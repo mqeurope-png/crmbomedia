@@ -44,7 +44,8 @@ export default function LoginPage() {
         <button className="button" type="submit" disabled={isSubmitting}>
           {isSubmitting ? "Entrando..." : "Entrar"}
         </button>
-      <p className="muted"><a href="/password-reset">¿Has olvidado la contraseña?</a></p>
+        <p className="muted"><a href="/password-reset">¿Has olvidado la contraseña?</a></p>
+      </form>
     </main>
   );
 }
