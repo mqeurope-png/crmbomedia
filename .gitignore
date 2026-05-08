@@ -7,6 +7,7 @@ __pycache__/
 .env
 .env.*
 !.env.example
+!.env.production.example
 
 # Node
 node_modules/
@@ -22,3 +23,7 @@ npm-debug.log*
 # Runtime
 *.sqlite3
 coverage/
+
+# Production deploy artifacts (real domain configs are generated from .example)
+deploy/nginx/conf.d/*.conf
+!deploy/nginx/conf.d/*.example

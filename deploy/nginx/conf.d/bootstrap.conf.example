@@ -1,0 +1,28 @@
+# Bootstrap-only Nginx vhost for issuing the first Let's Encrypt cert.
+#
+# Use this file *instead of* app.conf the first time you start Nginx, when
+# /etc/letsencrypt/live/CRM_DOMAIN/ does not yet exist. It serves only the
+# ACME http-01 challenge over plain HTTP. Once certbot has issued the cert,
+# remove bootstrap.conf, install app.conf, and reload Nginx.
+#
+# Replace CRM_DOMAIN with your real domain.
+
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name CRM_DOMAIN;
+
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+
+    location = /healthz {
+        access_log off;
+        return 200 "ok\n";
+        default_type text/plain;
+    }
+
+    location / {
+        return 404;
+    }
+}
