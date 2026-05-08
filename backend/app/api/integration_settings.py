@@ -1,3 +1,4 @@
+# ruff: noqa: I001
 from app.core.auth import require_admin, require_manager
 from app.core.errors import not_found
 from app.db.session import get_session
