@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.venv/
+.env
+.env.*
+!.env.example
+
+# Node
+node_modules/
+.next/
+out/
+npm-debug.log*
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/
+
+# Runtime
+*.sqlite3
+coverage/

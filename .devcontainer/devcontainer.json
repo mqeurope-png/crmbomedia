@@ -1,0 +1,26 @@
+{
+  "name": "CRMBO Media CRM",
+  "image": "mcr.microsoft.com/devcontainers/universal:2",
+  "postCreateCommand": "./scripts/setup.sh",
+  "forwardPorts": [8000, 3000],
+  "portsAttributes": {
+    "8000": {
+      "label": "FastAPI backend",
+      "onAutoForward": "notify"
+    },
+    "3000": {
+      "label": "Next.js frontend",
+      "onAutoForward": "openPreview"
+    }
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "charliermarsh.ruff",
+        "dbaeumer.vscode-eslint"
+      ]
+    }
+  },
+  "remoteUser": "codespace"
+}
