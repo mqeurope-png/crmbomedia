@@ -1,3 +1,4 @@
+# ruff: noqa: I001
 import json
 from datetime import UTC, datetime
 
@@ -5,6 +6,7 @@ from fastapi import APIRouter, Depends, Query, Response, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.api.integration_settings import router as integration_settings_router
 from app.core.auth import (
     get_current_user,
     require_admin,
@@ -24,7 +26,6 @@ from app.core.security import (
 from app.db.session import get_session
 from app.models.crm import AuditLog, Company, Contact, Note, Task, User
 from app.repositories import crm as crm_repository
-from app.api.integration_settings import router as integration_settings_router
 from app.schemas.crm import (
     AuditLogRead,
     ChangePasswordRequest,
