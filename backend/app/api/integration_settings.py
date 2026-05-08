@@ -1,6 +1,3 @@
-from fastapi import APIRouter, Depends
-from sqlalchemy.orm import Session
-
 from app.core.auth import require_admin, require_manager
 from app.core.errors import not_found
 from app.db.session import get_session
@@ -11,6 +8,8 @@ from app.repositories.integration_settings import (
     list_integration_settings as list_settings,
 )
 from app.schemas.integration_settings import IntegrationSettingRead, IntegrationSettingUpdate
+from fastapi import APIRouter, Depends
+from sqlalchemy.orm import Session
 
 router = APIRouter(prefix="/integration-settings", tags=["integration settings"])
 
