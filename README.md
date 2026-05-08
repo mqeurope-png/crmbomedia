@@ -10,7 +10,7 @@ El repositorio sigue el roadmap de `roadmap_crm_integraciones.md`: la app propia
 
 - **Frontend:** Next.js + React + TypeScript.
 - **Backend:** FastAPI + SQLAlchemy + Pydantic.
-- **Base de datos:** PostgreSQL.
+- **Base de datos:** MySQL 8.
 - **Migraciones:** Alembic.
 - **Colas/cache:** Redis preparado para workers futuros.
 - **Orquestación local:** Docker Compose.
@@ -58,7 +58,7 @@ Puedes probar el proyecto sin preparar tu máquina local usando GitHub Codespace
    ./scripts/dev-check.sh
    ```
 
-5. Arranca PostgreSQL, Redis, backend y frontend con Docker Compose:
+5. Arranca MySQL, Redis, backend y frontend con Docker Compose:
 
    ```bash
    docker compose up --build
@@ -69,7 +69,7 @@ Puedes probar el proyecto sin preparar tu máquina local usando GitHub Codespace
    - `3000`: frontend Next.js.
    - `8000`: API FastAPI y OpenAPI en `/docs`.
 
-La configuración usa Docker-in-Docker para que `docker compose up --build` funcione dentro de Codespaces. Si tu organización deshabilita Docker-in-Docker, usa los comandos locales documentados en la sección de desarrollo y levanta PostgreSQL/Redis con servicios externos o un Codespace con permisos de Docker habilitados.
+La configuración usa Docker-in-Docker para que `docker compose up --build` funcione dentro de Codespaces. Si tu organización deshabilita Docker-in-Docker, usa los comandos locales documentados en la sección de desarrollo y levanta MySQL/Redis con servicios externos o un Codespace con permisos de Docker habilitados.
 
 ## Puesta en marcha rápida
 
@@ -103,7 +103,7 @@ Variables principales:
 
 - `APP_NAME`: nombre mostrado por la API.
 - `ENVIRONMENT`: entorno (`development`, `staging`, `production`).
-- `DATABASE_URL`: URL SQLAlchemy de PostgreSQL.
+- `DATABASE_URL`: URL SQLAlchemy de MySQL (driver `pymysql`).
 - `REDIS_URL`: URL Redis para colas/cache futuras.
 - `CORS_ORIGINS`: orígenes permitidos para el frontend.
 - `SECRET_KEY`: secreto local; debe cambiarse antes de producción.
@@ -133,7 +133,7 @@ docker compose down
 docker compose down -v
 ```
 
-`docker compose down -v` elimina el volumen local de PostgreSQL.
+`docker compose down -v` elimina el volumen local de MySQL.
 
 ## Desarrollo backend sin Docker
 
@@ -239,7 +239,7 @@ Reglas relevantes:
 ## Requisitos antes de producción
 
 - HTTPS mediante proxy seguro.
-- PostgreSQL y Redis no expuestos públicamente.
+- MySQL y Redis no expuestos públicamente.
 - Gestión real de usuarios, roles y permisos.
 - 2FA para administradores.
 - API keys cifradas.
