@@ -23,6 +23,8 @@ const roadmapItems = [
   "Consentimiento marketing y bajas con prioridad RGPD",
 ];
 
+const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
+
 export default function Home() {
   const router = useRouter();
   const [user, setUser] = useState<User | null>(null);
@@ -75,6 +77,8 @@ export default function Home() {
     );
   }
 
+  const canManageIntegrations = user?.role === "admin" || user?.role === "manager";
+
   return (
     <main className="shell">
       <section className="hero compact">
@@ -89,10 +93,11 @@ export default function Home() {
         </p>
         <div className="actions">
           <Link href="/contacts/new" className="button">Crear contacto</Link>
-          <a href="http://localhost:8000/docs" className="button secondary">OpenAPI</a>
+          <a href={`${apiBaseUrl}/docs`} className="button secondary">OpenAPI</a>
           <Link href="/account/password" className="button secondary">Contraseña</Link>
           {user?.role === "admin" ? <Link href="/admin/users" className="button secondary">Usuarios</Link> : null}
           {user?.role === "admin" ? <Link href="/admin/audit" className="button secondary">Auditoría</Link> : null}
+          {canManageIntegrations ? <Link href="/admin/integrations" className="button secondary">Integraciones</Link> : null}
           <button className="button secondary" type="button" onClick={logout}>Salir</button>
         </div>
       </section>
