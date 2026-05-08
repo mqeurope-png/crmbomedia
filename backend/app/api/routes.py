@@ -24,6 +24,7 @@ from app.core.security import (
 from app.db.session import get_session
 from app.models.crm import AuditLog, Company, Contact, Note, Task, User
 from app.repositories import crm as crm_repository
+from app.api.integration_settings import router as integration_settings_router
 from app.schemas.crm import (
     AuditLogRead,
     ChangePasswordRequest,
@@ -639,3 +640,6 @@ def create_task(
     session.commit()
     session.refresh(task)
     return task
+
+
+router.include_router(integration_settings_router)
