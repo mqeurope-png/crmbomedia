@@ -11,10 +11,17 @@ import { confirmPasswordReset, requestPasswordReset } from "../lib/api";
 
 export default function PasswordResetPage() {
   const [token, setToken] = useState("");
+  // newPassword drives PasswordRequirements; the requirements list reacts to
+  // each keystroke on "Nueva contraseña", not on the confirm box.
   const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
   const compliant = isPasswordCompliant(newPassword);
+  const showMatch = confirmPassword.length > 0;
+  const matches = newPassword === confirmPassword;
+  const canSubmit = compliant && matches;
 
   async function onRequest(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -40,6 +47,7 @@ export default function PasswordResetPage() {
       await confirmPasswordReset(String(form.get("token")), String(form.get("new_password")));
       setMessage("Contraseña restablecida. Ya puedes iniciar sesión.");
       setNewPassword("");
+      setConfirmPassword("");
     } catch (err) {
       setError(err instanceof Error ? err.message : "No se pudo restablecer la contraseña");
     }
@@ -74,7 +82,24 @@ export default function PasswordResetPage() {
           />
         </label>
         <PasswordRequirements password={newPassword} />
-        <button className="button" type="submit" disabled={!compliant}>
+        <label>
+          Confirmar nueva contraseña
+          <input
+            name="confirm_password"
+            type="password"
+            required
+            value={confirmPassword}
+            onChange={(event) => setConfirmPassword(event.target.value)}
+            autoComplete="new-password"
+          />
+        </label>
+        {showMatch ? (
+          <p className={`password-match ${matches ? "ok" : "miss"}`}>
+            <span aria-hidden="true">{matches ? "✓" : "✗"}</span>
+            {matches ? " Las contraseñas coinciden" : " Las contraseñas no coinciden"}
+          </p>
+        ) : null}
+        <button className="button" type="submit" disabled={!canSubmit}>
           Restablecer
         </button>
       </form>
