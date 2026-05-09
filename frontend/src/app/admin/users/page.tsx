@@ -28,7 +28,13 @@ export default function AdminUsersPage() {
   const [message, setMessage] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [createPassword, setCreatePassword] = useState("");
+  const [createConfirm, setCreateConfirm] = useState("");
   const [editPasswords, setEditPasswords] = useState<Record<string, string>>({});
+
+  const createCompliant = isPasswordCompliant(createPassword);
+  const createMatchesShow = createConfirm.length > 0;
+  const createMatches = createPassword === createConfirm;
+  const canCreate = createCompliant && createMatches;
 
   async function loadUsers() {
     const [currentUser, userList] = await Promise.all([getCurrentUser(), getUsers()]);
@@ -58,6 +64,7 @@ export default function AdminUsersPage() {
       });
       event.currentTarget.reset();
       setCreatePassword("");
+      setCreateConfirm("");
       setMessage("Usuario creado");
       await loadUsers();
     } catch (err) {
@@ -131,8 +138,25 @@ export default function AdminUsersPage() {
                 />
               </label>
               <PasswordRequirements password={createPassword} />
+              <label>
+                Confirmar contraseña
+                <input
+                  name="confirm_password"
+                  type="password"
+                  required
+                  value={createConfirm}
+                  onChange={(event) => setCreateConfirm(event.target.value)}
+                  autoComplete="new-password"
+                />
+              </label>
+              {createMatchesShow ? (
+                <p className={`password-match ${createMatches ? "ok" : "miss"}`}>
+                  <span aria-hidden="true">{createMatches ? "✓" : "✗"}</span>
+                  {createMatches ? " Las contraseñas coinciden" : " Las contraseñas no coinciden"}
+                </p>
+              ) : null}
               <label>Rol<select name="role" defaultValue="viewer">{roles.map((role) => <option key={role} value={role}>{role}</option>)}</select></label>
-              <button className="button" type="submit" disabled={!isPasswordCompliant(createPassword)}>
+              <button className="button" type="submit" disabled={!canCreate}>
                 Crear
               </button>
             </form>

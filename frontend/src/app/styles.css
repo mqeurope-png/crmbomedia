@@ -346,3 +346,15 @@ td {
 .password-strength.strength-medium .strength-bar > span { background: #d4ac0d; }
 .password-strength.strength-strong .strength-bar > span { background: #117a36; }
 .password-strength.strength-empty .strength-bar > span { background: rgba(0, 0, 0, 0.15); }
+
+.password-match {
+  margin: -4px 0 8px;
+  font-size: 13px;
+  font-weight: 500;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.password-match.ok { color: #117a36; }
+.password-match.miss { color: #8a1f1f; }
