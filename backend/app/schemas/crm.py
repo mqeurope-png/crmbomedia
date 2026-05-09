@@ -2,7 +2,15 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
+from app.core.passwords import MAX_LENGTH as PASSWORD_MAX_LENGTH
+from app.core.passwords import MIN_LENGTH as PASSWORD_MIN_LENGTH
+from app.core.passwords import validate_password_policy
 from app.models.crm import ConsentStatus, ExternalSystem, TaskStatus, UserRole
+
+
+def _enforce_password_policy(value: str) -> str:
+    validate_password_policy(value)
+    return value
 
 
 class ErrorResponse(BaseModel):
@@ -21,7 +29,9 @@ class TokenRead(BaseModel):
 
 class ChangePasswordRequest(BaseModel):
     current_password: str = Field(min_length=1)
-    new_password: str = Field(min_length=8, max_length=128)
+    new_password: str = Field(min_length=PASSWORD_MIN_LENGTH, max_length=PASSWORD_MAX_LENGTH)
+
+    _validate_new_password = field_validator("new_password")(_enforce_password_policy)
 
 
 class PasswordResetRequest(BaseModel):
@@ -35,7 +45,9 @@ class PasswordResetRequestRead(BaseModel):
 
 class PasswordResetConfirm(BaseModel):
     token: str = Field(min_length=16)
-    new_password: str = Field(min_length=8, max_length=128)
+    new_password: str = Field(min_length=PASSWORD_MIN_LENGTH, max_length=PASSWORD_MAX_LENGTH)
+
+    _validate_new_password = field_validator("new_password")(_enforce_password_policy)
 
 
 class MessageRead(BaseModel):
@@ -45,9 +57,11 @@ class MessageRead(BaseModel):
 class UserCreate(BaseModel):
     email: EmailStr
     full_name: str = Field(min_length=1, max_length=255)
-    password: str = Field(min_length=8, max_length=128)
+    password: str = Field(min_length=PASSWORD_MIN_LENGTH, max_length=PASSWORD_MAX_LENGTH)
     role: UserRole = UserRole.VIEWER
     is_active: bool = True
+
+    _validate_password = field_validator("password")(_enforce_password_policy)
 
 
 class UserUpdate(BaseModel):
@@ -56,7 +70,9 @@ class UserUpdate(BaseModel):
     is_active: bool | None = None
 
 class UserPasswordUpdate(BaseModel):
-    new_password: str = Field(min_length=8, max_length=128)
+    new_password: str = Field(min_length=PASSWORD_MIN_LENGTH, max_length=PASSWORD_MAX_LENGTH)
+
+    _validate_new_password = field_validator("new_password")(_enforce_password_policy)
 
 
 class UserRead(BaseModel):

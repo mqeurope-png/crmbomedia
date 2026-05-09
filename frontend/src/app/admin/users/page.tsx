@@ -4,6 +4,11 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { ErrorState } from "../../components/ErrorState";
 import {
+  isPasswordCompliant,
+  PasswordRequirements,
+  PASSWORD_MIN_LENGTH,
+} from "../../components/PasswordRequirements";
+import {
   adminUpdateUserPassword,
   createUser,
   deactivateUser,
@@ -22,6 +27,8 @@ export default function AdminUsersPage() {
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [createPassword, setCreatePassword] = useState("");
+  const [editPasswords, setEditPasswords] = useState<Record<string, string>>({});
 
   async function loadUsers() {
     const [currentUser, userList] = await Promise.all([getCurrentUser(), getUsers()]);
@@ -50,6 +57,7 @@ export default function AdminUsersPage() {
         role: form.get("role"),
       });
       event.currentTarget.reset();
+      setCreatePassword("");
       setMessage("Usuario creado");
       await loadUsers();
     } catch (err) {
@@ -72,6 +80,7 @@ export default function AdminUsersPage() {
         await adminUpdateUserPassword(user.id, password);
       }
       setMessage("Usuario actualizado");
+      setEditPasswords((prev) => ({ ...prev, [user.id]: "" }));
       await loadUsers();
     } catch (err) {
       setError(err instanceof Error ? err.message : "No se pudo actualizar el usuario");
@@ -109,27 +118,61 @@ export default function AdminUsersPage() {
             <form className="form-card embedded" onSubmit={onCreate}>
               <label>Email<input name="email" type="email" required /></label>
               <label>Nombre<input name="full_name" required /></label>
-              <label>Contraseña<input name="password" type="password" required minLength={8} /></label>
+              <label>
+                Contraseña
+                <input
+                  name="password"
+                  type="password"
+                  required
+                  minLength={PASSWORD_MIN_LENGTH}
+                  value={createPassword}
+                  onChange={(event) => setCreatePassword(event.target.value)}
+                  autoComplete="new-password"
+                />
+              </label>
+              <PasswordRequirements password={createPassword} />
               <label>Rol<select name="role" defaultValue="viewer">{roles.map((role) => <option key={role} value={role}>{role}</option>)}</select></label>
-              <button className="button" type="submit">Crear</button>
+              <button className="button" type="submit" disabled={!isPasswordCompliant(createPassword)}>
+                Crear
+              </button>
             </form>
           </article>
           <article className="card wide-card">
             <h2>Usuarios existentes</h2>
             <ul className="item-list">
-              {users.map((user) => (
-                <li key={user.id}>
-                  <form className="user-edit-row" onSubmit={(event) => { event.preventDefault(); saveUser(user, event.currentTarget); }}>
-                    <strong>{user.email}</strong>
-                    <input name="full_name" defaultValue={user.full_name} required />
-                    <select name="role" defaultValue={user.role}>{roles.map((role) => <option key={role} value={role}>{role}</option>)}</select>
-                    <select name="is_active" defaultValue={String(user.is_active)}><option value="true">Activo</option><option value="false">Inactivo</option></select>
-                    <input name="new_password" type="password" placeholder="Nueva contraseña opcional" minLength={8} />
-                    <button className="button secondary small" type="submit">Guardar</button>
-                    <button className="button secondary small" type="button" onClick={() => toggleActive(user)}>{user.is_active ? "Desactivar" : "Reactivar"}</button>
-                  </form>
-                </li>
-              ))}
+              {users.map((user) => {
+                const draft = editPasswords[user.id] ?? "";
+                return (
+                  <li key={user.id}>
+                    <form className="user-edit-row" onSubmit={(event) => { event.preventDefault(); saveUser(user, event.currentTarget); }}>
+                      <strong>{user.email}</strong>
+                      <input name="full_name" defaultValue={user.full_name} required />
+                      <select name="role" defaultValue={user.role}>{roles.map((role) => <option key={role} value={role}>{role}</option>)}</select>
+                      <select name="is_active" defaultValue={String(user.is_active)}><option value="true">Activo</option><option value="false">Inactivo</option></select>
+                      <input
+                        name="new_password"
+                        type="password"
+                        placeholder="Nueva contraseña opcional"
+                        minLength={PASSWORD_MIN_LENGTH}
+                        value={draft}
+                        onChange={(event) =>
+                          setEditPasswords((prev) => ({ ...prev, [user.id]: event.target.value }))
+                        }
+                        autoComplete="new-password"
+                      />
+                      <button
+                        className="button secondary small"
+                        type="submit"
+                        disabled={draft.length > 0 && !isPasswordCompliant(draft)}
+                      >
+                        Guardar
+                      </button>
+                      <button className="button secondary small" type="button" onClick={() => toggleActive(user)}>{user.is_active ? "Desactivar" : "Reactivar"}</button>
+                    </form>
+                    {draft.length > 0 ? <PasswordRequirements password={draft} /> : null}
+                  </li>
+                );
+              })}
             </ul>
           </article>
         </section>

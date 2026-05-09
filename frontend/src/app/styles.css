@@ -286,3 +286,63 @@ td {
 @media (max-width: 900px) {
   .user-edit-row { grid-template-columns: 1fr; }
 }
+
+.password-requirements {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 6px 0 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.02);
+  font-size: 13px;
+}
+
+.password-rules {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.password-rules li {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.password-rules li.ok { color: #117a36; }
+.password-rules li.miss { color: #8a1f1f; }
+
+.password-strength {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.password-strength .strength-label {
+  font-weight: 600;
+}
+
+.password-strength .strength-bar {
+  display: block;
+  height: 6px;
+  width: 100%;
+  background: rgba(0, 0, 0, 0.08);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.password-strength .strength-bar > span {
+  display: block;
+  height: 100%;
+  background: #c0392b;
+  transition: width 150ms ease, background 150ms ease;
+}
+
+.password-strength.strength-medium .strength-bar > span { background: #d4ac0d; }
+.password-strength.strength-strong .strength-bar > span { background: #117a36; }
+.password-strength.strength-empty .strength-bar > span { background: rgba(0, 0, 0, 0.15); }

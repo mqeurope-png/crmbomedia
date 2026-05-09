@@ -110,7 +110,7 @@ def test_admin_can_create_and_list_users(client: TestClient):
         json={
             "email": "new-user@example.com",
             "full_name": "New User",
-            "password": "password123",
+            "password": "NewUserPass123!",
             "role": "viewer",
         },
         headers=headers,
@@ -351,11 +351,11 @@ def test_change_current_user_password(client: TestClient):
 
     changed = client.post(
         "/api/auth/change-password",
-        json={"current_password": "password123", "new_password": "new-password123"},
+        json={"current_password": "password123", "new_password": "ChangedPass123!"},
         headers=headers,
     )
     login_response = client.post(
-        "/api/auth/login", json={"email": "user@example.com", "password": "new-password123"}
+        "/api/auth/login", json={"email": "user@example.com", "password": "ChangedPass123!"}
     )
 
     assert changed.status_code == 200
@@ -370,10 +370,10 @@ def test_password_reset_request_and_confirm(client: TestClient):
 
     confirmed = client.post(
         "/api/auth/password-reset/confirm",
-        json={"token": token, "new_password": "reset-password123"},
+        json={"token": token, "new_password": "ResetPass123!Z"},
     )
     login_response = client.post(
-        "/api/auth/login", json={"email": "viewer@example.com", "password": "reset-password123"}
+        "/api/auth/login", json={"email": "viewer@example.com", "password": "ResetPass123!Z"}
     )
 
     assert requested.status_code == 200
@@ -402,7 +402,7 @@ def test_admin_can_update_user_password(client: TestClient):
         json={
             "email": "password-target@example.com",
             "full_name": "Password Target",
-            "password": "password123",
+            "password": "TargetPass123!",
             "role": "viewer",
         },
         headers=headers,
@@ -410,12 +410,12 @@ def test_admin_can_update_user_password(client: TestClient):
 
     changed = client.patch(
         f"/api/users/{created.json()['id']}/password",
-        json={"new_password": "admin-set-password123"},
+        json={"new_password": "AdminSetPass123!"},
         headers=headers,
     )
     login_response = client.post(
         "/api/auth/login",
-        json={"email": "password-target@example.com", "password": "admin-set-password123"},
+        json={"email": "password-target@example.com", "password": "AdminSetPass123!"},
     )
 
     assert changed.status_code == 200
