@@ -2,11 +2,18 @@
 
 import Link from "next/link";
 import { useState } from "react";
+import {
+  isPasswordCompliant,
+  PasswordRequirements,
+  PASSWORD_MIN_LENGTH,
+} from "../../components/PasswordRequirements";
 import { changePassword } from "../../lib/api";
 
 export default function ChangePasswordPage() {
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [newPassword, setNewPassword] = useState("");
+  const compliant = isPasswordCompliant(newPassword);
 
   async function onSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -17,6 +24,7 @@ export default function ChangePasswordPage() {
       await changePassword(String(form.get("current_password")), String(form.get("new_password")));
       setMessage("Contraseña actualizada");
       event.currentTarget.reset();
+      setNewPassword("");
     } catch (err) {
       setError(err instanceof Error ? err.message : "No se pudo cambiar la contraseña");
     }
@@ -30,8 +38,22 @@ export default function ChangePasswordPage() {
         {error ? <div className="error-state">{error}</div> : null}
         {message ? <div className="success-state">{message}</div> : null}
         <label>Contraseña actual<input name="current_password" type="password" required /></label>
-        <label>Nueva contraseña<input name="new_password" type="password" required minLength={8} /></label>
-        <button className="button" type="submit">Cambiar contraseña</button>
+        <label>
+          Nueva contraseña
+          <input
+            name="new_password"
+            type="password"
+            required
+            minLength={PASSWORD_MIN_LENGTH}
+            value={newPassword}
+            onChange={(event) => setNewPassword(event.target.value)}
+            autoComplete="new-password"
+          />
+        </label>
+        <PasswordRequirements password={newPassword} />
+        <button className="button" type="submit" disabled={!compliant}>
+          Cambiar contraseña
+        </button>
       </form>
     </main>
   );

@@ -2,12 +2,19 @@
 
 import Link from "next/link";
 import { useState } from "react";
+import {
+  isPasswordCompliant,
+  PasswordRequirements,
+  PASSWORD_MIN_LENGTH,
+} from "../components/PasswordRequirements";
 import { confirmPasswordReset, requestPasswordReset } from "../lib/api";
 
 export default function PasswordResetPage() {
   const [token, setToken] = useState("");
+  const [newPassword, setNewPassword] = useState("");
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const compliant = isPasswordCompliant(newPassword);
 
   async function onRequest(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -16,6 +23,9 @@ export default function PasswordResetPage() {
     try {
       const response = await requestPasswordReset(String(form.get("email")));
       setMessage(response.message);
+      // In production the API never returns the token; the user gets the link
+      // by email. In dev/test the token is included and we autofill the form
+      // so Codespaces and the test suite can complete the flow.
       if (response.reset_token) setToken(response.reset_token);
     } catch (err) {
       setError(err instanceof Error ? err.message : "No se pudo solicitar reset");
@@ -29,6 +39,7 @@ export default function PasswordResetPage() {
     try {
       await confirmPasswordReset(String(form.get("token")), String(form.get("new_password")));
       setMessage("Contraseña restablecida. Ya puedes iniciar sesión.");
+      setNewPassword("");
     } catch (err) {
       setError(err instanceof Error ? err.message : "No se pudo restablecer la contraseña");
     }
@@ -42,12 +53,30 @@ export default function PasswordResetPage() {
       {message ? <div className="success-state">{message}</div> : null}
       <form className="form-card" onSubmit={onRequest}>
         <label>Email<input name="email" type="email" required /></label>
-        <button className="button" type="submit">Solicitar token</button>
+        <button className="button" type="submit">Solicitar enlace de recuperación</button>
+        <p className="muted">
+          Si la cuenta existe recibirás un enlace por email. En entornos de desarrollo el token
+          aparece directamente en la respuesta para facilitar las pruebas.
+        </p>
       </form>
       <form className="form-card" onSubmit={onConfirm}>
         <label>Token<input name="token" value={token} onChange={(event) => setToken(event.target.value)} required /></label>
-        <label>Nueva contraseña<input name="new_password" type="password" minLength={8} required /></label>
-        <button className="button" type="submit">Restablecer</button>
+        <label>
+          Nueva contraseña
+          <input
+            name="new_password"
+            type="password"
+            minLength={PASSWORD_MIN_LENGTH}
+            required
+            value={newPassword}
+            onChange={(event) => setNewPassword(event.target.value)}
+            autoComplete="new-password"
+          />
+        </label>
+        <PasswordRequirements password={newPassword} />
+        <button className="button" type="submit" disabled={!compliant}>
+          Restablecer
+        </button>
       </form>
     </main>
   );

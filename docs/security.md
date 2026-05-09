@@ -123,3 +123,93 @@ mysql -u crm -p crm -e "SELECT system, LEFT(api_key_encrypted, 32), api_key_set_
 ```
 
 El campo debe verse como `gAAAAAB...` (prefijo Fernet versión 0x80) y nunca como el plaintext que introdujiste.
+
+---
+
+# Password policy
+
+Reglas mínimas para contraseñas de usuario, aplicadas de forma consistente en creación, cambio, reset por admin y reset auto-servicio. Centralizadas en `backend/app/core/passwords.py`.
+
+## Reglas
+
+| Regla | Valor |
+|---|---|
+| Longitud mínima | **12** caracteres |
+| Longitud máxima | 128 caracteres |
+| Mayúscula | al menos una |
+| Minúscula | al menos una |
+| Dígito | al menos uno |
+| Símbolos | recomendados (suman a la fortaleza visual), no obligatorios |
+| Lista de bloqueo | `backend/app/core/common_passwords.txt` (~50 entradas comunes / leaked) |
+
+La comparación con la blocklist es **case-insensitive**: `Password`, `PASSWORD` y `password` se rechazan por igual.
+
+## Justificación
+
+- 12 caracteres es el mínimo NIST recomendado actualmente (SP 800-63B Rev. 4 borrador) y supera el `8` que estaba implícito antes.
+- Variedad (mayúscula + minúscula + dígito) frena ataques con diccionarios pequeños sin obligar a símbolos no-ASCII que rompen teclados internacionales.
+- La blocklist es un sanity check sobre las contraseñas más reutilizadas (RockYou, NCSC bad list); evita que se acepten passwords que ya forman parte de wordlists públicas, sin pretender ser exhaustiva.
+- No se exige rotación periódica obligatoria: NIST desaconseja forzar cambios sin causa, porque empuja a los usuarios a patrones predecibles.
+
+## Aplicación
+
+Validador `validate_password_policy(password)` (lanza `PasswordPolicyError(ValueError)`), enchufado a los schemas de:
+
+- `POST /api/users` (crear usuario).
+- `PATCH /api/users/{id}/password` (admin cambia password ajeno).
+- `POST /api/auth/change-password` (usuario cambia su password).
+- `POST /api/auth/password-reset/confirm` (recuperación de contraseña).
+
+La violación devuelve **`422 Unprocessable Entity`** con el campo `detail[].msg` indicando qué regla falla en español.
+
+## UI
+
+`frontend/src/app/components/PasswordRequirements.tsx` muestra en tiempo real una checklist (✓/✗) y una barra de fortaleza (Débil / Media / Fuerte) en los formularios de `/admin/users`, `/account/password` y `/password-reset`. La regla autoritativa es la del backend; el componente solo sirve de hint y deshabilita el botón hasta que se cumple la política mínima.
+
+## Verificación
+
+```bash
+cd backend
+python -m pytest tests/test_password_policy.py -q
+```
+
+Cubre:
+
+- Cada regla individual (longitud, mayúscula, minúscula, dígito, blocklist).
+- Rechazo de `Password1234` (cumple las reglas estructurales pero está en la blocklist).
+- Rechazo en cada uno de los 4 endpoints.
+- Caso negativo: una contraseña conforme se acepta.
+
+---
+
+# Password-reset flow: producción vs desarrollo
+
+`POST /api/auth/password-reset/request` cambia su contrato según `ENVIRONMENT`:
+
+| Comportamiento | `production` | `development` / `test` |
+|---|---|---|
+| Status code | **`202 Accepted`** | `200 OK` |
+| Cuerpo | `{"message": "If the email exists, a reset link has been sent."}` | `{"message": "...", "reset_token": "..."}` (si el email existe) |
+| Email existe? | No revela. La respuesta es idéntica en ambos casos. | Mensaje distinto entre existe / no existe. |
+| Entrega del token | Por email (TODO: pendiente conector transaccional). Por ahora se loggea un `warning` con `user_id`. | Devuelto en el cuerpo y loggeado en `INFO` para que Codespaces y los tests puedan completar el flujo. |
+
+## Por qué
+
+- En producción no se debe revelar la existencia de cuentas (account enumeration).
+- En producción el token **nunca** sale por la respuesta HTTP: solo por el canal autenticado (email del titular).
+- En desarrollo / test mantenemos la respuesta antigua para que los tests (`test_password_reset_request_and_confirm`) no necesiten un servicio SMTP, y para que se pueda probar el flujo end-to-end en Codespaces.
+
+## TODO pendiente
+
+Conectar un proveedor SMTP / transactional (probable: Brevo cuando Fase 5 lo integre, o un proveedor independiente antes). Hasta entonces, en producción la solicitud queda registrada (`audit_logs` + `password_reset_token_hash` en `users`) pero el token solo es accesible por consulta directa a BBDD por un operador. Documentado como riesgo en el README sección "Pendiente para hardening de producción".
+
+## Verificación
+
+```bash
+cd backend
+python -m pytest tests/test_password_policy.py::test_password_reset_request_in_production_returns_202_without_token -q
+python -m pytest tests/test_password_policy.py::test_password_reset_request_in_production_neutral_for_unknown_email -q
+python -m pytest tests/test_password_policy.py::test_password_reset_request_in_development_returns_token -q
+```
+
+Las tres pasan; las dos primeras prueban el comportamiento neutro de producción, la tercera garantiza la compatibilidad de desarrollo.

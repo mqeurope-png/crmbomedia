@@ -1,8 +1,10 @@
 # ruff: noqa: I001
 import json
+import logging
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Query, Response, status
+from fastapi.responses import JSONResponse
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -53,6 +55,8 @@ from app.schemas.crm import (
     UserRead,
     UserUpdate,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 ERROR_RESPONSES = {
@@ -118,22 +122,78 @@ def change_password(
 
 @router.post(
     "/auth/password-reset/request",
-    response_model=PasswordResetRequestRead,
     tags=["auth"],
+    responses={
+        200: {
+            "model": PasswordResetRequestRead,
+            "description": (
+                "Development / test environments only: returns the reset token in the body so "
+                "Codespaces and the CI suite can complete the flow without an email service."
+            ),
+        },
+        202: {
+            "model": MessageRead,
+            "description": (
+                "Production: request accepted. The response is the same regardless of whether "
+                "the email exists, to prevent account enumeration. The token is delivered out "
+                "of band (email)."
+            ),
+        },
+    },
 )
 def request_password_reset(
-    payload: PasswordResetRequest, session: Session = Depends(get_session)
-) -> PasswordResetRequestRead:
+    payload: PasswordResetRequest,
+    session: Session = Depends(get_session),
+    settings: Settings = Depends(get_settings),
+) -> JSONResponse:
+    is_production = settings.environment.lower() == "production"
     user = crm_repository.get_user_by_email(session, str(payload.email))
-    if not user or not user.is_active:
-        return PasswordResetRequestRead(message="If the user exists, a reset token was generated")
-    reset_token = create_reset_token()
-    user.password_reset_token_hash = hash_reset_token(reset_token)
-    user.password_reset_requested_at = datetime.now(UTC)
-    record_audit(session, user, "request_password_reset", "user", user.id)
-    session.commit()
-    return PasswordResetRequestRead(
-        message="Password reset token generated", reset_token=reset_token
+    reset_token: str | None = None
+
+    if user and user.is_active:
+        reset_token = create_reset_token()
+        user.password_reset_token_hash = hash_reset_token(reset_token)
+        user.password_reset_requested_at = datetime.now(UTC)
+        record_audit(session, user, "request_password_reset", "user", user.id)
+        session.commit()
+
+        # TODO(connectors): deliver this through a transactional email provider.
+        # Until that lands, surface the link only in development logs and never
+        # in the HTTP response when running production.
+        if is_production:
+            logger.warning(
+                "Password reset requested for user_id=%s but no email service is configured. "
+                "Token generated and stored but cannot be delivered.",
+                user.id,
+            )
+        else:
+            logger.info(
+                "[dev] password reset link token=%s user_id=%s — deliver manually until "
+                "email service is wired up.",
+                reset_token,
+                user.id,
+            )
+
+    if is_production:
+        # Always 202 + neutral message to avoid revealing whether the email exists.
+        return JSONResponse(
+            status_code=status.HTTP_202_ACCEPTED,
+            content={"message": "If the email exists, a reset link has been sent."},
+        )
+
+    # Development / test: keep the legacy behaviour so the existing flow can be
+    # exercised end-to-end without an email service.
+    if reset_token is None:
+        return JSONResponse(
+            status_code=status.HTTP_200_OK,
+            content={"message": "If the user exists, a reset token was generated"},
+        )
+    return JSONResponse(
+        status_code=status.HTTP_200_OK,
+        content={
+            "message": "Password reset token generated",
+            "reset_token": reset_token,
+        },
     )
 
 
