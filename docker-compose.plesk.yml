@@ -1,0 +1,35 @@
+# Plesk reverse-proxy override for CRMBO Media CRM.
+#
+# Use this override when the host already runs Plesk (or any other reverse
+# proxy / web server) on ports 80 and 443. In that scenario:
+#   - Plesk terminates TLS and manages Let's Encrypt certs.
+#   - The CRM Nginx container must NOT bind 80/443; it publishes on
+#     127.0.0.1:8080 only and Plesk proxies to it.
+#   - The CRM Nginx vhost is HTTP-only (no TLS, no certbot mounts).
+#
+# Apply on top of docker-compose.prod.yml:
+#
+#   docker compose --env-file .env.production \
+#     -f docker-compose.prod.yml \
+#     -f docker-compose.plesk.yml \
+#     up -d --build
+#
+# For the standalone case (Docker owns 80/443 + certbot on the host) keep
+# using docker-compose.prod.yml on its own.
+
+services:
+  nginx:
+    # Replace, do not append: avoids inheriting 80/443 from the prod file.
+    ports: !override
+      - "127.0.0.1:8080:80"
+    # Replace, do not append: drops /etc/letsencrypt and certbot_webroot
+    # mounts that are irrelevant when Plesk handles TLS.
+    volumes: !override
+      - ./deploy/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./deploy/nginx/conf.d:/etc/nginx/conf.d:ro
+
+  frontend:
+    # Next.js 15 standalone server defaults to listening on the container
+    # hostname; force 0.0.0.0 so the Nginx container can reach it.
+    environment:
+      HOSTNAME: "0.0.0.0"

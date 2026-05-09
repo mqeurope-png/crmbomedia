@@ -227,3 +227,115 @@ docker compose -f docker-compose.prod.yml exec api bash
 - [ ] `certbot renew --dry-run` finaliza sin errores.
 - [ ] Logs de `api` y `nginx` rotan (configurado en compose: 10 MB × 5).
 - [ ] Sentry u otro colector de errores conectado (pendiente — fuera del alcance de esta entrega).
+
+---
+
+## 14. Despliegue detrás de Plesk (reverse proxy)
+
+Esta sección reemplaza los pasos 5–9 cuando el VPS IONOS ya tiene **Plesk** instalado y ocupa los puertos 80 y 443. Se mantiene todo lo demás (Docker, `.env.production`, MySQL, backups, restore).
+
+### Cuándo usar este modo
+
+- El servidor llega con Plesk preinstalado (cuenta IONOS «Linux gestionado» o Plesk Web Pro/Host).
+- Plesk emite y renueva los certificados Let's Encrypt del dominio.
+- Hay otros sitios sirviéndose desde el mismo Plesk y compartir el puerto 443 es obligatorio.
+
+Si el VPS está **vacío** (sin Plesk), sigue usando la pila standalone de los pasos 5–9: Nginx en contenedor terminando TLS y certbot del host.
+
+### Comprobaciones previas
+
+```bash
+# Plesk respondiendo en 80/443
+curl -fsSI https://bo-crm.tudominio.com/ | head -1
+
+# Nada más escuchando en 8080 (puerto que usará el Nginx interno)
+sudo ss -tlnp | grep :8080 || echo "8080 libre"
+
+# Subdominio creado en Plesk con su propio document root y cert Let's Encrypt
+# (Plesk → Domains → Add Domain o Add Subdomain → SSL/TLS Certificates → Install).
+```
+
+### Procedimiento
+
+1. **Instalar el vhost interno HTTP-only**:
+
+   ```bash
+   cd /opt/crmbomedia
+   cp deploy/nginx/conf.d/app.plesk.conf.example deploy/nginx/conf.d/app.conf
+   ```
+
+   No hace falta sustituir `CRM_DOMAIN`: el vhost es `default_server` y delega el dominio público a Plesk.
+
+2. **Arrancar la pila con el override Plesk**:
+
+   ```bash
+   docker compose --env-file .env.production \
+     -f docker-compose.prod.yml \
+     -f docker-compose.plesk.yml \
+     up -d --build
+   ```
+
+   El override:
+   - Hace que el contenedor `nginx` publique solo en `127.0.0.1:8080:80` (no expone 80/443 al exterior).
+   - Quita los mounts `/etc/letsencrypt`, `/var/lib/letsencrypt` y `certbot_webroot` (irrelevantes con Plesk).
+   - Añade `HOSTNAME=0.0.0.0` al `frontend` para que el server standalone de Next.js 15 escuche en todas las interfaces internas (por defecto bindea al hostname del contenedor y Nginx no llega).
+
+3. **Configurar Plesk como reverse proxy del subdominio**:
+
+   En **Plesk → Domains → bo-crm.tudominio.com → Apache & nginx Settings**:
+
+   - **Proxy mode**: desactivado.
+   - **Smart static files processing**: desactivado.
+   - **Additional nginx directives**:
+
+     ```nginx
+     location ~ ^/ {
+         proxy_pass http://127.0.0.1:8080;
+         proxy_http_version 1.1;
+         proxy_set_header Host $host;
+         proxy_set_header X-Real-IP $remote_addr;
+         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+         proxy_set_header X-Forwarded-Proto $scheme;
+         proxy_set_header Upgrade $http_upgrade;
+         proxy_set_header Connection "upgrade";
+         proxy_read_timeout 60s;
+     }
+     ```
+
+   - Pulsa **Apply**.
+
+4. **Emitir el certificado Let's Encrypt en Plesk**:
+
+   En **SSL/TLS Certificates → Install** del subdominio. Si la primera emisión falla por solapamiento entre la regla regex añadida y el `location` que Plesk usa internamente para el desafío ACME, deja **Additional nginx directives** vacío temporalmente, emite el cert y vuelve a pegar el bloque después.
+
+5. **Verificación**:
+
+   ```bash
+   # Desde el VPS
+   curl -fsS http://127.0.0.1:8080/healthz                  # → ok
+   curl -fsS http://127.0.0.1:8080/api/health               # → {"status":"ok",...}
+
+   # Desde fuera (públicamente)
+   curl -fsS https://bo-crm.tudominio.com/api/health        # → {"status":"ok",...}
+   curl -fsSI https://bo-crm.tudominio.com/ | head -1       # → HTTP/2 200
+   ```
+
+### Notas
+
+- **Por qué `location ~ ^/` con regex y no `location /`**: Plesk autogenera su propio `location /` por prefijo en el vhost del subdominio y rechaza un duplicado. Una regex (`~ ^/`) tiene una clase de prioridad distinta en Nginx y convive sin conflicto, capturando todo lo que Plesk no maneja explícitamente.
+- **Renovaciones automáticas Let's Encrypt**: Plesk inyecta `location ^~ /.well-known/acme-challenge/` (preferential prefix) en el vhost, que tiene mayor prioridad que la regex anterior y atiende los desafíos ACME sin pasar por la pila Docker. Las renovaciones funcionan sin intervención.
+- **`X-Forwarded-Proto`**: la conexión interna Plesk → contenedor es HTTP plano. El `app.plesk.conf.example` usa `$http_x_forwarded_proto` (con fallback a `$scheme`) para que la app vea el esquema real del cliente.
+- **Backup y restore**: idénticos al modo standalone. Los scripts solo dependen del servicio `db`, que no cambia.
+
+### Smoke test local
+
+Antes de subir cambios al VPS, valida que el merge de los dos compose files es correcto:
+
+```bash
+docker compose --env-file .env.production \
+  -f docker-compose.prod.yml \
+  -f docker-compose.plesk.yml \
+  config | grep -A2 -E '^\s+(ports|volumes|environment):' | head -40
+```
+
+Esperado: en `nginx`, único port `127.0.0.1:8080:80` y solo dos volumes (`nginx.conf`, `conf.d`); en `frontend`, `HOSTNAME=0.0.0.0` añadido a las variables existentes.
