@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
 
 from app.models.crm import ExternalSystem
 from app.models.integration_settings import IntegrationMode, IntegrationStatus
@@ -22,6 +22,18 @@ class IntegrationSettingUpdate(BaseModel):
         return value.strip() if value else value
 
 
+class IntegrationApiKeyUpdate(BaseModel):
+    api_key: str = Field(..., min_length=1, max_length=4096)
+
+    @field_validator("api_key")
+    @classmethod
+    def strip_api_key(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("api_key must not be blank")
+        return stripped
+
+
 class IntegrationSettingRead(BaseModel):
     id: str
     system: ExternalSystem
@@ -33,7 +45,15 @@ class IntegrationSettingRead(BaseModel):
     account_label: str | None
     credential_status: str
     notes: str | None
+    api_key_set_at: datetime | None = None
+    api_key_last_used_at: datetime | None = None
+    api_key_encrypted: str | None = Field(default=None, exclude=True, repr=False)
     created_at: datetime
     updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def has_api_key(self) -> bool:
+        return self.api_key_encrypted is not None and self.api_key_encrypted != ""

@@ -1,7 +1,8 @@
+from datetime import datetime
 from enum import StrEnum
 from uuid import uuid4
 
-from sqlalchemy import Boolean, Enum, String, Text
+from sqlalchemy import Boolean, DateTime, Enum, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.crm import Base, ExternalSystem, TimestampMixin, enum_values
@@ -46,3 +47,6 @@ class IntegrationSetting(TimestampMixin, Base):
         String(80), default="not_configured", nullable=False
     )
     notes: Mapped[str | None] = mapped_column(Text)
+    api_key_encrypted: Mapped[str | None] = mapped_column(Text)
+    api_key_set_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    api_key_last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

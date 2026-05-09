@@ -13,6 +13,9 @@ export type IntegrationSetting = {
   account_label?: string | null;
   credential_status: string;
   notes?: string | null;
+  has_api_key: boolean;
+  api_key_set_at?: string | null;
+  api_key_last_used_at?: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -62,5 +65,23 @@ export async function updateIntegrationSetting(
   return apiFetch<IntegrationSetting>(`/api/integration-settings/${system}`, {
     method: "PATCH",
     body: JSON.stringify(payload),
+  });
+}
+
+export async function setIntegrationApiKey(
+  system: ExternalSystem,
+  apiKey: string,
+): Promise<IntegrationSetting> {
+  return apiFetch<IntegrationSetting>(`/api/integration-settings/${system}/api-key`, {
+    method: "PUT",
+    body: JSON.stringify({ api_key: apiKey }),
+  });
+}
+
+export async function deleteIntegrationApiKey(
+  system: ExternalSystem,
+): Promise<IntegrationSetting> {
+  return apiFetch<IntegrationSetting>(`/api/integration-settings/${system}/api-key`, {
+    method: "DELETE",
   });
 }
