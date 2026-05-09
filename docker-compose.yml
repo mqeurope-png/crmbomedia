@@ -1,19 +1,23 @@
 services:
-  postgres:
-    image: postgres:16-alpine
+  db:
+    image: mysql:8
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
     environment:
-      POSTGRES_DB: crm
-      POSTGRES_USER: crm
-      POSTGRES_PASSWORD: crm
+      MYSQL_DATABASE: crm
+      MYSQL_USER: crm
+      MYSQL_PASSWORD: crm
+      MYSQL_ROOT_PASSWORD: root
     ports:
-      - "5432:5432"
+      - "3306:3306"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - mysql_data:/var/lib/mysql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U crm -d crm"]
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-ucrm", "-pcrm"]
       interval: 10s
       timeout: 5s
-      retries: 5
+      retries: 10
 
   redis:
     image: redis:7-alpine
@@ -29,7 +33,7 @@ services:
     build: ./backend
     env_file: .env
     environment:
-      DATABASE_URL: postgresql+psycopg://crm:crm@postgres:5432/crm
+      DATABASE_URL: mysql+pymysql://crm:crm@db:3306/crm
       REDIS_URL: redis://redis:6379/0
       DEFAULT_ADMIN_EMAIL: ${DEFAULT_ADMIN_EMAIL:-admin@example.com}
       DEFAULT_ADMIN_PASSWORD: ${DEFAULT_ADMIN_PASSWORD:-change-me-admin-password}
@@ -41,7 +45,7 @@ services:
       timeout: 5s
       retries: 5
     depends_on:
-      postgres:
+      db:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -65,4 +69,4 @@ services:
       retries: 5
 
 volumes:
-  postgres_data:
+  mysql_data:

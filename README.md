@@ -10,7 +10,7 @@ El repositorio sigue el roadmap de `roadmap_crm_integraciones.md`: la app propia
 
 - **Frontend:** Next.js + React + TypeScript.
 - **Backend:** FastAPI + SQLAlchemy + Pydantic.
-- **Base de datos:** PostgreSQL.
+- **Base de datos:** MySQL 8.
 - **Migraciones:** Alembic.
 - **Colas/cache:** Redis preparado para workers futuros.
 - **Orquestación local:** Docker Compose.
@@ -58,7 +58,7 @@ Puedes probar el proyecto sin preparar tu máquina local usando GitHub Codespace
    ./scripts/dev-check.sh
    ```
 
-5. Arranca PostgreSQL, Redis, backend y frontend con Docker Compose:
+5. Arranca MySQL, Redis, backend y frontend con Docker Compose:
 
    ```bash
    docker compose up --build
@@ -69,7 +69,7 @@ Puedes probar el proyecto sin preparar tu máquina local usando GitHub Codespace
    - `3000`: frontend Next.js.
    - `8000`: API FastAPI y OpenAPI en `/docs`.
 
-La configuración usa Docker-in-Docker para que `docker compose up --build` funcione dentro de Codespaces. Si tu organización deshabilita Docker-in-Docker, usa los comandos locales documentados en la sección de desarrollo y levanta PostgreSQL/Redis con servicios externos o un Codespace con permisos de Docker habilitados.
+La configuración usa Docker-in-Docker para que `docker compose up --build` funcione dentro de Codespaces. Si tu organización deshabilita Docker-in-Docker, usa los comandos locales documentados en la sección de desarrollo y levanta MySQL/Redis con servicios externos o un Codespace con permisos de Docker habilitados.
 
 ## Puesta en marcha rápida
 
@@ -103,7 +103,7 @@ Variables principales:
 
 - `APP_NAME`: nombre mostrado por la API.
 - `ENVIRONMENT`: entorno (`development`, `staging`, `production`).
-- `DATABASE_URL`: URL SQLAlchemy de PostgreSQL.
+- `DATABASE_URL`: URL SQLAlchemy de MySQL (driver `pymysql`).
 - `REDIS_URL`: URL Redis para colas/cache futuras.
 - `CORS_ORIGINS`: orígenes permitidos para el frontend.
 - `SECRET_KEY`: secreto local; debe cambiarse antes de producción.
@@ -133,7 +133,7 @@ docker compose down
 docker compose down -v
 ```
 
-`docker compose down -v` elimina el volumen local de PostgreSQL.
+`docker compose down -v` elimina el volumen local de MySQL.
 
 ## Desarrollo backend sin Docker
 
@@ -236,15 +236,70 @@ Reglas relevantes:
 - No hay auditoría completa ni cifrado de API keys persistidas.
 - La UI es una interfaz CRM mínima para validar la base técnica.
 
-## Requisitos antes de producción
+## Despliegue en IONOS (producción)
 
-- HTTPS mediante proxy seguro.
-- PostgreSQL y Redis no expuestos públicamente.
-- Gestión real de usuarios, roles y permisos.
+La pila productiva está separada del entorno de desarrollo. Resumen:
+
+```bash
+# En el VPS IONOS (Ubuntu 22.04)
+git clone https://github.com/mqeurope-png/crmbomedia.git /opt/crmbomedia
+cd /opt/crmbomedia
+cp .env.production.example .env.production && chmod 600 .env.production
+nano .env.production   # generar SECRET_KEY y contraseñas reales
+
+# Bootstrap del certificado Let's Encrypt
+sudo certbot certonly --standalone -d crm.tudominio.com
+
+# Configurar Nginx con tu dominio
+sed 's/CRM_DOMAIN/crm.tudominio.com/g' \
+  deploy/nginx/conf.d/app.conf.example \
+  > deploy/nginx/conf.d/app.conf
+
+# Arrancar la pila
+docker compose --env-file .env.production -f docker-compose.prod.yml up -d --build
+```
+
+Ficheros relevantes:
+
+- `docker-compose.prod.yml`: pila productiva (db, redis, api, frontend, nginx). MySQL y Redis sin puertos publicados; solo Nginx expone 80/443.
+- `deploy/nginx/`: configuración Nginx + plantillas de vhost (`app.conf.example`, `bootstrap.conf.example`).
+- `.env.production.example`: plantilla de variables. `.env.production` está en `.gitignore`.
+- `scripts/backup-mysql.sh`: dump comprimido con `mysqldump --single-transaction` y rotación.
+- `scripts/restore-mysql.sh`: restauración interactiva desde un `.sql.gz`.
+- `docs/deployment-ionos.md`: guía completa paso a paso (firewall, certbot, hooks de renovación, cron de backups, checklist).
+
+### Backups
+
+```bash
+./scripts/backup-mysql.sh                       # manual
+# /etc/cron.d/crmbomedia-backup
+0 3 * * * deploy /opt/crmbomedia/scripts/backup-mysql.sh >> /var/log/crm-backup.log 2>&1
+```
+
+### Restauración
+
+```bash
+docker compose -f docker-compose.prod.yml stop api
+./scripts/restore-mysql.sh /var/backups/crmbomedia/crm-YYYYMMDDTHHMMSSZ.sql.gz
+docker compose -f docker-compose.prod.yml start api
+```
+
+## Requisitos cubiertos por la pila productiva
+
+- HTTPS mediante Nginx + Let's Encrypt (TLS 1.2/1.3, HSTS).
+- MySQL y Redis no expuestos públicamente (sin `ports:` en compose prod).
+- `SECRET_KEY` y credenciales fuera del repo (`.env.production` gitignored).
+- Volumen MySQL persistente (`mysql_data`).
+- Backups con `mysqldump --single-transaction` y restore documentado.
+- Healthchecks en db, redis, api, frontend y nginx.
+- Logs rotados (`json-file`, 10 MB × 5).
+
+## Pendiente para hardening de producción
+
 - 2FA para administradores.
-- API keys cifradas.
-- Backups verificados.
-- Logs de acceso, cambios, exportaciones y errores.
+- Cifrado de API keys de conectores en reposo.
+- Sentry u otro colector de errores.
+- Verificación periódica del backup mediante restauración en staging.
 - Respeto estricto de consentimientos y bajas antes de cualquier integración de marketing.
 
 ## Próximos hitos recomendados

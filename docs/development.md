@@ -17,7 +17,7 @@ Flujo recomendado:
 docker compose up --build
 ```
 
-Abre el puerto `3000` para el frontend y `8000` para FastAPI/OpenAPI. PostgreSQL y Redis se levantan desde `docker-compose.yml` al ejecutar Docker Compose.
+Abre el puerto `3000` para el frontend y `8000` para FastAPI/OpenAPI. MySQL y Redis se levantan desde `docker-compose.yml` al ejecutar Docker Compose.
 
 ## Backend
 
@@ -33,7 +33,7 @@ python -m app.db.init_db
 python -m pytest
 ```
 
-El backend usa PostgreSQL como base objetivo. Los tests usan SQLite en memoria porque los modelos actuales son compatibles y permite pruebas rápidas sin levantar servicios externos.
+El backend usa MySQL 8 como base objetivo. Los tests usan SQLite en memoria porque los modelos actuales son compatibles y permite pruebas rápidas sin levantar servicios externos.
 
 ## Usuario admin inicial
 
@@ -81,7 +81,7 @@ docker compose down
 docker compose down -v
 ```
 
-El servicio `api` ejecuta `alembic upgrade head` y `python -m app.db.init_db` al arrancar. PostgreSQL persiste datos en el volumen `postgres_data`.
+El servicio `api` ejecuta `alembic upgrade head` y `python -m app.db.init_db` al arrancar. MySQL persiste datos en el volumen `mysql_data`.
 
 ## Exportación de auditoría
 
