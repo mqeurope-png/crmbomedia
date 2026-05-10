@@ -326,3 +326,96 @@ python -m pytest tests/test_email_service.py -q
 - `test_production_returns_202_when_smtp_fails` — fallback resiliente en producción.
 - `test_factory_uses_smtp_when_production_and_host_set` / `_falls_back_to_console_when_production_missing_host` / `_uses_console_in_development_even_when_host_set` — selección de implementación por entorno.
 - `test_smtp_service_maps_starttls_for_port_587` / `_implicit_ssl_for_port_465` — mapeo `SMTP_USE_TLS`/`SMTP_USE_SSL` a `aiosmtplib`.
+
+---
+
+# Error tracking (Sentry)
+
+Backend y frontend reportan automáticamente excepciones no capturadas a Sentry **cuando hay DSN configurado**. Sin DSN, ambos SDKs son no-op: no se inicializan, no se envía nada. Esto cubre dev / Codespaces / despliegues self-hosted sin cuenta Sentry.
+
+## Contrato de privacidad
+
+| Configuración | Valor |
+|---|---|
+| `send_default_pii` | **`false`** (backend y frontend). Sentry no añade IP del cliente, user-agent, request body completo. |
+| `before_send` | Hook propio que recorre el evento y redacta sensibles antes de salir del host. |
+| Claves redactadas | `password`, `passwd`, `token`, `secret`, `api_key`, `apikey`, `authorization`, `cookie`, `session` (substring match, case-insensitive). Su valor se reemplaza por `[REDACTED]`. |
+| Emails en strings | Cualquier email dentro de cualquier valor string se reemplaza por `[REDACTED EMAIL]` (regex `[A-Za-z0-9._%+\-]+@…`). |
+| Profundidad | Recursivo: dicts, listas, tuplas. Cubre `request.data`, `breadcrumbs`, `extra`, `tags`, `exception.values`. |
+
+Backend: `app/core/observability.py::scrub_pii` + `before_send_filter`.
+Frontend: `frontend/src/app/lib/sentry-scrub.ts::scrubSentryEvent`. Misma lógica, mismo conjunto de needles, mismo formato de literales — los eventos se ven idénticos vengan de FastAPI o del browser.
+
+## Variables
+
+```env
+# Backend (server-side)
+SENTRY_DSN=https://<key>@sentry.io/<project>
+SENTRY_TRACES_SAMPLE_RATE=0.1
+GIT_SHA=<commit hash>          # CI lo exporta desde $GITHUB_SHA
+
+# Frontend (browser bundle)
+NEXT_PUBLIC_SENTRY_DSN=https://<key>@sentry.io/<project>
+NEXT_PUBLIC_GIT_SHA=<commit hash>
+```
+
+`NEXT_PUBLIC_*` se inyecta al bundle en build time. **No** uses la misma DSN para backend y frontend en proyectos sensibles: separa los dos proyectos en Sentry para que el granted-access difiera.
+
+## Crear el proyecto en Sentry (procedimiento)
+
+1. https://sentry.io → *Projects → Create Project*.
+2. **Backend**: platform *FastAPI*. Copia la DSN al `SENTRY_DSN` de `.env.production`.
+3. **Frontend**: platform *Next.js*. Copia esa DSN al `NEXT_PUBLIC_SENTRY_DSN` de `.env.production`.
+4. Reinicia la pila: `docker compose -f docker-compose.prod.yml up -d --force-recreate api frontend`.
+5. Provoca un error (`curl https://crm.tudominio.com/api/integration-settings/foo` con `foo` invalido) y comprueba que aparece en Sentry.
+
+## Alertas (recomendado)
+
+En Sentry → *Alerts → Create Alert Rule*:
+
+- **Backend — error rate spike**: "Number of errors > 10 in 5 minutes" → notify Slack/email.
+- **Backend — new issue**: "When a new issue is created" → notify (especialmente útil para descubrir excepciones nuevas tras un deploy).
+- **Frontend — page error**: "An issue is seen by 50 users in 1 hour" → notify.
+- **Performance**: "p95 transaction duration > 2s" → notify (con `traces_sample_rate=0.1` el muestreo es útil pero no exhaustivo; subir a 0.5 si hace falta detalle).
+
+## Releases y source maps
+
+- `release` se setea desde `GIT_SHA` en CI y producción. Los eventos de cada deploy quedan agrupados por commit.
+- `next.config.ts` envuelve la configuración con `withSentryConfig` cuando hay DSN. Esto **prepara** la subida de source maps (genera mappings, hide sources en cliente) pero **no** los sube todavía.
+- Para activar la subida en CI hace falta `SENTRY_AUTH_TOKEN`, `SENTRY_ORG`, `SENTRY_PROJECT` como secrets de GitHub. Es un follow-up explícitamente fuera del alcance de este PR.
+
+## `tunnel` opcional para evitar adblockers
+
+Sentry recomienda servir `/monitoring` (o cualquier ruta) como proxy hacia `sentry.io` para que los uBlock-likes no bloqueen el reporting. Para activarlo en el frontend:
+
+```ts
+// sentry.client.config.ts
+Sentry.init({
+  // ...
+  tunnel: "/monitoring",
+});
+```
+
+Y configurar Next.js para hacer rewrite de `/monitoring/*` a `https://sentry.io/api/...`. Documentado en https://docs.sentry.io/platforms/javascript/guides/nextjs/manual-setup/#tunnel pero **no activado** por defecto en este repo.
+
+## Verificación local
+
+```bash
+cd backend
+python -m pytest tests/test_observability.py -q
+```
+
+Cubre:
+
+- `scrub_pii` redacta keys sensibles, emails dentro de strings y recurre por listas/tuplas.
+- `before_send_filter` devuelve el evento ya scrubeado.
+- `setup_sentry()` no llama a `sentry_sdk.init` cuando falta `SENTRY_DSN`.
+- `setup_sentry()` con DSN llama a `init` con `send_default_pii=False`, `before_send=before_send_filter`, `release=git_sha or "unknown"`.
+- Test e2e con FastAPI + transport mock: una excepción no capturada llega al transport con el email redactado.
+
+## Lo que **no** se reporta
+
+- Logs `INFO` / `WARNING` (Sentry captura solo errores y trazas con muestreo).
+- Audit logs CRM (esos viven en BBDD vía `audit_logs`, no en Sentry).
+- Body de respuestas exitosas. Solo errores y métricas de transacción.
+- Plaintext de API keys, passwords, tokens — el `before_send` los borra antes de salir.
