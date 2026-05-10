@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   isPasswordCompliant,
   PasswordRequirements,
@@ -12,6 +12,17 @@ import { extractErrorMessage } from "../lib/errors";
 
 export default function PasswordResetPage() {
   const [token, setToken] = useState("");
+
+  // Auto-fill the token when the user clicks the email link
+  // (https://crm.tudominio.com/password-reset?token=...). Reading
+  // window.location.search inside an effect keeps this client-only and
+  // sidesteps the Next.js useSearchParams Suspense requirement.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const fromUrl = new URLSearchParams(window.location.search).get("token");
+    if (fromUrl) setToken(fromUrl);
+  }, []);
+
   // newPassword drives PasswordRequirements; the requirements list reacts to
   // each keystroke on "Nueva contraseña", not on the confirm box.
   const [newPassword, setNewPassword] = useState("");
