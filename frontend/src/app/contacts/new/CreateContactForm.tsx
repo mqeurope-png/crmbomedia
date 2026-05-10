@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { createContact, type Company } from "../../lib/api";
+import { extractErrorMessage } from "../../lib/errors";
 
 export function CreateContactForm({ companies }: Readonly<{ companies: Company[] }>) {
   const router = useRouter();
@@ -30,7 +31,7 @@ export function CreateContactForm({ companies }: Readonly<{ companies: Company[]
       router.push(`/contacts/${contact.id}`);
       router.refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "No se pudo crear el contacto");
+      setError(extractErrorMessage(err, "No se pudo crear el contacto"));
     } finally {
       setIsSubmitting(false);
     }

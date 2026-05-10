@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { updateCompany, type Company } from "../lib/api";
+import { extractErrorMessage } from "../lib/errors";
 
 export function CompanyEditor({ company }: Readonly<{ company: Company }>) {
   const [name, setName] = useState(company.name);
@@ -16,7 +17,7 @@ export function CompanyEditor({ company }: Readonly<{ company: Company }>) {
       setName(updated.name);
       setSaved(true);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "No se pudo actualizar la empresa");
+      setError(extractErrorMessage(err, "No se pudo actualizar la empresa"));
     }
   }
 

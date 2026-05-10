@@ -8,6 +8,7 @@ import {
   PASSWORD_MIN_LENGTH,
 } from "../components/PasswordRequirements";
 import { confirmPasswordReset, requestPasswordReset } from "../lib/api";
+import { extractErrorMessage } from "../lib/errors";
 
 export default function PasswordResetPage() {
   const [token, setToken] = useState("");
@@ -35,7 +36,7 @@ export default function PasswordResetPage() {
       // so Codespaces and the test suite can complete the flow.
       if (response.reset_token) setToken(response.reset_token);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "No se pudo solicitar reset");
+      setError(extractErrorMessage(err, "No se pudo solicitar reset"));
     }
   }
 
@@ -49,7 +50,7 @@ export default function PasswordResetPage() {
       setNewPassword("");
       setConfirmPassword("");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "No se pudo restablecer la contraseña");
+      setError(extractErrorMessage(err, "No se pudo restablecer la contraseña"));
     }
   }
 
