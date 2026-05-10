@@ -12,6 +12,7 @@ import {
   type IntegrationSetting,
   type IntegrationStatus,
 } from "../../lib/integrationSettings";
+import { extractErrorMessage } from "../../lib/errors";
 
 const modes: IntegrationMode[] = ["sandbox", "live"];
 const statuses: IntegrationStatus[] = ["not_configured", "configured", "paused"];
@@ -41,7 +42,7 @@ export default function IntegrationSettingsPage() {
     Promise.all([getCurrentUser(), loadSettings()])
       .then(([currentUser]) => setUser(currentUser))
       .catch((err) =>
-        setError(err instanceof Error ? err.message : "No se pudieron cargar los ajustes"),
+        setError(extractErrorMessage(err, "No se pudieron cargar los ajustes")),
       )
       .finally(() => setIsLoading(false));
   }, []);
@@ -66,7 +67,7 @@ export default function IntegrationSettingsPage() {
       setMessage(`Ajustes guardados para ${setting.display_name}`);
       await loadSettings();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "No se pudieron guardar los ajustes");
+      setError(extractErrorMessage(err, "No se pudieron guardar los ajustes"));
     }
   }
 
@@ -84,7 +85,7 @@ export default function IntegrationSettingsPage() {
       setMessage(`API key guardada para ${setting.display_name}`);
       await loadSettings();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "No se pudo guardar la API key");
+      setError(extractErrorMessage(err, "No se pudo guardar la API key"));
     }
   }
 
@@ -101,7 +102,7 @@ export default function IntegrationSettingsPage() {
       setMessage(`API key borrada para ${setting.display_name}`);
       await loadSettings();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "No se pudo borrar la API key");
+      setError(extractErrorMessage(err, "No se pudo borrar la API key"));
     }
   }
 

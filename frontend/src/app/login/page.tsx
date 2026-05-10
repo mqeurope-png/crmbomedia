@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { login } from "../lib/api";
+import { extractErrorMessage } from "../lib/errors";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -18,7 +19,7 @@ export default function LoginPage() {
       await login(String(form.get("email")), String(form.get("password")));
       router.push("/");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "No se pudo iniciar sesión");
+      setError(extractErrorMessage(err, "No se pudo iniciar sesión"));
     } finally {
       setIsSubmitting(false);
     }

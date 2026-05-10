@@ -1,3 +1,5 @@
+import { extractErrorMessage, formatFastApiDetail } from "./errors";
+
 export type Role = "admin" | "manager" | "user" | "viewer";
 
 export type User = {
@@ -63,24 +65,33 @@ export function clearStoredToken() {
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const token = getStoredToken();
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...init?.headers,
-    },
-    cache: "no-store",
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE_URL}${path}`, {
+      ...init,
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...init?.headers,
+      },
+      cache: "no-store",
+    });
+  } catch (networkError) {
+    throw new Error(extractErrorMessage(networkError));
+  }
 
   if (!response.ok) {
-    let message = `API request failed with ${response.status}`;
+    const fallback = `Error de la API (${response.status})`;
+    let body: unknown = null;
     try {
-      const body = await response.json();
-      message = body.detail ?? message;
+      body = await response.json();
     } catch {
-      message = await response.text();
+      // body was empty or non-JSON; fall back to status-only message
     }
+    const message =
+      body && typeof body === "object" && "detail" in body
+        ? formatFastApiDetail((body as { detail?: unknown }).detail, fallback)
+        : fallback;
     throw new Error(message);
   }
 

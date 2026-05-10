@@ -19,6 +19,7 @@ import {
   type Role,
   type User,
 } from "../../lib/api";
+import { extractErrorMessage } from "../../lib/errors";
 
 const roles: Role[] = ["admin", "manager", "user", "viewer"];
 
@@ -46,7 +47,7 @@ export default function AdminUsersPage() {
 
   useEffect(() => {
     loadUsers()
-      .catch((err) => setError(err instanceof Error ? err.message : "No se pudieron cargar usuarios"))
+      .catch((err) => setError(extractErrorMessage(err, "No se pudieron cargar usuarios")))
       .finally(() => setIsLoading(false));
   }, []);
 
@@ -68,7 +69,7 @@ export default function AdminUsersPage() {
       setMessage("Usuario creado");
       await loadUsers();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "No se pudo crear el usuario");
+      setError(extractErrorMessage(err, "No se pudo crear el usuario"));
     }
   }
 
@@ -90,7 +91,7 @@ export default function AdminUsersPage() {
       setEditPasswords((prev) => ({ ...prev, [user.id]: "" }));
       await loadUsers();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "No se pudo actualizar el usuario");
+      setError(extractErrorMessage(err, "No se pudo actualizar el usuario"));
     }
   }
 
@@ -104,7 +105,7 @@ export default function AdminUsersPage() {
       }
       await loadUsers();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "No se pudo cambiar el estado del usuario");
+      setError(extractErrorMessage(err, "No se pudo cambiar el estado del usuario"));
     }
   }
 

@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { deactivateContact, updateContact, type Contact } from "../../lib/api";
+import { extractErrorMessage } from "../../lib/errors";
 
 export function ContactEditForm({ contact }: Readonly<{ contact: Contact }>) {
   const router = useRouter();
@@ -25,7 +26,7 @@ export function ContactEditForm({ contact }: Readonly<{ contact: Contact }>) {
       });
       router.refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "No se pudo actualizar el contacto");
+      setError(extractErrorMessage(err, "No se pudo actualizar el contacto"));
     } finally {
       setIsSubmitting(false);
     }
@@ -37,7 +38,7 @@ export function ContactEditForm({ contact }: Readonly<{ contact: Contact }>) {
       await deactivateContact(contact.id);
       router.push("/");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "No se pudo desactivar el contacto");
+      setError(extractErrorMessage(err, "No se pudo desactivar el contacto"));
     }
   }
 

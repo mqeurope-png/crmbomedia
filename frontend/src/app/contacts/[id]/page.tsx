@@ -5,6 +5,7 @@ import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
 import { ErrorState } from "../../components/ErrorState";
 import { getContact, type Contact } from "../../lib/api";
+import { extractErrorMessage } from "../../lib/errors";
 import { ContactEditForm } from "./ContactEditForm";
 
 export default function ContactDetailPage() {
@@ -16,7 +17,7 @@ export default function ContactDetailPage() {
   useEffect(() => {
     getContact(params.id)
       .then(setContact)
-      .catch((err) => setError(err instanceof Error ? err.message : "Comprueba el backend."))
+      .catch((err) => setError(extractErrorMessage(err, "Comprueba el backend.")))
       .finally(() => setIsLoading(false));
   }, [params.id]);
 

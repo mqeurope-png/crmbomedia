@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { ErrorState } from "../../components/ErrorState";
 import { getCompanies, type Company } from "../../lib/api";
+import { extractErrorMessage } from "../../lib/errors";
 import { CreateContactForm } from "./CreateContactForm";
 
 export default function NewContactPage() {
@@ -14,7 +15,7 @@ export default function NewContactPage() {
   useEffect(() => {
     getCompanies()
       .then(setCompanies)
-      .catch((err) => setError(err instanceof Error ? err.message : "Comprueba el backend."))
+      .catch((err) => setError(extractErrorMessage(err, "Comprueba el backend.")))
       .finally(() => setIsLoading(false));
   }, []);
 

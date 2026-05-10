@@ -8,6 +8,7 @@ import {
   PASSWORD_MIN_LENGTH,
 } from "../../components/PasswordRequirements";
 import { changePassword } from "../../lib/api";
+import { extractErrorMessage } from "../../lib/errors";
 
 export default function ChangePasswordPage() {
   const [message, setMessage] = useState<string | null>(null);
@@ -36,7 +37,7 @@ export default function ChangePasswordPage() {
       setNewPassword("");
       setConfirmPassword("");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "No se pudo cambiar la contraseña");
+      setError(extractErrorMessage(err, "No se pudo cambiar la contraseña"));
     }
   }
 

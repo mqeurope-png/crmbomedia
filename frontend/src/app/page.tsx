@@ -14,6 +14,7 @@ import {
   type Contact,
   type User,
 } from "./lib/api";
+import { extractErrorMessage } from "./lib/errors";
 
 const roadmapItems = [
   "Contactos y empresas como modelo propio",
@@ -45,7 +46,7 @@ export default function Home() {
         setContacts(contactList);
         setCompanies(companyList);
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Arranca la API o inicia sesión de nuevo.");
+        setError(extractErrorMessage(err, "Arranca la API o inicia sesión de nuevo."));
       } finally {
         setIsLoading(false);
       }

@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { ErrorState } from "../../components/ErrorState";
 import { exportAuditLogs, getAuditLogs, getCurrentUser, type AuditLog } from "../../lib/api";
+import { extractErrorMessage } from "../../lib/errors";
 
 export default function AuditLogsPage() {
   const [logs, setLogs] = useState<AuditLog[]>([]);
@@ -17,7 +18,7 @@ export default function AuditLogsPage() {
       setLogs(await getAuditLogs());
     }
     load()
-      .catch((err) => setError(err instanceof Error ? err.message : "No se pudo cargar auditoría"))
+      .catch((err) => setError(extractErrorMessage(err, "No se pudo cargar auditoría")))
       .finally(() => setIsLoading(false));
   }, []);
 
@@ -31,7 +32,7 @@ export default function AuditLogsPage() {
       link.click();
       URL.revokeObjectURL(url);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "No se pudo exportar auditoría");
+      setError(extractErrorMessage(err, "No se pudo exportar auditoría"));
     }
   }
 
