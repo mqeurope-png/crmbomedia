@@ -213,3 +213,100 @@ python -m pytest tests/test_password_policy.py::test_password_reset_request_in_d
 ```
 
 Las tres pasan; las dos primeras prueban el comportamiento neutro de producción, la tercera garantiza la compatibilidad de desarrollo.
+
+---
+
+# Email service (Phase A — env-var config)
+
+`POST /api/auth/password-reset/request` ahora **envía un email real** con el enlace de recuperación cuando hay SMTP configurado. La selección entre proveedor real y stub se hace por entorno; ver `app/services/email.py`.
+
+## Selección de implementación
+
+| `ENVIRONMENT` | `SMTP_HOST` | Servicio | Comportamiento |
+|---|---|---|---|
+| `production` | definido | `SMTPEmailService` | envía vía `aiosmtplib` |
+| `production` | vacío | `ConsoleEmailService` + WARNING | imprime el email a stdout (no entrega) |
+| `development` / `test` | cualquier valor | `ConsoleEmailService` | captura el email en `service.sent` para tests |
+
+La factory `get_email_service()` está cacheada con `@lru_cache(maxsize=1)`. En producción la pila se inicializa una vez al arranque.
+
+## Variables (Fase A)
+
+```env
+SMTP_HOST=smtp.ionos.es        # IONOS recomendado para deploys IONOS
+SMTP_PORT=587                  # 587 STARTTLS, 465 SSL implícito
+SMTP_USER=noreply@tudominio.com
+SMTP_PASSWORD=<password del buzón>
+SMTP_FROM=noreply@tudominio.com
+SMTP_FROM_NAME=CRMBO Media CRM
+SMTP_USE_TLS=true              # STARTTLS — usar con puerto 587
+SMTP_USE_SSL=false             # SSL implícito — usar con puerto 465 (mutuamente exclusivos)
+FRONTEND_BASE_URL=https://crm.tudominio.com
+```
+
+## Proveedores SMTP soportados (cualquiera vale)
+
+| Proveedor | Host | Puerto | Notas |
+|---|---|---|---|
+| **IONOS** | `smtp.ionos.es` (ES) o `smtp.ionos.com` (intl) | 587 STARTTLS | Gratis si tienes mailbox IONOS contratado. SMTP_USER = email completo del buzón. |
+| **SendGrid** | `smtp.sendgrid.net` | 587 STARTTLS | SMTP_USER = `apikey`, SMTP_PASSWORD = la API key. |
+| **Postmark** | `smtp.postmarkapp.com` | 587 STARTTLS | SMTP_USER = SMTP_PASSWORD = Server Token. |
+| **Brevo (transactional)** | `smtp-relay.brevo.com` | 587 STARTTLS | SMTP_USER = email login, SMTP_PASSWORD = SMTP key (no la API key). |
+| **AWS SES** | `email-smtp.<region>.amazonaws.com` | 587 STARTTLS | Credenciales SES SMTP, no IAM. |
+
+## Validar la conexión SMTP desde el VPS
+
+```bash
+docker run --rm -i \
+  -e HOST="$SMTP_HOST" -e PORT="$SMTP_PORT" \
+  -e USER="$SMTP_USER" -e PASSWORD="$SMTP_PASSWORD" \
+  python:3.12-slim bash -lc 'pip install --quiet aiosmtplib && \
+  python - <<PY
+import asyncio, os
+from email.message import EmailMessage
+from aiosmtplib import SMTP
+
+async def main():
+    msg = EmailMessage()
+    msg["From"] = os.environ["USER"]
+    msg["To"] = os.environ["USER"]
+    msg["Subject"] = "CRMBO smoke test"
+    msg.set_content("ok")
+    smtp = SMTP(hostname=os.environ["HOST"], port=int(os.environ["PORT"]), start_tls=True)
+    await smtp.connect()
+    await smtp.login(os.environ["USER"], os.environ["PASSWORD"])
+    await smtp.send_message(msg)
+    await smtp.quit()
+    print("OK")
+
+asyncio.run(main())
+PY'
+```
+
+Si `OK` aparece, las credenciales son buenas y el firewall del VPS deja salir 587. Si falla, revisa `nc -zv $SMTP_HOST $SMTP_PORT` y los logs del proveedor.
+
+## Tolerancia a fallos
+
+- En **producción**, si el envío SMTP falla (red caída, credenciales mal, rate limit) la app **no rompe** la respuesta: sigue devolviendo `202 Accepted` con el mensaje neutro `"If the email exists, a reset link has been sent."` y registra un `WARNING` con `user_id` y la causa. Nunca se revela al cliente si el email existe ni qué falló.
+- En **desarrollo**, el fallo de envío se loggea como `ERROR` con stack completo y la respuesta sigue trayendo el `reset_token` para que la prueba pueda completarse.
+
+## Plantillas
+
+`backend/app/templates/email/password_reset.{html,txt}` (Jinja2). Variables disponibles: `app_name`, `user_name`, `reset_url`, `expires_in_minutes`. La versión texto es el fallback que ven los clientes que rechazan HTML; la HTML lleva estilos inline para que sobreviva en clientes como Outlook que tiran CSS externo.
+
+## Próxima iteración (Phase B)
+
+El siguiente PR moverá la configuración SMTP detrás del panel admin de integraciones, con `SMTP_PASSWORD` cifrada en BBDD usando la `INTEGRATION_SECRETS_KEY` ya existente (mismo patrón que las API keys de Brevo/AgileCRM/etc.). Las env vars seguirán funcionando como **fallback** cuando no haya valor en BBDD, para no romper deploys actuales.
+
+## Tests
+
+```bash
+cd backend
+python -m pytest tests/test_email_service.py -q
+```
+
+- `test_console_service_captures_password_reset` — el render de las plantillas tiene token, URL bien formada y subject en español.
+- `test_password_reset_request_sends_email` — flujo end-to-end: `POST /api/auth/password-reset/request` añade un email a `email_capture.sent` con el token correcto.
+- `test_production_returns_202_when_smtp_fails` — fallback resiliente en producción.
+- `test_factory_uses_smtp_when_production_and_host_set` / `_falls_back_to_console_when_production_missing_host` / `_uses_console_in_development_even_when_host_set` — selección de implementación por entorno.
+- `test_smtp_service_maps_starttls_for_port_587` / `_implicit_ssl_for_port_465` — mapeo `SMTP_USE_TLS`/`SMTP_USE_SSL` a `aiosmtplib`.

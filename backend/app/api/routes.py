@@ -28,6 +28,7 @@ from app.core.security import (
 from app.db.session import get_session
 from app.models.crm import AuditLog, Company, Contact, Note, Task, User
 from app.repositories import crm as crm_repository
+from app.services.email import EmailService, get_email_service
 from app.schemas.crm import (
     AuditLogRead,
     ChangePasswordRequest,
@@ -145,6 +146,7 @@ def request_password_reset(
     payload: PasswordResetRequest,
     session: Session = Depends(get_session),
     settings: Settings = Depends(get_settings),
+    email_service: EmailService = Depends(get_email_service),
 ) -> JSONResponse:
     is_production = settings.environment.lower() == "production"
     user = crm_repository.get_user_by_email(session, str(payload.email))
@@ -157,22 +159,27 @@ def request_password_reset(
         record_audit(session, user, "request_password_reset", "user", user.id)
         session.commit()
 
-        # TODO(connectors): deliver this through a transactional email provider.
-        # Until that lands, surface the link only in development logs and never
-        # in the HTTP response when running production.
-        if is_production:
-            logger.warning(
-                "Password reset requested for user_id=%s but no email service is configured. "
-                "Token generated and stored but cannot be delivered.",
-                user.id,
+        try:
+            email_service.send_password_reset(
+                to_email=user.email,
+                to_name=user.full_name,
+                token=reset_token,
             )
-        else:
-            logger.info(
-                "[dev] password reset link token=%s user_id=%s — deliver manually until "
-                "email service is wired up.",
-                reset_token,
-                user.id,
-            )
+        except Exception as exc:  # noqa: BLE001 - we want to swallow any provider error
+            # Production: never reveal whether the email exists; just log so an
+            # operator can investigate. Dev: noisy stack so the failure is obvious.
+            if is_production:
+                logger.warning(
+                    "Password reset email could not be delivered for user_id=%s: %s",
+                    user.id,
+                    exc,
+                )
+            else:
+                logger.error(
+                    "Password reset email failed for user_id=%s",
+                    user.id,
+                    exc_info=True,
+                )
 
     if is_production:
         # Always 202 + neutral message to avoid revealing whether the email exists.

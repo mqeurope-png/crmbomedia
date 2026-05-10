@@ -24,6 +24,24 @@ class Settings(BaseSettings):
         ),
     )
 
+    # Public URL the user clicks in the password-reset email. Used to build
+    # the reset link; never sent back to the client by the API.
+    frontend_base_url: str = "http://localhost:3000"
+
+    # SMTP configuration. All fields are optional so the app keeps booting
+    # without an email service; the factory in app/services/email.py picks
+    # SMTPEmailService only when ENVIRONMENT=production AND smtp_host is set,
+    # and falls back to ConsoleEmailService (with a warning in production)
+    # otherwise. See docs/security.md "Email service".
+    smtp_host: str | None = None
+    smtp_port: int = 587
+    smtp_user: str | None = None
+    smtp_password: str | None = None
+    smtp_from: str | None = None
+    smtp_from_name: str = "CRMBO Media CRM"
+    smtp_use_tls: bool = True   # STARTTLS on port 587
+    smtp_use_ssl: bool = False  # implicit SSL on port 465; mutually exclusive with use_tls
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
     @field_validator("integration_secrets_key")
