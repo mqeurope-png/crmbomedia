@@ -1,14 +1,32 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { login } from "../lib/api";
 import { extractErrorMessage } from "../lib/errors";
 
+const FLASH_MESSAGES: Record<string, string> = {
+  "password-reset-success": "Contraseña actualizada. Inicia sesión con la nueva contraseña.",
+};
+
 export default function LoginPage() {
   const router = useRouter();
   const [error, setError] = useState<string | null>(null);
+  const [flash, setFlash] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // One-shot flash messages handed over by other pages via ?flash=<key>.
+  // Read once on mount and strip the query param so a refresh does not
+  // re-show the banner.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const key = params.get("flash");
+    if (key && FLASH_MESSAGES[key]) {
+      setFlash(FLASH_MESSAGES[key]);
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+  }, []);
 
   async function onSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -33,6 +51,7 @@ export default function LoginPage() {
         <p className="lead">Usa tu usuario interno para acceder al CRM MVP.</p>
       </section>
       <form className="form-card" onSubmit={onSubmit}>
+        {flash ? <div className="success-state">{flash}</div> : null}
         {error ? <div className="error-state">{error}</div> : null}
         <label>
           Email

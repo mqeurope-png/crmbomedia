@@ -199,6 +199,22 @@ Cubre:
 - En producción el token **nunca** sale por la respuesta HTTP: solo por el canal autenticado (email del titular).
 - En desarrollo / test mantenemos la respuesta antigua para que los tests (`test_password_reset_request_and_confirm`) no necesiten un servicio SMTP, y para que se pueda probar el flujo end-to-end en Codespaces.
 
+## UX de la pantalla `/password-reset`
+
+La pantalla del frontend renderiza **uno de dos estados mutuamente excluyentes** según haya o no un token en el query string:
+
+| Estado | URL | Qué se ve | Acción |
+|---|---|---|---|
+| **Solicitar enlace** | `/password-reset` (sin `?token=...`) | Solo el formulario de email + botón "Solicitar enlace de recuperación" | Tras enviar, el formulario se oculta y aparece un mensaje neutro "Si la cuenta existe, hemos enviado un enlace…" + link de vuelta al login. |
+| **Restablecer contraseña** | `/password-reset?token=ABC123` (link del email) | Solo el formulario de "Nueva contraseña" + "Confirmar contraseña" + checklist + barra de fortaleza | El token va en `useState`, **nunca** se renderiza como input. Al hacer submit, se envía silenciosamente con `{token, new_password}`. |
+
+Reglas:
+
+- El input "Token" del flujo anterior **no existe**. El usuario nunca ve ni copia el token; se mueve solo del email a la URL a state de React.
+- Si el usuario refresca la pantalla en modo "confirm", el token se vuelve a leer del query string. No se persiste en `localStorage` ni en cookies.
+- Si el backend rechaza el token (`401` con "Invalid reset token", típicamente por caducidad o uso previo), la pantalla muestra el error **y** un enlace `Solicitar un nuevo enlace` que devuelve al modo "request".
+- Tras un reset exitoso se redirige a `/login?flash=password-reset-success`. El login lee `flash`, muestra un banner verde "Contraseña actualizada. Inicia sesión con la nueva contraseña." y limpia el query string con `history.replaceState` para que un refresh no re-muestre el banner.
+
 ## TODO pendiente
 
 Conectar un proveedor SMTP / transactional (probable: Brevo cuando Fase 5 lo integre, o un proveedor independiente antes). Hasta entonces, en producción la solicitud queda registrada (`audit_logs` + `password_reset_token_hash` en `users`) pero el token solo es accesible por consulta directa a BBDD por un operador. Documentado como riesgo en el README sección "Pendiente para hardening de producción".
