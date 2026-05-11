@@ -1,11 +1,13 @@
+import json
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 from app.core.passwords import MAX_LENGTH as PASSWORD_MAX_LENGTH
 from app.core.passwords import MIN_LENGTH as PASSWORD_MIN_LENGTH
 from app.core.passwords import validate_password_policy
-from app.models.crm import ConsentStatus, ExternalSystem, TaskStatus, UserRole
+from app.models.crm import AuditLog, ConsentStatus, ExternalSystem, TaskStatus, UserRole
 
 
 def _enforce_password_policy(value: str) -> str:
@@ -136,13 +138,44 @@ class CurrentUserRead(UserRead):
 class AuditLogRead(BaseModel):
     id: str
     actor_user_id: str | None
+    actor_email: str | None
     action: str
-    entity_type: str
-    entity_id: str | None
-    message: str | None
+    target_type: str
+    target_id: str | None
+    # The DB column is JSON-encoded text; the API exposes it decoded so the
+    # frontend doesn't need to JSON.parse on every row.
+    metadata: dict[str, Any] | None = None
+    message: str | None = None
+    ip_address: str | None = None
+    user_agent: str | None = None
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+    @classmethod
+    def from_audit_log(cls, audit: AuditLog) -> "AuditLogRead":
+        metadata: dict[str, Any] | None
+        if audit.metadata_json:
+            try:
+                parsed = json.loads(audit.metadata_json)
+                metadata = parsed if isinstance(parsed, dict) else {"value": parsed}
+            except (ValueError, TypeError):
+                metadata = {"raw": audit.metadata_json}
+        else:
+            metadata = None
+        return cls(
+            id=audit.id,
+            actor_user_id=audit.actor_user_id,
+            actor_email=audit.actor_email,
+            action=audit.action,
+            target_type=audit.target_type,
+            target_id=audit.target_id,
+            metadata=metadata,
+            message=audit.message,
+            ip_address=audit.ip_address,
+            user_agent=audit.user_agent,
+            created_at=audit.created_at,
+        )
 
 
 class CompanyCreate(BaseModel):

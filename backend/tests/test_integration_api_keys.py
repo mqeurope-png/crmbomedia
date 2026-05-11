@@ -181,8 +181,8 @@ def test_audit_log_records_set_and_delete_without_secret(client: TestClient):
 
     assert response.status_code == 200
     actions = {entry["action"] for entry in response.json()}
-    assert "set_integration_api_key" in actions
-    assert "delete_integration_api_key" in actions
+    assert "integration_api_key.set" in actions
+    assert "integration_api_key.deleted" in actions
     assert "must-not-leak-secret" not in response.text
 
 

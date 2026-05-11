@@ -1,4 +1,6 @@
-from sqlalchemy import select
+from datetime import datetime
+
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.models.crm import AuditLog, Company, Contact, Note, Task, User
@@ -74,30 +76,96 @@ def list_tasks(session: Session, contact_id: str) -> list[Task]:
     return list(session.scalars(statement))
 
 
-def create_audit_log(
-    session: Session,
+def _audit_query(
+    *,
+    action: str | None,
+    action_prefix: str | None,
     actor_user_id: str | None,
-    action: str,
-    entity_type: str,
-    entity_id: str | None,
-    message: str | None = None,
-) -> AuditLog:
-    audit_log = AuditLog(
-        actor_user_id=actor_user_id,
+    target_type: str | None,
+    from_date: datetime | None,
+    to_date: datetime | None,
+):
+    statement = select(AuditLog)
+    if action:
+        statement = statement.where(AuditLog.action == action)
+    if action_prefix:
+        statement = statement.where(AuditLog.action.like(f"{action_prefix}%"))
+    if actor_user_id:
+        statement = statement.where(AuditLog.actor_user_id == actor_user_id)
+    if target_type:
+        statement = statement.where(AuditLog.target_type == target_type)
+    if from_date:
+        statement = statement.where(AuditLog.created_at >= from_date)
+    if to_date:
+        statement = statement.where(AuditLog.created_at <= to_date)
+    return statement
+
+
+def list_audit_logs(
+    session: Session,
+    *,
+    skip: int = 0,
+    limit: int = 50,
+    action: str | None = None,
+    action_prefix: str | None = None,
+    actor_user_id: str | None = None,
+    target_type: str | None = None,
+    from_date: datetime | None = None,
+    to_date: datetime | None = None,
+) -> list[AuditLog]:
+    statement = _audit_query(
         action=action,
-        entity_type=entity_type,
-        entity_id=entity_id,
-        message=message,
+        action_prefix=action_prefix,
+        actor_user_id=actor_user_id,
+        target_type=target_type,
+        from_date=from_date,
+        to_date=to_date,
     )
-    session.add(audit_log)
-    return audit_log
-
-
-def list_audit_logs(session: Session, skip: int, limit: int) -> list[AuditLog]:
-    statement = select(AuditLog).order_by(AuditLog.created_at.desc()).offset(skip).limit(limit)
+    statement = statement.order_by(AuditLog.created_at.desc()).offset(skip).limit(limit)
     return list(session.scalars(statement))
 
 
-def list_all_audit_logs(session: Session) -> list[AuditLog]:
-    statement = select(AuditLog).order_by(AuditLog.created_at.desc())
+def count_audit_logs(
+    session: Session,
+    *,
+    action: str | None = None,
+    action_prefix: str | None = None,
+    actor_user_id: str | None = None,
+    target_type: str | None = None,
+    from_date: datetime | None = None,
+    to_date: datetime | None = None,
+) -> int:
+    statement = _audit_query(
+        action=action,
+        action_prefix=action_prefix,
+        actor_user_id=actor_user_id,
+        target_type=target_type,
+        from_date=from_date,
+        to_date=to_date,
+    )
+    return int(session.scalar(select(func.count()).select_from(statement.subquery())) or 0)
+
+
+def list_audit_logs_for_export(
+    session: Session,
+    *,
+    max_rows: int,
+    action: str | None = None,
+    action_prefix: str | None = None,
+    actor_user_id: str | None = None,
+    target_type: str | None = None,
+    from_date: datetime | None = None,
+    to_date: datetime | None = None,
+) -> list[AuditLog]:
+    """Like list_audit_logs but without offset and capped at max_rows + 1 so
+    the caller can detect overflow without scanning the whole table."""
+    statement = _audit_query(
+        action=action,
+        action_prefix=action_prefix,
+        actor_user_id=actor_user_id,
+        target_type=target_type,
+        from_date=from_date,
+        to_date=to_date,
+    )
+    statement = statement.order_by(AuditLog.created_at.desc()).limit(max_rows + 1)
     return list(session.scalars(statement))

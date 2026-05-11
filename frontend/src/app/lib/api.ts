@@ -212,11 +212,33 @@ export async function createContact(payload: Record<string, FormDataEntryValue |
 export type AuditLog = {
   id: string;
   actor_user_id?: string | null;
+  actor_email?: string | null;
   action: string;
-  entity_type: string;
-  entity_id?: string | null;
+  target_type: string;
+  target_id?: string | null;
+  metadata?: Record<string, unknown> | null;
   message?: string | null;
+  ip_address?: string | null;
+  user_agent?: string | null;
   created_at: string;
+};
+
+export type AuditLogFilters = {
+  action?: string;
+  action_prefix?: string;
+  actor_user_id?: string;
+  target_type?: string;
+  from?: string;
+  to?: string;
+  skip?: number;
+  limit?: number;
+};
+
+export type AuditLogPage = {
+  items: AuditLog[];
+  total: number;
+  skip: number;
+  limit: number;
 };
 
 export async function getUsers(): Promise<User[]> {
@@ -273,17 +295,68 @@ export async function confirmPasswordReset(token: string, newPassword: string) {
   });
 }
 
-export async function getAuditLogs(): Promise<AuditLog[]> {
-  return apiFetch<AuditLog[]>("/api/audit-logs?limit=100");
+function buildAuditQuery(filters: AuditLogFilters): string {
+  const params = new URLSearchParams();
+  if (filters.action) params.set("action", filters.action);
+  if (filters.action_prefix) params.set("action_prefix", filters.action_prefix);
+  if (filters.actor_user_id) params.set("actor_user_id", filters.actor_user_id);
+  if (filters.target_type) params.set("target_type", filters.target_type);
+  if (filters.from) params.set("from", filters.from);
+  if (filters.to) params.set("to", filters.to);
+  if (filters.skip !== undefined) params.set("skip", String(filters.skip));
+  if (filters.limit !== undefined) params.set("limit", String(filters.limit));
+  return params.toString();
 }
 
-export async function exportAuditLogs(format: "csv" | "json"): Promise<Blob> {
+export async function getAuditLogs(filters: AuditLogFilters = {}): Promise<AuditLogPage> {
   const token = getStoredToken();
-  const response = await fetch(`${API_BASE_URL}/api/audit-logs/export?format=${format}`, {
+  const query = buildAuditQuery({ limit: 50, ...filters });
+  const url = `${API_BASE_URL}/api/audit-logs${query ? `?${query}` : ""}`;
+  const response = await fetch(url, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    cache: "no-store",
+  });
+  if (!response.ok) {
+    let detail = `API request failed with ${response.status}`;
+    try {
+      const body = await response.json();
+      detail = body.detail ?? detail;
+    } catch {
+      detail = await response.text();
+    }
+    throw new Error(detail);
+  }
+  const items = (await response.json()) as AuditLog[];
+  const total = Number.parseInt(response.headers.get("x-total-count") ?? "0", 10);
+  return {
+    items,
+    total: Number.isFinite(total) ? total : items.length,
+    skip: filters.skip ?? 0,
+    limit: filters.limit ?? 50,
+  };
+}
+
+export async function exportAuditLogs(
+  format: "csv" | "json",
+  filters: AuditLogFilters = {},
+): Promise<Blob> {
+  const token = getStoredToken();
+  const query = buildAuditQuery({ ...filters });
+  const url = `${API_BASE_URL}/api/audit-logs/export?format=${format}${
+    query ? `&${query}` : ""
+  }`;
+  const response = await fetch(url, {
     headers: token ? { Authorization: `Bearer ${token}` } : {},
   });
   if (!response.ok) {
-    throw new Error(`Audit export failed with ${response.status}`);
+    let detail = `Audit export failed with ${response.status}`;
+    try {
+      const body = await response.json();
+      detail = body.detail ?? detail;
+    } catch {
+      // body was empty / non-JSON; keep status-only message
+    }
+    throw new Error(detail);
   }
   return response.blob();
 }
