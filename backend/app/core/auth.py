@@ -1,7 +1,7 @@
 from collections.abc import Callable
 from typing import Any
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
@@ -69,9 +69,44 @@ def get_pre_2fa_user(
     return user
 
 
-def require_role(minimum_role: UserRole) -> Callable[[User], User]:
-    def dependency(current_user: User = Depends(get_current_user)) -> User:
+def _audit_forbidden(
+    request: Request,
+    session: Session,
+    current_user: User,
+    minimum_role: UserRole,
+) -> None:
+    """Persist a record of an attempted access by a user with insufficient role.
+
+    Imported lazily to dodge the circular `app.core.audit` ↔ `app.core.auth`
+    dependency that would otherwise show up at module load.
+    """
+    from app.core.audit import Action, record_event
+
+    record_event(
+        session,
+        action=Action.ACCESS_FORBIDDEN,
+        target_type="endpoint",
+        target_id=request.url.path,
+        actor=current_user,
+        metadata={
+            "method": request.method,
+            "path": request.url.path,
+            "required_role": minimum_role.value,
+            "actual_role": current_user.role.value,
+        },
+        request=request,
+    )
+    session.commit()
+
+
+def require_role(minimum_role: UserRole) -> Callable[..., User]:
+    def dependency(
+        request: Request,
+        current_user: User = Depends(get_current_user),
+        session: Session = Depends(get_session),
+    ) -> User:
         if ROLE_LEVELS[current_user.role] < ROLE_LEVELS[minimum_role]:
+            _audit_forbidden(request, session, current_user, minimum_role)
             raise forbidden()
         return current_user
 
@@ -84,7 +119,9 @@ require_manager = require_role(UserRole.MANAGER)
 
 
 def require_admin(
+    request: Request,
     current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
 ) -> User:
     """Admin role required.
 
@@ -95,5 +132,6 @@ def require_admin(
     are accepted normally until they expire.
     """
     if ROLE_LEVELS[current_user.role] < ROLE_LEVELS[UserRole.ADMIN]:
+        _audit_forbidden(request, session, current_user, UserRole.ADMIN)
         raise forbidden()
     return current_user

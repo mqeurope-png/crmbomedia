@@ -1,10 +1,10 @@
 # ruff: noqa: I001
+from app.core.audit import Action, record_event
 from app.core.auth import require_admin, require_manager
 from app.core.errors import not_found
 from app.db.session import get_session
 from app.models.crm import ExternalSystem, User
 from app.models.integration_settings import IntegrationSetting
-from app.repositories import crm as crm_repository
 from app.repositories.integration_settings import (
     clear_api_key,
     get_integration_setting as get_setting,
@@ -16,26 +16,10 @@ from app.schemas.integration_settings import (
     IntegrationSettingRead,
     IntegrationSettingUpdate,
 )
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Request, status
 from sqlalchemy.orm import Session
 
 router = APIRouter(prefix="/integration-settings", tags=["integration settings"])
-
-
-def _record_settings_audit(
-    session: Session,
-    actor: User,
-    setting: IntegrationSetting,
-    action: str,
-) -> None:
-    crm_repository.create_audit_log(
-        session=session,
-        actor_user_id=actor.id,
-        action=action,
-        entity_type="integration_setting",
-        entity_id=setting.id,
-        message=setting.system.value,
-    )
 
 
 @router.get("", response_model=list[IntegrationSettingRead])
@@ -67,15 +51,25 @@ def read_integration_setting(
 def update_integration_setting(
     system: ExternalSystem,
     payload: IntegrationSettingUpdate,
+    request: Request,
     session: Session = Depends(get_session),
     current_user: User = Depends(require_admin),
 ) -> IntegrationSetting:
     setting = get_setting(session, system)
     if not setting:
         raise not_found("Integration setting")
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    changes = payload.model_dump(exclude_unset=True)
+    for field, value in changes.items():
         setattr(setting, field, value)
-    _record_settings_audit(session, current_user, setting, "update_integration_setting")
+    record_event(
+        session,
+        action=Action.INTEGRATION_SETTING_UPDATED,
+        target_type="integration_setting",
+        target_id=setting.id,
+        actor=current_user,
+        metadata={"system": setting.system.value, "changed_fields": sorted(changes.keys())},
+        request=request,
+    )
     session.commit()
     session.refresh(setting)
     return setting
@@ -89,6 +83,7 @@ def update_integration_setting(
 def set_integration_api_key(
     system: ExternalSystem,
     payload: IntegrationApiKeyUpdate,
+    request: Request,
     session: Session = Depends(get_session),
     current_user: User = Depends(require_admin),
 ) -> IntegrationSetting:
@@ -96,7 +91,16 @@ def set_integration_api_key(
     if not setting:
         raise not_found("Integration setting")
     set_api_key(session, setting, payload.api_key)
-    _record_settings_audit(session, current_user, setting, "set_integration_api_key")
+    record_event(
+        session,
+        action=Action.INTEGRATION_API_KEY_SET,
+        target_type="integration_setting",
+        target_id=setting.id,
+        actor=current_user,
+        # NEVER include the API key value (plaintext or ciphertext) in metadata.
+        metadata={"system": setting.system.value},
+        request=request,
+    )
     session.commit()
     session.refresh(setting)
     return setting
@@ -109,6 +113,7 @@ def set_integration_api_key(
 )
 def delete_integration_api_key(
     system: ExternalSystem,
+    request: Request,
     session: Session = Depends(get_session),
     current_user: User = Depends(require_admin),
 ) -> IntegrationSetting:
@@ -116,7 +121,15 @@ def delete_integration_api_key(
     if not setting:
         raise not_found("Integration setting")
     clear_api_key(session, setting)
-    _record_settings_audit(session, current_user, setting, "delete_integration_api_key")
+    record_event(
+        session,
+        action=Action.INTEGRATION_API_KEY_DELETED,
+        target_type="integration_setting",
+        target_id=setting.id,
+        actor=current_user,
+        metadata={"system": setting.system.value},
+        request=request,
+    )
     session.commit()
     session.refresh(setting)
     return setting

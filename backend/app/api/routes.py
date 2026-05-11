@@ -1,14 +1,15 @@
 # ruff: noqa: I001
 import json
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.integration_settings import router as integration_settings_router
+from app.core.audit import Action, record_event
 from app.core.auth import (
     get_current_user,
     require_admin,
@@ -37,7 +38,7 @@ from app.core.totp import (
     verify_totp_code,
 )
 from app.db.session import get_session
-from app.models.crm import AuditLog, Company, Contact, Note, Task, User
+from app.models.crm import Company, Contact, Note, Task, User
 from app.repositories import crm as crm_repository
 from app.services.email import EmailService, get_email_service
 from app.schemas.crm import (
@@ -85,22 +86,8 @@ ERROR_RESPONSES = {
 }
 
 
-def record_audit(
-    session: Session,
-    actor: User | None,
-    action: str,
-    entity_type: str,
-    entity_id: str | None,
-    message: str | None = None,
-) -> None:
-    crm_repository.create_audit_log(
-        session=session,
-        actor_user_id=actor.id if actor else None,
-        action=action,
-        entity_type=entity_type,
-        entity_id=entity_id,
-        message=message,
-    )
+EXPORT_MAX_ROWS = 50_000
+EXPORT_DEFAULT_WINDOW_DAYS = 365
 
 
 @router.get("/health", response_model=HealthRead, tags=["system"])
@@ -108,11 +95,40 @@ def health(settings: Settings = Depends(get_settings)) -> HealthRead:
     return HealthRead(status="ok", app_name=settings.app_name, environment=settings.environment)
 
 @router.post("/auth/login", response_model=TokenRead, responses=ERROR_RESPONSES, tags=["auth"])
-def login(payload: LoginRequest, session: Session = Depends(get_session)) -> TokenRead:
-    user = crm_repository.get_user_by_email(session, str(payload.email))
+def login(
+    payload: LoginRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+) -> TokenRead:
+    attempted_email = str(payload.email)
+    user = crm_repository.get_user_by_email(session, attempted_email)
     if not user or not user.is_active or not verify_password(payload.password, user.password_hash):
+        # Audit the failed attempt with the captured email + IP + UA so an
+        # operator can spot brute-force patterns. The DB-level user lookup
+        # may have miss; we still record the email actually tried.
+        reason = "user_not_found" if not user else (
+            "user_inactive" if not user.is_active else "invalid_password"
+        )
+        record_event(
+            session,
+            action=Action.AUTH_LOGIN_FAILED,
+            target_type="user",
+            target_id=user.id if user else None,
+            actor=user,
+            actor_email=attempted_email,
+            metadata={"reason": reason},
+            request=request,
+        )
+        session.commit()
         raise unauthorized("Invalid email or password")
-    record_audit(session, user, "login", "user", user.id)
+    record_event(
+        session,
+        action=Action.AUTH_LOGIN_SUCCESS,
+        target_type="user",
+        target_id=user.id,
+        actor=user,
+        request=request,
+    )
     session.commit()
 
     if user.totp_enabled:
@@ -140,7 +156,9 @@ def login(payload: LoginRequest, session: Session = Depends(get_session)) -> Tok
     tags=["auth"],
 )
 def verify_2fa(
-    payload: TotpVerifyRequest, session: Session = Depends(get_session)
+    payload: TotpVerifyRequest,
+    request: Request,
+    session: Session = Depends(get_session),
 ) -> TokenRead:
     """Second step of login: exchanges a pre-2FA token + TOTP code (or a
     backup code) for the final JWT. The temp token must come from
@@ -175,12 +193,17 @@ def verify_2fa(
     if not ok:
         raise unauthorized("Invalid 2FA code")
 
-    record_audit(
+    record_event(
         session,
-        user,
-        "verify_2fa_backup_code" if used_backup else "verify_2fa",
-        "user",
-        user.id,
+        action=(
+            Action.AUTH_2FA_VERIFIED_BACKUP_CODE
+            if used_backup
+            else Action.AUTH_2FA_VERIFIED
+        ),
+        target_type="user",
+        target_id=user.id,
+        actor=user,
+        request=request,
     )
     session.commit()
 
@@ -195,6 +218,7 @@ def verify_2fa(
     tags=["auth"],
 )
 def setup_2fa(
+    request: Request,
     session: Session = Depends(get_session),
     settings: Settings = Depends(get_settings),
     current_user: User = Depends(get_current_user),
@@ -210,7 +234,14 @@ def setup_2fa(
     secret = generate_secret()
     current_user.totp_secret_encrypted = encrypt(secret)
     current_user.totp_confirmed_at = None
-    record_audit(session, current_user, "start_2fa_setup", "user", current_user.id)
+    record_event(
+        session,
+        action=Action.AUTH_2FA_SETUP_STARTED,
+        target_type="user",
+        target_id=current_user.id,
+        actor=current_user,
+        request=request,
+    )
     session.commit()
     uri = build_provisioning_uri(
         secret,
@@ -228,6 +259,7 @@ def setup_2fa(
 )
 def confirm_2fa(
     payload: TotpConfirmRequest,
+    request: Request,
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> TotpConfirmRead:
@@ -247,7 +279,14 @@ def confirm_2fa(
     current_user.totp_confirmed_at = datetime.now(UTC)
     codes = generate_backup_codes()
     current_user.backup_codes_hash = hash_backup_codes(codes)
-    record_audit(session, current_user, "enable_2fa", "user", current_user.id)
+    record_event(
+        session,
+        action=Action.AUTH_2FA_ENABLED,
+        target_type="user",
+        target_id=current_user.id,
+        actor=current_user,
+        request=request,
+    )
     session.commit()
     return TotpConfirmRead(backup_codes=codes, enabled=True)
 
@@ -260,6 +299,7 @@ def confirm_2fa(
 )
 def disable_2fa(
     payload: TotpDisableRequest,
+    request: Request,
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> MessageRead:
@@ -271,7 +311,14 @@ def disable_2fa(
     current_user.totp_enabled = False
     current_user.totp_confirmed_at = None
     current_user.backup_codes_hash = None
-    record_audit(session, current_user, "disable_2fa", "user", current_user.id)
+    record_event(
+        session,
+        action=Action.AUTH_2FA_DISABLED,
+        target_type="user",
+        target_id=current_user.id,
+        actor=current_user,
+        request=request,
+    )
     session.commit()
     return MessageRead(message="2FA disabled")
 
@@ -284,6 +331,7 @@ def disable_2fa(
 )
 def change_password(
     payload: ChangePasswordRequest,
+    request: Request,
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> MessageRead:
@@ -292,7 +340,14 @@ def change_password(
     current_user.password_hash = hash_password(payload.new_password)
     current_user.password_reset_token_hash = None
     current_user.password_reset_requested_at = None
-    record_audit(session, current_user, "change_password", "user", current_user.id)
+    record_event(
+        session,
+        action=Action.AUTH_PASSWORD_CHANGED,
+        target_type="user",
+        target_id=current_user.id,
+        actor=current_user,
+        request=request,
+    )
     session.commit()
     return MessageRead(message="Password changed")
 
@@ -320,6 +375,7 @@ def change_password(
 )
 def request_password_reset(
     payload: PasswordResetRequest,
+    request: Request,
     session: Session = Depends(get_session),
     settings: Settings = Depends(get_settings),
     email_service: EmailService = Depends(get_email_service),
@@ -332,7 +388,14 @@ def request_password_reset(
         reset_token = create_reset_token()
         user.password_reset_token_hash = hash_reset_token(reset_token)
         user.password_reset_requested_at = datetime.now(UTC)
-        record_audit(session, user, "request_password_reset", "user", user.id)
+        record_event(
+            session,
+            action=Action.AUTH_PASSWORD_RESET_REQUESTED,
+            target_type="user",
+            target_id=user.id,
+            actor=user,
+            request=request,
+        )
         session.commit()
 
         try:
@@ -387,7 +450,9 @@ def request_password_reset(
     tags=["auth"],
 )
 def confirm_password_reset(
-    payload: PasswordResetConfirm, session: Session = Depends(get_session)
+    payload: PasswordResetConfirm,
+    request: Request,
+    session: Session = Depends(get_session),
 ) -> MessageRead:
     token_hash = hash_reset_token(payload.token)
     user = crm_repository.get_user_by_reset_token_hash(session, token_hash)
@@ -396,7 +461,14 @@ def confirm_password_reset(
     user.password_hash = hash_password(payload.new_password)
     user.password_reset_token_hash = None
     user.password_reset_requested_at = None
-    record_audit(session, user, "confirm_password_reset", "user", user.id)
+    record_event(
+        session,
+        action=Action.AUTH_PASSWORD_RESET_CONFIRMED,
+        target_type="user",
+        target_id=user.id,
+        actor=user,
+        request=request,
+    )
     session.commit()
     return MessageRead(message="Password reset completed")
 
@@ -429,6 +501,7 @@ def read_current_user(current_user: User = Depends(get_current_user)) -> Current
 )
 def create_user(
     payload: UserCreate,
+    request: Request,
     session: Session = Depends(get_session),
     current_user: User = Depends(require_admin),
 ) -> User:
@@ -444,7 +517,18 @@ def create_user(
     )
     session.add(user)
     session.flush()
-    record_audit(session, current_user, "create_user", "user", user.id, user.email)
+    record_event(
+        session,
+        action=Action.USER_CREATED,
+        target_type="user",
+        target_id=user.id,
+        actor=current_user,
+        metadata={
+            "target_email": user.email,
+            "target_role": user.role.value,
+        },
+        request=request,
+    )
     session.commit()
     session.refresh(user)
     return user
@@ -470,17 +554,47 @@ def list_users(
 def update_user(
     user_id: str,
     payload: UserUpdate,
+    request: Request,
     session: Session = Depends(get_session),
     current_user: User = Depends(require_admin),
 ) -> User:
     user = session.get(User, user_id)
     if not user:
         raise not_found("User")
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    changes = payload.model_dump(exclude_unset=True)
+    role_before = user.role
+    for field, value in changes.items():
         if field == "full_name" and value is not None:
             value = value.strip()
         setattr(user, field, value)
-    record_audit(session, current_user, "update_user", "user", user.id, user.email)
+    record_event(
+        session,
+        action=Action.USER_UPDATED,
+        target_type="user",
+        target_id=user.id,
+        actor=current_user,
+        metadata={
+            "target_email": user.email,
+            "changed_fields": sorted(changes.keys()),
+        },
+        request=request,
+    )
+    # When the role actually flips, write a dedicated audit row so role
+    # transitions are easy to filter for compliance reports.
+    if "role" in changes and changes["role"] != role_before:
+        record_event(
+            session,
+            action=Action.USER_ROLE_CHANGED,
+            target_type="user",
+            target_id=user.id,
+            actor=current_user,
+            metadata={
+                "target_email": user.email,
+                "from_role": role_before.value,
+                "to_role": user.role.value,
+            },
+            request=request,
+        )
     session.commit()
     session.refresh(user)
     return user
@@ -495,6 +609,7 @@ def update_user(
 def admin_update_user_password(
     user_id: str,
     payload: UserPasswordUpdate,
+    request: Request,
     session: Session = Depends(get_session),
     current_user: User = Depends(require_admin),
 ) -> MessageRead:
@@ -504,7 +619,15 @@ def admin_update_user_password(
     user.password_hash = hash_password(payload.new_password)
     user.password_reset_token_hash = None
     user.password_reset_requested_at = None
-    record_audit(session, current_user, "admin_update_password", "user", user.id, user.email)
+    record_event(
+        session,
+        action=Action.USER_PASSWORD_SET_BY_ADMIN,
+        target_type="user",
+        target_id=user.id,
+        actor=current_user,
+        metadata={"target_email": user.email},
+        request=request,
+    )
     session.commit()
     return MessageRead(message="Password updated")
 
@@ -517,6 +640,7 @@ def admin_update_user_password(
 )
 def deactivate_user(
     user_id: str,
+    request: Request,
     session: Session = Depends(get_session),
     current_user: User = Depends(require_admin),
 ) -> User:
@@ -524,7 +648,15 @@ def deactivate_user(
     if not user:
         raise not_found("User")
     user.is_active = False
-    record_audit(session, current_user, "deactivate_user", "user", user.id, user.email)
+    record_event(
+        session,
+        action=Action.USER_DEACTIVATED,
+        target_type="user",
+        target_id=user.id,
+        actor=current_user,
+        metadata={"target_email": user.email},
+        request=request,
+    )
     session.commit()
     session.refresh(user)
     return user
@@ -538,6 +670,7 @@ def deactivate_user(
 )
 def reactivate_user(
     user_id: str,
+    request: Request,
     session: Session = Depends(get_session),
     current_user: User = Depends(require_admin),
 ) -> User:
@@ -545,7 +678,15 @@ def reactivate_user(
     if not user:
         raise not_found("User")
     user.is_active = True
-    record_audit(session, current_user, "reactivate_user", "user", user.id, user.email)
+    record_event(
+        session,
+        action=Action.USER_REACTIVATED,
+        target_type="user",
+        target_id=user.id,
+        actor=current_user,
+        metadata={"target_email": user.email},
+        request=request,
+    )
     session.commit()
     session.refresh(user)
     return user
@@ -558,13 +699,43 @@ def reactivate_user(
     tags=["audit"],
 )
 def list_audit_logs(
+    response: Response,
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=100),
+    action: str | None = Query(default=None, description="Exact action match"),
+    action_prefix: str | None = Query(
+        default=None, description="Action prefix filter (e.g. auth.)"
+    ),
+    actor_user_id: str | None = Query(default=None),
+    target_type: str | None = Query(default=None),
+    from_date: datetime | None = Query(default=None, alias="from"),
+    to_date: datetime | None = Query(default=None, alias="to"),
     session: Session = Depends(get_session),
     current_user: User = Depends(require_admin),
-) -> list[AuditLog]:
+) -> list[AuditLogRead]:
     _ = current_user
-    return crm_repository.list_audit_logs(session=session, skip=skip, limit=limit)
+    logs = crm_repository.list_audit_logs(
+        session=session,
+        skip=skip,
+        limit=limit,
+        action=action,
+        action_prefix=action_prefix,
+        actor_user_id=actor_user_id,
+        target_type=target_type,
+        from_date=from_date,
+        to_date=to_date,
+    )
+    total = crm_repository.count_audit_logs(
+        session=session,
+        action=action,
+        action_prefix=action_prefix,
+        actor_user_id=actor_user_id,
+        target_type=target_type,
+        from_date=from_date,
+        to_date=to_date,
+    )
+    response.headers["X-Total-Count"] = str(total)
+    return [AuditLogRead.from_audit_log(log) for log in logs]
 
 
 @router.get(
@@ -573,20 +744,78 @@ def list_audit_logs(
     tags=["audit"],
 )
 def export_audit_logs(
+    request: Request,
     format: str = Query(default="csv", pattern="^(csv|json)$"),
+    action: str | None = Query(default=None),
+    action_prefix: str | None = Query(default=None),
+    actor_user_id: str | None = Query(default=None),
+    target_type: str | None = Query(default=None),
+    from_date: datetime | None = Query(default=None, alias="from"),
+    to_date: datetime | None = Query(default=None, alias="to"),
     session: Session = Depends(get_session),
     current_user: User = Depends(require_admin),
 ) -> Response:
-    _ = current_user
-    logs = crm_repository.list_all_audit_logs(session)
+    # Default to the last 12 months when the caller doesn't specify a
+    # range — keeps the export bounded even for old install where the
+    # table has grown unbounded.
+    if from_date is None and to_date is None:
+        to_date = datetime.now(UTC)
+        from_date = to_date - timedelta(days=EXPORT_DEFAULT_WINDOW_DAYS)
+
+    logs = crm_repository.list_audit_logs_for_export(
+        session=session,
+        max_rows=EXPORT_MAX_ROWS,
+        action=action,
+        action_prefix=action_prefix,
+        actor_user_id=actor_user_id,
+        target_type=target_type,
+        from_date=from_date,
+        to_date=to_date,
+    )
+    if len(logs) > EXPORT_MAX_ROWS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Export exceeds {EXPORT_MAX_ROWS} rows. Narrow the range with "
+                f"`from` / `to` or filter by `action` / `actor_user_id`."
+            ),
+        )
+
+    # The export itself is an audited action: who pulled how many rows,
+    # for what filters, when.
+    record_event(
+        session,
+        action=Action.AUDIT_EXPORTED,
+        target_type="audit_log",
+        actor=current_user,
+        metadata={
+            "format": format,
+            "rows": len(logs),
+            "filters": {
+                "action": action,
+                "action_prefix": action_prefix,
+                "actor_user_id": actor_user_id,
+                "target_type": target_type,
+                "from": from_date.isoformat() if from_date else None,
+                "to": to_date.isoformat() if to_date else None,
+            },
+        },
+        request=request,
+    )
+    session.commit()
+
     rows = [
         {
             "id": log.id,
             "actor_user_id": log.actor_user_id or "",
+            "actor_email": log.actor_email or "",
             "action": log.action,
-            "entity_type": log.entity_type,
-            "entity_id": log.entity_id or "",
+            "target_type": log.target_type,
+            "target_id": log.target_id or "",
+            "metadata": log.metadata_json or "",
             "message": log.message or "",
+            "ip_address": log.ip_address or "",
+            "user_agent": log.user_agent or "",
             "created_at": log.created_at.isoformat(),
         }
         for log in logs
@@ -597,10 +826,30 @@ def export_audit_logs(
             media_type="application/json",
             headers={"Content-Disposition": "attachment; filename=audit_logs.json"},
         )
-    header = ["id", "actor_user_id", "action", "entity_type", "entity_id", "message", "created_at"]
+    header = [
+        "id",
+        "actor_user_id",
+        "actor_email",
+        "action",
+        "target_type",
+        "target_id",
+        "metadata",
+        "message",
+        "ip_address",
+        "user_agent",
+        "created_at",
+    ]
     csv_lines = [",".join(header)]
     for row in rows:
-        csv_lines.append(",".join(str(row[key]).replace(",", " ") for key in header))
+        # Strip embedded commas and newlines so the CSV parses without quoting;
+        # for production-grade CSV pipelines the consumer should already cope,
+        # but defensive escaping keeps spreadsheets happy.
+        csv_lines.append(
+            ",".join(
+                str(row[key]).replace(",", " ").replace("\n", " ").replace("\r", " ")
+                for key in header
+            )
+        )
     return Response(
         content="\n".join(csv_lines) + "\n",
         media_type="text/csv",
@@ -617,6 +866,7 @@ def export_audit_logs(
 )
 def create_company(
     payload: CompanyCreate,
+    request: Request,
     session: Session = Depends(get_session),
     current_user: User = Depends(require_manager),
 ) -> Company:
@@ -627,7 +877,15 @@ def create_company(
     except IntegrityError as exc:
         session.rollback()
         raise conflict("A company with this tax_id already exists") from exc
-    record_audit(session, current_user, "create_company", "company", company.id, company.name)
+    record_event(
+        session,
+        action=Action.COMPANY_CREATED,
+        target_type="company",
+        target_id=company.id,
+        actor=current_user,
+        metadata={"name": company.name},
+        request=request,
+    )
     session.commit()
     session.refresh(company)
     return company
@@ -657,20 +915,30 @@ def list_companies(
 def update_company(
     company_id: str,
     payload: CompanyUpdate,
+    request: Request,
     session: Session = Depends(get_session),
     current_user: User = Depends(require_manager),
 ) -> Company:
     company = crm_repository.get_company(session, company_id)
     if not company:
         raise not_found("Company")
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    changes = payload.model_dump(exclude_unset=True)
+    for field, value in changes.items():
         setattr(company, field, value)
     try:
         session.flush()
     except IntegrityError as exc:
         session.rollback()
         raise conflict("A company with this tax_id already exists") from exc
-    record_audit(session, current_user, "update_company", "company", company.id, company.name)
+    record_event(
+        session,
+        action=Action.COMPANY_UPDATED,
+        target_type="company",
+        target_id=company.id,
+        actor=current_user,
+        metadata={"name": company.name, "changed_fields": sorted(changes.keys())},
+        request=request,
+    )
     session.commit()
     session.refresh(company)
     return company
@@ -684,6 +952,7 @@ def update_company(
 )
 def deactivate_company(
     company_id: str,
+    request: Request,
     session: Session = Depends(get_session),
     current_user: User = Depends(require_manager),
 ) -> Company:
@@ -691,7 +960,15 @@ def deactivate_company(
     if not company:
         raise not_found("Company")
     company.is_active = False
-    record_audit(session, current_user, "deactivate_company", "company", company.id, company.name)
+    record_event(
+        session,
+        action=Action.COMPANY_DEACTIVATED,
+        target_type="company",
+        target_id=company.id,
+        actor=current_user,
+        metadata={"name": company.name},
+        request=request,
+    )
     session.commit()
     session.refresh(company)
     return company
@@ -706,6 +983,7 @@ def deactivate_company(
 )
 def create_contact(
     payload: ContactCreate,
+    request: Request,
     session: Session = Depends(get_session),
     current_user: User = Depends(require_manager),
 ) -> Contact:
@@ -724,7 +1002,15 @@ def create_contact(
     except IntegrityError as exc:
         session.rollback()
         raise conflict("A contact with this email already exists") from exc
-    record_audit(session, current_user, "create_contact", "contact", contact.id, contact.email)
+    record_event(
+        session,
+        action=Action.CONTACT_CREATED,
+        target_type="contact",
+        target_id=contact.id,
+        actor=current_user,
+        metadata={"email": contact.email},
+        request=request,
+    )
     session.commit()
     session.refresh(contact)
     return contact
@@ -772,6 +1058,7 @@ def get_contact(
 def update_contact(
     contact_id: str,
     payload: ContactUpdate,
+    request: Request,
     session: Session = Depends(get_session),
     current_user: User = Depends(require_manager),
 ) -> Contact:
@@ -789,7 +1076,15 @@ def update_contact(
         raise not_found("Company")
     for field, value in data.items():
         setattr(contact, field, value)
-    record_audit(session, current_user, "update_contact", "contact", contact.id, contact.email)
+    record_event(
+        session,
+        action=Action.CONTACT_UPDATED,
+        target_type="contact",
+        target_id=contact.id,
+        actor=current_user,
+        metadata={"email": contact.email, "changed_fields": sorted(data.keys())},
+        request=request,
+    )
     session.commit()
     session.refresh(contact)
     return contact
@@ -803,6 +1098,7 @@ def update_contact(
 )
 def deactivate_contact(
     contact_id: str,
+    request: Request,
     session: Session = Depends(get_session),
     current_user: User = Depends(require_manager),
 ) -> Contact:
@@ -810,7 +1106,15 @@ def deactivate_contact(
     if not contact:
         raise not_found("Contact")
     contact.is_active = False
-    record_audit(session, current_user, "deactivate_contact", "contact", contact.id, contact.email)
+    record_event(
+        session,
+        action=Action.CONTACT_DEACTIVATED,
+        target_type="contact",
+        target_id=contact.id,
+        actor=current_user,
+        metadata={"email": contact.email},
+        request=request,
+    )
     session.commit()
     session.refresh(contact)
     return contact
@@ -843,6 +1147,7 @@ def list_contact_notes(
 def create_note(
     contact_id: str,
     payload: NoteCreate,
+    request: Request,
     session: Session = Depends(get_session),
     current_user: User = Depends(require_user),
 ) -> Note:
@@ -853,7 +1158,15 @@ def create_note(
     note = Note(contact_id=contact_id, **data)
     session.add(note)
     session.flush()
-    record_audit(session, current_user, "create_note", "note", note.id, contact_id)
+    record_event(
+        session,
+        action=Action.NOTE_CREATED,
+        target_type="note",
+        target_id=note.id,
+        actor=current_user,
+        metadata={"contact_id": contact_id},
+        request=request,
+    )
     session.commit()
     session.refresh(note)
     return note
@@ -886,6 +1199,7 @@ def list_contact_tasks(
 def create_task(
     contact_id: str,
     payload: TaskCreate,
+    request: Request,
     session: Session = Depends(get_session),
     current_user: User = Depends(require_user),
 ) -> Task:
@@ -894,7 +1208,15 @@ def create_task(
     task = Task(contact_id=contact_id, **payload.model_dump())
     session.add(task)
     session.flush()
-    record_audit(session, current_user, "create_task", "task", task.id, contact_id)
+    record_event(
+        session,
+        action=Action.TASK_CREATED,
+        target_type="task",
+        target_id=task.id,
+        actor=current_user,
+        metadata={"contact_id": contact_id, "title": task.title},
+        request=request,
+    )
     session.commit()
     session.refresh(task)
     return task

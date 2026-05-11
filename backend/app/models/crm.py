@@ -190,7 +190,14 @@ class AuditLog(TimestampMixin, Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     actor_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+    actor_email: Mapped[str | None] = mapped_column(String(255))
     action: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
-    entity_type: Mapped[str] = mapped_column(String(120), nullable=False)
-    entity_id: Mapped[str | None] = mapped_column(String(36))
+    target_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    target_id: Mapped[str | None] = mapped_column(String(36))
+    # `metadata` collides with SQLAlchemy's Base.metadata, so the Python
+    # attribute is metadata_json while the underlying column keeps the
+    # short name in SQL.
+    metadata_json: Mapped[str | None] = mapped_column("metadata", Text)
     message: Mapped[str | None] = mapped_column(Text)
+    ip_address: Mapped[str | None] = mapped_column(String(45))  # fits IPv6
+    user_agent: Mapped[str | None] = mapped_column(Text)

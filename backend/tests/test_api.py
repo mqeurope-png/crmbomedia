@@ -323,8 +323,8 @@ def test_audit_log_records_login_and_crm_actions(client: TestClient):
 
     assert response.status_code == 200
     actions = {entry["action"] for entry in response.json()}
-    assert "login" in actions
-    assert "create_contact" in actions
+    assert "auth.login_success" in actions
+    assert "contact.created" in actions
 
 
 def test_change_current_user_password(client: TestClient):
@@ -414,6 +414,6 @@ def test_audit_export_csv_and_json_requires_admin(client: TestClient):
 
     assert forbidden.status_code == 403
     assert csv_response.status_code == 200
-    assert "create_contact" in csv_response.text
+    assert "contact.created" in csv_response.text
     assert json_response.status_code == 200
-    assert any(row["action"] == "create_contact" for row in json_response.json())
+    assert any(row["action"] == "contact.created" for row in json_response.json())
