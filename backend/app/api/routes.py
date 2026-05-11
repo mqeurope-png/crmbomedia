@@ -37,7 +37,7 @@ from app.core.totp import (
     verify_totp_code,
 )
 from app.db.session import get_session
-from app.models.crm import AuditLog, Company, Contact, Note, Task, User, UserRole
+from app.models.crm import AuditLog, Company, Contact, Note, Task, User
 from app.repositories import crm as crm_repository
 from app.services.email import EmailService, get_email_service
 from app.schemas.crm import (
@@ -125,13 +125,12 @@ def login(payload: LoginRequest, session: Session = Depends(get_session)) -> Tok
         )
         return TokenRead(access_token=temp_token, requires_2fa=True)
 
-    # Admin without 2FA → final token marked `limited`. Sensitive admin
-    # endpoints will reject this token until 2FA is enabled.
-    is_limited_admin = user.role == UserRole.ADMIN
-    token = create_access_token(
-        subject=user.id, role=user.role.value, limited=is_limited_admin
-    )
-    return TokenRead(access_token=token, limited=is_limited_admin)
+    # 2FA is fully optional, including for admins. Anyone without 2FA gets a
+    # normal access token; the `limited` claim is never set anymore. The flag
+    # is left in place in create_access_token so old tokens with limited=true
+    # still parse cleanly while they live out their 8-hour TTL.
+    token = create_access_token(subject=user.id, role=user.role.value)
+    return TokenRead(access_token=token, limited=False)
 
 
 @router.post(
@@ -415,9 +414,9 @@ def read_current_user(current_user: User = Depends(get_current_user)) -> Current
         totp_enabled=current_user.totp_enabled,
         created_at=current_user.created_at,
         updated_at=current_user.updated_at,
-        requires_2fa_setup=(
-            current_user.role == UserRole.ADMIN and not current_user.totp_enabled
-        ),
+        # 2FA is opt-in for every role; the field is kept in the response for
+        # backward compatibility and is always False.
+        requires_2fa_setup=False,
     )
 
 

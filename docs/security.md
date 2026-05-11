@@ -424,7 +424,9 @@ Cubre:
 
 # Two-Factor Authentication (TOTP)
 
-2FA opcional para todos los roles, **obligatorio** para `admin`. Implementación basada en TOTP (RFC 6238) — funciona con Google Authenticator, Authy, 1Password, Bitwarden, etc. Sin SMS, sin WebAuthn (lo segundo se considera en una fase posterior).
+> **2FA es opcional para todos los roles, incluido `admin`.** Cualquier usuario puede activarlo voluntariamente desde *Mi cuenta → Seguridad / 2FA*. No hay enforcement por rol: la app no obliga a activarlo ni bloquea endpoints por falta de 2FA. (Hubo una fase previa con enforcement obligatorio para admin; se retiró por fricción operativa.)
+
+Implementación basada en TOTP (RFC 6238) — funciona con Google Authenticator, Authy, 1Password, Bitwarden, etc. Sin SMS, sin WebAuthn (lo segundo se considera en una fase posterior).
 
 ## Modelo de datos
 
@@ -445,9 +447,7 @@ Migración: `20260512_0004_user_totp.py`.
 POST /api/auth/login                                 (paso 1)
   → si user.totp_enabled == true:
       {access_token: <pre_2fa token, 5 min>, requires_2fa: true, limited: false}
-  → si user.totp_enabled == false y role == admin:
-      {access_token: <full token, limited=true>, requires_2fa: false, limited: true}
-  → en cualquier otro caso:
+  → si user.totp_enabled == false (cualquier rol, incluido admin):
       {access_token: <full token>, requires_2fa: false, limited: false}
 
 POST /api/auth/2fa/verify                            (paso 2, solo si requires_2fa)
@@ -457,20 +457,9 @@ POST /api/auth/2fa/verify                            (paso 2, solo si requires_2
 
 El `pre_2fa` JWT lleva el claim `pre_2fa: true`, dura 5 minutos y solo es aceptado por `/api/auth/2fa/verify`. Cualquier otro endpoint con ese token responde `401 Complete 2FA verification first`.
 
-## "Sesión limitada" — admin sin 2FA
+## Claim `limited` — heredado, sin enforcement
 
-Cuando un usuario con rol `admin` y `totp_enabled=false` hace login, el JWT final lleva `limited: true`. Los endpoints sensibles lo rechazan con `403`:
-
-- `/api/users/*`
-- `/api/audit-logs/*`
-- `/api/integration-settings` (PATCH del setting y endpoints de API key)
-
-El dep `require_admin` chequea el claim `limited`. El frontend muestra un banner persistente en el dashboard apuntando a `/account/security` para activar 2FA.
-
-Endpoints que SÍ funcionan en sesión limitada:
-
-- `/api/auth/me`, `/api/auth/change-password`, `/api/auth/2fa/setup`, `/api/auth/2fa/confirm`, `/api/auth/2fa/disable`.
-- Todo el CRM (contactos, empresas, notas, tareas) — los gates `require_manager`/`require_user`/`require_viewer` NO chequean `limited`. Un admin sin 2FA puede seguir trabajando con clientes; solo se cierra la configuración del sistema.
+El JWT soporta un claim `limited: true` que se usaba para gatear los endpoints sensibles cuando un admin no tenía 2FA. **Hoy no se setea nunca** y `require_admin` no lo lee. Los campos quedan en el código (response del login, `create_access_token` los acepta, etc.) por compatibilidad de tokens viejos en circulación durante el TTL de 8 horas y para no romper consumidores que ya leen `limited` del JSON. Si en el futuro se reintroduce enforcement, basta con volver a setear el flag en `login` y reactivar el check en `require_admin`.
 
 ## Backup codes
 
@@ -482,7 +471,7 @@ Los códigos se devuelven en plano una sola vez en la respuesta de `/api/auth/2f
 
 | Método | Path | Auth | Comportamiento |
 |---|---|---|---|
-| POST | `/api/auth/login` | none | Devuelve `requires_2fa` + token (temp o full según estado). |
+| POST | `/api/auth/login` | none | Devuelve `requires_2fa` + token (temp si `totp_enabled`, full si no). `limited` siempre `false`. |
 | POST | `/api/auth/2fa/verify` | body con temp_token | Intercambia (temp_token, code) por el JWT final. Acepta backup code. |
 | POST | `/api/auth/2fa/setup` | usuario logueado | Genera secret + URI otpauth; `totp_enabled=false` hasta confirmar. |
 | POST | `/api/auth/2fa/confirm` | usuario logueado | Verifica el primer código y devuelve los 8 backup codes (una sola vez). |

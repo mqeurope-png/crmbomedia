@@ -25,9 +25,9 @@ def get_token_payload(
 ) -> dict[str, Any]:
     """Decode and validate the JWT signature/exp; return the raw payload.
 
-    Used as a building block by `get_current_user`, `get_pre_2fa_user` and
-    `require_admin`, all of which need either the user or one of the
-    auxiliary claims (pre_2fa, limited).
+    Used as a building block by `get_current_user` and `get_pre_2fa_user`,
+    which inspect the `pre_2fa` claim to decide whether the request can
+    proceed.
     """
     if credentials is None:
         raise unauthorized()
@@ -84,23 +84,16 @@ require_manager = require_role(UserRole.MANAGER)
 
 
 def require_admin(
-    payload: dict[str, Any] = Depends(get_token_payload),
     current_user: User = Depends(get_current_user),
 ) -> User:
-    """Admin role required AND the session must NOT be marked `limited`.
+    """Admin role required.
 
-    `limited` is set on the JWT issued to an admin who logged in without
-    2FA; sensitive endpoints (/api/users, /api/audit-logs, /api/integration-
-    settings) refuse such sessions until 2FA is enabled.
+    Note: 2FA is fully optional for every role, admin included. Sensitive
+    admin endpoints used to refuse JWTs marked `limited` (issued to admins
+    who logged in without 2FA), but the policy is no longer enforced; the
+    claim is no longer set at login time and any leftover `limited` tokens
+    are accepted normally until they expire.
     """
     if ROLE_LEVELS[current_user.role] < ROLE_LEVELS[UserRole.ADMIN]:
         raise forbidden()
-    if payload.get("limited"):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=(
-                "2FA setup required to access this section. "
-                "Enable two-factor authentication from your security settings."
-            ),
-        )
     return current_user
