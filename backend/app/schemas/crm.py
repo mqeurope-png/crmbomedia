@@ -7,7 +7,15 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 from app.core.passwords import MAX_LENGTH as PASSWORD_MAX_LENGTH
 from app.core.passwords import MIN_LENGTH as PASSWORD_MIN_LENGTH
 from app.core.passwords import validate_password_policy
-from app.models.crm import AuditLog, ConsentStatus, ExternalSystem, TaskStatus, UserRole
+from app.models.crm import (
+    AuditLog,
+    ConsentStatus,
+    ExternalSystem,
+    GdprRequestStatus,
+    GdprRequestType,
+    TaskStatus,
+    UserRole,
+)
 
 
 def _enforce_password_policy(value: str) -> str:
@@ -307,3 +315,44 @@ class HealthRead(BaseModel):
     status: str
     app_name: str
     environment: str
+
+
+class GdprRequestCreate(BaseModel):
+    subject_email: EmailStr
+    request_type: GdprRequestType
+    notes: str | None = Field(default=None, max_length=4000)
+
+
+class GdprRequestUpdate(BaseModel):
+    status: GdprRequestStatus | None = None
+    notes: str | None = Field(default=None, max_length=4000)
+
+
+class GdprRequestRead(BaseModel):
+    id: str
+    subject_email: EmailStr
+    subject_contact_id: str | None
+    request_type: GdprRequestType
+    status: GdprRequestStatus
+    requested_at: datetime
+    completed_at: datetime | None
+    requester_user_id: str | None
+    notes: str | None
+    evidence_path: str | None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class GdprProcessResult(BaseModel):
+    """Returned by POST /gdpr/requests/{id}/process. `payload` carries the
+    type-specific summary (rectification endpoint list, erasure counts,
+    objection state, etc.) so the UI can render a clear confirmation
+    without re-fetching."""
+
+    request_id: str
+    request_type: GdprRequestType
+    status: GdprRequestStatus
+    evidence_path: str | None = None
+    payload: dict[str, Any] = Field(default_factory=dict)

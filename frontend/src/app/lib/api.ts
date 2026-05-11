@@ -336,6 +336,86 @@ export async function getAuditLogs(filters: AuditLogFilters = {}): Promise<Audit
   };
 }
 
+export type GdprRequestType =
+  | "access"
+  | "rectification"
+  | "erasure"
+  | "portability"
+  | "objection";
+
+export type GdprRequestStatus =
+  | "pending"
+  | "in_progress"
+  | "completed"
+  | "rejected";
+
+export type GdprRequest = {
+  id: string;
+  subject_email: string;
+  subject_contact_id: string | null;
+  request_type: GdprRequestType;
+  status: GdprRequestStatus;
+  requested_at: string;
+  completed_at: string | null;
+  requester_user_id: string | null;
+  notes: string | null;
+  evidence_path: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type GdprProcessResult = {
+  request_id: string;
+  request_type: GdprRequestType;
+  status: GdprRequestStatus;
+  evidence_path: string | null;
+  payload: Record<string, unknown>;
+};
+
+export type GdprRequestFilters = {
+  status?: GdprRequestStatus;
+  request_type?: GdprRequestType;
+  subject_email?: string;
+};
+
+export async function listGdprRequests(
+  filters: GdprRequestFilters = {},
+): Promise<GdprRequest[]> {
+  const params = new URLSearchParams();
+  if (filters.status) params.set("status", filters.status);
+  if (filters.request_type) params.set("request_type", filters.request_type);
+  if (filters.subject_email) params.set("subject_email", filters.subject_email);
+  const query = params.toString();
+  return apiFetch<GdprRequest[]>(`/api/gdpr/requests${query ? `?${query}` : ""}`);
+}
+
+export async function createGdprRequest(payload: {
+  subject_email: string;
+  request_type: GdprRequestType;
+  notes?: string | null;
+}): Promise<GdprRequest> {
+  return apiFetch<GdprRequest>("/api/gdpr/requests", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updateGdprRequest(
+  id: string,
+  payload: { status?: GdprRequestStatus; notes?: string | null },
+): Promise<GdprRequest> {
+  return apiFetch<GdprRequest>(`/api/gdpr/requests/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function processGdprRequest(id: string): Promise<GdprProcessResult> {
+  return apiFetch<GdprProcessResult>(`/api/gdpr/requests/${id}/process`, {
+    method: "POST",
+  });
+}
+
 export async function exportAuditLogs(
   format: "csv" | "json",
   filters: AuditLogFilters = {},

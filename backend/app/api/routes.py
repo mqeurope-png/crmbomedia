@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.api.gdpr import router as gdpr_router
 from app.api.integration_settings import router as integration_settings_router
 from app.core.audit import Action, record_event
 from app.core.auth import (
@@ -1223,3 +1224,4 @@ def create_task(
 
 
 router.include_router(integration_settings_router)
+router.include_router(gdpr_router)
