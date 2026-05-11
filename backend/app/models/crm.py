@@ -185,6 +185,69 @@ class User(TimestampMixin, Base):
     backup_codes_hash: Mapped[str | None] = mapped_column(Text)
 
 
+class GdprRequestType(StrEnum):
+    ACCESS = "access"
+    RECTIFICATION = "rectification"
+    ERASURE = "erasure"
+    PORTABILITY = "portability"
+    OBJECTION = "objection"
+
+
+class GdprRequestStatus(StrEnum):
+    PENDING = "pending"
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    REJECTED = "rejected"
+
+
+class GdprRequest(TimestampMixin, Base):
+    """A data-subject rights request under GDPR (RGPD).
+
+    Stored as a tracking record only: the actual processing (export file
+    generation, contact erasure, audit-log anonymisation, consent flip) is
+    performed by `app.services.gdpr.process_request` and recorded both on
+    this row (status + completed_at + evidence_path) and in `audit_logs`
+    via `gdpr.*` events.
+    """
+
+    __tablename__ = "gdpr_requests"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    subject_email: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    subject_contact_id: Mapped[str | None] = mapped_column(String(36))
+    request_type: Mapped[GdprRequestType] = mapped_column(
+        Enum(
+            GdprRequestType,
+            native_enum=False,
+            values_callable=enum_values,
+            length=32,
+        ),
+        nullable=False,
+        index=True,
+    )
+    status: Mapped[GdprRequestStatus] = mapped_column(
+        Enum(
+            GdprRequestStatus,
+            native_enum=False,
+            values_callable=enum_values,
+            length=32,
+        ),
+        default=GdprRequestStatus.PENDING,
+        nullable=False,
+        index=True,
+    )
+    requested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    requester_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+    notes: Mapped[str | None] = mapped_column(Text)
+    # Filesystem path to the generated export (access/portability). Stored
+    # as relative path under the export root so the row survives a host
+    # migration without rewriting absolute paths.
+    evidence_path: Mapped[str | None] = mapped_column(String(512))
+
+
 class AuditLog(TimestampMixin, Base):
     __tablename__ = "audit_logs"
 

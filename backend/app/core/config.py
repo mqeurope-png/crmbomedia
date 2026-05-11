@@ -42,6 +42,12 @@ class Settings(BaseSettings):
     smtp_use_tls: bool = True   # STARTTLS on port 587
     smtp_use_ssl: bool = False  # implicit SSL on port 465; mutually exclusive with use_tls
 
+    # GDPR / RGPD subject-rights workflow. `access` and `portability`
+    # requests write JSON/CSV exports to disk so an operator can hand them
+    # to the data subject through a separate (signed) channel. The path is
+    # relative-friendly; the service creates it on first use.
+    gdpr_export_root: str = "var/gdpr_exports"
+
     # Error tracking. Sentry is initialized only when sentry_dsn is set, so
     # development and CI stay completely offline. release defaults to the
     # short git SHA in CI (export GIT_SHA=$GITHUB_SHA in the workflow).

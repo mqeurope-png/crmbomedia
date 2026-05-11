@@ -69,6 +69,16 @@ class Action:
     # Access control
     ACCESS_FORBIDDEN = "access.forbidden"
 
+    # GDPR / RGPD subject-rights events
+    GDPR_REQUEST_CREATED = "gdpr.request_created"
+    GDPR_REQUEST_UPDATED = "gdpr.request_updated"
+    GDPR_REQUEST_PROCESSED = "gdpr.request_processed"
+    GDPR_EXPORT_GENERATED = "gdpr.export_generated"
+    GDPR_CONTACT_ERASED = "gdpr.contact_erased"
+    GDPR_AUDIT_ANONYMIZED = "gdpr.audit_anonymized"
+    GDPR_OBJECTION_APPLIED = "gdpr.objection_applied"
+    GDPR_RECTIFICATION_GUIDANCE = "gdpr.rectification_guidance"
+
 
 def client_ip(request: Request | None) -> str | None:
     """Resolve the request's source IP, honouring proxy headers."""
