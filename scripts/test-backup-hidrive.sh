@@ -26,11 +26,30 @@ set +a
 : "${RESTIC_REPOSITORY:?RESTIC_REPOSITORY missing in $BACKUP_ENV}"
 : "${RESTIC_PASSWORD:?RESTIC_PASSWORD missing in $BACKUP_ENV}"
 
+# Resolve restic with a defensive fallback so this script works even when run
+# from an interactive shell that lacks /usr/local/bin in PATH.
+if [ -z "${RESTIC_BIN:-}" ] || [ ! -x "${RESTIC_BIN}" ]; then
+  RESTIC_BIN="$(command -v restic 2>/dev/null || true)"
+  if [ -z "$RESTIC_BIN" ]; then
+    for candidate in /usr/local/bin/restic /usr/bin/restic; do
+      if [ -x "$candidate" ]; then
+        RESTIC_BIN="$candidate"
+        break
+      fi
+    done
+  fi
+fi
+if [ -z "${RESTIC_BIN:-}" ] || [ ! -x "$RESTIC_BIN" ]; then
+  echo "ERROR: restic binary not found. Run setup-restic-hidrive.sh." >&2
+  exit 1
+fi
+
 cat <<EOF
 === CRMBO backup verification ===
 
 Repository: $RESTIC_REPOSITORY
 App root:   $APP_ROOT
+restic:     $RESTIC_BIN
 
 EOF
 
@@ -41,11 +60,11 @@ echo "-----------------------------------------------------------------"
 
 echo
 echo "Step 2/3: snapshots in the repository:"
-restic snapshots --tag daily --compact
+"$RESTIC_BIN" snapshots --tag daily --compact
 
 echo
 echo "Step 3/3: repository statistics:"
-restic stats
+"$RESTIC_BIN" stats
 
 cat <<EOF
 
@@ -55,6 +74,6 @@ Next manual check (recommended): dry-run restore plan
   $APP_ROOT/scripts/restore-mysql-restic.sh latest --dry-run
 
 Quarterly (every 3 months): run a deep integrity verification
-  . $BACKUP_ENV && restic check --read-data-subset 5%
+  . $BACKUP_ENV && \$RESTIC_BIN check --read-data-subset 5%
 
 EOF
