@@ -2,7 +2,9 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { ErrorState } from "../../components/ErrorState";
+import { IntegrationAccountModal } from "../../components/IntegrationAccountModal";
 import { getCurrentUser, type User } from "../../lib/api";
 import { extractErrorMessage } from "../../lib/errors";
 import {
@@ -15,9 +17,7 @@ import {
   type ExternalSystem,
   type IntegrationAccount,
   type IntegrationAccountCreatePayload,
-  type IntegrationMode,
-  type IntegrationStatus,
-  type QuotaStrategy,
+  type IntegrationAccountUpdatePayload,
 } from "../../lib/integrationSettings";
 
 const SYSTEMS: ExternalSystem[] = ["agilecrm", "brevo", "freshdesk", "factusol"];
@@ -27,12 +27,6 @@ const SYSTEM_LABEL: Record<ExternalSystem, string> = {
   freshdesk: "Freshdesk",
   factusol: "FactuSOL",
 };
-
-const MODES: IntegrationMode[] = ["sandbox", "live"];
-const STATUSES: IntegrationStatus[] = ["not_configured", "configured", "paused"];
-const QUOTA_STRATEGIES: QuotaStrategy[] = ["keep_newest", "keep_oldest", "none"];
-
-const ACCOUNT_ID_PATTERN = /^[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?$/;
 
 function supportsQuota(system: ExternalSystem): boolean {
   return system === "agilecrm";
@@ -47,29 +41,11 @@ function formatDate(value?: string | null): string {
   }
 }
 
-type CreateDraft = {
-  account_id: string;
-  display_name: string;
-  mode: IntegrationMode;
-  api_base_url: string;
-  account_label: string;
-  quota_max_contacts: string;
-  quota_strategy: QuotaStrategy;
-  sync_priority: string;
-  notes: string;
-};
-
-const EMPTY_DRAFT: CreateDraft = {
-  account_id: "",
-  display_name: "",
-  mode: "sandbox",
-  api_base_url: "",
-  account_label: "",
-  quota_max_contacts: "",
-  quota_strategy: "none",
-  sync_priority: "100",
-  notes: "",
-};
+type ModalState =
+  | { kind: "closed" }
+  | { kind: "create"; system: ExternalSystem }
+  | { kind: "edit"; account: IntegrationAccount }
+  | { kind: "delete"; account: IntegrationAccount; force?: boolean; detail?: string };
 
 export default function IntegrationAccountsPage() {
   const [user, setUser] = useState<User | null>(null);
@@ -78,14 +54,7 @@ export default function IntegrationAccountsPage() {
   const [message, setMessage] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [apiKeyDrafts, setApiKeyDrafts] = useState<Record<string, string>>({});
-  const [openCreate, setOpenCreate] = useState<ExternalSystem | null>(null);
-  const [createDrafts, setCreateDrafts] = useState<Record<ExternalSystem, CreateDraft>>({
-    agilecrm: { ...EMPTY_DRAFT },
-    brevo: { ...EMPTY_DRAFT },
-    freshdesk: { ...EMPTY_DRAFT },
-    factusol: { ...EMPTY_DRAFT },
-  });
-  const [openEdit, setOpenEdit] = useState<string | null>(null);
+  const [modal, setModal] = useState<ModalState>({ kind: "closed" });
 
   const isAdmin = user?.role === "admin";
 
@@ -106,69 +75,53 @@ export default function IntegrationAccountsPage() {
     return `${account.system}:${account.account_id}`;
   }
 
-  async function onCreate(system: ExternalSystem) {
-    setError(null);
-    setMessage(null);
-    const draft = createDrafts[system];
-    if (!ACCOUNT_ID_PATTERN.test(draft.account_id)) {
-      setError(
-        "account_id inválido. Usa solo minúsculas, números, '_' y '-' (ej. 'agilecrm-es').",
-      );
-      return;
-    }
-    const payload: IntegrationAccountCreatePayload = {
-      account_id: draft.account_id,
-      display_name: draft.display_name,
-      mode: draft.mode,
-      api_base_url: draft.api_base_url || null,
-      account_label: draft.account_label || null,
-      notes: draft.notes || null,
-      sync_priority: Number(draft.sync_priority) || 100,
-    };
-    if (supportsQuota(system) && draft.quota_max_contacts) {
-      payload.quota_max_contacts = Number(draft.quota_max_contacts);
-      payload.quota_strategy = draft.quota_strategy;
-    }
-    try {
-      await createIntegrationAccount(system, payload);
-      setCreateDrafts((prev) => ({ ...prev, [system]: { ...EMPTY_DRAFT } }));
-      setOpenCreate(null);
-      setMessage(`Cuenta '${draft.account_id}' creada en ${SYSTEM_LABEL[system]}`);
-      await loadAccounts();
-    } catch (err) {
-      setError(extractErrorMessage(err, "No se pudo crear la cuenta"));
-    }
+  function closeModal() {
+    setModal({ kind: "closed" });
   }
 
-  async function onSave(account: IntegrationAccount, form: HTMLFormElement) {
+  async function onCreateSubmit(
+    system: ExternalSystem,
+    payload: IntegrationAccountCreatePayload,
+  ) {
     setError(null);
     setMessage(null);
-    const data = new FormData(form);
+    await createIntegrationAccount(system, payload);
+    closeModal();
+    setMessage(
+      `Cuenta '${payload.account_id}' creada en ${SYSTEM_LABEL[system]}`,
+    );
+    await loadAccounts();
+  }
+
+  async function onEditSubmit(
+    account: IntegrationAccount,
+    payload: IntegrationAccountUpdatePayload,
+  ) {
+    setError(null);
+    setMessage(null);
+    await updateIntegrationAccount(account.system, account.account_id, payload);
+    closeModal();
+    setMessage(`Cuenta '${account.account_id}' actualizada`);
+    await loadAccounts();
+  }
+
+  async function onConfirmDelete(account: IntegrationAccount, force: boolean) {
+    setError(null);
+    setMessage(null);
     try {
-      const quotaRaw = String(data.get("quota_max_contacts") ?? "").trim();
-      const payload = {
-        display_name: String(data.get("display_name") ?? account.display_name),
-        enabled: data.get("enabled") === "true",
-        mode: String(data.get("mode") ?? account.mode) as IntegrationMode,
-        status: String(data.get("status") ?? account.status) as IntegrationStatus,
-        api_base_url: String(data.get("api_base_url") ?? "") || null,
-        account_label: String(data.get("account_label") ?? "") || null,
-        credential_status: String(
-          data.get("credential_status") ?? account.credential_status,
-        ),
-        notes: String(data.get("notes") ?? "") || null,
-        sync_priority:
-          Number(data.get("sync_priority") ?? account.sync_priority) || 100,
-        quota_max_contacts: quotaRaw ? Number(quotaRaw) : null,
-        quota_strategy:
-          (String(data.get("quota_strategy") ?? "none") as QuotaStrategy) || null,
-      };
-      await updateIntegrationAccount(account.system, account.account_id, payload);
-      setMessage(`Cuenta '${account.account_id}' actualizada`);
-      setOpenEdit(null);
+      await deleteIntegrationAccount(account.system, account.account_id, { force });
+      closeModal();
+      setMessage(force ? "Cuenta eliminada (forzada)" : "Cuenta eliminada");
       await loadAccounts();
     } catch (err) {
-      setError(extractErrorMessage(err, "No se pudo guardar la cuenta"));
+      const detail = extractErrorMessage(err, "No se pudo borrar la cuenta");
+      // Backend signals 409 with a "?force=true" hint when external references exist.
+      if (!force && detail.includes("?force=true")) {
+        setModal({ kind: "delete", account, force: true, detail });
+        return;
+      }
+      setError(detail);
+      closeModal();
     }
   }
 
@@ -209,51 +162,6 @@ export default function IntegrationAccountsPage() {
     }
   }
 
-  async function onDeleteAccount(account: IntegrationAccount) {
-    setError(null);
-    setMessage(null);
-    const confirmed = window.confirm(
-      `¿Borrar la cuenta '${account.account_id}' de ${SYSTEM_LABEL[account.system]}? Esta acción es irreversible.`,
-    );
-    if (!confirmed) return;
-    try {
-      await deleteIntegrationAccount(account.system, account.account_id);
-      setMessage("Cuenta eliminada");
-      await loadAccounts();
-    } catch (err) {
-      // If the backend reports references, offer to force.
-      const detail = extractErrorMessage(err, "");
-      if (detail.includes("?force=true")) {
-        const force = window.confirm(
-          `${detail}\n\n¿Forzar el borrado de todos modos?`,
-        );
-        if (!force) return;
-        try {
-          await deleteIntegrationAccount(account.system, account.account_id, {
-            force: true,
-          });
-          setMessage("Cuenta eliminada (forzada)");
-          await loadAccounts();
-        } catch (err2) {
-          setError(extractErrorMessage(err2, "No se pudo borrar la cuenta"));
-        }
-        return;
-      }
-      setError(extractErrorMessage(err, "No se pudo borrar la cuenta"));
-    }
-  }
-
-  function setDraftField<K extends keyof CreateDraft>(
-    system: ExternalSystem,
-    field: K,
-    value: CreateDraft[K],
-  ) {
-    setCreateDrafts((prev) => ({
-      ...prev,
-      [system]: { ...prev[system], [field]: value },
-    }));
-  }
-
   return (
     <main className="shell">
       <Link href="/" className="back-link">← Volver al dashboard</Link>
@@ -275,8 +183,6 @@ export default function IntegrationAccountsPage() {
         const list = accounts
           .filter((a) => a.system === system)
           .sort((a, b) => a.sync_priority - b.sync_priority);
-        const draft = createDrafts[system];
-        const isCreateOpen = openCreate === system;
         return (
           <section className="card" key={system}>
             <div className="section-title">
@@ -290,141 +196,20 @@ export default function IntegrationAccountsPage() {
                 <button
                   className="button secondary small"
                   type="button"
-                  onClick={() => setOpenCreate(isCreateOpen ? null : system)}
+                  onClick={() => setModal({ kind: "create", system })}
                 >
-                  {isCreateOpen ? "Cancelar" : "+ Añadir cuenta"}
+                  + Añadir cuenta
                 </button>
               ) : null}
             </div>
 
-            {isAdmin && isCreateOpen ? (
-              <form
-                className="form-card embedded"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  onCreate(system);
-                }}
-              >
-                <label>
-                  account_id (slug)
-                  <input
-                    required
-                    placeholder="agilecrm-es"
-                    value={draft.account_id}
-                    onChange={(event) =>
-                      setDraftField(system, "account_id", event.target.value)
-                    }
-                  />
-                </label>
-                <label>
-                  Nombre visible
-                  <input
-                    required
-                    placeholder="AgileCRM España"
-                    value={draft.display_name}
-                    onChange={(event) =>
-                      setDraftField(system, "display_name", event.target.value)
-                    }
-                  />
-                </label>
-                <label>
-                  Modo
-                  <select
-                    value={draft.mode}
-                    onChange={(event) =>
-                      setDraftField(system, "mode", event.target.value as IntegrationMode)
-                    }
-                  >
-                    {MODES.map((mode) => (
-                      <option key={mode} value={mode}>{mode}</option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  URL base API
-                  <input
-                    placeholder="https://api.example.com"
-                    value={draft.api_base_url}
-                    onChange={(event) =>
-                      setDraftField(system, "api_base_url", event.target.value)
-                    }
-                  />
-                </label>
-                <label>
-                  Etiqueta de cuenta
-                  <input
-                    placeholder="Producción ES"
-                    value={draft.account_label}
-                    onChange={(event) =>
-                      setDraftField(system, "account_label", event.target.value)
-                    }
-                  />
-                </label>
-                <label>
-                  Prioridad de sincronización
-                  <input
-                    type="number"
-                    min={0}
-                    max={10000}
-                    value={draft.sync_priority}
-                    onChange={(event) =>
-                      setDraftField(system, "sync_priority", event.target.value)
-                    }
-                  />
-                </label>
-                {supportsQuota(system) ? (
-                  <>
-                    <label>
-                      Cuota máxima de contactos
-                      <input
-                        type="number"
-                        min={1}
-                        placeholder="800"
-                        value={draft.quota_max_contacts}
-                        onChange={(event) =>
-                          setDraftField(system, "quota_max_contacts", event.target.value)
-                        }
-                      />
-                    </label>
-                    <label>
-                      Estrategia de cuota
-                      <select
-                        value={draft.quota_strategy}
-                        onChange={(event) =>
-                          setDraftField(
-                            system,
-                            "quota_strategy",
-                            event.target.value as QuotaStrategy,
-                          )
-                        }
-                      >
-                        {QUOTA_STRATEGIES.map((q) => (
-                          <option key={q} value={q}>{q}</option>
-                        ))}
-                      </select>
-                    </label>
-                  </>
-                ) : null}
-                <label>
-                  Notas
-                  <input
-                    placeholder="Comentarios internos"
-                    value={draft.notes}
-                    onChange={(event) => setDraftField(system, "notes", event.target.value)}
-                  />
-                </label>
-                <button className="button" type="submit">Crear cuenta</button>
-              </form>
-            ) : null}
-
-            {list.length === 0 && !isCreateOpen ? (
+            {list.length === 0 ? (
               <p className="muted">Sin cuentas configuradas.</p>
             ) : null}
 
             <div className="item-list">
               {list.map((account) => {
                 const compound = compoundKey(account);
-                const isEditing = openEdit === compound;
                 return (
                   <article className="card embedded" key={account.id}>
                     <header className="section-title">
@@ -438,14 +223,14 @@ export default function IntegrationAccountsPage() {
                             <button
                               className="button secondary small"
                               type="button"
-                              onClick={() => setOpenEdit(isEditing ? null : compound)}
+                              onClick={() => setModal({ kind: "edit", account })}
                             >
-                              {isEditing ? "Cerrar" : "Editar"}
+                              Editar
                             </button>
                             <button
                               className="button secondary small"
                               type="button"
-                              onClick={() => onDeleteAccount(account)}
+                              onClick={() => setModal({ kind: "delete", account })}
                             >
                               Borrar
                             </button>
@@ -464,54 +249,6 @@ export default function IntegrationAccountsPage() {
                       ) : null}
                       {account.account_label ? <> · {account.account_label}</> : null}
                     </p>
-
-                    {isAdmin && isEditing ? (
-                      <form
-                        className="form-card embedded"
-                        onSubmit={(event) => {
-                          event.preventDefault();
-                          onSave(account, event.currentTarget);
-                        }}
-                      >
-                        <label>Nombre visible<input name="display_name" defaultValue={account.display_name} /></label>
-                        <label>
-                          Activada
-                          <select name="enabled" defaultValue={String(account.enabled)}>
-                            <option value="false">No</option>
-                            <option value="true">Sí</option>
-                          </select>
-                        </label>
-                        <label>
-                          Modo
-                          <select name="mode" defaultValue={account.mode}>
-                            {MODES.map((mode) => <option key={mode} value={mode}>{mode}</option>)}
-                          </select>
-                        </label>
-                        <label>
-                          Configuración
-                          <select name="status" defaultValue={account.status}>
-                            {STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
-                          </select>
-                        </label>
-                        <label>URL base API<input name="api_base_url" defaultValue={account.api_base_url ?? ""} /></label>
-                        <label>Etiqueta<input name="account_label" defaultValue={account.account_label ?? ""} /></label>
-                        <label>Estado de credenciales<input name="credential_status" defaultValue={account.credential_status} /></label>
-                        <label>Prioridad sync<input type="number" name="sync_priority" defaultValue={account.sync_priority} min={0} max={10000} /></label>
-                        {supportsQuota(account.system) ? (
-                          <>
-                            <label>Cuota máxima contactos<input type="number" name="quota_max_contacts" defaultValue={account.quota_max_contacts ?? ""} min={1} /></label>
-                            <label>
-                              Estrategia cuota
-                              <select name="quota_strategy" defaultValue={account.quota_strategy ?? "none"}>
-                                {QUOTA_STRATEGIES.map((q) => <option key={q} value={q}>{q}</option>)}
-                              </select>
-                            </label>
-                          </>
-                        ) : null}
-                        <label>Notas<input name="notes" defaultValue={account.notes ?? ""} /></label>
-                        <button className="button" type="submit">Guardar</button>
-                      </form>
-                    ) : null}
 
                     {isAdmin ? (
                       <div className="form-card embedded api-key-block">
@@ -567,6 +304,45 @@ export default function IntegrationAccountsPage() {
           </section>
         );
       })}
+
+      {modal.kind === "create" ? (
+        <IntegrationAccountModal
+          mode="create"
+          open
+          system={modal.system}
+          onClose={closeModal}
+          onSubmit={(payload) => onCreateSubmit(modal.system, payload)}
+        />
+      ) : null}
+
+      {modal.kind === "edit" ? (
+        <IntegrationAccountModal
+          mode="edit"
+          open
+          account={modal.account}
+          onClose={closeModal}
+          onSubmit={(payload) => onEditSubmit(modal.account, payload)}
+        />
+      ) : null}
+
+      {modal.kind === "delete" ? (
+        <ConfirmDialog
+          open
+          title={
+            modal.force
+              ? "Forzar borrado de cuenta"
+              : "Eliminar cuenta de integración"
+          }
+          message={
+            modal.force && modal.detail
+              ? `${modal.detail}\n\n¿Forzar el borrado de todos modos?`
+              : `¿Eliminar la cuenta ${modal.account.display_name} (${modal.account.account_id})? Esta acción no se puede deshacer.`
+          }
+          confirmLabel={modal.force ? "Forzar eliminación" : "Eliminar"}
+          onConfirm={() => onConfirmDelete(modal.account, modal.force === true)}
+          onCancel={closeModal}
+        />
+      ) : null}
     </main>
   );
 }

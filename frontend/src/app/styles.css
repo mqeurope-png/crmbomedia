@@ -465,3 +465,132 @@ td {
 @media (max-width: 900px) {
   .audit-filters { grid-template-columns: 1fr; }
 }
+
+/* ---------------------------------------------------------------------------
+ * Modal dialog (Modal / ConfirmDialog / IntegrationAccountModal)
+ *
+ * Centred dialog with darkened overlay. The overlay layer (.modal-overlay)
+ * captures click-outside; the dialog (.modal-dialog) is the actual card.
+ * Activated via inline rendering in the component — no portal.
+ * --------------------------------------------------------------------------- */
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 24px;
+  animation: modal-fade 120ms ease-out;
+}
+
+@keyframes modal-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.modal-dialog {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 22px;
+  width: 100%;
+  max-width: 600px;
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+  box-shadow: 0 24px 60px rgba(15, 23, 42, 0.25);
+  display: flex;
+  flex-direction: column;
+}
+
+.modal-dialog.small {
+  max-width: 460px;
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 20px 24px;
+  border-bottom: 1px solid var(--line);
+}
+
+.modal-header h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.modal-close {
+  background: transparent;
+  border: 0;
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+  color: var(--ink);
+  padding: 4px 10px;
+  border-radius: 999px;
+}
+
+.modal-close:hover {
+  background: var(--line);
+}
+
+.modal-body {
+  padding: 20px 24px 24px;
+}
+
+.modal-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.modal-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.modal-form input,
+.modal-form select {
+  font: inherit;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.modal-form input[readonly] {
+  background: var(--line);
+  color: var(--ink);
+  cursor: not-allowed;
+}
+
+.modal-form small.muted {
+  font-weight: 400;
+  font-size: 12px;
+  color: var(--muted, #6b7280);
+}
+
+.modal-error {
+  background: #fef2f2;
+  border: 1px solid #fecdca;
+  color: var(--danger);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 8px 0 0;
+  font-size: 14px;
+  white-space: pre-line;
+}
+
+.modal-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-top: 16px;
+}
