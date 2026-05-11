@@ -270,18 +270,39 @@ Ficheros relevantes:
 
 ### Backups
 
+Hay dos capas. La capa local (rotación en disco del VPS) se cubre con los scripts iniciales:
+
 ```bash
-./scripts/backup-mysql.sh                       # manual
+./scripts/backup-mysql.sh                       # manual, dump local
 # /etc/cron.d/crmbomedia-backup
 0 3 * * * deploy /opt/crmbomedia/scripts/backup-mysql.sh >> /var/log/crm-backup.log 2>&1
 ```
 
+Para la capa off-site (cifrada con restic, subida a IONOS HiDrive vía rclone/WebDAV), ver
+[`docs/backups-and-restore.md`](docs/backups-and-restore.md). El setup es:
+
+```bash
+sudo bash /opt/crmbo/scripts/setup-restic-hidrive.sh   # idempotente, instala cron diario
+sudo bash /opt/crmbo/scripts/test-backup-hidrive.sh    # verificación end-to-end manual
+```
+
+El cron diario (`/etc/cron.d/crmbo-backup`) hace `mysqldump → gzip → restic backup → HiDrive` a las 03:00 UTC y aplica retención `--keep-daily 7 --keep-weekly 4 --keep-monthly 12`.
+
 ### Restauración
+
+Capa local:
 
 ```bash
 docker compose -f docker-compose.prod.yml stop api
 ./scripts/restore-mysql.sh /var/backups/crmbomedia/crm-YYYYMMDDTHHMMSSZ.sql.gz
 docker compose -f docker-compose.prod.yml start api
+```
+
+Capa off-site (desde HiDrive):
+
+```bash
+sudo bash /opt/crmbo/scripts/restore-mysql-restic.sh latest --dry-run  # simula
+sudo bash /opt/crmbo/scripts/restore-mysql-restic.sh latest             # ejecuta
 ```
 
 ## Requisitos cubiertos por la pila productiva
