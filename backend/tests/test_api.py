@@ -6,10 +6,10 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app.core.security import hash_password
 from app.db.session import get_session
 from app.main import app
-from app.models.crm import Base, User, UserRole
+from app.models.crm import Base
+from tests._test_helpers import auth_headers, seed_test_users
 
 
 @pytest.fixture()
@@ -23,17 +23,7 @@ def client() -> Generator[TestClient, None, None]:
     testing_session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
     with testing_session() as seed_session:
-        for role in UserRole:
-            seed_session.add(
-                User(
-                    email=f"{role.value}@example.com",
-                    full_name=f"{role.value.title()} User",
-                    password_hash=hash_password("password123"),
-                    role=role,
-                    is_active=True,
-                )
-            )
-        seed_session.commit()
+        seed_test_users(seed_session)
 
     def override_session() -> Generator[Session, None, None]:
         with testing_session() as session:
@@ -44,15 +34,6 @@ def client() -> Generator[TestClient, None, None]:
         yield test_client
     app.dependency_overrides.clear()
     Base.metadata.drop_all(engine)
-
-
-def auth_headers(client: TestClient, role: str = "admin") -> dict[str, str]:
-    response = client.post(
-        "/api/auth/login",
-        json={"email": f"{role}@example.com", "password": "password123"},
-    )
-    assert response.status_code == 200
-    return {"Authorization": f"Bearer {response.json()['access_token']}"}
 
 
 def create_contact(client: TestClient, email: str = "ana@example.com") -> dict:

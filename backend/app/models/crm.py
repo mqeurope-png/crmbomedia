@@ -176,6 +176,13 @@ class User(TimestampMixin, Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     password_reset_token_hash: Mapped[str | None] = mapped_column(String(255))
     password_reset_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # TOTP 2FA. Secret is encrypted at rest with the Fernet key reused from
+    # the integration-credentials work. backup_codes_hash holds a JSON array
+    # of one-time pbkdf2 hashes; consumed codes are removed from the list.
+    totp_secret_encrypted: Mapped[str | None] = mapped_column(Text)
+    totp_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    totp_confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    backup_codes_hash: Mapped[str | None] = mapped_column(Text)
 
 
 class AuditLog(TimestampMixin, Base):

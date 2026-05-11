@@ -23,8 +23,46 @@ class LoginRequest(BaseModel):
 
 
 class TokenRead(BaseModel):
+    """Login / 2FA-verify response.
+
+    `requires_2fa`: when true, `access_token` is a short-lived pre-2FA token
+    that only unlocks POST /api/auth/2fa/verify; the client must call that
+    endpoint with the user's TOTP code (or a backup code) to obtain the
+    final token.
+
+    `limited`: an admin authenticated by password but without 2FA enabled.
+    The final JWT works for everything except sensitive admin endpoints
+    (/api/users, /api/audit-logs, /api/integration-settings) until 2FA is
+    set up.
+    """
+
     access_token: str
     token_type: str = "bearer"
+    requires_2fa: bool = False
+    limited: bool = False
+
+
+class TotpSetupRead(BaseModel):
+    secret: str  # base32, also embedded in otpauth_uri
+    otpauth_uri: str  # otpauth://totp/...  → QR
+
+
+class TotpConfirmRequest(BaseModel):
+    code: str = Field(min_length=6, max_length=16)
+
+
+class TotpConfirmRead(BaseModel):
+    backup_codes: list[str]
+    enabled: bool = True
+
+
+class TotpDisableRequest(BaseModel):
+    password: str = Field(min_length=1)
+
+
+class TotpVerifyRequest(BaseModel):
+    temp_token: str = Field(min_length=20)
+    code: str = Field(min_length=4, max_length=20)
 
 
 class ChangePasswordRequest(BaseModel):
@@ -81,10 +119,18 @@ class UserRead(BaseModel):
     full_name: str
     role: UserRole
     is_active: bool
+    totp_enabled: bool = False
     created_at: datetime
     updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class CurrentUserRead(UserRead):
+    """Returned by GET /api/auth/me. Includes a derived flag the UI uses to
+    render the admin-no-2FA banner without re-deriving server policy."""
+
+    requires_2fa_setup: bool = False
 
 
 class AuditLogRead(BaseModel):

@@ -12,11 +12,11 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.core import crypto
-from app.core.security import hash_password
 from app.db.session import get_session
 from app.main import app
-from app.models.crm import Base, ExternalSystem, User, UserRole
+from app.models.crm import Base, ExternalSystem
 from app.models.integration_settings import IntegrationSetting
+from tests._test_helpers import auth_headers, seed_test_users
 
 
 @dataclass
@@ -36,17 +36,7 @@ def stack() -> Generator[Stack, None, None]:
     testing_session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
     with testing_session() as seed_session:
-        for role in UserRole:
-            seed_session.add(
-                User(
-                    email=f"{role.value}@example.com",
-                    full_name=f"{role.value.title()} User",
-                    password_hash=hash_password("password123"),
-                    role=role,
-                    is_active=True,
-                )
-            )
-        seed_session.commit()
+        seed_test_users(seed_session)
 
     def override_session() -> Generator[Session, None, None]:
         with testing_session() as session:
@@ -62,15 +52,6 @@ def stack() -> Generator[Stack, None, None]:
 @pytest.fixture()
 def client(stack: Stack) -> TestClient:
     return stack.client
-
-
-def auth_headers(client: TestClient, role: str = "admin") -> dict[str, str]:
-    response = client.post(
-        "/api/auth/login",
-        json={"email": f"{role}@example.com", "password": "password123"},
-    )
-    assert response.status_code == 200
-    return {"Authorization": f"Bearer {response.json()['access_token']}"}
 
 
 def test_encrypt_decrypt_roundtrips_arbitrary_secret():

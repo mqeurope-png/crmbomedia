@@ -82,6 +82,13 @@ export default function Home() {
 
   return (
     <main className="shell">
+      {user?.requires_2fa_setup ? (
+        <div className="banner-warning">
+          <strong>Cuenta admin sin 2FA.</strong> Activa la autenticación de doble factor
+          para acceder a configuración de usuarios, auditoría e integraciones.{" "}
+          <Link href="/account/security">Activar 2FA →</Link>
+        </div>
+      ) : null}
       <section className="hero compact">
         <div className="topbar">
           <p className="eyebrow">CRM MVP · Base segura</p>
@@ -96,6 +103,7 @@ export default function Home() {
           <Link href="/contacts/new" className="button">Crear contacto</Link>
           <a href={`${apiBaseUrl}/docs`} className="button secondary">OpenAPI</a>
           <Link href="/account/password" className="button secondary">Contraseña</Link>
+          <Link href="/account/security" className="button secondary">Seguridad / 2FA</Link>
           {user?.role === "admin" ? <Link href="/admin/users" className="button secondary">Usuarios</Link> : null}
           {user?.role === "admin" ? <Link href="/admin/audit" className="button secondary">Auditoría</Link> : null}
           {canManageIntegrations ? <Link href="/admin/integrations" className="button secondary">Integraciones</Link> : null}
