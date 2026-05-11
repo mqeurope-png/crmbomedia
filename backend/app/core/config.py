@@ -42,6 +42,13 @@ class Settings(BaseSettings):
     smtp_use_tls: bool = True   # STARTTLS on port 587
     smtp_use_ssl: bool = False  # implicit SSL on port 465; mutually exclusive with use_tls
 
+    # Error tracking. Sentry is initialized only when sentry_dsn is set, so
+    # development and CI stay completely offline. release defaults to the
+    # short git SHA in CI (export GIT_SHA=$GITHUB_SHA in the workflow).
+    sentry_dsn: str | None = None
+    sentry_traces_sample_rate: float = Field(default=0.1, ge=0.0, le=1.0)
+    git_sha: str | None = None
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
     @field_validator("integration_secrets_key")

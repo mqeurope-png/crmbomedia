@@ -3,6 +3,12 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import router
 from app.core.config import get_settings
+from app.core.observability import setup_sentry
+
+# Sentry must be initialized BEFORE the FastAPI app is created so its
+# integrations can hook the request lifecycle. setup_sentry() is a no-op
+# unless SENTRY_DSN is set, so this is safe in dev / tests / CI.
+setup_sentry()
 
 settings = get_settings()
 
