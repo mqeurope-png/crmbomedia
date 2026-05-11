@@ -16,7 +16,6 @@ SQLite (development / tests, via table recreation) and MySQL
 from collections.abc import Sequence
 
 import sqlalchemy as sa
-
 from alembic import op
 
 revision: str = "20260515_0007"
