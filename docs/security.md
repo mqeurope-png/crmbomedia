@@ -1,15 +1,15 @@
 # Seguridad — almacén cifrado de API keys
 
-Este documento describe cómo se cifran las API keys de las integraciones externas (AgileCRM, Brevo, Freshdesk, FactuSOL) y cómo operar la clave maestra en producción. Complementa `docs/security-rgpd-baseline.md`, que cubre RGPD y políticas generales.
+Este documento describe cómo se cifran las API keys de las integraciones externas (AgileCRM, Brevo, Freshdesk, FactuSOL) y cómo operar la clave maestra en producción. Complementa `docs/security-rgpd-baseline.md`, que cubre RGPD y políticas generales, y `docs/integrations.md`, que documenta el modelo conceptual de cuentas múltiples.
 
 ## 1. Modelo
 
-- Las claves de proveedores externos viven en la columna `integration_settings.api_key_encrypted` (TEXT, nullable).
+- Las claves de proveedores externos viven en la columna `integration_accounts.api_key_encrypted` (TEXT, nullable). Cada fila representa una **cuenta** identificada por la pareja natural `(system, account_id)`; el operador puede tener varias cuentas por sistema (p. ej. una por mercado en AgileCRM).
 - El cifrado es **simétrico** con [Fernet](https://cryptography.io/en/latest/fernet/) (`cryptography` ≥ 44.0). Fernet aporta AES-128-CBC + HMAC-SHA256 + nonce aleatorio + caducidad opcional.
-- La clave maestra es una sola para todo el sistema: **`INTEGRATION_SECRETS_KEY`** (44 chars urlsafe base64). Se lee desde el entorno y **no** se guarda en BBDD.
+- La clave maestra es una sola para todo el sistema: **`INTEGRATION_SECRETS_KEY`** (44 chars urlsafe base64). Se lee desde el entorno y **no** se guarda en BBDD. La misma clave cifra **todas** las cuentas.
 - La app **no arranca** si `INTEGRATION_SECRETS_KEY` falta o no es una clave Fernet válida (`pydantic.ValidationError` durante el bootstrap).
 - La API **nunca** devuelve ni el plaintext ni el `api_key_encrypted`. El único campo derivado expuesto es `has_api_key: bool` y la fecha `api_key_set_at`.
-- Los logs de auditoría registran `set_integration_api_key` y `delete_integration_api_key` con actor, sistema y timestamp. **Nunca** se loggea el secreto ni el ciphertext.
+- Los logs de auditoría registran `integration_account.api_key_set` y `integration_account.api_key_deleted` con actor, `system`, `account_id` y timestamp. **Nunca** se loggea el secreto ni el ciphertext.
 
 ## 2. Generar la clave
 
@@ -28,18 +28,25 @@ TOKEN=$(curl -s -X POST $API/api/auth/login \
   -H 'Content-Type: application/json' \
   -d '{"email":"admin@...","password":"..."}' | jq -r .access_token)
 
-curl -s -X PUT $API/api/integration-settings/brevo/api-key \
+curl -s -X PUT $API/api/integration-accounts/brevo/default/api-key \
   -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"api_key":"xkeysib-...."}'
 ```
 
-Respuesta esperada: el setting con `has_api_key: true`, `api_key_set_at` actualizado y `credential_status: "configured"`. **Sin** plaintext.
+Si tienes varias cuentas (p. ej. AgileCRM ES y AgileCRM UK), sustituye `default` por el `account_id` correspondiente:
+
+```bash
+curl -s -X PUT $API/api/integration-accounts/agilecrm/agilecrm-es/api-key ...
+curl -s -X PUT $API/api/integration-accounts/agilecrm/agilecrm-uk/api-key ...
+```
+
+Respuesta esperada: la cuenta con `has_api_key: true`, `api_key_set_at` actualizado y `credential_status: "configured"`. **Sin** plaintext.
 
 ## 4. Borrar una API key
 
 ```bash
-curl -s -X DELETE $API/api/integration-settings/brevo/api-key \
+curl -s -X DELETE $API/api/integration-accounts/brevo/default/api-key \
   -H "Authorization: Bearer $TOKEN"
 ```
 
@@ -53,7 +60,14 @@ Los conectores nunca leen la columna directamente. El helper público está en `
 from app.integrations.credentials import get_decrypted_api_key
 from app.models.crm import ExternalSystem
 
+# Single-account install (sin cambios): se usa el row `account_id='default'`
+# que la migración 20260515_0007 deja preservado.
 api_key = get_decrypted_api_key(ExternalSystem.BREVO)
+
+# Multi-account: pasa el account_id explícitamente.
+key_es = get_decrypted_api_key(ExternalSystem.AGILECRM, "agilecrm-es")
+key_uk = get_decrypted_api_key(ExternalSystem.AGILECRM, "agilecrm-uk")
+
 if api_key is None:
     raise RuntimeError("Brevo no configurado todavía")
 # usar api_key únicamente para construir la cabecera/headers de la petición
@@ -72,17 +86,22 @@ Rotar es necesario cuando la clave actual pueda haberse comprometido (acceso al 
    # Con la app aún corriendo con la clave antigua, exporta el plaintext
    # llamando al helper en una shell privilegiada (NO desde un endpoint público):
    docker compose exec api python -c "
+   from sqlalchemy import select
+   from sqlalchemy.orm import Session
+   from app.db.session import get_engine
    from app.integrations.credentials import get_decrypted_api_key
-   from app.models.crm import ExternalSystem
-   for s in ExternalSystem:
-       k = get_decrypted_api_key(s)
-       print(s.value, k or '<unset>')
+   from app.models.integration_settings import IntegrationAccount
+   with Session(get_engine()) as s:
+       rows = s.scalars(select(IntegrationAccount)).all()
+       for r in rows:
+           k = get_decrypted_api_key(r.system, r.account_id)
+           print(r.system.value, r.account_id, k or '<unset>')
    " | tee /tmp/secrets.txt   # protegido fuera del repo, borrar tras rotación
    ```
 
 3. **Sustituir `INTEGRATION_SECRETS_KEY`** en el entorno (env var o `.env.production`) y reiniciar la app.
 
-4. **Reintroducir cada API key** vía `PUT /api/integration-settings/{system}/api-key` con el plaintext capturado en el paso 2.
+4. **Reintroducir cada API key** vía `PUT /api/integration-accounts/{system}/{account_id}/api-key` con el plaintext capturado en el paso 2 (una llamada por cuenta).
 
 5. **Borrar `/tmp/secrets.txt`** (`shred -u`) y purgar el historial del shell.
 
@@ -109,7 +128,7 @@ Tests relevantes:
 
 - `test_encrypt_decrypt_roundtrips_arbitrary_secret` — cifrado/descifrado sin pérdida.
 - `test_decrypt_with_wrong_key_raises_decryption_error` — un ciphertext de otra clave no se descifra silenciosamente.
-- `test_get_integration_setting_never_returns_plaintext` — el endpoint nunca devuelve la key en claro.
+- `test_get_integration_account_never_returns_plaintext` — el endpoint nunca devuelve la key en claro.
 - `test_put_api_key_persists_ciphertext_not_plaintext` — lo que se guarda en la BBDD es el ciphertext.
 - `test_settings_fail_fast_when_integration_secrets_key_missing` — sin la clave, la app no arranca.
 - `test_audit_log_records_set_and_delete_without_secret` — la auditoría no registra el secreto.
@@ -119,7 +138,7 @@ Para una validación end-to-end manual contra una BBDD real:
 ```bash
 # arranca la app, autentícate como admin, guarda una key
 # luego, desde una shell con acceso a la BBDD:
-mysql -u crm -p crm -e "SELECT system, LEFT(api_key_encrypted, 32), api_key_set_at FROM integration_settings;"
+mysql -u crm -p crm -e "SELECT system, account_id, LEFT(api_key_encrypted, 32), api_key_set_at FROM integration_accounts;"
 ```
 
 El campo debe verse como `gAAAAAB...` (prefijo Fernet versión 0x80) y nunca como el plaintext que introdujiste.
@@ -367,7 +386,7 @@ NEXT_PUBLIC_GIT_SHA=<commit hash>
 2. **Backend**: platform *FastAPI*. Copia la DSN al `SENTRY_DSN` de `.env.production`.
 3. **Frontend**: platform *Next.js*. Copia esa DSN al `NEXT_PUBLIC_SENTRY_DSN` de `.env.production`.
 4. Reinicia la pila: `docker compose -f docker-compose.prod.yml up -d --force-recreate api frontend`.
-5. Provoca un error (`curl https://crm.tudominio.com/api/integration-settings/foo` con `foo` invalido) y comprueba que aparece en Sentry.
+5. Provoca un error (`curl https://crm.tudominio.com/api/integration-accounts/foo/bar` con `foo` invalido) y comprueba que aparece en Sentry.
 
 ## Alertas (recomendado)
 
@@ -536,7 +555,7 @@ python -m pytest tests/test_2fa.py -q
 
 # Audit logging
 
-Tabla `audit_logs` actúa como pista forense de toda acción sensible del CRM. Implementación en `app/core/audit.py` (constantes `Action.*` + helper `record_event`) y emisión desde `app/api/routes.py` + `app/api/integration_settings.py`.
+Tabla `audit_logs` actúa como pista forense de toda acción sensible del CRM. Implementación en `app/core/audit.py` (constantes `Action.*` + helper `record_event`) y emisión desde `app/api/routes.py`, `app/api/integration_settings.py` (módulo del refactor multi-cuenta) y `app/api/gdpr.py`.
 
 ## Esquema
 
@@ -546,7 +565,7 @@ Tabla `audit_logs` actúa como pista forense de toda acción sensible del CRM. I
 | `actor_user_id` | `VARCHAR(36)?` | FK → `users.id`. Nullable para acciones del sistema (CLI, eventos pre-login). |
 | `actor_email` | `VARCHAR(255)?` | Email del actor en el momento del evento, incluso si después se desactiva o cambia. Para login_failed lleva el email intentado. |
 | `action` | `VARCHAR(120)`, indexed | Cadena normalizada dotted: `auth.login_success`, `user.password_set_by_admin`, etc. |
-| `target_type` | `VARCHAR(120)` | Categoría del recurso afectado: `user`, `contact`, `company`, `note`, `task`, `integration_setting`, `audit_log`, `endpoint`. |
+| `target_type` | `VARCHAR(120)` | Categoría del recurso afectado: `user`, `contact`, `company`, `note`, `task`, `integration_account`, `audit_log`, `endpoint`. |
 | `target_id` | `VARCHAR(36)?` | id del recurso afectado (o la `path` del endpoint en accesos denegados). |
 | `metadata` | `TEXT?` (JSON) | Detalles estructurados (campos modificados, antes/después de un cambio de rol, filtros del export, etc.). **Nunca** contiene secretos. |
 | `message` | `TEXT?` | Texto libre heredado de la primera versión. Para entradas nuevas suele estar vacío en favor de `metadata`. |
@@ -595,13 +614,17 @@ Migración: `20260513_0005_audit_log_fields.py` renombra `entity_type → target
 | `note.created` | `POST /api/contacts/{id}/notes`. | `contact_id` |
 | `task.created` | `POST /api/contacts/{id}/tasks`. | `contact_id`, `title` |
 
-### Integraciones (`integration_setting.*`, `integration_api_key.*`)
+### Integraciones (`integration_account.*`)
+
+Tras el refactor multi-cuenta (migración `20260515_0007`), todos los eventos incluyen siempre `system` **y** `account_id` en `metadata` para que el audit log pueda pivotarse por cualquiera de las dos dimensiones.
 
 | Acción | Endpoint | Metadata |
 |---|---|---|
-| `integration_setting.updated` | `PATCH /api/integration-settings/{system}`. | `system`, `changed_fields` |
-| `integration_api_key.set` | `PUT /api/integration-settings/{system}/api-key`. | `system` (**nunca** la API key ni el ciphertext). |
-| `integration_api_key.deleted` | `DELETE /api/integration-settings/{system}/api-key`. | `system` |
+| `integration_account.created` | `POST /api/integration-accounts/{system}`. | `system`, `account_id`, `display_name` |
+| `integration_account.updated` | `PATCH /api/integration-accounts/{system}/{account_id}`. | `system`, `account_id`, `changed_fields` |
+| `integration_account.deleted` | `DELETE /api/integration-accounts/{system}/{account_id}` (con `?force=true` si hay referencias). | `system`, `account_id`, `display_name`, `force` |
+| `integration_account.api_key_set` | `PUT /api/integration-accounts/{system}/{account_id}/api-key`. | `system`, `account_id` (**nunca** la API key ni el ciphertext). |
+| `integration_account.api_key_deleted` | `DELETE /api/integration-accounts/{system}/{account_id}/api-key`. | `system`, `account_id` |
 
 ### Audit log + acceso
 

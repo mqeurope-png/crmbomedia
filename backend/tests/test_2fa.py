@@ -252,7 +252,7 @@ def test_backup_code_works_once(stack: Stack):
 
 def test_admin_without_2fa_can_access_sensitive_endpoints(client: TestClient):
     """No enforcement: an admin without 2FA reaches /api/users, /api/audit-logs
-    and /api/integration-settings exactly like an admin with 2FA does."""
+    and /api/integration-accounts exactly like an admin with 2FA does."""
     body = _login(client, "admin-no-2fa@example.com")
     headers = {"Authorization": f"Bearer {body['access_token']}"}
     me = client.get("/api/auth/me", headers=headers)
@@ -262,7 +262,7 @@ def test_admin_without_2fa_can_access_sensitive_endpoints(client: TestClient):
 
     assert client.get("/api/users", headers=headers).status_code == 200
     assert client.get("/api/audit-logs", headers=headers).status_code == 200
-    assert client.get("/api/integration-settings", headers=headers).status_code == 200
+    assert client.get("/api/integration-accounts", headers=headers).status_code == 200
 
 
 def test_voluntary_2fa_enrollment_for_admin(client: TestClient):

@@ -1,4 +1,12 @@
-"""Tests for encrypted API key storage on integration_settings."""
+"""Tests for encrypted API key storage on integration_accounts.
+
+The multi-account refactor (migration 20260515_0007) changed the
+URL from `/api/integration-settings/{system}/...` to
+`/api/integration-accounts/{system}/{account_id}/...`. These tests now
+seed one account per system as part of the fixture so the existing
+expectations (set/delete/audit) still apply, simply against the new
+shape.
+"""
 from __future__ import annotations
 
 from collections.abc import Generator
@@ -15,7 +23,7 @@ from app.core import crypto
 from app.db.session import get_session
 from app.main import app
 from app.models.crm import Base, ExternalSystem
-from app.models.integration_settings import IntegrationSetting
+from app.models.integration_settings import IntegrationAccount
 from tests._test_helpers import auth_headers, seed_test_users
 
 
@@ -23,6 +31,26 @@ from tests._test_helpers import auth_headers, seed_test_users
 class Stack:
     client: TestClient
     engine: Engine
+
+
+def _seed_default_accounts(session: Session) -> None:
+    """Mirror what the production data migration does: one
+    `account_id='default'` row per system."""
+    display_names = {
+        ExternalSystem.AGILECRM: "AgileCRM",
+        ExternalSystem.BREVO: "Brevo",
+        ExternalSystem.FRESHDESK: "Freshdesk",
+        ExternalSystem.FACTUSOL: "FactuSOL",
+    }
+    for system, name in display_names.items():
+        session.add(
+            IntegrationAccount(
+                system=system,
+                account_id="default",
+                display_name=name,
+            )
+        )
+    session.commit()
 
 
 @pytest.fixture()
@@ -37,6 +65,7 @@ def stack() -> Generator[Stack, None, None]:
 
     with testing_session() as seed_session:
         seed_test_users(seed_session)
+        _seed_default_accounts(seed_session)
 
     def override_session() -> Generator[Session, None, None]:
         with testing_session() as session:
@@ -77,15 +106,17 @@ def test_decrypt_with_wrong_key_raises_decryption_error(monkeypatch):
         crypto.decrypt(foreign_ciphertext)
 
 
-def test_get_integration_setting_never_returns_plaintext(client: TestClient):
+def test_get_integration_account_never_returns_plaintext(client: TestClient):
     headers = auth_headers(client, "admin")
     client.put(
-        "/api/integration-settings/brevo/api-key",
+        "/api/integration-accounts/brevo/default/api-key",
         json={"api_key": "secret-brevo-key-xyz"},
         headers=headers,
     )
 
-    response = client.get("/api/integration-settings/brevo", headers=headers)
+    response = client.get(
+        "/api/integration-accounts/brevo/default", headers=headers
+    )
 
     assert response.status_code == 200
     body = response.json()
@@ -96,26 +127,27 @@ def test_get_integration_setting_never_returns_plaintext(client: TestClient):
     assert "secret-brevo-key-xyz" not in response.text
 
 
-def test_list_integration_settings_never_returns_plaintext(client: TestClient):
+def test_list_integration_accounts_never_returns_plaintext(client: TestClient):
     headers = auth_headers(client, "admin")
     client.put(
-        "/api/integration-settings/agilecrm/api-key",
+        "/api/integration-accounts/agilecrm/default/api-key",
         json={"api_key": "secret-agilecrm-key-zzz"},
         headers=headers,
     )
 
-    response = client.get("/api/integration-settings", headers=headers)
+    response = client.get("/api/integration-accounts", headers=headers)
 
     assert response.status_code == 200
     assert "secret-agilecrm-key-zzz" not in response.text
-    by_system = {item["system"]: item for item in response.json()}
-    assert by_system["agilecrm"]["has_api_key"] is True
-    assert "api_key_encrypted" not in by_system["agilecrm"]
+    rows = response.json()
+    agile = next(r for r in rows if r["system"] == "agilecrm" and r["account_id"] == "default")
+    assert agile["has_api_key"] is True
+    assert "api_key_encrypted" not in agile
 
 
 def test_put_api_key_requires_admin(client: TestClient):
     response = client.put(
-        "/api/integration-settings/brevo/api-key",
+        "/api/integration-accounts/brevo/default/api-key",
         json={"api_key": "secret-brevo-key"},
         headers=auth_headers(client, "manager"),
     )
@@ -125,7 +157,7 @@ def test_put_api_key_requires_admin(client: TestClient):
 
 def test_delete_api_key_requires_admin(client: TestClient):
     response = client.delete(
-        "/api/integration-settings/brevo/api-key",
+        "/api/integration-accounts/brevo/default/api-key",
         headers=auth_headers(client, "manager"),
     )
 
@@ -135,30 +167,34 @@ def test_delete_api_key_requires_admin(client: TestClient):
 def test_put_api_key_persists_ciphertext_not_plaintext(stack: Stack):
     headers = auth_headers(stack.client, "admin")
     stack.client.put(
-        "/api/integration-settings/freshdesk/api-key",
+        "/api/integration-accounts/freshdesk/default/api-key",
         json={"api_key": "secret-freshdesk-key"},
         headers=headers,
     )
 
     with Session(stack.engine) as session:
-        setting = session.query(IntegrationSetting).filter_by(system=ExternalSystem.FRESHDESK).one()
-        assert setting.api_key_encrypted is not None
-        assert setting.api_key_encrypted != "secret-freshdesk-key"
-        assert setting.api_key_set_at is not None
-        assert setting.credential_status == "configured"
-        assert crypto.decrypt(setting.api_key_encrypted) == "secret-freshdesk-key"
+        account = (
+            session.query(IntegrationAccount)
+            .filter_by(system=ExternalSystem.FRESHDESK, account_id="default")
+            .one()
+        )
+        assert account.api_key_encrypted is not None
+        assert account.api_key_encrypted != "secret-freshdesk-key"
+        assert account.api_key_set_at is not None
+        assert account.credential_status == "configured"
+        assert crypto.decrypt(account.api_key_encrypted) == "secret-freshdesk-key"
 
 
 def test_delete_api_key_clears_state(client: TestClient):
     headers = auth_headers(client, "admin")
     client.put(
-        "/api/integration-settings/factusol/api-key",
+        "/api/integration-accounts/factusol/default/api-key",
         json={"api_key": "secret-factusol-key"},
         headers=headers,
     )
 
     deleted = client.delete(
-        "/api/integration-settings/factusol/api-key", headers=headers
+        "/api/integration-accounts/factusol/default/api-key", headers=headers
     )
 
     assert deleted.status_code == 200
@@ -171,18 +207,18 @@ def test_delete_api_key_clears_state(client: TestClient):
 def test_audit_log_records_set_and_delete_without_secret(client: TestClient):
     headers = auth_headers(client, "admin")
     client.put(
-        "/api/integration-settings/brevo/api-key",
+        "/api/integration-accounts/brevo/default/api-key",
         json={"api_key": "must-not-leak-secret"},
         headers=headers,
     )
-    client.delete("/api/integration-settings/brevo/api-key", headers=headers)
+    client.delete("/api/integration-accounts/brevo/default/api-key", headers=headers)
 
     response = client.get("/api/audit-logs", headers=headers)
 
     assert response.status_code == 200
     actions = {entry["action"] for entry in response.json()}
-    assert "integration_api_key.set" in actions
-    assert "integration_api_key.deleted" in actions
+    assert "integration_account.api_key_set" in actions
+    assert "integration_account.api_key_deleted" in actions
     assert "must-not-leak-secret" not in response.text
 
 
@@ -190,7 +226,7 @@ def test_put_api_key_rejects_blank(client: TestClient):
     headers = auth_headers(client, "admin")
 
     response = client.put(
-        "/api/integration-settings/brevo/api-key",
+        "/api/integration-accounts/brevo/default/api-key",
         json={"api_key": "   "},
         headers=headers,
     )
@@ -212,23 +248,62 @@ def test_get_decrypted_api_key_helper_updates_last_used(monkeypatch):
     monkeypatch.setattr("app.integrations.credentials.get_engine", lambda: engine)
 
     with Session(engine) as setup:
-        setting = IntegrationSetting(
+        account = IntegrationAccount(
             system=ExternalSystem.AGILECRM,
+            account_id="default",
             display_name="AgileCRM",
             api_key_encrypted=crypto.encrypt("plain-agilecrm"),
         )
-        setup.add(setting)
+        setup.add(account)
         setup.commit()
-        assert setting.api_key_last_used_at is None
+        assert account.api_key_last_used_at is None
 
     plaintext = get_decrypted_api_key(ExternalSystem.AGILECRM)
     assert plaintext == "plain-agilecrm"
 
     with Session(engine) as check:
-        refreshed = check.query(IntegrationSetting).filter_by(
-            system=ExternalSystem.AGILECRM
-        ).one()
+        refreshed = (
+            check.query(IntegrationAccount)
+            .filter_by(system=ExternalSystem.AGILECRM, account_id="default")
+            .one()
+        )
         assert refreshed.api_key_last_used_at is not None
+
+
+def test_get_decrypted_api_key_resolves_named_account(monkeypatch):
+    """Multi-account installs disambiguate by account_id."""
+    from app.integrations.credentials import get_decrypted_api_key
+
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    monkeypatch.setattr("app.integrations.credentials.get_engine", lambda: engine)
+
+    with Session(engine) as setup:
+        setup.add(
+            IntegrationAccount(
+                system=ExternalSystem.AGILECRM,
+                account_id="es",
+                display_name="AgileCRM España",
+                api_key_encrypted=crypto.encrypt("plain-es"),
+            )
+        )
+        setup.add(
+            IntegrationAccount(
+                system=ExternalSystem.AGILECRM,
+                account_id="uk",
+                display_name="AgileCRM UK",
+                api_key_encrypted=crypto.encrypt("plain-uk"),
+            )
+        )
+        setup.commit()
+
+    assert get_decrypted_api_key(ExternalSystem.AGILECRM, "es") == "plain-es"
+    assert get_decrypted_api_key(ExternalSystem.AGILECRM, "uk") == "plain-uk"
+    assert get_decrypted_api_key(ExternalSystem.AGILECRM, "missing") is None
 
 
 def test_get_decrypted_api_key_returns_none_when_missing(monkeypatch):
@@ -243,7 +318,13 @@ def test_get_decrypted_api_key_returns_none_when_missing(monkeypatch):
     monkeypatch.setattr("app.integrations.credentials.get_engine", lambda: engine)
 
     with Session(engine) as setup:
-        setup.add(IntegrationSetting(system=ExternalSystem.BREVO, display_name="Brevo"))
+        setup.add(
+            IntegrationAccount(
+                system=ExternalSystem.BREVO,
+                account_id="default",
+                display_name="Brevo",
+            )
+        )
         setup.commit()
 
     assert get_decrypted_api_key(ExternalSystem.BREVO) is None
@@ -258,7 +339,6 @@ def test_settings_fail_fast_when_integration_secrets_key_missing(monkeypatch):
     monkeypatch.delenv("INTEGRATION_SECRETS_KEY", raising=False)
 
     with pytest.raises(ValidationError):
-        # _env_file=None bypasses the .env file fallback so we test the env-only path.
         Settings(_env_file=None)
 
 
@@ -279,5 +359,3 @@ def test_settings_accepts_valid_fernet_key():
     valid_key = Fernet.generate_key().decode()
     settings = Settings(_env_file=None, integration_secrets_key=valid_key)
     assert settings.integration_secrets_key == valid_key
-
-

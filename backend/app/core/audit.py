@@ -58,10 +58,19 @@ class Action:
     NOTE_CREATED = "note.created"
     TASK_CREATED = "task.created"
 
-    # Integration settings
-    INTEGRATION_SETTING_UPDATED = "integration_setting.updated"
-    INTEGRATION_API_KEY_SET = "integration_api_key.set"
-    INTEGRATION_API_KEY_DELETED = "integration_api_key.deleted"
+    # Integration accounts (multi-account refactor 20260515_0007).
+    # The legacy single-account names live on as aliases below so audit
+    # readers and dashboards can still filter on the old strings while
+    # historic rows live out their retention.
+    INTEGRATION_ACCOUNT_CREATED = "integration_account.created"
+    INTEGRATION_ACCOUNT_UPDATED = "integration_account.updated"
+    INTEGRATION_ACCOUNT_DELETED = "integration_account.deleted"
+    INTEGRATION_ACCOUNT_API_KEY_SET = "integration_account.api_key_set"
+    INTEGRATION_ACCOUNT_API_KEY_DELETED = "integration_account.api_key_deleted"
+    # Legacy aliases kept as compile-time references to old constant names.
+    INTEGRATION_SETTING_UPDATED = INTEGRATION_ACCOUNT_UPDATED
+    INTEGRATION_API_KEY_SET = INTEGRATION_ACCOUNT_API_KEY_SET
+    INTEGRATION_API_KEY_DELETED = INTEGRATION_ACCOUNT_API_KEY_DELETED
 
     # Audit log itself
     AUDIT_EXPORTED = "audit.exported"
