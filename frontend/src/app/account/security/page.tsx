@@ -133,12 +133,10 @@ export default function SecurityPage() {
               <strong className="badge miss">Desactivada</strong>
             )}
           </p>
-          {user.requires_2fa_setup ? (
-            <p className="muted">
-              Tu cuenta tiene rol <strong>admin</strong>: 2FA es obligatorio para
-              acceder a la gestión de usuarios, auditoría e integraciones.
-            </p>
-          ) : null}
+          <p className="muted">
+            La autenticación de doble factor es opcional para todos los roles. Si la
+            activas, en cada login pediremos un código de 6 dígitos de tu app TOTP.
+          </p>
           {!user.totp_enabled ? (
             <button className="button" type="button" onClick={onStartSetup}>
               Activar 2FA

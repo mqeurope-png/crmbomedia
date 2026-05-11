@@ -129,10 +129,12 @@ def test_login_with_totp_returns_temp_token_and_requires_2fa(client: TestClient)
     assert body.get("limited") is False
 
 
-def test_login_without_totp_for_admin_is_limited(client: TestClient):
+def test_login_without_totp_for_admin_is_not_limited(client: TestClient):
+    """2FA is fully optional now, even for admins. The JWT must not carry
+    `limited: true`; sensitive admin endpoints accept it normally."""
     body = _login(client, "admin-no-2fa@example.com")
     assert body.get("requires_2fa") is False
-    assert body["limited"] is True
+    assert body["limited"] is False
     assert body["access_token"]
 
 
@@ -248,18 +250,25 @@ def test_backup_code_works_once(stack: Stack):
 # ----- limited-admin gate ---------------------------------------------------
 
 
-def test_admin_without_2fa_can_see_dashboard_but_not_users(client: TestClient):
+def test_admin_without_2fa_can_access_sensitive_endpoints(client: TestClient):
+    """No enforcement: an admin without 2FA reaches /api/users, /api/audit-logs
+    and /api/integration-settings exactly like an admin with 2FA does."""
     body = _login(client, "admin-no-2fa@example.com")
     headers = {"Authorization": f"Bearer {body['access_token']}"}
     me = client.get("/api/auth/me", headers=headers)
     assert me.status_code == 200
-    assert me.json()["requires_2fa_setup"] is True
+    assert me.json()["requires_2fa_setup"] is False
+    assert me.json()["totp_enabled"] is False
 
-    assert client.get("/api/users", headers=headers).status_code == 403
-    assert client.get("/api/audit-logs", headers=headers).status_code == 403
+    assert client.get("/api/users", headers=headers).status_code == 200
+    assert client.get("/api/audit-logs", headers=headers).status_code == 200
+    assert client.get("/api/integration-settings", headers=headers).status_code == 200
 
 
-def test_admin_without_2fa_can_run_setup_and_confirm(client: TestClient):
+def test_voluntary_2fa_enrollment_for_admin(client: TestClient):
+    """An admin can still opt into 2FA voluntarily; from then on, login asks
+    for the second step. Coverage of the same setup → confirm → verify
+    sequence used by any other role."""
     body = _login(client, "admin-no-2fa@example.com")
     headers = {"Authorization": f"Bearer {body['access_token']}"}
     setup = client.post("/api/auth/2fa/setup", headers=headers)
@@ -273,8 +282,9 @@ def test_admin_without_2fa_can_run_setup_and_confirm(client: TestClient):
     assert confirm.status_code == 200
     assert len(confirm.json()["backup_codes"]) == 8
 
-    # Re-login and verify → full session → /api/users now accessible.
+    # Subsequent login now requires the 2FA step.
     login_again = _login(client, "admin-no-2fa@example.com")
+    assert login_again["requires_2fa"] is True
     verify = client.post(
         "/api/auth/2fa/verify",
         json={
@@ -290,14 +300,16 @@ def test_admin_without_2fa_can_run_setup_and_confirm(client: TestClient):
 # ----- /auth/me -------------------------------------------------------------
 
 
-def test_me_reports_totp_enabled_and_requires_setup(client: TestClient):
+def test_me_reports_totp_enabled_and_never_requires_setup(client: TestClient):
+    """`requires_2fa_setup` is kept in the response shape for backward
+    compatibility but is always False — there is no enforcement."""
     no_2fa = _login(client, "admin-no-2fa@example.com")
     me = client.get(
         "/api/auth/me", headers={"Authorization": f"Bearer {no_2fa['access_token']}"}
     )
     body = me.json()
     assert body["totp_enabled"] is False
-    assert body["requires_2fa_setup"] is True
+    assert body["requires_2fa_setup"] is False
 
     viewer = _login(client, "viewer@example.com")
     me = client.get(
@@ -325,11 +337,13 @@ def test_disable_requires_correct_password(stack: Stack):
     )
     assert good.status_code == 200
 
-    # After disabling, the next login no longer requires 2FA, but the admin
-    # JWT is `limited` until 2FA is re-enabled.
+    # After disabling, the next login no longer requires 2FA and the JWT
+    # is unrestricted — 2FA is opt-in.
     body = _login(stack.client, "admin@example.com")
     assert body.get("requires_2fa") is False
-    assert body["limited"] is True
+    assert body["limited"] is False
+    headers = {"Authorization": f"Bearer {body['access_token']}"}
+    assert stack.client.get("/api/users", headers=headers).status_code == 200
 
 
 def test_setup_when_already_enabled_returns_conflict(stack: Stack):
