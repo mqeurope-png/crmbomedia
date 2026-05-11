@@ -23,7 +23,6 @@ set -euo pipefail
 APP_ROOT="${APP_ROOT:-/opt/crmbo}"
 ENV_FILE="${ENV_FILE:-$APP_ROOT/.env.production}"
 BACKUP_ENV="${BACKUP_ENV:-/etc/crmbo/backup.env}"
-COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.prod.yml}"
 TMP_DIR="${TMP_DIR:-/tmp}"
 
 DRY_RUN=false
@@ -40,6 +39,33 @@ for arg in "$@"; do
   esac
 done
 
+# Read a single key from a dotenv-style file, stripping a wrapping pair of
+# quotes if present. See backup-mysql-restic.sh for the rationale.
+load_env_var() {
+  local key="$1" file="$2"
+  [ -f "$file" ] || return 0
+  local raw
+  raw="$(grep -m1 "^${key}=" "$file" 2>/dev/null || true)"
+  [ -n "$raw" ] || return 0
+  raw="${raw#${key}=}"
+  case "$raw" in
+    \"*\") raw="${raw#\"}"; raw="${raw%\"}" ;;
+    \'*\') raw="${raw#\'}"; raw="${raw%\'}" ;;
+  esac
+  printf '%s' "$raw"
+}
+
+# Honour an operator-exported COMPOSE_FILE (e.g. the Plesk override pattern
+# "docker-compose.prod.yml:docker-compose.plesk.yml"): docker compose reads it
+# natively; passing it to -f as a literal path fails.
+if [ -n "${COMPOSE_FILE:-}" ]; then
+  COMPOSE_ARGS=()
+  COMPOSE_DISPLAY="docker compose"
+else
+  COMPOSE_ARGS=(-f docker-compose.prod.yml)
+  COMPOSE_DISPLAY="docker compose -f docker-compose.prod.yml"
+fi
+
 cd "$APP_ROOT"
 
 if [ ! -f "$ENV_FILE" ]; then
@@ -51,9 +77,11 @@ if [ ! -f "$BACKUP_ENV" ]; then
   exit 1
 fi
 
+MYSQL_ROOT_PASSWORD="$(load_env_var MYSQL_ROOT_PASSWORD "$ENV_FILE")"
+MYSQL_DATABASE="$(load_env_var MYSQL_DATABASE "$ENV_FILE")"
+export MYSQL_ROOT_PASSWORD MYSQL_DATABASE
+
 set -a
-# shellcheck disable=SC1090
-source "$ENV_FILE"
 # shellcheck disable=SC1090
 source "$BACKUP_ENV"
 set +a
@@ -63,12 +91,29 @@ set +a
 : "${RESTIC_REPOSITORY:?RESTIC_REPOSITORY must be set in $BACKUP_ENV}"
 : "${RESTIC_PASSWORD:?RESTIC_PASSWORD must be set in $BACKUP_ENV}"
 
+# Resolve restic with a defensive fallback.
+if [ -z "${RESTIC_BIN:-}" ] || [ ! -x "${RESTIC_BIN}" ]; then
+  RESTIC_BIN="$(command -v restic 2>/dev/null || true)"
+  if [ -z "$RESTIC_BIN" ]; then
+    for candidate in /usr/local/bin/restic /usr/bin/restic; do
+      if [ -x "$candidate" ]; then
+        RESTIC_BIN="$candidate"
+        break
+      fi
+    done
+  fi
+fi
+if [ -z "${RESTIC_BIN:-}" ] || [ ! -x "$RESTIC_BIN" ]; then
+  echo "ERROR: restic binary not found. Run setup-restic-hidrive.sh or install restic." >&2
+  exit 1
+fi
+
 # Snapshot picker -----------------------------------------------------------
 
 if [ -z "$SNAPSHOT" ]; then
   echo "Available daily snapshots:"
   echo
-  restic snapshots --tag daily --compact
+  "$RESTIC_BIN" snapshots --tag daily --compact
   echo
   read -r -p "Enter snapshot id (8-char prefix), 'latest', or blank to abort: " SNAPSHOT
 fi
@@ -82,15 +127,16 @@ echo
 echo "Snapshot:   $SNAPSHOT"
 echo "Database:   $MYSQL_DATABASE"
 echo "App root:   $APP_ROOT"
-echo "Compose:    $COMPOSE_FILE"
+echo "Compose:    $COMPOSE_DISPLAY"
+echo "restic:     $RESTIC_BIN"
 
 if [ "$DRY_RUN" = true ]; then
   echo
   echo "[dry-run] Would execute:"
-  echo "  1. restic restore $SNAPSHOT --target $TMP_DIR/restore-<ts>"
-  echo "  2. docker compose -f $COMPOSE_FILE stop api frontend"
-  echo "  3. gunzip -c <dump> | docker compose exec -T db mysql ... $MYSQL_DATABASE"
-  echo "  4. docker compose -f $COMPOSE_FILE start api frontend"
+  echo "  1. $RESTIC_BIN restore $SNAPSHOT --target $TMP_DIR/restore-<ts>"
+  echo "  2. $COMPOSE_DISPLAY stop api frontend"
+  echo "  3. gunzip -c <dump> | $COMPOSE_DISPLAY exec -T db mysql ... $MYSQL_DATABASE"
+  echo "  4. $COMPOSE_DISPLAY start api frontend"
   echo "  5. rm -rf $TMP_DIR/restore-<ts>"
   echo
   echo "[dry-run] No changes made."
@@ -117,8 +163,8 @@ cleanup() {
 trap cleanup EXIT
 
 echo
-echo "[1/4] restic restore $SNAPSHOT → $RESTORE_DIR"
-restic restore "$SNAPSHOT" --target "$RESTORE_DIR"
+echo "[1/4] $RESTIC_BIN restore $SNAPSHOT → $RESTORE_DIR"
+"$RESTIC_BIN" restore "$SNAPSHOT" --target "$RESTORE_DIR"
 
 DUMP_FILE="$(find "$RESTORE_DIR" -type f -name '*.sql.gz' | head -1)"
 if [ -z "$DUMP_FILE" ] || [ ! -s "$DUMP_FILE" ]; then
@@ -129,12 +175,12 @@ echo "    found: $DUMP_FILE ($(du -h "$DUMP_FILE" | cut -f1))"
 
 echo
 echo "[2/4] Stopping api + frontend so no writes hit the db during import"
-docker compose -f "$COMPOSE_FILE" stop api frontend
+docker compose "${COMPOSE_ARGS[@]}" stop api frontend
 
 echo
 echo "[3/4] Loading dump into MySQL container"
 gunzip -c "$DUMP_FILE" \
-  | docker compose -f "$COMPOSE_FILE" exec -T db \
+  | docker compose "${COMPOSE_ARGS[@]}" exec -T db \
       mysql \
         -u root \
         -p"$MYSQL_ROOT_PASSWORD" \
@@ -143,8 +189,8 @@ gunzip -c "$DUMP_FILE" \
 
 echo
 echo "[4/4] Restarting api + frontend"
-docker compose -f "$COMPOSE_FILE" start api frontend
+docker compose "${COMPOSE_ARGS[@]}" start api frontend
 
 echo
 echo "Restore complete from snapshot=$SNAPSHOT."
-echo "Tip: run 'docker compose -f $COMPOSE_FILE restart api' if cached connections behave oddly."
+echo "Tip: run '$COMPOSE_DISPLAY restart api' if cached connections behave oddly."

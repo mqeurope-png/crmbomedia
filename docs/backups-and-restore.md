@@ -201,3 +201,33 @@ sudo bash /opt/crmbo/scripts/test-backup-hidrive.sh
 * Sin backup automático del `.env.production` o de `INTEGRATION_SECRETS_KEY`:
   esos deben vivir en el gestor de contraseñas, no en el repositorio
   restic.
+
+## Troubleshooting
+
+### `restic: command not found` después del setup
+
+Síntoma: `setup-restic-hidrive.sh` instala restic en `/usr/local/bin/restic` (vía binario upstream cuando AlmaLinux 8 no lo trae empaquetado) y el siguiente paso del propio script falla con `restic: command not found`.
+
+Causa: bash mantiene una caché negativa (`hash`) de búsquedas en `$PATH`, o el shell interactivo no incluye `/usr/local/bin`.
+
+Mitigación incluida en este repo: el setup script y los scripts de backup/restore/test resuelven la ruta absoluta del binario tras la instalación (`RESTIC_BIN`, `RCLONE_BIN`) y la persisten en `/etc/crmbo/backup.env`. La línea del cron mensual también lleva embebida la ruta absoluta. Si aun así ves el error tras un upgrade, ejecuta `hash -r` o reabre la sesión SSH.
+
+### `Media: command not found` cuando arranca el backup
+
+Síntoma: el cron diario falla con `Media: command not found` o similar.
+
+Causa: alguna variable de `.env.production` contiene un espacio sin comillas (típicamente `SMTP_FROM_NAME=CRMBO Media CRM`). El backup script ya no hace `source .env.production` por este motivo, pero si lo invocas en otro contexto bash sí afecta.
+
+Fix permanente: poner comillas en los valores con espacios. La cabecera de `.env.production.example` documenta la regla:
+
+```env
+SMTP_FROM_NAME="CRMBO Media CRM"
+```
+
+### `stat docker-compose.prod.yml:docker-compose.plesk.yml: no such file or directory`
+
+Síntoma: cualquier script de backup/restore falla con un error de `stat` mencionando un nombre de fichero con `:` en el medio.
+
+Causa: el operador exporta `COMPOSE_FILE=docker-compose.prod.yml:docker-compose.plesk.yml` (patrón estándar para combinar el override Plesk) y los scripts pasan ese valor literal a `docker compose -f`. La forma correcta es dejar que docker compose lea `$COMPOSE_FILE` del entorno.
+
+Mitigación incluida: `backup-mysql-restic.sh` y `restore-mysql-restic.sh` detectan `${COMPOSE_FILE:-}`; si está set, NO pasan `-f` y dejan que compose use el entorno. El plan del `--dry-run` del restore también refleja esto.
