@@ -8,6 +8,36 @@ export type User = {
   full_name: string;
   role: Role;
   is_active: boolean;
+  totp_enabled?: boolean;
+  /** Only set on GET /api/auth/me. True when the user is an admin who has
+   * not enabled 2FA yet; the UI renders a persistent banner and the
+   * backend issues a `limited` JWT that blocks sensitive admin endpoints
+   * until 2FA setup is complete. */
+  requires_2fa_setup?: boolean;
+};
+
+export type LoginResult = {
+  access_token: string;
+  token_type?: string;
+  /** When true, `access_token` is a short-lived pre-2FA temp token. The
+   * client must call POST /api/auth/2fa/verify with that token + a TOTP
+   * (or backup) code to obtain the final JWT. */
+  requires_2fa: boolean;
+  /** Set on the FINAL JWT issued to an admin who logged in without 2FA;
+   * the token still works for most endpoints but admin-sensitive routes
+   * (/api/users, /api/audit-logs, /api/integration-settings) will refuse
+   * it until 2FA is enabled. */
+  limited: boolean;
+};
+
+export type TotpSetupResponse = {
+  secret: string;
+  otpauth_uri: string;
+};
+
+export type TotpConfirmResponse = {
+  backup_codes: string[];
+  enabled: boolean;
 };
 
 export type Company = {
@@ -98,12 +128,44 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-export async function login(email: string, password: string): Promise<void> {
-  const response = await apiFetch<{ access_token: string }>("/api/auth/login", {
+export async function login(email: string, password: string): Promise<LoginResult> {
+  const result = await apiFetch<LoginResult>("/api/auth/login", {
     method: "POST",
     body: JSON.stringify({ email, password }),
   });
-  setStoredToken(response.access_token);
+  // Only persist the FINAL JWT. A pre-2FA temp token stays in component
+  // state and is used once for /auth/2fa/verify.
+  if (!result.requires_2fa) {
+    setStoredToken(result.access_token);
+  }
+  return result;
+}
+
+export async function verifyTotp(tempToken: string, code: string): Promise<LoginResult> {
+  const result = await apiFetch<LoginResult>("/api/auth/2fa/verify", {
+    method: "POST",
+    body: JSON.stringify({ temp_token: tempToken, code }),
+  });
+  setStoredToken(result.access_token);
+  return result;
+}
+
+export async function setupTotp(): Promise<TotpSetupResponse> {
+  return apiFetch<TotpSetupResponse>("/api/auth/2fa/setup", { method: "POST" });
+}
+
+export async function confirmTotp(code: string): Promise<TotpConfirmResponse> {
+  return apiFetch<TotpConfirmResponse>("/api/auth/2fa/confirm", {
+    method: "POST",
+    body: JSON.stringify({ code }),
+  });
+}
+
+export async function disableTotp(password: string): Promise<{ message: string }> {
+  return apiFetch<{ message: string }>("/api/auth/2fa/disable", {
+    method: "POST",
+    body: JSON.stringify({ password }),
+  });
 }
 
 export async function getCurrentUser(): Promise<User> {

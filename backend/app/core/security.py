@@ -52,12 +52,34 @@ def verify_reset_token(token: str, token_hash: str | None) -> bool:
     return hmac.compare_digest(hash_reset_token(token), token_hash)
 
 
-def create_access_token(subject: str, role: str, expires_minutes: int | None = None) -> str:
+def create_access_token(
+    subject: str,
+    role: str,
+    expires_minutes: int | None = None,
+    *,
+    pre_2fa: bool = False,
+    limited: bool = False,
+) -> str:
+    """Sign a JWT.
+
+    Extra claims used by the 2FA flow:
+      * pre_2fa: token is only valid for POST /api/auth/2fa/verify.
+      * limited: admin authenticated without 2FA; sensitive admin endpoints
+        will refuse it until /auth/2fa/setup → /auth/2fa/confirm runs.
+    """
     settings = get_settings()
     expires_delta = timedelta(minutes=expires_minutes or settings.access_token_expire_minutes)
     expires_at = datetime.now(UTC) + expires_delta
     header = {"alg": "HS256", "typ": "JWT"}
-    payload = {"sub": subject, "role": role, "exp": int(expires_at.timestamp())}
+    payload: dict[str, Any] = {
+        "sub": subject,
+        "role": role,
+        "exp": int(expires_at.timestamp()),
+    }
+    if pre_2fa:
+        payload["pre_2fa"] = True
+    if limited:
+        payload["limited"] = True
     signing_input = ".".join(
         [
             _b64encode(json.dumps(header, separators=(",", ":")).encode()),
@@ -68,6 +90,9 @@ def create_access_token(subject: str, role: str, expires_minutes: int | None = N
         settings.secret_key.encode(), signing_input.encode(), hashlib.sha256
     ).digest()
     return f"{signing_input}.{_b64encode(signature)}"
+
+
+PRE_2FA_TOKEN_TTL_MINUTES = 5
 
 
 def decode_access_token(token: str) -> dict[str, Any] | None:

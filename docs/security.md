@@ -419,3 +419,126 @@ Cubre:
 - Audit logs CRM (esos viven en BBDD vía `audit_logs`, no en Sentry).
 - Body de respuestas exitosas. Solo errores y métricas de transacción.
 - Plaintext de API keys, passwords, tokens — el `before_send` los borra antes de salir.
+
+---
+
+# Two-Factor Authentication (TOTP)
+
+2FA opcional para todos los roles, **obligatorio** para `admin`. Implementación basada en TOTP (RFC 6238) — funciona con Google Authenticator, Authy, 1Password, Bitwarden, etc. Sin SMS, sin WebAuthn (lo segundo se considera en una fase posterior).
+
+## Modelo de datos
+
+Cuatro columnas nuevas en `users`:
+
+| Columna | Tipo | Descripción |
+|---|---|---|
+| `totp_secret_encrypted` | `TEXT?` | Secreto base32 cifrado con la misma `INTEGRATION_SECRETS_KEY` que protege las API keys de integraciones. La clave nunca sale del servidor. |
+| `totp_enabled` | `BOOL` | `true` solo cuando el usuario ha confirmado el primer código con la app. |
+| `totp_confirmed_at` | `DATETIME?` | Timestamp de activación. |
+| `backup_codes_hash` | `TEXT?` | JSON array con los hashes pbkdf2 de los 8 backup codes vigentes. Cada uso elimina el hash matched (consumo single-use). |
+
+Migración: `20260512_0004_user_totp.py`.
+
+## Flujo de login en dos pasos
+
+```
+POST /api/auth/login                                 (paso 1)
+  → si user.totp_enabled == true:
+      {access_token: <pre_2fa token, 5 min>, requires_2fa: true, limited: false}
+  → si user.totp_enabled == false y role == admin:
+      {access_token: <full token, limited=true>, requires_2fa: false, limited: true}
+  → en cualquier otro caso:
+      {access_token: <full token>, requires_2fa: false, limited: false}
+
+POST /api/auth/2fa/verify                            (paso 2, solo si requires_2fa)
+  body: {temp_token, code}    // code = 6-digit TOTP o backup code de 10 chars
+  → {access_token: <full token>, requires_2fa: false, limited: false}
+```
+
+El `pre_2fa` JWT lleva el claim `pre_2fa: true`, dura 5 minutos y solo es aceptado por `/api/auth/2fa/verify`. Cualquier otro endpoint con ese token responde `401 Complete 2FA verification first`.
+
+## "Sesión limitada" — admin sin 2FA
+
+Cuando un usuario con rol `admin` y `totp_enabled=false` hace login, el JWT final lleva `limited: true`. Los endpoints sensibles lo rechazan con `403`:
+
+- `/api/users/*`
+- `/api/audit-logs/*`
+- `/api/integration-settings` (PATCH del setting y endpoints de API key)
+
+El dep `require_admin` chequea el claim `limited`. El frontend muestra un banner persistente en el dashboard apuntando a `/account/security` para activar 2FA.
+
+Endpoints que SÍ funcionan en sesión limitada:
+
+- `/api/auth/me`, `/api/auth/change-password`, `/api/auth/2fa/setup`, `/api/auth/2fa/confirm`, `/api/auth/2fa/disable`.
+- Todo el CRM (contactos, empresas, notas, tareas) — los gates `require_manager`/`require_user`/`require_viewer` NO chequean `limited`. Un admin sin 2FA puede seguir trabajando con clientes; solo se cierra la configuración del sistema.
+
+## Backup codes
+
+8 códigos hex de 10 caracteres (≈40 bits de entropía cada uno), generados por `secrets.token_hex(5)`. Se hashean con pbkdf2 (mismo helper que las contraseñas) y se almacenan como `JSON list` en `backup_codes_hash`. Cuando un código se consume con éxito en `/api/auth/2fa/verify`, se elimina del array. Cuando el array queda vacío, la columna vuelve a `NULL` y el usuario debe regenerar 2FA si pierde el dispositivo.
+
+Los códigos se devuelven en plano una sola vez en la respuesta de `/api/auth/2fa/confirm`. La UI los enseña con un botón "He guardado mis códigos de respaldo".
+
+## Endpoints
+
+| Método | Path | Auth | Comportamiento |
+|---|---|---|---|
+| POST | `/api/auth/login` | none | Devuelve `requires_2fa` + token (temp o full según estado). |
+| POST | `/api/auth/2fa/verify` | body con temp_token | Intercambia (temp_token, code) por el JWT final. Acepta backup code. |
+| POST | `/api/auth/2fa/setup` | usuario logueado | Genera secret + URI otpauth; `totp_enabled=false` hasta confirmar. |
+| POST | `/api/auth/2fa/confirm` | usuario logueado | Verifica el primer código y devuelve los 8 backup codes (una sola vez). |
+| POST | `/api/auth/2fa/disable` | usuario + password | Limpia las cuatro columnas. Audit log. |
+| GET | `/api/auth/me` | usuario logueado | Añade `totp_enabled` y `requires_2fa_setup`. |
+
+## Auditoría
+
+Cada acción 2FA registra una entrada en `audit_logs`:
+
+- `start_2fa_setup` — al generar un secret nuevo.
+- `enable_2fa` — al confirmar.
+- `disable_2fa` — al desactivar.
+- `verify_2fa` — login completado con código TOTP.
+- `verify_2fa_backup_code` — login completado con un código de respaldo.
+- `reset_2fa_cli` — emergencia, vía `scripts/reset-user-2fa.py`.
+
+## Recuperación de emergencia
+
+Si un admin pierde tanto el dispositivo TOTP **como** los backup codes:
+
+```bash
+ssh deploy@<vps>
+cd /opt/crmbo
+
+# Desde el contenedor (preferido):
+sudo docker compose -f docker-compose.prod.yml exec api \
+  python -m scripts.reset_user_2fa --email admin@tudominio.com
+
+# O desde el host con un venv y la BBDD accesible:
+python scripts/reset-user-2fa.py --email admin@tudominio.com
+```
+
+El script pide `RESET` por consola (o `--yes` para automatizar). Limpia las cuatro columnas 2FA, registra `reset_2fa_cli` en audit, y el siguiente login del admin sale `limited` hasta que vuelva a enrolar TOTP. Solo lo puede ejecutar alguien con SSH al VPS — exactamente el mismo nivel de privilegio que reiniciar la pila.
+
+## Política de rotación / pérdida del secret
+
+- **TOTP secret**: cifrado con la `INTEGRATION_SECRETS_KEY`. Si esa Fernet se rota, los secretos TOTP existentes quedan ilegibles y todos los usuarios con 2FA deben volver a enrolar. Documentado en la sección de rotación de `INTEGRATION_SECRETS_KEY`.
+- **Backup codes**: hashes salados; no se pueden recuperar. La única vía es regenerarlos (disable + setup + confirm).
+
+## Verificación
+
+```bash
+cd backend
+python -m pytest tests/test_2fa.py -q
+```
+
+13 tests cubren:
+
+- Login devuelve `requires_2fa` cuando hay TOTP, `limited` cuando admin sin TOTP, normal en otros casos.
+- `/auth/2fa/verify` con código correcto devuelve un JWT final no limitado.
+- Código incorrecto → 401.
+- Un JWT final reusado como temp_token → 401.
+- Backup code de un solo uso (segundo intento del mismo código → 401, otro código sí funciona).
+- Admin sin 2FA puede `/auth/me` y `/api/contacts` pero **no** `/api/users` ni `/api/audit-logs`.
+- Admin sin 2FA puede ejecutar setup + confirm; tras login + verify, ya accede a `/api/users`.
+- `/auth/2fa/disable` requiere la password actual; password incorrecta → 401.
+- `/auth/2fa/setup` cuando ya está habilitado → 409.
+- Pre-2FA token NO puede acceder a endpoints protegidos.

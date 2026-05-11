@@ -3,7 +3,7 @@ import json
 import logging
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -17,16 +17,27 @@ from app.core.auth import (
     require_viewer,
 )
 from app.core.config import Settings, get_settings
+from app.core.crypto import decrypt, encrypt
 from app.core.errors import conflict, not_found, unauthorized
 from app.core.security import (
+    PRE_2FA_TOKEN_TTL_MINUTES,
     create_access_token,
     create_reset_token,
+    decode_access_token,
     hash_password,
     hash_reset_token,
     verify_password,
 )
+from app.core.totp import (
+    build_provisioning_uri,
+    generate_backup_codes,
+    generate_secret,
+    hash_backup_codes,
+    verify_and_consume_backup_code,
+    verify_totp_code,
+)
 from app.db.session import get_session
-from app.models.crm import AuditLog, Company, Contact, Note, Task, User
+from app.models.crm import AuditLog, Company, Contact, Note, Task, User, UserRole
 from app.repositories import crm as crm_repository
 from app.services.email import EmailService, get_email_service
 from app.schemas.crm import (
@@ -39,6 +50,7 @@ from app.schemas.crm import (
     ContactDetailRead,
     ContactRead,
     ContactUpdate,
+    CurrentUserRead,
     ErrorResponse,
     HealthRead,
     LoginRequest,
@@ -51,6 +63,11 @@ from app.schemas.crm import (
     TaskCreate,
     TaskRead,
     TokenRead,
+    TotpConfirmRead,
+    TotpConfirmRequest,
+    TotpDisableRequest,
+    TotpSetupRead,
+    TotpVerifyRequest,
     UserCreate,
     UserPasswordUpdate,
     UserRead,
@@ -97,7 +114,167 @@ def login(payload: LoginRequest, session: Session = Depends(get_session)) -> Tok
         raise unauthorized("Invalid email or password")
     record_audit(session, user, "login", "user", user.id)
     session.commit()
-    return TokenRead(access_token=create_access_token(subject=user.id, role=user.role.value))
+
+    if user.totp_enabled:
+        # 2FA enrolled → return a short-lived token good only for /2fa/verify.
+        temp_token = create_access_token(
+            subject=user.id,
+            role=user.role.value,
+            expires_minutes=PRE_2FA_TOKEN_TTL_MINUTES,
+            pre_2fa=True,
+        )
+        return TokenRead(access_token=temp_token, requires_2fa=True)
+
+    # Admin without 2FA → final token marked `limited`. Sensitive admin
+    # endpoints will reject this token until 2FA is enabled.
+    is_limited_admin = user.role == UserRole.ADMIN
+    token = create_access_token(
+        subject=user.id, role=user.role.value, limited=is_limited_admin
+    )
+    return TokenRead(access_token=token, limited=is_limited_admin)
+
+
+@router.post(
+    "/auth/2fa/verify",
+    response_model=TokenRead,
+    responses=ERROR_RESPONSES,
+    tags=["auth"],
+)
+def verify_2fa(
+    payload: TotpVerifyRequest, session: Session = Depends(get_session)
+) -> TokenRead:
+    """Second step of login: exchanges a pre-2FA token + TOTP code (or a
+    backup code) for the final JWT. The temp token must come from
+    /auth/login on a user that has totp_enabled=true.
+
+    The temp token travels inside the request body (not in the Authorization
+    header) because the client doesn't yet have a "session" — this endpoint
+    is the moment that session is created.
+    """
+    decoded = decode_access_token(payload.temp_token)
+    if not decoded or not decoded.get("pre_2fa") or not decoded.get("sub"):
+        raise unauthorized("Invalid or expired 2FA session")
+    user = session.get(User, decoded["sub"])
+    if not user or not user.is_active:
+        raise unauthorized()
+    if not user.totp_enabled or not user.totp_secret_encrypted:
+        raise unauthorized("2FA is not enabled for this account")
+
+    cleaned = payload.code.strip()
+    secret = decrypt(user.totp_secret_encrypted)
+    ok = verify_totp_code(secret, cleaned)
+    used_backup = False
+    if not ok:
+        consumed, remaining_json = verify_and_consume_backup_code(
+            user.backup_codes_hash, cleaned
+        )
+        if consumed:
+            user.backup_codes_hash = remaining_json
+            ok = True
+            used_backup = True
+
+    if not ok:
+        raise unauthorized("Invalid 2FA code")
+
+    record_audit(
+        session,
+        user,
+        "verify_2fa_backup_code" if used_backup else "verify_2fa",
+        "user",
+        user.id,
+    )
+    session.commit()
+
+    token = create_access_token(subject=user.id, role=user.role.value)
+    return TokenRead(access_token=token)
+
+
+@router.post(
+    "/auth/2fa/setup",
+    response_model=TotpSetupRead,
+    responses=ERROR_RESPONSES,
+    tags=["auth"],
+)
+def setup_2fa(
+    session: Session = Depends(get_session),
+    settings: Settings = Depends(get_settings),
+    current_user: User = Depends(get_current_user),
+) -> TotpSetupRead:
+    """Generate a fresh secret and return the provisioning URI for QR display.
+
+    The secret is encrypted at rest immediately; `totp_enabled` stays false
+    until /auth/2fa/confirm verifies the user has actually scanned it.
+    Re-runs are allowed only when 2FA is NOT yet enabled (use /2fa/disable
+    first to rotate)."""
+    if current_user.totp_enabled:
+        raise conflict("2FA is already enabled; disable it first to rotate the secret")
+    secret = generate_secret()
+    current_user.totp_secret_encrypted = encrypt(secret)
+    current_user.totp_confirmed_at = None
+    record_audit(session, current_user, "start_2fa_setup", "user", current_user.id)
+    session.commit()
+    uri = build_provisioning_uri(
+        secret,
+        account_name=current_user.email,
+        issuer=settings.app_name,
+    )
+    return TotpSetupRead(secret=secret, otpauth_uri=uri)
+
+
+@router.post(
+    "/auth/2fa/confirm",
+    response_model=TotpConfirmRead,
+    responses=ERROR_RESPONSES,
+    tags=["auth"],
+)
+def confirm_2fa(
+    payload: TotpConfirmRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> TotpConfirmRead:
+    """Verify a code from the authenticator app, flip totp_enabled to true,
+    and return the freshly generated backup codes (shown once)."""
+    if current_user.totp_enabled:
+        raise conflict("2FA is already enabled")
+    if not current_user.totp_secret_encrypted:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Run /auth/2fa/setup before confirming",
+        )
+    secret = decrypt(current_user.totp_secret_encrypted)
+    if not verify_totp_code(secret, payload.code):
+        raise unauthorized("Invalid TOTP code")
+    current_user.totp_enabled = True
+    current_user.totp_confirmed_at = datetime.now(UTC)
+    codes = generate_backup_codes()
+    current_user.backup_codes_hash = hash_backup_codes(codes)
+    record_audit(session, current_user, "enable_2fa", "user", current_user.id)
+    session.commit()
+    return TotpConfirmRead(backup_codes=codes, enabled=True)
+
+
+@router.post(
+    "/auth/2fa/disable",
+    response_model=MessageRead,
+    responses=ERROR_RESPONSES,
+    tags=["auth"],
+)
+def disable_2fa(
+    payload: TotpDisableRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> MessageRead:
+    """Disabling 2FA requires re-authenticating with the current password —
+    a stolen session cookie alone can't downgrade the account."""
+    if not verify_password(payload.password, current_user.password_hash):
+        raise unauthorized("Invalid password")
+    current_user.totp_secret_encrypted = None
+    current_user.totp_enabled = False
+    current_user.totp_confirmed_at = None
+    current_user.backup_codes_hash = None
+    record_audit(session, current_user, "disable_2fa", "user", current_user.id)
+    session.commit()
+    return MessageRead(message="2FA disabled")
 
 
 @router.post(
@@ -225,9 +402,23 @@ def confirm_password_reset(
     return MessageRead(message="Password reset completed")
 
 
-@router.get("/auth/me", response_model=UserRead, responses=ERROR_RESPONSES, tags=["auth"])
-def read_current_user(current_user: User = Depends(get_current_user)) -> User:
-    return current_user
+@router.get(
+    "/auth/me", response_model=CurrentUserRead, responses=ERROR_RESPONSES, tags=["auth"]
+)
+def read_current_user(current_user: User = Depends(get_current_user)) -> CurrentUserRead:
+    return CurrentUserRead(
+        id=current_user.id,
+        email=current_user.email,
+        full_name=current_user.full_name,
+        role=current_user.role,
+        is_active=current_user.is_active,
+        totp_enabled=current_user.totp_enabled,
+        created_at=current_user.created_at,
+        updated_at=current_user.updated_at,
+        requires_2fa_setup=(
+            current_user.role == UserRole.ADMIN and not current_user.totp_enabled
+        ),
+    )
 
 
 @router.post(
