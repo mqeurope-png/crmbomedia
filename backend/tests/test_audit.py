@@ -174,26 +174,46 @@ def test_2fa_events_recorded(client: TestClient):
     assert Action.AUTH_2FA_VERIFIED in seen
 
 
-def test_integration_api_key_events_recorded_and_metadata_safe(client: TestClient):
+def test_integration_api_key_events_recorded_and_metadata_safe(
+    client: TestClient, stack
+):
+    """Seed a `default` account for brevo (the multi-account schema does
+    not auto-create rows) and round-trip the API key to confirm the
+    `integration_account.api_key_*` audit rows are emitted without ever
+    leaking the secret."""
+    _, session_factory = stack
+    with session_factory() as session:
+        from app.models.crm import ExternalSystem
+        from app.models.integration_settings import IntegrationAccount
+
+        session.add(
+            IntegrationAccount(
+                system=ExternalSystem.BREVO,
+                account_id="default",
+                display_name="Brevo",
+            )
+        )
+        session.commit()
+
     headers = auth_headers(client, "admin")
     secret_value = "must-not-leak-secret-xyz"
     client.put(
-        "/api/integration-settings/brevo/api-key",
+        "/api/integration-accounts/brevo/default/api-key",
         json={"api_key": secret_value},
         headers=headers,
     )
-    client.delete("/api/integration-settings/brevo/api-key", headers=headers)
+    client.delete("/api/integration-accounts/brevo/default/api-key", headers=headers)
 
     response = client.get(
         "/api/audit-logs",
-        params={"action_prefix": "integration_api_key."},
+        params={"action_prefix": "integration_account."},
         headers=headers,
     )
     assert response.status_code == 200
     rows = response.json()
     seen = _actions_of(rows)
-    assert Action.INTEGRATION_API_KEY_SET in seen
-    assert Action.INTEGRATION_API_KEY_DELETED in seen
+    assert Action.INTEGRATION_ACCOUNT_API_KEY_SET in seen
+    assert Action.INTEGRATION_ACCOUNT_API_KEY_DELETED in seen
     # The secret must NEVER appear in metadata/message/anywhere in the body.
     assert secret_value not in response.text
 

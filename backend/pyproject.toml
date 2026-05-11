@@ -8,3 +8,10 @@ line-length = 100
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
 ignore = ["B008"]
+
+[tool.ruff.lint.isort]
+# The repo has a top-level `alembic/` directory, which older ruff
+# versions (0.8.x) treat as first-party. Newer ruff treats it as
+# third-party. Pin the classification explicitly so the same source
+# passes both versions.
+known-third-party = ["alembic"]
