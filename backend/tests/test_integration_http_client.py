@@ -6,6 +6,7 @@ the real httpx + tenacity stack without touching the network.
 """
 from __future__ import annotations
 
+import logging
 from collections.abc import Generator
 
 import httpx
@@ -22,7 +23,11 @@ from app.integrations.errors import (
     IntegrationNetworkError,
     IntegrationServerError,
 )
-from app.integrations.http_client import IntegrationHTTPClient
+from app.integrations.http_client import (
+    IntegrationHTTPClient,
+    _mask_secret,
+    _sanitize_headers,
+)
 from app.models.crm import AuditLog, Base, ExternalSystem
 from app.models.integration_settings import IntegrationAccount
 
@@ -232,3 +237,88 @@ def test_404_does_not_retry(session_factory: sessionmaker):
                 )
             )
         assert attempts["count"] == 1
+
+
+# ---------------------------------------------------------------------------
+# INTEGRATION_HTTP_DEBUG: masking + opt-in gating
+# ---------------------------------------------------------------------------
+
+
+def test_mask_secret_redacts_short_values():
+    assert _mask_secret("") == ""
+    assert _mask_secret("short") == "***"
+    assert _mask_secret("abcdefghijklmnop") == "***"  # length < 20
+
+
+def test_mask_secret_keeps_head_and_tail_for_long_values():
+    secret = "Basic abcdefghijklmnopqrstuvwxyz1234567890"
+    masked = _mask_secret(secret)
+    assert masked.startswith("Basic abcdef")
+    assert masked.endswith("...7890")
+    assert "stuvwxyz" not in masked
+
+
+def test_sanitize_headers_masks_authorization():
+    headers = {
+        "Authorization": "Basic abcdefghijklmnopqrstuvwxyz1234567890",
+        "X-Api-Key": "supersecretapikey12345",
+        "Accept": "application/json",
+    }
+    sanitized = _sanitize_headers(headers)
+    assert "Basic abcdef" in sanitized["Authorization"]
+    assert "abcdefghijkl" not in sanitized["X-Api-Key"]  # masked too
+    assert sanitized["Accept"] == "application/json"
+
+
+def test_debug_disabled_emits_no_request_log(session_factory: sessionmaker, monkeypatch, caplog):
+    """Default behaviour: no `integration.http.request` line in logs."""
+    import asyncio
+
+    monkeypatch.delenv("INTEGRATION_HTTP_DEBUG", raising=False)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"ok": True})
+
+    with caplog.at_level(logging.INFO, logger="app.integrations.http_client"):
+        with session_factory() as session:
+            asyncio.run(_run(session, transport=httpx.MockTransport(handler), url="/x"))
+    assert not any("integration.http.request" in record.message for record in caplog.records)
+
+
+def test_debug_enabled_logs_masked_request_and_error(
+    session_factory: sessionmaker, monkeypatch, caplog
+):
+    """With the flag on we emit one INFO per request and one ERROR per
+    4xx/5xx, both with the Authorization header masked."""
+    import asyncio
+
+    monkeypatch.setenv("INTEGRATION_HTTP_DEBUG", "true")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, text="not found body")
+
+    with caplog.at_level(logging.INFO, logger="app.integrations.http_client"):
+        with session_factory() as session:
+            with pytest.raises(IntegrationClientError):
+                asyncio.run(
+                    _run(
+                        session,
+                        transport=httpx.MockTransport(handler),
+                        url="/agilecrm/contacts",
+                        max_retries=1,
+                    )
+                )
+
+    request_logs = [r for r in caplog.records if "integration.http.request" in r.message]
+    error_logs = [r for r in caplog.records if "integration.http.response_error" in r.message]
+    assert request_logs, "expected the request line to be logged"
+    assert error_logs, "expected the response error to be logged"
+    # The full request log must contain the masked Authorization (Bearer
+    # prefix on the base IntegrationHTTPClient, scheme "Bearer"). It
+    # must NOT contain the full plaintext key.
+    combined = " ".join(r.getMessage() for r in request_logs)
+    assert "plain-test-key" not in combined
+    # The error log must include the 404 body so the operator can read
+    # what the remote said.
+    combined_err = " ".join(r.getMessage() for r in error_logs)
+    assert "not found body" in combined_err

@@ -419,6 +419,59 @@ Para Brevo / Freshdesk / FactuSOL repetir el layout:
 Las colas RQ ya están declaradas en `docker-compose.prod.yml` para los
 cuatro sistemas previstos.
 
+## Debugging external API calls
+
+Cuando un conector falla con `IntegrationServerError` o `500 from
+<system>/<account>` y un `curl` directo al mismo endpoint con las
+mismas credenciales devuelve 200, suele tratarse de una diferencia
+sutil en headers / URL / cuerpo. El cliente base soporta un modo de
+logging detallado, desactivado por defecto, controlado por la variable
+de entorno `INTEGRATION_HTTP_DEBUG`.
+
+### Activación
+
+```bash
+# .env.production (o pasado al contenedor por compose)
+INTEGRATION_HTTP_DEBUG=true
+```
+
+Acepta `1` / `true` / `yes` / `on`. Cualquier otro valor (incluyendo
+ausente) lo deja apagado.
+
+Tras editarlo basta con reiniciar el contenedor `api` (para llamadas
+desde endpoints síncronos) y `worker` (para jobs de sync) — los logs
+se imprimen vía el logger estándar `logging`, así que se ven con
+`docker compose logs -f api worker`.
+
+### Qué se loggea
+
+- **INFO `integration.http.request`** por cada llamada:
+  - `method` (GET / POST / ...)
+  - `url` completa (host + path + query string como httpx la enviará).
+  - `headers` finales, **con `Authorization`, `X-Api-Key`, `Apikey` y
+    `X-Auth-Token` enmascarados** (`Basic abcdefghijkl...wxyz`); strings
+    < 20 caracteres se redactan completos como `***`.
+- **ERROR `integration.http.response_error`** por cada respuesta
+  `>= 400`:
+  - `status` numérico.
+  - `headers` de respuesta (mismo enmascarado que la request).
+  - `body` truncado a los primeros 2000 caracteres del `response.text`.
+
+### Qué NO se loggea
+
+- El cuerpo de la request (los conectores actuales solo hacen GETs;
+  cuando lleguen POST/PUT habrá que decidir si añadir el body o
+  filtrar antes de logear PII).
+- El API key sin enmascarar, **nunca**. La función `_mask_secret`
+  vive en `app/integrations/http_client.py` y se aplica tanto a
+  request como a response headers.
+
+### Recordatorio
+
+`INTEGRATION_HTTP_DEBUG` es para diagnóstico puntual. Dejarlo activo
+en producción estable inunda los logs y disipa el `audit_logs` real.
+Apagarlo en cuanto el bug esté entendido.
+
 ## Health checks
 
 - El servicio `worker` no expone HTTP; `docker compose ps` muestra el
