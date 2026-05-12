@@ -168,14 +168,19 @@ class AgileCRMClient(IntegrationHTTPClient):
             params["order_by"] = order_by
         response = await self.get("/dev/api/contacts", params=params)
         items = response.json if isinstance(response.json, list) else []
-        # AgileCRM's cursor pagination convention: if the page returned
-        # exactly `page_size` items there's likely another page. The
-        # `cursor` value for the next call is the ID of the last item.
+        # AgileCRM ships an opaque `cursor` field on each contact in the
+        # response (a base64-looking GAE datastore continuation token,
+        # NOT the contact's id). The last item in a full page carries
+        # the cursor that the next page request should pass back; when
+        # the page underflows OR the last item has no cursor field, we
+        # are at the end of the dataset.
         next_cursor: str | None = None
         if len(items) >= size and items:
             tail = items[-1]
             if isinstance(tail, dict):
-                next_cursor = str(tail.get("id")) if tail.get("id") is not None else None
+                cursor_value = tail.get("cursor")
+                if isinstance(cursor_value, str) and cursor_value:
+                    next_cursor = cursor_value
         return items, next_cursor
 
     async def get_contact(self, external_id: str) -> dict[str, Any] | None:

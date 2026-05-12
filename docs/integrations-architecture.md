@@ -358,6 +358,33 @@ regresión está cubierta por
 `...::test_list_contacts_includes_cursor_param_when_paginating` y
 `...::test_list_contacts_does_not_leak_order_by_when_unset`.
 
+### Paginación: el cursor vive en el item, NO es el id
+
+AgileCRM acompaña cada contacto de la respuesta con un campo opaco
+`cursor` (un token estilo continuation de Google Datastore, p. ej.
+`"cursor": "CjsSNWoRc35hZ2lsZS1jcm0t..."`). El cursor del **último**
+item de una página llena es el que hay que pasar como query param
+`cursor` para pedir la siguiente página.
+
+**No** se debe usar el `id` del último contacto como cursor: AgileCRM
+responde HTTP 500 `Invalid cursor` al recibir un id en ese parámetro.
+La primera versión del conector se equivocaba aquí y la paginación
+fallaba siempre tras la primera página de 50 contactos.
+
+Reglas que aplica `AgileCRMClient.list_contacts`:
+
+- Si la página devuelve menos de `page_size` items → `next_cursor = None`
+  (fin del dataset).
+- Si la página devuelve `page_size` items pero el último **no** tiene
+  campo `cursor` (o lo tiene vacío / no-string) → `next_cursor = None`
+  (también fin del dataset, sin fallback al id).
+- Si el último item tiene `cursor` válido → `next_cursor = ese valor`,
+  y el bucle del job pide la siguiente página con `cursor=ese valor`.
+
+Cobertura: `test_list_contacts_returns_items_and_cursor`,
+`test_list_contacts_full_page_without_cursor_field_returns_none` y
+`test_list_contacts_ignores_non_string_cursor_field`.
+
 ### Idempotencia y dedup multi-cuenta
 
 `sync_agilecrm_contacts` decide qué hacer en este orden:

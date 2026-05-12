@@ -162,8 +162,13 @@ def test_list_contacts_returns_items_and_cursor(session_factory):
         captured["auth"] = request.headers.get("authorization", "")
         captured["ua"] = request.headers.get("user-agent", "")
         # Return a page that's exactly page_size long so the client
-        # infers there's a next page.
-        items = [{"id": i, "properties": []} for i in range(1, 11)]
+        # infers there's a next page. AgileCRM tags every contact in
+        # the response with its own opaque `cursor`; only the last
+        # one matters for pagination.
+        items = [
+            {"id": i, "cursor": f"cur-{i}", "properties": []}
+            for i in range(1, 11)
+        ]
         return httpx.Response(200, json=items)
 
     with session_factory() as session:
@@ -174,7 +179,9 @@ def test_list_contacts_returns_items_and_cursor(session_factory):
         )
 
     assert len(items) == 10
-    assert cursor == "10"  # Last item's id, stringified
+    # The next-page token is the opaque `cursor` field carried by the
+    # last item, NOT the contact id (AgileCRM 500s if we send the id).
+    assert cursor == "cur-10"
     assert "page_size=10" in captured["url"]
     assert captured["auth"].startswith("Basic ")
     assert "CRMBO-Media-CRM" in captured["ua"]
@@ -206,6 +213,47 @@ def test_list_contacts_underflow_returns_no_cursor(session_factory):
             session,
             _make_transport(handler),
             lambda client: client.list_contacts(page_size=10),
+        )
+    assert len(items) == 2
+    assert cursor is None
+
+
+def test_list_contacts_full_page_without_cursor_field_returns_none(session_factory):
+    """When AgileCRM returns a full page but the last item carries no
+    `cursor` field, the dataset is exhausted: there is no next page to
+    fetch. The client must NOT fall back to the contact id (that would
+    re-trigger the production 500 the previous bug caused)."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        items = [{"id": i, "properties": []} for i in range(1, 11)]
+        return httpx.Response(200, json=items)
+
+    with session_factory() as session:
+        items, cursor = _run_with_transport(
+            session,
+            _make_transport(handler),
+            lambda client: client.list_contacts(page_size=10),
+        )
+    assert len(items) == 10
+    assert cursor is None
+
+
+def test_list_contacts_ignores_non_string_cursor_field(session_factory):
+    """Defensive: if AgileCRM ships back a `cursor` field with a wrong
+    type (int, None, empty string), don't treat that as a real cursor."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        items = [
+            {"id": 1, "cursor": "cur-1"},
+            {"id": 2, "cursor": ""},  # empty string → falsy
+        ]
+        return httpx.Response(200, json=items)
+
+    with session_factory() as session:
+        items, cursor = _run_with_transport(
+            session,
+            _make_transport(handler),
+            lambda client: client.list_contacts(page_size=2),
         )
     assert len(items) == 2
     assert cursor is None
