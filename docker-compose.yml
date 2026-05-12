@@ -50,6 +50,31 @@ services:
       redis:
         condition: service_healthy
 
+  worker:
+    build: ./backend
+    env_file: .env
+    environment:
+      DATABASE_URL: mysql+pymysql://crm:crm@db:3306/crm
+      REDIS_URL: redis://redis:6379/0
+    command:
+      - rq
+      - worker
+      - --url
+      - redis://redis:6379/0
+      - --logging-level
+      - INFO
+      - agilecrm:sync_contacts
+      - agilecrm:purge_quota
+      - brevo:push_contact
+      - brevo:webhook_process
+      - freshdesk:sync_tickets
+      - factusol:sync_invoices
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
   frontend:
     build:
       context: ./frontend

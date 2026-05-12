@@ -78,6 +78,18 @@ class Action:
     # Access control
     ACCESS_FORBIDDEN = "access.forbidden"
 
+    # Integration runtime (HTTP client, worker, webhook intake).
+    # Sprint A baseline; per-system action names will be added when the
+    # individual connectors land.
+    INTEGRATION_API_CALL = "integration.api_call"
+    INTEGRATION_AUTH_FAILED = "integration.auth_failed"
+    INTEGRATION_SYNC_TRIGGERED = "integration.sync_triggered"
+    INTEGRATION_SYNC_STARTED = "integration.sync_started"
+    INTEGRATION_SYNC_SUCCEEDED = "integration.sync_succeeded"
+    INTEGRATION_SYNC_PARTIAL = "integration.sync_partial"
+    INTEGRATION_SYNC_FAILED = "integration.sync_failed"
+    INTEGRATION_WEBHOOK_RECEIVED = "integration.webhook_received"
+
     # GDPR / RGPD subject-rights events
     GDPR_REQUEST_CREATED = "gdpr.request_created"
     GDPR_REQUEST_UPDATED = "gdpr.request_updated"

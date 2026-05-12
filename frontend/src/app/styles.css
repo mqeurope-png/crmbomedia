@@ -594,3 +594,48 @@ td {
   gap: 12px;
   margin-top: 16px;
 }
+
+/* ---------------------------------------------------------------------------
+ * SyncPanel + sync-history page
+ * --------------------------------------------------------------------------- */
+
+.sync-panel { margin-top: 16px; }
+
+.sync-panel .actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.sync-panel table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.sync-panel th,
+.sync-panel td {
+  text-align: left;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.badge.ok { background: #ecfdf3; color: var(--success); }
+.badge.warn { background: #fffaeb; color: #b54708; }
+.badge.bad { background: #fef3f2; color: var(--danger); }
+.badge.active { background: #eef4ff; color: var(--brand); }
+.badge.muted { background: var(--line); color: var(--ink); }
+
+.sync-detail { display: grid; grid-template-columns: 200px 1fr; gap: 8px 16px; }
+.sync-detail dt { font-weight: 700; }
+.sync-detail dd { margin: 0; }
+.sync-detail dd code { white-space: pre-wrap; word-break: break-all; }
