@@ -98,6 +98,48 @@ class SyncLogRead(BaseModel):
 # --------------------------------------------------------------------------- #
 
 
+def _trigger(
+    *,
+    system: ExternalSystem,
+    account_id: str,
+    operation: str,
+    request_payload: dict[str, Any] | None,
+    request: Request,
+    session: Session,
+    current_user: User,
+) -> SyncTriggerResponse:
+    account = get_integration_account(session, system, account_id)
+    if account is None:
+        raise not_found("Integration account")
+    if not is_operation_registered(system.value, operation):
+        # The job would still enqueue and the worker would mark the
+        # row as FAILED with a clear error, but we surface a 409 here
+        # so the UI can keep "Sincronizar" disabled.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Operation '{operation}' is not implemented yet "
+                f"for system '{system.value}'."
+            ),
+        )
+    sync_log_id, job_id = enqueue_sync_job(
+        session,
+        system=system,
+        account_id=account_id,
+        operation=operation,
+        triggered_by=SyncTrigger.MANUAL,
+        triggered_by_user_id=current_user.id,
+        payload=request_payload,
+        request=request,
+    )
+    return SyncTriggerResponse(
+        sync_log_id=sync_log_id,
+        job_id=job_id,
+        operation=operation,
+        status=SyncStatus.PENDING,
+    )
+
+
 @router.post(
     "/{system}/{account_id}/sync",
     response_model=SyncTriggerResponse,
@@ -111,36 +153,42 @@ def trigger_sync(
     session: Session = Depends(get_session),
     current_user: User = Depends(require_admin),
 ) -> SyncTriggerResponse:
-    account = get_integration_account(session, system, account_id)
-    if account is None:
-        raise not_found("Integration account")
-    if not is_operation_registered(system.value, payload.operation):
-        # The job will still enqueue and the worker will mark the row
-        # as FAILED with a clear error, but we surface a 409 at the API
-        # so a frontend can keep "Sincronizar" disabled.
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=(
-                f"Operation '{payload.operation}' is not implemented yet "
-                f"for system '{system.value}'."
-            ),
-        )
-
-    sync_log_id, job_id = enqueue_sync_job(
-        session,
+    return _trigger(
         system=system,
         account_id=account_id,
         operation=payload.operation,
-        triggered_by=SyncTrigger.MANUAL,
-        triggered_by_user_id=current_user.id,
-        payload=payload.payload,
+        request_payload=payload.payload,
         request=request,
+        session=session,
+        current_user=current_user,
     )
-    return SyncTriggerResponse(
-        sync_log_id=sync_log_id,
-        job_id=job_id,
-        operation=payload.operation,
-        status=SyncStatus.PENDING,
+
+
+@router.post(
+    "/{system}/{account_id}/sync/{operation}",
+    response_model=SyncTriggerResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def trigger_sync_operation(
+    system: ExternalSystem,
+    account_id: str,
+    operation: str,
+    request: Request,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_admin),
+) -> SyncTriggerResponse:
+    """Path-based variant of `POST /sync` for operators triggering a
+    specific operation directly (e.g. `purge_quota`) without crafting a
+    JSON body. No payload may be passed this way; callers that need
+    extra context use the body variant above."""
+    return _trigger(
+        system=system,
+        account_id=account_id,
+        operation=operation,
+        request_payload=None,
+        request=request,
+        session=session,
+        current_user=current_user,
     )
 
 

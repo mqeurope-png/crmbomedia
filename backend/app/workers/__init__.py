@@ -11,10 +11,16 @@ public surface exposes:
   the entrypoint that the worker actually runs. Updates the `sync_logs`
   row through the lifecycle and emits `integration.sync_*` audit rows.
 
-The current PR (Sprint A) is infrastructure only — no connector
-implementations are registered yet. Each per-system PR adds a handler
-to the `OPERATIONS` registry below.
+Per-connector modules under `app.integrations.<system>` register their
+operations into `OPERATIONS` at import time. Importing them from here
+keeps the registration deterministic in both the API process and the
+RQ worker (both go through this module on startup).
 """
+# Connector registrations. Each side-effect import populates entries
+# in `OPERATIONS`; failing to import (e.g. missing optional dependency)
+# leaves the registry empty for that connector and the API surfaces a
+# clear 409 when the operator tries to trigger an unregistered op.
+from app.integrations import agilecrm as _agilecrm  # noqa: F401
 from app.workers.jobs import OPERATIONS, enqueue_sync_job, run_sync_job
 from app.workers.queues import (
     DEFAULT_JOB_TIMEOUT,

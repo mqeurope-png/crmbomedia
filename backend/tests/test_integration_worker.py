@@ -58,10 +58,16 @@ def factory() -> Generator[sessionmaker, None, None]:
 # ---------------------------------------------------------------------------
 
 
-def test_operation_registry_starts_empty():
-    """Sprint A ships the infrastructure only — no concrete operations
-    are registered yet, so the API must surface this clearly."""
-    assert not is_operation_registered("agilecrm", "sync_contacts")
+def test_unregistered_operations_remain_empty():
+    """Connectors that haven't landed yet must surface as unregistered
+    so the API can return a clean 409 instead of silently enqueueing
+    a job that nobody will pick up."""
+    assert not is_operation_registered("freshdesk", "sync_tickets")
+    assert not is_operation_registered("factusol", "sync_invoices")
+    # AgileCRM landed in Sprint A PR-2; the worker registers two
+    # operations on import.
+    assert is_operation_registered("agilecrm", "sync_contacts")
+    assert is_operation_registered("agilecrm", "purge_quota")
 
 
 # ---------------------------------------------------------------------------
