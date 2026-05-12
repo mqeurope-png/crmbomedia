@@ -15,6 +15,7 @@ export type IntegrationAccount = {
   status: IntegrationStatus;
   api_base_url?: string | null;
   account_label?: string | null;
+  auth_identifier?: string | null;
   credential_status: string;
   notes?: string | null;
   quota_max_contacts?: number | null;
@@ -34,6 +35,7 @@ export type IntegrationAccountCreatePayload = {
   mode?: IntegrationMode;
   api_base_url?: string | null;
   account_label?: string | null;
+  auth_identifier?: string | null;
   notes?: string | null;
   quota_max_contacts?: number | null;
   quota_strategy?: QuotaStrategy | null;
@@ -47,6 +49,7 @@ export type IntegrationAccountUpdatePayload = Partial<{
   status: IntegrationStatus;
   api_base_url: string | null;
   account_label: string | null;
+  auth_identifier: string | null;
   credential_status: string;
   notes: string | null;
   quota_max_contacts: number | null;

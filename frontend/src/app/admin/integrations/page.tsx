@@ -217,6 +217,9 @@ export default function IntegrationAccountsPage() {
                       <div>
                         <strong>{account.display_name}</strong>{" "}
                         <code>{account.account_id}</code>
+                        {account.auth_identifier ? (
+                          <span className="muted"> · {account.auth_identifier}</span>
+                        ) : null}
                       </div>
                       <div className="actions">
                         {isAdmin ? (

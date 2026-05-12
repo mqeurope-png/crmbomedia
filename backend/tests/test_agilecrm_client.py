@@ -40,7 +40,10 @@ def session_factory() -> Generator[sessionmaker, None, None]:
                 account_id="es",
                 display_name="AgileCRM España",
                 api_base_url="https://es.agilecrm.example",
-                api_key_encrypted=crypto.encrypt("ops@example.com:secret-key-xyz"),
+                # New canonical form: identifier in plaintext column,
+                # API key in encrypted column.
+                auth_identifier="ops@example.com",
+                api_key_encrypted=crypto.encrypt("secret-key-xyz"),
                 credential_status="configured",
             )
         )
@@ -81,25 +84,74 @@ def test_constructor_builds_basic_auth_header(session_factory):
     assert client._email == "ops@example.com"
 
 
-def test_constructor_rejects_credential_without_colon(session_factory):
+def test_constructor_accepts_legacy_email_colon_key_with_warning(session_factory):
+    """Backwards compatibility: pre-PR-2.1 deploys stored the email
+    embedded in the encrypted column. The client still accepts that
+    shape, emitting a `DeprecationWarning` so operators see the nudge
+    when they tail the worker logs."""
+    import warnings as _warnings
+
     with session_factory() as session:
-        # Replace the key with a single token (no colon) and reload.
         account = (
             session.query(IntegrationAccount)
             .filter_by(account_id="es")
             .one()
         )
+        account.auth_identifier = None
+        account.api_key_encrypted = crypto.encrypt("legacy@example.com:legacy-key")
+        session.commit()
+
+    with session_factory() as session:
+        with _warnings.catch_warnings(record=True) as caught:
+            _warnings.simplefilter("always")
+            client = AgileCRMClient(session, "es")
+        assert any(issubclass(w.category, DeprecationWarning) for w in caught)
+        expected = base64.b64encode(b"legacy@example.com:legacy-key").decode("ascii")
+        assert client._api_key == f"Basic {expected}"
+
+
+def test_constructor_rejects_missing_credential(session_factory):
+    """No `auth_identifier` AND the encrypted column is just a key
+    (no embedded email) → IntegrationAuthError."""
+    with session_factory() as session:
+        account = (
+            session.query(IntegrationAccount)
+            .filter_by(account_id="es")
+            .one()
+        )
+        account.auth_identifier = None
         account.api_key_encrypted = crypto.encrypt("just-a-key-no-email")
         session.commit()
 
     with session_factory() as session:
-        with pytest.raises(IntegrationAuthError):
+        with pytest.raises(IntegrationAuthError) as exc_info:
             AgileCRMClient(session, "es")
+        assert "auth_identifier" in str(exc_info.value)
 
 
 # ---------------------------------------------------------------------------
 # list_contacts
 # ---------------------------------------------------------------------------
+
+
+def test_outbound_requests_include_accept_application_json(session_factory):
+    """AgileCRM defaults to XML; we force `Accept: application/json`
+    in the AsyncClient's default headers so every outbound call asks
+    for JSON regardless of the per-method kwargs."""
+    captured: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["accept"] = request.headers.get("accept", "")
+        captured["content_type"] = request.headers.get("content-type", "")
+        return httpx.Response(200, json=[])
+
+    with session_factory() as session:
+        _run_with_transport(
+            session,
+            _make_transport(handler),
+            lambda client: client.list_contacts(page_size=10),
+        )
+    assert "application/json" in captured["accept"]
 
 
 def test_list_contacts_returns_items_and_cursor(session_factory):

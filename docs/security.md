@@ -10,6 +10,7 @@ Este documento describe cómo se cifran las API keys de las integraciones extern
 - La app **no arranca** si `INTEGRATION_SECRETS_KEY` falta o no es una clave Fernet válida (`pydantic.ValidationError` durante el bootstrap).
 - La API **nunca** devuelve ni el plaintext ni el `api_key_encrypted`. El único campo derivado expuesto es `has_api_key: bool` y la fecha `api_key_set_at`.
 - Los logs de auditoría registran `integration_account.api_key_set` y `integration_account.api_key_deleted` con actor, `system`, `account_id` y timestamp. **Nunca** se loggea el secreto ni el ciphertext.
+- Algunos proveedores (AgileCRM) necesitan también un identificador de usuario (email) para autenticar. Se guarda en `integration_accounts.auth_identifier` (VARCHAR, **plaintext**, igual que `account_label` o `notes`) — **no es secreto**. Solo la API key se cifra; el email aparece tal cual en `audit_logs.metadata`, `sync_logs.metadata` y en el JSON de la API.
 
 ## 2. Generar la clave
 

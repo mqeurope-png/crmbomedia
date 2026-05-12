@@ -81,6 +81,12 @@ class IntegrationAccount(TimestampMixin, Base):
         String(80), default="not_configured", nullable=False
     )
     notes: Mapped[str | None] = mapped_column(Text)
+    # Non-secret companion to `api_key_encrypted`. AgileCRM (and similar
+    # vendors) need a user identifier — typically an email — to compose
+    # HTTP Basic auth. Stored in plaintext because it's metadata, not a
+    # secret. Nullable for every system; only AgileCRM currently
+    # requires it.
+    auth_identifier: Mapped[str | None] = mapped_column(String(255))
     api_key_encrypted: Mapped[str | None] = mapped_column(Text)
     api_key_set_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     api_key_last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

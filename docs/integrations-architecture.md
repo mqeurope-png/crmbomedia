@@ -308,21 +308,37 @@ FactuSOL).
 ### Credencial
 
 AgileCRM usa **HTTP Basic** con `<email>:<api_key>` como user:password.
-Para evitar añadir una columna nueva al modelo, almacenamos la pareja
-como un **único string** en `integration_accounts.api_key_encrypted`,
-en formato literal `<email>:<api_key>`. El cliente la parte por el
-primer `:` al construir.
 
-UI / admin: en el campo "API key" de la cuenta AgileCRM el operador
-pega exactamente:
+- El **email** se guarda en `integration_accounts.auth_identifier`
+  (columna nueva, plaintext — no es secreto). En la UI aparece como
+  campo "Email de login de AgileCRM" en el modal de creación / edición
+  de la cuenta, con validación que lo marca obligatorio.
+- La **API key** se guarda en `integration_accounts.api_key_encrypted`
+  (cifrada con Fernet, igual que todas las demás claves).
 
-```
-ops@example.com:abcdef1234567890
-```
+El `AgileCRMClient` compone `Authorization: Basic base64(email:api_key)`
+en construcción y lo añade automáticamente a cada llamada.
 
-La string viaja cifrada (Fernet) como cualquier otra clave; la
-`AgileCRMClient` la descifra una sola vez por instancia y la convierte
-en `Authorization: Basic base64(...)`.
+### Accept: application/json
+
+AgileCRM responde en **XML** por defecto. El `AgileCRMClient` fuerza
+`Accept: application/json` (y `Content-Type: application/json` para
+POST/PUT) en los headers default del `httpx.AsyncClient` para que cada
+llamada pida JSON sin necesidad de pasarlo en cada `request()`.
+
+### Compatibilidad hacia atrás (legacy `email:api_key`)
+
+Versiones anteriores guardaban ambos en el campo cifrado, separados por
+`:`. El cliente sigue aceptando esa forma:
+
+- Si `auth_identifier` está vacío Y el campo cifrado contiene `:`, el
+  cliente parte por el primer `:`, emite `DeprecationWarning` y sigue
+  funcionando. El operador verá el warning en `docker compose logs -f
+  worker`; al re-guardar la cuenta desde la UI moderna, el email migra
+  a `auth_identifier` y la advertencia desaparece.
+- Si ni hay `auth_identifier` ni `:` en el campo cifrado, el cliente
+  lanza `IntegrationAuthError` con un mensaje claro pidiendo que se
+  configure ambos en `/admin/integrations`.
 
 ### Idempotencia y dedup multi-cuenta
 
