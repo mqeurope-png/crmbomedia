@@ -119,3 +119,17 @@ Los paquetes bajo `backend/app/integrations/` son placeholders. No deben contene
 ```
 
 Si hay restricciones de proxy/registro, no se debe simular éxito. Documenta el comando exacto y el error recibido.
+
+## Renderizado dinámico de pantallas
+
+Todas las pantallas del CRM son client components (`"use client"`) que piden datos al API en `useEffect`. Next.js, sin ayuda, prerenderiza la shell HTML inicial al construir y la sirve con `cache-control: s-maxage=31536000` — nginx la cachea un año y un dataset recién importado nunca aparece en el dashboard hasta el siguiente deploy.
+
+`frontend/src/app/layout.tsx` declara `export const dynamic = "force-dynamic"` para que ese ajuste se herede en cada ruta. Verificable con `npm run build`: todas las rutas deben aparecer como `ƒ (Dynamic) server-rendered on demand`, no como `○ (Static)`.
+
+Diagnóstico cuando un dato no se refresca tras un deploy:
+
+```bash
+curl -s -I https://bo-crm.mbolasers.com/admin/integrations | grep -i 'x-nextjs\|cache-control'
+```
+
+Si aparece `x-nextjs-prerender: 1` con `cache-control: s-maxage=31536000`, alguna ruta volvió a marcarse como estática — revisar `layout.tsx` y cualquier `export const dynamic` o `revalidate` añadido en una página concreta que sobrescriba el default.
