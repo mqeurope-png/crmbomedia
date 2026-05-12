@@ -29,6 +29,24 @@ function supportsQuota(system: ExternalSystem): boolean {
   return system === "agilecrm";
 }
 
+/** Human-readable label for the per-system auth identifier field. The
+ * connector (server-side) decides what to do with the value; the UI
+ * just nudges the operator with a meaningful prompt. */
+const AUTH_IDENTIFIER_LABEL: Record<ExternalSystem, string> = {
+  agilecrm: "Email de login de AgileCRM",
+  brevo: "Identificador adicional (opcional)",
+  freshdesk: "Subdomain o email",
+  factusol: "Usuario API",
+};
+
+/** Systems where the identifier is required to authenticate. */
+const AUTH_IDENTIFIER_REQUIRED: Record<ExternalSystem, boolean> = {
+  agilecrm: true,
+  brevo: false,
+  freshdesk: false,
+  factusol: false,
+};
+
 type CreateProps = {
   mode: "create";
   open: boolean;
@@ -55,6 +73,7 @@ type FormState = {
   status: IntegrationStatus;
   api_base_url: string;
   account_label: string;
+  auth_identifier: string;
   credential_status: string;
   notes: string;
   quota_max_contacts: string;
@@ -70,6 +89,7 @@ const EMPTY_FORM: FormState = {
   status: "not_configured",
   api_base_url: "",
   account_label: "",
+  auth_identifier: "",
   credential_status: "not_configured",
   notes: "",
   quota_max_contacts: "",
@@ -86,6 +106,7 @@ function fromAccount(account: IntegrationAccount): FormState {
     status: account.status,
     api_base_url: account.api_base_url ?? "",
     account_label: account.account_label ?? "",
+    auth_identifier: account.auth_identifier ?? "",
     credential_status: account.credential_status,
     notes: account.notes ?? "",
     quota_max_contacts:
@@ -127,12 +148,18 @@ export function IntegrationAccountModal(props: Props) {
       );
       return null;
     }
+    const identifier = form.auth_identifier.trim();
+    if (AUTH_IDENTIFIER_REQUIRED[system] && !identifier) {
+      setError(`${AUTH_IDENTIFIER_LABEL[system]} es obligatorio para ${SYSTEM_LABEL[system]}.`);
+      return null;
+    }
     const payload: IntegrationAccountCreatePayload = {
       account_id: form.account_id,
       display_name: form.display_name,
       mode: form.mode,
       api_base_url: form.api_base_url || null,
       account_label: form.account_label || null,
+      auth_identifier: identifier || null,
       notes: form.notes || null,
       sync_priority: Number(form.sync_priority) || 100,
     };
@@ -151,6 +178,7 @@ export function IntegrationAccountModal(props: Props) {
       status: form.status,
       api_base_url: form.api_base_url || null,
       account_label: form.account_label || null,
+      auth_identifier: form.auth_identifier.trim() || null,
       credential_status: form.credential_status,
       notes: form.notes || null,
       sync_priority: Number(form.sync_priority) || 100,
@@ -267,6 +295,25 @@ export function IntegrationAccountModal(props: Props) {
             value={form.api_base_url}
             onChange={(event) => setField("api_base_url", event.target.value)}
           />
+        </label>
+        <label>
+          {AUTH_IDENTIFIER_LABEL[system]}
+          {AUTH_IDENTIFIER_REQUIRED[system] ? " *" : ""}
+          <input
+            required={AUTH_IDENTIFIER_REQUIRED[system]}
+            placeholder={
+              system === "agilecrm"
+                ? "envios@bomedia.net"
+                : "Identificador adicional"
+            }
+            value={form.auth_identifier}
+            onChange={(event) => setField("auth_identifier", event.target.value)}
+          />
+          <small className="muted">
+            {system === "agilecrm"
+              ? "AgileCRM autentica con Basic email:api_key. El email se guarda aquí (sin cifrar); la API key sigue cifrada al guardarla en su campo."
+              : "Identificador en claro complementario al API key (no es secreto)."}
+          </small>
         </label>
         <label>
           Etiqueta de cuenta

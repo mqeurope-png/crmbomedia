@@ -43,6 +43,10 @@ class IntegrationAccountCreate(BaseModel):
     mode: IntegrationMode = IntegrationMode.SANDBOX
     api_base_url: str | None = Field(default=None, max_length=255)
     account_label: str | None = Field(default=None, max_length=255)
+    # Non-secret user identifier (e.g. AgileCRM login email). Lives
+    # alongside the encrypted API key. AgileCRM requires it; other
+    # systems may ignore it.
+    auth_identifier: str | None = Field(default=None, max_length=255)
     notes: str | None = None
     quota_max_contacts: int | None = Field(default=None, ge=1)
     quota_strategy: QuotaStrategy | None = None
@@ -69,6 +73,7 @@ class IntegrationAccountUpdate(BaseModel):
     status: IntegrationStatus | None = None
     api_base_url: str | None = Field(default=None, max_length=255)
     account_label: str | None = Field(default=None, max_length=255)
+    auth_identifier: str | None = Field(default=None, max_length=255)
     credential_status: str | None = Field(default=None, max_length=80)
     notes: str | None = None
     quota_max_contacts: int | None = Field(default=None, ge=1)
@@ -103,6 +108,7 @@ class IntegrationAccountRead(BaseModel):
     status: IntegrationStatus
     api_base_url: str | None
     account_label: str | None
+    auth_identifier: str | None = None
     credential_status: str
     notes: str | None
     quota_max_contacts: int | None

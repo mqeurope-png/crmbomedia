@@ -103,6 +103,7 @@ def create_account(
         mode=payload.mode,
         api_base_url=payload.api_base_url,
         account_label=payload.account_label,
+        auth_identifier=payload.auth_identifier,
         notes=payload.notes,
         quota_max_contacts=payload.quota_max_contacts,
         quota_strategy=payload.quota_strategy,
@@ -139,6 +140,11 @@ def update_account(
     changes = payload.model_dump(exclude_unset=True)
     for field, value in changes.items():
         setattr(account, field, value)
+    # `auth_identifier` is plain metadata, but if the operator clears
+    # it to empty string treat that as "unset" so the column stays NULL
+    # instead of accumulating empty strings.
+    if account.auth_identifier == "":
+        account.auth_identifier = None
     record_event(
         session,
         action=Action.INTEGRATION_ACCOUNT_UPDATED,

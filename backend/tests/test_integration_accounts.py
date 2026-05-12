@@ -147,6 +147,41 @@ def test_create_persists_quota_fields(client: TestClient):
     assert body["has_api_key"] is False
 
 
+def test_create_persists_auth_identifier(client: TestClient):
+    headers = auth_headers(client, "admin")
+    response = client.post(
+        "/api/integration-accounts/agilecrm",
+        json={
+            "account_id": "es",
+            "display_name": "AgileCRM España",
+            "auth_identifier": "envios@bomedia.net",
+        },
+        headers=headers,
+    )
+    assert response.status_code == 201, response.text
+    assert response.json()["auth_identifier"] == "envios@bomedia.net"
+
+
+def test_patch_clears_auth_identifier_on_empty_string(client: TestClient):
+    headers = auth_headers(client, "admin")
+    client.post(
+        "/api/integration-accounts/agilecrm",
+        json={
+            "account_id": "es",
+            "display_name": "AgileCRM España",
+            "auth_identifier": "envios@bomedia.net",
+        },
+        headers=headers,
+    )
+    response = client.patch(
+        "/api/integration-accounts/agilecrm/es",
+        json={"auth_identifier": ""},
+        headers=headers,
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["auth_identifier"] is None
+
+
 def test_create_rejects_duplicate_account_id(client: TestClient):
     headers = auth_headers(client, "admin")
     response = client.post(
