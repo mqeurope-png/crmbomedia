@@ -57,6 +57,7 @@ from app.schemas.crm import (
     ContactDetailRead,
     ContactRead,
     ContactUpdate,
+    CountRead,
     CurrentUserRead,
     ErrorResponse,
     HealthRead,
@@ -912,6 +913,28 @@ def list_companies(
     )
 
 
+@router.get(
+    "/companies/count",
+    response_model=CountRead,
+    responses=ERROR_RESPONSES,
+    tags=["crm"],
+)
+def count_companies(
+    q: str | None = Query(default=None, description="Filtro por nombre"),
+    include_inactive: bool = Query(default=False),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_viewer),
+) -> CountRead:
+    """Total de empresas que pasarían los mismos filtros que
+    `GET /companies`. El dashboard lo consulta para los stat-cards en
+    vez de tomar `len(items)` de la primera página paginada."""
+    _ = current_user
+    total = crm_repository.count_companies(
+        session=session, q=q, include_inactive=include_inactive
+    )
+    return CountRead(total=total)
+
+
 @router.patch(
     "/companies/{company_id}",
     response_model=CompanyRead,
@@ -1035,6 +1058,28 @@ def list_contacts(
     return crm_repository.list_contacts(
         session=session, q=q, skip=skip, limit=limit, include_inactive=include_inactive
     )
+
+
+@router.get(
+    "/contacts/count",
+    response_model=CountRead,
+    responses=ERROR_RESPONSES,
+    tags=["crm"],
+)
+def count_contacts(
+    q: str | None = Query(default=None, description="Busca por nombre, apellidos o email"),
+    include_inactive: bool = Query(default=False),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_viewer),
+) -> CountRead:
+    """Total de contactos que pasarían los mismos filtros que
+    `GET /contacts`. El dashboard lo consulta para mostrar el contador
+    real en vez de la longitud de la primera página paginada."""
+    _ = current_user
+    total = crm_repository.count_contacts(
+        session=session, q=q, include_inactive=include_inactive
+    )
+    return CountRead(total=total)
 
 
 @router.get(

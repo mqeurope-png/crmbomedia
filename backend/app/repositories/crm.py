@@ -34,6 +34,19 @@ def list_companies(
     return list(session.scalars(statement))
 
 
+def count_companies(
+    session: Session, q: str | None = None, include_inactive: bool = False
+) -> int:
+    """Return the total number of companies matching the same filters
+    the list endpoint applies — used by the dashboard stat cards."""
+    statement = select(func.count()).select_from(Company)
+    if not include_inactive:
+        statement = statement.where(Company.is_active.is_(True))
+    if q:
+        statement = statement.where(Company.name.ilike(f"%{q}%"))
+    return int(session.scalar(statement) or 0)
+
+
 def get_contact(session: Session, contact_id: str) -> Contact | None:
     return session.scalar(
         select(Contact)
@@ -64,6 +77,25 @@ def list_contacts(
             | Contact.email.ilike(like)
         )
     return list(session.scalars(statement))
+
+
+def count_contacts(
+    session: Session, q: str | None = None, include_inactive: bool = False
+) -> int:
+    """Return the total number of contacts matching the same filters the
+    list endpoint applies — used by the dashboard stat cards so they
+    don't reflect the paginated page size."""
+    statement = select(func.count()).select_from(Contact)
+    if not include_inactive:
+        statement = statement.where(Contact.is_active.is_(True))
+    if q:
+        like = f"%{q}%"
+        statement = statement.where(
+            Contact.first_name.ilike(like)
+            | Contact.last_name.ilike(like)
+            | Contact.email.ilike(like)
+        )
+    return int(session.scalar(statement) or 0)
 
 
 def list_notes(session: Session, contact_id: str) -> list[Note]:

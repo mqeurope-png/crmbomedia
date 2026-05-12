@@ -445,3 +445,94 @@ def test_openapi_endpoints_live_under_api_prefix(client: TestClient):
     assert client.get("/docs").status_code == 404
     assert client.get("/redoc").status_code == 404
     assert client.get("/openapi.json").status_code == 404
+
+
+def test_contacts_count_reflects_active_filter(client: TestClient):
+    """`/contacts/count` must return the real DB total — not the
+    paginated page size the list endpoint defaults to — and must apply
+    the same `is_active=true` default as `/contacts`."""
+    headers = auth_headers(client, "manager")
+
+    # Seed 3 active contacts so the count is unambiguous.
+    for i in range(3):
+        client.post(
+            "/api/contacts",
+            json={
+                "first_name": f"Ana{i}",
+                "email": f"ana{i}@example.com",
+                "marketing_consent": "granted",
+            },
+            headers=headers,
+        )
+
+    response = client.get("/api/contacts/count", headers=headers)
+    assert response.status_code == 200
+    assert response.json() == {"total": 3}
+
+
+def test_contacts_count_skips_inactive_unless_requested(client: TestClient):
+    headers = auth_headers(client, "manager")
+    body = client.post(
+        "/api/contacts",
+        json={
+            "first_name": "Soft",
+            "email": "soft@example.com",
+            "marketing_consent": "granted",
+        },
+        headers=headers,
+    ).json()
+    # Soft-delete it.
+    client.patch(f"/api/contacts/{body['id']}/deactivate", headers=headers)
+
+    # Default: only active rows.
+    default = client.get("/api/contacts/count", headers=headers)
+    assert default.json() == {"total": 0}
+
+    # `include_inactive=true` brings it back.
+    full = client.get(
+        "/api/contacts/count?include_inactive=true", headers=headers
+    )
+    assert full.json() == {"total": 1}
+
+
+def test_contacts_count_applies_query_filter(client: TestClient):
+    headers = auth_headers(client, "manager")
+    for idx, name in enumerate(("Ana", "Boris", "Ana")):
+        client.post(
+            "/api/contacts",
+            json={
+                "first_name": name,
+                "email": f"{name.lower()}{idx}@example.com",
+                "marketing_consent": "granted",
+            },
+            headers=headers,
+        )
+
+    filtered = client.get("/api/contacts/count?q=Ana", headers=headers)
+    assert filtered.json() == {"total": 2}
+
+
+def test_companies_count_basic(client: TestClient):
+    headers = auth_headers(client, "manager")
+    for name in ("Acme", "Globex"):
+        client.post(
+            "/api/companies",
+            json={"name": name},
+            headers=headers,
+        )
+
+    response = client.get("/api/companies/count", headers=headers)
+    assert response.status_code == 200
+    assert response.json() == {"total": 2}
+
+
+def test_count_endpoints_require_viewer_or_above(client: TestClient):
+    """Anonymous requests bounce with 401. Authenticated `viewer` role
+    succeeds — the count is non-sensitive aggregate data."""
+    anon = client.get("/api/contacts/count")
+    assert anon.status_code == 401
+
+    viewer = client.get(
+        "/api/contacts/count", headers=auth_headers(client, "viewer")
+    )
+    assert viewer.status_code == 200

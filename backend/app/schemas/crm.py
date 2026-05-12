@@ -102,6 +102,13 @@ class MessageRead(BaseModel):
     message: str
 
 
+class CountRead(BaseModel):
+    """Tiny envelope for `GET .../count` endpoints. The dashboard reads
+    it to show real totals instead of the paginated page size."""
+
+    total: int
+
+
 class UserCreate(BaseModel):
     email: EmailStr
     full_name: str = Field(min_length=1, max_length=255)
