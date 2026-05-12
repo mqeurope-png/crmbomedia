@@ -71,6 +71,48 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+def _debug_enabled() -> bool:
+    return os.environ.get("INTEGRATION_HTTP_DEBUG", "").lower() in {"1", "true", "yes", "on"}
+
+
+def _mask_secret(value: str) -> str:
+    """Compact mask for sensitive header values.
+
+    Keeps the first 12 and last 4 characters so an operator can spot
+    whether the credential changed between deploys without seeing the
+    full secret in the logs. Strings shorter than 16 characters are
+    fully redacted because there's no safe truncation that protects
+    them.
+    """
+    if not value:
+        return ""
+    if len(value) < 20:
+        return "***"
+    return f"{value[:12]}...{value[-4:]}"
+
+
+def _sanitize_headers(headers: object) -> dict[str, str]:
+    """Return a copy of `headers` with `Authorization` (and other
+    obvious secrets) masked. Accepts any mapping-like (httpx.Headers,
+    dict, list of tuples) so it works on both request and response."""
+    sensitive = {"authorization", "x-api-key", "apikey", "x-auth-token"}
+    masked: dict[str, str] = {}
+    if hasattr(headers, "items"):
+        pairs: list[tuple[Any, Any]] = list(headers.items())  # type: ignore[attr-defined]
+    else:
+        try:
+            pairs = list(headers)  # type: ignore[arg-type, call-overload]
+        except TypeError:
+            return {}
+    for key, value in pairs:
+        key_s = str(key)
+        if key_s.lower() in sensitive:
+            masked[key_s] = _mask_secret(str(value))
+        else:
+            masked[key_s] = str(value)
+    return masked
+
+
 @dataclass
 class IntegrationResponse:
     """Thin facade over `httpx.Response`. The connector gets the parsed
@@ -180,8 +222,23 @@ class IntegrationHTTPClient:
                 "IntegrationHTTPClient must be entered via `async with` before use."
             )
         client = self._client
+        debug = _debug_enabled()
 
         async def _do() -> httpx.Response:
+            if debug:
+                # Build the request without sending so we can introspect
+                # the final URL + merged headers (httpx merges client
+                # defaults with per-request kwargs); then send the same
+                # request via the client's `send`. This guarantees the
+                # log reflects exactly what hits the wire.
+                request_obj = client.build_request(method, url, **kwargs)
+                logger.info(
+                    "integration.http.request method=%s url=%s headers=%s",
+                    request_obj.method,
+                    str(request_obj.url),
+                    _sanitize_headers(request_obj.headers),
+                )
+                return await client.send(request_obj)
             return await client.request(method, url, **kwargs)
 
         retry = AsyncRetrying(
@@ -238,6 +295,17 @@ class IntegrationHTTPClient:
         if 200 <= status < 300:
             return
         body_snippet = (response.text or "")[:512]
+        # Debug-only: full response details for the operator chasing a
+        # `500 from agilecrm/...` that succeeds with curl. Up to 2000
+        # chars of body so a JSON error payload fits without flooding
+        # the log.
+        if _debug_enabled():
+            logger.error(
+                "integration.http.response_error status=%s headers=%s body=%s",
+                status,
+                _sanitize_headers(response.headers),
+                (response.text or "")[:2000],
+            )
         if status in (401, 403):
             self._mark_account_credential_error()
             record_event(
