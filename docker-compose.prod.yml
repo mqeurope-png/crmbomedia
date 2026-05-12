@@ -74,6 +74,40 @@ services:
       start_period: 30s
     logging: *default-logging
 
+  worker:
+    image: crmbomedia-api:latest
+    restart: unless-stopped
+    env_file: .env.production
+    environment:
+      DATABASE_URL: mysql+pymysql://${MYSQL_USER}:${MYSQL_PASSWORD}@db:3306/${MYSQL_DATABASE}
+      REDIS_URL: redis://redis:6379/0
+    # Listens on every `{system}:{operation}` queue the connectors
+    # define. Listing them explicitly (instead of `*`) makes it easy
+    # to throttle one system independently with a second worker
+    # container later on.
+    # RQ default serializer (pickle) is fine because the worker shares
+    # its Docker image with the api service, so producer and consumer
+    # speak the same Python.
+    command:
+      - rq
+      - worker
+      - --url
+      - redis://redis:6379/0
+      - --logging-level
+      - INFO
+      - agilecrm:sync_contacts
+      - agilecrm:purge_quota
+      - brevo:push_contact
+      - brevo:webhook_process
+      - freshdesk:sync_tickets
+      - factusol:sync_invoices
+    depends_on:
+      api:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    logging: *default-logging
+
   frontend:
     build:
       context: ./frontend

@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { ErrorState } from "../../components/ErrorState";
 import { IntegrationAccountModal } from "../../components/IntegrationAccountModal";
+import { SyncPanel } from "../../components/SyncPanel";
 import { getCurrentUser, type User } from "../../lib/api";
 import { extractErrorMessage } from "../../lib/errors";
 import {
@@ -297,6 +298,8 @@ export default function IntegrationAccountsPage() {
                         </div>
                       </div>
                     ) : null}
+
+                    <SyncPanel system={account.system} accountId={account.account_id} />
                   </article>
                 );
               })}

@@ -13,6 +13,8 @@ from app.api.integration_settings import (
     deprecated_router as integration_settings_deprecated_router,
     router as integration_accounts_router,
 )
+from app.api.sync import router as sync_router
+from app.api.webhooks import router as webhooks_router
 from app.core.audit import Action, record_event
 from app.core.auth import (
     get_current_user,
@@ -1228,4 +1230,6 @@ def create_task(
 
 router.include_router(integration_accounts_router)
 router.include_router(integration_settings_deprecated_router)
+router.include_router(sync_router)
+router.include_router(webhooks_router)
 router.include_router(gdpr_router)

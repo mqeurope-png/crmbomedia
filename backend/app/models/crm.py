@@ -2,7 +2,16 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from uuid import uuid4
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, String, Text, UniqueConstraint
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -147,16 +156,59 @@ class ExternalReference(TimestampMixin, Base):
     contact: Mapped[Contact] = relationship(back_populates="external_refs")
 
 
+class SyncStatus(StrEnum):
+    """Lifecycle of a sync_logs row. Created as `PENDING` when an
+    operator enqueues a job; flipped to `RUNNING` when the worker picks
+    it up; ends in `SUCCESS`, `PARTIAL_SUCCESS` (some records processed,
+    some skipped/failed) or `FAILED` (the whole operation aborted)."""
+
+    PENDING = "pending"
+    RUNNING = "running"
+    SUCCESS = "success"
+    PARTIAL_SUCCESS = "partial_success"
+    FAILED = "failed"
+
+
+class SyncTrigger(StrEnum):
+    MANUAL = "manual"
+    CRON = "cron"
+    WEBHOOK = "webhook"
+
+
 class SyncLog(TimestampMixin, Base):
+    """Trace row for every integration operation (manual sync, cron job,
+    webhook delivery). The composite `(system, account_id)` matches the
+    natural key of `integration_accounts`; the FK is informal (no
+    ON DELETE cascade) because we want the audit trail to outlive the
+    account if it ever gets removed."""
+
     __tablename__ = "sync_logs"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     system: Mapped[ExternalSystem] = mapped_column(
         Enum(ExternalSystem, native_enum=False, values_callable=enum_values, length=32),
         nullable=False,
+        index=True,
     )
-    direction: Mapped[str] = mapped_column(String(80), nullable=False)
-    status: Mapped[str] = mapped_column(String(80), nullable=False)
+    account_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    operation: Mapped[str | None] = mapped_column(String(120), index=True)
+    # `direction` is the pre-refactor field; kept nullable so the column
+    # remains backwards compatible while the new `operation` carries the
+    # canonical name (`sync_contacts`, `webhook_received`, ...).
+    direction: Mapped[str | None] = mapped_column(String(80))
+    status: Mapped[str] = mapped_column(
+        String(40), nullable=False, default=SyncStatus.PENDING.value
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    records_processed: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    records_skipped: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    records_failed: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    error_summary: Mapped[str | None] = mapped_column(Text)
+    triggered_by: Mapped[str | None] = mapped_column(String(32))
+    triggered_by_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+    job_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    metadata_json: Mapped[str | None] = mapped_column("metadata", Text)
     message: Mapped[str | None] = mapped_column(Text)
     contact_id: Mapped[str | None] = mapped_column(ForeignKey("contacts.id"))
 

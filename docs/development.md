@@ -35,6 +35,27 @@ python -m pytest
 
 El backend usa MySQL 8 como base objetivo. Los tests usan SQLite en memoria porque los modelos actuales son compatibles y permite pruebas rápidas sin levantar servicios externos.
 
+## Worker de integraciones
+
+El stack incluye un servicio `worker` (RQ sobre Redis) que ejecuta los jobs de los conectores externos. En `docker-compose.yml` y `docker-compose.prod.yml` el contenedor `worker` reutiliza la imagen `crmbomedia-api:latest`; basta con un `docker compose build` para que tanto `api` como `worker` arranquen con el código actualizado.
+
+Para depurar en local sin Docker (Redis local en `localhost:6379`):
+
+```bash
+cd backend
+source .venv/bin/activate
+export REDIS_URL=redis://localhost:6379/0
+rq worker --url $REDIS_URL agilecrm:sync_contacts brevo:push_contact
+```
+
+Inspeccionar colas y jobs vivos:
+
+```bash
+rq info --url redis://localhost:6379/0
+```
+
+Arquitectura completa del cliente HTTP base, el patrón de jobs y el endpoint genérico de webhooks: `docs/integrations-architecture.md`.
+
 ## Usuario admin inicial
 
 Configura estas variables en `.env`:

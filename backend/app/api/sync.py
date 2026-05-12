@@ -1,0 +1,206 @@
+"""Generic sync trigger + sync-logs listing for any integration account.
+
+Routes live under `/integration-accounts/{system}/{account_id}` so they
+share the prefix and audit metadata pattern of the multi-account CRUD.
+"""
+# ruff: noqa: I001
+from __future__ import annotations
+
+import json
+from datetime import datetime
+from typing import Any
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
+
+from app.core.auth import require_admin, require_manager
+from app.core.errors import not_found
+from app.db.session import get_session
+from app.models.crm import ExternalSystem, SyncLog, SyncStatus, SyncTrigger, User
+from app.repositories.integration_settings import get_integration_account
+from app.workers.jobs import enqueue_sync_job, is_operation_registered
+
+router = APIRouter(prefix="/integration-accounts", tags=["integration accounts"])
+
+
+# --------------------------------------------------------------------------- #
+# Schemas
+# --------------------------------------------------------------------------- #
+
+
+class SyncTriggerRequest(BaseModel):
+    operation: str = Field(min_length=1, max_length=120)
+    payload: dict[str, Any] | None = None
+
+
+class SyncTriggerResponse(BaseModel):
+    sync_log_id: str
+    job_id: str | None
+    operation: str
+    status: SyncStatus
+
+
+class SyncLogRead(BaseModel):
+    id: str
+    system: ExternalSystem
+    account_id: str | None
+    operation: str | None
+    status: str
+    started_at: datetime | None
+    finished_at: datetime | None
+    records_processed: int
+    records_skipped: int
+    records_failed: int
+    error_summary: str | None
+    triggered_by: str | None
+    triggered_by_user_id: str | None
+    job_id: str | None
+    metadata: dict[str, Any] | None = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+    @classmethod
+    def from_orm_row(cls, row: SyncLog) -> SyncLogRead:
+        meta: dict[str, Any] | None = None
+        if row.metadata_json:
+            try:
+                parsed = json.loads(row.metadata_json)
+                meta = parsed if isinstance(parsed, dict) else {"value": parsed}
+            except (ValueError, TypeError):
+                meta = {"raw": row.metadata_json}
+        return cls(
+            id=row.id,
+            system=row.system,
+            account_id=row.account_id,
+            operation=row.operation,
+            status=row.status,
+            started_at=row.started_at,
+            finished_at=row.finished_at,
+            records_processed=row.records_processed,
+            records_skipped=row.records_skipped,
+            records_failed=row.records_failed,
+            error_summary=row.error_summary,
+            triggered_by=row.triggered_by,
+            triggered_by_user_id=row.triggered_by_user_id,
+            job_id=row.job_id,
+            metadata=meta,
+            created_at=row.created_at,
+            updated_at=row.updated_at,
+        )
+
+
+# --------------------------------------------------------------------------- #
+# Endpoints
+# --------------------------------------------------------------------------- #
+
+
+@router.post(
+    "/{system}/{account_id}/sync",
+    response_model=SyncTriggerResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def trigger_sync(
+    system: ExternalSystem,
+    account_id: str,
+    payload: SyncTriggerRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_admin),
+) -> SyncTriggerResponse:
+    account = get_integration_account(session, system, account_id)
+    if account is None:
+        raise not_found("Integration account")
+    if not is_operation_registered(system.value, payload.operation):
+        # The job will still enqueue and the worker will mark the row
+        # as FAILED with a clear error, but we surface a 409 at the API
+        # so a frontend can keep "Sincronizar" disabled.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Operation '{payload.operation}' is not implemented yet "
+                f"for system '{system.value}'."
+            ),
+        )
+
+    sync_log_id, job_id = enqueue_sync_job(
+        session,
+        system=system,
+        account_id=account_id,
+        operation=payload.operation,
+        triggered_by=SyncTrigger.MANUAL,
+        triggered_by_user_id=current_user.id,
+        payload=payload.payload,
+        request=request,
+    )
+    return SyncTriggerResponse(
+        sync_log_id=sync_log_id,
+        job_id=job_id,
+        operation=payload.operation,
+        status=SyncStatus.PENDING,
+    )
+
+
+@router.get(
+    "/{system}/{account_id}/sync-logs",
+    response_model=list[SyncLogRead],
+)
+def list_sync_logs(
+    system: ExternalSystem,
+    account_id: str,
+    response: Response,
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=200),
+    status_filter: SyncStatus | None = Query(default=None, alias="status"),
+    operation: str | None = Query(default=None),
+    from_date: datetime | None = Query(default=None, alias="from"),
+    to_date: datetime | None = Query(default=None, alias="to"),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_manager),
+) -> list[SyncLogRead]:
+    _ = current_user
+    statement = select(SyncLog).where(
+        SyncLog.system == system, SyncLog.account_id == account_id
+    )
+    if status_filter is not None:
+        statement = statement.where(SyncLog.status == status_filter.value)
+    if operation:
+        statement = statement.where(SyncLog.operation == operation)
+    if from_date is not None:
+        statement = statement.where(SyncLog.created_at >= from_date)
+    if to_date is not None:
+        statement = statement.where(SyncLog.created_at <= to_date)
+    total = int(
+        session.scalar(select(func.count()).select_from(statement.subquery())) or 0
+    )
+    response.headers["X-Total-Count"] = str(total)
+    statement = statement.order_by(SyncLog.created_at.desc()).offset(skip).limit(limit)
+    rows = list(session.scalars(statement))
+    return [SyncLogRead.from_orm_row(row) for row in rows]
+
+
+@router.get(
+    "/{system}/{account_id}/sync-logs/{log_id}",
+    response_model=SyncLogRead,
+)
+def get_sync_log(
+    system: ExternalSystem,
+    account_id: str,
+    log_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_manager),
+) -> SyncLogRead:
+    _ = current_user
+    row = session.scalar(
+        select(SyncLog).where(
+            SyncLog.id == log_id,
+            SyncLog.system == system,
+            SyncLog.account_id == account_id,
+        )
+    )
+    if row is None:
+        raise not_found("Sync log")
+    return SyncLogRead.from_orm_row(row)
