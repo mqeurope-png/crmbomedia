@@ -61,8 +61,6 @@ services:
       - worker
       - --url
       - redis://redis:6379/0
-      - --logging-level
-      - INFO
       - agilecrm:sync_contacts
       - agilecrm:purge_quota
       - brevo:push_contact

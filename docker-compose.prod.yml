@@ -87,14 +87,15 @@ services:
     # container later on.
     # RQ default serializer (pickle) is fine because the worker shares
     # its Docker image with the api service, so producer and consumer
-    # speak the same Python.
+    # speak the same Python. `rq worker` defaults to INFO logging so
+    # we don't pass --logging_level explicitly — the flag name changed
+    # between rq minor versions (--logging-level vs --logging_level)
+    # and silently omitting it keeps us version-agnostic.
     command:
       - rq
       - worker
       - --url
       - redis://redis:6379/0
-      - --logging-level
-      - INFO
       - agilecrm:sync_contacts
       - agilecrm:purge_quota
       - brevo:push_contact
