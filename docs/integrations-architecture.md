@@ -283,6 +283,126 @@ Tras añadir esto y redeployar:
    → `sync_log_id` + `job_id` → el panel polea cada 5s y muestra el progreso.
 4. Cada `integration_account.api_call` queda en `audit_logs`.
 
+## Conector AgileCRM (referencia de implementación)
+
+El Sprint A PR-2 implementa el primer conector real (AgileCRM) sobre
+la infraestructura común. El código sirve como **plantilla de
+referencia** para los conectores siguientes (Brevo, Freshdesk,
+FactuSOL).
+
+### Layout
+
+- `app/integrations/agilecrm/client.py` — `AgileCRMClient`, subclase
+  de `IntegrationHTTPClient` que conoce los endpoints `/dev/api/contacts`,
+  `/dev/api/contacts/{id}` y `/dev/api/contacts/count`.
+- `app/integrations/agilecrm/mapper.py` — `map_agilecrm_contact_to_internal`
+  que traduce un payload AgileCRM (con su array `properties: [{name, value}]`)
+  a un dict plano listo para `Contact(**record)`.
+- `app/integrations/agilecrm/jobs.py` — los dos handlers
+  (`sync_agilecrm_contacts`, `purge_agilecrm_quota`) registrados en
+  `OPERATIONS["agilecrm:sync_contacts"]` y `OPERATIONS["agilecrm:purge_quota"]`.
+- `app/integrations/agilecrm/__init__.py` — import side-effect que
+  carga `jobs` (y por tanto registra las operaciones) cuando
+  `app.workers` se inicializa.
+
+### Credencial
+
+AgileCRM usa **HTTP Basic** con `<email>:<api_key>` como user:password.
+Para evitar añadir una columna nueva al modelo, almacenamos la pareja
+como un **único string** en `integration_accounts.api_key_encrypted`,
+en formato literal `<email>:<api_key>`. El cliente la parte por el
+primer `:` al construir.
+
+UI / admin: en el campo "API key" de la cuenta AgileCRM el operador
+pega exactamente:
+
+```
+ops@example.com:abcdef1234567890
+```
+
+La string viaja cifrada (Fernet) como cualquier otra clave; la
+`AgileCRMClient` la descifra una sola vez por instancia y la convierte
+en `Authorization: Basic base64(...)`.
+
+### Idempotencia y dedup multi-cuenta
+
+`sync_agilecrm_contacts` decide qué hacer en este orden:
+
+1. ¿Existe ya un `external_references (system, account_id, external_id)`
+   para esta cuenta? → **update** del `contacts` enlazado.
+2. ¿No existe la ref pero ya hay un `contacts` con ese **email**? →
+   **consolidación**: se añade un segundo `external_references` apuntando
+   al contact existente. Un único contacto puede aparecer en N cuentas
+   AgileCRM sin duplicarse.
+3. En caso contrario → **insert** del contact + insert del
+   external_reference.
+
+El RGPD: `marketing_consent` siempre se importa como `unknown`. AgileCRM
+no garantiza una base jurídica equivalente; el flujo dedicado de RGPD
+es quien actualiza el consentimiento explícito.
+
+### Cuotas
+
+AgileCRM cobra por contactos almacenados. Cuando una cuenta tiene
+`quota_max_contacts` set + `quota_strategy ∈ {keep_newest, keep_oldest}`,
+`sync_contacts` encola automáticamente al final de la importación una
+ejecución de `purge_quota` (cola `agilecrm:purge_quota`). El job:
+
+- Llama a `/dev/api/contacts/count` para saber cuántos hay.
+- Si `count <= quota_max_contacts`, no hace nada.
+- Si `count > quota`, listar `to_delete = count - quota` contactos en
+  el orden correspondiente (`keep_newest` → `created_time` ASC,
+  `keep_oldest` → `-created_time`) y borrarlos **en el remoto** vía
+  `DELETE /dev/api/contacts/{id}`.
+- Cada borrado emite `integration.quota_deleted` con
+  `{system, account_id, external_id, reason='quota', strategy}`.
+- En `external_references` la fila se conserva (no se borra) con
+  `external_status='deleted_in_origin'`.
+
+**Nunca se borra del CRM local.** Solo se borra de AgileCRM y se marca
+la fila de auditoría.
+
+### Endpoints de la API
+
+- `POST /api/integration-accounts/agilecrm/{account_id}/sync` con
+  `{"operation": "sync_contacts"}` o `{"operation": "purge_quota"}`.
+- `POST /api/integration-accounts/agilecrm/{account_id}/sync/sync_contacts`
+  (variante path-based, sin body) — equivalente para automatizaciones
+  o el botón "Sincronizar ahora" de la UI.
+- `POST /api/integration-accounts/agilecrm/{account_id}/sync/purge_quota`
+  — para el botón "Purgar cuota ahora".
+
+### Notas operativas
+
+- **Rate limits**: AgileCRM Free tier ≈ 200 req/h por API key. El base
+  `IntegrationHTTPClient` ya respeta `Retry-After` en 429 — un workflow
+  saturado se enlentece pero el job no se rompe; la importación es
+  idempotente.
+- **`company_name`**: el mapper expone el nombre de empresa como hint
+  pero NO resuelve `company_id` automáticamente. El operador puede
+  asociar empresas desde la UI a posteriori.
+- **Errores por contacto**: hasta 100 errores se acumulan en
+  `error_summary` de la `sync_log` row; el resto se trunca.
+- **Cap por sync**: `MAX_CONTACTS_PER_SYNC = 50_000` por seguridad.
+  Las cuentas con más contactos completan la importación en
+  ejecuciones sucesivas (la idempotencia garantiza progreso).
+
+## Patrón para los siguientes conectores
+
+Para Brevo / Freshdesk / FactuSOL repetir el layout:
+
+1. `app/integrations/<system>/client.py` — subclase de
+   `IntegrationHTTPClient` con los endpoints del proveedor.
+2. `app/integrations/<system>/mapper.py` — traducción payload → CRM.
+3. `app/integrations/<system>/jobs.py` — handlers + registro en
+   `OPERATIONS["<system>:<operation>"]`.
+4. `app/integrations/<system>/__init__.py` — `from . import jobs`.
+5. En `app/workers/__init__.py`, añadir `from app.integrations import <system>`.
+6. Frontend: añadir `<system>: ['<operation>', ...]` a `SYSTEM_OPERATIONS`.
+
+Las colas RQ ya están declaradas en `docker-compose.prod.yml` para los
+cuatro sistemas previstos.
+
 ## Health checks
 
 - El servicio `worker` no expone HTTP; `docker compose ps` muestra el

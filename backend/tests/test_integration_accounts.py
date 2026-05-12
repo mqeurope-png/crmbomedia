@@ -269,6 +269,7 @@ def test_delete_account_with_references_requires_force(stack: Stack):
         session.add(
             ExternalReference(
                 system=ExternalSystem.AGILECRM,
+                account_id="default",
                 external_id="x",
                 contact_id=contact.id,
             )

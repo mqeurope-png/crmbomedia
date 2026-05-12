@@ -142,14 +142,26 @@ class Task(TimestampMixin, Base):
 
 class ExternalReference(TimestampMixin, Base):
     __tablename__ = "external_references"
-    __table_args__ = (UniqueConstraint("system", "external_id", name="uq_external_reference"),)
+    __table_args__ = (
+        UniqueConstraint(
+            "system",
+            "account_id",
+            "external_id",
+            name="uq_external_reference_system_account_external_id",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     system: Mapped[ExternalSystem] = mapped_column(
         Enum(ExternalSystem, native_enum=False, values_callable=enum_values, length=32),
         nullable=False,
     )
+    account_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     external_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    # Used by the AgileCRM quota-purge job (and analogous per-system
+    # cleanup tasks) to flag references whose remote record was deleted
+    # in origin. The row is preserved so the historical link survives.
+    external_status: Mapped[str | None] = mapped_column(String(40))
     account_label: Mapped[str | None] = mapped_column(String(255))
     contact_id: Mapped[str] = mapped_column(ForeignKey("contacts.id"), nullable=False)
 

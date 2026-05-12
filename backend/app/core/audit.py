@@ -89,6 +89,10 @@ class Action:
     INTEGRATION_SYNC_PARTIAL = "integration.sync_partial"
     INTEGRATION_SYNC_FAILED = "integration.sync_failed"
     INTEGRATION_WEBHOOK_RECEIVED = "integration.webhook_received"
+    # Per-record cleanups (e.g. AgileCRM quota purge). Metadata includes
+    # the remote external_id + the account that owned it; never includes
+    # any field of the contact beyond what's needed to identify the row.
+    INTEGRATION_QUOTA_DELETED = "integration.quota_deleted"
 
     # GDPR / RGPD subject-rights events
     GDPR_REQUEST_CREATED = "gdpr.request_created"

@@ -299,7 +299,11 @@ export default function IntegrationAccountsPage() {
                       </div>
                     ) : null}
 
-                    <SyncPanel system={account.system} accountId={account.account_id} />
+                    <SyncPanel
+                      system={account.system}
+                      accountId={account.account_id}
+                      account={account}
+                    />
                   </article>
                 );
               })}

@@ -274,9 +274,13 @@ export async function getIntegrationSyncLog(
 }
 
 // The per-system operations registry mirrors the backend's
-// `app.workers.jobs.OPERATIONS`. Empty for Sprint A — the SyncPanel
-// keeps the "Sincronizar ahora" button disabled when there's no entry.
-export const SYSTEM_OPERATIONS: Partial<Record<ExternalSystem, string[]>> = {};
+// `app.workers.jobs.OPERATIONS`. The SyncPanel uses it to keep the
+// "Sincronizar ahora" button disabled while a connector hasn't shipped
+// yet. Sprint A PR-2 lands AgileCRM; future PRs add Brevo, Freshdesk
+// and FactuSOL.
+export const SYSTEM_OPERATIONS: Partial<Record<ExternalSystem, string[]>> = {
+  agilecrm: ["sync_contacts", "purge_quota"],
+};
 
 export function hasOperationsRegistered(system: ExternalSystem): boolean {
   const list = SYSTEM_OPERATIONS[system];
@@ -286,4 +290,9 @@ export function hasOperationsRegistered(system: ExternalSystem): boolean {
 export function defaultOperationFor(system: ExternalSystem): string | null {
   const list = SYSTEM_OPERATIONS[system];
   return list && list.length ? list[0] : null;
+}
+
+export function hasOperation(system: ExternalSystem, operation: string): boolean {
+  const list = SYSTEM_OPERATIONS[system];
+  return Array.isArray(list) && list.includes(operation);
 }
