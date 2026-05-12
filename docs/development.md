@@ -17,7 +17,7 @@ Flujo recomendado:
 docker compose up --build
 ```
 
-Abre el puerto `3000` para el frontend y `8000` para FastAPI/OpenAPI. MySQL y Redis se levantan desde `docker-compose.yml` al ejecutar Docker Compose.
+Abre el puerto `3000` para el frontend y `8000` para FastAPI. La UI de OpenAPI vive en `http://localhost:8000/api/docs` (Swagger), `http://localhost:8000/api/redoc` (ReDoc) y el schema en `http://localhost:8000/api/openapi.json`; en producción el reverse proxy enruta solo `/api/*` al backend, así que estas rutas conviven con el frontend en el mismo dominio. MySQL y Redis se levantan desde `docker-compose.yml` al ejecutar Docker Compose.
 
 ## Backend
 

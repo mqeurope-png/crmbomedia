@@ -19,6 +19,14 @@ app = FastAPI(
         "API central para CRM propio e integraciones con AgileCRM, "
         "Brevo, Freshdesk y FactuSOL."
     ),
+    # The reverse proxy in production only routes `/api/*` to the
+    # backend, so the default `/docs`, `/redoc` and `/openapi.json`
+    # paths get swallowed by the Next.js app (404). Move all three
+    # under the `/api` prefix so the frontend "OpenAPI" button and
+    # any external integrator land on the right host.
+    docs_url="/api/docs",
+    redoc_url="/api/redoc",
+    openapi_url="/api/openapi.json",
 )
 
 app.add_middleware(

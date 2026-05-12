@@ -417,3 +417,31 @@ def test_audit_export_csv_and_json_requires_admin(client: TestClient):
     assert "contact.created" in csv_response.text
     assert json_response.status_code == 200
     assert any(row["action"] == "contact.created" for row in json_response.json())
+
+
+def test_openapi_endpoints_live_under_api_prefix(client: TestClient):
+    """The reverse proxy routes only `/api/*` to the backend. Swagger,
+    ReDoc and the OpenAPI schema must therefore be mounted under that
+    prefix; the FastAPI defaults at `/docs` / `/redoc` / `/openapi.json`
+    would be swallowed by Next.js."""
+    docs = client.get("/api/docs")
+    assert docs.status_code == 200
+    assert "swagger" in docs.text.lower()
+
+    redoc = client.get("/api/redoc")
+    assert redoc.status_code == 200
+    assert "redoc" in redoc.text.lower()
+
+    schema = client.get("/api/openapi.json")
+    assert schema.status_code == 200
+    body = schema.json()
+    assert body.get("openapi", "").startswith("3.")
+    # Sanity-check that real routes are present under the documented prefix.
+    paths = body.get("paths", {})
+    assert "/api/auth/login" in paths
+
+    # The legacy unprefixed paths must NOT respond — Next.js would
+    # otherwise believe they exist and produce confusing routing.
+    assert client.get("/docs").status_code == 404
+    assert client.get("/redoc").status_code == 404
+    assert client.get("/openapi.json").status_code == 404
