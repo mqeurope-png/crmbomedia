@@ -8,7 +8,9 @@ import { ErrorState } from "./components/ErrorState";
 import {
   clearStoredToken,
   getCompanies,
+  getCompaniesCount,
   getContacts,
+  getContactsCount,
   getCurrentUser,
   type Company,
   type Contact,
@@ -31,20 +33,34 @@ export default function Home() {
   const [user, setUser] = useState<User | null>(null);
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [companies, setCompanies] = useState<Company[]>([]);
+  // The list endpoints page at 20 by default, but the stat-cards must
+  // show the real totals. Fetch them via the dedicated /count endpoints.
+  const [contactsTotal, setContactsTotal] = useState<number | null>(null);
+  const [companiesTotal, setCompaniesTotal] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
     async function loadDashboard() {
       try {
-        const [currentUser, contactList, companyList] = await Promise.all([
+        const [
+          currentUser,
+          contactList,
+          companyList,
+          contactTotal,
+          companyTotal,
+        ] = await Promise.all([
           getCurrentUser(),
           getContacts(),
           getCompanies(),
+          getContactsCount(),
+          getCompaniesCount(),
         ]);
         setUser(currentUser);
         setContacts(contactList);
         setCompanies(companyList);
+        setContactsTotal(contactTotal);
+        setCompaniesTotal(companyTotal);
       } catch (err) {
         setError(extractErrorMessage(err, "Arranca la API o inicia sesión de nuevo."));
       } finally {
@@ -106,8 +122,14 @@ export default function Home() {
       </section>
 
       <section className="stats-grid" aria-label="Resumen CRM">
-        <article className="stat-card"><span>{contacts.length}</span><p>Contactos activos</p></article>
-        <article className="stat-card"><span>{companies.length}</span><p>Empresas activas</p></article>
+        <article className="stat-card">
+          <span>{contactsTotal ?? contacts.length}</span>
+          <p>Contactos activos</p>
+        </article>
+        <article className="stat-card">
+          <span>{companiesTotal ?? companies.length}</span>
+          <p>Empresas activas</p>
+        </article>
         <article className="stat-card"><span>4</span><p>Roles disponibles</p></article>
       </section>
 

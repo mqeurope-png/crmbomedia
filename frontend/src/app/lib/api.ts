@@ -176,6 +176,11 @@ export async function getContacts(): Promise<Contact[]> {
   return apiFetch<Contact[]>("/api/contacts?limit=20");
 }
 
+export async function getContactsCount(): Promise<number> {
+  const body = await apiFetch<{ total: number }>("/api/contacts/count");
+  return body.total;
+}
+
 export async function getContact(id: string): Promise<Contact> {
   return apiFetch<Contact>(`/api/contacts/${id}`);
 }
@@ -193,6 +198,11 @@ export async function deactivateContact(id: string): Promise<Contact> {
 
 export async function getCompanies(): Promise<Company[]> {
   return apiFetch<Company[]>("/api/companies?limit=20");
+}
+
+export async function getCompaniesCount(): Promise<number> {
+  const body = await apiFetch<{ total: number }>("/api/companies/count");
+  return body.total;
 }
 
 export async function updateCompany(id: string, payload: Record<string, unknown>): Promise<Company> {
