@@ -211,6 +211,79 @@ def test_list_contacts_underflow_returns_no_cursor(session_factory):
     assert cursor is None
 
 
+def test_list_contacts_omits_cursor_param_on_first_call(session_factory):
+    """AgileCRM responds 500 with `IllegalArgumentException: Invalid
+    cursor` when the request includes `cursor=` with an empty value.
+    `list_contacts(cursor=None)` must not put the parameter in the URL
+    at all."""
+    captured: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["query"] = request.url.query.decode("utf-8")
+        return httpx.Response(200, json=[])
+
+    with session_factory() as session:
+        _run_with_transport(
+            session,
+            _make_transport(handler),
+            lambda client: client.list_contacts(page_size=25, cursor=None),
+        )
+    assert "cursor" not in captured["query"], (
+        f"first-page request leaked an empty cursor: {captured['query']!r}"
+    )
+    assert "page_size=25" in captured["query"]
+
+
+def test_list_contacts_includes_cursor_param_when_paginating(session_factory):
+    """Once we have a non-empty cursor (next-page token from AgileCRM),
+    it must travel in the query string verbatim."""
+    captured: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["query"] = request.url.query.decode("utf-8")
+        return httpx.Response(200, json=[])
+
+    with session_factory() as session:
+        _run_with_transport(
+            session,
+            _make_transport(handler),
+            lambda client: client.list_contacts(page_size=25, cursor="ABC123"),
+        )
+    assert "cursor=ABC123" in captured["query"]
+
+
+def test_list_contacts_does_not_leak_order_by_when_unset(session_factory):
+    """Same defensive contract for `order_by`: omit when the caller
+    didn't pass anything. AgileCRM's parser is fussy about empty values
+    in other params too."""
+    captured: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["query"] = request.url.query.decode("utf-8")
+        return httpx.Response(200, json=[])
+
+    with session_factory() as session:
+        _run_with_transport(
+            session,
+            _make_transport(handler),
+            lambda client: client.list_contacts(),
+        )
+    assert "order_by" not in captured["query"]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=[{"id": 1}, {"id": 2}])
+
+    with session_factory() as session:
+        items, cursor = _run_with_transport(
+            session,
+            _make_transport(handler),
+            lambda client: client.list_contacts(page_size=10),
+        )
+    assert len(items) == 2
+    assert cursor is None
+
+
 def test_unauthorized_marks_credential_error(session_factory):
     """401 must propagate through the parent's auth handling — flips
     `credential_status='error'` and raises `IntegrationAuthError`."""

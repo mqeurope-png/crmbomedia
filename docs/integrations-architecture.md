@@ -340,6 +340,24 @@ Versiones anteriores guardaban ambos en el campo cifrado, separados por
   lanza `IntegrationAuthError` con un mensaje claro pidiendo que se
   configure ambos en `/admin/integrations`.
 
+### Paginación: cursor sólo cuando es real
+
+AgileCRM rechaza `GET /dev/api/contacts?...&cursor=` (valor vacío) con
+HTTP 500 + body:
+
+```json
+{"exception message":"java.lang.IllegalArgumentException: Invalid cursor","status":"500"}
+```
+
+`AgileCRMClient.list_contacts` construye los query params con un
+truthy-check (`if cursor:`) para que la primera llamada — cuando
+todavía no hay token de paginación — envíe sólo `page_size`. Idéntica
+política para `order_by`: se omite cuando el caller no pasa nada. La
+regresión está cubierta por
+`tests/test_agilecrm_client.py::test_list_contacts_omits_cursor_param_on_first_call`,
+`...::test_list_contacts_includes_cursor_param_when_paginating` y
+`...::test_list_contacts_does_not_leak_order_by_when_unset`.
+
 ### Idempotencia y dedup multi-cuenta
 
 `sync_agilecrm_contacts` decide qué hacer en este orden:
