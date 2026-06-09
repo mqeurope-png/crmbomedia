@@ -16,8 +16,8 @@ Idempotent: re-running the data step finds existing tags by
 `name_normalized` and skips rows already linked.
 """
 from collections.abc import Sequence
-from uuid import uuid4
 from datetime import datetime, timezone
+from uuid import uuid4
 
 import sqlalchemy as sa
 from alembic import op
