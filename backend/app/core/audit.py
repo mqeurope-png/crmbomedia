@@ -129,6 +129,8 @@ class Action:
     CONTACT_PIPELINE_STAGE_CHANGED = "contact_pipeline_stage.stage_changed"
     CONTACT_PIPELINE_STAGE_ARCHIVED = "contact_pipeline_stage.archived"
 
+    PIPELINE_AI_GENERATED = "pipeline.ai_generated"
+
     # GDPR / RGPD subject-rights events
     GDPR_REQUEST_CREATED = "gdpr.request_created"
     GDPR_REQUEST_UPDATED = "gdpr.request_updated"
