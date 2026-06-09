@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { listTags, type ContactListFilters, type TagDetail } from "../lib/api";
+import type { ContactListFilters } from "../lib/api";
+import { TagMultiSelectFilter } from "./TagMultiSelectFilter";
 
 type Props = {
   filters: ContactListFilters;
@@ -35,73 +35,35 @@ const ORIGIN_SYSTEMS = [
 ];
 
 export function ContactFilters({ filters, onChange, onReset }: Props) {
-  const [tags, setTags] = useState<TagDetail[]>([]);
-  const [tagsError, setTagsError] = useState<string | null>(null);
-
-  useEffect(() => {
-    listTags()
-      .then((page) => setTags(page.items))
-      .catch(() => setTagsError("Tags no disponibles"));
-  }, []);
-
   const update = (patch: Partial<ContactListFilters>) =>
     onChange({ ...filters, ...patch, skip: 0 });
 
-  const selectedTagIds = new Set(filters.tag_ids ?? []);
+  const selectedTagIds = filters.tag_ids ?? [];
 
   return (
     <div className="contact-filters" role="group" aria-label="Filtros de contactos">
       <div className="filter-block filter-block-tags">
         <span className="filter-label">Tags</span>
-        {tagsError ? (
-          <span className="muted small">{tagsError}</span>
-        ) : tags.length === 0 ? (
-          <span className="muted small">Sin tags configurados</span>
-        ) : (
-          <div className="filter-tag-list">
-            {tags.map((tag) => {
-              const checked = selectedTagIds.has(tag.id);
-              return (
-                <label
-                  key={tag.id}
-                  className={`filter-tag-chip${checked ? " is-selected" : ""}`}
-                  style={tag.color ? { borderColor: tag.color } : undefined}
-                >
-                  <input
-                    type="checkbox"
-                    checked={checked}
-                    onChange={() => {
-                      const next = new Set(selectedTagIds);
-                      if (checked) next.delete(tag.id);
-                      else next.add(tag.id);
-                      update({
-                        tag_ids: next.size ? Array.from(next) : undefined,
-                      });
-                    }}
-                  />
-                  {tag.color ? (
-                    <span
-                      className="tag-picker-swatch"
-                      style={{ background: tag.color }}
-                      aria-hidden
-                    />
-                  ) : null}
-                  <span>{tag.name}</span>
-                </label>
-              );
-            })}
-          </div>
-        )}
-        <label className="checkbox">
-          <input
-            type="checkbox"
-            checked={filters.tag_match_mode === "all"}
-            onChange={(event) =>
-              update({ tag_match_mode: event.target.checked ? "all" : "any" })
-            }
-          />
-          <span>Todas las tags (en vez de cualquiera)</span>
-        </label>
+        <TagMultiSelectFilter
+          selectedIds={selectedTagIds}
+          onChange={(next) =>
+            update({ tag_ids: next.length ? next : undefined })
+          }
+          footer={
+            <label className="checkbox">
+              <input
+                type="checkbox"
+                checked={filters.tag_match_mode === "all"}
+                onChange={(event) =>
+                  update({
+                    tag_match_mode: event.target.checked ? "all" : "any",
+                  })
+                }
+              />
+              <span>Todas las tags (en vez de cualquiera)</span>
+            </label>
+          }
+        />
       </div>
 
       <label>

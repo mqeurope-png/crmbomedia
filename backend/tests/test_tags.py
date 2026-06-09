@@ -46,7 +46,7 @@ def _create_contact(client: TestClient, email: str = "ana@example.com") -> dict:
     return response.json()
 
 
-def _create_tag(client: TestClient, name: str = "VIP", color: str = "#FF5733") -> dict:
+def _create_tag(client: TestClient, name: str = "VIP", color: str = "#ef4444") -> dict:
     response = client.post(
         "/api/tags",
         json={"name": name, "color": color},
@@ -280,3 +280,62 @@ def test_delete_tag_cascades_assignments(client: TestClient):
         assert session.query(ContactTag).count() == 0
     finally:
         gen.close()
+
+
+def test_tag_create_rejects_off_palette_color(client: TestClient):
+    """The palette swatches are the only colours an operator can save
+    going forward — a hand-crafted API call with a random hex must
+    422. This stops a re-used dropdown from drifting into incoherent
+    colours over time."""
+    response = client.post(
+        "/api/tags",
+        json={"name": "Custom", "color": "#abcdef"},
+        headers=auth_headers(client, "manager"),
+    )
+    assert response.status_code == 422
+    assert "palette" in response.text
+
+
+def test_tag_create_accepts_palette_color(client: TestClient):
+    from app.schemas.crm import TAG_COLOR_PALETTE
+
+    response = client.post(
+        "/api/tags",
+        json={"name": "Blue", "color": TAG_COLOR_PALETTE[15]},
+        headers=auth_headers(client, "manager"),
+    )
+    assert response.status_code == 201
+    assert response.json()["color"] == TAG_COLOR_PALETTE[15]
+
+
+def test_tag_create_accepts_null_color(client: TestClient):
+    """A tag without a color renders with the default UI swatch.
+    The API must accept null AND empty string to clear the value."""
+    response = client.post(
+        "/api/tags",
+        json={"name": "No colour", "color": None},
+        headers=auth_headers(client, "manager"),
+    )
+    assert response.status_code == 201
+    assert response.json()["color"] is None
+
+
+def test_tag_color_validation_is_case_insensitive(client: TestClient):
+    response = client.post(
+        "/api/tags",
+        json={"name": "Mixed case", "color": "#3B82F6"},
+        headers=auth_headers(client, "manager"),
+    )
+    assert response.status_code == 201
+    # Normalised to lowercase so equality comparisons are deterministic.
+    assert response.json()["color"] == "#3b82f6"
+
+
+def test_tag_update_blocks_off_palette_color(client: TestClient):
+    created = _create_tag(client, name="Edit me", color="#3b82f6")
+    response = client.patch(
+        f"/api/tags/{created['id']}",
+        json={"color": "#ffffff"},
+        headers=auth_headers(client, "manager"),
+    )
+    assert response.status_code == 422
