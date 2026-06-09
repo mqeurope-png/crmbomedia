@@ -1649,3 +1649,33 @@ td {
 @media (max-width: 860px) {
   .contact-pipeline-row { grid-template-columns: 1fr; }
 }
+
+/* ---------------------------------------------------------------- */
+/* Pipeline report chart (Sprint P.2 PR-C)                          */
+/* ---------------------------------------------------------------- */
+
+.pipeline-chart-wrapper {
+  overflow-x: auto;
+}
+
+.pipeline-chart {
+  max-width: 100%;
+  height: auto;
+  min-width: 480px;
+}
+
+.pipeline-chart-bar { fill: var(--brand); }
+.pipeline-chart-bar.is-stale { fill: var(--danger); }
+.pipeline-chart-count {
+  font-size: 11px;
+  font-weight: 700;
+  fill: var(--ink);
+}
+.pipeline-chart-conversion {
+  font-size: 10px;
+  fill: var(--muted);
+}
+.pipeline-chart-label {
+  font-size: 11px;
+  fill: var(--ink);
+}

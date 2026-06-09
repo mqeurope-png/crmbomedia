@@ -706,3 +706,58 @@ def _days_to_timedelta(days: int):
     from datetime import timedelta as _td
 
     return _td(days=days)
+
+
+def list_stalled_contacts(
+    session: Session, pipeline: Pipeline, *, limit: int = 200
+) -> list[dict[str, Any]]:
+    """Return active assignments whose days-in-stage exceeds the
+    stage's `target_days`. Sorted by overdue days desc so the most
+    urgent rows surface first."""
+    now = datetime.now(UTC)
+    out: list[dict[str, Any]] = []
+    for stage in sorted(pipeline.stages, key=lambda s: s.position):
+        if not stage.target_days:
+            continue
+        assignments = list(
+            session.scalars(
+                select(ContactPipelineStage).where(
+                    ContactPipelineStage.stage_id == stage.id,
+                    ContactPipelineStage.is_archived.is_(False),
+                )
+            )
+        )
+        if not assignments:
+            continue
+        contact_ids = [a.contact_id for a in assignments]
+        contacts = {
+            c.id: c
+            for c in session.scalars(
+                select(Contact).where(Contact.id.in_(contact_ids))
+            )
+        }
+        for assignment in assignments:
+            entered = _ensure_tz(assignment.entered_stage_at)
+            days = max(0, (now - entered).days)
+            if days <= stage.target_days:
+                continue
+            contact = contacts.get(assignment.contact_id)
+            if contact is None:
+                continue
+            out.append(
+                {
+                    "assignment_id": assignment.id,
+                    "contact_id": contact.id,
+                    "first_name": contact.first_name,
+                    "last_name": contact.last_name,
+                    "email": contact.email,
+                    "stage_id": stage.id,
+                    "stage_name": stage.name,
+                    "target_days": stage.target_days,
+                    "days_in_stage": days,
+                    "overdue_days": days - stage.target_days,
+                    "entered_stage_at": entered,
+                }
+            )
+    out.sort(key=lambda row: row["overdue_days"], reverse=True)
+    return out[:limit]

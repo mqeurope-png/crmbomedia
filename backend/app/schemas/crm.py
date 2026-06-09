@@ -1005,3 +1005,22 @@ class PipelineReportResponse(BaseModel):
     won_count: int
     lost_count: int
     metrics: list[PipelineStageMetric]
+
+
+class StalledContactRow(BaseModel):
+    """Row in `GET /api/pipelines/{id}/stalled-contacts`. Cards the
+    operator needs to nudge: the contact card + how many days they've
+    been in the stage vs the SLA. The fields mirror what the kanban
+    card uses so the same React renderer can be reused."""
+
+    assignment_id: str
+    contact_id: str
+    first_name: str
+    last_name: str | None = None
+    email: str
+    stage_id: str
+    stage_name: str
+    target_days: int
+    days_in_stage: int
+    overdue_days: int
+    entered_stage_at: datetime

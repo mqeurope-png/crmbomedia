@@ -102,6 +102,7 @@ from app.schemas.crm import (
     PipelineStageReorderRequest,
     PipelineStageUpdate,
     PipelineUpdate,
+    StalledContactRow,
     TagCreate,
     TagDetailRead,
     TagListPage,
@@ -2876,6 +2877,31 @@ def pipeline_report(
         lost_count=report["lost_count"],
         metrics=[PipelineStageMetric(**m) for m in report["metrics"]],
     )
+
+
+@router.get(
+    "/pipelines/{pipeline_id}/stalled-contacts",
+    response_model=list[StalledContactRow],
+    responses=ERROR_RESPONSES,
+    tags=["crm"],
+)
+def pipeline_stalled_contacts(
+    pipeline_id: str,
+    limit: int = Query(default=200, ge=1, le=500),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_viewer),
+) -> list[StalledContactRow]:
+    """Surfaces the contacts that have been in their current stage
+    longer than its `target_days`. Sorted by overdue days desc so the
+    most urgent rows render at the top of the report screen."""
+    _ = current_user
+    pipeline = pipelines_repository.get_pipeline(session, pipeline_id)
+    if not pipeline:
+        raise not_found("Pipeline")
+    rows = pipelines_repository.list_stalled_contacts(
+        session, pipeline, limit=limit
+    )
+    return [StalledContactRow(**row) for row in rows]
 
 
 router.include_router(integration_accounts_router)
