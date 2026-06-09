@@ -24,6 +24,7 @@ CONTACT_SORT_COLUMNS = {
     "email": Contact.email,
     "created_at": Contact.created_at,
     "updated_at": Contact.updated_at,
+    "lead_score": Contact.lead_score,
 }
 
 

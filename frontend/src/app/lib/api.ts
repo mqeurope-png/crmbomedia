@@ -61,6 +61,21 @@ export type Task = {
   due_at?: string | null;
 };
 
+export type ExternalReference = {
+  id: string;
+  system: string;
+  account_id: string;
+  external_id: string;
+  account_label?: string | null;
+  contact_id: string;
+  external_created_at?: string | null;
+  external_updated_at?: string | null;
+  origin_detail?: string | null;
+  metadata?: Record<string, unknown> | null;
+  created_at: string;
+  updated_at: string;
+};
+
 export type Contact = {
   id: string;
   first_name: string;
@@ -75,8 +90,15 @@ export type Contact = {
   is_active: boolean;
   updated_at?: string;
   created_at?: string;
+  address_country?: string | null;
+  address_country_name?: string | null;
+  address_state?: string | null;
+  address_city?: string | null;
+  lead_score?: number | null;
+  custom_fields?: Record<string, unknown> | null;
   notes?: Note[];
   tasks?: Task[];
+  external_refs?: ExternalReference[];
 };
 
 export type ContactListFilters = {
@@ -86,7 +108,7 @@ export type ContactListFilters = {
   origin_account_id?: string;
   commercial_status?: string;
   marketing_consent?: string;
-  sort_by?: "name" | "email" | "created_at" | "updated_at";
+  sort_by?: "name" | "email" | "created_at" | "updated_at" | "lead_score";
   sort_dir?: "asc" | "desc";
   skip?: number;
   limit?: number;

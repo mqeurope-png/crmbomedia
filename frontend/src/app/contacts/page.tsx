@@ -88,6 +88,13 @@ export default function ContactsListPage() {
     if (!page || page.limit === 0) return 1;
     return Math.floor(page.offset / page.limit) + 1;
   }, [page]);
+  // Only show the lead-score column when at least one row in the
+  // current page has a score. Otherwise the column is dead space for
+  // tenants who haven't imported AgileCRM data yet.
+  const showLeadScore = useMemo(
+    () => Boolean(page?.items.some((c) => typeof c.lead_score === "number")),
+    [page],
+  );
 
   const handleReset = useCallback(() => {
     setSearchInput("");
@@ -154,6 +161,8 @@ export default function ContactsListPage() {
               <option value="updated_at:desc">Última actualización</option>
               <option value="name:asc">Nombre (A→Z)</option>
               <option value="email:asc">Email (A→Z)</option>
+              <option value="lead_score:desc">Lead score (mayor primero)</option>
+              <option value="lead_score:asc">Lead score (menor primero)</option>
             </select>
           </label>
         </div>
@@ -185,6 +194,7 @@ export default function ContactsListPage() {
                     <th scope="col">Origen</th>
                     <th scope="col">Estado</th>
                     <th scope="col">Consentimiento</th>
+                    {showLeadScore ? <th scope="col">Lead score</th> : null}
                     <th scope="col">Actualizado</th>
                   </tr>
                 </thead>
@@ -208,6 +218,9 @@ export default function ContactsListPage() {
                           {contact.marketing_consent}
                         </span>
                       </td>
+                      {showLeadScore ? (
+                        <td>{contact.lead_score ?? "—"}</td>
+                      ) : null}
                       <td>{formatDate(contact.updated_at)}</td>
                     </tr>
                   ))}
