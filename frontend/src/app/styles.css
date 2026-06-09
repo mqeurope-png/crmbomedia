@@ -1521,3 +1521,131 @@ td {
 @media (max-width: 880px) {
   .stage-editor-row { grid-template-columns: 1fr; }
 }
+
+/* ---------------------------------------------------------------- */
+/* Kanban view (Sprint P.2 PR-B)                                    */
+/* ---------------------------------------------------------------- */
+
+.kanban {
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  padding-bottom: 8px;
+  margin-top: 18px;
+}
+
+.kanban-column {
+  flex: 0 0 280px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-top: 4px solid var(--brand);
+  border-radius: 14px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 200px;
+}
+
+.kanban-column.is-won { border-top-color: var(--success); }
+.kanban-column.is-lost { border-top-color: var(--danger); }
+
+.kanban-column-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.kanban-column-title {
+  font-weight: 700;
+  text-transform: uppercase;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+}
+
+.kanban-column-target { font-size: 11px; }
+
+.kanban-column-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1 1 auto;
+}
+
+.kanban-card {
+  background: white;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px 12px;
+  cursor: grab;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+
+.kanban-card a {
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.kanban-card.is-stale {
+  border-color: var(--danger);
+  background: #fff8f7;
+}
+
+.kanban-card-meta {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  margin-top: 4px;
+}
+
+.kanban-card-score {
+  background: #fef3c7;
+  color: #92400e;
+  border-radius: 999px;
+  padding: 1px 8px;
+  font-weight: 700;
+  font-size: 11px;
+}
+
+/* ---------------------------------------------------------------- */
+/* Contact-detail Pipelines section                                 */
+/* ---------------------------------------------------------------- */
+
+.contact-pipeline-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.contact-pipeline-row {
+  display: grid;
+  grid-template-columns: 1fr 220px auto auto;
+  gap: 10px;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 8px 12px;
+}
+
+.contact-pipeline-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.contact-pipeline-row select {
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  font: inherit;
+}
+
+@media (max-width: 860px) {
+  .contact-pipeline-row { grid-template-columns: 1fr; }
+}

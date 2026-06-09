@@ -934,6 +934,26 @@ class ContactPipelineStageRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class ContactPipelineSummary(BaseModel):
+    """Compact row the contact-detail page uses to surface every
+    pipeline a contact lives in. One round-trip beats N calls to
+    `GET /pipelines/{id}` from the UI."""
+
+    assignment_id: str
+    pipeline_id: str
+    pipeline_name: str
+    pipeline_color: str | None = None
+    stage_id: str
+    stage_name: str
+    stage_color: str | None = None
+    stage_position: int
+    is_won: bool
+    is_lost: bool
+    days_in_stage: int
+    entered_stage_at: datetime
+    added_to_pipeline_at: datetime
+
+
 class PipelineContactCard(BaseModel):
     """Compact row used by the kanban view — enough to render a card
     without re-fetching the full contact."""

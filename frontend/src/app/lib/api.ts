@@ -1025,3 +1025,29 @@ export async function archivePipelineAssignment(
     { method: "DELETE" },
   );
 }
+
+export type ContactPipelineSummary = {
+  assignment_id: string;
+  pipeline_id: string;
+  pipeline_name: string;
+  pipeline_color?: string | null;
+  stage_id: string;
+  stage_name: string;
+  stage_color?: string | null;
+  stage_position: number;
+  is_won: boolean;
+  is_lost: boolean;
+  days_in_stage: number;
+  entered_stage_at: string;
+  added_to_pipeline_at: string;
+};
+
+export async function listContactPipelines(
+  contactId: string,
+  includeArchived = false,
+): Promise<ContactPipelineSummary[]> {
+  const query = includeArchived ? "?include_archived=true" : "";
+  return apiFetch<ContactPipelineSummary[]>(
+    `/api/contacts/${contactId}/pipelines${query}`,
+  );
+}
