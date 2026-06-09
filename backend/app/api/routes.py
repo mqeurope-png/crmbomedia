@@ -44,7 +44,7 @@ from app.core.totp import (
     verify_totp_code,
 )
 from app.db.session import get_session
-from app.models.crm import Company, Contact, Note, Task, User
+from app.models.crm import Company, Contact, ExternalSystem, Note, Task, User
 from app.repositories import crm as crm_repository
 from app.services.email import EmailService, get_email_service
 from app.schemas.crm import (
@@ -55,6 +55,7 @@ from app.schemas.crm import (
     CompanyUpdate,
     ContactCreate,
     ContactDetailRead,
+    ContactListPage,
     ContactRead,
     ContactUpdate,
     CountRead,
@@ -1045,18 +1046,68 @@ def create_contact(
     return contact
 
 
-@router.get("/contacts", response_model=list[ContactRead], responses=ERROR_RESPONSES, tags=["crm"])
+@router.get(
+    "/contacts",
+    response_model=ContactListPage,
+    responses=ERROR_RESPONSES,
+    tags=["crm"],
+)
 def list_contacts(
-    q: str | None = Query(default=None, description="Busca por nombre, apellidos o email"),
+    q: str | None = Query(
+        default=None, description="Busca por nombre, apellidos, email o teléfono"
+    ),
+    tag: str | None = Query(default=None, description="Filtra por un tag exacto del CSV `tags`"),
+    origin_system: ExternalSystem | None = Query(
+        default=None,
+        description="Filtra por sistema de origen vía external_references.system",
+    ),
+    origin_account_id: str | None = Query(
+        default=None,
+        description="Filtra por cuenta de integración vía external_references.account_id",
+    ),
+    commercial_status: str | None = Query(default=None, max_length=80),
+    marketing_consent: str | None = Query(default=None, max_length=40),
+    sort_by: str = Query(
+        default="created_at",
+        description="created_at | updated_at | name | email",
+    ),
+    sort_dir: str = Query(default="desc", pattern="^(asc|desc)$"),
     skip: int = Query(default=0, ge=0),
-    limit: int = Query(default=50, ge=1, le=100),
+    limit: int = Query(default=25, ge=1, le=100),
     include_inactive: bool = Query(default=False),
     session: Session = Depends(get_session),
     current_user: User = Depends(require_viewer),
-) -> list[Contact]:
+) -> ContactListPage:
     _ = current_user
-    return crm_repository.list_contacts(
-        session=session, q=q, skip=skip, limit=limit, include_inactive=include_inactive
+    items = crm_repository.list_contacts(
+        session=session,
+        q=q,
+        tag=tag,
+        origin_system=origin_system,
+        origin_account_id=origin_account_id,
+        commercial_status=commercial_status,
+        marketing_consent=marketing_consent,
+        skip=skip,
+        limit=limit,
+        include_inactive=include_inactive,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+    )
+    total = crm_repository.count_contacts(
+        session=session,
+        q=q,
+        tag=tag,
+        origin_system=origin_system,
+        origin_account_id=origin_account_id,
+        commercial_status=commercial_status,
+        marketing_consent=marketing_consent,
+        include_inactive=include_inactive,
+    )
+    return ContactListPage(
+        items=[ContactRead.model_validate(c) for c in items],
+        total=total,
+        limit=limit,
+        offset=skip,
     )
 
 
@@ -1068,6 +1119,11 @@ def list_contacts(
 )
 def count_contacts(
     q: str | None = Query(default=None, description="Busca por nombre, apellidos o email"),
+    tag: str | None = Query(default=None),
+    origin_system: ExternalSystem | None = Query(default=None),
+    origin_account_id: str | None = Query(default=None),
+    commercial_status: str | None = Query(default=None, max_length=80),
+    marketing_consent: str | None = Query(default=None, max_length=40),
     include_inactive: bool = Query(default=False),
     session: Session = Depends(get_session),
     current_user: User = Depends(require_viewer),
@@ -1077,7 +1133,14 @@ def count_contacts(
     real en vez de la longitud de la primera página paginada."""
     _ = current_user
     total = crm_repository.count_contacts(
-        session=session, q=q, include_inactive=include_inactive
+        session=session,
+        q=q,
+        tag=tag,
+        origin_system=origin_system,
+        origin_account_id=origin_account_id,
+        commercial_status=commercial_status,
+        marketing_consent=marketing_consent,
+        include_inactive=include_inactive,
     )
     return CountRead(total=total)
 

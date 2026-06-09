@@ -234,8 +234,231 @@ def test_search_and_paginate_contacts(client: TestClient):
     )
 
     assert response.status_code == 200
-    assert len(response.json()) == 1
-    assert response.json()[0]["email"] == "marta@example.com"
+    body = response.json()
+    # The list endpoint returns a wrapper with `total` so the UI can
+    # paginate without a second `/count` round-trip. Items, total, limit
+    # and offset must all be present.
+    assert body["total"] == 1
+    assert body["limit"] == 5
+    assert body["offset"] == 0
+    assert len(body["items"]) == 1
+    assert body["items"][0]["email"] == "marta@example.com"
+
+
+def test_contacts_list_filter_by_tag(client: TestClient):
+    """`tag=` matches an exact CSV token, never a substring. "VIP" must
+    not pull rows tagged "VIPS"."""
+    headers = auth_headers(client, "manager")
+    for first_name, email, tags in (
+        ("Ana", "ana@example.com", "vip,priority"),
+        ("Boris", "boris@example.com", "newsletter"),
+        ("Carla", "carla@example.com", "vips"),
+        ("Diego", "diego@example.com", "vip"),
+    ):
+        client.post(
+            "/api/contacts",
+            json={
+                "first_name": first_name,
+                "email": email,
+                "tags": tags,
+                "marketing_consent": "unknown",
+            },
+            headers=headers,
+        )
+
+    response = client.get(
+        "/api/contacts",
+        params={"tag": "vip"},
+        headers=auth_headers(client, "viewer"),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    emails = sorted(item["email"] for item in body["items"])
+    assert emails == ["ana@example.com", "diego@example.com"]
+    assert body["total"] == 2
+
+
+def test_contacts_list_filter_by_commercial_status(client: TestClient):
+    headers = auth_headers(client, "manager")
+    for name, email, status_value in (
+        ("Ana", "ana@example.com", "qualified"),
+        ("Boris", "boris@example.com", "new"),
+    ):
+        client.post(
+            "/api/contacts",
+            json={
+                "first_name": name,
+                "email": email,
+                "commercial_status": status_value,
+                "marketing_consent": "unknown",
+            },
+            headers=headers,
+        )
+
+    response = client.get(
+        "/api/contacts",
+        params={"commercial_status": "qualified"},
+        headers=auth_headers(client, "viewer"),
+    )
+
+    body = response.json()
+    assert body["total"] == 1
+    assert body["items"][0]["email"] == "ana@example.com"
+
+
+def test_contacts_list_filter_by_marketing_consent(client: TestClient):
+    headers = auth_headers(client, "manager")
+    for name, email, consent in (
+        ("Ana", "ana@example.com", "granted"),
+        ("Boris", "boris@example.com", "denied"),
+        ("Carla", "carla@example.com", "unknown"),
+    ):
+        client.post(
+            "/api/contacts",
+            json={
+                "first_name": name,
+                "email": email,
+                "marketing_consent": consent,
+            },
+            headers=headers,
+        )
+
+    response = client.get(
+        "/api/contacts",
+        params={"marketing_consent": "granted"},
+        headers=auth_headers(client, "viewer"),
+    )
+    body = response.json()
+    assert body["total"] == 1
+    assert body["items"][0]["email"] == "ana@example.com"
+
+
+def test_contacts_list_sort_by_email_asc(client: TestClient):
+    headers = auth_headers(client, "manager")
+    for name, email in (
+        ("Carla", "carla@example.com"),
+        ("Ana", "ana@example.com"),
+        ("Boris", "boris@example.com"),
+    ):
+        client.post(
+            "/api/contacts",
+            json={
+                "first_name": name,
+                "email": email,
+                "marketing_consent": "unknown",
+            },
+            headers=headers,
+        )
+
+    response = client.get(
+        "/api/contacts",
+        params={"sort_by": "email", "sort_dir": "asc"},
+        headers=auth_headers(client, "viewer"),
+    )
+    body = response.json()
+    assert [item["email"] for item in body["items"]] == [
+        "ana@example.com",
+        "boris@example.com",
+        "carla@example.com",
+    ]
+
+
+def test_contacts_list_unknown_sort_by_falls_back_to_created_at(client: TestClient):
+    """A malicious `sort_by=secret_column` must not leak into the SQL.
+    The repository whitelist drops back to `created_at desc`."""
+    headers = auth_headers(client, "manager")
+    create_contact(client, "ana@example.com")
+    create_contact(client, "boris@example.com")
+
+    response = client.get(
+        "/api/contacts",
+        params={"sort_by": "id; drop table contacts"},
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    assert response.json()["total"] == 2
+
+
+def test_contacts_list_filter_by_origin_system(client: TestClient):
+    """`origin_system` filters via external_references. A contact with no
+    reference for the requested system must not appear in the page."""
+    from app.models.crm import Contact, ExternalReference, ExternalSystem
+
+    ana = create_contact(client, "ana@example.com")
+    boris = create_contact(client, "boris@example.com")
+
+    # Wire ana to AgileCRM directly through the SQLAlchemy session; the
+    # API doesn't expose a "link to integration account" endpoint yet.
+    session_factory = app.dependency_overrides[get_session]
+    session_gen = session_factory()
+    session = next(session_gen)
+    try:
+        session.add(
+            ExternalReference(
+                system=ExternalSystem.AGILECRM,
+                external_id="ana-1",
+                account_id="acct-1",
+                contact_id=session.get(Contact, ana["id"]).id,
+            )
+        )
+        session.commit()
+    finally:
+        session_gen.close()
+
+    response = client.get(
+        "/api/contacts",
+        params={"origin_system": "agilecrm"},
+        headers=auth_headers(client, "viewer"),
+    )
+    body = response.json()
+    emails = [item["email"] for item in body["items"]]
+    assert emails == ["ana@example.com"]
+    assert body["total"] == 1
+    assert boris["email"] not in emails
+
+
+def test_contacts_list_filter_by_origin_account_id(client: TestClient):
+    """`origin_account_id` narrows the origin filter to one integration
+    account. Two AgileCRM accounts must not bleed into each other."""
+    from app.models.crm import Contact, ExternalReference, ExternalSystem
+
+    ana = create_contact(client, "ana@example.com")
+    boris = create_contact(client, "boris@example.com")
+
+    session_factory = app.dependency_overrides[get_session]
+    session_gen = session_factory()
+    session = next(session_gen)
+    try:
+        session.add_all(
+            [
+                ExternalReference(
+                    system=ExternalSystem.AGILECRM,
+                    external_id="ana-1",
+                    account_id="acct-A",
+                    contact_id=session.get(Contact, ana["id"]).id,
+                ),
+                ExternalReference(
+                    system=ExternalSystem.AGILECRM,
+                    external_id="boris-1",
+                    account_id="acct-B",
+                    contact_id=session.get(Contact, boris["id"]).id,
+                ),
+            ]
+        )
+        session.commit()
+    finally:
+        session_gen.close()
+
+    response = client.get(
+        "/api/contacts",
+        params={"origin_system": "agilecrm", "origin_account_id": "acct-A"},
+        headers=auth_headers(client, "viewer"),
+    )
+    body = response.json()
+    assert body["total"] == 1
+    assert body["items"][0]["email"] == "ana@example.com"
 
 
 def test_get_contact_detail(client: TestClient):

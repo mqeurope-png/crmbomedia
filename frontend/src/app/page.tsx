@@ -109,7 +109,8 @@ export default function Home() {
           con AgileCRM, Brevo, Freshdesk o FactuSOL.
         </p>
         <div className="actions">
-          <Link href="/contacts/new" className="button">Crear contacto</Link>
+          <Link href="/contacts" className="button">Ver todos los contactos</Link>
+          <Link href="/contacts/new" className="button secondary">Crear contacto</Link>
           <a href={`${apiBaseUrl}/api/docs`} className="button secondary">OpenAPI</a>
           <Link href="/account/password" className="button secondary">Contraseña</Link>
           <Link href="/account/security" className="button secondary">Seguridad / 2FA</Link>
@@ -137,7 +138,7 @@ export default function Home() {
         <article className="card">
           <div className="section-title">
             <h2>Contactos</h2>
-            <Link href="/contacts/new">Nuevo</Link>
+            <Link href="/contacts">Ver todos</Link>
           </div>
           {contacts.length ? (
             <ul className="item-list">

@@ -73,8 +73,31 @@ export type Contact = {
   marketing_consent: "unknown" | "granted" | "denied" | "unsubscribed";
   company_id?: string | null;
   is_active: boolean;
+  updated_at?: string;
+  created_at?: string;
   notes?: Note[];
   tasks?: Task[];
+};
+
+export type ContactListFilters = {
+  q?: string;
+  tag?: string;
+  origin_system?: string;
+  origin_account_id?: string;
+  commercial_status?: string;
+  marketing_consent?: string;
+  sort_by?: "name" | "email" | "created_at" | "updated_at";
+  sort_dir?: "asc" | "desc";
+  skip?: number;
+  limit?: number;
+  include_inactive?: boolean;
+};
+
+export type ContactListPage = {
+  items: Contact[];
+  total: number;
+  limit: number;
+  offset: number;
 };
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
@@ -173,7 +196,30 @@ export async function getCurrentUser(): Promise<User> {
 }
 
 export async function getContacts(): Promise<Contact[]> {
-  return apiFetch<Contact[]>("/api/contacts?limit=20");
+  // Dashboard shortcut: the list endpoint now wraps the response, but
+  // callers that only want the first page items continue to receive a
+  // plain array. The pagination wrapper is exposed via `listContacts`.
+  const page = await apiFetch<ContactListPage>("/api/contacts?limit=20");
+  return page.items;
+}
+
+export async function listContacts(
+  filters: ContactListFilters = {},
+): Promise<ContactListPage> {
+  const params = new URLSearchParams();
+  if (filters.q) params.set("q", filters.q);
+  if (filters.tag) params.set("tag", filters.tag);
+  if (filters.origin_system) params.set("origin_system", filters.origin_system);
+  if (filters.origin_account_id) params.set("origin_account_id", filters.origin_account_id);
+  if (filters.commercial_status) params.set("commercial_status", filters.commercial_status);
+  if (filters.marketing_consent) params.set("marketing_consent", filters.marketing_consent);
+  if (filters.sort_by) params.set("sort_by", filters.sort_by);
+  if (filters.sort_dir) params.set("sort_dir", filters.sort_dir);
+  if (filters.skip !== undefined) params.set("skip", String(filters.skip));
+  if (filters.limit !== undefined) params.set("limit", String(filters.limit));
+  if (filters.include_inactive) params.set("include_inactive", "true");
+  const query = params.toString();
+  return apiFetch<ContactListPage>(`/api/contacts${query ? `?${query}` : ""}`);
 }
 
 export async function getContactsCount(): Promise<number> {

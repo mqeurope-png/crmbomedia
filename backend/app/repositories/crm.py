@@ -1,9 +1,30 @@
 from datetime import datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import Select, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
-from app.models.crm import AuditLog, Company, Contact, Note, Task, User
+from app.models.crm import (
+    AuditLog,
+    Company,
+    Contact,
+    ExternalReference,
+    ExternalSystem,
+    Note,
+    Task,
+    User,
+)
+
+# Valid contact list sort keys. Anything else falls back to the
+# default `created_at desc` so a malicious or misspelt `sort_by` can't
+# leak unindexed columns into the ORDER BY.
+CONTACT_SORT_COLUMNS = {
+    "name": Contact.first_name,
+    "first_name": Contact.first_name,
+    "last_name": Contact.last_name,
+    "email": Contact.email,
+    "created_at": Contact.created_at,
+    "updated_at": Contact.updated_at,
+}
 
 
 def get_user_by_email(session: Session, email: str) -> User | None:
@@ -63,10 +84,20 @@ def get_contact_by_email(session: Session, email: str) -> Contact | None:
     return session.scalar(select(Contact).where(Contact.email == email.lower()))
 
 
-def list_contacts(
-    session: Session, q: str | None, skip: int, limit: int, include_inactive: bool = False
-) -> list[Contact]:
-    statement = select(Contact).order_by(Contact.created_at.desc()).offset(skip).limit(limit)
+def _apply_contact_filters(
+    statement: Select,
+    *,
+    q: str | None = None,
+    tag: str | None = None,
+    origin_system: ExternalSystem | None = None,
+    origin_account_id: str | None = None,
+    commercial_status: str | None = None,
+    marketing_consent: str | None = None,
+    include_inactive: bool = False,
+) -> Select:
+    """Single source of truth for contact-list filtering. Used by both
+    `list_contacts` and `count_contacts` so the dashboard stat cards
+    and the list endpoint always agree on which rows match."""
     if not include_inactive:
         statement = statement.where(Contact.is_active.is_(True))
     if q:
@@ -75,26 +106,93 @@ def list_contacts(
             Contact.first_name.ilike(like)
             | Contact.last_name.ilike(like)
             | Contact.email.ilike(like)
+            | Contact.phone.ilike(like)
         )
+    if tag:
+        # Contact.tags is a CSV string. Match `tag` as a whole token
+        # without false positives ("VIP" must not match "VIPS"). The
+        # four-way OR is portable across SQLite/MySQL and lets the
+        # query plan use the column directly.
+        statement = statement.where(
+            or_(
+                Contact.tags == tag,
+                Contact.tags.like(f"{tag},%"),
+                Contact.tags.like(f"%,{tag},%"),
+                Contact.tags.like(f"%,{tag}"),
+            )
+        )
+    if origin_system is not None or origin_account_id:
+        subq = select(ExternalReference.contact_id)
+        if origin_system is not None:
+            subq = subq.where(ExternalReference.system == origin_system)
+        if origin_account_id:
+            subq = subq.where(ExternalReference.account_id == origin_account_id)
+        statement = statement.where(Contact.id.in_(subq))
+    if commercial_status:
+        statement = statement.where(Contact.commercial_status == commercial_status)
+    if marketing_consent:
+        statement = statement.where(Contact.marketing_consent == marketing_consent)
+    return statement
+
+
+def list_contacts(
+    session: Session,
+    *,
+    q: str | None = None,
+    tag: str | None = None,
+    origin_system: ExternalSystem | None = None,
+    origin_account_id: str | None = None,
+    commercial_status: str | None = None,
+    marketing_consent: str | None = None,
+    skip: int = 0,
+    limit: int = 25,
+    include_inactive: bool = False,
+    sort_by: str = "created_at",
+    sort_dir: str = "desc",
+) -> list[Contact]:
+    statement = select(Contact)
+    statement = _apply_contact_filters(
+        statement,
+        q=q,
+        tag=tag,
+        origin_system=origin_system,
+        origin_account_id=origin_account_id,
+        commercial_status=commercial_status,
+        marketing_consent=marketing_consent,
+        include_inactive=include_inactive,
+    )
+    sort_column = CONTACT_SORT_COLUMNS.get(sort_by, Contact.created_at)
+    order = sort_column.desc() if sort_dir.lower() == "desc" else sort_column.asc()
+    statement = statement.order_by(order).offset(skip).limit(limit)
     return list(session.scalars(statement))
 
 
 def count_contacts(
-    session: Session, q: str | None = None, include_inactive: bool = False
+    session: Session,
+    *,
+    q: str | None = None,
+    tag: str | None = None,
+    origin_system: ExternalSystem | None = None,
+    origin_account_id: str | None = None,
+    commercial_status: str | None = None,
+    marketing_consent: str | None = None,
+    include_inactive: bool = False,
 ) -> int:
     """Return the total number of contacts matching the same filters the
     list endpoint applies — used by the dashboard stat cards so they
-    don't reflect the paginated page size."""
+    don't reflect the paginated page size, and by `/contacts` itself so
+    the wrapped response can include the running total."""
     statement = select(func.count()).select_from(Contact)
-    if not include_inactive:
-        statement = statement.where(Contact.is_active.is_(True))
-    if q:
-        like = f"%{q}%"
-        statement = statement.where(
-            Contact.first_name.ilike(like)
-            | Contact.last_name.ilike(like)
-            | Contact.email.ilike(like)
-        )
+    statement = _apply_contact_filters(
+        statement,
+        q=q,
+        tag=tag,
+        origin_system=origin_system,
+        origin_account_id=origin_account_id,
+        commercial_status=commercial_status,
+        marketing_consent=marketing_consent,
+        include_inactive=include_inactive,
+    )
     return int(session.scalar(statement) or 0)
 
 
