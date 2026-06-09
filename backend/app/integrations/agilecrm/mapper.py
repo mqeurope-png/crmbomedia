@@ -324,7 +324,13 @@ def map_agilecrm_note_to_internal(
     AgileCRM notes typically look like::
 
         {"id": 123, "subject": "Llamada", "description": "Habló de X",
-         "created_time": 1750000000, "owner": {"email": "ag@x.com"}}
+         "created_time": 1750000000,
+         "domainOwner": {"name": "Operador", "email": "ag@x.com", "pic": "..."}}
+
+    Real-tenant payloads carry the author under `domainOwner` (the
+    AgileCRM user that wrote the note). Older fixtures used `owner` —
+    we accept both so existing tests keep passing while production
+    rows pick up the real author.
 
     We collapse subject + description into one body so the existing
     `Note.body` column carries everything; the original parts are kept
@@ -338,7 +344,13 @@ def map_agilecrm_note_to_internal(
     if not body_parts:
         return None
     body = "\n\n".join(body_parts)
-    owner = payload.get("owner") if isinstance(payload.get("owner"), dict) else {}
+    # `domainOwner` is the production shape; fall back to `owner` for
+    # legacy fixtures. Either way we keep `author_user_id=None` because
+    # an AgileCRM user is not one of our `users` rows — the operator
+    # who triggered the sync is recorded on the audit event, not on
+    # the imported note.
+    raw_owner = payload.get("domainOwner") or payload.get("owner")
+    owner = raw_owner if isinstance(raw_owner, dict) else {}
     return {
         "contact_id": contact_id,
         "body": body,

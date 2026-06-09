@@ -540,6 +540,16 @@ tier de 200 req/h, una importación full puede tardar > 14 horas. El
 job es idempotente — el operador puede re-disparar la sync para
 recuperar incrementales.
 
+**Autor de las notas importadas**: las notas guardan el `domainOwner`
+de AgileCRM (`name` + `email`) en las columnas `notes.external_author_name`
+/ `notes.external_author_email`. `notes.author_user_id` permanece NULL
+para filas importadas — un usuario AgileCRM no es uno de los
+nuestros; quién disparó la sync queda en el audit log, no en la nota.
+Si una nota llega sin `domainOwner` (legacy / fixtures viejas),
+caemos a `owner` como fallback. La UI muestra el nombre con el email
+como tooltip; sólo cuando ambos campos vienen vacíos aparece
+"Sistema".
+
 ### Rate limiting y throttling
 
 El cliente base (`IntegrationHTTPClient`) respeta el header

@@ -296,6 +296,35 @@ def test_note_mapper_collapses_subject_and_description():
     assert record["external_created_at"] is not None
 
 
+def test_note_mapper_reads_author_from_domain_owner():
+    """Production AgileCRM payloads carry the author under
+    `domainOwner`, not `owner` (the legacy fixtures used the latter).
+    Both shapes must populate `external_author_name` /
+    `external_author_email` so the UI never falls back to a generic
+    "Sistema" label."""
+    record = map_agilecrm_note_to_internal(
+        {
+            "id": 7,
+            "subject": "Llamada",
+            "description": "Habló de renovar",
+            "created_time": 1750000000,
+            "domainOwner": {
+                "name": "Marta López",
+                "email": "marta@empresa.com",
+                "pic": "https://x.com/avatar.png",
+            },
+        },
+        contact_id="ct-1",
+        account_id="es",
+    )
+    assert record is not None
+    assert record["external_author_email"] == "marta@empresa.com"
+    assert record["external_author_name"] == "Marta López"
+    # `author_user_id` is the *internal* user FK and must stay None for
+    # imported rows — the AgileCRM user is not one of ours.
+    assert "author_user_id" not in record or record.get("author_user_id") is None
+
+
 def test_note_mapper_returns_none_when_payload_has_no_text():
     record = map_agilecrm_note_to_internal(
         {"id": 8, "subject": "", "description": ""},
