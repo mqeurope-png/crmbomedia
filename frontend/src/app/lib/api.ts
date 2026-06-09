@@ -196,7 +196,108 @@ export type ContactListFilters = {
   skip?: number;
   limit?: number;
   include_inactive?: boolean;
+  view_id?: string;
 };
+
+export type SavedViewFilters = {
+  q?: string | null;
+  tag_ids?: string[] | null;
+  tag_match_mode?: "any" | "all" | null;
+  origin_system?: string | null;
+  origin_account_id?: string | null;
+  commercial_status?: string | null;
+  marketing_consent?: string | null;
+  is_active?: boolean | null;
+  lead_score_min?: number | null;
+  lead_score_max?: number | null;
+  created_after?: string | null;
+  created_before?: string | null;
+};
+
+export type SavedViewColumns = {
+  visible: string[];
+  order: string[];
+  widths: Record<string, number>;
+};
+
+export type SavedViewSort = {
+  sort_by: string;
+  sort_dir: "asc" | "desc";
+};
+
+export type SavedView = {
+  id: string;
+  name: string;
+  description?: string | null;
+  owner_user_id: string;
+  is_owner: boolean;
+  is_shared: boolean;
+  is_default: boolean;
+  filters: SavedViewFilters;
+  columns: SavedViewColumns;
+  sort: SavedViewSort;
+  created_at: string;
+  updated_at: string;
+};
+
+export async function listSavedViews(): Promise<SavedView[]> {
+  return apiFetch<SavedView[]>("/api/contact-views");
+}
+
+export async function createSavedView(payload: {
+  name: string;
+  description?: string | null;
+  is_shared?: boolean;
+  is_default?: boolean;
+  filters: SavedViewFilters;
+  columns: SavedViewColumns;
+  sort: SavedViewSort;
+}): Promise<SavedView> {
+  return apiFetch<SavedView>("/api/contact-views", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updateSavedView(
+  id: string,
+  payload: Partial<{
+    name: string;
+    description: string | null;
+    is_shared: boolean;
+    is_default: boolean;
+    filters: SavedViewFilters;
+    columns: SavedViewColumns;
+    sort: SavedViewSort;
+  }>,
+): Promise<SavedView> {
+  return apiFetch<SavedView>(`/api/contact-views/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function deleteSavedView(id: string): Promise<{ message: string }> {
+  return apiFetch<{ message: string }>(`/api/contact-views/${id}`, {
+    method: "DELETE",
+  });
+}
+
+export async function duplicateSavedView(
+  id: string,
+  payload: { name?: string } = {},
+): Promise<SavedView> {
+  return apiFetch<SavedView>(`/api/contact-views/${id}/duplicate`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function setDefaultSavedView(id: string): Promise<SavedView> {
+  return apiFetch<SavedView>(`/api/contact-views/${id}/set-default`, {
+    method: "POST",
+  });
+}
 
 export type ContactListPage = {
   items: Contact[];
@@ -331,6 +432,7 @@ export async function listContacts(
   if (filters.skip !== undefined) params.set("skip", String(filters.skip));
   if (filters.limit !== undefined) params.set("limit", String(filters.limit));
   if (filters.include_inactive) params.set("include_inactive", "true");
+  if (filters.view_id) params.set("view_id", filters.view_id);
   const query = params.toString();
   return apiFetch<ContactListPage>(`/api/contacts${query ? `?${query}` : ""}`);
 }

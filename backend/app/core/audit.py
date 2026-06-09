@@ -109,6 +109,13 @@ class Action:
     CONTACT_TAG_REMOVED = "contact_tag.removed"
     CONTACT_TAGS_BULK_ACTION = "contact_tags.bulk_action"
 
+    # Saved contact views (Sprint P.1 ampliado PR-B).
+    CONTACT_VIEW_CREATED = "contact_view.created"
+    CONTACT_VIEW_UPDATED = "contact_view.updated"
+    CONTACT_VIEW_DELETED = "contact_view.deleted"
+    CONTACT_VIEW_DUPLICATED = "contact_view.duplicated"
+    CONTACT_VIEW_DEFAULT_SET = "contact_view.default_set"
+
     # GDPR / RGPD subject-rights events
     GDPR_REQUEST_CREATED = "gdpr.request_created"
     GDPR_REQUEST_UPDATED = "gdpr.request_updated"

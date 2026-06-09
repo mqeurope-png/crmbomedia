@@ -2,6 +2,7 @@
 import json
 import logging
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import JSONResponse
@@ -46,6 +47,7 @@ from app.core.totp import (
 )
 from app.db.session import get_session
 from app.models.crm import Company, Contact, ContactTag, ExternalSystem, Note, Task, User
+from app.repositories import contact_views as contact_views_repository
 from app.repositories import crm as crm_repository
 from app.services.email import EmailService, get_email_service
 from app.schemas.crm import (
@@ -64,6 +66,11 @@ from app.schemas.crm import (
     ContactRead,
     ContactTagAssignRequest,
     ContactUpdate,
+    ContactViewCreate,
+    ContactViewDuplicateRequest,
+    ContactViewFilters,
+    ContactViewRead,
+    ContactViewUpdate,
     CountRead,
     ExternalRefreshRead,
     TagCreate,
@@ -1106,6 +1113,7 @@ def _mirror_csv_tags_into_table(
     tags=["crm"],
 )
 def list_contacts(
+    request: Request,
     q: str | None = Query(
         default=None, description="Busca por nombre, apellidos, email o teléfono"
     ),
@@ -1144,10 +1152,60 @@ def list_contacts(
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=25, ge=1, le=100),
     include_inactive: bool = Query(default=False),
+    view_id: str | None = Query(
+        default=None,
+        description=(
+            "Saved view UUID; its filters are applied as defaults that "
+            "individual URL params override key by key."
+        ),
+    ),
     session: Session = Depends(get_session),
     current_user: User = Depends(require_viewer),
 ) -> ContactListPage:
     _ = current_user
+    # Merge the view's saved filters on top of URL params, but only for
+    # params the operator didn't include in the URL — we look at the
+    # raw query string to tell "I passed include_inactive=false" from
+    # "I didn't pass include_inactive at all". A view with broad
+    # defaults can still be narrowed with a single URL param.
+    view_filters: dict[str, Any] = {}
+    if view_id:
+        view = contact_views_repository.get_view(session, view_id)
+        if view and (
+            view.owner_user_id == current_user.id or view.is_shared
+        ):
+            view_filters, _columns, view_sort = contact_views_repository.view_to_dicts(view)
+            if "sort_by" not in request.query_params and isinstance(view_sort, dict):
+                sort_by = view_sort.get("sort_by") or sort_by
+                sort_dir = view_sort.get("sort_dir") or sort_dir
+
+    def _from_view(key: str, current: Any) -> Any:
+        if key in request.query_params:
+            return current
+        return view_filters.get(key, current)
+
+    q = _from_view("q", q)
+    tag = _from_view("tag", tag)
+    if "tag_ids" not in request.query_params:
+        tag_ids = view_filters.get("tag_ids") or tag_ids
+    tag_match_mode = _from_view("tag_match_mode", tag_match_mode)
+    if "origin_system" not in request.query_params:
+        raw_origin = view_filters.get("origin_system")
+        if raw_origin and origin_system is None:
+            try:
+                origin_system = ExternalSystem(raw_origin)
+            except ValueError:
+                origin_system = None
+    origin_account_id = _from_view("origin_account_id", origin_account_id)
+    commercial_status = _from_view("commercial_status", commercial_status)
+    marketing_consent = _from_view("marketing_consent", marketing_consent)
+    lead_score_min = _from_view("lead_score_min", lead_score_min)
+    lead_score_max = _from_view("lead_score_max", lead_score_max)
+    if "include_inactive" not in request.query_params:
+        is_active_pref = view_filters.get("is_active")
+        if is_active_pref is False:
+            include_inactive = True
+
     items = crm_repository.list_contacts(
         session=session,
         q=q,
@@ -1895,6 +1953,256 @@ def bulk_contact_tag(
         affected=affected,
         skipped=skipped,
     )
+
+
+# ---------------------------------------------------------------------------
+# Saved contact views (Sprint P.1 ampliado PR-B)
+# ---------------------------------------------------------------------------
+
+
+def _view_to_read(view, *, current_user: User) -> ContactViewRead:
+    filters, columns, sort = contact_views_repository.view_to_dicts(view)
+    return ContactViewRead(
+        id=view.id,
+        name=view.name,
+        description=view.description,
+        owner_user_id=view.owner_user_id,
+        is_owner=view.owner_user_id == current_user.id,
+        is_shared=view.is_shared,
+        is_default=view.is_default,
+        filters=ContactViewFilters(**filters) if filters else ContactViewFilters(),
+        columns=columns or {"visible": [], "order": [], "widths": {}},  # type: ignore[arg-type]
+        sort=sort or {"sort_by": "created_at", "sort_dir": "desc"},  # type: ignore[arg-type]
+        created_at=view.created_at,
+        updated_at=view.updated_at,
+    )
+
+
+@router.get(
+    "/contact-views",
+    response_model=list[ContactViewRead],
+    responses=ERROR_RESPONSES,
+    tags=["crm"],
+)
+def list_contact_views(
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_viewer),
+) -> list[ContactViewRead]:
+    rows = contact_views_repository.list_views_for_user(
+        session, user_id=current_user.id
+    )
+    return [_view_to_read(row, current_user=current_user) for row in rows]
+
+
+@router.get(
+    "/contact-views/{view_id}",
+    response_model=ContactViewRead,
+    responses=ERROR_RESPONSES,
+    tags=["crm"],
+)
+def read_contact_view(
+    view_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_viewer),
+) -> ContactViewRead:
+    view = contact_views_repository.get_view(session, view_id)
+    if not view:
+        raise not_found("Contact view")
+    if view.owner_user_id != current_user.id and not view.is_shared:
+        raise not_found("Contact view")
+    return _view_to_read(view, current_user=current_user)
+
+
+@router.post(
+    "/contact-views",
+    response_model=ContactViewRead,
+    status_code=status.HTTP_201_CREATED,
+    responses=ERROR_RESPONSES,
+    tags=["crm"],
+)
+def create_contact_view(
+    payload: ContactViewCreate,
+    request: Request,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_viewer),
+) -> ContactViewRead:
+    view = contact_views_repository.create_view(
+        session,
+        owner_user_id=current_user.id,
+        name=payload.name,
+        description=payload.description,
+        is_shared=payload.is_shared,
+        is_default=payload.is_default,
+        filters=payload.filters.model_dump(exclude_none=True),
+        columns=payload.columns.model_dump(),
+        sort=payload.sort.model_dump(),
+    )
+    record_event(
+        session,
+        action=Action.CONTACT_VIEW_CREATED,
+        target_type="contact_view",
+        target_id=view.id,
+        actor=current_user,
+        metadata={"name": view.name, "is_shared": view.is_shared},
+        request=request,
+    )
+    session.commit()
+    session.refresh(view)
+    return _view_to_read(view, current_user=current_user)
+
+
+@router.patch(
+    "/contact-views/{view_id}",
+    response_model=ContactViewRead,
+    responses=ERROR_RESPONSES,
+    tags=["crm"],
+)
+def update_contact_view(
+    view_id: str,
+    payload: ContactViewUpdate,
+    request: Request,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_viewer),
+) -> ContactViewRead:
+    view = contact_views_repository.get_view(session, view_id)
+    if not view:
+        raise not_found("Contact view")
+    if view.owner_user_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not owner")
+    changes = payload.model_dump(exclude_unset=True)
+    contact_views_repository.update_view(
+        session,
+        view=view,
+        name=changes.get("name"),
+        description=changes.get("description"),
+        is_shared=changes.get("is_shared"),
+        is_default=changes.get("is_default"),
+        filters=(
+            payload.filters.model_dump(exclude_none=True)
+            if payload.filters is not None
+            else None
+        ),
+        columns=(payload.columns.model_dump() if payload.columns is not None else None),
+        sort=(payload.sort.model_dump() if payload.sort is not None else None),
+    )
+    record_event(
+        session,
+        action=Action.CONTACT_VIEW_UPDATED,
+        target_type="contact_view",
+        target_id=view.id,
+        actor=current_user,
+        metadata={"name": view.name, "changed_fields": sorted(changes.keys())},
+        request=request,
+    )
+    session.commit()
+    session.refresh(view)
+    return _view_to_read(view, current_user=current_user)
+
+
+@router.delete(
+    "/contact-views/{view_id}",
+    response_model=MessageRead,
+    responses=ERROR_RESPONSES,
+    tags=["crm"],
+)
+def delete_contact_view(
+    view_id: str,
+    request: Request,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_viewer),
+) -> MessageRead:
+    view = contact_views_repository.get_view(session, view_id)
+    if not view:
+        raise not_found("Contact view")
+    if view.owner_user_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not owner")
+    record_event(
+        session,
+        action=Action.CONTACT_VIEW_DELETED,
+        target_type="contact_view",
+        target_id=view.id,
+        actor=current_user,
+        metadata={"name": view.name},
+        request=request,
+    )
+    contact_views_repository.delete_view(session, view=view)
+    session.commit()
+    return MessageRead(message="Contact view deleted")
+
+
+@router.post(
+    "/contact-views/{view_id}/duplicate",
+    response_model=ContactViewRead,
+    status_code=status.HTTP_201_CREATED,
+    responses=ERROR_RESPONSES,
+    tags=["crm"],
+)
+def duplicate_contact_view(
+    view_id: str,
+    payload: ContactViewDuplicateRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_viewer),
+) -> ContactViewRead:
+    source = contact_views_repository.get_view(session, view_id)
+    if not source:
+        raise not_found("Contact view")
+    # Anyone with read access can duplicate; the new row is fully
+    # owned by the duplicator with sharing/default flags reset.
+    if source.owner_user_id != current_user.id and not source.is_shared:
+        raise not_found("Contact view")
+    duplicate = contact_views_repository.duplicate_view(
+        session,
+        source=source,
+        owner_user_id=current_user.id,
+        name=payload.name,
+    )
+    record_event(
+        session,
+        action=Action.CONTACT_VIEW_DUPLICATED,
+        target_type="contact_view",
+        target_id=duplicate.id,
+        actor=current_user,
+        metadata={"source_view_id": source.id, "name": duplicate.name},
+        request=request,
+    )
+    session.commit()
+    session.refresh(duplicate)
+    return _view_to_read(duplicate, current_user=current_user)
+
+
+@router.post(
+    "/contact-views/{view_id}/set-default",
+    response_model=ContactViewRead,
+    responses=ERROR_RESPONSES,
+    tags=["crm"],
+)
+def set_default_contact_view(
+    view_id: str,
+    request: Request,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_viewer),
+) -> ContactViewRead:
+    view = contact_views_repository.get_view(session, view_id)
+    if not view:
+        raise not_found("Contact view")
+    if view.owner_user_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not owner")
+    contact_views_repository.update_view(
+        session, view=view, is_default=True
+    )
+    record_event(
+        session,
+        action=Action.CONTACT_VIEW_DEFAULT_SET,
+        target_type="contact_view",
+        target_id=view.id,
+        actor=current_user,
+        metadata={"name": view.name},
+        request=request,
+    )
+    session.commit()
+    session.refresh(view)
+    return _view_to_read(view, current_user=current_user)
 
 
 router.include_router(integration_accounts_router)

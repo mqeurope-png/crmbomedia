@@ -1208,3 +1208,261 @@ td {
 @media (max-width: 540px) {
   .palette-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); }
 }
+
+/* ---------------------------------------------------------------- */
+/* Contacts layout with views sidebar (Sprint P.1 ampliado PR-B)    */
+/* ---------------------------------------------------------------- */
+
+.shell-wide { width: min(1320px, calc(100% - 32px)); }
+
+.contacts-layout {
+  display: grid;
+  grid-template-columns: 260px 1fr;
+  gap: 18px;
+  margin-top: 24px;
+  align-items: start;
+}
+
+.contacts-panel { margin: 0; }
+
+@media (max-width: 960px) {
+  .contacts-layout { grid-template-columns: 1fr; }
+}
+
+.views-sidebar {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  position: sticky;
+  top: 24px;
+}
+
+.views-sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.views-section h3 {
+  margin: 0 0 8px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.views-section ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.view-row {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  border-radius: 8px;
+}
+
+.view-row.is-active { background: rgba(36, 75, 216, 0.10); }
+.view-row:hover { background: rgba(0, 0, 0, 0.04); }
+
+.view-row-main {
+  flex: 1 1 auto;
+  background: transparent;
+  border: 0;
+  text-align: left;
+  cursor: pointer;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font: inherit;
+  color: inherit;
+}
+
+.view-row-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.view-row-description { font-size: 12px; }
+
+.view-row-badge {
+  display: inline-flex;
+  width: 18px;
+  height: 18px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  font-size: 11px;
+}
+
+.view-row-badge-default {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.view-row-badge-shared {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.view-row-menu-trigger {
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  padding: 4px 10px;
+  color: var(--muted);
+  font-size: 18px;
+}
+
+.view-row-menu {
+  position: absolute;
+  right: 8px;
+  top: calc(100% - 4px);
+  background: white;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.08);
+  z-index: 12;
+  display: flex;
+  flex-direction: column;
+  min-width: 180px;
+}
+
+.view-row-menu button {
+  background: transparent;
+  border: 0;
+  text-align: left;
+  padding: 8px 12px;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+}
+
+.view-row-menu button:hover { background: var(--surface, #f3f4f6); }
+
+/* ---------------------------------------------------------------- */
+/* Modal overlay (used by view editor)                              */
+/* ---------------------------------------------------------------- */
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 35, 95, 0.32);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 40;
+}
+
+.modal-card {
+  background: white;
+  border-radius: 16px;
+  padding: 24px;
+  width: min(420px, calc(100% - 32px));
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.18);
+}
+
+.modal-card h2 { margin: 0; }
+.modal-card label { color: var(--muted); display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+.modal-card input,
+.modal-card textarea {
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  font: inherit;
+}
+.modal-card label.checkbox {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink);
+  font-size: 14px;
+}
+
+/* ---------------------------------------------------------------- */
+/* Column configurator popover                                      */
+/* ---------------------------------------------------------------- */
+
+.column-config { position: relative; }
+
+.column-config-panel {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  background: white;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.12);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 280px;
+  max-height: 360px;
+  z-index: 25;
+}
+
+.column-config-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.column-config-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  cursor: grab;
+  font-size: 14px;
+}
+
+.column-config-row:hover { background: var(--surface, #f3f4f6); }
+.column-config-row.is-hidden { color: var(--muted); }
+
+.column-config-handle {
+  cursor: grab;
+  color: var(--muted);
+  font-size: 14px;
+  width: 16px;
+  display: inline-block;
+  text-align: center;
+}
+
+/* ---------------------------------------------------------------- */
+/* Freshness badge in table cells                                   */
+/* ---------------------------------------------------------------- */
+
+.freshness-badge {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 999px;
+  text-transform: uppercase;
+}
+.freshness-badge.freshness-fresh { background: #ecfdf3; color: var(--success); }
+.freshness-badge.freshness-stale { background: #fffaeb; color: #b54708; }
+.freshness-badge.freshness-outdated { background: #fef3f2; color: var(--danger); }
