@@ -463,11 +463,33 @@ class ContactDetailRead(ContactRead):
     # detail screen doesn't need to JSON.parse a string before rendering
     # the key/value list.
     custom_fields: dict[str, Any] | None = None
+    # Sprint A PR-8: notes/tasks/events are no longer pre-synced for
+    # every contact during the bulk job — they're fetched on demand
+    # from the detail page. These two fields drive the freshness
+    # indicator + auto-refresh behaviour in the UI.
+    last_external_refresh_at: datetime | None = None
+    external_data_freshness: str = "outdated"
 
     @field_validator("custom_fields", mode="before")
     @classmethod
     def _decode_custom_fields(cls, value: Any) -> Any:
         return _decode_json_dict(value)
+
+
+class ExternalRefreshRead(BaseModel):
+    """Response of `POST /api/contacts/{id}/refresh-external-data`. The
+    UI uses `status` to decide whether to render a warning banner and
+    `sources_refreshed` to confirm which integrations were attempted —
+    a multi-account contact whose primary AgileCRM succeeded and
+    secondary was rate-limited shows "Partial" rather than "Failed"."""
+
+    refreshed_at: datetime
+    sources_refreshed: list[str]
+    notes_count: int
+    tasks_count: int
+    events_count: int
+    warnings: list[str]
+    status: str  # ok | partial
 
 
 class HealthRead(BaseModel):

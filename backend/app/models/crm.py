@@ -108,6 +108,16 @@ class Contact(TimestampMixin, Base):
     # AgileCRM lead score. Other systems push their own scoring under
     # the same column for consistency.
     lead_score: Mapped[int | None] = mapped_column(Integer)
+    # When the operator last clicked "Actualizar desde AgileCRM" on
+    # this contact's detail page. Drives the `external_data_freshness`
+    # flag in the API response; null means "never refreshed
+    # on-demand" (so the UI surfaces an "Outdated" banner). Kept on
+    # `contacts` instead of MAX(synced_at) over the child tables so a
+    # contact with zero notes/tasks/events still records its last
+    # refresh attempt.
+    external_data_refreshed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
 
     company: Mapped[Company | None] = relationship(back_populates="contacts")
     notes: Mapped[list["Note"]] = relationship(

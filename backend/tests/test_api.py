@@ -1,5 +1,5 @@
 from collections.abc import Generator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -649,6 +649,319 @@ def test_missing_contact_returns_404(client: TestClient):
 
     assert response.status_code == 404
     assert response.json()["detail"] == "Contact not found"
+
+
+def test_contact_detail_freshness_default_outdated(client: TestClient):
+    """A freshly-created contact has never been on-demand refreshed,
+    so the UI must see `outdated` so the auto-refresh kicks in."""
+    contact = create_contact(client, "ana@example.com")
+    response = client.get(
+        f"/api/contacts/{contact['id']}", headers=auth_headers(client, "viewer")
+    )
+    body = response.json()
+    assert body["external_data_freshness"] == "outdated"
+    assert body["last_external_refresh_at"] is None
+
+
+def test_contact_detail_freshness_buckets(client: TestClient):
+    """`fresh` < 1h ago, `stale` 1h-24h, `outdated` > 24h or null. We
+    stamp the contact in the past and re-fetch to walk through the
+    transitions."""
+    from app.models.crm import Contact
+
+    contact = create_contact(client, "ana@example.com")
+    session_factory = app.dependency_overrides[get_session]
+
+    def _set_refreshed(delta: timedelta) -> None:
+        gen = session_factory()
+        session = next(gen)
+        try:
+            row = session.get(Contact, contact["id"])
+            assert row is not None
+            row.external_data_refreshed_at = datetime.now(UTC) - delta
+            session.commit()
+        finally:
+            gen.close()
+
+    headers = auth_headers(client, "viewer")
+    _set_refreshed(timedelta(minutes=30))
+    assert client.get(
+        f"/api/contacts/{contact['id']}", headers=headers
+    ).json()["external_data_freshness"] == "fresh"
+
+    _set_refreshed(timedelta(hours=5))
+    assert client.get(
+        f"/api/contacts/{contact['id']}", headers=headers
+    ).json()["external_data_freshness"] == "stale"
+
+    _set_refreshed(timedelta(days=2))
+    assert client.get(
+        f"/api/contacts/{contact['id']}", headers=headers
+    ).json()["external_data_freshness"] == "outdated"
+
+
+def test_refresh_external_data_returns_ok_when_no_agilecrm_refs(client: TestClient):
+    """A contact with zero AgileCRM references still completes the
+    refresh successfully — the timestamp moves forward, and the UI
+    flips back to `fresh`. No external API calls happen."""
+    contact = create_contact(client, "ana@example.com")
+    headers = auth_headers(client, "manager")
+
+    response = client.post(
+        f"/api/contacts/{contact['id']}/refresh-external-data",
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "ok"
+    assert body["sources_refreshed"] == []
+    assert body["warnings"] == []
+
+    # GET now shows `fresh`.
+    detail = client.get(
+        f"/api/contacts/{contact['id']}", headers=headers
+    ).json()
+    assert detail["external_data_freshness"] == "fresh"
+    assert detail["last_external_refresh_at"] is not None
+
+
+def test_refresh_external_data_calls_agilecrm_and_persists(
+    client: TestClient, monkeypatch
+):
+    """A contact with an AgileCRM external_reference triggers a fetch.
+    Notes / tasks / events land in their tables and the counters in
+    the response match what was upserted."""
+    from app.models.crm import (
+        ActivityEvent,
+        Contact,
+        ExternalReference,
+        ExternalSystem,
+        Note,
+        Task,
+    )
+
+    seeded = create_contact(client, "ana@example.com")
+    session_factory = app.dependency_overrides[get_session]
+
+    gen = session_factory()
+    session = next(gen)
+    try:
+        session.add(
+            ExternalReference(
+                system=ExternalSystem.AGILECRM,
+                external_id="ag-1",
+                account_id="es",
+                contact_id=session.get(Contact, seeded["id"]).id,
+            )
+        )
+        session.commit()
+    finally:
+        gen.close()
+
+    class _FakeClient:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return None
+
+        async def list_contact_notes(self, _id):
+            return [{"id": 1, "subject": "Llamada", "description": "ok"}]
+
+        async def list_contact_tasks(self, _id):
+            return [{"id": 2, "subject": "Enviar propuesta"}]
+
+        async def list_contact_events(self, _id):
+            return [
+                {
+                    "id": 3,
+                    "type": "EMAIL_SENT",
+                    "time": 1750000000,
+                    "subject": "Welcome",
+                }
+            ]
+
+    # Swap the concrete client. The refresh module imports it by name.
+    monkeypatch.setattr(
+        "app.integrations.agilecrm.refresh.AgileCRMClient", _FakeClient
+    )
+
+    response = client.post(
+        f"/api/contacts/{seeded['id']}/refresh-external-data",
+        headers=auth_headers(client, "manager"),
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "ok"
+    assert body["sources_refreshed"] == ["agilecrm:es"]
+    assert body["notes_count"] == 1
+    assert body["tasks_count"] == 1
+    assert body["events_count"] == 1
+
+    gen = session_factory()
+    session = next(gen)
+    try:
+        assert session.query(Note).count() == 1
+        assert session.query(Task).count() == 1
+        assert session.query(ActivityEvent).count() == 1
+    finally:
+        gen.close()
+
+
+def test_refresh_external_data_handles_rate_limit_softly(
+    client: TestClient, monkeypatch
+):
+    """A 429 from AgileCRM must NOT fail the request. The user keeps
+    their cached data and sees a warning banner; the audit log records
+    `external_refresh.rate_limited` so an operator can correlate."""
+    from app.integrations.errors import IntegrationRateLimitError
+    from app.models.crm import AuditLog, Contact, ExternalReference, ExternalSystem
+
+    seeded = create_contact(client, "ana@example.com")
+    session_factory = app.dependency_overrides[get_session]
+
+    gen = session_factory()
+    session = next(gen)
+    try:
+        session.add(
+            ExternalReference(
+                system=ExternalSystem.AGILECRM,
+                external_id="ag-1",
+                account_id="es",
+                contact_id=session.get(Contact, seeded["id"]).id,
+            )
+        )
+        session.commit()
+    finally:
+        gen.close()
+
+    class _RateLimitedClient:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return None
+
+        async def list_contact_notes(self, _id):
+            raise IntegrationRateLimitError(
+                "rate limit", system="agilecrm", account_id="es", status_code=429
+            )
+
+        list_contact_tasks = list_contact_notes
+        list_contact_events = list_contact_notes
+
+    monkeypatch.setattr(
+        "app.integrations.agilecrm.refresh.AgileCRMClient", _RateLimitedClient
+    )
+
+    response = client.post(
+        f"/api/contacts/{seeded['id']}/refresh-external-data",
+        headers=auth_headers(client, "manager"),
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "partial"
+    assert any("Rate limit" in w for w in body["warnings"])
+
+    gen = session_factory()
+    session = next(gen)
+    try:
+        actions = {row.action for row in session.query(AuditLog).all()}
+        assert "external_refresh.rate_limited" in actions
+    finally:
+        gen.close()
+
+
+def test_refresh_external_data_handles_auth_error_softly(
+    client: TestClient, monkeypatch
+):
+    """A 401 must also soft-fail: the operator keeps the cached
+    fixture, the warning lands in the response and the credential
+    error is audited."""
+    from app.integrations.errors import IntegrationAuthError
+    from app.models.crm import AuditLog, Contact, ExternalReference, ExternalSystem
+
+    seeded = create_contact(client, "ana@example.com")
+    session_factory = app.dependency_overrides[get_session]
+    gen = session_factory()
+    session = next(gen)
+    try:
+        session.add(
+            ExternalReference(
+                system=ExternalSystem.AGILECRM,
+                external_id="ag-1",
+                account_id="es",
+                contact_id=session.get(Contact, seeded["id"]).id,
+            )
+        )
+        session.commit()
+    finally:
+        gen.close()
+
+    class _AuthFailingClient:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return None
+
+        async def list_contact_notes(self, _id):
+            raise IntegrationAuthError(
+                "bad token", system="agilecrm", account_id="es", status_code=401
+            )
+
+        list_contact_tasks = list_contact_notes
+        list_contact_events = list_contact_notes
+
+    monkeypatch.setattr(
+        "app.integrations.agilecrm.refresh.AgileCRMClient", _AuthFailingClient
+    )
+
+    response = client.post(
+        f"/api/contacts/{seeded['id']}/refresh-external-data",
+        headers=auth_headers(client, "manager"),
+    )
+    body = response.json()
+    assert body["status"] == "partial"
+    assert any("Authentication failed" in w for w in body["warnings"])
+
+    gen = session_factory()
+    session = next(gen)
+    try:
+        actions = {row.action for row in session.query(AuditLog).all()}
+        assert "external_refresh.auth_error" in actions
+    finally:
+        gen.close()
+
+
+def test_refresh_external_data_requires_user_role(client: TestClient):
+    """Viewers see cached data only. They cannot trigger refresh — the
+    burst of AgileCRM calls is non-trivial and must be tied to an
+    authenticated operator who can be audited."""
+    contact = create_contact(client, "ana@example.com")
+    response = client.post(
+        f"/api/contacts/{contact['id']}/refresh-external-data",
+        headers=auth_headers(client, "viewer"),
+    )
+    assert response.status_code == 403
+
+
+def test_refresh_external_data_returns_404_for_missing_contact(client: TestClient):
+    response = client.post(
+        "/api/contacts/missing/refresh-external-data",
+        headers=auth_headers(client, "manager"),
+    )
+    assert response.status_code == 404
 
 
 def test_update_and_deactivate_contact(client: TestClient):

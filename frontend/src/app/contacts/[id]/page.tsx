@@ -2,13 +2,15 @@
 
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ErrorState } from "../../components/ErrorState";
+import { RefreshExternalDataButton } from "../../components/RefreshExternalDataButton";
 import {
   getContact,
   type ActivityEvent,
   type Contact,
   type ExternalReference,
+  type ExternalRefreshResult,
   type Note,
   type Task,
 } from "../../lib/api";
@@ -165,15 +167,55 @@ function ExternalReferenceCard({ reference }: { reference: ExternalReference }) 
 export default function ContactDetailPage() {
   const params = useParams<{ id: string }>();
   const [contact, setContact] = useState<Contact | null>(null);
+  const [refreshWarnings, setRefreshWarnings] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  // Single-shot guard so we never re-trigger the auto-refresh when the
+  // component re-renders after the freshness flips back to `fresh`.
+  const autoRefreshed = useRef(false);
+
+  const loadContact = useCallback(async () => {
+    const fresh = await getContact(params.id);
+    setContact(fresh);
+    return fresh;
+  }, [params.id]);
 
   useEffect(() => {
-    getContact(params.id)
-      .then(setContact)
+    loadContact()
       .catch((err) => setError(extractErrorMessage(err, "Comprueba el backend.")))
       .finally(() => setIsLoading(false));
-  }, [params.id]);
+  }, [loadContact]);
+
+  const handleRefreshDone = useCallback(
+    (result: ExternalRefreshResult) => {
+      setRefreshWarnings(result.warnings);
+      // Re-fetch so notes / tasks / timeline render the newly synced
+      // rows alongside the updated freshness banner.
+      loadContact().catch((err) =>
+        setError(extractErrorMessage(err, "Comprueba el backend.")),
+      );
+    },
+    [loadContact],
+  );
+
+  useEffect(() => {
+    // Auto-refresh ONLY for `outdated` (or never refreshed). `stale`
+    // gives the operator a chance to opt in manually so we don't burn
+    // quota on background loads of contacts they were just glancing
+    // at.
+    if (!contact || autoRefreshed.current) return;
+    if (contact.external_data_freshness !== "outdated") return;
+    autoRefreshed.current = true;
+    import("../../lib/api").then(({ refreshContactExternalData }) => {
+      refreshContactExternalData(contact.id)
+        .then(handleRefreshDone)
+        .catch(() => {
+          // The visible button still works; we swallow the auto-attempt
+          // error so a transient network glitch doesn't render a red
+          // banner.
+        });
+    });
+  }, [contact, handleRefreshDone]);
 
   if (isLoading) {
     return <main className="shell"><p className="muted">Cargando contacto...</p></main>;
@@ -279,6 +321,17 @@ export default function ContactDetailPage() {
               </span>
             ) : null}
           </div>
+          <FreshnessBanner
+            freshness={contact.external_data_freshness ?? "outdated"}
+            refreshedAt={contact.last_external_refresh_at}
+            warnings={refreshWarnings}
+          />
+          <div className="freshness-actions">
+            <RefreshExternalDataButton
+              contactId={contact.id}
+              onDone={handleRefreshDone}
+            />
+          </div>
           {contact.activity_events?.length ? (
             <ul className="timeline-list">
               {contact.activity_events.map((event) => (
@@ -287,12 +340,46 @@ export default function ContactDetailPage() {
             </ul>
           ) : (
             <p className="muted">
-              Sin eventos sincronizados todavía. La próxima sync de AgileCRM
-              los traerá.
+              Sin eventos sincronizados todavía. Pulsa &quot;Actualizar desde
+              AgileCRM&quot; para traer notas, tareas y eventos del contacto.
             </p>
           )}
         </article>
       </section>
     </main>
+  );
+}
+
+function FreshnessBanner({
+  freshness,
+  refreshedAt,
+  warnings,
+}: {
+  freshness: "fresh" | "stale" | "outdated";
+  refreshedAt: string | null | undefined;
+  warnings: string[];
+}) {
+  const refreshedLabel = refreshedAt ? formatDateTime(refreshedAt) : "nunca";
+  let bannerText: string;
+  if (freshness === "fresh") {
+    bannerText = `Datos al día · actualizados ${refreshedLabel}`;
+  } else if (freshness === "stale") {
+    bannerText = `Última actualización: ${refreshedLabel}`;
+  } else {
+    bannerText = refreshedAt
+      ? `Datos no actualizados desde AgileCRM (última: ${refreshedLabel})`
+      : "Datos no actualizados desde AgileCRM";
+  }
+  return (
+    <div className={`freshness freshness-${freshness}`} role="status">
+      <span>{bannerText}</span>
+      {warnings.length ? (
+        <ul className="freshness-warnings">
+          {warnings.map((warning) => (
+            <li key={warning}>{warning}</li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
   );
 }

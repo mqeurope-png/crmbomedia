@@ -448,23 +448,70 @@ la fila de auditoría.
   Las cuentas con más contactos completan la importación en
   ejecuciones sucesivas (la idempotencia garantiza progreso).
 
-### Sub-syncs por contacto (Sprint A PR-5)
+### Sub-resources por contacto: on-demand (Sprint A PR-8)
 
-Después de cada upsert de contacto, el worker dispara **3 fetches con
-concurrencia acotada** (`asyncio.Semaphore(MAX_SUBSYNC_CONCURRENCY)`,
-default 2) contra los sub-recursos AgileCRM:
+**Cambio arquitectónico**: notas, tareas y eventos AgileCRM ya **no
+se pre-sincronizan** en el job `sync_contacts`. El bulk sync ahora
+sólo pagina la lista de contactos (~30 calls / 1000 contactos), y los
+sub-recursos se traen on-demand cuando el operador abre la ficha del
+contacto.
 
-| Sub-recurso | Endpoint                            | Tabla local       | Dedup key |
-|-------------|-------------------------------------|-------------------|-----------|
-| Notas       | `/dev/api/contacts/{id}/notes`      | `notes`           | `(external_system, external_account_id, external_id)` |
-| Tareas      | `/dev/api/contacts/{id}/tasks`      | `tasks`           | `(external_system, external_account_id, external_id)` |
-| Eventos     | `/dev/api/contacts/{id}/events`     | `activity_events` | UNIQUE `(system, account_id, external_id)` |
+| Sub-recurso | Endpoint AgileCRM                   | Tabla local       | Cuándo se trae |
+|-------------|-------------------------------------|-------------------|----------------|
+| Contactos   | `/dev/api/contacts` (paginado)      | `contacts`        | Bulk sync (`sync_contacts`) |
+| Notas       | `/dev/api/contacts/{id}/notes`      | `notes`           | On-demand |
+| Tareas      | `/dev/api/contacts/{id}/tasks`      | `tasks`           | On-demand |
+| Eventos     | `/dev/api/contacts/{id}/events`     | `activity_events` | On-demand |
+
+Motivación: el plan Free de AgileCRM permite ~200 req/h. Con 762
+contactos y 4 llamadas por contacto (contact + 3 sub-resources), el
+bulk consumía ~3000 calls y disparaba 429 persistente durante horas.
+El patrón on-demand garantiza coste 0 para contactos que nadie
+visita y caps de pocos calls cuando un operador abre una ficha.
+
+Endpoint del refresh on-demand:
+
+- `POST /api/contacts/{id}/refresh-external-data` — disponible para
+  `admin`, `manager`, `user`. `viewer` ve datos cached pero no puede
+  disparar la sincronización.
+- Iter cada `external_references` activa, fan-out con
+  `asyncio.Semaphore(MAX_SUBSYNC_CONCURRENCY=2)`. Upsert dedup'd por
+  `(system, account_id, external_id)`.
+- Soft-fail 429 → response `status: "partial"` + warning + audit
+  `external_refresh.rate_limited`.
+- Soft-fail 401 → mismo patrón + audit `external_refresh.auth_error`
+  (la capa http base ya flippea `credential_status='error'`).
+- Audit principal: `external_refresh.requested` con counters por
+  source.
+
+Freshness indicator (UI):
+
+- `Contact.external_data_refreshed_at` (timestamp del último refresh)
+  + `external_data_freshness` (enum) llegan en `GET /contacts/{id}`.
+- Buckets: `fresh` (< 1h), `stale` (1h-24h), `outdated` (> 24h o
+  nunca).
+- La pantalla `/contacts/[id]` auto-dispara el refresh **sólo** en
+  `outdated` (evita quemar cuota en `stale`). El usuario siempre
+  puede pulsar "Actualizar desde AgileCRM" manualmente.
 
 Los nombres `events` (en AgileCRM y en el código del cliente/mapper) y
 `activity_events` (tabla local) son **deliberadamente diferentes**: el
 modelo de la tabla mantiene su nombre original para no requerir una
 migración de rename, pero el código del worker habla de "events" para
 alinearse con el endpoint AgileCRM real.
+
+Las funciones helper `_sync_contact_notes` / `_sync_contact_tasks` /
+`_sync_contact_events` (en `jobs.py`) sobreviven al refactor y las
+reutiliza el endpoint on-demand vía `agilecrm/refresh.py`. La intención
+es que un futuro job de cron — "warm cache for VIP contacts" — pueda
+reusar las mismas helpers sin duplicación.
+
+**Mismo patrón para Brevo / Freshdesk** (sprints futuros): bulk de
+contactos / contactos+tickets en `sync_*`; sub-recursos (campañas,
+emails, tickets, conversaciones) on-demand desde la ficha. El
+endpoint `refresh-external-data` ya itera el array de
+`external_references` — para meter un connector adicional sólo hay
+que añadir su rama en `refresh.py`.
 
 Los 3 mapping helpers (`map_agilecrm_note_to_internal`, …) viven en
 `mapper.py` y devuelven dicts listos para `Model(**record)`. El
