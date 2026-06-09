@@ -191,6 +191,38 @@ class ContactTag(Base):
     tag: Mapped[Tag] = relationship(back_populates="assignments")
 
 
+class ContactView(TimestampMixin, Base):
+    """Saved contacts-list configuration (filters + columns + sort)
+    that an operator can name, share with others read-only, and mark as
+    their default landing view.
+
+    `is_shared` opens the row to read-by-anyone — the front-end greys
+    out edit affordances when `owner_user_id != current_user.id`.
+    `is_default` is enforced at most once per `owner_user_id` from the
+    route layer (no DB-level partial unique because portable SQLite
+    doesn't have them; the route always demotes the previous default
+    inside the same transaction)."""
+
+    __tablename__ = "contact_views"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+    owner_user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id"), nullable=False, index=True
+    )
+    is_shared: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # Three opaque JSON blobs (text). The route layer decodes them
+    # before returning — same trick AuditLog / ExternalReference use
+    # for their `metadata` column, except `columns` would clash with
+    # the SQLAlchemy Table.columns descriptor so all three use
+    # `_json` suffixes consistently.
+    filters_json: Mapped[str | None] = mapped_column(Text)
+    columns_json: Mapped[str | None] = mapped_column(Text)
+    sort_json: Mapped[str | None] = mapped_column(Text)
+
+
 class Note(TimestampMixin, Base):
     __tablename__ = "notes"
 

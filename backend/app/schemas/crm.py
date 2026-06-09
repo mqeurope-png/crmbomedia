@@ -422,6 +422,98 @@ class BulkContactTagResult(BaseModel):
     skipped: int
 
 
+# ---------------------------------------------------------------------------
+# Saved contact views (Sprint P.1 ampliado PR-B)
+# ---------------------------------------------------------------------------
+
+
+class ContactViewFilters(BaseModel):
+    """Shape stored as JSON in `contact_views.filters_json`. Mirrors
+    the query params accepted by `GET /api/contacts` so the route can
+    pass it through `_apply_contact_filters` after merging URL
+    overrides on top."""
+
+    q: str | None = None
+    tag_ids: list[str] | None = None
+    tag_match_mode: str | None = None
+    origin_system: str | None = None
+    origin_account_id: str | None = None
+    commercial_status: str | None = None
+    marketing_consent: str | None = None
+    is_active: bool | None = None
+    lead_score_min: int | None = None
+    lead_score_max: int | None = None
+    created_after: datetime | None = None
+    created_before: datetime | None = None
+
+
+class ContactViewColumns(BaseModel):
+    """Visible columns + ordering + per-column widths. `visible` is the
+    set of column keys the operator actually rendered; `order` is the
+    full sequence (visible + hidden) so the column configurator can
+    surface every option in its persisted position."""
+
+    visible: list[str] = Field(default_factory=list)
+    order: list[str] = Field(default_factory=list)
+    widths: dict[str, int] = Field(default_factory=dict)
+
+
+class ContactViewSort(BaseModel):
+    sort_by: str = "created_at"
+    sort_dir: str = "desc"
+
+
+class ContactViewCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    description: str | None = Field(default=None, max_length=2000)
+    is_shared: bool = False
+    is_default: bool = False
+    filters: ContactViewFilters = Field(default_factory=ContactViewFilters)
+    columns: ContactViewColumns = Field(default_factory=ContactViewColumns)
+    sort: ContactViewSort = Field(default_factory=ContactViewSort)
+
+    @field_validator("name")
+    @classmethod
+    def strip_name(cls, value: str) -> str:
+        return value.strip()
+
+
+class ContactViewUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+    description: str | None = Field(default=None, max_length=2000)
+    is_shared: bool | None = None
+    is_default: bool | None = None
+    filters: ContactViewFilters | None = None
+    columns: ContactViewColumns | None = None
+    sort: ContactViewSort | None = None
+
+    @field_validator("name")
+    @classmethod
+    def strip_optional_name(cls, value: str | None) -> str | None:
+        return value.strip() if value else value
+
+
+class ContactViewRead(BaseModel):
+    id: str
+    name: str
+    description: str | None = None
+    owner_user_id: str
+    is_owner: bool = False
+    is_shared: bool
+    is_default: bool
+    filters: ContactViewFilters
+    columns: ContactViewColumns
+    sort: ContactViewSort
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ContactViewDuplicateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+
+
 class ContactRead(ContactCreate):
     id: str
     is_email_valid: bool
