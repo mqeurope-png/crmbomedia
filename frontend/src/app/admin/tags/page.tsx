@@ -11,12 +11,11 @@ import {
   type TagDetail,
 } from "../../lib/api";
 import { extractErrorMessage } from "../../lib/errors";
+import { TAG_PALETTE, isPaletteColor } from "../../lib/tagPalette";
 
-const DEFAULT_COLOR = "#1f4ed8";
+type DraftTag = { name: string; color: string | null; description: string };
 
-type DraftTag = { name: string; color: string; description: string };
-
-const EMPTY_DRAFT: DraftTag = { name: "", color: DEFAULT_COLOR, description: "" };
+const EMPTY_DRAFT: DraftTag = { name: "", color: null, description: "" };
 
 export default function TagsAdminPage() {
   const [tags, setTags] = useState<TagDetail[]>([]);
@@ -96,7 +95,7 @@ export default function TagsAdminPage() {
     setEditingId(tag.id);
     setDraft({
       name: tag.name,
-      color: tag.color || DEFAULT_COLOR,
+      color: tag.color || null,
       description: tag.description || "",
     });
   }
@@ -136,16 +135,49 @@ export default function TagsAdminPage() {
                 }
               />
             </label>
-            <label>
-              <span>Color</span>
-              <input
-                type="color"
-                value={draft.color}
-                onChange={(event) =>
-                  setDraft((current) => ({ ...current, color: event.target.value }))
-                }
-              />
-            </label>
+            <fieldset className="palette-fieldset">
+              <legend>Color</legend>
+              <div className="palette-grid" role="radiogroup" aria-label="Color del tag">
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={!draft.color}
+                  title="Sin color"
+                  className={`palette-swatch palette-swatch-empty${!draft.color ? " is-selected" : ""}`}
+                  onClick={() => setDraft((current) => ({ ...current, color: null }))}
+                >
+                  <span aria-hidden>∅</span>
+                </button>
+                {TAG_PALETTE.map((swatch) => {
+                  const selected = draft.color?.toLowerCase() === swatch.hex;
+                  return (
+                    <button
+                      key={swatch.hex}
+                      type="button"
+                      role="radio"
+                      aria-checked={selected}
+                      title={swatch.label}
+                      className={`palette-swatch${selected ? " is-selected" : ""}`}
+                      style={{ background: swatch.hex }}
+                      onClick={() =>
+                        setDraft((current) => ({
+                          ...current,
+                          color: swatch.hex,
+                        }))
+                      }
+                    >
+                      {selected ? <span aria-hidden>✓</span> : null}
+                    </button>
+                  );
+                })}
+              </div>
+              {draft.color && !isPaletteColor(draft.color) ? (
+                <p className="muted small">
+                  Color personalizado heredado: {draft.color}. Selecciona uno de
+                  la paleta para reemplazarlo.
+                </p>
+              ) : null}
+            </fieldset>
             <label>
               <span>Descripción</span>
               <textarea
