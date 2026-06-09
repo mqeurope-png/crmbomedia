@@ -46,9 +46,21 @@ from app.core.totp import (
     verify_totp_code,
 )
 from app.db.session import get_session
-from app.models.crm import Company, Contact, ContactTag, ExternalSystem, Note, Task, User
+from app.models.crm import (
+    Company,
+    Contact,
+    ContactPipelineStage,
+    ContactTag,
+    ExternalSystem,
+    Note,
+    Pipeline,
+    PipelineStage,
+    Task,
+    User,
+)
 from app.repositories import contact_views as contact_views_repository
 from app.repositories import crm as crm_repository
+from app.repositories import pipelines as pipelines_repository
 from app.services.email import EmailService, get_email_service
 from app.schemas.crm import (
     ActivityEventListPage,
@@ -66,6 +78,9 @@ from app.schemas.crm import (
     ContactRead,
     ContactTagAssignRequest,
     ContactUpdate,
+    ContactPipelineAddRequest,
+    ContactPipelineMoveRequest,
+    ContactPipelineStageRead,
     ContactViewCreate,
     ContactViewDuplicateRequest,
     ContactViewFilters,
@@ -73,6 +88,19 @@ from app.schemas.crm import (
     ContactViewUpdate,
     CountRead,
     ExternalRefreshRead,
+    PipelineContactCard,
+    PipelineContactsResponse,
+    PipelineCreate,
+    PipelineDuplicateRequest,
+    PipelineRead,
+    PipelineReportResponse,
+    PipelineStageCreate,
+    PipelineStageGroup,
+    PipelineStageMetric,
+    PipelineStageRead,
+    PipelineStageReorderRequest,
+    PipelineStageUpdate,
+    PipelineUpdate,
     TagCreate,
     TagDetailRead,
     TagListPage,
@@ -2203,6 +2231,599 @@ def set_default_contact_view(
     session.commit()
     session.refresh(view)
     return _view_to_read(view, current_user=current_user)
+
+
+# ---------------------------------------------------------------------------
+# Pipelines (Sprint P.2)
+# ---------------------------------------------------------------------------
+
+
+def _pipeline_to_read(
+    session: Session, pipeline: Pipeline
+) -> PipelineRead:
+    return PipelineRead(
+        id=pipeline.id,
+        name=pipeline.name,
+        description=pipeline.description,
+        color=pipeline.color,
+        is_active=pipeline.is_active,
+        is_shared=pipeline.is_shared,
+        owner_user_id=pipeline.owner_user_id,
+        stages=[
+            PipelineStageRead.model_validate(stage)
+            for stage in sorted(pipeline.stages, key=lambda s: s.position)
+        ],
+        contact_count=pipelines_repository.contact_count(session, pipeline.id),
+        created_at=pipeline.created_at,
+        updated_at=pipeline.updated_at,
+    )
+
+
+@router.get(
+    "/pipelines",
+    response_model=list[PipelineRead],
+    responses=ERROR_RESPONSES,
+    tags=["crm"],
+)
+def list_pipelines(
+    include_inactive: bool = Query(default=False),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_viewer),
+) -> list[PipelineRead]:
+    _ = current_user
+    rows = pipelines_repository.list_pipelines(
+        session, include_inactive=include_inactive
+    )
+    return [_pipeline_to_read(session, row) for row in rows]
+
+
+@router.get(
+    "/pipelines/{pipeline_id}",
+    response_model=PipelineRead,
+    responses=ERROR_RESPONSES,
+    tags=["crm"],
+)
+def read_pipeline(
+    pipeline_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_viewer),
+) -> PipelineRead:
+    _ = current_user
+    pipeline = pipelines_repository.get_pipeline(session, pipeline_id)
+    if not pipeline:
+        raise not_found("Pipeline")
+    return _pipeline_to_read(session, pipeline)
+
+
+@router.post(
+    "/pipelines",
+    response_model=PipelineRead,
+    status_code=status.HTTP_201_CREATED,
+    responses=ERROR_RESPONSES,
+    tags=["crm"],
+)
+def create_pipeline(
+    payload: PipelineCreate,
+    request: Request,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_manager),
+) -> PipelineRead:
+    pipeline = pipelines_repository.create_pipeline(
+        session,
+        owner_user_id=current_user.id,
+        name=payload.name,
+        description=payload.description,
+        color=payload.color,
+        is_shared=payload.is_shared,
+        stages=[stage.model_dump() for stage in payload.stages],
+    )
+    record_event(
+        session,
+        action=Action.PIPELINE_CREATED,
+        target_type="pipeline",
+        target_id=pipeline.id,
+        actor=current_user,
+        metadata={"name": pipeline.name, "stage_count": len(payload.stages)},
+        request=request,
+    )
+    session.commit()
+    session.refresh(pipeline)
+    return _pipeline_to_read(session, pipeline)
+
+
+@router.patch(
+    "/pipelines/{pipeline_id}",
+    response_model=PipelineRead,
+    responses=ERROR_RESPONSES,
+    tags=["crm"],
+)
+def update_pipeline(
+    pipeline_id: str,
+    payload: PipelineUpdate,
+    request: Request,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_manager),
+) -> PipelineRead:
+    pipeline = pipelines_repository.get_pipeline(session, pipeline_id)
+    if not pipeline:
+        raise not_found("Pipeline")
+    changes = payload.model_dump(exclude_unset=True)
+    pipelines_repository.update_pipeline(session, pipeline=pipeline, **changes)
+    record_event(
+        session,
+        action=Action.PIPELINE_UPDATED,
+        target_type="pipeline",
+        target_id=pipeline.id,
+        actor=current_user,
+        metadata={"name": pipeline.name, "changed_fields": sorted(changes.keys())},
+        request=request,
+    )
+    session.commit()
+    session.refresh(pipeline)
+    return _pipeline_to_read(session, pipeline)
+
+
+@router.delete(
+    "/pipelines/{pipeline_id}",
+    response_model=MessageRead,
+    responses=ERROR_RESPONSES,
+    tags=["crm"],
+)
+def delete_pipeline(
+    pipeline_id: str,
+    request: Request,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_manager),
+) -> MessageRead:
+    pipeline = pipelines_repository.get_pipeline(session, pipeline_id)
+    if not pipeline:
+        raise not_found("Pipeline")
+    pipelines_repository.soft_delete_pipeline(session, pipeline)
+    record_event(
+        session,
+        action=Action.PIPELINE_DELETED,
+        target_type="pipeline",
+        target_id=pipeline.id,
+        actor=current_user,
+        metadata={"name": pipeline.name},
+        request=request,
+    )
+    session.commit()
+    return MessageRead(message="Pipeline archived")
+
+
+@router.post(
+    "/pipelines/{pipeline_id}/duplicate",
+    response_model=PipelineRead,
+    status_code=status.HTTP_201_CREATED,
+    responses=ERROR_RESPONSES,
+    tags=["crm"],
+)
+def duplicate_pipeline(
+    pipeline_id: str,
+    payload: PipelineDuplicateRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_manager),
+) -> PipelineRead:
+    source = pipelines_repository.get_pipeline(session, pipeline_id)
+    if not source:
+        raise not_found("Pipeline")
+    duplicate = pipelines_repository.duplicate_pipeline(
+        session,
+        source=source,
+        owner_user_id=current_user.id,
+        name=payload.name,
+        include_contacts=payload.include_contacts,
+    )
+    record_event(
+        session,
+        action=Action.PIPELINE_DUPLICATED,
+        target_type="pipeline",
+        target_id=duplicate.id,
+        actor=current_user,
+        metadata={
+            "source_pipeline_id": source.id,
+            "name": duplicate.name,
+            "include_contacts": payload.include_contacts,
+        },
+        request=request,
+    )
+    session.commit()
+    session.refresh(duplicate)
+    return _pipeline_to_read(session, duplicate)
+
+
+# ----- Stages -----
+
+
+@router.post(
+    "/pipelines/{pipeline_id}/stages",
+    response_model=PipelineStageRead,
+    status_code=status.HTTP_201_CREATED,
+    responses=ERROR_RESPONSES,
+    tags=["crm"],
+)
+def create_pipeline_stage(
+    pipeline_id: str,
+    payload: PipelineStageCreate,
+    request: Request,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_manager),
+) -> PipelineStage:
+    pipeline = pipelines_repository.get_pipeline(session, pipeline_id)
+    if not pipeline:
+        raise not_found("Pipeline")
+    stage = pipelines_repository.add_stage(
+        session,
+        pipeline=pipeline,
+        name=payload.name,
+        description=payload.description,
+        color=payload.color,
+        is_won=payload.is_won,
+        is_lost=payload.is_lost,
+        target_days=payload.target_days,
+        position=payload.position,
+    )
+    record_event(
+        session,
+        action=Action.PIPELINE_STAGE_CREATED,
+        target_type="pipeline_stage",
+        target_id=stage.id,
+        actor=current_user,
+        metadata={
+            "pipeline_id": pipeline.id,
+            "name": stage.name,
+            "position": stage.position,
+        },
+        request=request,
+    )
+    session.commit()
+    session.refresh(stage)
+    return stage
+
+
+@router.patch(
+    "/pipeline-stages/{stage_id}",
+    response_model=PipelineStageRead,
+    responses=ERROR_RESPONSES,
+    tags=["crm"],
+)
+def update_pipeline_stage(
+    stage_id: str,
+    payload: PipelineStageUpdate,
+    request: Request,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_manager),
+) -> PipelineStage:
+    stage = session.get(PipelineStage, stage_id)
+    if not stage:
+        raise not_found("Pipeline stage")
+    changes = payload.model_dump(exclude_unset=True)
+    pipelines_repository.update_stage(session, stage=stage, **changes)
+    record_event(
+        session,
+        action=Action.PIPELINE_STAGE_UPDATED,
+        target_type="pipeline_stage",
+        target_id=stage.id,
+        actor=current_user,
+        metadata={
+            "pipeline_id": stage.pipeline_id,
+            "changed_fields": sorted(changes.keys()),
+        },
+        request=request,
+    )
+    session.commit()
+    session.refresh(stage)
+    return stage
+
+
+@router.delete(
+    "/pipeline-stages/{stage_id}",
+    response_model=MessageRead,
+    responses=ERROR_RESPONSES,
+    tags=["crm"],
+)
+def delete_pipeline_stage(
+    stage_id: str,
+    request: Request,
+    move_to_stage_id: str | None = Query(default=None),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_manager),
+) -> MessageRead:
+    stage = session.get(PipelineStage, stage_id)
+    if not stage:
+        raise not_found("Pipeline stage")
+    pipeline_id = stage.pipeline_id
+    stage_name = stage.name
+    try:
+        moved = pipelines_repository.delete_stage(
+            session, stage=stage, move_to_stage_id=move_to_stage_id
+        )
+    except pipelines_repository.StageHasContactsError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
+    record_event(
+        session,
+        action=Action.PIPELINE_STAGE_DELETED,
+        target_type="pipeline_stage",
+        target_id=stage_id,
+        actor=current_user,
+        metadata={
+            "pipeline_id": pipeline_id,
+            "name": stage_name,
+            "moved_contacts": moved,
+        },
+        request=request,
+    )
+    session.commit()
+    return MessageRead(
+        message=f"Stage deleted; {moved} contact(s) relocated"
+    )
+
+
+@router.post(
+    "/pipelines/{pipeline_id}/stages/reorder",
+    response_model=list[PipelineStageRead],
+    responses=ERROR_RESPONSES,
+    tags=["crm"],
+)
+def reorder_pipeline_stages(
+    pipeline_id: str,
+    payload: PipelineStageReorderRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_manager),
+) -> list[PipelineStage]:
+    pipeline = pipelines_repository.get_pipeline(session, pipeline_id)
+    if not pipeline:
+        raise not_found("Pipeline")
+    try:
+        ordered = pipelines_repository.reorder_stages(
+            session, pipeline=pipeline, stage_ids=payload.stage_ids
+        )
+    except pipelines_repository.InvalidStageOrderError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
+    record_event(
+        session,
+        action=Action.PIPELINE_STAGE_REORDERED,
+        target_type="pipeline",
+        target_id=pipeline.id,
+        actor=current_user,
+        metadata={"stage_ids": payload.stage_ids},
+        request=request,
+    )
+    session.commit()
+    return ordered
+
+
+# ----- Contact assignments -----
+
+
+@router.post(
+    "/contacts/{contact_id}/pipelines",
+    response_model=ContactPipelineStageRead,
+    status_code=status.HTTP_201_CREATED,
+    responses=ERROR_RESPONSES,
+    tags=["crm"],
+)
+def add_contact_to_pipeline(
+    contact_id: str,
+    payload: ContactPipelineAddRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_user),
+) -> ContactPipelineStage:
+    contact = crm_repository.get_contact(session, contact_id)
+    if not contact:
+        raise not_found("Contact")
+    pipeline = pipelines_repository.get_pipeline(session, payload.pipeline_id)
+    if not pipeline:
+        raise not_found("Pipeline")
+    try:
+        assignment = pipelines_repository.add_contact_to_pipeline(
+            session,
+            contact=contact,
+            pipeline=pipeline,
+            stage_id=payload.stage_id,
+            note=payload.note,
+            moved_by_user_id=current_user.id,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
+    record_event(
+        session,
+        action=Action.CONTACT_PIPELINE_STAGE_ADDED,
+        target_type="contact_pipeline_stage",
+        target_id=assignment.id,
+        actor=current_user,
+        metadata={
+            "contact_id": contact.id,
+            "pipeline_id": pipeline.id,
+            "stage_id": assignment.stage_id,
+        },
+        request=request,
+    )
+    session.commit()
+    session.refresh(assignment)
+    return assignment
+
+
+@router.patch(
+    "/contact-pipeline-stages/{assignment_id}",
+    response_model=ContactPipelineStageRead,
+    responses=ERROR_RESPONSES,
+    tags=["crm"],
+)
+def move_contact_in_pipeline(
+    assignment_id: str,
+    payload: ContactPipelineMoveRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_user),
+) -> ContactPipelineStage:
+    assignment = pipelines_repository.get_assignment(session, assignment_id)
+    if not assignment:
+        raise not_found("Contact pipeline stage")
+    try:
+        updated = pipelines_repository.move_contact_to_stage(
+            session,
+            assignment=assignment,
+            new_stage_id=payload.stage_id,
+            note=payload.note,
+            moved_by_user_id=current_user.id,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
+    record_event(
+        session,
+        action=Action.CONTACT_PIPELINE_STAGE_CHANGED,
+        target_type="contact_pipeline_stage",
+        target_id=updated.id,
+        actor=current_user,
+        metadata={
+            "pipeline_id": updated.pipeline_id,
+            "stage_id": updated.stage_id,
+        },
+        request=request,
+    )
+    session.commit()
+    session.refresh(updated)
+    return updated
+
+
+@router.delete(
+    "/contact-pipeline-stages/{assignment_id}",
+    response_model=MessageRead,
+    responses=ERROR_RESPONSES,
+    tags=["crm"],
+)
+def archive_contact_in_pipeline(
+    assignment_id: str,
+    request: Request,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_user),
+) -> MessageRead:
+    assignment = pipelines_repository.get_assignment(session, assignment_id)
+    if not assignment:
+        raise not_found("Contact pipeline stage")
+    pipelines_repository.archive_assignment(session, assignment)
+    record_event(
+        session,
+        action=Action.CONTACT_PIPELINE_STAGE_ARCHIVED,
+        target_type="contact_pipeline_stage",
+        target_id=assignment.id,
+        actor=current_user,
+        metadata={
+            "contact_id": assignment.contact_id,
+            "pipeline_id": assignment.pipeline_id,
+        },
+        request=request,
+    )
+    session.commit()
+    return MessageRead(message="Assignment archived")
+
+
+@router.get(
+    "/pipelines/{pipeline_id}/contacts",
+    response_model=PipelineContactsResponse,
+    responses=ERROR_RESPONSES,
+    tags=["crm"],
+)
+def list_pipeline_contacts(
+    pipeline_id: str,
+    per_stage_limit: int = Query(default=50, ge=1, le=200),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_viewer),
+) -> PipelineContactsResponse:
+    _ = current_user
+    pipeline = pipelines_repository.get_pipeline(session, pipeline_id)
+    if not pipeline:
+        raise not_found("Pipeline")
+    now = datetime.now(UTC)
+    groups = pipelines_repository.list_contacts_grouped_by_stage(
+        session, pipeline, per_stage_limit=per_stage_limit
+    )
+    stage_groups: list[PipelineStageGroup] = []
+    for stage, pairs, total in groups:
+        cards: list[PipelineContactCard] = []
+        for assignment, contact in pairs:
+            entered = assignment.entered_stage_at
+            if entered.tzinfo is None:
+                entered = entered.replace(tzinfo=UTC)
+            days = max(0, (now - entered).days)
+            cards.append(
+                PipelineContactCard(
+                    id=assignment.id,
+                    contact_id=contact.id,
+                    first_name=contact.first_name,
+                    last_name=contact.last_name,
+                    email=contact.email,
+                    phone=contact.phone,
+                    lead_score=contact.lead_score,
+                    tags=[
+                        TagRead.model_validate(assignment.tag)
+                        for assignment in contact.tag_assignments
+                    ],
+                    entered_stage_at=assignment.entered_stage_at,
+                    added_to_pipeline_at=assignment.added_to_pipeline_at,
+                    days_in_stage=days,
+                )
+            )
+        stage_groups.append(
+            PipelineStageGroup(
+                stage_id=stage.id,
+                stage_name=stage.name,
+                stage_color=stage.color,
+                position=stage.position,
+                is_won=stage.is_won,
+                is_lost=stage.is_lost,
+                target_days=stage.target_days,
+                total=total,
+                contacts=cards,
+            )
+        )
+    return PipelineContactsResponse(
+        pipeline=_pipeline_to_read(session, pipeline),
+        stages=stage_groups,
+    )
+
+
+@router.get(
+    "/pipelines/{pipeline_id}/report",
+    response_model=PipelineReportResponse,
+    responses=ERROR_RESPONSES,
+    tags=["crm"],
+)
+def pipeline_report(
+    pipeline_id: str,
+    from_date: datetime | None = Query(default=None),
+    to_date: datetime | None = Query(default=None),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_viewer),
+) -> PipelineReportResponse:
+    _ = current_user
+    pipeline = pipelines_repository.get_pipeline(session, pipeline_id)
+    if not pipeline:
+        raise not_found("Pipeline")
+    report = pipelines_repository.compute_report(
+        session, pipeline, from_date=from_date, to_date=to_date
+    )
+    return PipelineReportResponse(
+        pipeline_id=report["pipeline_id"],
+        pipeline_name=report["pipeline_name"],
+        total_contacts=report["total_contacts"],
+        won_count=report["won_count"],
+        lost_count=report["lost_count"],
+        metrics=[PipelineStageMetric(**m) for m in report["metrics"]],
+    )
 
 
 router.include_router(integration_accounts_router)

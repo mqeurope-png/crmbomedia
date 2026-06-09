@@ -777,3 +777,211 @@ class GdprProcessResult(BaseModel):
     status: GdprRequestStatus
     evidence_path: str | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
+# Pipelines (Sprint P.2)
+# ---------------------------------------------------------------------------
+
+
+class PipelineStageCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    description: str | None = Field(default=None, max_length=2000)
+    color: str | None = Field(default=None, max_length=7)
+    is_won: bool = False
+    is_lost: bool = False
+    target_days: int | None = Field(default=None, ge=0)
+    position: int | None = Field(default=None, ge=0)
+
+    @field_validator("name")
+    @classmethod
+    def strip_name(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator("color", mode="before")
+    @classmethod
+    def _validate_color(cls, value: str | None) -> str | None:
+        return _validate_tag_color(value)
+
+
+class PipelineStageUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+    description: str | None = Field(default=None, max_length=2000)
+    color: str | None = Field(default=None, max_length=7)
+    is_won: bool | None = None
+    is_lost: bool | None = None
+    target_days: int | None = Field(default=None, ge=0)
+
+    @field_validator("color", mode="before")
+    @classmethod
+    def _validate_color(cls, value: str | None) -> str | None:
+        return _validate_tag_color(value)
+
+
+class PipelineStageRead(BaseModel):
+    id: str
+    pipeline_id: str
+    name: str
+    description: str | None = None
+    position: int
+    color: str | None = None
+    is_won: bool
+    is_lost: bool
+    target_days: int | None = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class PipelineStageReorderRequest(BaseModel):
+    """`POST /api/pipelines/{id}/stages/reorder` body — the full list
+    of stage UUIDs in their new order. The route validates length
+    equals the pipeline's current stage count so the operator can't
+    accidentally drop a stage by omitting it."""
+
+    stage_ids: list[str] = Field(min_length=1)
+
+
+class PipelineCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    description: str | None = Field(default=None, max_length=2000)
+    color: str | None = Field(default=None, max_length=7)
+    is_shared: bool = True
+    stages: list[PipelineStageCreate] = Field(default_factory=list)
+
+    @field_validator("name")
+    @classmethod
+    def strip_name(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator("color", mode="before")
+    @classmethod
+    def _validate_color(cls, value: str | None) -> str | None:
+        return _validate_tag_color(value)
+
+
+class PipelineUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+    description: str | None = Field(default=None, max_length=2000)
+    color: str | None = Field(default=None, max_length=7)
+    is_shared: bool | None = None
+    is_active: bool | None = None
+
+    @field_validator("color", mode="before")
+    @classmethod
+    def _validate_color(cls, value: str | None) -> str | None:
+        return _validate_tag_color(value)
+
+
+class PipelineRead(BaseModel):
+    id: str
+    name: str
+    description: str | None = None
+    color: str | None = None
+    is_active: bool
+    is_shared: bool
+    owner_user_id: str
+    stages: list[PipelineStageRead] = Field(default_factory=list)
+    contact_count: int = 0
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class PipelineDuplicateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+    include_contacts: bool = False
+
+
+class ContactPipelineAddRequest(BaseModel):
+    pipeline_id: str
+    stage_id: str | None = None  # defaults to position-0 stage
+    note: str | None = Field(default=None, max_length=4000)
+
+
+class ContactPipelineMoveRequest(BaseModel):
+    stage_id: str
+    note: str | None = Field(default=None, max_length=4000)
+
+
+class ContactStageHistoryRead(BaseModel):
+    id: str
+    from_stage_id: str | None = None
+    to_stage_id: str
+    moved_by_user_id: str | None = None
+    moved_at: datetime
+    duration_seconds_in_previous_stage: int | None = None
+    note: str | None = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ContactPipelineStageRead(BaseModel):
+    id: str
+    contact_id: str
+    pipeline_id: str
+    stage_id: str
+    entered_stage_at: datetime
+    added_to_pipeline_at: datetime
+    last_activity_at: datetime | None = None
+    notes: str | None = None
+    is_archived: bool
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class PipelineContactCard(BaseModel):
+    """Compact row used by the kanban view — enough to render a card
+    without re-fetching the full contact."""
+
+    id: str  # contact_pipeline_stages.id
+    contact_id: str
+    first_name: str
+    last_name: str | None = None
+    email: str
+    phone: str | None = None
+    lead_score: int | None = None
+    tags: list[TagRead] = Field(default_factory=list)
+    entered_stage_at: datetime
+    added_to_pipeline_at: datetime
+    days_in_stage: int
+
+
+class PipelineStageGroup(BaseModel):
+    stage_id: str
+    stage_name: str
+    stage_color: str | None = None
+    position: int
+    is_won: bool
+    is_lost: bool
+    target_days: int | None = None
+    total: int
+    contacts: list[PipelineContactCard]
+
+
+class PipelineContactsResponse(BaseModel):
+    pipeline: PipelineRead
+    stages: list[PipelineStageGroup]
+
+
+class PipelineStageMetric(BaseModel):
+    stage_id: str
+    stage_name: str
+    position: int
+    contact_count: int
+    avg_seconds_in_stage: float | None = None
+    conversion_to_next: float | None = None  # 0..1 ratio
+    stalled_count: int = 0  # over target_days
+
+
+class PipelineReportResponse(BaseModel):
+    pipeline_id: str
+    pipeline_name: str
+    total_contacts: int
+    won_count: int
+    lost_count: int
+    metrics: list[PipelineStageMetric]

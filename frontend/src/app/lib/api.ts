@@ -784,3 +784,244 @@ export async function exportAuditLogs(
   }
   return response.blob();
 }
+
+// ----- Pipelines (Sprint P.2) -----
+
+export type PipelineStage = {
+  id: string;
+  pipeline_id: string;
+  name: string;
+  description?: string | null;
+  position: number;
+  color?: string | null;
+  is_won: boolean;
+  is_lost: boolean;
+  target_days?: number | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type Pipeline = {
+  id: string;
+  name: string;
+  description?: string | null;
+  color?: string | null;
+  is_active: boolean;
+  is_shared: boolean;
+  owner_user_id: string;
+  stages: PipelineStage[];
+  contact_count: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type PipelineContactCard = {
+  id: string;
+  contact_id: string;
+  first_name: string;
+  last_name?: string | null;
+  email: string;
+  phone?: string | null;
+  lead_score?: number | null;
+  tags: Tag[];
+  entered_stage_at: string;
+  added_to_pipeline_at: string;
+  days_in_stage: number;
+};
+
+export type PipelineStageGroup = {
+  stage_id: string;
+  stage_name: string;
+  stage_color?: string | null;
+  position: number;
+  is_won: boolean;
+  is_lost: boolean;
+  target_days?: number | null;
+  total: number;
+  contacts: PipelineContactCard[];
+};
+
+export type PipelineContactsResponse = {
+  pipeline: Pipeline;
+  stages: PipelineStageGroup[];
+};
+
+export type PipelineStageMetric = {
+  stage_id: string;
+  stage_name: string;
+  position: number;
+  contact_count: number;
+  avg_seconds_in_stage?: number | null;
+  conversion_to_next?: number | null;
+  stalled_count: number;
+};
+
+export type PipelineReport = {
+  pipeline_id: string;
+  pipeline_name: string;
+  total_contacts: number;
+  won_count: number;
+  lost_count: number;
+  metrics: PipelineStageMetric[];
+};
+
+export async function listPipelines(includeInactive = false): Promise<Pipeline[]> {
+  const query = includeInactive ? "?include_inactive=true" : "";
+  return apiFetch<Pipeline[]>(`/api/pipelines${query}`);
+}
+
+export async function getPipeline(id: string): Promise<Pipeline> {
+  return apiFetch<Pipeline>(`/api/pipelines/${id}`);
+}
+
+export async function createPipeline(payload: {
+  name: string;
+  description?: string | null;
+  color?: string | null;
+  is_shared?: boolean;
+  stages?: Array<{
+    name: string;
+    description?: string | null;
+    color?: string | null;
+    is_won?: boolean;
+    is_lost?: boolean;
+    target_days?: number | null;
+    position?: number;
+  }>;
+}): Promise<Pipeline> {
+  return apiFetch<Pipeline>("/api/pipelines", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updatePipeline(
+  id: string,
+  payload: Partial<{
+    name: string;
+    description: string | null;
+    color: string | null;
+    is_shared: boolean;
+    is_active: boolean;
+  }>,
+): Promise<Pipeline> {
+  return apiFetch<Pipeline>(`/api/pipelines/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function deletePipeline(id: string): Promise<{ message: string }> {
+  return apiFetch<{ message: string }>(`/api/pipelines/${id}`, {
+    method: "DELETE",
+  });
+}
+
+export async function duplicatePipeline(
+  id: string,
+  payload: { name?: string; include_contacts?: boolean } = {},
+): Promise<Pipeline> {
+  return apiFetch<Pipeline>(`/api/pipelines/${id}/duplicate`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function addPipelineStage(
+  pipelineId: string,
+  payload: {
+    name: string;
+    description?: string | null;
+    color?: string | null;
+    is_won?: boolean;
+    is_lost?: boolean;
+    target_days?: number | null;
+    position?: number;
+  },
+): Promise<PipelineStage> {
+  return apiFetch<PipelineStage>(`/api/pipelines/${pipelineId}/stages`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updatePipelineStage(
+  stageId: string,
+  payload: Partial<{
+    name: string;
+    description: string | null;
+    color: string | null;
+    is_won: boolean;
+    is_lost: boolean;
+    target_days: number | null;
+  }>,
+): Promise<PipelineStage> {
+  return apiFetch<PipelineStage>(`/api/pipeline-stages/${stageId}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function deletePipelineStage(
+  stageId: string,
+  moveToStageId?: string,
+): Promise<{ message: string }> {
+  const query = moveToStageId ? `?move_to_stage_id=${moveToStageId}` : "";
+  return apiFetch<{ message: string }>(
+    `/api/pipeline-stages/${stageId}${query}`,
+    { method: "DELETE" },
+  );
+}
+
+export async function reorderPipelineStages(
+  pipelineId: string,
+  stageIds: string[],
+): Promise<PipelineStage[]> {
+  return apiFetch<PipelineStage[]>(
+    `/api/pipelines/${pipelineId}/stages/reorder`,
+    { method: "POST", body: JSON.stringify({ stage_ids: stageIds }) },
+  );
+}
+
+export async function listPipelineContacts(
+  pipelineId: string,
+): Promise<PipelineContactsResponse> {
+  return apiFetch<PipelineContactsResponse>(
+    `/api/pipelines/${pipelineId}/contacts`,
+  );
+}
+
+export async function pipelineReport(
+  pipelineId: string,
+): Promise<PipelineReport> {
+  return apiFetch<PipelineReport>(`/api/pipelines/${pipelineId}/report`);
+}
+
+export async function addContactToPipeline(
+  contactId: string,
+  payload: { pipeline_id: string; stage_id?: string; note?: string | null },
+): Promise<{ id: string; stage_id: string; pipeline_id: string }> {
+  return apiFetch(`/api/contacts/${contactId}/pipelines`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function moveContactToStage(
+  assignmentId: string,
+  payload: { stage_id: string; note?: string | null },
+): Promise<{ id: string; stage_id: string }> {
+  return apiFetch(`/api/contact-pipeline-stages/${assignmentId}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function archivePipelineAssignment(
+  assignmentId: string,
+): Promise<{ message: string }> {
+  return apiFetch<{ message: string }>(
+    `/api/contact-pipeline-stages/${assignmentId}`,
+    { method: "DELETE" },
+  );
+}

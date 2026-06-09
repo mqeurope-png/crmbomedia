@@ -223,6 +223,156 @@ class ContactView(TimestampMixin, Base):
     sort_json: Mapped[str | None] = mapped_column(Text)
 
 
+class Pipeline(TimestampMixin, Base):
+    """A named sequence of stages a contact moves through. A tenant
+    can run several pipelines side by side (Ventas, Reactivación,
+    Onboarding) and the same contact can sit in more than one.
+
+    `is_shared` defaults to True — pipelines are an
+    organisation-level concept; a private pipeline is the unusual
+    case. `is_active` is the soft-delete; the row stays for history.
+    """
+
+    __tablename__ = "pipelines"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+    color: Mapped[str | None] = mapped_column(String(7))
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    owner_user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id"), nullable=False
+    )
+    is_shared: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+    stages: Mapped[list["PipelineStage"]] = relationship(
+        back_populates="pipeline",
+        cascade="all, delete-orphan",
+        order_by="PipelineStage.position",
+    )
+    contact_assignments: Mapped[list["ContactPipelineStage"]] = relationship(
+        back_populates="pipeline", cascade="all, delete-orphan"
+    )
+
+
+class PipelineStage(TimestampMixin, Base):
+    """One ordered step inside a pipeline. Positions are kept
+    contiguous (0..N-1) by the reorder endpoint — there's no DB-level
+    constraint enforcing it because portable SQLite + MySQL don't
+    have a clean way to express "no gaps", but every mutation route
+    rewrites the positions through the repository helper."""
+
+    __tablename__ = "pipeline_stages"
+    __table_args__ = (
+        UniqueConstraint(
+            "pipeline_id", "position", name="uq_pipeline_stage_position"
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    pipeline_id: Mapped[str] = mapped_column(
+        ForeignKey("pipelines.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    color: Mapped[str | None] = mapped_column(String(7))
+    is_won: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    is_lost: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    target_days: Mapped[int | None] = mapped_column(Integer)
+
+    pipeline: Mapped[Pipeline] = relationship(back_populates="stages")
+    contact_assignments: Mapped[list["ContactPipelineStage"]] = relationship(
+        back_populates="stage"
+    )
+
+
+class ContactPipelineStage(TimestampMixin, Base):
+    """The row that says "contact C is in stage S of pipeline P". A
+    contact has at most one such row per pipeline (the unique key
+    enforces it) and moves between stages by updating
+    `stage_id` + `entered_stage_at`, while the repository writes a
+    `ContactStageHistory` row in the same transaction."""
+
+    __tablename__ = "contact_pipeline_stages"
+    __table_args__ = (
+        UniqueConstraint(
+            "contact_id",
+            "pipeline_id",
+            name="uq_contact_pipeline_single_stage",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    contact_id: Mapped[str] = mapped_column(
+        ForeignKey("contacts.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    pipeline_id: Mapped[str] = mapped_column(
+        ForeignKey("pipelines.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    stage_id: Mapped[str] = mapped_column(
+        ForeignKey("pipeline_stages.id"), nullable=False, index=True
+    )
+    entered_stage_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+    )
+    added_to_pipeline_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+    )
+    last_activity_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    notes: Mapped[str | None] = mapped_column(Text)
+    is_archived: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+    pipeline: Mapped[Pipeline] = relationship(back_populates="contact_assignments")
+    stage: Mapped[PipelineStage] = relationship(back_populates="contact_assignments")
+    history: Mapped[list["ContactStageHistory"]] = relationship(
+        back_populates="assignment",
+        cascade="all, delete-orphan",
+        order_by="ContactStageHistory.moved_at",
+    )
+
+
+class ContactStageHistory(Base):
+    """Audit trail of stage transitions for one
+    `contact_pipeline_stages` row. The initial add writes one row with
+    `from_stage_id=NULL`; every subsequent move writes another with
+    the prior stage and the duration the contact spent in it.
+    Reports (avg time per stage, conversion rate) aggregate over this
+    table."""
+
+    __tablename__ = "contact_stage_history"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    contact_pipeline_stage_id: Mapped[str] = mapped_column(
+        ForeignKey("contact_pipeline_stages.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    from_stage_id: Mapped[str | None] = mapped_column(
+        ForeignKey("pipeline_stages.id")
+    )
+    to_stage_id: Mapped[str] = mapped_column(
+        ForeignKey("pipeline_stages.id"), nullable=False
+    )
+    moved_by_user_id: Mapped[str | None] = mapped_column(String(36))
+    moved_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+        index=True,
+    )
+    duration_seconds_in_previous_stage: Mapped[int | None] = mapped_column(Integer)
+    note: Mapped[str | None] = mapped_column(Text)
+
+    assignment: Mapped[ContactPipelineStage] = relationship(back_populates="history")
+
+
 class Note(TimestampMixin, Base):
     __tablename__ = "notes"
 

@@ -116,6 +116,19 @@ class Action:
     CONTACT_VIEW_DUPLICATED = "contact_view.duplicated"
     CONTACT_VIEW_DEFAULT_SET = "contact_view.default_set"
 
+    # Pipelines (Sprint P.2).
+    PIPELINE_CREATED = "pipeline.created"
+    PIPELINE_UPDATED = "pipeline.updated"
+    PIPELINE_DELETED = "pipeline.deleted"
+    PIPELINE_DUPLICATED = "pipeline.duplicated"
+    PIPELINE_STAGE_CREATED = "pipeline_stage.created"
+    PIPELINE_STAGE_UPDATED = "pipeline_stage.updated"
+    PIPELINE_STAGE_DELETED = "pipeline_stage.deleted"
+    PIPELINE_STAGE_REORDERED = "pipeline_stage.reordered"
+    CONTACT_PIPELINE_STAGE_ADDED = "contact_pipeline_stage.added"
+    CONTACT_PIPELINE_STAGE_CHANGED = "contact_pipeline_stage.stage_changed"
+    CONTACT_PIPELINE_STAGE_ARCHIVED = "contact_pipeline_stage.archived"
+
     # GDPR / RGPD subject-rights events
     GDPR_REQUEST_CREATED = "gdpr.request_created"
     GDPR_REQUEST_UPDATED = "gdpr.request_updated"
