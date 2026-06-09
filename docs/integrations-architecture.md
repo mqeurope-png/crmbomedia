@@ -550,6 +550,18 @@ caemos a `owner` como fallback. La UI muestra el nombre con el email
 como tooltip; sólo cuando ambos campos vienen vacíos aparece
 "Sistema".
 
+**Tags importados** (Sprint P.1 ampliado): el mapper ya **no escribe**
+en la columna CSV `contacts.tags`. Para cada string del array
+`payload.tags` (o de `payload.tags[].tag` cuando llegan como dicts),
+hace upsert sobre la tabla `tags` por `name_normalized` y crea una
+fila en `contact_tags` con `source='agilecrm:<account_id>'`. El job
+reconcilia delta: una tag que estaba en el sync anterior y desaparece
+del payload se elimina **solo si su `source` coincide con esta
+cuenta**. Tags asignados manualmente o desde otra cuenta AgileCRM
+sobreviven al sync. La columna CSV se mantiene para compatibilidad
+hacia atrás pero se considera deprecated — un futuro PR la retirará
+del modelo cuando todos los clientes consuman `tag_objects`.
+
 ### Rate limiting y throttling
 
 El cliente base (`IntegrationHTTPClient`) respeta el header

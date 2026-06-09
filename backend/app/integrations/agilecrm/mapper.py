@@ -68,6 +68,41 @@ def _stringify_tags(tags: Any) -> str:
     return ",".join(sorted(set(cleaned)))
 
 
+def _tag_names(tags: Any) -> list[str]:
+    """Return a list of deduplicated, stripped, case-insensitive tag
+    names from the AgileCRM payload — the feed for the M:N
+    `contact_tags` upserter. Original casing is preserved (so the
+    first occurrence of "VIP" is what we display) but a follow-up
+    "vip" in the same payload collapses to a single entry."""
+    if not tags:
+        return []
+    if isinstance(tags, str):
+        candidates: list[str] = [t for t in tags.split(",")]
+    elif isinstance(tags, list):
+        candidates = []
+        for raw in tags:
+            if isinstance(raw, str):
+                candidates.append(raw)
+            elif isinstance(raw, dict):
+                value = raw.get("tag") or raw.get("name")
+                if isinstance(value, str):
+                    candidates.append(value)
+    else:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        cleaned = candidate.strip()
+        if not cleaned:
+            continue
+        normalized = cleaned.lower()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        out.append(cleaned)
+    return out
+
+
 def _raw_tags(tags: Any) -> list[Any] | None:
     """Preserve the original tag shape (list of strings OR list of dicts)
     in the external_reference metadata so a future tags-table feature
@@ -245,13 +280,17 @@ def map_agilecrm_contact_to_internal(
         "email": email,
         "phone": phone or None,
         "origin": ORIGIN_LABEL,
-        "tags": _stringify_tags(payload.get("tags")),
         "commercial_status": "new",
         "marketing_consent": "unknown",
         **address_fields,
         "lead_score": lead_score,
         "custom_fields": json.dumps(custom_fields, default=str) if custom_fields else None,
     }
+    # The mapper writes tags into the M:N `tags` table via the job,
+    # NOT into the legacy `contacts.tags` CSV column (Sprint P.1
+    # ampliado). `tag_names` is a magic key the worker strips before
+    # `Contact(**record)` and feeds to the M:N delta helper.
+    record["tag_names"] = _tag_names(payload.get("tags"))
     if company_name:
         # Hint stored under `account_label` of the external_reference
         # row downstream — the mapper just returns the name; the worker

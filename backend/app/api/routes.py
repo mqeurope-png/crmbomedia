@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import JSONResponse
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -44,13 +45,15 @@ from app.core.totp import (
     verify_totp_code,
 )
 from app.db.session import get_session
-from app.models.crm import Company, Contact, ExternalSystem, Note, Task, User
+from app.models.crm import Company, Contact, ContactTag, ExternalSystem, Note, Task, User
 from app.repositories import crm as crm_repository
 from app.services.email import EmailService, get_email_service
 from app.schemas.crm import (
     ActivityEventListPage,
     ActivityEventRead,
     AuditLogRead,
+    BulkContactTagRequest,
+    BulkContactTagResult,
     ChangePasswordRequest,
     CompanyCreate,
     CompanyRead,
@@ -59,9 +62,15 @@ from app.schemas.crm import (
     ContactDetailRead,
     ContactListPage,
     ContactRead,
+    ContactTagAssignRequest,
     ContactUpdate,
     CountRead,
     ExternalRefreshRead,
+    TagCreate,
+    TagDetailRead,
+    TagListPage,
+    TagRead,
+    TagUpdate,
     CurrentUserRead,
     ErrorResponse,
     HealthRead,
@@ -1035,6 +1044,16 @@ def create_contact(
     except IntegrityError as exc:
         session.rollback()
         raise conflict("A contact with this email already exists") from exc
+    # Bridge the legacy CSV column to the new M:N table so a caller
+    # using the pre-Sprint-P.1 API contract still ends up with proper
+    # tag rows. The CSV stays writable for backwards compat.
+    _mirror_csv_tags_into_table(
+        session,
+        contact=contact,
+        csv=contact.tags,
+        actor=current_user,
+        source="manual",
+    )
     record_event(
         session,
         action=Action.CONTACT_CREATED,
@@ -1049,6 +1068,37 @@ def create_contact(
     return contact
 
 
+def _mirror_csv_tags_into_table(
+    session: Session,
+    *,
+    contact: Contact,
+    csv: str | None,
+    actor: User,
+    source: str,
+) -> None:
+    if not csv:
+        return
+    seen: set[str] = set()
+    for raw in csv.split(","):
+        cleaned = raw.strip()
+        if not cleaned:
+            continue
+        normalized = cleaned.lower()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        tag, _ = crm_repository.upsert_tag(
+            session, name=cleaned, created_by_user_id=actor.id
+        )
+        crm_repository.assign_tag_to_contact(
+            session,
+            contact_id=contact.id,
+            tag_id=tag.id,
+            assigned_by_user_id=actor.id,
+            source=source,
+        )
+
+
 @router.get(
     "/contacts",
     response_model=ContactListPage,
@@ -1059,7 +1109,19 @@ def list_contacts(
     q: str | None = Query(
         default=None, description="Busca por nombre, apellidos, email o teléfono"
     ),
-    tag: str | None = Query(default=None, description="Filtra por un tag exacto del CSV `tags`"),
+    tag: str | None = Query(
+        default=None,
+        description="Legacy: filtra por nombre exacto de un tag (case-insensitive)",
+    ),
+    tag_ids: list[str] | None = Query(
+        default=None,
+        description="UUIDs de tags. Combinado con `tag_match_mode`",
+    ),
+    tag_match_mode: str = Query(
+        default="any",
+        pattern="^(any|all)$",
+        description="`any`: al menos uno; `all`: todos",
+    ),
     origin_system: ExternalSystem | None = Query(
         default=None,
         description="Filtra por sistema de origen vía external_references.system",
@@ -1070,6 +1132,10 @@ def list_contacts(
     ),
     commercial_status: str | None = Query(default=None, max_length=80),
     marketing_consent: str | None = Query(default=None, max_length=40),
+    lead_score_min: int | None = Query(default=None),
+    lead_score_max: int | None = Query(default=None),
+    created_after: datetime | None = Query(default=None),
+    created_before: datetime | None = Query(default=None),
     sort_by: str = Query(
         default="created_at",
         description="created_at | updated_at | name | email",
@@ -1086,10 +1152,16 @@ def list_contacts(
         session=session,
         q=q,
         tag=tag,
+        tag_ids=tag_ids,
+        tag_match_mode=tag_match_mode,
         origin_system=origin_system,
         origin_account_id=origin_account_id,
         commercial_status=commercial_status,
         marketing_consent=marketing_consent,
+        lead_score_min=lead_score_min,
+        lead_score_max=lead_score_max,
+        created_after=created_after,
+        created_before=created_before,
         skip=skip,
         limit=limit,
         include_inactive=include_inactive,
@@ -1100,10 +1172,16 @@ def list_contacts(
         session=session,
         q=q,
         tag=tag,
+        tag_ids=tag_ids,
+        tag_match_mode=tag_match_mode,
         origin_system=origin_system,
         origin_account_id=origin_account_id,
         commercial_status=commercial_status,
         marketing_consent=marketing_consent,
+        lead_score_min=lead_score_min,
+        lead_score_max=lead_score_max,
+        created_after=created_after,
+        created_before=created_before,
         include_inactive=include_inactive,
     )
     return ContactListPage(
@@ -1123,10 +1201,16 @@ def list_contacts(
 def count_contacts(
     q: str | None = Query(default=None, description="Busca por nombre, apellidos o email"),
     tag: str | None = Query(default=None),
+    tag_ids: list[str] | None = Query(default=None),
+    tag_match_mode: str = Query(default="any", pattern="^(any|all)$"),
     origin_system: ExternalSystem | None = Query(default=None),
     origin_account_id: str | None = Query(default=None),
     commercial_status: str | None = Query(default=None, max_length=80),
     marketing_consent: str | None = Query(default=None, max_length=40),
+    lead_score_min: int | None = Query(default=None),
+    lead_score_max: int | None = Query(default=None),
+    created_after: datetime | None = Query(default=None),
+    created_before: datetime | None = Query(default=None),
     include_inactive: bool = Query(default=False),
     session: Session = Depends(get_session),
     current_user: User = Depends(require_viewer),
@@ -1139,10 +1223,16 @@ def count_contacts(
         session=session,
         q=q,
         tag=tag,
+        tag_ids=tag_ids,
+        tag_match_mode=tag_match_mode,
         origin_system=origin_system,
         origin_account_id=origin_account_id,
         commercial_status=commercial_status,
         marketing_consent=marketing_consent,
+        lead_score_min=lead_score_min,
+        lead_score_max=lead_score_max,
+        created_after=created_after,
+        created_before=created_before,
         include_inactive=include_inactive,
     )
     return CountRead(total=total)
@@ -1439,6 +1529,372 @@ def create_task(
     session.commit()
     session.refresh(task)
     return task
+
+
+# ---------------------------------------------------------------------------
+# Tags (Sprint P.1 ampliado)
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/tags",
+    response_model=TagListPage,
+    responses=ERROR_RESPONSES,
+    tags=["crm"],
+)
+def list_tags(
+    q: str | None = Query(default=None, description="Búsqueda parcial sobre nombre"),
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=200),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_viewer),
+) -> TagListPage:
+    _ = current_user
+    tags, counts, total = crm_repository.list_tags(
+        session=session, q=q, skip=skip, limit=limit
+    )
+    items = [
+        TagDetailRead(
+            id=tag.id,
+            name=tag.name,
+            color=tag.color,
+            description=tag.description,
+            created_by_user_id=tag.created_by_user_id,
+            created_at=tag.created_at,
+            updated_at=tag.updated_at,
+            contact_count=count,
+        )
+        for tag, count in zip(tags, counts, strict=True)
+    ]
+    return TagListPage(items=items, total=total, limit=limit, offset=skip)
+
+
+@router.get(
+    "/tags/{tag_id}",
+    response_model=TagDetailRead,
+    responses=ERROR_RESPONSES,
+    tags=["crm"],
+)
+def read_tag(
+    tag_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_viewer),
+) -> TagDetailRead:
+    _ = current_user
+    tag = crm_repository.get_tag(session, tag_id)
+    if not tag:
+        raise not_found("Tag")
+    count = int(
+        session.scalar(
+            select(func.count())
+            .select_from(ContactTag)
+            .where(ContactTag.tag_id == tag.id)
+        )
+        or 0
+    )
+    return TagDetailRead(
+        id=tag.id,
+        name=tag.name,
+        color=tag.color,
+        description=tag.description,
+        created_by_user_id=tag.created_by_user_id,
+        created_at=tag.created_at,
+        updated_at=tag.updated_at,
+        contact_count=count,
+    )
+
+
+@router.post(
+    "/tags",
+    response_model=TagDetailRead,
+    status_code=status.HTTP_201_CREATED,
+    responses=ERROR_RESPONSES,
+    tags=["crm"],
+)
+def create_tag(
+    payload: TagCreate,
+    request: Request,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_manager),
+) -> TagDetailRead:
+    tag, created = crm_repository.upsert_tag(
+        session,
+        name=payload.name,
+        color=payload.color,
+        description=payload.description,
+        created_by_user_id=current_user.id,
+    )
+    if not created:
+        raise conflict("A tag with this name already exists")
+    record_event(
+        session,
+        action=Action.TAG_CREATED,
+        target_type="tag",
+        target_id=tag.id,
+        actor=current_user,
+        metadata={"name": tag.name},
+        request=request,
+    )
+    session.commit()
+    session.refresh(tag)
+    return TagDetailRead(
+        id=tag.id,
+        name=tag.name,
+        color=tag.color,
+        description=tag.description,
+        created_by_user_id=tag.created_by_user_id,
+        created_at=tag.created_at,
+        updated_at=tag.updated_at,
+        contact_count=0,
+    )
+
+
+@router.patch(
+    "/tags/{tag_id}",
+    response_model=TagDetailRead,
+    responses=ERROR_RESPONSES,
+    tags=["crm"],
+)
+def update_tag(
+    tag_id: str,
+    payload: TagUpdate,
+    request: Request,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_manager),
+) -> TagDetailRead:
+    tag = crm_repository.get_tag(session, tag_id)
+    if not tag:
+        raise not_found("Tag")
+    changes = payload.model_dump(exclude_unset=True)
+    if "name" in changes and changes["name"]:
+        new_name = changes["name"]
+        normalized = crm_repository.normalize_tag_name(new_name)
+        if normalized != tag.name_normalized:
+            collision = crm_repository.get_tag_by_name(session, new_name)
+            if collision and collision.id != tag.id:
+                raise conflict("A tag with this name already exists")
+            tag.name = new_name
+            tag.name_normalized = normalized
+        changes.pop("name")
+    for field, value in changes.items():
+        setattr(tag, field, value)
+    record_event(
+        session,
+        action=Action.TAG_UPDATED,
+        target_type="tag",
+        target_id=tag.id,
+        actor=current_user,
+        metadata={
+            "name": tag.name,
+            "changed_fields": sorted(payload.model_dump(exclude_unset=True).keys()),
+        },
+        request=request,
+    )
+    session.commit()
+    session.refresh(tag)
+    count = int(
+        session.scalar(
+            select(func.count())
+            .select_from(ContactTag)
+            .where(ContactTag.tag_id == tag.id)
+        )
+        or 0
+    )
+    return TagDetailRead(
+        id=tag.id,
+        name=tag.name,
+        color=tag.color,
+        description=tag.description,
+        created_by_user_id=tag.created_by_user_id,
+        created_at=tag.created_at,
+        updated_at=tag.updated_at,
+        contact_count=count,
+    )
+
+
+@router.delete(
+    "/tags/{tag_id}",
+    response_model=MessageRead,
+    responses=ERROR_RESPONSES,
+    tags=["crm"],
+)
+def delete_tag(
+    tag_id: str,
+    request: Request,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_manager),
+) -> MessageRead:
+    tag = crm_repository.get_tag(session, tag_id)
+    if not tag:
+        raise not_found("Tag")
+    record_event(
+        session,
+        action=Action.TAG_DELETED,
+        target_type="tag",
+        target_id=tag.id,
+        actor=current_user,
+        metadata={"name": tag.name},
+        request=request,
+    )
+    session.delete(tag)
+    session.commit()
+    return MessageRead(message="Tag deleted")
+
+
+@router.post(
+    "/contacts/{contact_id}/tags",
+    response_model=TagRead,
+    status_code=status.HTTP_201_CREATED,
+    responses=ERROR_RESPONSES,
+    tags=["crm"],
+)
+def add_tag_to_contact(
+    contact_id: str,
+    payload: ContactTagAssignRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_manager),
+) -> TagRead:
+    contact = crm_repository.get_contact(session, contact_id)
+    if not contact:
+        raise not_found("Contact")
+    if payload.tag_id:
+        tag = crm_repository.get_tag(session, payload.tag_id)
+        if not tag:
+            raise not_found("Tag")
+    elif payload.tag_name:
+        tag, _ = crm_repository.upsert_tag(
+            session,
+            name=payload.tag_name,
+            color=payload.color,
+            created_by_user_id=current_user.id,
+        )
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Either tag_id or tag_name is required",
+        )
+    added = crm_repository.assign_tag_to_contact(
+        session,
+        contact_id=contact.id,
+        tag_id=tag.id,
+        assigned_by_user_id=current_user.id,
+        source="manual",
+    )
+    if added:
+        record_event(
+            session,
+            action=Action.CONTACT_TAG_ADDED,
+            target_type="contact",
+            target_id=contact.id,
+            actor=current_user,
+            metadata={"tag_id": tag.id, "tag_name": tag.name},
+            request=request,
+        )
+        session.commit()
+    return TagRead(id=tag.id, name=tag.name, color=tag.color)
+
+
+@router.delete(
+    "/contacts/{contact_id}/tags/{tag_id}",
+    response_model=MessageRead,
+    responses=ERROR_RESPONSES,
+    tags=["crm"],
+)
+def remove_tag_from_contact(
+    contact_id: str,
+    tag_id: str,
+    request: Request,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_manager),
+) -> MessageRead:
+    if not crm_repository.get_contact(session, contact_id):
+        raise not_found("Contact")
+    removed = crm_repository.remove_tag_from_contact(
+        session, contact_id=contact_id, tag_id=tag_id
+    )
+    if removed:
+        record_event(
+            session,
+            action=Action.CONTACT_TAG_REMOVED,
+            target_type="contact",
+            target_id=contact_id,
+            actor=current_user,
+            metadata={"tag_id": tag_id},
+            request=request,
+        )
+        session.commit()
+    return MessageRead(message="Tag removed" if removed else "Tag was not attached")
+
+
+@router.post(
+    "/contacts/bulk-tag",
+    response_model=BulkContactTagResult,
+    responses=ERROR_RESPONSES,
+    tags=["crm"],
+)
+def bulk_contact_tag(
+    payload: BulkContactTagRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_manager),
+) -> BulkContactTagResult:
+    """Apply one tag add/remove to up to 500 contacts in a single
+    audited operation. Used by the list-page bulk actions menu."""
+    tag = crm_repository.get_tag(session, payload.tag_id)
+    if not tag:
+        raise not_found("Tag")
+
+    affected = 0
+    skipped = 0
+    if payload.action == "add":
+        for contact_id in payload.contact_ids:
+            if not crm_repository.get_contact(session, contact_id):
+                skipped += 1
+                continue
+            added = crm_repository.assign_tag_to_contact(
+                session,
+                contact_id=contact_id,
+                tag_id=tag.id,
+                assigned_by_user_id=current_user.id,
+                source="manual",
+            )
+            if added:
+                affected += 1
+            else:
+                skipped += 1
+    else:
+        for contact_id in payload.contact_ids:
+            removed = crm_repository.remove_tag_from_contact(
+                session, contact_id=contact_id, tag_id=tag.id
+            )
+            if removed:
+                affected += 1
+            else:
+                skipped += 1
+
+    record_event(
+        session,
+        action=Action.CONTACT_TAGS_BULK_ACTION,
+        target_type="tag",
+        target_id=tag.id,
+        actor=current_user,
+        metadata={
+            "action": payload.action,
+            "tag_name": tag.name,
+            "requested": len(payload.contact_ids),
+            "affected": affected,
+            "skipped": skipped,
+        },
+        request=request,
+    )
+    session.commit()
+    return BulkContactTagResult(
+        action=payload.action,
+        tag_id=tag.id,
+        affected=affected,
+        skipped=skipped,
+    )
 
 
 router.include_router(integration_accounts_router)

@@ -110,6 +110,27 @@ export type ExternalReference = {
   updated_at: string;
 };
 
+export type Tag = {
+  id: string;
+  name: string;
+  color?: string | null;
+};
+
+export type TagDetail = Tag & {
+  description?: string | null;
+  contact_count: number;
+  created_by_user_id?: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type TagListPage = {
+  items: TagDetail[];
+  total: number;
+  limit: number;
+  offset: number;
+};
+
 export type Contact = {
   id: string;
   first_name: string;
@@ -117,7 +138,9 @@ export type Contact = {
   email: string;
   phone?: string | null;
   origin?: string | null;
+  /** Deprecated CSV; new code should consume `tag_objects`. */
   tags: string;
+  tag_objects?: Tag[];
   commercial_status: string;
   marketing_consent: "unknown" | "granted" | "denied" | "unsubscribed";
   company_id?: string | null;
@@ -160,10 +183,14 @@ export async function refreshContactExternalData(
 export type ContactListFilters = {
   q?: string;
   tag?: string;
+  tag_ids?: string[];
+  tag_match_mode?: "any" | "all";
   origin_system?: string;
   origin_account_id?: string;
   commercial_status?: string;
   marketing_consent?: string;
+  lead_score_min?: number;
+  lead_score_max?: number;
   sort_by?: "name" | "email" | "created_at" | "updated_at" | "lead_score";
   sort_dir?: "asc" | "desc";
   skip?: number;
@@ -287,10 +314,18 @@ export async function listContacts(
   const params = new URLSearchParams();
   if (filters.q) params.set("q", filters.q);
   if (filters.tag) params.set("tag", filters.tag);
+  if (filters.tag_ids?.length) {
+    for (const id of filters.tag_ids) params.append("tag_ids", id);
+  }
+  if (filters.tag_match_mode) params.set("tag_match_mode", filters.tag_match_mode);
   if (filters.origin_system) params.set("origin_system", filters.origin_system);
   if (filters.origin_account_id) params.set("origin_account_id", filters.origin_account_id);
   if (filters.commercial_status) params.set("commercial_status", filters.commercial_status);
   if (filters.marketing_consent) params.set("marketing_consent", filters.marketing_consent);
+  if (filters.lead_score_min !== undefined)
+    params.set("lead_score_min", String(filters.lead_score_min));
+  if (filters.lead_score_max !== undefined)
+    params.set("lead_score_max", String(filters.lead_score_max));
   if (filters.sort_by) params.set("sort_by", filters.sort_by);
   if (filters.sort_dir) params.set("sort_dir", filters.sort_dir);
   if (filters.skip !== undefined) params.set("skip", String(filters.skip));
@@ -298,6 +333,69 @@ export async function listContacts(
   if (filters.include_inactive) params.set("include_inactive", "true");
   const query = params.toString();
   return apiFetch<ContactListPage>(`/api/contacts${query ? `?${query}` : ""}`);
+}
+
+export async function listTags(query?: string): Promise<TagListPage> {
+  const params = new URLSearchParams();
+  if (query) params.set("q", query);
+  params.set("limit", "200");
+  return apiFetch<TagListPage>(`/api/tags?${params.toString()}`);
+}
+
+export async function createTag(payload: {
+  name: string;
+  color?: string | null;
+  description?: string | null;
+}): Promise<TagDetail> {
+  return apiFetch<TagDetail>("/api/tags", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updateTag(
+  id: string,
+  payload: { name?: string; color?: string | null; description?: string | null },
+): Promise<TagDetail> {
+  return apiFetch<TagDetail>(`/api/tags/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function deleteTag(id: string): Promise<{ message: string }> {
+  return apiFetch<{ message: string }>(`/api/tags/${id}`, { method: "DELETE" });
+}
+
+export async function addTagToContact(
+  contactId: string,
+  payload: { tag_id?: string; tag_name?: string; color?: string | null },
+): Promise<Tag> {
+  return apiFetch<Tag>(`/api/contacts/${contactId}/tags`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function removeTagFromContact(
+  contactId: string,
+  tagId: string,
+): Promise<{ message: string }> {
+  return apiFetch<{ message: string }>(
+    `/api/contacts/${contactId}/tags/${tagId}`,
+    { method: "DELETE" },
+  );
+}
+
+export async function bulkContactTag(payload: {
+  action: "add" | "remove";
+  tag_id: string;
+  contact_ids: string[];
+}): Promise<{ action: string; tag_id: string; affected: number; skipped: number }> {
+  return apiFetch("/api/contacts/bulk-tag", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
 }
 
 export async function getContactsCount(): Promise<number> {

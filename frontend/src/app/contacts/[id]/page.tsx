@@ -6,7 +6,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ErrorState } from "../../components/ErrorState";
 import { RefreshExternalDataButton } from "../../components/RefreshExternalDataButton";
 import {
+  addTagToContact,
   getContact,
+  removeTagFromContact,
   type ActivityEvent,
   type Contact,
   type ExternalReference,
@@ -15,6 +17,8 @@ import {
   type Task,
 } from "../../lib/api";
 import { extractErrorMessage } from "../../lib/errors";
+import { TagChips } from "../../components/TagChips";
+import { TagPicker } from "../../components/TagPicker";
 import { ContactEditForm } from "./ContactEditForm";
 
 function formatDateTime(value: string | null | undefined): string {
@@ -268,11 +272,35 @@ export default function ContactDetailPage() {
             <Row label="Teléfono" value={contact.phone} />
             <Row label="Origen" value={contact.origin} />
             <Row label="Estado comercial" value={contact.commercial_status} />
-            <Row label="Tags" value={contact.tags || null} />
             <Row label="Lead score" value={contact.lead_score} />
             <Row label="Dirección" value={address} />
             <Row label="Activo" value={contact.is_active ? "Sí" : "No"} />
           </dl>
+          <div className="tag-section">
+            <h3>Tags</h3>
+            <TagChips
+              tags={contact.tag_objects ?? []}
+              onRemove={async (tagId) => {
+                try {
+                  await removeTagFromContact(contact.id, tagId);
+                  await loadContact();
+                } catch (err) {
+                  setError(extractErrorMessage(err, "No se pudo quitar el tag."));
+                }
+              }}
+            />
+            <TagPicker
+              excludeTagIds={(contact.tag_objects ?? []).map((t) => t.id)}
+              onPick={async (choice) => {
+                try {
+                  await addTagToContact(contact.id, choice);
+                  await loadContact();
+                } catch (err) {
+                  setError(extractErrorMessage(err, "No se pudo añadir el tag."));
+                }
+              }}
+            />
+          </div>
         </article>
         <article className="card">
           <h2>Campos personalizados</h2>
