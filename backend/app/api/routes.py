@@ -81,6 +81,7 @@ from app.schemas.crm import (
     ContactPipelineAddRequest,
     ContactPipelineMoveRequest,
     ContactPipelineStageRead,
+    ContactPipelineSummary,
     ContactViewCreate,
     ContactViewDuplicateRequest,
     ContactViewFilters,
@@ -2601,6 +2602,57 @@ def reorder_pipeline_stages(
 
 
 # ----- Contact assignments -----
+
+
+@router.get(
+    "/contacts/{contact_id}/pipelines",
+    response_model=list[ContactPipelineSummary],
+    responses=ERROR_RESPONSES,
+    tags=["crm"],
+)
+def list_contact_pipelines(
+    contact_id: str,
+    include_archived: bool = Query(default=False),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_viewer),
+) -> list[ContactPipelineSummary]:
+    """Pipelines this contact lives in + its current stage in each.
+    The contact-detail screen calls this once and renders the
+    "Pipelines" section without N round-trips."""
+    _ = current_user
+    if not crm_repository.get_contact(session, contact_id):
+        raise not_found("Contact")
+    assignments = pipelines_repository.assignments_for_contact(
+        session, contact_id, include_archived=include_archived
+    )
+    now = datetime.now(UTC)
+    out: list[ContactPipelineSummary] = []
+    for assignment in assignments:
+        pipeline = session.get(Pipeline, assignment.pipeline_id)
+        stage = session.get(PipelineStage, assignment.stage_id)
+        if pipeline is None or stage is None:
+            continue
+        entered = assignment.entered_stage_at
+        if entered.tzinfo is None:
+            entered = entered.replace(tzinfo=UTC)
+        out.append(
+            ContactPipelineSummary(
+                assignment_id=assignment.id,
+                pipeline_id=pipeline.id,
+                pipeline_name=pipeline.name,
+                pipeline_color=pipeline.color,
+                stage_id=stage.id,
+                stage_name=stage.name,
+                stage_color=stage.color,
+                stage_position=stage.position,
+                is_won=stage.is_won,
+                is_lost=stage.is_lost,
+                days_in_stage=max(0, (now - entered).days),
+                entered_stage_at=assignment.entered_stage_at,
+                added_to_pipeline_at=assignment.added_to_pipeline_at,
+            )
+        )
+    return out
 
 
 @router.post(

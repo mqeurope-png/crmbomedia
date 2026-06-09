@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ErrorState } from "../../components/ErrorState";
+import { ContactPipelinesSection } from "../../components/ContactPipelinesSection";
 import { RefreshExternalDataButton } from "../../components/RefreshExternalDataButton";
 import {
   addTagToContact,
@@ -346,6 +347,7 @@ export default function ContactDetailPage() {
             </ul>
           ) : <p className="muted">Sin tareas pendientes.</p>}
         </article>
+        <ContactPipelinesSection contactId={contact.id} />
         <article className="card card-wide">
           <div className="section-title">
             <h2>Línea de tiempo</h2>

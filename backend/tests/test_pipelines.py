@@ -386,3 +386,63 @@ def test_duplicate_pipeline_clones_stages_only_by_default(client: TestClient):
     finally:
         gen.close()
     assert clone_assignments == []
+
+
+def test_list_contact_pipelines_returns_summaries(client: TestClient):
+    """`GET /api/contacts/{id}/pipelines` is the single fetch the
+    contact-detail page uses to render its Pipelines section."""
+    pipeline_a = _create_pipeline(client, stages=["Nuevo", "Cualificado"])
+    pipeline_b_response = client.post(
+        "/api/pipelines",
+        json={"name": "Otra", "stages": [{"name": "Inicio", "position": 0}]},
+        headers=auth_headers(client, "manager"),
+    )
+    pipeline_b = pipeline_b_response.json()
+    contact = _create_contact(client)
+    headers = auth_headers(client, "manager")
+    client.post(
+        f"/api/contacts/{contact['id']}/pipelines",
+        json={"pipeline_id": pipeline_a["id"]},
+        headers=headers,
+    )
+    client.post(
+        f"/api/contacts/{contact['id']}/pipelines",
+        json={"pipeline_id": pipeline_b["id"]},
+        headers=headers,
+    )
+
+    response = client.get(
+        f"/api/contacts/{contact['id']}/pipelines",
+        headers=auth_headers(client, "viewer"),
+    )
+    assert response.status_code == 200
+    summaries = response.json()
+    names = {s["pipeline_name"] for s in summaries}
+    assert names == {"Pipeline Ventas", "Otra"}
+    for summary in summaries:
+        assert "stage_name" in summary
+        assert summary["days_in_stage"] >= 0
+
+
+def test_list_contact_pipelines_hides_archived_by_default(client: TestClient):
+    pipeline = _create_pipeline(client, stages=["Nuevo"])
+    contact = _create_contact(client)
+    add = client.post(
+        f"/api/contacts/{contact['id']}/pipelines",
+        json={"pipeline_id": pipeline["id"]},
+        headers=auth_headers(client, "manager"),
+    )
+    client.delete(
+        f"/api/contact-pipeline-stages/{add.json()['id']}",
+        headers=auth_headers(client, "manager"),
+    )
+    default = client.get(
+        f"/api/contacts/{contact['id']}/pipelines",
+        headers=auth_headers(client, "viewer"),
+    )
+    assert default.json() == []
+    with_archived = client.get(
+        f"/api/contacts/{contact['id']}/pipelines?include_archived=true",
+        headers=auth_headers(client, "viewer"),
+    )
+    assert len(with_archived.json()) == 1
