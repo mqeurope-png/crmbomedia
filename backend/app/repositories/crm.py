@@ -4,6 +4,7 @@ from sqlalchemy import Select, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.models.crm import (
+    ActivityEvent,
     AuditLog,
     Company,
     Contact,
@@ -79,6 +80,22 @@ def get_contact(session: Session, contact_id: str) -> Contact | None:
         )
         .where(Contact.id == contact_id)
     )
+
+
+def get_contact_with_timeline(
+    session: Session, contact_id: str, *, timeline_limit: int
+) -> tuple[Contact, list[ActivityEvent], int] | None:
+    """Detail endpoint helper. Returns the contact (with its
+    notes/tasks/external_refs eager-loaded), the latest
+    `timeline_limit` activity events, and the total event count so the
+    UI can decide whether to surface "Ver todos" without a second
+    round-trip."""
+    contact = get_contact(session, contact_id)
+    if contact is None:
+        return None
+    events = list_activity_events(session, contact_id, skip=0, limit=timeline_limit)
+    total = count_activity_events(session, contact_id)
+    return contact, events, total
 
 
 def get_contact_by_email(session: Session, email: str) -> Contact | None:
@@ -205,6 +222,34 @@ def list_notes(session: Session, contact_id: str) -> list[Note]:
 def list_tasks(session: Session, contact_id: str) -> list[Task]:
     statement = select(Task).where(Task.contact_id == contact_id).order_by(Task.created_at.desc())
     return list(session.scalars(statement))
+
+
+#: How many timeline events the detail endpoint embeds in the contact
+#: response. Anything beyond that the operator paginates through the
+#: dedicated `/contacts/{id}/activity-events` endpoint.
+ACTIVITY_EVENTS_INLINE_LIMIT = 50
+
+
+def list_activity_events(
+    session: Session, contact_id: str, *, skip: int = 0, limit: int = 50
+) -> list[ActivityEvent]:
+    statement = (
+        select(ActivityEvent)
+        .where(ActivityEvent.contact_id == contact_id)
+        .order_by(ActivityEvent.occurred_at.desc())
+        .offset(skip)
+        .limit(limit)
+    )
+    return list(session.scalars(statement))
+
+
+def count_activity_events(session: Session, contact_id: str) -> int:
+    statement = (
+        select(func.count())
+        .select_from(ActivityEvent)
+        .where(ActivityEvent.contact_id == contact_id)
+    )
+    return int(session.scalar(statement) or 0)
 
 
 def _audit_query(

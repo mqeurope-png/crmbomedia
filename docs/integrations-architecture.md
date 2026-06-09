@@ -448,6 +448,72 @@ la fila de auditoría.
   Las cuentas con más contactos completan la importación en
   ejecuciones sucesivas (la idempotencia garantiza progreso).
 
+### Sub-syncs por contacto (Sprint A PR-5)
+
+Después de cada upsert de contacto, el worker dispara **3 fetches en
+paralelo** (`asyncio.gather`) contra los sub-recursos AgileCRM:
+
+| Sub-recurso | Endpoint | Tabla local | Dedup key |
+|-------------|----------|-------------|-----------|
+| Notas       | `/dev/api/contacts/{id}/notes`     | `notes`             | `(external_system, external_account_id, external_id)` |
+| Tareas      | `/dev/api/tasks/contact/{id}`      | `tasks`             | `(external_system, external_account_id, external_id)` |
+| Actividades | `/dev/api/activities/contact/{id}` | `activity_events`   | UNIQUE `(system, account_id, external_id)` |
+
+Los 3 mapping helpers (`map_agilecrm_note_to_internal`, …) viven en
+`mapper.py` y devuelven dicts listos para `Model(**record)`. El
+upsert se hace en código (no DB-level) en `notes` y `tasks` porque la
+columna `external_id` es opcional — las notas creadas a mano
+comparten el slot NULL y no deben colisionar.
+
+`activity_events` es una tabla **nueva** y genérica (no específica
+de AgileCRM) con un UNIQUE compuesto en `(system, account_id,
+external_id)` para evitar duplicados al re-sincronizar. Los conectores
+Brevo / Freshdesk reusarán la misma tabla sin migración.
+
+Contadores en `sync_log.metadata`:
+
+- `notes_synced` — número de notas (creadas + actualizadas)
+- `tasks_synced` — idem para tareas
+- `activities_synced` — idem para eventos de timeline
+
+Una excepción en notes / tasks / activities de UN contacto se loggea
+como warning y NO aborta el contacto ni el sync — el upsert del
+contacto ya está commiteado para esa página.
+
+**Coste**: 1 contacto en AgileCRM ahora consume **4 llamadas HTTP**
+(contact + notes + tasks + activities). Con 762 contactos y un Free
+tier de 200 req/h, una importación full puede tardar > 14 horas. El
+job es idempotente — el operador puede re-disparar la sync para
+recuperar incrementales.
+
+### Qué NO se importa de AgileCRM
+
+Decisiones de scope, deliberadas:
+
+- **Ofertas / deals** → vendrán de **FactuSOL** (sprint ERP futuro).
+  AgileCRM tiene `deals` pero no es la fuente de la verdad
+  comercial.
+- **Email history detallado** → vendrá de **Brevo** (Sprint B + D).
+  AgileCRM expone `EMAIL_SENT` / `EMAIL_OPENED` como eventos de
+  timeline (esos sí entran en `activity_events`), pero el cuerpo
+  completo + adjuntos + estado de entrega son problema de Brevo.
+- **Tickets de soporte** → vendrán de **Freshdesk** (sprint futuro).
+- **Campañas marketing** → vendrán de **Brevo**.
+- **Documentos adjuntos** → requieren storage de ficheros (sprint
+  posterior). El timeline guarda referencias pero no descarga blobs.
+- **Web Stats / page views** → no aplican al MVP. Si AgileCRM los
+  manda como evento de timeline, se persisten con `event_type =
+  "PAGE_VIEWED"` pero no se procesan más.
+
+### Custom fields verification
+
+El mapper recorre `payload.properties[]` y conserva las entradas con
+`type == "CUSTOM"`. La función `_custom_properties()` ignora
+mayúsculas/minúsculas (`type.upper() == "CUSTOM"`) y deja el valor tal
+como llega (`string`, `number`, etc.). Si un tenant tiene custom
+fields y el contacto no los muestra, el problema está en la fuente
+(propiedad sin `type`) y no en este mapper.
+
 ## Patrón para los siguientes conectores
 
 Para Brevo / Freshdesk / FactuSOL repetir el layout:

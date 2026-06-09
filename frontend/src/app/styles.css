@@ -208,6 +208,9 @@ select {
 .status-denied,
 .status-unsubscribed { background: #fee4e2; color: var(--danger); }
 .status-unknown { background: #fef0c7; color: var(--warning); }
+.status-open { background: #eef4ff; color: var(--brand); }
+.status-done { background: #dcfae6; color: var(--success); }
+.status-cancelled { background: var(--line); color: var(--muted); }
 
 .topbar {
   align-items: center;
@@ -804,3 +807,94 @@ td {
   font-size: 14px;
   word-break: break-word;
 }
+
+.note-list,
+.task-list,
+.timeline-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.note-card,
+.task-card {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: var(--surface, #fafbff);
+}
+
+.note-card-header,
+.task-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 6px;
+  font-size: 13px;
+}
+
+.note-card-header .muted,
+.task-card-header .muted {
+  font-weight: 400;
+}
+
+.note-body {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 14px;
+}
+
+.card-wide { grid-column: 1 / -1; }
+
+.timeline-row {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.timeline-list .timeline-row:last-child { border-bottom: none; }
+
+.timeline-icon {
+  flex: 0 0 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--surface, #f3f4f6);
+  font-size: 14px;
+}
+
+.timeline-content { flex: 1 1 auto; min-width: 0; }
+
+.timeline-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.timeline-type {
+  display: inline-block;
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-top: 2px;
+}
+
+.timeline-body {
+  margin: 6px 0 0;
+  font-size: 14px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.muted.small { font-size: 12px; }

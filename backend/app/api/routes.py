@@ -48,6 +48,8 @@ from app.models.crm import Company, Contact, ExternalSystem, Note, Task, User
 from app.repositories import crm as crm_repository
 from app.services.email import EmailService, get_email_service
 from app.schemas.crm import (
+    ActivityEventListPage,
+    ActivityEventRead,
     AuditLogRead,
     ChangePasswordRequest,
     CompanyCreate,
@@ -1155,12 +1157,54 @@ def get_contact(
     contact_id: str,
     session: Session = Depends(get_session),
     current_user: User = Depends(require_viewer),
-) -> Contact:
+) -> ContactDetailRead:
     _ = current_user
-    contact = crm_repository.get_contact(session, contact_id)
-    if not contact:
+    bundle = crm_repository.get_contact_with_timeline(
+        session,
+        contact_id,
+        timeline_limit=crm_repository.ACTIVITY_EVENTS_INLINE_LIMIT,
+    )
+    if bundle is None:
         raise not_found("Contact")
-    return contact
+    contact, events, _total = bundle
+    # FastAPI would call model_validate on `contact` for us, but the
+    # latest events live on a sibling list — we hand-build the response
+    # so the timeline tail is always exactly the rows the dashboard
+    # paginates over.
+    detail = ContactDetailRead.model_validate(contact)
+    detail.activity_events = [ActivityEventRead.model_validate(e) for e in events]
+    return detail
+
+
+@router.get(
+    "/contacts/{contact_id}/activity-events",
+    response_model=ActivityEventListPage,
+    responses=ERROR_RESPONSES,
+    tags=["crm"],
+)
+def list_contact_activity_events(
+    contact_id: str,
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=200),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_viewer),
+) -> ActivityEventListPage:
+    """Full paginated timeline for one contact. The detail endpoint
+    embeds the most recent 50 events; this one is the "Ver todos"
+    backing call."""
+    _ = current_user
+    if not crm_repository.get_contact(session, contact_id):
+        raise not_found("Contact")
+    items = crm_repository.list_activity_events(
+        session, contact_id, skip=skip, limit=limit
+    )
+    total = crm_repository.count_activity_events(session, contact_id)
+    return ActivityEventListPage(
+        items=[ActivityEventRead.model_validate(e) for e in items],
+        total=total,
+        limit=limit,
+        offset=skip,
+    )
 
 
 @router.patch(

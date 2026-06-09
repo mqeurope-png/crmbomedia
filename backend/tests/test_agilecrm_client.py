@@ -435,3 +435,110 @@ def test_count_contacts_returns_none_on_5xx(session_factory):
             lambda client: client.count_contacts(),
         )
     assert total is None
+
+
+# ---------------------------------------------------------------------------
+# Per-contact sub-resources
+# ---------------------------------------------------------------------------
+
+
+def test_list_contact_notes_returns_items(session_factory):
+    captured: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["path"] = request.url.path
+        return httpx.Response(
+            200,
+            json=[
+                {"id": 1, "subject": "Llamada", "description": "ok"},
+                {"id": 2, "subject": "Email", "description": "ack"},
+            ],
+        )
+
+    with session_factory() as session:
+        items = _run_with_transport(
+            session,
+            _make_transport(handler),
+            lambda client: client.list_contact_notes("42"),
+        )
+    assert captured["path"] == "/dev/api/contacts/42/notes"
+    assert len(items) == 2
+    assert items[0]["subject"] == "Llamada"
+
+
+def test_list_contact_notes_returns_empty_on_404(session_factory):
+    """Fresh contacts have no sub-resources. AgileCRM 404s instead of
+    returning [], so the client converts 404 to an empty list and the
+    sync job carries on instead of marking the contact as failed."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, text="not found")
+
+    with session_factory() as session:
+        items = _run_with_transport(
+            session,
+            _make_transport(handler),
+            lambda client: client.list_contact_notes("99"),
+        )
+    assert items == []
+
+
+def test_list_contact_tasks_hits_tasks_subresource(session_factory):
+    captured: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["path"] = request.url.path
+        return httpx.Response(200, json=[{"id": 7, "subject": "Llamar mañana"}])
+
+    with session_factory() as session:
+        items = _run_with_transport(
+            session,
+            _make_transport(handler),
+            lambda client: client.list_contact_tasks("42"),
+        )
+    assert captured["path"] == "/dev/api/tasks/contact/42"
+    assert items[0]["subject"] == "Llamar mañana"
+
+
+def test_list_contact_activities_hits_activities_subresource(session_factory):
+    captured: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["path"] = request.url.path
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "id": 1,
+                    "activity_type": "EMAIL_SENT",
+                    "time": 1750000000,
+                    "label": "Reactivation email",
+                }
+            ],
+        )
+
+    with session_factory() as session:
+        items = _run_with_transport(
+            session,
+            _make_transport(handler),
+            lambda client: client.list_contact_activities("42"),
+        )
+    assert captured["path"] == "/dev/api/activities/contact/42"
+    assert items[0]["activity_type"] == "EMAIL_SENT"
+
+
+def test_list_contact_subresource_filters_non_dict_rows(session_factory):
+    """Defensive: an AgileCRM tenant once shipped a stray "null" row in
+    the notes list. The client must drop non-dict rows instead of
+    handing them to the mapper."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=[{"id": 1}, None, "garbage", {"id": 2}])
+
+    with session_factory() as session:
+        items = _run_with_transport(
+            session,
+            _make_transport(handler),
+            lambda client: client.list_contact_notes("42"),
+        )
+    assert [i.get("id") for i in items] == [1, 2]
