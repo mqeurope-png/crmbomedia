@@ -71,6 +71,12 @@ export default function PipelineDetailPage() {
         ) : null}
         <div className="actions">
           <Link
+            href={`/pipelines/${pipeline.id}/report`}
+            className="button"
+          >
+            Reporte
+          </Link>
+          <Link
             href={`/pipelines/${pipeline.id}/edit-stages`}
             className="button secondary"
           >

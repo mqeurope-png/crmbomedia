@@ -1051,3 +1051,25 @@ export async function listContactPipelines(
     `/api/contacts/${contactId}/pipelines${query}`,
   );
 }
+
+export type StalledContactRow = {
+  assignment_id: string;
+  contact_id: string;
+  first_name: string;
+  last_name?: string | null;
+  email: string;
+  stage_id: string;
+  stage_name: string;
+  target_days: number;
+  days_in_stage: number;
+  overdue_days: number;
+  entered_stage_at: string;
+};
+
+export async function pipelineStalledContacts(
+  pipelineId: string,
+): Promise<StalledContactRow[]> {
+  return apiFetch<StalledContactRow[]>(
+    `/api/pipelines/${pipelineId}/stalled-contacts`,
+  );
+}

@@ -446,3 +446,70 @@ def test_list_contact_pipelines_hides_archived_by_default(client: TestClient):
         headers=auth_headers(client, "viewer"),
     )
     assert len(with_archived.json()) == 1
+
+
+def test_stalled_contacts_endpoint_returns_overdue_rows(client: TestClient):
+    """A contact whose days_in_stage > stage.target_days appears in
+    the stalled list with the overdue delta. Contacts within SLA
+    don't show up."""
+    from app.models.crm import ContactPipelineStage
+
+    pipeline = _create_pipeline(client, stages=["Stuck", "Done"])
+    # Set target_days=1 on the first stage.
+    stage_id = pipeline["stages"][0]["id"]
+    patch = client.patch(
+        f"/api/pipeline-stages/{stage_id}",
+        json={"target_days": 1},
+        headers=auth_headers(client, "manager"),
+    )
+    assert patch.status_code == 200
+
+    contact = _create_contact(client)
+    add = client.post(
+        f"/api/contacts/{contact['id']}/pipelines",
+        json={"pipeline_id": pipeline["id"]},
+        headers=auth_headers(client, "manager"),
+    )
+    assignment_id = add.json()["id"]
+
+    # Manually backdate entered_stage_at so the contact is overdue.
+    session_factory = app.dependency_overrides[get_session]
+    gen = session_factory()
+    session = next(gen)
+    try:
+        from datetime import UTC, datetime, timedelta
+
+        row = session.get(ContactPipelineStage, assignment_id)
+        assert row is not None
+        row.entered_stage_at = datetime.now(UTC) - timedelta(days=5)
+        session.commit()
+    finally:
+        gen.close()
+
+    response = client.get(
+        f"/api/pipelines/{pipeline['id']}/stalled-contacts",
+        headers=auth_headers(client, "viewer"),
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body) == 1
+    assert body[0]["email"] == contact["email"]
+    assert body[0]["overdue_days"] >= 3
+    assert body[0]["stage_name"] == "Stuck"
+
+
+def test_stalled_contacts_empty_when_no_target(client: TestClient):
+    """Stages without `target_days` never produce stalled rows even
+    when contacts have been there forever."""
+    pipeline = _create_pipeline(client)
+    contact = _create_contact(client)
+    client.post(
+        f"/api/contacts/{contact['id']}/pipelines",
+        json={"pipeline_id": pipeline["id"]},
+        headers=auth_headers(client, "manager"),
+    )
+    response = client.get(
+        f"/api/pipelines/{pipeline['id']}/stalled-contacts",
+        headers=auth_headers(client, "viewer"),
+    )
+    assert response.json() == []
