@@ -93,6 +93,21 @@ class Contact(TimestampMixin, Base):
     is_email_valid: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     company_id: Mapped[str | None] = mapped_column(ForeignKey("companies.id"))
+    # Free-form per-system extras (AgileCRM custom properties today,
+    # other systems' equivalents tomorrow). Stored as JSON text so the
+    # operator can query it cheaply without a side table; the API
+    # exposes it decoded.
+    custom_fields: Mapped[str | None] = mapped_column(Text)
+    # Address components captured by AgileCRM's address property and
+    # other CRMs alike. Kept as separate columns (instead of nested
+    # JSON) so filters / sort are straightforward.
+    address_country: Mapped[str | None] = mapped_column(String(120))
+    address_country_name: Mapped[str | None] = mapped_column(String(255))
+    address_state: Mapped[str | None] = mapped_column(String(120))
+    address_city: Mapped[str | None] = mapped_column(String(120))
+    # AgileCRM lead score. Other systems push their own scoring under
+    # the same column for consistency.
+    lead_score: Mapped[int | None] = mapped_column(Integer)
 
     company: Mapped[Company | None] = relationship(back_populates="contacts")
     notes: Mapped[list["Note"]] = relationship(
@@ -163,6 +178,21 @@ class ExternalReference(TimestampMixin, Base):
     # in origin. The row is preserved so the historical link survives.
     external_status: Mapped[str | None] = mapped_column(String(40))
     account_label: Mapped[str | None] = mapped_column(String(255))
+    # Mirror of the remote system's own created/updated timestamps —
+    # NOT the row's created_at/updated_at in our DB. Lets the dashboard
+    # show "last sync touched this on <date> in AgileCRM" without
+    # losing the audit trail of when we inserted/updated the row here.
+    external_created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    external_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # AgileCRM's `source` field today; other systems' provenance hint
+    # tomorrow. Kept opaque on purpose (provider-defined strings).
+    origin_detail: Mapped[str | None] = mapped_column(String(255))
+    # Free-form per-reference extras (owner snapshot, raw tag array,
+    # whatever the connector wants to preserve without polluting the
+    # canonical Contact). JSON text under the SQL name `metadata` —
+    # the Python attribute is `metadata_json` to avoid the clash with
+    # `Base.metadata` (same trick `AuditLog`/`SyncLog` already use).
+    metadata_json: Mapped[str | None] = mapped_column("metadata", Text)
     contact_id: Mapped[str] = mapped_column(ForeignKey("contacts.id"), nullable=False)
 
     contact: Mapped[Contact] = relationship(back_populates="external_refs")

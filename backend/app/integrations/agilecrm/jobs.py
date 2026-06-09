@@ -20,6 +20,7 @@ whole sync.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from typing import Any
 
@@ -103,7 +104,7 @@ def _upsert_contact_for_payload(
     if not external_id:
         raise ValueError("AgileCRM payload missing 'id'")
 
-    record = map_agilecrm_contact_to_internal(payload)
+    record, ref_extras = map_agilecrm_contact_to_internal(payload)
     email = record.get("email") or ""
     if not email:
         raise ValueError("AgileCRM payload missing email")
@@ -128,6 +129,7 @@ def _upsert_contact_for_payload(
             if ref.external_status == "deleted_in_origin":
                 # Remote brought it back — clear the marker.
                 ref.external_status = None
+            _apply_ref_extras(ref, ref_extras)
             session.flush()
             return ("updated", False)
 
@@ -145,6 +147,7 @@ def _upsert_contact_for_payload(
             account_label=label,
             contact_id=existing_contact.id,
         )
+        _apply_ref_extras(new_ref, ref_extras)
         session.add(new_ref)
         # Refresh editable fields too (phone, tags) so the consolidated
         # contact picks up details that may have been entered in the
@@ -157,17 +160,37 @@ def _upsert_contact_for_payload(
     contact = Contact(**record)
     session.add(contact)
     session.flush()
-    session.add(
-        ExternalReference(
-            system=ExternalSystem.AGILECRM,
-            account_id=account_id,
-            external_id=external_id,
-            account_label=label,
-            contact_id=contact.id,
-        )
+    new_ref = ExternalReference(
+        system=ExternalSystem.AGILECRM,
+        account_id=account_id,
+        external_id=external_id,
+        account_label=label,
+        contact_id=contact.id,
     )
+    _apply_ref_extras(new_ref, ref_extras)
+    session.add(new_ref)
     session.flush()
     return ("created", False)
+
+
+def _apply_ref_extras(ref: ExternalReference, extras: dict[str, Any]) -> None:
+    """Copy mapper output onto the external_references row. JSON-encodes
+    `metadata` so it lands as text under the SQL column name `metadata`
+    (`ExternalReference.metadata_json` is the Python attribute)."""
+    if not extras:
+        return
+    external_created_at = extras.get("external_created_at")
+    if external_created_at is not None:
+        ref.external_created_at = external_created_at
+    external_updated_at = extras.get("external_updated_at")
+    if external_updated_at is not None:
+        ref.external_updated_at = external_updated_at
+    origin_detail = extras.get("origin_detail")
+    if origin_detail:
+        ref.origin_detail = origin_detail
+    metadata = extras.get("metadata")
+    if metadata:
+        ref.metadata_json = json.dumps(metadata, default=str)
 
 
 def _apply_update(
