@@ -757,3 +757,50 @@ td {
 
 .pagination-buttons { display: flex; gap: 8px; }
 .pagination-buttons .button[disabled] { opacity: 0.5; cursor: not-allowed; }
+
+.external-ref-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.external-ref {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 12px 14px;
+  background: var(--surface, #f9fafb);
+}
+
+.external-ref-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 8px;
+  text-transform: uppercase;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+}
+
+.external-ref-header strong { color: var(--brand); }
+
+.external-ref .definition-list {
+  display: grid;
+  grid-template-columns: minmax(140px, max-content) 1fr;
+  gap: 4px 12px;
+  margin: 0;
+}
+
+.external-ref .definition-list dt {
+  font-weight: 600;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.external-ref .definition-list dd {
+  margin: 0;
+  font-size: 14px;
+  word-break: break-word;
+}

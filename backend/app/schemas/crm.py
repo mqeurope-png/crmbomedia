@@ -2,7 +2,7 @@ import json
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 
 from app.core.passwords import MAX_LENGTH as PASSWORD_MAX_LENGTH
 from app.core.passwords import MIN_LENGTH as PASSWORD_MIN_LENGTH
@@ -21,6 +21,22 @@ from app.models.crm import (
 def _enforce_password_policy(value: str) -> str:
     validate_password_policy(value)
     return value
+
+
+def _decode_json_dict(value: Any) -> dict[str, Any] | None:
+    """Parse a JSON-text column into a dict for API output. Returns None
+    for empty/null/non-dict payloads so the frontend always sees either
+    a real object or null — never a half-parsed string."""
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+        except (ValueError, TypeError):
+            return None
+        if isinstance(parsed, dict):
+            return parsed
+    return None
 
 
 class ErrorResponse(BaseModel):
@@ -317,21 +333,70 @@ class TaskRead(TaskCreate):
 
 
 class ExternalReferenceRead(BaseModel):
+    """Per-system link between a CRM contact and the remote record.
+
+    Beyond the canonical id/system/external_id we also surface the
+    integration `account_id` (so multi-tenant deployments tell the two
+    AgileCRM accounts apart), the remote-system timestamps mirrored from
+    AgileCRM's `created_time` / `updated_time`, the AgileCRM `source`
+    string in `origin_detail`, and the decoded `metadata` JSON (owner
+    snapshot, raw tags) the mapper stuffs in there.
+    """
+
     id: str
     system: ExternalSystem
+    account_id: str
     external_id: str
     account_label: str | None = None
     contact_id: str
+    external_created_at: datetime | None = None
+    external_updated_at: datetime | None = None
+    origin_detail: str | None = None
+    metadata: dict[str, Any] | None = None
     created_at: datetime
     updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _from_orm(cls, data: Any) -> Any:
+        # The ORM column is named `metadata` (clash with SQLAlchemy's
+        # Base.metadata) so the Python attribute is `metadata_json`.
+        # from_attributes alone would look for `obj.metadata` and hit
+        # the SQLAlchemy MetaData object instead — so we map manually
+        # and JSON-decode in one go.
+        if isinstance(data, dict) or data is None:
+            return data
+        return {
+            "id": data.id,
+            "system": data.system,
+            "account_id": data.account_id,
+            "external_id": data.external_id,
+            "account_label": data.account_label,
+            "contact_id": data.contact_id,
+            "external_created_at": data.external_created_at,
+            "external_updated_at": data.external_updated_at,
+            "origin_detail": data.origin_detail,
+            "metadata": _decode_json_dict(getattr(data, "metadata_json", None)),
+            "created_at": data.created_at,
+            "updated_at": data.updated_at,
+        }
 
 
 class ContactDetailRead(ContactRead):
     notes: list[NoteRead] = Field(default_factory=list)
     tasks: list[TaskRead] = Field(default_factory=list)
     external_refs: list[ExternalReferenceRead] = Field(default_factory=list)
+    # `custom_fields` is JSON text on the DB; we decode it here so the
+    # detail screen doesn't need to JSON.parse a string before rendering
+    # the key/value list.
+    custom_fields: dict[str, Any] | None = None
+
+    @field_validator("custom_fields", mode="before")
+    @classmethod
+    def _decode_custom_fields(cls, value: Any) -> Any:
+        return _decode_json_dict(value)
 
 
 class HealthRead(BaseModel):

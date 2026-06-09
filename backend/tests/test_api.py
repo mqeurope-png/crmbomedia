@@ -1,4 +1,5 @@
 from collections.abc import Generator
+from datetime import UTC, datetime
 
 import pytest
 from fastapi.testclient import TestClient
@@ -470,6 +471,88 @@ def test_get_contact_detail(client: TestClient):
     assert response.json()["id"] == contact["id"]
     assert response.json()["notes"] == []
     assert response.json()["tasks"] == []
+
+
+def test_contact_detail_exposes_extended_agilecrm_fields(client: TestClient):
+    """`GET /api/contacts/{id}` must surface the enriched columns the
+    AgileCRM mapper writes — address parts, lead score, custom fields,
+    plus per-reference timestamps / origin_detail / decoded metadata."""
+    import json as _json
+
+    from app.models.crm import Contact, ExternalReference, ExternalSystem
+
+    seeded = create_contact(client, "ana@example.com")
+
+    session_factory = app.dependency_overrides[get_session]
+    session_gen = session_factory()
+    session = next(session_gen)
+    try:
+        contact = session.get(Contact, seeded["id"])
+        assert contact is not None
+        contact.address_country = "ES"
+        contact.address_country_name = "España"
+        contact.address_state = "Madrid"
+        contact.address_city = "Madrid"
+        contact.lead_score = 42
+        contact.custom_fields = _json.dumps({"plan": "gold", "vendor_id": "v-1"})
+        session.add(
+            ExternalReference(
+                system=ExternalSystem.AGILECRM,
+                external_id="ext-1",
+                account_id="acct-1",
+                contact_id=contact.id,
+                account_label="ana@example.com",
+                external_created_at=datetime(2025, 6, 1, 12, 0, tzinfo=UTC),
+                external_updated_at=datetime(2025, 7, 2, 9, 30, tzinfo=UTC),
+                origin_detail="form",
+                metadata_json=_json.dumps(
+                    {"owner": {"id": "99", "email": "agent@example.com"}}
+                ),
+            )
+        )
+        session.commit()
+    finally:
+        session_gen.close()
+
+    response = client.get(
+        f"/api/contacts/{seeded['id']}", headers=auth_headers(client, "viewer")
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["address_country"] == "ES"
+    assert body["address_city"] == "Madrid"
+    assert body["lead_score"] == 42
+    assert body["custom_fields"] == {"plan": "gold", "vendor_id": "v-1"}
+
+    refs = body["external_refs"]
+    assert len(refs) == 1
+    ref = refs[0]
+    assert ref["system"] == "agilecrm"
+    assert ref["account_id"] == "acct-1"
+    assert ref["external_id"] == "ext-1"
+    assert ref["external_created_at"].startswith("2025-06-01T12:00:00")
+    assert ref["external_updated_at"].startswith("2025-07-02T09:30:00")
+    assert ref["origin_detail"] == "form"
+    assert ref["metadata"] == {"owner": {"id": "99", "email": "agent@example.com"}}
+
+
+def test_contact_detail_handles_missing_extended_fields(client: TestClient):
+    """A contact created manually (no AgileCRM enrichment) must still
+    serialise cleanly — every enriched field is null, never a string,
+    and `custom_fields` is null rather than '{}'. Prevents the UI from
+    rendering "—" for the empty dict case."""
+    contact = create_contact(client, "luis@example.com")
+
+    response = client.get(
+        f"/api/contacts/{contact['id']}", headers=auth_headers(client, "viewer")
+    )
+
+    body = response.json()
+    assert body["address_country"] is None
+    assert body["lead_score"] is None
+    assert body["custom_fields"] is None
+    assert body["external_refs"] == []
 
 
 def test_missing_contact_returns_404(client: TestClient):
