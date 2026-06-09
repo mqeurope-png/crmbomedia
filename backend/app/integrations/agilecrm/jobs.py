@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from typing import Any
 
 from sqlalchemy import func, select
@@ -32,8 +33,8 @@ from app.integrations.agilecrm.client import AgileCRMClient
 from app.integrations.agilecrm.mapper import (
     agilecrm_account_label,
     agilecrm_external_id,
-    map_agilecrm_activity_to_internal,
     map_agilecrm_contact_to_internal,
+    map_agilecrm_event_to_internal,
     map_agilecrm_note_to_internal,
     map_agilecrm_task_to_internal,
 )
@@ -60,6 +61,35 @@ MAX_PER_RECORD_ERRORS = 100
 #: simply pick up where it left off on the next run because the import
 #: is idempotent.
 MAX_CONTACTS_PER_SYNC = 50_000
+
+#: Cap on the number of in-flight sub-resource fetches per contact.
+#: AgileCRM's Free tier sits around 200 req/h — 2 concurrent fetches
+#: is more than enough to overlap network latency without giving the
+#: rate limiter ammunition. The semaphore is per-contact so the worker
+#: never has > MAX_SUBSYNC_CONCURRENCY HTTP calls in flight at once.
+MAX_SUBSYNC_CONCURRENCY = 2
+
+#: Default throttle target for the inter-contact pacing in
+#: `sync_contacts`. Tunable via the `AGILECRM_REQUESTS_PER_SECOND` env
+#: var. Each contact already costs 4 calls (contact + notes + tasks +
+#: events) so the *real* outbound rate ends up roughly 4x this value.
+#: AgileCRM's Free quota (200/h ≈ 0.06 req/s) is the bottleneck in
+#: practice — the throttle just stops bursts from triggering 429s.
+DEFAULT_REQUESTS_PER_SECOND = 5.0
+
+
+def _inter_contact_sleep_seconds() -> float:
+    """Read `AGILECRM_REQUESTS_PER_SECOND` from the environment and
+    convert it into an inter-contact pacing delay. A value <= 0
+    disables the pacing."""
+    raw = os.environ.get("AGILECRM_REQUESTS_PER_SECOND")
+    try:
+        rps = float(raw) if raw is not None else DEFAULT_REQUESTS_PER_SECOND
+    except ValueError:
+        rps = DEFAULT_REQUESTS_PER_SECOND
+    if rps <= 0:
+        return 0.0
+    return 1.0 / rps
 
 
 def _load_account(session: Session, account_id: str) -> IntegrationAccount:
@@ -222,22 +252,38 @@ def _apply_update(
 
 
 async def _fetch_subresources(
-    client: AgileCRMClient, agilecrm_contact_id: str
+    client: AgileCRMClient,
+    agilecrm_contact_id: str,
+    semaphore: asyncio.Semaphore,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
-    """Fan-out the 3 per-contact sub-resource fetches in parallel.
+    """Fan-out the 3 per-contact sub-resource fetches behind an
+    `asyncio.Semaphore` so we never have > MAX_SUBSYNC_CONCURRENCY
+    HTTP calls in flight at once.
 
-    A single bad sub-resource shouldn't abort the others, so failures
-    are downgraded to "empty list" with a warning log. The caller
-    decides whether to treat that as a partial success at the contact
-    level."""
-    results = await asyncio.gather(
-        client.list_contact_notes(agilecrm_contact_id),
-        client.list_contact_tasks(agilecrm_contact_id),
-        client.list_contact_activities(agilecrm_contact_id),
-        return_exceptions=True,
+    Latency-wise this still pipelines 2 of the 3 calls; rate-limit-wise
+    it stops the worker from bursting 3 simultaneous requests against
+    an already-saturated tenant. A single bad sub-resource shouldn't
+    abort the others, so failures are downgraded to "empty list" with
+    a warning log."""
+
+    async def _guarded(
+        fetcher: Any, kind: str
+    ) -> tuple[str, list[dict[str, Any]] | Exception]:
+        async with semaphore:
+            try:
+                result = await fetcher(agilecrm_contact_id)
+            except Exception as exc:  # noqa: BLE001 - keep sibling fetches alive
+                return kind, exc
+            return kind, result
+
+    pairs = await asyncio.gather(
+        _guarded(client.list_contact_notes, "notes"),
+        _guarded(client.list_contact_tasks, "tasks"),
+        _guarded(client.list_contact_events, "events"),
     )
 
-    def _as_list(result: Any, kind: str) -> list[dict[str, Any]]:
+    by_kind: dict[str, list[dict[str, Any]]] = {"notes": [], "tasks": [], "events": []}
+    for kind, result in pairs:
         if isinstance(result, Exception):
             logger.warning(
                 "AgileCRM %s fetch failed for contact_id=%s: %s",
@@ -245,14 +291,11 @@ async def _fetch_subresources(
                 agilecrm_contact_id,
                 result,
             )
-            return []
-        return result if isinstance(result, list) else []
+            continue
+        if isinstance(result, list):
+            by_kind[kind] = result
 
-    return (
-        _as_list(results[0], "notes"),
-        _as_list(results[1], "tasks"),
-        _as_list(results[2], "activities"),
-    )
+    return by_kind["notes"], by_kind["tasks"], by_kind["events"]
 
 
 def _sync_contact_notes(
@@ -323,16 +366,20 @@ def _sync_contact_tasks(
     return written
 
 
-def _sync_contact_activities(
+def _sync_contact_events(
     session: Session,
     *,
     contact_id: str,
     account_id: str,
     payloads: list[dict[str, Any]],
 ) -> int:
+    """Upsert AgileCRM timeline events into `activity_events`. The table
+    name keeps its original spelling so this PR doesn't ship a no-op
+    rename migration; the worker just talks about "events" everywhere
+    else to match AgileCRM's own `/contacts/{id}/events` path."""
     written = 0
     for payload in payloads:
-        record = map_agilecrm_activity_to_internal(
+        record = map_agilecrm_event_to_internal(
             payload, contact_id=contact_id, account_id=account_id
         )
         if record is None:
@@ -360,11 +407,15 @@ def _sync_contact_activities(
 def sync_agilecrm_contacts(session: Session, sync_log: SyncLog) -> SyncOutcome:
     """Worker handler: iterate every AgileCRM contact and upsert it.
 
-    After each successful contact upsert we fan out 3 parallel sub-
-    resource fetches (notes / tasks / activities) on the same client to
-    cut wall-clock latency in roughly a third. AgileCRM's rate limit
-    still gates the total API call count — this only buys back the
-    round-trip serialisation overhead."""
+    After each successful contact upsert we fan out 3 sub-resource
+    fetches (notes / tasks / events) behind a `MAX_SUBSYNC_CONCURRENCY`
+    semaphore — bounded concurrency keeps latency overlapped without
+    handing the rate limiter an opening. Between contacts we pause for
+    `1 / AGILECRM_REQUESTS_PER_SECOND` seconds (default 0.2s) so a
+    cold tenant doesn't catch a 429 on the very first burst.
+
+    AgileCRM's rate limit still gates the *total* API call count —
+    the IntegrationHTTPClient honours `Retry-After` automatically."""
     account_id = sync_log.account_id or ""
     account = _load_account(session, account_id)
 
@@ -376,12 +427,14 @@ def sync_agilecrm_contacts(session: Session, sync_log: SyncLog) -> SyncOutcome:
     failed = 0
     notes_synced = 0
     tasks_synced = 0
-    activities_synced = 0
+    events_synced = 0
     error_lines: list[str] = []
+    inter_contact_sleep = _inter_contact_sleep_seconds()
+    semaphore = asyncio.Semaphore(MAX_SUBSYNC_CONCURRENCY)
 
     async def _drive() -> None:
         nonlocal processed, created, updated, consolidated, skipped, failed
-        nonlocal notes_synced, tasks_synced, activities_synced
+        nonlocal notes_synced, tasks_synced, events_synced
         async with AgileCRMClient(session, account_id) as client:
             cursor: str | None = None
             while processed < MAX_CONTACTS_PER_SYNC:
@@ -421,12 +474,12 @@ def sync_agilecrm_contacts(session: Session, sync_log: SyncLog) -> SyncOutcome:
                         continue
 
                     # Sub-syncs run AFTER the contact row is in place so
-                    # a missing notes/tasks/activities endpoint never
-                    # blocks the contact upsert. We tolerate per-contact
+                    # a missing notes/tasks/events endpoint never blocks
+                    # the contact upsert. We tolerate per-contact
                     # sub-sync failures: the operator can re-run later.
                     try:
-                        note_payloads, task_payloads, activity_payloads = (
-                            await _fetch_subresources(client, ext_id)
+                        note_payloads, task_payloads, event_payloads = (
+                            await _fetch_subresources(client, ext_id, semaphore)
                         )
                         notes_synced += _sync_contact_notes(
                             session,
@@ -440,11 +493,11 @@ def sync_agilecrm_contacts(session: Session, sync_log: SyncLog) -> SyncOutcome:
                             account_id=account_id,
                             payloads=task_payloads,
                         )
-                        activities_synced += _sync_contact_activities(
+                        events_synced += _sync_contact_events(
                             session,
                             contact_id=internal_id,
                             account_id=account_id,
-                            payloads=activity_payloads,
+                            payloads=event_payloads,
                         )
                     except Exception as exc:  # noqa: BLE001
                         logger.warning(
@@ -456,6 +509,12 @@ def sync_agilecrm_contacts(session: Session, sync_log: SyncLog) -> SyncOutcome:
                         )
                         session.rollback()
                     processed += 1
+                    # Polite inter-contact pacing. Spaces out the next
+                    # contact's 4 outbound calls so a burst doesn't trip
+                    # the rate limiter even when the previous contact's
+                    # sub-syncs finished instantly.
+                    if inter_contact_sleep > 0:
+                        await asyncio.sleep(inter_contact_sleep)
                 # Commit per page so a later failure doesn't lose the
                 # earlier pages' work.
                 session.commit()
@@ -483,7 +542,7 @@ def sync_agilecrm_contacts(session: Session, sync_log: SyncLog) -> SyncOutcome:
         "failed": failed,
         "notes_synced": notes_synced,
         "tasks_synced": tasks_synced,
-        "activities_synced": activities_synced,
+        "events_synced": events_synced,
     }
 
     # After a successful import, enqueue the quota purge automatically

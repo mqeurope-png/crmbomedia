@@ -77,6 +77,8 @@ class _FakeClient:
         self._tasks = tasks_by_contact or {}
         self._activities = activities_by_contact or {}
         self._notes_error_for = notes_error_for or set()
+        self._in_flight = 0
+        self.peak_in_flight = 0
         # AsyncMock would be enough, but a tiny hand-rolled class makes
         # the test reads cleaner.
 
@@ -108,15 +110,31 @@ class _FakeClient:
         return self._count
 
     async def list_contact_notes(self, contact_id: str) -> list[dict[str, Any]]:
+        await self._track_concurrency()
         if contact_id in self._notes_error_for:
             raise RuntimeError(f"simulated notes failure for {contact_id}")
         return list(self._notes.get(str(contact_id), []))
 
     async def list_contact_tasks(self, contact_id: str) -> list[dict[str, Any]]:
+        await self._track_concurrency()
         return list(self._tasks.get(str(contact_id), []))
 
-    async def list_contact_activities(self, contact_id: str) -> list[dict[str, Any]]:
+    async def list_contact_events(self, contact_id: str) -> list[dict[str, Any]]:
+        await self._track_concurrency()
         return list(self._activities.get(str(contact_id), []))
+
+    async def _track_concurrency(self) -> None:
+        """Increment the in-flight counter, yield to the loop so a
+        sibling task can pre-empt, then decrement. Lets the semaphore
+        test assert the peak."""
+        import asyncio as _asyncio
+
+        self._in_flight += 1
+        try:
+            self.peak_in_flight = max(self.peak_in_flight, self._in_flight)
+            await _asyncio.sleep(0)
+        finally:
+            self._in_flight -= 1
 
 
 @pytest.fixture()
@@ -370,7 +388,7 @@ def test_sync_imports_notes_tasks_and_activities_per_contact(factory: sessionmak
 
     assert outcome.metadata["notes_synced"] == 1
     assert outcome.metadata["tasks_synced"] == 1
-    assert outcome.metadata["activities_synced"] == 1
+    assert outcome.metadata["events_synced"] == 1
     with factory() as session:
         note = session.query(Note).one()
         assert note.body.startswith("Llamada")
@@ -453,6 +471,37 @@ def test_sync_tolerates_subresource_failure_without_aborting_contact(
     with factory() as session:
         emails = sorted(c.email for c in session.query(Contact).all())
         assert emails == ["ana@example.com", "boris@example.com"]
+
+
+def test_sync_caps_subresource_concurrency_at_two(factory: sessionmaker):
+    """The 3 per-contact sub-resource fetches must run behind a
+    semaphore that allows at most `MAX_SUBSYNC_CONCURRENCY` in-flight
+    requests. Regression guard: a previous iteration used a naked
+    `asyncio.gather` and started 3 concurrent calls per contact, which
+    burnt the AgileCRM rate limit in seconds."""
+    from app.integrations.agilecrm.jobs import MAX_SUBSYNC_CONCURRENCY
+
+    fake = _FakeClient(
+        [[_make_payload(contact_id=1, email="ana@example.com")]],
+        notes_by_contact={"1": [{"id": 10, "subject": "ok", "description": "x"}]},
+        tasks_by_contact={"1": [{"id": 20, "subject": "Llamar"}]},
+        activities_by_contact={
+            "1": [
+                {
+                    "id": 30,
+                    "type": "EMAIL_SENT",
+                    "time": 1750000000,
+                    "subject": "Welcome",
+                }
+            ]
+        },
+    )
+    with factory() as session, _patch_client(fake):
+        sync_log = _new_sync_log(session, operation="sync_contacts")
+        sync_agilecrm_contacts(session, sync_log)
+
+    assert fake.peak_in_flight <= MAX_SUBSYNC_CONCURRENCY
+    assert MAX_SUBSYNC_CONCURRENCY == 2
 
 
 # ---------------------------------------------------------------------------

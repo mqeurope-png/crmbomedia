@@ -450,14 +450,21 @@ la fila de auditoría.
 
 ### Sub-syncs por contacto (Sprint A PR-5)
 
-Después de cada upsert de contacto, el worker dispara **3 fetches en
-paralelo** (`asyncio.gather`) contra los sub-recursos AgileCRM:
+Después de cada upsert de contacto, el worker dispara **3 fetches con
+concurrencia acotada** (`asyncio.Semaphore(MAX_SUBSYNC_CONCURRENCY)`,
+default 2) contra los sub-recursos AgileCRM:
 
-| Sub-recurso | Endpoint | Tabla local | Dedup key |
-|-------------|----------|-------------|-----------|
-| Notas       | `/dev/api/contacts/{id}/notes`     | `notes`             | `(external_system, external_account_id, external_id)` |
-| Tareas      | `/dev/api/tasks/contact/{id}`      | `tasks`             | `(external_system, external_account_id, external_id)` |
-| Actividades | `/dev/api/activities/contact/{id}` | `activity_events`   | UNIQUE `(system, account_id, external_id)` |
+| Sub-recurso | Endpoint                            | Tabla local       | Dedup key |
+|-------------|-------------------------------------|-------------------|-----------|
+| Notas       | `/dev/api/contacts/{id}/notes`      | `notes`           | `(external_system, external_account_id, external_id)` |
+| Tareas      | `/dev/api/contacts/{id}/tasks`      | `tasks`           | `(external_system, external_account_id, external_id)` |
+| Eventos     | `/dev/api/contacts/{id}/events`     | `activity_events` | UNIQUE `(system, account_id, external_id)` |
+
+Los nombres `events` (en AgileCRM y en el código del cliente/mapper) y
+`activity_events` (tabla local) son **deliberadamente diferentes**: el
+modelo de la tabla mantiene su nombre original para no requerir una
+migración de rename, pero el código del worker habla de "events" para
+alinearse con el endpoint AgileCRM real.
 
 Los 3 mapping helpers (`map_agilecrm_note_to_internal`, …) viven en
 `mapper.py` y devuelven dicts listos para `Model(**record)`. El
@@ -474,17 +481,50 @@ Contadores en `sync_log.metadata`:
 
 - `notes_synced` — número de notas (creadas + actualizadas)
 - `tasks_synced` — idem para tareas
-- `activities_synced` — idem para eventos de timeline
+- `events_synced` — idem para eventos de timeline
 
 Una excepción en notes / tasks / activities de UN contacto se loggea
 como warning y NO aborta el contacto ni el sync — el upsert del
 contacto ya está commiteado para esa página.
 
 **Coste**: 1 contacto en AgileCRM ahora consume **4 llamadas HTTP**
-(contact + notes + tasks + activities). Con 762 contactos y un Free
+(contact + notes + tasks + events). Con 762 contactos y un Free
 tier de 200 req/h, una importación full puede tardar > 14 horas. El
 job es idempotente — el operador puede re-disparar la sync para
 recuperar incrementales.
+
+### Rate limiting y throttling
+
+El cliente base (`IntegrationHTTPClient`) respeta el header
+`Retry-After` en respuestas 429 / 503:
+
+- Valor en segundos (entero) → `await asyncio.sleep(value)` antes del
+  próximo retry (no es un `time.sleep` bloqueante).
+- HTTP-date (`Sun, 06 Nov 2026 08:49:37 GMT`) → se parsea con
+  `email.utils.parsedate_to_datetime` y se convierte a delta segundos.
+- Cap máximo: `RETRY_AFTER_HARD_CAP_SECONDS = 300` (5 min). Por
+  encima de eso se aborta sin reintentos y se levanta
+  `IntegrationRateLimitError` para que RQ reprograme el job.
+
+El job `sync_agilecrm_contacts` añade dos defensas adicionales:
+
+- `asyncio.Semaphore(MAX_SUBSYNC_CONCURRENCY)` (default 2) limita
+  cuántas llamadas a sub-recursos por contacto vuelan a la vez. Un
+  iteración previa usaba `asyncio.gather` desnudo y disparaba 3
+  requests concurrentes — eso quemaba la cuota AgileCRM en minutos.
+- `asyncio.sleep(1 / AGILECRM_REQUESTS_PER_SECOND)` entre contactos
+  del bucle principal (default 0.2s = 5 RPS). La variable de entorno
+  `AGILECRM_REQUESTS_PER_SECOND` permite afinar si el tenant cambia
+  de plan o si se quiere acelerar/frenar manualmente. Valor ≤ 0
+  desactiva la pausa.
+
+Logs estructurados que emite la capa http base:
+
+- `integration.rate_limit.retry_after` (INFO) cuando aplica el
+  Retry-After: `system=... account_id=... sleeping_seconds=... attempt=...`.
+- `integration.rate_limit.cap_exceeded` (WARNING) cuando el remote
+  pide más espera que el cap; el job aborta el call con
+  `IntegrationRateLimitError`.
 
 ### Qué NO se importa de AgileCRM
 

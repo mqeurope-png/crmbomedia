@@ -169,15 +169,24 @@ def test_network_error_retries_and_then_raises(session_factory: sessionmaker):
 def test_respects_retry_after_and_succeeds(session_factory: sessionmaker, monkeypatch):
     import asyncio
 
-    # Avoid actually sleeping; we just want to confirm the retry happens
-    # and the second response is honoured.
-    monkeypatch.setattr("app.integrations.http_client.time.sleep", lambda *_a, **_kw: None)
+    # Patch tenacity's async sleep so the test doesn't actually wait;
+    # we only care that the retry happens and the second response wins.
+    sleeps: list[float] = []
+
+    async def _no_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    # Patch asyncio.sleep — tenacity's `_portable_async_sleep` defers
+    # to it for the asyncio runtime, so swapping it in here means no
+    # actual blocking but we still see the sleep durations.
+    import asyncio as _asyncio  # noqa: PLC0415
+    monkeypatch.setattr(_asyncio, "sleep", _no_sleep)
     attempts = {"count": 0}
 
     def handler(request: httpx.Request) -> httpx.Response:
         attempts["count"] += 1
         if attempts["count"] == 1:
-            return httpx.Response(429, headers={"Retry-After": "1"}, text="slow down")
+            return httpx.Response(429, headers={"Retry-After": "5"}, text="slow down")
         return httpx.Response(200, json={"ok": True})
 
     with session_factory() as session:
@@ -186,6 +195,89 @@ def test_respects_retry_after_and_succeeds(session_factory: sessionmaker, monkey
         )
         assert resp.status_code == 200
         assert attempts["count"] == 2
+        # The wait function honoured the Retry-After value (5s) instead
+        # of using the default exponential floor (>= 1s, ramping up).
+        assert any(abs(s - 5.0) < 0.01 for s in sleeps), sleeps
+
+
+def test_retry_after_http_date_is_parsed(session_factory: sessionmaker, monkeypatch):
+    """RFC 7231 allows Retry-After as an HTTP-date. Make sure the
+    parser honours the date format too — some upstream servers send it
+    instead of a plain seconds value."""
+    import asyncio
+    from datetime import UTC, datetime, timedelta
+    from email.utils import format_datetime
+
+    sleeps: list[float] = []
+
+    async def _no_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    # Patch asyncio.sleep — tenacity's `_portable_async_sleep` defers
+    # to it for the asyncio runtime, so swapping it in here means no
+    # actual blocking but we still see the sleep durations.
+    import asyncio as _asyncio  # noqa: PLC0415
+    monkeypatch.setattr(_asyncio, "sleep", _no_sleep)
+    attempts = {"count": 0}
+    http_date = format_datetime(datetime.now(UTC) + timedelta(seconds=7), usegmt=True)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            return httpx.Response(429, headers={"Retry-After": http_date}, text="slow")
+        return httpx.Response(200, json={"ok": True})
+
+    with session_factory() as session:
+        resp = asyncio.run(
+            _run(session, transport=httpx.MockTransport(handler), url="/x", max_retries=3)
+        )
+        assert resp.status_code == 200
+        # Allow a generous tolerance because parsing/sending takes a few
+        # milliseconds; the sleep value should be close to 7 seconds.
+        assert any(4.0 <= s <= 8.0 for s in sleeps), sleeps
+
+
+def test_retry_after_above_cap_aborts_without_retry(session_factory: sessionmaker, monkeypatch):
+    """If the remote demands a longer cooldown than the worker is
+    willing to block for (5 minutes), we surface a rate-limit error and
+    let the scheduler reschedule the job — no retries, no blocked
+    worker."""
+    import asyncio
+
+    from app.integrations.errors import IntegrationRateLimitError
+
+    sleeps: list[float] = []
+
+    async def _no_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    # Patch asyncio.sleep — tenacity's `_portable_async_sleep` defers
+    # to it for the asyncio runtime, so swapping it in here means no
+    # actual blocking but we still see the sleep durations.
+    import asyncio as _asyncio  # noqa: PLC0415
+    monkeypatch.setattr(_asyncio, "sleep", _no_sleep)
+    attempts = {"count": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts["count"] += 1
+        # Past the 300s cap so the client gives up immediately.
+        return httpx.Response(429, headers={"Retry-After": "900"}, text="slow")
+
+    with session_factory() as session:
+        with pytest.raises(IntegrationRateLimitError) as exc_info:
+            asyncio.run(
+                _run(
+                    session,
+                    transport=httpx.MockTransport(handler),
+                    url="/x",
+                    max_retries=3,
+                )
+            )
+    # Only the initial attempt happened — the cap check fires before
+    # tenacity gets a chance to schedule a retry.
+    assert attempts["count"] == 1
+    assert "exceeds local cap" in str(exc_info.value)
+    assert sleeps == []
 
 
 # ---------------------------------------------------------------------------

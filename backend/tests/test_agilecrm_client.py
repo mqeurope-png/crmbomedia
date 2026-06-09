@@ -496,11 +496,15 @@ def test_list_contact_tasks_hits_tasks_subresource(session_factory):
             _make_transport(handler),
             lambda client: client.list_contact_tasks("42"),
         )
-    assert captured["path"] == "/dev/api/tasks/contact/42"
+    assert captured["path"] == "/dev/api/contacts/42/tasks"
     assert items[0]["subject"] == "Llamar mañana"
 
 
-def test_list_contact_activities_hits_activities_subresource(session_factory):
+def test_list_contact_events_hits_events_subresource(session_factory):
+    """AgileCRM exposes timeline events at `/contacts/{id}/events`. An
+    earlier path (`/activities/contact/{id}`) 404s in production; this
+    test pins the corrected URL so a future refactor doesn't slip
+    back into the old shape."""
     captured: dict[str, str] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -510,9 +514,9 @@ def test_list_contact_activities_hits_activities_subresource(session_factory):
             json=[
                 {
                     "id": 1,
-                    "activity_type": "EMAIL_SENT",
+                    "type": "EMAIL_SENT",
                     "time": 1750000000,
-                    "label": "Reactivation email",
+                    "subject": "Reactivation email",
                 }
             ],
         )
@@ -521,10 +525,10 @@ def test_list_contact_activities_hits_activities_subresource(session_factory):
         items = _run_with_transport(
             session,
             _make_transport(handler),
-            lambda client: client.list_contact_activities("42"),
+            lambda client: client.list_contact_events("42"),
         )
-    assert captured["path"] == "/dev/api/activities/contact/42"
-    assert items[0]["activity_type"] == "EMAIL_SENT"
+    assert captured["path"] == "/dev/api/contacts/42/events"
+    assert items[0]["type"] == "EMAIL_SENT"
 
 
 def test_list_contact_subresource_filters_non_dict_rows(session_factory):
