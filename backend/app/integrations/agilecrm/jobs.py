@@ -32,14 +32,20 @@ from app.integrations.agilecrm.client import AgileCRMClient
 from app.integrations.agilecrm.mapper import (
     agilecrm_account_label,
     agilecrm_external_id,
+    map_agilecrm_activity_to_internal,
     map_agilecrm_contact_to_internal,
+    map_agilecrm_note_to_internal,
+    map_agilecrm_task_to_internal,
 )
 from app.integrations.errors import IntegrationError
 from app.models.crm import (
+    ActivityEvent,
     Contact,
     ExternalReference,
     ExternalSystem,
+    Note,
     SyncLog,
+    Task,
 )
 from app.models.integration_settings import IntegrationAccount, QuotaStrategy
 from app.workers.jobs import OPERATIONS, SyncOutcome
@@ -93,12 +99,15 @@ def _upsert_contact_for_payload(
     *,
     account_id: str,
     payload: dict[str, Any],
-) -> tuple[str, bool]:
+) -> tuple[str, bool, str, str]:
     """Insert or update one internal contact for an AgileCRM payload.
 
-    Returns `(action, was_consolidated)` where `action ∈ {"created", "updated"}`
-    and `was_consolidated` is True when the row was matched by email to an
-    existing contact already linked from a different AgileCRM account.
+    Returns `(action, was_consolidated, contact_id, external_id)` where
+    `action ∈ {"created", "updated"}` and `was_consolidated` is True when
+    the row was matched by email to an existing contact already linked
+    from a different AgileCRM account. `contact_id` is the internal
+    UUID, returned so the sub-sync helpers can attach notes/tasks/
+    activities without having to re-query.
     """
     external_id = agilecrm_external_id(payload)
     if not external_id:
@@ -131,7 +140,7 @@ def _upsert_contact_for_payload(
                 ref.external_status = None
             _apply_ref_extras(ref, ref_extras)
             session.flush()
-            return ("updated", False)
+            return ("updated", False, contact.id, external_id)
 
     # 2. No reference for this account, but the email already exists
     # somewhere → consolidate: link the existing contact under this
@@ -154,7 +163,7 @@ def _upsert_contact_for_payload(
         # secondary AgileCRM account.
         _apply_update(existing_contact, record, allow_email_overwrite=False)
         session.flush()
-        return ("updated", True)
+        return ("updated", True, existing_contact.id, external_id)
 
     # 3. Brand-new contact + reference.
     contact = Contact(**record)
@@ -170,7 +179,7 @@ def _upsert_contact_for_payload(
     _apply_ref_extras(new_ref, ref_extras)
     session.add(new_ref)
     session.flush()
-    return ("created", False)
+    return ("created", False, contact.id, external_id)
 
 
 def _apply_ref_extras(ref: ExternalReference, extras: dict[str, Any]) -> None:
@@ -212,8 +221,150 @@ def _apply_update(
 # ---------------------------------------------------------------------------
 
 
+async def _fetch_subresources(
+    client: AgileCRMClient, agilecrm_contact_id: str
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Fan-out the 3 per-contact sub-resource fetches in parallel.
+
+    A single bad sub-resource shouldn't abort the others, so failures
+    are downgraded to "empty list" with a warning log. The caller
+    decides whether to treat that as a partial success at the contact
+    level."""
+    results = await asyncio.gather(
+        client.list_contact_notes(agilecrm_contact_id),
+        client.list_contact_tasks(agilecrm_contact_id),
+        client.list_contact_activities(agilecrm_contact_id),
+        return_exceptions=True,
+    )
+
+    def _as_list(result: Any, kind: str) -> list[dict[str, Any]]:
+        if isinstance(result, Exception):
+            logger.warning(
+                "AgileCRM %s fetch failed for contact_id=%s: %s",
+                kind,
+                agilecrm_contact_id,
+                result,
+            )
+            return []
+        return result if isinstance(result, list) else []
+
+    return (
+        _as_list(results[0], "notes"),
+        _as_list(results[1], "tasks"),
+        _as_list(results[2], "activities"),
+    )
+
+
+def _sync_contact_notes(
+    session: Session,
+    *,
+    contact_id: str,
+    account_id: str,
+    payloads: list[dict[str, Any]],
+) -> int:
+    written = 0
+    for payload in payloads:
+        record = map_agilecrm_note_to_internal(
+            payload, contact_id=contact_id, account_id=account_id
+        )
+        if record is None:
+            continue
+        existing = None
+        if record["external_id"]:
+            existing = session.scalar(
+                select(Note).where(
+                    Note.external_system == record["external_system"],
+                    Note.external_account_id == record["external_account_id"],
+                    Note.external_id == record["external_id"],
+                )
+            )
+        if existing is not None:
+            for field, value in record.items():
+                setattr(existing, field, value)
+        else:
+            session.add(Note(**record))
+        written += 1
+    if written:
+        session.flush()
+    return written
+
+
+def _sync_contact_tasks(
+    session: Session,
+    *,
+    contact_id: str,
+    account_id: str,
+    payloads: list[dict[str, Any]],
+) -> int:
+    written = 0
+    for payload in payloads:
+        record = map_agilecrm_task_to_internal(
+            payload, contact_id=contact_id, account_id=account_id
+        )
+        if record is None:
+            continue
+        existing = None
+        if record["external_id"]:
+            existing = session.scalar(
+                select(Task).where(
+                    Task.external_system == record["external_system"],
+                    Task.external_account_id == record["external_account_id"],
+                    Task.external_id == record["external_id"],
+                )
+            )
+        if existing is not None:
+            for field, value in record.items():
+                setattr(existing, field, value)
+        else:
+            session.add(Task(**record))
+        written += 1
+    if written:
+        session.flush()
+    return written
+
+
+def _sync_contact_activities(
+    session: Session,
+    *,
+    contact_id: str,
+    account_id: str,
+    payloads: list[dict[str, Any]],
+) -> int:
+    written = 0
+    for payload in payloads:
+        record = map_agilecrm_activity_to_internal(
+            payload, contact_id=contact_id, account_id=account_id
+        )
+        if record is None:
+            continue
+        existing = None
+        if record["external_id"]:
+            existing = session.scalar(
+                select(ActivityEvent).where(
+                    ActivityEvent.system == record["system"],
+                    ActivityEvent.account_id == record["account_id"],
+                    ActivityEvent.external_id == record["external_id"],
+                )
+            )
+        if existing is not None:
+            for field, value in record.items():
+                setattr(existing, field, value)
+        else:
+            session.add(ActivityEvent(**record))
+        written += 1
+    if written:
+        session.flush()
+    return written
+
+
 def sync_agilecrm_contacts(session: Session, sync_log: SyncLog) -> SyncOutcome:
-    """Worker handler: iterate every AgileCRM contact and upsert it."""
+    """Worker handler: iterate every AgileCRM contact and upsert it.
+
+    After each successful contact upsert we fan out 3 parallel sub-
+    resource fetches (notes / tasks / activities) on the same client to
+    cut wall-clock latency in roughly a third. AgileCRM's rate limit
+    still gates the total API call count — this only buys back the
+    round-trip serialisation overhead."""
     account_id = sync_log.account_id or ""
     account = _load_account(session, account_id)
 
@@ -223,10 +374,14 @@ def sync_agilecrm_contacts(session: Session, sync_log: SyncLog) -> SyncOutcome:
     consolidated = 0
     skipped = 0
     failed = 0
+    notes_synced = 0
+    tasks_synced = 0
+    activities_synced = 0
     error_lines: list[str] = []
 
     async def _drive() -> None:
         nonlocal processed, created, updated, consolidated, skipped, failed
+        nonlocal notes_synced, tasks_synced, activities_synced
         async with AgileCRMClient(session, account_id) as client:
             cursor: str | None = None
             while processed < MAX_CONTACTS_PER_SYNC:
@@ -235,8 +390,10 @@ def sync_agilecrm_contacts(session: Session, sync_log: SyncLog) -> SyncOutcome:
                     break
                 for payload in items:
                     try:
-                        action, was_consolidated = _upsert_contact_for_payload(
-                            session, account_id=account_id, payload=payload
+                        action, was_consolidated, internal_id, ext_id = (
+                            _upsert_contact_for_payload(
+                                session, account_id=account_id, payload=payload
+                            )
                         )
                         if action == "created":
                             created += 1
@@ -253,8 +410,50 @@ def sync_agilecrm_contacts(session: Session, sync_log: SyncLog) -> SyncOutcome:
                     except Exception as exc:  # noqa: BLE001 - never abort the whole sync
                         failed += 1
                         if len(error_lines) < MAX_PER_RECORD_ERRORS:
-                            ext_id = payload.get("id") if isinstance(payload, dict) else "?"
-                            error_lines.append(f"contact_id={ext_id}: {exc!s}")
+                            ext_payload_id = (
+                                payload.get("id") if isinstance(payload, dict) else "?"
+                            )
+                            error_lines.append(
+                                f"contact_id={ext_payload_id}: {exc!s}"
+                            )
+                        session.rollback()
+                        processed += 1
+                        continue
+
+                    # Sub-syncs run AFTER the contact row is in place so
+                    # a missing notes/tasks/activities endpoint never
+                    # blocks the contact upsert. We tolerate per-contact
+                    # sub-sync failures: the operator can re-run later.
+                    try:
+                        note_payloads, task_payloads, activity_payloads = (
+                            await _fetch_subresources(client, ext_id)
+                        )
+                        notes_synced += _sync_contact_notes(
+                            session,
+                            contact_id=internal_id,
+                            account_id=account_id,
+                            payloads=note_payloads,
+                        )
+                        tasks_synced += _sync_contact_tasks(
+                            session,
+                            contact_id=internal_id,
+                            account_id=account_id,
+                            payloads=task_payloads,
+                        )
+                        activities_synced += _sync_contact_activities(
+                            session,
+                            contact_id=internal_id,
+                            account_id=account_id,
+                            payloads=activity_payloads,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "AgileCRM sub-sync failed for contact internal_id=%s "
+                            "external_id=%s: %s",
+                            internal_id,
+                            ext_id,
+                            exc,
+                        )
                         session.rollback()
                     processed += 1
                 # Commit per page so a later failure doesn't lose the
@@ -282,6 +481,9 @@ def sync_agilecrm_contacts(session: Session, sync_log: SyncLog) -> SyncOutcome:
         "updated_existing": updated - consolidated,
         "consolidated_from_other_account": consolidated,
         "failed": failed,
+        "notes_synced": notes_synced,
+        "tasks_synced": tasks_synced,
+        "activities_synced": activities_synced,
     }
 
     # After a successful import, enqueue the quota purge automatically

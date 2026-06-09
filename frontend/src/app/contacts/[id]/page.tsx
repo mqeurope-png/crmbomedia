@@ -6,8 +6,11 @@ import { useEffect, useState } from "react";
 import { ErrorState } from "../../components/ErrorState";
 import {
   getContact,
+  type ActivityEvent,
   type Contact,
   type ExternalReference,
+  type Note,
+  type Task,
 } from "../../lib/api";
 import { extractErrorMessage } from "../../lib/errors";
 import { ContactEditForm } from "./ContactEditForm";
@@ -63,6 +66,73 @@ function Row({ label, value }: RowProps) {
       <dt>{label}</dt>
       <dd>{value}</dd>
     </>
+  );
+}
+
+// Soft mapping of AgileCRM activity_type → emoji marker. New types just
+// fall back to the default bullet so we never crash on an unknown event.
+const EVENT_TYPE_ICON: Record<string, string> = {
+  EMAIL_SENT: "✉️",
+  EMAIL_OPENED: "👁️",
+  EMAIL_CLICKED: "🔗",
+  CALL_LOG: "📞",
+  NOTE: "🗒️",
+  FORM_FILL: "📝",
+  DEAL_CREATED: "💼",
+  PAGE_VIEWED: "🌐",
+  TASK_COMPLETED: "✅",
+};
+
+function eventIcon(eventType: string): string {
+  return EVENT_TYPE_ICON[eventType] ?? "•";
+}
+
+function NoteCard({ note }: { note: Note }) {
+  const author =
+    note.external_author_name ||
+    note.external_author_email ||
+    "Operador";
+  const date = note.external_created_at ?? note.created_at;
+  return (
+    <li className="note-card">
+      <div className="note-card-header">
+        <strong>{author}</strong>
+        <span className="muted">{formatDateTime(date)}</span>
+      </div>
+      <p className="note-body">{note.body}</p>
+    </li>
+  );
+}
+
+function TaskCard({ task }: { task: Task }) {
+  return (
+    <li className="task-card">
+      <div className="task-card-header">
+        <span className={`status status-${task.status}`}>{task.status}</span>
+        <strong>{task.title}</strong>
+      </div>
+      {task.due_at ? (
+        <span className="muted">Vence: {formatDateTime(task.due_at)}</span>
+      ) : null}
+    </li>
+  );
+}
+
+function ActivityEventRow({ event }: { event: ActivityEvent }) {
+  return (
+    <li className="timeline-row">
+      <span className="timeline-icon" aria-hidden>
+        {eventIcon(event.event_type)}
+      </span>
+      <div className="timeline-content">
+        <div className="timeline-meta">
+          <strong>{event.subject || event.event_type}</strong>
+          <span className="muted">{formatDateTime(event.occurred_at)}</span>
+        </div>
+        <span className="timeline-type">{event.event_type}</span>
+        {event.body ? <p className="timeline-body">{event.body}</p> : null}
+      </div>
+    </li>
   );
 }
 
@@ -183,18 +253,44 @@ export default function ContactDetailPage() {
         <article className="card">
           <h2>Notas</h2>
           {contact.notes?.length ? (
-            <ul className="item-list">
-              {contact.notes.map((note) => <li key={note.id}>{note.body}</li>)}
+            <ul className="note-list">
+              {contact.notes.map((note) => (
+                <NoteCard key={note.id} note={note} />
+              ))}
             </ul>
           ) : <p className="muted">Sin notas todavía.</p>}
         </article>
         <article className="card">
-          <h2>Tareas</h2>
+          <h2>Tareas pendientes</h2>
           {contact.tasks?.length ? (
-            <ul className="item-list">
-              {contact.tasks.map((task) => <li key={task.id}>{task.title} · {task.status}</li>)}
+            <ul className="task-list">
+              {contact.tasks.map((task) => (
+                <TaskCard key={task.id} task={task} />
+              ))}
             </ul>
           ) : <p className="muted">Sin tareas pendientes.</p>}
+        </article>
+        <article className="card card-wide">
+          <div className="section-title">
+            <h2>Línea de tiempo</h2>
+            {(contact.activity_events?.length ?? 0) > 0 ? (
+              <span className="muted small">
+                {contact.activity_events?.length} eventos recientes
+              </span>
+            ) : null}
+          </div>
+          {contact.activity_events?.length ? (
+            <ul className="timeline-list">
+              {contact.activity_events.map((event) => (
+                <ActivityEventRow key={event.id} event={event} />
+              ))}
+            </ul>
+          ) : (
+            <p className="muted">
+              Sin eventos sincronizados todavía. La próxima sync de AgileCRM
+              los traerá.
+            </p>
+          )}
         </article>
       </section>
     </main>

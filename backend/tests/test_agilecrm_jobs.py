@@ -62,6 +62,10 @@ class _FakeClient:
         *,
         count: int | None = None,
         count_unavailable: bool = False,
+        notes_by_contact: dict[str, list[dict[str, Any]]] | None = None,
+        tasks_by_contact: dict[str, list[dict[str, Any]]] | None = None,
+        activities_by_contact: dict[str, list[dict[str, Any]]] | None = None,
+        notes_error_for: set[str] | None = None,
     ) -> None:
         self._pages = list(pages)
         self._count: int | None = (
@@ -69,6 +73,10 @@ class _FakeClient:
             else (count if count is not None else sum(len(p) for p in pages))
         )
         self.deleted: list[str] = []
+        self._notes = notes_by_contact or {}
+        self._tasks = tasks_by_contact or {}
+        self._activities = activities_by_contact or {}
+        self._notes_error_for = notes_error_for or set()
         # AsyncMock would be enough, but a tiny hand-rolled class makes
         # the test reads cleaner.
 
@@ -98,6 +106,17 @@ class _FakeClient:
 
     async def count_contacts(self) -> int | None:
         return self._count
+
+    async def list_contact_notes(self, contact_id: str) -> list[dict[str, Any]]:
+        if contact_id in self._notes_error_for:
+            raise RuntimeError(f"simulated notes failure for {contact_id}")
+        return list(self._notes.get(str(contact_id), []))
+
+    async def list_contact_tasks(self, contact_id: str) -> list[dict[str, Any]]:
+        return list(self._tasks.get(str(contact_id), []))
+
+    async def list_contact_activities(self, contact_id: str) -> list[dict[str, Any]]:
+        return list(self._activities.get(str(contact_id), []))
 
 
 @pytest.fixture()
@@ -298,6 +317,142 @@ def test_sync_emits_integration_api_call_audit_events_indirectly(factory: sessio
         # No spurious audit rows from the handler itself.
         assert Action.INTEGRATION_SYNC_TRIGGERED not in actions
         assert Action.INTEGRATION_SYNC_STARTED not in actions
+
+
+# ---------------------------------------------------------------------------
+# Per-contact sub-syncs
+# ---------------------------------------------------------------------------
+
+
+def test_sync_imports_notes_tasks_and_activities_per_contact(factory: sessionmaker):
+    """A green-field sync writes notes, tasks and activity_events for
+    each contact alongside the contact + external_reference."""
+    from app.models.crm import ActivityEvent, Note, Task
+
+    fake = _FakeClient(
+        [[_make_payload(contact_id=1, email="ana@example.com")]],
+        notes_by_contact={
+            "1": [
+                {
+                    "id": 10,
+                    "subject": "Llamada",
+                    "description": "Quiere renovar",
+                    "created_time": 1750000000,
+                    "owner": {"email": "ops@example.com", "name": "Ops"},
+                }
+            ]
+        },
+        tasks_by_contact={
+            "1": [
+                {
+                    "id": 20,
+                    "subject": "Enviar propuesta",
+                    "status": "YET_TO_START",
+                    "due": 1750100000,
+                }
+            ]
+        },
+        activities_by_contact={
+            "1": [
+                {
+                    "id": 30,
+                    "activity_type": "EMAIL_SENT",
+                    "time": 1750200000,
+                    "label": "Welcome",
+                    "description": "Opened",
+                }
+            ]
+        },
+    )
+    with factory() as session, _patch_client(fake):
+        sync_log = _new_sync_log(session, operation="sync_contacts")
+        outcome = sync_agilecrm_contacts(session, sync_log)
+
+    assert outcome.metadata["notes_synced"] == 1
+    assert outcome.metadata["tasks_synced"] == 1
+    assert outcome.metadata["activities_synced"] == 1
+    with factory() as session:
+        note = session.query(Note).one()
+        assert note.body.startswith("Llamada")
+        assert note.external_id == "10"
+        assert note.external_author_email == "ops@example.com"
+        task = session.query(Task).one()
+        assert task.title == "Enviar propuesta"
+        assert task.external_id == "20"
+        event = session.query(ActivityEvent).one()
+        assert event.event_type == "EMAIL_SENT"
+        assert event.external_id == "30"
+        assert event.subject == "Welcome"
+
+
+def test_sync_dedups_sub_resources_on_re_run(factory: sessionmaker):
+    """Running the sync twice must not double-write notes/tasks/events
+    — the unique-by-external-id helpers upsert in place."""
+    from app.models.crm import ActivityEvent, Note, Task
+
+    fake_factory = lambda: _FakeClient(  # noqa: E731 - one-line builder
+        [[_make_payload(contact_id=1, email="ana@example.com")]],
+        notes_by_contact={
+            "1": [
+                {
+                    "id": 10,
+                    "subject": "Llamada",
+                    "description": "Quiere renovar",
+                    "created_time": 1750000000,
+                }
+            ]
+        },
+        tasks_by_contact={
+            "1": [{"id": 20, "subject": "Enviar propuesta"}]
+        },
+        activities_by_contact={
+            "1": [
+                {
+                    "id": 30,
+                    "activity_type": "EMAIL_SENT",
+                    "time": 1750200000,
+                    "label": "Welcome",
+                }
+            ]
+        },
+    )
+
+    for _ in range(2):
+        fake = fake_factory()
+        with factory() as session, _patch_client(fake):
+            sync_log = _new_sync_log(session, operation="sync_contacts")
+            sync_agilecrm_contacts(session, sync_log)
+
+    with factory() as session:
+        assert session.query(Note).count() == 1
+        assert session.query(Task).count() == 1
+        assert session.query(ActivityEvent).count() == 1
+
+
+def test_sync_tolerates_subresource_failure_without_aborting_contact(
+    factory: sessionmaker,
+):
+    """If notes fetch blows up for one contact, the contact must still
+    land in the DB (the contact upsert already committed) and the rest
+    of the sync carries on."""
+    fake = _FakeClient(
+        [
+            [
+                _make_payload(contact_id=1, email="ana@example.com"),
+                _make_payload(contact_id=2, email="boris@example.com"),
+            ]
+        ],
+        notes_error_for={"1"},
+        notes_by_contact={"2": [{"id": 999, "subject": "OK", "description": "fine"}]},
+    )
+    with factory() as session, _patch_client(fake):
+        sync_log = _new_sync_log(session, operation="sync_contacts")
+        outcome = sync_agilecrm_contacts(session, sync_log)
+
+    assert outcome.records_processed == 2
+    with factory() as session:
+        emails = sorted(c.email for c in session.query(Contact).all())
+        assert emails == ["ana@example.com", "boris@example.com"]
 
 
 # ---------------------------------------------------------------------------

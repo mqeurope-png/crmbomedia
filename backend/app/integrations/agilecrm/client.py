@@ -206,6 +206,53 @@ class AgileCRMClient(IntegrationHTTPClient):
                 return
             raise
 
+    # ------------------------------------------------------------------
+    # Per-contact sub-resources (notes, tasks, activities)
+    # ------------------------------------------------------------------
+    #
+    # AgileCRM's sub-endpoints follow a few variants depending on the
+    # tenant's plan. We default to the documented paths and silently
+    # treat 404 as "no rows" — typical for fresh contacts. Any other
+    # 4xx/5xx bubbles up via `IntegrationClientError` /
+    # `IntegrationServerError`; the sync job's per-contact try/except
+    # downgrades that to a warning so one flaky sub-resource never
+    # aborts the whole import.
+
+    async def list_contact_notes(self, contact_id: str) -> list[dict[str, Any]]:
+        """Notes attached to one contact. Endpoint:
+        `GET /dev/api/contacts/{id}/notes`."""
+        return await self._list_subresource(f"/dev/api/contacts/{contact_id}/notes")
+
+    async def list_contact_tasks(self, contact_id: str) -> list[dict[str, Any]]:
+        """Tasks attached to one contact. Endpoint:
+        `GET /dev/api/tasks/contact/{id}`. (`/api/contacts/{id}/tasks`
+        is a documented alternative but ships task ids only — this one
+        returns the full task payload.)"""
+        return await self._list_subresource(f"/dev/api/tasks/contact/{contact_id}")
+
+    async def list_contact_activities(self, contact_id: str) -> list[dict[str, Any]]:
+        """Timeline events for one contact. Endpoint:
+        `GET /dev/api/activities/contact/{id}`. Returns AgileCRM's
+        timeline rows (EMAIL_SENT, FORM_FILL, NOTE, …)."""
+        return await self._list_subresource(
+            f"/dev/api/activities/contact/{contact_id}"
+        )
+
+    async def _list_subresource(self, path: str) -> list[dict[str, Any]]:
+        """Shared helper for the per-contact sub-resources. AgileCRM
+        responds with a top-level JSON array; 404 is treated as an empty
+        list so a brand-new contact (no notes/tasks/activities yet)
+        doesn't raise."""
+        try:
+            response = await self.get(path)
+        except IntegrationClientError as exc:
+            if exc.status_code == 404:
+                return []
+            raise
+        if isinstance(response.json, list):
+            return [item for item in response.json if isinstance(item, dict)]
+        return []
+
     async def count_contacts(self) -> int | None:
         """Return the total contact count for this account, or `None`
         when AgileCRM refuses to answer.

@@ -52,6 +52,12 @@ export type Note = {
   id: string;
   body: string;
   created_at: string;
+  external_system?: string | null;
+  external_account_id?: string | null;
+  external_id?: string | null;
+  external_author_email?: string | null;
+  external_author_name?: string | null;
+  external_created_at?: string | null;
 };
 
 export type Task = {
@@ -59,6 +65,34 @@ export type Task = {
   title: string;
   status: "open" | "done" | "cancelled";
   due_at?: string | null;
+  external_system?: string | null;
+  external_account_id?: string | null;
+  external_id?: string | null;
+  external_created_at?: string | null;
+  external_updated_at?: string | null;
+};
+
+export type ActivityEvent = {
+  id: string;
+  contact_id: string;
+  system: string;
+  account_id: string;
+  external_id?: string | null;
+  event_type: string;
+  subject?: string | null;
+  body?: string | null;
+  metadata?: Record<string, unknown> | null;
+  occurred_at: string;
+  synced_at: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ActivityEventListPage = {
+  items: ActivityEvent[];
+  total: number;
+  limit: number;
+  offset: number;
 };
 
 export type ExternalReference = {
@@ -99,6 +133,7 @@ export type Contact = {
   notes?: Note[];
   tasks?: Task[];
   external_refs?: ExternalReference[];
+  activity_events?: ActivityEvent[];
 };
 
 export type ContactListFilters = {
@@ -251,6 +286,16 @@ export async function getContactsCount(): Promise<number> {
 
 export async function getContact(id: string): Promise<Contact> {
   return apiFetch<Contact>(`/api/contacts/${id}`);
+}
+
+export async function getContactActivityEvents(
+  id: string,
+  { skip = 0, limit = 50 }: { skip?: number; limit?: number } = {},
+): Promise<ActivityEventListPage> {
+  const params = new URLSearchParams({ skip: String(skip), limit: String(limit) });
+  return apiFetch<ActivityEventListPage>(
+    `/api/contacts/${id}/activity-events?${params.toString()}`,
+  );
 }
 
 export async function updateContact(id: string, payload: Record<string, unknown>): Promise<Contact> {

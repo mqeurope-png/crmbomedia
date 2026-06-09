@@ -119,6 +119,9 @@ class Contact(TimestampMixin, Base):
     external_refs: Mapped[list["ExternalReference"]] = relationship(
         back_populates="contact", cascade="all, delete-orphan"
     )
+    activity_events: Mapped[list["ActivityEvent"]] = relationship(
+        back_populates="contact", cascade="all, delete-orphan"
+    )
 
 
 class Note(TimestampMixin, Base):
@@ -128,6 +131,21 @@ class Note(TimestampMixin, Base):
     body: Mapped[str] = mapped_column(Text, nullable=False)
     author_user_id: Mapped[str | None] = mapped_column(String(36))
     contact_id: Mapped[str] = mapped_column(ForeignKey("contacts.id"), nullable=False)
+    # Provenance for notes imported from an external CRM (AgileCRM today,
+    # Brevo/Freshdesk tomorrow). All four are NULL for manual notes so
+    # the UI form keeps working unchanged. The sync job dedups by the
+    # (external_system, external_account_id, external_id) triplet via
+    # the helper in app/repositories/crm.py — no DB-level unique key
+    # because manual notes share the (NULL, NULL, NULL) slot.
+    external_system: Mapped[str | None] = mapped_column(String(32))
+    external_account_id: Mapped[str | None] = mapped_column(String(64))
+    external_id: Mapped[str | None] = mapped_column(String(255))
+    # Snapshot of the remote author's email + name. We never resolve to a
+    # real `User` row because AgileCRM users aren't us; the operator
+    # just needs the name on screen.
+    external_author_email: Mapped[str | None] = mapped_column(String(255))
+    external_author_name: Mapped[str | None] = mapped_column(String(255))
+    external_created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     contact: Mapped[Contact] = relationship(back_populates="notes")
 
@@ -151,6 +169,12 @@ class Task(TimestampMixin, Base):
     due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     assignee_user_id: Mapped[str | None] = mapped_column(String(36))
     contact_id: Mapped[str] = mapped_column(ForeignKey("contacts.id"), nullable=False)
+    # Same provenance trio Note uses. NULL for manual tasks.
+    external_system: Mapped[str | None] = mapped_column(String(32))
+    external_account_id: Mapped[str | None] = mapped_column(String(64))
+    external_id: Mapped[str | None] = mapped_column(String(255))
+    external_created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    external_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     contact: Mapped[Contact] = relationship(back_populates="tasks")
 
@@ -196,6 +220,52 @@ class ExternalReference(TimestampMixin, Base):
     contact_id: Mapped[str] = mapped_column(ForeignKey("contacts.id"), nullable=False)
 
     contact: Mapped[Contact] = relationship(back_populates="external_refs")
+
+
+class ActivityEvent(TimestampMixin, Base):
+    """Timeline event imported from an external CRM (AgileCRM `activities`
+    today). One row per event, dedup'd by `(system, account_id,
+    external_id)` so a re-sync doesn't double-write the operator's
+    timeline.
+
+    Kept as a thin generic table — `event_type` is the remote system's
+    raw type string ("EMAIL_SENT", "NOTE", "FORM_FILL", …) — so the
+    Brevo + Freshdesk connectors can reuse the same shape later without
+    a schema migration."""
+
+    __tablename__ = "activity_events"
+    __table_args__ = (
+        UniqueConstraint(
+            "system",
+            "account_id",
+            "external_id",
+            name="uq_activity_event_system_account_external_id",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    contact_id: Mapped[str] = mapped_column(
+        ForeignKey("contacts.id"), nullable=False, index=True
+    )
+    system: Mapped[str] = mapped_column(String(32), nullable=False)
+    account_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    external_id: Mapped[str | None] = mapped_column(String(255))
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    subject: Mapped[str | None] = mapped_column(Text)
+    body: Mapped[str | None] = mapped_column(Text)
+    # Raw remote payload (or the relevant subset) preserved verbatim so
+    # the operator can drill in when the summary is ambiguous and the
+    # mapper can be improved without a re-sync. JSON text — Python attr
+    # is `metadata_json` to avoid the SQLAlchemy `Base.metadata` clash.
+    metadata_json: Mapped[str | None] = mapped_column("metadata", Text)
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, index=True
+    )
+    synced_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+
+    contact: Mapped[Contact] = relationship(back_populates="activity_events")
 
 
 class SyncStatus(StrEnum):

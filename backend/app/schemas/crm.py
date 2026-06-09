@@ -312,6 +312,14 @@ class NoteRead(NoteCreate):
     contact_id: str
     created_at: datetime
     updated_at: datetime
+    # Provenance for imported notes. NULL for manually-created notes,
+    # which the UI form keeps producing untouched.
+    external_system: str | None = None
+    external_account_id: str | None = None
+    external_id: str | None = None
+    external_author_email: str | None = None
+    external_author_name: str | None = None
+    external_created_at: datetime | None = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -328,8 +336,68 @@ class TaskRead(TaskCreate):
     contact_id: str
     created_at: datetime
     updated_at: datetime
+    external_system: str | None = None
+    external_account_id: str | None = None
+    external_id: str | None = None
+    external_created_at: datetime | None = None
+    external_updated_at: datetime | None = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class ActivityEventRead(BaseModel):
+    """Timeline event row imported from an external CRM (AgileCRM
+    today). `metadata` is the decoded JSON column so the UI can render
+    extra fields without re-parsing."""
+
+    id: str
+    contact_id: str
+    system: str
+    account_id: str
+    external_id: str | None = None
+    event_type: str
+    subject: str | None = None
+    body: str | None = None
+    metadata: dict[str, Any] | None = None
+    occurred_at: datetime
+    synced_at: datetime
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _from_orm(cls, data: Any) -> Any:
+        # Same dance ExternalReferenceRead does: the DB column is named
+        # `metadata` (which would collide with SQLAlchemy's
+        # `Base.metadata`), so the Python attribute is `metadata_json`.
+        if isinstance(data, dict) or data is None:
+            return data
+        return {
+            "id": data.id,
+            "contact_id": data.contact_id,
+            "system": data.system,
+            "account_id": data.account_id,
+            "external_id": data.external_id,
+            "event_type": data.event_type,
+            "subject": data.subject,
+            "body": data.body,
+            "metadata": _decode_json_dict(getattr(data, "metadata_json", None)),
+            "occurred_at": data.occurred_at,
+            "synced_at": data.synced_at,
+            "created_at": data.created_at,
+            "updated_at": data.updated_at,
+        }
+
+
+class ActivityEventListPage(BaseModel):
+    """Paginated wrapper for `GET /api/contacts/{id}/activity-events`."""
+
+    items: list[ActivityEventRead]
+    total: int
+    limit: int
+    offset: int
 
 
 class ExternalReferenceRead(BaseModel):
@@ -388,6 +456,9 @@ class ContactDetailRead(ContactRead):
     notes: list[NoteRead] = Field(default_factory=list)
     tasks: list[TaskRead] = Field(default_factory=list)
     external_refs: list[ExternalReferenceRead] = Field(default_factory=list)
+    # The detail screen only renders the latest 50 events; the full
+    # timeline lives behind `GET /api/contacts/{id}/activity-events`.
+    activity_events: list[ActivityEventRead] = Field(default_factory=list)
     # `custom_fields` is JSON text on the DB; we decode it here so the
     # detail screen doesn't need to JSON.parse a string before rendering
     # the key/value list.

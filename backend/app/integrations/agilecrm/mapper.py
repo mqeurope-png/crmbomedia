@@ -301,3 +301,148 @@ def agilecrm_account_label(payload: dict[str, Any]) -> str | None:
     if isinstance(label_candidate, str):
         return label_candidate.strip() or None
     return None
+
+
+# ---------------------------------------------------------------------------
+# Notes / Tasks / Activities
+# ---------------------------------------------------------------------------
+#
+# All three mappers return *plain dicts* shaped like the SQLAlchemy
+# constructors of `Note`, `Task` and `ActivityEvent`. The job layer
+# decides what to do with them; that keeps the mapper pure (no session
+# coupling) and the tests cheap.
+
+
+def map_agilecrm_note_to_internal(
+    payload: dict[str, Any],
+    *,
+    contact_id: str,
+    account_id: str,
+) -> dict[str, Any] | None:
+    """Translate one AgileCRM note dict into a `Note(**record)` payload.
+
+    AgileCRM notes typically look like::
+
+        {"id": 123, "subject": "Llamada", "description": "Habló de X",
+         "created_time": 1750000000, "owner": {"email": "ag@x.com"}}
+
+    We collapse subject + description into one body so the existing
+    `Note.body` column carries everything; the original parts are kept
+    on `metadata` via the worker. Returns `None` when the payload has no
+    usable text (so we never persist an empty note)."""
+    if not isinstance(payload, dict):
+        return None
+    subject = _clean_str(payload.get("subject"))
+    description = _clean_str(payload.get("description") or payload.get("note"))
+    body_parts = [part for part in (subject, description) if part]
+    if not body_parts:
+        return None
+    body = "\n\n".join(body_parts)
+    owner = payload.get("owner") if isinstance(payload.get("owner"), dict) else {}
+    return {
+        "contact_id": contact_id,
+        "body": body,
+        "external_system": ORIGIN_LABEL,
+        "external_account_id": account_id,
+        "external_id": _external_id(payload),
+        "external_author_email": _clean_str(owner.get("email")) if owner else None,
+        "external_author_name": _clean_str(owner.get("name")) if owner else None,
+        "external_created_at": _to_datetime(payload.get("created_time")),
+    }
+
+
+def map_agilecrm_task_to_internal(
+    payload: dict[str, Any],
+    *,
+    contact_id: str,
+    account_id: str,
+) -> dict[str, Any] | None:
+    """Translate one AgileCRM task dict into a `Task(**record)` payload.
+
+    AgileCRM tasks ship `subject` as the title, `status ∈ {YET_TO_START,
+    IN_PROGRESS, COMPLETED}` and `due` as Unix seconds (the wider epoch
+    in millis for some installations — `_to_datetime` accepts both via
+    its float conversion).
+
+    Status maps: COMPLETED → done; everything else → open (we never
+    flip a remote-in-progress task to "cancelled" automatically). The
+    sync job upserts by `(system, account_id, external_id)` so a remote
+    status change on re-sync overwrites the local row."""
+    if not isinstance(payload, dict):
+        return None
+    title_raw = payload.get("subject") or payload.get("name") or payload.get("title")
+    title = _clean_str(title_raw)
+    if not title:
+        return None
+    status_raw = str(payload.get("status") or "").upper()
+    status = "done" if status_raw in {"COMPLETED", "DONE"} else "open"
+    return {
+        "contact_id": contact_id,
+        "title": title,
+        "status": status,
+        "due_at": _to_datetime(payload.get("due")),
+        "external_system": ORIGIN_LABEL,
+        "external_account_id": account_id,
+        "external_id": _external_id(payload),
+        "external_created_at": _to_datetime(payload.get("created_time")),
+        "external_updated_at": _to_datetime(
+            payload.get("updated_time") or payload.get("entity_updated_time")
+        ),
+    }
+
+
+def map_agilecrm_activity_to_internal(
+    payload: dict[str, Any],
+    *,
+    contact_id: str,
+    account_id: str,
+) -> dict[str, Any] | None:
+    """Translate one AgileCRM activity (timeline) dict into an
+    `ActivityEvent(**record)` payload.
+
+    AgileCRM activities have many shapes — EMAIL_SENT, FORM_FILL, NOTE,
+    CALL_LOG, DEAL_CREATED, … — but they all share `activity_type` /
+    `time` / `label` / `description`. We surface the type verbatim
+    (uppercased), the label as `subject`, the description as `body`,
+    and stuff the rest into the JSON `metadata` blob so the operator
+    can drill in.
+
+    Returns `None` when the payload has neither a `time` nor a
+    `created_time` we can anchor the row on — the table requires
+    `occurred_at`."""
+    if not isinstance(payload, dict):
+        return None
+    occurred = _to_datetime(payload.get("time") or payload.get("created_time"))
+    if occurred is None:
+        return None
+    event_type = (
+        _clean_str(payload.get("activity_type"))
+        or _clean_str(payload.get("type"))
+        or "UNKNOWN"
+    ).upper()
+    metadata = {
+        key: payload.get(key)
+        for key in payload
+        if key not in {"id", "time", "created_time", "label", "description"}
+        and payload.get(key) is not None
+    }
+    return {
+        "contact_id": contact_id,
+        "system": ORIGIN_LABEL,
+        "account_id": account_id,
+        "external_id": _external_id(payload),
+        "event_type": event_type,
+        "subject": _clean_str(payload.get("label")),
+        "body": _clean_str(payload.get("description")),
+        "occurred_at": occurred,
+        "metadata_json": (
+            json.dumps(metadata, default=str) if metadata else None
+        ),
+    }
+
+
+def _external_id(payload: dict[str, Any]) -> str | None:
+    raw = payload.get("id")
+    if raw is None:
+        return None
+    return str(raw)

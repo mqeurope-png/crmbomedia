@@ -553,6 +553,95 @@ def test_contact_detail_handles_missing_extended_fields(client: TestClient):
     assert body["lead_score"] is None
     assert body["custom_fields"] is None
     assert body["external_refs"] == []
+    assert body["activity_events"] == []
+
+
+def test_contact_detail_embeds_latest_activity_events(client: TestClient):
+    """The detail endpoint embeds the latest 50 events sorted by
+    `occurred_at desc`. We seed 3 with deliberately out-of-order dates
+    so the test catches a regression in the ORDER BY."""
+    from app.models.crm import ActivityEvent
+
+    seeded = create_contact(client, "ana@example.com")
+    session_factory = app.dependency_overrides[get_session]
+    session_gen = session_factory()
+    session = next(session_gen)
+    try:
+        for idx, occurred in enumerate(
+            [
+                datetime(2025, 1, 1, tzinfo=UTC),
+                datetime(2025, 3, 1, tzinfo=UTC),
+                datetime(2025, 2, 1, tzinfo=UTC),
+            ]
+        ):
+            session.add(
+                ActivityEvent(
+                    contact_id=seeded["id"],
+                    system="agilecrm",
+                    account_id="es",
+                    external_id=f"ev-{idx}",
+                    event_type="EMAIL_SENT",
+                    subject=f"Email {idx}",
+                    occurred_at=occurred,
+                )
+            )
+        session.commit()
+    finally:
+        session_gen.close()
+
+    response = client.get(
+        f"/api/contacts/{seeded['id']}", headers=auth_headers(client, "viewer")
+    )
+    body = response.json()
+    events = body["activity_events"]
+    assert [e["subject"] for e in events] == ["Email 1", "Email 2", "Email 0"]
+
+
+def test_activity_events_endpoint_paginates(client: TestClient):
+    """`GET /api/contacts/{id}/activity-events` returns the wrapped
+    page so the UI can render pagination controls without a separate
+    /count call."""
+    from app.models.crm import ActivityEvent
+
+    seeded = create_contact(client, "ana@example.com")
+    session_factory = app.dependency_overrides[get_session]
+    session_gen = session_factory()
+    session = next(session_gen)
+    try:
+        for idx in range(5):
+            session.add(
+                ActivityEvent(
+                    contact_id=seeded["id"],
+                    system="agilecrm",
+                    account_id="es",
+                    external_id=f"ev-{idx}",
+                    event_type="EMAIL_SENT",
+                    subject=f"Email {idx}",
+                    occurred_at=datetime(2025, 1, idx + 1, tzinfo=UTC),
+                )
+            )
+        session.commit()
+    finally:
+        session_gen.close()
+
+    response = client.get(
+        f"/api/contacts/{seeded['id']}/activity-events?skip=2&limit=2",
+        headers=auth_headers(client, "viewer"),
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 5
+    assert body["limit"] == 2
+    assert body["offset"] == 2
+    assert len(body["items"]) == 2
+
+
+def test_activity_events_endpoint_returns_404_for_missing_contact(client: TestClient):
+    response = client.get(
+        "/api/contacts/does-not-exist/activity-events",
+        headers=auth_headers(client, "viewer"),
+    )
+    assert response.status_code == 404
 
 
 def test_missing_contact_returns_404(client: TestClient):
