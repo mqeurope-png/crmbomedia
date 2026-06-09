@@ -61,6 +61,7 @@ from app.schemas.crm import (
     ContactRead,
     ContactUpdate,
     CountRead,
+    ExternalRefreshRead,
     CurrentUserRead,
     ErrorResponse,
     HealthRead,
@@ -1173,7 +1174,67 @@ def get_contact(
     # paginates over.
     detail = ContactDetailRead.model_validate(contact)
     detail.activity_events = [ActivityEventRead.model_validate(e) for e in events]
+    detail.last_external_refresh_at = contact.external_data_refreshed_at
+    detail.external_data_freshness = _freshness_label(
+        contact.external_data_refreshed_at
+    )
     return detail
+
+
+def _freshness_label(refreshed_at: datetime | None) -> str:
+    """Bucket the last-refresh timestamp into one of three tiers the UI
+    renders different banners for. Reused by the refresh endpoint so
+    the freshness shown after a click matches the GET response.
+
+    SQLite (the test backend) drops the tzinfo on DateTime(timezone=True)
+    columns; we coerce naive datetimes to UTC so the subtraction below
+    doesn't TypeError on the test DB."""
+    if refreshed_at is None:
+        return "outdated"
+    if refreshed_at.tzinfo is None:
+        refreshed_at = refreshed_at.replace(tzinfo=UTC)
+    age = datetime.now(UTC) - refreshed_at
+    if age < timedelta(hours=1):
+        return "fresh"
+    if age < timedelta(hours=24):
+        return "stale"
+    return "outdated"
+
+
+@router.post(
+    "/contacts/{contact_id}/refresh-external-data",
+    response_model=ExternalRefreshRead,
+    responses=ERROR_RESPONSES,
+    tags=["crm"],
+)
+async def refresh_contact_external_data(
+    contact_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_user),
+) -> ExternalRefreshRead:
+    """On-demand pull of notes / tasks / events from the contact's
+    external systems. The bulk `sync_contacts` job no longer carries
+    them — that change cut the per-sync API call count from 4N down to
+    ~N/page so the AgileCRM Free quota survives a full re-sync.
+
+    `viewer` cannot trigger this endpoint (only sees cached data); the
+    audit row links the actor to the burst of API calls so a saturated
+    account can be traced back to a specific operator."""
+    from app.integrations.agilecrm.refresh import refresh_contact_external_data as _do
+
+    contact = crm_repository.get_contact(session, contact_id)
+    if not contact:
+        raise not_found("Contact")
+    result = await _do(session, contact=contact, actor=current_user)
+    return ExternalRefreshRead(
+        refreshed_at=result.refreshed_at,
+        sources_refreshed=result.sources_refreshed,
+        notes_count=result.notes_count,
+        tasks_count=result.tasks_count,
+        events_count=result.events_count,
+        warnings=result.warnings,
+        status=result.status,
+    )
 
 
 @router.get(

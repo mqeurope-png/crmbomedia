@@ -338,153 +338,25 @@ def test_sync_emits_integration_api_call_audit_events_indirectly(factory: sessio
 
 
 # ---------------------------------------------------------------------------
-# Per-contact sub-syncs
+# Bulk sync_contacts must NOT fetch sub-resources (Sprint A PR-8)
 # ---------------------------------------------------------------------------
 
 
-def test_sync_imports_notes_tasks_and_activities_per_contact(factory: sessionmaker):
-    """A green-field sync writes notes, tasks and activity_events for
-    each contact alongside the contact + external_reference."""
+def test_sync_contacts_does_not_fetch_subresources(factory: sessionmaker):
+    """Regression guard. The bulk sync used to issue 4 HTTP calls per
+    contact (contact + notes + tasks + events); that blew through the
+    AgileCRM Free quota on tenants with > 50 contacts. The sub-fetch
+    now lives behind the on-demand `/refresh-external-data` endpoint.
+    We verify the bulk job never touches `list_contact_*` for the
+    contacts it imports."""
     from app.models.crm import ActivityEvent, Note, Task
 
     fake = _FakeClient(
         [[_make_payload(contact_id=1, email="ana@example.com")]],
         notes_by_contact={
-            "1": [
-                {
-                    "id": 10,
-                    "subject": "Llamada",
-                    "description": "Quiere renovar",
-                    "created_time": 1750000000,
-                    "owner": {"email": "ops@example.com", "name": "Ops"},
-                }
-            ]
+            "1": [{"id": 10, "subject": "Llamada", "description": "x"}]
         },
-        tasks_by_contact={
-            "1": [
-                {
-                    "id": 20,
-                    "subject": "Enviar propuesta",
-                    "status": "YET_TO_START",
-                    "due": 1750100000,
-                }
-            ]
-        },
-        activities_by_contact={
-            "1": [
-                {
-                    "id": 30,
-                    "activity_type": "EMAIL_SENT",
-                    "time": 1750200000,
-                    "label": "Welcome",
-                    "description": "Opened",
-                }
-            ]
-        },
-    )
-    with factory() as session, _patch_client(fake):
-        sync_log = _new_sync_log(session, operation="sync_contacts")
-        outcome = sync_agilecrm_contacts(session, sync_log)
-
-    assert outcome.metadata["notes_synced"] == 1
-    assert outcome.metadata["tasks_synced"] == 1
-    assert outcome.metadata["events_synced"] == 1
-    with factory() as session:
-        note = session.query(Note).one()
-        assert note.body.startswith("Llamada")
-        assert note.external_id == "10"
-        assert note.external_author_email == "ops@example.com"
-        task = session.query(Task).one()
-        assert task.title == "Enviar propuesta"
-        assert task.external_id == "20"
-        event = session.query(ActivityEvent).one()
-        assert event.event_type == "EMAIL_SENT"
-        assert event.external_id == "30"
-        assert event.subject == "Welcome"
-
-
-def test_sync_dedups_sub_resources_on_re_run(factory: sessionmaker):
-    """Running the sync twice must not double-write notes/tasks/events
-    — the unique-by-external-id helpers upsert in place."""
-    from app.models.crm import ActivityEvent, Note, Task
-
-    fake_factory = lambda: _FakeClient(  # noqa: E731 - one-line builder
-        [[_make_payload(contact_id=1, email="ana@example.com")]],
-        notes_by_contact={
-            "1": [
-                {
-                    "id": 10,
-                    "subject": "Llamada",
-                    "description": "Quiere renovar",
-                    "created_time": 1750000000,
-                }
-            ]
-        },
-        tasks_by_contact={
-            "1": [{"id": 20, "subject": "Enviar propuesta"}]
-        },
-        activities_by_contact={
-            "1": [
-                {
-                    "id": 30,
-                    "activity_type": "EMAIL_SENT",
-                    "time": 1750200000,
-                    "label": "Welcome",
-                }
-            ]
-        },
-    )
-
-    for _ in range(2):
-        fake = fake_factory()
-        with factory() as session, _patch_client(fake):
-            sync_log = _new_sync_log(session, operation="sync_contacts")
-            sync_agilecrm_contacts(session, sync_log)
-
-    with factory() as session:
-        assert session.query(Note).count() == 1
-        assert session.query(Task).count() == 1
-        assert session.query(ActivityEvent).count() == 1
-
-
-def test_sync_tolerates_subresource_failure_without_aborting_contact(
-    factory: sessionmaker,
-):
-    """If notes fetch blows up for one contact, the contact must still
-    land in the DB (the contact upsert already committed) and the rest
-    of the sync carries on."""
-    fake = _FakeClient(
-        [
-            [
-                _make_payload(contact_id=1, email="ana@example.com"),
-                _make_payload(contact_id=2, email="boris@example.com"),
-            ]
-        ],
-        notes_error_for={"1"},
-        notes_by_contact={"2": [{"id": 999, "subject": "OK", "description": "fine"}]},
-    )
-    with factory() as session, _patch_client(fake):
-        sync_log = _new_sync_log(session, operation="sync_contacts")
-        outcome = sync_agilecrm_contacts(session, sync_log)
-
-    assert outcome.records_processed == 2
-    with factory() as session:
-        emails = sorted(c.email for c in session.query(Contact).all())
-        assert emails == ["ana@example.com", "boris@example.com"]
-
-
-def test_sync_caps_subresource_concurrency_at_two(factory: sessionmaker):
-    """The 3 per-contact sub-resource fetches must run behind a
-    semaphore that allows at most `MAX_SUBSYNC_CONCURRENCY` in-flight
-    requests. Regression guard: a previous iteration used a naked
-    `asyncio.gather` and started 3 concurrent calls per contact, which
-    burnt the AgileCRM rate limit in seconds."""
-    from app.integrations.agilecrm.jobs import MAX_SUBSYNC_CONCURRENCY
-
-    fake = _FakeClient(
-        [[_make_payload(contact_id=1, email="ana@example.com")]],
-        notes_by_contact={"1": [{"id": 10, "subject": "ok", "description": "x"}]},
-        tasks_by_contact={"1": [{"id": 20, "subject": "Llamar"}]},
+        tasks_by_contact={"1": [{"id": 20, "subject": "Enviar propuesta"}]},
         activities_by_contact={
             "1": [
                 {
@@ -498,10 +370,28 @@ def test_sync_caps_subresource_concurrency_at_two(factory: sessionmaker):
     )
     with factory() as session, _patch_client(fake):
         sync_log = _new_sync_log(session, operation="sync_contacts")
-        sync_agilecrm_contacts(session, sync_log)
+        outcome = sync_agilecrm_contacts(session, sync_log)
 
-    assert fake.peak_in_flight <= MAX_SUBSYNC_CONCURRENCY
-    assert MAX_SUBSYNC_CONCURRENCY == 2
+    # The contact lands; the sub-resources do NOT.
+    assert outcome.metadata["notes_synced"] == 0
+    assert outcome.metadata["tasks_synced"] == 0
+    assert outcome.metadata["events_synced"] == 0
+    with factory() as session:
+        assert session.query(Note).count() == 0
+        assert session.query(Task).count() == 0
+        assert session.query(ActivityEvent).count() == 0
+        # The contact + external_reference rows DO get written —
+        # only the sub-resource fan-out was removed.
+        assert session.query(Contact).count() == 1
+
+
+def test_sync_contacts_keeps_inter_contact_pacing(factory: sessionmaker):
+    """The inter-contact `asyncio.sleep` survives the refactor; it now
+    protects only the list-contacts cursor pagination but still guards
+    against future quota tightening."""
+    from app.integrations.agilecrm import jobs as _jobs
+
+    assert _jobs._inter_contact_sleep_seconds() > 0  # default ON
 
 
 # ---------------------------------------------------------------------------

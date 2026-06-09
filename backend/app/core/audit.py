@@ -94,6 +94,13 @@ class Action:
     # any field of the contact beyond what's needed to identify the row.
     INTEGRATION_QUOTA_DELETED = "integration.quota_deleted"
 
+    # On-demand external-data refresh (Sprint A PR-8). One row per
+    # operator-triggered fetch of notes/tasks/events for a contact,
+    # plus per-system success / rate-limit / auth-error breakdowns.
+    EXTERNAL_REFRESH_REQUESTED = "external_refresh.requested"
+    EXTERNAL_REFRESH_RATE_LIMITED = "external_refresh.rate_limited"
+    EXTERNAL_REFRESH_AUTH_ERROR = "external_refresh.auth_error"
+
     # GDPR / RGPD subject-rights events
     GDPR_REQUEST_CREATED = "gdpr.request_created"
     GDPR_REQUEST_UPDATED = "gdpr.request_updated"

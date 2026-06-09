@@ -898,3 +898,38 @@ td {
 }
 
 .muted.small { font-size: 12px; }
+
+.freshness {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  font-size: 13px;
+  margin: 8px 0 12px;
+  border: 1px solid transparent;
+}
+
+.freshness-fresh { background: #ecfdf3; color: var(--success); border-color: #abefc6; }
+.freshness-stale { background: #fffaeb; color: #b54708; border-color: #fef0c7; }
+.freshness-outdated { background: #fef3f2; color: var(--danger); border-color: #fee4e2; }
+
+.freshness-warnings {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12px;
+}
+
+.freshness-actions {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.refresh-external-button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.refresh-error { color: var(--danger); }

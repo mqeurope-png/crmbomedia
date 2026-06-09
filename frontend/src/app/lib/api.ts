@@ -134,7 +134,28 @@ export type Contact = {
   tasks?: Task[];
   external_refs?: ExternalReference[];
   activity_events?: ActivityEvent[];
+  last_external_refresh_at?: string | null;
+  external_data_freshness?: "fresh" | "stale" | "outdated";
 };
+
+export type ExternalRefreshResult = {
+  refreshed_at: string;
+  sources_refreshed: string[];
+  notes_count: number;
+  tasks_count: number;
+  events_count: number;
+  warnings: string[];
+  status: "ok" | "partial";
+};
+
+export async function refreshContactExternalData(
+  contactId: string,
+): Promise<ExternalRefreshResult> {
+  return apiFetch<ExternalRefreshResult>(
+    `/api/contacts/${contactId}/refresh-external-data`,
+    { method: "POST" },
+  );
+}
 
 export type ContactListFilters = {
   q?: string;

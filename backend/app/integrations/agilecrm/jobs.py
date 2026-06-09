@@ -407,15 +407,25 @@ def _sync_contact_events(
 def sync_agilecrm_contacts(session: Session, sync_log: SyncLog) -> SyncOutcome:
     """Worker handler: iterate every AgileCRM contact and upsert it.
 
-    After each successful contact upsert we fan out 3 sub-resource
-    fetches (notes / tasks / events) behind a `MAX_SUBSYNC_CONCURRENCY`
-    semaphore — bounded concurrency keeps latency overlapped without
-    handing the rate limiter an opening. Between contacts we pause for
-    `1 / AGILECRM_REQUESTS_PER_SECOND` seconds (default 0.2s) so a
-    cold tenant doesn't catch a 429 on the very first burst.
+    **Sprint A PR-8** — the per-contact notes/tasks/events fetch was
+    moved out of this loop to the on-demand refresh endpoint
+    (`POST /api/contacts/{id}/refresh-external-data`). The bulk sync
+    used to issue 4 outbound calls per contact (contact + 3 sub-
+    resources); a tenant with 700+ contacts blew through the Free
+    tier's daily quota in minutes. Now the bulk job only paginates
+    contacts — ~30 calls for the whole import — and the operator
+    pulls the enriched data on demand from the detail screen.
 
-    AgileCRM's rate limit still gates the *total* API call count —
-    the IntegrationHTTPClient honours `Retry-After` automatically."""
+    `_sync_contact_notes` / `_sync_contact_tasks` /
+    `_sync_contact_events` / `_fetch_subresources` survive as
+    internal helpers used by the on-demand refresh module; their
+    signatures are kept stable so a future scheduled "warm the cache
+    for VIP contacts" job can reuse them.
+
+    Between contacts we keep `1 / AGILECRM_REQUESTS_PER_SECOND`
+    seconds of pacing as a thin safety net in case AgileCRM tightens
+    its list-contacts quota; the IntegrationHTTPClient still honours
+    `Retry-After` automatically."""
     account_id = sync_log.account_id or ""
     account = _load_account(session, account_id)
 
@@ -425,16 +435,11 @@ def sync_agilecrm_contacts(session: Session, sync_log: SyncLog) -> SyncOutcome:
     consolidated = 0
     skipped = 0
     failed = 0
-    notes_synced = 0
-    tasks_synced = 0
-    events_synced = 0
     error_lines: list[str] = []
     inter_contact_sleep = _inter_contact_sleep_seconds()
-    semaphore = asyncio.Semaphore(MAX_SUBSYNC_CONCURRENCY)
 
     async def _drive() -> None:
         nonlocal processed, created, updated, consolidated, skipped, failed
-        nonlocal notes_synced, tasks_synced, events_synced
         async with AgileCRMClient(session, account_id) as client:
             cursor: str | None = None
             while processed < MAX_CONTACTS_PER_SYNC:
@@ -443,7 +448,7 @@ def sync_agilecrm_contacts(session: Session, sync_log: SyncLog) -> SyncOutcome:
                     break
                 for payload in items:
                     try:
-                        action, was_consolidated, internal_id, ext_id = (
+                        action, was_consolidated, _internal_id, _ext_id = (
                             _upsert_contact_for_payload(
                                 session, account_id=account_id, payload=payload
                             )
@@ -470,49 +475,7 @@ def sync_agilecrm_contacts(session: Session, sync_log: SyncLog) -> SyncOutcome:
                                 f"contact_id={ext_payload_id}: {exc!s}"
                             )
                         session.rollback()
-                        processed += 1
-                        continue
-
-                    # Sub-syncs run AFTER the contact row is in place so
-                    # a missing notes/tasks/events endpoint never blocks
-                    # the contact upsert. We tolerate per-contact
-                    # sub-sync failures: the operator can re-run later.
-                    try:
-                        note_payloads, task_payloads, event_payloads = (
-                            await _fetch_subresources(client, ext_id, semaphore)
-                        )
-                        notes_synced += _sync_contact_notes(
-                            session,
-                            contact_id=internal_id,
-                            account_id=account_id,
-                            payloads=note_payloads,
-                        )
-                        tasks_synced += _sync_contact_tasks(
-                            session,
-                            contact_id=internal_id,
-                            account_id=account_id,
-                            payloads=task_payloads,
-                        )
-                        events_synced += _sync_contact_events(
-                            session,
-                            contact_id=internal_id,
-                            account_id=account_id,
-                            payloads=event_payloads,
-                        )
-                    except Exception as exc:  # noqa: BLE001
-                        logger.warning(
-                            "AgileCRM sub-sync failed for contact internal_id=%s "
-                            "external_id=%s: %s",
-                            internal_id,
-                            ext_id,
-                            exc,
-                        )
-                        session.rollback()
                     processed += 1
-                    # Polite inter-contact pacing. Spaces out the next
-                    # contact's 4 outbound calls so a burst doesn't trip
-                    # the rate limiter even when the previous contact's
-                    # sub-syncs finished instantly.
                     if inter_contact_sleep > 0:
                         await asyncio.sleep(inter_contact_sleep)
                 # Commit per page so a later failure doesn't lose the
@@ -540,9 +503,13 @@ def sync_agilecrm_contacts(session: Session, sync_log: SyncLog) -> SyncOutcome:
         "updated_existing": updated - consolidated,
         "consolidated_from_other_account": consolidated,
         "failed": failed,
-        "notes_synced": notes_synced,
-        "tasks_synced": tasks_synced,
-        "events_synced": events_synced,
+        # Bulk sub-resource sync was retired in Sprint A PR-8 in favour
+        # of the on-demand refresh endpoint. The keys are kept at zero
+        # so dashboards / log parsers that grep for them continue to
+        # work without a config change.
+        "notes_synced": 0,
+        "tasks_synced": 0,
+        "events_synced": 0,
     }
 
     # After a successful import, enqueue the quota purge automatically
