@@ -639,3 +639,121 @@ td {
 .sync-detail dt { font-weight: 700; }
 .sync-detail dd { margin: 0; }
 .sync-detail dd code { white-space: pre-wrap; word-break: break-all; }
+
+.contact-toolbar {
+  display: flex;
+  gap: 12px;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+
+.contact-toolbar .search-input {
+  flex: 1 1 280px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  font-size: 14px;
+}
+
+.contact-toolbar .sort-select {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.contact-toolbar .sort-select select {
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  font-size: 14px;
+}
+
+.contact-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 16px;
+  align-items: flex-end;
+}
+
+.contact-filters label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.contact-filters label.checkbox {
+  flex-direction: row;
+  align-items: center;
+  font-size: 14px;
+  color: var(--ink);
+}
+
+.contact-filters input[type="text"],
+.contact-filters select {
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  font-size: 14px;
+  min-width: 160px;
+}
+
+.button.small { padding: 6px 12px; font-size: 13px; }
+
+.table-wrapper {
+  overflow-x: auto;
+  margin-top: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.data-table th,
+.data-table td {
+  padding: 10px 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+
+.data-table thead {
+  background: var(--surface, #f9fafb);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.data-table tbody tr:last-child td { border-bottom: none; }
+
+.data-table tbody tr:hover { background: rgba(0, 0, 0, 0.02); }
+
+.data-table a {
+  color: var(--brand);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.data-table a:hover { text-decoration: underline; }
+
+.pagination {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-top: 16px;
+  flex-wrap: wrap;
+}
+
+.pagination-buttons { display: flex; gap: 8px; }
+.pagination-buttons .button[disabled] { opacity: 0.5; cursor: not-allowed; }

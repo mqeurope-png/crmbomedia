@@ -235,6 +235,11 @@ class ContactCreate(BaseModel):
     commercial_status: str = Field(default="new", max_length=80)
     marketing_consent: ConsentStatus = ConsentStatus.UNKNOWN
     company_id: str | None = None
+    address_country: str | None = Field(default=None, max_length=120)
+    address_country_name: str | None = Field(default=None, max_length=255)
+    address_state: str | None = Field(default=None, max_length=120)
+    address_city: str | None = Field(default=None, max_length=120)
+    lead_score: int | None = None
 
     @field_validator("first_name")
     @classmethod
@@ -268,6 +273,17 @@ class ContactRead(ContactCreate):
     updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class ContactListPage(BaseModel):
+    """Paginated wrapper returned by `GET /api/contacts`. The list page in
+    the frontend consumes `total` to render pagination controls without a
+    separate `/count` round-trip."""
+
+    items: list[ContactRead]
+    total: int
+    limit: int
+    offset: int
 
 
 class NoteCreate(BaseModel):
