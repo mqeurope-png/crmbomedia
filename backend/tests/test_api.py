@@ -556,6 +556,47 @@ def test_contact_detail_handles_missing_extended_fields(client: TestClient):
     assert body["activity_events"] == []
 
 
+def test_contact_detail_exposes_note_external_author(client: TestClient):
+    """`NoteRead` must surface `external_author_name` /
+    `external_author_email` so the UI shows the AgileCRM operator who
+    wrote the note instead of the generic "Sistema" fallback. The fix
+    in `map_agilecrm_note_to_internal` populates the columns from the
+    AgileCRM `domainOwner` payload; this test pins the contract end
+    to end."""
+    from app.models.crm import Contact, Note
+
+    seeded = create_contact(client, "ana@example.com")
+    session_factory = app.dependency_overrides[get_session]
+    session_gen = session_factory()
+    session = next(session_gen)
+    try:
+        contact = session.get(Contact, seeded["id"])
+        assert contact is not None
+        session.add(
+            Note(
+                contact_id=contact.id,
+                body="Llamada\n\nHabló de renovar",
+                external_system="agilecrm",
+                external_account_id="es",
+                external_id="42",
+                external_author_email="marta@empresa.com",
+                external_author_name="Marta López",
+            )
+        )
+        session.commit()
+    finally:
+        session_gen.close()
+
+    response = client.get(
+        f"/api/contacts/{seeded['id']}", headers=auth_headers(client, "viewer")
+    )
+    body = response.json()
+    assert len(body["notes"]) == 1
+    note = body["notes"][0]
+    assert note["external_author_name"] == "Marta López"
+    assert note["external_author_email"] == "marta@empresa.com"
+
+
 def test_contact_detail_embeds_latest_activity_events(client: TestClient):
     """The detail endpoint embeds the latest 50 events sorted by
     `occurred_at desc`. We seed 3 with deliberately out-of-order dates

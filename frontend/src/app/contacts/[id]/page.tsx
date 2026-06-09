@@ -90,15 +90,21 @@ function eventIcon(eventType: string): string {
 }
 
 function NoteCard({ note }: { note: Note }) {
+  // Prefer the AgileCRM author name; fall back to the email when the
+  // remote omits the name; only show "Sistema" when both are missing
+  // (manual notes created from the CRM UI). Tooltip surfaces the
+  // email so an operator can hover to disambiguate two authors with
+  // the same display name.
   const author =
     note.external_author_name ||
     note.external_author_email ||
-    "Operador";
+    "Sistema";
+  const tooltip = note.external_author_email ?? undefined;
   const date = note.external_created_at ?? note.created_at;
   return (
     <li className="note-card">
       <div className="note-card-header">
-        <strong>{author}</strong>
+        <strong title={tooltip}>{author}</strong>
         <span className="muted">{formatDateTime(date)}</span>
       </div>
       <p className="note-body">{note.body}</p>
@@ -338,6 +344,14 @@ export default function ContactDetailPage() {
                 <ActivityEventRow key={event.id} event={event} />
               ))}
             </ul>
+          ) : contact.last_external_refresh_at ? (
+            // We've already asked AgileCRM and the timeline is genuinely
+            // empty for this contact — don't suggest the operator
+            // pulls again, that would just waste quota.
+            <p className="muted">
+              Sin eventos en AgileCRM para este contacto. Última
+              actualización: {formatDateTime(contact.last_external_refresh_at)}.
+            </p>
           ) : (
             <p className="muted">
               Sin eventos sincronizados todavía. Pulsa &quot;Actualizar desde
