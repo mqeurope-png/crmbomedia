@@ -385,3 +385,53 @@ def test_count_contacts_parses_plain_text_response(session_factory):
             lambda client: client.count_contacts(),
         )
     assert total == 421
+
+
+def test_count_contacts_returns_none_on_400(session_factory):
+    """AgileCRM's count endpoint is flaky across tenants — when it
+    refuses (400 / 404 / other 4xx) we return None so the caller
+    decides whether to skip the operation. We must NOT crash the
+    surrounding job."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, text="bad request")
+
+    with session_factory() as session:
+        total = _run_with_transport(
+            session,
+            _make_transport(handler),
+            lambda client: client.count_contacts(),
+        )
+    assert total is None
+
+
+def test_count_contacts_returns_none_on_unparseable_text(session_factory):
+    """200 OK with a body we can't interpret as an integer also yields
+    None (the caller must decide what to do with the soft failure)."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="unexpected format")
+
+    with session_factory() as session:
+        total = _run_with_transport(
+            session,
+            _make_transport(handler),
+            lambda client: client.count_contacts(),
+        )
+    assert total is None
+
+
+def test_count_contacts_returns_none_on_5xx(session_factory):
+    """Persistent 5xx also collapses to None so a saturated AgileCRM
+    tenant doesn't take the purge job with it."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="server error")
+
+    with session_factory() as session:
+        total = _run_with_transport(
+            session,
+            _make_transport(handler),
+            lambda client: client.count_contacts(),
+        )
+    assert total is None
