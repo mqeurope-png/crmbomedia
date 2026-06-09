@@ -148,8 +148,9 @@ def _upsert_contact_for_payload(
     if not email:
         raise ValueError("AgileCRM payload missing email")
     label = agilecrm_account_label(payload)
-    # Strip the hint key so it never lands on the Contact ORM.
+    # Strip helper keys so they never land on the Contact ORM.
     record.pop("company_name", None)
+    tag_names: list[str] = record.pop("tag_names", []) or []
 
     # 1. Existing reference for THIS account → update.
     ref = session.scalar(
@@ -169,6 +170,12 @@ def _upsert_contact_for_payload(
                 # Remote brought it back — clear the marker.
                 ref.external_status = None
             _apply_ref_extras(ref, ref_extras)
+            _sync_tag_delta(
+                session,
+                contact_id=contact.id,
+                account_id=account_id,
+                desired_names=tag_names,
+            )
             session.flush()
             return ("updated", False, contact.id, external_id)
 
@@ -192,6 +199,12 @@ def _upsert_contact_for_payload(
         # contact picks up details that may have been entered in the
         # secondary AgileCRM account.
         _apply_update(existing_contact, record, allow_email_overwrite=False)
+        _sync_tag_delta(
+            session,
+            contact_id=existing_contact.id,
+            account_id=account_id,
+            desired_names=tag_names,
+        )
         session.flush()
         return ("updated", True, existing_contact.id, external_id)
 
@@ -208,8 +221,90 @@ def _upsert_contact_for_payload(
     )
     _apply_ref_extras(new_ref, ref_extras)
     session.add(new_ref)
+    _sync_tag_delta(
+        session,
+        contact_id=contact.id,
+        account_id=account_id,
+        desired_names=tag_names,
+    )
     session.flush()
     return ("created", False, contact.id, external_id)
+
+
+def _sync_tag_delta(
+    session: Session,
+    *,
+    contact_id: str,
+    account_id: str,
+    desired_names: list[str],
+) -> None:
+    """Reconcile the contact's AgileCRM-sourced tag assignments with
+    the desired set from this payload.
+
+    Crucially we only touch assignments whose `source` matches
+    `agilecrm:<this_account_id>` — tags added manually from the CRM
+    UI, or sourced from another AgileCRM account, or migrated from
+    the legacy CSV, stay untouched. So a manual unassign in the CRM
+    survives a sync, and a sync from account A never erases tags
+    attached by account B.
+    """
+    from app.models.crm import ContactTag, Tag
+
+    source = f"agilecrm:{account_id}"
+    desired_normalized: dict[str, str] = {name.lower(): name for name in desired_names}
+
+    existing_rows = list(
+        session.scalars(
+            select(ContactTag).where(
+                ContactTag.contact_id == contact_id,
+                ContactTag.source == source,
+            )
+        )
+    )
+    existing_tag_ids = {row.tag_id for row in existing_rows}
+    if existing_tag_ids:
+        existing_tags = list(
+            session.scalars(select(Tag).where(Tag.id.in_(existing_tag_ids)))
+        )
+    else:
+        existing_tags = []
+    existing_normalized_by_id = {
+        tag.id: tag.name_normalized for tag in existing_tags
+    }
+
+    # Remove tags that are no longer present in the AgileCRM payload.
+    for row in existing_rows:
+        normalized = existing_normalized_by_id.get(row.tag_id)
+        if normalized is None or normalized not in desired_normalized:
+            session.delete(row)
+
+    # Upsert the tags we want, then ensure the contact_tag row exists
+    # under our source. Idempotent if already linked.
+    for normalized, original in desired_normalized.items():
+        tag = session.scalar(select(Tag).where(Tag.name_normalized == normalized))
+        if tag is None:
+            tag = Tag(name=original, name_normalized=normalized)
+            session.add(tag)
+            session.flush()
+        link = session.get(
+            ContactTag, {"contact_id": contact_id, "tag_id": tag.id}
+        )
+        if link is None:
+            session.add(
+                ContactTag(
+                    contact_id=contact_id,
+                    tag_id=tag.id,
+                    source=source,
+                )
+            )
+        elif link.source != source and link.source not in (
+            "manual",
+            "migrated_from_csv",
+        ):
+            # An entry under a different account_id; bind our source
+            # to it so a later removal in that account's payload can
+            # still expire the link.
+            link.source = source
 
 
 def _apply_ref_extras(ref: ExternalReference, extras: dict[str, Any]) -> None:

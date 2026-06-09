@@ -118,6 +118,7 @@ export default function Home() {
           {user?.role === "admin" ? <Link href="/admin/audit" className="button secondary">Auditoría</Link> : null}
           {user?.role === "admin" ? <Link href="/admin/gdpr" className="button secondary">RGPD</Link> : null}
           {canManageIntegrations ? <Link href="/admin/integrations" className="button secondary">Integraciones</Link> : null}
+          {canManageIntegrations ? <Link href="/admin/tags" className="button secondary">Tags</Link> : null}
           <button className="button secondary" type="button" onClick={logout}>Salir</button>
         </div>
       </section>

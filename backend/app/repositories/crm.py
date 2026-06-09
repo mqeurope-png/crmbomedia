@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Select, func, or_, select
+from sqlalchemy import Select, func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.models.crm import (
@@ -8,9 +8,11 @@ from app.models.crm import (
     AuditLog,
     Company,
     Contact,
+    ContactTag,
     ExternalReference,
     ExternalSystem,
     Note,
+    Tag,
     Task,
     User,
 )
@@ -107,10 +109,16 @@ def _apply_contact_filters(
     *,
     q: str | None = None,
     tag: str | None = None,
+    tag_ids: list[str] | None = None,
+    tag_match_mode: str = "any",
     origin_system: ExternalSystem | None = None,
     origin_account_id: str | None = None,
     commercial_status: str | None = None,
     marketing_consent: str | None = None,
+    lead_score_min: int | None = None,
+    lead_score_max: int | None = None,
+    created_after: datetime | None = None,
+    created_before: datetime | None = None,
     include_inactive: bool = False,
 ) -> Select:
     """Single source of truth for contact-list filtering. Used by both
@@ -127,18 +135,40 @@ def _apply_contact_filters(
             | Contact.phone.ilike(like)
         )
     if tag:
-        # Contact.tags is a CSV string. Match `tag` as a whole token
-        # without false positives ("VIP" must not match "VIPS"). The
-        # four-way OR is portable across SQLite/MySQL and lets the
-        # query plan use the column directly.
+        # Legacy `tag=` filter: match against the new `tags` table by
+        # exact name. Replaces the old CSV-substring approach so
+        # operators with bookmarked URLs keep working after the M:N
+        # migration.
         statement = statement.where(
-            or_(
-                Contact.tags == tag,
-                Contact.tags.like(f"{tag},%"),
-                Contact.tags.like(f"%,{tag},%"),
-                Contact.tags.like(f"%,{tag}"),
+            Contact.id.in_(
+                select(ContactTag.contact_id)
+                .join(Tag, Tag.id == ContactTag.tag_id)
+                .where(Tag.name_normalized == tag.strip().lower())
             )
         )
+    if tag_ids:
+        # New multi-tag filter. `any` matches contacts with at least one
+        # of the requested tags (IN subquery); `all` requires every
+        # tag (count subquery). The count form stays portable across
+        # SQLite + MySQL because it avoids correlated GROUP BY HAVING
+        # tricks.
+        if tag_match_mode == "all":
+            statement = statement.where(
+                Contact.id.in_(
+                    select(ContactTag.contact_id)
+                    .where(ContactTag.tag_id.in_(tag_ids))
+                    .group_by(ContactTag.contact_id)
+                    .having(func.count(func.distinct(ContactTag.tag_id)) == len(tag_ids))
+                )
+            )
+        else:
+            statement = statement.where(
+                Contact.id.in_(
+                    select(ContactTag.contact_id).where(
+                        ContactTag.tag_id.in_(tag_ids)
+                    )
+                )
+            )
     if origin_system is not None or origin_account_id:
         subq = select(ExternalReference.contact_id)
         if origin_system is not None:
@@ -150,6 +180,14 @@ def _apply_contact_filters(
         statement = statement.where(Contact.commercial_status == commercial_status)
     if marketing_consent:
         statement = statement.where(Contact.marketing_consent == marketing_consent)
+    if lead_score_min is not None:
+        statement = statement.where(Contact.lead_score >= lead_score_min)
+    if lead_score_max is not None:
+        statement = statement.where(Contact.lead_score <= lead_score_max)
+    if created_after:
+        statement = statement.where(Contact.created_at >= created_after)
+    if created_before:
+        statement = statement.where(Contact.created_at <= created_before)
     return statement
 
 
@@ -158,25 +196,39 @@ def list_contacts(
     *,
     q: str | None = None,
     tag: str | None = None,
+    tag_ids: list[str] | None = None,
+    tag_match_mode: str = "any",
     origin_system: ExternalSystem | None = None,
     origin_account_id: str | None = None,
     commercial_status: str | None = None,
     marketing_consent: str | None = None,
+    lead_score_min: int | None = None,
+    lead_score_max: int | None = None,
+    created_after: datetime | None = None,
+    created_before: datetime | None = None,
     skip: int = 0,
     limit: int = 25,
     include_inactive: bool = False,
     sort_by: str = "created_at",
     sort_dir: str = "desc",
 ) -> list[Contact]:
-    statement = select(Contact)
+    statement = select(Contact).options(
+        selectinload(Contact.tag_assignments).selectinload(ContactTag.tag)
+    )
     statement = _apply_contact_filters(
         statement,
         q=q,
         tag=tag,
+        tag_ids=tag_ids,
+        tag_match_mode=tag_match_mode,
         origin_system=origin_system,
         origin_account_id=origin_account_id,
         commercial_status=commercial_status,
         marketing_consent=marketing_consent,
+        lead_score_min=lead_score_min,
+        lead_score_max=lead_score_max,
+        created_after=created_after,
+        created_before=created_before,
         include_inactive=include_inactive,
     )
     sort_column = CONTACT_SORT_COLUMNS.get(sort_by, Contact.created_at)
@@ -190,10 +242,16 @@ def count_contacts(
     *,
     q: str | None = None,
     tag: str | None = None,
+    tag_ids: list[str] | None = None,
+    tag_match_mode: str = "any",
     origin_system: ExternalSystem | None = None,
     origin_account_id: str | None = None,
     commercial_status: str | None = None,
     marketing_consent: str | None = None,
+    lead_score_min: int | None = None,
+    lead_score_max: int | None = None,
+    created_after: datetime | None = None,
+    created_before: datetime | None = None,
     include_inactive: bool = False,
 ) -> int:
     """Return the total number of contacts matching the same filters the
@@ -205,13 +263,139 @@ def count_contacts(
         statement,
         q=q,
         tag=tag,
+        tag_ids=tag_ids,
+        tag_match_mode=tag_match_mode,
         origin_system=origin_system,
         origin_account_id=origin_account_id,
         commercial_status=commercial_status,
         marketing_consent=marketing_consent,
+        lead_score_min=lead_score_min,
+        lead_score_max=lead_score_max,
+        created_after=created_after,
+        created_before=created_before,
         include_inactive=include_inactive,
     )
     return int(session.scalar(statement) or 0)
+
+
+# ---------------------------------------------------------------------------
+# Tags
+# ---------------------------------------------------------------------------
+
+
+def normalize_tag_name(name: str) -> str:
+    """Single source of truth for the case-insensitive tag key. Used by
+    every layer (mapper, repository, route) so a tag created from the
+    UI as "VIP" matches one imported from AgileCRM as "vip"."""
+    return name.strip().lower()
+
+
+def get_tag(session: Session, tag_id: str) -> Tag | None:
+    return session.get(Tag, tag_id)
+
+
+def get_tag_by_name(session: Session, name: str) -> Tag | None:
+    return session.scalar(
+        select(Tag).where(Tag.name_normalized == normalize_tag_name(name))
+    )
+
+
+def list_tags(
+    session: Session,
+    *,
+    q: str | None = None,
+    skip: int = 0,
+    limit: int = 50,
+) -> tuple[list[Tag], list[int], int]:
+    """Return one page of tags + parallel list of contact counts + the
+    grand total so the UI can paginate without a second round-trip.
+
+    The count subquery is a single LEFT JOIN GROUP BY so we don't fire
+    N+1 queries — important for tenants with thousands of tags."""
+    base = select(Tag)
+    if q:
+        like = f"%{q.strip().lower()}%"
+        base = base.where(Tag.name_normalized.like(like))
+    total = int(
+        session.scalar(select(func.count()).select_from(base.subquery())) or 0
+    )
+    statement = base.order_by(Tag.name).offset(skip).limit(limit)
+    tags = list(session.scalars(statement))
+    if not tags:
+        return [], [], total
+    counts_rows = session.execute(
+        select(ContactTag.tag_id, func.count(ContactTag.contact_id))
+        .where(ContactTag.tag_id.in_([t.id for t in tags]))
+        .group_by(ContactTag.tag_id)
+    ).all()
+    counts_by_id = {tag_id: count for tag_id, count in counts_rows}
+    return tags, [counts_by_id.get(t.id, 0) for t in tags], total
+
+
+def upsert_tag(
+    session: Session,
+    *,
+    name: str,
+    color: str | None = None,
+    description: str | None = None,
+    created_by_user_id: str | None = None,
+) -> tuple[Tag, bool]:
+    """Get-or-create a tag by case-insensitive name. Returns
+    `(tag, created)`. The unique constraint guarantees no race ever
+    persists two rows for the same normalized name."""
+    normalized = normalize_tag_name(name)
+    existing = session.scalar(
+        select(Tag).where(Tag.name_normalized == normalized)
+    )
+    if existing is not None:
+        return existing, False
+    tag = Tag(
+        name=name.strip(),
+        name_normalized=normalized,
+        color=color,
+        description=description,
+        created_by_user_id=created_by_user_id,
+    )
+    session.add(tag)
+    session.flush()
+    return tag, True
+
+
+def assign_tag_to_contact(
+    session: Session,
+    *,
+    contact_id: str,
+    tag_id: str,
+    assigned_by_user_id: str | None,
+    source: str | None,
+) -> bool:
+    """Idempotent: returns True when a new link was written, False when
+    the contact already had the tag (so the route can audit only real
+    additions)."""
+    existing = session.get(ContactTag, {"contact_id": contact_id, "tag_id": tag_id})
+    if existing is not None:
+        return False
+    session.add(
+        ContactTag(
+            contact_id=contact_id,
+            tag_id=tag_id,
+            assigned_by_user_id=assigned_by_user_id,
+            source=source,
+        )
+    )
+    session.flush()
+    return True
+
+
+def remove_tag_from_contact(
+    session: Session, *, contact_id: str, tag_id: str
+) -> bool:
+    existing = session.get(ContactTag, {"contact_id": contact_id, "tag_id": tag_id})
+    if existing is None:
+        return False
+    session.delete(existing)
+    session.flush()
+    return True
 
 
 def list_notes(session: Session, contact_id: str) -> list[Note]:

@@ -101,6 +101,14 @@ class Action:
     EXTERNAL_REFRESH_RATE_LIMITED = "external_refresh.rate_limited"
     EXTERNAL_REFRESH_AUTH_ERROR = "external_refresh.auth_error"
 
+    # Tags (Sprint P.1 ampliado).
+    TAG_CREATED = "tag.created"
+    TAG_UPDATED = "tag.updated"
+    TAG_DELETED = "tag.deleted"
+    CONTACT_TAG_ADDED = "contact_tag.added"
+    CONTACT_TAG_REMOVED = "contact_tag.removed"
+    CONTACT_TAGS_BULK_ACTION = "contact_tags.bulk_action"
+
     # GDPR / RGPD subject-rights events
     GDPR_REQUEST_CREATED = "gdpr.request_created"
     GDPR_REQUEST_UPDATED = "gdpr.request_updated"

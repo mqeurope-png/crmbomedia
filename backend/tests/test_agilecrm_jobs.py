@@ -394,6 +394,83 @@ def test_sync_contacts_keeps_inter_contact_pacing(factory: sessionmaker):
     assert _jobs._inter_contact_sleep_seconds() > 0  # default ON
 
 
+def _make_tagged_payload(*, contact_id: int, email: str, tags: list[str]) -> dict[str, Any]:
+    return {
+        "id": contact_id,
+        "tags": tags,
+        "properties": [
+            {"name": "first_name", "value": "Ana"},
+            {"name": "email", "value": email},
+        ],
+    }
+
+
+def test_sync_writes_tags_into_mn_table_not_csv(factory: sessionmaker):
+    """New mapper feeds `tag_names` into the M:N upserter. The
+    `contacts.tags` CSV column is deliberately left empty so callers
+    that still read it can be migrated off it gradually."""
+    from app.models.crm import ContactTag, Tag
+
+    fake = _FakeClient(
+        [[_make_tagged_payload(contact_id=1, email="ana@example.com", tags=["VIP", "lead"])]]
+    )
+    with factory() as session, _patch_client(fake):
+        sync_log = _new_sync_log(session, operation="sync_contacts")
+        sync_agilecrm_contacts(session, sync_log)
+
+    with factory() as session:
+        tags = {t.name_normalized for t in session.query(Tag).all()}
+        assert tags == {"vip", "lead"}
+        links = session.query(ContactTag).all()
+        assert {link.source for link in links} == {"agilecrm:es"}
+        assert session.query(Contact).one().tags == ""
+
+
+def test_sync_removes_tag_dropped_from_payload(factory: sessionmaker):
+    """A second sync that drops a tag must clear the corresponding
+    contact_tag row — but only when its source matches THIS
+    AgileCRM account. Manual tags are sticky."""
+    from app.models.crm import ContactTag, Tag
+
+    first = _FakeClient(
+        [[_make_tagged_payload(contact_id=1, email="ana@example.com", tags=["VIP", "lead"])]]
+    )
+    with factory() as session, _patch_client(first):
+        sync_log = _new_sync_log(session, operation="sync_contacts")
+        sync_agilecrm_contacts(session, sync_log)
+
+    # Manually attach a 3rd tag as if the operator added it from the CRM UI.
+    with factory() as session:
+        contact = session.query(Contact).one()
+        manual_tag = Tag(name="Manual", name_normalized="manual")
+        session.add(manual_tag)
+        session.flush()
+        session.add(
+            ContactTag(
+                contact_id=contact.id,
+                tag_id=manual_tag.id,
+                source="manual",
+            )
+        )
+        session.commit()
+
+    second = _FakeClient(
+        [[_make_tagged_payload(contact_id=1, email="ana@example.com", tags=["VIP"])]]
+    )
+    with factory() as session, _patch_client(second):
+        sync_log = _new_sync_log(session, operation="sync_contacts")
+        sync_agilecrm_contacts(session, sync_log)
+
+    with factory() as session:
+        contact = session.query(Contact).one()
+        names = sorted(
+            link.tag.name_normalized for link in contact.tag_assignments
+        )
+        # "lead" gone (AgileCRM dropped it), "vip" stays (still in payload),
+        # "manual" stays (different source, never touched by sync).
+        assert names == ["manual", "vip"]
+
+
 # ---------------------------------------------------------------------------
 # purge_quota
 # ---------------------------------------------------------------------------

@@ -132,6 +132,63 @@ class Contact(TimestampMixin, Base):
     activity_events: Mapped[list["ActivityEvent"]] = relationship(
         back_populates="contact", cascade="all, delete-orphan"
     )
+    tag_assignments: Mapped[list["ContactTag"]] = relationship(
+        back_populates="contact", cascade="all, delete-orphan"
+    )
+
+    @property
+    def tag_objects(self) -> list["Tag"]:
+        """Flatten the M:N relationship for API serialisation. The
+        Pydantic `ContactRead.tag_objects` field reads this via
+        `from_attributes`; the manual flatten keeps the schema layer
+        ignorant of the through-table."""
+        return [assignment.tag for assignment in self.tag_assignments]
+
+
+class Tag(TimestampMixin, Base):
+    """Reusable contact tag. The case-insensitive uniqueness is enforced
+    by a normalized companion column (`name_normalized`) so SQLite and
+    MySQL behave identically without relying on functional indexes."""
+
+    __tablename__ = "tags"
+    __table_args__ = (
+        UniqueConstraint("name_normalized", name="uq_tag_name_normalized"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    # Lowercased + stripped form of `name`. We dedup on this column so
+    # "VIP", "vip" and " VIP " all collapse to one tag.
+    name_normalized: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    color: Mapped[str | None] = mapped_column(String(7))
+    description: Mapped[str | None] = mapped_column(Text)
+    created_by_user_id: Mapped[str | None] = mapped_column(String(36))
+
+    assignments: Mapped[list["ContactTag"]] = relationship(
+        back_populates="tag", cascade="all, delete-orphan"
+    )
+
+
+class ContactTag(Base):
+    """M:N row between `contacts` and `tags`. `source` records where the
+    assignment came from ("agilecrm:default", "manual", "import",
+    "migrated_from_csv") so a tag set in AgileCRM doesn't survive a
+    manual unassign and vice versa."""
+
+    __tablename__ = "contact_tags"
+
+    contact_id: Mapped[str] = mapped_column(
+        ForeignKey("contacts.id"), primary_key=True
+    )
+    tag_id: Mapped[str] = mapped_column(ForeignKey("tags.id"), primary_key=True)
+    assigned_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+    assigned_by_user_id: Mapped[str | None] = mapped_column(String(36))
+    source: Mapped[str | None] = mapped_column(String(80))
+
+    contact: Mapped[Contact] = relationship(back_populates="tag_assignments")
+    tag: Mapped[Tag] = relationship(back_populates="assignments")
 
 
 class Note(TimestampMixin, Base):

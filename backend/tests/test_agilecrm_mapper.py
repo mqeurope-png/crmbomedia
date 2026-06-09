@@ -42,7 +42,11 @@ def test_maps_full_payload():
     assert record["email"] == "ana@example.com"
     assert record["phone"] == "+34 600 000 000"
     assert record["origin"] == "agilecrm"
-    assert record["tags"] == "Lead,Newsletter"
+    # Sprint P.1: tags travel as a list of names (case-preserved,
+    # deduped) under `tag_names`. The legacy CSV column on Contact is
+    # no longer written by the mapper.
+    assert record["tag_names"] == ["Lead", "Newsletter"]
+    assert "tags" not in record
     assert record["marketing_consent"] == "unknown"
     assert record["commercial_status"] == "new"
     assert record["company_name"] == "Acme S.L."
@@ -62,19 +66,22 @@ def test_missing_first_name_and_email_uses_placeholder():
     assert record["email"] == ""
 
 
-def test_tags_accept_dict_shape_and_dedup_and_sort():
+def test_tags_accept_dict_shape_and_dedup():
+    """Mapper accepts list-of-strings, list-of-{tag:...}, and a mix;
+    dedupes case-insensitively while preserving the FIRST occurrence's
+    casing. The worker layer (M:N upsert) handles the case-fold."""
     payload = _payload(
         tags=[
             {"tag": "VIP"},
             {"tag": "lead"},
             "Newsletter",
-            "Newsletter",
+            "newsletter",  # case dup
             "  ",
-            42,  # garbage discarded silently
+            42,  # garbage silently dropped
         ]
     )
     record, _ = map_agilecrm_contact_to_internal(payload)
-    assert record["tags"] == "Newsletter,VIP,lead"
+    assert record["tag_names"] == ["VIP", "lead", "Newsletter"]
 
 
 def test_external_id_is_stringified():

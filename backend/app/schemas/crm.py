@@ -281,12 +281,101 @@ class ContactUpdate(BaseModel):
         return value.strip() if value else value
 
 
+class TagRead(BaseModel):
+    """Tag exposed on contact list / detail responses. The lighter
+    shape (id + name + color) lives on every contact row; the full
+    shape (with description, count) goes through the dedicated
+    `/api/tags` endpoints."""
+
+    id: str
+    name: str
+    color: str | None = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class TagCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    color: str | None = Field(default=None, max_length=7)
+    description: str | None = Field(default=None, max_length=2000)
+
+    @field_validator("name")
+    @classmethod
+    def strip_name(cls, value: str) -> str:
+        return value.strip()
+
+
+class TagUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+    color: str | None = Field(default=None, max_length=7)
+    description: str | None = Field(default=None, max_length=2000)
+
+    @field_validator("name")
+    @classmethod
+    def strip_optional_name(cls, value: str | None) -> str | None:
+        return value.strip() if value else value
+
+
+class TagDetailRead(TagRead):
+    description: str | None = None
+    created_by_user_id: str | None = None
+    contact_count: int = 0
+    created_at: datetime
+    updated_at: datetime
+
+
+class TagListPage(BaseModel):
+    items: list[TagDetailRead]
+    total: int
+    limit: int
+    offset: int
+
+
+class ContactTagAssignRequest(BaseModel):
+    """Body for `POST /api/contacts/{id}/tags`. One of `tag_id` or
+    `tag_name` must be set; sending `tag_name` triggers a case-
+    insensitive upsert on the tags table so the operator can attach a
+    brand new tag in one round-trip."""
+
+    tag_id: str | None = None
+    tag_name: str | None = Field(default=None, min_length=1, max_length=100)
+    color: str | None = Field(default=None, max_length=7)
+
+    @field_validator("tag_name")
+    @classmethod
+    def strip_tag_name(cls, value: str | None) -> str | None:
+        return value.strip() if value else value
+
+
+class BulkContactTagRequest(BaseModel):
+    """`POST /api/contacts/bulk-tag` — add/remove one tag on many
+    contacts in a single audited operation."""
+
+    action: str = Field(pattern="^(add|remove)$")
+    tag_id: str
+    contact_ids: list[str] = Field(min_length=1, max_length=500)
+
+
+class BulkContactTagResult(BaseModel):
+    action: str
+    tag_id: str
+    affected: int
+    skipped: int
+
+
 class ContactRead(ContactCreate):
     id: str
     is_email_valid: bool
     is_active: bool
     created_at: datetime
     updated_at: datetime
+    # Real M:N tags exposed alongside the (deprecated, still readable)
+    # `tags` CSV field. New code should consume `tag_objects`; the CSV
+    # stays for backwards-compat during the migration. The Contact ORM
+    # exposes a `tag_objects` Python property that flattens its
+    # `tag_assignments` relationship to a list of Tag rows — Pydantic
+    # picks it up automatically via from_attributes.
+    tag_objects: list[TagRead] = Field(default_factory=list)
 
     model_config = ConfigDict(from_attributes=True)
 

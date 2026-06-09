@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ContactFilters } from "../components/ContactFilters";
 import { ErrorState } from "../components/ErrorState";
+import { TagChips } from "../components/TagChips";
 import {
   listContacts,
   type Contact,
@@ -208,7 +209,13 @@ export default function ContactsListPage() {
                       </td>
                       <td>{contact.email}</td>
                       <td>{contact.phone ?? "—"}</td>
-                      <td>{contact.tags || "—"}</td>
+                      <td>
+                        {contact.tag_objects?.length ? (
+                          <TagChips tags={contact.tag_objects} size="dense" />
+                        ) : (
+                          "—"
+                        )}
+                      </td>
                       <td>{contact.origin ?? "—"}</td>
                       <td>{contact.commercial_status}</td>
                       <td>
