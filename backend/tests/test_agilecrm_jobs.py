@@ -56,9 +56,18 @@ class _FakeClient:
     them through `list_contacts`. `count_contacts` returns the sum.
     `delete_contact` records ids for later assertion."""
 
-    def __init__(self, pages: list[list[dict[str, Any]]], *, count: int | None = None) -> None:
+    def __init__(
+        self,
+        pages: list[list[dict[str, Any]]],
+        *,
+        count: int | None = None,
+        count_unavailable: bool = False,
+    ) -> None:
         self._pages = list(pages)
-        self._count = count if count is not None else sum(len(p) for p in pages)
+        self._count: int | None = (
+            None if count_unavailable
+            else (count if count is not None else sum(len(p) for p in pages))
+        )
         self.deleted: list[str] = []
         # AsyncMock would be enough, but a tiny hand-rolled class makes
         # the test reads cleaner.
@@ -87,7 +96,7 @@ class _FakeClient:
     async def delete_contact(self, external_id: str) -> None:
         self.deleted.append(external_id)
 
-    async def count_contacts(self) -> int:
+    async def count_contacts(self) -> int | None:
         return self._count
 
 
@@ -380,3 +389,33 @@ def test_purge_marks_existing_references_as_deleted_in_origin(factory: sessionma
         assert ref.external_status == "deleted_in_origin"
         # Contact itself is never deleted from the CRM.
         assert session.query(Contact).count() == 1
+
+
+def test_purge_logs_warning_and_skips_when_count_unavailable(
+    factory: sessionmaker, caplog
+):
+    """When AgileCRM's count endpoint refuses to answer (e.g. 400 from
+    the tenant), the job must skip the purge cleanly: no deletions on
+    the remote, no contact loss, a WARNING in the worker logs and a
+    `skip_reason=count_unavailable` flag in the sync_log metadata."""
+    import logging
+
+    fake = _FakeClient([], count_unavailable=True)
+    with factory() as session:
+        _seed_account_with_quota(session, quota=4, strategy=QuotaStrategy.KEEP_NEWEST)
+
+    with caplog.at_level(logging.WARNING, logger="app.integrations.agilecrm.jobs"):
+        with factory() as session, _patch_client(fake):
+            sync_log = _new_sync_log(session, operation="purge_quota")
+            outcome = purge_agilecrm_quota(session, sync_log)
+
+    assert outcome.records_processed == 0
+    assert outcome.records_failed == 0
+    assert outcome.metadata is not None
+    assert outcome.metadata.get("skip_reason") == "count_unavailable"
+    assert fake.deleted == []
+    warnings = [
+        r for r in caplog.records
+        if r.levelno >= logging.WARNING and "count_contacts unavailable" in r.message
+    ]
+    assert warnings, "expected a WARNING for the unreachable AgileCRM count endpoint"

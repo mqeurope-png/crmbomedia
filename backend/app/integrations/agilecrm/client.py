@@ -32,7 +32,11 @@ from typing import Any
 
 import httpx
 
-from app.integrations.errors import IntegrationAuthError, IntegrationClientError
+from app.integrations.errors import (
+    IntegrationAuthError,
+    IntegrationClientError,
+    IntegrationServerError,
+)
 from app.integrations.http_client import IntegrationHTTPClient
 
 logger = logging.getLogger(__name__)
@@ -202,11 +206,28 @@ class AgileCRMClient(IntegrationHTTPClient):
                 return
             raise
 
-    async def count_contacts(self) -> int:
-        """Return the total contact count for this account. AgileCRM
-        exposes `/dev/api/contacts/count` as plain text; we accept both
-        text and JSON responses for robustness."""
-        response = await self.get("/dev/api/contacts/count")
+    async def count_contacts(self) -> int | None:
+        """Return the total contact count for this account, or `None`
+        when AgileCRM refuses to answer.
+
+        AgileCRM's documented `GET /dev/api/contacts/count` endpoint is
+        flaky across tenants — some installations 400 with no clear
+        reason, others return plain text, others JSON. We try the
+        documented endpoint first; on any 4xx or 5xx we fall back to
+        `None` so callers (notably `purge_agilecrm_quota`) can skip the
+        purge gracefully instead of erroring the whole job.
+
+        The plain-text / JSON-int / JSON-dict parsing layers are kept
+        in priority order because real installations have been seen
+        returning each of the three shapes.
+        """
+        try:
+            response = await self.get("/dev/api/contacts/count")
+        except (IntegrationClientError, IntegrationServerError):
+            # The base client already audited the call and applied
+            # retries. There's nothing useful left to do with a count
+            # endpoint that won't reply — let the caller decide.
+            return None
         if isinstance(response.json, int):
             return response.json
         if isinstance(response.json, dict):
@@ -217,7 +238,7 @@ class AgileCRMClient(IntegrationHTTPClient):
         try:
             return int(text)
         except ValueError:
-            return 0
+            return None
 
 
 async def _close(client: httpx.AsyncClient | None) -> None:  # pragma: no cover - helper

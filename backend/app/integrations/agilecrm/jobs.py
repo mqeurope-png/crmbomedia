@@ -335,12 +335,24 @@ def purge_agilecrm_quota(session: Session, sync_log: SyncLog) -> SyncOutcome:
     deleted = 0
     failed = 0
     error_lines: list[str] = []
-    total_remote = 0
+    total_remote: int | None = 0
+    count_unavailable = False
 
     async def _drive() -> None:
-        nonlocal deleted, failed, total_remote
+        nonlocal deleted, failed, total_remote, count_unavailable
         async with AgileCRMClient(session, account_id) as client:
             total_remote = await client.count_contacts()
+            # AgileCRM's count endpoint is not always reachable. When
+            # it isn't we can't decide how many contacts to purge —
+            # silently skipping is safer than deleting the wrong subset.
+            if total_remote is None:
+                count_unavailable = True
+                logger.warning(
+                    "AgileCRM count_contacts unavailable for account=%s; "
+                    "purge_quota skipped this run",
+                    account_id,
+                )
+                return
             assert account.quota_max_contacts is not None
             to_delete = max(0, total_remote - account.quota_max_contacts)
             if to_delete == 0:
@@ -396,6 +408,11 @@ def purge_agilecrm_quota(session: Session, sync_log: SyncLog) -> SyncOutcome:
     error_summary: str | None = None
     if error_lines:
         error_summary = "\n".join(error_lines)
+    if count_unavailable and not error_summary:
+        error_summary = (
+            "AgileCRM count endpoint unavailable for this account; purge "
+            "skipped without touching the remote dataset."
+        )
 
     return SyncOutcome(
         records_processed=deleted,
@@ -409,6 +426,7 @@ def purge_agilecrm_quota(session: Session, sync_log: SyncLog) -> SyncOutcome:
             "remote_total_before": total_remote,
             "deleted": deleted,
             "failed": failed,
+            "skip_reason": "count_unavailable" if count_unavailable else None,
         },
     )
 
