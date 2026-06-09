@@ -225,18 +225,19 @@ class AgileCRMClient(IntegrationHTTPClient):
 
     async def list_contact_tasks(self, contact_id: str) -> list[dict[str, Any]]:
         """Tasks attached to one contact. Endpoint:
-        `GET /dev/api/tasks/contact/{id}`. (`/api/contacts/{id}/tasks`
-        is a documented alternative but ships task ids only — this one
-        returns the full task payload.)"""
-        return await self._list_subresource(f"/dev/api/tasks/contact/{contact_id}")
+        `GET /dev/api/contacts/{id}/tasks`. (An earlier iteration of
+        this client tried `/dev/api/tasks/contact/{id}` — verified 404
+        in production; AgileCRM only exposes the sub-resource under
+        `/contacts/{id}/tasks`.)"""
+        return await self._list_subresource(f"/dev/api/contacts/{contact_id}/tasks")
 
-    async def list_contact_activities(self, contact_id: str) -> list[dict[str, Any]]:
+    async def list_contact_events(self, contact_id: str) -> list[dict[str, Any]]:
         """Timeline events for one contact. Endpoint:
-        `GET /dev/api/activities/contact/{id}`. Returns AgileCRM's
-        timeline rows (EMAIL_SENT, FORM_FILL, NOTE, …)."""
-        return await self._list_subresource(
-            f"/dev/api/activities/contact/{contact_id}"
-        )
+        `GET /dev/api/contacts/{id}/events`. AgileCRM names this
+        sub-resource `events` (NOT `activities` — that path 404s in
+        production); each item carries `type`, `subject`, `body`,
+        `created_time` and free-form remote metadata."""
+        return await self._list_subresource(f"/dev/api/contacts/{contact_id}/events")
 
     async def _list_subresource(self, path: str) -> list[dict[str, Any]]:
         """Shared helper for the per-contact sub-resources. AgileCRM

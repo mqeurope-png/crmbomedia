@@ -267,7 +267,7 @@ def test_raw_tags_preserved_in_metadata():
 
 
 from app.integrations.agilecrm.mapper import (  # noqa: E402  - bottom imports
-    map_agilecrm_activity_to_internal,
+    map_agilecrm_event_to_internal,
     map_agilecrm_note_to_internal,
     map_agilecrm_task_to_internal,
 )
@@ -342,14 +342,18 @@ def test_task_mapper_returns_none_without_title():
     assert record is None
 
 
-def test_activity_mapper_uppercases_event_type_and_decodes_time():
-    record = map_agilecrm_activity_to_internal(
+def test_event_mapper_canonical_shape_uppercases_type_and_decodes_time():
+    """Canonical AgileCRM `/contacts/{id}/events` payload: `type` +
+    `subject` + `body` + `created_time` (the broken `/activities/...`
+    endpoint used `activity_type`/`label`/`description`; that shape is
+    still accepted via the backwards-compat aliases below)."""
+    record = map_agilecrm_event_to_internal(
         {
             "id": 1,
-            "activity_type": "email_sent",
+            "type": "email_sent",
             "time": 1750000000,
-            "label": "Reactivation",
-            "description": "Opened",
+            "subject": "Reactivation",
+            "body": "Opened",
             "campaign_id": "c-42",
         },
         contact_id="ct-1",
@@ -364,11 +368,32 @@ def test_activity_mapper_uppercases_event_type_and_decodes_time():
     assert "campaign_id" in record["metadata_json"]
 
 
-def test_activity_mapper_skips_payloads_without_time():
+def test_event_mapper_accepts_legacy_activity_keys():
+    """Older fixtures shipped `activity_type` / `label` / `description`
+    from the (broken) `/activities/...` endpoint. Keep parsing them so
+    a re-running test corpus or an in-flight migration doesn't break."""
+    record = map_agilecrm_event_to_internal(
+        {
+            "id": 2,
+            "activity_type": "FORM_FILL",
+            "time": 1750000000,
+            "label": "Hubspot form",
+            "description": "Submitted",
+        },
+        contact_id="ct-1",
+        account_id="es",
+    )
+    assert record is not None
+    assert record["event_type"] == "FORM_FILL"
+    assert record["subject"] == "Hubspot form"
+    assert record["body"] == "Submitted"
+
+
+def test_event_mapper_skips_payloads_without_time():
     """`occurred_at` is NOT NULL on the model — a payload without a
     parseable timestamp cannot become a timeline row."""
-    record = map_agilecrm_activity_to_internal(
-        {"id": 1, "activity_type": "EMAIL_SENT"},
+    record = map_agilecrm_event_to_internal(
+        {"id": 1, "type": "EMAIL_SENT"},
         contact_id="ct-1",
         account_id="es",
     )

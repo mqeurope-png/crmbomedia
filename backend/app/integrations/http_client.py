@@ -9,7 +9,8 @@ this class. Responsibilities:
 - Wrap `httpx.AsyncClient` with sane defaults: configurable timeout
   (`INTEGRATION_HTTP_TIMEOUT_SECONDS`, default 30) and retries with
   exponential backoff (`INTEGRATION_HTTP_MAX_RETRIES`, default 3).
-  Retry-After-aware 429 handling.
+  Retry-After-aware 429 handling: numeric seconds AND HTTP-date format
+  are both parsed, capped at `RETRY_AFTER_HARD_CAP_SECONDS` (300s).
 - Translate every failure mode into an explicit subclass of
   `IntegrationError` so the connector can react without parsing raw
   status codes.
@@ -23,6 +24,8 @@ import logging
 import os
 import time
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -55,10 +58,11 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT_SECONDS = 30.0
 DEFAULT_MAX_RETRIES = 3
-# Cap on Retry-After: a remote that asks us to wait 10 minutes is
-# better served by failing the job and letting RQ reschedule than by
-# blocking a worker for that long.
-RETRY_AFTER_HARD_CAP_SECONDS = 60.0
+# Cap on Retry-After: a remote that asks us to wait longer than this is
+# better served by failing the job (so RQ can reschedule it) than by
+# blocking a worker. 5 minutes is generous enough that AgileCRM's
+# typical 60s windows still fit comfortably.
+RETRY_AFTER_HARD_CAP_SECONDS = 300.0
 
 
 def _env_float(name: str, default: float) -> float:
@@ -241,9 +245,37 @@ class IntegrationHTTPClient:
                 return await client.send(request_obj)
             return await client.request(method, url, **kwargs)
 
+        system = self.system
+        account_id = self.account_id
+        _exponential_wait = wait_exponential(multiplier=1, min=1, max=30)
+
+        def _wait_with_retry_after(retry_state: Any) -> float:
+            """Tenacity hands us the failed attempt; if it carried a
+            Retry-After hint, honour that — otherwise fall back to the
+            exponential backoff so transient 5xx/network errors still
+            recover."""
+            exc = (
+                retry_state.outcome.exception() if retry_state.outcome else None
+            )
+            if isinstance(exc, _RetryableRateLimit) and exc.retry_after_seconds:
+                sleep_for = min(
+                    exc.retry_after_seconds, RETRY_AFTER_HARD_CAP_SECONDS
+                )
+                logger.info(
+                    "integration.rate_limit.retry_after system=%s account_id=%s "
+                    "sleeping_seconds=%.1f retry_after_seconds=%.1f attempt=%d",
+                    system,
+                    account_id,
+                    sleep_for,
+                    exc.retry_after_seconds,
+                    retry_state.attempt_number,
+                )
+                return sleep_for
+            return _exponential_wait(retry_state)
+
         retry = AsyncRetrying(
             stop=stop_after_attempt(max(self.max_retries, 1)),
-            wait=wait_exponential(multiplier=1, min=1, max=30),
+            wait=_wait_with_retry_after,
             retry=retry_if_exception(_should_retry),
             reraise=True,
         )
@@ -328,20 +360,35 @@ class IntegrationHTTPClient:
                 body=body_snippet,
             )
         if status == 429:
-            retry_after_raw = response.headers.get("retry-after")
-            retry_after: float | None = None
-            if retry_after_raw:
-                try:
-                    retry_after = float(retry_after_raw)
-                except ValueError:
-                    retry_after = None
+            retry_after = _parse_retry_after(response.headers.get("retry-after"))
+            if retry_after is not None and retry_after > RETRY_AFTER_HARD_CAP_SECONDS:
+                # The remote wants a longer cooldown than we're willing
+                # to block a worker for. Don't retry; let the job report
+                # the failure so the scheduler can defer the work to a
+                # later run.
+                logger.warning(
+                    "integration.rate_limit.cap_exceeded system=%s account_id=%s "
+                    "retry_after_seconds=%.1f cap_seconds=%.1f",
+                    self.system,
+                    self.account_id,
+                    retry_after,
+                    RETRY_AFTER_HARD_CAP_SECONDS,
+                )
+                raise IntegrationRateLimitError(
+                    f"Rate limit Retry-After ({retry_after:.0f}s) exceeds local cap "
+                    f"({RETRY_AFTER_HARD_CAP_SECONDS:.0f}s); aborting this call",
+                    system=self.system,
+                    account_id=self.account_id,
+                    status_code=429,
+                    body=body_snippet,
+                    retry_after_seconds=retry_after,
+                )
             raise _RetryableRateLimit(
                 "Rate limited by the remote",
                 system=self.system,
                 account_id=self.account_id,
                 status_code=429,
                 body=body_snippet,
-                sleep_seconds=retry_after,
                 retry_after_seconds=retry_after,
             )
         if 400 <= status < 500:
@@ -391,16 +438,12 @@ class IntegrationHTTPClient:
 
 
 class _RetryableRateLimit(IntegrationRateLimitError):
-    """Sentinel raised on 429 to drive the tenacity retry loop. After
-    the retry budget is exhausted the same exception surfaces to the
-    caller as a plain `IntegrationRateLimitError`. Sleeps for the
-    (capped) Retry-After hint inside `__init__` so the next attempt
-    actually leaves the remote enough breathing room."""
-
-    def __init__(self, *args: object, sleep_seconds: float | None = None, **kwargs: object) -> None:
-        super().__init__(*args, **kwargs)  # type: ignore[arg-type]
-        if sleep_seconds and sleep_seconds > 0:
-            time.sleep(min(sleep_seconds, RETRY_AFTER_HARD_CAP_SECONDS))
+    """Sentinel raised on 429 to drive the tenacity retry loop. The
+    Retry-After value travels on the exception so the custom wait
+    function can pause `asyncio.sleep` (NOT a blocking `time.sleep`)
+    before the next attempt. After the retry budget is exhausted the
+    same exception surfaces to the caller as a plain
+    `IntegrationRateLimitError`."""
 
 
 def _should_retry(exc: BaseException) -> bool:
@@ -408,6 +451,28 @@ def _should_retry(exc: BaseException) -> bool:
         exc,
         (_RetryableRateLimit, IntegrationServerError, IntegrationNetworkError),
     )
+
+
+def _parse_retry_after(raw: str | None) -> float | None:
+    """Parse RFC 7231 Retry-After. Accepts numeric seconds and HTTP-date.
+    Returns the wait in seconds, or None when the header is missing or
+    unparseable. Negative / past dates clamp to 0 so a stale
+    server-clock skew doesn't translate to an infinite wait."""
+    if not raw:
+        return None
+    raw = raw.strip()
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        pass
+    try:
+        retry_at = parsedate_to_datetime(raw)
+    except (TypeError, ValueError):
+        return None
+    if retry_at.tzinfo is None:
+        retry_at = retry_at.replace(tzinfo=UTC)
+    delta = (retry_at - datetime.now(UTC)).total_seconds()
+    return max(0.0, delta)
 
 
 async def request_with_session(

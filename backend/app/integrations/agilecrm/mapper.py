@@ -391,39 +391,57 @@ def map_agilecrm_task_to_internal(
     }
 
 
-def map_agilecrm_activity_to_internal(
+def map_agilecrm_event_to_internal(
     payload: dict[str, Any],
     *,
     contact_id: str,
     account_id: str,
 ) -> dict[str, Any] | None:
-    """Translate one AgileCRM activity (timeline) dict into an
+    """Translate one AgileCRM contact event (timeline row) dict into an
     `ActivityEvent(**record)` payload.
 
-    AgileCRM activities have many shapes — EMAIL_SENT, FORM_FILL, NOTE,
-    CALL_LOG, DEAL_CREATED, … — but they all share `activity_type` /
-    `time` / `label` / `description`. We surface the type verbatim
-    (uppercased), the label as `subject`, the description as `body`,
-    and stuff the rest into the JSON `metadata` blob so the operator
-    can drill in.
+    AgileCRM's `/contacts/{id}/events` ships rows with `type` /
+    `subject` / `body` / `created_time` plus connector-specific extras
+    (campaign_id, email_id, …). The mapper surfaces the type uppercased,
+    promotes `subject` to subject, `body` to body, and stuffs every
+    other field into the JSON `metadata` blob so the operator can drill
+    in without a re-sync.
 
-    Returns `None` when the payload has neither a `time` nor a
-    `created_time` we can anchor the row on — the table requires
-    `occurred_at`."""
+    Backwards-compat: an older iteration shipped the same shape under
+    the keys `activity_type` / `label` / `description` from the
+    (broken) `/activities/contact/{id}` endpoint; both spellings are
+    accepted so tests and fixtures keep working.
+
+    Returns `None` when the payload has neither `time` nor
+    `created_time` — the `activity_events.occurred_at` column is NOT
+    NULL."""
     if not isinstance(payload, dict):
         return None
     occurred = _to_datetime(payload.get("time") or payload.get("created_time"))
     if occurred is None:
         return None
     event_type = (
-        _clean_str(payload.get("activity_type"))
-        or _clean_str(payload.get("type"))
+        _clean_str(payload.get("type"))
+        or _clean_str(payload.get("activity_type"))
         or "UNKNOWN"
     ).upper()
+    subject = _clean_str(payload.get("subject") or payload.get("label"))
+    body = _clean_str(payload.get("body") or payload.get("description"))
     metadata = {
         key: payload.get(key)
         for key in payload
-        if key not in {"id", "time", "created_time", "label", "description"}
+        if key
+        not in {
+            "id",
+            "time",
+            "created_time",
+            "type",
+            "activity_type",
+            "subject",
+            "label",
+            "body",
+            "description",
+        }
         and payload.get(key) is not None
     }
     return {
@@ -432,13 +450,20 @@ def map_agilecrm_activity_to_internal(
         "account_id": account_id,
         "external_id": _external_id(payload),
         "event_type": event_type,
-        "subject": _clean_str(payload.get("label")),
-        "body": _clean_str(payload.get("description")),
+        "subject": subject,
+        "body": body,
         "occurred_at": occurred,
         "metadata_json": (
             json.dumps(metadata, default=str) if metadata else None
         ),
     }
+
+
+# Backwards-compat alias: the function was previously named
+# `map_agilecrm_activity_to_internal`. Existing imports keep working
+# until every caller has switched to the new name (CI gate enforces
+# the rename within this repo).
+map_agilecrm_activity_to_internal = map_agilecrm_event_to_internal
 
 
 def _external_id(payload: dict[str, Any]) -> str | None:
