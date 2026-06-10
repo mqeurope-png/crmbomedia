@@ -209,6 +209,17 @@ body {
   font-weight: 600;
 }
 
+.brevo-backfill-confirm {
+  background: #fff7ed;
+  border: 1px solid #fde2c2;
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 13px;
+}
+
 .segment-mirror-pill {
   margin-left: 8px;
   font-size: 11px;

@@ -16,7 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.audit import Action, record_event
-from app.core.auth import require_manager, require_user
+from app.core.auth import require_admin, require_manager, require_user
 from app.core.errors import not_found
 from app.db.session import get_session
 from app.integrations.brevo import campaigns as campaigns_service
@@ -405,6 +405,95 @@ def brevo_webhook_stats(
     ).all()
     by_type = {str(event_type): int(count) for event_type, count in rows}
     return {"total": sum(by_type.values()), "by_type": by_type}
+
+
+# ---------------------------------------------------------------------------
+# Historical events backfill
+# ---------------------------------------------------------------------------
+
+
+@router.post("/historical-backfill")
+def trigger_historical_backfill(
+    request: Request,
+    account_id: str = Query(...),
+    max_campaigns: int | None = Query(default=None, ge=1, le=2000),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_admin),
+) -> dict[str, Any]:
+    """Enqueue a historical events backfill for one Brevo account.
+
+    Admin-only — the job iterates every cached sent/archive campaign
+    and pulls per-event recipients from Brevo; on a tenant with
+    hundreds of campaigns it can run for 10-30 minutes and dominate
+    the connector's request budget. The UI surfaces a confirmation
+    before firing.
+    """
+    _require_brevo_account(session, account_id)
+    payload = {"max_campaigns": max_campaigns} if max_campaigns else None
+    sync_log_id, job_id = enqueue_sync_job(
+        session,
+        system="brevo",
+        account_id=account_id,
+        operation="historical_backfill",
+        triggered_by="manual",
+        triggered_by_user_id=current_user.id,
+        payload=payload,
+        request=request,
+    )
+    session.commit()
+    return {"sync_log_id": sync_log_id, "job_id": job_id}
+
+
+@router.get("/historical-backfill/status")
+def historical_backfill_status(
+    account_id: str = Query(...),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_admin),
+) -> dict[str, Any]:
+    """Last backfill run for the account — drives the "Último backfill"
+    line in the Brevo integration panel."""
+    _ = current_user
+    from app.models.crm import SyncLog  # noqa: PLC0415
+
+    row = session.scalar(
+        select(SyncLog)
+        .where(
+            SyncLog.system == ExternalSystem.BREVO,
+            SyncLog.account_id == account_id,
+            SyncLog.operation == "historical_backfill",
+        )
+        .order_by(SyncLog.created_at.desc())
+        .limit(1)
+    )
+    if row is None:
+        return {"status": "never"}
+    metadata: dict[str, Any] = {}
+    if row.metadata_json:
+        try:
+            decoded = json.loads(row.metadata_json)
+            if isinstance(decoded, dict):
+                metadata = decoded
+        except (ValueError, TypeError):
+            metadata = {}
+    # The handler stores its aggregate summary in `outcome.metadata`,
+    # which the worker persists under SyncLog.metadata['outcome'].
+    outcome = metadata.get("outcome") or metadata
+    return {
+        "sync_log_id": row.id,
+        "status": row.status,
+        "started_at": row.started_at,
+        "finished_at": row.finished_at,
+        "records_processed": row.records_processed,
+        "records_skipped": row.records_skipped,
+        "records_failed": row.records_failed,
+        "error_summary": row.error_summary,
+        "campaigns_processed": outcome.get("campaigns_processed"),
+        "campaigns_skipped": outcome.get("campaigns_skipped"),
+        "events_inserted_total": outcome.get("events_inserted_total"),
+        "events_skipped_total": outcome.get("events_skipped_total"),
+        "contacts_unknown_total": outcome.get("contacts_unknown_total"),
+        "max_campaigns": outcome.get("max_campaigns"),
+    }
 
 
 def _decode_json(raw: str | None) -> dict[str, Any]:

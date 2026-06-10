@@ -449,6 +449,46 @@ export function campaignRates(stats?: BrevoCampaignStats | null): {
   };
 }
 
+// ----- Historical backfill -----
+
+export type BrevoBackfillStatus = {
+  status: "never" | "pending" | "running" | "success" | "partial_success" | "failed";
+  sync_log_id?: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+  records_processed?: number;
+  records_skipped?: number;
+  records_failed?: number;
+  error_summary?: string | null;
+  campaigns_processed?: number | null;
+  campaigns_skipped?: number | null;
+  events_inserted_total?: number | null;
+  events_skipped_total?: number | null;
+  contacts_unknown_total?: number | null;
+  max_campaigns?: number | null;
+};
+
+export async function triggerBrevoHistoricalBackfill(
+  accountId: string,
+  maxCampaigns?: number,
+): Promise<{ sync_log_id: string; job_id: string }> {
+  const params = new URLSearchParams({ account_id: accountId });
+  if (maxCampaigns !== undefined) {
+    params.set("max_campaigns", String(maxCampaigns));
+  }
+  return apiFetch(`/api/brevo/historical-backfill?${params.toString()}`, {
+    method: "POST",
+  });
+}
+
+export async function getBrevoHistoricalBackfillStatus(
+  accountId: string,
+): Promise<BrevoBackfillStatus> {
+  return apiFetch<BrevoBackfillStatus>(
+    `/api/brevo/historical-backfill/status?account_id=${encodeURIComponent(accountId)}`,
+  );
+}
+
 // ----- Segments mirror -----
 
 export async function refreshBrevoSegment(

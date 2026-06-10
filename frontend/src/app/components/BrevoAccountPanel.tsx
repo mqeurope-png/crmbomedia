@@ -15,6 +15,7 @@ import {
   type BrevoWebhookStats,
 } from "../lib/brevoApi";
 import { extractErrorMessage } from "../lib/errors";
+import { BrevoBackfillSection } from "./BrevoBackfillSection";
 import { BrevoSyncTargetModal } from "./BrevoSyncTargetModal";
 import { ConfirmDialog } from "./ConfirmDialog";
 
@@ -308,6 +309,14 @@ export function BrevoAccountPanel({ accountId, isAdmin }: Props) {
           <Link href="/marketing/templates">/marketing/templates</Link>.
         </p>
       </section>
+
+      {isAdmin ? (
+        <BrevoBackfillSection
+          accountId={accountId}
+          onError={setError}
+          onMessage={setMessage}
+        />
+      ) : null}
 
       {modalTarget ? (
         <BrevoSyncTargetModal

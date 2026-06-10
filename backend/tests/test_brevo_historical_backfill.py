@@ -359,3 +359,74 @@ def test_account_runner_processes_sent_only_ordered_by_sent_at(
         # Order is newest first → 'New' then 'Mid'.
         names = [item["campaign_name"] for item in stats["per_campaign"]]
         assert names == ["New", "Mid"]
+
+
+# ---------------------------------------------------------------------------
+# API endpoint
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def client(session_factory):
+    from fastapi.testclient import TestClient
+
+    from app.db.session import get_session
+    from app.main import app
+    from tests._test_helpers import seed_test_users
+
+    with session_factory() as session:
+        seed_test_users(session)
+
+    def override_session():
+        with session_factory() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override_session
+    with TestClient(app) as test_client:
+        yield test_client
+    app.dependency_overrides.clear()
+
+
+def test_post_endpoint_enqueues_admin_only(client):
+    from tests._test_helpers import auth_headers
+
+    with patch("app.api.brevo.enqueue_sync_job") as fake:
+        fake.return_value = ("log-1", "job-1")
+        ok = client.post(
+            "/api/brevo/historical-backfill?account_id=main",
+            headers=auth_headers(client, "admin"),
+        )
+    assert ok.status_code == 200, ok.text
+    assert ok.json() == {"sync_log_id": "log-1", "job_id": "job-1"}
+    kwargs = fake.call_args.kwargs
+    assert kwargs["operation"] == "historical_backfill"
+    assert kwargs["account_id"] == "main"
+
+    forbidden = client.post(
+        "/api/brevo/historical-backfill?account_id=main",
+        headers=auth_headers(client, "manager"),
+    )
+    assert forbidden.status_code == 403
+
+
+def test_post_endpoint_passes_max_campaigns_payload(client):
+    from tests._test_helpers import auth_headers
+
+    with patch("app.api.brevo.enqueue_sync_job") as fake:
+        fake.return_value = ("log-2", "job-2")
+        client.post(
+            "/api/brevo/historical-backfill?account_id=main&max_campaigns=50",
+            headers=auth_headers(client, "admin"),
+        )
+    assert fake.call_args.kwargs["payload"] == {"max_campaigns": 50}
+
+
+def test_status_endpoint_returns_never_with_no_log(client):
+    from tests._test_helpers import auth_headers
+
+    response = client.get(
+        "/api/brevo/historical-backfill/status?account_id=main",
+        headers=auth_headers(client, "admin"),
+    )
+    assert response.status_code == 200
+    assert response.json() == {"status": "never"}
