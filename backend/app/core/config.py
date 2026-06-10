@@ -63,6 +63,13 @@ class Settings(BaseSettings):
     anthropic_api_key: str | None = None
     anthropic_model: str = "claude-sonnet-4-6"
 
+    # Brevo webhook signature secret. Optional but recommended: when
+    # set, POST /api/webhooks/brevo rejects deliveries whose token
+    # header doesn't match; when unset, deliveries are accepted with a
+    # security warning in the logs. Configure the same value in Brevo
+    # (Settings → Webhooks → signature/auth header).
+    brevo_webhook_secret: str | None = None
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
     @field_validator("integration_secrets_key")

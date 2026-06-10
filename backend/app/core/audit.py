@@ -101,6 +101,12 @@ class Action:
     EXTERNAL_REFRESH_RATE_LIMITED = "external_refresh.rate_limited"
     EXTERNAL_REFRESH_AUTH_ERROR = "external_refresh.auth_error"
 
+    # Brevo webhooks (Sprint B+D). Reactive contact mutations driven
+    # by inbound events — audited so a consent flip always has a
+    # traceable origin.
+    CONTACT_CONSENT_CHANGED_BY_WEBHOOK = "contact.consent_changed_by_webhook"
+    CONTACT_EMAIL_INVALIDATED_BY_WEBHOOK = "contact.email_invalidated_by_webhook"
+
     # Tags (Sprint P.1 ampliado).
     TAG_CREATED = "tag.created"
     TAG_UPDATED = "tag.updated"
