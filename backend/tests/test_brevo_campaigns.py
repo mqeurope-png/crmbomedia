@@ -461,3 +461,88 @@ def test_campaign_detail_lazy_loads_html(client: TestClient):
         assert second.status_code == 200
         assert second.json()["html_content"] == "<h1>Real HTML</h1>"
         assert ("get_campaign", 500) not in _FakeClient.calls
+
+
+def test_stats_prefer_campaign_stats_when_global_is_zero(session_factory):
+    """Production Bug 6: 'post fespa español' showed 0 everywhere
+    because Brevo returned globalStats present-but-all-zero with the
+    real numbers in the per-list campaignStats rows. The extractor
+    must aggregate campaignStats and prefer the block with signal."""
+    with session_factory() as session:
+        row = upsert_campaign_row(
+            session,
+            account_id="main",
+            payload={
+                "id": 77,
+                "name": "post fespa español",
+                "status": "sent",
+                "statistics": {
+                    "globalStats": {
+                        "sent": 0,
+                        "delivered": 0,
+                        "uniqueViews": 0,
+                        "uniqueClicks": 0,
+                    },
+                    "campaignStats": [
+                        {
+                            "listId": 4,
+                            "sent": 1200,
+                            "delivered": 1150,
+                            "uniqueViews": 480,
+                            "uniqueClicks": 95,
+                            "hardBounces": 12,
+                            "softBounces": 8,
+                            "unsubscriptions": 5,
+                            "complaints": 1,
+                        },
+                        {
+                            "listId": 7,
+                            "sent": 300,
+                            "delivered": 290,
+                            "uniqueViews": 100,
+                            "uniqueClicks": 20,
+                            "hardBounces": 2,
+                            "softBounces": 1,
+                            "unsubscriptions": 0,
+                            "complaints": 0,
+                        },
+                    ],
+                },
+            },
+        )
+        session.commit()
+        import json as _json
+
+        stats = _json.loads(row.stats_json)
+        # Summed across both lists.
+        assert stats["sent"] == 1500
+        assert stats["delivered"] == 1440
+        assert stats["uniqueViews"] == 580
+        assert stats["uniqueClicks"] == 115
+        assert stats["hardBounces"] == 14
+        assert stats["unsubscriptions"] == 5
+
+
+def test_stats_keep_global_when_it_carries_data(session_factory):
+    """Regression guard: globalStats with real numbers still wins
+    over an absent/zero campaignStats."""
+    with session_factory() as session:
+        row = upsert_campaign_row(
+            session,
+            account_id="main",
+            payload={
+                "id": 78,
+                "name": "Global",
+                "status": "sent",
+                "statistics": {
+                    "globalStats": {"sent": 100, "delivered": 95, "uniqueViews": 40},
+                    "campaignStats": [],
+                },
+            },
+        )
+        session.commit()
+        import json as _json
+
+        stats = _json.loads(row.stats_json)
+        assert stats["sent"] == 100
+        assert stats["delivered"] == 95

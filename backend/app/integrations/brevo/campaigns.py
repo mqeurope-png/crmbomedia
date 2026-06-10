@@ -61,13 +61,55 @@ def _parse_dt(value: Any) -> datetime | None:
         return None
 
 
+def _sum_stat_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Aggregate per-list `campaignStats` rows into campaign totals."""
+    totals: dict[str, Any] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        for key in STAT_KEYS:
+            value = row.get(key)
+            if isinstance(value, (int, float)):
+                totals[key] = totals.get(key, 0) + value
+    return totals
+
+
+def _block_weight(block: dict[str, Any]) -> int:
+    """How much signal a stats block carries — used to pick between
+    globalStats and the campaignStats aggregate."""
+    return sum(
+        int(block.get(key) or 0)
+        for key in ("sent", "delivered", "uniqueViews", "viewed")
+    )
+
+
 def _extract_stats(payload: dict[str, Any]) -> dict[str, Any]:
+    """Pick the stats block that actually carries data.
+
+    Production lesson (debt-closure Bug 6): for sent campaigns Brevo
+    frequently returns `statistics.globalStats` PRESENT but all-zero
+    while the real numbers live in the per-list `campaignStats` rows.
+    The previous "globalStats if non-empty dict" check happily served
+    the zeros, so the detail page showed 0 Enviados on a campaign
+    with thousands of sends. Now both candidates are computed and the
+    one with actual signal wins."""
     statistics = payload.get("statistics") or {}
-    block = statistics.get("globalStats") or {}
-    if not block:
-        rows = statistics.get("campaignStats") or []
-        block = rows[0] if rows else {}
-    return {key: block.get(key, 0) for key in STAT_KEYS if key in block} or dict(block)
+    global_block = {
+        key: statistics.get("globalStats", {}).get(key, 0)
+        for key in STAT_KEYS
+        if isinstance(statistics.get("globalStats"), dict)
+        and key in statistics["globalStats"]
+    }
+    summed_block = _sum_stat_rows(statistics.get("campaignStats") or [])
+
+    if _block_weight(summed_block) > _block_weight(global_block):
+        return summed_block
+    if global_block:
+        return global_block
+    if summed_block:
+        return summed_block
+    # Legacy shape: counters directly under `statistics`.
+    return {key: statistics[key] for key in STAT_KEYS if key in statistics}
 
 
 def upsert_campaign_row(
