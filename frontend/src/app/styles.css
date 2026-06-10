@@ -27,6 +27,133 @@ body {
   font-family: Arial, Helvetica, sans-serif;
 }
 
+/* Integrations refactor (Sprint UX)                                */
+
+.integration-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--line);
+  margin: 12px 0;
+}
+
+.integration-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  font: inherit;
+  font-size: 14px;
+  color: var(--muted);
+}
+
+.integration-tab:hover {
+  color: var(--ink);
+}
+
+.integration-tab.is-active {
+  color: var(--brand-dark);
+  border-bottom-color: var(--brand);
+  font-weight: 600;
+}
+
+.integration-tab-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  padding: 0 6px;
+  height: 18px;
+  border-radius: 999px;
+  background: #e7ecfb;
+  color: var(--brand-dark);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.integration-tab.is-active .integration-tab-badge {
+  background: var(--brand);
+  color: #ffffff;
+}
+
+.integration-account-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.integration-account-card {
+  background: #ffffff;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.integration-account-card.is-expanded {
+  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.06);
+}
+
+.integration-account-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  flex-wrap: wrap;
+}
+
+.integration-account-card-summary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 1;
+}
+
+.integration-account-card-title {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.integration-account-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.integration-account-card-body {
+  border-top: 1px solid var(--line);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.integration-status-dot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.integration-status-dot.is-ok { color: var(--success); }
+.integration-status-dot.is-warn { color: var(--warning); }
+.integration-status-dot.is-off { color: var(--muted); }
+
+.success-state {
+  background: #e6f4ec;
+  border: 1px solid #b6dec6;
+  color: var(--success);
+  padding: 8px 12px;
+  border-radius: 8px;
+  margin: 8px 0;
+  font-size: 13px;
+}
+
 /* Origin-account multi-select (Sprint UX)                          */
 
 .origin-multiselect {
