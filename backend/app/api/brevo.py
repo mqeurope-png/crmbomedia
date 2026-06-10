@@ -1019,6 +1019,71 @@ def send_campaign_test(
     return {"message": f"Test enviado a {', '.join(payload.emails)}"}
 
 
+@router.get("/campaigns/{campaign_id}/timeline")
+def campaign_timeline(
+    campaign_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_user),
+) -> dict[str, Any]:
+    """Per-day opens/clicks since the send plus the most-clicked URLs,
+    aggregated from webhook-fed activity_events. Powers the detail
+    page chart without touching the Brevo API."""
+    _ = current_user
+    row = _get_campaign_or_404(session, campaign_id)
+    from sqlalchemy import func  # noqa: PLC0415
+
+    from app.models.crm import ActivityEvent  # noqa: PLC0415
+
+    since = row.sent_at or row.created_at_brevo
+    statement = select(
+        func.date(ActivityEvent.occurred_at),
+        ActivityEvent.event_type,
+        func.count(ActivityEvent.id),
+    ).where(
+        ActivityEvent.system == "brevo",
+        ActivityEvent.account_id == row.brevo_account_id,
+        ActivityEvent.event_type.in_(("email.opened", "email.clicked")),
+    )
+    if since is not None:
+        statement = statement.where(ActivityEvent.occurred_at >= since)
+    statement = statement.group_by(
+        func.date(ActivityEvent.occurred_at), ActivityEvent.event_type
+    ).order_by(func.date(ActivityEvent.occurred_at))
+
+    days: dict[str, dict[str, int]] = {}
+    for day, event_type, count in session.execute(statement):
+        bucket = days.setdefault(str(day), {"opened": 0, "clicked": 0})
+        key = "opened" if event_type == "email.opened" else "clicked"
+        bucket[key] = int(count)
+
+    clicks_statement = (
+        select(ActivityEvent.body, func.count(ActivityEvent.id))
+        .where(
+            ActivityEvent.system == "brevo",
+            ActivityEvent.account_id == row.brevo_account_id,
+            ActivityEvent.event_type == "email.clicked",
+            ActivityEvent.body.is_not(None),
+        )
+        .group_by(ActivityEvent.body)
+        .order_by(func.count(ActivityEvent.id).desc())
+        .limit(10)
+    )
+    if since is not None:
+        clicks_statement = clicks_statement.where(
+            ActivityEvent.occurred_at >= since
+        )
+    top_clicks = [
+        {"url": url, "count": int(count)}
+        for url, count in session.execute(clicks_statement)
+    ]
+    return {
+        "timeline": [
+            {"day": day, **counts} for day, counts in sorted(days.items())
+        ],
+        "top_clicks": top_clicks,
+    }
+
+
 @router.get("/campaigns/{campaign_id}/recipients/{event_type}")
 def campaign_recipients_by_event(
     campaign_id: str,
