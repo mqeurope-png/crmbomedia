@@ -73,3 +73,20 @@ de Brevo). El botón "Probar (dry-run)" enseña qué haría sin escribir.
 - Si no hay **senders verificados** en Brevo, el wizard lo avisa y
   enlaza a Brevo Senders — verifica al menos uno antes de crear
   campañas.
+
+## Historial de eventos pre-webhook
+
+El detalle de una campaña enviada antes de que el webhook estuviera
+configurado muestra los agregados (OR%, CTR%) pero las pestañas
+"Destinatarios por evento" y la sección "Actividad email" de cada
+ficha de contacto pueden venir vacías para esa campaña.
+
+Para rellenarlas: `/admin/integrations` → expande Brevo →
+sección **"Historial de eventos (backfill)"** → "Lanzar backfill
+histórico". Ver `integrations-brevo.md` § "Backfill histórico de
+eventos" para detalles de cuándo lanzarlo, idempotencia y
+limitaciones.
+
+Tras el backfill, los eventos `email.*` con `metadata.campaign_name`
+en el activity event muestran el nombre de la campaña en la timeline
+del contacto, en lugar del asunto de la campaña.

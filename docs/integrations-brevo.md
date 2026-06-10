@@ -178,6 +178,55 @@ cliente Brevo añade `IntegrationDuplicateError` para el 400
 | `brevo:refresh_segment` | refresco de un mirror concreto | botón "Refrescar ahora" |
 | `brevo:periodic_read` | heartbeat read sync por cuenta live | cada `BREVO_SYNC_INTERVAL_HOURS` (default 12) |
 | `brevo:periodic_segments` | heartbeat refresh segments por cuenta | cada `BREVO_SEGMENTS_REFRESH_INTERVAL_HOURS` (default 6) |
+| `brevo:historical_backfill` | importar destinatarios de cada evento de campañas pasadas | manual (panel `/admin/integrations` o CLI), **nunca** automático |
+
+## Backfill histórico de eventos
+
+El webhook en vivo solo dispara desde el día que se configura.
+Cualquier campaña enviada ANTES no tiene historial granular en el
+CRM — la ficha de cada contacto muestra entregas/aperturas/clicks
+solo de lo recibido después. Brevo expone los destinatarios por
+evento de cada campaña pasada vía API; este backfill los lee y
+materializa las filas faltantes en `activity_events`.
+
+Cuándo lanzarlo:
+
+- Una vez, tras configurar el webhook por primera vez en una
+  cuenta nueva — recupera todo el historial accesible.
+- Ocasionalmente, si sospechas que se han perdido eventos
+  (corte de red, webhook desactivado por accidente).
+- **Nunca** como cron — es una operación pesada (10-30 min en
+  cuentas con cientos de campañas) que consume cuota del API.
+
+Cómo lanzarlo:
+
+- **UI**: `/admin/integrations` → expandir Brevo → sección
+  "Historial de eventos (backfill)" → "Lanzar backfill histórico"
+  (admin only). Confirmación inline. Tras lanzarlo, el panel
+  refresca solo cada 8 s mientras corre.
+- **CLI** (paralelo): `scripts/backfill_brevo_email_history.py`
+  con `--account-id`, opcional `--max-campaigns`, opcional
+  `--dry-run`.
+
+Idempotencia: la dedup va por el UNIQUE
+`activity_events(system, account_id, external_id)` ya existente.
+El `external_id` sintetizado encaja `backfill:{brevo_campaign_id}:
+{email}:{event_type}` — una re-ejecución hits la misma clave, la
+inserción cae con `IntegrityError` dentro de su SAVEPOINT y la
+fila cuenta como `events_skipped_existing`. Sin SELECT-por-fila
+de coste.
+
+Restricciones (heredadas de la política de webhooks):
+
+- No crea contactos. Un email Brevo sin contraparte en `contacts`
+  se cuenta como `contacts_unknown` y se descarta. Sincroniza
+  primero `brevo:sync_contacts` si quieres que aparezcan.
+- Solo procesa campañas con `status ∈ {sent, archive}` del
+  cache local `brevo_campaigns_cache`. Lo que no esté cacheado no
+  se trae — refresca antes con el botón "Refrescar" de la lista
+  de campañas si hace falta.
+- Limita la concurrencia a 2 llamadas + 200 ms entre páginas para
+  no quemar la cuota Brevo (400 req/min).
 
 ## Periodic scheduling
 
@@ -250,3 +299,4 @@ sincronizarla como tag".
 |---|---|---|
 | `scripts/backfill_brevo_consent.py` | `unknown → granted` para contactos sourced de Brevo. Pasa una vez tras el deploy del PR follow-up. | ✅ |
 | `scripts/cleanup_stale_sync_logs.py` | `pending → failed` para SyncLogs ≥ 2h sin que el worker los cogiera. Schedulable como cron. | ✅ |
+| `scripts/backfill_brevo_email_history.py` | Pulla los destinatarios por evento de cada campaña pasada del cache local y los inserta como `activity_events`. `--account-id`, `--max-campaigns`, `--dry-run`. Misma operación que el botón del panel `/admin/integrations`. | ✅ |
