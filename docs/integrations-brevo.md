@@ -229,6 +229,21 @@ tampoco crean contactos — esa restricción se mantiene aquí). El
 sync read tradicional (`brevo:sync_contacts`) trae los contactos;
 este mirror solo asigna membresía.
 
+Ruta de membresía (corregida en el debt-closure PR): Brevo v3 NO
+tiene `/contacts/segments/{id}/contacts` (404 `Invalid route`); la
+lectura va por el listado genérico filtrado:
+`GET /contacts?segmentId={id}`. Límites por endpoint:
+`/contacts/segments` capea `limit` en 50 (`out_of_range` por
+encima); `/contacts` admite hasta 1000. El cliente clampa ambos.
+
+Si una cuenta Brevo rechaza el filtro `segmentId` (es un parámetro
+relativamente reciente), el refresco degrada con elegancia: conserva
+la membresía del refresco anterior (nunca vacía un mirror que
+funcionaba por una limitación de API) y escribe la nota en la
+descripción del segmento — "Brevo no expone la membresía de este
+segmento vía API… ábrelo en Brevo o expórtalo como lista Brevo para
+sincronizarla como tag".
+
 ## Scripts operativos
 
 | Script | Qué hace | Idempotente |

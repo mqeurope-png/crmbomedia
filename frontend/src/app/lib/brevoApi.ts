@@ -215,10 +215,21 @@ export async function deleteBrevoTemplate(
 export async function sendBrevoTemplateTest(
   id: string,
   emails: string[],
+  sender: { senderName?: string; senderEmail?: string } = {},
 ): Promise<{ message: string }> {
   return apiFetch<{ message: string }>(
     `/api/brevo/templates/${id}/send-test`,
-    { method: "POST", body: JSON.stringify({ emails }) },
+    {
+      method: "POST",
+      body: JSON.stringify({
+        emails,
+        // Brevo's sendTest uses the sender stored on the template;
+        // sending the editor's selection lets the backend persist it
+        // first so the test really goes out from the picked address.
+        sender_name: sender.senderName ?? null,
+        sender_email: sender.senderEmail ?? null,
+      }),
+    },
   );
 }
 

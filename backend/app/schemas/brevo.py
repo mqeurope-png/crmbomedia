@@ -162,6 +162,15 @@ class BrevoTemplateRead(BaseModel):
 
 class BrevoSendTestRequest(BaseModel):
     emails: list[str] = Field(min_length=1, max_length=3)
+    # Optional sender override for template tests. Brevo's
+    # `POST /smtp/templates/{id}/sendTest` always uses the sender
+    # STORED on the template (no per-request override), so when the
+    # operator picks a different sender in the editor dropdown the
+    # backend must first persist it on the template — otherwise the
+    # test goes out from the stale sender (or Brevo's
+    # `*.brevosend.com` fallback when the stored one isn't verified).
+    sender_name: str | None = Field(default=None, max_length=200)
+    sender_email: str | None = Field(default=None, max_length=255)
 
 
 # ---------------------------------------------------------------------------

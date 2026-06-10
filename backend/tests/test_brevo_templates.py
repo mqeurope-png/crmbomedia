@@ -305,3 +305,82 @@ def test_viewer_cannot_mutate_templates(client: TestClient):
         headers=auth_headers(client, "viewer"),
     )
     assert response.status_code == 403
+
+
+def test_send_test_with_changed_sender_updates_template_first(client: TestClient):
+    """Production Bug 7: the operator picked 'Artisjet Europe' in the
+    dropdown but the test arrived from Brevo's brevosend.com fallback
+    — sendTest has no sender override and used the stale sender
+    stored on the template. The endpoint must persist the dropdown
+    selection (PUT) BEFORE firing the test, and mirror the cache."""
+    headers = auth_headers(client, "manager")
+    with _patch_api_client():
+        created = client.post(
+            "/api/brevo/templates",
+            json={
+                "brevo_account_id": "main",
+                "name": "T",
+                "subject": "s",
+                "html_content": "<p>x</p>",
+                "sender_name": "Bomedia SL",
+                "sender_email": "old@bomedia.es",
+            },
+            headers=headers,
+        ).json()
+        response = client.post(
+            f"/api/brevo/templates/{created['id']}/send-test",
+            json={
+                "emails": ["qa@mbolasers.com"],
+                "sender_name": "Artisjet Europe",
+                "sender_email": "info@artisjet-printers.eu",
+            },
+            headers=headers,
+        )
+    assert response.status_code == 200, response.text
+    # The update ran BEFORE the test, carrying the new sender.
+    update_calls = [c for c in _FakeClient.calls if c[0] == "update"]
+    send_calls = [c for c in _FakeClient.calls if c[0] == "send_test"]
+    assert update_calls, "expected a template update before sendTest"
+    assert update_calls[-1][2]["sender"] == {
+        "name": "Artisjet Europe",
+        "email": "info@artisjet-printers.eu",
+    }
+    assert _FakeClient.calls.index(update_calls[-1]) < _FakeClient.calls.index(
+        send_calls[-1]
+    )
+    # Cache mirrors the persisted sender.
+    detail = client.get(
+        f"/api/brevo/templates/{created['id']}", headers=headers
+    ).json()
+    assert detail["sender_email"] == "info@artisjet-printers.eu"
+    assert detail["sender_name"] == "Artisjet Europe"
+
+
+def test_send_test_with_same_sender_skips_update(client: TestClient):
+    headers = auth_headers(client, "manager")
+    with _patch_api_client():
+        created = client.post(
+            "/api/brevo/templates",
+            json={
+                "brevo_account_id": "main",
+                "name": "T2",
+                "subject": "s",
+                "html_content": "<p>x</p>",
+                "sender_name": "Same",
+                "sender_email": "same@bomedia.es",
+            },
+            headers=headers,
+        ).json()
+        _FakeClient.calls = []
+        response = client.post(
+            f"/api/brevo/templates/{created['id']}/send-test",
+            json={
+                "emails": ["qa@mbolasers.com"],
+                "sender_name": "Same",
+                "sender_email": "same@bomedia.es",
+            },
+            headers=headers,
+        )
+    assert response.status_code == 200
+    assert not [c for c in _FakeClient.calls if c[0] == "update"]
+    assert [c for c in _FakeClient.calls if c[0] == "send_test"]

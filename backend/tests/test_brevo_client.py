@@ -256,3 +256,50 @@ def test_template_and_campaign_endpoints_hit_expected_paths(session_factory):
     assert "PUT /v3/emailCampaigns/9" in paths[10]
     assert "GET /v3/emailCampaigns/9/opened" in paths[11]
     assert "GET /v3/senders" in paths[12]
+
+
+def test_list_segments_clamps_limit_to_brevo_max(session_factory):
+    """Brevo hard-caps /contacts/segments at limit=50 and answers
+    `out_of_range` above. The client clamps before sending so a
+    sloppy caller can't crash the sync (production Bug 3)."""
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["params"] = dict(request.url.params)
+        seen["path"] = request.url.path
+        return httpx.Response(200, json={"segments": [], "count": 0})
+
+    with session_factory() as session:
+        _run(
+            session,
+            httpx.MockTransport(handler),
+            lambda c: c.list_segments(limit=100),
+        )
+    assert seen["path"].endswith("/contacts/segments")
+    assert seen["params"]["limit"] == "50"
+
+
+def test_get_segment_contacts_uses_contacts_filter_route(session_factory):
+    """Production Bug 4: /contacts/segments/{id}/contacts does NOT
+    exist in Brevo v3 (404 'Invalid route'). Membership reads go via
+    GET /contacts?segmentId={id}."""
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["params"] = dict(request.url.params)
+        seen["path"] = request.url.path
+        return httpx.Response(
+            200, json={"contacts": [{"email": "a@b.c"}], "count": 1}
+        )
+
+    with session_factory() as session:
+        result = _run(
+            session,
+            httpx.MockTransport(handler),
+            lambda c: c.get_segment_contacts(42, limit=2000, offset=0),
+        )
+    assert seen["path"].endswith("/v3/contacts")
+    assert seen["params"]["segmentId"] == "42"
+    # Clamped to the /contacts ceiling.
+    assert seen["params"]["limit"] == "1000"
+    assert result["count"] == 1

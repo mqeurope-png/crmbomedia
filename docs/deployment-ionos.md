@@ -339,3 +339,68 @@ docker compose --env-file .env.production \
 ```
 
 Esperado: en `nginx`, único port `127.0.0.1:8080:80` y solo dos volumes (`nginx.conf`, `conf.d`); en `frontend`, `HOSTNAME=0.0.0.0` añadido a las variables existentes.
+
+## 15. Runbook de rebuild + recreación de contenedores
+
+### Rebuild estándar (tras un merge)
+
+```bash
+cd /opt/crmbo
+git pull
+docker compose --env-file .env.production \
+  -f docker-compose.prod.yml -f docker-compose.plesk.yml \
+  up -d --build --force-recreate api worker frontend
+docker compose --env-file .env.production \
+  -f docker-compose.prod.yml -f docker-compose.plesk.yml \
+  exec api alembic upgrade head
+```
+
+### Nginx y las IPs de los upstreams
+
+Los vhosts (`app.conf.example` y `app.plesk.conf.example`) usan el
+DNS embebido de Docker (`resolver 127.0.0.11 valid=10s`) con
+`proxy_pass` por variable, así que nginx re-resuelve `api:8000` y
+`frontend:3000` en cada request: tras un `--force-recreate` los
+contenedores nuevos se recogen solos en ≤10 s, **sin** `restart
+nginx`.
+
+**Atención**: el `app.conf` real del servidor es una copia del
+`.example`. Si tu copia es anterior a este cambio (usa bloques
+`upstream` estáticos), sigue afectada por el bug de IPs cacheadas.
+Dos opciones:
+
+1. Re-copiar la plantilla (recomendado, una vez):
+   ```bash
+   cp deploy/nginx/conf.d/app.plesk.conf.example deploy/nginx/conf.d/app.conf
+   docker compose --env-file .env.production \
+     -f docker-compose.prod.yml -f docker-compose.plesk.yml \
+     restart nginx
+   ```
+2. Mantener la copia vieja y añadir `restart nginx` al final de cada
+   rebuild (workaround).
+
+### Scripts operativos dentro del contenedor
+
+La imagen del API incluye `scripts/` (backfills + limpiezas):
+
+```bash
+docker compose --env-file .env.production \
+  -f docker-compose.prod.yml -f docker-compose.plesk.yml \
+  exec api python scripts/backfill_brevo_consent.py
+docker compose --env-file .env.production \
+  -f docker-compose.prod.yml -f docker-compose.plesk.yml \
+  exec api python scripts/cleanup_stale_sync_logs.py
+```
+
+### Migración 0022 (solo si quedó stamped sin ejecutar)
+
+Si en su día se hizo `alembic stamp 20260610_0022` para saltar la
+versión rota (sintaxis `||`), tras desplegar el fix puede
+re-ejecutarse de forma segura — las columnas ya están en
+VARCHAR(120)/(160) y los datos truncados, así que es un no-op
+funcional:
+
+```bash
+docker compose ... exec api alembic downgrade 20260610_0021
+docker compose ... exec api alembic upgrade head
+```

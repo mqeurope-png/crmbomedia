@@ -36,6 +36,18 @@ BREVO_BASE_URL = "https://api.brevo.com/v3"
 DEFAULT_PAGE_SIZE = 50
 LIST_BATCH_SIZE = 100  # Brevo accepts up to ~150 emails per list call
 
+#: Per-endpoint `limit` ceilings. Brevo rejects anything above with
+#: `400 {"code":"out_of_range","message":"Limit exceeds max value"}`
+#: instead of silently clamping, so the client clamps before sending.
+#: Verified against production during the first segments import (the
+#: 100-row page on /contacts/segments crashed the job).
+SEGMENTS_MAX_PAGE_SIZE = 50
+CONTACTS_MAX_PAGE_SIZE = 1000
+
+
+def _clamp_limit(limit: int, maximum: int) -> int:
+    return max(1, min(limit, maximum))
+
 DEFAULT_HEADERS = {
     "accept": "application/json",
     "content-type": "application/json",
@@ -192,9 +204,16 @@ class BrevoClient(IntegrationHTTPClient):
         Brevo's API doesn't expose the segment rule tree (filter
         logic lives in the UI), so the CRM imports each segment as a
         mirror: name + count + the periodic refresh of its member
-        list via `get_segment_contacts`."""
+        list via `get_segment_contacts`.
+
+        The endpoint hard-caps `limit` at 50 (`out_of_range` above);
+        the clamp keeps a sloppy caller from crashing the sync."""
         response = await self.get(
-            "/contacts/segments", params={"limit": limit, "offset": offset}
+            "/contacts/segments",
+            params={
+                "limit": _clamp_limit(limit, SEGMENTS_MAX_PAGE_SIZE),
+                "offset": offset,
+            },
         )
         body = response.json or {}
         return {
@@ -211,13 +230,26 @@ class BrevoClient(IntegrationHTTPClient):
     ) -> dict[str, Any]:
         """Paginated membership of a Brevo segment.
 
-        Brevo's `/contacts/segments/{id}/contacts` is the canonical
-        endpoint; some old tenants surface it as `/contacts/segments/
-        {id}` with members inline — we only call the former path
-        because it scales past the inline-array cap."""
+        Production lesson (debt-closure Bug 4): there is NO
+        `/contacts/segments/{id}/contacts` route in Brevo v3 — it
+        404s with `Invalid route/method passed`. The supported way to
+        read a segment's membership is the generic contacts listing
+        filtered by `segmentId`:
+
+            GET /contacts?segmentId={id}&limit=...&offset=...
+
+        If Brevo ever rejects the filter on an account (the param is
+        comparatively recent), the caller in `segments.py` degrades
+        gracefully — it keeps the previous membership and surfaces
+        the limitation in the mirror's description instead of wiping
+        the segment."""
         response = await self.get(
-            f"/contacts/segments/{segment_id}/contacts",
-            params={"limit": limit, "offset": offset},
+            "/contacts",
+            params={
+                "segmentId": segment_id,
+                "limit": _clamp_limit(limit, CONTACTS_MAX_PAGE_SIZE),
+                "offset": offset,
+            },
         )
         body = response.json or {}
         return {
