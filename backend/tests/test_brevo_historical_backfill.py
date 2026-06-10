@@ -83,9 +83,10 @@ def _seed_campaign(
 
 
 def _csv(*emails: str) -> bytes:
-    """Build a Brevo-shaped CSV with a UTF-8 BOM and a header row."""
-    body = "email,name\r\n" + "".join(
-        f"{email},{email.split('@')[0].title()}\r\n" for email in emails
+    """Build a Brevo-shaped CSV: UTF-8 BOM, semicolon delimiter and
+    the real `Email_ID` column header."""
+    body = "Campaign ID;Campaign Name;Email_ID;Send_Date\r\n" + "".join(
+        f"42;Verano 2026;{email};03-10-2025 10:45:06\r\n" for email in emails
     )
     return b"\xef\xbb\xbf" + body.encode("utf-8")
 
@@ -201,11 +202,11 @@ def _patch_sleep():
 
 def test_parse_csv_strips_bom_and_dedupes_emails():
     raw = (
-        b"\xef\xbb\xbfemail,name\r\n"
-        b"Ana@example.com,Ana\r\n"
-        b"ana@example.com,Dupe\r\n"
-        b"boris@example.com,Boris\r\n"
-        b",MissingEmail\r\n"
+        b"\xef\xbb\xbfCampaign ID;Campaign Name;Email_ID;Send_Date\r\n"
+        b"42;Verano 2026;Ana@example.com;03-10-2025 10:45:06\r\n"
+        b"42;Verano 2026;ana@example.com;03-10-2025 10:45:06\r\n"
+        b"42;Verano 2026;boris@example.com;03-10-2025 10:45:06\r\n"
+        b"42;Verano 2026;;03-10-2025 10:45:06\r\n"
     )
     emails = _parse_export_csv(raw)
     assert emails == ["ana@example.com", "boris@example.com"]
@@ -361,7 +362,7 @@ def test_start_export_client_error_skips_bucket(session_factory):
             (42, recipients_type): csv_bytes
             for recipients_type in EVENT_TYPE_MAP
         }
-        _FakeBrevoClient.raise_for_start = {(42, "hardBouncers")}
+        _FakeBrevoClient.raise_for_start = {(42, "hardBounces")}
 
         with _patch_client():
             stats = backfill_campaign_events(
@@ -370,7 +371,7 @@ def test_start_export_client_error_skips_bucket(session_factory):
             session.commit()
 
     assert stats["events_inserted"] == 4
-    assert any("hardBouncers" in err for err in stats["errors"])
+    assert any("hardBounces" in err for err in stats["errors"])
 
 
 def test_account_runner_processes_sent_only_ordered_by_sent_at(

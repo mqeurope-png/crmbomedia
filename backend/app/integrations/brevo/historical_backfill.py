@@ -65,11 +65,16 @@ logger = logging.getLogger(__name__)
 #: (redundant with the positive buckets) and `delivered`/`complaints`
 #: (Brevo does not expose recipient lists for those via the export
 #: endpoint).
+#:
+#: Production lesson: the bounce buckets are spelled `softBounces` /
+#: `hardBounces` — NOT `softBouncers`/`hardBouncers` as the docs'
+#: enum suggested. Brevo replies 400 `invalid_parameter` on the
+#: latter.
 EVENT_TYPE_MAP: dict[str, str] = {
     "openers": "email.opened",
     "clickers": "email.clicked",
-    "softBouncers": "email.bounced_soft",
-    "hardBouncers": "email.bounced_hard",
+    "softBounces": "email.bounced_soft",
+    "hardBounces": "email.bounced_hard",
     "unsubscribed": "email.unsubscribed",
 }
 
@@ -195,33 +200,31 @@ async def _wait_for_export(
 def _parse_export_csv(csv_bytes: bytes) -> list[str]:
     """Decode a Brevo recipients CSV → list of normalised emails.
 
-    Brevo writes UTF-8 with a BOM, so `utf-8-sig` is the right
-    codec. The `email` column is the only one we care about; column
-    order varies by export type but the header is always present.
-    Rows without an email column or with an empty value are silently
-    dropped — those rare cases (e.g. anonymised recipients) wouldn't
-    match a CRM contact anyway."""
+    Production lessons (the assumptions in the first version were
+    both wrong):
+
+    - The delimiter is a SEMICOLON, not a comma. `dialect=csv.excel`
+      silently parsed each row into a single mega-column and zero
+      emails matched.
+    - The address lives under `Email_ID`, not `email`.
+
+    Brevo writes UTF-8 with a BOM, so `utf-8-sig` is the right codec.
+    Rows without an email value are silently dropped — those rare
+    cases (e.g. anonymised recipients) wouldn't match a CRM contact
+    anyway."""
     if not csv_bytes:
         return []
     try:
         text = csv_bytes.decode("utf-8-sig")
     except UnicodeDecodeError:
         text = csv_bytes.decode("utf-8", errors="replace")
-    reader = csv.DictReader(io.StringIO(text), dialect=csv.excel)
+    reader = csv.DictReader(io.StringIO(text), delimiter=";")
     emails: list[str] = []
     seen: set[str] = set()
     for row in reader:
         if not row:
             continue
-        # Brevo's column header is `email` but tolerate trivial casing
-        # variants so a one-off schema change doesn't break the run.
-        raw = (
-            row.get("email")
-            or row.get("Email")
-            or row.get("EMAIL")
-            or row.get("email_address")
-        )
-        normalised = _normalise_email(raw)
+        normalised = _normalise_email(row.get("Email_ID"))
         if not normalised or normalised in seen:
             continue
         seen.add(normalised)
