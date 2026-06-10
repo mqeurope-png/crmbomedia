@@ -164,6 +164,105 @@ body {
   background: #ffffff;
 }
 
+/* Brevo integrations panel + email activity                         */
+
+.brevo-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.brevo-panel-section {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px 14px;
+  background: #fbfcfe;
+}
+
+.brevo-panel-section > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.brevo-panel-section h3 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.brevo-webhook-url {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 6px 0;
+}
+
+.brevo-webhook-url code {
+  background: #eef2fa;
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.sidebar-sublist {
+  list-style: none;
+  margin: 2px 0 4px;
+  padding: 0 0 0 36px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sidebar-sublink {
+  display: block;
+  padding: 5px 10px;
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--muted);
+  text-decoration: none;
+}
+
+.sidebar-sublink:hover { background: #f1f4fa; color: var(--ink); }
+
+.sidebar-sublink.is-active {
+  color: var(--brand-dark);
+  font-weight: 600;
+  background: #e7ecfb;
+}
+
+.email-activity-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 360px;
+  overflow-y: auto;
+}
+
+.email-activity-list li {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.email-activity-icon { font-size: 16px; }
+
+.email-activity-body {
+  display: flex;
+  flex-direction: column;
+  font-size: 13px;
+}
+
+.email-activity-date { font-size: 11px; }
+
+.email-marketing-widget { margin-top: 16px; }
+
 /* Campaign wizard + detail                                          */
 
 .wizard-stepper {

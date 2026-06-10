@@ -4,6 +4,7 @@ import { useParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ErrorState } from "../../components/ErrorState";
 import { PageHeader } from "../../components/PageHeader";
+import { ContactEmailActivity } from "../../components/ContactEmailActivity";
 import { ContactPipelinesSection } from "../../components/ContactPipelinesSection";
 import { RefreshExternalDataButton } from "../../components/RefreshExternalDataButton";
 import {
@@ -355,6 +356,7 @@ export default function ContactDetailPage() {
           ) : <p className="muted">Sin tareas pendientes.</p>}
         </article>
         <ContactPipelinesSection contactId={contact.id} />
+        <ContactEmailActivity contactId={contact.id} />
         <article className="card card-wide">
           <div className="section-title">
             <h2>Línea de tiempo</h2>

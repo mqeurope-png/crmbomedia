@@ -14,6 +14,7 @@ import {
   setIntegrationAccountApiKey,
   type IntegrationAccount,
 } from "../lib/integrationSettings";
+import { BrevoAccountPanel } from "./BrevoAccountPanel";
 import { SyncPanel } from "./SyncPanel";
 
 type Props = {
@@ -211,6 +212,13 @@ export function IntegrationAccountCard({
                 ) : null}
               </div>
             </section>
+          ) : null}
+
+          {account.system === "brevo" ? (
+            <BrevoAccountPanel
+              accountId={account.account_id}
+              isAdmin={isAdmin}
+            />
           ) : null}
 
           <SyncPanel
