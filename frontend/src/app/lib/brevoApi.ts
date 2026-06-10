@@ -438,6 +438,25 @@ export function campaignRates(stats?: BrevoCampaignStats | null): {
   };
 }
 
+// ----- Segments mirror -----
+
+export async function refreshBrevoSegment(
+  segmentId: string,
+): Promise<{ sync_log_id: string; job_id: string }> {
+  return apiFetch(`/api/brevo/segments/${segmentId}/refresh`, {
+    method: "POST",
+  });
+}
+
+export async function refreshAllBrevoSegments(
+  accountId: string,
+): Promise<{ sync_log_id: string; job_id: string }> {
+  return apiFetch(
+    `/api/brevo/segments/refresh-all?account_id=${encodeURIComponent(accountId)}`,
+    { method: "POST" },
+  );
+}
+
 // ----- Primary Brevo account discovery -----
 
 /**

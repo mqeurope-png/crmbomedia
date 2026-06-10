@@ -9,6 +9,7 @@ import {
   deleteSegment,
   duplicateSegment,
   getHealth,
+  isBrevoMirror,
   listSegments,
   type Segment,
 } from "../lib/api";
@@ -128,6 +129,11 @@ export default function SegmentsListPage() {
                       <Link href={`/segments/${segment.id}`}>
                         <strong>{segment.name}</strong>
                       </Link>
+                      {isBrevoMirror(segment) ? (
+                        <span className="status-pill is-on segment-mirror-pill">
+                          Espejo Brevo
+                        </span>
+                      ) : null}
                       {segment.is_shared ? (
                         <span className="muted small"> · compartido</span>
                       ) : null}

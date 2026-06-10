@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
+import { BrevoMirrorPanel } from "../../components/BrevoMirrorPanel";
 import { PageHeader } from "../../components/PageHeader";
 import { ErrorState } from "../../components/ErrorState";
 import { SegmentAIExplainPanel } from "../../components/SegmentAIExplainPanel";
@@ -10,6 +11,7 @@ import { SegmentLivePreview } from "../../components/SegmentLivePreview";
 import { SegmentRuleBuilder } from "../../components/SegmentRuleBuilder";
 import {
   getSegment,
+  isBrevoMirror,
   segmentContacts,
   segmentCount,
   updateSegment,
@@ -153,6 +155,9 @@ export default function SegmentDetailPage() {
         </div>
 
         {tab === "rules" ? (
+          isBrevoMirror(segment) ? (
+            <BrevoMirrorPanel segment={segment} onRefreshed={refresh} />
+          ) : (
           <div className="segment-rules-layout">
             <div className="segment-builder-pane">
               <SegmentRuleBuilder
@@ -173,6 +178,7 @@ export default function SegmentDetailPage() {
             </div>
             <SegmentLivePreview rules={draftRules} />
           </div>
+          )
         ) : page ? (
           <div className="table-wrapper">
             <table className="data-table">

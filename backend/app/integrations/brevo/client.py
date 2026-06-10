@@ -181,6 +181,51 @@ class BrevoClient(IntegrationHTTPClient):
         }
 
     # ------------------------------------------------------------------
+    # Segments (Sprint Brevo follow-up — mirrored as static CRM segments)
+    # ------------------------------------------------------------------
+
+    async def list_segments(
+        self, *, limit: int = DEFAULT_PAGE_SIZE, offset: int = 0
+    ) -> dict[str, Any]:
+        """GET /contacts/segments → {"segments": [...], "count": int}.
+
+        Brevo's API doesn't expose the segment rule tree (filter
+        logic lives in the UI), so the CRM imports each segment as a
+        mirror: name + count + the periodic refresh of its member
+        list via `get_segment_contacts`."""
+        response = await self.get(
+            "/contacts/segments", params={"limit": limit, "offset": offset}
+        )
+        body = response.json or {}
+        return {
+            "segments": body.get("segments") or [],
+            "count": int(body.get("count") or 0),
+        }
+
+    async def get_segment_contacts(
+        self,
+        segment_id: int,
+        *,
+        limit: int = DEFAULT_PAGE_SIZE,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        """Paginated membership of a Brevo segment.
+
+        Brevo's `/contacts/segments/{id}/contacts` is the canonical
+        endpoint; some old tenants surface it as `/contacts/segments/
+        {id}` with members inline — we only call the former path
+        because it scales past the inline-array cap."""
+        response = await self.get(
+            f"/contacts/segments/{segment_id}/contacts",
+            params={"limit": limit, "offset": offset},
+        )
+        body = response.json or {}
+        return {
+            "contacts": body.get("contacts") or [],
+            "count": int(body.get("count") or 0),
+        }
+
+    # ------------------------------------------------------------------
     # Email templates (Sprint B+D §M)
     # ------------------------------------------------------------------
 

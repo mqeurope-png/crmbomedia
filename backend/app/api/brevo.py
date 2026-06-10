@@ -315,6 +315,69 @@ def list_brevo_senders(
 # ---------------------------------------------------------------------------
 
 
+@router.post("/segments/refresh-all")
+def refresh_all_brevo_segments(
+    request: Request,
+    account_id: str = Query(...),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_manager),
+) -> dict[str, Any]:
+    """Enqueue a full Brevo-segments refresh for one account.
+
+    Mirrors the wider "Sincronizar ahora" pattern: the route returns
+    `(sync_log_id, job_id)` and the worker picks it up. The dashboard
+    panel uses this to give the operator a manual "Importar ahora"
+    button next to the periodic 6h cron.
+    """
+    _require_brevo_account(session, account_id)
+    sync_log_id, job_id = enqueue_sync_job(
+        session,
+        system="brevo",
+        account_id=account_id,
+        operation="refresh_segments",
+        triggered_by="manual",
+        triggered_by_user_id=current_user.id,
+        request=request,
+    )
+    session.commit()
+    return {"sync_log_id": sync_log_id, "job_id": job_id}
+
+
+@router.post("/segments/{segment_id}/refresh")
+def refresh_one_brevo_segment(
+    segment_id: str,
+    request: Request,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_manager),
+) -> dict[str, Any]:
+    """Refresh one Brevo mirror — the segment detail page's
+    "Refrescar ahora desde Brevo" button calls this."""
+    segment = session.get(Segment, segment_id)
+    if segment is None or not segment.external_source:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Segmento Brevo no encontrado",
+        )
+    if not segment.external_source.startswith("brevo:"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No es un segmento gestionado por Brevo",
+        )
+    account_id = segment.external_source.split(":")[1]
+    sync_log_id, job_id = enqueue_sync_job(
+        session,
+        system="brevo",
+        account_id=account_id,
+        operation="refresh_segment",
+        triggered_by="manual",
+        triggered_by_user_id=current_user.id,
+        payload={"segment_id": segment.id},
+        request=request,
+    )
+    session.commit()
+    return {"sync_log_id": sync_log_id, "job_id": job_id}
+
+
 @router.get("/webhook-stats")
 def brevo_webhook_stats(
     account_id: str = Query(...),
