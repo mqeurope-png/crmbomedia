@@ -169,8 +169,69 @@ cliente Brevo añade `IntegrationDuplicateError` para el 400
 
 | Cola | Handler | Disparo |
 |---|---|---|
-| `brevo:sync_contacts` | read sync | manual (SyncPanel) |
+| `brevo:sync_contacts` | read sync | manual (SyncPanel) + cron `periodic_read` |
 | `brevo:push_target` | push de un target | manual / heartbeat |
 | `brevo:auto_sync_check` | heartbeat targets | cada 5 min (self) |
 | `brevo:webhook_process` | materializar eventos | cada delivery |
 | `brevo:refresh_campaigns` | refrescar cache campañas | cada 15 min (self) |
+| `brevo:refresh_segments` | importar/refrescar mirrors de segmentos | manual / cron `periodic_segments` |
+| `brevo:refresh_segment` | refresco de un mirror concreto | botón "Refrescar ahora" |
+| `brevo:periodic_read` | heartbeat read sync por cuenta live | cada `BREVO_SYNC_INTERVAL_HOURS` (default 12) |
+| `brevo:periodic_segments` | heartbeat refresh segments por cuenta | cada `BREVO_SEGMENTS_REFRESH_INTERVAL_HOURS` (default 6) |
+
+## Periodic scheduling
+
+Tres heartbeats independientes y un cron por separado para campañas
+viven en `app/integrations/brevo/scheduler.py`. Todos usan SETNX en
+Redis como guard, así que dos procesos de API arrancando a la vez
+no pueden doble-armarlos. `app.main` los arma en el startup
+handler; la API NO cae si Redis está caído al boot — solo deja de
+re-armar hasta el siguiente reinicio.
+
+Variables de entorno (con defaults):
+
+| Variable | Default | Qué controla |
+|---|---|---|
+| `BREVO_SYNC_INTERVAL_HOURS` | 12 | Cada cuánto encola `sync_contacts` para cada cuenta `enabled=true, mode=live` |
+| `BREVO_SEGMENTS_REFRESH_INTERVAL_HOURS` | 6 | Cada cuánto encola `refresh_segments` para cada cuenta `enabled=true` (live y sandbox) |
+
+El RQ worker debe correr con `--with-scheduler` (ya está en ambos
+`docker-compose.yml`) para que `enqueue_in` funcione.
+
+## ConsentStatus deviation
+
+El sprint pedía `marketing_consent='withdrawn'` para los contactos
+con `emailBlacklisted=true`. El enum `ConsentStatus` del CRM define
+`granted | denied | unknown | unsubscribed` — esta última cubre la
+misma semántica que Brevo entiende como "no contactable".
+Introducir `withdrawn` como valor paralelo exigiría migrar el enum
+y tocar filtros, motor de segmentos, contexto de IA y pickers del
+frontend para un comportamiento idéntico, así que se usa
+`unsubscribed`. Mismo trade-off que se documentó al cerrar PR #51.
+
+## Segments mirror
+
+Los segmentos Brevo viven como "mirrors" en el CRM: una fila normal
+de `segments` con `is_dynamic=False`, `static_contact_ids`
+refrescado periódicamente, y `external_source =
+"brevo:<account>:<brevo_id>"`. El motor de segmentos no cambia —
+sirve la membresía desde `static_contact_ids` exactamente como en
+los segmentos congelados nativos.
+
+La API de Brevo NO expone el árbol de filtros, así que las reglas
+NO se importan: la UI esconde el editor y muestra "Espejo Brevo" +
+"Refrescar ahora desde Brevo" + deeplink. Editar las reglas se hace
+en Brevo nativo; el siguiente refresco trae la nueva membresía.
+
+Resolución de membresía: por email contra `contacts`. Emails Brevo
+sin contraparte CRM se ignoran silenciosamente (los webhooks
+tampoco crean contactos — esa restricción se mantiene aquí). El
+sync read tradicional (`brevo:sync_contacts`) trae los contactos;
+este mirror solo asigna membresía.
+
+## Scripts operativos
+
+| Script | Qué hace | Idempotente |
+|---|---|---|
+| `scripts/backfill_brevo_consent.py` | `unknown → granted` para contactos sourced de Brevo. Pasa una vez tras el deploy del PR follow-up. | ✅ |
+| `scripts/cleanup_stale_sync_logs.py` | `pending → failed` para SyncLogs ≥ 2h sin que el worker los cogiera. Schedulable como cron. | ✅ |
