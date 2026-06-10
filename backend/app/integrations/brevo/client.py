@@ -372,32 +372,18 @@ class BrevoClient(IntegrationHTTPClient):
         """Stats ride along on the campaign detail response."""
         return await self.get_email_campaign(campaign_id)
 
-    async def get_campaign_recipients_stats(
-        self,
-        campaign_id: int,
-        event_type: str,
-        *,
-        limit: int = DEFAULT_PAGE_SIZE,
-        offset: int = 0,
-    ) -> dict[str, Any]:
-        """GET /emailCampaigns/{id}/{event_type} — opens, clicks, …
-
-        DEPRECATED: this endpoint does NOT exist on Brevo's API v3
-        (returns 404 `Invalid route/method passed`). Kept around only
-        for backward compatibility with tests that haven't been moved
-        over to the new export flow yet — every caller should use
-        `start_recipients_export` + `get_process_status` +
-        `download_csv_export` instead.
-        """
-        response = await self.get(
-            f"/emailCampaigns/{campaign_id}/{event_type}",
-            params={"limit": limit, "offset": offset},
-        )
-        return response.json or {}
-
     # ------------------------------------------------------------------
     # Async recipient exports (used by the historical events backfill)
     # ------------------------------------------------------------------
+    #
+    # NOTE: PR #54 shipped a `get_campaign_recipients_stats` helper that
+    # targeted `GET /emailCampaigns/{id}/{event_type}` (e.g. `.../opened`,
+    # `.../clicked`). That route does NOT exist in Brevo's API v3 and
+    # 404s in production with "Invalid route/method passed". The
+    # historical events backfill (see `historical_backfill.py`) now
+    # uses the supported async export flow below; the legacy helper
+    # was removed together with this comment to keep the surface area
+    # honest.
 
     async def start_recipients_export(
         self, campaign_id: int, recipients_type: str

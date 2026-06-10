@@ -238,7 +238,6 @@ def test_template_and_campaign_endpoints_hit_expected_paths(session_factory):
             await c.send_email_campaign_now(9)
             await c.send_test_email_campaign(9, ["x@y.z"])
             await c.schedule_email_campaign(9, "2026-07-01T10:00:00+02:00")
-            await c.get_campaign_recipients_stats(9, "opened")
             await c.list_senders()
 
         _run(session, httpx.MockTransport(handler), _all)
@@ -254,8 +253,7 @@ def test_template_and_campaign_endpoints_hit_expected_paths(session_factory):
     assert "POST /v3/emailCampaigns/9/sendNow" in paths[8]
     assert "POST /v3/emailCampaigns/9/sendTest" in paths[9]
     assert "PUT /v3/emailCampaigns/9" in paths[10]
-    assert "GET /v3/emailCampaigns/9/opened" in paths[11]
-    assert "GET /v3/senders" in paths[12]
+    assert "GET /v3/senders" in paths[11]
 
 
 def test_list_segments_clamps_limit_to_brevo_max(session_factory):
