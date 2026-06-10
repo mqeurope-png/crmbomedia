@@ -407,6 +407,17 @@ class Segment(TimestampMixin, Base):
     color: Mapped[str | None] = mapped_column(String(7))
     cached_count: Mapped[int | None] = mapped_column(Integer)
     last_evaluated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Marker for externally-managed segments (Brevo segments mirror).
+    # Format: `<system>:<account_id>:<external_id>` — when populated
+    # the segment behaves as `is_dynamic=False` with `static_contact_ids`
+    # refreshed periodically by the connector job; the UI hides the
+    # rule editor and shows "Espejo Brevo" + "Refrescar / Abrir en Brevo".
+    # NULL = ordinary CRM-native segment.
+    external_source: Mapped[str | None] = mapped_column(String(150))
+    external_last_refreshed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    external_refresh_interval_minutes: Mapped[int | None] = mapped_column(Integer)
 
 
 class Note(TimestampMixin, Base):
