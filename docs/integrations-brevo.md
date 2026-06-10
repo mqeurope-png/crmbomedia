@@ -1,0 +1,176 @@
+# Integración Brevo
+
+Sprint B+D fusionado: sincronización bidireccional de contactos,
+webhooks de eventos de email, plantillas y campañas gestionadas desde
+el CRM. El objetivo: el operador vive dentro del CRM para el marketing
+habitual; Brevo nativo queda para edición visual de HTML y
+configuración de senders.
+
+Documentación relacionada: `integrations-architecture.md` (pasillo
+común), `marketing-campaigns.md` (guía del operador).
+
+## Arquitectura del sync
+
+### Read (Brevo → CRM)
+
+`brevo:sync_contacts` (worker RQ, disparable desde el SyncPanel):
+
+- Pagina `GET /contacts` con `modifiedSince = último run OK − 5 min`
+  (delta). El payload `{"full_sync": true}` fuerza el recorrido
+  completo — botón "Resincronizar todo".
+- Upsert por `(system='brevo', account_id, external_id)`. Si el email
+  ya existe en el CRM (p. ej. importado de AgileCRM), se añade una
+  `external_reference` adicional al contacto existente — nunca se
+  duplica. Un contacto puede tener referencias a varios sistemas.
+- Membresía de listas → auto-tags `brevo-list:<nombre>` con
+  `source=brevo:<account>`; el delta de cada sync solo toca las
+  asignaciones de esa fuente (tags manuales y de otros conectores
+  sobreviven).
+- Lock Redis por cuenta (TTL 1h) contra ejecuciones concurrentes.
+- Contactos sin email usable se saltan con warning (no se crean
+  cascarones).
+
+### Write (CRM → Brevo): sync targets
+
+Un `BrevoSyncTarget` define el subconjunto del CRM que viaja a una
+audiencia Brevo: `segmento (Sprint P.3) → lista Brevo`. El motor de
+segmentos se reutiliza sin tocar.
+
+Ejecución (`brevo:push_target`):
+
+1. Evalúa el segmento → contactos actuales (sin email se excluyen).
+2. `POST /contacts` por contacto; el 400 `duplicate_parameter` cae a
+   `PUT /contacts/{email}` (update).
+3. Si hay `brevo_list_id`: alta en la lista en lotes de 100.
+4. **Delta de salida**: `brevo_target_memberships` guarda quién se
+   empujó en el run anterior; quien ya no cumple el segmento se
+   **quita de la lista** (`/contacts/lists/{id}/contacts/remove`) —
+   nunca se borra el contacto en Brevo.
+5. Stats en `last_run_stats_json` (pushed_new, pushed_updated,
+   added_to_list, removed_from_list, errors).
+
+Dry-run (`POST /api/brevo/sync-targets/{id}/run?dry_run=true`):
+evalúa y diffea sin tocar Brevo; devuelve would_push /
+would_remove_from_list inline. Lo usa el botón "Probar" del modal.
+
+### Scheduler
+
+`brevo:auto_sync_check` corre cada 5 minutos: encola los targets con
+`auto_sync_enabled` cuyo `last_run_at + sync_interval_minutes` venció,
+y se re-programa a sí mismo vía `enqueue_in` de RQ. Requiere el worker
+con `--with-scheduler` (ya en ambos compose). El heartbeat se arma
+solo al crear un target (SETNX idempotente), así un deploy nuevo no
+necesita intervención. Mismo patrón para `brevo:refresh_campaigns`
+(cada 15 min).
+
+## Webhooks
+
+`POST /api/webhooks/brevo` (público — Brevo no puede autenticarse como
+user). Flujo: firma → parse (objeto o array) → sync_log + audit →
+encolar a `brevo:webhook_process` → 200 inmediato. Si Redis está caído
+se procesa inline antes que perder el evento.
+
+### Firma
+
+Con `BREVO_WEBHOOK_SECRET` configurado (ver `.env.production.example`),
+el header de auth (acepta `brevo-signature-token`, `x-brevo-signature`
+o `x-sib-signature`) se compara en tiempo constante; mismatch → 401.
+Sin secret: se acepta con WARNING de seguridad en los logs.
+
+### Idempotencia
+
+Brevo entrega best-effort (duplicados posibles). Cada evento se
+registra en `webhook_events_seen` con clave
+`message-id:evento:email` (+timestamp para opens/clicks repetibles);
+la segunda entrega del mismo id se descarta. TTL 30 días con limpieza
+oportunista tras cada lote.
+
+### Mapeo de eventos
+
+| Evento Brevo | activity_events.event_type | Acción reactiva |
+|---|---|---|
+| `request` | `email.queued` | — |
+| `sent` | `email.sent` | — |
+| `delivered` | `email.delivered` | — |
+| `opened` / `unique_opened` | `email.opened` | — |
+| `click` | `email.clicked` | URL guardada en `body` |
+| `soft_bounce` | `email.bounced_soft` | — |
+| `hard_bounce` | `email.bounced_hard` | `is_email_valid=false` |
+| `unsubscribe` | `email.unsubscribed` | `marketing_consent='unsubscribed'` |
+| `spam` | `email.spam_complaint` | ambas |
+
+Las mutaciones reactivas se auditan
+(`contact.consent_changed_by_webhook`,
+`contact.email_invalidated_by_webhook`).
+
+> Nota de diseño: el sprint pedía consent `withdrawn`; el enum
+> `ConsentStatus` del CRM define `unsubscribed` para esa semántica
+> (modelo, filtros, segmentos y UI), así que se usa `unsubscribed`.
+
+**Los webhooks nunca crean contactos.** Un email sin contacto en el
+CRM se loggea (email + cuenta + evento) y se descarta — los envíos
+transaccionales a desconocidos no deben contaminar la base.
+
+### Configurar el webhook en Brevo (paso a paso)
+
+1. `/admin/integrations` → expandir la card Brevo → sección
+   "Webhooks" → **Copiar URL** (`https://<tu-dominio>/api/webhooks/brevo`).
+2. (Recomendado) Genera el secret: `openssl rand -hex 32`; añádelo a
+   `.env.production` como `BREVO_WEBHOOK_SECRET` y recrea el
+   contenedor `api`.
+3. En Brevo: **Settings → Webhooks → Add a new webhook**.
+   - URL: la copiada en el paso 1.
+   - Eventos: marca todos (sent, delivered, opened, clicked,
+     soft/hard bounce, unsubscribed, marked as spam).
+   - Si configuraste el secret: añade el header
+     `brevo-signature-token: <secret>` en la configuración del
+     webhook.
+4. Verifica: envía un test desde una campaña; los contadores de la
+   sección "Webhooks" (últimas 24h) deben moverse y la ficha del
+   contacto mostrar el evento en "Actividad email".
+
+## Plantillas y campañas
+
+Ambas usan cache local (`brevo_templates_cache`,
+`brevo_campaigns_cache`, unique por `(account, id remoto)`) para que
+la UI renderice sin esperar al API:
+
+- Plantillas: la lista nunca trae el HTML; se lazy-loadea al abrir el
+  detalle y queda persistido. `?refresh=true` re-espeja el catálogo
+  (lo que desapareció en Brevo se borra localmente).
+- Campañas: el detalle se auto-refresca si `cached_at > 5 min` (si
+  Brevo está caído se sirve la copia stale en vez de fallar). El
+  cron de 15 min mantiene la lista fresca.
+
+Reglas de estado (validadas en API, reflejadas en UI):
+- editar/borrar: solo `draft` / `suspended` (409 si no).
+- send-now: `draft` / `queued` / `suspended`.
+- programar: mínimo +1h (cliente y servidor).
+- cancelar programación: `queued` → status Brevo `draft`, se limpia
+  `scheduled_at`.
+
+Campaña desde segmento: el backend crea una lista
+`crm-campaign-{timestamp}`, vuelca los contactos del segmento en
+lotes de 100 y crea la campaña apuntando a esa lista.
+
+Los tabs "Destinatarios por evento" y el gráfico del detalle se
+alimentan de los `activity_events` del webhook — sin round-trips a
+Brevo y con enlace directo a la ficha de cada contacto.
+
+## Rate limits y errores
+
+El `IntegrationHTTPClient` compartido gestiona: 429 + `Retry-After`
+(3 reintentos, backoff exponencial), 401 → `IntegrationAuthError` +
+`credential_status='error'`, timeouts 30s, audit por llamada. El
+cliente Brevo añade `IntegrationDuplicateError` para el 400
+`duplicate_parameter` de `POST /contacts`.
+
+## Operaciones del worker
+
+| Cola | Handler | Disparo |
+|---|---|---|
+| `brevo:sync_contacts` | read sync | manual (SyncPanel) |
+| `brevo:push_target` | push de un target | manual / heartbeat |
+| `brevo:auto_sync_check` | heartbeat targets | cada 5 min (self) |
+| `brevo:webhook_process` | materializar eventos | cada delivery |
+| `brevo:refresh_campaigns` | refrescar cache campañas | cada 15 min (self) |
