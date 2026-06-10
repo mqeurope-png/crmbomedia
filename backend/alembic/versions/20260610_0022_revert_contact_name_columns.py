@@ -37,16 +37,34 @@ LAST_NAME_LEN = 160
 
 def _truncate(column: str, max_len: int) -> None:
     """Replace any value > `max_len` with its first `max_len-1` chars
-    plus the standard truncation marker. SQLite supports SUBSTR/
-    LENGTH; MySQL supports SUBSTRING/CHAR_LENGTH. We pick the SQL-
-    standard `SUBSTR`/`LENGTH` form so both dialects run the same
-    statement."""
-    op.execute(
-        sa.text(
+    plus the standard truncation marker.
+
+    Production lesson (Bug 1 of the debt-closure PR): the first
+    version of this migration used `||` for concatenation — valid in
+    SQLite/PostgreSQL, but on MySQL `||` is boolean OR unless
+    PIPES_AS_CONCAT is enabled, so the UPDATE failed with
+    `1292 Truncated incorrect DOUBLE value`. We now branch the full
+    statement per dialect:
+
+    - MySQL: `CONCAT()` + `CHAR_LENGTH()` (characters, not bytes — a
+      LENGTH() byte count over multibyte UTF-8 names produced false
+      positives and over-truncated).
+    - SQLite (tests) and anything else: keep the SQL-standard `||` +
+      `LENGTH()` (SQLite's LENGTH already counts characters, and its
+      CONCAT() only exists from 3.44 which CI may not have).
+    """
+    bind = op.get_bind()
+    if bind.dialect.name == "mysql":
+        statement = (
+            f"UPDATE contacts SET {column} = CONCAT(SUBSTR({column}, 1, :keep), '…') "
+            f"WHERE {column} IS NOT NULL AND CHAR_LENGTH({column}) > :max"
+        )
+    else:
+        statement = (
             f"UPDATE contacts SET {column} = SUBSTR({column}, 1, :keep) || '…' "
             f"WHERE {column} IS NOT NULL AND LENGTH({column}) > :max"
-        ).bindparams(keep=max_len - 1, max=max_len)
-    )
+        )
+    op.execute(sa.text(statement).bindparams(keep=max_len - 1, max=max_len))
 
 
 def upgrade() -> None:
