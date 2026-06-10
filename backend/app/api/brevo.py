@@ -12,7 +12,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.audit import Action, record_event
@@ -1314,6 +1314,14 @@ def campaign_recipients_by_event(
     from app.models.crm import ActivityEvent, Contact  # noqa: PLC0415
 
     types = mapped if isinstance(mapped, tuple) else (mapped,)
+    # Primary filter is the indexed `campaign_brevo_id` column added
+    # in migration 0025. Pre-0025 rows where the backfill couldn't
+    # resolve a campaign id stay accessible through the legacy
+    # `external_id LIKE 'backfill:{id}:%'` substring scan — that path
+    # only ever matched historical-backfill writes, so adding it as a
+    # belt-and-braces fallback doesn't change behaviour. The OR
+    # short-circuits on the indexed equality whenever possible.
+    backfill_prefix = f"backfill:{row.brevo_campaign_id}:%"
     statement = (
         select(ActivityEvent, Contact)
         .join(Contact, Contact.id == ActivityEvent.contact_id)
@@ -1321,6 +1329,13 @@ def campaign_recipients_by_event(
             ActivityEvent.system == "brevo",
             ActivityEvent.account_id == row.brevo_account_id,
             ActivityEvent.event_type.in_(types),
+            or_(
+                ActivityEvent.campaign_brevo_id == row.brevo_campaign_id,
+                and_(
+                    ActivityEvent.campaign_brevo_id.is_(None),
+                    ActivityEvent.external_id.like(backfill_prefix),
+                ),
+            ),
         )
         .order_by(ActivityEvent.occurred_at.desc())
         .offset(offset)

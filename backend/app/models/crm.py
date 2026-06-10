@@ -547,6 +547,17 @@ class ActivityEvent(TimestampMixin, Base):
     account_id: Mapped[str] = mapped_column(String(64), nullable=False)
     external_id: Mapped[str | None] = mapped_column(String(255))
     event_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    # Brevo campaign id (`brevo_campaigns_cache.brevo_campaign_id`),
+    # NULL for events outside Brevo's marketing flow. Indexed because
+    # `/campaigns/{id}/recipients/{event_type}` filters by this column —
+    # without it the endpoint had to fall back to a
+    # `external_id LIKE 'backfill:{id}:%'` substring scan that misses
+    # webhook events entirely. The webhook + backfill mappers both
+    # populate it on insert (see
+    # `app/integrations/brevo/{webhooks,historical_backfill}.py`).
+    campaign_brevo_id: Mapped[int | None] = mapped_column(
+        Integer, nullable=True, index=True
+    )
     subject: Mapped[str | None] = mapped_column(Text)
     body: Mapped[str | None] = mapped_column(Text)
     # Raw remote payload (or the relevant subset) preserved verbatim so

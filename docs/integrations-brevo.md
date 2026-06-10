@@ -77,6 +77,18 @@ el header de auth (acepta `brevo-signature-token`, `x-brevo-signature`
 o `x-sib-signature`) se compara en tiempo constante; mismatch → 401.
 Sin secret: se acepta con WARNING de seguridad en los logs.
 
+**Marketing vs transaccional**: el panel de Marketing de Brevo
+(campañas email) **NO ofrece campo de firma** — sus deliveries
+llegan sin auth, no hay nada que podamos negociar desde nuestro
+lado. Para esa parte deja `BREVO_WEBHOOK_SECRET=` vacío y asume
+los warnings en logs. La firma solo aplica si en el futuro se
+configura un webhook de la SMTP API (transaccional), donde Brevo
+sí permite cabecera de auth personalizada. Mitigaciones del
+"webhook sin firma": el endpoint exige `Content-Type:
+application/json`, deduplica por `message-id:evento:email` (30 días
+TTL) y nunca crea contactos a partir de un evento — sin contacto
+en CRM, el evento se descarta tras el warning.
+
 ### Idempotencia
 
 Brevo entrega best-effort (duplicados posibles). Cada evento se
@@ -164,6 +176,30 @@ El `IntegrationHTTPClient` compartido gestiona: 429 + `Retry-After`
 `credential_status='error'`, timeouts 30s, audit por llamada. El
 cliente Brevo añade `IntegrationDuplicateError` para el 400
 `duplicate_parameter` de `POST /contacts`.
+
+### Limpieza de colas RQ huérfanas
+
+Durante los deploys del 2026-06-10 apareció una cola
+`rq:queue:brevo:brevo:sync_contacts` en Redis (doble prefijo) con un
+job huérfano que ningún worker recogía. El bug en el código está
+arreglado vía un guard defensivo en `app/workers/queues.py:queue_name`,
+pero la cola fantasma sobrevive a reinicios — hay que purgarla a
+mano una vez:
+
+```bash
+docker compose --env-file .env.production exec redis \
+    redis-cli DEL rq:queue:brevo:brevo:sync_contacts
+```
+
+Para revisar el inventario de colas en cualquier momento:
+
+```bash
+docker compose --env-file .env.production exec redis \
+    redis-cli --scan --pattern 'rq:queue:*'
+```
+
+Las colas legítimas siguen el patrón `rq:queue:<system>:<operation>`
+con `system` apareciendo UNA sola vez.
 
 ## Operaciones del worker
 

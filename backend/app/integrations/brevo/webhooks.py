@@ -107,6 +107,22 @@ def prune_seen_events(session: Session) -> int:
     return int(result.rowcount or 0)
 
 
+def _campaign_brevo_id(event: dict[str, Any]) -> int | None:
+    """Pull Brevo's marketing campaign id out of a webhook payload.
+
+    Brevo's payload key has shifted across firmware versions
+    (`campaign-id`, `campaign_id`, sometimes nested) so we try the
+    known variants and fall back to None for transactional sends —
+    which don't carry a campaign at all."""
+    for key in ("campaign-id", "campaign_id", "campaignId", "campaign_brevo_id"):
+        value = event.get(key)
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str) and value.strip().isdigit():
+            return int(value.strip())
+    return None
+
+
 def _parse_event_date(event: dict[str, Any]) -> datetime:
     for key in ("date", "date_event"):
         raw = event.get(key)
@@ -173,6 +189,7 @@ def process_brevo_webhook_event(
             account_id=account_id,
             external_id=key,
             event_type=event_type,
+            campaign_brevo_id=_campaign_brevo_id(event),
             subject=str(subject) if subject else None,
             body=str(url) if url else None,
             metadata_json=json.dumps(event, default=str),

@@ -84,7 +84,10 @@ type FormState = {
 const EMPTY_FORM: FormState = {
   account_id: "",
   display_name: "",
-  enabled: false,
+  // Default ON so the new account is ready to sync as soon as the
+  // API key lands. The status enum still guards "not_configured"
+  // accounts from triggering syncs prematurely.
+  enabled: true,
   mode: "sandbox",
   status: "not_configured",
   api_base_url: "",

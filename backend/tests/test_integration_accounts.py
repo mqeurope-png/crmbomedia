@@ -147,6 +147,24 @@ def test_create_persists_quota_fields(client: TestClient):
     assert body["has_api_key"] is False
 
 
+def test_create_defaults_enabled_true(client: TestClient):
+    """The operator filled in the form to start syncing — don't make
+    them flip a second toggle. The status enum (`not_configured` →
+    `configured`) still guards premature syncs while the API key is
+    missing, so it's safe to default `enabled` to True."""
+    headers = auth_headers(client, "admin")
+    response = client.post(
+        "/api/integration-accounts/agilecrm",
+        json={
+            "account_id": "es",
+            "display_name": "AgileCRM España",
+        },
+        headers=headers,
+    )
+    assert response.status_code == 201, response.text
+    assert response.json()["enabled"] is True
+
+
 def test_create_persists_auth_identifier(client: TestClient):
     headers = auth_headers(client, "admin")
     response = client.post(

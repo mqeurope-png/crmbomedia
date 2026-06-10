@@ -36,6 +36,19 @@ def redis_connection(url: str | None = None) -> Redis:
 
 
 def queue_name(system: str, operation: str) -> str:
+    """Build the RQ queue name for `(system, operation)`.
+
+    Production lesson: an orphan queue `rq:queue:brevo:brevo:sync_contacts`
+    showed up in Redis after the Sprint B+D deploy carrying one
+    stranded job. The cause was a caller that pre-prefixed `operation`
+    with `brevo:` before passing it through here, so the resulting
+    name doubled the system. We can't change every caller and survive
+    a future copy-paste, so the guard belongs at the construction
+    site: strip a `<system>:` prefix when the operation already
+    carries one.
+    """
+    if operation.startswith(f"{system}:"):
+        operation = operation[len(system) + 1 :]
     return f"{system}:{operation}"
 
 

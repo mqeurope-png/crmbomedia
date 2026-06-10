@@ -39,7 +39,13 @@ def _normalize_account_id(value: str) -> str:
 class IntegrationAccountCreate(BaseModel):
     account_id: str = Field(..., min_length=1, max_length=64)
     display_name: str = Field(..., min_length=1, max_length=255)
-    enabled: bool = False
+    # Default ON: the operator just filled in API key + base URL,
+    # they want to start syncing — not flip a second toggle. Pre-2026
+    # builds defaulted to False which forced an extra edit before the
+    # first sync. The status enum (`not_configured` → `configured`)
+    # already protects against accidentally syncing before the key
+    # lands; `enabled` is the operator's switch.
+    enabled: bool = True
     mode: IntegrationMode = IntegrationMode.SANDBOX
     api_base_url: str | None = Field(default=None, max_length=255)
     account_label: str | None = Field(default=None, max_length=255)
