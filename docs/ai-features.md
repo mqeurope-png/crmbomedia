@@ -72,3 +72,39 @@ Garantías de privacidad: idénticas al resto del patrón AI:
 - API key sólo en backend.
 - Audit metadata-only (descripción nunca persistida; explanation_length y rules_size sí).
 - Las reglas que la IA propone se validan con el mismo engine que las del builder visual antes de ofrecerse al operador, así una sugerencia con un campo fuera del whitelist se filtra y se muestra como "La IA propuso reglas inválidas: ...".
+
+## Diagnóstico
+
+`app/services/llm.py` emite tres entradas de log por cada llamada,
+todas metadata-only (nunca contenido):
+
+- `llm.request model=… system_chars=… user_chars=…` antes de invocar
+  Anthropic.
+- `llm.response model=… chars=…` al recibir la respuesta.
+- `llm.parse_failure chars=… preview=…` cuando el JSON devuelto no es
+  parseable. El `preview` se limita a 200 caracteres del texto crudo
+  (no del prompt del operador) para que un compliance officer pueda
+  ver si el modelo devolvió prosa, una negativa, o un snippet roto
+  sin habilitar los logs del proveedor.
+
+Además, cuando `_parse_segment_json` lanza `LLMUpstreamError`, la
+ruta `POST /api/segments/ai-generate` traduce ese caso concreto a un
+mensaje de UI accionable: **"La IA no pudo generar reglas para esta
+descripción. Intenta reformular usando los nombres de los campos
+disponibles."** El resto de fallos del proveedor mantienen el 502
+genérico.
+
+### Pruebas manuales
+
+Para verificar que el endpoint AI está activo:
+
+1. `GET /api/health` → debe devolver `ai_features_enabled: true` (el
+   wizard usa ese flag para mostrar el CTA "✨ Generar con IA").
+2. En el wizard, modo IA, prueba descripciones de ejemplo:
+   - **OK**: "Leads con score mayor a 70 y consentimiento concedido".
+   - **OK**: "Contactos creados en los últimos 7 días en España".
+   - **Ambiguo**: "los buenos" → debe devolver `{error: "..."}` con
+     mensaje del propio modelo.
+   - **No parseable**: cuando ocurra (raro con prompts cortos), la
+     UI muestra el mensaje accionable y el log graba
+     `llm.parse_failure` con el preview.

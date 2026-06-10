@@ -33,11 +33,16 @@ export function SegmentAIGenerator({ onProposal }: Props) {
       const result = await segmentAIGenerate(description.trim());
       onProposal(result);
     } catch (err) {
-      setError(
-        err instanceof Error
+      // Surface the backend's actionable message (e.g. "La IA no pudo
+      // generar reglas para esta descripción. Intenta reformular…")
+      // when present. Generic "Failed to fetch" only shows up for true
+      // network errors, which warrant a different hint than a model
+      // parse failure.
+      const message =
+        err instanceof Error && err.message
           ? err.message
-          : "Error al generar. Intenta describir el segmento de otra forma.",
-      );
+          : "Error al generar. Intenta describir el segmento de otra forma.";
+      setError(message);
     } finally {
       setSubmitting(false);
     }

@@ -116,6 +116,24 @@ def test_unsupported_comparator_for_field_is_rejected(session_factory):
         )
 
 
+def test_value_type_mismatch_surfaces_as_segment_rule_error(session_factory):
+    """A typed value mismatch (e.g. tags expects a list of UUIDs but the
+    operator typed a free-form string) used to bubble up as a plain
+    `ValueError` and trigger HTTP 500 in production. The engine now
+    wraps `validate_value` so the route's `except SegmentRuleError`
+    catches it and returns 400 with a field-aware detail."""
+    with pytest.raises(SegmentRuleError) as exc_info:
+        build_filter(
+            {
+                "type": "rule",
+                "field": "tags",
+                "comparator": "contains_any",
+                "value": "formmbo",
+            }
+        )
+    assert "tags" in str(exc_info.value)
+
+
 def test_simple_equality_filter(session_factory):
     factory = session_factory
     with factory() as session:
