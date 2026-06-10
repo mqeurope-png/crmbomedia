@@ -1,5 +1,5 @@
-"""Brevo historical backfill — async export flow, idempotency,
-unknown-email skipping, status filter, error capture, polling
+"""Brevo historical backfill v3 — single `all` export per campaign,
+column-based event detection, real timestamps, idempotency, polling
 schedule and timeout."""
 from __future__ import annotations
 
@@ -15,8 +15,9 @@ from sqlalchemy.pool import StaticPool
 
 from app.db.base import Base
 from app.integrations.brevo.historical_backfill import (
-    EVENT_TYPE_MAP,
-    _parse_export_csv,
+    _extract_events_from_row,
+    _parse_brevo_csv_date,
+    _parse_export_rows,
     _wait_for_export,
     backfill_account_campaigns,
     backfill_campaign_events,
@@ -24,6 +25,33 @@ from app.integrations.brevo.historical_backfill import (
 from app.models.brevo import BrevoCampaignCache
 from app.models.crm import ActivityEvent, Contact, ExternalSystem
 from app.models.integration_settings import IntegrationAccount
+
+# Verbatim Brevo export header (semicolon-delimited; the trailing
+# column is a dynamic per-link column we must ignore).
+CSV_HEADER = (
+    "Campaign ID;Campaign Name;Email_ID;Send_Date;Delivered_Date;"
+    "Open_Date;Total Opens;Total Apple MPP Opens;Unsubscribe_Date;"
+    "Hard_Bounce_Date;Hard_Bounce_Reason;Soft_Bounce_Date;"
+    "Soft_Bounce_Reason;Open_IP;Click_IP;Unsubscribe_IP;"
+    "Clicked_Links_Count;Complaint_date;https://mbo.example/promo"
+)
+
+COLUMNS = CSV_HEADER.split(";")
+
+
+def _csv_row(**overrides: str) -> str:
+    """One CSV line with every cell empty except the overrides.
+    Column keys use the verbatim Brevo header names."""
+    cells = {column: "" for column in COLUMNS}
+    cells["Campaign ID"] = "42"
+    cells["Campaign Name"] = "Verano 2026"
+    cells.update(overrides)
+    return ";".join(cells[column] for column in COLUMNS)
+
+
+def _csv_bytes(*rows: str) -> bytes:
+    body = "\r\n".join([CSV_HEADER, *rows]) + "\r\n"
+    return b"\xef\xbb\xbf" + body.encode("utf-8")
 
 
 @pytest.fixture()
@@ -82,31 +110,19 @@ def _seed_campaign(
     return row
 
 
-def _csv(*emails: str) -> bytes:
-    """Build a Brevo-shaped CSV with a UTF-8 BOM and a header row."""
-    body = "email,name\r\n" + "".join(
-        f"{email},{email.split('@')[0].title()}\r\n" for email in emails
-    )
-    return b"\xef\xbb\xbf" + body.encode("utf-8")
-
-
 class _FakeBrevoClient:
-    """In-memory replay of Brevo's async export flow.
+    """In-memory replay of Brevo's async export flow — ONE export per
+    campaign with recipientsType=all."""
 
-    Tests populate the class-attribute maps; the worker drives the
-    backfill with no actual HTTP I/O. `process_status_sequence` lets a
-    test simulate `queued → in_process → completed` polling without
-    blocking on real timers."""
-
-    by_campaign_recipients: dict[tuple[int, str], bytes] = {}
-    raise_for_start: set[tuple[int, str]] = set()
-    aborted_for: set[tuple[int, str]] = set()
+    csv_by_campaign: dict[int, bytes] = {}
+    raise_for_campaigns: set[int] = set()
+    aborted_campaigns: set[int] = set()
     process_status_sequence: list[str] = []
+    requested: list[tuple[int, str]] = []
     next_process_id: int = 1000
 
     def __init__(self, session, account_id, **kwargs):
-        self._session = session
-        self._pending: dict[int, tuple[int, str]] = {}
+        self._pending: dict[int, int] = {}
         self._poll_calls: dict[int, int] = {}
 
     async def __aenter__(self):
@@ -116,8 +132,8 @@ class _FakeBrevoClient:
         return None
 
     async def start_recipients_export(self, campaign_id, recipients_type):
-        key = (int(campaign_id), recipients_type)
-        if key in _FakeBrevoClient.raise_for_start:
+        _FakeBrevoClient.requested.append((int(campaign_id), recipients_type))
+        if int(campaign_id) in _FakeBrevoClient.raise_for_campaigns:
             from app.integrations.errors import IntegrationClientError
 
             raise IntegrationClientError(
@@ -128,14 +144,14 @@ class _FakeBrevoClient:
             )
         _FakeBrevoClient.next_process_id += 1
         process_id = _FakeBrevoClient.next_process_id
-        self._pending[process_id] = key
+        self._pending[process_id] = int(campaign_id)
         return process_id
 
     async def get_process_status(self, process_id):
-        key = self._pending.get(int(process_id))
-        if key is None:
+        campaign_id = self._pending.get(int(process_id))
+        if campaign_id is None:
             return {"status": "aborted"}
-        if key in _FakeBrevoClient.aborted_for:
+        if campaign_id in _FakeBrevoClient.aborted_campaigns:
             return {"status": "aborted"}
         seq = list(_FakeBrevoClient.process_status_sequence)
         if seq:
@@ -150,26 +166,23 @@ class _FakeBrevoClient:
         }
 
     async def download_csv_export(self, export_url):
-        """Resolve the URL back to the (campaign, recipients_type) key
-        that issued the export and return the matching CSV. Buckets
-        without a registered CSV come back as an empty file — that
-        mirrors Brevo behaviour when nobody opened/clicked/bounced."""
         try:
             pid = int(export_url.rsplit("/", 1)[-1].split(".")[0])
         except (ValueError, IndexError):
             return b""
-        key = self._pending.get(pid)
-        if key is None:
+        campaign_id = self._pending.get(pid)
+        if campaign_id is None:
             return b""
-        return _FakeBrevoClient.by_campaign_recipients.get(key, b"")
+        return _FakeBrevoClient.csv_by_campaign.get(campaign_id, b"")
 
 
 @pytest.fixture(autouse=True)
 def _reset_fake():
-    _FakeBrevoClient.by_campaign_recipients = {}
-    _FakeBrevoClient.raise_for_start = set()
-    _FakeBrevoClient.aborted_for = set()
+    _FakeBrevoClient.csv_by_campaign = {}
+    _FakeBrevoClient.raise_for_campaigns = set()
+    _FakeBrevoClient.aborted_campaigns = set()
     _FakeBrevoClient.process_status_sequence = []
+    _FakeBrevoClient.requested = []
     _FakeBrevoClient.next_process_id = 1000
 
 
@@ -181,7 +194,7 @@ def _patch_client():
 
 
 # Skip the inter-call sleep + polling waits — tests would otherwise
-# block on the 1 s pacing between recipientsType buckets.
+# block on the 1 s pacing between campaigns.
 @pytest.fixture(autouse=True)
 def _patch_sleep():
     async def _noop(_seconds):
@@ -195,24 +208,130 @@ def _patch_sleep():
 
 
 # ---------------------------------------------------------------------------
-# CSV parser
+# Date parser
 # ---------------------------------------------------------------------------
 
 
-def test_parse_csv_strips_bom_and_dedupes_emails():
-    raw = (
-        b"\xef\xbb\xbfemail,name\r\n"
-        b"Ana@example.com,Ana\r\n"
-        b"ana@example.com,Dupe\r\n"
-        b"boris@example.com,Boris\r\n"
-        b",MissingEmail\r\n"
+def test_parse_brevo_csv_date_day_first_utc():
+    parsed = _parse_brevo_csv_date("03-10-2025 10:45:06")
+    assert parsed == datetime(2025, 10, 3, 10, 45, 6, tzinfo=UTC)
+
+
+@pytest.mark.parametrize("raw", ["", "   ", None, "not-a-date", "2025-10-03"])
+def test_parse_brevo_csv_date_empty_or_malformed_is_none(raw):
+    assert _parse_brevo_csv_date(raw) is None
+
+
+# ---------------------------------------------------------------------------
+# Row → events extraction
+# ---------------------------------------------------------------------------
+
+
+def _row_dict(**overrides: str) -> dict[str, str]:
+    row = {column: "" for column in COLUMNS}
+    row.update(overrides)
+    return row
+
+
+def test_extract_events_delivered_only_row_yields_only_delivered():
+    """The contamination regression: a recipient who merely received
+    the campaign must produce email.delivered and NOTHING else."""
+    row = _row_dict(
+        Email_ID="glopezm27@gmail.com",
+        Send_Date="03-10-2025 10:45:06",
+        Delivered_Date="03-10-2025 10:45:13",
+        **{"Total Opens": "0", "Clicked_Links_Count": "0"},
     )
-    emails = _parse_export_csv(raw)
-    assert emails == ["ana@example.com", "boris@example.com"]
+    events = _extract_events_from_row(row, fallback_dt=None)
+    assert [event_type for event_type, _, _ in events] == ["email.delivered"]
+    assert events[0][1] == datetime(2025, 10, 3, 10, 45, 13, tzinfo=UTC)
 
 
-def test_parse_csv_returns_empty_on_blank_bytes():
-    assert _parse_export_csv(b"") == []
+def test_extract_events_engaged_row_yields_delivered_opened_clicked():
+    row = _row_dict(
+        Email_ID="ana@example.com",
+        Send_Date="03-10-2025 10:45:06",
+        Delivered_Date="03-10-2025 10:45:13",
+        Open_Date="03-10-2025 10:46:39",
+        **{"Total Opens": "3", "Clicked_Links_Count": "2"},
+    )
+    events = {event_type: (ts, extra) for event_type, ts, extra in
+              _extract_events_from_row(row, fallback_dt=None)}
+    assert set(events) == {"email.delivered", "email.opened", "email.clicked"}
+    # Real timestamps from the CSV.
+    assert events["email.opened"][0] == datetime(2025, 10, 3, 10, 46, 39, tzinfo=UTC)
+    assert events["email.opened"][1] == {"total_opens": 3}
+    # Click has no own date column — the open timestamp approximates it.
+    assert events["email.clicked"][0] == datetime(2025, 10, 3, 10, 46, 39, tzinfo=UTC)
+    assert events["email.clicked"][1] == {"clicked_links_count": 2}
+
+
+def test_extract_events_bounce_and_unsubscribe_and_complaint():
+    row = _row_dict(
+        Email_ID="boris@example.com",
+        Send_Date="03-10-2025 10:45:06",
+        Hard_Bounce_Date="03-10-2025 10:45:20",
+        Unsubscribe_Date="04-10-2025 09:00:00",
+        Soft_Bounce_Date="03-10-2025 10:45:21",
+        Complaint_date="05-10-2025 12:00:00",
+    )
+    events = {event_type for event_type, _, _ in
+              _extract_events_from_row(row, fallback_dt=None)}
+    assert events == {
+        "email.bounced_hard",
+        "email.bounced_soft",
+        "email.unsubscribed",
+        "email.spam_complaint",
+    }
+
+
+def test_extract_clicked_falls_back_to_delivered_then_send_date():
+    # No Open_Date → Delivered_Date approximates the click.
+    row = _row_dict(
+        Email_ID="x@y.z",
+        Send_Date="03-10-2025 10:45:06",
+        Delivered_Date="03-10-2025 10:45:13",
+        Clicked_Links_Count="1",
+    )
+    events = dict(
+        (event_type, ts) for event_type, ts, _ in
+        _extract_events_from_row(row, fallback_dt=None)
+    )
+    assert events["email.clicked"] == datetime(2025, 10, 3, 10, 45, 13, tzinfo=UTC)
+
+    # No dates at all → campaign fallback.
+    fallback = datetime(2026, 5, 1, 10, 0, tzinfo=UTC)
+    row = _row_dict(Email_ID="x@y.z", Clicked_Links_Count="1")
+    events = dict(
+        (event_type, ts) for event_type, ts, _ in
+        _extract_events_from_row(row, fallback_dt=fallback)
+    )
+    assert events["email.clicked"] == fallback
+
+
+def test_extract_open_date_wins_over_zero_total_opens():
+    """Brevo sometimes reports Total Opens=0 with Open_Date set; the
+    date column is the source of truth."""
+    row = _row_dict(
+        Email_ID="x@y.z",
+        Open_Date="03-10-2025 10:46:39",
+        **{"Total Opens": "0"},
+    )
+    events = [event_type for event_type, _, _ in
+              _extract_events_from_row(row, fallback_dt=None)]
+    assert "email.opened" in events
+
+
+def test_parse_export_rows_strips_bom_and_keeps_dynamic_columns_unread():
+    raw = _csv_bytes(
+        _csv_row(Email_ID="Ana@example.com", Send_Date="03-10-2025 10:45:06"),
+        _csv_row(Email_ID="", Send_Date="03-10-2025 10:45:06"),
+    )
+    rows = _parse_export_rows(raw)
+    assert len(rows) == 2
+    assert rows[0]["Email_ID"] == "Ana@example.com"
+    assert rows[0]["Campaign Name"] == "Verano 2026"
+    assert _parse_export_rows(b"") == []
 
 
 # ---------------------------------------------------------------------------
@@ -220,21 +339,49 @@ def test_parse_csv_returns_empty_on_blank_bytes():
 # ---------------------------------------------------------------------------
 
 
-def test_full_flow_inserts_one_event_per_known_contact(session_factory):
-    """1 campaign × 5 recipientsType, every CSV carries 3 emails of
-    which 2 match CRM contacts → 5 × 2 = 10 events inserted, 5 × 1 = 5
-    contacts_unknown counted, no contacts created."""
+def test_full_flow_single_export_column_based_events(session_factory):
+    """One campaign, one `all` export. The CSV carries 4 recipients:
+    - ana: delivered + opened + clicked  → 3 events
+    - oscar: delivered only              → 1 event (regression case)
+    - boris: hard bounce, never delivered → 1 event
+    - stranger: not a CRM contact        → contacts_unknown
+    """
     with session_factory() as session:
-        _seed_contacts(session, "ana@example.com", "boris@example.com")
+        contacts = _seed_contacts(
+            session,
+            "ana@example.com",
+            "glopezm27@gmail.com",
+            "boris@example.com",
+        )
         campaign = _seed_campaign(session)
         session.commit()
 
-        csv_bytes = _csv(
-            "ana@example.com", "boris@example.com", "stranger@unknown.invalid"
-        )
-        _FakeBrevoClient.by_campaign_recipients = {
-            (42, recipients_type): csv_bytes
-            for recipients_type in EVENT_TYPE_MAP
+        _FakeBrevoClient.csv_by_campaign = {
+            42: _csv_bytes(
+                _csv_row(
+                    Email_ID="Ana@example.com",
+                    Send_Date="03-10-2025 10:45:06",
+                    Delivered_Date="03-10-2025 10:45:13",
+                    Open_Date="03-10-2025 10:46:39",
+                    **{"Total Opens": "1", "Clicked_Links_Count": "1"},
+                ),
+                _csv_row(
+                    Email_ID="glopezm27@gmail.com",
+                    Send_Date="03-10-2025 10:45:06",
+                    Delivered_Date="03-10-2025 10:45:12",
+                    **{"Total Opens": "0", "Clicked_Links_Count": "0"},
+                ),
+                _csv_row(
+                    Email_ID="boris@example.com",
+                    Send_Date="03-10-2025 10:45:06",
+                    Hard_Bounce_Date="03-10-2025 10:45:20",
+                ),
+                _csv_row(
+                    Email_ID="stranger@unknown.invalid",
+                    Send_Date="03-10-2025 10:45:06",
+                    Delivered_Date="03-10-2025 10:45:14",
+                ),
+            )
         }
 
         with _patch_client():
@@ -243,13 +390,14 @@ def test_full_flow_inserts_one_event_per_known_contact(session_factory):
             )
             session.commit()
 
-    assert stats["events_inserted"] == 10
-    assert stats["events_skipped_existing"] == 0
-    assert stats["contacts_unknown"] == 5
+    # Exactly ONE export was requested, with recipientsType=all.
+    assert _FakeBrevoClient.requested == [(42, "all")]
+    assert stats["events_inserted"] == 5
+    assert stats["contacts_unknown"] == 1
+    assert stats["errors"] == []
 
     with session_factory() as session:
         rows = list(session.scalars(select(ActivityEvent)))
-        # No stranger contact was created.
         assert (
             session.scalar(
                 select(Contact).where(
@@ -259,28 +407,47 @@ def test_full_flow_inserts_one_event_per_known_contact(session_factory):
             is None
         )
 
-    assert len(rows) == 10
-    assert {row.event_type for row in rows} == set(EVENT_TYPE_MAP.values())
-    # occurred_at is anchored on the campaign's sent_at (the export has
-    # no per-event timestamp).
-    for row in rows:
-        stored = row.occurred_at
-        if stored.tzinfo is None:
-            stored = stored.replace(tzinfo=UTC)
-        assert stored == datetime(2026, 5, 1, 10, 0, tzinfo=UTC)
+    by_contact: dict[str, set[str]] = {}
+    for event in rows:
+        by_contact.setdefault(event.contact_id, set()).add(event.event_type)
+
+    # The regression case: delivered-only recipient gets ONLY delivered.
+    oscar = contacts["glopezm27@gmail.com"]
+    assert by_contact[oscar] == {"email.delivered"}
+    ana = contacts["ana@example.com"]
+    assert by_contact[ana] == {
+        "email.delivered",
+        "email.opened",
+        "email.clicked",
+    }
+    boris = contacts["boris@example.com"]
+    assert by_contact[boris] == {"email.bounced_hard"}
+
+    # Real per-event timestamps from the CSV, not the campaign sent_at.
+    ana_opened = next(
+        e for e in rows
+        if e.contact_id == ana and e.event_type == "email.opened"
+    )
+    stored = ana_opened.occurred_at
+    if stored.tzinfo is None:
+        stored = stored.replace(tzinfo=UTC)
+    assert stored == datetime(2025, 10, 3, 10, 46, 39, tzinfo=UTC)
 
 
 def test_second_run_is_idempotent(session_factory):
-    """Re-running must not duplicate events — the UNIQUE constraint
-    catches the second insert and the row is counted as 'already
-    there', not inserted nor failed."""
     with session_factory() as session:
         _seed_contacts(session, "ana@example.com")
         campaign = _seed_campaign(session)
         session.commit()
 
-        _FakeBrevoClient.by_campaign_recipients = {
-            (42, "openers"): _csv("ana@example.com"),
+        _FakeBrevoClient.csv_by_campaign = {
+            42: _csv_bytes(
+                _csv_row(
+                    Email_ID="ana@example.com",
+                    Send_Date="03-10-2025 10:45:06",
+                    Delivered_Date="03-10-2025 10:45:13",
+                ),
+            )
         }
 
         with _patch_client():
@@ -298,7 +465,7 @@ def test_second_run_is_idempotent(session_factory):
     assert second["events_inserted"] == 0
     assert second["events_skipped_existing"] == 1
     assert len(rows) == 1
-    assert rows[0].event_type == "email.opened"
+    assert rows[0].event_type == "email.delivered"
 
 
 def test_skips_campaigns_not_in_sent_or_archive_status(session_factory):
@@ -317,67 +484,49 @@ def test_skips_campaigns_not_in_sent_or_archive_status(session_factory):
         assert session.scalar(select(ActivityEvent)) is None
 
 
-def test_aborted_export_is_logged_and_other_buckets_continue(session_factory):
-    """If Brevo aborts the export for one recipientsType, the run logs
-    the failure but still processes the other buckets and the next
-    campaign."""
+def test_aborted_export_logs_error_and_next_campaign_continues(
+    session_factory,
+):
     with session_factory() as session:
         _seed_contacts(session, "ana@example.com")
-        campaign = _seed_campaign(session)
+        _seed_campaign(
+            session,
+            brevo_id=10,
+            sent_at=datetime(2026, 3, 1, 9, 0, tzinfo=UTC),
+            name="Old",
+        )
+        _seed_campaign(
+            session,
+            brevo_id=11,
+            sent_at=datetime(2026, 5, 1, 9, 0, tzinfo=UTC),
+            name="Mid",
+        )
         session.commit()
 
-        csv_bytes = _csv("ana@example.com")
-        _FakeBrevoClient.by_campaign_recipients = {
-            (42, recipients_type): csv_bytes
-            for recipients_type in EVENT_TYPE_MAP
+        delivered_row = _csv_row(
+            Email_ID="ana@example.com",
+            Send_Date="03-10-2025 10:45:06",
+            Delivered_Date="03-10-2025 10:45:13",
+        )
+        _FakeBrevoClient.csv_by_campaign = {
+            10: _csv_bytes(delivered_row),
+            11: _csv_bytes(delivered_row),
         }
-        # The `clickers` bucket aborts in Brevo's process queue.
-        _FakeBrevoClient.aborted_for = {(42, "clickers")}
+        # The newest campaign's export aborts in Brevo's queue.
+        _FakeBrevoClient.aborted_campaigns = {11}
 
         with _patch_client():
-            stats = backfill_campaign_events(
-                session, account_id="main", campaign_id=campaign.id
-            )
-            session.commit()
+            stats = backfill_account_campaigns(session, account_id="main")
 
-    # 4 buckets succeeded × 1 event each = 4 inserts; clickers failed
-    # but didn't crash the run.
-    assert stats["events_inserted"] == 4
-    assert any("clickers" in err for err in stats["errors"])
-    assert any("status='aborted'" in err for err in stats["errors"])
-
-
-def test_start_export_client_error_skips_bucket(session_factory):
-    """If `start_recipients_export` raises (e.g. 404 on an old
-    campaign) we log + skip that bucket but keep the rest of the run
-    alive."""
-    with session_factory() as session:
-        _seed_contacts(session, "ana@example.com")
-        campaign = _seed_campaign(session)
-        session.commit()
-
-        csv_bytes = _csv("ana@example.com")
-        _FakeBrevoClient.by_campaign_recipients = {
-            (42, recipients_type): csv_bytes
-            for recipients_type in EVENT_TYPE_MAP
-        }
-        _FakeBrevoClient.raise_for_start = {(42, "hardBouncers")}
-
-        with _patch_client():
-            stats = backfill_campaign_events(
-                session, account_id="main", campaign_id=campaign.id
-            )
-            session.commit()
-
-    assert stats["events_inserted"] == 4
-    assert any("hardBouncers" in err for err in stats["errors"])
+    # 'Old' (10) landed its event despite 'Mid' (11) aborting first.
+    assert stats["events_inserted_total"] == 1
+    assert any("aborted" in err for err in stats["errors"])
+    assert any("campaign=11" in err for err in stats["errors"])
 
 
 def test_account_runner_processes_sent_only_ordered_by_sent_at(
     session_factory,
 ):
-    """`backfill_account_campaigns` walks the cache in `sent_at`
-    descending order and respects max_campaigns."""
     with session_factory() as session:
         _seed_contacts(session, "ana@example.com")
         _seed_campaign(
@@ -398,16 +547,17 @@ def test_account_runner_processes_sent_only_ordered_by_sent_at(
             sent_at=datetime(2026, 6, 1, 9, 0, tzinfo=UTC),
             name="New",
         )
-        # A draft campaign that must be skipped.
         _seed_campaign(session, brevo_id=99, status="draft", name="Draft")
         session.commit()
 
-        csv_bytes = _csv("ana@example.com")
-        # Only the openers bucket carries data — the other 4 export
-        # buckets return empty CSVs (default for the fake).
-        _FakeBrevoClient.by_campaign_recipients = {
-            (12, "openers"): csv_bytes,
-            (11, "openers"): csv_bytes,
+        delivered_row = _csv_row(
+            Email_ID="ana@example.com",
+            Send_Date="03-10-2025 10:45:06",
+            Delivered_Date="03-10-2025 10:45:13",
+        )
+        _FakeBrevoClient.csv_by_campaign = {
+            12: _csv_bytes(delivered_row),
+            11: _csv_bytes(delivered_row),
         }
 
         with _patch_client():
@@ -416,11 +566,110 @@ def test_account_runner_processes_sent_only_ordered_by_sent_at(
             )
 
         assert stats["campaigns_processed"] == 2
-        # Both processed campaigns contributed 1 opener event each.
         assert stats["events_inserted_total"] == 2
-        # Order is newest first → 'New' then 'Mid'.
         names = [item["campaign_name"] for item in stats["per_campaign"]]
         assert names == ["New", "Mid"]
+
+
+# ---------------------------------------------------------------------------
+# Real Brevo CSV fixture
+# ---------------------------------------------------------------------------
+
+
+def test_real_brevo_csv_fixture_end_to_end(session_factory):
+    """Drive the full flow with a CSV shaped exactly like Brevo's
+    production export (semicolon delimiter, real header, dynamic link
+    columns, bounce reasons, empty Email_ID row, mixed-case email)."""
+    from pathlib import Path
+
+    fixture = (
+        Path(__file__).parent / "fixtures" / "brevo_export_sample.csv"
+    )
+    csv_bytes = b"\xef\xbb\xbf" + fixture.read_bytes()
+
+    emails = [
+        "a8035416@xtec.cat",      # delivered + 1 open
+        "a8064167@xtec.cat",      # delivered only
+        "engaged@example.com",    # delivered + opened + 2 clicks
+        "multiopen@example.com",  # delivered + 5 opens
+        "baja@example.com",       # delivered + opened + unsubscribed
+        "duro@example.com",       # hard bounce, never delivered
+        "blando@example.com",     # soft bounce, never delivered
+        "queja@example.com",      # delivered + spam complaint
+        "rarezas@example.com",    # Open_Date set but Total Opens=0
+        "mayusculas@example.com",  # CSV says MAYUSCULAS@Example.COM
+    ]
+    with session_factory() as session:
+        contacts = _seed_contacts(session, *emails)
+        campaign = _seed_campaign(session, brevo_id=4, name="coles codigo")
+        session.commit()
+
+        _FakeBrevoClient.csv_by_campaign = {4: csv_bytes}
+        with _patch_client():
+            stats = backfill_campaign_events(
+                session, account_id="main", campaign_id=campaign.id
+            )
+            session.commit()
+
+        rows = list(session.scalars(select(ActivityEvent)))
+
+    assert stats["errors"] == []
+    assert stats["rows_without_email"] == 1
+    assert stats["contacts_unknown"] == 0
+
+    by_email: dict[str, set[str]] = {}
+    contact_to_email = {cid: email for email, cid in contacts.items()}
+    for event in rows:
+        by_email.setdefault(
+            contact_to_email[event.contact_id], set()
+        ).add(event.event_type)
+
+    assert by_email["a8035416@xtec.cat"] == {
+        "email.delivered", "email.opened",
+    }
+    assert by_email["a8064167@xtec.cat"] == {"email.delivered"}
+    assert by_email["engaged@example.com"] == {
+        "email.delivered", "email.opened", "email.clicked",
+    }
+    assert by_email["multiopen@example.com"] == {
+        "email.delivered", "email.opened",
+    }
+    assert by_email["baja@example.com"] == {
+        "email.delivered", "email.opened", "email.unsubscribed",
+    }
+    assert by_email["duro@example.com"] == {"email.bounced_hard"}
+    assert by_email["blando@example.com"] == {"email.bounced_soft"}
+    assert by_email["queja@example.com"] == {
+        "email.delivered", "email.spam_complaint",
+    }
+    # Open_Date wins over the inconsistent Total Opens=0.
+    assert by_email["rarezas@example.com"] == {
+        "email.delivered", "email.opened",
+    }
+    # Case-insensitive email match.
+    assert by_email["mayusculas@example.com"] == {"email.delivered"}
+
+    assert stats["events_inserted"] == sum(
+        len(types) for types in by_email.values()
+    ) == 18
+
+    # Spot-check metadata: total opens + clicked links count survive.
+    import json as _json
+
+    multiopen_opened = next(
+        e for e in rows
+        if contact_to_email[e.contact_id] == "multiopen@example.com"
+        and e.event_type == "email.opened"
+    )
+    assert _json.loads(multiopen_opened.metadata_json)["total_opens"] == 5
+    engaged_clicked = next(
+        e for e in rows
+        if contact_to_email[e.contact_id] == "engaged@example.com"
+        and e.event_type == "email.clicked"
+    )
+    assert (
+        _json.loads(engaged_clicked.metadata_json)["clicked_links_count"] == 2
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -442,8 +691,6 @@ class _PollingClient:
 
 
 def test_wait_for_export_progresses_through_queued_in_process_completed():
-    """Polling honours the adaptive schedule and stops as soon as
-    `status=completed` lands."""
     import asyncio
 
     waits: list[float] = []
@@ -468,28 +715,14 @@ def test_wait_for_export_progresses_through_queued_in_process_completed():
         )
     )
     assert body["status"] == "completed"
-    # Three polls fired → two sleeps between them.
     assert client.calls == 3
     assert waits == [5.0, 10.0]
 
 
 def test_wait_for_export_times_out_when_status_never_lands():
-    """If the process never reaches a terminal state, the timeout is
-    enforced and `TimeoutError` surfaces."""
     import asyncio
 
     waits: list[float] = []
-
-    async def fake_sleep(seconds: float) -> None:
-        # Push the event-loop clock forward so the deadline check
-        # actually fires — `asyncio.get_event_loop().time()` lags
-        # otherwise during fast-forwarded tests.
-        waits.append(seconds)
-        await asyncio.sleep(0)
-
-    # Trick the deadline math: pretend the loop's time advances by the
-    # nominal wait each time we "sleep". We use a counter on the
-    # client + a monkeypatched loop.time to keep things deterministic.
     fake_clock = {"now": 0.0}
 
     async def advancing_sleep(seconds: float) -> None:

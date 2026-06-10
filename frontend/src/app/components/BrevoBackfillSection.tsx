@@ -75,7 +75,7 @@ export function BrevoBackfillSection({
     try {
       await triggerBrevoHistoricalBackfill(accountId);
       onMessage(
-        "Backfill encolado. Brevo procesa cada campaña con un export asíncrono (puede tardar 3-5 horas en cuentas con muchas campañas — déjalo correr de fondo).",
+        "Backfill encolado. Brevo procesa cada campaña con un export asíncrono (~40-60 minutos en cuentas con muchas campañas — déjalo correr de fondo).",
       );
       setConfirming(false);
       await refresh();
@@ -152,11 +152,11 @@ export function BrevoBackfillSection({
         <div className="brevo-backfill-confirm">
           <p>
             Vas a procesar todas las campañas Brevo enviadas. Brevo
-            obliga a generar un export asíncrono por campaña y bucket
-            de evento, así que el proceso puede tardar{" "}
-            <strong>varias horas</strong> y consumir cuota del API. La
-            operación es <strong>idempotente</strong> — re-ejecutarla no
-            duplica eventos, así que es seguro volverla a lanzar si se
+            obliga a generar un export asíncrono por campaña, así que
+            el proceso puede tardar <strong>40-60 minutos</strong> y
+            consumir cuota del API. La operación es{" "}
+            <strong>idempotente</strong> — re-ejecutarla no duplica
+            eventos, así que es seguro volverla a lanzar si se
             interrumpe.
           </p>
           <div className="actions">
