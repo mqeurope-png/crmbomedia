@@ -43,7 +43,12 @@ from app.workers.jobs import OPERATIONS, SyncOutcome
 
 logger = logging.getLogger(__name__)
 
-PAGE_SIZE = 100
+#: Page sizes per endpoint. `/contacts/segments` hard-caps at 50
+#: (Brevo answers `out_of_range` above — exactly what crashed the
+#: first production import with PAGE_SIZE=100); the generic
+#: `/contacts?segmentId=` listing accepts larger pages.
+SEGMENT_LIST_PAGE_SIZE = 50
+MEMBERS_PAGE_SIZE = 500
 DEFAULT_REFRESH_INTERVAL_MINUTES = 360  # 6h
 
 
@@ -137,23 +142,52 @@ def _resolve_member_emails(
     return contact_ids, len(normalized) - len(contact_ids)
 
 
+#: Operator-facing limitation note. Stored on the mirror's
+#: description when Brevo rejects the membership filter so Bart sees
+#: WHY the segment shows zero contacts instead of a silent empty list.
+MEMBERSHIP_UNAVAILABLE_NOTE = (
+    "Brevo no expone la membresía de este segmento vía API en esta "
+    "cuenta. Ábrelo en Brevo para ver los contactos, o exporta el "
+    "segmento como lista Brevo para sincronizarla como tag."
+)
+
+
 async def refresh_segment_membership(
     session: Session,
     *,
     account: IntegrationAccount,
     brevo_segment: dict[str, Any],
 ) -> tuple[Segment, dict[str, Any]]:
-    """Pull every page of `/contacts/segments/{id}/contacts`, resolve
+    """Pull every page of `GET /contacts?segmentId=...`, resolve
     against the CRM by email, persist the mirror row. Returns
-    `(segment_row, stats)`."""
+    `(segment_row, stats)`.
+
+    Graceful degradation: if Brevo rejects the `segmentId` filter
+    (400/404 — the param is recent and some accounts may lack it),
+    the mirror is upserted with the metadata only, the PREVIOUS
+    membership is preserved (never wiped on an API limitation), and
+    the operator-facing limitation note lands in the description."""
+    from app.integrations.errors import IntegrationClientError  # noqa: PLC0415
+
     segment_id = int(brevo_segment["id"])
     all_emails: list[str] = []
+    membership_available = True
     async with BrevoClient(session, account.account_id) as client:
         offset = 0
         while True:
-            page = await client.get_segment_contacts(
-                segment_id, limit=PAGE_SIZE, offset=offset
-            )
+            try:
+                page = await client.get_segment_contacts(
+                    segment_id, limit=MEMBERS_PAGE_SIZE, offset=offset
+                )
+            except IntegrationClientError as exc:
+                membership_available = False
+                logger.warning(
+                    "brevo.segments membership filter rejected for "
+                    "segment=%s (status=%s) — keeping previous members",
+                    segment_id,
+                    exc.status_code,
+                )
+                break
             contacts = page["contacts"]
             if not contacts:
                 break
@@ -161,9 +195,38 @@ async def refresh_segment_membership(
                 email = entry.get("email")
                 if email:
                     all_emails.append(str(email))
-            if len(contacts) < PAGE_SIZE:
+            if len(contacts) < MEMBERS_PAGE_SIZE:
                 break
-            offset += PAGE_SIZE
+            offset += MEMBERS_PAGE_SIZE
+
+    if not membership_available:
+        # Metadata-only upsert: keep whatever membership the previous
+        # refresh stored; flag the limitation for the UI.
+        source = _source_key(account.account_id, segment_id)
+        row = session.scalar(
+            select(Segment).where(Segment.external_source == source)
+        )
+        previous_ids: list[str] = []
+        if row is not None and row.static_contact_ids:
+            try:
+                previous_ids = json.loads(row.static_contact_ids)
+            except (ValueError, TypeError):
+                previous_ids = []
+        row = upsert_mirror(
+            session,
+            account=account,
+            brevo_segment=brevo_segment,
+            member_contact_ids=previous_ids,
+        )
+        row.description = MEMBERSHIP_UNAVAILABLE_NOTE
+        session.flush()
+        return row, {
+            "brevo_total": 0,
+            "matched": len(previous_ids),
+            "unknown_skipped": 0,
+            "membership_unavailable": True,
+        }
+
     contact_ids, skipped = _resolve_member_emails(session, all_emails)
     row = upsert_mirror(
         session,
@@ -189,14 +252,16 @@ async def sync_brevo_segments(
     async with BrevoClient(session, account_id) as client:
         offset = 0
         while True:
-            body = await client.list_segments(limit=PAGE_SIZE, offset=offset)
+            body = await client.list_segments(
+                limit=SEGMENT_LIST_PAGE_SIZE, offset=offset
+            )
             chunk = body.get("segments") or []
             if not chunk:
                 break
             remote_segments.extend(chunk)
-            if len(chunk) < PAGE_SIZE:
+            if len(chunk) < SEGMENT_LIST_PAGE_SIZE:
                 break
-            offset += PAGE_SIZE
+            offset += SEGMENT_LIST_PAGE_SIZE
 
     remote_ids = {int(s["id"]) for s in remote_segments if s.get("id") is not None}
 

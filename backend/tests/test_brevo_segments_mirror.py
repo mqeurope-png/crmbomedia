@@ -270,3 +270,54 @@ def test_refresh_all_endpoint_enqueues_account_level_sync(client: TestClient):
         )
     assert response.status_code == 200
     assert fake.call_args.kwargs["operation"] == "refresh_segments"
+
+
+class _FilterRejectedClient(_FakeClient):
+    """Simulates a Brevo account where the `segmentId` filter on
+    GET /contacts isn't available (400/404)."""
+
+    async def get_segment_contacts(self, segment_id, *, limit=100, offset=0):
+        from app.integrations.errors import IntegrationClientError
+
+        raise IntegrationClientError(
+            "Invalid route/method passed",
+            system="brevo",
+            account_id="main",
+            status_code=404,
+        )
+
+
+def test_membership_filter_rejected_keeps_previous_members(session_factory):
+    """Bug 4 degradation: when Brevo rejects the membership filter the
+    mirror must keep the previously-synced members (never wipe on an
+    API limitation) and surface the operator-facing note."""
+    from app.integrations.brevo.segments import MEMBERSHIP_UNAVAILABLE_NOTE
+
+    _FakeClient.segments = [{"id": 11, "name": "VIPs"}]
+    _FakeClient.members_by_segment = {11: ["ana@example.com"]}
+    with session_factory() as session:
+        ana_id, _ = _seed_contacts(session)
+        session.commit()
+        # First run with a working filter populates the membership.
+        with _patch_client():
+            __import__("asyncio").run(sync_brevo_segments(session, "main"))
+        session.commit()
+        mirror = session.scalar(
+            select(Segment).where(Segment.external_source == "brevo:main:11")
+        )
+        assert mirror.cached_count == 1
+
+        # Second run: filter rejected → members preserved + note set.
+        with patch(
+            "app.integrations.brevo.segments.BrevoClient",
+            _FilterRejectedClient,
+        ):
+            stats = __import__("asyncio").run(
+                sync_brevo_segments(session, "main")
+            )
+        session.commit()
+        session.refresh(mirror)
+        assert stats["members_matched"] == 1  # preserved, not wiped
+        members = __import__("json").loads(mirror.static_contact_ids)
+        assert members == [ana_id]
+        assert mirror.description == MEMBERSHIP_UNAVAILABLE_NOTE
