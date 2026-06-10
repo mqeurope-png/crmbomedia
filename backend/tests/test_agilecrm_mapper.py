@@ -63,7 +63,55 @@ def test_missing_first_name_falls_back_to_email_local_part():
 def test_missing_first_name_and_email_uses_placeholder():
     record, _ = map_agilecrm_contact_to_internal(_payload(properties=[]))
     assert record["first_name"] == "Sin nombre"
-    assert record["email"] == ""
+    # Empty source email is normalised to None now — the column is
+    # nullable, the read schema surfaces None, and the mapper no
+    # longer stores empty strings that masquerade as real values.
+    assert record["email"] is None
+    assert record["is_email_valid"] is False
+
+
+def test_malformed_email_is_nulled_and_flag_flipped(caplog):
+    """Production crash root cause: AgileCRM accounts surface emails
+    like 'emete@emete@emete.cat' that pass the source's lenient
+    storage but fail RFC validation. Mapper must null them, set
+    `is_email_valid=False`, and emit a warning carrying the offending
+    external_id so ops can audit later."""
+    with caplog.at_level("WARNING"):
+        record, _ = map_agilecrm_contact_to_internal(
+            _payload(
+                properties=[
+                    {"name": "first_name", "value": "Emete"},
+                    {"name": "email", "value": "emete@emete@emete.cat"},
+                ]
+            )
+        )
+    assert record["email"] is None
+    assert record["is_email_valid"] is False
+    assert record["first_name"] == "Emete"
+    assert any(
+        "email malformed" in rec.message for rec in caplog.records
+    )
+
+
+def test_garbage_phone_is_nulled(caplog):
+    """A free-form phone column over 30 chars or without any digit is
+    functionally unusable downstream. The mapper drops it, the read
+    schema surfaces None, and a warning is logged for the audit
+    trail."""
+    with caplog.at_level("WARNING"):
+        record, _ = map_agilecrm_contact_to_internal(
+            _payload(
+                properties=[
+                    {"name": "email", "value": "ghost@example.com"},
+                    {
+                        "name": "phone",
+                        "value": "see notes for full schedule",
+                    },
+                ]
+            )
+        )
+    assert record["phone"] is None
+    assert any("phone looks malformed" in rec.message for rec in caplog.records)
 
 
 def test_tags_accept_dict_shape_and_dedup():

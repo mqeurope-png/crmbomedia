@@ -74,7 +74,14 @@ class Contact(TimestampMixin, Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     first_name: Mapped[str] = mapped_column(String(120), nullable=False)
     last_name: Mapped[str | None] = mapped_column(String(160))
-    email: Mapped[str] = mapped_column(String(255), nullable=False, unique=True, index=True)
+    # Nullable on purpose: ingesters routinely surface malformed
+    # addresses ("emete@emete@emete.cat") that can't be repaired
+    # downstream. The mapper writes NULL in that case so the read
+    # schema can tell the difference between "we have no email" and
+    # "we have an unusable string" — `is_email_valid` flags the latter
+    # when something IS stored but failed the validator. Migration
+    # 20260606_0019 relaxed the column from NOT NULL.
+    email: Mapped[str | None] = mapped_column(String(255), unique=True, index=True)
     phone: Mapped[str | None] = mapped_column(String(80))
     origin: Mapped[str | None] = mapped_column(String(120))
     tags: Mapped[str] = mapped_column(String(500), default="", nullable=False)

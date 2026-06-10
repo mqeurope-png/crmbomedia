@@ -180,6 +180,50 @@ def test_create_contact_with_company_and_persist_consent(client: TestClient):
     assert response.json()["company_id"] == company["id"]
 
 
+def test_contacts_list_tolerates_malformed_email_in_db(client: TestClient):
+    """Regression: a row with `email = 'emete@emete@emete.cat'` (legit
+    in the DB after a bad AgileCRM import) used to take the entire
+    list endpoint down with a 500. The read schema now surfaces None
+    for that row so the page renders."""
+    from app.db.session import get_session as gs
+    from app.models.crm import Contact
+
+    headers = auth_headers(client, "manager")
+    # Create one well-formed contact via the API so the listing has
+    # something else alongside the bad row.
+    client.post(
+        "/api/contacts",
+        json={"first_name": "Ana", "email": "ana@example.com"},
+        headers=headers,
+    )
+    # Drop the bad row directly via the ORM — the create endpoint
+    # would reject it (which is the whole point of the strict
+    # `ContactCreate.email`).
+    factory = client.app.dependency_overrides[gs]
+    gen = factory()
+    session = next(gen)
+    try:
+        session.add(
+            Contact(
+                first_name="Bad",
+                email="emete@emete@emete.cat",
+                is_email_valid=False,
+            )
+        )
+        session.commit()
+    finally:
+        gen.close()
+
+    response = client.get("/api/contacts", headers=headers)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    emails = sorted(item["email"] for item in body["items"] if item["email"])
+    assert "ana@example.com" in emails
+    nulled = [item for item in body["items"] if item["email"] is None]
+    assert len(nulled) == 1
+    assert nulled[0]["first_name"] == "Bad"
+
+
 def test_reject_contact_for_missing_company(client: TestClient):
     response = client.post(
         "/api/contacts",
