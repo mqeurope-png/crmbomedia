@@ -1,0 +1,8 @@
+# Keep the image lean: bytecode caches and test artefacts never
+# belong in the build context.
+__pycache__/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+tests/

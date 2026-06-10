@@ -19,6 +19,15 @@
 
 services:
   nginx:
+    # Declared here too (same as docker-compose.prod.yml) so the
+    # override is self-sufficient: combining it with the dev compose
+    # (`-f docker-compose.yml -f docker-compose.plesk.yml`), which has
+    # no nginx service, used to fail with "service nginx has neither
+    # an image nor a build context". With the image inline, any base
+    # file works; when applied on top of the prod file the values are
+    # identical so nothing changes.
+    image: nginx:1.27-alpine
+    restart: unless-stopped
     # Replace, do not append: avoids inheriting 80/443 from the prod file.
     ports: !override
       - "127.0.0.1:8080:80"
