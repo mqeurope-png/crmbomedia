@@ -24,6 +24,12 @@ import logging
 from datetime import datetime
 from typing import Any
 
+from app.integrations.mapper_helpers import (
+    EXTERNAL_REFERENCE_FIELD_LIMITS,
+    apply_contact_field_limits,
+    truncate_safe,
+)
+
 logger = logging.getLogger(__name__)
 
 ORIGIN_LABEL = "brevo"
@@ -97,6 +103,24 @@ def map_brevo_contact_to_internal(
             lead_score = None
 
     first_name = str(native.get("first_name") or "").strip()
+    # Brevo treats list membership as the opt-in: every contact sitting
+    # in any list (i.e. anything we pull) is suscribed unless explicitly
+    # blacklisted. The post-deploy reality check (PR #51) imported 18.8k
+    # rows and the previous mapping left 17.7k stuck on `unknown`, which
+    # then leaked into every consent filter and segment. With Brevo
+    # there is no intermediate state to preserve — either the address
+    # is opted in or it isn't.
+    #
+    # `withdrawn` (asked for by the follow-up spec) would need a new
+    # value in `ConsentStatus`; the enum across model/filters/segments/
+    # IA context/UI defines `unsubscribed` for the exact semantic, so
+    # this keeps the same trade-off documented in the previous sprint
+    # (`docs/integrations-brevo.md` § "ConsentStatus deviation") rather
+    # than rippling a parallel value through every layer.
+    is_blacklisted = bool(
+        payload.get("emailBlacklisted") or payload.get("smsBlacklisted")
+    )
+
     record: dict[str, Any] = {
         "first_name": first_name or _local_part(email or "") or "Sin nombre",
         "last_name": str(native.get("last_name") or "").strip() or None,
@@ -105,17 +129,17 @@ def map_brevo_contact_to_internal(
         "phone": phone,
         "origin": ORIGIN_LABEL,
         "commercial_status": str(native.get("commercial_status") or "new"),
-        # Brevo doesn't model GDPR consent; `emailBlacklisted` means the
-        # address must not be mailed, which maps to our unsubscribe
-        # bucket. Anything else stays unknown — never auto-grant.
-        "marketing_consent": (
-            "unsubscribed" if payload.get("emailBlacklisted") else "unknown"
-        ),
+        "marketing_consent": "unsubscribed" if is_blacklisted else "granted",
         "address_country": str(native.get("address_country") or "").strip() or None,
         "address_city": str(native.get("address_city") or "").strip() or None,
         "lead_score": lead_score,
         "custom_fields": json.dumps(custom, default=str) if custom else None,
     }
+    # Last-mile safety net: truncate every varchar to the column's
+    # declared length so a 240-char name never aborts the whole sync.
+    apply_contact_field_limits(
+        record, connector="brevo", external_id=payload.get("id")
+    )
 
     # List membership → auto-tags. The job's tag-delta helper removes
     # stale `brevo:<account>`-sourced assignments when a contact leaves
@@ -131,7 +155,13 @@ def map_brevo_contact_to_internal(
     ref_extras: dict[str, Any] = {
         "external_created_at": _parse_dt(payload.get("createdAt")),
         "external_updated_at": _parse_dt(payload.get("modifiedAt")),
-        "origin_detail": "brevo",
+        "origin_detail": truncate_safe(
+            "brevo",
+            EXTERNAL_REFERENCE_FIELD_LIMITS.get("origin_detail"),
+            field_name="origin_detail",
+            external_id=payload.get("id"),
+            connector="brevo",
+        ),
         "metadata": {
             "list_ids": list_ids,
             "email_blacklisted": bool(payload.get("emailBlacklisted", False)),

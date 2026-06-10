@@ -28,6 +28,8 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
+from app.integrations.mapper_helpers import apply_contact_field_limits
+
 logger = logging.getLogger(__name__)
 
 ORIGIN_LABEL = "agilecrm"
@@ -324,6 +326,12 @@ def map_agilecrm_contact_to_internal(
         "origin_detail": source,
         "metadata": metadata or None,
     }
+    # Truncate every varchar to the column's declared length so a
+    # 240-char first_name (real case from a Brevo-then-imported-to-
+    # AgileCRM contact) never aborts the bulk sync transaction.
+    apply_contact_field_limits(
+        record, connector="agilecrm", external_id=payload.get("id")
+    )
     return record, extras
 
 

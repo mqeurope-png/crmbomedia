@@ -36,7 +36,9 @@ def test_well_formed_contact_maps_native_fields():
     assert record["phone"] == "+34600100100"
     assert record["is_email_valid"] is True
     assert record["origin"] == "brevo"
-    assert record["marketing_consent"] == "unknown"
+    # Brevo treats list membership as the opt-in: anything we pull
+    # that isn't blacklisted is granted.
+    assert record["marketing_consent"] == "granted"
     assert sorted(record["tag_names"]) == [
         "brevo-list:Newsletter",
         "brevo-list:VIP",
@@ -89,6 +91,45 @@ def test_blacklisted_email_marks_unsubscribed():
     )
     assert record["marketing_consent"] == "unsubscribed"
     assert record["is_email_valid"] is False
+
+
+def test_sms_blacklisted_also_marks_unsubscribed():
+    """`smsBlacklisted` is a second opt-out signal Brevo carries; if
+    either flag is set the contact must not be mailed/SMS'd."""
+    record, _ = map_brevo_contact_to_internal(
+        _payload(emailBlacklisted=False, smsBlacklisted=True), "main"
+    )
+    assert record["marketing_consent"] == "unsubscribed"
+
+
+def test_clean_contact_defaults_to_granted_consent():
+    """Regression for the post-deploy bug: 17.7k Brevo contacts were
+    stuck on `unknown` because the mapper only flipped on blacklist."""
+    record, _ = map_brevo_contact_to_internal(
+        _payload(emailBlacklisted=False, smsBlacklisted=False), "main"
+    )
+    assert record["marketing_consent"] == "granted"
+
+
+def test_long_first_name_is_truncated_with_warning(caplog):
+    """Real production payload: a Brevo contact with 240 chars of
+    company+department+name in first_name. The old mapper let the
+    240-char value reach the ORM and the INSERT failed with
+    `Data too long for column 'first_name'`. Now we truncate."""
+    very_long = "Ana " * 80  # 320 chars
+    with caplog.at_level("WARNING"):
+        record, _ = map_brevo_contact_to_internal(
+            _payload(attributes={"NOMBRE": very_long, "APELLIDOS": "García"}),
+            "main",
+        )
+    # Resolved from the model — Contact.first_name is String(120).
+    from app.integrations.mapper_helpers import CONTACT_FIELD_LIMITS
+
+    expected_max = CONTACT_FIELD_LIMITS["first_name"]
+    assert expected_max is not None
+    assert len(record["first_name"]) == expected_max
+    assert record["first_name"].endswith("…")
+    assert any("truncated first_name" in rec.message for rec in caplog.records)
 
 
 def test_list_ids_without_names_fall_back_to_id():
