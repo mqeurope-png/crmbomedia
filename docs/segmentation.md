@@ -109,3 +109,53 @@ Rate limit por user: 10 generaciones/hora, 30 explicaciones/hora.
 - **Sprint E**: triggers cuando un contacto entra/sale de un segmento (notificación, asignar tag, mover de pipeline). El motor ya expone `evaluate_contact_against_rules(contact, tree)` para usarlo desde un hook.
 - **Sprint P.4**: re-evaluación en background con cron — no necesario aún porque el cache se invalida al entrar al detail page.
 - **Sprint AI**: cualificación automática del contacto basada en los segmentos donde encaja.
+
+## UX del builder
+
+El `SegmentRuleBuilder` ofrece dos vistas que comparten el mismo árbol JSON:
+
+- **Vista simple** (default). Lista plana inspirada en Brevo/ActiveCampaign:
+  cada fila es `Campo | Operador | Valor | ×`, con un toggle global
+  `Coincidir todas (AND)` / `Coincidir cualquiera (OR)` arriba y un
+  botón `+ Añadir condición` al final. Cubre el 90% de los casos
+  reales del CRM y no requiere que el operador entienda grupos
+  anidados.
+- **Vista avanzada**. La que ya existía sobre `react-querybuilder`,
+  con grupos anidados, NOT, etc. Se selecciona vía botón y la
+  preferencia persiste en `localStorage`
+  (`crmbomedia_segment_builder_mode`).
+
+Detección automática: si las reglas guardadas contienen grupos
+anidados o NOT, el builder arranca en avanzada aunque el usuario
+hubiera elegido simple, para que no se pierdan estructuras al
+re-serializar.
+
+## Editor de valores tipado
+
+Tanto la vista simple como la avanzada delegan en
+`SegmentValueEditor`, que pinta el control adecuado según el tipo de
+campo + comparador:
+
+| Tipo de campo               | Editor                              |
+|-----------------------------|-------------------------------------|
+| `tags` (tag-multi)          | Multi-select con checkboxes y swatch de color, lista cargada desde `/api/tags`. |
+| `pipeline_id` (uuid-multi)  | Multi-select de pipelines.          |
+| `pipeline_stage_id`         | Multi-select agrupado por pipeline. |
+| `enum` (in/not_in)          | Multi-checkbox.                     |
+| `enum` (eq/neq)             | `<select>` con `enum_values`.       |
+| `bool`                      | Toggle Sí/No.                       |
+| `int`                       | `<input type="number">`. Para listas → CSV de enteros. |
+| `date`                      | `<input type="date">`. Para `between` → par de fechas. |
+| `between` (cualquier tipo)  | Dos inputs del tipo del campo.       |
+| `in_last_n_days`            | `<input type="number">` con N días. |
+| `is_null` / `is_not_null`   | Sin valor (placeholder "sin valor").|
+
+El bug que motivó este cambio era que el editor por defecto de
+`react-querybuilder` aceptaba cualquier string, así que un operador
+podía teclear `formmbo` en un campo `tags` con comparador
+`contains_any` y el backend recibía un string donde esperaba una
+lista de UUIDs. El engine ahora también convierte ese
+`ValueError` a `SegmentRuleError`, así que aunque alguien envíe
+`rules_json` malformado por API directa, la respuesta es 400 con
+mensaje claro (`Campo 'tags': Comparator 'contains_any' requires a
+non-empty list`) en lugar de 500.

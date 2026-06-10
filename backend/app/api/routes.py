@@ -3478,6 +3478,18 @@ def segment_ai_generate(
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
         ) from exc
+    except llm_service.LLMUpstreamError as exc:
+        # The LLM responded but didn't return parseable JSON. Surface
+        # an operator-friendly message instead of leaking provider
+        # internals — the actionable hint is to reword the prompt.
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=(
+                "La IA no pudo generar reglas para esta descripción. "
+                "Intenta reformular usando los nombres de los campos "
+                "disponibles."
+            ),
+        ) from exc
     except llm_service.LLMError as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)

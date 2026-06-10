@@ -109,7 +109,17 @@ def _compile(node: dict[str, Any], *, depth: int) -> ColumnElement[bool]:
         raise SegmentRuleError(
             f"Comparator {comparator!r} not allowed for field {field_key!r}"
         )
-    value = validate_value(spec, comparator, raw_value)
+    try:
+        value = validate_value(spec, comparator, raw_value)
+    except ValueError as exc:
+        # `validate_value` raises plain ValueError on type mismatches
+        # (e.g. tags expects a list of UUIDs but the operator sent a
+        # string). Without this wrap the route layer would see an
+        # unhandled exception and return 500 instead of a 400 that the
+        # UI can show next to the offending row.
+        raise SegmentRuleError(
+            f"Campo {spec.key!r}: {exc}"
+        ) from exc
     return _compile_leaf(spec, comparator, value)
 
 
@@ -319,7 +329,10 @@ def _evaluate(contact: Contact, node: dict[str, Any], *, depth: int) -> bool:
     comparator = str(node.get("comparator") or "")
     if comparator not in spec.comparators:
         return False
-    value = validate_value(spec, comparator, node.get("value"))
+    try:
+        value = validate_value(spec, comparator, node.get("value"))
+    except ValueError:
+        return False
     return _evaluate_leaf(contact, spec, comparator, value)
 
 

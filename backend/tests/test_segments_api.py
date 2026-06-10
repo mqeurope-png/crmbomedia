@@ -192,6 +192,73 @@ def test_preview_rejects_invalid_rules(client: TestClient):
     assert response.status_code == 400
 
 
+def test_preview_rejects_tag_string_value_with_400_not_500(client: TestClient):
+    """Production bug: an operator typing free-text into the value editor
+    for `tags` sent a plain string where the engine expects a list of
+    UUIDs. The route used to return 500 because `validate_value` raised
+    a plain `ValueError` that didn't match the `SegmentRuleError`
+    handler. With the engine wrapping the validator, the same payload
+    now surfaces as a 400 with a clear field-aware message the UI can
+    show next to the offending row."""
+    response = client.post(
+        "/api/segments/preview",
+        json={
+            "rules": {
+                "type": "rule",
+                "field": "tags",
+                "comparator": "contains_any",
+                "value": "formmbo",  # string, not a list of UUIDs
+            }
+        },
+        headers=auth_headers(client, "viewer"),
+    )
+    assert response.status_code == 400, response.text
+    body = response.json()
+    detail = body.get("detail", "")
+    assert "tags" in detail
+    assert "contains_any" in detail or "list" in detail
+
+
+def test_create_segment_with_bad_tags_value_returns_400(client: TestClient):
+    """Same fix applies at POST: invalid value types must reach the UI
+    as a clean 400 instead of crashing the create flow."""
+    response = client.post(
+        "/api/segments",
+        json={
+            "name": "Bad",
+            "rules": {
+                "type": "rule",
+                "field": "tags",
+                "comparator": "contains_any",
+                "value": "not-a-uuid-list",
+            },
+        },
+        headers=auth_headers(client, "manager"),
+    )
+    assert response.status_code == 400
+
+
+def test_update_segment_with_bad_lead_score_returns_400(client: TestClient):
+    segment = client.post(
+        "/api/segments",
+        json={"name": "S", "rules": _basic_rules()},
+        headers=auth_headers(client, "manager"),
+    ).json()
+    response = client.patch(
+        f"/api/segments/{segment['id']}",
+        json={
+            "rules": {
+                "type": "rule",
+                "field": "lead_score",
+                "comparator": "gte",
+                "value": "not-a-number",
+            }
+        },
+        headers=auth_headers(client, "manager"),
+    )
+    assert response.status_code == 400
+
+
 def test_force_refresh_count_re_evaluates(client: TestClient):
     """`?force_refresh=true` re-runs the SQL even when a cached value
     exists. Used by the "Refrescar count" button on the detail page."""

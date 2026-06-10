@@ -241,7 +241,13 @@ def explain_segment_rules(
 
 
 def _parse_segment_json(raw: str) -> dict[str, Any]:
-    """JSON-load the raw provider output, stripping markdown fences."""
+    """JSON-load the raw provider output, stripping markdown fences.
+
+    On parse failure we log a short preview of the raw text so an
+    operator hunting down a "non-JSON content" issue can confirm
+    whether Claude returned prose, a refusal, or a malformed snippet
+    without having to enable the upstream's debug logs. The preview is
+    capped to 200 chars so a runaway model can't flood the log."""
     import json as _json  # noqa: PLC0415
 
     cleaned = raw.strip()
@@ -251,8 +257,19 @@ def _parse_segment_json(raw: str) -> dict[str, Any]:
     try:
         data = _json.loads(cleaned)
     except (ValueError, TypeError) as exc:
+        preview = cleaned[:200].replace("\n", " ")
+        logger.warning(
+            "llm.parse_failure chars=%d preview=%r",
+            len(raw),
+            preview,
+        )
         raise LLMUpstreamError("Provider returned non-JSON content") from exc
     if not isinstance(data, dict):
+        logger.warning(
+            "llm.parse_non_object type=%s preview=%r",
+            type(data).__name__,
+            str(data)[:200],
+        )
         raise LLMUpstreamError("Provider returned a non-object payload")
     return data
 
@@ -300,13 +317,26 @@ def _invoke_claude(
     user_prompt: str,
 ) -> str:
     """Wrapper isolated so tests can monkeypatch it without touching
-    the high-level `generate_pipeline_proposal` flow."""
+    the high-level `generate_pipeline_proposal` flow.
+
+    Diagnostic logging is metadata-only: model + prompt sizes + response
+    length. The API key never leaves this scope; raw user prompts and
+    raw responses are NOT logged so an enabled DEBUG level doesn't leak
+    PII to the application log.
+    """
     try:
         import anthropic
     except ImportError as exc:  # pragma: no cover - guarded by config
         raise LLMNotConfiguredError(
             "anthropic package not installed"
         ) from exc
+
+    logger.info(
+        "llm.request model=%s system_chars=%d user_chars=%d",
+        model,
+        len(system_prompt),
+        len(user_prompt),
+    )
 
     client = anthropic.Anthropic(api_key=api_key)
     try:
@@ -317,20 +347,24 @@ def _invoke_claude(
             messages=[{"role": "user", "content": user_prompt}],
         )
     except getattr(anthropic, "RateLimitError", Exception) as exc:
+        logger.warning("llm.rate_limit model=%s", model)
         raise LLMRateLimitError("Upstream rate limit") from exc
     except getattr(anthropic, "APIError", Exception) as exc:
-        logger.warning("Anthropic API failure: %s", exc)
+        logger.warning("llm.api_error model=%s err=%s", model, exc)
         raise LLMUpstreamError("Provider error") from exc
     except Exception as exc:  # noqa: BLE001 - last-line catch-all
-        logger.exception("Unexpected LLM failure")
+        logger.exception("llm.unexpected_failure model=%s", model)
         raise LLMUpstreamError("Unexpected provider failure") from exc
 
     if not message.content:
+        logger.warning("llm.empty_response model=%s", model)
         raise LLMUpstreamError("Empty response from provider")
     chunk = message.content[0]
     text = getattr(chunk, "text", None)
     if not text:
+        logger.warning("llm.non_text_response model=%s", model)
         raise LLMUpstreamError("Provider returned non-text content")
+    logger.info("llm.response model=%s chars=%d", model, len(text))
     return text
 
 
