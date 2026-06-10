@@ -66,3 +66,51 @@ ContactPipelineStage es independiente.
 - **PR-C**: Pantalla de reportes `/pipelines/{id}/report` con gráfico de barras + lista de estancados.
 - **Sprint E**: Automatizaciones al cambiar de etapa (enviar email, asignar tag, crear tarea).
 - **Sprint P.3**: Segmentación dinámica desde un pipeline.
+
+## Plantillas y generación IA (Sprint P.2.5)
+
+El wizard `/pipelines → + Nuevo pipeline` ofrece tres caminos.
+
+### Plantillas pre-hechas
+
+`app/services/pipeline_templates.py` mantiene una biblioteca **hardcoded**
+de 7 plantillas (ventas B2B/B2C, onboarding, reactivación, soporte,
+renovaciones, RRHH). Son contenido de producto que viaja con el
+release — no datos de usuario — por eso se versionan en código.
+
+- `GET /api/pipeline-templates` lista todas.
+- `POST /api/pipelines/from-template` con `{template_id, name?}`
+  instancia el pipeline con sus etapas + colores + target_days en una
+  sola llamada. Audit `pipeline.created` con `source="template"`.
+
+### Generación con IA
+
+`POST /api/pipelines/generate-ai` con `{description: "..."}` pasa la
+descripción a Claude (Anthropic) y devuelve una propuesta en JSON
+**sin persistir nada**. El operador la revisa en el wizard y decide:
+
+- "Crear directamente" → POST normal a `/pipelines`.
+- "Regenerar" → vuelve a llamar.
+- "Editar antes de crear" → carga la propuesta en el form.
+
+Garantías de privacidad y coste:
+
+- API key vive solo en backend (`ANTHROPIC_API_KEY`). El frontend lee
+  el flag `ai_features_enabled` desde `/api/health` para decidir si
+  pinta el CTA. Cuando la key no está, el endpoint 503 y el flag es
+  false.
+- **El prompt nunca se persiste**. El audit log
+  `pipeline.ai_generated` carga `description_length` +
+  `stages_proposed` — nada más. La descripción puede incluir nombres
+  de clientes, productos, mercados… nada de eso entra en BD ni en
+  logs.
+- **Rate limit** local: 5 generaciones/hora/user. Sliding window en
+  memoria por proceso. Para deploys multi-worker hay que subirlo a
+  Redis cuando dé problemas.
+- **El operador siempre revisa**. La IA propone, el operador decide;
+  no hay "generate-and-save" en un paso. Patrón replicable cuando
+  llegue el Sprint AI (cualificación automática).
+
+Modelo: `claude-sonnet-4-6` (override con `ANTHROPIC_MODEL`). Max
+2000 tokens output. La respuesta se normaliza (entre 4 y 8 etapas, la
+penúltima debe ser `is_won`, la última `is_lost`).

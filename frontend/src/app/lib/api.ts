@@ -1073,3 +1073,70 @@ export async function pipelineStalledContacts(
     `/api/pipelines/${pipelineId}/stalled-contacts`,
   );
 }
+
+// ----- Pipeline templates + AI assist (Sprint P.2.5) -----
+
+export type PipelineTemplate = {
+  id: string;
+  name: string;
+  description: string;
+  category: string;
+  color?: string | null;
+  stages: Array<{
+    name: string;
+    description?: string | null;
+    color?: string | null;
+    is_won?: boolean;
+    is_lost?: boolean;
+    target_days?: number | null;
+  }>;
+};
+
+export type PipelineProposal = {
+  name: string;
+  description?: string | null;
+  color?: string | null;
+  stages: Array<{
+    name: string;
+    description?: string | null;
+    color?: string | null;
+    is_won: boolean;
+    is_lost: boolean;
+    target_days?: number | null;
+    position: number;
+  }>;
+};
+
+export async function listPipelineTemplates(): Promise<PipelineTemplate[]> {
+  return apiFetch<PipelineTemplate[]>("/api/pipeline-templates");
+}
+
+export async function createPipelineFromTemplate(payload: {
+  template_id: string;
+  name?: string;
+}): Promise<Pipeline> {
+  return apiFetch<Pipeline>("/api/pipelines/from-template", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function generatePipelineWithAI(
+  description: string,
+): Promise<PipelineProposal> {
+  return apiFetch<PipelineProposal>("/api/pipelines/generate-ai", {
+    method: "POST",
+    body: JSON.stringify({ description }),
+  });
+}
+
+export type HealthResponse = {
+  status: string;
+  app_name: string;
+  environment: string;
+  ai_features_enabled: boolean;
+};
+
+export async function getHealth(): Promise<HealthResponse> {
+  return apiFetch<HealthResponse>("/api/health");
+}

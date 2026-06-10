@@ -736,6 +736,9 @@ class HealthRead(BaseModel):
     status: str
     app_name: str
     environment: str
+    # Frontend reads this flag to decide whether to render the
+    # "Generar con IA" CTA. Never exposes the API key itself.
+    ai_features_enabled: bool = False
 
 
 class GdprRequestCreate(BaseModel):
@@ -1024,3 +1027,57 @@ class StalledContactRow(BaseModel):
     days_in_stage: int
     overdue_days: int
     entered_stage_at: datetime
+
+
+# ---------------------------------------------------------------------------
+# Pipeline templates + AI generation (Sprint P.2.5)
+# ---------------------------------------------------------------------------
+
+
+class PipelineTemplateStage(BaseModel):
+    name: str
+    description: str | None = None
+    color: str | None = None
+    is_won: bool = False
+    is_lost: bool = False
+    target_days: int | None = None
+
+
+class PipelineTemplate(BaseModel):
+    id: str
+    name: str
+    description: str
+    category: str
+    color: str | None = None
+    stages: list[PipelineTemplateStage]
+
+
+class PipelineFromTemplateRequest(BaseModel):
+    template_id: str = Field(min_length=1, max_length=64)
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+
+
+class PipelineGenerateAIRequest(BaseModel):
+    description: str = Field(min_length=1, max_length=2000)
+
+
+class PipelineProposalStage(BaseModel):
+    name: str
+    description: str | None = None
+    color: str | None = None
+    is_won: bool = False
+    is_lost: bool = False
+    target_days: int | None = None
+    position: int
+
+
+class PipelineProposal(BaseModel):
+    """AI-generated pipeline that the operator inspects before saving.
+    No DB row is written by `/generate-ai`; the proposal is round-
+    tripped through the wizard which the operator then POSTs as a
+    `PipelineCreate` (or via the template path) on confirm."""
+
+    name: str
+    description: str | None = None
+    color: str | None = None
+    stages: list[PipelineProposalStage]

@@ -55,6 +55,14 @@ class Settings(BaseSettings):
     sentry_traces_sample_rate: float = Field(default=0.1, ge=0.0, le=1.0)
     git_sha: str | None = None
 
+    # Anthropic Claude API key for AI-assisted pipeline generation.
+    # Opt-in: when unset the "Generar con IA" surface stays hidden on
+    # the frontend and the endpoint 503s. The key NEVER leaves the
+    # backend — the frontend only reads the computed
+    # `ai_features_enabled` flag via `GET /api/health`.
+    anthropic_api_key: str | None = None
+    anthropic_model: str = "claude-sonnet-4-6"
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
     @field_validator("integration_secrets_key")
@@ -76,6 +84,10 @@ class Settings(BaseSettings):
     @property
     def cors_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
+
+    @property
+    def ai_features_enabled(self) -> bool:
+        return bool(self.anthropic_api_key)
 
 
 @lru_cache

@@ -2,35 +2,22 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
+import { CreatePipelineWizard } from "../components/CreatePipelineWizard";
 import { ErrorState } from "../components/ErrorState";
 import {
-  createPipeline,
   deletePipeline,
   duplicatePipeline,
+  getHealth,
   listPipelines,
   type Pipeline,
 } from "../lib/api";
 import { extractErrorMessage } from "../lib/errors";
-import { TAG_PALETTE } from "../lib/tagPalette";
-
-const DEFAULT_STAGES = [
-  { name: "Nuevo lead" },
-  { name: "Contactado" },
-  { name: "Cualificado" },
-  { name: "Propuesta enviada" },
-  { name: "Negociación" },
-  { name: "Cerrado ganado", is_won: true },
-  { name: "Cerrado perdido", is_lost: true },
-];
 
 export default function PipelinesAdminPage() {
   const [pipelines, setPipelines] = useState<Pipeline[]>([]);
   const [includeInactive, setIncludeInactive] = useState(false);
-  const [showCreate, setShowCreate] = useState(false);
-  const [creating, setCreating] = useState(false);
-  const [draftName, setDraftName] = useState("");
-  const [draftDescription, setDraftDescription] = useState("");
-  const [draftColor, setDraftColor] = useState<string | null>(null);
+  const [wizardOpen, setWizardOpen] = useState(false);
+  const [aiAvailable, setAiAvailable] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
@@ -51,31 +38,11 @@ export default function PipelinesAdminPage() {
     refresh();
   }, [refresh]);
 
-  async function handleCreate(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!draftName.trim()) return;
-    setCreating(true);
-    try {
-      await createPipeline({
-        name: draftName,
-        description: draftDescription || null,
-        color: draftColor,
-        stages: DEFAULT_STAGES.map((stage, index) => ({
-          ...stage,
-          position: index,
-        })),
-      });
-      setDraftName("");
-      setDraftDescription("");
-      setDraftColor(null);
-      setShowCreate(false);
-      await refresh();
-    } catch (err) {
-      setError(extractErrorMessage(err, "No se pudo crear el pipeline."));
-    } finally {
-      setCreating(false);
-    }
-  }
+  useEffect(() => {
+    getHealth()
+      .then((health) => setAiAvailable(health.ai_features_enabled))
+      .catch(() => setAiAvailable(false));
+  }, []);
 
   async function handleDuplicate(pipeline: Pipeline) {
     try {
@@ -105,89 +72,20 @@ export default function PipelinesAdminPage() {
         <p className="eyebrow">CRM</p>
         <h1>Pipelines</h1>
         <p className="lead">
-          Construye flujos de gestión de contactos con etapas
-          reordenables. Cada contacto puede recorrer varios pipelines a la
-          vez (ej: ventas + onboarding).
+          Construye flujos de gestión de contactos con etapas reordenables.
+          Empieza desde cero, parte de una plantilla, o deja que la IA proponga
+          una estructura.
         </p>
         <div className="actions">
           <button
             type="button"
             className="button"
-            onClick={() => setShowCreate((v) => !v)}
+            onClick={() => setWizardOpen(true)}
           >
-            {showCreate ? "Cancelar" : "+ Nuevo pipeline"}
+            + Nuevo pipeline
           </button>
         </div>
       </section>
-
-      {showCreate ? (
-        <section className="panel">
-          <h2>Crear pipeline</h2>
-          <form onSubmit={handleCreate} className="stacked-form">
-            <label>
-              <span>Nombre</span>
-              <input
-                type="text"
-                required
-                maxLength={100}
-                value={draftName}
-                onChange={(event) => setDraftName(event.target.value)}
-              />
-            </label>
-            <label>
-              <span>Descripción</span>
-              <textarea
-                rows={2}
-                maxLength={2000}
-                value={draftDescription}
-                onChange={(event) => setDraftDescription(event.target.value)}
-              />
-            </label>
-            <fieldset className="palette-fieldset">
-              <legend>Color</legend>
-              <div className="palette-grid" role="radiogroup">
-                <button
-                  type="button"
-                  role="radio"
-                  aria-checked={!draftColor}
-                  title="Sin color"
-                  className={`palette-swatch palette-swatch-empty${!draftColor ? " is-selected" : ""}`}
-                  onClick={() => setDraftColor(null)}
-                >
-                  <span aria-hidden>∅</span>
-                </button>
-                {TAG_PALETTE.map((swatch) => {
-                  const selected = draftColor === swatch.hex;
-                  return (
-                    <button
-                      key={swatch.hex}
-                      type="button"
-                      role="radio"
-                      aria-checked={selected}
-                      title={swatch.label}
-                      className={`palette-swatch${selected ? " is-selected" : ""}`}
-                      style={{ background: swatch.hex }}
-                      onClick={() => setDraftColor(swatch.hex)}
-                    >
-                      {selected ? <span aria-hidden>✓</span> : null}
-                    </button>
-                  );
-                })}
-              </div>
-            </fieldset>
-            <p className="muted small">
-              Se crearán 7 etapas iniciales (Nuevo → Contactado → Cualificado
-              → Propuesta → Negociación → Ganado / Perdido). Puedes editarlas
-              después.
-            </p>
-            <div className="form-actions">
-              <button type="submit" className="button" disabled={creating}>
-                {creating ? "Creando…" : "Crear pipeline"}
-              </button>
-            </div>
-          </form>
-        </section>
-      ) : null}
 
       <section className="panel">
         <div className="contact-toolbar">
@@ -204,7 +102,10 @@ export default function PipelinesAdminPage() {
         {isLoading && pipelines.length === 0 ? (
           <p className="muted">Cargando…</p>
         ) : pipelines.length === 0 ? (
-          <p className="muted">No hay pipelines todavía.</p>
+          <p className="muted">
+            No hay pipelines todavía. Pulsa &ldquo;Nuevo pipeline&rdquo; para
+            empezar.
+          </p>
         ) : (
           <div className="table-wrapper">
             <table className="data-table">
@@ -276,6 +177,23 @@ export default function PipelinesAdminPage() {
           </div>
         )}
       </section>
+
+      <CreatePipelineWizard
+        open={wizardOpen}
+        aiAvailable={aiAvailable}
+        onCreated={async (pipeline) => {
+          setWizardOpen(false);
+          await refresh();
+          // Optimistic prepend so the new pipeline shows up immediately
+          // even before refresh resolves.
+          setPipelines((current) =>
+            current.some((p) => p.id === pipeline.id)
+              ? current
+              : [pipeline, ...current],
+          );
+        }}
+        onClose={() => setWizardOpen(false)}
+      />
     </main>
   );
 }

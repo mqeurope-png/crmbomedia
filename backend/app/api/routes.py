@@ -61,6 +61,8 @@ from app.models.crm import (
 from app.repositories import contact_views as contact_views_repository
 from app.repositories import crm as crm_repository
 from app.repositories import pipelines as pipelines_repository
+from app.services import llm as llm_service
+from app.services import pipeline_templates as pipeline_templates_service
 from app.services.email import EmailService, get_email_service
 from app.schemas.crm import (
     ActivityEventListPage,
@@ -101,6 +103,11 @@ from app.schemas.crm import (
     PipelineStageRead,
     PipelineStageReorderRequest,
     PipelineStageUpdate,
+    PipelineFromTemplateRequest,
+    PipelineGenerateAIRequest,
+    PipelineProposal,
+    PipelineProposalStage,
+    PipelineTemplate,
     PipelineUpdate,
     StalledContactRow,
     TagCreate,
@@ -149,7 +156,12 @@ EXPORT_DEFAULT_WINDOW_DAYS = 365
 
 @router.get("/health", response_model=HealthRead, tags=["system"])
 def health(settings: Settings = Depends(get_settings)) -> HealthRead:
-    return HealthRead(status="ok", app_name=settings.app_name, environment=settings.environment)
+    return HealthRead(
+        status="ok",
+        app_name=settings.app_name,
+        environment=settings.environment,
+        ai_features_enabled=settings.ai_features_enabled,
+    )
 
 @router.post("/auth/login", response_model=TokenRead, responses=ERROR_RESPONSES, tags=["auth"])
 def login(
@@ -2902,6 +2914,134 @@ def pipeline_stalled_contacts(
         session, pipeline, limit=limit
     )
     return [StalledContactRow(**row) for row in rows]
+
+
+# ---------------------------------------------------------------------------
+# Pipeline templates + AI assist (Sprint P.2.5)
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/pipeline-templates",
+    response_model=list[PipelineTemplate],
+    responses=ERROR_RESPONSES,
+    tags=["crm"],
+)
+def list_pipeline_templates(
+    current_user: User = Depends(require_viewer),
+) -> list[dict[str, Any]]:
+    """Hardcoded library of starter pipelines. Same set per release;
+    the wizard passes the chosen `id` back to `/from-template`."""
+    _ = current_user
+    return pipeline_templates_service.list_templates()
+
+
+@router.post(
+    "/pipelines/from-template",
+    response_model=PipelineRead,
+    status_code=status.HTTP_201_CREATED,
+    responses=ERROR_RESPONSES,
+    tags=["crm"],
+)
+def create_pipeline_from_template(
+    payload: PipelineFromTemplateRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_manager),
+) -> PipelineRead:
+    template_payload = pipeline_templates_service.build_pipeline_payload(
+        payload.template_id, name=payload.name
+    )
+    if template_payload is None:
+        raise not_found("Pipeline template")
+    pipeline = pipelines_repository.create_pipeline(
+        session,
+        owner_user_id=current_user.id,
+        name=template_payload["name"],
+        description=template_payload.get("description"),
+        color=template_payload.get("color"),
+        is_shared=True,
+        stages=template_payload["stages"],
+    )
+    record_event(
+        session,
+        action=Action.PIPELINE_CREATED,
+        target_type="pipeline",
+        target_id=pipeline.id,
+        actor=current_user,
+        metadata={
+            "name": pipeline.name,
+            "stage_count": len(template_payload["stages"]),
+            "source": "template",
+            "template_id": payload.template_id,
+        },
+        request=request,
+    )
+    session.commit()
+    session.refresh(pipeline)
+    return _pipeline_to_read(session, pipeline)
+
+
+@router.post(
+    "/pipelines/generate-ai",
+    response_model=PipelineProposal,
+    responses=ERROR_RESPONSES,
+    tags=["crm"],
+)
+def generate_pipeline_with_ai(
+    payload: PipelineGenerateAIRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+    settings: Settings = Depends(get_settings),
+    current_user: User = Depends(require_manager),
+) -> PipelineProposal:
+    """Ask Claude to draft a pipeline structure from a natural-language
+    description. Returns the proposal WITHOUT persisting — the
+    operator must POST it back to `/pipelines` to materialise it."""
+    if not settings.ai_features_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="AI features are not configured on this deployment.",
+        )
+    try:
+        proposal = llm_service.generate_pipeline_proposal(
+            payload.description, user_id=current_user.id
+        )
+    except llm_service.LLMRateLimitError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=str(exc),
+        ) from exc
+    except llm_service.LLMNotConfiguredError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="AI features are not configured on this deployment.",
+        ) from exc
+    except llm_service.LLMError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(exc),
+        ) from exc
+    record_event(
+        session,
+        action=Action.PIPELINE_AI_GENERATED,
+        target_type="pipeline",
+        actor=current_user,
+        # NEVER log the raw description — potential PII / customer
+        # secrets. Length + stage count is enough usage signal.
+        metadata={
+            "description_length": len(payload.description),
+            "stages_proposed": len(proposal["stages"]),
+        },
+        request=request,
+    )
+    session.commit()
+    return PipelineProposal(
+        name=proposal["name"],
+        description=proposal.get("description"),
+        color=proposal.get("color"),
+        stages=[PipelineProposalStage(**stage) for stage in proposal["stages"]],
+    )
 
 
 router.include_router(integration_accounts_router)
