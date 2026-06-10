@@ -475,6 +475,7 @@ def _materialise_rows(
                         row.brevo_campaign_id, email, event_type
                     ),
                     event_type=event_type,
+                    campaign_brevo_id=row.brevo_campaign_id,
                     subject=row.subject,
                     body=None,
                     metadata_json=json.dumps(payload, default=str),

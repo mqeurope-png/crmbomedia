@@ -433,6 +433,11 @@ def test_full_flow_single_export_column_based_events(session_factory):
         stored = stored.replace(tzinfo=UTC)
     assert stored == datetime(2025, 10, 3, 10, 46, 39, tzinfo=UTC)
 
+    # Every backfilled row carries the campaign id in the new column
+    # so the recipients endpoint can filter on it without a LIKE
+    # substring scan.
+    assert all(event.campaign_brevo_id == 42 for event in rows)
+
 
 def test_second_run_is_idempotent(session_factory):
     with session_factory() as session:

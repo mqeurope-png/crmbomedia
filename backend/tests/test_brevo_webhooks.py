@@ -89,7 +89,9 @@ def _event(name: str, **overrides):
 def test_opened_event_creates_activity_event(session_factory):
     with session_factory() as session:
         status = process_brevo_webhook_event(
-            session, _event("opened"), account_id="main"
+            session,
+            _event("opened", **{"campaign-id": 39}),
+            account_id="main",
         )
         session.commit()
         assert status == "processed"
@@ -97,6 +99,35 @@ def test_opened_event_creates_activity_event(session_factory):
         assert event.event_type == "email.opened"
         assert event.system == "brevo"
         assert event.subject == "Oferta verano"
+        # The mapper picks Brevo's `campaign-id` payload key — the
+        # recipients endpoint needs it to filter responses per
+        # campaign.
+        assert event.campaign_brevo_id == 39
+
+
+def test_event_without_campaign_id_lands_with_null_column(session_factory):
+    """Transactional sends don't carry a campaign — the column stays
+    NULL and the row is still materialised."""
+    with session_factory() as session:
+        process_brevo_webhook_event(
+            session, _event("delivered"), account_id="main"
+        )
+        session.commit()
+        event = session.scalar(select(ActivityEvent))
+        assert event is not None
+        assert event.campaign_brevo_id is None
+
+
+def test_event_campaign_id_accepts_string_payload(session_factory):
+    """Brevo occasionally ships the id as a JSON string."""
+    with session_factory() as session:
+        process_brevo_webhook_event(
+            session, _event("opened", **{"campaign-id": "42"}),
+            account_id="main",
+        )
+        session.commit()
+        event = session.scalar(select(ActivityEvent))
+        assert event.campaign_brevo_id == 42
         assert event.occurred_at is not None
 
 

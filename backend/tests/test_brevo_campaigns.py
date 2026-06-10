@@ -398,6 +398,7 @@ def test_campaign_recipients_resolved_from_activity_events(
     with session_factory() as session:
         from app.models.crm import ActivityEvent, Contact
 
+        row = session.get(BrevoCampaignCache, created["id"])
         ana = Contact(first_name="Ana", email="ana@example.com")
         session.add(ana)
         session.flush()
@@ -408,11 +409,11 @@ def test_campaign_recipients_resolved_from_activity_events(
                 account_id="main",
                 external_id="evt-1",
                 event_type="email.opened",
+                campaign_brevo_id=row.brevo_campaign_id,
                 occurred_at=datetime.now(UTC),
                 synced_at=datetime.now(UTC),
             )
         )
-        row = session.get(BrevoCampaignCache, created["id"])
         row.cached_at = datetime.now(UTC)
         session.commit()
     response = client.get(
@@ -424,6 +425,102 @@ def test_campaign_recipients_resolved_from_activity_events(
     assert len(items) == 1
     assert items[0]["email"] == "ana@example.com"
     assert items[0]["event_type"] == "email.opened"
+
+
+def test_campaign_recipients_filtered_by_campaign_brevo_id(
+    client: TestClient, session_factory
+):
+    """Regression: the endpoint used to mix every campaign's
+    recipients into the same response. Each campaign now MUST only
+    surface its own recipients, identified by the new
+    `activity_events.campaign_brevo_id` column."""
+    headers = auth_headers(client, "manager")
+    with _patch_api():
+        first = client.post(
+            "/api/brevo/campaigns",
+            json=_campaign_payload(name="Coles aviso"),
+            headers=headers,
+        ).json()
+        second = client.post(
+            "/api/brevo/campaigns",
+            json=_campaign_payload(name="Coles subvención"),
+            headers=headers,
+        ).json()
+
+    with session_factory() as session:
+        from app.models.crm import ActivityEvent, Contact
+
+        first_row = session.get(BrevoCampaignCache, first["id"])
+        second_row = session.get(BrevoCampaignCache, second["id"])
+
+        oscar = Contact(first_name="Oscar", email="oscar@example.com")
+        ana = Contact(first_name="Ana", email="ana@example.com")
+        session.add_all([oscar, ana])
+        session.flush()
+
+        # Oscar opened only the FIRST campaign.
+        session.add(
+            ActivityEvent(
+                contact_id=oscar.id,
+                system="brevo",
+                account_id="main",
+                external_id=f"backfill:{first_row.brevo_campaign_id}:oscar@example.com:openers",
+                event_type="email.opened",
+                campaign_brevo_id=first_row.brevo_campaign_id,
+                occurred_at=datetime.now(UTC),
+                synced_at=datetime.now(UTC),
+            )
+        )
+        # Ana opened only the SECOND campaign.
+        session.add(
+            ActivityEvent(
+                contact_id=ana.id,
+                system="brevo",
+                account_id="main",
+                external_id=f"backfill:{second_row.brevo_campaign_id}:ana@example.com:openers",
+                event_type="email.opened",
+                campaign_brevo_id=second_row.brevo_campaign_id,
+                occurred_at=datetime.now(UTC),
+                synced_at=datetime.now(UTC),
+            )
+        )
+        # A pre-0025 row with NULL campaign_brevo_id but the backfill
+        # external_id pointing at the first campaign — must still
+        # surface there via the fallback LIKE.
+        session.add(
+            ActivityEvent(
+                contact_id=oscar.id,
+                system="brevo",
+                account_id="main",
+                external_id=f"backfill:{first_row.brevo_campaign_id}:legacy@example.com:openers",
+                event_type="email.opened",
+                campaign_brevo_id=None,
+                occurred_at=datetime.now(UTC),
+                synced_at=datetime.now(UTC),
+            )
+        )
+        first_row.cached_at = datetime.now(UTC)
+        second_row.cached_at = datetime.now(UTC)
+        session.commit()
+
+    first_resp = client.get(
+        f"/api/brevo/campaigns/{first['id']}/recipients/opened",
+        headers=headers,
+    ).json()
+    assert {item["email"] for item in first_resp["items"]} == {
+        "oscar@example.com",
+    }
+    # The legacy NULL row also lands on the first campaign via the
+    # external_id fallback (one item, but Oscar is its contact too).
+    assert len(first_resp["items"]) == 2
+
+    second_resp = client.get(
+        f"/api/brevo/campaigns/{second['id']}/recipients/opened",
+        headers=headers,
+    ).json()
+    assert {item["email"] for item in second_resp["items"]} == {
+        "ana@example.com",
+    }
 
 
 def test_campaign_detail_lazy_loads_html(client: TestClient):
