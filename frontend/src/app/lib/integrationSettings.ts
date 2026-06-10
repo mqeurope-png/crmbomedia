@@ -288,7 +288,7 @@ export const SYSTEM_OPERATIONS: Partial<Record<ExternalSystem, string[]>> = {
   // registered server-side under the same `<system>:<operation>`
   // contract; the first entry is the "default" the SyncPanel
   // dispatches when the operator clicks "Sincronizar ahora".
-  brevo: ["sync_contacts", "refresh_segments"],
+  brevo: ["sync_contacts", "refresh_segments", "historical_backfill"],
 };
 
 export function hasOperationsRegistered(system: ExternalSystem): boolean {

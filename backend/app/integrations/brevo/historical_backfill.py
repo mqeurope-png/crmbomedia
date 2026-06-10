@@ -4,28 +4,40 @@ The live webhook only fires from the moment Bart sets it up. Every
 campaign sent before that day has no granular trail in the CRM — the
 campaign detail page shows aggregated stats but the contact page's
 "Actividad email" section stays empty for pre-webhook deliveries.
-Brevo's API exposes the recipients per event on every past
-campaign, so this module walks the cached `brevo_campaigns_cache`
-rows and back-fills the missing `activity_events` rows from the
-remote.
 
-Idempotency rides on the existing `activity_events` UNIQUE
-constraint `(system, account_id, external_id)`. The `external_id`
-we synthesise is deterministic per (campaign, recipient, event):
+PR #54 implemented this against `GET /emailCampaigns/{id}/{event_type}`
+which **does not exist** in Brevo's API v3 (404 in production). The
+supported path is an asynchronous **export job** per campaign and
+per recipient bucket:
+
+  POST /emailCampaigns/{id}/exportRecipients  body={recipientsType}
+       → {"processId": N}
+  GET  /processes/{N}     → {"status": "...", "exportUrl?": "..."}
+  GET  exportUrl  (signed)  → CSV with the recipient list
+
+We poll the process until it lands on `completed` or `aborted`, download
+the CSV, decode it (utf-8-sig handles Brevo's BOM cleanly), and
+materialise one `activity_events` row per known CRM contact. Unknown
+emails are counted as `contacts_unknown` — webhooks never create
+contacts and the backfill follows the same rule.
+
+Idempotency rides on the `activity_events` UNIQUE constraint
+`(system, account_id, external_id)`. We keep PR #54's external_id
+pattern so a fresh CSV download doesn't re-create rows already left
+behind by the buggy v1 run:
 
     backfill:{brevo_campaign_id}:{email_normalised}:{event_type}
 
-A second run hits the same key → IntegrityError on insert → we
-swallow it and count the row as "already there". No upfront SELECT
-per row needed.
-
-Webhooks NEVER create contacts; the backfill follows the same rule.
-A recipient email that doesn't match any CRM contact is logged as
-`contacts_unknown` and skipped.
+This module is meant to be run **once per installation**: after the
+backfill finishes, the live webhook covers everything going forward.
+A second run is harmless (every row hits the UNIQUE key and is counted
+as `events_skipped_existing`) but it costs API quota.
 """
 from __future__ import annotations
 
 import asyncio
+import csv
+import io
 import json
 import logging
 from datetime import UTC, datetime
@@ -46,31 +58,41 @@ from app.workers.jobs import OPERATIONS, SyncOutcome
 
 logger = logging.getLogger(__name__)
 
-#: Brevo event-type segment (URL path) → internal `email.*` event.
+#: Brevo `recipientsType` → internal `email.*` event mapping.
+#:
+#: Only the buckets that map cleanly to a single observable event are
+#: listed. We deliberately skip `all`, `nonClickers` and `nonOpeners`
+#: (redundant with the positive buckets) and `delivered`/`complaints`
+#: (Brevo does not expose recipient lists for those via the export
+#: endpoint).
 EVENT_TYPE_MAP: dict[str, str] = {
-    "delivered": "email.delivered",
-    "opened": "email.opened",
-    "clicked": "email.clicked",
-    "bounced": "email.bounced_hard",
-    "soft-bounce": "email.bounced_soft",
+    "openers": "email.opened",
+    "clickers": "email.clicked",
+    "softBouncers": "email.bounced_soft",
+    "hardBouncers": "email.bounced_hard",
     "unsubscribed": "email.unsubscribed",
-    "complaints": "email.spam_complaint",
 }
 
-#: Brevo's per-event recipient response sometimes carries the
-#: precise timestamp under a different key. Order matters — we pick
-#: the first that exists.
-TIMESTAMP_KEYS = ("openedAt", "clickedAt", "eventTime", "date", "deliveredAt")
-
-PAGE_SIZE = 500
 SENT_STATUSES = {"sent", "archive"}
 
-#: Brevo's docs don't pin the rate limit for these endpoints; the
-#: live integration hits 400 req/min on the rest of the API. Two
-#: concurrent calls + 200ms inter-call sleep keeps us comfortably
-#: under it and matches the agilecrm pacing helper.
-_CONCURRENCY = 2
-_INTER_CALL_SLEEP_SECONDS = 0.2
+#: Adaptive polling schedule for the process endpoint, in seconds. We
+#: start tight because most exports finish under a minute, then back
+#: off so a long-running job doesn't waste 360 polls/hour. The last
+#: value repeats once the schedule is exhausted.
+_POLL_SCHEDULE_SECONDS: tuple[float, ...] = (5, 10, 15, 30, 30, 60, 60, 120)
+
+#: Hard wall on how long we wait for a single export. Brevo runs the
+#: export queue with no SLA — observed real-world latency stays
+#: comfortably under 5 minutes per campaign but a stuck export must
+#: NOT block the worker forever.
+_EXPORT_TIMEOUT_SECONDS = 1800.0
+
+#: Brevo throttles campaign-data endpoints to ~100 req/min — much
+#: stricter than the 400 req/min on contacts. With the export flow we
+#: only fire 1-2 API calls per polling tick (start_export + status
+#: polls); a 1 s gap between calls keeps the bucket healthy and
+#: matches the rate-limit cushion the live integration runs with.
+_INTER_CALL_SLEEP_SECONDS = 1.0
 
 
 def _normalise_email(value: Any) -> str | None:
@@ -93,18 +115,15 @@ def _coerce_dt(value: Any) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
-def _occurred_at(
-    entry: dict[str, Any], fallback: datetime | None
-) -> datetime:
-    for key in TIMESTAMP_KEYS:
-        parsed = _coerce_dt(entry.get(key))
-        if parsed is not None:
-            return parsed
-    if fallback is not None:
-        if fallback.tzinfo is None:
-            fallback = fallback.replace(tzinfo=UTC)
-        return fallback
-    return datetime.now(UTC)
+def _fallback_occurred_at(fallback: datetime | None) -> datetime:
+    """The CSV export only carries the recipient list — there's no
+    per-event timestamp. We anchor every row to the campaign's
+    `sent_at` so the timeline shows the right calendar day."""
+    if fallback is None:
+        return datetime.now(UTC)
+    if fallback.tzinfo is None:
+        return fallback.replace(tzinfo=UTC)
+    return fallback
 
 
 def _resolve_emails_to_contact_ids(
@@ -125,48 +144,163 @@ def _resolve_emails_to_contact_ids(
 
 def _external_id(campaign_id: int, email: str, event_type: str) -> str:
     """Deterministic dedup key. Capped at the column's 255-char
-    limit; in practice campaign ids + emails stay well below."""
+    limit; in practice campaign ids + emails stay well below.
+
+    Kept stable across PR #54 → this PR so a partial run from the
+    legacy flow doesn't re-insert rows that already landed."""
     raw = f"backfill:{campaign_id}:{email}:{event_type}"
     return raw[:255]
 
 
-async def _fetch_event_recipients(
+# ---------------------------------------------------------------------------
+# Export + polling primitives
+# ---------------------------------------------------------------------------
+
+
+async def _wait_for_export(
+    client: BrevoClient,
+    process_id: int,
+    *,
+    timeout_seconds: float = _EXPORT_TIMEOUT_SECONDS,
+    poll_schedule: tuple[float, ...] = _POLL_SCHEDULE_SECONDS,
+    sleeper: Any = None,
+) -> dict[str, Any]:
+    """Block until a Brevo export `processId` reaches a terminal state.
+
+    Returns the last `get_process_status` body (status, exportUrl, ...).
+    Raises `TimeoutError` if the process is still queued/in_process
+    after `timeout_seconds`. The `sleeper` hook lets tests fast-forward
+    the schedule without monkeypatching `asyncio.sleep` globally."""
+    sleep = sleeper or asyncio.sleep
+    deadline = asyncio.get_event_loop().time() + timeout_seconds
+    schedule_iter = iter(poll_schedule)
+    last_wait = poll_schedule[-1]
+    while True:
+        body = await client.get_process_status(process_id)
+        status = str(body.get("status") or "").lower()
+        if status in {"completed", "aborted", "failed", "error"}:
+            return body
+        now = asyncio.get_event_loop().time()
+        if now >= deadline:
+            raise TimeoutError(
+                f"Brevo export process {process_id} did not finish "
+                f"within {timeout_seconds:.0f}s (last status={status!r})"
+            )
+        wait = next(schedule_iter, last_wait)
+        # Don't oversleep past the deadline.
+        wait = min(wait, max(deadline - now, 0.0))
+        await sleep(wait)
+
+
+def _parse_export_csv(csv_bytes: bytes) -> list[str]:
+    """Decode a Brevo recipients CSV → list of normalised emails.
+
+    Brevo writes UTF-8 with a BOM, so `utf-8-sig` is the right
+    codec. The `email` column is the only one we care about; column
+    order varies by export type but the header is always present.
+    Rows without an email column or with an empty value are silently
+    dropped — those rare cases (e.g. anonymised recipients) wouldn't
+    match a CRM contact anyway."""
+    if not csv_bytes:
+        return []
+    try:
+        text = csv_bytes.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        text = csv_bytes.decode("utf-8", errors="replace")
+    reader = csv.DictReader(io.StringIO(text), dialect=csv.excel)
+    emails: list[str] = []
+    seen: set[str] = set()
+    for row in reader:
+        if not row:
+            continue
+        # Brevo's column header is `email` but tolerate trivial casing
+        # variants so a one-off schema change doesn't break the run.
+        raw = (
+            row.get("email")
+            or row.get("Email")
+            or row.get("EMAIL")
+            or row.get("email_address")
+        )
+        normalised = _normalise_email(raw)
+        if not normalised or normalised in seen:
+            continue
+        seen.add(normalised)
+        emails.append(normalised)
+    return emails
+
+
+async def _fetch_recipients_via_export(
     client: BrevoClient,
     campaign_id: int,
-    brevo_event: str,
-    semaphore: asyncio.Semaphore,
-) -> list[dict[str, Any]]:
-    """Paginate `/emailCampaigns/{id}/{event}` until empty. The
-    semaphore caps concurrent calls across event types; the
-    `asyncio.sleep` between pages paces successive calls so a tenant
-    with hundreds of past campaigns doesn't burn the Brevo quota."""
-    out: list[dict[str, Any]] = []
-    offset = 0
-    while True:
-        async with semaphore:
-            try:
-                body = await client.get_campaign_recipients_stats(
-                    campaign_id, brevo_event, limit=PAGE_SIZE, offset=offset
-                )
-            except IntegrationClientError as exc:
-                # 404 on an old campaign happens — skip the event,
-                # keep the rest of the backfill running.
-                logger.warning(
-                    "brevo.backfill recipients %s/%s status=%s — skipping",
-                    campaign_id,
-                    brevo_event,
-                    exc.status_code,
-                )
-                break
-        recipients = body.get("recipients") or body.get("contacts") or []
-        if not recipients:
-            break
-        out.extend(recipients)
-        if len(recipients) < PAGE_SIZE:
-            break
-        offset += PAGE_SIZE
-        await asyncio.sleep(_INTER_CALL_SLEEP_SECONDS)
-    return out
+    recipients_type: str,
+    *,
+    timeout_seconds: float = _EXPORT_TIMEOUT_SECONDS,
+) -> tuple[list[str], str | None]:
+    """Start an export, poll until done, download and parse the CSV.
+
+    Returns `(emails, error)`. On success `error` is None. A non-fatal
+    Brevo response (process aborted, export endpoint 4xx, signed URL
+    404) returns an empty list + a human-readable error so the caller
+    can skip the bucket and keep the rest of the run alive."""
+    try:
+        process_id = await client.start_recipients_export(
+            campaign_id, recipients_type
+        )
+    except IntegrationClientError as exc:
+        # 400/404 on an old campaign happens — skip the bucket but
+        # keep the rest of the run alive.
+        logger.warning(
+            "brevo.backfill export %s/%s status=%s — skipping",
+            campaign_id,
+            recipients_type,
+            exc.status_code,
+        )
+        return [], f"{recipients_type}: start_export status={exc.status_code}"
+
+    try:
+        body = await _wait_for_export(
+            client, process_id, timeout_seconds=timeout_seconds
+        )
+    except TimeoutError as exc:
+        logger.warning(
+            "brevo.backfill export %s/%s timed out (process=%s)",
+            campaign_id,
+            recipients_type,
+            process_id,
+        )
+        return [], f"{recipients_type}: {exc}"
+
+    status = str(body.get("status") or "").lower()
+    if status != "completed":
+        logger.warning(
+            "brevo.backfill export %s/%s ended status=%s — skipping",
+            campaign_id,
+            recipients_type,
+            status,
+        )
+        return [], f"{recipients_type}: process status={status!r}"
+
+    export_url = body.get("exportUrl") or body.get("export_url")
+    if not export_url:
+        return [], f"{recipients_type}: completed without exportUrl"
+
+    try:
+        csv_bytes = await client.download_csv_export(str(export_url))
+    except IntegrationError as exc:
+        logger.warning(
+            "brevo.backfill download %s/%s failed: %s",
+            campaign_id,
+            recipients_type,
+            exc.message,
+        )
+        return [], f"{recipients_type}: download {exc.message}"
+
+    return _parse_export_csv(csv_bytes), None
+
+
+# ---------------------------------------------------------------------------
+# Materialisation
+# ---------------------------------------------------------------------------
 
 
 def backfill_campaign_events(
@@ -176,6 +310,10 @@ def backfill_campaign_events(
     campaign_id: str,
 ) -> dict[str, Any]:
     """Back-fill every supported event of one cached campaign.
+
+    Drives the export flow once per `recipientsType`, serially —
+    Brevo enqueues exports per account and parallel jobs only add
+    latency without lifting the throughput ceiling.
 
     Returns a stats dict. Re-runnable: the second run inserts zero
     new rows (every event hits the UNIQUE constraint and is counted
@@ -203,75 +341,73 @@ def backfill_campaign_events(
     sent_at_fallback = row.sent_at or row.created_at_brevo
 
     async def _drive() -> None:
-        semaphore = asyncio.Semaphore(_CONCURRENCY)
         async with BrevoClient(session, account_id) as client:
-            for brevo_event, internal_event in EVENT_TYPE_MAP.items():
+            for recipients_type, internal_event in EVENT_TYPE_MAP.items():
                 try:
-                    recipients = await _fetch_event_recipients(
-                        client, row.brevo_campaign_id, brevo_event, semaphore
+                    emails, fetch_error = await _fetch_recipients_via_export(
+                        client, row.brevo_campaign_id, recipients_type
                     )
                 except IntegrationError as exc:
                     stats["errors"].append(
-                        f"{brevo_event}: {exc.message}"
+                        f"{recipients_type}: {exc.message}"
                     )
                     continue
-                _materialise_event(
+                if fetch_error:
+                    stats["errors"].append(fetch_error)
+                if not emails:
+                    continue
+                _materialise_emails(
                     session,
                     account_id=account_id,
                     row=row,
-                    brevo_event=brevo_event,
+                    recipients_type=recipients_type,
                     internal_event=internal_event,
-                    recipients=recipients,
+                    emails=emails,
                     fallback_dt=sent_at_fallback,
                     stats=stats,
                 )
+                # Pace the materialisation step so we don't pile back
+                # onto the rate-limit bucket immediately after the CSV
+                # download.
+                await asyncio.sleep(_INTER_CALL_SLEEP_SECONDS)
 
     asyncio.run(_drive())
     return stats
 
 
-def _materialise_event(
+def _materialise_emails(
     session: Session,
     *,
     account_id: str,
     row: BrevoCampaignCache,
-    brevo_event: str,
+    recipients_type: str,
     internal_event: str,
-    recipients: list[dict[str, Any]],
+    emails: list[str],
     fallback_dt: datetime | None,
     stats: dict[str, Any],
 ) -> None:
     """Resolve emails → CRM contacts in one batch, then insert each
     event row inside its own SAVEPOINT so the UNIQUE-key collision
     on duplicates doesn't poison the surrounding transaction."""
-    normalised: list[tuple[dict[str, Any], str]] = []
-    for entry in recipients:
-        email = _normalise_email(entry.get("email"))
-        if not email:
-            continue
-        normalised.append((entry, email))
-    if not normalised:
+    if not emails:
         return
-
-    email_to_contact = _resolve_emails_to_contact_ids(
-        session, [email for _, email in normalised]
-    )
-    for entry, email in normalised:
+    email_to_contact = _resolve_emails_to_contact_ids(session, emails)
+    occurred_at = _fallback_occurred_at(fallback_dt)
+    for email in emails:
         contact_id = email_to_contact.get(email)
         if contact_id is None:
             stats["contacts_unknown"] += 1
             continue
         external_id = _external_id(
-            row.brevo_campaign_id, email, brevo_event
+            row.brevo_campaign_id, email, recipients_type
         )
         payload = {
             "campaign_id": row.id,
             "campaign_brevo_id": row.brevo_campaign_id,
             "campaign_name": row.name,
             "recipient_email": email,
-            "brevo_event": brevo_event,
-            "source": "historical_backfill",
-            "raw_event": entry,
+            "source_export_type": recipients_type,
+            "source": "historical_backfill_export",
         }
         savepoint = session.begin_nested()
         session.add(
@@ -282,9 +418,9 @@ def _materialise_event(
                 external_id=external_id,
                 event_type=internal_event,
                 subject=row.subject,
-                body=str(entry.get("url") or entry.get("link") or "") or None,
+                body=None,
                 metadata_json=json.dumps(payload, default=str),
-                occurred_at=_occurred_at(entry, fallback_dt),
+                occurred_at=occurred_at,
                 synced_at=datetime.now(UTC),
             )
         )
@@ -314,7 +450,11 @@ def backfill_account_campaigns(
         select(BrevoCampaignCache)
         .where(BrevoCampaignCache.brevo_account_id == account_id)
         .where(BrevoCampaignCache.status.in_(SENT_STATUSES))
-        .order_by(BrevoCampaignCache.sent_at.desc().nullslast())
+        # MySQL 8 doesn't support `NULLS LAST`; bare `.desc()` already
+        # pushes NULLs to the end on a DESC sort, which is what we want
+        # (campaigns without a `sent_at` are odd outliers and don't
+        # need to jump the queue).
+        .order_by(BrevoCampaignCache.sent_at.desc())
     )
     if max_campaigns is not None:
         statement = statement.limit(max_campaigns)

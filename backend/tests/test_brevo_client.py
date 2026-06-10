@@ -238,7 +238,6 @@ def test_template_and_campaign_endpoints_hit_expected_paths(session_factory):
             await c.send_email_campaign_now(9)
             await c.send_test_email_campaign(9, ["x@y.z"])
             await c.schedule_email_campaign(9, "2026-07-01T10:00:00+02:00")
-            await c.get_campaign_recipients_stats(9, "opened")
             await c.list_senders()
 
         _run(session, httpx.MockTransport(handler), _all)
@@ -254,8 +253,7 @@ def test_template_and_campaign_endpoints_hit_expected_paths(session_factory):
     assert "POST /v3/emailCampaigns/9/sendNow" in paths[8]
     assert "POST /v3/emailCampaigns/9/sendTest" in paths[9]
     assert "PUT /v3/emailCampaigns/9" in paths[10]
-    assert "GET /v3/emailCampaigns/9/opened" in paths[11]
-    assert "GET /v3/senders" in paths[12]
+    assert "GET /v3/senders" in paths[11]
 
 
 def test_list_segments_clamps_limit_to_brevo_max(session_factory):
@@ -303,3 +301,128 @@ def test_get_segment_contacts_uses_contacts_filter_route(session_factory):
     # Clamped to the /contacts ceiling.
     assert seen["params"]["limit"] == "1000"
     assert result["count"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Async export flow (commit 3): exportRecipients → processes → CSV
+# ---------------------------------------------------------------------------
+
+
+def test_start_recipients_export_returns_process_id(session_factory):
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["path"] = request.url.path
+        seen["body"] = json.loads(request.content.decode())
+        return httpx.Response(202, json={"processId": 4567})
+
+    with session_factory() as session:
+        result = _run(
+            session,
+            httpx.MockTransport(handler),
+            lambda c: c.start_recipients_export(42, "openers"),
+        )
+    assert result == 4567
+    assert seen["path"].endswith("/v3/emailCampaigns/42/exportRecipients")
+    assert seen["body"] == {"recipientsType": "openers"}
+
+
+def test_start_recipients_export_missing_process_id_raises(session_factory):
+    from app.integrations.errors import IntegrationServerError
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(202, json={"message": "ok"})
+
+    with session_factory() as session:
+        with pytest.raises(IntegrationServerError):
+            _run(
+                session,
+                httpx.MockTransport(handler),
+                lambda c: c.start_recipients_export(42, "openers"),
+            )
+
+
+def test_get_process_status_returns_payload(session_factory):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "id": 4567,
+                "status": "completed",
+                "exportUrl": "https://download.brevo/x.csv?sig=abc",
+            },
+        )
+
+    with session_factory() as session:
+        body = _run(
+            session,
+            httpx.MockTransport(handler),
+            lambda c: c.get_process_status(4567),
+        )
+    assert body["status"] == "completed"
+    assert body["exportUrl"].endswith("?sig=abc")
+
+
+def test_download_csv_export_does_not_send_api_key(session_factory):
+    """The exportUrl is signed; sending `api-key` would leak the
+    credential to the CDN. Verify the request lands without it."""
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["api-key"] = request.headers.get("api-key")
+        seen["path"] = request.url.path
+        body = b"\xef\xbb\xbfemail,name\r\nana@example.com,Ana\r\n"
+        return httpx.Response(
+            200, content=body, headers={"content-type": "text/csv"}
+        )
+
+    with session_factory() as session:
+        # Inject the mock transport into the bare httpx client used by
+        # `download_csv_export` so the test stays hermetic. We do this
+        # by patching `httpx.AsyncClient` for the duration of the call.
+        import httpx as _httpx  # noqa: PLC0415
+
+        orig = _httpx.AsyncClient
+
+        def _patched(*args, **kwargs):
+            kwargs["transport"] = httpx.MockTransport(handler)
+            return orig(*args, **kwargs)
+
+        async def _go(c: BrevoClient):
+            _httpx.AsyncClient = _patched  # type: ignore[misc]
+            try:
+                return await c.download_csv_export(
+                    "https://download.brevo/x.csv?sig=abc"
+                )
+            finally:
+                _httpx.AsyncClient = orig  # type: ignore[misc]
+
+        content = _run(session, httpx.MockTransport(handler), _go)
+    assert content.startswith(b"\xef\xbb\xbfemail,name")
+    assert seen["api-key"] is None
+
+
+def test_download_csv_export_404_raises_client_error(session_factory):
+    from app.integrations.errors import IntegrationClientError
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, text="expired")
+
+    with session_factory() as session:
+        import httpx as _httpx  # noqa: PLC0415
+
+        orig = _httpx.AsyncClient
+
+        def _patched(*args, **kwargs):
+            kwargs["transport"] = httpx.MockTransport(handler)
+            return orig(*args, **kwargs)
+
+        async def _go(c: BrevoClient):
+            _httpx.AsyncClient = _patched  # type: ignore[misc]
+            try:
+                return await c.download_csv_export("https://x/y.csv?sig=expired")
+            finally:
+                _httpx.AsyncClient = orig  # type: ignore[misc]
+
+        with pytest.raises(IntegrationClientError):
+            _run(session, httpx.MockTransport(handler), _go)

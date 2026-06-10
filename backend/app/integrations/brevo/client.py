@@ -24,9 +24,13 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+import httpx
+
 from app.integrations.errors import (
     IntegrationClientError,
     IntegrationDuplicateError,
+    IntegrationNetworkError,
+    IntegrationServerError,
 )
 from app.integrations.http_client import IntegrationHTTPClient
 
@@ -368,20 +372,99 @@ class BrevoClient(IntegrationHTTPClient):
         """Stats ride along on the campaign detail response."""
         return await self.get_email_campaign(campaign_id)
 
-    async def get_campaign_recipients_stats(
-        self,
-        campaign_id: int,
-        event_type: str,
-        *,
-        limit: int = DEFAULT_PAGE_SIZE,
-        offset: int = 0,
-    ) -> dict[str, Any]:
-        """GET /emailCampaigns/{id}/{event_type} — opens, clicks, …"""
-        response = await self.get(
-            f"/emailCampaigns/{campaign_id}/{event_type}",
-            params={"limit": limit, "offset": offset},
+    # ------------------------------------------------------------------
+    # Async recipient exports (used by the historical events backfill)
+    # ------------------------------------------------------------------
+    #
+    # NOTE: PR #54 shipped a `get_campaign_recipients_stats` helper that
+    # targeted `GET /emailCampaigns/{id}/{event_type}` (e.g. `.../opened`,
+    # `.../clicked`). That route does NOT exist in Brevo's API v3 and
+    # 404s in production with "Invalid route/method passed". The
+    # historical events backfill (see `historical_backfill.py`) now
+    # uses the supported async export flow below; the legacy helper
+    # was removed together with this comment to keep the surface area
+    # honest.
+
+    async def start_recipients_export(
+        self, campaign_id: int, recipients_type: str
+    ) -> int:
+        """POST /emailCampaigns/{id}/exportRecipients → processId.
+
+        `recipients_type` is Brevo's segment of the campaign audience
+        we want extracted (e.g. `openers`, `clickers`, `softBouncers`,
+        `hardBouncers`, `unsubscribed`). The endpoint replies right
+        away with an integer `processId`; the actual CSV is built
+        asynchronously and downloaded later via `get_process_status` +
+        `download_csv_export`."""
+        response = await self.post(
+            f"/emailCampaigns/{campaign_id}/exportRecipients",
+            json={"recipientsType": recipients_type},
         )
+        body = response.json or {}
+        process_id = body.get("processId")
+        if process_id is None:
+            raise IntegrationServerError(
+                "Brevo exportRecipients response missing processId",
+                system=self.system,
+                account_id=self.account_id,
+                status_code=response.status_code,
+                body=response.text[:512],
+            )
+        return int(process_id)
+
+    async def get_process_status(self, process_id: int) -> dict[str, Any]:
+        """GET /processes/{id} → `{status, exportUrl?, ...}`.
+
+        `status` ∈ {`queued`, `in_process`, `completed`, `aborted`}.
+        When the process finishes successfully Brevo populates
+        `exportUrl` with a signed CSV link that expires after about an
+        hour, so the caller should download immediately."""
+        response = await self.get(f"/processes/{process_id}")
         return response.json or {}
+
+    async def download_csv_export(self, export_url: str) -> bytes:
+        """Download the signed CSV link returned by `get_process_status`.
+
+        The URL is already authenticated (Brevo signs the query string)
+        so we bypass the integration HTTP client — sending the
+        `api-key` header on a third-party CDN URL is at best useless
+        and at worst leaks the credential. We still want a short
+        timeout and a friendly error if the link expired, so a thin
+        wrapper around `httpx.AsyncClient` does the job."""
+        timeout = httpx.Timeout(self.timeout.read or 30.0, connect=10.0)
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as raw:
+                response = await raw.get(export_url)
+        except httpx.NetworkError as exc:
+            raise IntegrationNetworkError(
+                f"Network error downloading Brevo export from {export_url}: {exc}",
+                system=self.system,
+                account_id=self.account_id,
+            ) from exc
+        except httpx.TimeoutException as exc:
+            raise IntegrationNetworkError(
+                f"Timeout downloading Brevo export from {export_url}",
+                system=self.system,
+                account_id=self.account_id,
+            ) from exc
+        if response.status_code >= 400:
+            snippet = (response.text or "")[:512]
+            if response.status_code >= 500:
+                raise IntegrationServerError(
+                    f"{response.status_code} downloading Brevo export",
+                    system=self.system,
+                    account_id=self.account_id,
+                    status_code=response.status_code,
+                    body=snippet,
+                )
+            raise IntegrationClientError(
+                f"{response.status_code} downloading Brevo export",
+                system=self.system,
+                account_id=self.account_id,
+                status_code=response.status_code,
+                body=snippet,
+            )
+        return response.content
 
     # ------------------------------------------------------------------
     # Senders (Sprint B+D §O)

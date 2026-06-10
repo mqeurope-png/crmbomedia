@@ -237,10 +237,50 @@ def test_retry_after_http_date_is_parsed(session_factory: sessionmaker, monkeypa
         assert any(4.0 <= s <= 8.0 for s in sleeps), sleeps
 
 
+def test_brevo_ratelimit_reset_header_is_honoured(
+    session_factory: sessionmaker, monkeypatch
+):
+    """Brevo's 429 carries the wait under `x-sib-ratelimit-reset`
+    instead of the RFC `Retry-After`. Fall back to it so the worker
+    sleeps the right amount instead of the 1 s exponential floor."""
+    import asyncio
+
+    sleeps: list[float] = []
+
+    async def _no_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    import asyncio as _asyncio  # noqa: PLC0415
+
+    monkeypatch.setattr(_asyncio, "sleep", _no_sleep)
+    attempts = {"count": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            return httpx.Response(
+                429, headers={"x-sib-ratelimit-reset": "9"}, text="slow"
+            )
+        return httpx.Response(200, json={"ok": True})
+
+    with session_factory() as session:
+        resp = asyncio.run(
+            _run(
+                session,
+                transport=httpx.MockTransport(handler),
+                url="/x",
+                max_retries=3,
+            )
+        )
+        assert resp.status_code == 200
+        assert attempts["count"] == 2
+        assert any(abs(s - 9.0) < 0.01 for s in sleeps), sleeps
+
+
 def test_retry_after_above_cap_aborts_without_retry(session_factory: sessionmaker, monkeypatch):
     """If the remote demands a longer cooldown than the worker is
-    willing to block for (5 minutes), we surface a rate-limit error and
-    let the scheduler reschedule the job — no retries, no blocked
+    willing to block for (15 minutes), we surface a rate-limit error
+    and let the scheduler reschedule the job — no retries, no blocked
     worker."""
     import asyncio
 
@@ -260,8 +300,8 @@ def test_retry_after_above_cap_aborts_without_retry(session_factory: sessionmake
 
     def handler(request: httpx.Request) -> httpx.Response:
         attempts["count"] += 1
-        # Past the 300s cap so the client gives up immediately.
-        return httpx.Response(429, headers={"Retry-After": "900"}, text="slow")
+        # Past the 900s cap so the client gives up immediately.
+        return httpx.Response(429, headers={"Retry-After": "1200"}, text="slow")
 
     with session_factory() as session:
         with pytest.raises(IntegrationRateLimitError) as exc_info:

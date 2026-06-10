@@ -186,17 +186,33 @@ El webhook en vivo solo dispara desde el día que se configura.
 Cualquier campaña enviada ANTES no tiene historial granular en el
 CRM — la ficha de cada contacto muestra entregas/aperturas/clicks
 solo de lo recibido después. Brevo expone los destinatarios por
-evento de cada campaña pasada vía API; este backfill los lee y
-materializa las filas faltantes en `activity_events`.
+evento de cada campaña pasada vía **export asíncrono** (NO hay
+endpoint REST directo); este backfill lanza un job por
+campaña × `recipientsType`, espera a que termine, descarga el CSV
+firmado y materializa las filas faltantes en `activity_events`.
+
+Flujo por bucket (5 buckets por campaña: `openers`, `clickers`,
+`softBouncers`, `hardBouncers`, `unsubscribed`):
+
+1. `POST /v3/emailCampaigns/{id}/exportRecipients` con
+   `{recipientsType}` → devuelve `processId`.
+2. Polling adaptativo a `GET /v3/processes/{processId}` (5 s, 10 s,
+   15 s, 30 s, 30 s, 60 s, 60 s, 120 s… hasta `completed`/`aborted`
+   o timeout de 30 min).
+3. `GET <exportUrl>` (firmado, sin api-key) → CSV UTF-8 con BOM.
+4. Por cada `email` del CSV: busca contacto en CRM por email
+   case-insensitive, inserta `activity_event` con `occurred_at`
+   anclado al `sent_at` de la campaña (el export NO trae
+   timestamp granular por evento).
 
 Cuándo lanzarlo:
 
-- Una vez, tras configurar el webhook por primera vez en una
-  cuenta nueva — recupera todo el historial accesible.
-- Ocasionalmente, si sospechas que se han perdido eventos
+- **Una vez por instalación**, tras configurar el webhook por
+  primera vez — recupera todo el historial accesible.
+- Excepcionalmente, si sospechas que se han perdido eventos
   (corte de red, webhook desactivado por accidente).
-- **Nunca** como cron — es una operación pesada (10-30 min en
-  cuentas con cientos de campañas) que consume cuota del API.
+- **Nunca** como cron — el flujo asíncrono puede durar horas y
+  consume cuota del API.
 
 Cómo lanzarlo:
 
@@ -204,9 +220,24 @@ Cómo lanzarlo:
   "Historial de eventos (backfill)" → "Lanzar backfill histórico"
   (admin only). Confirmación inline. Tras lanzarlo, el panel
   refresca solo cada 8 s mientras corre.
-- **CLI** (paralelo): `scripts/backfill_brevo_email_history.py`
-  con `--account-id`, opcional `--max-campaigns`, opcional
-  `--dry-run`.
+- **CLI** (recomendado para cuentas grandes): se ejecuta en segundo
+  plano con `nohup` para que sobreviva a un desconexión SSH —
+
+      docker compose --env-file .env.production exec -d api bash -c \
+        "nohup python scripts/backfill_brevo_email_history.py \
+          --account-id default \
+          > /tmp/backfill_$(date +%Y%m%d_%H%M%S).log 2>&1 &"
+
+  Flags: `--account-id` (obligatorio), `--max-campaigns N`
+  (opcional, limita a las N más recientes), `--dry-run`
+  (transacción se hace ROLLBACK al final). Tail al log para ver
+  progreso; cuando termine imprime un resumen JSON.
+
+Tiempo estimado: cada export Brevo tarda entre 10 s y unos pocos
+minutos. Para una cuenta con ~60-80 campañas históricas (300-400
+exports) la ejecución típica es de **3-5 horas**. Casos peores
+pueden llegar a una jornada, pero un export que se cuelga 30 min
+se aborta automáticamente y el backfill sigue con el siguiente.
 
 Idempotencia: la dedup va por el UNIQUE
 `activity_events(system, account_id, external_id)` ya existente.
@@ -214,7 +245,7 @@ El `external_id` sintetizado encaja `backfill:{brevo_campaign_id}:
 {email}:{event_type}` — una re-ejecución hits la misma clave, la
 inserción cae con `IntegrityError` dentro de su SAVEPOINT y la
 fila cuenta como `events_skipped_existing`. Sin SELECT-por-fila
-de coste.
+de coste. Re-ejecutar tras una interrupción es seguro.
 
 Restricciones (heredadas de la política de webhooks):
 
@@ -225,8 +256,13 @@ Restricciones (heredadas de la política de webhooks):
   cache local `brevo_campaigns_cache`. Lo que no esté cacheado no
   se trae — refresca antes con el botón "Refrescar" de la lista
   de campañas si hace falta.
-- Limita la concurrencia a 2 llamadas + 200 ms entre páginas para
-  no quemar la cuota Brevo (400 req/min).
+- 1 export en curso por cuenta (Brevo procesa la cola seriada;
+  paralelizar más no acelera y satura el rate limit). Sleep de
+  1 s entre llamadas para mantener la cuota del API holgada
+  (Brevo limita endpoints de campañas a ~100 req/min).
+- `email.delivered` y `email.spam_complaint` quedan fuera —
+  Brevo no expone destinatarios de esos eventos vía export.
+  Las stats agregadas de campaña los siguen mostrando.
 
 ## Periodic scheduling
 

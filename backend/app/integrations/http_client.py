@@ -10,7 +10,8 @@ this class. Responsibilities:
   (`INTEGRATION_HTTP_TIMEOUT_SECONDS`, default 30) and retries with
   exponential backoff (`INTEGRATION_HTTP_MAX_RETRIES`, default 3).
   Retry-After-aware 429 handling: numeric seconds AND HTTP-date format
-  are both parsed, capped at `RETRY_AFTER_HARD_CAP_SECONDS` (300s).
+  are both parsed; Brevo's `x-sib-ratelimit-reset` is honoured as a
+  fallback. Wait is capped at `RETRY_AFTER_HARD_CAP_SECONDS` (900s).
 - Translate every failure mode into an explicit subclass of
   `IntegrationError` so the connector can react without parsing raw
   status codes.
@@ -60,9 +61,11 @@ DEFAULT_TIMEOUT_SECONDS = 30.0
 DEFAULT_MAX_RETRIES = 3
 # Cap on Retry-After: a remote that asks us to wait longer than this is
 # better served by failing the job (so RQ can reschedule it) than by
-# blocking a worker. 5 minutes is generous enough that AgileCRM's
-# typical 60s windows still fit comfortably.
-RETRY_AFTER_HARD_CAP_SECONDS = 300.0
+# blocking a worker. 15 minutes is wide enough to absorb Brevo's
+# campaign-export cooldowns (we've observed Retry-After ~10 min during
+# the historical backfill) while still letting an absurd wait fail
+# fast.
+RETRY_AFTER_HARD_CAP_SECONDS = 900.0
 
 
 def _env_float(name: str, default: float) -> float:
@@ -360,7 +363,7 @@ class IntegrationHTTPClient:
                 body=body_snippet,
             )
         if status == 429:
-            retry_after = _parse_retry_after(response.headers.get("retry-after"))
+            retry_after = _retry_after_from_response(response)
             if retry_after is not None and retry_after > RETRY_AFTER_HARD_CAP_SECONDS:
                 # The remote wants a longer cooldown than we're willing
                 # to block a worker for. Don't retry; let the job report
@@ -473,6 +476,26 @@ def _parse_retry_after(raw: str | None) -> float | None:
         retry_at = retry_at.replace(tzinfo=UTC)
     delta = (retry_at - datetime.now(UTC)).total_seconds()
     return max(0.0, delta)
+
+
+def _retry_after_from_response(response: httpx.Response) -> float | None:
+    """Read the wait hint from a 429 response.
+
+    Tries `Retry-After` first (RFC 7231) and falls back to Brevo's
+    proprietary `x-sib-ratelimit-reset`, which carries the seconds
+    until the bucket refills. Returns the larger of the two when both
+    are present so we never under-wait."""
+    headers = response.headers
+    candidates: list[float] = []
+    standard = _parse_retry_after(headers.get("retry-after"))
+    if standard is not None:
+        candidates.append(standard)
+    brevo = _parse_retry_after(headers.get("x-sib-ratelimit-reset"))
+    if brevo is not None:
+        candidates.append(brevo)
+    if not candidates:
+        return None
+    return max(candidates)
 
 
 async def request_with_session(
