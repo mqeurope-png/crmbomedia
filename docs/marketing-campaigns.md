@@ -83,12 +83,12 @@ ficha de contacto pueden venir vacías para esa campaña.
 
 Para rellenarlas: `/admin/integrations` → expande Brevo →
 sección **"Historial de eventos (backfill)"** → "Lanzar backfill
-histórico". Para cuentas con más de ~30 campañas usa el CLI con
-`nohup` — la operación puede tardar 3-5 horas porque Brevo expone
-los destinatarios sólo vía export asíncrono (un job por campaña ×
-recipientsType). Ver `integrations-brevo.md` § "Backfill histórico
-de eventos" para detalles del flujo, idempotencia y limitaciones
-(no se obtienen destinatarios de `delivered` ni `spam_complaint`).
+histórico". La operación tarda **~40-60 minutos** para una cuenta
+con ~60 campañas (Brevo expone el historial sólo vía export
+asíncrono, un job por campaña). Cada evento lleva su timestamp real
+del CSV de Brevo (entrega, apertura, baja, rebote, queja). Ver
+`integrations-brevo.md` § "Backfill histórico de eventos" para
+detalles del flujo, idempotencia y limitaciones.
 
 Tras el backfill, los eventos `email.*` con `metadata.campaign_name`
 en el activity event muestran el nombre de la campaña en la timeline

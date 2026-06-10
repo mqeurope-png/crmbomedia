@@ -572,6 +572,107 @@ def test_account_runner_processes_sent_only_ordered_by_sent_at(
 
 
 # ---------------------------------------------------------------------------
+# Real Brevo CSV fixture
+# ---------------------------------------------------------------------------
+
+
+def test_real_brevo_csv_fixture_end_to_end(session_factory):
+    """Drive the full flow with a CSV shaped exactly like Brevo's
+    production export (semicolon delimiter, real header, dynamic link
+    columns, bounce reasons, empty Email_ID row, mixed-case email)."""
+    from pathlib import Path
+
+    fixture = (
+        Path(__file__).parent / "fixtures" / "brevo_export_sample.csv"
+    )
+    csv_bytes = b"\xef\xbb\xbf" + fixture.read_bytes()
+
+    emails = [
+        "a8035416@xtec.cat",      # delivered + 1 open
+        "a8064167@xtec.cat",      # delivered only
+        "engaged@example.com",    # delivered + opened + 2 clicks
+        "multiopen@example.com",  # delivered + 5 opens
+        "baja@example.com",       # delivered + opened + unsubscribed
+        "duro@example.com",       # hard bounce, never delivered
+        "blando@example.com",     # soft bounce, never delivered
+        "queja@example.com",      # delivered + spam complaint
+        "rarezas@example.com",    # Open_Date set but Total Opens=0
+        "mayusculas@example.com",  # CSV says MAYUSCULAS@Example.COM
+    ]
+    with session_factory() as session:
+        contacts = _seed_contacts(session, *emails)
+        campaign = _seed_campaign(session, brevo_id=4, name="coles codigo")
+        session.commit()
+
+        _FakeBrevoClient.csv_by_campaign = {4: csv_bytes}
+        with _patch_client():
+            stats = backfill_campaign_events(
+                session, account_id="main", campaign_id=campaign.id
+            )
+            session.commit()
+
+        rows = list(session.scalars(select(ActivityEvent)))
+
+    assert stats["errors"] == []
+    assert stats["rows_without_email"] == 1
+    assert stats["contacts_unknown"] == 0
+
+    by_email: dict[str, set[str]] = {}
+    contact_to_email = {cid: email for email, cid in contacts.items()}
+    for event in rows:
+        by_email.setdefault(
+            contact_to_email[event.contact_id], set()
+        ).add(event.event_type)
+
+    assert by_email["a8035416@xtec.cat"] == {
+        "email.delivered", "email.opened",
+    }
+    assert by_email["a8064167@xtec.cat"] == {"email.delivered"}
+    assert by_email["engaged@example.com"] == {
+        "email.delivered", "email.opened", "email.clicked",
+    }
+    assert by_email["multiopen@example.com"] == {
+        "email.delivered", "email.opened",
+    }
+    assert by_email["baja@example.com"] == {
+        "email.delivered", "email.opened", "email.unsubscribed",
+    }
+    assert by_email["duro@example.com"] == {"email.bounced_hard"}
+    assert by_email["blando@example.com"] == {"email.bounced_soft"}
+    assert by_email["queja@example.com"] == {
+        "email.delivered", "email.spam_complaint",
+    }
+    # Open_Date wins over the inconsistent Total Opens=0.
+    assert by_email["rarezas@example.com"] == {
+        "email.delivered", "email.opened",
+    }
+    # Case-insensitive email match.
+    assert by_email["mayusculas@example.com"] == {"email.delivered"}
+
+    assert stats["events_inserted"] == sum(
+        len(types) for types in by_email.values()
+    ) == 18
+
+    # Spot-check metadata: total opens + clicked links count survive.
+    import json as _json
+
+    multiopen_opened = next(
+        e for e in rows
+        if contact_to_email[e.contact_id] == "multiopen@example.com"
+        and e.event_type == "email.opened"
+    )
+    assert _json.loads(multiopen_opened.metadata_json)["total_opens"] == 5
+    engaged_clicked = next(
+        e for e in rows
+        if contact_to_email[e.contact_id] == "engaged@example.com"
+        and e.event_type == "email.clicked"
+    )
+    assert (
+        _json.loads(engaged_clicked.metadata_json)["clicked_links_count"] == 2
+    )
+
+
+# ---------------------------------------------------------------------------
 # Polling primitives
 # ---------------------------------------------------------------------------
 

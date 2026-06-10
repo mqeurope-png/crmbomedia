@@ -3,9 +3,11 @@
 When the live webhook is configured AFTER campaigns have already been
 sent, the CRM has aggregated stats but no per-recipient timeline for
 those historical campaigns. This script reads the existing campaign
-cache and drives the asynchronous Brevo export flow (one process per
-campaign × per recipientsType) to materialise one `activity_events`
-row per (recipient, recipientsType).
+cache and drives the asynchronous Brevo export flow — ONE
+`recipientsType=all` export per campaign — deriving each recipient's
+events from the CSV columns (`Delivered_Date`, `Open_Date`,
+`Unsubscribe_Date`, bounce dates, `Complaint_date`,
+`Clicked_Links_Count`) with their REAL timestamps.
 
 Idempotent: a second run inserts zero new rows. Dedup rides on the
 UNIQUE `(system, account_id, external_id)` constraint, where
@@ -17,22 +19,14 @@ Recipient emails that don't match any CRM contact are counted as
 
 # Runtime expectations
 
-Each campaign triggers 5 Brevo export processes (`openers`,
-`clickers`, `softBouncers`, `hardBouncers`, `unsubscribed`) that the
-worker polls until completed. Brevo's export queue has no SLA but
+One export process per campaign. Brevo's export queue has no SLA but
 empirically each process resolves between 10 seconds and a few
-minutes:
+minutes (typical ~30-60 s). For an account with 60-80 historical
+campaigns expect a **40-60 minute** run. A campaign hitting the
+30 min per-export timeout is skipped and the run continues.
 
-  - Best case:   ~30 s × 5 buckets × N campaigns  (≈ 2.5 min / camp.)
-  - Worst case:  ~5 min × 5 buckets × N campaigns (≈ 25 min / camp.)
-  - Typical:     ~1-2 min total per campaign
-
-For an account with 60-80 historical campaigns expect a 3-5 h run.
-Worst case (a campaign hitting the 30 min timeout) is rare but
-possible — that bucket is skipped, the run continues.
-
-Recommended invocation: run overnight via `nohup` so SSH disconnects
-don't kill the job and the polling stays uninterrupted:
+Recommended invocation: `nohup` so SSH disconnects don't kill the
+job and the polling stays uninterrupted:
 
     docker compose --env-file .env.production exec -d api bash -c \\
       "nohup python scripts/backfill_brevo_email_history.py \\
