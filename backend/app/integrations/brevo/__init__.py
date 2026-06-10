@@ -4,6 +4,7 @@ Importing this package registers the worker handlers (side-effect on
 `app.workers.jobs.OPERATIONS`) — same convention as AgileCRM.
 """
 from app.integrations.brevo import campaigns as _campaigns  # noqa: F401
+from app.integrations.brevo import historical_backfill as _backfill  # noqa: F401
 from app.integrations.brevo import jobs as _jobs  # noqa: F401
 from app.integrations.brevo import scheduler as _scheduler  # noqa: F401
 from app.integrations.brevo import segments as _segments  # noqa: F401

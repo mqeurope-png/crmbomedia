@@ -60,6 +60,10 @@ export function ContactEmailActivity({ contactId }: { contactId: string }) {
               icon: "✉️",
               label: event.event_type,
             };
+            const campaignName =
+              typeof event.metadata?.campaign_name === "string"
+                ? event.metadata.campaign_name
+                : null;
             return (
               <li key={event.id}>
                 <span className="email-activity-icon" aria-hidden>
@@ -67,7 +71,9 @@ export function ContactEmailActivity({ contactId }: { contactId: string }) {
                 </span>
                 <div className="email-activity-body">
                   <strong>{meta.label}</strong>
-                  {event.subject ? (
+                  {campaignName ? (
+                    <span className="muted small"> · {campaignName}</span>
+                  ) : event.subject ? (
                     <span className="muted small"> · {event.subject}</span>
                   ) : null}
                   {event.event_type === "email.clicked" && event.body ? (
