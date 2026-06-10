@@ -1,8 +1,8 @@
 "use client";
 
-import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { PageHeader } from "../../../components/PageHeader";
 import { ErrorState } from "../../../components/ErrorState";
 import {
   addPipelineStage,
@@ -101,7 +101,10 @@ export default function EditStagesPage() {
   if (error || !pipeline) {
     return (
       <main className="shell narrow">
-        <Link href="/pipelines" className="back-link">← Pipelines</Link>
+        <PageHeader
+          title="Etapas"
+          crumbs={[{ label: "Pipelines", href: "/pipelines" }]}
+        />
         <ErrorState
           title="No se pudo cargar el pipeline"
           message={error ?? "Pipeline no encontrado"}
@@ -112,21 +115,21 @@ export default function EditStagesPage() {
 
   return (
     <main className="shell shell-wide">
-      <Link href={`/pipelines/${pipeline.id}`} className="back-link">
-        ← Volver al pipeline
-      </Link>
-      <section className="hero compact">
-        <p className="eyebrow">Etapas</p>
-        <h1>{pipeline.name}</h1>
-        <p className="lead">
-          Arrastra para reordenar; click en el nombre o el color para editar.
-        </p>
-        <div className="actions">
-          <button type="button" className="button" onClick={handleAddStage}>
+      <PageHeader
+        title={pipeline.name}
+        eyebrow="Etapas"
+        description="Arrastra para reordenar; click en el nombre o el color para editar."
+        crumbs={[
+          { label: "Pipelines", href: "/pipelines" },
+          { label: pipeline.name, href: `/pipelines/${pipeline.id}` },
+          { label: "Etapas" },
+        ]}
+        actions={
+          <button type="button" className="button small" onClick={handleAddStage}>
             + Añadir etapa
           </button>
-        </div>
-      </section>
+        }
+      />
 
       {error ? <ErrorState title="Error" message={error} /> : null}
 

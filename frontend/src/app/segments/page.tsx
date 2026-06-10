@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { ErrorState } from "../components/ErrorState";
+import { PageHeader } from "../components/PageHeader";
 import { SegmentWizard } from "../components/SegmentWizard";
 import {
   deleteSegment,
@@ -75,27 +76,20 @@ export default function SegmentsListPage() {
 
   return (
     <main className="shell shell-wide">
-      <Link href="/" className="back-link">
-        ← Volver al dashboard
-      </Link>
-      <section className="hero compact">
-        <p className="eyebrow">CRM</p>
-        <h1>Segmentos</h1>
-        <p className="lead">
-          Grupos dinámicos de contactos definidos por reglas booleanas. Se
-          re-evalúan solos conforme cambian los datos. Crea desde cero, de
-          una plantilla, o deja que la IA traduzca tu descripción.
-        </p>
-        <div className="actions">
+      <PageHeader
+        title="Segmentos"
+        eyebrow="CRM"
+        description="Grupos dinámicos de contactos definidos por reglas booleanas. Se re-evalúan solos conforme cambian los datos. Crea desde cero, de una plantilla, o deja que la IA traduzca tu descripción."
+        actions={
           <button
             type="button"
-            className="button"
+            className="button small"
             onClick={() => setWizardOpen(true)}
           >
             + Nuevo segmento
           </button>
-        </div>
-      </section>
+        }
+      />
 
       <section className="panel">
         {error ? <ErrorState title="Error" message={error} /> : null}

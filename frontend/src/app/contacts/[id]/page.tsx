@@ -1,9 +1,9 @@
 "use client";
 
-import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ErrorState } from "../../components/ErrorState";
+import { PageHeader } from "../../components/PageHeader";
 import { ContactPipelinesSection } from "../../components/ContactPipelinesSection";
 import { RefreshExternalDataButton } from "../../components/RefreshExternalDataButton";
 import {
@@ -235,7 +235,11 @@ export default function ContactDetailPage() {
   if (error || !contact) {
     return (
       <main className="shell narrow">
-        <Link href="/" className="back-link">← Volver al dashboard</Link>
+        <PageHeader
+          title="Contacto"
+          eyebrow="Ficha"
+          crumbs={[{ label: "Contactos", href: "/contacts" }]}
+        />
         <ErrorState title="No se pudo cargar el contacto" message={error ?? "Contacto no encontrado"} />
       </main>
     );
@@ -250,17 +254,20 @@ export default function ContactDetailPage() {
 
   return (
     <main className="shell">
-      <Link href="/" className="back-link">← Volver al dashboard</Link>
-      <section className="detail-header">
-        <div>
-          <p className="eyebrow">Ficha de contacto</p>
-          <h1>{fullName}</h1>
-          <p className="lead">{contact.email}</p>
-        </div>
-        <span className={`status status-${contact.marketing_consent}`}>
-          {contact.marketing_consent}
-        </span>
-      </section>
+      <PageHeader
+        title={fullName || "(Sin nombre)"}
+        eyebrow="Ficha de contacto"
+        description={contact.email ?? undefined}
+        crumbs={[
+          { label: "Contactos", href: "/contacts" },
+          { label: fullName || "(Sin nombre)" },
+        ]}
+        actions={
+          <span className={`status status-${contact.marketing_consent}`}>
+            {contact.marketing_consent}
+          </span>
+        }
+      />
 
       <section className="grid two">
         <article className="card">

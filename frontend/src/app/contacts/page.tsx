@@ -10,6 +10,7 @@ import {
 } from "../components/ContactViewEditorModal";
 import { ContactViewsSidebar } from "../components/ContactViewsSidebar";
 import { ErrorState } from "../components/ErrorState";
+import { PageHeader } from "../components/PageHeader";
 import { TagChips } from "../components/TagChips";
 import {
   createSavedView,
@@ -404,22 +405,16 @@ export default function ContactsListPage() {
 
   return (
     <main className="shell shell-wide">
-      <Link href="/" className="back-link">
-        ← Volver al dashboard
-      </Link>
-      <section className="hero compact">
-        <p className="eyebrow">Contactos</p>
-        <h1>Lista de contactos</h1>
-        <p className="lead">
-          Busca, filtra y abre cualquier contacto. Guarda configuraciones
-          como vistas para volver a ellas en un click.
-        </p>
-        <div className="actions">
-          <Link href="/contacts/new" className="button">
-            Crear contacto
+      <PageHeader
+        title="Lista de contactos"
+        eyebrow="Contactos"
+        description="Busca, filtra y abre cualquier contacto. Guarda configuraciones como vistas para volver a ellas en un click."
+        actions={
+          <Link href="/contacts/new" className="button small">
+            + Crear contacto
           </Link>
-        </div>
-      </section>
+        }
+      />
 
       <section className="contacts-layout">
         <ContactViewsSidebar

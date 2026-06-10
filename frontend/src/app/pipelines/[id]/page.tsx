@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { ErrorState } from "../../components/ErrorState";
+import { PageHeader } from "../../components/PageHeader";
 import { PipelineKanban } from "../../components/PipelineKanban";
 import {
   listPipelineContacts,
@@ -46,9 +47,10 @@ export default function PipelineDetailPage() {
   if (error || !snapshot) {
     return (
       <main className="shell narrow">
-        <Link href="/pipelines" className="back-link">
-          ← Pipelines
-        </Link>
+        <PageHeader
+          title="Pipeline"
+          crumbs={[{ label: "Pipelines", href: "/pipelines" }]}
+        />
         <ErrorState
           title="No se pudo cargar el pipeline"
           message={error ?? "Pipeline no encontrado"}
@@ -60,37 +62,38 @@ export default function PipelineDetailPage() {
   const { pipeline } = snapshot;
   return (
     <main className="shell shell-wide">
-      <Link href="/pipelines" className="back-link">
-        ← Pipelines
-      </Link>
-      <section className="hero compact">
-        <p className="eyebrow">Pipeline</p>
-        <h1>{pipeline.name}</h1>
-        {pipeline.description ? (
-          <p className="lead">{pipeline.description}</p>
-        ) : null}
-        <div className="actions">
-          <Link
-            href={`/pipelines/${pipeline.id}/report`}
-            className="button"
-          >
-            Reporte
-          </Link>
-          <Link
-            href={`/pipelines/${pipeline.id}/edit-stages`}
-            className="button secondary"
-          >
-            Editar etapas
-          </Link>
-          <button
-            type="button"
-            className="button secondary"
-            onClick={refresh}
-          >
-            Refrescar
-          </button>
-        </div>
-      </section>
+      <PageHeader
+        title={pipeline.name}
+        eyebrow="Pipeline"
+        description={pipeline.description ?? undefined}
+        crumbs={[
+          { label: "Pipelines", href: "/pipelines" },
+          { label: pipeline.name },
+        ]}
+        actions={
+          <>
+            <Link
+              href={`/pipelines/${pipeline.id}/report`}
+              className="button small"
+            >
+              Reporte
+            </Link>
+            <Link
+              href={`/pipelines/${pipeline.id}/edit-stages`}
+              className="button secondary small"
+            >
+              Editar etapas
+            </Link>
+            <button
+              type="button"
+              className="button secondary small"
+              onClick={refresh}
+            >
+              Refrescar
+            </button>
+          </>
+        }
+      />
 
       {error ? <ErrorState title="Error" message={error} /> : null}
 

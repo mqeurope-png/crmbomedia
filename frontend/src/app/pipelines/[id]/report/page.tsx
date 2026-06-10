@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { PageHeader } from "../../../components/PageHeader";
 import { ErrorState } from "../../../components/ErrorState";
 import { PipelineReportChart } from "../../../components/PipelineReportChart";
 import {
@@ -67,9 +68,10 @@ export default function PipelineReportPage() {
   if (error || !report) {
     return (
       <main className="shell narrow">
-        <Link href="/pipelines" className="back-link">
-          ← Pipelines
-        </Link>
+        <PageHeader
+          title="Reporte"
+          crumbs={[{ label: "Pipelines", href: "/pipelines" }]}
+        />
         <ErrorState
           title="No se pudo cargar el reporte"
           message={error ?? "Reporte no disponible"}
@@ -80,17 +82,16 @@ export default function PipelineReportPage() {
 
   return (
     <main className="shell shell-wide">
-      <Link href={`/pipelines/${report.pipeline_id}`} className="back-link">
-        ← Volver al pipeline
-      </Link>
-      <section className="hero compact">
-        <p className="eyebrow">Reporte</p>
-        <h1>{report.pipeline_name}</h1>
-        <p className="lead">
-          Vista agregada de los contactos del pipeline + métricas de
-          tiempo y conversión por etapa.
-        </p>
-      </section>
+      <PageHeader
+        title={report.pipeline_name}
+        eyebrow="Reporte"
+        description="Vista agregada de los contactos del pipeline + métricas de tiempo y conversión por etapa."
+        crumbs={[
+          { label: "Pipelines", href: "/pipelines" },
+          { label: report.pipeline_name, href: `/pipelines/${report.pipeline_id}` },
+          { label: "Reporte" },
+        ]}
+      />
 
       <section className="stats-grid" aria-label="Resumen">
         <article className="stat-card">

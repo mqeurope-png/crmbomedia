@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
+import { PageHeader } from "../../components/PageHeader";
 import { ErrorState } from "../../components/ErrorState";
 import { SegmentAIExplainPanel } from "../../components/SegmentAIExplainPanel";
 import { SegmentLivePreview } from "../../components/SegmentLivePreview";
@@ -92,9 +93,10 @@ export default function SegmentDetailPage() {
   if (error || !segment) {
     return (
       <main className="shell narrow">
-        <Link href="/segments" className="back-link">
-          ← Segmentos
-        </Link>
+        <PageHeader
+          title="Segmento"
+          crumbs={[{ label: "Segmentos", href: "/segments" }]}
+        />
         <ErrorState
           title="No se pudo cargar el segmento"
           message={error ?? "Segmento no encontrado"}
@@ -105,31 +107,32 @@ export default function SegmentDetailPage() {
 
   return (
     <main className="shell shell-wide">
-      <Link href="/segments" className="back-link">
-        ← Segmentos
-      </Link>
-      <section className="hero compact">
-        <p className="eyebrow">Segmento</p>
-        <h1>{segment.name}</h1>
-        {segment.description ? (
-          <p className="lead">{segment.description}</p>
-        ) : null}
-        <div className="actions">
-          <span className="muted small">
-            {segment.cached_count ?? "?"} contactos · Última evaluación:{" "}
-            {segment.last_evaluated_at
-              ? new Date(segment.last_evaluated_at).toLocaleString("es-ES")
-              : "—"}
-          </span>
-          <button
-            type="button"
-            className="button secondary"
-            onClick={handleForceRefresh}
-          >
-            Refrescar count
-          </button>
-        </div>
-      </section>
+      <PageHeader
+        title={segment.name}
+        eyebrow="Segmento"
+        description={segment.description ?? undefined}
+        crumbs={[
+          { label: "Segmentos", href: "/segments" },
+          { label: segment.name },
+        ]}
+        actions={
+          <>
+            <span className="muted small">
+              {segment.cached_count ?? "?"} contactos · Última evaluación:{" "}
+              {segment.last_evaluated_at
+                ? new Date(segment.last_evaluated_at).toLocaleString("es-ES")
+                : "—"}
+            </span>
+            <button
+              type="button"
+              className="button secondary small"
+              onClick={handleForceRefresh}
+            >
+              Refrescar count
+            </button>
+          </>
+        }
+      />
 
       <section className="panel">
         <div className="tab-bar">

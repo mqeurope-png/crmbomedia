@@ -1,10 +1,10 @@
 "use client";
 
-import Link from "next/link";
 import { useEffect, useState } from "react";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { ErrorState } from "../../components/ErrorState";
 import { IntegrationAccountModal } from "../../components/IntegrationAccountModal";
+import { PageHeader } from "../../components/PageHeader";
 import { SyncPanel } from "../../components/SyncPanel";
 import { getCurrentUser, type User } from "../../lib/api";
 import { extractErrorMessage } from "../../lib/errors";
@@ -165,16 +165,11 @@ export default function IntegrationAccountsPage() {
 
   return (
     <main className="shell">
-      <Link href="/" className="back-link">← Volver al dashboard</Link>
-      <section className="hero compact">
-        <p className="eyebrow">Administración</p>
-        <h1>Cuentas de integración</h1>
-        <p className="lead">
-          Múltiples cuentas por sistema. AgileCRM y Freshdesk admiten una cuenta
-          por mercado o equipo; Brevo y FactuSOL típicamente quedan en una sola
-          cuenta. Las API keys se cifran en reposo.
-        </p>
-      </section>
+      <PageHeader
+        title="Cuentas de integración"
+        eyebrow="Administración"
+        description="Múltiples cuentas por sistema. AgileCRM y Freshdesk admiten una cuenta por mercado o equipo; Brevo y FactuSOL típicamente quedan en una sola cuenta. Las API keys se cifran en reposo."
+      />
 
       {isLoading ? <p className="muted">Cargando cuentas...</p> : null}
       {error ? <ErrorState title="Error" message={error} /> : null}

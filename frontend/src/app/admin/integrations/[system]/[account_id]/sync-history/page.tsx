@@ -1,8 +1,8 @@
 "use client";
 
-import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams, useSearchParams } from "next/navigation";
+import { PageHeader } from "../../../../../components/PageHeader";
 import { ErrorState } from "../../../../../components/ErrorState";
 import { Modal } from "../../../../../components/Modal";
 import {
@@ -83,13 +83,14 @@ export default function SyncHistoryPage() {
 
   return (
     <main className="shell">
-      <Link href="/admin/integrations" className="back-link">
-        ← Volver a integraciones
-      </Link>
-      <section className="hero compact">
-        <p className="eyebrow">Administración</p>
-        <h1>{headerTitle}</h1>
-      </section>
+      <PageHeader
+        title={headerTitle}
+        eyebrow="Administración"
+        crumbs={[
+          { label: "Integraciones", href: "/admin/integrations" },
+          { label: "Histórico" },
+        ]}
+      />
 
       {error ? <ErrorState title="Error" message={error} /> : null}
 

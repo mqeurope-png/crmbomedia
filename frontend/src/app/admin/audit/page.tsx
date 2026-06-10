@@ -1,8 +1,8 @@
 "use client";
 
-import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { ErrorState } from "../../components/ErrorState";
+import { PageHeader } from "../../components/PageHeader";
 import {
   exportAuditLogs,
   getAuditLogs,
@@ -126,23 +126,21 @@ export default function AuditLogsPage() {
 
   return (
     <main className="shell">
-      <Link href="/" className="back-link">← Volver al dashboard</Link>
-      <section className="hero compact">
-        <p className="eyebrow">Administración</p>
-        <h1>Auditoría</h1>
-        <p className="lead">
-          Eventos sensibles del sistema: login (correcto y fallido), cambios de password,
-          gestión de usuarios, 2FA, integraciones, exportaciones, accesos denegados.
-        </p>
-        <div className="actions">
-          <button className="button secondary" type="button" onClick={() => onExport("csv")}>
-            Exportar CSV
-          </button>
-          <button className="button secondary" type="button" onClick={() => onExport("json")}>
-            Exportar JSON
-          </button>
-        </div>
-      </section>
+      <PageHeader
+        title="Auditoría"
+        eyebrow="Administración"
+        description="Eventos sensibles del sistema: login (correcto y fallido), cambios de password, gestión de usuarios, 2FA, integraciones, exportaciones, accesos denegados."
+        actions={
+          <>
+            <button className="button secondary small" type="button" onClick={() => onExport("csv")}>
+              Exportar CSV
+            </button>
+            <button className="button secondary small" type="button" onClick={() => onExport("json")}>
+              Exportar JSON
+            </button>
+          </>
+        }
+      />
 
       <section className="card">
         <form className="audit-filters" onSubmit={onApply}>

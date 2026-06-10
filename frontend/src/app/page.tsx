@@ -1,12 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { CompanyEditor } from "./components/CompanyEditor";
 import { ErrorState } from "./components/ErrorState";
+import { PageHeader } from "./components/PageHeader";
 import {
-  clearStoredToken,
   getCompanies,
   getCompaniesCount,
   getContacts,
@@ -29,7 +28,6 @@ const roadmapItems = [
 const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 
 export default function Home() {
-  const router = useRouter();
   const [user, setUser] = useState<User | null>(null);
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [companies, setCompanies] = useState<Company[]>([]);
@@ -70,60 +68,49 @@ export default function Home() {
     loadDashboard();
   }, []);
 
-  function logout() {
-    clearStoredToken();
-    router.push("/login");
-  }
-
   if (isLoading) {
-    return <main className="shell"><p className="muted">Cargando CRM...</p></main>;
+    return (
+      <main className="shell">
+        <PageHeader title="Dashboard" eyebrow="CRM" />
+        <p className="muted">Cargando CRM…</p>
+      </main>
+    );
   }
 
   if (error) {
     return (
       <main className="shell">
-        <section className="hero compact">
-          <p className="eyebrow">CRM MVP</p>
-          <h1>Dashboard CRM central</h1>
-          <div className="actions">
-            <Link href="/login" className="button">Iniciar sesión</Link>
-          </div>
-        </section>
+        <PageHeader title="Dashboard" eyebrow="CRM" />
         <ErrorState title="No se pudo cargar el CRM" message={error} />
       </main>
     );
   }
 
-  const canManageIntegrations = user?.role === "admin" || user?.role === "manager";
+  void user;
 
   return (
     <main className="shell">
-      <section className="hero compact">
-        <div className="topbar">
-          <p className="eyebrow">CRM MVP · Base segura</p>
-          {user ? <span className="user-pill">{user.full_name} · {user.role}</span> : null}
-        </div>
-        <h1>Dashboard CRM central</h1>
-        <p className="lead">
-          Interfaz mínima para revisar contactos, empresas y permisos antes de iniciar integraciones
-          con AgileCRM, Brevo, Freshdesk o FactuSOL.
-        </p>
-        <div className="actions">
-          <Link href="/contacts" className="button">Ver todos los contactos</Link>
-          <Link href="/contacts/new" className="button secondary">Crear contacto</Link>
-          <a href={`${apiBaseUrl}/api/docs`} className="button secondary">OpenAPI</a>
-          <Link href="/account/password" className="button secondary">Contraseña</Link>
-          <Link href="/account/security" className="button secondary">Seguridad / 2FA</Link>
-          {user?.role === "admin" ? <Link href="/admin/users" className="button secondary">Usuarios</Link> : null}
-          {user?.role === "admin" ? <Link href="/admin/audit" className="button secondary">Auditoría</Link> : null}
-          {user?.role === "admin" ? <Link href="/admin/gdpr" className="button secondary">RGPD</Link> : null}
-          {canManageIntegrations ? <Link href="/admin/integrations" className="button secondary">Integraciones</Link> : null}
-          {canManageIntegrations ? <Link href="/admin/tags" className="button secondary">Tags</Link> : null}
-          {canManageIntegrations ? <Link href="/pipelines" className="button secondary">Pipelines</Link> : null}
-          {canManageIntegrations ? <Link href="/segments" className="button secondary">Segmentos</Link> : null}
-          <button className="button secondary" type="button" onClick={logout}>Salir</button>
-        </div>
-      </section>
+      <PageHeader
+        title="Dashboard"
+        eyebrow="Resumen del CRM"
+        description="Estado actual de contactos y empresas en la base de datos compartida."
+        actions={
+          <>
+            <Link href="/contacts" className="button small">
+              Ver contactos
+            </Link>
+            <Link href="/contacts/new" className="button secondary small">
+              + Nuevo contacto
+            </Link>
+            <a
+              href={`${apiBaseUrl}/api/docs`}
+              className="button secondary small"
+            >
+              OpenAPI
+            </a>
+          </>
+        }
+      />
 
       <section className="stats-grid" aria-label="Resumen CRM">
         <article className="stat-card">
