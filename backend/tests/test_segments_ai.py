@@ -86,6 +86,43 @@ def test_ai_generate_returns_validated_rules_with_preview(
     assert body["count"] >= 0
 
 
+def test_ai_generate_injects_crm_context_into_system_prompt(
+    client: TestClient, monkeypatch
+):
+    """The route must build a per-tenant CRM context block and splice
+    it into the system prompt before invoking Claude. Without this,
+    the model can't know the operator's real tag ids and ends up
+    generating rules that match zero contacts."""
+    from app.models.crm import Tag
+    from app.services.segments import ai_context
+
+    session_factory = app.dependency_overrides[get_session]
+    gen = session_factory()
+    session = next(gen)
+    try:
+        session.add(Tag(name="formMBO", name_normalized="formmbo"))
+        session.commit()
+    finally:
+        gen.close()
+    ai_context.reset_cache()
+
+    captured: dict[str, str] = {}
+
+    def fake_invoke(**kwargs):
+        captured["system_prompt"] = kwargs["system_prompt"]
+        return VALID_GENERATED_RULES
+
+    monkeypatch.setattr(llm_service, "_invoke_claude", fake_invoke)
+    response = client.post(
+        "/api/segments/ai-generate",
+        json={"description": "leads con tag MBO"},
+        headers=auth_headers(client, "manager"),
+    )
+    assert response.status_code == 200
+    assert "TAGS DISPONIBLES" in captured["system_prompt"]
+    assert "formMBO" in captured["system_prompt"]
+
+
 def test_ai_generate_passes_error_when_model_returns_one(
     client: TestClient, monkeypatch
 ):

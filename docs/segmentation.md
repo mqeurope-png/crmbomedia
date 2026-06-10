@@ -138,7 +138,10 @@ campo + comparador:
 
 | Tipo de campo               | Editor                              |
 |-----------------------------|-------------------------------------|
-| `tags` (tag-multi)          | Multi-select con checkboxes y swatch de color, lista cargada desde `/api/tags`. |
+| `tags` (tag-multi)          | Dropdown con buscador (reutiliza `<TagMultiSelectFilter>`) y chips de seleccionadas — mismo control que la lista de contactos. |
+| `address_country`           | Dropdown poblado de `/api/segments/available-countries` (códigos presentes en BD + contact_count). Para `in` → multi-checkbox. |
+| `origin_account_id`         | Dropdown / multi-checkbox poblado de `/api/segments/available-origin-accounts` (cuentas habilitadas en /admin/integrations). Si pasa de 20 cuentas, autocomplete. |
+| `origin_system` (enum)      | `<select>` con etiquetas legibles ("AgileCRM", "Brevo", …) en vez de slugs. |
 | `pipeline_id` (uuid-multi)  | Multi-select de pipelines.          |
 | `pipeline_stage_id`         | Multi-select agrupado por pipeline. |
 | `enum` (in/not_in)          | Multi-checkbox.                     |
@@ -149,6 +152,14 @@ campo + comparador:
 | `between` (cualquier tipo)  | Dos inputs del tipo del campo.       |
 | `in_last_n_days`            | `<input type="number">` con N días. |
 | `is_null` / `is_not_null`   | Sin valor (placeholder "sin valor").|
+
+### Endpoints auxiliares del builder
+
+| Endpoint | Devuelve | Auth |
+|---|---|---|
+| `GET /api/segments/available-fields` | Whitelist + comparadores. | viewer |
+| `GET /api/segments/available-countries` | `[{code, contact_count}]` ordenado por uso. | viewer |
+| `GET /api/segments/available-origin-accounts` | `[{value, label, system}]` con cuentas `enabled=true`. | viewer |
 
 El bug que motivó este cambio era que el editor por defecto de
 `react-querybuilder` aceptaba cualquier string, así que un operador

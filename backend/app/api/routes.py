@@ -59,6 +59,7 @@ from app.models.crm import (
     Task,
     User,
 )
+from app.models.integration_settings import IntegrationAccount
 from app.repositories import contact_views as contact_views_repository
 from app.repositories import crm as crm_repository
 from app.repositories import pipelines as pipelines_repository
@@ -118,9 +119,11 @@ from app.schemas.crm import (
     SegmentAIExplainResponse,
     SegmentAIGenerateRequest,
     SegmentAIGenerateResponse,
+    SegmentCountryOption,
     SegmentCreate,
     SegmentDuplicateRequest,
     SegmentFieldDescriptor,
+    SegmentOriginAccountOption,
     SegmentPreviewContactCard,
     SegmentPreviewRequest,
     SegmentPreviewResponse,
@@ -3100,6 +3103,70 @@ def segment_available_fields(
 
 
 @router.get(
+    "/segments/available-countries",
+    response_model=list[SegmentCountryOption],
+    responses=ERROR_RESPONSES,
+    tags=["crm"],
+)
+def segment_available_countries(
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_viewer),
+) -> list[SegmentCountryOption]:
+    """Distinct `address_country` values present in the contacts table
+    so the value picker for the `address_country` rule shows real
+    options, not a free-text input. Ordered by usage descending."""
+    _ = current_user
+    rows = session.execute(
+        select(
+            Contact.address_country,
+            func.count(Contact.id).label("contact_count"),
+        )
+        .where(Contact.address_country.is_not(None))
+        .where(Contact.address_country != "")
+        .group_by(Contact.address_country)
+        .order_by(func.count(Contact.id).desc(), Contact.address_country)
+        .limit(200)
+    ).all()
+    return [
+        SegmentCountryOption(code=row[0], contact_count=int(row.contact_count))
+        for row in rows
+        if row[0]
+    ]
+
+
+@router.get(
+    "/segments/available-origin-accounts",
+    response_model=list[SegmentOriginAccountOption],
+    responses=ERROR_RESPONSES,
+    tags=["crm"],
+)
+def segment_available_origin_accounts(
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_viewer),
+) -> list[SegmentOriginAccountOption]:
+    """Enabled integration accounts in `{value, label, system}` shape.
+
+    The engine compares `external_refs.account_id` directly against the
+    `value`, so the picker must surface the same slug. The `label` is
+    "{Display Name} · {account_id}" so the operator can tell two
+    AgileCRM accounts apart even if both share a display name."""
+    _ = current_user
+    rows = session.execute(
+        select(IntegrationAccount)
+        .where(IntegrationAccount.enabled.is_(True))
+        .order_by(IntegrationAccount.system, IntegrationAccount.display_name)
+    ).scalars().all()
+    return [
+        SegmentOriginAccountOption(
+            value=row.account_id,
+            label=f"{row.display_name} · {row.account_id}",
+            system=row.system.value if hasattr(row.system, "value") else str(row.system),
+        )
+        for row in rows
+    ]
+
+
+@router.get(
     "/segments/templates",
     response_model=list[SegmentTemplate],
     responses=ERROR_RESPONSES,
@@ -3468,7 +3535,9 @@ def segment_ai_generate(
         )
     try:
         result = llm_service.generate_segment_rules(
-            payload.description, user_id=current_user.id
+            payload.description,
+            user_id=current_user.id,
+            session=session,
         )
     except llm_service.LLMRateLimitError as exc:
         raise HTTPException(

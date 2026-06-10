@@ -19,6 +19,8 @@ import time
 from collections import defaultdict, deque
 from typing import Any
 
+from sqlalchemy.orm import Session
+
 from app.core.config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -144,6 +146,7 @@ SEGMENT_GENERATE_SYSTEM_PROMPT = (
     "- Si la descripción es ambigua o requiere campos fuera de la "
     "whitelist, devuelve `{\"error\": \"explicación breve\"}`.\n"
     "- Idioma: español. Lenguaje natural en `error`, no jerga técnica.\n\n"
+    "{crm_context}"
     "Campos disponibles:\n{fields_table}"
 )
 
@@ -182,11 +185,20 @@ def _build_fields_table() -> str:
 
 
 def generate_segment_rules(
-    description: str, *, user_id: str
+    description: str,
+    *,
+    user_id: str,
+    session: Session | None = None,
 ) -> dict[str, Any]:
     """Translate a natural-language description into a rule tree.
     Returns either `{"rules": {...}}` for a valid proposal or
-    `{"error": "..."}` for an ambiguous / unsupported case."""
+    `{"error": "..."}` for an ambiguous / unsupported case.
+
+    `session` is optional only so legacy callers / unit tests that
+    don't need DB-derived context can keep working. The HTTP route
+    always passes one through so Claude sees the operator's real
+    tags / accounts / pipelines instead of generating ids out of
+    thin air."""
     settings = get_settings()
     if not settings.anthropic_api_key:
         raise LLMNotConfiguredError(
@@ -200,12 +212,19 @@ def generate_segment_rules(
             f"Description too long; max {MAX_DESCRIPTION_CHARS} characters."
         )
     _rate_limit_check(f"segment-generate:{user_id}", max_calls=10)
+
+    crm_context_block = ""
+    if session is not None:
+        from app.services.segments.ai_context import build_crm_context  # noqa: PLC0415
+
+        crm_context_block = build_crm_context(session) + "\n\n"
+
     # Use `replace` instead of `.format()` — the prompt's JSON
     # examples contain literal `{}` braces that `.format()` would
     # try to interpolate.
     system = SEGMENT_GENERATE_SYSTEM_PROMPT.replace(
         "{fields_table}", _build_fields_table()
-    )
+    ).replace("{crm_context}", crm_context_block)
     raw = _invoke_claude(
         api_key=settings.anthropic_api_key,
         model=settings.anthropic_model,

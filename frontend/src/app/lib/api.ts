@@ -1203,6 +1203,33 @@ export async function listSegmentFields(): Promise<SegmentFieldDescriptor[]> {
   return apiFetch<SegmentFieldDescriptor[]>("/api/segments/available-fields");
 }
 
+export type SegmentCountryOption = {
+  code: string;
+  contact_count: number;
+};
+
+export type SegmentOriginAccountOption = {
+  value: string;
+  label: string;
+  system: string;
+};
+
+export async function listSegmentAvailableCountries(): Promise<
+  SegmentCountryOption[]
+> {
+  return apiFetch<SegmentCountryOption[]>(
+    "/api/segments/available-countries",
+  );
+}
+
+export async function listSegmentAvailableOriginAccounts(): Promise<
+  SegmentOriginAccountOption[]
+> {
+  return apiFetch<SegmentOriginAccountOption[]>(
+    "/api/segments/available-origin-accounts",
+  );
+}
+
 export async function listSegments(): Promise<Segment[]> {
   return apiFetch<Segment[]>("/api/segments");
 }
