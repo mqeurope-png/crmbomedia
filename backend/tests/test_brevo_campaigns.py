@@ -1,0 +1,408 @@
+"""Brevo campaigns — cache, creation from segment, scheduling rules."""
+from __future__ import annotations
+
+from collections.abc import Generator
+from datetime import UTC, datetime, timedelta
+from typing import Any
+from unittest.mock import patch
+
+import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import StaticPool
+
+from app.db.base import Base
+from app.db.session import get_session
+from app.integrations.brevo.campaigns import (
+    campaign_cache_is_stale,
+    upsert_campaign_row,
+)
+from app.main import app
+from app.models.brevo import BrevoCampaignCache
+from app.models.crm import ExternalSystem
+from app.models.integration_settings import IntegrationAccount
+from tests._test_helpers import auth_headers, seed_test_users
+
+
+@pytest.fixture()
+def session_factory() -> Generator[sessionmaker, None, None]:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    with factory() as session:
+        seed_test_users(session)
+        session.add(
+            IntegrationAccount(
+                system=ExternalSystem.BREVO,
+                account_id="main",
+                display_name="Brevo",
+                enabled=True,
+            )
+        )
+        session.commit()
+    yield factory
+    Base.metadata.drop_all(engine)
+
+
+@pytest.fixture()
+def client(session_factory) -> Generator[TestClient, None, None]:
+    def override_session() -> Generator[Session, None, None]:
+        with session_factory() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override_session
+    with TestClient(app) as test_client:
+        yield test_client
+    app.dependency_overrides.clear()
+
+
+class _FakeClient:
+    campaigns: dict[int, dict[str, Any]] = {}
+    lists_created: list[str] = []
+    list_members: dict[int, list[str]] = {}
+    next_campaign_id = 500
+    next_list_id = 70
+    calls: list[tuple[str, Any]] = []
+
+    def __init__(self, session, account_id, **kwargs):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return None
+
+    async def create_list(self, name, folder_id=None):
+        lid = _FakeClient.next_list_id
+        _FakeClient.next_list_id += 1
+        _FakeClient.lists_created.append(name)
+        _FakeClient.list_members[lid] = []
+        return {"id": lid}
+
+    async def add_contacts_to_list(self, list_id, emails):
+        _FakeClient.list_members.setdefault(list_id, []).extend(emails)
+        return {}
+
+    async def create_email_campaign(self, payload):
+        cid = _FakeClient.next_campaign_id
+        _FakeClient.next_campaign_id += 1
+        _FakeClient.campaigns[cid] = {**payload, "id": cid, "status": "draft"}
+        _FakeClient.calls.append(("create_campaign", cid))
+        return {"id": cid}
+
+    async def update_email_campaign(self, campaign_id, payload):
+        _FakeClient.calls.append(("update_campaign", campaign_id, payload))
+        _FakeClient.campaigns.setdefault(campaign_id, {}).update(payload)
+
+    async def delete_email_campaign(self, campaign_id):
+        _FakeClient.calls.append(("delete_campaign", campaign_id))
+        _FakeClient.campaigns.pop(campaign_id, None)
+
+    async def send_email_campaign_now(self, campaign_id):
+        _FakeClient.calls.append(("send_now", campaign_id))
+
+    async def send_test_email_campaign(self, campaign_id, email_to):
+        _FakeClient.calls.append(("send_test", campaign_id, tuple(email_to)))
+
+    async def schedule_email_campaign(self, campaign_id, scheduled_at):
+        _FakeClient.calls.append(("schedule", campaign_id, scheduled_at))
+
+    async def update_campaign_status(self, campaign_id, status):
+        _FakeClient.calls.append(("status", campaign_id, status))
+
+
+@pytest.fixture(autouse=True)
+def _reset_fake():
+    _FakeClient.campaigns = {}
+    _FakeClient.lists_created = []
+    _FakeClient.list_members = {}
+    _FakeClient.next_campaign_id = 500
+    _FakeClient.next_list_id = 70
+    _FakeClient.calls = []
+
+
+def _patch_api():
+    return patch("app.api.brevo.BrevoClient", _FakeClient)
+
+
+def _seed_segment(client: TestClient) -> str:
+    headers = auth_headers(client, "manager")
+    client.post(
+        "/api/contacts",
+        json={"first_name": "Ana", "email": "ana@example.com"},
+        headers=headers,
+    )
+    client.post(
+        "/api/contacts",
+        json={"first_name": "Boris", "email": "boris@example.com"},
+        headers=headers,
+    )
+    segment = client.post(
+        "/api/segments",
+        json={
+            "name": "Todos",
+            "rules": {
+                "type": "rule",
+                "field": "is_active",
+                "comparator": "eq",
+                "value": True,
+            },
+        },
+        headers=headers,
+    ).json()
+    return segment["id"]
+
+
+def _campaign_payload(**overrides):
+    base = {
+        "brevo_account_id": "main",
+        "name": "Campaña verano",
+        "subject": "¡Ofertas!",
+        "sender_name": "MBO",
+        "sender_email": "news@mbolasers.com",
+        "html_content": "<h1>Hola</h1>",
+        "list_ids": [3],
+    }
+    base.update(overrides)
+    return base
+
+
+def test_create_campaign_from_segment_materialises_list(client: TestClient):
+    segment_id = _seed_segment(client)
+    headers = auth_headers(client, "manager")
+    with _patch_api():
+        response = client.post(
+            "/api/brevo/campaigns",
+            json=_campaign_payload(list_ids=None, segment_id=segment_id),
+            headers=headers,
+        )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["status"] == "draft"
+    # A list was auto-created and both segment contacts joined it.
+    assert len(_FakeClient.lists_created) == 1
+    assert _FakeClient.lists_created[0].startswith("crm-campaign-")
+    members = _FakeClient.list_members[70]
+    assert sorted(members) == ["ana@example.com", "boris@example.com"]
+    assert body["recipient_list_ids"] == [70]
+
+
+def test_create_campaign_requires_content_and_recipients(client: TestClient):
+    headers = auth_headers(client, "manager")
+    no_content = client.post(
+        "/api/brevo/campaigns",
+        json=_campaign_payload(html_content=None),
+        headers=headers,
+    )
+    assert no_content.status_code == 400
+    no_recipients = client.post(
+        "/api/brevo/campaigns",
+        json=_campaign_payload(list_ids=None),
+        headers=headers,
+    )
+    assert no_recipients.status_code == 400
+
+
+def test_send_now_only_from_draft_or_scheduled(client: TestClient):
+    headers = auth_headers(client, "manager")
+    with _patch_api():
+        created = client.post(
+            "/api/brevo/campaigns", json=_campaign_payload(), headers=headers
+        ).json()
+        ok = client.post(
+            f"/api/brevo/campaigns/{created['id']}/send-now", headers=headers
+        )
+        assert ok.status_code == 200
+        assert ("send_now", 500) in _FakeClient.calls
+        # Now in_process → a second send must 409.
+        again = client.post(
+            f"/api/brevo/campaigns/{created['id']}/send-now", headers=headers
+        )
+        assert again.status_code == 409
+
+
+def test_schedule_requires_one_hour_lead(client: TestClient):
+    headers = auth_headers(client, "manager")
+    with _patch_api():
+        created = client.post(
+            "/api/brevo/campaigns", json=_campaign_payload(), headers=headers
+        ).json()
+        too_soon = client.post(
+            f"/api/brevo/campaigns/{created['id']}/schedule",
+            json={
+                "scheduled_at": (
+                    datetime.now(UTC) + timedelta(minutes=10)
+                ).isoformat()
+            },
+            headers=headers,
+        )
+        assert too_soon.status_code == 400
+        ok = client.post(
+            f"/api/brevo/campaigns/{created['id']}/schedule",
+            json={
+                "scheduled_at": (
+                    datetime.now(UTC) + timedelta(hours=2)
+                ).isoformat()
+            },
+            headers=headers,
+        )
+        assert ok.status_code == 200
+    detail = client.get(
+        f"/api/brevo/campaigns/{created['id']}", headers=headers
+    ).json()
+    assert detail["status"] == "queued"
+    assert detail["scheduled_at"] is not None
+
+
+def test_cancel_schedule_returns_to_draft(client: TestClient):
+    headers = auth_headers(client, "manager")
+    with _patch_api():
+        created = client.post(
+            "/api/brevo/campaigns", json=_campaign_payload(), headers=headers
+        ).json()
+        client.post(
+            f"/api/brevo/campaigns/{created['id']}/schedule",
+            json={
+                "scheduled_at": (
+                    datetime.now(UTC) + timedelta(hours=2)
+                ).isoformat()
+            },
+            headers=headers,
+        )
+        cancelled = client.post(
+            f"/api/brevo/campaigns/{created['id']}/cancel-schedule",
+            headers=headers,
+        )
+        assert cancelled.status_code == 200
+        assert ("status", 500, "draft") in _FakeClient.calls
+    detail = client.get(
+        f"/api/brevo/campaigns/{created['id']}", headers=headers
+    ).json()
+    assert detail["status"] == "draft"
+    assert detail["scheduled_at"] is None
+
+
+def test_edit_blocked_once_sent(client: TestClient, session_factory):
+    headers = auth_headers(client, "manager")
+    with _patch_api():
+        created = client.post(
+            "/api/brevo/campaigns", json=_campaign_payload(), headers=headers
+        ).json()
+    # Flip the cached status to sent directly.
+    with session_factory() as session:
+        row = session.get(BrevoCampaignCache, created["id"])
+        row.status = "sent"
+        # Refresh the cache timestamp so the detail endpoint doesn't try
+        # to re-pull from (fake) Brevo.
+        row.cached_at = datetime.now(UTC)
+        session.commit()
+    with _patch_api():
+        response = client.patch(
+            f"/api/brevo/campaigns/{created['id']}",
+            json={"subject": "nuevo"},
+            headers=headers,
+        )
+    assert response.status_code == 409
+
+
+def test_send_test_campaign(client: TestClient):
+    headers = auth_headers(client, "manager")
+    with _patch_api():
+        created = client.post(
+            "/api/brevo/campaigns", json=_campaign_payload(), headers=headers
+        ).json()
+        response = client.post(
+            f"/api/brevo/campaigns/{created['id']}/send-test",
+            json={"emails": ["qa@mbolasers.com"]},
+            headers=headers,
+        )
+    assert response.status_code == 200
+    assert ("send_test", 500, ("qa@mbolasers.com",)) in _FakeClient.calls
+
+
+def test_cache_staleness_rule(session_factory):
+    with session_factory() as session:
+        row = upsert_campaign_row(
+            session,
+            account_id="main",
+            payload={"id": 9, "name": "X", "status": "sent"},
+        )
+        assert campaign_cache_is_stale(row) is False
+        row.cached_at = datetime.now(UTC) - timedelta(minutes=6)
+        assert campaign_cache_is_stale(row) is True
+
+
+def test_stats_extraction_from_global_stats(session_factory):
+    with session_factory() as session:
+        row = upsert_campaign_row(
+            session,
+            account_id="main",
+            payload={
+                "id": 11,
+                "name": "Stats",
+                "status": "sent",
+                "statistics": {
+                    "globalStats": {
+                        "sent": 100,
+                        "delivered": 95,
+                        "uniqueViews": 40,
+                        "uniqueClicks": 12,
+                        "hardBounces": 2,
+                        "unsubscriptions": 1,
+                    }
+                },
+            },
+        )
+        session.commit()
+        import json as _json
+
+        stats = _json.loads(row.stats_json)
+        assert stats["sent"] == 100
+        assert stats["uniqueViews"] == 40
+
+
+def test_campaign_recipients_resolved_from_activity_events(
+    client: TestClient, session_factory
+):
+    """The recipients tabs read webhook-fed activity_events joined to
+    CRM contacts, not the Brevo API."""
+    headers = auth_headers(client, "manager")
+    with _patch_api():
+        created = client.post(
+            "/api/brevo/campaigns", json=_campaign_payload(), headers=headers
+        ).json()
+    with session_factory() as session:
+        from app.models.crm import ActivityEvent, Contact
+
+        ana = Contact(first_name="Ana", email="ana@example.com")
+        session.add(ana)
+        session.flush()
+        session.add(
+            ActivityEvent(
+                contact_id=ana.id,
+                system="brevo",
+                account_id="main",
+                external_id="evt-1",
+                event_type="email.opened",
+                occurred_at=datetime.now(UTC),
+                synced_at=datetime.now(UTC),
+            )
+        )
+        row = session.get(BrevoCampaignCache, created["id"])
+        row.cached_at = datetime.now(UTC)
+        session.commit()
+    response = client.get(
+        f"/api/brevo/campaigns/{created['id']}/recipients/opened",
+        headers=headers,
+    )
+    assert response.status_code == 200, response.text
+    items = response.json()["items"]
+    assert len(items) == 1
+    assert items[0]["email"] == "ana@example.com"
+    assert items[0]["event_type"] == "email.opened"

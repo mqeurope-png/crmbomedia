@@ -277,6 +277,16 @@ class BrevoClient(IntegrationHTTPClient):
             json={"scheduledAt": scheduled_at},
         )
 
+    async def update_campaign_status(
+        self, campaign_id: int, status: str
+    ) -> None:
+        """PUT /emailCampaigns/{id}/status — e.g. `suspended` to cancel
+        a scheduled send, `draft` to fully unschedule."""
+        await self.put(
+            f"/emailCampaigns/{campaign_id}/status",
+            json={"status": status},
+        )
+
     async def get_campaign_stats(self, campaign_id: int) -> dict[str, Any]:
         """Stats ride along on the campaign detail response."""
         return await self.get_email_campaign(campaign_id)
