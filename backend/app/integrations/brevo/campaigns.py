@@ -106,6 +106,12 @@ def upsert_campaign_row(
     row.recipient_list_ids_json = json.dumps(list_ids)
     template_id = payload.get("templateId")
     row.template_id_used = int(template_id) if template_id else None
+    # Brevo's GET /emailCampaigns/{id} response sometimes carries the
+    # full htmlContent — keep it when present (the list endpoint
+    # never does, so the cache stays None until the detail page
+    # triggers `ensure_campaign_html`).
+    if payload.get("htmlContent"):
+        row.html_content_cached = str(payload["htmlContent"])
     row.cached_at = datetime.now(UTC)
     session.flush()
     return row
@@ -151,6 +157,23 @@ async def refresh_campaign_row(
     )
     session.refresh(row)
     return row
+
+
+async def ensure_campaign_html(
+    session: Session, row: BrevoCampaignCache
+) -> BrevoCampaignCache:
+    """Lazy-load the HTML body on first detail open.
+
+    The list refresh paths never store the HTML (Brevo's list endpoint
+    doesn't return it), so the detail page calls this once per
+    campaign — the result lands in `html_content_cached` and the next
+    detail open serves it from the cache without round-tripping
+    Brevo. The full GET also returns fresher status/stats, so we
+    upsert the whole row from it; treat this as the cheapest path to
+    "make the detail page complete"."""
+    if row.html_content_cached is not None:
+        return row
+    return await refresh_campaign_row(session, row)
 
 
 # ---------------------------------------------------------------------------

@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { CampaignTimelineChart } from "../../../components/CampaignTimelineChart";
+import { HtmlPreview } from "../../../components/HtmlPreview";
 import { ConfirmDialog } from "../../../components/ConfirmDialog";
 import { ErrorState } from "../../../components/ErrorState";
 import { PageHeader } from "../../../components/PageHeader";
@@ -262,6 +263,19 @@ export default function CampaignDetailPage() {
           <span>{stats.complaints ?? "—"}</span>
           <p>Spam</p>
         </article>
+      </section>
+
+      <section className="panel">
+        <h3>Contenido</h3>
+        {campaign.html_content ? (
+          <HtmlPreview html={campaign.html_content} />
+        ) : (
+          <p className="muted">
+            Brevo no ha devuelto el HTML para esta campaña aún. Vuelve a
+            cargar en unos segundos o abre la campaña en Brevo para
+            editar el contenido.
+          </p>
+        )}
       </section>
 
       {isSent || timeline?.timeline.length ? (

@@ -263,6 +263,10 @@ export type BrevoCampaign = {
   recipient_list_ids?: number[] | null;
   template_id_used?: number | null;
   cached_at: string;
+  /** Lazy-loaded by the detail endpoint. The list endpoint never
+   * carries it. Used to render the iframe preview on the detail
+   * page. */
+  html_content?: string | null;
 };
 
 export type BrevoCampaignTimeline = {

@@ -651,19 +651,34 @@ def get_campaign(
 ) -> BrevoCampaignRead:
     _ = current_user
     row = _get_campaign_or_404(session, campaign_id)
-    if campaigns_service.campaign_cache_is_stale(row):
+    is_stale = campaigns_service.campaign_cache_is_stale(row)
+    needs_html = row.html_content_cached is None
+    if is_stale or needs_html:
         try:
-            asyncio.run(campaigns_service.refresh_campaign_row(session, row))
+            # `ensure_campaign_html` short-circuits when the HTML is
+            # already cached AND the row is fresh; when either is
+            # missing it goes through the full GET that returns both
+            # the latest stats and the HTML body.
+            if needs_html:
+                asyncio.run(
+                    campaigns_service.ensure_campaign_html(session, row)
+                )
+            else:
+                asyncio.run(
+                    campaigns_service.refresh_campaign_row(session, row)
+                )
             session.commit()
         except IntegrationError as exc:
             # Serve the stale copy rather than failing the page; the
             # operator sees cached_at and can retry.
             logger.warning(
-                "brevo.campaign stale-refresh failed id=%s: %s",
+                "brevo.campaign refresh failed id=%s: %s",
                 row.brevo_campaign_id,
                 exc.message,
             )
-    return BrevoCampaignRead.model_validate(row)
+    read = BrevoCampaignRead.model_validate(row)
+    read.html_content = row.html_content_cached
+    return read
 
 
 @router.post(
