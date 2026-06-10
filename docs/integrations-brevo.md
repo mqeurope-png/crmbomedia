@@ -165,6 +165,30 @@ El `IntegrationHTTPClient` compartido gestiona: 429 + `Retry-After`
 cliente Brevo añade `IntegrationDuplicateError` para el 400
 `duplicate_parameter` de `POST /contacts`.
 
+### Limpieza de colas RQ huérfanas
+
+Durante los deploys del 2026-06-10 apareció una cola
+`rq:queue:brevo:brevo:sync_contacts` en Redis (doble prefijo) con un
+job huérfano que ningún worker recogía. El bug en el código está
+arreglado vía un guard defensivo en `app/workers/queues.py:queue_name`,
+pero la cola fantasma sobrevive a reinicios — hay que purgarla a
+mano una vez:
+
+```bash
+docker compose --env-file .env.production exec redis \
+    redis-cli DEL rq:queue:brevo:brevo:sync_contacts
+```
+
+Para revisar el inventario de colas en cualquier momento:
+
+```bash
+docker compose --env-file .env.production exec redis \
+    redis-cli --scan --pattern 'rq:queue:*'
+```
+
+Las colas legítimas siguen el patrón `rq:queue:<system>:<operation>`
+con `system` apareciendo UNA sola vez.
+
 ## Operaciones del worker
 
 | Cola | Handler | Disparo |

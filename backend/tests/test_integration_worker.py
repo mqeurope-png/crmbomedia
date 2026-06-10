@@ -58,6 +58,23 @@ def factory() -> Generator[sessionmaker, None, None]:
 # ---------------------------------------------------------------------------
 
 
+def test_queue_name_strips_accidental_system_prefix():
+    """Production guardrail: a caller that passed `operation="brevo:
+    sync_contacts"` produced an orphan queue
+    `rq:queue:brevo:brevo:sync_contacts`. The helper now normalises
+    the prefix away so callers can't drift back into that bug."""
+    from app.workers.queues import queue_name
+
+    assert queue_name("brevo", "sync_contacts") == "brevo:sync_contacts"
+    assert queue_name("brevo", "brevo:sync_contacts") == "brevo:sync_contacts"
+    assert (
+        queue_name("agilecrm", "agilecrm:purge_quota")
+        == "agilecrm:purge_quota"
+    )
+    # Without the prefix we leave the operation alone.
+    assert queue_name("brevo", "historical_backfill") == "brevo:historical_backfill"
+
+
 def test_unregistered_operations_remain_empty():
     """Connectors that haven't landed yet must surface as unregistered
     so the API can return a clean 409 instead of silently enqueueing
