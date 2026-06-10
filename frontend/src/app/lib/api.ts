@@ -1140,3 +1140,174 @@ export type HealthResponse = {
 export async function getHealth(): Promise<HealthResponse> {
   return apiFetch<HealthResponse>("/api/health");
 }
+
+// ----- Segments (Sprint P.3) -----
+
+export type SegmentFieldDescriptor = {
+  key: string;
+  label: string;
+  type: string;
+  comparators: string[];
+  enum_values: string[];
+};
+
+export type Segment = {
+  id: string;
+  name: string;
+  description?: string | null;
+  color?: string | null;
+  owner_user_id: string;
+  is_owner: boolean;
+  is_shared: boolean;
+  is_dynamic: boolean;
+  rules: Record<string, unknown>;
+  static_contact_ids: string[];
+  cached_count?: number | null;
+  last_evaluated_at?: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type SegmentPreviewContactCard = {
+  id: string;
+  first_name: string;
+  last_name?: string | null;
+  email: string;
+  lead_score?: number | null;
+};
+
+export type SegmentPreviewResponse = {
+  count: number;
+  sample: SegmentPreviewContactCard[];
+};
+
+export type SegmentTemplate = {
+  id: string;
+  name: string;
+  description: string;
+  category: string;
+  color?: string | null;
+  rules: Record<string, unknown>;
+};
+
+export type SegmentAIGenerateResponse = {
+  rules: Record<string, unknown> | null;
+  error: string | null;
+  count: number;
+  sample: SegmentPreviewContactCard[];
+};
+
+export type SegmentAIExplainResponse = { explanation: string };
+
+export async function listSegmentFields(): Promise<SegmentFieldDescriptor[]> {
+  return apiFetch<SegmentFieldDescriptor[]>("/api/segments/available-fields");
+}
+
+export async function listSegments(): Promise<Segment[]> {
+  return apiFetch<Segment[]>("/api/segments");
+}
+
+export async function getSegment(id: string): Promise<Segment> {
+  return apiFetch<Segment>(`/api/segments/${id}`);
+}
+
+export async function createSegment(payload: {
+  name: string;
+  description?: string | null;
+  color?: string | null;
+  is_shared?: boolean;
+  is_dynamic?: boolean;
+  rules: Record<string, unknown>;
+}): Promise<Segment> {
+  return apiFetch<Segment>("/api/segments", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updateSegment(
+  id: string,
+  payload: Partial<{
+    name: string;
+    description: string | null;
+    color: string | null;
+    is_shared: boolean;
+    is_dynamic: boolean;
+    rules: Record<string, unknown>;
+  }>,
+): Promise<Segment> {
+  return apiFetch<Segment>(`/api/segments/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function deleteSegment(id: string): Promise<{ message: string }> {
+  return apiFetch<{ message: string }>(`/api/segments/${id}`, {
+    method: "DELETE",
+  });
+}
+
+export async function duplicateSegment(
+  id: string,
+  payload: { name?: string } = {},
+): Promise<Segment> {
+  return apiFetch<Segment>(`/api/segments/${id}/duplicate`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function segmentContacts(
+  id: string,
+  params: { skip?: number; limit?: number; sort_by?: string; sort_dir?: "asc" | "desc" } = {},
+): Promise<ContactListPage> {
+  const search = new URLSearchParams();
+  if (params.skip !== undefined) search.set("skip", String(params.skip));
+  if (params.limit !== undefined) search.set("limit", String(params.limit));
+  if (params.sort_by) search.set("sort_by", params.sort_by);
+  if (params.sort_dir) search.set("sort_dir", params.sort_dir);
+  const query = search.toString();
+  return apiFetch<ContactListPage>(
+    `/api/segments/${id}/contacts${query ? `?${query}` : ""}`,
+  );
+}
+
+export async function segmentCount(
+  id: string,
+  forceRefresh = false,
+): Promise<{ total: number }> {
+  const query = forceRefresh ? "?force_refresh=true" : "";
+  return apiFetch<{ total: number }>(`/api/segments/${id}/count${query}`);
+}
+
+export async function previewSegmentRules(
+  rules: Record<string, unknown>,
+): Promise<SegmentPreviewResponse> {
+  return apiFetch<SegmentPreviewResponse>("/api/segments/preview", {
+    method: "POST",
+    body: JSON.stringify({ rules }),
+  });
+}
+
+export async function listSegmentTemplates(): Promise<SegmentTemplate[]> {
+  return apiFetch<SegmentTemplate[]>("/api/segments/templates");
+}
+
+export async function segmentAIGenerate(
+  description: string,
+): Promise<SegmentAIGenerateResponse> {
+  return apiFetch<SegmentAIGenerateResponse>("/api/segments/ai-generate", {
+    method: "POST",
+    body: JSON.stringify({ description }),
+  });
+}
+
+export async function segmentAIExplain(
+  payload: { rules?: Record<string, unknown>; segment_id?: string },
+): Promise<SegmentAIExplainResponse> {
+  return apiFetch<SegmentAIExplainResponse>("/api/segments/ai-explain", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}

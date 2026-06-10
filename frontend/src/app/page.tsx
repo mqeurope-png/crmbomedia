@@ -120,6 +120,7 @@ export default function Home() {
           {canManageIntegrations ? <Link href="/admin/integrations" className="button secondary">Integraciones</Link> : null}
           {canManageIntegrations ? <Link href="/admin/tags" className="button secondary">Tags</Link> : null}
           {canManageIntegrations ? <Link href="/pipelines" className="button secondary">Pipelines</Link> : null}
+          {canManageIntegrations ? <Link href="/segments" className="button secondary">Segmentos</Link> : null}
           <button className="button secondary" type="button" onClick={logout}>Salir</button>
         </div>
       </section>

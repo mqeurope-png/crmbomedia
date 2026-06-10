@@ -131,6 +131,15 @@ class Action:
 
     PIPELINE_AI_GENERATED = "pipeline.ai_generated"
 
+    # Segments (Sprint P.3).
+    SEGMENT_CREATED = "segment.created"
+    SEGMENT_UPDATED = "segment.updated"
+    SEGMENT_DELETED = "segment.deleted"
+    SEGMENT_DUPLICATED = "segment.duplicated"
+    SEGMENT_EVALUATED = "segment.evaluated"
+    SEGMENT_AI_GENERATED = "segment.ai_generated"
+    SEGMENT_AI_EXPLAINED = "segment.ai_explained"
+
     # GDPR / RGPD subject-rights events
     GDPR_REQUEST_CREATED = "gdpr.request_created"
     GDPR_REQUEST_UPDATED = "gdpr.request_updated"

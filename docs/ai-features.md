@@ -54,3 +54,21 @@ que el audit log no contenga la descripción cruda.
 - Modelos plug-in: el cliente `_invoke_claude` aísla Anthropic; un
   futuro `LLMProvider` permitirá conmutar Anthropic / OpenAI /
   Google según política del cliente sin tocar las rutas.
+
+## AI en segmentación (Sprint P.3)
+
+Dos endpoints nuevos extienden el patrón **propose, never apply** a los segmentos:
+
+- `POST /api/segments/ai-generate` traduce una descripción en lenguaje natural a un árbol de reglas. La whitelist completa de campos se inyecta dinámicamente en el system prompt, así un campo nuevo añadido al engine se propaga automáticamente a la IA. La propuesta vuelve con `count` + `sample` reales evaluados contra la BD del operador para que vea impacto antes de guardar.
+- `POST /api/segments/ai-explain` recibe un árbol (o `segment_id`) y devuelve un párrafo en español describiendo a quién incluye sin jerga técnica.
+
+Rate-limits específicos:
+- generación: 10 / hora / user (segmentos son más exploratorios que pipelines).
+- explicación: 30 / hora / user (operación más barata).
+
+Coste estimado por llamada (Sonnet 4.6, ~1500 tokens input + 500 output): **~$0.001**.
+
+Garantías de privacidad: idénticas al resto del patrón AI:
+- API key sólo en backend.
+- Audit metadata-only (descripción nunca persistida; explanation_length y rules_size sí).
+- Las reglas que la IA propone se validan con el mismo engine que las del builder visual antes de ofrecerse al operador, así una sugerencia con un campo fuera del whitelist se filtra y se muestra como "La IA propuso reglas inválidas: ...".

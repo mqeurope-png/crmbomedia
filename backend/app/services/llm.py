@@ -84,17 +84,20 @@ class LLMUpstreamError(LLMError):
     """Network, 5xx, malformed JSON. The client sees a generic message."""
 
 
-def _rate_limit_check(user_id: str) -> None:
+def _rate_limit_check(
+    user_id: str, *, max_calls: int = _RATE_LIMIT_MAX_CALLS
+) -> None:
     """Sliding window: drop any timestamp older than the window, then
-    accept or reject the new call. Raises `LLMRateLimitError` so the
-    caller can map it to HTTP 429 with the right Retry-After hint."""
+    accept or reject the new call. `max_calls` is per-namespace —
+    pipelines and segments live in different buckets via the
+    `namespace:user_id` key the caller passes."""
     now = time.monotonic()
     bucket = _rate_buckets[user_id]
     while bucket and now - bucket[0] > _RATE_LIMIT_WINDOW_SECONDS:
         bucket.popleft()
-    if len(bucket) >= _RATE_LIMIT_MAX_CALLS:
+    if len(bucket) >= max_calls:
         raise LLMRateLimitError(
-            f"Rate limit reached: {_RATE_LIMIT_MAX_CALLS} generations / "
+            f"Rate limit reached: {max_calls} calls / "
             f"{_RATE_LIMIT_WINDOW_SECONDS // 60} min per user."
         )
     bucket.append(now)
@@ -108,6 +111,150 @@ def reset_rate_limit(user_id: str | None = None) -> None:
         _rate_buckets.clear()
     else:
         _rate_buckets.pop(user_id, None)
+
+
+# ---------------------------------------------------------------------------
+# Segment AI helpers (Sprint P.3)
+# ---------------------------------------------------------------------------
+
+
+SEGMENT_GENERATE_SYSTEM_PROMPT = (
+    "Eres un asistente experto en segmentación de contactos en un CRM. "
+    "Tu trabajo es traducir descripciones en lenguaje natural a árboles "
+    "de reglas booleanas estrictas en formato JSON.\n\n"
+    "Solo puedes usar los campos y comparadores autorizados. "
+    "La whitelist completa se incluye al final.\n\n"
+    "Estructura del árbol:\n"
+    "{\n"
+    "  \"operator\": \"AND\" | \"OR\" | \"NOT\",\n"
+    "  \"children\": [\n"
+    "    { \"type\": \"rule\", \"field\": \"...\", \"comparator\": \"...\", \"value\": ... },\n"
+    "    { \"operator\": \"OR\", \"children\": [ ... ] }\n"
+    "  ]\n"
+    "}\n\n"
+    "Ejemplo válido:\n"
+    "{\"operator\":\"AND\",\"children\":[\n"
+    "  {\"type\":\"rule\",\"field\":\"lead_score\","
+    "\"comparator\":\"gte\",\"value\":50},\n"
+    "  {\"type\":\"rule\",\"field\":\"marketing_consent\","
+    "\"comparator\":\"eq\",\"value\":\"granted\"}\n"
+    "]}\n\n"
+    "Reglas:\n"
+    "- SIEMPRE devuelves JSON válido, sin texto adicional, sin markdown.\n"
+    "- Si la descripción es ambigua o requiere campos fuera de la "
+    "whitelist, devuelve `{\"error\": \"explicación breve\"}`.\n"
+    "- Idioma: español. Lenguaje natural en `error`, no jerga técnica.\n\n"
+    "Campos disponibles:\n{fields_table}"
+)
+
+
+SEGMENT_EXPLAIN_SYSTEM_PROMPT = (
+    "Eres un asistente que traduce árboles de reglas booleanas de un "
+    "CRM a explicaciones legibles para usuarios no técnicos.\n\n"
+    "Recibirás un árbol JSON con reglas combinadas. Devuelves un "
+    "párrafo breve (2-4 frases) en español describiendo a quién "
+    "incluye el segmento.\n\n"
+    "Usa lenguaje natural, NO nombres técnicos de campos. Ejemplo: "
+    "en vez de \"marketing_consent = granted\" di \"que han dado su "
+    "consentimiento de marketing\". No menciones JSON ni comparadores."
+)
+
+
+def _build_fields_table() -> str:
+    """Render the whitelist as a markdown-ish table that the system
+    prompt embeds. Centralising it here means a new field added to
+    the engine is automatically surfaced to the LLM."""
+    from app.services.segments.fields import FIELD_SPECS  # noqa: PLC0415
+
+    lines: list[str] = []
+    for spec in FIELD_SPECS.values():
+        comp = ", ".join(spec.comparators)
+        enums = (
+            f" | enum: {', '.join(spec.enum_values)}"
+            if spec.enum_values
+            else ""
+        )
+        lines.append(
+            f"- {spec.key} ({spec.type}, etiqueta UI: {spec.label}; "
+            f"comparadores: {comp}){enums}"
+        )
+    return "\n".join(lines)
+
+
+def generate_segment_rules(
+    description: str, *, user_id: str
+) -> dict[str, Any]:
+    """Translate a natural-language description into a rule tree.
+    Returns either `{"rules": {...}}` for a valid proposal or
+    `{"error": "..."}` for an ambiguous / unsupported case."""
+    settings = get_settings()
+    if not settings.anthropic_api_key:
+        raise LLMNotConfiguredError(
+            "AI features are disabled. Set ANTHROPIC_API_KEY to enable."
+        )
+    cleaned = description.strip()
+    if not cleaned:
+        raise LLMError("Description is empty")
+    if len(cleaned) > MAX_DESCRIPTION_CHARS:
+        raise LLMError(
+            f"Description too long; max {MAX_DESCRIPTION_CHARS} characters."
+        )
+    _rate_limit_check(f"segment-generate:{user_id}", max_calls=10)
+    # Use `replace` instead of `.format()` — the prompt's JSON
+    # examples contain literal `{}` braces that `.format()` would
+    # try to interpolate.
+    system = SEGMENT_GENERATE_SYSTEM_PROMPT.replace(
+        "{fields_table}", _build_fields_table()
+    )
+    raw = _invoke_claude(
+        api_key=settings.anthropic_api_key,
+        model=settings.anthropic_model,
+        system_prompt=system,
+        user_prompt=f"Genera un segmento para: {cleaned}",
+    )
+    parsed = _parse_segment_json(raw)
+    if "error" in parsed:
+        return {"error": str(parsed["error"])}
+    return {"rules": parsed}
+
+
+def explain_segment_rules(
+    rules: dict[str, Any], *, user_id: str
+) -> str:
+    """Translate a rule tree back into a short Spanish paragraph the
+    operator can read without learning the field whitelist."""
+    settings = get_settings()
+    if not settings.anthropic_api_key:
+        raise LLMNotConfiguredError(
+            "AI features are disabled. Set ANTHROPIC_API_KEY to enable."
+        )
+    _rate_limit_check(f"segment-explain:{user_id}", max_calls=30)
+    import json as _json  # noqa: PLC0415
+
+    raw = _invoke_claude(
+        api_key=settings.anthropic_api_key,
+        model=settings.anthropic_model,
+        system_prompt=SEGMENT_EXPLAIN_SYSTEM_PROMPT,
+        user_prompt=_json.dumps(rules, ensure_ascii=False),
+    )
+    return raw.strip().strip("`").strip()
+
+
+def _parse_segment_json(raw: str) -> dict[str, Any]:
+    """JSON-load the raw provider output, stripping markdown fences."""
+    import json as _json  # noqa: PLC0415
+
+    cleaned = raw.strip()
+    fence = re.match(r"^```(?:json)?\s*(.*?)\s*```$", cleaned, re.DOTALL)
+    if fence:
+        cleaned = fence.group(1).strip()
+    try:
+        data = _json.loads(cleaned)
+    except (ValueError, TypeError) as exc:
+        raise LLMUpstreamError("Provider returned non-JSON content") from exc
+    if not isinstance(data, dict):
+        raise LLMUpstreamError("Provider returned a non-object payload")
+    return data
 
 
 def generate_pipeline_proposal(
