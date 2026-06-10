@@ -18,6 +18,16 @@ from rq import Queue
 DEFAULT_JOB_TIMEOUT = 600  # 10 minutes; long enough for full-contact syncs.
 DEFAULT_RESULT_TTL = 86_400  # keep the result around for one day for the UI.
 
+#: Operations whose jobs legitimately outlive the 10-minute default.
+#: Without an override RQ kills the job with JobTimeoutException
+#: mid-run — exactly what happened when the historical backfill was
+#: first triggered from the UI. The backfill drives one Brevo export
+#: per campaign (~40-60 min for a typical account), so 2 h leaves
+#: comfortable headroom.
+LONG_JOB_TIMEOUTS: dict[str, int] = {
+    "brevo:historical_backfill": 7_200,
+}
+
 
 def redis_connection(url: str | None = None) -> Redis:
     """Return a Redis client. Honours `REDIS_URL` if not given explicitly."""
@@ -33,10 +43,11 @@ def queue_for(
     system: str, operation: str, *, connection: Redis | None = None
 ) -> Queue:
     """Build the RQ Queue for the `(system, operation)` pair."""
+    name = queue_name(system, operation)
     return Queue(
-        queue_name(system, operation),
+        name,
         connection=connection or redis_connection(),
-        default_timeout=DEFAULT_JOB_TIMEOUT,
+        default_timeout=LONG_JOB_TIMEOUTS.get(name, DEFAULT_JOB_TIMEOUT),
     )
 
 

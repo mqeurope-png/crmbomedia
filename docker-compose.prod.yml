@@ -111,6 +111,7 @@ services:
       - brevo:refresh_segment
       - brevo:periodic_read
       - brevo:periodic_segments
+      - brevo:historical_backfill
       - freshdesk:sync_tickets
       - factusol:sync_invoices
     depends_on:
