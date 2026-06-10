@@ -699,3 +699,55 @@ Apagarlo en cuanto el bug esté entendido.
   las colas, workers activos y jobs encolados.
 - El servicio `api` mantiene `/api/health`. La salud del worker no
   está expuesta como endpoint público para evitar information disclosure.
+
+## Listado de cuentas para pickers (Sprint UX)
+
+`GET /api/integrations/accounts` (auth: viewer) devuelve todas las
+cuentas configuradas agrupadas por sistema:
+
+```json
+[
+  {
+    "system": "agilecrm",
+    "system_label": "AgileCRM",
+    "accounts": [
+      {"account_id": "mbomedia", "label": "AgileCRM Mbomedia",
+       "contacts_count": 1234, "enabled": true},
+      {"account_id": "artisjet", "label": "Artisjet Spain",
+       "contacts_count": 567, "enabled": true}
+    ]
+  },
+  {"system": "brevo", "system_label": "Brevo", "accounts": [...]}
+]
+```
+
+`contacts_count` viene de un `SELECT COUNT(DISTINCT contact_id) FROM
+external_references GROUP BY (system, account_id)` y se devuelve sin
+caché — un tenant con cientos de miles de contactos puede querer
+introducir Redis aquí, pero el coste por defecto se ha medido como
+aceptable para los rangos actuales (≤ 50 ms a 200 k contactos).
+
+Disabled accounts también vuelven, no se filtran: la UI las pinta
+greyed-out pero deben seguir siendo seleccionables porque un segmento
+con esa cuenta evaluará correctamente el día que se re-active.
+
+### Filtro `origin_account_keys`
+
+`GET /api/contacts` y `/api/contacts/count` aceptan
+`origin_account_keys` (lista repetida en el query string) con pares
+`"system:account_id"`. El filtro tiene precedencia sobre los antiguos
+`origin_system` + `origin_account_id` y produce un
+`(system, account_id) IN (...)` portable a MySQL + SQLite vía
+OR-of-AND.
+
+Los pares inválidos (sin `:`, system fuera de la enum, etc.) se
+descartan silenciosamente — el frontend ya los construye desde
+`/api/integrations/accounts`, así que no hay path realista de input
+manual erróneo.
+
+`contact_views.filters_json` migrado por Alembic `20260607_0020`:
+`{origin_system, origin_account_id}` → `{origin_account_keys:
+["system:account_id"]}`. Los campos antiguos se conservan en el
+JSON para que un cliente no migrado aún siga viendo la vista
+consistente; el route layer prefiere la nueva clave cuando ambas
+existen.

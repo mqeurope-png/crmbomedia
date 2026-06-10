@@ -561,6 +561,56 @@ def test_contacts_list_filter_by_origin_account_keys(client: TestClient):
     assert emails == ["ana@example.com", "carla@example.com"]
 
 
+def test_origin_account_keys_takes_precedence_over_legacy_fields(client: TestClient):
+    """When both `origin_account_keys` and the legacy
+    `origin_system`/`origin_account_id` are passed, the new param wins
+    so a partly-migrated saved view layered with the new picker
+    doesn't double-filter."""
+    from app.models.crm import Contact, ExternalReference, ExternalSystem
+
+    ana = create_contact(client, "ana@example.com")
+    boris = create_contact(client, "boris@example.com")
+
+    session_factory = app.dependency_overrides[get_session]
+    session_gen = session_factory()
+    session = next(session_gen)
+    try:
+        session.add_all(
+            [
+                ExternalReference(
+                    system=ExternalSystem.AGILECRM,
+                    external_id="ana-1",
+                    account_id="acct-A",
+                    contact_id=session.get(Contact, ana["id"]).id,
+                ),
+                ExternalReference(
+                    system=ExternalSystem.AGILECRM,
+                    external_id="boris-1",
+                    account_id="acct-B",
+                    contact_id=session.get(Contact, boris["id"]).id,
+                ),
+            ]
+        )
+        session.commit()
+    finally:
+        session_gen.close()
+
+    response = client.get(
+        "/api/contacts",
+        params=[
+            ("origin_account_keys", "agilecrm:acct-A"),
+            ("origin_system", "agilecrm"),
+            ("origin_account_id", "acct-B"),
+        ],
+        headers=auth_headers(client, "viewer"),
+    )
+    assert response.status_code == 200
+    emails = [item["email"] for item in response.json()["items"]]
+    # `origin_account_keys` overrides → only Ana (acct-A) appears, not
+    # Boris (acct-B) despite the legacy fields pointing at him.
+    assert emails == ["ana@example.com"]
+
+
 def test_integrations_accounts_endpoint_groups_by_system(client: TestClient):
     """`/api/integrations/accounts` shapes every integration into a
     `{system, system_label, accounts}` group with contacts_count
