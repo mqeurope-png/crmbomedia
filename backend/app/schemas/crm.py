@@ -439,6 +439,12 @@ class ContactViewFilters(BaseModel):
     tag_match_mode: str | None = None
     origin_system: str | None = None
     origin_account_id: str | None = None
+    # Sprint UX: pairs of "system:account_id". Takes precedence over
+    # `origin_system` + `origin_account_id` if both are present. Kept
+    # alongside the legacy fields so a view migrated from the old
+    # shape can still be re-loaded by code paths that haven't been
+    # updated yet — the route layer reads both and prefers this one.
+    origin_account_keys: list[str] | None = None
     commercial_status: str | None = None
     marketing_consent: str | None = None
     is_active: bool | None = None
@@ -1296,3 +1302,25 @@ class SegmentOriginAccountOption(BaseModel):
     value: str
     label: str
     system: str
+
+
+class IntegrationAccountSummary(BaseModel):
+    """Per-account row inside `IntegrationSystemGroup`. The contact
+    count comes from a `SELECT COUNT(...)` over `external_references`
+    so two accounts pointing at overlapping contact sets each get
+    credited for the contacts they actually carry references to."""
+
+    account_id: str
+    label: str
+    contacts_count: int
+    enabled: bool
+
+
+class IntegrationSystemGroup(BaseModel):
+    """One group inside `GET /api/integrations/accounts`. The frontend
+    pickers render each system as a header followed by its accounts;
+    flat lists got unmanageable at 9 AgileCRM accounts."""
+
+    system: str
+    system_label: str
+    accounts: list[IntegrationAccountSummary] = Field(default_factory=list)

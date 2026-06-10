@@ -113,6 +113,7 @@ def _apply_contact_filters(
     tag_match_mode: str = "any",
     origin_system: ExternalSystem | None = None,
     origin_account_id: str | None = None,
+    origin_account_keys: list[str] | None = None,
     commercial_status: str | None = None,
     marketing_consent: str | None = None,
     lead_score_min: int | None = None,
@@ -169,7 +170,47 @@ def _apply_contact_filters(
                     )
                 )
             )
-    if origin_system is not None or origin_account_id:
+    if origin_account_keys:
+        # New (preferred) path: pairs of `(system, account_id)` —
+        # operators with 9 AgileCRM accounts need to pick concrete
+        # ones, not the entire system. Format: "system:account_id".
+        # Invalid entries are silently dropped — the caller already
+        # validated via the available-origin-accounts endpoint.
+        pairs = []
+        for raw in origin_account_keys:
+            if not raw or ":" not in raw:
+                continue
+            system_slug, _, account_id = raw.partition(":")
+            if not system_slug or not account_id:
+                continue
+            try:
+                pairs.append(
+                    (ExternalSystem(system_slug.strip()), account_id.strip())
+                )
+            except ValueError:
+                continue
+        if pairs:
+            from sqlalchemy import and_, or_, tuple_  # noqa: PLC0415
+
+            # `IN (tuple, tuple)` is the cleanest write but MySQL 8
+            # supports it natively while SQLite emulates row values
+            # only since 3.15 — playing safe with an OR-of-AND chain
+            # so the same SQL plan runs on both backends.
+            clauses = [
+                and_(
+                    ExternalReference.system == system,
+                    ExternalReference.account_id == account_id,
+                )
+                for system, account_id in pairs
+            ]
+            subq = select(ExternalReference.contact_id).where(or_(*clauses))
+            statement = statement.where(Contact.id.in_(subq))
+            # `tuple_` import kept available for future MySQL-only
+            # optimisations.
+            _ = tuple_
+    elif origin_system is not None or origin_account_id:
+        # Legacy path kept for bookmarked URLs + the migration window.
+        # New code should send `origin_account_keys` instead.
         subq = select(ExternalReference.contact_id)
         if origin_system is not None:
             subq = subq.where(ExternalReference.system == origin_system)
@@ -200,6 +241,7 @@ def list_contacts(
     tag_match_mode: str = "any",
     origin_system: ExternalSystem | None = None,
     origin_account_id: str | None = None,
+    origin_account_keys: list[str] | None = None,
     commercial_status: str | None = None,
     marketing_consent: str | None = None,
     lead_score_min: int | None = None,
@@ -223,6 +265,7 @@ def list_contacts(
         tag_match_mode=tag_match_mode,
         origin_system=origin_system,
         origin_account_id=origin_account_id,
+        origin_account_keys=origin_account_keys,
         commercial_status=commercial_status,
         marketing_consent=marketing_consent,
         lead_score_min=lead_score_min,
@@ -246,6 +289,7 @@ def count_contacts(
     tag_match_mode: str = "any",
     origin_system: ExternalSystem | None = None,
     origin_account_id: str | None = None,
+    origin_account_keys: list[str] | None = None,
     commercial_status: str | None = None,
     marketing_consent: str | None = None,
     lead_score_min: int | None = None,
@@ -267,6 +311,7 @@ def count_contacts(
         tag_match_mode=tag_match_mode,
         origin_system=origin_system,
         origin_account_id=origin_account_id,
+        origin_account_keys=origin_account_keys,
         commercial_status=commercial_status,
         marketing_consent=marketing_consent,
         lead_score_min=lead_score_min,
