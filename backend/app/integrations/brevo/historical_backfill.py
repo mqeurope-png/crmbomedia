@@ -65,12 +65,15 @@ TIMESTAMP_KEYS = ("openedAt", "clickedAt", "eventTime", "date", "deliveredAt")
 PAGE_SIZE = 500
 SENT_STATUSES = {"sent", "archive"}
 
-#: Brevo's docs don't pin the rate limit for these endpoints; the
-#: live integration hits 400 req/min on the rest of the API. Two
-#: concurrent calls + 200ms inter-call sleep keeps us comfortably
-#: under it and matches the agilecrm pacing helper.
-_CONCURRENCY = 2
-_INTER_CALL_SLEEP_SECONDS = 0.2
+#: Brevo throttles campaign-data endpoints to ~100 req/min — much
+#: stricter than the 400 req/min on contacts. Production runs of the
+#: backfill saturated the bucket within seconds at concurrency=2 +
+#: 200 ms sleep, so we drop to serial requests with a 1 s gap. The
+#: rewrite (commit 4) uses asynchronous CSV exports anyway: there is
+#: at most one HTTP call in flight per account, the sleep just paces
+#: the polling loop and the post-CSV materialisation calls.
+_CONCURRENCY = 1
+_INTER_CALL_SLEEP_SECONDS = 1.0
 
 
 def _normalise_email(value: Any) -> str | None:
@@ -314,7 +317,11 @@ def backfill_account_campaigns(
         select(BrevoCampaignCache)
         .where(BrevoCampaignCache.brevo_account_id == account_id)
         .where(BrevoCampaignCache.status.in_(SENT_STATUSES))
-        .order_by(BrevoCampaignCache.sent_at.desc().nullslast())
+        # MySQL 8 doesn't support `NULLS LAST`; bare `.desc()` already
+        # pushes NULLs to the end on a DESC sort, which is what we want
+        # (campaigns without a `sent_at` are odd outliers and don't
+        # need to jump the queue).
+        .order_by(BrevoCampaignCache.sent_at.desc())
     )
     if max_campaigns is not None:
         statement = statement.limit(max_campaigns)
