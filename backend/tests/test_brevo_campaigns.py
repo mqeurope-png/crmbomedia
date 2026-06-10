@@ -104,6 +104,10 @@ class _FakeClient:
         _FakeClient.calls.append(("delete_campaign", campaign_id))
         _FakeClient.campaigns.pop(campaign_id, None)
 
+    async def get_email_campaign(self, campaign_id):
+        _FakeClient.calls.append(("get_campaign", campaign_id))
+        return _FakeClient.campaigns.get(campaign_id, {"id": campaign_id})
+
     async def send_email_campaign_now(self, campaign_id):
         _FakeClient.calls.append(("send_now", campaign_id))
 
@@ -127,8 +131,22 @@ def _reset_fake():
     _FakeClient.calls = []
 
 
-def _patch_api():
-    return patch("app.api.brevo.BrevoClient", _FakeClient)
+class _patch_api:
+    """Patch every BrevoClient ref the campaign endpoints reach
+    (the public route + the cache helpers in `campaigns.py`)."""
+
+    def __enter__(self):
+        self.p1 = patch("app.api.brevo.BrevoClient", _FakeClient)
+        self.p2 = patch(
+            "app.integrations.brevo.campaigns.BrevoClient", _FakeClient
+        )
+        self.p1.__enter__()
+        self.p2.__enter__()
+        return self
+
+    def __exit__(self, *exc):
+        self.p2.__exit__(*exc)
+        self.p1.__exit__(*exc)
 
 
 def _seed_segment(client: TestClient) -> str:
@@ -406,3 +424,40 @@ def test_campaign_recipients_resolved_from_activity_events(
     assert len(items) == 1
     assert items[0]["email"] == "ana@example.com"
     assert items[0]["event_type"] == "email.opened"
+
+
+def test_campaign_detail_lazy_loads_html(client: TestClient):
+    """Regression: detail page used to land with `html_content=None`
+    because the list refresh paths don't fetch it. The detail
+    endpoint now triggers `ensure_campaign_html`, caches the result,
+    and serves it on subsequent reads without re-hitting Brevo."""
+    headers = auth_headers(client, "manager")
+    with _patch_api():
+        created = client.post(
+            "/api/brevo/campaigns", json=_campaign_payload(), headers=headers
+        ).json()
+    # Simulate that Brevo will return the htmlContent on the detail
+    # GET — the fake's get_email_campaign returns whatever lives in
+    # `_FakeClient.campaigns`.
+    _FakeClient.campaigns[500] = {
+        **_FakeClient.campaigns.get(500, {}),
+        "id": 500,
+        "name": "Campaña verano",
+        "status": "draft",
+        "htmlContent": "<h1>Real HTML</h1>",
+    }
+    with _patch_api():
+        first = client.get(
+            f"/api/brevo/campaigns/{created['id']}", headers=headers
+        )
+        assert first.status_code == 200
+        assert first.json()["html_content"] == "<h1>Real HTML</h1>"
+        # Second open within the freshness window must NOT call
+        # get_email_campaign again — html came from cache.
+        _FakeClient.calls = []
+        second = client.get(
+            f"/api/brevo/campaigns/{created['id']}", headers=headers
+        )
+        assert second.status_code == 200
+        assert second.json()["html_content"] == "<h1>Real HTML</h1>"
+        assert ("get_campaign", 500) not in _FakeClient.calls

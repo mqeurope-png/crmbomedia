@@ -283,6 +283,12 @@ export async function getIntegrationSyncLog(
 // and FactuSOL.
 export const SYSTEM_OPERATIONS: Partial<Record<ExternalSystem, string[]>> = {
   agilecrm: ["sync_contacts", "purge_quota"],
+  // Brevo's connector landed in PR #51 (read sync) + PR #52 (write
+  // targets, webhooks, segments mirror). All operations are
+  // registered server-side under the same `<system>:<operation>`
+  // contract; the first entry is the "default" the SyncPanel
+  // dispatches when the operator clicks "Sincronizar ahora".
+  brevo: ["sync_contacts", "refresh_segments"],
 };
 
 export function hasOperationsRegistered(system: ExternalSystem): boolean {

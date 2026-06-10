@@ -213,6 +213,10 @@ class BrevoCampaignRead(BaseModel):
     recipient_list_ids: list[int] | None = None
     template_id_used: int | None
     cached_at: datetime
+    # Lazy-loaded by the detail endpoint. Lists never carry it; the
+    # editor iframe consumes it the first time the operator opens the
+    # campaign.
+    html_content: str | None = None
 
     model_config = ConfigDict(from_attributes=True)
 

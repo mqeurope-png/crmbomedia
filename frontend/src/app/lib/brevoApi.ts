@@ -263,6 +263,10 @@ export type BrevoCampaign = {
   recipient_list_ids?: number[] | null;
   template_id_used?: number | null;
   cached_at: string;
+  /** Lazy-loaded by the detail endpoint. The list endpoint never
+   * carries it. Used to render the iframe preview on the detail
+   * page. */
+  html_content?: string | null;
 };
 
 export type BrevoCampaignTimeline = {
@@ -432,6 +436,25 @@ export function campaignRates(stats?: BrevoCampaignStats | null): {
     openRate: Math.round((opened / delivered) * 1000) / 10,
     clickRate: Math.round((clicked / delivered) * 1000) / 10,
   };
+}
+
+// ----- Segments mirror -----
+
+export async function refreshBrevoSegment(
+  segmentId: string,
+): Promise<{ sync_log_id: string; job_id: string }> {
+  return apiFetch(`/api/brevo/segments/${segmentId}/refresh`, {
+    method: "POST",
+  });
+}
+
+export async function refreshAllBrevoSegments(
+  accountId: string,
+): Promise<{ sync_log_id: string; job_id: string }> {
+  return apiFetch(
+    `/api/brevo/segments/refresh-all?account_id=${encodeURIComponent(accountId)}`,
+    { method: "POST" },
+  );
 }
 
 // ----- Primary Brevo account discovery -----

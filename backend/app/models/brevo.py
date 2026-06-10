@@ -21,9 +21,16 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
+from sqlalchemy.dialects.mysql import LONGTEXT
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.crm import Base, TimestampMixin, enum_values
+
+#: HTML payloads from Brevo regularly cross the 64KB TEXT limit on
+#: MySQL — one real template weighed 124KB and crashed
+#: `?refresh=true` with 500. `Text` on SQLite is unbounded already;
+#: the MySQL-only variant uses LONGTEXT (4GB).
+_LongText = Text().with_variant(LONGTEXT(), "mysql")
 
 
 class SyncDirection(StrEnum):
@@ -176,7 +183,7 @@ class BrevoTemplateCache(TimestampMixin, Base):
     created_at_brevo: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     modified_at_brevo: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     cached_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    html_content: Mapped[str | None] = mapped_column(Text)
+    html_content: Mapped[str | None] = mapped_column(_LongText)
 
 
 class BrevoCampaignCache(TimestampMixin, Base):
@@ -215,6 +222,11 @@ class BrevoCampaignCache(TimestampMixin, Base):
     recipient_list_ids_json: Mapped[str | None] = mapped_column(Text)
     template_id_used: Mapped[int | None] = mapped_column(Integer)
     cached_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # Lazy-loaded on first detail open. Brevo's list endpoint doesn't
+    # return htmlContent, so this column is `None` until the
+    # operator opens the campaign detail; from then on it serves the
+    # iframe preview without round-tripping Brevo.
+    html_content_cached: Mapped[str | None] = mapped_column(_LongText)
 
     @property
     def stats(self) -> str | None:

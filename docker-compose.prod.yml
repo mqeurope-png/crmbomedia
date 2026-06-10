@@ -107,6 +107,10 @@ services:
       - brevo:push_contact
       - brevo:webhook_process
       - brevo:refresh_campaigns
+      - brevo:refresh_segments
+      - brevo:refresh_segment
+      - brevo:periodic_read
+      - brevo:periodic_segments
       - freshdesk:sync_tickets
       - factusol:sync_invoices
     depends_on:

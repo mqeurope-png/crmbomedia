@@ -3204,6 +3204,9 @@ def _segment_to_read(segment: Segment, *, current_user: User) -> SegmentRead:
         static_contact_ids=segments_repository.decode_static_ids(segment),
         cached_count=segment.cached_count,
         last_evaluated_at=segment.last_evaluated_at,
+        external_source=segment.external_source,
+        external_last_refreshed_at=segment.external_last_refreshed_at,
+        external_refresh_interval_minutes=segment.external_refresh_interval_minutes,
         created_at=segment.created_at,
         updated_at=segment.updated_at,
     )

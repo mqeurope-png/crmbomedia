@@ -93,6 +93,29 @@ def test_malformed_email_is_nulled_and_flag_flipped(caplog):
     )
 
 
+def test_long_first_name_is_truncated_with_warning(caplog):
+    """Shared truncate-on-mapper helper protects the bulk sync from a
+    single oversized varchar tanking the transaction (same root cause
+    as the Brevo regression after the first 18.8k import)."""
+    very_long = "X" * 400  # well past Contact.first_name's String(120)
+    with caplog.at_level("WARNING"):
+        record, _ = map_agilecrm_contact_to_internal(
+            _payload(
+                properties=[
+                    {"name": "first_name", "value": very_long},
+                    {"name": "email", "value": "ghost@example.com"},
+                ]
+            )
+        )
+    from app.integrations.mapper_helpers import CONTACT_FIELD_LIMITS
+
+    expected_max = CONTACT_FIELD_LIMITS["first_name"]
+    assert expected_max is not None
+    assert len(record["first_name"]) == expected_max
+    assert record["first_name"].endswith("…")
+    assert any("truncated first_name" in rec.message for rec in caplog.records)
+
+
 def test_garbage_phone_is_nulled(caplog):
     """A free-form phone column over 30 chars or without any digit is
     functionally unusable downstream. The mapper drops it, the read

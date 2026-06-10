@@ -164,6 +164,56 @@ body {
   background: #ffffff;
 }
 
+/* Brevo segment mirror                                              */
+
+.brevo-mirror-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px;
+  background: #fbfcfe;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+
+.brevo-mirror-panel > header {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+  align-items: flex-start;
+}
+
+.brevo-mirror-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 14px;
+  margin: 0;
+}
+
+.brevo-mirror-stats div {
+  display: flex;
+  flex-direction: column;
+}
+
+.brevo-mirror-stats dt {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.brevo-mirror-stats dd {
+  margin: 4px 0 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.segment-mirror-pill {
+  margin-left: 8px;
+  font-size: 11px;
+}
+
 /* Brevo integrations panel + email activity                         */
 
 .brevo-panel {

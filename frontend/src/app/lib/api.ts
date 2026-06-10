@@ -1173,9 +1173,29 @@ export type Segment = {
   static_contact_ids: string[];
   cached_count?: number | null;
   last_evaluated_at?: string | null;
+  /** Brevo-managed mirror identifier. `<system>:<account>:<id>` when
+   * the segment is externally managed; null on CRM-native segments.
+   * The UI uses this to hide the rule editor and show
+   * "Espejo Brevo" + refresh/open buttons. */
+  external_source?: string | null;
+  external_last_refreshed_at?: string | null;
+  external_refresh_interval_minutes?: number | null;
   created_at: string;
   updated_at: string;
 };
+
+export function isBrevoMirror(segment: Segment): boolean {
+  return Boolean(segment.external_source?.startsWith("brevo:"));
+}
+
+export function brevoMirrorParts(segment: Segment):
+  | { account: string; brevoSegmentId: string }
+  | null {
+  if (!segment.external_source) return null;
+  const parts = segment.external_source.split(":");
+  if (parts.length !== 3 || parts[0] !== "brevo") return null;
+  return { account: parts[1], brevoSegmentId: parts[2] };
+}
 
 export type SegmentPreviewContactCard = {
   id: string;

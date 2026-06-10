@@ -38,3 +38,26 @@ app.add_middleware(
 )
 
 app.include_router(router, prefix="/api")
+
+
+@app.on_event("startup")
+async def _arm_brevo_periodics() -> None:
+    """Arm Brevo's self-rescheduling heartbeats at API startup. The
+    SETNX guards in `arm_periodic_jobs` make this idempotent across
+    multiple API processes and across restarts. Wrapped in a try so a
+    Redis outage at boot doesn't take the API down — the next click
+    on `Sincronizar ahora` will trigger one-shot enqueues anyway."""
+    try:
+        # Side-effect import wires the OPERATIONS registry; calling
+        # it here keeps the scheduler responsible for its own armor.
+        from app.integrations.brevo.scheduler import (  # noqa: PLC0415
+            arm_periodic_jobs,
+        )
+
+        arm_periodic_jobs()
+    except Exception:  # noqa: BLE001
+        import logging  # noqa: PLC0415
+
+        logging.getLogger(__name__).warning(
+            "brevo.scheduler arm failed at startup", exc_info=True
+        )

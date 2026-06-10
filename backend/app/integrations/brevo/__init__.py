@@ -5,4 +5,6 @@ Importing this package registers the worker handlers (side-effect on
 """
 from app.integrations.brevo import campaigns as _campaigns  # noqa: F401
 from app.integrations.brevo import jobs as _jobs  # noqa: F401
+from app.integrations.brevo import scheduler as _scheduler  # noqa: F401
+from app.integrations.brevo import segments as _segments  # noqa: F401
 from app.integrations.brevo import sync_targets as _sync_targets  # noqa: F401
