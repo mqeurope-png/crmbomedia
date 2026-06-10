@@ -123,7 +123,13 @@ export function TemplateEditor({
     if (!emails.length || !templateId) return;
     setError(null);
     try {
-      const result = await sendBrevoTemplateTest(templateId, emails);
+      // Pass the editor's current sender: Brevo's sendTest uses the
+      // sender stored ON the template, so the backend persists this
+      // selection first when it differs from the saved one.
+      const result = await sendBrevoTemplateTest(templateId, emails, {
+        senderName: senderName || undefined,
+        senderEmail: senderEmail || undefined,
+      });
       setMessage(result.message);
       setTestOpen(false);
       setTestEmails("");
@@ -273,6 +279,17 @@ export function TemplateEditor({
         <div className="modal-overlay" role="dialog" aria-modal>
           <div className="modal-card">
             <h3>Enviar test</h3>
+            <p className="muted small">
+              El test sale con el sender seleccionado arriba
+              {senderEmail ? (
+                <>
+                  {" "}
+                  (<strong>{senderEmail}</strong>)
+                </>
+              ) : null}
+              . El asunto y el HTML usados son los de la última versión
+              guardada — guarda antes si los has cambiado.
+            </p>
             <label>
               <span>Emails (máx. 3, separados por coma)</span>
               <input

@@ -645,11 +645,39 @@ def send_template_test(
     session: Session = Depends(get_session),
     current_user: User = Depends(require_manager),
 ) -> dict[str, str]:
+    """Send a template test, honouring the editor's sender selection.
+
+    Brevo's `sendTest` endpoint has NO per-request sender override —
+    it always uses the sender stored on the template. Production bug:
+    the operator picked "Artisjet Europe" in the dropdown, the test
+    arrived from Brevo's `*.brevosend.com` fallback because the
+    template still carried the stale (unverified) sender. When the
+    request carries a sender different from the cached one, we
+    persist it on the template FIRST (PUT), mirror the cache, then
+    fire the test."""
     _ = current_user
     row = _get_template_or_404(session, template_id)
 
+    sender_changed = bool(
+        payload.sender_email
+        and (
+            payload.sender_email != row.sender_email
+            or (payload.sender_name or "") != (row.sender_name or "")
+        )
+    )
+
     async def _send() -> None:
         async with BrevoClient(session, row.brevo_account_id) as client:
+            if sender_changed:
+                await client.update_email_template(
+                    row.brevo_template_id,
+                    {
+                        "sender": {
+                            "name": payload.sender_name or row.sender_name,
+                            "email": payload.sender_email,
+                        }
+                    },
+                )
             await client.send_test_template(row.brevo_template_id, payload.emails)
 
     try:
@@ -658,6 +686,11 @@ def send_template_test(
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY, detail=exc.message
         ) from exc
+    if sender_changed:
+        row.sender_email = payload.sender_email
+        row.sender_name = payload.sender_name or row.sender_name
+        row.cached_at = datetime.now(UTC)
+        session.commit()
     return {"message": f"Test enviado a {', '.join(payload.emails)}"}
 
 
