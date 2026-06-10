@@ -3,11 +3,35 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   listPipelines,
-  listTags,
+  listSegmentAvailableCountries,
+  listSegmentAvailableOriginAccounts,
   type Pipeline,
+  type SegmentCountryOption,
   type SegmentFieldDescriptor,
-  type TagDetail,
+  type SegmentOriginAccountOption,
 } from "../lib/api";
+import { TagMultiSelectFilter } from "./TagMultiSelectFilter";
+
+/**
+ * Human-readable labels for the `origin_system` enum. The backend
+ * stores slugs (`agilecrm`, `brevo`, …); the picker needs to show
+ * something operators can recognise without learning the integration
+ * codename.
+ */
+const ORIGIN_SYSTEM_LABELS: Record<string, string> = {
+  agilecrm: "AgileCRM",
+  brevo: "Brevo",
+  freshdesk: "Freshdesk",
+  factusol: "FactuSOL",
+  manual: "Manual",
+};
+
+function labelForEnumValue(spec: SegmentFieldDescriptor, value: string): string {
+  if (spec.key === "origin_system") {
+    return ORIGIN_SYSTEM_LABELS[value] ?? value;
+  }
+  return value;
+}
 
 /**
  * Typed value editor for a segment rule. Keeps every field on the
@@ -70,6 +94,26 @@ export function SegmentValueEditor({
     return <TagsEditor value={value} onChange={onChange} />;
   }
 
+  if (spec.key === "address_country") {
+    return (
+      <CountryEditor
+        comparator={comparator}
+        value={value}
+        onChange={onChange}
+      />
+    );
+  }
+
+  if (spec.key === "origin_account_id") {
+    return (
+      <OriginAccountEditor
+        comparator={comparator}
+        value={value}
+        onChange={onChange}
+      />
+    );
+  }
+
   if (spec.key === "pipeline_id") {
     return (
       <PipelineEditor
@@ -90,21 +134,21 @@ export function SegmentValueEditor({
   }
 
   if (spec.enum_values.length > 0) {
+    const enumOptions = spec.enum_values.map((v) => ({
+      value: v,
+      label: labelForEnumValue(spec, v),
+    }));
     if (MULTI_COMPARATORS.has(comparator)) {
       return (
         <EnumMultiEditor
-          options={spec.enum_values}
+          options={enumOptions}
           value={value}
           onChange={onChange}
         />
       );
     }
     return (
-      <EnumEditor
-        options={spec.enum_values}
-        value={value}
-        onChange={onChange}
-      />
+      <EnumEditor options={enumOptions} value={value} onChange={onChange} />
     );
   }
 
@@ -218,12 +262,14 @@ function BoolEditor({
   );
 }
 
+type EnumOption = { value: string; label: string };
+
 function EnumEditor({
   options,
   value,
   onChange,
 }: {
-  options: string[];
+  options: EnumOption[];
   value: unknown;
   onChange: (s: string) => void;
 }) {
@@ -236,8 +282,8 @@ function EnumEditor({
     >
       <option value="">— elige —</option>
       {options.map((opt) => (
-        <option key={opt} value={opt}>
-          {opt}
+        <option key={opt.value} value={opt.value}>
+          {opt.label}
         </option>
       ))}
     </select>
@@ -249,7 +295,7 @@ function EnumMultiEditor({
   value,
   onChange,
 }: {
-  options: string[];
+  options: EnumOption[];
   value: unknown;
   onChange: (s: string[]) => void;
 }) {
@@ -266,13 +312,13 @@ function EnumMultiEditor({
   return (
     <div className="qb-value-multi">
       {options.map((opt) => (
-        <label key={opt} className="qb-value-chip">
+        <label key={opt.value} className="qb-value-chip">
           <input
             type="checkbox"
-            checked={selected.includes(opt)}
-            onChange={() => toggle(opt)}
+            checked={selected.includes(opt.value)}
+            onChange={() => toggle(opt.value)}
           />
-          {opt}
+          {opt.label}
         </label>
       ))}
     </div>
@@ -360,47 +406,179 @@ function TagsEditor({
   value: unknown;
   onChange: (ids: string[]) => void;
 }) {
-  const [tags, setTags] = useState<TagDetail[] | null>(null);
-  useEffect(() => {
-    listTags()
-      .then((page) => setTags(page.items))
-      .catch(() => setTags([]));
-  }, []);
   const selected = useMemo(() => {
     if (!Array.isArray(value)) return [] as string[];
     return value.filter((item) => typeof item === "string") as string[];
   }, [value]);
-
-  function toggle(id: string) {
-    if (selected.includes(id)) onChange(selected.filter((s) => s !== id));
-    else onChange([...selected, id]);
-  }
-
-  if (tags === null) return <span className="muted small">Cargando tags…</span>;
-  if (tags.length === 0) {
-    return <span className="muted small">No hay tags todavía.</span>;
-  }
-
+  // Reuses the same dropdown-with-search component the contacts list
+  // uses; with 30+ tags an inline checkbox wall was unreadable.
   return (
-    <div className="qb-value-multi">
-      {tags.map((tag) => (
-        <label key={tag.id} className="qb-value-chip">
-          <input
-            type="checkbox"
-            checked={selected.includes(tag.id)}
-            onChange={() => toggle(tag.id)}
-          />
-          {tag.color ? (
-            <span
-              className="tag-color-swatch"
-              style={{ background: tag.color }}
-              aria-hidden
+    <TagMultiSelectFilter
+      selectedIds={selected}
+      onChange={onChange}
+      placeholder="Buscar tag…"
+    />
+  );
+}
+
+function CountryEditor({
+  comparator,
+  value,
+  onChange,
+}: {
+  comparator: string;
+  value: unknown;
+  onChange: (next: unknown) => void;
+}) {
+  const [countries, setCountries] = useState<SegmentCountryOption[] | null>(null);
+  useEffect(() => {
+    listSegmentAvailableCountries()
+      .then(setCountries)
+      .catch(() => setCountries([]));
+  }, []);
+
+  if (countries === null) {
+    return <span className="muted small">Cargando países…</span>;
+  }
+  if (countries.length === 0) {
+    return (
+      <span className="muted small">
+        Aún no hay países cargados en los contactos.
+      </span>
+    );
+  }
+  const multi = comparator === "in";
+  if (multi) {
+    const selected = Array.isArray(value)
+      ? (value.filter((item) => typeof item === "string") as string[])
+      : [];
+    function toggle(code: string) {
+      if (selected.includes(code)) onChange(selected.filter((c) => c !== code));
+      else onChange([...selected, code]);
+    }
+    return (
+      <div className="qb-value-multi">
+        {countries.map((c) => (
+          <label key={c.code} className="qb-value-chip">
+            <input
+              type="checkbox"
+              checked={selected.includes(c.code)}
+              onChange={() => toggle(c.code)}
             />
-          ) : null}
-          {tag.name}
-        </label>
+            {c.code}
+            <span className="muted small"> · {c.contact_count}</span>
+          </label>
+        ))}
+      </div>
+    );
+  }
+  const safe = typeof value === "string" ? value : "";
+  return (
+    <select
+      className="qb-value"
+      value={safe}
+      onChange={(event) => onChange(event.target.value)}
+    >
+      <option value="">— elige país —</option>
+      {countries.map((c) => (
+        <option key={c.code} value={c.code}>
+          {c.code} ({c.contact_count})
+        </option>
       ))}
-    </div>
+    </select>
+  );
+}
+
+function OriginAccountEditor({
+  comparator,
+  value,
+  onChange,
+}: {
+  comparator: string;
+  value: unknown;
+  onChange: (next: unknown) => void;
+}) {
+  const [accounts, setAccounts] = useState<
+    SegmentOriginAccountOption[] | null
+  >(null);
+  const [query, setQuery] = useState("");
+  useEffect(() => {
+    listSegmentAvailableOriginAccounts()
+      .then(setAccounts)
+      .catch(() => setAccounts([]));
+  }, []);
+
+  if (accounts === null) {
+    return <span className="muted small">Cargando cuentas…</span>;
+  }
+  if (accounts.length === 0) {
+    return (
+      <span className="muted small">
+        Configura una integración en{" "}
+        <a href="/admin/integrations">/admin/integrations</a> primero.
+      </span>
+    );
+  }
+
+  const multi = comparator === "in";
+  // Autocomplete kicks in past 20 accounts — below that the plain
+  // dropdown / chip list is more direct.
+  const showSearch = accounts.length > 20;
+  const filtered =
+    showSearch && query.trim()
+      ? accounts.filter((acc) =>
+          acc.label.toLowerCase().includes(query.trim().toLowerCase()),
+        )
+      : accounts;
+
+  if (multi) {
+    const selected = Array.isArray(value)
+      ? (value.filter((item) => typeof item === "string") as string[])
+      : [];
+    function toggle(slug: string) {
+      if (selected.includes(slug)) onChange(selected.filter((s) => s !== slug));
+      else onChange([...selected, slug]);
+    }
+    return (
+      <div className="qb-value-multi qb-value-multi-stacked">
+        {showSearch ? (
+          <input
+            type="search"
+            className="qb-value"
+            value={query}
+            placeholder="Buscar cuenta…"
+            onChange={(event) => setQuery(event.target.value)}
+          />
+        ) : null}
+        <div className="qb-value-multi">
+          {filtered.map((acc) => (
+            <label key={acc.value} className="qb-value-chip">
+              <input
+                type="checkbox"
+                checked={selected.includes(acc.value)}
+                onChange={() => toggle(acc.value)}
+              />
+              {acc.label}
+            </label>
+          ))}
+        </div>
+      </div>
+    );
+  }
+  const safe = typeof value === "string" ? value : "";
+  return (
+    <select
+      className="qb-value"
+      value={safe}
+      onChange={(event) => onChange(event.target.value)}
+    >
+      <option value="">— elige cuenta —</option>
+      {accounts.map((acc) => (
+        <option key={acc.value} value={acc.value}>
+          {acc.label}
+        </option>
+      ))}
+    </select>
   );
 }
 

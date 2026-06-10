@@ -1205,3 +1205,25 @@ class SegmentFieldDescriptor(BaseModel):
     type: str
     comparators: list[str]
     enum_values: list[str] = Field(default_factory=list)
+
+
+class SegmentCountryOption(BaseModel):
+    """One ISO code / country name actually present in `contacts`. The
+    builder uses this list to populate the `address_country` value
+    dropdown so the operator picks from real data instead of typing a
+    free-form string that ends up matching nothing."""
+
+    code: str
+    contact_count: int
+
+
+class SegmentOriginAccountOption(BaseModel):
+    """One enabled integration account, in the value/label shape the
+    `origin_account_id` value picker expects. `value` is the raw
+    `account_id` (what the engine compares against); `label` is the
+    human display so the operator sees "AgileCRM · España" instead of
+    a slug."""
+
+    value: str
+    label: str
+    system: str

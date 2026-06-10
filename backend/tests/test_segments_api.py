@@ -71,6 +71,77 @@ def test_available_fields_endpoint_lists_whitelist(client: TestClient):
     assert {"name", "email", "tags", "lead_score", "pipeline_id"} <= keys
 
 
+def test_available_countries_endpoint_returns_distinct_codes(client: TestClient):
+    """The value picker for `address_country` queries this endpoint so
+    the operator picks from countries actually present in the DB
+    rather than typing a free-form string."""
+    _create_contact(client, "ana@example.com", address_country="ES")
+    _create_contact(client, "boris@example.com", address_country="ES")
+    _create_contact(client, "carla@example.com", address_country="FR")
+    response = client.get(
+        "/api/segments/available-countries",
+        headers=auth_headers(client, "viewer"),
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    by_code = {row["code"]: row["contact_count"] for row in body}
+    assert by_code == {"ES": 2, "FR": 1}
+
+
+def test_available_origin_accounts_returns_enabled_accounts(client: TestClient):
+    """The value picker for `origin_account_id` shows enabled
+    integration accounts as `{value, label, system}` triples. Disabled
+    rows must NOT leak through — a segment over an account that was
+    paused would produce confusing zero-match previews."""
+    from app.db.session import get_session as gs
+
+    factory = client.app.dependency_overrides[gs]
+    gen = factory()
+    session = next(gen)
+    try:
+        from app.models.crm import ExternalSystem
+        from app.models.integration_settings import IntegrationAccount
+
+        session.add(
+            IntegrationAccount(
+                system=ExternalSystem.AGILECRM,
+                account_id="default",
+                display_name="AgileCRM cuenta principal",
+                enabled=True,
+            )
+        )
+        session.add(
+            IntegrationAccount(
+                system=ExternalSystem.AGILECRM,
+                account_id="es",
+                display_name="AgileCRM España",
+                enabled=True,
+            )
+        )
+        session.add(
+            IntegrationAccount(
+                system=ExternalSystem.BREVO,
+                account_id="paused",
+                display_name="Brevo (paused)",
+                enabled=False,
+            )
+        )
+        session.commit()
+    finally:
+        gen.close()
+
+    response = client.get(
+        "/api/segments/available-origin-accounts",
+        headers=auth_headers(client, "viewer"),
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    values = {row["value"] for row in body}
+    assert values == {"default", "es"}
+    assert all("·" in row["label"] for row in body)
+    assert all(row["system"] == "agilecrm" for row in body)
+
+
 def test_create_segment_evaluates_and_caches_count(client: TestClient):
     _create_contact(client, "ana@example.com", marketing_consent="granted")
     _create_contact(client, "boris@example.com", marketing_consent="denied")

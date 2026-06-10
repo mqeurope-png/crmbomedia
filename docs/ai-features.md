@@ -94,6 +94,30 @@ descripción. Intenta reformular usando los nombres de los campos
 disponibles."** El resto de fallos del proveedor mantienen el 502
 genérico.
 
+### Contexto del CRM real
+
+Antes de invocar a Claude, `generate_segment_rules` construye un
+bloque de **contexto del CRM** (`app/services/segments/ai_context.py`)
+y lo splicea en el system prompt entre las reglas estructurales y la
+whitelist de campos. El bloque incluye:
+
+- Top 100 tags (id + nombre, ordenadas por uso descendente).
+- Cuentas de integración habilitadas (`system`, `account_id`,
+  `display_name`).
+- Países distintos presentes en `contacts.address_country`.
+- Pipelines activos y sus etapas (id + nombre).
+- Rango actual de `lead_score` (min, max).
+
+Caching: 5 minutos por proceso, con `reset_cache()` expuesto para
+tests. Topkill: si el bloque sobrepasa los 16k caracteres
+(~4000 tokens) se trunca preservando las tags primero (las más
+útiles para resolver descripciones tipo "tag MBO" → ids reales).
+
+Test manual documentado: con el contexto inyectado, una descripción
+como "contactos con tag MBO" debe generar un árbol cuyo
+`comparator: "contains_any"` recibe los ids de **todas** las tags
+cuyo nombre contiene "mbo" (case-insensitive), no un string libre.
+
 ### Pruebas manuales
 
 Para verificar que el endpoint AI está activo:
