@@ -55,15 +55,20 @@ from app.models.crm import (
     Note,
     Pipeline,
     PipelineStage,
+    Segment,
     Task,
     User,
 )
 from app.repositories import contact_views as contact_views_repository
 from app.repositories import crm as crm_repository
 from app.repositories import pipelines as pipelines_repository
+from app.repositories import segments as segments_repository
 from app.services import llm as llm_service
 from app.services import pipeline_templates as pipeline_templates_service
 from app.services.email import EmailService, get_email_service
+from app.services.segments import engine as segment_engine
+from app.services.segments import fields as segment_fields
+from app.services.segments import templates as segments_templates
 from app.schemas.crm import (
     ActivityEventListPage,
     ActivityEventRead,
@@ -109,6 +114,19 @@ from app.schemas.crm import (
     PipelineProposalStage,
     PipelineTemplate,
     PipelineUpdate,
+    SegmentAIExplainRequest,
+    SegmentAIExplainResponse,
+    SegmentAIGenerateRequest,
+    SegmentAIGenerateResponse,
+    SegmentCreate,
+    SegmentDuplicateRequest,
+    SegmentFieldDescriptor,
+    SegmentPreviewContactCard,
+    SegmentPreviewRequest,
+    SegmentPreviewResponse,
+    SegmentRead,
+    SegmentTemplate,
+    SegmentUpdate,
     StalledContactRow,
     TagCreate,
     TagDetailRead,
@@ -3042,6 +3060,527 @@ def generate_pipeline_with_ai(
         color=proposal.get("color"),
         stages=[PipelineProposalStage(**stage) for stage in proposal["stages"]],
     )
+
+
+# ---------------------------------------------------------------------------
+# Segments (Sprint P.3)
+# ---------------------------------------------------------------------------
+
+
+def _segment_to_read(segment: Segment, *, current_user: User) -> SegmentRead:
+    return SegmentRead(
+        id=segment.id,
+        name=segment.name,
+        description=segment.description,
+        color=segment.color,
+        owner_user_id=segment.owner_user_id,
+        is_owner=segment.owner_user_id == current_user.id,
+        is_shared=segment.is_shared,
+        is_dynamic=segment.is_dynamic,
+        rules=segments_repository.decode_rules(segment),
+        static_contact_ids=segments_repository.decode_static_ids(segment),
+        cached_count=segment.cached_count,
+        last_evaluated_at=segment.last_evaluated_at,
+        created_at=segment.created_at,
+        updated_at=segment.updated_at,
+    )
+
+
+@router.get(
+    "/segments/available-fields",
+    response_model=list[SegmentFieldDescriptor],
+    responses=ERROR_RESPONSES,
+    tags=["crm"],
+)
+def segment_available_fields(
+    current_user: User = Depends(require_viewer),
+) -> list[dict[str, Any]]:
+    _ = current_user
+    return segment_fields.list_fields_for_ui()
+
+
+@router.get(
+    "/segments/templates",
+    response_model=list[SegmentTemplate],
+    responses=ERROR_RESPONSES,
+    tags=["crm"],
+)
+def segment_templates(
+    current_user: User = Depends(require_viewer),
+) -> list[dict[str, Any]]:
+    _ = current_user
+    return segments_templates.list_templates()
+
+
+@router.get(
+    "/segments",
+    response_model=list[SegmentRead],
+    responses=ERROR_RESPONSES,
+    tags=["crm"],
+)
+def list_segments(
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_viewer),
+) -> list[SegmentRead]:
+    rows = segments_repository.list_segments(session, user_id=current_user.id)
+    return [_segment_to_read(row, current_user=current_user) for row in rows]
+
+
+@router.get(
+    "/segments/{segment_id}",
+    response_model=SegmentRead,
+    responses=ERROR_RESPONSES,
+    tags=["crm"],
+)
+def read_segment(
+    segment_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_viewer),
+) -> SegmentRead:
+    segment = segments_repository.get_segment(session, segment_id)
+    if not segment or (
+        segment.owner_user_id != current_user.id and not segment.is_shared
+    ):
+        raise not_found("Segment")
+    return _segment_to_read(segment, current_user=current_user)
+
+
+@router.post(
+    "/segments",
+    response_model=SegmentRead,
+    status_code=status.HTTP_201_CREATED,
+    responses=ERROR_RESPONSES,
+    tags=["crm"],
+)
+def create_segment(
+    payload: SegmentCreate,
+    request: Request,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_user),
+) -> SegmentRead:
+    try:
+        if payload.rules:
+            segment_engine.build_filter(payload.rules)
+    except segment_engine.SegmentRuleError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
+    segment = segments_repository.create_segment(
+        session,
+        owner_user_id=current_user.id,
+        name=payload.name,
+        description=payload.description,
+        rules=payload.rules,
+        is_dynamic=payload.is_dynamic,
+        static_contact_ids=payload.static_contact_ids,
+        is_shared=payload.is_shared,
+        color=payload.color,
+    )
+    count, duration = segments_repository.evaluate_segment(session, segment)
+    record_event(
+        session,
+        action=Action.SEGMENT_CREATED,
+        target_type="segment",
+        target_id=segment.id,
+        actor=current_user,
+        metadata={"name": segment.name, "count": count},
+        request=request,
+    )
+    record_event(
+        session,
+        action=Action.SEGMENT_EVALUATED,
+        target_type="segment",
+        target_id=segment.id,
+        actor=current_user,
+        metadata={"count": count, "duration_ms": int(duration * 1000)},
+        request=request,
+    )
+    session.commit()
+    session.refresh(segment)
+    return _segment_to_read(segment, current_user=current_user)
+
+
+@router.patch(
+    "/segments/{segment_id}",
+    response_model=SegmentRead,
+    responses=ERROR_RESPONSES,
+    tags=["crm"],
+)
+def update_segment(
+    segment_id: str,
+    payload: SegmentUpdate,
+    request: Request,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_user),
+) -> SegmentRead:
+    segment = segments_repository.get_segment(session, segment_id)
+    if not segment:
+        raise not_found("Segment")
+    if segment.owner_user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Not owner"
+        )
+    if payload.rules is not None:
+        try:
+            segment_engine.build_filter(payload.rules)
+        except segment_engine.SegmentRuleError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+            ) from exc
+    changes = payload.model_dump(exclude_unset=True)
+    segments_repository.update_segment(
+        session,
+        segment=segment,
+        name=changes.get("name"),
+        description=changes.get("description"),
+        color=changes.get("color"),
+        is_shared=changes.get("is_shared"),
+        is_dynamic=changes.get("is_dynamic"),
+        rules=changes.get("rules"),
+        static_contact_ids=changes.get("static_contact_ids"),
+    )
+    count, duration = segments_repository.evaluate_segment(session, segment)
+    record_event(
+        session,
+        action=Action.SEGMENT_UPDATED,
+        target_type="segment",
+        target_id=segment.id,
+        actor=current_user,
+        metadata={
+            "name": segment.name,
+            "changed_fields": sorted(changes.keys()),
+            "count": count,
+        },
+        request=request,
+    )
+    record_event(
+        session,
+        action=Action.SEGMENT_EVALUATED,
+        target_type="segment",
+        target_id=segment.id,
+        actor=current_user,
+        metadata={"count": count, "duration_ms": int(duration * 1000)},
+        request=request,
+    )
+    session.commit()
+    session.refresh(segment)
+    return _segment_to_read(segment, current_user=current_user)
+
+
+@router.delete(
+    "/segments/{segment_id}",
+    response_model=MessageRead,
+    responses=ERROR_RESPONSES,
+    tags=["crm"],
+)
+def delete_segment(
+    segment_id: str,
+    request: Request,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_user),
+) -> MessageRead:
+    segment = segments_repository.get_segment(session, segment_id)
+    if not segment:
+        raise not_found("Segment")
+    if segment.owner_user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Not owner"
+        )
+    record_event(
+        session,
+        action=Action.SEGMENT_DELETED,
+        target_type="segment",
+        target_id=segment.id,
+        actor=current_user,
+        metadata={"name": segment.name},
+        request=request,
+    )
+    segments_repository.delete_segment(session, segment)
+    session.commit()
+    return MessageRead(message="Segment deleted")
+
+
+@router.post(
+    "/segments/{segment_id}/duplicate",
+    response_model=SegmentRead,
+    status_code=status.HTTP_201_CREATED,
+    responses=ERROR_RESPONSES,
+    tags=["crm"],
+)
+def duplicate_segment(
+    segment_id: str,
+    payload: SegmentDuplicateRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_user),
+) -> SegmentRead:
+    source = segments_repository.get_segment(session, segment_id)
+    if not source or (
+        source.owner_user_id != current_user.id and not source.is_shared
+    ):
+        raise not_found("Segment")
+    duplicate = segments_repository.duplicate_segment(
+        session,
+        source=source,
+        owner_user_id=current_user.id,
+        name=payload.name,
+    )
+    segments_repository.evaluate_segment(session, duplicate)
+    record_event(
+        session,
+        action=Action.SEGMENT_DUPLICATED,
+        target_type="segment",
+        target_id=duplicate.id,
+        actor=current_user,
+        metadata={"source_segment_id": source.id, "name": duplicate.name},
+        request=request,
+    )
+    session.commit()
+    session.refresh(duplicate)
+    return _segment_to_read(duplicate, current_user=current_user)
+
+
+@router.get(
+    "/segments/{segment_id}/contacts",
+    response_model=ContactListPage,
+    responses=ERROR_RESPONSES,
+    tags=["crm"],
+)
+def list_segment_contacts(
+    segment_id: str,
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=25, ge=1, le=100),
+    sort_by: str = Query(default="created_at"),
+    sort_dir: str = Query(default="desc", pattern="^(asc|desc)$"),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_viewer),
+) -> ContactListPage:
+    segment = segments_repository.get_segment(session, segment_id)
+    if not segment or (
+        segment.owner_user_id != current_user.id and not segment.is_shared
+    ):
+        raise not_found("Segment")
+    items, total = segments_repository.list_segment_contacts(
+        session,
+        segment,
+        skip=skip,
+        limit=limit,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+    )
+    return ContactListPage(
+        items=[ContactRead.model_validate(c) for c in items],
+        total=total,
+        limit=limit,
+        offset=skip,
+    )
+
+
+@router.get(
+    "/segments/{segment_id}/count",
+    response_model=CountRead,
+    responses=ERROR_RESPONSES,
+    tags=["crm"],
+)
+def segment_count(
+    segment_id: str,
+    request: Request,
+    force_refresh: bool = Query(default=False),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_viewer),
+) -> CountRead:
+    segment = segments_repository.get_segment(session, segment_id)
+    if not segment or (
+        segment.owner_user_id != current_user.id and not segment.is_shared
+    ):
+        raise not_found("Segment")
+    if force_refresh or segment.cached_count is None:
+        count, duration = segments_repository.evaluate_segment(session, segment)
+        record_event(
+            session,
+            action=Action.SEGMENT_EVALUATED,
+            target_type="segment",
+            target_id=segment.id,
+            actor=current_user,
+            metadata={
+                "count": count,
+                "duration_ms": int(duration * 1000),
+                "trigger": "force_refresh" if force_refresh else "stale",
+            },
+            request=request,
+        )
+        session.commit()
+        return CountRead(total=count)
+    return CountRead(total=segment.cached_count)
+
+
+@router.post(
+    "/segments/preview",
+    response_model=SegmentPreviewResponse,
+    responses=ERROR_RESPONSES,
+    tags=["crm"],
+)
+def segment_preview(
+    payload: SegmentPreviewRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_viewer),
+) -> SegmentPreviewResponse:
+    _ = current_user
+    try:
+        segment_engine.build_filter(payload.rules)
+    except segment_engine.SegmentRuleError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
+    count, sample = segments_repository.preview_rules(session, payload.rules)
+    return SegmentPreviewResponse(
+        count=count,
+        sample=[
+            SegmentPreviewContactCard(
+                id=contact.id,
+                first_name=contact.first_name,
+                last_name=contact.last_name,
+                email=contact.email,
+                lead_score=contact.lead_score,
+            )
+            for contact in sample
+        ],
+    )
+
+
+@router.post(
+    "/segments/ai-generate",
+    response_model=SegmentAIGenerateResponse,
+    responses=ERROR_RESPONSES,
+    tags=["crm"],
+)
+def segment_ai_generate(
+    payload: SegmentAIGenerateRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+    settings: Settings = Depends(get_settings),
+    current_user: User = Depends(require_user),
+) -> SegmentAIGenerateResponse:
+    if not settings.ai_features_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="AI features are not configured on this deployment.",
+        )
+    try:
+        result = llm_service.generate_segment_rules(
+            payload.description, user_id=current_user.id
+        )
+    except llm_service.LLMRateLimitError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(exc)
+        ) from exc
+    except llm_service.LLMNotConfiguredError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
+        ) from exc
+    except llm_service.LLMError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)
+        ) from exc
+
+    rules = result.get("rules")
+    response = SegmentAIGenerateResponse(error=result.get("error"))
+    if rules is not None:
+        try:
+            segment_engine.build_filter(rules)
+        except segment_engine.SegmentRuleError as exc:
+            response.error = f"La IA propuso reglas inválidas: {exc}"
+        else:
+            response.rules = rules
+            count, sample = segments_repository.preview_rules(session, rules)
+            response.count = count
+            response.sample = [
+                SegmentPreviewContactCard(
+                    id=contact.id,
+                    first_name=contact.first_name,
+                    last_name=contact.last_name,
+                    email=contact.email,
+                    lead_score=contact.lead_score,
+                )
+                for contact in sample
+            ]
+
+    record_event(
+        session,
+        action=Action.SEGMENT_AI_GENERATED,
+        target_type="segment",
+        actor=current_user,
+        metadata={
+            "description_length": len(payload.description),
+            "has_rules": rules is not None,
+        },
+        request=request,
+    )
+    session.commit()
+    return response
+
+
+@router.post(
+    "/segments/ai-explain",
+    response_model=SegmentAIExplainResponse,
+    responses=ERROR_RESPONSES,
+    tags=["crm"],
+)
+def segment_ai_explain(
+    payload: SegmentAIExplainRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+    settings: Settings = Depends(get_settings),
+    current_user: User = Depends(require_viewer),
+) -> SegmentAIExplainResponse:
+    if not settings.ai_features_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="AI features are not configured on this deployment.",
+        )
+    rules = payload.rules
+    if rules is None and payload.segment_id:
+        segment = segments_repository.get_segment(session, payload.segment_id)
+        if not segment or (
+            segment.owner_user_id != current_user.id and not segment.is_shared
+        ):
+            raise not_found("Segment")
+        rules = segments_repository.decode_rules(segment)
+    if not rules:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="rules or segment_id is required",
+        )
+    try:
+        explanation = llm_service.explain_segment_rules(
+            rules, user_id=current_user.id
+        )
+    except llm_service.LLMRateLimitError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(exc)
+        ) from exc
+    except llm_service.LLMNotConfiguredError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
+        ) from exc
+    except llm_service.LLMError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)
+        ) from exc
+    record_event(
+        session,
+        action=Action.SEGMENT_AI_EXPLAINED,
+        target_type="segment",
+        target_id=payload.segment_id,
+        actor=current_user,
+        metadata={
+            "explanation_length": len(explanation),
+            "rules_size": len(str(rules)),
+        },
+        request=request,
+    )
+    session.commit()
+    return SegmentAIExplainResponse(explanation=explanation)
 
 
 router.include_router(integration_accounts_router)

@@ -1,7 +1,8 @@
 "use client";
 
-import { useState } from "react";
-import type { SavedView } from "../lib/api";
+import Link from "next/link";
+import { useEffect, useState } from "react";
+import { listSegments, type SavedView, type Segment } from "../lib/api";
 
 type Props = {
   views: SavedView[];
@@ -53,6 +54,7 @@ export function ContactViewsSidebar({
         onSetDefault={onSetDefault}
         onDelete={onDelete}
       />
+      <MySegmentsSection />
       <ViewsSection
         title="Vistas compartidas"
         empty="Ningún compañero ha compartido vistas."
@@ -218,5 +220,54 @@ function ViewRow({
         </div>
       ) : null}
     </li>
+  );
+}
+
+function MySegmentsSection() {
+  const [segments, setSegments] = useState<Segment[]>([]);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    listSegments()
+      .then(setSegments)
+      .catch(() => setError("Segmentos no disponibles"));
+  }, []);
+
+  return (
+    <section className="views-section">
+      <h3>Mis segmentos</h3>
+      {error ? (
+        <p className="muted small">{error}</p>
+      ) : segments.length === 0 ? (
+        <p className="muted small">
+          Crea segmentos desde la pantalla de <Link href="/segments">Segmentos</Link>.
+        </p>
+      ) : (
+        <ul>
+          {segments.slice(0, 8).map((segment) => (
+            <li key={segment.id} className="view-row">
+              <Link
+                href={`/segments/${segment.id}`}
+                className="view-row-main segment-sidebar-section"
+              >
+                <span className="view-row-title">
+                  {segment.color ? (
+                    <span
+                      className="tag-color-swatch"
+                      style={{ background: segment.color }}
+                      aria-hidden
+                    />
+                  ) : null}
+                  <span>{segment.name}</span>
+                </span>
+                <span className="muted small">
+                  {segment.cached_count ?? "?"} contactos
+                </span>
+              </Link>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
   );
 }

@@ -1081,3 +1081,127 @@ class PipelineProposal(BaseModel):
     description: str | None = None
     color: str | None = None
     stages: list[PipelineProposalStage]
+
+
+# ---------------------------------------------------------------------------
+# Segments (Sprint P.3)
+# ---------------------------------------------------------------------------
+
+
+class SegmentRuleNode(BaseModel):
+    """The rule tree is a free-form dict. Pydantic only validates the
+    outer envelope; the engine in
+    `app/services/segments/engine.py` enforces the whitelist of
+    fields + comparators before any SQL is generated."""
+
+    model_config = ConfigDict(extra="allow")
+
+
+class SegmentCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    description: str | None = Field(default=None, max_length=2000)
+    color: str | None = Field(default=None, max_length=7)
+    is_shared: bool = False
+    is_dynamic: bool = True
+    rules: dict[str, Any] = Field(default_factory=dict)
+    static_contact_ids: list[str] | None = None
+
+    @field_validator("name")
+    @classmethod
+    def strip_name(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator("color", mode="before")
+    @classmethod
+    def _validate_color(cls, value: str | None) -> str | None:
+        return _validate_tag_color(value)
+
+
+class SegmentUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+    description: str | None = Field(default=None, max_length=2000)
+    color: str | None = Field(default=None, max_length=7)
+    is_shared: bool | None = None
+    is_dynamic: bool | None = None
+    rules: dict[str, Any] | None = None
+    static_contact_ids: list[str] | None = None
+
+    @field_validator("color", mode="before")
+    @classmethod
+    def _validate_color(cls, value: str | None) -> str | None:
+        return _validate_tag_color(value)
+
+
+class SegmentRead(BaseModel):
+    id: str
+    name: str
+    description: str | None = None
+    color: str | None = None
+    owner_user_id: str
+    is_owner: bool = False
+    is_shared: bool
+    is_dynamic: bool
+    rules: dict[str, Any] = Field(default_factory=dict)
+    static_contact_ids: list[str] = Field(default_factory=list)
+    cached_count: int | None = None
+    last_evaluated_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class SegmentDuplicateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+
+
+class SegmentPreviewRequest(BaseModel):
+    rules: dict[str, Any]
+
+
+class SegmentPreviewContactCard(BaseModel):
+    id: str
+    first_name: str
+    last_name: str | None = None
+    email: str
+    lead_score: int | None = None
+
+
+class SegmentPreviewResponse(BaseModel):
+    count: int
+    sample: list[SegmentPreviewContactCard]
+
+
+class SegmentAIGenerateRequest(BaseModel):
+    description: str = Field(min_length=1, max_length=2000)
+
+
+class SegmentAIGenerateResponse(BaseModel):
+    rules: dict[str, Any] | None = None
+    error: str | None = None
+    count: int = 0
+    sample: list[SegmentPreviewContactCard] = Field(default_factory=list)
+
+
+class SegmentAIExplainRequest(BaseModel):
+    rules: dict[str, Any] | None = None
+    segment_id: str | None = None
+
+
+class SegmentAIExplainResponse(BaseModel):
+    explanation: str
+
+
+class SegmentTemplate(BaseModel):
+    id: str
+    name: str
+    description: str
+    category: str
+    color: str | None = None
+    rules: dict[str, Any]
+
+
+class SegmentFieldDescriptor(BaseModel):
+    key: str
+    label: str
+    type: str
+    comparators: list[str]
+    enum_values: list[str] = Field(default_factory=list)

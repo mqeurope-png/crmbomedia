@@ -373,6 +373,35 @@ class ContactStageHistory(Base):
     assignment: Mapped[ContactPipelineStage] = relationship(back_populates="history")
 
 
+class Segment(TimestampMixin, Base):
+    """Dynamic group of contacts defined by a boolean rule tree.
+
+    Re-evaluated on demand via the rules engine in
+    `app/services/segments/engine.py`. `cached_count` +
+    `last_evaluated_at` are populated by the route layer on
+    create/update/manual-refresh so the list page renders without
+    re-running the SQL on every render.
+
+    `is_dynamic=False` switches the segment to a frozen list of
+    `static_contact_ids` — used for one-off "send to these 50 people"
+    workflows that should NOT pick up new matches over time.
+    """
+
+    __tablename__ = "segments"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+    rules_json: Mapped[str | None] = mapped_column(Text)
+    is_dynamic: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    static_contact_ids: Mapped[str | None] = mapped_column(Text)
+    owner_user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
+    is_shared: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    color: Mapped[str | None] = mapped_column(String(7))
+    cached_count: Mapped[int | None] = mapped_column(Integer)
+    last_evaluated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class Note(TimestampMixin, Base):
     __tablename__ = "notes"
 
