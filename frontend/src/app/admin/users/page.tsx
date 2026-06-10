@@ -1,8 +1,8 @@
 "use client";
 
-import Link from "next/link";
 import { useEffect, useState } from "react";
 import { ErrorState } from "../../components/ErrorState";
+import { PageHeader } from "../../components/PageHeader";
 import {
   isPasswordCompliant,
   PasswordRequirements,
@@ -111,11 +111,7 @@ export default function AdminUsersPage() {
 
   return (
     <main className="shell">
-      <Link href="/" className="back-link">← Volver al dashboard</Link>
-      <section className="hero compact">
-        <p className="eyebrow">Administración</p>
-        <h1>Usuarios y roles</h1>
-      </section>
+      <PageHeader title="Usuarios y roles" eyebrow="Administración" />
       {isLoading ? <p className="muted">Cargando usuarios...</p> : null}
       {error ? <ErrorState title="Error de permisos o carga" message={error} /> : null}
       {message ? <div className="success-state">{message}</div> : null}

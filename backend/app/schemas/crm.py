@@ -1,4 +1,5 @@
 import json
+import logging
 from datetime import datetime
 from typing import Any
 
@@ -438,6 +439,12 @@ class ContactViewFilters(BaseModel):
     tag_match_mode: str | None = None
     origin_system: str | None = None
     origin_account_id: str | None = None
+    # Sprint UX: pairs of "system:account_id". Takes precedence over
+    # `origin_system` + `origin_account_id` if both are present. Kept
+    # alongside the legacy fields so a view migrated from the old
+    # shape can still be re-loaded by code paths that haven't been
+    # updated yet — the route layer reads both and prefers this one.
+    origin_account_keys: list[str] | None = None
     commercial_status: str | None = None
     marketing_consent: str | None = None
     is_active: bool | None = None
@@ -527,8 +534,76 @@ class ContactRead(ContactCreate):
     # `tag_assignments` relationship to a list of Tag rows — Pydantic
     # picks it up automatically via from_attributes.
     tag_objects: list[TagRead] = Field(default_factory=list)
+    # READ-time tolerance for email + phone. `ContactCreate` keeps
+    # `EmailStr` (strict at write time), but historical rows imported
+    # from AgileCRM may carry malformed strings like
+    # "emete@emete@emete.cat". A strict `EmailStr` on the read path
+    # crashes the whole list endpoint with 500 the moment one bad row
+    # surfaces. Surfacing `None` instead — and logging the row id so
+    # ops can audit later — keeps the rest of the page rendering.
+    email: str | None = None  # type: ignore[assignment]
+    phone: str | None = None
 
     model_config = ConfigDict(from_attributes=True)
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def coerce_tolerant_email(cls, value: object, info: object) -> str | None:  # noqa: ARG003
+        return _coerce_tolerant_email(value)
+
+    @field_validator("phone", mode="before")
+    @classmethod
+    def coerce_tolerant_phone(cls, value: object) -> str | None:
+        return _coerce_tolerant_phone(value)
+
+
+def _coerce_tolerant_email(value: object) -> str | None:
+    """Return a normalised email if parseable, else `None`.
+
+    Plus a warning log entry — the caller never sees a ValidationError
+    from a strange DB row. The strict validation still lives in
+    `ContactCreate` so this can't be abused for new inserts."""
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        value = str(value)
+    candidate = value.strip()
+    if not candidate:
+        return None
+    try:
+        from email_validator import (  # noqa: PLC0415
+            EmailNotValidError,
+            validate_email,
+        )
+    except ImportError:  # pragma: no cover - shipped with pydantic[email]
+        return candidate.lower()
+    try:
+        result = validate_email(candidate, check_deliverability=False)
+    except EmailNotValidError:
+        logging.getLogger(__name__).warning(
+            "contact.email malformed; surfacing None: %r", candidate
+        )
+        return None
+    return result.normalized.lower()
+
+
+def _coerce_tolerant_phone(value: object) -> str | None:
+    """Drop obvious garbage (>30 chars OR no digit at all). Keeps the
+    column lossy — exactly what the operator wants on a value that's
+    a free-form notes field across half of the AgileCRM accounts."""
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        value = str(value)
+    candidate = value.strip()
+    if not candidate:
+        return None
+    if len(candidate) > 30 or not any(ch.isdigit() for ch in candidate):
+        logging.getLogger(__name__).warning(
+            "contact.phone looks malformed; surfacing None: %r", candidate
+        )
+        return None
+    return candidate
 
 
 class ContactListPage(BaseModel):
@@ -1227,3 +1302,25 @@ class SegmentOriginAccountOption(BaseModel):
     value: str
     label: str
     system: str
+
+
+class IntegrationAccountSummary(BaseModel):
+    """Per-account row inside `IntegrationSystemGroup`. The contact
+    count comes from a `SELECT COUNT(...)` over `external_references`
+    so two accounts pointing at overlapping contact sets each get
+    credited for the contacts they actually carry references to."""
+
+    account_id: str
+    label: str
+    contacts_count: int
+    enabled: bool
+
+
+class IntegrationSystemGroup(BaseModel):
+    """One group inside `GET /api/integrations/accounts`. The frontend
+    pickers render each system as a header followed by its accounts;
+    flat lists got unmanageable at 9 AgileCRM accounts."""
+
+    system: str
+    system_label: str
+    accounts: list[IntegrationAccountSummary] = Field(default_factory=list)

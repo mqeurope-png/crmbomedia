@@ -1,6 +1,7 @@
 "use client";
 
 import type { ContactListFilters } from "../lib/api";
+import { OriginAccountMultiSelect } from "./OriginAccountMultiSelect";
 import { TagMultiSelectFilter } from "./TagMultiSelectFilter";
 
 type Props = {
@@ -23,15 +24,6 @@ const MARKETING_CONSENTS = [
   { value: "denied", label: "Denegado" },
   { value: "unknown", label: "Desconocido" },
   { value: "unsubscribed", label: "Baja" },
-];
-
-const ORIGIN_SYSTEMS = [
-  { value: "", label: "Cualquier origen" },
-  { value: "agilecrm", label: "AgileCRM" },
-  { value: "brevo", label: "Brevo" },
-  { value: "freshdesk", label: "Freshdesk" },
-  { value: "factusol", label: "FactuSOL" },
-  { value: "manual", label: "Manual" },
 ];
 
 export function ContactFilters({ filters, onChange, onReset }: Props) {
@@ -98,21 +90,24 @@ export function ContactFilters({ filters, onChange, onReset }: Props) {
         </select>
       </label>
 
-      <label>
-        <span>Origen</span>
-        <select
-          value={filters.origin_system ?? ""}
-          onChange={(event) =>
-            update({ origin_system: event.target.value || undefined })
+      <div className="filter-block">
+        <span className="filter-label">Origen</span>
+        <OriginAccountMultiSelect
+          selectedKeys={filters.origin_account_keys ?? []}
+          onChange={(next) =>
+            update({
+              origin_account_keys: next.length ? next : undefined,
+              // Drop the legacy fields the moment the operator picks a
+              // concrete account. They stay set if a saved view loaded
+              // them and the operator hasn't touched the origin filter.
+              origin_system: next.length ? undefined : filters.origin_system,
+              origin_account_id: next.length
+                ? undefined
+                : filters.origin_account_id,
+            })
           }
-        >
-          {ORIGIN_SYSTEMS.map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.label}
-            </option>
-          ))}
-        </select>
-      </label>
+        />
+      </div>
 
       <label className="checkbox">
         <input

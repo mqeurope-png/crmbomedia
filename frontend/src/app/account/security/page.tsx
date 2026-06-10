@@ -1,8 +1,8 @@
 "use client";
 
-import Link from "next/link";
 import { QRCodeSVG } from "qrcode.react";
 import { useEffect, useState } from "react";
+import { PageHeader } from "../../components/PageHeader";
 import {
   confirmTotp,
   disableTotp,
@@ -113,11 +113,7 @@ export default function SecurityPage() {
 
   return (
     <main className="shell narrow">
-      <Link href="/" className="back-link">← Volver al dashboard</Link>
-      <section className="hero compact">
-        <p className="eyebrow">Cuenta</p>
-        <h1>Seguridad</h1>
-      </section>
+      <PageHeader title="Seguridad" eyebrow="Cuenta" />
 
       {error ? <div className="error-state">{error}</div> : null}
       {message ? <div className="success-state">{message}</div> : null}

@@ -1,8 +1,8 @@
 "use client";
 
-import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ErrorState } from "../../components/ErrorState";
+import { PageHeader } from "../../components/PageHeader";
 import {
   createTag,
   deleteTag,
@@ -107,17 +107,11 @@ export default function TagsAdminPage() {
 
   return (
     <main className="shell">
-      <Link href="/" className="back-link">
-        ← Volver al dashboard
-      </Link>
-      <section className="hero compact">
-        <p className="eyebrow">Administración</p>
-        <h1>Tags de contactos</h1>
-        <p className="lead">
-          Los tags se comparten entre AgileCRM, importaciones y asignaciones
-          manuales. Borrar un tag aquí lo retira de todos los contactos a la vez.
-        </p>
-      </section>
+      <PageHeader
+        title="Tags de contactos"
+        eyebrow="Administración"
+        description="Los tags se comparten entre AgileCRM, importaciones y asignaciones manuales. Borrar un tag aquí lo retira de todos los contactos a la vez."
+      />
 
       <section className="grid two">
         <article className="card">

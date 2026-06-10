@@ -180,6 +180,50 @@ def test_create_contact_with_company_and_persist_consent(client: TestClient):
     assert response.json()["company_id"] == company["id"]
 
 
+def test_contacts_list_tolerates_malformed_email_in_db(client: TestClient):
+    """Regression: a row with `email = 'emete@emete@emete.cat'` (legit
+    in the DB after a bad AgileCRM import) used to take the entire
+    list endpoint down with a 500. The read schema now surfaces None
+    for that row so the page renders."""
+    from app.db.session import get_session as gs
+    from app.models.crm import Contact
+
+    headers = auth_headers(client, "manager")
+    # Create one well-formed contact via the API so the listing has
+    # something else alongside the bad row.
+    client.post(
+        "/api/contacts",
+        json={"first_name": "Ana", "email": "ana@example.com"},
+        headers=headers,
+    )
+    # Drop the bad row directly via the ORM — the create endpoint
+    # would reject it (which is the whole point of the strict
+    # `ContactCreate.email`).
+    factory = client.app.dependency_overrides[gs]
+    gen = factory()
+    session = next(gen)
+    try:
+        session.add(
+            Contact(
+                first_name="Bad",
+                email="emete@emete@emete.cat",
+                is_email_valid=False,
+            )
+        )
+        session.commit()
+    finally:
+        gen.close()
+
+    response = client.get("/api/contacts", headers=headers)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    emails = sorted(item["email"] for item in body["items"] if item["email"])
+    assert "ana@example.com" in emails
+    nulled = [item for item in body["items"] if item["email"] is None]
+    assert len(nulled) == 1
+    assert nulled[0]["first_name"] == "Bad"
+
+
 def test_reject_contact_for_missing_company(client: TestClient):
     response = client.post(
         "/api/contacts",
@@ -460,6 +504,176 @@ def test_contacts_list_filter_by_origin_account_id(client: TestClient):
     body = response.json()
     assert body["total"] == 1
     assert body["items"][0]["email"] == "ana@example.com"
+
+
+def test_contacts_list_filter_by_origin_account_keys(client: TestClient):
+    """The new `origin_account_keys` (CSV of `system:account_id`) lets
+    an operator with 9 AgileCRM accounts pick two concrete ones
+    without sweeping every contact of the system. Three accounts seeded;
+    two of them queried; the third's contact must NOT appear."""
+    from app.models.crm import Contact, ExternalReference, ExternalSystem
+
+    ana = create_contact(client, "ana@example.com")
+    boris = create_contact(client, "boris@example.com")
+    carla = create_contact(client, "carla@example.com")
+
+    session_factory = app.dependency_overrides[get_session]
+    session_gen = session_factory()
+    session = next(session_gen)
+    try:
+        session.add_all(
+            [
+                ExternalReference(
+                    system=ExternalSystem.AGILECRM,
+                    external_id="ana-1",
+                    account_id="mbomedia",
+                    contact_id=session.get(Contact, ana["id"]).id,
+                ),
+                ExternalReference(
+                    system=ExternalSystem.AGILECRM,
+                    external_id="boris-1",
+                    account_id="artisjet",
+                    contact_id=session.get(Contact, boris["id"]).id,
+                ),
+                ExternalReference(
+                    system=ExternalSystem.BREVO,
+                    external_id="carla-1",
+                    account_id="brevo-main",
+                    contact_id=session.get(Contact, carla["id"]).id,
+                ),
+            ]
+        )
+        session.commit()
+    finally:
+        session_gen.close()
+
+    response = client.get(
+        "/api/contacts",
+        params=[
+            ("origin_account_keys", "agilecrm:mbomedia"),
+            ("origin_account_keys", "brevo:brevo-main"),
+        ],
+        headers=auth_headers(client, "viewer"),
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    emails = sorted(item["email"] for item in body["items"])
+    assert emails == ["ana@example.com", "carla@example.com"]
+
+
+def test_origin_account_keys_takes_precedence_over_legacy_fields(client: TestClient):
+    """When both `origin_account_keys` and the legacy
+    `origin_system`/`origin_account_id` are passed, the new param wins
+    so a partly-migrated saved view layered with the new picker
+    doesn't double-filter."""
+    from app.models.crm import Contact, ExternalReference, ExternalSystem
+
+    ana = create_contact(client, "ana@example.com")
+    boris = create_contact(client, "boris@example.com")
+
+    session_factory = app.dependency_overrides[get_session]
+    session_gen = session_factory()
+    session = next(session_gen)
+    try:
+        session.add_all(
+            [
+                ExternalReference(
+                    system=ExternalSystem.AGILECRM,
+                    external_id="ana-1",
+                    account_id="acct-A",
+                    contact_id=session.get(Contact, ana["id"]).id,
+                ),
+                ExternalReference(
+                    system=ExternalSystem.AGILECRM,
+                    external_id="boris-1",
+                    account_id="acct-B",
+                    contact_id=session.get(Contact, boris["id"]).id,
+                ),
+            ]
+        )
+        session.commit()
+    finally:
+        session_gen.close()
+
+    response = client.get(
+        "/api/contacts",
+        params=[
+            ("origin_account_keys", "agilecrm:acct-A"),
+            ("origin_system", "agilecrm"),
+            ("origin_account_id", "acct-B"),
+        ],
+        headers=auth_headers(client, "viewer"),
+    )
+    assert response.status_code == 200
+    emails = [item["email"] for item in response.json()["items"]]
+    # `origin_account_keys` overrides → only Ana (acct-A) appears, not
+    # Boris (acct-B) despite the legacy fields pointing at him.
+    assert emails == ["ana@example.com"]
+
+
+def test_integrations_accounts_endpoint_groups_by_system(client: TestClient):
+    """`/api/integrations/accounts` shapes every integration into a
+    `{system, system_label, accounts}` group with contacts_count
+    pulled from external_references."""
+    from app.models.crm import Contact, ExternalReference, ExternalSystem
+    from app.models.integration_settings import IntegrationAccount
+
+    ana = create_contact(client, "ana@example.com")
+
+    session_factory = app.dependency_overrides[get_session]
+    session_gen = session_factory()
+    session = next(session_gen)
+    try:
+        session.add_all(
+            [
+                IntegrationAccount(
+                    system=ExternalSystem.AGILECRM,
+                    account_id="mbomedia",
+                    display_name="AgileCRM Mbomedia",
+                    enabled=True,
+                ),
+                IntegrationAccount(
+                    system=ExternalSystem.AGILECRM,
+                    account_id="artisjet",
+                    display_name="Artisjet Spain",
+                    enabled=True,
+                ),
+                IntegrationAccount(
+                    system=ExternalSystem.BREVO,
+                    account_id="paused",
+                    display_name="Brevo (paused)",
+                    enabled=False,
+                ),
+                ExternalReference(
+                    system=ExternalSystem.AGILECRM,
+                    external_id="ana-1",
+                    account_id="mbomedia",
+                    contact_id=session.get(Contact, ana["id"]).id,
+                ),
+            ]
+        )
+        session.commit()
+    finally:
+        session_gen.close()
+
+    response = client.get(
+        "/api/integrations/accounts",
+        headers=auth_headers(client, "viewer"),
+    )
+    assert response.status_code == 200, response.text
+    groups = response.json()
+    by_system = {group["system"]: group for group in groups}
+    assert "agilecrm" in by_system
+    assert by_system["agilecrm"]["system_label"] == "AgileCRM"
+    agilecrm_accounts = {
+        acc["account_id"]: acc for acc in by_system["agilecrm"]["accounts"]
+    }
+    assert agilecrm_accounts["mbomedia"]["contacts_count"] == 1
+    assert agilecrm_accounts["mbomedia"]["enabled"] is True
+    assert agilecrm_accounts["artisjet"]["contacts_count"] == 0
+    # Disabled accounts still surface so segments over a paused
+    # integration keep evaluating consistently.
+    assert by_system["brevo"]["accounts"][0]["enabled"] is False
 
 
 def test_get_contact_detail(client: TestClient):

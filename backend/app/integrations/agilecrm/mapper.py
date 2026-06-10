@@ -24,8 +24,11 @@ The mapping is intentionally conservative:
 from __future__ import annotations
 
 import json
+import logging
 from datetime import UTC, datetime
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 ORIGIN_LABEL = "agilecrm"
 
@@ -259,10 +262,14 @@ def map_agilecrm_contact_to_internal(
     last_name_raw = props.get("last_name")
     last_name = last_name_raw.strip() if isinstance(last_name_raw, str) else None
     email_raw = props.get("email") or ""
-    email = email_raw.strip().lower() if isinstance(email_raw, str) else ""
+    raw_email = email_raw.strip().lower() if isinstance(email_raw, str) else ""
+    email = _sanitize_email(
+        raw_email, external_id=payload.get("id"), payload=payload
+    )
 
     phone_raw = props.get("phone")
-    phone = phone_raw.strip() if isinstance(phone_raw, str) else None
+    phone_candidate = phone_raw.strip() if isinstance(phone_raw, str) else None
+    phone = _sanitize_phone(phone_candidate, external_id=payload.get("id"))
 
     company_name_raw = props.get("company")
     company_name = company_name_raw.strip() if isinstance(company_name_raw, str) else None
@@ -275,9 +282,13 @@ def map_agilecrm_contact_to_internal(
         # AgileCRM sometimes omits first_name; the model requires it as
         # NOT NULL, so we fall back to the email local-part or a stable
         # placeholder so the row inserts cleanly.
-        "first_name": first_name or _local_part(email) or "Sin nombre",
+        "first_name": first_name or _local_part(email or "") or "Sin nombre",
         "last_name": last_name or None,
         "email": email,
+        # `is_email_valid` doubles as the audit flag for rows that
+        # carry a usable address vs. those we nulled because the
+        # validator rejected them.
+        "is_email_valid": bool(email),
         "phone": phone or None,
         "origin": ORIGIN_LABEL,
         "commercial_status": "new",
@@ -314,6 +325,55 @@ def map_agilecrm_contact_to_internal(
         "metadata": metadata or None,
     }
     return record, extras
+
+
+def _sanitize_email(
+    raw: str, *, external_id: object, payload: dict[str, Any]
+) -> str | None:
+    """Return a normalised email or `None` if the raw value can't be
+    parsed. Logs a warning with the AgileCRM external id + account
+    label so the operator can audit later. Never raises — a junk
+    email must not stop the rest of the contact mapping."""
+    if not raw:
+        return None
+    try:
+        from email_validator import (  # noqa: PLC0415
+            EmailNotValidError,
+            validate_email,
+        )
+    except ImportError:  # pragma: no cover - ships with pydantic[email]
+        return raw
+    try:
+        return validate_email(raw, check_deliverability=False).normalized.lower()
+    except EmailNotValidError as exc:
+        logger.warning(
+            "agilecrm.mapper email malformed; storing None: external_id=%r raw=%r reason=%s",
+            external_id,
+            raw,
+            exc,
+        )
+        return None
+
+
+def _sanitize_phone(raw: str | None, *, external_id: object) -> str | None:
+    """Drop obvious garbage. AgileCRM's phone column is free-form, so
+    operators have shoved emails, dates and even short paragraphs in
+    there over the years. Past 30 characters or with zero digits the
+    value is functionally unusable downstream — we surface None and
+    log the row id so the audit trail catches it."""
+    if raw is None:
+        return None
+    candidate = raw.strip()
+    if not candidate:
+        return None
+    if len(candidate) > 30 or not any(ch.isdigit() for ch in candidate):
+        logger.warning(
+            "agilecrm.mapper phone looks malformed; storing None: external_id=%r raw=%r",
+            external_id,
+            candidate,
+        )
+        return None
+    return candidate
 
 
 def _local_part(email: str) -> str:

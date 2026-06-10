@@ -51,6 +51,7 @@ from app.models.crm import (
     Contact,
     ContactPipelineStage,
     ContactTag,
+    ExternalReference,
     ExternalSystem,
     Note,
     Pipeline,
@@ -139,6 +140,8 @@ from app.schemas.crm import (
     CurrentUserRead,
     ErrorResponse,
     HealthRead,
+    IntegrationAccountSummary,
+    IntegrationSystemGroup,
     LoginRequest,
     MessageRead,
     NoteCreate,
@@ -1195,11 +1198,27 @@ def list_contacts(
     ),
     origin_system: ExternalSystem | None = Query(
         default=None,
-        description="Filtra por sistema de origen vía external_references.system",
+        description=(
+            "DEPRECATED — use `origin_account_keys` instead. "
+            "Filtra por sistema de origen vía external_references.system. "
+            "Mantenido por compatibilidad con URLs guardadas y vistas "
+            "anteriores; nuevo código debe enviar pares concretos."
+        ),
     ),
     origin_account_id: str | None = Query(
         default=None,
-        description="Filtra por cuenta de integración vía external_references.account_id",
+        description=(
+            "DEPRECATED — use `origin_account_keys` instead. "
+            "Filtra por cuenta de integración vía external_references.account_id."
+        ),
+    ),
+    origin_account_keys: list[str] | None = Query(
+        default=None,
+        description=(
+            "Lista de claves `system:account_id` (ej: "
+            "`agilecrm:agile-mbomedia,brevo:brevo-mbomedia`). Si se pasa, "
+            "tiene prioridad sobre `origin_system` y `origin_account_id`."
+        ),
     ),
     commercial_status: str | None = Query(default=None, max_length=80),
     marketing_consent: str | None = Query(default=None, max_length=40),
@@ -1260,6 +1279,14 @@ def list_contacts(
             except ValueError:
                 origin_system = None
     origin_account_id = _from_view("origin_account_id", origin_account_id)
+    if "origin_account_keys" not in request.query_params and not origin_account_keys:
+        # `filters_json` may carry the new shape (a list) or the
+        # legacy `origin_system + origin_account_id` pair. Normalise
+        # them into one place so the repository only has to read a
+        # single param.
+        stored_keys = view_filters.get("origin_account_keys")
+        if isinstance(stored_keys, list) and stored_keys:
+            origin_account_keys = [str(k) for k in stored_keys if k]
     commercial_status = _from_view("commercial_status", commercial_status)
     marketing_consent = _from_view("marketing_consent", marketing_consent)
     lead_score_min = _from_view("lead_score_min", lead_score_min)
@@ -1277,6 +1304,7 @@ def list_contacts(
         tag_match_mode=tag_match_mode,
         origin_system=origin_system,
         origin_account_id=origin_account_id,
+        origin_account_keys=origin_account_keys,
         commercial_status=commercial_status,
         marketing_consent=marketing_consent,
         lead_score_min=lead_score_min,
@@ -1297,6 +1325,7 @@ def list_contacts(
         tag_match_mode=tag_match_mode,
         origin_system=origin_system,
         origin_account_id=origin_account_id,
+        origin_account_keys=origin_account_keys,
         commercial_status=commercial_status,
         marketing_consent=marketing_consent,
         lead_score_min=lead_score_min,
@@ -1326,6 +1355,7 @@ def count_contacts(
     tag_match_mode: str = Query(default="any", pattern="^(any|all)$"),
     origin_system: ExternalSystem | None = Query(default=None),
     origin_account_id: str | None = Query(default=None),
+    origin_account_keys: list[str] | None = Query(default=None),
     commercial_status: str | None = Query(default=None, max_length=80),
     marketing_consent: str | None = Query(default=None, max_length=40),
     lead_score_min: int | None = Query(default=None),
@@ -1348,6 +1378,7 @@ def count_contacts(
         tag_match_mode=tag_match_mode,
         origin_system=origin_system,
         origin_account_id=origin_account_id,
+        origin_account_keys=origin_account_keys,
         commercial_status=commercial_status,
         marketing_consent=marketing_consent,
         lead_score_min=lead_score_min,
@@ -1357,6 +1388,94 @@ def count_contacts(
         include_inactive=include_inactive,
     )
     return CountRead(total=total)
+
+
+_INTEGRATIONS_LABELS = {
+    "agilecrm": "AgileCRM",
+    "brevo": "Brevo",
+    "freshdesk": "Freshdesk",
+    "factusol": "FactuSOL",
+}
+
+
+@router.get(
+    "/integrations/accounts",
+    response_model=list[IntegrationSystemGroup],
+    responses=ERROR_RESPONSES,
+    tags=["integration accounts"],
+)
+def list_integration_account_groups(
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_viewer),
+) -> list[IntegrationSystemGroup]:
+    """Group every configured account by system, including a count of
+    contacts that carry an `external_references` row for it.
+
+    Drives the new "Origen" picker on `/contacts` (and `/segments`).
+    Returned even for disabled accounts so an operator can build a
+    segment over a paused integration and re-enable it later without
+    the rules silently dropping matches.
+    """
+    _ = current_user
+
+    accounts = list(
+        session.scalars(
+            select(IntegrationAccount).order_by(
+                IntegrationAccount.system,
+                IntegrationAccount.display_name,
+                IntegrationAccount.account_id,
+            )
+        )
+    )
+
+    counts_rows = session.execute(
+        select(
+            ExternalReference.system,
+            ExternalReference.account_id,
+            func.count(func.distinct(ExternalReference.contact_id)),
+        ).group_by(ExternalReference.system, ExternalReference.account_id)
+    ).all()
+    counts: dict[tuple[str, str], int] = {}
+    for system_value, account_id, total in counts_rows:
+        key_system = (
+            system_value.value
+            if hasattr(system_value, "value")
+            else str(system_value)
+        )
+        counts[(key_system, account_id)] = int(total or 0)
+
+    groups: dict[str, IntegrationSystemGroup] = {}
+    for account in accounts:
+        system_slug = (
+            account.system.value
+            if hasattr(account.system, "value")
+            else str(account.system)
+        )
+        group = groups.setdefault(
+            system_slug,
+            IntegrationSystemGroup(
+                system=system_slug,
+                system_label=_INTEGRATIONS_LABELS.get(system_slug, system_slug),
+                accounts=[],
+            ),
+        )
+        group.accounts.append(
+            IntegrationAccountSummary(
+                account_id=account.account_id,
+                label=account.display_name or account.account_id,
+                contacts_count=counts.get((system_slug, account.account_id), 0),
+                enabled=account.enabled,
+            )
+        )
+    # Stable system order: known systems first, unknowns at the end.
+    order = ["agilecrm", "brevo", "freshdesk", "factusol"]
+    return sorted(
+        groups.values(),
+        key=lambda group: (
+            order.index(group.system) if group.system in order else len(order),
+            group.system,
+        ),
+    )
 
 
 @router.get(

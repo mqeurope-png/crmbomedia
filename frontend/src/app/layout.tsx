@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { AppShell } from "./components/AppShell";
 import "./styles.css";
 
 export const metadata: Metadata = {
@@ -21,7 +22,9 @@ export const dynamic = "force-dynamic";
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="es">
-      <body>{children}</body>
+      <body>
+        <AppShell>{children}</AppShell>
+      </body>
     </html>
   );
 }

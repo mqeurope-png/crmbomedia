@@ -187,6 +187,10 @@ export type ContactListFilters = {
   tag_match_mode?: "any" | "all";
   origin_system?: string;
   origin_account_id?: string;
+  /** Sprint UX: list of `"system:account_id"` keys. Takes
+   * precedence over `origin_system` + `origin_account_id` on the
+   * backend. */
+  origin_account_keys?: string[];
   commercial_status?: string;
   marketing_consent?: string;
   lead_score_min?: number;
@@ -421,6 +425,11 @@ export async function listContacts(
   if (filters.tag_match_mode) params.set("tag_match_mode", filters.tag_match_mode);
   if (filters.origin_system) params.set("origin_system", filters.origin_system);
   if (filters.origin_account_id) params.set("origin_account_id", filters.origin_account_id);
+  if (filters.origin_account_keys?.length) {
+    for (const key of filters.origin_account_keys) {
+      params.append("origin_account_keys", key);
+    }
+  }
   if (filters.commercial_status) params.set("commercial_status", filters.commercial_status);
   if (filters.marketing_consent) params.set("marketing_consent", filters.marketing_consent);
   if (filters.lead_score_min !== undefined)
@@ -1228,6 +1237,25 @@ export async function listSegmentAvailableOriginAccounts(): Promise<
   return apiFetch<SegmentOriginAccountOption[]>(
     "/api/segments/available-origin-accounts",
   );
+}
+
+export type IntegrationAccountSummary = {
+  account_id: string;
+  label: string;
+  contacts_count: number;
+  enabled: boolean;
+};
+
+export type IntegrationSystemGroup = {
+  system: string;
+  system_label: string;
+  accounts: IntegrationAccountSummary[];
+};
+
+export async function listIntegrationAccountGroups(): Promise<
+  IntegrationSystemGroup[]
+> {
+  return apiFetch<IntegrationSystemGroup[]>("/api/integrations/accounts");
 }
 
 export async function listSegments(): Promise<Segment[]> {

@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { CreatePipelineWizard } from "../components/CreatePipelineWizard";
+import { PageHeader } from "../components/PageHeader";
 import { ErrorState } from "../components/ErrorState";
 import {
   deletePipeline,
@@ -65,27 +66,20 @@ export default function PipelinesAdminPage() {
 
   return (
     <main className="shell shell-wide">
-      <Link href="/" className="back-link">
-        ← Volver al dashboard
-      </Link>
-      <section className="hero compact">
-        <p className="eyebrow">CRM</p>
-        <h1>Pipelines</h1>
-        <p className="lead">
-          Construye flujos de gestión de contactos con etapas reordenables.
-          Empieza desde cero, parte de una plantilla, o deja que la IA proponga
-          una estructura.
-        </p>
-        <div className="actions">
+      <PageHeader
+        title="Pipelines"
+        eyebrow="CRM"
+        description="Construye flujos de gestión de contactos con etapas reordenables. Empieza desde cero, parte de una plantilla, o deja que la IA proponga una estructura."
+        actions={
           <button
             type="button"
-            className="button"
+            className="button small"
             onClick={() => setWizardOpen(true)}
           >
             + Nuevo pipeline
           </button>
-        </div>
-      </section>
+        }
+      />
 
       <section className="panel">
         <div className="contact-toolbar">

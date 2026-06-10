@@ -1,8 +1,8 @@
 "use client";
 
-import Link from "next/link";
 import { useEffect, useState } from "react";
 import { ErrorState } from "../../components/ErrorState";
+import { PageHeader } from "../../components/PageHeader";
 import { getCompanies, type Company } from "../../lib/api";
 import { extractErrorMessage } from "../../lib/errors";
 import { CreateContactForm } from "./CreateContactForm";
@@ -21,8 +21,11 @@ export default function NewContactPage() {
 
   return (
     <main className="shell narrow">
-      <Link href="/" className="back-link">← Volver al dashboard</Link>
-      <h1>Crear contacto</h1>
+      <PageHeader
+        title="Crear contacto"
+        eyebrow="Contactos"
+        crumbs={[{ label: "Contactos", href: "/contacts" }, { label: "Nuevo" }]}
+      />
       {isLoading ? <p className="muted">Cargando empresas...</p> : null}
       {error ? <ErrorState title="No se pudo cargar el formulario" message={error} /> : null}
       {!isLoading && !error ? <CreateContactForm companies={companies} /> : null}

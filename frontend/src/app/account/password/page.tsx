@@ -1,6 +1,6 @@
 "use client";
 
-import Link from "next/link";
+import { PageHeader } from "../../components/PageHeader";
 import { useState } from "react";
 import {
   isPasswordCompliant,
@@ -43,8 +43,7 @@ export default function ChangePasswordPage() {
 
   return (
     <main className="shell narrow">
-      <Link href="/" className="back-link">← Volver al dashboard</Link>
-      <section className="hero compact"><p className="eyebrow">Cuenta</p><h1>Cambiar contraseña</h1></section>
+      <PageHeader title="Cambiar contraseña" eyebrow="Cuenta" />
       <form className="form-card" onSubmit={onSubmit}>
         {error ? <div className="error-state">{error}</div> : null}
         {message ? <div className="success-state">{message}</div> : null}

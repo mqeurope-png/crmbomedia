@@ -1,8 +1,8 @@
 "use client";
 
-import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { ErrorState } from "../../components/ErrorState";
+import { PageHeader } from "../../components/PageHeader";
 import {
   createGdprRequest,
   getCurrentUser,
@@ -139,16 +139,11 @@ export default function GdprPage() {
 
   return (
     <main className="shell">
-      <Link href="/" className="back-link">← Volver al dashboard</Link>
-      <section className="hero compact">
-        <p className="eyebrow">Administración</p>
-        <h1>RGPD · Derechos del titular</h1>
-        <p className="lead">
-          Registro y procesamiento de solicitudes RGPD: acceso, rectificación,
-          supresión, portabilidad y oposición. Cada acción se audita en
-          <code> gdpr.* </code> dentro del registro de auditoría.
-        </p>
-      </section>
+      <PageHeader
+        title="RGPD · Derechos del titular"
+        eyebrow="Administración"
+        description="Registro y procesamiento de solicitudes RGPD: acceso, rectificación, supresión, portabilidad y oposición. Cada acción se audita en gdpr.* dentro del registro de auditoría."
+      />
 
       {error ? <ErrorState title="Error RGPD" message={error} /> : null}
       {message ? <div className="success-state">{message}</div> : null}
