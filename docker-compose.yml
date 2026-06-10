@@ -59,12 +59,19 @@ services:
     command:
       - rq
       - worker
+      # --with-scheduler powers Brevo's self-rescheduling heartbeats
+      # (auto-sync targets + campaign cache refresh) via enqueue_in.
+      - --with-scheduler
       - --url
       - redis://redis:6379/0
       - agilecrm:sync_contacts
       - agilecrm:purge_quota
+      - brevo:sync_contacts
+      - brevo:push_target
+      - brevo:auto_sync_check
       - brevo:push_contact
       - brevo:webhook_process
+      - brevo:refresh_campaigns
       - freshdesk:sync_tickets
       - factusol:sync_invoices
     depends_on:

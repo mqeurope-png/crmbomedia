@@ -326,7 +326,7 @@ export function clearStoredToken() {
   window.localStorage.removeItem(TOKEN_STORAGE_KEY);
 }
 
-async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
+export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const token = getStoredToken();
   let response: Response;
   try {

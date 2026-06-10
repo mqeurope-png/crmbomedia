@@ -10,6 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.api.brevo import router as brevo_router
 from app.api.gdpr import router as gdpr_router
 from app.api.integration_settings import (
     deprecated_router as integration_settings_deprecated_router,
@@ -3783,6 +3784,7 @@ def segment_ai_explain(
     return SegmentAIExplainResponse(explanation=explanation)
 
 
+router.include_router(brevo_router)
 router.include_router(integration_accounts_router)
 router.include_router(integration_settings_deprecated_router)
 router.include_router(sync_router)

@@ -27,6 +27,320 @@ body {
   font-family: Arial, Helvetica, sans-serif;
 }
 
+/* Marketing module (Sprint B+D — Brevo)                            */
+
+.marketing-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.marketing-filters input,
+.marketing-filters select {
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font: inherit;
+  font-size: 13px;
+}
+
+.template-cards-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 10px;
+}
+
+.marketing-template-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 14px;
+  background: #ffffff;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+}
+
+.marketing-template-card:hover {
+  border-color: var(--brand);
+  box-shadow: 0 2px 8px rgba(36, 75, 216, 0.08);
+}
+
+.marketing-template-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+}
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.status-pill.is-on { background: #e6f4ec; color: var(--success); }
+.status-pill.is-off { background: #f1f4fa; color: var(--muted); }
+
+.marketing-tag-chip {
+  background: #e7ecfb;
+  color: var(--brand-dark);
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+}
+
+.template-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.template-editor-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+}
+
+.template-editor-fields label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+}
+
+.template-editor-fields input,
+.template-editor-fields select {
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font: inherit;
+}
+
+.template-editor-html {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  min-height: 420px;
+}
+
+@media (max-width: 960px) {
+  .template-editor-html { grid-template-columns: 1fr; }
+}
+
+.template-editor-html-input,
+.template-editor-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+}
+
+.template-editor-html-input textarea {
+  flex: 1;
+  min-height: 400px;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  resize: vertical;
+}
+
+.html-preview-frame {
+  flex: 1;
+  min-height: 400px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+/* Brevo integrations panel + email activity                         */
+
+.brevo-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.brevo-panel-section {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px 14px;
+  background: #fbfcfe;
+}
+
+.brevo-panel-section > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.brevo-panel-section h3 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.brevo-webhook-url {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 6px 0;
+}
+
+.brevo-webhook-url code {
+  background: #eef2fa;
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.sidebar-sublist {
+  list-style: none;
+  margin: 2px 0 4px;
+  padding: 0 0 0 36px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sidebar-sublink {
+  display: block;
+  padding: 5px 10px;
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--muted);
+  text-decoration: none;
+}
+
+.sidebar-sublink:hover { background: #f1f4fa; color: var(--ink); }
+
+.sidebar-sublink.is-active {
+  color: var(--brand-dark);
+  font-weight: 600;
+  background: #e7ecfb;
+}
+
+.email-activity-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 360px;
+  overflow-y: auto;
+}
+
+.email-activity-list li {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.email-activity-icon { font-size: 16px; }
+
+.email-activity-body {
+  display: flex;
+  flex-direction: column;
+  font-size: 13px;
+}
+
+.email-activity-date { font-size: 11px; }
+
+.email-marketing-widget { margin-top: 16px; }
+
+/* Campaign wizard + detail                                          */
+
+.wizard-stepper {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 12px 0;
+}
+
+.wizard-step {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #ffffff;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.wizard-step.is-active {
+  border-color: var(--brand);
+  color: var(--brand-dark);
+  font-weight: 600;
+}
+
+.wizard-step.is-done { color: var(--success); }
+
+.wizard-step-number {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #e7ecfb;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.radio-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.radio-row-vertical { flex-direction: column; gap: 8px; }
+
+.status-pill.is-pending { background: #fdf1e2; color: var(--warning); }
+
+.campaign-review-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 14px;
+}
+
+.campaign-chart-wrapper { overflow-x: auto; }
+
+.campaign-chart { width: 100%; max-width: 760px; }
+
+.campaign-chart-open { fill: #244bd8; }
+.campaign-chart-click { fill: #10b981; }
+
+.campaign-chart-label {
+  font-size: 9px;
+  fill: var(--muted);
+}
+
+.campaign-chart-legend { font-size: 11px; fill: #244bd8; }
+.campaign-chart-legend-click { font-size: 11px; fill: #10b981; }
+
 /* Integrations refactor (Sprint UX)                                */
 
 .integration-tabs {

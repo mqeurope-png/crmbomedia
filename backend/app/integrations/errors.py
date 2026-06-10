@@ -74,6 +74,12 @@ class IntegrationClientError(IntegrationError):
     """Any other 4xx — bad request, not found, conflict. Not retried."""
 
 
+class IntegrationDuplicateError(IntegrationClientError):
+    """The remote rejected a create because the resource already exists
+    (e.g. Brevo's `duplicate_parameter` on POST /contacts). Callers in
+    push flows catch this and fall back to an update."""
+
+
 class IntegrationServerError(IntegrationError):
     """5xx that survived the retry budget."""
 

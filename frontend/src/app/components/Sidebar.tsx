@@ -6,6 +6,7 @@ import {
   ChevronsLeft,
   ChevronsRight,
   Kanban,
+  Mail,
   Plug,
   Settings,
   Tag,
@@ -26,6 +27,9 @@ type Item = {
    * roles listed in `allowedRoles`. */
   public?: boolean;
   allowedRoles?: ReadonlyArray<User["role"]>;
+  /** Sub-items rendered indented when the sidebar is expanded and the
+   * parent (or a child) route is active. */
+  children?: ReadonlyArray<{ href: string; label: string }>;
 };
 
 const NAV_ITEMS: ReadonlyArray<Item> = [
@@ -43,6 +47,16 @@ const NAV_ITEMS: ReadonlyArray<Item> = [
     label: "Segmentos",
     icon: Target,
     allowedRoles: ["admin", "manager"],
+  },
+  {
+    href: "/marketing/campaigns",
+    label: "Marketing",
+    icon: Mail,
+    allowedRoles: ["admin", "manager", "user"],
+    children: [
+      { href: "/marketing/campaigns", label: "Campañas" },
+      { href: "/marketing/templates", label: "Plantillas" },
+    ],
   },
   {
     href: "/admin/tags",
@@ -105,19 +119,38 @@ export function Sidebar({
         <ul>
           {NAV_ITEMS.filter(isVisible).map((item) => {
             const Icon = item.icon;
-            const active = isActive(item.href);
+            const sectionActive =
+              isActive(item.href) ||
+              (item.children?.some((child) => isActive(child.href)) ?? false);
             return (
               <li key={item.href}>
                 <Link
                   href={item.href}
                   onClick={onCloseDrawer}
-                  className={`sidebar-link${active ? " is-active" : ""}`}
-                  aria-current={active ? "page" : undefined}
+                  className={`sidebar-link${sectionActive ? " is-active" : ""}`}
+                  aria-current={sectionActive ? "page" : undefined}
                   title={collapsed ? item.label : undefined}
                 >
                   <Icon size={18} aria-hidden />
                   <span className="sidebar-link-label">{item.label}</span>
                 </Link>
+                {item.children && !collapsed && sectionActive ? (
+                  <ul className="sidebar-sublist">
+                    {item.children.map((child) => (
+                      <li key={child.href}>
+                        <Link
+                          href={child.href}
+                          onClick={onCloseDrawer}
+                          className={`sidebar-sublink${
+                            isActive(child.href) ? " is-active" : ""
+                          }`}
+                        >
+                          {child.label}
+                        </Link>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
               </li>
             );
           })}

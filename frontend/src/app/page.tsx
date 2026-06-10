@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { CompanyEditor } from "./components/CompanyEditor";
+import { EmailMarketingWidget } from "./components/EmailMarketingWidget";
 import { ErrorState } from "./components/ErrorState";
 import { PageHeader } from "./components/PageHeader";
 import {
@@ -123,6 +124,8 @@ export default function Home() {
         </article>
         <article className="stat-card"><span>4</span><p>Roles disponibles</p></article>
       </section>
+
+      <EmailMarketingWidget />
 
       <section className="grid two">
         <article className="card">

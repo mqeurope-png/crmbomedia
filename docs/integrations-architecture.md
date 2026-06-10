@@ -623,9 +623,18 @@ como llega (`string`, `number`, etc.). Si un tenant tiene custom
 fields y el contacto no los muestra, el problema está en la fuente
 (propiedad sin `type`) y no en este mapper.
 
+## Matriz de conectores
+
+| Sistema | Read (→ CRM) | Write (CRM →) | Webhooks | Extras |
+|---|---|---|---|---|
+| AgileCRM | ✅ contactos + notas/tareas/eventos on-demand | ❌ | ❌ | quota purge |
+| **Brevo** | ✅ contactos + listas (delta `modifiedSince`) | ✅ sync targets (segmento → lista, delta de salida) | ✅ eventos email → activity_events + acciones reactivas | módulo /marketing: plantillas + campañas + scheduling (ver `integrations-brevo.md`) |
+| Freshdesk | ⏳ pendiente | ⏳ | ⏳ | — |
+| FactuSOL | ⏳ pendiente | ⏳ | ⏳ | — |
+
 ## Patrón para los siguientes conectores
 
-Para Brevo / Freshdesk / FactuSOL repetir el layout:
+Para Freshdesk / FactuSOL repetir el layout (Brevo ya lo sigue):
 
 1. `app/integrations/<system>/client.py` — subclase de
    `IntegrationHTTPClient` con los endpoints del proveedor.

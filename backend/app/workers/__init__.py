@@ -21,6 +21,7 @@ RQ worker (both go through this module on startup).
 # leaves the registry empty for that connector and the API surfaces a
 # clear 409 when the operator tries to trigger an unregistered op.
 from app.integrations import agilecrm as _agilecrm  # noqa: F401
+from app.integrations import brevo as _brevo  # noqa: F401
 from app.workers.jobs import OPERATIONS, enqueue_sync_job, run_sync_job
 from app.workers.queues import (
     DEFAULT_JOB_TIMEOUT,
