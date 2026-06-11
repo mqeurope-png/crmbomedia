@@ -96,6 +96,7 @@ def connect_user(
     result = exchange_code_for_tokens(code=code, state=state)
     integration = get_integration(session, user_id)
     now = datetime.now(UTC)
+    previous_scopes: set[str] = set()
     if integration is None:
         integration = UserGoogleIntegration(
             user_id=user_id,
@@ -109,10 +110,8 @@ def connect_user(
         session.add(integration)
     else:
         account_changed = integration.google_email != result.google_email
-        existing_scopes = set(
-            (integration.scopes or "").split()
-        )
-        merged_scopes = sorted(existing_scopes | set(result.scopes))
+        previous_scopes = set((integration.scopes or "").split())
+        merged_scopes = sorted(previous_scopes | set(result.scopes))
         integration.google_email = result.google_email
         integration.access_token_encrypted = encrypt(result.access_token)
         integration.refresh_token_encrypted = encrypt(result.refresh_token)
@@ -124,6 +123,32 @@ def connect_user(
             integration.selected_calendar_id = None
             integration.selected_calendar_summary = None
     session.flush()
+
+    # Auto-register the Gmail Push Notifications watch the first
+    # time the user grants gmail.modify. Before this fix, replies
+    # never reached the CRM because the watch was only created via
+    # a manual `register_watch` call.
+    gmail_modify = "https://www.googleapis.com/auth/gmail.modify"
+    new_scopes = set(result.scopes)
+    if gmail_modify in new_scopes and gmail_modify not in previous_scopes:
+        try:
+            from app.integrations.gmail.service import (  # noqa: PLC0415
+                register_watch,
+            )
+
+            register_watch(session, user_id=user_id)
+            logger.info(
+                "gmail.watch.auto_registered user_id=%s", user_id
+            )
+        except Exception:  # noqa: BLE001
+            # Watch failure must NOT abort the OAuth flow — the
+            # user can retry from /account if needed. Log + carry on.
+            logger.warning(
+                "gmail.watch.auto_register_failed user_id=%s",
+                user_id,
+                exc_info=True,
+            )
+
     return integration
 
 

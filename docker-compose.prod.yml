@@ -114,6 +114,8 @@ services:
       - brevo:historical_backfill
       - freshdesk:sync_tickets
       - factusol:sync_invoices
+      - gmail:process_history
+      - gmail:renew_watches
     depends_on:
       api:
         condition: service_healthy

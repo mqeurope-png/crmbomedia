@@ -889,3 +889,208 @@ def test_account_change_clears_calendar(
         integration = session.scalar(select(UserGoogleIntegration))
         assert integration is not None
         assert integration.selected_calendar_id is None
+
+
+# ---------------------------------------------------------------------------
+# Sprint Email v1 closing — auto-register Gmail watch on OAuth
+# ---------------------------------------------------------------------------
+
+
+def test_callback_auto_registers_gmail_watch_when_modify_granted(
+    client: TestClient,
+    session_factory: sessionmaker,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """First-time grant of `gmail.modify` should call
+    `register_watch` automatically. Before this fix the watch had
+    to be created via a manual shell command."""
+    calls: list[str] = []
+    monkeypatch.setattr(
+        "app.integrations.gmail.service.register_watch",
+        lambda session, *, user_id: calls.append(user_id),
+    )
+    monkeypatch.setattr(
+        "app.api.google_integrations.get_authorize_url",
+        lambda state: f"https://accounts.google.com/o/oauth2/auth?state={state}",
+    )
+    auth_resp = client.get(
+        "/api/integrations/google/authorize",
+        headers=auth_headers(client, "user"),
+    )
+    state = auth_resp.json()["url"].rsplit("=", 1)[1]
+
+    def fake_exchange(*, code: str, state: str) -> OAuthExchangeResult:
+        _ = (code, state)
+        return OAuthExchangeResult(
+            google_email="bart@bomedia.net",
+            access_token="t",
+            refresh_token="r",
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            scopes=[
+                "https://www.googleapis.com/auth/calendar.events",
+                "https://www.googleapis.com/auth/gmail.send",
+                "https://www.googleapis.com/auth/gmail.modify",
+            ],
+        )
+
+    monkeypatch.setattr(google_service, "exchange_code_for_tokens", fake_exchange)
+
+    response = client.get(
+        "/api/integrations/google/callback",
+        params={"code": "x", "state": state},
+        follow_redirects=False,
+    )
+    assert response.status_code == 302
+    with session_factory() as session:
+        user_id = _user_id(session, UserRole.USER)
+    assert calls == [user_id]
+
+
+def test_callback_does_not_re_register_watch_on_subsequent_auth(
+    client: TestClient,
+    session_factory: sessionmaker,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If the user already had gmail.modify granted, re-authorising
+    should not trigger another watch registration — the existing
+    watch keeps its history_id."""
+    from app.core.crypto import encrypt  # noqa: PLC0415
+
+    with session_factory() as session:
+        uid = _user_id(session, UserRole.USER)
+        session.add(
+            UserGoogleIntegration(
+                user_id=uid,
+                google_email="bart@bomedia.net",
+                access_token_encrypted=encrypt("a"),
+                refresh_token_encrypted=encrypt("r"),
+                token_expires_at=datetime.now(UTC) + timedelta(hours=1),
+                scopes=(
+                    "https://www.googleapis.com/auth/calendar.events "
+                    "https://www.googleapis.com/auth/gmail.modify "
+                    "https://www.googleapis.com/auth/gmail.send"
+                ),
+                connected_at=datetime.now(UTC),
+                selected_calendar_id="cal-A",
+                selected_calendar_summary="A",
+            )
+        )
+        session.commit()
+
+    calls: list[str] = []
+    monkeypatch.setattr(
+        "app.integrations.gmail.service.register_watch",
+        lambda session, *, user_id: calls.append(user_id),
+    )
+    monkeypatch.setattr(
+        "app.api.google_integrations.get_authorize_url",
+        lambda state: f"https://accounts.google.com/o/oauth2/auth?state={state}",
+    )
+    auth_resp = client.get(
+        "/api/integrations/google/authorize",
+        headers=auth_headers(client, "user"),
+    )
+    state = auth_resp.json()["url"].rsplit("=", 1)[1]
+
+    def fake_exchange(*, code: str, state: str) -> OAuthExchangeResult:
+        _ = (code, state)
+        return OAuthExchangeResult(
+            google_email="bart@bomedia.net",
+            access_token="new",
+            refresh_token="new",
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            scopes=[
+                "https://www.googleapis.com/auth/calendar.events",
+                "https://www.googleapis.com/auth/gmail.send",
+                "https://www.googleapis.com/auth/gmail.modify",
+            ],
+        )
+
+    monkeypatch.setattr(google_service, "exchange_code_for_tokens", fake_exchange)
+
+    response = client.get(
+        "/api/integrations/google/callback",
+        params={"code": "x", "state": state},
+        follow_redirects=False,
+    )
+    assert response.status_code == 302
+    assert calls == []
+
+
+def test_callback_swallows_watch_register_failure(
+    client: TestClient,
+    session_factory: sessionmaker,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If `register_watch` raises during OAuth completion, the flow
+    still completes successfully. The user can retry from /account
+    later via the manual refresh-watch endpoint."""
+    def boom(session, *, user_id):
+        raise RuntimeError("quota exceeded")
+
+    monkeypatch.setattr(
+        "app.integrations.gmail.service.register_watch", boom
+    )
+    monkeypatch.setattr(
+        "app.api.google_integrations.get_authorize_url",
+        lambda state: f"https://accounts.google.com/o/oauth2/auth?state={state}",
+    )
+    auth_resp = client.get(
+        "/api/integrations/google/authorize",
+        headers=auth_headers(client, "user"),
+    )
+    state = auth_resp.json()["url"].rsplit("=", 1)[1]
+
+    def fake_exchange(*, code: str, state: str) -> OAuthExchangeResult:
+        _ = (code, state)
+        return OAuthExchangeResult(
+            google_email="bart@bomedia.net",
+            access_token="t",
+            refresh_token="r",
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            scopes=[
+                "https://www.googleapis.com/auth/calendar.events",
+                "https://www.googleapis.com/auth/gmail.modify",
+            ],
+        )
+
+    monkeypatch.setattr(google_service, "exchange_code_for_tokens", fake_exchange)
+
+    response = client.get(
+        "/api/integrations/google/callback",
+        params={"code": "x", "state": state},
+        follow_redirects=False,
+    )
+    # The redirect still goes through (200/302), the user is connected.
+    assert response.status_code == 302
+
+
+def test_two_users_can_connect_same_google_email_independently(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    """Bug 4 follow-up: two CRM users connecting the same Google
+    account get independent integration rows. We deliberately do
+    NOT add a UNIQUE on google_email — each user owns their own
+    tokens and watch."""
+    from app.core.crypto import encrypt  # noqa: PLC0415
+
+    now = datetime.now(UTC)
+    with session_factory() as session:
+        admin_id = _user_id(session, UserRole.ADMIN)
+        user_id = _user_id(session, UserRole.USER)
+        for uid in (admin_id, user_id):
+            session.add(
+                UserGoogleIntegration(
+                    user_id=uid,
+                    google_email="shared@bomedia.net",
+                    access_token_encrypted=encrypt("a"),
+                    refresh_token_encrypted=encrypt("r"),
+                    token_expires_at=now + timedelta(hours=1),
+                    scopes="https://www.googleapis.com/auth/calendar.events",
+                    connected_at=now,
+                )
+            )
+        session.commit()
+        rows = list(session.scalars(select(UserGoogleIntegration)))
+    assert len(rows) == 2
+    assert {r.user_id for r in rows} == {admin_id, user_id}

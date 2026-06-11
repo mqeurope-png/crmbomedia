@@ -85,11 +85,25 @@ credenciales OAuth". No se cae, no devuelve 500.
 
 ### Multi-user
 
-- Cada user tiene su propia conexión + calendario. Una tarea creada
-  por el user A pero asignada al user B se sincroniza en el
-  calendario **del user B**, no del A.
-- Si B no tiene Google conectado, la tarea se crea normalmente y la
-  sync se omite en silencio (warning en los logs).
+- Cada user del CRM tiene su PROPIA conexión Google independiente.
+  Aunque dos users conecten la misma cuenta Google (un sysadmin
+  que opera con varias identidades en el CRM, p. ej.), cada uno
+  tiene su propia fila en `user_google_integrations` con sus
+  tokens, sus scopes, su selección de calendario y su watch
+  Gmail. No se comparte nada entre users.
+- Una tarea creada por el user A pero asignada al user B se
+  sincroniza en el calendario **del user B**, no del A.
+- Si B no tiene Google conectado, la tarea se crea normalmente y
+  la sync se omite en silencio (warning en los logs).
+- En `/account` el `google_email` aparece claramente para que el
+  user vea con qué cuenta Google está conectado — útil cuando
+  alguien gestiona varias.
+- Si el operador detecta dos filas en `user_google_integrations`
+  para el mismo `google_email` y cree que es por error
+  (conexiones duplicadas accidentales), la consolidación es
+  manual: revisar qué `user_id` corresponde a qué identidad del
+  CRM y borrar la sobrante. No hay UNIQUE en `google_email` a
+  propósito.
 
 ## Cambio de calendario
 
