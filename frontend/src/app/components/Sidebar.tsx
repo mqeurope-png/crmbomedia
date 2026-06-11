@@ -9,6 +9,7 @@ import {
   Mail,
   Plug,
   Settings,
+  CheckSquare,
   Tag,
   Target,
   Users,
@@ -17,7 +18,36 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useEffect, useState } from "react";
 import type { User } from "../lib/api";
+import { getMyBuckets } from "../lib/tasksApi";
+
+/** Poll `my-buckets` so the sidebar badge stays roughly fresh as
+ * tasks come due. Cheap call, polls every 90 s. */
+function useTasksBadge(user: User | null): number {
+  const [count, setCount] = useState(0);
+  useEffect(() => {
+    if (!user) {
+      setCount(0);
+      return;
+    }
+    let cancelled = false;
+    const tick = () => {
+      getMyBuckets()
+        .then((b) => {
+          if (!cancelled) setCount(b.overdue.length + b.today.length);
+        })
+        .catch(() => undefined);
+    };
+    tick();
+    const handle = window.setInterval(tick, 90_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(handle);
+    };
+  }, [user]);
+  return count;
+}
 
 type Item = {
   href: string;
@@ -35,6 +65,7 @@ type Item = {
 const NAV_ITEMS: ReadonlyArray<Item> = [
   { href: "/", label: "Dashboard", icon: BarChart3, public: true },
   { href: "/contacts", label: "Contactos", icon: Users, public: true },
+  { href: "/tasks", label: "Tareas", icon: CheckSquare, public: true },
   { href: "/companies", label: "Empresas", icon: Building2, public: true },
   {
     href: "/pipelines",
@@ -99,6 +130,7 @@ export function Sidebar({
   onCloseDrawer,
 }: Props) {
   const pathname = usePathname() ?? "";
+  const tasksBadge = useTasksBadge(user);
 
   function isVisible(item: Item): boolean {
     if (item.public) return true;
@@ -134,6 +166,14 @@ export function Sidebar({
                 >
                   <Icon size={18} aria-hidden />
                   <span className="sidebar-link-label">{item.label}</span>
+                  {item.href === "/tasks" && tasksBadge > 0 ? (
+                    <span
+                      className="sidebar-badge"
+                      title={`${tasksBadge} tareas pendientes`}
+                    >
+                      {tasksBadge > 99 ? "99+" : tasksBadge}
+                    </span>
+                  ) : null}
                 </Link>
                 {item.children && !collapsed && sectionActive ? (
                   <ul className="sidebar-sublist">
