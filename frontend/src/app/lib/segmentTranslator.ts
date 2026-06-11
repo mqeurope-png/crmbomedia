@@ -140,3 +140,143 @@ function qbRuleToBackend(rule: RuleType): BackendNode {
     value: rule.value,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Prune + coerce — keep half-typed rules away from the backend
+// ---------------------------------------------------------------------------
+
+type FieldSpecLite = {
+  key: string;
+  type: string; // string | int | bool | date | enum | tag-multi | uuid-multi
+};
+
+const NO_VALUE_COMPARATORS = new Set(["is_null", "is_not_null"]);
+const LIST_COMPARATORS = new Set([
+  "in",
+  "not_in",
+  "contains_any",
+  "contains_all",
+  "contains_none",
+]);
+
+/** Drop unfinished rules and coerce values to the engine's expected
+ * types before a tree leaves the browser.
+ *
+ * Production bugs this guards against:
+ * - tags / in_brevo_list rules with an empty list 400'd with
+ *   "requires a non-empty list" the moment they were added.
+ * - lead_score values travelled as strings → "Expected int".
+ * - date values travelled empty or non-ISO → "Expected ISO date".
+ *
+ * The UI keeps the half-typed rule on screen (the QB tree is separate
+ * state); only the emitted tree is pruned, so the operator perceives
+ * "the filter doesn't apply until I give it a value".
+ *
+ * Returns `{}` when nothing survives — the engine treats that as
+ * "match everything".
+ */
+export function pruneRulesTree(
+  tree: BackendNode,
+  specs: FieldSpecLite[],
+): BackendNode {
+  const typeByField: Record<string, string> = {};
+  for (const spec of specs) typeByField[spec.key] = spec.type;
+  const pruned = pruneNode(tree, typeByField);
+  return pruned ?? {};
+}
+
+function pruneNode(
+  node: BackendNode,
+  typeByField: Record<string, string>,
+): BackendNode | null {
+  if (!node || Object.keys(node).length === 0) return null;
+  const operator = (node.operator as string | undefined)?.toUpperCase();
+  if (operator) {
+    const children = ((node.children as BackendNode[]) ?? [])
+      .map((child) => pruneNode(child, typeByField))
+      .filter((child): child is BackendNode => child !== null);
+    if (children.length === 0) return null;
+    if (operator === "NOT") {
+      // NOT of a pruned-away child means "no filter", not "everything
+      // except nothing".
+      return { operator: "NOT", children: [children[0]] };
+    }
+    if (children.length === 1) return children[0];
+    return { operator, children };
+  }
+  if (node.type === "rule") {
+    return pruneRule(node, typeByField);
+  }
+  return null;
+}
+
+function pruneRule(
+  rule: BackendNode,
+  typeByField: Record<string, string>,
+): BackendNode | null {
+  const comparator = String(rule.comparator ?? "");
+  if (NO_VALUE_COMPARATORS.has(comparator)) return rule;
+
+  const fieldType = typeByField[String(rule.field ?? "")] ?? "string";
+  const value = rule.value;
+
+  if (LIST_COMPARATORS.has(comparator)) {
+    if (!Array.isArray(value) || value.length === 0) return null;
+    const items = value
+      .map((item) => coerceScalar(item, fieldType))
+      .filter((item) => item !== null && item !== "");
+    if (items.length === 0) return null;
+    return { ...rule, value: items };
+  }
+
+  if (comparator === "between") {
+    if (!Array.isArray(value) || value.length !== 2) return null;
+    const low = coerceScalar(value[0], fieldType);
+    const high = coerceScalar(value[1], fieldType);
+    if (low === null || low === "" || high === null || high === "") return null;
+    return { ...rule, value: [low, high] };
+  }
+
+  if (comparator === "in_last_n_days" || comparator === "not_in_last_n_days") {
+    const days = coerceScalar(value, "int");
+    if (days === null) return null;
+    return { ...rule, value: days };
+  }
+
+  const coerced = coerceScalar(value, fieldType);
+  if (coerced === null || coerced === "") return null;
+  return { ...rule, value: coerced };
+}
+
+/** Per-type scalar coercion. Returns null for values that can't be
+ * coerced (the rule gets dropped rather than 400ing server-side). */
+function coerceScalar(value: unknown, fieldType: string): unknown {
+  if (value === null || value === undefined) return null;
+  if (fieldType === "int") {
+    if (typeof value === "number") return Number.isNaN(value) ? null : value;
+    const parsed = Number.parseInt(String(value).trim(), 10);
+    return Number.isNaN(parsed) ? null : parsed;
+  }
+  if (fieldType === "bool") {
+    if (typeof value === "boolean") return value;
+    if (value === "true") return true;
+    if (value === "false") return false;
+    return null;
+  }
+  if (fieldType === "date") {
+    const raw = String(value).trim();
+    if (!raw) return null;
+    // <input type="date"> emits YYYY-MM-DD which the backend's
+    // fromisoformat accepts as-is; anything else gets normalised
+    // through Date → ISO, dropped when unparseable.
+    if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+    const parsed = new Date(raw);
+    if (Number.isNaN(parsed.getTime())) return null;
+    return parsed.toISOString();
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed === "" ? null : trimmed;
+  }
+  return value;
+}

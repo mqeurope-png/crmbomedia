@@ -37,6 +37,7 @@ import {
   type ContactColumnKey,
 } from "../lib/contactColumns";
 import { legacyFiltersToRulesTree } from "../lib/contactRulesMigration";
+import { pruneRulesTree } from "../lib/segmentTranslator";
 import {
   readUrlState,
   serializeUrlState,
@@ -145,7 +146,15 @@ function rulesEqual(
   a: Record<string, unknown>,
   b: Record<string, unknown>,
 ): boolean {
-  return JSON.stringify(a ?? {}) === JSON.stringify(b ?? {});
+  // Normalise both sides through the same prune the builder applies on
+  // output. Views saved before the prune landed store the raw tree
+  // (e.g. a single-rule AND wrapper); without this the dirty badge
+  // would light up the moment the builder re-emits the semantically
+  // identical pruned shape.
+  return (
+    JSON.stringify(pruneRulesTree(a ?? {}, [])) ===
+    JSON.stringify(pruneRulesTree(b ?? {}, []))
+  );
 }
 
 export default function ContactsListPage() {
