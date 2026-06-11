@@ -241,7 +241,10 @@ def test_address_parsed_from_json_string():
     )
     record, _ = map_agilecrm_contact_to_internal(payload)
     assert record["address_country"] == "ES"
-    assert record["address_country_name"] == "España"
+    # Mini-PR C Fase 3: the mapper normalises via pycountry which
+    # returns the canonical English name regardless of how the source
+    # typed it.
+    assert record["address_country_name"] == "Spain"
     assert record["address_state"] == "Madrid"
     assert record["address_city"] == "Madrid"
 

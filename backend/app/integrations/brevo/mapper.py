@@ -24,6 +24,7 @@ import logging
 from datetime import datetime
 from typing import Any
 
+from app.integrations.country_codes import normalize_country
 from app.integrations.mapper_helpers import (
     EXTERNAL_REFERENCE_FIELD_LIMITS,
     apply_contact_field_limits,
@@ -31,6 +32,15 @@ from app.integrations.mapper_helpers import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _country_pair(raw: Any) -> dict[str, str | None]:
+    """Build the `address_country` + `address_country_name` pair from
+    whatever shape Brevo handed us."""
+    if raw is None:
+        return {"address_country": None, "address_country_name": None}
+    iso, name = normalize_country(str(raw))
+    return {"address_country": iso, "address_country_name": name}
 
 ORIGIN_LABEL = "brevo"
 
@@ -130,7 +140,10 @@ def map_brevo_contact_to_internal(
         "origin": ORIGIN_LABEL,
         "commercial_status": str(native.get("commercial_status") or "new"),
         "marketing_consent": "unsubscribed" if is_blacklisted else "granted",
-        "address_country": str(native.get("address_country") or "").strip() or None,
+        # Brevo can send either ISO or a country name depending on how
+        # the operator filled the field. Normalise to (iso2,
+        # display_name) so the CRM stays canonical.
+        **_country_pair(native.get("address_country")),
         "address_city": str(native.get("address_city") or "").strip() or None,
         "lead_score": lead_score,
         "custom_fields": json.dumps(custom, default=str) if custom else None,

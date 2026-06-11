@@ -16,6 +16,7 @@ tenacity==9.0.0
 rq==1.16.2
 redis==5.2.1
 anthropic==0.40.0
+pycountry==24.6.1
 google-auth==2.37.0
 google-auth-oauthlib==1.2.1
 google-api-python-client==2.158.0
