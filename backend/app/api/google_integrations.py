@@ -97,6 +97,43 @@ def scopes_status(
     }
 
 
+@router.post("/refresh-watch")
+def refresh_gmail_watch(
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_viewer),
+) -> dict[str, str]:
+    """Manual fallback for the auto-register on OAuth. Useful when
+    the OAuth callback's watch registration failed (transient
+    quota, API outage, etc.) and the user wants to retry from
+    `/account` without going through the full reauth flow again."""
+    from app.integrations.gmail.service import (  # noqa: PLC0415
+        GmailNotConnectedError,
+        GmailScopeMissingError,
+        register_watch,
+    )
+
+    try:
+        register_watch(session, user_id=current_user.id)
+    except GmailNotConnectedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
+    except GmailScopeMissingError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)
+        ) from exc
+    except Exception as exc:
+        logger.warning(
+            "gmail.watch.refresh_failed user_id=%s", current_user.id, exc_info=True
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Gmail rejected the watch request: {exc}",
+        ) from exc
+    session.commit()
+    return {"status": "registered"}
+
+
 @router.get("/status", response_model=GoogleCalendarStatus)
 def get_status(
     session: Session = Depends(get_session),
