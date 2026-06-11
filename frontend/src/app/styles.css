@@ -3652,3 +3652,165 @@ a.origin-chip:hover { filter: brightness(0.97); }
   margin: 6px 0 0;
   display: block;
 }
+
+/* ─── Dashboard widgets grid ─────────────────────────────────── */
+.dashboard-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  margin-top: 16px;
+}
+.widget { padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; }
+.widget header.section-title { display: flex; align-items: center; justify-content: space-between; margin: 0; }
+.widget header.section-title h2 {
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #2d3a55;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+}
+.widget-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; }
+.widget-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+  border-bottom: 1px solid #f1f3f9;
+}
+.widget-row:last-child { border-bottom: none; }
+.widget-row-main { flex: 1; min-width: 0; }
+.widget-row-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.widget-row-meta { margin: 1px 0 0; font-size: 12px; }
+.widget-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 0;
+}
+.widget-toolbar {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+}
+.widget-toolbar select {
+  font-size: 12px;
+  padding: 2px 4px;
+}
+.pill-toggle {
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: white;
+  cursor: pointer;
+}
+.pill-toggle.is-active {
+  background: var(--brand);
+  color: white;
+  border-color: var(--brand);
+}
+
+/* Due-date highlight in the tasks widget */
+.due-overdue { color: var(--danger); font-weight: 600; }
+.due-today { color: #b58105; font-weight: 600; }
+.due-soon { color: #2d6a4f; font-weight: 600; }
+.task-priority-urgent { color: var(--danger); }
+.task-priority-high { color: #b58105; }
+
+/* Pipeline summary bars */
+.pipeline-summary-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.pipeline-summary-item h3 {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  margin: 0 0 4px;
+}
+.pipeline-stage-bars {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.pipeline-stage-row {
+  display: grid;
+  grid-template-columns: 110px 1fr 30px;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+.pipeline-stage-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pipeline-stage-bar {
+  height: 8px;
+  border-radius: 3px;
+  min-width: 4px;
+}
+.pipeline-stage-count {
+  text-align: right;
+  color: #4b5563;
+  font-weight: 600;
+}
+
+/* Stats widget KPI strip + chart */
+.widget-kpis {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+.widget-kpis li {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+.widget-kpis strong {
+  font-size: 18px;
+  color: #1d2940;
+}
+.widget-chart { margin-top: 8px; }
+
+/* Email event tag pills */
+.email-event-tag {
+  display: inline-block;
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: #eef2fb;
+  color: #3357ab;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  margin-right: 4px;
+}
+.email-event-tag.email-event-email_clicked,
+.email-event-tag.email-event-email_opened { background: #def7e7; color: #137a4d; }
+.email-event-tag.email-event-email_bounced { background: #fee4e2; color: var(--danger); }
+
+/* Lead row with assign button */
+.widget-row-lead { gap: 8px; }
+.widget-row-lead .button.small { padding: 2px 8px; font-size: 11px; }
+
+/* Make the page itself wider on the dashboard */
+.shell-wide { max-width: 1320px; }
