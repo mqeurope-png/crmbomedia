@@ -51,6 +51,16 @@ export default function EmailThreadPage() {
     load();
   }, [load]);
 
+  // Prefill the reply with the latest inbound message's sender so
+  // the operator doesn't end up replying to themselves when the
+  // most recent message in the thread is their own outbound.
+  // Hooks must stay above the conditional returns below so the
+  // call order matches across renders.
+  const lastInbound = useMemo(() => {
+    const msgs = thread?.messages ?? [];
+    return [...msgs].reverse().find((m) => m.direction === "inbound") ?? null;
+  }, [thread?.messages]);
+
   if (loading)
     return (
       <main className="shell"><p className="muted">Cargando…</p></main>
@@ -61,15 +71,6 @@ export default function EmailThreadPage() {
     );
 
   const last = thread.messages[thread.messages.length - 1];
-  // Prefill the reply with the latest inbound message's sender so
-  // the operator doesn't end up replying to themselves when the
-  // most recent message in the thread is their own outbound.
-  const lastInbound = useMemo(
-    () =>
-      [...thread.messages].reverse().find((m) => m.direction === "inbound") ??
-      null,
-    [thread.messages],
-  );
   const replyParent = lastInbound ?? last;
   const replyTarget =
     lastInbound?.from_email ??
