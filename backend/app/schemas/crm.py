@@ -521,12 +521,34 @@ class ContactViewDuplicateRequest(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=100)
 
 
+class ExternalReferenceSummary(BaseModel):
+    """Compact origin marker for the contacts list — just enough to
+    render the per-row chips without the full reference payload."""
+
+    system: str
+    account_id: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class ContactRead(ContactCreate):
     id: str
     is_email_valid: bool
     is_active: bool
     created_at: datetime
     updated_at: datetime
+    # Real source-system dates (NULL until a sync carries one). The UI
+    # shows `created_at_external` as the contact's age, falling back to
+    # the CRM `created_at` with a "del CRM" badge when absent.
+    created_at_external: datetime | None = None
+    updated_at_external: datetime | None = None
+    # All origins the contact belongs to, as `(system, account_id)`
+    # pairs. Read from the ORM's `external_references_summary` property;
+    # the repository eager-loads `external_refs` for the list so this
+    # doesn't trigger an N+1.
+    external_references_summary: list[ExternalReferenceSummary] = Field(
+        default_factory=list
+    )
     # Real M:N tags exposed alongside the (deprecated, still readable)
     # `tags` CSV field. New code should consume `tag_objects`; the CSV
     # stays for backwards-compat during the migration. The Contact ORM
@@ -728,13 +750,20 @@ class ExternalReferenceRead(BaseModel):
 
     id: str
     system: ExternalSystem
+    # Display label for the system ("AgileCRM", "Brevo", …) so the UI
+    # doesn't carry its own slug→label map.
+    system_label: str | None = None
     account_id: str
-    external_id: str
     account_label: str | None = None
+    external_id: str
     contact_id: str
     external_created_at: datetime | None = None
     external_updated_at: datetime | None = None
     origin_detail: str | None = None
+    # Deep link into the source system's UI, when we can build one
+    # (Brevo always; AgileCRM when the account's base URL is known).
+    # Filled by the contact detail endpoint, which has the account row.
+    external_url: str | None = None
     metadata: dict[str, Any] | None = None
     created_at: datetime
     updated_at: datetime
@@ -751,16 +780,20 @@ class ExternalReferenceRead(BaseModel):
         # and JSON-decode in one go.
         if isinstance(data, dict) or data is None:
             return data
+        from app.integrations.external_links import system_label  # noqa: PLC0415
+
         return {
             "id": data.id,
             "system": data.system,
+            "system_label": system_label(data.system),
             "account_id": data.account_id,
-            "external_id": data.external_id,
             "account_label": data.account_label,
+            "external_id": data.external_id,
             "contact_id": data.contact_id,
             "external_created_at": data.external_created_at,
             "external_updated_at": data.external_updated_at,
             "origin_detail": data.origin_detail,
+            "external_url": None,
             "metadata": _decode_json_dict(getattr(data, "metadata_json", None)),
             "created_at": data.created_at,
             "updated_at": data.updated_at,

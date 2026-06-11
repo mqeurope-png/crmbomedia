@@ -402,6 +402,31 @@ El RGPD: `marketing_consent` siempre se importa como `unknown`. AgileCRM
 no garantiza una base jurídica equivalente; el flujo dedicado de RGPD
 es quien actualiza el consentimiento explícito.
 
+### Merge de campos multi-sistema
+
+Cuando un contacto vive en varios sistemas (consolidado por email en el
+paso 2 de arriba), tres campos NO siguen "el último sync gana" sino una
+política de merge en `app/integrations/contact_merge.py`, aplicada
+desde el `_apply_update` de cada conector:
+
+| Campo | Política | Por qué |
+|---|---|---|
+| `contacts.origin` | Primer sistema que importó; no se sobrescribe | Es un marcador legacy de un único valor; los orígenes reales viven en `external_references`. Sobrescribir hacía que la ficha "cambiara de origen" en cada sync. |
+| `contacts.created_at_external` | La fecha **más antigua** | El sistema más viejo es la creación real del contacto. |
+| `contacts.updated_at_external` | La fecha **más reciente** | La última actividad en cualquier sistema. |
+
+Ambos helpers (`keep_first_origin`, `merge_external_dates`) **extraen
+(pop) sus claves** del `record` antes del bucle genérico de `setattr`,
+así que el upsert no puede pisarlas. Las comparaciones de fechas se
+normalizan a UTC porque SQLite devuelve `datetime` naive en el
+round-trip y un compare aware-vs-naive reventaría.
+
+Las fechas se extraen en el mapper (`created_time`/`updated_time` →
+millis en AgileCRM; `createdAt`/`modifiedAt` → ISO 8601 en Brevo) y se
+ponen tanto en `external_references` (por sistema) como en el `record`
+del contacto (para el merge). Si el payload no las trae → `None`, y el
+merge deja la columna intacta. Nunca se inventa una fecha.
+
 ### Cuotas
 
 AgileCRM cobra por contactos almacenados. Cuando una cuenta tiene

@@ -114,6 +114,60 @@ def test_upsert_consolidates_by_email_with_existing_contact(session_factory):
         assert session.scalar(select(Contact.id).where(Contact.id != existing.id)) is None
 
 
+def test_upsert_merges_origin_and_external_dates_across_systems(session_factory):
+    """A contact first imported from AgileCRM (origin=agilecrm, created
+    March 2025) gets a Brevo sync with a later creation date. Origin
+    stays agilecrm (first wins), created_at_external stays the older
+    March date, updated_at_external takes Brevo's newer value."""
+    from datetime import UTC, datetime
+
+    with session_factory() as session:
+        existing = Contact(
+            first_name="Ana",
+            email="ana@example.com",
+            origin="agilecrm",
+            created_at_external=datetime(2025, 3, 1, 9, 0, tzinfo=UTC),
+            updated_at_external=datetime(2025, 6, 1, 9, 0, tzinfo=UTC),
+        )
+        session.add(existing)
+        session.flush()
+        session.add(
+            ExternalReference(
+                system=ExternalSystem.AGILECRM,
+                account_id="agile-1",
+                external_id="agile-77",
+                contact_id=existing.id,
+            )
+        )
+        session.commit()
+
+        upsert_brevo_contact(
+            session,
+            account_id="main",
+            payload={
+                "id": 9,
+                "email": "ana@example.com",
+                "attributes": {"NOMBRE": "Ana"},
+                "listIds": [],
+                "createdAt": "2025-09-25T09:37:00.000+00:00",
+                "modifiedAt": "2025-12-03T11:02:00.000+00:00",
+            },
+        )
+        session.commit()
+
+        contact = session.get(Contact, existing.id)
+
+        def _utc(dt):
+            return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt
+
+        # Origin not overwritten — agilecrm imported first.
+        assert contact.origin == "agilecrm"
+        # Oldest creation wins (March, not September).
+        assert _utc(contact.created_at_external) == datetime(2025, 3, 1, 9, 0, tzinfo=UTC)
+        # Newest update wins (Brevo's December).
+        assert _utc(contact.updated_at_external) == datetime(2025, 12, 3, 11, 2, tzinfo=UTC)
+
+
 def test_upsert_updates_existing_brevo_reference(session_factory):
     with session_factory() as session:
         upsert_brevo_contact(

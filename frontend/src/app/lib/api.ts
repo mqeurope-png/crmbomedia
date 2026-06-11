@@ -98,16 +98,25 @@ export type ActivityEventListPage = {
 export type ExternalReference = {
   id: string;
   system: string;
+  /** Display label for the system, e.g. "AgileCRM" / "Brevo". */
+  system_label?: string | null;
   account_id: string;
-  external_id: string;
   account_label?: string | null;
+  external_id: string;
   contact_id: string;
   external_created_at?: string | null;
   external_updated_at?: string | null;
   origin_detail?: string | null;
+  /** Deep link into the source system's UI, when one can be built. */
+  external_url?: string | null;
   metadata?: Record<string, unknown> | null;
   created_at: string;
   updated_at: string;
+};
+
+export type ExternalReferenceSummary = {
+  system: string;
+  account_id: string;
 };
 
 export type Tag = {
@@ -138,6 +147,9 @@ export type Contact = {
   email: string;
   phone?: string | null;
   origin?: string | null;
+  /** All origins as compact (system, account) pairs — drives the
+   * origin chips on the list page. */
+  external_references_summary?: ExternalReferenceSummary[];
   /** Deprecated CSV; new code should consume `tag_objects`. */
   tags: string;
   tag_objects?: Tag[];
@@ -147,6 +159,9 @@ export type Contact = {
   is_active: boolean;
   updated_at?: string;
   created_at?: string;
+  /** Real creation/modification dates in the source system(s). */
+  created_at_external?: string | null;
+  updated_at_external?: string | null;
   address_country?: string | null;
   address_country_name?: string | null;
   address_state?: string | null;

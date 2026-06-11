@@ -611,6 +611,51 @@ def test_origin_account_keys_takes_precedence_over_legacy_fields(client: TestCli
     assert emails == ["ana@example.com"]
 
 
+def test_contact_list_includes_external_references_summary(client: TestClient):
+    """`GET /api/contacts` items carry a compact
+    `external_references_summary` array — all origins per contact, no
+    full reference payload."""
+    from app.models.crm import Contact, ExternalReference, ExternalSystem
+
+    seeded = create_contact(client, "multi@example.com")
+
+    session_factory = app.dependency_overrides[get_session]
+    session_gen = session_factory()
+    session = next(session_gen)
+    try:
+        contact = session.get(Contact, seeded["id"])
+        session.add_all(
+            [
+                ExternalReference(
+                    system=ExternalSystem.AGILECRM,
+                    external_id="a-1",
+                    account_id="agile-mbomedia",
+                    contact_id=contact.id,
+                ),
+                ExternalReference(
+                    system=ExternalSystem.BREVO,
+                    external_id="b-1",
+                    account_id="default",
+                    contact_id=contact.id,
+                ),
+            ]
+        )
+        session.commit()
+    finally:
+        session_gen.close()
+
+    body = client.get(
+        "/api/contacts?q=multi@example.com",
+        headers=auth_headers(client, "viewer"),
+    ).json()
+    item = next(i for i in body["items"] if i["email"] == "multi@example.com")
+    summary = {(r["system"], r["account_id"]) for r in item["external_references_summary"]}
+    assert summary == {
+        ("agilecrm", "agile-mbomedia"),
+        ("brevo", "default"),
+    }
+
+
 def test_integrations_accounts_endpoint_groups_by_system(client: TestClient):
     """`/api/integrations/accounts` shapes every integration into a
     `{system, system_label, accounts}` group with contacts_count
@@ -743,12 +788,89 @@ def test_contact_detail_exposes_extended_agilecrm_fields(client: TestClient):
     assert len(refs) == 1
     ref = refs[0]
     assert ref["system"] == "agilecrm"
+    assert ref["system_label"] == "AgileCRM"
     assert ref["account_id"] == "acct-1"
     assert ref["external_id"] == "ext-1"
     assert ref["external_created_at"].startswith("2025-06-01T12:00:00")
     assert ref["external_updated_at"].startswith("2025-07-02T09:30:00")
     assert ref["origin_detail"] == "form"
     assert ref["metadata"] == {"owner": {"id": "99", "email": "agent@example.com"}}
+    # No IntegrationAccount row exists for (agilecrm, acct-1) here, so
+    # we can't know the subdomain → no deep link.
+    assert ref["external_url"] is None
+
+
+def test_contact_detail_external_dates_url_and_account_label(client: TestClient):
+    """The detail response carries `created_at_external` /
+    `updated_at_external`, plus per-reference `external_url` (deep link)
+    and the IntegrationAccount display name as `account_label`."""
+    from app.models.crm import Contact, ExternalReference, ExternalSystem
+    from app.models.integration_settings import IntegrationAccount
+
+    seeded = create_contact(client, "multi@example.com")
+
+    session_factory = app.dependency_overrides[get_session]
+    session_gen = session_factory()
+    session = next(session_gen)
+    try:
+        session.add(
+            IntegrationAccount(
+                system=ExternalSystem.AGILECRM,
+                account_id="agile-mbomedia",
+                display_name="AgileCRM Mbomedia",
+                api_base_url="https://mbomedia.agilecrm.com",
+                enabled=True,
+            )
+        )
+        session.add(
+            IntegrationAccount(
+                system=ExternalSystem.BREVO,
+                account_id="default",
+                display_name="Brevo Producción ES",
+                enabled=True,
+            )
+        )
+        contact = session.get(Contact, seeded["id"])
+        contact.created_at_external = datetime(2025, 3, 1, 9, 0, tzinfo=UTC)
+        contact.updated_at_external = datetime(2025, 12, 3, 11, 2, tzinfo=UTC)
+        session.add(
+            ExternalReference(
+                system=ExternalSystem.AGILECRM,
+                external_id="1234",
+                account_id="agile-mbomedia",
+                contact_id=contact.id,
+            )
+        )
+        session.add(
+            ExternalReference(
+                system=ExternalSystem.BREVO,
+                external_id="16272",
+                account_id="default",
+                contact_id=contact.id,
+            )
+        )
+        session.commit()
+    finally:
+        session_gen.close()
+
+    body = client.get(
+        f"/api/contacts/{seeded['id']}", headers=auth_headers(client, "viewer")
+    ).json()
+
+    assert body["created_at_external"].startswith("2025-03-01T09:00:00")
+    assert body["updated_at_external"].startswith("2025-12-03T11:02:00")
+
+    refs = {r["system"]: r for r in body["external_refs"]}
+    assert refs["agilecrm"]["account_label"] == "AgileCRM Mbomedia"
+    assert (
+        refs["agilecrm"]["external_url"]
+        == "https://mbomedia.agilecrm.com/contact/1234"
+    )
+    assert refs["brevo"]["account_label"] == "Brevo Producción ES"
+    assert (
+        refs["brevo"]["external_url"]
+        == "https://app.brevo.com/contact/index/16272"
+    )
 
 
 def test_contact_detail_handles_missing_extended_fields(client: TestClient):

@@ -98,6 +98,7 @@ from app.schemas.crm import (
     ContactViewRead,
     ContactViewUpdate,
     CountRead,
+    ExternalReferenceRead,
     ExternalRefreshRead,
     PipelineContactCard,
     PipelineContactsResponse,
@@ -1509,7 +1510,42 @@ def get_contact(
     detail.external_data_freshness = _freshness_label(
         contact.external_data_refreshed_at
     )
+    _enrich_external_refs(session, detail.external_refs)
     return detail
+
+
+def _enrich_external_refs(
+    session: Session, refs: list[ExternalReferenceRead]
+) -> None:
+    """Fill each reference's `external_url` (deep link into the source
+    system) and friendly `account_label` (the IntegrationAccount's
+    display name) — both need the account row the schema layer can't
+    reach. One batched query for every (system, account) the contact
+    touches."""
+    if not refs:
+        return
+    from app.integrations.external_links import build_external_url  # noqa: PLC0415
+    from app.models.integration_settings import IntegrationAccount  # noqa: PLC0415
+
+    # A deployment has a handful of integration accounts; loading them
+    # all once is cheaper than a composite-key IN (which isn't portable
+    # across SQLite + MySQL) and the lookup stays in memory.
+    accounts = {
+        (acc.system.value, acc.account_id): acc
+        for acc in session.scalars(select(IntegrationAccount))
+    }
+    for ref in refs:
+        ref_system = ref.system.value if hasattr(ref.system, "value") else str(ref.system)
+        account = accounts.get((ref_system, ref.account_id))
+        if account is not None and account.display_name:
+            # Prefer the operator-facing account name over the
+            # mapper-set per-payload label (e.g. AgileCRM lead_status).
+            ref.account_label = account.display_name
+        ref.external_url = build_external_url(
+            ref.system,
+            ref.external_id,
+            api_base_url=account.api_base_url if account else None,
+        )
 
 
 def _freshness_label(refreshed_at: datetime | None) -> str:

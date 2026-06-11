@@ -255,7 +255,10 @@ def list_contacts(
     sort_dir: str = "desc",
 ) -> list[Contact]:
     statement = select(Contact).options(
-        selectinload(Contact.tag_assignments).selectinload(ContactTag.tag)
+        selectinload(Contact.tag_assignments).selectinload(ContactTag.tag),
+        # Eager-load so `ContactRead.external_references_summary` (which
+        # reads `contact.external_refs`) doesn't fire one SELECT per row.
+        selectinload(Contact.external_refs),
     )
     statement = _apply_contact_filters(
         statement,

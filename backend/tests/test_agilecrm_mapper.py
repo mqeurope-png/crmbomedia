@@ -208,9 +208,18 @@ def test_external_timestamps_parsed_from_unix_seconds():
             updated_time="1750000000",  # accept the string flavour too
         )
     )
-    _ = record
     assert extras["external_created_at"] == datetime(2023, 11, 14, 22, 13, 20, tzinfo=UTC)
     assert extras["external_updated_at"] == datetime(2025, 6, 15, 15, 6, 40, tzinfo=UTC)
+    # The same dates are promoted onto the contact record so the
+    # worker can merge them onto contacts.created_at_external.
+    assert record["created_at_external"] == datetime(2023, 11, 14, 22, 13, 20, tzinfo=UTC)
+    assert record["updated_at_external"] == datetime(2025, 6, 15, 15, 6, 40, tzinfo=UTC)
+
+
+def test_external_dates_are_none_when_payload_omits_them():
+    record, _ = map_agilecrm_contact_to_internal(_payload())
+    assert record["created_at_external"] is None
+    assert record["updated_at_external"] is None
 
 
 def test_address_parsed_from_json_string():

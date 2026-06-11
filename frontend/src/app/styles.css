@@ -2113,6 +2113,36 @@ td {
   padding: 0 0 0 2px;
 }
 
+/* Origin chips reuse the tag-chip pill shape. A neutral default tint
+ * plus a per-system accent so AgileCRM and Brevo read apart at a
+ * glance. Anchor variant (deep link) inherits colour + shows the
+ * lucide icon inline. */
+.origin-chip-list { align-items: center; }
+.origin-chip {
+  background: #eef2f7;
+  color: var(--ink);
+  text-decoration: none;
+  gap: 6px;
+}
+a.origin-chip:hover { filter: brightness(0.97); }
+.origin-chip-id { font-weight: 600; opacity: 0.7; font-size: 0.92em; }
+.origin-chip--agilecrm { background: #e7ecfb; color: #2c3e8c; }
+.origin-chip--brevo { background: #e3f4ec; color: #137a4d; }
+.origin-chip--freshdesk { background: #eaf0fe; color: #1f5fb0; }
+.origin-chip--factusol { background: #fdeede; color: #9a5b12; }
+
+.external-ref-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: auto;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--brand);
+  text-decoration: none;
+}
+.external-ref-link:hover { text-decoration: underline; }
+
 .tag-section { margin-top: 16px; }
 .tag-section h3 { margin: 0 0 8px; font-size: 13px; text-transform: uppercase; color: var(--muted); }
 
