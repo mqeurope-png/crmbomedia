@@ -135,7 +135,13 @@ def pipeline_summary(
     current_user: User = Depends(require_viewer),
 ) -> list[dict[str, Any]]:
     """Per active pipeline, contacts owned by the user grouped by
-    stage. The widget shows one bar chart per pipeline."""
+    stage. The widget shows one bar chart per pipeline.
+
+    Fase 3 closing fix: the first version referenced
+    `PipelineStage.is_archived` (which only exists on
+    `ContactPipelineStage`) and `ContactPipelineStage.pipeline_stage_id`
+    (the column is `stage_id`). Both raised AttributeError → 500.
+    """
     pipelines = list(
         session.scalars(
             select(Pipeline)
@@ -148,24 +154,22 @@ def pipeline_summary(
         return []
     out: list[dict[str, Any]] = []
     for pipeline in pipelines:
-        stages = sorted(
-            (s for s in pipeline.stages if not s.is_archived),
-            key=lambda s: s.position,
-        )
+        stages = sorted(pipeline.stages, key=lambda s: s.position)
         rows = session.execute(
             select(
-                ContactPipelineStage.pipeline_stage_id,
+                ContactPipelineStage.stage_id,
                 func.count(Contact.id).label("contact_count"),
             )
             .join(Contact, Contact.id == ContactPipelineStage.contact_id)
             .where(
                 ContactPipelineStage.pipeline_id == pipeline.id,
+                ContactPipelineStage.is_archived.is_(False),
                 Contact.owner_user_id == current_user.id,
                 Contact.is_active.is_(True),
             )
-            .group_by(ContactPipelineStage.pipeline_stage_id)
+            .group_by(ContactPipelineStage.stage_id)
         ).all()
-        counts = {row.pipeline_stage_id: int(row.contact_count) for row in rows}
+        counts = {row.stage_id: int(row.contact_count) for row in rows}
         out.append(
             {
                 "pipeline_id": pipeline.id,
@@ -273,15 +277,23 @@ def leads_stats(
             return f"{iso.year}-W{iso.week:02d}"
         return f"{at.year}-{at.month:02d}"
 
+    def _as_aware(value: datetime) -> datetime:
+        """MySQL DATETIME columns lose the tz on read even when the
+        SQLAlchemy column is declared `timezone=True`. Normalise to
+        UTC so comparing against `start`/`prev_start` doesn't blow
+        up with `can't compare offset-naive and offset-aware`."""
+        return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
     series: dict[str, int] = {}
     qualified_now = 0
     closed_won_now = 0
     new_now = 0
     new_prev = 0
     for contact in contacts:
-        if contact.created_at >= start:
+        created = _as_aware(contact.created_at)
+        if created >= start:
             new_now += 1
-            key = _bucket_key(contact.created_at)
+            key = _bucket_key(created)
             series[key] = series.get(key, 0) + 1
             status = (contact.commercial_status or "").lower()
             if status in ("qualified", "qualified_lead", "qualified-lead"):
