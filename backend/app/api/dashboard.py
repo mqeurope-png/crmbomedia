@@ -26,7 +26,6 @@ from app.models.crm import (
     Contact,
     ContactPipelineStage,
     Pipeline,
-    PipelineStage,
     Task,
     TaskStatus,
     User,
