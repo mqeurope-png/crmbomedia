@@ -101,13 +101,18 @@ def get_status(
 @router.get("/authorize")
 def authorize(
     current_user: User = Depends(require_viewer),
-) -> RedirectResponse:
-    """Generate a CSRF-safe state, bind it to the current user in
-    Redis, and redirect to Google's consent screen."""
+) -> dict[str, str]:
+    """Hand the consent URL back to the SPA.
+
+    A 302 would be slicker but the auth token lives in localStorage,
+    not in a cookie, so the browser can't include it on a top-level
+    navigation — the SPA does `window.location.href = response.url`
+    after the fetch returns instead.
+    """
     _require_configured()
     state = google_service.issue_oauth_state(current_user.id)
     url = get_authorize_url(state)
-    return RedirectResponse(url=url, status_code=status.HTTP_302_FOUND)
+    return {"url": url}
 
 
 @router.get("/callback")
