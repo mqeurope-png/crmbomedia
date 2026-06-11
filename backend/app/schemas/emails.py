@@ -5,7 +5,14 @@ import json
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    EmailStr,
+    Field,
+    field_validator,
+)
 
 
 class EmailSendRequest(BaseModel):
@@ -28,8 +35,13 @@ class EmailMessageRead(BaseModel):
     direction: str
     from_email: str
     from_name: str | None
-    to_emails: list[str]
-    cc_emails: list[str] | None
+    to_emails: list[str] = Field(
+        validation_alias=AliasChoices("to_emails", "to_emails_json"),
+    )
+    cc_emails: list[str] | None = Field(
+        default=None,
+        validation_alias=AliasChoices("cc_emails", "cc_emails_json"),
+    )
     subject: str | None
     body_html: str | None
     body_text: str | None
@@ -39,7 +51,7 @@ class EmailMessageRead(BaseModel):
     created_by_user_id: str | None
     read_at: datetime | None
 
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
     @field_validator("to_emails", "cc_emails", mode="before")
     @classmethod
@@ -59,14 +71,17 @@ class EmailThreadRead(BaseModel):
     gmail_thread_id: str
     gmail_account_user_id: str
     subject: str | None
-    participants: list[str]
+    participants: list[str] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("participants", "participants_json"),
+    )
     first_message_at: datetime
     last_message_at: datetime
     message_count: int
     has_unread_replies: bool
     is_archived: bool
 
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
     @field_validator("participants", mode="before")
     @classmethod

@@ -55,7 +55,10 @@ def _emit_activity(
             contact_id=contact_id,
             system="crm",
             account_id="emails",
-            external_id=f"email:{metadata.get('message_id') or metadata.get('thread_id')}:{event_type}",
+            external_id=(
+                f"email:{metadata.get('message_id') or metadata.get('thread_id')}"
+                f":{event_type}"
+            ),
             event_type=event_type,
             subject=(subject or "")[:200],
             metadata_json=json.dumps(metadata, default=str),
