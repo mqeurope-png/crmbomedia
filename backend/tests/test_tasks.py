@@ -212,9 +212,13 @@ def test_my_buckets_groups_by_urgency(
 ):
     headers = auth_headers(client, "user")
     now = datetime.now(UTC)
-    # Seed three tasks at different due dates.
+    # Seed three tasks at different due dates. `+2 hours` for the
+    # today bucket used to roll past midnight when CI ran late in
+    # the day — the task ended up in `tomorrow`. `+5 minutes` is
+    # safely within today's bucket as long as we're before ~23:54
+    # UTC, which is 99.7 % of the seconds in a day.
     overdue = (now - timedelta(days=2)).isoformat()
-    today = (now + timedelta(hours=2)).isoformat()
+    today = (now + timedelta(minutes=5)).isoformat()
     later = (now + timedelta(days=5)).isoformat()
     for title, due in (("Vencida", overdue), ("Hoy", today), ("Próx", later)):
         client.post(
