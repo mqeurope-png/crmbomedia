@@ -3164,3 +3164,197 @@ a.origin-chip:hover { filter: brightness(0.97); }
     grid-template-columns: 1fr;
   }
 }
+
+/* -------------------------------------------------------------------------
+ * Mini-PR B Fase 2 — Contacts query builder + view tabs
+ * ------------------------------------------------------------------------- */
+
+.contact-views-tabs {
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 16px;
+}
+.contact-views-tabs-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: 0;
+  overflow-x: auto;
+}
+.contact-views-tabs-list > li {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.contact-views-tab {
+  background: none;
+  border: 1px solid transparent;
+  border-bottom: 2px solid transparent;
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+  cursor: pointer;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.contact-views-tab:hover { color: var(--ink); }
+.contact-views-tab.is-active {
+  color: var(--brand);
+  border-bottom-color: var(--brand);
+}
+.contact-views-tab-dot {
+  color: var(--brand);
+  font-size: 20px;
+  line-height: 1;
+  margin-left: 2px;
+}
+.contact-views-tab-default { color: #b58105; }
+.contact-views-tab-menu-button {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 0 6px;
+  display: inline-flex;
+  align-items: center;
+}
+.contact-views-tab-menu-button:hover { color: var(--ink); }
+.contact-views-tab-add {
+  background: none;
+  border: 1px dashed var(--line);
+  border-radius: 999px;
+  padding: 4px 10px;
+  margin-left: 8px;
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.contact-views-tab-add:hover { color: var(--brand); border-color: var(--brand); }
+.contact-views-tabs-meta { margin: 6px 4px 0; }
+
+.contact-views-tab-menu-overlay {
+  position: fixed;
+  inset: 0;
+  background: transparent;
+  z-index: 10;
+}
+.contact-views-tab-menu {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  z-index: 11;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 4px 0;
+  min-width: 180px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+}
+.contact-views-tab-menu li > button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  padding: 8px 14px;
+  font-size: 13px;
+  cursor: pointer;
+  color: var(--ink);
+}
+.contact-views-tab-menu li > button:hover { background: #f3f6fb; }
+.contact-views-tab-menu li > button.danger { color: #b03030; }
+
+/* Brevo-style query builder cards */
+.contact-query-builder {
+  background: #f9fafc;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 12px;
+  margin: 12px 0 16px;
+}
+.contact-qb-root { font-size: 13px; }
+.contact-qb-group {
+  background: var(--surface);
+  border-color: var(--line);
+  border-radius: 12px;
+  padding: 12px;
+}
+.contact-qb-group .contact-qb-group {
+  margin-top: 8px;
+  background: #f9fafc;
+}
+.contact-qb-combinator {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: #eef1f6;
+  color: var(--ink);
+  border-radius: 999px;
+  padding: 2px 12px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin: 6px 0;
+}
+.contact-qb-add-rule,
+.contact-qb-add-group {
+  border-radius: 999px;
+  font-weight: 600;
+}
+.contact-qb-remove {
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-weight: 700;
+}
+
+/* Dropdown menu used by the Acciones button */
+.dropdown { position: relative; display: inline-block; }
+.dropdown-overlay {
+  position: fixed;
+  inset: 0;
+  background: transparent;
+  z-index: 10;
+}
+.dropdown-menu {
+  position: absolute;
+  right: 0;
+  top: 100%;
+  z-index: 11;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  margin: 4px 0 0;
+  padding: 4px 0;
+  list-style: none;
+  min-width: 240px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+}
+.dropdown-menu li > button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  padding: 8px 14px;
+  font-size: 13px;
+  cursor: pointer;
+  color: var(--ink);
+}
+.dropdown-menu li > button:hover:not(:disabled) { background: #f3f6fb; }
+.dropdown-menu li > button:disabled {
+  color: var(--muted);
+  cursor: not-allowed;
+}

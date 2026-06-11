@@ -224,6 +224,7 @@ export type SavedViewFilters = {
   tag_match_mode?: "any" | "all" | null;
   origin_system?: string | null;
   origin_account_id?: string | null;
+  origin_account_keys?: string[] | null;
   commercial_status?: string | null;
   marketing_consent?: string | null;
   is_active?: boolean | null;
@@ -231,6 +232,10 @@ export type SavedViewFilters = {
   lead_score_max?: number | null;
   created_after?: string | null;
   created_before?: string | null;
+  /** Segments-engine rules tree (Sprint UX). When present the query
+   * builder reads it directly; the legacy flat fields above stay for
+   * backwards compatibility. */
+  rules_json?: Record<string, unknown> | null;
 };
 
 export type SavedViewColumns = {
@@ -473,6 +478,58 @@ export async function listContacts(
   if (filters.view_id) params.set("view_id", filters.view_id);
   const query = params.toString();
   return apiFetch<ContactListPage>(`/api/contacts${query ? `?${query}` : ""}`);
+}
+
+export type ContactSearchPayload = {
+  rules_json?: Record<string, unknown> | null;
+  q?: string | null;
+  sort_by?: string;
+  sort_dir?: "asc" | "desc";
+  limit?: number;
+  offset?: number;
+  include_inactive?: boolean;
+};
+
+export async function searchContacts(
+  payload: ContactSearchPayload,
+): Promise<ContactListPage> {
+  return apiFetch<ContactListPage>("/api/contacts/search", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function saveViewAsSegment(
+  viewId: string,
+  payload: { name: string; description?: string | null; is_shared?: boolean },
+): Promise<{ id: string; name: string }> {
+  return apiFetch<{ id: string; name: string }>(
+    `/api/contact-views/${viewId}/save-as-segment`,
+    { method: "POST", body: JSON.stringify(payload) },
+  );
+}
+
+export type PushViewToBrevoResult = {
+  sync_log_id: string;
+  job_id: string | null;
+  target_id: string;
+  segment_id: string;
+  contacts_to_push: number;
+  brevo_list_id: number;
+};
+
+export async function pushViewToBrevoList(
+  viewId: string,
+  payload: {
+    brevo_account_id: string;
+    brevo_list_id?: number | null;
+    new_list_name?: string | null;
+  },
+): Promise<PushViewToBrevoResult> {
+  return apiFetch<PushViewToBrevoResult>(
+    `/api/contact-views/${viewId}/push-to-brevo-list`,
+    { method: "POST", body: JSON.stringify(payload) },
+  );
 }
 
 export async function listTags(query?: string): Promise<TagListPage> {
