@@ -149,6 +149,13 @@ class Action:
     SEGMENT_AI_GENERATED = "segment.ai_generated"
     SEGMENT_AI_EXPLAINED = "segment.ai_explained"
 
+    # Gmail integration (Sprint Email v1).
+    EMAIL_SENT_FROM_CRM = "email.sent_from_crm"
+    EMAIL_REPLY_RECEIVED = "email.reply_received"
+    EMAIL_THREAD_MARKED_READ = "email.thread_marked_read"
+    GMAIL_WATCH_REGISTERED = "gmail.watch_registered"
+    GMAIL_WATCH_RENEWED = "gmail.watch_renewed"
+
     # Google Calendar integration (Mini-PR C Fase 2).
     GOOGLE_CALENDAR_CONNECTED = "google_calendar.connected"
     GOOGLE_CALENDAR_DISCONNECTED = "google_calendar.disconnected"
