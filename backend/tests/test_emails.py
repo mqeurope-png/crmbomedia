@@ -341,7 +341,10 @@ def test_webhook_routes_to_user_and_enqueues(
     }
     response = client.post("/api/webhooks/gmail", json=payload)
     assert response.status_code == 200
-    assert response.json() == {"status": "enqueued"}
+    # Fan-out (commit 1 of this PR) added a `users` counter to the
+    # webhook response so we can verify multi-user routing from the
+    # response body.
+    assert response.json() == {"status": "enqueued", "users": 1}
     assert enqueued == [(uid, 500)]
 
 
@@ -623,3 +626,296 @@ def test_send_with_unmarked_alias_returns_403(
     )
     assert response.status_code == 403
     assert "preferencias" in response.json()["detail"].lower()
+
+
+# ---------------------------------------------------------------------------
+# Multi-user Gmail fan-out + tolerant history processing
+# ---------------------------------------------------------------------------
+
+
+def test_webhook_enqueues_one_job_per_matching_integration(
+    client: TestClient,
+    session_factory: sessionmaker,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two CRM users sharing the same `google_email` must both get
+    a process_history job — otherwise replies for the user not
+    chosen by `session.scalar()` would be silently dropped."""
+    now = datetime.now(UTC)
+    with session_factory() as session:
+        admin_id = _user_id(session, UserRole.ADMIN)
+        user_id = _user_id(session, UserRole.USER)
+        for uid in (admin_id, user_id):
+            session.add(
+                UserGoogleIntegration(
+                    user_id=uid,
+                    google_email="shared@bomedia.net",
+                    access_token_encrypted=encrypt("a"),
+                    refresh_token_encrypted=encrypt("r"),
+                    token_expires_at=now + timedelta(hours=1),
+                    scopes=(
+                        "https://www.googleapis.com/auth/gmail.send "
+                        "https://www.googleapis.com/auth/gmail.modify"
+                    ),
+                    connected_at=now,
+                )
+            )
+        session.commit()
+
+    enqueued: list[tuple[str, int]] = []
+    monkeypatch.setattr(
+        "app.integrations.gmail.jobs.enqueue_process_history",
+        lambda *, user_id, new_history_id: enqueued.append(
+            (user_id, new_history_id)
+        ),
+    )
+    monkeypatch.setattr(
+        "app.integrations.gmail.webhook._validate_jwt",
+        lambda _auth: None,
+    )
+
+    payload = {
+        "message": {
+            "data": base64.b64encode(
+                json.dumps(
+                    {
+                        "emailAddress": "shared@bomedia.net",
+                        "historyId": 777,
+                    }
+                ).encode()
+            ).decode(),
+        }
+    }
+    response = client.post("/api/webhooks/gmail", json=payload)
+    assert response.status_code == 200
+    assert response.json() == {"status": "enqueued", "users": 2}
+    assert sorted(uid for uid, _ in enqueued) == sorted([admin_id, user_id])
+    assert all(hid == 777 for _, hid in enqueued)
+
+
+def test_webhook_returns_ignored_when_no_integration_matches(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    enqueued: list[tuple[str, int]] = []
+    monkeypatch.setattr(
+        "app.integrations.gmail.jobs.enqueue_process_history",
+        lambda *, user_id, new_history_id: enqueued.append(
+            (user_id, new_history_id)
+        ),
+    )
+    monkeypatch.setattr(
+        "app.integrations.gmail.webhook._validate_jwt",
+        lambda _auth: None,
+    )
+    payload = {
+        "message": {
+            "data": base64.b64encode(
+                json.dumps(
+                    {
+                        "emailAddress": "stranger@example.com",
+                        "historyId": 1,
+                    }
+                ).encode()
+            ).decode(),
+        }
+    }
+    response = client.post("/api/webhooks/gmail", json=payload)
+    assert response.status_code == 200
+    assert response.json() == {"status": "ignored"}
+    assert enqueued == []
+
+
+def _make_http_error(status: int) -> Exception:
+    """Build a googleapiclient HttpError without speaking HTTP. The
+    test mocks raise it from `get_message` to trigger the 404 path."""
+    from googleapiclient.errors import HttpError  # noqa: PLC0415
+
+    class _Resp:
+        def __init__(self, code: int) -> None:
+            self.status = code
+            self.reason = "Not Found"
+
+    err = HttpError.__new__(HttpError)
+    err.resp = _Resp(status)
+    err.content = b""
+    err.uri = "https://example/gmail"
+    err.error_details = ""
+    err.status_code = status
+    return err
+
+
+def test_process_history_skips_messages_returning_404(
+    client: TestClient,
+    session_factory: sessionmaker,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ghost messages (drafts deleted / spam moved / trashed) used
+    to abort the whole batch and trap the watch. Now they're logged
+    + skipped and the watch still advances."""
+    with session_factory() as session:
+        uid = _user_id(session, UserRole.USER)
+    _seed_gmail_integration(session_factory, user_id=uid)
+
+    # Seed a thread the user owns + the watch row.
+    from app.models.crm import EmailThread, GmailPubsubWatch  # noqa: PLC0415
+
+    with session_factory() as session:
+        thread = EmailThread(
+            initiated_by_user_id=uid,
+            gmail_thread_id="thr-A",
+            gmail_account_user_id=uid,
+            first_message_at=datetime.now(UTC),
+            last_message_at=datetime.now(UTC),
+            message_count=1,
+        )
+        session.add(thread)
+        session.add(
+            GmailPubsubWatch(
+                user_id=uid,
+                history_id=1,
+                watch_expires_at=datetime.now(UTC) + timedelta(days=6),
+                last_renewed_at=datetime.now(UTC),
+                topic_name="projects/x/topics/y",
+            )
+        )
+        session.commit()
+
+    class _FakeClient:
+        def __init__(self, *_a, **_k):
+            pass
+
+        def list_history(self, _start):
+            return {
+                "history": [
+                    {
+                        "messagesAdded": [
+                            {"message": {"id": "ghost", "threadId": "thr-A"}},
+                            {"message": {"id": "real", "threadId": "thr-A"}},
+                        ]
+                    }
+                ]
+            }
+
+        def get_message(self, mid):
+            if mid == "ghost":
+                raise _make_http_error(404)
+            return {
+                "id": "real",
+                "snippet": "ok",
+                "payload": {
+                    "headers": [
+                        {"name": "From", "value": "client@example.com"},
+                        {"name": "To", "value": "info@bomedia.net"},
+                        {"name": "Subject", "value": "Re: Hola"},
+                        {
+                            "name": "Date",
+                            "value": "Fri, 31 Dec 2099 23:59:00 +0000",
+                        },
+                    ],
+                    "mimeType": "text/plain",
+                    "body": {
+                        "data": base64.urlsafe_b64encode(
+                            b"hi"
+                        ).decode()
+                    },
+                },
+            }
+
+    monkeypatch.setattr(
+        "app.integrations.gmail.service.GmailClient", _FakeClient
+    )
+
+    from app.integrations.gmail import service as gmail_service  # noqa: PLC0415
+
+    with session_factory() as session:
+        imported = gmail_service.process_history(
+            session, user_id=uid, new_history_id=999
+        )
+        session.commit()
+    # Ghost skipped, real persisted.
+    assert imported == 1
+
+    with session_factory() as session:
+        # Watch advanced even though one message in the batch
+        # raised 404 — critical invariant.
+        watch = session.scalar(
+            select(GmailPubsubWatch).where(GmailPubsubWatch.user_id == uid)
+        )
+        assert watch is not None
+        assert watch.history_id == 999
+
+
+def test_process_history_advances_watch_even_when_every_message_fails(
+    client: TestClient,
+    session_factory: sessionmaker,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """All-404 batch — watch.history_id must still advance so the
+    next push isn't trapped on the same range."""
+    with session_factory() as session:
+        uid = _user_id(session, UserRole.USER)
+    _seed_gmail_integration(session_factory, user_id=uid)
+
+    from app.models.crm import EmailThread, GmailPubsubWatch  # noqa: PLC0415
+
+    with session_factory() as session:
+        session.add(
+            EmailThread(
+                initiated_by_user_id=uid,
+                gmail_thread_id="thr-A",
+                gmail_account_user_id=uid,
+                first_message_at=datetime.now(UTC),
+                last_message_at=datetime.now(UTC),
+                message_count=1,
+            )
+        )
+        session.add(
+            GmailPubsubWatch(
+                user_id=uid,
+                history_id=1,
+                watch_expires_at=datetime.now(UTC) + timedelta(days=6),
+                last_renewed_at=datetime.now(UTC),
+                topic_name="projects/x/topics/y",
+            )
+        )
+        session.commit()
+
+    class _FakeClient:
+        def __init__(self, *_a, **_k):
+            pass
+
+        def list_history(self, _start):
+            return {
+                "history": [
+                    {
+                        "messagesAdded": [
+                            {"message": {"id": "g1", "threadId": "thr-A"}},
+                            {"message": {"id": "g2", "threadId": "thr-A"}},
+                        ]
+                    }
+                ]
+            }
+
+        def get_message(self, _mid):
+            raise _make_http_error(404)
+
+    monkeypatch.setattr(
+        "app.integrations.gmail.service.GmailClient", _FakeClient
+    )
+
+    from app.integrations.gmail import service as gmail_service  # noqa: PLC0415
+
+    with session_factory() as session:
+        imported = gmail_service.process_history(
+            session, user_id=uid, new_history_id=42_000
+        )
+        session.commit()
+    assert imported == 0
+
+    with session_factory() as session:
+        watch = session.scalar(
+            select(GmailPubsubWatch).where(GmailPubsubWatch.user_id == uid)
+        )
+        assert watch is not None
+        assert watch.history_id == 42_000

@@ -98,7 +98,7 @@ def _decode_pubsub_payload(body: dict[str, Any]) -> dict[str, Any]:
 async def gmail_webhook(
     request: Request,
     session: Session = Depends(get_session),
-) -> dict[str, str]:
+) -> dict[str, str | int]:
     """Receive a Gmail Push Notifications push.
 
     Returns 200 fast — the actual history processing happens in the
@@ -121,12 +121,20 @@ async def gmail_webhook(
             detail="Missing emailAddress / historyId in Pub/Sub payload.",
         )
 
-    integration = session.scalar(
-        select(UserGoogleIntegration).where(
-            UserGoogleIntegration.google_email == email_address
+    # Fan out: one push from Gmail/Pub/Sub maps to ONE Google
+    # account, but two CRM users may share that account (one user
+    # connected the same Gmail under different CRM roles, e.g. an
+    # admin profile + a sales profile). Each user has its own
+    # `email_threads`/`email_messages` rows, so we must enqueue
+    # one history-process job per matching integration.
+    integrations = (
+        session.scalars(
+            select(UserGoogleIntegration).where(
+                UserGoogleIntegration.google_email == email_address
+            )
         )
-    )
-    if integration is None:
+    ).all()
+    if not integrations:
         # Not one of our users — drop silently with 200 so Google
         # doesn't retry forever.
         logger.info(
@@ -139,5 +147,13 @@ async def gmail_webhook(
     # `(gmail_account_user_id, gmail_message_id)` unique key.
     from app.integrations.gmail.jobs import enqueue_process_history  # noqa: PLC0415
 
-    enqueue_process_history(user_id=integration.user_id, new_history_id=history_id)
-    return {"status": "enqueued"}
+    for integration in integrations:
+        enqueue_process_history(
+            user_id=integration.user_id, new_history_id=history_id
+        )
+    logger.info(
+        "gmail.webhook.enqueued address=%s users=%d",
+        email_address,
+        len(integrations),
+    )
+    return {"status": "enqueued", "users": len(integrations)}
