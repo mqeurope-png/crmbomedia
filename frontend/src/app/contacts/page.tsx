@@ -102,6 +102,10 @@ function renderCell(key: ContactColumnKey, contact: Contact): React.ReactNode {
       return formatDate(contact.created_at);
     case "updated_at":
       return formatDate(contact.updated_at);
+    case "created_at_external":
+      return formatDate(contact.created_at_external);
+    case "updated_at_external":
+      return formatDate(contact.updated_at_external);
     case "external_data_freshness":
       return contact.external_data_freshness ? (
         <span
