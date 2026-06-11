@@ -71,19 +71,22 @@ const NAV_ITEMS: ReadonlyArray<Item> = [
     href: "/pipelines",
     label: "Pipelines",
     icon: Kanban,
-    allowedRoles: ["admin", "manager"],
+    // Mini-PR C Fase 3: pipelines, segments and tags are now visible
+    // to every signed-in user (including viewer, read-only). Creating
+    // and editing are gated separately at the route layer.
+    allowedRoles: ["admin", "manager", "user", "viewer"],
   },
   {
     href: "/segments",
     label: "Segmentos",
     icon: Target,
-    allowedRoles: ["admin", "manager"],
+    allowedRoles: ["admin", "manager", "user", "viewer"],
   },
   {
     href: "/marketing/campaigns",
     label: "Marketing",
     icon: Mail,
-    allowedRoles: ["admin", "manager", "user"],
+    allowedRoles: ["admin", "manager", "user", "viewer"],
     children: [
       { href: "/marketing/campaigns", label: "Campañas" },
       { href: "/marketing/templates", label: "Plantillas" },
@@ -94,13 +97,15 @@ const NAV_ITEMS: ReadonlyArray<Item> = [
     href: "/admin/tags",
     label: "Tags",
     icon: Tag,
-    allowedRoles: ["admin", "manager"],
+    allowedRoles: ["admin", "manager", "user", "viewer"],
   },
   {
     href: "/admin/integrations",
     label: "Integraciones",
     icon: Plug,
-    allowedRoles: ["admin", "manager"],
+    // Fase 3: integrations contain sensitive credentials — restrict
+    // to admin only.
+    allowedRoles: ["admin"],
   },
   {
     href: "/admin/users",

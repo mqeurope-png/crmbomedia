@@ -28,6 +28,7 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
+from app.integrations.country_codes import normalize_country
 from app.integrations.mapper_helpers import apply_contact_field_limits
 
 logger = logging.getLogger(__name__)
@@ -161,9 +162,16 @@ def _parse_address(raw: Any) -> dict[str, str | None]:
             "address_state": None,
             "address_city": None,
         }
+    # AgileCRM ships either ISO Alpha-2 ("ES") or a localised name
+    # ("España" / "Spain") under `country`. Normalise both into our
+    # canonical pair (ISO under `address_country`, display name under
+    # `address_country_name`).
+    raw_country = _clean_str(parsed.get("country"))
+    raw_country_name = _clean_str(parsed.get("countryname"))
+    iso, display = normalize_country(raw_country or raw_country_name)
     return {
-        "address_country": _clean_str(parsed.get("country")),
-        "address_country_name": _clean_str(parsed.get("countryname")),
+        "address_country": iso,
+        "address_country_name": display or raw_country_name,
         "address_state": _clean_str(parsed.get("state")),
         "address_city": _clean_str(parsed.get("city")),
     }

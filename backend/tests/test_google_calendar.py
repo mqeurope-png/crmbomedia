@@ -533,3 +533,145 @@ def test_delete_task_drops_calendar_event(
     assert calls == [("cal-123", "event-del")]
     with session_factory() as session:
         assert session.get(Task, task["id"]) is None
+
+
+def test_patch_task_with_existing_event_updates_calendar(
+    client: TestClient,
+    session_factory: sessionmaker,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Mini-PR C Fase 3 — edit task: PATCH a task with
+    google_event_id set calls update_event with the patched body."""
+    with session_factory() as session:
+        uid = _user_id(session, UserRole.USER)
+    _seed_integration(session_factory, user_id=uid)
+
+    updates: list[dict[str, Any]] = []
+
+    class _FakeClient:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            pass
+
+        def create_event(self, calendar_id: str, body: dict[str, Any]) -> dict[str, Any]:
+            return {"id": "event-init"}
+
+        def update_event(
+            self, calendar_id: str, event_id: str, body: dict[str, Any]
+        ) -> dict[str, Any]:
+            updates.append({"calendar_id": calendar_id, "event_id": event_id, "body": body})
+            return {"id": event_id}
+
+    monkeypatch.setattr(
+        "app.integrations.google_calendar.service.GoogleCalendarClient",
+        _FakeClient,
+    )
+    task = client.post(
+        "/api/tasks",
+        json={"title": "Original", "sync_with_google_calendar": True},
+        headers=auth_headers(client, "user"),
+    ).json()
+    assert task["google_event_id"] == "event-init"
+
+    response = client.patch(
+        f"/api/tasks/{task['id']}",
+        json={"title": "Renombrada"},
+        headers=auth_headers(client, "user"),
+    )
+    assert response.status_code == 200, response.text
+    assert len(updates) == 1
+    assert updates[0]["event_id"] == "event-init"
+    assert updates[0]["body"]["summary"] == "Renombrada"
+
+
+def test_patch_task_to_enable_sync_creates_event(
+    client: TestClient,
+    session_factory: sessionmaker,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Toggling sync ON in the edit modal on a previously-unsynced
+    task triggers a create_event call."""
+    with session_factory() as session:
+        uid = _user_id(session, UserRole.USER)
+    _seed_integration(session_factory, user_id=uid)
+
+    creates: list[str] = []
+
+    class _FakeClient:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            pass
+
+        def create_event(self, calendar_id: str, body: dict[str, Any]) -> dict[str, Any]:
+            creates.append(body["summary"])
+            return {"id": "event-late"}
+
+        def update_event(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            raise AssertionError("update should not run on initial sync-on")
+
+    monkeypatch.setattr(
+        "app.integrations.google_calendar.service.GoogleCalendarClient",
+        _FakeClient,
+    )
+    task = client.post(
+        "/api/tasks",
+        json={"title": "Unsynced"},
+        headers=auth_headers(client, "user"),
+    ).json()
+    assert task["google_event_id"] is None
+
+    response = client.patch(
+        f"/api/tasks/{task['id']}",
+        json={"sync_with_google_calendar": True},
+        headers=auth_headers(client, "user"),
+    )
+    assert response.status_code == 200, response.text
+    assert creates == ["Unsynced"]
+    assert response.json()["google_event_id"] == "event-late"
+
+
+def test_patch_task_to_disable_sync_deletes_event(
+    client: TestClient,
+    session_factory: sessionmaker,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Toggling sync OFF on a synced task deletes the event and
+    clears the google_event_id / google_calendar_id columns."""
+    with session_factory() as session:
+        uid = _user_id(session, UserRole.USER)
+    _seed_integration(session_factory, user_id=uid)
+
+    deletes: list[tuple[str, str]] = []
+
+    class _FakeClient:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            pass
+
+        def create_event(self, calendar_id: str, body: dict[str, Any]) -> dict[str, Any]:
+            return {"id": "event-toggle"}
+
+        def update_event(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            raise AssertionError("update should not run when toggling off")
+
+        def delete_event(self, calendar_id: str, event_id: str) -> None:
+            deletes.append((calendar_id, event_id))
+
+    monkeypatch.setattr(
+        "app.integrations.google_calendar.service.GoogleCalendarClient",
+        _FakeClient,
+    )
+    task = client.post(
+        "/api/tasks",
+        json={"title": "Has event", "sync_with_google_calendar": True},
+        headers=auth_headers(client, "user"),
+    ).json()
+    assert task["google_event_id"] == "event-toggle"
+
+    response = client.patch(
+        f"/api/tasks/{task['id']}",
+        json={"sync_with_google_calendar": False},
+        headers=auth_headers(client, "user"),
+    )
+    assert response.status_code == 200, response.text
+    assert deletes == [("cal-123", "event-toggle")]
+    body = response.json()
+    assert body["google_event_id"] is None
+    assert body["google_calendar_id"] is None

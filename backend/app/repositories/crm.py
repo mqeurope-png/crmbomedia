@@ -25,11 +25,14 @@ CONTACT_SORT_COLUMNS = {
     "first_name": Contact.first_name,
     "last_name": Contact.last_name,
     "email": Contact.email,
+    "phone": Contact.phone,
     "created_at": Contact.created_at,
     "updated_at": Contact.updated_at,
     "created_at_external": Contact.created_at_external,
     "updated_at_external": Contact.updated_at_external,
     "lead_score": Contact.lead_score,
+    "commercial_status": Contact.commercial_status,
+    "marketing_consent": Contact.marketing_consent,
 }
 
 

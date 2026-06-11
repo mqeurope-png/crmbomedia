@@ -699,6 +699,11 @@ class ContactSearchRequest(BaseModel):
     # operator can layer it over a saved view without rewriting the
     # tree.
     q: str | None = None
+    # Toggle in the contacts list header that filters down to "only
+    # contacts I own". Backend AND's `Contact.owner_user_id ==
+    # current_user.id` into the rules tree's WHERE so the user
+    # doesn't have to add the rule manually every time.
+    assigned_to_me: bool = False
 
 
 class TaskAssigneeRead(BaseModel):
@@ -764,6 +769,10 @@ class TaskUpdate(BaseModel):
     company_id: str | None = None
     pipeline_stage_id: str | None = None
     reminder_minutes_before: int | None = Field(default=None, ge=0, le=10080)
+    # When provided, drives the sync side effect: True on an unsynced
+    # task creates the event; False on a synced task deletes it and
+    # clears `google_event_id`. Omit to leave the sync state alone.
+    sync_with_google_calendar: bool | None = None
 
 
 class TaskRead(BaseModel):

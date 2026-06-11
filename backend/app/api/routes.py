@@ -1417,6 +1417,14 @@ def search_contacts_endpoint(
             detail=str(exc),
         ) from exc
 
+    if payload.assigned_to_me:
+        from sqlalchemy import and_ as _and_  # noqa: PLC0415
+
+        owner_clause = Contact.owner_user_id == current_user.id
+        filter_clause = (
+            owner_clause if filter_clause is None else _and_(filter_clause, owner_clause)
+        )
+
     items, total = crm_repository.search_contacts(
         session,
         filter_clause=filter_clause,

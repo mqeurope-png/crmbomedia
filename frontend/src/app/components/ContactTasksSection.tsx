@@ -1,6 +1,6 @@
 "use client";
 
-import { CheckCircle2, Plus, Trash2 } from "lucide-react";
+import { CheckCircle2, Pencil, Plus, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import {
   completeTask,
@@ -31,6 +31,7 @@ export function ContactTasksSection({ contactId }: { contactId: string }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showModal, setShowModal] = useState(false);
+  const [editingTask, setEditingTask] = useState<Task | null>(null);
 
   const reload = useCallback(async () => {
     try {
@@ -104,6 +105,14 @@ export function ContactTasksSection({ contactId }: { contactId: string }) {
               </div>
               <button
                 type="button"
+                className="tasks-row-edit"
+                onClick={() => setEditingTask(task)}
+                title="Editar"
+              >
+                <Pencil size={13} aria-hidden />
+              </button>
+              <button
+                type="button"
                 className="tasks-row-delete"
                 onClick={() => handleDelete(task)}
                 title="Borrar"
@@ -120,6 +129,16 @@ export function ContactTasksSection({ contactId }: { contactId: string }) {
           onClose={() => setShowModal(false)}
           onCreated={async () => {
             setShowModal(false);
+            await reload();
+          }}
+        />
+      ) : null}
+      {editingTask ? (
+        <TaskModal
+          task={editingTask}
+          onClose={() => setEditingTask(null)}
+          onUpdated={async () => {
+            setEditingTask(null);
             await reload();
           }}
         />

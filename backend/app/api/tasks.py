@@ -276,6 +276,9 @@ def update_task_endpoint(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Solo admin/manager puede reasignar tareas.",
         )
+    # Pop the sync flag before the repo sees it — the repo only deals
+    # with model columns.
+    sync_flag = changes.pop("sync_with_google_calendar", None)
     tasks_repository.update_task(session, task=task, changes=changes)
     record_event(
         session,
@@ -286,7 +289,20 @@ def update_task_endpoint(
         metadata={"changes": list(changes.keys())},
         request=request,
     )
-    if task.google_event_id and task.google_calendar_id:
+    # Sync side effects:
+    # - sync_flag True + no event yet → create the event.
+    # - sync_flag False + event present → delete the event and
+    #   clear `google_event_id`/`google_calendar_id`.
+    # - sync_flag None (omitted) + event present → patch the
+    #   existing event with the new fields.
+    if sync_flag is True and not task.google_event_id:
+        google_service.sync_task_to_calendar(session, task)
+    elif sync_flag is False and task.google_event_id:
+        google_service.delete_task_event(session, task)
+        task.google_event_id = None
+        task.google_calendar_id = None
+        session.flush()
+    elif task.google_event_id and task.google_calendar_id:
         google_service.update_task_event(session, task)
     session.commit()
     session.refresh(task)
