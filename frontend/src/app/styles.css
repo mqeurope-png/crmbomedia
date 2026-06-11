@@ -3941,3 +3941,34 @@ a.origin-chip:hover { filter: brightness(0.97); }
   font-size: 13px;
 }
 .select-all-banner .button.small { padding: 4px 10px; }
+
+/* Lista / Calendario toggle in /tasks */
+.task-mode-toggle {
+  display: inline-flex;
+  gap: 4px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px;
+  background: white;
+}
+.task-mode-toggle .pill-toggle {
+  border: none;
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+/* react-big-calendar tweaks */
+.tasks-calendar-wrapper {
+  margin-top: 16px;
+  background: white;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+}
+.tasks-calendar-wrapper .rbc-toolbar button {
+  font-size: 12px;
+}
+.rbc-event-done { background-color: #94a3b8 !important; opacity: 0.7; }
+.rbc-event-done .rbc-event-content { text-decoration: line-through; }
+.rbc-event-urgent { background-color: #b03030 !important; }
+.rbc-event-high { background-color: #b58105 !important; }

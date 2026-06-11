@@ -3,7 +3,9 @@
 import {
   AlertCircle,
   Calendar,
+  CalendarDays,
   CheckCircle2,
+  List as ListIcon,
   Pencil,
   Plus,
   Trash2,
@@ -12,6 +14,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { PageHeader } from "../components/PageHeader";
 import { TaskModal } from "../components/TaskModal";
+import { TasksCalendar } from "../components/TasksCalendar";
 import { extractErrorMessage } from "../lib/errors";
 import {
   completeTask,
@@ -61,6 +64,7 @@ export default function TasksPage() {
   // clutter the urgency buckets. When on, an extra "Completadas"
   // section appears at the bottom with the last 50 done tasks.
   const [showCompleted, setShowCompleted] = useState(false);
+  const [mode, setMode] = useState<"list" | "calendar">("list");
 
   const reload = useCallback(async () => {
     try {
@@ -114,14 +118,32 @@ export default function TasksPage() {
         description="Tus tareas pendientes agrupadas por urgencia."
         actions={
           <>
-            <label className="task-show-completed">
-              <input
-                type="checkbox"
-                checked={showCompleted}
-                onChange={(e) => setShowCompleted(e.target.checked)}
-              />
-              Mostrar completadas
-            </label>
+            <div className="task-mode-toggle" role="group" aria-label="Modo de vista">
+              <button
+                type="button"
+                className={`pill-toggle ${mode === "list" ? "is-active" : ""}`}
+                onClick={() => setMode("list")}
+              >
+                <ListIcon size={11} aria-hidden /> Lista
+              </button>
+              <button
+                type="button"
+                className={`pill-toggle ${mode === "calendar" ? "is-active" : ""}`}
+                onClick={() => setMode("calendar")}
+              >
+                <CalendarDays size={11} aria-hidden /> Calendario
+              </button>
+            </div>
+            {mode === "list" ? (
+              <label className="task-show-completed">
+                <input
+                  type="checkbox"
+                  checked={showCompleted}
+                  onChange={(e) => setShowCompleted(e.target.checked)}
+                />
+                Mostrar completadas
+              </label>
+            ) : null}
             <button
               type="button"
               className="button"
@@ -135,7 +157,9 @@ export default function TasksPage() {
 
       {error ? <p className="form-error">{error}</p> : null}
 
-      {loading ? (
+      {mode === "calendar" ? (
+        <TasksCalendar />
+      ) : loading ? (
         <p className="muted">Cargando…</p>
       ) : !buckets ? null : (
         <section className="tasks-grid">
@@ -170,7 +194,7 @@ export default function TasksPage() {
         </section>
       )}
 
-      {showCompleted && completedTasks.length > 0 ? (
+      {mode === "list" && showCompleted && completedTasks.length > 0 ? (
         <section className="tasks-completed">
           <header className="section-title">
             <h2>Completadas</h2>

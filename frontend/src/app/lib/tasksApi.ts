@@ -99,6 +99,18 @@ export async function getMyBuckets(): Promise<TaskBuckets> {
   return apiFetch<TaskBuckets>("/api/tasks/my-buckets");
 }
 
+/** Calendar slice: tasks whose `due_at` falls within [from, to].
+ *  Used by the `/tasks` calendar view (month / week / day). */
+export async function getCalendarTasks(
+  fromIso: string,
+  toIso: string,
+  assignedUserId?: string,
+): Promise<Task[]> {
+  const params = new URLSearchParams({ from: fromIso, to: toIso });
+  if (assignedUserId) params.set("assigned_user_id", assignedUserId);
+  return apiFetch<Task[]>(`/api/tasks/calendar?${params.toString()}`);
+}
+
 export async function listContactTasks(
   contactId: string,
   options: { include_completed?: boolean } = {},
