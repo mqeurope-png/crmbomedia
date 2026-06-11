@@ -98,7 +98,7 @@ def _decode_pubsub_payload(body: dict[str, Any]) -> dict[str, Any]:
 async def gmail_webhook(
     request: Request,
     session: Session = Depends(get_session),
-) -> dict[str, str]:
+) -> dict[str, str | int]:
     """Receive a Gmail Push Notifications push.
 
     Returns 200 fast — the actual history processing happens in the
