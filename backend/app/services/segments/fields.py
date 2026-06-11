@@ -36,7 +36,16 @@ class FieldSpec:
     extras: dict[str, Any] = field(default_factory=dict)
 
 
-_COMMON_STRING = ("contains", "not_contains", "starts_with", "eq", "neq")
+_COMMON_STRING = (
+    "contains",
+    "not_contains",
+    "starts_with",
+    "ends_with",
+    "eq",
+    "neq",
+    "is_null",
+    "is_not_null",
+)
 _COMMON_NULLABLE = ("is_null", "is_not_null")
 _NUMERIC = ("eq", "neq", "gt", "gte", "lt", "lte", "between", "is_null")
 _DATE = (
@@ -45,6 +54,7 @@ _DATE = (
     "between",
     "in_last_n_days",
     "not_in_last_n_days",
+    "older_than_n_days",
     "is_null",
     "is_not_null",
 )
@@ -63,15 +73,29 @@ FIELD_SPECS: dict[str, FieldSpec] = {
         key="email",
         label="Email",
         type="string",
-        comparators=("contains", "eq", "neq", *_COMMON_NULLABLE),
+        comparators=_COMMON_STRING,
         column=Contact.email,
     ),
     "phone": FieldSpec(
         key="phone",
         label="Teléfono",
         type="string",
-        comparators=("contains", "eq", "is_null"),
+        comparators=_COMMON_STRING,
         column=Contact.phone,
+    ),
+    "first_name": FieldSpec(
+        key="first_name",
+        label="Nombre",
+        type="string",
+        comparators=_COMMON_STRING,
+        column=Contact.first_name,
+    ),
+    "last_name": FieldSpec(
+        key="last_name",
+        label="Apellidos",
+        type="string",
+        comparators=_COMMON_STRING,
+        column=Contact.last_name,
     ),
     "tags": FieldSpec(
         key="tags",
@@ -99,7 +123,7 @@ FIELD_SPECS: dict[str, FieldSpec] = {
         key="commercial_status",
         label="Estado comercial",
         type="enum",
-        comparators=("eq", "neq", "in"),
+        comparators=("eq", "neq", "in", "not_in"),
         enum_values=("new", "qualified", "won", "lost"),
         column=Contact.commercial_status,
     ),
@@ -107,7 +131,7 @@ FIELD_SPECS: dict[str, FieldSpec] = {
         key="marketing_consent",
         label="Consentimiento marketing",
         type="enum",
-        comparators=("eq", "neq", "in"),
+        comparators=("eq", "neq", "in", "not_in"),
         enum_values=("granted", "denied", "unknown", "unsubscribed"),
         column=Contact.marketing_consent,
     ),
@@ -129,8 +153,24 @@ FIELD_SPECS: dict[str, FieldSpec] = {
         key="address_country",
         label="País (dirección)",
         type="string",
-        comparators=("eq", "neq", "in", "is_null"),
+        comparators=(
+            "eq",
+            "neq",
+            "in",
+            "not_in",
+            "contains",
+            "not_contains",
+            "is_null",
+            "is_not_null",
+        ),
         column=Contact.address_country,
+    ),
+    "address_city": FieldSpec(
+        key="address_city",
+        label="Ciudad (dirección)",
+        type="string",
+        comparators=_COMMON_STRING,
+        column=Contact.address_city,
     ),
     "created_at": FieldSpec(
         key="created_at",
