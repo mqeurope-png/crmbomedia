@@ -213,3 +213,205 @@ def test_view_id_for_private_view_of_other_user_is_404(client: TestClient):
         headers=auth_headers(client, "manager"),
     )
     assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Save view as segment
+# ---------------------------------------------------------------------------
+
+
+def _rules_view(client: TestClient, name: str, rules: dict) -> dict:
+    """Helper: create a view whose `filters.rules_json` carries the
+    new segments-engine boolean tree (Sprint UX)."""
+    return _create_view(
+        client, role="manager", name=name, filters={"rules_json": rules}
+    )
+
+
+def test_save_view_as_segment_creates_segment_with_same_rules(
+    client: TestClient,
+):
+    rules = {
+        "type": "rule",
+        "field": "email",
+        "comparator": "contains",
+        "value": "@example.com",
+    }
+    view = _rules_view(client, "Vista clientes", rules)
+
+    response = client.post(
+        f"/api/contact-views/{view['id']}/save-as-segment",
+        json={"name": "Clientes", "description": "Clientes activos"},
+        headers=auth_headers(client, "manager"),
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["name"] == "Clientes"
+    # The segment's rules_json round-trips the view's filter tree.
+    assert body["rules"]["field"] == "email"
+    assert body["rules"]["value"] == "@example.com"
+
+
+def test_save_view_as_segment_blocked_for_non_owner_private_view(
+    client: TestClient,
+):
+    rules = {"type": "rule", "field": "email", "comparator": "is_not_null"}
+    admin_view = _create_view(
+        client,
+        role="admin",
+        name="Solo admin",
+        filters={"rules_json": rules},
+    )
+    response = client.post(
+        f"/api/contact-views/{admin_view['id']}/save-as-segment",
+        json={"name": "Robo"},
+        headers=auth_headers(client, "manager"),
+    )
+    # The view exists but isn't shared and the manager isn't the
+    # owner → 403 from the endpoint's ownership check.
+    assert response.status_code == 403
+
+
+def test_save_view_as_segment_legacy_filter_dict_becomes_empty_rules(
+    client: TestClient,
+):
+    """Old views stored `filters` as a flat dict (`{"q": "demo"}`) —
+    the action turns the tree into an empty rules_json, matching the
+    'every contact' default rather than crashing the engine."""
+    legacy = _create_view(client, role="manager", filters={"q": "demo"})
+    response = client.post(
+        f"/api/contact-views/{legacy['id']}/save-as-segment",
+        json={"name": "Vista vieja"},
+        headers=auth_headers(client, "manager"),
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["rules"] == {}
+
+
+# ---------------------------------------------------------------------------
+# Push view to brevo list
+# ---------------------------------------------------------------------------
+
+
+def _seed_brevo_account(client: TestClient) -> None:
+    """Seed a Brevo integration account so the push endpoint can find
+    one. We don't actually hit Brevo — `BrevoClient.create_list` is
+    patched per-test."""
+    from app.db.session import get_session
+    from app.main import app
+    from app.models.crm import ExternalSystem
+    from app.models.integration_settings import IntegrationAccount
+
+    session_factory = app.dependency_overrides[get_session]
+    session_gen = session_factory()
+    session = next(session_gen)
+    try:
+        session.add(
+            IntegrationAccount(
+                system=ExternalSystem.BREVO,
+                account_id="default",
+                display_name="Brevo Default",
+                enabled=True,
+            )
+        )
+        session.commit()
+    finally:
+        session_gen.close()
+
+
+def test_push_view_to_existing_brevo_list_creates_target_and_enqueues(
+    client: TestClient, monkeypatch
+):
+    rules = {
+        "type": "rule",
+        "field": "email",
+        "comparator": "is_not_null",
+    }
+    view = _rules_view(client, "Lista email", rules)
+    _seed_brevo_account(client)
+
+    fake = {"sync_log_id": "log-1", "job_id": "job-1"}
+
+    def _fake_enqueue(*_args, **_kwargs):
+        return fake["sync_log_id"], fake["job_id"]
+
+    monkeypatch.setattr(
+        "app.api.routes.enqueue_sync_job", _fake_enqueue
+    )
+
+    response = client.post(
+        f"/api/contact-views/{view['id']}/push-to-brevo-list",
+        json={"brevo_account_id": "default", "brevo_list_id": 42},
+        headers=auth_headers(client, "manager"),
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["sync_log_id"] == "log-1"
+    assert body["brevo_list_id"] == 42
+    assert body["target_id"]
+    assert body["segment_id"]
+
+
+def test_push_view_to_brevo_list_rejects_both_or_neither(client: TestClient):
+    view = _rules_view(
+        client,
+        "Vista",
+        {"type": "rule", "field": "email", "comparator": "is_not_null"},
+    )
+    _seed_brevo_account(client)
+    both = client.post(
+        f"/api/contact-views/{view['id']}/push-to-brevo-list",
+        json={
+            "brevo_account_id": "default",
+            "brevo_list_id": 42,
+            "new_list_name": "Otra",
+        },
+        headers=auth_headers(client, "manager"),
+    )
+    assert both.status_code == 400
+
+    neither = client.post(
+        f"/api/contact-views/{view['id']}/push-to-brevo-list",
+        json={"brevo_account_id": "default"},
+        headers=auth_headers(client, "manager"),
+    )
+    assert neither.status_code == 400
+
+
+def test_push_view_creates_new_brevo_list_when_requested(
+    client: TestClient, monkeypatch
+):
+    rules = {"type": "rule", "field": "email", "comparator": "is_not_null"}
+    view = _rules_view(client, "Vista", rules)
+    _seed_brevo_account(client)
+
+    created_id = 9999
+
+    class _FakeClient:
+        def __init__(self, *_a, **_kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return None
+
+        async def create_list(self, name):
+            return {"id": created_id, "name": name}
+
+    monkeypatch.setattr(
+        "app.integrations.brevo.client.BrevoClient", _FakeClient
+    )
+    monkeypatch.setattr(
+        "app.api.routes.enqueue_sync_job", lambda *_a, **_kw: ("L", "J")
+    )
+
+    response = client.post(
+        f"/api/contact-views/{view['id']}/push-to-brevo-list",
+        json={"brevo_account_id": "default", "new_list_name": "Nueva lista"},
+        headers=auth_headers(client, "manager"),
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["brevo_list_id"] == created_id

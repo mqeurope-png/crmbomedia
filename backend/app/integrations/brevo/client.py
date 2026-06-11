@@ -166,6 +166,45 @@ class BrevoClient(IntegrationHTTPClient):
         response = await self.post("/contacts/lists", json=payload)
         return response.json or {}
 
+    async def update_list(
+        self, list_id: int, *, name: str | None = None, folder_id: int | None = None
+    ) -> None:
+        """PUT /contacts/lists/{id} — rename and/or re-folder.
+
+        Brevo replies 204 on success; both fields are optional but at
+        least one is expected by the API."""
+        body: dict[str, Any] = {}
+        if name is not None:
+            body["name"] = name
+        if folder_id is not None:
+            body["folderId"] = folder_id
+        await self.put(f"/contacts/lists/{list_id}", json=body)
+
+    async def delete_list(self, list_id: int) -> None:
+        await self.delete(f"/contacts/lists/{list_id}")
+
+    async def list_list_contacts(
+        self,
+        list_id: int,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        """GET /contacts/lists/{id}/contacts — paginated subscribers.
+
+        Brevo caps the page at 500 and accepts only `email` (not
+        contact id) in the response, so the route layer maps the
+        returned addresses to local `contact_id`s when available."""
+        response = await self.get(
+            f"/contacts/lists/{list_id}/contacts",
+            params={"limit": _clamp_limit(limit, 500), "offset": offset},
+        )
+        body = response.json or {}
+        return {
+            "contacts": body.get("contacts") or [],
+            "count": int(body.get("count") or 0),
+        }
+
     async def add_contacts_to_list(
         self, list_id: int, emails: list[str]
     ) -> dict[str, Any]:

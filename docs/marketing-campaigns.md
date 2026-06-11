@@ -60,6 +60,52 @@ CRM → lista Brevo, con auto-sync cada N minutos. Quien entra al
 segmento se empuja; quien sale, se quita de la lista (nunca se borra
 de Brevo). El botón "Probar (dry-run)" enseña qué haría sin escribir.
 
+## Listas Brevo desde el CRM (`/marketing/listas`)
+
+Las listas de Brevo se gestionan **completas** desde el CRM sin tener
+que entrar a Brevo: ver, crear, renombrar, borrar, y ver/quitar
+contactos. La cuenta Brevo es la activa (`resolvePrimaryBrevoAccount`);
+los endpoints son proxy puro al `/contacts/lists` de Brevo, sin cache
+local.
+
+- **Lista de listas** — buscador por nombre + counters
+  (suscriptores totales / únicos / blacklist / folder). Click en una
+  fila abre el detalle. "+ Nueva lista" (modal con campo nombre)
+  llama `POST /api/brevo/lists`. Roles: admin/manager.
+- **Detalle de una lista** — header con nombre + acciones
+  "Renombrar" / "Borrar" (manager-only). Dos stat cards. Tabla
+  paginada de subscribers; los emails conocidos en el CRM linkan a
+  `/contacts/[id]` con su nombre, los desconocidos aparecen como "no
+  está en el CRM" (consistente con la política de webhooks: el CRM
+  nunca crea contactos por su cuenta). Cada fila tiene un botón
+  "Quitar" que pide confirmación y llama
+  `POST /api/brevo/lists/{id}/contacts/remove`.
+
+Para **añadir contactos en bloque** a una lista (sea existente o
+nueva), el flujo recomendado es desde una vista guardada en
+`/contacts` → botón "Enviar a lista Brevo": el backend resuelve los
+contactos del filtro, crea un segmento auxiliar y un `BrevoSyncTarget`
+push-only, y encola el job (`brevo:push_target`). El resultado del
+endpoint trae `sync_log_id` para seguir el progreso desde
+`/admin/integrations`.
+
+### Endpoints `/api/brevo/lists/*`
+
+| Método | Path | Rol | Qué hace |
+|---|---|---|---|
+| GET | `/lists?account_id=` | user+ | Listado (proxy a Brevo). |
+| GET | `/lists/{id}?account_id=` | user+ | Detalle con counters. 404 si Brevo devuelve vacío. |
+| POST | `/lists?account_id=` | manager+ | Crear (re-fetch detalle al final para devolver counters). |
+| PATCH | `/lists/{id}?account_id=` | manager+ | Renombrar / re-folder. Body vacío → 400. |
+| DELETE | `/lists/{id}?account_id=` | manager+ | Borra la lista en Brevo (los contactos no se borran). |
+| GET | `/lists/{id}/contacts?account_id=` | user+ | Paginated (limit≤500). Mapea `email`→`contact_id` del CRM (case-insensitive). |
+| POST | `/lists/{id}/contacts/add?account_id=` | manager+ | Body `{emails?, contact_ids?}`. Resuelve, deduplica, lowercases. Batches de 100 contra Brevo. |
+| POST | `/lists/{id}/contacts/remove?account_id=` | manager+ | Igual que add. |
+
+Cuando se pasa `contact_ids`, los unknown se cuentan como
+`skipped_unknown_contact`; los contactos sin email se cuentan como
+`skipped_missing_email`. Ninguno crashea la petición.
+
 ## Limitaciones conocidas
 
 - **Sin editor WYSIWYG**: HTML en texto plano + preview. Edición

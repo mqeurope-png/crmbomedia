@@ -49,24 +49,47 @@ from app.services.segments.fields import (
 MAX_DEPTH = 10
 LOGICAL_OPERATORS = {"AND", "OR", "NOT"}
 
+#: Callable that returns the `rules_json` tree for a segment id, or
+#: None when the id doesn't resolve. The route layer passes a
+#: closure backed by the SQLAlchemy session; tests pass an in-memory
+#: dict. Without a resolver the `in_segment` field can't be compiled
+#: and the engine raises a clear error.
+SegmentResolver = Any  # Callable[[str, set[str]], dict | None]
+
 
 class SegmentRuleError(ValueError):
     """Operator-supplied tree failed validation. The route maps it to
     400 so the UI can highlight the offending node."""
 
 
-def build_filter(tree: dict[str, Any]) -> ColumnElement[bool]:
+def build_filter(
+    tree: dict[str, Any],
+    *,
+    segment_resolver: SegmentResolver | None = None,
+) -> ColumnElement[bool]:
     """Compile the rule tree into a SQLAlchemy boolean expression.
 
     Empty / falsy input compiles to `True` so a brand-new segment
     matches every contact instead of crashing the preview.
+
+    `segment_resolver` is consulted when the tree references
+    `in_segment` — the route layer passes a session-backed lookup; in
+    its absence the engine raises `SegmentRuleError` instead of
+    silently ignoring the rule.
     """
     if not tree:
         return _true()
-    return _compile(tree, depth=0)
+    return _compile(tree, depth=0, resolver=segment_resolver, visited=set())
 
 
-def _compile(node: dict[str, Any], *, depth: int) -> ColumnElement[bool]:
+def _compile(
+    node: dict[str, Any],
+    *,
+    depth: int,
+    resolver: SegmentResolver | None = None,
+    visited: set[str] | None = None,
+) -> ColumnElement[bool]:
+    visited = visited if visited is not None else set()
     if depth > MAX_DEPTH:
         raise SegmentRuleError(f"Rule tree exceeds max depth {MAX_DEPTH}")
     if not isinstance(node, dict):
@@ -83,7 +106,10 @@ def _compile(node: dict[str, Any], *, depth: int) -> ColumnElement[bool]:
             # (OR / NOT). We pick a friendly default: empty means no
             # filter so the operator sees their contact universe.
             return _true()
-        compiled = [_compile(child, depth=depth + 1) for child in children]
+        compiled = [
+            _compile(child, depth=depth + 1, resolver=resolver, visited=visited)
+            for child in children
+        ]
         if op_upper == "AND":
             return and_(*compiled)
         if op_upper == "OR":
@@ -120,18 +146,32 @@ def _compile(node: dict[str, Any], *, depth: int) -> ColumnElement[bool]:
         raise SegmentRuleError(
             f"Campo {spec.key!r}: {exc}"
         ) from exc
-    return _compile_leaf(spec, comparator, value)
+    return _compile_leaf(
+        spec, comparator, value, resolver=resolver, visited=visited, depth=depth
+    )
 
 
 def _compile_leaf(
-    spec: FieldSpec, comparator: str, value: Any
+    spec: FieldSpec,
+    comparator: str,
+    value: Any,
+    *,
+    resolver: SegmentResolver | None = None,
+    visited: set[str] | None = None,
+    depth: int = 0,
 ) -> ColumnElement[bool]:
+    if spec.relation == "segment_membership":
+        return _compile_segment_membership(
+            comparator, value, resolver=resolver, visited=visited or set(), depth=depth
+        )
     if spec.relation == "tags":
         return _compile_tag_leaf(comparator, value)
     if spec.relation in {"external_refs.system", "external_refs.account_id"}:
         return _compile_external_ref_leaf(spec, comparator, value)
     if spec.relation in {"pipeline_id", "pipeline_stage_id"}:
         return _compile_pipeline_leaf(spec, comparator, value)
+    if spec.relation == "brevo_list_membership":
+        return _compile_brevo_list_leaf(comparator, value)
 
     column = spec.column
     if column is None and "concat" in spec.extras:
@@ -265,6 +305,97 @@ def _compile_pipeline_leaf(
     raise SegmentRuleError(
         f"Unsupported pipeline comparator {comparator!r}"
     )
+
+
+def _compile_brevo_list_leaf(
+    comparator: str, value: list[Any]
+) -> ColumnElement[bool]:
+    """Match contacts whose Brevo `external_references.metadata` has any
+    of the given list ids in its `list_ids` array.
+
+    The brevo mapper writes `metadata.list_ids` as a JSON array of
+    ints. We don't have a per-(contact, list) row, so we LIKE-scan the
+    JSON text with anchored patterns that survive the mapper's
+    `json.dumps` default formatting (`[4, 7]`, separator is `, `).
+    Anchoring both sides with `[` / `, ` / `]` rules out the
+    `12 matches 1` false positive."""
+    # ExternalSystem.BREVO lives in app.models.crm — imported lazily
+    # so the engine module stays decoupled from the enum value.
+    from app.models.crm import ExternalSystem  # noqa: PLC0415
+
+    list_ids = [str(int(item)) for item in value]
+    patterns: list[Any] = []
+    for lid in list_ids:
+        patterns.append(
+            ExternalReference.metadata_json.like(f'%"list_ids": [{lid}]%')
+        )
+        patterns.append(
+            ExternalReference.metadata_json.like(f'%"list_ids": [{lid}, %')
+        )
+        patterns.append(
+            ExternalReference.metadata_json.like(f'%, {lid}]%')
+        )
+        patterns.append(
+            ExternalReference.metadata_json.like(f'%, {lid}, %')
+        )
+    subq = (
+        select(ExternalReference.contact_id)
+        .where(ExternalReference.system == ExternalSystem.BREVO)
+        .where(ExternalReference.metadata_json.is_not(None))
+        .where(or_(*patterns))
+    )
+    if comparator == "in":
+        return Contact.id.in_(subq)
+    if comparator == "not_in":
+        return ~Contact.id.in_(subq)
+    raise SegmentRuleError(
+        f"Unsupported brevo list comparator {comparator!r}"
+    )
+
+
+def _compile_segment_membership(
+    comparator: str,
+    value: list[str],
+    *,
+    resolver: SegmentResolver | None,
+    visited: set[str],
+    depth: int,
+) -> ColumnElement[bool]:
+    """`in_segment` references other segments by id; each referenced
+    segment's rules tree is loaded via `resolver` and compiled in
+    place (OR'd across the listed ids). Cycles are detected via the
+    `visited` set so a segment that references itself can't loop."""
+    if resolver is None:
+        raise SegmentRuleError(
+            "in_segment requires a segment_resolver; pass one via build_filter"
+        )
+    sub_filters: list[ColumnElement[bool]] = []
+    for segment_id in value:
+        sid = str(segment_id)
+        if sid in visited:
+            raise SegmentRuleError(
+                f"in_segment cycle detected at segment {sid!r}"
+            )
+        sub_tree = resolver(sid, visited)
+        if sub_tree is None:
+            # Unknown segment id → contributes no matches. Skipping
+            # silently would be too kind (it'd match every contact via
+            # the AND-empty rule), so we add a dead clause that filters
+            # nothing out.
+            sub_filters.append(_false())
+            continue
+        next_visited = visited | {sid}
+        sub_filters.append(
+            _compile(sub_tree, depth=depth + 1, resolver=resolver, visited=next_visited)
+        )
+    if not sub_filters:
+        return _false() if comparator == "in" else _true()
+    combined = or_(*sub_filters) if len(sub_filters) > 1 else sub_filters[0]
+    return combined if comparator == "in" else not_(combined)
+
+
+def _false() -> ColumnElement[bool]:
+    return Contact.id != Contact.id
 
 
 def _true() -> ColumnElement[bool]:

@@ -101,7 +101,31 @@ export type BrevoList = {
   id: number;
   name: string;
   total_subscribers: number;
+  unique_subscribers?: number | null;
+  total_blacklisted?: number | null;
   folder_id?: number | null;
+};
+
+export type BrevoListContactItem = {
+  email: string;
+  contact_id: string | null;
+  first_name: string | null;
+  last_name: string | null;
+  contact_known: boolean;
+};
+
+export type BrevoListContactsPage = {
+  items: BrevoListContactItem[];
+  total: number;
+  limit: number;
+  offset: number;
+};
+
+export type BrevoListContactsMutationResult = {
+  requested: number;
+  sent: number;
+  skipped_unknown_contact: number;
+  skipped_missing_email: number;
 };
 
 export type BrevoSender = {
@@ -114,6 +138,86 @@ export type BrevoSender = {
 export async function listBrevoLists(accountId: string): Promise<BrevoList[]> {
   return apiFetch<BrevoList[]>(
     `/api/brevo/lists?account_id=${encodeURIComponent(accountId)}`,
+  );
+}
+
+export async function getBrevoList(
+  accountId: string,
+  listId: number,
+): Promise<BrevoList> {
+  return apiFetch<BrevoList>(
+    `/api/brevo/lists/${listId}?account_id=${encodeURIComponent(accountId)}`,
+  );
+}
+
+export async function createBrevoList(
+  accountId: string,
+  payload: { name: string; folder_id?: number | null },
+): Promise<BrevoList> {
+  return apiFetch<BrevoList>(
+    `/api/brevo/lists?account_id=${encodeURIComponent(accountId)}`,
+    { method: "POST", body: JSON.stringify(payload) },
+  );
+}
+
+export async function updateBrevoList(
+  accountId: string,
+  listId: number,
+  payload: { name?: string | null; folder_id?: number | null },
+): Promise<BrevoList> {
+  return apiFetch<BrevoList>(
+    `/api/brevo/lists/${listId}?account_id=${encodeURIComponent(accountId)}`,
+    { method: "PATCH", body: JSON.stringify(payload) },
+  );
+}
+
+export async function deleteBrevoList(
+  accountId: string,
+  listId: number,
+): Promise<void> {
+  await apiFetch<unknown>(
+    `/api/brevo/lists/${listId}?account_id=${encodeURIComponent(accountId)}`,
+    { method: "DELETE" },
+  );
+}
+
+export async function getBrevoListContacts(
+  accountId: string,
+  listId: number,
+  options: { limit?: number; offset?: number } = {},
+): Promise<BrevoListContactsPage> {
+  const limit = options.limit ?? 50;
+  const offset = options.offset ?? 0;
+  return apiFetch<BrevoListContactsPage>(
+    `/api/brevo/lists/${listId}/contacts?account_id=${encodeURIComponent(
+      accountId,
+    )}&limit=${limit}&offset=${offset}`,
+  );
+}
+
+export async function addContactsToBrevoList(
+  accountId: string,
+  listId: number,
+  payload: { emails?: string[]; contact_ids?: string[] },
+): Promise<BrevoListContactsMutationResult> {
+  return apiFetch<BrevoListContactsMutationResult>(
+    `/api/brevo/lists/${listId}/contacts/add?account_id=${encodeURIComponent(
+      accountId,
+    )}`,
+    { method: "POST", body: JSON.stringify(payload) },
+  );
+}
+
+export async function removeContactsFromBrevoList(
+  accountId: string,
+  listId: number,
+  payload: { emails?: string[]; contact_ids?: string[] },
+): Promise<BrevoListContactsMutationResult> {
+  return apiFetch<BrevoListContactsMutationResult>(
+    `/api/brevo/lists/${listId}/contacts/remove?account_id=${encodeURIComponent(
+      accountId,
+    )}`,
+    { method: "POST", body: JSON.stringify(payload) },
   );
 }
 

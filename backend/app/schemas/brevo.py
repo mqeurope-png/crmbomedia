@@ -106,7 +106,56 @@ class BrevoListRead(BaseModel):
     id: int
     name: str
     total_subscribers: int = 0
+    unique_subscribers: int | None = None
+    total_blacklisted: int | None = None
     folder_id: int | None = None
+
+
+class BrevoListCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    folder_id: int | None = None
+
+
+class BrevoListUpdate(BaseModel):
+    """PATCH body for a Brevo list. At least one of `name` /
+    `folder_id` must be present; both null → 400."""
+
+    name: str | None = Field(default=None, max_length=200)
+    folder_id: int | None = None
+
+
+class BrevoListContactItem(BaseModel):
+    """One row of `/lists/{id}/contacts`: the Brevo email + the local
+    contact id when we can map it via the CRM contacts table."""
+
+    email: str
+    contact_id: str | None = None
+    first_name: str | None = None
+    last_name: str | None = None
+    contact_known: bool = False
+
+
+class BrevoListContactsPage(BaseModel):
+    items: list[BrevoListContactItem]
+    total: int
+    limit: int
+    offset: int
+
+
+class BrevoListContactsMutation(BaseModel):
+    """Body for `add` / `remove`. Operator passes either `emails`
+    directly OR CRM `contact_ids` (the route resolves them to emails
+    before calling Brevo). Mixed lists are de-duped at the route."""
+
+    emails: list[str] | None = None
+    contact_ids: list[str] | None = None
+
+
+class BrevoListContactsMutationResult(BaseModel):
+    requested: int
+    sent: int
+    skipped_unknown_contact: int = 0
+    skipped_missing_email: int = 0
 
 
 class BrevoSenderRead(BaseModel):

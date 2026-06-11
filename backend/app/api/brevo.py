@@ -11,8 +11,8 @@ import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from sqlalchemy import and_, or_, select
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.audit import Action, record_event
@@ -41,7 +41,13 @@ from app.schemas.brevo import (
     BrevoCampaignRead,
     BrevoCampaignScheduleRequest,
     BrevoCampaignUpdate,
+    BrevoListContactItem,
+    BrevoListContactsMutation,
+    BrevoListContactsMutationResult,
+    BrevoListContactsPage,
+    BrevoListCreate,
     BrevoListRead,
+    BrevoListUpdate,
     BrevoSenderRead,
     BrevoSendTestRequest,
     BrevoSyncTargetCreate,
@@ -266,18 +272,342 @@ def list_brevo_lists(
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY, detail=exc.message
         ) from exc
-    return [
-        BrevoListRead(
-            id=int(row.get("id")),
-            name=str(row.get("name") or row.get("id")),
-            total_subscribers=int(
-                row.get("totalSubscribers") or row.get("uniqueSubscribers") or 0
-            ),
-            folder_id=row.get("folderId"),
+    return [_list_row_to_read(row) for row in rows if row.get("id") is not None]
+
+
+def _list_row_to_read(row: dict[str, Any]) -> BrevoListRead:
+    """Normalise a Brevo `/contacts/lists` row into our `BrevoListRead`.
+
+    Brevo's response shape varies slightly between the index call
+    (returns `totalSubscribers` / `uniqueSubscribers`) and the detail
+    call (adds `totalBlacklisted`). We surface the superset so the UI
+    has every counter without re-fetching."""
+    return BrevoListRead(
+        id=int(row.get("id") or 0),
+        name=str(row.get("name") or row.get("id") or ""),
+        total_subscribers=int(
+            row.get("totalSubscribers") or row.get("uniqueSubscribers") or 0
+        ),
+        unique_subscribers=(
+            int(row["uniqueSubscribers"])
+            if row.get("uniqueSubscribers") is not None
+            else None
+        ),
+        total_blacklisted=(
+            int(row["totalBlacklisted"])
+            if row.get("totalBlacklisted") is not None
+            else None
+        ),
+        folder_id=row.get("folderId"),
+    )
+
+
+@router.get("/lists/{list_id}", response_model=BrevoListRead)
+def get_brevo_list(
+    list_id: int,
+    account_id: str = Query(...),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_user),
+) -> BrevoListRead:
+    _ = current_user
+    _require_brevo_account(session, account_id)
+
+    async def _fetch() -> dict[str, Any]:
+        async with BrevoClient(session, account_id) as client:
+            return await client.get_list(list_id)
+
+    try:
+        row = asyncio.run(_fetch())
+    except IntegrationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=exc.message
+        ) from exc
+    if not row or row.get("id") is None:
+        raise not_found("Brevo list")
+    return _list_row_to_read(row)
+
+
+@router.post(
+    "/lists",
+    response_model=BrevoListRead,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_brevo_list(
+    payload: BrevoListCreate,
+    account_id: str = Query(...),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_manager),
+) -> BrevoListRead:
+    _ = current_user
+    _require_brevo_account(session, account_id)
+
+    async def _create() -> dict[str, Any]:
+        async with BrevoClient(session, account_id) as client:
+            return await client.create_list(payload.name, folder_id=payload.folder_id)
+
+    try:
+        created = asyncio.run(_create())
+    except IntegrationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=exc.message
+        ) from exc
+    if created.get("id") is None:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Brevo no devolvió un id de lista al crear",
         )
-        for row in rows
-        if row.get("id") is not None
+    # Re-fetch the detail so counters are populated for the UI in one
+    # round-trip after creation.
+    async def _detail() -> dict[str, Any]:
+        async with BrevoClient(session, account_id) as client:
+            return await client.get_list(int(created["id"]))
+
+    try:
+        detail = asyncio.run(_detail())
+    except IntegrationError:
+        detail = created
+    return _list_row_to_read(detail)
+
+
+@router.patch("/lists/{list_id}", response_model=BrevoListRead)
+def update_brevo_list(
+    list_id: int,
+    payload: BrevoListUpdate,
+    account_id: str = Query(...),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_manager),
+) -> BrevoListRead:
+    _ = current_user
+    if payload.name is None and payload.folder_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Pasa al menos `name` o `folder_id`",
+        )
+    _require_brevo_account(session, account_id)
+
+    async def _run() -> dict[str, Any]:
+        async with BrevoClient(session, account_id) as client:
+            await client.update_list(
+                list_id, name=payload.name, folder_id=payload.folder_id
+            )
+            return await client.get_list(list_id)
+
+    try:
+        detail = asyncio.run(_run())
+    except IntegrationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=exc.message
+        ) from exc
+    return _list_row_to_read(detail)
+
+
+@router.delete("/lists/{list_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_brevo_list(
+    list_id: int,
+    account_id: str = Query(...),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_manager),
+) -> Response:
+    _ = current_user
+    _require_brevo_account(session, account_id)
+
+    async def _run() -> None:
+        async with BrevoClient(session, account_id) as client:
+            await client.delete_list(list_id)
+
+    try:
+        asyncio.run(_run())
+    except IntegrationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=exc.message
+        ) from exc
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get("/lists/{list_id}/contacts", response_model=BrevoListContactsPage)
+def list_brevo_list_contacts(
+    list_id: int,
+    account_id: str = Query(...),
+    limit: int = Query(default=50, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_user),
+) -> BrevoListContactsPage:
+    """Paginated subscribers of a Brevo list, mapped onto our CRM
+    contacts where possible.
+
+    Returns one row per Brevo subscriber: `contact_id` + `first_name`
+    /`last_name` populate when we already have a CRM contact for that
+    email (case-insensitive match); `contact_known=False` flags
+    addresses we don't manage so the UI can highlight them.
+    """
+    from app.models.crm import Contact  # noqa: PLC0415
+
+    _ = current_user
+    _require_brevo_account(session, account_id)
+
+    async def _fetch() -> dict[str, Any]:
+        async with BrevoClient(session, account_id) as client:
+            return await client.list_list_contacts(
+                list_id, limit=limit, offset=offset
+            )
+
+    try:
+        body = asyncio.run(_fetch())
+    except IntegrationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=exc.message
+        ) from exc
+
+    raw_rows = body.get("contacts") or []
+    emails = [
+        str(row.get("email") or "").strip().lower()
+        for row in raw_rows
+        if row.get("email")
     ]
+    contact_map: dict[str, Contact] = {}
+    if emails:
+        for contact in session.scalars(
+            select(Contact).where(func.lower(Contact.email).in_(emails))
+        ):
+            contact_map[(contact.email or "").lower()] = contact
+
+    items = [
+        BrevoListContactItem(
+            email=str(row.get("email") or ""),
+            contact_id=(c.id if (c := contact_map.get((row.get("email") or "").lower())) else None),
+            first_name=(c.first_name if c else None),
+            last_name=(c.last_name if c else None),
+            contact_known=c is not None,
+        )
+        for row in raw_rows
+    ]
+    return BrevoListContactsPage(
+        items=items,
+        total=int(body.get("count") or 0),
+        limit=limit,
+        offset=offset,
+    )
+
+
+def _resolve_mutation_emails(
+    session: Session, payload: BrevoListContactsMutation
+) -> tuple[list[str], int, int]:
+    """Combine the `emails` + `contact_ids` inputs into a single email
+    list, deduped, lowercased. Returns `(emails, unknown_contacts,
+    contacts_without_email)` so the caller can report skipped
+    counters."""
+    from app.models.crm import Contact  # noqa: PLC0415
+
+    out: dict[str, None] = {}
+    unknown_contacts = 0
+    contacts_without_email = 0
+    for raw in payload.emails or []:
+        normalised = str(raw or "").strip().lower()
+        if normalised:
+            out.setdefault(normalised, None)
+    if payload.contact_ids:
+        rows = list(
+            session.scalars(
+                select(Contact).where(Contact.id.in_(payload.contact_ids))
+            )
+        )
+        by_id = {c.id: c for c in rows}
+        for cid in payload.contact_ids:
+            contact = by_id.get(cid)
+            if contact is None:
+                unknown_contacts += 1
+                continue
+            if not contact.email:
+                contacts_without_email += 1
+                continue
+            out.setdefault(contact.email.lower(), None)
+    return list(out.keys()), unknown_contacts, contacts_without_email
+
+
+@router.post(
+    "/lists/{list_id}/contacts/add",
+    response_model=BrevoListContactsMutationResult,
+)
+def add_contacts_to_brevo_list(
+    list_id: int,
+    payload: BrevoListContactsMutation,
+    account_id: str = Query(...),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_manager),
+) -> BrevoListContactsMutationResult:
+    _ = current_user
+    _require_brevo_account(session, account_id)
+    emails, unknown, no_email = _resolve_mutation_emails(session, payload)
+    if not emails:
+        return BrevoListContactsMutationResult(
+            requested=len(payload.emails or []) + len(payload.contact_ids or []),
+            sent=0,
+            skipped_unknown_contact=unknown,
+            skipped_missing_email=no_email,
+        )
+
+    async def _run() -> None:
+        async with BrevoClient(session, account_id) as client:
+            # Brevo accepts up to ~150 per call; batch to stay safe.
+            for chunk_start in range(0, len(emails), 100):
+                chunk = emails[chunk_start : chunk_start + 100]
+                await client.add_contacts_to_list(list_id, chunk)
+
+    try:
+        asyncio.run(_run())
+    except IntegrationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=exc.message
+        ) from exc
+    return BrevoListContactsMutationResult(
+        requested=len(payload.emails or []) + len(payload.contact_ids or []),
+        sent=len(emails),
+        skipped_unknown_contact=unknown,
+        skipped_missing_email=no_email,
+    )
+
+
+@router.post(
+    "/lists/{list_id}/contacts/remove",
+    response_model=BrevoListContactsMutationResult,
+)
+def remove_contacts_from_brevo_list(
+    list_id: int,
+    payload: BrevoListContactsMutation,
+    account_id: str = Query(...),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_manager),
+) -> BrevoListContactsMutationResult:
+    _ = current_user
+    _require_brevo_account(session, account_id)
+    emails, unknown, no_email = _resolve_mutation_emails(session, payload)
+    if not emails:
+        return BrevoListContactsMutationResult(
+            requested=len(payload.emails or []) + len(payload.contact_ids or []),
+            sent=0,
+            skipped_unknown_contact=unknown,
+            skipped_missing_email=no_email,
+        )
+
+    async def _run() -> None:
+        async with BrevoClient(session, account_id) as client:
+            for chunk_start in range(0, len(emails), 100):
+                chunk = emails[chunk_start : chunk_start + 100]
+                await client.remove_contacts_from_list(list_id, chunk)
+
+    try:
+        asyncio.run(_run())
+    except IntegrationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=exc.message
+        ) from exc
+    return BrevoListContactsMutationResult(
+        requested=len(payload.emails or []) + len(payload.contact_ids or []),
+        sent=len(emails),
+        skipped_unknown_contact=unknown,
+        skipped_missing_email=no_email,
+    )
 
 
 @router.get("/senders", response_model=list[BrevoSenderRead])
