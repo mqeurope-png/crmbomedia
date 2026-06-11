@@ -699,6 +699,11 @@ class ContactSearchRequest(BaseModel):
     # operator can layer it over a saved view without rewriting the
     # tree.
     q: str | None = None
+    # Toggle in the contacts list header that filters down to "only
+    # contacts I own". Backend AND's `Contact.owner_user_id ==
+    # current_user.id` into the rules tree's WHERE so the user
+    # doesn't have to add the rule manually every time.
+    assigned_to_me: bool = False
 
 
 class TaskAssigneeRead(BaseModel):

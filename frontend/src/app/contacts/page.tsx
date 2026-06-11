@@ -197,6 +197,7 @@ export default function ContactsListPage() {
   // changes so stale rows can't be acted on.
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [assignedToMe, setAssignedToMe] = useState(false);
   const [editorMode, setEditorMode] = useState<
     { kind: "create" } | { kind: "edit"; view: SavedView } | null
   >(null);
@@ -239,7 +240,13 @@ export default function ContactsListPage() {
 
   useEffect(() => {
     getCurrentUser()
-      .then(setCurrentUser)
+      .then((u) => {
+        setCurrentUser(u);
+        // Sales user → default to "Solo asignados a mí" so they
+        // don't land on the whole org list and have to filter
+        // every session.
+        if (u.role === "user") setAssignedToMe(true);
+      })
       .catch(() => setCurrentUser(null));
   }, []);
 
@@ -322,6 +329,7 @@ export default function ContactsListPage() {
       sort_dir: sortDir,
       limit: PAGE_SIZE,
       offset,
+      assigned_to_me: assignedToMe,
     })
       .then((result) => {
         if (!cancelled) {
@@ -351,7 +359,7 @@ export default function ContactsListPage() {
     return () => {
       cancelled = true;
     };
-  }, [rules, q, sortBy, sortDir, offset]);
+  }, [rules, q, sortBy, sortDir, offset, assignedToMe]);
 
   const totalPages = useMemo(() => {
     if (!page || page.limit === 0) return 1;
@@ -582,6 +590,32 @@ export default function ContactsListPage() {
 
       <section className="panel contacts-panel">
         <div className="contact-toolbar">
+          <div
+            className="assigned-toggle"
+            role="group"
+            aria-label="Filtrar por asignación"
+          >
+            <button
+              type="button"
+              className={`pill-toggle ${assignedToMe ? "" : "is-active"}`}
+              onClick={() => {
+                setAssignedToMe(false);
+                setOffset(0);
+              }}
+            >
+              Todos
+            </button>
+            <button
+              type="button"
+              className={`pill-toggle ${assignedToMe ? "is-active" : ""}`}
+              onClick={() => {
+                setAssignedToMe(true);
+                setOffset(0);
+              }}
+            >
+              Solo asignados a mí
+            </button>
+          </div>
           <input
             type="search"
             className="search-input"

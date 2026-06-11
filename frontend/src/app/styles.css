@@ -3883,3 +3883,18 @@ a.origin-chip:hover { filter: brightness(0.97); }
   gap: 6px;
 }
 .bulk-bar .form-error { flex: 1 1 100%; margin: 0; }
+
+/* "Asignados a mí" pill group in the contacts toolbar */
+.assigned-toggle {
+  display: inline-flex;
+  gap: 4px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px;
+  background: white;
+}
+.assigned-toggle .pill-toggle {
+  border: none;
+  padding: 4px 10px;
+  font-size: 12px;
+}

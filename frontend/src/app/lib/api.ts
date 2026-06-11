@@ -488,6 +488,9 @@ export type ContactSearchPayload = {
   limit?: number;
   offset?: number;
   include_inactive?: boolean;
+  /** Mini-PR C Fase 3: "leads asignados a mí" toggle. Backend AND's
+   *  `Contact.owner_user_id == current_user.id` into the query. */
+  assigned_to_me?: boolean;
 };
 
 export async function searchContacts(
