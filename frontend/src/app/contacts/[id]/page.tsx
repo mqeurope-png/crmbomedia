@@ -1,29 +1,38 @@
 "use client";
 
-import { ExternalLink } from "lucide-react";
+import {
+  Activity as ActivityIcon,
+  CheckSquare,
+  Kanban,
+  Mail,
+  Phone as PhoneIcon,
+  StickyNote,
+  Trash2,
+} from "lucide-react";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ErrorState } from "../../components/ErrorState";
-import { PageHeader } from "../../components/PageHeader";
 import { ContactEmailActivity } from "../../components/ContactEmailActivity";
 import { ContactPipelinesSection } from "../../components/ContactPipelinesSection";
 import { ContactTasksSection } from "../../components/ContactTasksSection";
+import { EditableField } from "../../components/EditableField";
+import { ErrorState } from "../../components/ErrorState";
+import { OriginChips } from "../../components/OriginChips";
+import { PageHeader } from "../../components/PageHeader";
 import { RefreshExternalDataButton } from "../../components/RefreshExternalDataButton";
+import { TagChips } from "../../components/TagChips";
+import { TagPicker } from "../../components/TagPicker";
 import {
   addTagToContact,
+  deactivateContact,
   getContact,
   removeTagFromContact,
+  updateContact,
   type ActivityEvent,
   type Contact,
-  type ExternalReference,
   type ExternalRefreshResult,
   type Note,
 } from "../../lib/api";
 import { extractErrorMessage } from "../../lib/errors";
-import { TagChips } from "../../components/TagChips";
-import { TagPicker } from "../../components/TagPicker";
-import { OriginChips } from "../../components/OriginChips";
-import { ContactEditForm } from "./ContactEditForm";
 
 function formatDateTime(value: string | null | undefined): string {
   if (!value) return "—";
@@ -38,169 +47,30 @@ function formatDateTime(value: string | null | undefined): string {
   });
 }
 
-function formatAddress(contact: Contact): string | null {
-  const parts = [
-    contact.address_city,
-    contact.address_state,
-    contact.address_country_name ?? contact.address_country,
-  ].filter((part): part is string => Boolean(part && part.trim()));
-  return parts.length ? parts.join(", ") : null;
-}
+const COMMERCIAL_OPTIONS: ReadonlyArray<[string, string]> = [
+  ["new", "Nuevo"],
+  ["qualified", "Calificado"],
+  ["working", "Trabajando"],
+  ["won", "Ganado"],
+  ["lost", "Perdido"],
+];
 
-function ownerSummary(metadata: Record<string, unknown> | null | undefined): string | null {
-  if (!metadata || typeof metadata !== "object") return null;
-  const owner = (metadata as { owner?: unknown }).owner;
-  if (!owner || typeof owner !== "object") return null;
-  const ownerObj = owner as { name?: unknown; email?: unknown; id?: unknown };
-  const label = [ownerObj.name, ownerObj.email]
-    .filter((value): value is string => typeof value === "string" && value.trim() !== "")
-    .join(" · ");
-  if (label) return label;
-  return typeof ownerObj.id === "string" ? `ID ${ownerObj.id}` : null;
-}
+const CONSENT_OPTIONS: ReadonlyArray<[string, string]> = [
+  ["unknown", "Sin definir"],
+  ["granted", "Otorgado"],
+  ["denied", "Denegado"],
+  ["unsubscribed", "Baja"],
+];
 
-function renderCustomValue(value: unknown): string {
-  if (value === null || value === undefined) return "—";
-  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
-    return String(value);
-  }
-  return JSON.stringify(value);
-}
+type Tab = "activity" | "tasks" | "notes" | "pipelines" | "emails";
 
-type RowProps = { label: string; value: string | number | null | undefined };
-
-function Row({ label, value }: RowProps) {
-  if (value === null || value === undefined || value === "") return null;
-  return (
-    <>
-      <dt>{label}</dt>
-      <dd>{value}</dd>
-    </>
-  );
-}
-
-/** "Creado en origen": prefer the real source-system date, falling
- * back to the CRM row's `created_at` with a "del CRM" badge so the
- * operator knows it's not the contact's real age. The CRM date rides
- * along as a tooltip when the external date is shown. */
-function CreatedRow({ contact }: { contact: Contact }) {
-  if (contact.created_at_external) {
-    return (
-      <>
-        <dt>Creado en origen</dt>
-        <dd title={`En el CRM: ${formatDateTime(contact.created_at)}`}>
-          {formatDateTime(contact.created_at_external)}
-        </dd>
-      </>
-    );
-  }
-  if (!contact.created_at) return null;
-  return (
-    <>
-      <dt>Creado</dt>
-      <dd>
-        {formatDateTime(contact.created_at)}{" "}
-        <span className="badge muted">del CRM</span>
-      </dd>
-    </>
-  );
-}
-
-// Soft mapping of AgileCRM activity_type → emoji marker. New types just
-// fall back to the default bullet so we never crash on an unknown event.
-const EVENT_TYPE_ICON: Record<string, string> = {
-  EMAIL_SENT: "✉️",
-  EMAIL_OPENED: "👁️",
-  EMAIL_CLICKED: "🔗",
-  CALL_LOG: "📞",
-  NOTE: "🗒️",
-  FORM_FILL: "📝",
-  DEAL_CREATED: "💼",
-  PAGE_VIEWED: "🌐",
-  TASK_COMPLETED: "✅",
-};
-
-function eventIcon(eventType: string): string {
-  return EVENT_TYPE_ICON[eventType] ?? "•";
-}
-
-function NoteCard({ note }: { note: Note }) {
-  // Prefer the AgileCRM author name; fall back to the email when the
-  // remote omits the name; only show "Sistema" when both are missing
-  // (manual notes created from the CRM UI). Tooltip surfaces the
-  // email so an operator can hover to disambiguate two authors with
-  // the same display name.
-  const author =
-    note.external_author_name ||
-    note.external_author_email ||
-    "Sistema";
-  const tooltip = note.external_author_email ?? undefined;
-  const date = note.external_created_at ?? note.created_at;
-  return (
-    <li className="note-card">
-      <div className="note-card-header">
-        <strong title={tooltip}>{author}</strong>
-        <span className="muted">{formatDateTime(date)}</span>
-      </div>
-      <p className="note-body">{note.body}</p>
-    </li>
-  );
-}
-
-function ActivityEventRow({ event }: { event: ActivityEvent }) {
-  return (
-    <li className="timeline-row">
-      <span className="timeline-icon" aria-hidden>
-        {eventIcon(event.event_type)}
-      </span>
-      <div className="timeline-content">
-        <div className="timeline-meta">
-          <strong>{event.subject || event.event_type}</strong>
-          <span className="muted">{formatDateTime(event.occurred_at)}</span>
-        </div>
-        <span className="timeline-type">{event.event_type}</span>
-        {event.body ? <p className="timeline-body">{event.body}</p> : null}
-      </div>
-    </li>
-  );
-}
-
-function ExternalReferenceCard({ reference }: { reference: ExternalReference }) {
-  const owner = ownerSummary(reference.metadata);
-  return (
-    <li className="external-ref">
-      <div className="external-ref-header">
-        <strong>{reference.system_label ?? reference.system}</strong>
-        <span className="muted">{reference.account_label ?? reference.account_id}</span>
-        {reference.external_url ? (
-          <a
-            href={reference.external_url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="external-ref-link"
-            title="Abrir en el sistema de origen"
-          >
-            <ExternalLink size={13} aria-hidden /> Abrir
-          </a>
-        ) : null}
-      </div>
-      <dl className="definition-list">
-        <Row label="ID externo" value={reference.external_id} />
-        <Row label="Etiqueta" value={reference.account_label} />
-        <Row label="Origen" value={reference.origin_detail} />
-        <Row label="Propietario remoto" value={owner} />
-        <Row
-          label="Creado en origen"
-          value={reference.external_created_at ? formatDateTime(reference.external_created_at) : null}
-        />
-        <Row
-          label="Actualizado en origen"
-          value={reference.external_updated_at ? formatDateTime(reference.external_updated_at) : null}
-        />
-      </dl>
-    </li>
-  );
-}
+const TABS: Array<{ id: Tab; label: string; icon: React.ElementType }> = [
+  { id: "activity", label: "Actividad", icon: ActivityIcon },
+  { id: "tasks", label: "Tareas", icon: CheckSquare },
+  { id: "notes", label: "Notas", icon: StickyNote },
+  { id: "pipelines", label: "Pipelines", icon: Kanban },
+  { id: "emails", label: "Emails", icon: Mail },
+];
 
 export default function ContactDetailPage() {
   const params = useParams<{ id: string }>();
@@ -208,8 +78,7 @@ export default function ContactDetailPage() {
   const [refreshWarnings, setRefreshWarnings] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  // Single-shot guard so we never re-trigger the auto-refresh when the
-  // component re-renders after the freshness flips back to `fresh`.
+  const [activeTab, setActiveTab] = useState<Tab>("activity");
   const autoRefreshed = useRef(false);
 
   const loadContact = useCallback(async () => {
@@ -220,15 +89,15 @@ export default function ContactDetailPage() {
 
   useEffect(() => {
     loadContact()
-      .catch((err) => setError(extractErrorMessage(err, "Comprueba el backend.")))
+      .catch((err) =>
+        setError(extractErrorMessage(err, "Comprueba el backend.")),
+      )
       .finally(() => setIsLoading(false));
   }, [loadContact]);
 
   const handleRefreshDone = useCallback(
     (result: ExternalRefreshResult) => {
       setRefreshWarnings(result.warnings);
-      // Re-fetch so notes / tasks / timeline render the newly synced
-      // rows alongside the updated freshness banner.
       loadContact().catch((err) =>
         setError(extractErrorMessage(err, "Comprueba el backend.")),
       );
@@ -237,26 +106,53 @@ export default function ContactDetailPage() {
   );
 
   useEffect(() => {
-    // Auto-refresh ONLY for `outdated` (or never refreshed). `stale`
-    // gives the operator a chance to opt in manually so we don't burn
-    // quota on background loads of contacts they were just glancing
-    // at.
     if (!contact || autoRefreshed.current) return;
     if (contact.external_data_freshness !== "outdated") return;
     autoRefreshed.current = true;
     import("../../lib/api").then(({ refreshContactExternalData }) => {
       refreshContactExternalData(contact.id)
         .then(handleRefreshDone)
-        .catch(() => {
-          // The visible button still works; we swallow the auto-attempt
-          // error so a transient network glitch doesn't render a red
-          // banner.
-        });
+        .catch(() => undefined);
     });
   }, [contact, handleRefreshDone]);
 
+  async function patch(payload: Record<string, unknown>): Promise<void> {
+    if (!contact) return;
+    try {
+      await updateContact(contact.id, payload);
+      await loadContact();
+    } catch (err) {
+      throw new Error(
+        extractErrorMessage(err, "No se pudo actualizar el contacto."),
+      );
+    }
+  }
+
+  async function handleDeactivate() {
+    if (!contact) return;
+    if (
+      !window.confirm(
+        `¿Desactivar el contacto "${contact.first_name}"? Lo oculta del listado.`,
+      )
+    ) {
+      return;
+    }
+    try {
+      await deactivateContact(contact.id);
+      await loadContact();
+    } catch (err) {
+      setError(
+        extractErrorMessage(err, "No se pudo desactivar el contacto."),
+      );
+    }
+  }
+
   if (isLoading) {
-    return <main className="shell"><p className="muted">Cargando contacto...</p></main>;
+    return (
+      <main className="shell">
+        <p className="muted">Cargando contacto...</p>
+      </main>
+    );
   }
 
   if (error || !contact) {
@@ -267,56 +163,121 @@ export default function ContactDetailPage() {
           eyebrow="Ficha"
           crumbs={[{ label: "Contactos", href: "/contacts" }]}
         />
-        <ErrorState title="No se pudo cargar el contacto" message={error ?? "Contacto no encontrado"} />
+        <ErrorState
+          title="No se pudo cargar el contacto"
+          message={error ?? "Contacto no encontrado"}
+        />
       </main>
     );
   }
 
-  const fullName = [contact.first_name, contact.last_name].filter(Boolean).join(" ");
-  const address = formatAddress(contact);
-  const customEntries = contact.custom_fields
-    ? Object.entries(contact.custom_fields)
-    : [];
+  const fullName =
+    [contact.first_name, contact.last_name].filter(Boolean).join(" ") ||
+    "(Sin nombre)";
   const externalRefs = contact.external_refs ?? [];
 
   return (
-    <main className="shell">
+    <main className="shell shell-wide contact-detail">
       <PageHeader
-        title={fullName || "(Sin nombre)"}
+        title={fullName}
         eyebrow="Ficha de contacto"
-        description={contact.email ?? undefined}
         crumbs={[
           { label: "Contactos", href: "/contacts" },
-          { label: fullName || "(Sin nombre)" },
+          { label: fullName },
         ]}
         actions={
-          <span className={`status status-${contact.marketing_consent}`}>
-            {contact.marketing_consent}
-          </span>
+          <>
+            <RefreshExternalDataButton
+              contactId={contact.id}
+              onDone={handleRefreshDone}
+            />
+            {contact.is_active ? (
+              <button
+                type="button"
+                className="button small danger"
+                onClick={handleDeactivate}
+                title="Desactivar contacto"
+              >
+                <Trash2 size={11} aria-hidden /> Desactivar
+              </button>
+            ) : (
+              <span className="badge bad">Inactivo</span>
+            )}
+          </>
         }
       />
 
-      <section className="grid two">
-        <article className="card">
-          <h2>Editar contacto</h2>
-          <ContactEditForm contact={contact} />
-        </article>
-        <article className="card">
-          <h2>Datos CRM</h2>
-          <dl className="definition-list">
-            <Row label="Teléfono" value={contact.phone} />
-            <CreatedRow contact={contact} />
-            <dt>Origen</dt>
-            <dd>
+      {refreshWarnings.length > 0 ? (
+        <ul className="freshness-warnings">
+          {refreshWarnings.map((w) => (
+            <li key={w}>{w}</li>
+          ))}
+        </ul>
+      ) : null}
+
+      <div className="contact-detail-grid">
+        <aside className="contact-detail-sidebar">
+          <section className="contact-card">
+            <h3 className="contact-card-title">{fullName}</h3>
+            <ul className="contact-card-meta">
+              {contact.email ? (
+                <li>
+                  <Mail size={11} aria-hidden /> {contact.email}
+                </li>
+              ) : null}
+              {contact.phone ? (
+                <li>
+                  <PhoneIcon size={11} aria-hidden /> {contact.phone}
+                </li>
+              ) : null}
+            </ul>
+          </section>
+
+          <section className="contact-card">
+            <h4>Estado</h4>
+            <EditableField
+              label="Comercial"
+              kind="select"
+              options={COMMERCIAL_OPTIONS}
+              display={contact.commercial_status ?? "new"}
+              onSave={(v) => patch({ commercial_status: v })}
+            />
+            <EditableField
+              label="Consentimiento"
+              kind="select"
+              options={CONSENT_OPTIONS}
+              display={contact.marketing_consent ?? "unknown"}
+              onSave={(v) => patch({ marketing_consent: v })}
+            />
+            <EditableField
+              label="Lead score"
+              display={
+                contact.lead_score === null || contact.lead_score === undefined
+                  ? ""
+                  : String(contact.lead_score)
+              }
+              onSave={(v) =>
+                patch({
+                  lead_score: v.trim() === "" ? null : Number(v),
+                })
+              }
+            />
+            <EditableField
+              label="Teléfono"
+              display={contact.phone ?? ""}
+              onSave={(v) => patch({ phone: v.trim() || null })}
+            />
+          </section>
+
+          {externalRefs.length > 0 ? (
+            <section className="contact-card">
+              <h4>Origen</h4>
               <OriginChips references={externalRefs} />
-            </dd>
-            <Row label="Estado comercial" value={contact.commercial_status} />
-            <Row label="Lead score" value={contact.lead_score} />
-            <Row label="Dirección" value={address} />
-            <Row label="Activo" value={contact.is_active ? "Sí" : "No"} />
-          </dl>
-          <div className="tag-section">
-            <h3>Tags</h3>
+            </section>
+          ) : null}
+
+          <section className="contact-card">
+            <h4>Tags</h4>
             <TagChips
               tags={contact.tag_objects ?? []}
               onRemove={async (tagId) => {
@@ -324,7 +285,9 @@ export default function ContactDetailPage() {
                   await removeTagFromContact(contact.id, tagId);
                   await loadContact();
                 } catch (err) {
-                  setError(extractErrorMessage(err, "No se pudo quitar el tag."));
+                  setError(
+                    extractErrorMessage(err, "No se pudo quitar el tag."),
+                  );
                 }
               }}
             />
@@ -335,125 +298,142 @@ export default function ContactDetailPage() {
                   await addTagToContact(contact.id, choice);
                   await loadContact();
                 } catch (err) {
-                  setError(extractErrorMessage(err, "No se pudo añadir el tag."));
+                  setError(
+                    extractErrorMessage(err, "No se pudo añadir el tag."),
+                  );
                 }
               }}
             />
-          </div>
-        </article>
-        <article className="card">
-          <h2>Campos personalizados</h2>
-          {customEntries.length ? (
-            <dl className="definition-list">
-              {customEntries.map(([key, value]) => (
-                <Row key={key} label={key} value={renderCustomValue(value)} />
-              ))}
-            </dl>
-          ) : (
-            <p className="muted">Sin campos personalizados.</p>
-          )}
-        </article>
-        <article className="card">
-          <h2>Referencias externas</h2>
-          {externalRefs.length ? (
-            <ul className="external-ref-list">
-              {externalRefs.map((reference) => (
-                <ExternalReferenceCard key={reference.id} reference={reference} />
-              ))}
-            </ul>
-          ) : (
-            <p className="muted">Sin referencias externas todavía.</p>
-          )}
-        </article>
-        <article className="card">
-          <h2>Notas</h2>
-          {contact.notes?.length ? (
-            <ul className="note-list">
-              {contact.notes.map((note) => (
-                <NoteCard key={note.id} note={note} />
-              ))}
-            </ul>
-          ) : <p className="muted">Sin notas todavía.</p>}
-        </article>
-        <ContactTasksSection contactId={contact.id} />
-        <ContactPipelinesSection contactId={contact.id} />
-        <ContactEmailActivity contactId={contact.id} />
-        <article className="card card-wide">
-          <div className="section-title">
-            <h2>Línea de tiempo</h2>
-            {(contact.activity_events?.length ?? 0) > 0 ? (
-              <span className="muted small">
-                {contact.activity_events?.length} eventos recientes
-              </span>
+          </section>
+        </aside>
+
+        <section className="contact-detail-main">
+          <nav className="contact-detail-tabs" aria-label="Pestañas">
+            {TABS.map((t) => {
+              const Icon = t.icon;
+              return (
+                <button
+                  key={t.id}
+                  type="button"
+                  className={`contact-detail-tab ${
+                    activeTab === t.id ? "is-active" : ""
+                  }`}
+                  onClick={() => setActiveTab(t.id)}
+                >
+                  <Icon size={12} aria-hidden /> {t.label}
+                </button>
+              );
+            })}
+          </nav>
+
+          <div className="contact-detail-tab-body">
+            {activeTab === "activity" ? (
+              <ActivityTab
+                events={contact.activity_events ?? []}
+                lastRefresh={contact.last_external_refresh_at}
+              />
+            ) : null}
+            {activeTab === "tasks" ? (
+              <ContactTasksSection contactId={contact.id} />
+            ) : null}
+            {activeTab === "notes" ? (
+              <NotesTab notes={contact.notes ?? []} />
+            ) : null}
+            {activeTab === "pipelines" ? (
+              <ContactPipelinesSection contactId={contact.id} />
+            ) : null}
+            {activeTab === "emails" ? (
+              <ContactEmailActivity contactId={contact.id} />
             ) : null}
           </div>
-          <FreshnessBanner
-            freshness={contact.external_data_freshness ?? "outdated"}
-            refreshedAt={contact.last_external_refresh_at}
-            warnings={refreshWarnings}
-          />
-          <div className="freshness-actions">
-            <RefreshExternalDataButton
-              contactId={contact.id}
-              onDone={handleRefreshDone}
-            />
-          </div>
-          {contact.activity_events?.length ? (
-            <ul className="timeline-list">
-              {contact.activity_events.map((event) => (
-                <ActivityEventRow key={event.id} event={event} />
-              ))}
-            </ul>
-          ) : contact.last_external_refresh_at ? (
-            // We've already asked AgileCRM and the timeline is genuinely
-            // empty for this contact — don't suggest the operator
-            // pulls again, that would just waste quota.
-            <p className="muted">
-              Sin eventos en AgileCRM para este contacto. Última
-              actualización: {formatDateTime(contact.last_external_refresh_at)}.
-            </p>
-          ) : (
-            <p className="muted">
-              Sin eventos sincronizados todavía. Pulsa &quot;Actualizar desde
-              AgileCRM&quot; para traer notas, tareas y eventos del contacto.
-            </p>
-          )}
-        </article>
-      </section>
+        </section>
+      </div>
     </main>
   );
 }
 
-function FreshnessBanner({
-  freshness,
-  refreshedAt,
-  warnings,
+// ---------------------------------------------------------------------------
+// Sub-views
+// ---------------------------------------------------------------------------
+
+const EVENT_TYPE_ICON: Record<string, string> = {
+  EMAIL_SENT: "✉️",
+  EMAIL_OPENED: "👁️",
+  EMAIL_CLICKED: "🔗",
+  CALL_LOG: "📞",
+  NOTE: "🗒️",
+  FORM_FILL: "📝",
+  DEAL_CREATED: "💼",
+  PAGE_VIEWED: "🌐",
+  TASK_COMPLETED: "✅",
+  "task.created": "📌",
+  "task.completed": "✅",
+  "task.updated": "📝",
+  "task.deleted": "🗑️",
+};
+
+function ActivityTab({
+  events,
+  lastRefresh,
 }: {
-  freshness: "fresh" | "stale" | "outdated";
-  refreshedAt: string | null | undefined;
-  warnings: string[];
+  events: ActivityEvent[];
+  lastRefresh: string | null | undefined;
 }) {
-  const refreshedLabel = refreshedAt ? formatDateTime(refreshedAt) : "nunca";
-  let bannerText: string;
-  if (freshness === "fresh") {
-    bannerText = `Datos al día · actualizados ${refreshedLabel}`;
-  } else if (freshness === "stale") {
-    bannerText = `Última actualización: ${refreshedLabel}`;
-  } else {
-    bannerText = refreshedAt
-      ? `Datos no actualizados desde AgileCRM (última: ${refreshedLabel})`
-      : "Datos no actualizados desde AgileCRM";
+  if (events.length === 0) {
+    return (
+      <p className="muted small">
+        {lastRefresh
+          ? `Sin eventos sincronizados. Última actualización: ${formatDateTime(
+              lastRefresh,
+            )}.`
+          : "Sin eventos sincronizados. Pulsa \"Actualizar\" para traerlos."}
+      </p>
+    );
   }
   return (
-    <div className={`freshness freshness-${freshness}`} role="status">
-      <span>{bannerText}</span>
-      {warnings.length ? (
-        <ul className="freshness-warnings">
-          {warnings.map((warning) => (
-            <li key={warning}>{warning}</li>
-          ))}
-        </ul>
-      ) : null}
-    </div>
+    <ul className="timeline-list">
+      {events.map((event) => (
+        <li key={event.id} className="timeline-row">
+          <span className="timeline-icon" aria-hidden>
+            {EVENT_TYPE_ICON[event.event_type] ?? "•"}
+          </span>
+          <div className="timeline-content">
+            <div className="timeline-meta">
+              <strong>{event.subject || event.event_type}</strong>
+              <span className="muted">{formatDateTime(event.occurred_at)}</span>
+            </div>
+            <span className="timeline-type">{event.event_type}</span>
+            {event.body ? <p className="timeline-body">{event.body}</p> : null}
+          </div>
+        </li>
+      ))}
+    </ul>
   );
 }
+
+function NotesTab({ notes }: { notes: Note[] }) {
+  if (notes.length === 0) {
+    return <p className="muted small">Sin notas todavía.</p>;
+  }
+  return (
+    <ul className="note-list">
+      {notes.map((note) => {
+        const author =
+          note.external_author_name || note.external_author_email || "Sistema";
+        const date = note.external_created_at ?? note.created_at;
+        return (
+          <li key={note.id} className="note-card">
+            <div className="note-card-header">
+              <strong title={note.external_author_email ?? undefined}>
+                {author}
+              </strong>
+              <span className="muted">{formatDateTime(date)}</span>
+            </div>
+            <p className="note-body">{note.body}</p>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
