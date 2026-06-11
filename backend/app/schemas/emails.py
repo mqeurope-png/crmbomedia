@@ -80,6 +80,13 @@ class EmailThreadRead(BaseModel):
     message_count: int
     has_unread_replies: bool
     is_archived: bool
+    # Email v2.1: enriched fields the list view renders without
+    # having to fetch every message in the thread. Computed by the
+    # route handler from the latest message; absent from the
+    # in-memory model.
+    last_message_direction: str | None = None
+    last_message_from: str | None = None
+    last_message_snippet: str | None = None
 
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 

@@ -4264,3 +4264,41 @@ a.origin-chip:hover { filter: brightness(0.97); }
 }
 .origin-ref-dates dt { margin: 0; }
 .origin-ref-dates dd { margin: 0; color: #4b5563; }
+
+/* Emails list v2.1 — search bar + new columns */
+.email-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 12px 0;
+}
+.email-search {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  max-width: 420px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 10px;
+  background: white;
+}
+.email-search input {
+  flex: 1;
+  border: none;
+  outline: none;
+  font-size: 13px;
+  background: transparent;
+}
+.emails-list-table th { font-size: 12px; }
+.emails-participants {
+  margin: 4px 0 0;
+  font-size: 11px;
+  font-style: italic;
+}
+.emails-snippet {
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

@@ -309,6 +309,7 @@ def send_email(
 @router.get("/threads", response_model=EmailThreadList)
 def list_threads(
     contact_id: str | None = Query(default=None),
+    q: str | None = Query(default=None, description="LIKE on subject / from / snippet"),
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     session: Session = Depends(get_session),
@@ -319,6 +320,28 @@ def list_threads(
         stmt = stmt.where(EmailThread.contact_id == contact_id)
     if current_user.role not in (UserRole.ADMIN, UserRole.MANAGER):
         stmt = stmt.where(EmailThread.initiated_by_user_id == current_user.id)
+    if q:
+        # LIKE-match the term against the thread subject OR any
+        # message's from_email / subject / snippet / body_text.
+        # MySQL collates case-insensitively by default; SQLite (CI)
+        # needs the `ilike` analog.
+        from sqlalchemy import or_ as _or  # noqa: PLC0415
+
+        like = f"%{q}%"
+        msg_match = select(EmailMessage.thread_id).where(
+            _or(
+                EmailMessage.from_email.ilike(like),
+                EmailMessage.subject.ilike(like),
+                EmailMessage.snippet.ilike(like),
+                EmailMessage.body_text.ilike(like),
+            )
+        )
+        stmt = stmt.where(
+            _or(
+                EmailThread.subject.ilike(like),
+                EmailThread.id.in_(msg_match),
+            )
+        )
     total = int(
         session.scalar(
             select(func.count()).select_from(stmt.subquery())
@@ -332,10 +355,26 @@ def list_threads(
             .limit(limit)
         )
     )
-    return EmailThreadList(
-        items=[EmailThreadRead.model_validate(t) for t in items],
-        total=total,
-    )
+    # Last message per thread — driven the "Remitente último" +
+    # "Vista previa" columns the v2.1 list view exposes. One small
+    # extra query per page, batched via `id IN (...)`.
+    last_by_thread = _latest_messages(session, [t.id for t in items])
+    out: list[EmailThreadRead] = []
+    for thread in items:
+        last = last_by_thread.get(thread.id)
+        read = EmailThreadRead.model_validate(thread)
+        if last is not None:
+            read.last_message_direction = (
+                last.direction.value
+                if hasattr(last.direction, "value")
+                else str(last.direction)
+            )
+            read.last_message_from = last.from_email
+            read.last_message_snippet = last.snippet or _snippet_from_body(
+                last.body_text, last.body_html
+            )
+        out.append(read)
+    return EmailThreadList(items=out, total=total)
 
 
 @router.get("/threads/{thread_id}", response_model=EmailThreadDetail)
@@ -420,3 +459,40 @@ def admin_all_threads(
 
 def _message_read(m: EmailMessage) -> EmailMessageRead:
     return EmailMessageRead.model_validate(m)
+
+
+def _latest_messages(
+    session: Session, thread_ids: list[str]
+) -> dict[str, EmailMessage]:
+    """Return the most recent EmailMessage per thread id. Avoids
+    the per-row N+1 the list view used to have."""
+    if not thread_ids:
+        return {}
+    rows = session.scalars(
+        select(EmailMessage)
+        .where(EmailMessage.thread_id.in_(thread_ids))
+        .order_by(EmailMessage.sent_at.desc())
+    ).all()
+    out: dict[str, EmailMessage] = {}
+    for row in rows:
+        if row.thread_id not in out:
+            out[row.thread_id] = row
+    return out
+
+
+def _snippet_from_body(
+    body_text: str | None, body_html: str | None
+) -> str | None:
+    """Derive a ~200-char snippet from the message body when the
+    message didn't already carry a Gmail snippet. Strips HTML tags
+    naively (no DOMPurify needed for a preview line)."""
+    import re  # noqa: PLC0415
+
+    if body_text:
+        text = body_text.strip()
+    elif body_html:
+        text = re.sub(r"<[^>]+>", " ", body_html)
+    else:
+        return None
+    flat = " ".join(text.split()).strip()
+    return flat[:200] or None

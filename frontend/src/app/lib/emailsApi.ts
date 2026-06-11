@@ -67,6 +67,9 @@ export type EmailThread = {
   message_count: number;
   has_unread_replies: boolean;
   is_archived: boolean;
+  last_message_direction?: "outbound" | "inbound" | null;
+  last_message_from?: string | null;
+  last_message_snippet?: string | null;
 };
 
 export type EmailThreadDetail = EmailThread & {
@@ -106,9 +109,13 @@ export async function sendEmail(
 
 export async function listEmailThreads(
   contactId?: string,
+  q?: string,
 ): Promise<EmailThreadList> {
-  const qs = contactId ? `?contact_id=${encodeURIComponent(contactId)}` : "";
-  return apiFetch<EmailThreadList>(`/api/emails/threads${qs}`);
+  const params = new URLSearchParams();
+  if (contactId) params.set("contact_id", contactId);
+  if (q && q.trim()) params.set("q", q.trim());
+  const qs = params.toString();
+  return apiFetch<EmailThreadList>(`/api/emails/threads${qs ? `?${qs}` : ""}`);
 }
 
 export async function getEmailThread(id: string): Promise<EmailThreadDetail> {
