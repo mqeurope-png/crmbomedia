@@ -20,13 +20,24 @@ Una sola vez (admin).
 5. **Suscripción** push:
    - Tipo: **Push**.
    - URL: `https://crm.tudominio.com/api/webhooks/gmail`.
-   - Verificación: o JWT firmado (default) o un token
-     compartido. Si eliges JWT (recomendado), deja
-     `GMAIL_PUBSUB_VERIFICATION_TOKEN` vacío y la API hace
-     verify de firma con `google-auth`. Si eliges el token
-     compartido, generar con `openssl rand -hex 32` y pegarlo
-     en el header `Authorization: Bearer <token>` de la
-     suscripción.
+   - Verificación — tres opciones según prioridades:
+     1. **Sin autenticación** (rápido para empezar). En este
+        caso la suscripción Pub/Sub NO añade ningún header de
+        verificación. Deja `GMAIL_PUBSUB_VERIFICATION_TOKEN=`
+        vacío en `.env`. El backend acepta el push y loggea
+        un warning recordando que no se valida la firma. La
+        URL del webhook es un secreto suave (un atacante que
+        adivine la URL podría inyectar pushes).
+     2. **Token compartido** (simple + razonablemente seguro).
+        Genera el token con `openssl rand -hex 32`, configúralo
+        en la suscripción Pub/Sub bajo "Header de
+        autenticación" como `Authorization: Bearer <token>`, y
+        ponlo en `GMAIL_PUBSUB_VERIFICATION_TOKEN`.
+     3. **JWT firmado** (recomendado). Configura la
+        suscripción para enviar un JWT firmado por el service
+        account, pon el audience URL como
+        `GMAIL_PUBSUB_VERIFICATION_TOKEN` y el backend hace
+        verify de firma con `google-auth`.
 6. Copia los nombres completos del topic y la suscripción a
    `.env.production`:
 

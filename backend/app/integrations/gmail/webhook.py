@@ -40,11 +40,17 @@ def _validate_jwt(authorization: str | None) -> None:
     """
     settings = get_settings()
     if not settings.gmail_pubsub_verification_token:
-        # No token configured → log + accept (the upstream still
-        # signed the JWT, but full verification needs the
-        # subscription's audience URL which the operator may not
-        # have configured yet).
-        logger.info("gmail.webhook.jwt_skipped reason=token_unconfigured")
+        # No token configured → log + accept. Same pattern as the
+        # Brevo Marketing webhook: the upstream provider (Pub/Sub
+        # subscription without authentication) can't be told to send
+        # a header. Subir el log a warning para que sea visible —
+        # un atacante con la URL podría inyectar pushes hasta que
+        # admin configure la verificación.
+        logger.warning(
+            "gmail.webhook.jwt_skipped reason=token_unconfigured — "
+            "subscription accepts unsigned pushes; set "
+            "GMAIL_PUBSUB_VERIFICATION_TOKEN to enforce verification"
+        )
         return
     if not authorization:
         raise HTTPException(
