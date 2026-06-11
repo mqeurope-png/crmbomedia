@@ -166,6 +166,59 @@ curl -G $API/api/audit-logs \
   -H "Authorization: Bearer $TOKEN"
 ```
 
+## Orígenes múltiples por contacto + fechas reales
+
+Un contacto puede vivir en varios sistemas a la vez (típico: AgileCRM
+**y** Brevo, consolidados por email). El CRM lo modela así:
+
+- **Fuente de verdad de los orígenes**: la tabla `external_references`,
+  con una fila por `(system, account_id, external_id)`. Un contacto en
+  dos sistemas tiene dos filas. Los mappers de cada conector las
+  pueblan siempre en el upsert.
+- **`contacts.origin` (legacy)**: string del **primer** sistema que
+  importó el contacto. **No se sobrescribe** en syncs posteriores
+  (antes el último sync ganaba, dando la falsa impresión de un único
+  origen). Se mantiene por compatibilidad; la UI consume
+  `external_references`.
+
+La ficha de contacto (`/contacts/[id]`) y la lista (`/contacts`)
+muestran **todos** los orígenes como chips. El endpoint los expone así:
+
+- `GET /api/contacts/{id}` → `external_refs[]` enriquecido con
+  `system_label` ("AgileCRM"/"Brevo"), `account_label` (el
+  `display_name` de la `integration_account`) y `external_url` (deep
+  link al registro en el sistema de origen, cuando se puede construir:
+  Brevo siempre; AgileCRM si la cuenta tiene `api_base_url` con el
+  subdominio del tenant).
+- `GET /api/contacts` → cada item lleva `external_references_summary`,
+  un array compacto `[{system, account_id}]` para pintar los chips por
+  fila sin inflar la respuesta.
+
+### Fechas reales del sistema de origen
+
+Dos columnas en `contacts` guardan la fecha real en el sistema fuente,
+NO la fecha de sincronización al CRM:
+
+- `created_at_external` — la creación **más antigua** entre todos los
+  sistemas (el sistema más viejo es el origen real del contacto).
+- `updated_at_external` — la modificación **más reciente**.
+
+Los mappers las extraen del payload (`created_time`/`updated_time` en
+AgileCRM, `createdAt`/`modifiedAt` en Brevo). Si el payload no las
+trae, quedan `NULL` — nunca se inventa una fecha. La política de
+merge (más antigua para creación, más reciente para modificación) vive
+en `app/integrations/contact_merge.py`; ver
+`integrations-architecture.md` § "Merge de campos multi-sistema".
+
+La migración `0026` rellena estas columnas en contactos ya importados
+agregando las fechas que ya viven en `external_references`
+(`MIN(external_created_at)`, `MAX(external_updated_at)`).
+
+> Para rellenar contactos importados ANTES de este cambio con la mejor
+> precisión, relanza un sync de cada cuenta (botón "Sincronizar ahora"
+> en `/admin/integrations`): el upsert es idempotente y completa las
+> fechas que estuvieran a NULL.
+
 ## Roadmap
 
 - **Verificación de conexión** (`POST /api/integration-accounts/{system}/{account_id}/test`):
