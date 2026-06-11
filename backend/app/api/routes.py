@@ -1,4 +1,5 @@
 # ruff: noqa: I001
+import asyncio
 import json
 import logging
 from datetime import UTC, datetime, timedelta
@@ -10,7 +11,10 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.api.brevo import router as brevo_router
+from app.api.brevo import (
+    _require_brevo_account as require_brevo_account,
+    router as brevo_router,
+)
 from app.api.gdpr import router as gdpr_router
 from app.api.integration_settings import (
     deprecated_router as integration_settings_deprecated_router,
@@ -47,11 +51,13 @@ from app.core.totp import (
     verify_totp_code,
 )
 from app.db.session import get_session
+from app.integrations.errors import IntegrationError, IntegrationServerError
 from app.models.crm import (
     Company,
     Contact,
     ContactPipelineStage,
     ContactTag,
+    ContactView,
     ExternalReference,
     ExternalSystem,
     Note,
@@ -66,6 +72,7 @@ from app.repositories import contact_views as contact_views_repository
 from app.repositories import crm as crm_repository
 from app.repositories import pipelines as pipelines_repository
 from app.repositories import segments as segments_repository
+from app.workers.jobs import enqueue_sync_job
 from app.services import llm as llm_service
 from app.services import pipeline_templates as pipeline_templates_service
 from app.services.email import EmailService, get_email_service
@@ -88,6 +95,9 @@ from app.schemas.crm import (
     ContactRead,
     ContactSearchRequest,
     ContactTagAssignRequest,
+    ContactViewPushToBrevoRequest,
+    ContactViewPushToBrevoResponse,
+    ContactViewSaveAsSegmentRequest,
     ContactUpdate,
     ContactPipelineAddRequest,
     ContactPipelineMoveRequest,
@@ -2487,6 +2497,271 @@ def set_default_contact_view(
     session.commit()
     session.refresh(view)
     return _view_to_read(view, current_user=current_user)
+
+
+# ---------------------------------------------------------------------------
+# Contact view → segment / brevo list bridges (Sprint UX)
+# ---------------------------------------------------------------------------
+
+
+def _view_rules_tree(view: ContactView) -> dict[str, Any]:
+    """Extract the rules tree from a view's stored filters_json.
+
+    New views (Sprint UX) store the segments engine's
+    `{operator, children}` tree under `filters.rules_json`. Old views
+    stored only the legacy flat dropdown fields. The action endpoints
+    return an empty tree for legacy payloads so the engine compiles
+    to "match every contact" instead of crashing.
+    """
+    if not view.filters_json:
+        return {}
+    try:
+        decoded = json.loads(view.filters_json)
+    except (TypeError, ValueError):
+        return {}
+    if not isinstance(decoded, dict):
+        return {}
+    # Preferred: wrapped under `rules_json` alongside legacy fields.
+    nested = decoded.get("rules_json")
+    if isinstance(nested, dict) and (
+        "operator" in nested or nested.get("type") == "rule"
+    ):
+        return nested
+    # Edge-case migration path: an old view that was POSTed with the
+    # rule tree as the WHOLE filters payload (early UI experiment).
+    if "operator" in decoded or decoded.get("type") == "rule":
+        return decoded
+    return {}
+
+
+@router.post(
+    "/contact-views/{view_id}/save-as-segment",
+    response_model=SegmentRead,
+    status_code=status.HTTP_201_CREATED,
+    responses=ERROR_RESPONSES,
+    tags=["crm"],
+)
+def save_view_as_segment(
+    view_id: str,
+    payload: ContactViewSaveAsSegmentRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_user),
+) -> SegmentRead:
+    """Materialise a contact view as a reusable segment.
+
+    The view's stored filter tree (when it's already in the new
+    segments-engine shape) is reused verbatim as the segment's
+    `rules_json`. The operator owns the new segment; sharing /
+    static-list behaviour is left at the segment defaults
+    (`is_dynamic=True`, no static ids) — they can tune those later
+    from `/segments/{id}`.
+    """
+    view = contact_views_repository.get_view(session, view_id)
+    if view is None:
+        raise not_found("Contact view")
+    if view.owner_user_id != current_user.id and not view.is_shared:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No tienes acceso a esta vista",
+        )
+
+    rules = _view_rules_tree(view)
+    try:
+        if rules:
+            segment_engine.build_filter(rules)
+    except segment_engine.SegmentRuleError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
+
+    segment = segments_repository.create_segment(
+        session,
+        owner_user_id=current_user.id,
+        name=payload.name,
+        description=payload.description,
+        rules=rules,
+        is_dynamic=True,
+        static_contact_ids=None,
+        is_shared=payload.is_shared,
+        color=payload.color,
+    )
+    count, duration = segments_repository.evaluate_segment(session, segment)
+    record_event(
+        session,
+        action=Action.SEGMENT_CREATED,
+        target_type="segment",
+        target_id=segment.id,
+        actor=current_user,
+        metadata={
+            "name": segment.name,
+            "count": count,
+            "source": "contact_view",
+            "view_id": view.id,
+        },
+        request=request,
+    )
+    record_event(
+        session,
+        action=Action.SEGMENT_EVALUATED,
+        target_type="segment",
+        target_id=segment.id,
+        actor=current_user,
+        metadata={"count": count, "duration_ms": int(duration * 1000)},
+        request=request,
+    )
+    session.commit()
+    session.refresh(segment)
+    return _segment_to_read(segment, current_user=current_user)
+
+
+@router.post(
+    "/contact-views/{view_id}/push-to-brevo-list",
+    response_model=ContactViewPushToBrevoResponse,
+    responses=ERROR_RESPONSES,
+    tags=["crm"],
+)
+def push_view_to_brevo_list(
+    view_id: str,
+    payload: ContactViewPushToBrevoRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_manager),
+) -> ContactViewPushToBrevoResponse:
+    """One-shot push of the view's matching contacts to a Brevo list.
+
+    Internally:
+      1. Materialise a hidden segment that mirrors the view's tree —
+         `BrevoSyncTarget` needs a segment_id and we don't want every
+         push to spawn a visible segment in `/segments`.
+      2. Resolve `brevo_list_id` (either the one passed in or the one
+         Brevo returns after creating `new_list_name`).
+      3. Create a `BrevoSyncTarget` and enqueue its `push_target`
+         job — same machinery the persistent sync targets use, so we
+         get retries, audit and de-dup for free.
+    """
+    from app.integrations.brevo.client import BrevoClient  # noqa: PLC0415
+    from app.models.brevo import BrevoSyncTarget, SyncDirection  # noqa: PLC0415
+
+    if (payload.brevo_list_id is None) == (payload.new_list_name is None):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Pasa exactamente uno: brevo_list_id O new_list_name",
+        )
+
+    view = contact_views_repository.get_view(session, view_id)
+    if view is None:
+        raise not_found("Contact view")
+    if view.owner_user_id != current_user.id and not view.is_shared:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No tienes acceso a esta vista",
+        )
+
+    rules = _view_rules_tree(view)
+    try:
+        filter_clause = segment_engine.build_filter(rules)
+    except segment_engine.SegmentRuleError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
+
+    contacts_to_push = int(
+        session.scalar(
+            select(func.count()).select_from(
+                select(Contact.id).where(filter_clause).subquery()
+            )
+        )
+        or 0
+    )
+
+    # Ensure the target Brevo list exists (create-then-id when the
+    # caller asked for a fresh one). We do this BEFORE creating the
+    # auxiliary segment so a Brevo 4xx aborts cleanly.
+    require_brevo_account(session, payload.brevo_account_id)
+    list_id = payload.brevo_list_id
+    if list_id is None:
+        async def _create() -> int:
+            async with BrevoClient(session, payload.brevo_account_id) as client:
+                created = await client.create_list(payload.new_list_name)
+                raw = created.get("id")
+                if raw is None:
+                    raise IntegrationServerError(
+                        "Brevo create_list response missing id",
+                        system="brevo",
+                        account_id=payload.brevo_account_id,
+                    )
+                return int(raw)
+
+        try:
+            list_id = asyncio.run(_create())
+        except IntegrationError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY, detail=exc.message
+            ) from exc
+
+    # The auxiliary segment is name-stamped so the audit log makes the
+    # provenance obvious — it's also visible in `/segments`, but that's
+    # fine, the operator can rename or delete it later. `is_shared=False`
+    # keeps it scoped to the pusher.
+    aux_name = f"Push vista: {view.name}"[:100]
+    aux_segment = segments_repository.create_segment(
+        session,
+        owner_user_id=current_user.id,
+        name=aux_name,
+        description=f"Auto-creado para push a Brevo lista {list_id}",
+        rules=rules,
+        is_dynamic=True,
+        static_contact_ids=None,
+        is_shared=False,
+        color=None,
+    )
+
+    target = BrevoSyncTarget(
+        brevo_account_id=payload.brevo_account_id,
+        name=f"Push vista: {view.name}"[:200],
+        description=f"Auto-creado desde vista {view.id}",
+        segment_id=aux_segment.id,
+        brevo_list_id=str(list_id),
+        sync_direction=SyncDirection.PUSH_ONLY,
+        auto_sync_enabled=False,
+        sync_interval_minutes=None,
+    )
+    session.add(target)
+    session.flush()
+
+    sync_log_id, job_id = enqueue_sync_job(
+        session,
+        system="brevo",
+        account_id=payload.brevo_account_id,
+        operation="push_target",
+        payload={"target_id": target.id},
+        triggered_by_user_id=current_user.id,
+        request=request,
+    )
+    record_event(
+        session,
+        action=Action.INTEGRATION_SYNC_TRIGGERED,
+        target_type="brevo_sync_target",
+        target_id=target.id,
+        actor=current_user,
+        metadata={
+            "event": "view_pushed_to_brevo_list",
+            "view_id": view.id,
+            "brevo_list_id": list_id,
+            "contacts_to_push": contacts_to_push,
+        },
+        request=request,
+    )
+    session.commit()
+    return ContactViewPushToBrevoResponse(
+        sync_log_id=sync_log_id,
+        job_id=job_id,
+        target_id=target.id,
+        segment_id=aux_segment.id,
+        contacts_to_push=contacts_to_push,
+        brevo_list_id=list_id,
+    )
 
 
 # ---------------------------------------------------------------------------

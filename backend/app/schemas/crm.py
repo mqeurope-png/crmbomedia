@@ -452,6 +452,12 @@ class ContactViewFilters(BaseModel):
     lead_score_max: int | None = None
     created_after: datetime | None = None
     created_before: datetime | None = None
+    # Sprint UX: the segments-engine rules tree powers the new
+    # Brevo-style query builder on /contacts. When present the route
+    # layer prefers it over the legacy flat fields above; the legacy
+    # fields stay so old views still re-load and the migration is
+    # in-place rather than destructive.
+    rules_json: dict[str, Any] | None = None
 
 
 class ContactViewColumns(BaseModel):
@@ -637,6 +643,38 @@ class ContactListPage(BaseModel):
     total: int
     limit: int
     offset: int
+
+
+class ContactViewSaveAsSegmentRequest(BaseModel):
+    """Body for `POST /api/contact-views/{id}/save-as-segment`. The
+    view's `filters_json` is reused verbatim as the segment's
+    `rules_json`; the operator provides display fields."""
+
+    name: str = Field(min_length=1, max_length=100)
+    description: str | None = Field(default=None, max_length=2000)
+    color: str | None = Field(default=None, max_length=7)
+    is_shared: bool = False
+
+
+class ContactViewPushToBrevoRequest(BaseModel):
+    """Body for `POST /api/contact-views/{id}/push-to-brevo-list`.
+
+    EITHER `brevo_list_id` (push into an existing Brevo list) OR
+    `new_list_name` (create a fresh list then push). The endpoint
+    validates exactly-one-of and 400s otherwise."""
+
+    brevo_account_id: str = Field(min_length=1, max_length=64)
+    brevo_list_id: int | None = None
+    new_list_name: str | None = Field(default=None, max_length=200)
+
+
+class ContactViewPushToBrevoResponse(BaseModel):
+    sync_log_id: str
+    job_id: str | None = None
+    target_id: str
+    segment_id: str
+    contacts_to_push: int
+    brevo_list_id: int
 
 
 class ContactSearchRequest(BaseModel):
