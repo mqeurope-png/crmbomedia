@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import UTC, datetime
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import func, select
@@ -441,6 +442,73 @@ def mark_read(
     )
     session.commit()
     return {"message": "marked_read"}
+
+
+@router.get("/activity")
+def email_activity(
+    scope: str = Query(default="mine", pattern="^(mine|all)$"),
+    limit: int = Query(default=5, ge=1, le=50),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_user),
+) -> list[dict[str, Any]]:
+    """Recent CRM email activity for the dashboard widget.
+
+    Returns flat items `{type, thread_id, subject, contact_id,
+    contact_name, occurred_at, snippet, direction}` sorted by
+    `occurred_at` desc. `scope=mine` filters to threads the
+    current user initiated OR whose Gmail account belongs to
+    them. `scope=all` is admin-only — other roles get their own
+    activity regardless of what they passed.
+    """
+    from app.models.crm import Contact  # noqa: PLC0415
+
+    stmt = select(EmailMessage, EmailThread, Contact).join(
+        EmailThread, EmailMessage.thread_id == EmailThread.id
+    ).outerjoin(Contact, Contact.id == EmailMessage.contact_id)
+    if scope == "mine" or current_user.role not in (
+        UserRole.ADMIN,
+        UserRole.MANAGER,
+    ):
+        from sqlalchemy import or_ as _or  # noqa: PLC0415
+
+        stmt = stmt.where(
+            _or(
+                EmailThread.initiated_by_user_id == current_user.id,
+                EmailThread.gmail_account_user_id == current_user.id,
+            )
+        )
+    stmt = stmt.order_by(EmailMessage.sent_at.desc()).limit(limit)
+    rows = list(session.execute(stmt).all())
+    out: list[dict[str, Any]] = []
+    for msg, thread, contact in rows:
+        snippet = msg.snippet or _snippet_from_body(msg.body_text, msg.body_html)
+        contact_name = None
+        if contact is not None:
+            contact_name = (
+                " ".join(
+                    p for p in (contact.first_name, contact.last_name) if p
+                )
+                or contact.email
+            )
+        out.append(
+            {
+                "type": (
+                    "email.sent_from_crm"
+                    if msg.direction.value == "outbound"
+                    else "email.reply_received"
+                ),
+                "direction": msg.direction.value,
+                "thread_id": thread.id,
+                "message_id": msg.id,
+                "subject": thread.subject,
+                "contact_id": contact.id if contact else None,
+                "contact_name": contact_name,
+                "from_email": msg.from_email,
+                "occurred_at": msg.sent_at,
+                "snippet": snippet,
+            }
+        )
+    return out
 
 
 @router.get("/admin/all-threads", response_model=EmailThreadList)

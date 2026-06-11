@@ -129,3 +129,25 @@ export async function markThreadRead(id: string): Promise<void> {
 export async function listAdminEmailThreads(): Promise<EmailThreadList> {
   return apiFetch<EmailThreadList>("/api/emails/admin/all-threads");
 }
+
+export type EmailActivityItem = {
+  type: "email.sent_from_crm" | "email.reply_received";
+  direction: "outbound" | "inbound";
+  thread_id: string;
+  message_id: string;
+  subject: string | null;
+  contact_id: string | null;
+  contact_name: string | null;
+  from_email: string;
+  occurred_at: string;
+  snippet: string | null;
+};
+
+export async function getEmailActivity(
+  scope: "mine" | "all",
+  limit = 5,
+): Promise<EmailActivityItem[]> {
+  return apiFetch<EmailActivityItem[]>(
+    `/api/emails/activity?scope=${scope}&limit=${limit}`,
+  );
+}
