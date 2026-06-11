@@ -176,6 +176,11 @@ export default function ContactsListPage() {
   >(null);
   const [showBrevoModal, setShowBrevoModal] = useState(false);
   const [actionsMenu, setActionsMenu] = useState(false);
+  // When the user picks "Enviar a lista Brevo" with no active view we
+  // auto-create a transient one for them (the push endpoint needs a
+  // view id). This flag tells the post-save hook to chain straight
+  // into the Brevo modal instead of dropping back to the list.
+  const [pushAfterSave, setPushAfterSave] = useState(false);
 
   const firstLoadRef = useRef(true);
 
@@ -367,6 +372,14 @@ export default function ContactsListPage() {
     }
     await loadViews();
     setEditorMode(null);
+    // Chained flow: the operator clicked "Enviar a lista Brevo" before
+    // any view existed, we forced them through the save modal, and
+    // now we drop them straight onto the Brevo push modal so they
+    // don't lose the action click.
+    if (pushAfterSave) {
+      setPushAfterSave(false);
+      setShowBrevoModal(true);
+    }
   }
 
   async function handleSaveExistingView() {
@@ -600,9 +613,12 @@ export default function ContactsListPage() {
                 onPushToBrevo={() => {
                   setActionsMenu(false);
                   if (!activeView) {
-                    setError(
-                      "Guarda la consulta como vista antes de enviar a Brevo.",
-                    );
+                    // The push endpoint needs a view id, so divert
+                    // the operator through the save modal first and
+                    // chain into the Brevo modal once it lands
+                    // (`pushAfterSave` flag handled by handleSaveView).
+                    setPushAfterSave(true);
+                    setEditorMode({ kind: "create" });
                     return;
                   }
                   setShowBrevoModal(true);
@@ -759,11 +775,10 @@ function ActionsMenu({
           <button
             type="button"
             onClick={onPushToBrevo}
-            disabled={!hasView}
             title={
               hasView
                 ? "Encola un push a una lista Brevo"
-                : "Guarda primero la consulta como vista"
+                : "Te guiamos por el guardado de vista antes del push"
             }
           >
             <ListPlus size={12} aria-hidden /> Enviar contactos a lista Brevo
