@@ -3387,3 +3387,105 @@ a.origin-chip:hover { filter: brightness(0.97); }
   padding: 0;
 }
 .contact-qb-hint { margin: 8px 4px 0; }
+
+/* -------------------------------------------------------------------------
+ * Custom contact filters builder — Brevo-style cards (no react-querybuilder)
+ * ------------------------------------------------------------------------- */
+
+.filter-builder {
+  background: #f9fafc;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 14px;
+  margin: 12px 0 16px;
+}
+.filter-card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.filter-or-separator {
+  display: flex;
+  justify-content: center;
+  margin: 10px 0;
+}
+.filter-or-separator > span {
+  background: #eef1f6;
+  color: var(--ink);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  border-radius: 999px;
+  padding: 2px 16px;
+  font-size: 11px;
+}
+.filter-condition {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.filter-field,
+.filter-operator {
+  flex: 0 0 auto;
+  min-width: 140px;
+}
+.filter-value {
+  flex: 1 1 200px;
+  min-width: 160px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font: inherit;
+}
+.filter-value-between {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 240px;
+}
+.filter-value-placeholder {
+  flex: 1 1 200px;
+  color: var(--muted);
+  font-style: italic;
+}
+.filter-remove {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 4px;
+}
+.filter-remove:hover {
+  background: #f3f6fb;
+  color: #b03030;
+}
+.filter-pill {
+  align-self: flex-start;
+  background: #eef1f6;
+  color: var(--brand);
+  border: none;
+  border-radius: 999px;
+  padding: 4px 12px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.filter-pill:hover {
+  filter: brightness(0.95);
+}
+.filter-pill-y {
+  margin-top: 4px;
+}
+.filter-add-card-row {
+  display: flex;
+  justify-content: center;
+  margin-top: 12px;
+}

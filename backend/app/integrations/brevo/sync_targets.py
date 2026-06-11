@@ -46,7 +46,14 @@ from app.workers.queues import queue_name, redis_connection
 
 logger = logging.getLogger(__name__)
 
-TARGET_LOCK_TTL_SECONDS = 1800
+# Lock TTL must outlive the RQ job timeout for `brevo:push_target`
+# (`LONG_JOB_TIMEOUTS` sets that to 7200 s). With the old 1800 s value
+# a real long push (>30 min) outlived the lock, freeing the SETNX
+# while the job still ran — a parallel enqueue would then start a
+# second concurrent push of the same target. 7200 s pins them
+# together; the `finally` block still deletes the lock at end-of-run
+# for the typical short case.
+TARGET_LOCK_TTL_SECONDS = 7200
 HEARTBEAT_INTERVAL_SECONDS = 300  # 5 min
 HEARTBEAT_LOCK_KEY = "brevo:auto_sync_heartbeat"
 
@@ -228,7 +235,12 @@ def push_brevo_target(session: Session, sync_log: SyncLog) -> SyncOutcome:
     if not conn.set(lock, "1", nx=True, ex=TARGET_LOCK_TTL_SECONDS):
         return SyncOutcome(
             records_failed=1,
-            error_summary="Este target ya tiene una ejecución en curso.",
+            error_summary=(
+                f"Este target ya tiene una ejecución en curso (lock {lock}). "
+                "Si una ejecución previa murió por SIGKILL/restart y el lock "
+                "quedó colgado, libéralo con: "
+                f"`docker compose exec redis redis-cli DEL {lock}`."
+            ),
         )
 
     target.last_run_status = TargetRunStatus.RUNNING

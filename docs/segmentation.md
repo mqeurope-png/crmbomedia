@@ -338,3 +338,54 @@ sin `scheduledAt`) y programa con la segunda llamada documentada
 borrador usable. Un 405 de Brevo en campañas casi siempre es
 restricción de cuenta (API key sin permisos de Marketing o plan sin
 API de campañas) — el error de la API ahora lo dice en claro.
+
+## Filtros de /contacts — componente propio (cierre Mini-PR B)
+
+Tras 4 PRs intentando hacer que `react-querybuilder` produjera el UX
+de Brevo, el componente de `/contacts` quedó reescrito como
+`ContactFiltersBuilder.tsx`: HTML + estado en React, sin librería de
+query builder externa. El motor de segmentos backend NO cambia — el
+componente emite el mismo `rules_json` que el engine consume.
+
+Modelo de datos plano (lo que el operador realmente piensa):
+
+```
+tree     = OR of cards
+card     = AND of conditions
+condition= { field, operator, value }
+```
+
+Operaciones:
+
+- `+ Y` dentro de una tarjeta → añade condición con primer campo del
+  catálogo + primer operador válido.
+- `+ O` debajo de las tarjetas → añade tarjeta nueva con UNA
+  condición sembrada.
+- `×` en una condición → la elimina; si la tarjeta queda sin
+  condiciones, se elimina la tarjeta; si quedan 0 tarjetas, se
+  siembra una nueva con una condición vacía (estado mínimo
+  garantizado).
+
+Catálogo de operadores por tipo de campo (`PER_TYPE_OPERATORS`) ∩
+whitelist por campo del backend (`/api/segments/available-fields`).
+Esto garantiza que el dropdown NUNCA muestre un comparador que el
+engine rechazaría (no más bugs tipo `lead_score after`).
+
+Serialización (`serializeTree`):
+- Una sola card con una sola condición → emite `{type:"rule", ...}`
+  bare.
+- Una sola card con varias condiciones → `{operator:"AND", children:[...]}`.
+- Múltiples cards → `{operator:"OR", children:[<AND group per card>]}`.
+- Condiciones sin valor se descartan; ints/fechas se coercen al tipo
+  del campo; vistas sin nada útil emiten `{}` (= match all).
+
+Deserialización (`deserializeTree`):
+- Acepta cualquier árbol del engine y lo aplana a 2 niveles. NOT y
+  3+ niveles de anidación se descartan/aplanan (el operador puede
+  editar la versión simplificada; si necesita anidamiento real, el
+  builder avanzado de `/segments` sigue disponible).
+
+Inputs nativos (sin overrides): `<input type="date">` (ISO), `<input
+type="number">`, `<select>` para enums/bool, texto coma-separado para
+multi-select. CSS en `styles.css` (`.filter-builder`, `.filter-card`,
+`.filter-pill*`, `.filter-or-separator`).

@@ -611,8 +611,25 @@ def create_user(
     session: Session = Depends(get_session),
     current_user: User = Depends(require_admin),
 ) -> User:
-    email = str(payload.email).lower()
-    if crm_repository.get_user_by_email(session, email):
+    # Email travels through `EmailStr` (RFC 5321 normalised) and we
+    # additionally trim + lowercase. The repository lookup is also
+    # case-insensitive, so a casing variant of an existing email won't
+    # silently slip past — historically the conflict surfaced as the
+    # opaque IntegrityError on the unique index.
+    email = str(payload.email).strip().lower()
+    existing = crm_repository.get_user_by_email(session, email)
+    if existing is not None:
+        # The previous wording ("A user with this email already
+        # exists") was confusing when the existing row was a
+        # soft-deleted user (`is_active=False`): the operator saw a
+        # collision on an email they "knew" they had freed. Split the
+        # two cases and point at the reactivation flow when applicable.
+        if not existing.is_active:
+            raise conflict(
+                "A deactivated user with this email already exists. "
+                "Reactivate it from the users list or pick a different "
+                "email — the `email` column is uniquely indexed."
+            )
         raise conflict("A user with this email already exists")
     user = User(
         email=email,

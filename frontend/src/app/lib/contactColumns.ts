@@ -18,6 +18,8 @@ export type ContactColumnKey =
   | "is_active"
   | "created_at"
   | "updated_at"
+  | "created_at_external"
+  | "updated_at_external"
   | "external_data_freshness"
   | "last_external_refresh_at";
 
@@ -39,8 +41,13 @@ export const CONTACT_COLUMNS: readonly ContactColumnDef[] = [
   { key: "marketing_consent", label: "Consentimiento", defaultWidth: 160 },
   { key: "lead_score", label: "Lead score", defaultWidth: 110 },
   { key: "is_active", label: "Activo", defaultWidth: 100 },
-  { key: "created_at", label: "Creado", defaultWidth: 130 },
-  { key: "updated_at", label: "Actualizado", defaultWidth: 130 },
+  { key: "created_at", label: "Creado (CRM)", defaultWidth: 130 },
+  { key: "updated_at", label: "Actualizado (CRM)", defaultWidth: 130 },
+  // Source-system dates landed in PR #58 (Mini-PR A). The operator
+  // wants these visible by default ("entró a Brevo en marzo 2025"),
+  // not the CRM-side sync date.
+  { key: "created_at_external", label: "Creado en origen", defaultWidth: 140 },
+  { key: "updated_at_external", label: "Actualizado en origen", defaultWidth: 160 },
   { key: "external_data_freshness", label: "Frescura", defaultWidth: 130 },
   { key: "last_external_refresh_at", label: "Última actualización ext.", defaultWidth: 170 },
 ];
@@ -53,8 +60,11 @@ export const DEFAULT_VISIBLE_COLUMNS: ContactColumnKey[] = [
   "origin",
   "commercial_status",
   "marketing_consent",
-  "external_data_freshness",
-  "updated_at",
+  // Prefer the real source-system dates in the default view — the
+  // CRM-side `created_at` / `updated_at` rarely matters to the
+  // operator and was the column that prompted the column overhaul.
+  "created_at_external",
+  "updated_at_external",
 ];
 
 export const ALL_COLUMN_KEYS: ContactColumnKey[] = CONTACT_COLUMNS.map(
