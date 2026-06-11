@@ -296,3 +296,45 @@ status OK. En DELETE (204 No Content) eso lanzaba "Unexpected end of
 JSON input" y mostraba toast de error aunque la operación había
 funcionado. Ahora detecta `status === 204` y `content-length: 0` y
 devuelve `null` sin parsear.
+
+### Forma canónica del builder de /contacts (cierre Mini-PR B)
+
+Tras los bugs de producción, el builder de `/contacts` impone la
+forma de Brevo en vez de exponer la flexibilidad cruda de
+react-querybuilder:
+
+- **Sin dropdown de combinator.** La raíz es un OR implícito de
+  "tarjetas"; cada tarjeta es un AND implícito de condiciones. El "O"
+  entre tarjetas se pinta como cápsula centrada vía CSS. `+ Y` solo
+  aparece dentro de tarjetas; `+ O` solo a nivel raíz (un nivel de
+  anidación, como Brevo).
+- **`+ O` crea la tarjeta ya configurada** (`addRuleToNewGroups`):
+  primera condición con el primer campo del catálogo seleccionado.
+- **Editor tipado correctamente conectado.** Lección dura:
+  react-querybuilder v8 ignora un componente `valueEditor` por campo
+  (solo lee el STRING `valueEditorType`); el editor tipado debe ir en
+  `controlElements.valueEditor` global, leyendo el spec desde
+  `fieldData`. Sin esto, todos los valores viajaban como texto libre.
+- **Prune + coerción antes de emitir** (`pruneRulesTree` en
+  `segmentTranslator`): las condiciones sin valor se ignoran (el
+  operador las ve en pantalla pero no filtran hasta completarlas);
+  ints se convierten de string, fechas se normalizan a ISO
+  (`<input type="date">` ya emite YYYY-MM-DD), `between` exige ambos
+  extremos, listas vacías se descartan. `{}` = sin filtro.
+
+### Push a lista Brevo — timeout largo
+
+`brevo:push_target` está en `LONG_JOB_TIMEOUTS` (2 h). El job upserta
+cada contacto en serie ANTES del add-to-list final; con ~100 req/min
+de presupuesto Brevo, una vista de cientos de contactos supera los
+600 s por defecto de RQ y el SIGKILL dejaba la lista creada pero
+vacía. Mismo remedio que el historical_backfill (PR #57).
+
+### Campañas — borrador y programación en dos pasos
+
+El wizard crea SIEMPRE el borrador primero (`POST /emailCampaigns`
+sin `scheduledAt`) y programa con la segunda llamada documentada
+(`PUT /emailCampaigns/{id}`). Un rechazo en la programación deja un
+borrador usable. Un 405 de Brevo en campañas casi siempre es
+restricción de cuenta (API key sin permisos de Marketing o plan sin
+API de campañas) — el error de la API ahora lo dice en claro.
