@@ -1,11 +1,12 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import {
-  getEmailAliases,
+  getMyEmailAliases,
   sendEmail,
-  type EmailAlias,
   type EmailMessage,
+  type MyAlias,
 } from "../lib/emailsApi";
 import { extractErrorMessage } from "../lib/errors";
 
@@ -26,7 +27,7 @@ export function EmailComposerModal({
   onClose,
   onSent,
 }: Props) {
-  const [aliases, setAliases] = useState<EmailAlias[]>([]);
+  const [aliases, setAliases] = useState<MyAlias[]>([]);
   const [loadingAliases, setLoadingAliases] = useState(true);
   const [fromAlias, setFromAlias] = useState("");
   const [to, setTo] = useState(contactEmail ?? "");
@@ -45,7 +46,7 @@ export function EmailComposerModal({
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    getEmailAliases()
+    getMyEmailAliases()
       .then((items) => {
         setAliases(items);
         const def = items.find((a) => a.is_default) ?? items[0];
@@ -105,28 +106,40 @@ export function EmailComposerModal({
         {error ? <p className="form-error">{error}</p> : null}
         {!loadingAliases && aliases.length === 0 ? (
           <p className="form-warning">
-            No hay aliases &quot;Send mail as&quot; disponibles. Autoriza Gmail
-            desde <a href="/account">/account</a>.
+            No has marcado ningún alias en{" "}
+            <Link href="/account">/account</Link>. Marca al menos uno para
+            enviar emails desde el CRM.
           </p>
         ) : null}
         <form onSubmit={handleSubmit}>
-          <label className="field">
-            De
-            <select
-              value={fromAlias}
-              onChange={(e) => setFromAlias(e.target.value)}
-              disabled={loadingAliases || aliases.length === 0}
-            >
-              {aliases.map((a) => (
-                <option key={a.send_as_email} value={a.send_as_email}>
-                  {a.display_name
-                    ? `${a.display_name} <${a.send_as_email}>`
-                    : a.send_as_email}
-                  {a.is_primary ? " (primario)" : ""}
-                </option>
-              ))}
-            </select>
-          </label>
+          {aliases.length === 1 ? (
+            <p className="muted small">
+              Enviando desde:{" "}
+              <strong>
+                {aliases[0].display_name
+                  ? `${aliases[0].display_name} <${aliases[0].send_as_email}>`
+                  : aliases[0].send_as_email}
+              </strong>
+            </p>
+          ) : (
+            <label className="field">
+              De
+              <select
+                value={fromAlias}
+                onChange={(e) => setFromAlias(e.target.value)}
+                disabled={loadingAliases || aliases.length === 0}
+              >
+                {aliases.map((a) => (
+                  <option key={a.send_as_email} value={a.send_as_email}>
+                    {a.display_name
+                      ? `${a.display_name} <${a.send_as_email}>`
+                      : a.send_as_email}
+                    {a.is_default ? " (por defecto)" : ""}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
           <label className="field">
             Para
             <input
