@@ -3358,3 +3358,32 @@ a.origin-chip:hover { filter: brightness(0.97); }
   color: var(--muted);
   cursor: not-allowed;
 }
+
+/* Brevo-shape refinements (Mini-PR B cierre): no combinator dropdown;
+ * the OR between cards renders as a centered pill via CSS, and each
+ * AND card keeps its white-card look. */
+.contact-qb-root > .ruleGroup > .ruleGroup-body > .ruleGroup + .ruleGroup {
+  margin-top: 34px;
+  position: relative;
+}
+.contact-qb-root > .ruleGroup > .ruleGroup-body > .ruleGroup + .ruleGroup::before {
+  content: "O";
+  position: absolute;
+  top: -29px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #eef1f6;
+  color: var(--ink);
+  border-radius: 999px;
+  padding: 2px 14px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+/* The root group itself is just a transparent container. */
+.contact-qb-root > .ruleGroup {
+  background: transparent;
+  border: none;
+  padding: 0;
+}
+.contact-qb-hint { margin: 8px 4px 0; }

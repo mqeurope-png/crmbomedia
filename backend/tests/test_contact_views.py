@@ -553,3 +553,133 @@ def test_push_view_target_handler_runs_end_to_end(client: TestClient):
     # detail.
     assert int(list_id_used) == 42
     assert "ana@example.com" in emails_used
+
+
+def test_push_view_to_new_list_includes_contacts(client: TestClient):
+    """Full new-list flow: `new_list_name` creates the list in Brevo,
+    the worker pushes the view's matching contacts, and
+    `add_contacts_to_list` receives the right emails on the NEW list
+    id. This is the production scenario that presented as "the list
+    got created but stayed empty"."""
+    from unittest.mock import MagicMock, patch
+
+    from app.db.session import get_session
+    from app.integrations.brevo.sync_targets import push_brevo_target
+    from app.main import app
+    from app.models.crm import Contact, SyncLog
+
+    fake_redis = MagicMock()
+    fake_redis.set.return_value = True
+
+    session_factory = app.dependency_overrides[get_session]
+    session_gen = session_factory()
+    session = next(session_gen)
+    try:
+        session.add_all(
+            [
+                Contact(first_name="Ana", email="ana@example.com"),
+                Contact(first_name="Boris", email="boris@example.com"),
+            ]
+        )
+        session.commit()
+    finally:
+        session_gen.close()
+
+    view = _rules_view(
+        client,
+        "Push lista nueva",
+        {"type": "rule", "field": "email", "comparator": "is_not_null"},
+    )
+    _seed_brevo_account(client)
+
+    class _FakeClient:
+        created_lists: list[str] = []
+        add_calls: list[tuple[int, list[str]]] = []
+        next_list_id = 7777
+
+        def __init__(self, *_a, **_kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return None
+
+        async def create_list(self, name, folder_id=None):
+            _FakeClient.created_lists.append(name)
+            return {"id": _FakeClient.next_list_id, "name": name}
+
+        async def create_contact(self, payload):
+            return {"id": 1}
+
+        async def update_contact(self, identifier, payload):
+            return None
+
+        async def add_contacts_to_list(self, list_id, emails):
+            _FakeClient.add_calls.append((int(list_id), list(emails)))
+            return {}
+
+        async def remove_contacts_from_list(self, list_id, emails):
+            return {}
+
+    with (
+        # The endpoint imports BrevoClient lazily from the client
+        # module; the worker imports it at sync_targets module level.
+        patch("app.integrations.brevo.client.BrevoClient", _FakeClient),
+        patch("app.integrations.brevo.sync_targets.BrevoClient", _FakeClient),
+        patch(
+            "app.integrations.brevo.sync_targets.redis_connection",
+            return_value=fake_redis,
+        ),
+        patch(
+            "app.api.routes.enqueue_sync_job",
+            lambda *_a, **_kw: ("log-n", "job-n"),
+        ),
+    ):
+        push_response = client.post(
+            f"/api/contact-views/{view['id']}/push-to-brevo-list",
+            json={"brevo_account_id": "default", "new_list_name": "Test push v3"},
+            headers=auth_headers(client, "manager"),
+        )
+        assert push_response.status_code == 200, push_response.text
+        body = push_response.json()
+        assert body["brevo_list_id"] == 7777
+        assert _FakeClient.created_lists == ["Test push v3"]
+        # Endpoint reported the matched count up front.
+        assert body["contacts_to_push"] == 2
+
+        session_gen = session_factory()
+        session = next(session_gen)
+        try:
+            sync_log = SyncLog(
+                system="brevo",
+                account_id="default",
+                operation="push_target",
+                status="running",
+                metadata_json=(
+                    f'{{"payload": {{"target_id": "{body["target_id"]}"}}}}'
+                ),
+            )
+            session.add(sync_log)
+            session.flush()
+            outcome = push_brevo_target(session, sync_log)
+        finally:
+            session_gen.close()
+
+    assert outcome.records_failed == 0, outcome.error_summary
+    assert outcome.records_processed == 2
+    # The list-add call carried BOTH matching emails on the NEW list.
+    assert len(_FakeClient.add_calls) == 1
+    list_id_used, emails_used = _FakeClient.add_calls[0]
+    assert list_id_used == 7777
+    assert sorted(emails_used) == ["ana@example.com", "boris@example.com"]
+
+
+def test_push_target_queue_has_long_job_timeout():
+    """A push of a few hundred contacts outlives RQ's 600 s default —
+    the queue must carry the long-job override or the job gets killed
+    mid-run (the production "list created but empty" failure)."""
+    from app.workers.queues import LONG_JOB_TIMEOUTS
+
+    assert LONG_JOB_TIMEOUTS.get("brevo:push_target", 0) >= 3600

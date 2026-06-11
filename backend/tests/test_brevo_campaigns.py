@@ -643,3 +643,83 @@ def test_stats_keep_global_when_it_carries_data(session_factory):
         stats = _json.loads(row.stats_json)
         assert stats["sent"] == 100
         assert stats["delivered"] == 95
+
+
+def test_create_scheduled_campaign_uses_two_step_create_then_schedule(
+    client: TestClient,
+):
+    """Production hit a 405 on the combined create-with-scheduledAt.
+    The flow now creates the DRAFT first (POST /emailCampaigns without
+    scheduledAt) and schedules with the documented second call
+    (PUT /emailCampaigns/{id} via schedule_email_campaign). A
+    scheduling rejection therefore leaves a usable draft instead of
+    nothing."""
+    headers = auth_headers(client, "manager")
+    with _patch_api():
+        response = client.post(
+            "/api/brevo/campaigns",
+            json=_campaign_payload(scheduled_at="2099-07-01T10:00:00+00:00"),
+            headers=headers,
+        )
+    assert response.status_code == 201, response.text
+
+    create_calls = [c for c in _FakeClient.calls if c[0] == "create_campaign"]
+    schedule_calls = [c for c in _FakeClient.calls if c[0] == "schedule"]
+    assert len(create_calls) == 1
+    assert len(schedule_calls) == 1
+    # The create payload must NOT carry scheduledAt any more.
+    created_id = create_calls[0][1]
+    assert "scheduledAt" not in _FakeClient.campaigns[created_id]
+    # The schedule call targets the campaign just created with the
+    # requested timestamp.
+    assert schedule_calls[0][1] == created_id
+    assert schedule_calls[0][2].startswith("2099-07-01T10:00:00")
+
+
+def test_create_draft_campaign_makes_no_schedule_call(client: TestClient):
+    headers = auth_headers(client, "manager")
+    with _patch_api():
+        response = client.post(
+            "/api/brevo/campaigns",
+            json=_campaign_payload(),
+            headers=headers,
+        )
+    assert response.status_code == 201, response.text
+    assert not [c for c in _FakeClient.calls if c[0] == "schedule"]
+
+
+def test_campaign_405_surfaces_actionable_message(client: TestClient):
+    """A 405 from Brevo gets translated into a Spanish hint pointing
+    at API-key permissions / plan restrictions instead of the opaque
+    '405 from brevo/default'."""
+    from unittest.mock import patch as _patch
+
+    from app.integrations.errors import IntegrationClientError
+
+    class _Rejects:
+        def __init__(self, *_a, **_kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return None
+
+        async def create_email_campaign(self, payload):
+            raise IntegrationClientError(
+                "405 from brevo/main",
+                system="brevo",
+                account_id="main",
+                status_code=405,
+            )
+
+    headers = auth_headers(client, "manager")
+    with _patch("app.api.brevo.BrevoClient", _Rejects):
+        response = client.post(
+            "/api/brevo/campaigns",
+            json=_campaign_payload(),
+            headers=headers,
+        )
+    assert response.status_code == 502
+    assert "permisos de Marketing" in response.text
