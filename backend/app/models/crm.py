@@ -125,6 +125,20 @@ class Contact(TimestampMixin, Base):
     external_data_refreshed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True)
     )
+    # Real creation / last-modification timestamps in the source
+    # system(s), NOT the CRM row's `created_at`/`updated_at`. The
+    # operator wants to see "this contact entered Brevo in March 2025"
+    # instead of "it synced into the CRM in May 2026". Populated by the
+    # connector mappers from each payload; when a contact lives in more
+    # than one system the merge policy keeps the OLDEST creation (the
+    # earliest system is the real origin) and the NEWEST modification.
+    # NULL until a sync carries a parseable date — we never invent one.
+    created_at_external: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    updated_at_external: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
 
     company: Mapped[Company | None] = relationship(back_populates="contacts")
     notes: Mapped[list["Note"]] = relationship(
@@ -150,6 +164,20 @@ class Contact(TimestampMixin, Base):
         `from_attributes`; the manual flatten keeps the schema layer
         ignorant of the through-table."""
         return [assignment.tag for assignment in self.tag_assignments]
+
+    @property
+    def external_references_summary(self) -> list[dict[str, str]]:
+        """Compact `(system, account_id)` list for the contacts list
+        endpoint — enough to render the origin chips per row without
+        shipping the full `external_refs` payload. `ContactRead`
+        reads it via `from_attributes`. Callers that hit this on a
+        list MUST eager-load `external_refs` (the repository does) or
+        each row triggers a lazy SELECT."""
+        out: list[dict[str, str]] = []
+        for ref in self.external_refs:
+            system = ref.system.value if hasattr(ref.system, "value") else str(ref.system)
+            out.append({"system": system, "account_id": ref.account_id})
+        return out
 
 
 class Tag(TimestampMixin, Base):
