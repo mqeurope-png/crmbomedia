@@ -67,6 +67,13 @@ export type TaskCreatePayload = {
 
 export type TaskUpdatePayload = Partial<TaskCreatePayload>;
 
+/** Convenience: the same field surface as TaskCreatePayload plus the
+ *  sync_with_google_calendar tri-state the PATCH endpoint honours
+ *  (true = sync now, false = unsync + delete event, undefined = leave
+ *  alone). Already covered by TaskCreatePayload above, exported here
+ *  so the call sites read clearly. */
+export type TaskEditPayload = TaskUpdatePayload;
+
 export async function listTasks(params: {
   assignedUserId?: string;
   contactId?: string;

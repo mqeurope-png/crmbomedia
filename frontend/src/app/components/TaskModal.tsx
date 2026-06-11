@@ -1,15 +1,24 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { createTask, type Task, type TaskCreatePayload } from "../lib/tasksApi";
+import {
+  createTask,
+  updateTask,
+  type Task,
+  type TaskCreatePayload,
+  type TaskUpdatePayload,
+} from "../lib/tasksApi";
 import { extractErrorMessage } from "../lib/errors";
 import { getGoogleStatus, type GoogleStatus } from "../lib/googleApi";
 
 type Props = {
   /** Pre-fill contact link — used by the contact detail "Tareas" tab. */
   contactId?: string | null;
+  /** Pass a Task to edit in place; omit (or null) for creation. */
+  task?: Task | null;
   onClose: () => void;
-  onCreated: (task: Task) => void;
+  onCreated?: (task: Task) => void;
+  onUpdated?: (task: Task) => void;
 };
 
 const PRIORITIES: Array<[Task["priority"], string]> = [
@@ -29,32 +38,58 @@ const REMINDERS: Array<[number | null, string]> = [
   [1440, "1 día antes"],
 ];
 
+function pad(n: number): string {
+  return String(n).padStart(2, "0");
+}
+
+function isoToLocalInputValue(iso: string): string {
+  const d = new Date(iso);
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 function tomorrowAtNine(): string {
   const d = new Date();
   d.setDate(d.getDate() + 1);
   d.setHours(9, 0, 0, 0);
-  // datetime-local input wants `YYYY-MM-DDTHH:mm` in local time.
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return isoToLocalInputValue(d.toISOString());
 }
 
-/** Modal to create a task. Minimal MVP — title + due + priority +
- * reminder + (optional) contact. The dashboard widget, the
- * contact-tab "Tareas" and the standalone /tasks page all open this
- * with different defaults. */
-export function TaskModal({ contactId, onClose, onCreated }: Props) {
-  const [title, setTitle] = useState("");
-  const [description, setDescription] = useState("");
-  const [dueAt, setDueAt] = useState(tomorrowAtNine());
-  const [priority, setPriority] = useState<Task["priority"]>("medium");
-  const [reminder, setReminder] = useState<number | null>(null);
+/** Modal to create OR edit a task.
+ *
+ * - When `task` is null/undefined the form is in "create" mode and
+ *   posts to `POST /api/tasks`.
+ * - When `task` is set the form opens prefilled and submits to
+ *   `PATCH /api/tasks/{id}` with only the changed fields. The Google
+ *   sync checkbox tracks whether the task is currently synced so
+ *   toggling it triggers create/delete on the backend.
+ */
+export function TaskModal({
+  contactId,
+  task,
+  onClose,
+  onCreated,
+  onUpdated,
+}: Props) {
+  const isEdit = !!task;
+  const [title, setTitle] = useState(task?.title ?? "");
+  const [description, setDescription] = useState(task?.description ?? "");
+  const [dueAt, setDueAt] = useState(
+    task?.due_at ? isoToLocalInputValue(task.due_at) : tomorrowAtNine(),
+  );
+  const [priority, setPriority] = useState<Task["priority"]>(
+    task?.priority ?? "medium",
+  );
+  const [reminder, setReminder] = useState<number | null>(
+    task?.reminder_minutes_before ?? null,
+  );
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Google Calendar sync — the checkbox only renders once we know
-  // the user has a connected + configured calendar. Default ON when
-  // it shows; default OFF (and tip shown) when they aren't connected.
   const [googleStatus, setGoogleStatus] = useState<GoogleStatus | null>(null);
-  const [syncWithGoogle, setSyncWithGoogle] = useState(true);
+  // For new tasks default to ON when GCal is available; for editing
+  // start from the task's current sync state.
+  const [syncWithGoogle, setSyncWithGoogle] = useState<boolean>(
+    isEdit ? !!task?.google_event_id : true,
+  );
 
   useEffect(() => {
     getGoogleStatus()
@@ -72,19 +107,37 @@ export function TaskModal({ contactId, onClose, onCreated }: Props) {
         !!googleStatus?.connected &&
         !!googleStatus?.selected_calendar &&
         syncWithGoogle;
-      const payload: TaskCreatePayload = {
-        title: title.trim(),
-        description: description.trim() || null,
-        due_at: dueAt ? new Date(dueAt).toISOString() : null,
-        priority,
-        reminder_minutes_before: reminder,
-        contact_id: contactId ?? null,
-        sync_with_google_calendar: canSync,
-      };
-      const task = await createTask(payload);
-      onCreated(task);
+      if (isEdit && task) {
+        const payload: TaskUpdatePayload = {
+          title: title.trim(),
+          description: description.trim() || null,
+          due_at: dueAt ? new Date(dueAt).toISOString() : null,
+          priority,
+          reminder_minutes_before: reminder,
+          sync_with_google_calendar: canSync,
+        };
+        const updated = await updateTask(task.id, payload);
+        onUpdated?.(updated);
+      } else {
+        const payload: TaskCreatePayload = {
+          title: title.trim(),
+          description: description.trim() || null,
+          due_at: dueAt ? new Date(dueAt).toISOString() : null,
+          priority,
+          reminder_minutes_before: reminder,
+          contact_id: contactId ?? null,
+          sync_with_google_calendar: canSync,
+        };
+        const created = await createTask(payload);
+        onCreated?.(created);
+      }
     } catch (err) {
-      setError(extractErrorMessage(err, "No se pudo crear la tarea."));
+      setError(
+        extractErrorMessage(
+          err,
+          isEdit ? "No se pudo actualizar la tarea." : "No se pudo crear la tarea.",
+        ),
+      );
       setSubmitting(false);
     }
   }
@@ -93,8 +146,8 @@ export function TaskModal({ contactId, onClose, onCreated }: Props) {
     <div className="modal-backdrop" role="dialog" aria-modal="true">
       <div className="modal">
         <header>
-          <h2>Nueva tarea</h2>
-          {contactId ? (
+          <h2>{isEdit ? "Editar tarea" : "Nueva tarea"}</h2>
+          {contactId && !isEdit ? (
             <p className="muted small">Vinculada al contacto actual.</p>
           ) : null}
         </header>
@@ -194,7 +247,13 @@ export function TaskModal({ contactId, onClose, onCreated }: Props) {
               className="button"
               disabled={submitting || !title.trim()}
             >
-              {submitting ? "Creando…" : "Crear tarea"}
+              {submitting
+                ? isEdit
+                  ? "Guardando…"
+                  : "Creando…"
+                : isEdit
+                  ? "Guardar cambios"
+                  : "Crear tarea"}
             </button>
           </div>
         </form>

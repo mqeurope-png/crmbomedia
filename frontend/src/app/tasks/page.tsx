@@ -4,6 +4,7 @@ import {
   AlertCircle,
   Calendar,
   CheckCircle2,
+  Pencil,
   Plus,
   Trash2,
 } from "lucide-react";
@@ -52,6 +53,7 @@ export default function TasksPage() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
+  const [editingTask, setEditingTask] = useState<Task | null>(null);
 
   const reload = useCallback(async () => {
     try {
@@ -129,6 +131,7 @@ export default function TasksPage() {
                         task={task}
                         onComplete={() => handleComplete(task)}
                         onDelete={() => handleDelete(task)}
+                        onEdit={() => setEditingTask(task)}
                       />
                     ))}
                   </ul>
@@ -148,6 +151,16 @@ export default function TasksPage() {
           }}
         />
       ) : null}
+      {editingTask ? (
+        <TaskModal
+          task={editingTask}
+          onClose={() => setEditingTask(null)}
+          onUpdated={async () => {
+            setEditingTask(null);
+            await reload();
+          }}
+        />
+      ) : null}
     </main>
   );
 }
@@ -156,10 +169,12 @@ function TaskRow({
   task,
   onComplete,
   onDelete,
+  onEdit,
 }: {
   task: Task;
   onComplete: () => void;
   onDelete: () => void;
+  onEdit: () => void;
 }) {
   return (
     <li className={`tasks-row tasks-row--priority-${task.priority}`}>
@@ -196,6 +211,14 @@ function TaskRow({
           ) : null}
         </p>
       </div>
+      <button
+        type="button"
+        className="tasks-row-edit"
+        onClick={onEdit}
+        title="Editar"
+      >
+        <Pencil size={13} aria-hidden />
+      </button>
       <button
         type="button"
         className="tasks-row-delete"
