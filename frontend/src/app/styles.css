@@ -4326,3 +4326,22 @@ a.origin-chip:hover { filter: brightness(0.97); }
 .email-message-meta { flex: 1; min-width: 0; }
 .email-message-from { margin: 0; font-size: 13px; }
 .email-message-from .badge { margin-left: 6px; font-size: 10px; }
+
+/* Contact timeline email rows v2.1 */
+.timeline-row-email-out {
+  background: #f3f7fd;
+  border-left: 3px solid var(--brand);
+  padding-left: 8px;
+}
+.timeline-row-email-in {
+  background: #f0faf3;
+  border-left: 3px solid #137a4d;
+  padding-left: 8px;
+}
+.timeline-row-email-track {
+  background: #fffceb;
+  border-left: 3px solid #d4a900;
+  padding-left: 8px;
+}
+.timeline-subline { margin: 2px 0; font-size: 12px; }
+.timeline-body { font-style: italic; color: #6b7280; margin: 2px 0 0; font-size: 12px; }

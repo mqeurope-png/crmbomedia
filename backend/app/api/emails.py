@@ -51,6 +51,7 @@ def _emit_activity(
     subject: str | None,
     metadata: dict[str, str | int | None],
     occurred_at: datetime,
+    body: str | None = None,
 ) -> None:
     """Mirror an email mutation into the contact's activity timeline
     when we know which contact it belongs to."""
@@ -69,6 +70,7 @@ def _emit_activity(
             ),
             event_type=event_type,
             subject=(subject or "")[:200],
+            body=(body or "")[:200] or None,
             metadata_json=json.dumps(metadata, default=str),
             occurred_at=occurred_at,
             synced_at=datetime.now(UTC),
@@ -281,10 +283,14 @@ def send_email(
         contact_id=payload.contact_id,
         event_type="email.sent_from_crm",
         subject=payload.subject,
+        body=message.snippet or (payload.body_text or "")[:200] or None,
         metadata={
             "message_id": message.id,
             "thread_id": message.thread_id,
+            "direction": "outbound",
+            "from_email": message.from_email,
             "to": ", ".join(payload.to)[:200],
+            "snippet": message.snippet or "",
         },
         occurred_at=message.sent_at,
     )
