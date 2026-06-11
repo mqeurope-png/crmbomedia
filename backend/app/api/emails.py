@@ -422,10 +422,54 @@ def thread_detail(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="No tienes permiso para ver este hilo.",
         )
+    # v2.1.1: opening the detail page as the thread owner marks it
+    # read automatically — saves the front-end an extra POST and
+    # matches the operator's mental model ("if I opened it, I saw
+    # it"). Other roles (admin viewing someone else's thread) do
+    # NOT mark-read, since that would clobber the owner's badge.
+    if thread.initiated_by_user_id == current_user.id and thread.has_unread_replies:
+        thread.has_unread_replies = False
+        session.execute(
+            EmailMessage.__table__.update()  # type: ignore[attr-defined]
+            .where(
+                EmailMessage.thread_id == thread.id,
+                EmailMessage.direction == "inbound",
+                EmailMessage.read_at.is_(None),
+            )
+            .values(read_at=datetime.now(UTC))
+        )
+        session.commit()
     return EmailThreadDetail(
         **EmailThreadRead.model_validate(thread).model_dump(),
         messages=[_message_read(m) for m in thread.messages],
     )
+
+
+@router.post("/threads/{thread_id}/mark-unread")
+def mark_unread(
+    thread_id: str,
+    request: Request,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_user),
+) -> dict[str, str]:
+    """Inverse of mark-read — flips `has_unread_replies` back on
+    so the operator can flag a thread for follow-up. Doesn't
+    touch the `read_at` stamps on individual messages."""
+    thread = session.get(EmailThread, thread_id)
+    if thread is None:
+        raise not_found("EmailThread")
+    thread.has_unread_replies = True
+    record_event(
+        session,
+        action=Action.EMAIL_THREAD_MARKED_READ,
+        target_type="email_thread",
+        target_id=thread.id,
+        actor=current_user,
+        metadata={"flipped_to": "unread"},
+        request=request,
+    )
+    session.commit()
+    return {"message": "marked_unread"}
 
 
 @router.post("/threads/{thread_id}/mark-read")
