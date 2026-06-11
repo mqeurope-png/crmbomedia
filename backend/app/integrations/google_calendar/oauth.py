@@ -31,9 +31,26 @@ from app.core.config import get_settings
 GOOGLE_OAUTH_SCOPES: tuple[str, ...] = (
     "https://www.googleapis.com/auth/calendar.readonly",
     "https://www.googleapis.com/auth/calendar.events",
+    # Sprint Email v1 scopes. Sending requires gmail.send; reading
+    # threads + marking-as-read requires gmail.modify; aliases for the
+    # "Send mail as" picker need gmail.settings.basic. Asking for all
+    # three up-front keeps the consent screen to a single visit per
+    # user.
+    "https://www.googleapis.com/auth/gmail.send",
+    "https://www.googleapis.com/auth/gmail.modify",
+    "https://www.googleapis.com/auth/gmail.settings.basic",
     "openid",
     "https://www.googleapis.com/auth/userinfo.email",
 )
+
+
+# Granular checks the /scopes-status endpoint exposes to the UI so it
+# can decide which CTA to render (full reauth vs. incremental).
+SCOPE_CALENDAR_EVENTS = "https://www.googleapis.com/auth/calendar.events"
+SCOPE_CALENDAR_READONLY = "https://www.googleapis.com/auth/calendar.readonly"
+SCOPE_GMAIL_SEND = "https://www.googleapis.com/auth/gmail.send"
+SCOPE_GMAIL_MODIFY = "https://www.googleapis.com/auth/gmail.modify"
+SCOPE_GMAIL_SETTINGS = "https://www.googleapis.com/auth/gmail.settings.basic"
 
 
 @dataclass(frozen=True)

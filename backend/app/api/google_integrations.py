@@ -38,6 +38,11 @@ from app.integrations.google_calendar.client import (
     GoogleCalendarClient,
 )
 from app.integrations.google_calendar.oauth import (
+    SCOPE_CALENDAR_EVENTS,
+    SCOPE_CALENDAR_READONLY,
+    SCOPE_GMAIL_MODIFY,
+    SCOPE_GMAIL_SEND,
+    SCOPE_GMAIL_SETTINGS,
     get_authorize_url,
 )
 from app.models.crm import User
@@ -66,6 +71,30 @@ def _require_configured() -> None:
                 "por el administrador."
             ),
         )
+
+
+@router.get("/scopes-status")
+def scopes_status(
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_viewer),
+) -> dict[str, bool]:
+    """Granular per-scope check — drives the reauth banner when an
+    operator already authorised Calendar but not Gmail.
+
+    Returns booleans for every scope the integration cares about.
+    The UI compares against the union to decide what's missing.
+    """
+    integration = google_service.get_integration(session, current_user.id)
+    granted: set[str] = set()
+    if integration is not None and integration.scopes:
+        granted = set(integration.scopes.split())
+    return {
+        "calendar_events": SCOPE_CALENDAR_EVENTS in granted,
+        "calendar_readonly": SCOPE_CALENDAR_READONLY in granted,
+        "gmail_send": SCOPE_GMAIL_SEND in granted,
+        "gmail_modify": SCOPE_GMAIL_MODIFY in granted,
+        "gmail_settings": SCOPE_GMAIL_SETTINGS in granted,
+    }
 
 
 @router.get("/status", response_model=GoogleCalendarStatus)
