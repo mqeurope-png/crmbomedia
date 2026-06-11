@@ -1,7 +1,8 @@
 "use client";
 
-import { AlertTriangle, CheckCircle2, Plug } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Mail, Plug, RefreshCw } from "lucide-react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import {
   disconnectGoogle,
@@ -11,6 +12,7 @@ import {
   type GoogleScopesStatus,
   type GoogleStatus,
 } from "../lib/googleApi";
+import { getEmailAliases, type EmailAlias } from "../lib/emailsApi";
 import { extractErrorMessage } from "../lib/errors";
 
 /** Google Calendar block inside /account.
@@ -22,11 +24,24 @@ import { extractErrorMessage } from "../lib/errors";
  *     shows the chosen calendar + change/disconnect controls.
  */
 export function GoogleCalendarSection() {
+  const searchParams = useSearchParams();
   const [status, setStatus] = useState<GoogleStatus | null>(null);
   const [scopes, setScopes] = useState<GoogleScopesStatus | null>(null);
+  const [aliases, setAliases] = useState<EmailAlias[] | null>(null);
+  const [aliasesLoading, setAliasesLoading] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showGmailToast, setShowGmailToast] = useState(false);
+
+  // "?gmail_connected=1" lands on the user after the OAuth callback
+  // when they already had a calendar. Show a one-shot success toast
+  // so they know the reauth went through.
+  useEffect(() => {
+    if (searchParams?.get("gmail_connected") === "1") {
+      setShowGmailToast(true);
+    }
+  }, [searchParams]);
 
   const reload = useCallback(async () => {
     try {
@@ -42,9 +57,29 @@ export function GoogleCalendarSection() {
     }
   }, []);
 
+  const reloadAliases = useCallback(async () => {
+    setAliasesLoading(true);
+    try {
+      setAliases(await getEmailAliases());
+    } catch {
+      setAliases([]);
+    } finally {
+      setAliasesLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     reload().finally(() => setLoading(false));
   }, [reload]);
+
+  // Once we know Gmail is authorised, fetch the aliases. The
+  // backend hits Google's settings.sendAs.list endpoint on demand —
+  // no DB cache, the spec is explicit about that.
+  useEffect(() => {
+    if (scopes?.gmail_send && scopes?.gmail_settings && aliases === null) {
+      reloadAliases();
+    }
+  }, [scopes, aliases, reloadAliases]);
 
   async function handleConnect() {
     setBusy(true);
@@ -132,8 +167,17 @@ export function GoogleCalendarSection() {
   const needsGmailReauth =
     scopes !== null && (!scopes.gmail_send || !scopes.gmail_modify);
 
+  const gmailReady = !!scopes?.gmail_send && !!scopes?.gmail_modify;
+  const needsSettingsScope = !!scopes?.gmail_send && !scopes?.gmail_settings;
+
   return (
     <>
+      {showGmailToast ? (
+        <p className="form-success">
+          <CheckCircle2 size={11} aria-hidden /> Gmail autorizado correctamente.
+          Los aliases aparecen abajo.
+        </p>
+      ) : null}
       <p className="muted small">
         Cuenta: <strong>{status.google_email}</strong>
       </p>
@@ -176,23 +220,94 @@ export function GoogleCalendarSection() {
         <>
           <p className="muted small">
             <CheckCircle2 size={11} aria-hidden /> Calendario:{" "}
-            <strong>{status.selected_calendar?.summary ?? "—"}</strong>
-          </p>
-          <div className="actions">
-            <Link className="button small secondary" href="/account/google-setup">
-              Cambiar calendario
+            <strong>{status.selected_calendar?.summary ?? "—"}</strong>{" "}
+            <Link className="small muted" href="/account/google-setup">
+              Cambiar
             </Link>
-            <button
-              className="button small danger"
-              type="button"
-              onClick={handleDisconnect}
-              disabled={busy}
-            >
-              Desconectar
-            </button>
-          </div>
+          </p>
         </>
       )}
+
+      <h4 className="google-subheading">
+        <Mail size={11} aria-hidden /> Gmail (envío de emails)
+      </h4>
+      {gmailReady ? (
+        <>
+          {needsSettingsScope ? (
+            <p className="form-warning small">
+              Para ver tus aliases necesitamos un permiso adicional.{" "}
+              <button
+                type="button"
+                className="link-button"
+                onClick={handleConnect}
+                disabled={busy}
+              >
+                Reautorizar
+              </button>
+              .
+            </p>
+          ) : null}
+          {aliasesLoading || aliases === null ? (
+            <p className="muted small">Cargando aliases…</p>
+          ) : aliases.length === 0 ? (
+            <p className="muted small">
+              Sin aliases &quot;Send mail as&quot; configurados en tu Gmail.
+            </p>
+          ) : (
+            <>
+              <p className="muted small">
+                <CheckCircle2 size={11} aria-hidden /> Autorizado ·{" "}
+                {aliases.length} alias
+                {aliases.length === 1 ? "" : "es"} disponible
+                {aliases.length === 1 ? "" : "s"}
+              </p>
+              <ul className="gmail-aliases">
+                {aliases.map((a) => (
+                  <li key={a.send_as_email}>
+                    {a.display_name ? (
+                      <strong>{a.display_name}</strong>
+                    ) : null}{" "}
+                    <span className="muted small">
+                      &lt;{a.send_as_email}&gt;
+                    </span>
+                    {a.is_primary ? (
+                      <span className="badge muted"> primario</span>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+              <button
+                type="button"
+                className="button small secondary"
+                onClick={reloadAliases}
+                disabled={aliasesLoading}
+              >
+                <RefreshCw size={11} aria-hidden /> Refrescar aliases
+              </button>
+            </>
+          )}
+        </>
+      ) : (
+        <button
+          type="button"
+          className="button small"
+          onClick={handleConnect}
+          disabled={busy}
+        >
+          <Plug size={11} aria-hidden /> Autorizar envío de emails
+        </button>
+      )}
+
+      <div className="actions">
+        <button
+          className="button small danger"
+          type="button"
+          onClick={handleDisconnect}
+          disabled={busy}
+        >
+          Desconectar Google
+        </button>
+      </div>
     </>
   );
 }

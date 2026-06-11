@@ -772,3 +772,120 @@ def test_reopen_task_reverts_event_title(
     )
     assert response.status_code == 200, response.text
     assert titles[-1] == "Seguimiento"
+
+
+def test_scope_expansion_keeps_selected_calendar(
+    client: TestClient,
+    session_factory: sessionmaker,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Bug fix — Sprint Email v1 follow-up.
+
+    When the user re-authorises to add Gmail scopes, the existing
+    `selected_calendar_id` must stay put. The previous
+    implementation reset it on every re-auth, forcing the operator
+    through the setup screen again."""
+    with session_factory() as session:
+        uid = _user_id(session, UserRole.USER)
+    _seed_integration(session_factory, user_id=uid)  # calendar already selected
+
+    monkeypatch.setattr(
+        "app.api.google_integrations.get_authorize_url",
+        lambda state: f"https://accounts.google.com/o/oauth2/auth?state={state}",
+    )
+    auth_resp = client.get(
+        "/api/integrations/google/authorize",
+        headers=auth_headers(client, "user"),
+    )
+    state = auth_resp.json()["url"].rsplit("=", 1)[1]
+
+    def fake_exchange(*, code: str, state: str) -> OAuthExchangeResult:
+        _ = (code, state)
+        return OAuthExchangeResult(
+            google_email="bart@bomedia.net",  # SAME email
+            access_token="new-access",
+            refresh_token="new-refresh",
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            scopes=[
+                "https://www.googleapis.com/auth/calendar.readonly",
+                "https://www.googleapis.com/auth/calendar.events",
+                "https://www.googleapis.com/auth/gmail.send",
+                "https://www.googleapis.com/auth/gmail.modify",
+            ],
+        )
+
+    monkeypatch.setattr(google_service, "exchange_code_for_tokens", fake_exchange)
+
+    response = client.get(
+        "/api/integrations/google/callback",
+        params={"code": "x", "state": state},
+        follow_redirects=False,
+    )
+    assert response.status_code == 302
+    # Existing selection means the callback skips the setup screen.
+    assert "/account/google-setup" not in response.headers["location"]
+    assert "gmail_connected=1" in response.headers["location"]
+
+    with session_factory() as session:
+        integration = session.scalar(select(UserGoogleIntegration))
+        assert integration is not None
+        assert integration.selected_calendar_id == "cal-123"
+        assert integration.selected_calendar_summary == "CRMBO Tareas"
+        # Scopes are merged, not replaced.
+        scopes = set(integration.scopes.split())
+        assert "https://www.googleapis.com/auth/gmail.send" in scopes
+        assert "https://www.googleapis.com/auth/calendar.events" in scopes
+
+
+def test_account_change_clears_calendar(
+    client: TestClient,
+    session_factory: sessionmaker,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If the user re-authorises with a different Google account,
+    drop the calendar selection — the id won't belong to the new
+    account."""
+    with session_factory() as session:
+        uid = _user_id(session, UserRole.USER)
+    _seed_integration(
+        session_factory,
+        user_id=uid,
+        google_email="bart@bomedia.net",
+        calendar_id="cal-old",
+        calendar_summary="Old",
+    )
+
+    monkeypatch.setattr(
+        "app.api.google_integrations.get_authorize_url",
+        lambda state: f"https://accounts.google.com/o/oauth2/auth?state={state}",
+    )
+    auth_resp = client.get(
+        "/api/integrations/google/authorize",
+        headers=auth_headers(client, "user"),
+    )
+    state = auth_resp.json()["url"].rsplit("=", 1)[1]
+
+    def fake_exchange(*, code: str, state: str) -> OAuthExchangeResult:
+        _ = (code, state)
+        return OAuthExchangeResult(
+            google_email="other@bomedia.net",  # DIFFERENT email
+            access_token="x",
+            refresh_token="x",
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            scopes=["https://www.googleapis.com/auth/calendar.events"],
+        )
+
+    monkeypatch.setattr(google_service, "exchange_code_for_tokens", fake_exchange)
+
+    response = client.get(
+        "/api/integrations/google/callback",
+        params={"code": "x", "state": state},
+        follow_redirects=False,
+    )
+    assert response.status_code == 302
+    # Calendar got wiped → redirect goes back through setup.
+    assert "/account/google-setup" in response.headers["location"]
+    with session_factory() as session:
+        integration = session.scalar(select(UserGoogleIntegration))
+        assert integration is not None
+        assert integration.selected_calendar_id is None

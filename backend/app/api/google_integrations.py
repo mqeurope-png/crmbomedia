@@ -203,6 +203,17 @@ def callback(
         request=request,
     )
     session.commit()
+    # Scope-expansion vs first-time setup: if the user already
+    # picked a calendar (Fase 2 done), skip the setup screen —
+    # otherwise they'd be asked to re-pick on every incremental
+    # authorisation. The setup screen is only useful when the
+    # integration is brand new or the calendar selection was
+    # cleared (account change).
+    if integration.selected_calendar_id:
+        return RedirectResponse(
+            url=f"{frontend_base}/account?gmail_connected=1",
+            status_code=status.HTTP_302_FOUND,
+        )
     return RedirectResponse(
         url=f"{frontend_base}/account/google-setup",
         status_code=status.HTTP_302_FOUND,
