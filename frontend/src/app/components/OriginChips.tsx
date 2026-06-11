@@ -12,6 +12,17 @@ const SYSTEM_LABELS: Record<string, string> = {
   manual: "Manual",
 };
 
+function formatShortDate(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed.toLocaleDateString("es-ES", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  });
+}
+
 function systemLabel(system: string, explicit?: string | null): string {
   if (explicit) return explicit;
   return SYSTEM_LABELS[system] ?? system;
@@ -60,7 +71,11 @@ function Chip({
 }
 
 /** Full origin chips for the contact detail card — system label,
- * account label, external id and a deep link when available. */
+ * account label, external id, deep link and the source-system
+ * created/updated dates (when available). PR #58 added the date
+ * columns to `external_references`; this card surfaces them so
+ * the operator can see when the contact was first imported and
+ * last refreshed in the source system, not just in the CRM. */
 export function OriginChips({
   references,
 }: {
@@ -70,19 +85,42 @@ export function OriginChips({
     return <span className="muted">—</span>;
   }
   return (
-    <ul className="tag-chip-list origin-chip-list">
+    <ul className="origin-ref-list">
       {references.map((ref) => {
         const label = systemLabel(ref.system, ref.system_label);
         const full = ref.account_label ? `${label} · ${ref.account_label}` : label;
+        const created = formatShortDate(ref.external_created_at);
+        const updated = formatShortDate(ref.external_updated_at);
+        // Collapse "created == updated" into a single line; the
+        // operator doesn't need to read two identical dates.
+        const showUpdated = updated && updated !== created;
         return (
-          <li key={ref.id}>
-            <Chip
-              system={ref.system}
-              label={full}
-              externalId={ref.external_id}
-              externalUrl={ref.external_url}
-              size="regular"
-            />
+          <li key={ref.id} className="origin-ref-item">
+            <div className="origin-ref-chip">
+              <Chip
+                system={ref.system}
+                label={full}
+                externalId={ref.external_id}
+                externalUrl={ref.external_url}
+                size="regular"
+              />
+            </div>
+            {created || showUpdated ? (
+              <dl className="origin-ref-dates">
+                {created ? (
+                  <>
+                    <dt>Creado</dt>
+                    <dd>{created}</dd>
+                  </>
+                ) : null}
+                {showUpdated ? (
+                  <>
+                    <dt>Actualizado</dt>
+                    <dd>{updated}</dd>
+                  </>
+                ) : null}
+              </dl>
+            ) : null}
           </li>
         );
       })}

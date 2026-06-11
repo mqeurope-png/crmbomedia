@@ -655,3 +655,53 @@ def test_address_country_contains_operator(session_factory):
         )
         matched = list(session.scalars(select(Contact).where(condition)))
         assert _ids(matched) == {seeded["boris"].id}
+
+
+def test_tag_contains_none_with_two_tags(session_factory):
+    """`contains_none` with two tag_ids excludes any contact that
+    carries either of them — not just contacts carrying both."""
+    with session_factory() as session:
+        _seed(session)
+        vip_id = session.scalar(select(Tag.id).where(Tag.name_normalized == "vip"))
+        cold_id = session.scalar(select(Tag.id).where(Tag.name_normalized == "cold"))
+        condition = build_filter(
+            {
+                "type": "rule",
+                "field": "tags",
+                "comparator": "contains_none",
+                "value": [vip_id, cold_id],
+            }
+        )
+        matched = list(session.scalars(select(Contact).where(condition)))
+        # Ana + Carla carry VIP, Boris carries Cold → none survive
+        # the two-tag exclusion.
+        assert _ids(matched) == set()
+
+
+def test_tag_contains_none_combined_with_and(session_factory):
+    """The exclusion intersects cleanly with another rule under AND."""
+    with session_factory() as session:
+        seeded = _seed(session)
+        vip_id = session.scalar(select(Tag.id).where(Tag.name_normalized == "vip"))
+        condition = build_filter(
+            {
+                "operator": "AND",
+                "children": [
+                    {
+                        "type": "rule",
+                        "field": "tags",
+                        "comparator": "contains_none",
+                        "value": [vip_id],
+                    },
+                    {
+                        "type": "rule",
+                        "field": "marketing_consent",
+                        "comparator": "eq",
+                        "value": "denied",
+                    },
+                ],
+            }
+        )
+        matched = list(session.scalars(select(Contact).where(condition)))
+        # Boris has denied marketing AND no VIP tag (he's Cold).
+        assert _ids(matched) == {seeded["boris"].id}

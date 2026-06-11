@@ -4236,3 +4236,31 @@ a.origin-chip:hover { filter: brightness(0.97); }
   gap: 6px;
 }
 .form-success.small { font-size: 12px; padding: 6px 8px; }
+
+/* OriginChips with creation/update dates in contact detail */
+.origin-ref-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.origin-ref-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.origin-ref-chip { display: flex; }
+.origin-ref-dates {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  column-gap: 8px;
+  row-gap: 1px;
+  margin: 0;
+  padding-left: 4px;
+  font-size: 11px;
+  color: #6b7280;
+}
+.origin-ref-dates dt { margin: 0; }
+.origin-ref-dates dd { margin: 0; color: #4b5563; }

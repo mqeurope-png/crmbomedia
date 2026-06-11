@@ -1,8 +1,9 @@
 "use client";
 
 import { Plus, X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { listSegmentFields, type SegmentFieldDescriptor } from "../lib/api";
+import { TagMultiSelectFilter } from "./TagMultiSelectFilter";
 
 // ---------------------------------------------------------------------------
 // Data model — flat 2-level tree, matches the operator's mental model:
@@ -561,6 +562,9 @@ function ValueInput({
     );
   }
   if (LIST_OPERATORS.has(operator)) {
+    if (spec.type === "tag-multi") {
+      return <TagPickerInput value={value} onChange={onChange} />;
+    }
     return <CsvList spec={spec} value={value} onChange={onChange} />;
   }
   if (spec.type === "enum") {
@@ -630,6 +634,37 @@ function ScalarInput({
       className="filter-value"
       value={safe}
       onChange={(e) => onChange(e.target.value)}
+    />
+  );
+}
+
+/** Tag picker that resolves names to UUIDs.
+ *
+ * Bug fix: previously this slot used a CSV input expecting the
+ * operator to type UUIDs by hand. When the operator typed tag
+ * NAMES instead, the engine's `WHERE tag_id IN (...)` matched
+ * zero rows; for `contains_none` that silently degraded into a
+ * no-op (NOT IN empty-set ≡ TRUE) so the filter returned every
+ * contact, including those carrying the tag. Reusing
+ * `<TagMultiSelectFilter>` (same component segments use) emits
+ * the right UUIDs.
+ */
+function TagPickerInput({
+  value,
+  onChange,
+}: {
+  value: unknown;
+  onChange: (value: unknown) => void;
+}) {
+  const selectedIds = useMemo(() => {
+    if (!Array.isArray(value)) return [] as string[];
+    return value.filter((item) => typeof item === "string") as string[];
+  }, [value]);
+  return (
+    <TagMultiSelectFilter
+      selectedIds={selectedIds}
+      onChange={(next) => onChange(next)}
+      placeholder="Buscar tag…"
     />
   );
 }
