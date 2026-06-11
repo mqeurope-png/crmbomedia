@@ -14,7 +14,6 @@ from app.models.crm import (
     ExternalSystem,
     Note,
     Tag,
-    Task,
     User,
 )
 
@@ -507,11 +506,6 @@ def remove_tag_from_contact(
 
 def list_notes(session: Session, contact_id: str) -> list[Note]:
     statement = select(Note).where(Note.contact_id == contact_id).order_by(Note.created_at.desc())
-    return list(session.scalars(statement))
-
-
-def list_tasks(session: Session, contact_id: str) -> list[Task]:
-    statement = select(Task).where(Task.contact_id == contact_id).order_by(Task.created_at.desc())
     return list(session.scalars(statement))
 
 

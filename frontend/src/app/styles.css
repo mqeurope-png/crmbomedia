@@ -3489,3 +3489,88 @@ a.origin-chip:hover { filter: brightness(0.97); }
   justify-content: center;
   margin-top: 12px;
 }
+
+/* -------------------------------------------------------------------------
+ * Mini-PR C Fase 1 — Tasks
+ * ------------------------------------------------------------------------- */
+
+.sidebar-badge {
+  margin-left: auto;
+  background: #b03030;
+  color: white;
+  border-radius: 999px;
+  padding: 1px 8px;
+  font-size: 11px;
+  font-weight: 700;
+  min-width: 22px;
+  text-align: center;
+}
+
+.tasks-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px;
+  margin-top: 16px;
+}
+.tasks-bucket {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 14px;
+}
+.tasks-bucket header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 10px;
+}
+.tasks-bucket header h2 { margin: 0; font-size: 14px; }
+.tasks-bucket--overdue { border-color: #f3b8b8; background: #fff7f6; }
+.tasks-bucket--today { border-color: #b8d4f3; background: #f6faff; }
+
+.tasks-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.tasks-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 4px;
+  border-bottom: 1px solid #f0f2f6;
+  font-size: 13px;
+}
+.tasks-row:last-child { border-bottom: none; }
+.tasks-row-complete,
+.tasks-row-delete {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--muted);
+  padding: 4px;
+  border-radius: 4px;
+}
+.tasks-row-complete:hover { color: #137a4d; }
+.tasks-row-delete:hover { color: #b03030; }
+.tasks-row-main { flex: 1; min-width: 0; }
+.tasks-row-title {
+  margin: 0;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tasks-row-meta {
+  margin: 2px 0 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.tasks-row-priority {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-weight: 600;
+}
+.tasks-row-priority--high { color: #b58105; }
+.tasks-row-priority--urgent { color: #b03030; }
+.tasks-row--priority-urgent { background: #fff7f6; }
+.tasks-row-contact { color: var(--brand); text-decoration: none; }
+.tasks-row-contact:hover { text-decoration: underline; }

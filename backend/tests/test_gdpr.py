@@ -26,6 +26,8 @@ from app.models.crm import (
     GdprRequestType,
     Note,
     Task,
+    User,
+    UserRole,
 )
 from tests._test_helpers import DEFAULT_PASSWORD, auth_headers, seed_test_users
 
@@ -86,7 +88,17 @@ def _seed_subject(session_factory: sessionmaker, email: str = "subject@example.c
         session.add(contact)
         session.flush()
         session.add(Note(body="sample", contact_id=contact.id))
-        session.add(Task(title="follow up", contact_id=contact.id))
+        admin_id = session.scalar(
+            select(User.id).where(User.role == UserRole.ADMIN).limit(1)
+        )
+        session.add(
+            Task(
+                title="follow up",
+                contact_id=contact.id,
+                assigned_user_id=admin_id,
+                created_by_user_id=admin_id,
+            )
+        )
         session.add(
             AuditLog(
                 actor_email=email,

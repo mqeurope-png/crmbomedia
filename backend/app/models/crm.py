@@ -475,30 +475,90 @@ class Note(TimestampMixin, Base):
 
 
 class TaskStatus(StrEnum):
-    OPEN = "open"
+    # New productivity-layer states (Mini-PR C). PENDING and DONE are
+    # the working set; IN_PROGRESS is exposed in the UI for in-flight
+    # work; CANCELLED keeps task history without polluting "done".
+    PENDING = "pending"
+    IN_PROGRESS = "in_progress"
     DONE = "done"
     CANCELLED = "cancelled"
+    # Legacy alias from Sprint A. Maps to PENDING by the migration; the
+    # value lives on so historical audit rows still resolve.
+    OPEN = "open"
+
+
+class TaskPriority(StrEnum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    URGENT = "urgent"
 
 
 class Task(TimestampMixin, Base):
+    """Productivity tasks owned by a CRM user.
+
+    Started in Sprint A as a contact sub-resource (just title + status
+    + due + assignee + AgileCRM provenance) and expanded by Mini-PR C
+    into a full productivity layer with priority, optional company /
+    pipeline-stage links, a separate creator, and Google Calendar
+    mirror columns. The migration `20260612_0027` adds the new
+    columns in place, renames `assignee_user_id` → `assigned_user_id`
+    (and makes it NOT NULL), and relaxes `contact_id` to NULL so the
+    operator can keep personal todos.
+    """
+
     __tablename__ = "tasks"
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid4())
+    )
     title: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+    due_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), index=True
+    )
     status: Mapped[TaskStatus] = mapped_column(
         Enum(TaskStatus, native_enum=False, values_callable=enum_values, length=32),
-        default=TaskStatus.OPEN,
+        default=TaskStatus.PENDING,
+        nullable=False,
+        index=True,
+    )
+    priority: Mapped[TaskPriority] = mapped_column(
+        Enum(TaskPriority, native_enum=False, values_callable=enum_values, length=32),
+        default=TaskPriority.MEDIUM,
         nullable=False,
     )
-    due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    assignee_user_id: Mapped[str | None] = mapped_column(String(36))
-    contact_id: Mapped[str] = mapped_column(ForeignKey("contacts.id"), nullable=False)
-    # Same provenance trio Note uses. NULL for manual tasks.
+    assigned_user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id"), nullable=False, index=True
+    )
+    contact_id: Mapped[str | None] = mapped_column(
+        ForeignKey("contacts.id", ondelete="SET NULL"), index=True
+    )
+    company_id: Mapped[str | None] = mapped_column(
+        ForeignKey("companies.id", ondelete="SET NULL")
+    )
+    pipeline_stage_id: Mapped[str | None] = mapped_column(
+        ForeignKey("pipeline_stages.id", ondelete="SET NULL")
+    )
+    created_by_user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id"), nullable=False
+    )
+    google_event_id: Mapped[str | None] = mapped_column(String(255))
+    google_calendar_id: Mapped[str | None] = mapped_column(String(255))
+    reminder_minutes_before: Mapped[int | None] = mapped_column(Integer)
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    # AgileCRM provenance trio kept from Sprint A so imports continue
+    # to dedupe by (external_system, external_account_id, external_id).
     external_system: Mapped[str | None] = mapped_column(String(32))
     external_account_id: Mapped[str | None] = mapped_column(String(64))
     external_id: Mapped[str | None] = mapped_column(String(255))
     external_created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     external_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    contact: Mapped["Contact | None"] = relationship(back_populates="tasks")
+    assigned_user: Mapped["User"] = relationship(foreign_keys=[assigned_user_id])
 
     contact: Mapped[Contact] = relationship(back_populates="tasks")
 

@@ -502,7 +502,12 @@ def map_agilecrm_task_to_internal(
     if not title:
         return None
     status_raw = str(payload.get("status") or "").upper()
-    status = "done" if status_raw in {"COMPLETED", "DONE"} else "open"
+    if status_raw in {"COMPLETED", "DONE"}:
+        status = "done"
+    elif status_raw == "IN_PROGRESS":
+        status = "in_progress"
+    else:
+        status = "pending"
     return {
         "contact_id": contact_id,
         "title": title,

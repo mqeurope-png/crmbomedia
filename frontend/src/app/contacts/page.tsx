@@ -42,6 +42,10 @@ import {
   readUrlState,
   serializeUrlState,
 } from "../lib/contactsUrlState";
+import {
+  loadLocalColumns,
+  saveLocalColumns,
+} from "../lib/contactColumnsStorage";
 import { extractErrorMessage } from "../lib/errors";
 
 const PAGE_SIZE = 25;
@@ -174,10 +178,10 @@ export default function ContactsListPage() {
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [offset, setOffset] = useState(0);
   const [columnOrder, setColumnOrder] = useState<ContactColumnKey[]>(() =>
-    normaliseOrder(undefined),
+    normaliseOrder(loadLocalColumns()?.order),
   );
   const [visibleColumns, setVisibleColumns] = useState<ContactColumnKey[]>(() =>
-    normaliseVisible(undefined),
+    normaliseVisible(loadLocalColumns()?.visible),
   );
 
   const [page, setPage] = useState<ContactListPage | null>(null);
@@ -581,6 +585,29 @@ export default function ContactsListPage() {
             onApply={({ order, visible }) => {
               setColumnOrder(order);
               setVisibleColumns(visible);
+              // Persist BEFORE the URL effect re-runs: PATCH the
+              // active view's columns_json so every member sees the
+              // same config, or fall back to localStorage on the
+              // "Todos los contactos" tab so a reload keeps the
+              // operator's pick.
+              if (activeView) {
+                updateSavedView(activeView.id, {
+                  columns: { order, visible, widths: {} },
+                })
+                  .then((updated) => {
+                    setActiveView(updated);
+                  })
+                  .catch((err) =>
+                    setError(
+                      extractErrorMessage(
+                        err,
+                        "No se pudo guardar la configuración de columnas.",
+                      ),
+                    ),
+                  );
+              } else {
+                saveLocalColumns({ order, visible });
+              }
             }}
           />
           <button

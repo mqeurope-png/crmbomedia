@@ -439,14 +439,26 @@ def test_task_mapper_maps_completed_status_to_done():
     assert record["due_at"] is not None
 
 
-def test_task_mapper_defaults_unknown_status_to_open():
+def test_task_mapper_defaults_unknown_status_to_pending():
     record = map_agilecrm_task_to_internal(
         {"id": 99, "subject": "Llamar mañana", "status": "WHATEVER"},
         contact_id="ct-1",
         account_id="es",
     )
     assert record is not None
-    assert record["status"] == "open"
+    # Mini-PR C remapped the productivity-layer status enum; AgileCRM
+    # unknown statuses now land as `pending` (was `open` in Sprint A).
+    assert record["status"] == "pending"
+
+
+def test_task_mapper_in_progress_passes_through():
+    record = map_agilecrm_task_to_internal(
+        {"id": 100, "subject": "Continuar", "status": "IN_PROGRESS"},
+        contact_id="ct-1",
+        account_id="es",
+    )
+    assert record is not None
+    assert record["status"] == "in_progress"
 
 
 def test_task_mapper_returns_none_without_title():
