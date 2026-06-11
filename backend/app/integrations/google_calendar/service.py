@@ -275,21 +275,42 @@ def delete_task_event(session: Session, task: Task) -> None:
         )
 
 
+_DONE_PREFIX = "✓ "
+
+
+def _event_summary(task: Task) -> str:
+    """Compute the event title. When the task is done we prefix `✓ `
+    so the operator sees completion state from the calendar. Strip a
+    pre-existing prefix from `task.title` first so a manual rename
+    after completion doesn't double-up the mark."""
+    from app.models.crm import TaskStatus  # noqa: PLC0415
+
+    base = task.title or ""
+    if base.startswith(_DONE_PREFIX):
+        base = base[len(_DONE_PREFIX):]
+    if task.status == TaskStatus.DONE:
+        return f"{_DONE_PREFIX}{base}"
+    return base
+
+
 def _event_body_for_task(task: Task) -> dict[str, object]:
     """Build the Google Calendar event payload from a Task.
 
     Layout: title in `summary`, deep link back to the CRM appended to
     the description, start/end based on `due_at` (defaults to a
-    30-minute slot — tasks have no end time today).
+    30-minute slot — tasks have no end time today). When the task is
+    done the title is prefixed with `✓ ` so completion is visible in
+    the calendar without extra columns.
     """
     settings = get_settings()
     tz = settings.google_calendar_timezone
+    summary = _event_summary(task)
     if task.due_at is None:
         # An all-day event makes the most sense for a "no date"
         # task — Google requires a date range though, so pick "today".
         today = datetime.now(UTC).date()
         return {
-            "summary": task.title,
+            "summary": summary,
             "description": _build_description(task),
             "start": {"date": today.isoformat()},
             "end": {"date": today.isoformat()},
@@ -300,7 +321,7 @@ def _event_body_for_task(task: Task) -> dict[str, object]:
     duration = timedelta(minutes=settings.google_calendar_default_event_minutes)
     end = start + duration
     body: dict[str, object] = {
-        "summary": task.title,
+        "summary": summary,
         "description": _build_description(task),
         "start": {"dateTime": start.isoformat(), "timeZone": tz},
         "end": {"dateTime": end.isoformat(), "timeZone": tz},

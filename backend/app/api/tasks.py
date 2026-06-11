@@ -330,6 +330,12 @@ def complete_task_endpoint(
         metadata={"title": task.title},
         request=request,
     )
+    # Mirror the completion on Google Calendar: the event title gets
+    # a "✓ " prefix (driven by `_event_body_for_task`, which now
+    # consults `task.status`). Best-effort — a Google outage must
+    # not block the local complete.
+    if task.google_event_id and task.google_calendar_id:
+        google_service.update_task_event(session, task)
     session.commit()
     session.refresh(task)
     return TaskCompleteResponse(task=TaskRead.model_validate(task))

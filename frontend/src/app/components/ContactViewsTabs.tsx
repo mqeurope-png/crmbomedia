@@ -89,21 +89,20 @@ export function ContactViewsTabs({
                   </span>
                 ) : null}
               </button>
-              {isActive ? (
-                <button
-                  type="button"
-                  className="contact-views-tab-menu-button"
-                  onClick={() =>
-                    setMenuOpen(menuOpen === view.id ? null : view.id)
-                  }
-                  aria-haspopup="menu"
-                  aria-expanded={menuOpen === view.id}
-                  aria-label={`Acciones de ${view.name}`}
-                >
-                  <Settings2 size={13} aria-hidden />
-                </button>
-              ) : null}
-              {menuOpen === view.id && isActive ? (
+              <button
+                type="button"
+                className="contact-views-tab-menu-button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setMenuOpen(menuOpen === view.id ? null : view.id);
+                }}
+                aria-haspopup="menu"
+                aria-expanded={menuOpen === view.id}
+                aria-label={`Acciones de ${view.name}`}
+              >
+                <Settings2 size={13} aria-hidden />
+              </button>
+              {menuOpen === view.id ? (
                 <ViewActionsMenu
                   view={view}
                   onClose={() => setMenuOpen(null)}
