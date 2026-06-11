@@ -656,6 +656,75 @@ def test_contact_list_includes_external_references_summary(client: TestClient):
     }
 
 
+def test_contact_search_endpoint_compiles_rules_json(client: TestClient):
+    """`POST /api/contacts/search` runs the same rules_json tree the
+    segments engine speaks. Empty body returns every contact; a tree
+    filters."""
+    headers = auth_headers(client, "viewer")
+    create_contact(client, "ana@example.com")
+    create_contact(client, "boris@example.com")
+
+    all_body = client.post(
+        "/api/contacts/search", json={}, headers=headers
+    ).json()
+    assert all_body["total"] == 2
+
+    filtered = client.post(
+        "/api/contacts/search",
+        json={
+            "rules_json": {
+                "type": "rule",
+                "field": "email",
+                "comparator": "contains",
+                "value": "ana",
+            }
+        },
+        headers=headers,
+    ).json()
+    assert {item["email"] for item in filtered["items"]} == {"ana@example.com"}
+
+
+def test_contact_search_invalid_field_returns_400(client: TestClient):
+    response = client.post(
+        "/api/contacts/search",
+        json={
+            "rules_json": {
+                "type": "rule",
+                "field": "no_such_field",
+                "comparator": "eq",
+                "value": "x",
+            }
+        },
+        headers=auth_headers(client, "viewer"),
+    )
+    assert response.status_code == 400
+    assert "no_such_field" in response.text
+
+
+def test_contact_search_q_layers_over_rules_json(client: TestClient):
+    """The `q` free-text rides on top of the rule tree so the operator
+    can narrow a saved view from the search box."""
+    headers = auth_headers(client, "viewer")
+    create_contact(client, "ana@example.com")
+    create_contact(client, "anita@example.com")
+    create_contact(client, "boris@example.com")
+
+    body = client.post(
+        "/api/contacts/search",
+        json={
+            "rules_json": {
+                "type": "rule",
+                "field": "email",
+                "comparator": "contains",
+                "value": "@example.com",
+            },
+            "q": "anita",
+        },
+        headers=headers,
+    ).json()
+    assert {item["email"] for item in body["items"]} == {"anita@example.com"}
+
+
 def test_integrations_accounts_endpoint_groups_by_system(client: TestClient):
     """`/api/integrations/accounts` shapes every integration into a
     `{system, system_label, accounts}` group with contacts_count

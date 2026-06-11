@@ -356,3 +356,210 @@ def test_empty_tree_matches_everything(session_factory):
         condition = build_filter({})
         matched = list(session.scalars(select(Contact).where(condition)))
         assert len(matched) == 3
+
+
+# ---------------------------------------------------------------------------
+# in_brevo_list — JSON-anchored LIKE against external_references metadata
+# ---------------------------------------------------------------------------
+
+
+def _seed_brevo_refs(session, contacts, list_ids_by_contact):
+    """Attach a Brevo external_references row to each contact with the
+    given `list_ids` array (shape mirrors the brevo mapper output)."""
+    import json as _json
+
+    from app.models.crm import ExternalReference, ExternalSystem
+
+    for key, list_ids in list_ids_by_contact.items():
+        session.add(
+            ExternalReference(
+                system=ExternalSystem.BREVO,
+                account_id="default",
+                external_id=f"brevo-{key}",
+                contact_id=contacts[key].id,
+                metadata_json=_json.dumps(
+                    {"list_ids": list_ids, "email_blacklisted": False}
+                ),
+            )
+        )
+    session.commit()
+
+
+def test_in_brevo_list_matches_single_item_array(session_factory):
+    with session_factory() as session:
+        seeded = _seed(session)
+        _seed_brevo_refs(
+            session, seeded, {"ana": [4], "boris": [], "carla": [7]}
+        )
+        condition = build_filter(
+            {
+                "type": "rule",
+                "field": "in_brevo_list",
+                "comparator": "in",
+                "value": [4],
+            }
+        )
+        matched = list(session.scalars(select(Contact).where(condition)))
+        assert _ids(matched) == {seeded["ana"].id}
+
+
+def test_in_brevo_list_handles_multi_element_array_without_false_positives(
+    session_factory,
+):
+    """Searching list_id=1 must not match list 12 (`12 contains 1`
+    LIKE false positive)."""
+    with session_factory() as session:
+        seeded = _seed(session)
+        _seed_brevo_refs(
+            session,
+            seeded,
+            {"ana": [1, 12], "boris": [12], "carla": [1]},
+        )
+        condition = build_filter(
+            {
+                "type": "rule",
+                "field": "in_brevo_list",
+                "comparator": "in",
+                "value": [1],
+            }
+        )
+        matched = list(session.scalars(select(Contact).where(condition)))
+        assert _ids(matched) == {seeded["ana"].id, seeded["carla"].id}
+
+
+def test_in_brevo_list_not_in_inverts(session_factory):
+    with session_factory() as session:
+        seeded = _seed(session)
+        _seed_brevo_refs(session, seeded, {"ana": [4], "boris": [7]})
+        condition = build_filter(
+            {
+                "type": "rule",
+                "field": "in_brevo_list",
+                "comparator": "not_in",
+                "value": [4],
+            }
+        )
+        matched = list(session.scalars(select(Contact).where(condition)))
+        assert _ids(matched) == {seeded["boris"].id, seeded["carla"].id}
+
+
+# ---------------------------------------------------------------------------
+# in_segment — resolver, OR-across-ids, cycle detection
+# ---------------------------------------------------------------------------
+
+
+def test_in_segment_resolver_compiles_referenced_rules(session_factory):
+    """`in_segment = [seg-id]` resolves the referenced segment's tree
+    and OR's it into the parent."""
+    with session_factory() as session:
+        seeded = _seed(session)
+        resolver_calls: list[str] = []
+
+        def resolver(sid, _visited):
+            resolver_calls.append(sid)
+            if sid == "seg-vip":
+                return {
+                    "type": "rule",
+                    "field": "lead_score",
+                    "comparator": "gte",
+                    "value": 70,
+                }
+            return None
+
+        condition = build_filter(
+            {
+                "type": "rule",
+                "field": "in_segment",
+                "comparator": "in",
+                "value": ["seg-vip"],
+            },
+            segment_resolver=resolver,
+        )
+        matched = list(session.scalars(select(Contact).where(condition)))
+        assert _ids(matched) == {seeded["ana"].id}
+        assert resolver_calls == ["seg-vip"]
+
+
+def test_in_segment_cycle_is_detected(session_factory):
+    """A segment that references itself raises rather than looping."""
+
+    def resolver(sid, _visited):
+        return {
+            "type": "rule",
+            "field": "in_segment",
+            "comparator": "in",
+            "value": [sid],
+        }
+
+    with session_factory() as session:
+        _seed(session)
+        with pytest.raises(SegmentRuleError) as exc_info:
+            build_filter(
+                {
+                    "type": "rule",
+                    "field": "in_segment",
+                    "comparator": "in",
+                    "value": ["loop"],
+                },
+                segment_resolver=resolver,
+            )
+    assert "cycle" in str(exc_info.value).lower()
+
+
+def test_in_segment_without_resolver_raises(session_factory):
+    with session_factory() as session:
+        _seed(session)
+        with pytest.raises(SegmentRuleError):
+            build_filter(
+                {
+                    "type": "rule",
+                    "field": "in_segment",
+                    "comparator": "in",
+                    "value": ["x"],
+                }
+            )
+
+
+def test_in_segment_unknown_id_matches_nothing(session_factory):
+    """`in_segment = [unknown]` should add a dead clause that filters
+    nothing in (otherwise empty OR'd would behave as 'match everything'
+    via the engine's AND-empty rule)."""
+    with session_factory() as session:
+        seeded = _seed(session)
+        condition = build_filter(
+            {
+                "type": "rule",
+                "field": "in_segment",
+                "comparator": "in",
+                "value": ["does-not-exist"],
+            },
+            segment_resolver=lambda sid, visited: None,
+        )
+        matched = list(session.scalars(select(Contact).where(condition)))
+        assert matched == []
+        _ = seeded
+
+
+# ---------------------------------------------------------------------------
+# External-date fields wire up like any other date column
+# ---------------------------------------------------------------------------
+
+
+def test_created_at_external_date_filter(session_factory):
+    from datetime import UTC, datetime
+
+    with session_factory() as session:
+        seeded = _seed(session)
+        seeded["ana"].created_at_external = datetime(2025, 3, 1, tzinfo=UTC)
+        seeded["carla"].created_at_external = datetime(2025, 9, 1, tzinfo=UTC)
+        session.commit()
+        condition = build_filter(
+            {
+                "type": "rule",
+                "field": "created_at_external",
+                "comparator": "before",
+                "value": "2025-06-01T00:00:00+00:00",
+            }
+        )
+        matched = list(session.scalars(select(Contact).where(condition)))
+        assert _ids(matched) == {seeded["ana"].id}

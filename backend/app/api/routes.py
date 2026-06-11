@@ -86,6 +86,7 @@ from app.schemas.crm import (
     ContactDetailRead,
     ContactListPage,
     ContactRead,
+    ContactSearchRequest,
     ContactTagAssignRequest,
     ContactUpdate,
     ContactPipelineAddRequest,
@@ -1341,6 +1342,70 @@ def list_contacts(
         total=total,
         limit=limit,
         offset=skip,
+    )
+
+
+@router.post(
+    "/contacts/search",
+    response_model=ContactListPage,
+    responses=ERROR_RESPONSES,
+    tags=["crm"],
+)
+def search_contacts_endpoint(
+    payload: ContactSearchRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_viewer),
+) -> ContactListPage:
+    """Brevo-style contacts search: a `rules_json` boolean tree drives
+    the WHERE, reusing the same engine that powers `/api/segments`.
+
+    The body is optional — an empty `rules_json` returns every active
+    contact, mirroring `GET /api/contacts` without filters. Callers
+    that want to layer a saved view over a free-text search pass `q`
+    alongside the tree.
+    """
+    _ = current_user
+    from app.services.segments.engine import (  # noqa: PLC0415
+        SegmentRuleError,
+        build_filter,
+    )
+    from app.models.crm import Segment as _Segment  # noqa: PLC0415
+
+    def _segment_resolver(segment_id: str, _visited: set[str]) -> dict[str, Any] | None:
+        seg = session.get(_Segment, segment_id)
+        if seg is None or not seg.rules_json:
+            return None
+        try:
+            return json.loads(seg.rules_json)
+        except (TypeError, ValueError):
+            return None
+
+    try:
+        filter_clause = build_filter(
+            payload.rules_json or {},
+            segment_resolver=_segment_resolver,
+        )
+    except SegmentRuleError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+
+    items, total = crm_repository.search_contacts(
+        session,
+        filter_clause=filter_clause,
+        q=payload.q,
+        skip=payload.offset,
+        limit=payload.limit,
+        include_inactive=payload.include_inactive,
+        sort_by=payload.sort_by,
+        sort_dir=payload.sort_dir,
+    )
+    return ContactListPage(
+        items=[ContactRead.model_validate(c) for c in items],
+        total=total,
+        limit=payload.limit,
+        offset=payload.offset,
     )
 
 

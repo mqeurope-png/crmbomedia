@@ -639,6 +639,31 @@ class ContactListPage(BaseModel):
     offset: int
 
 
+class ContactSearchRequest(BaseModel):
+    """Body shape for `POST /api/contacts/search`. Mirrors the segments
+    engine's `rules_json` tree exactly (the search endpoint reuses
+    `build_filter` so any tree valid in `/api/segments/preview` works
+    here unchanged).
+
+    `rules_json` is OPTIONAL — an empty body returns every active
+    contact, same as the bare `GET /api/contacts`. The query-builder UI
+    on the contacts list starts with an empty tree and submits a body
+    only when the operator adds at least one rule.
+    """
+
+    rules_json: dict[str, Any] | None = None
+    sort_by: str = "created_at"
+    sort_dir: str = "desc"
+    limit: int = Field(default=25, ge=1, le=200)
+    offset: int = Field(default=0, ge=0)
+    include_inactive: bool = False
+    # `q` rides alongside `rules_json` as a quick free-text filter (UI
+    # search box). Backend applies it as an additional clause so the
+    # operator can layer it over a saved view without rewriting the
+    # tree.
+    q: str | None = None
+
+
 class NoteCreate(BaseModel):
     body: str = Field(min_length=1)
     author_user_id: str | None = None

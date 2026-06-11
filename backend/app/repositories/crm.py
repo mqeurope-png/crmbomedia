@@ -1,6 +1,7 @@
 from datetime import datetime
+from typing import Any
 
-from sqlalchemy import Select, func, select
+from sqlalchemy import Select, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.models.crm import (
@@ -27,6 +28,8 @@ CONTACT_SORT_COLUMNS = {
     "email": Contact.email,
     "created_at": Contact.created_at,
     "updated_at": Contact.updated_at,
+    "created_at_external": Contact.created_at_external,
+    "updated_at_external": Contact.updated_at_external,
     "lead_score": Contact.lead_score,
 }
 
@@ -324,6 +327,54 @@ def count_contacts(
         include_inactive=include_inactive,
     )
     return int(session.scalar(statement) or 0)
+
+
+def search_contacts(
+    session: Session,
+    *,
+    filter_clause: Any | None = None,
+    q: str | None = None,
+    skip: int = 0,
+    limit: int = 25,
+    include_inactive: bool = False,
+    sort_by: str = "created_at",
+    sort_dir: str = "desc",
+) -> tuple[list[Contact], int]:
+    """List + count contacts under one prebuilt SQLAlchemy filter.
+
+    Returns `(items, total)` so the route can answer both the paginated
+    page and the total counter without re-building the WHERE. The
+    free-text `q` rides on top so a saved query can be narrowed
+    further from the search box without rewriting the rule tree."""
+    base = (
+        select(Contact)
+        .options(
+            selectinload(Contact.tag_assignments).selectinload(ContactTag.tag),
+            selectinload(Contact.external_refs),
+        )
+    )
+    if not include_inactive:
+        base = base.where(Contact.is_active.is_(True))
+    if filter_clause is not None:
+        base = base.where(filter_clause)
+    if q:
+        like = f"%{q.lower()}%"
+        base = base.where(
+            or_(
+                func.lower(Contact.first_name).like(like),
+                func.lower(Contact.last_name).like(like),
+                func.lower(Contact.email).like(like),
+                func.lower(Contact.phone).like(like),
+            )
+        )
+    total_stmt = select(func.count()).select_from(base.subquery())
+    total = int(session.scalar(total_stmt) or 0)
+
+    sort_column = CONTACT_SORT_COLUMNS.get(sort_by, Contact.created_at)
+    order = sort_column.desc() if sort_dir.lower() == "desc" else sort_column.asc()
+    page_stmt = base.order_by(order).offset(skip).limit(limit)
+    items = list(session.scalars(page_stmt))
+    return items, total
 
 
 # ---------------------------------------------------------------------------
