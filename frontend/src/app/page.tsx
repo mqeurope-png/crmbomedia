@@ -56,6 +56,7 @@ export default function Home() {
   }
 
   const isAdmin = user?.role === "admin";
+  const canCreate = user?.role !== "viewer";
 
   return (
     <main className="shell shell-wide">
@@ -69,9 +70,11 @@ export default function Home() {
         }
         actions={
           <>
-            <Link href="/contacts/new" className="button small">
-              + Nuevo contacto
-            </Link>
+            {canCreate ? (
+              <Link href="/contacts/new" className="button small">
+                + Nuevo contacto
+              </Link>
+            ) : null}
             {isAdmin ? (
               <a
                 href={`${apiBaseUrl}/api/docs`}
