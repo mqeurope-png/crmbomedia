@@ -373,6 +373,20 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
     throw new Error(message);
   }
 
+  // 204 No Content (DELETE endpoints, the brevo lists delete in
+  // particular) and zero-length 200s have no body — `response.json()`
+  // would throw "Unexpected end of JSON input" and surface as a
+  // toast to the operator even though the call succeeded. Skip the
+  // parse and return null cast through T so the call sites that
+  // expect `void` / `null` keep working without per-site `try/catch`
+  // around every DELETE.
+  if (response.status === 204) {
+    return null as T;
+  }
+  const contentLength = response.headers.get("content-length");
+  if (contentLength === "0") {
+    return null as T;
+  }
   return response.json() as Promise<T>;
 }
 
