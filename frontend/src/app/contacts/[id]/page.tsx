@@ -7,6 +7,7 @@ import { ErrorState } from "../../components/ErrorState";
 import { PageHeader } from "../../components/PageHeader";
 import { ContactEmailActivity } from "../../components/ContactEmailActivity";
 import { ContactPipelinesSection } from "../../components/ContactPipelinesSection";
+import { ContactTasksSection } from "../../components/ContactTasksSection";
 import { RefreshExternalDataButton } from "../../components/RefreshExternalDataButton";
 import {
   addTagToContact,
@@ -17,7 +18,6 @@ import {
   type ExternalReference,
   type ExternalRefreshResult,
   type Note,
-  type Task,
 } from "../../lib/api";
 import { extractErrorMessage } from "../../lib/errors";
 import { TagChips } from "../../components/TagChips";
@@ -143,20 +143,6 @@ function NoteCard({ note }: { note: Note }) {
         <span className="muted">{formatDateTime(date)}</span>
       </div>
       <p className="note-body">{note.body}</p>
-    </li>
-  );
-}
-
-function TaskCard({ task }: { task: Task }) {
-  return (
-    <li className="task-card">
-      <div className="task-card-header">
-        <span className={`status status-${task.status}`}>{task.status}</span>
-        <strong>{task.title}</strong>
-      </div>
-      {task.due_at ? (
-        <span className="muted">Vence: {formatDateTime(task.due_at)}</span>
-      ) : null}
     </li>
   );
 }
@@ -389,16 +375,7 @@ export default function ContactDetailPage() {
             </ul>
           ) : <p className="muted">Sin notas todavía.</p>}
         </article>
-        <article className="card">
-          <h2>Tareas pendientes</h2>
-          {contact.tasks?.length ? (
-            <ul className="task-list">
-              {contact.tasks.map((task) => (
-                <TaskCard key={task.id} task={task} />
-              ))}
-            </ul>
-          ) : <p className="muted">Sin tareas pendientes.</p>}
-        </article>
+        <ContactTasksSection contactId={contact.id} />
         <ContactPipelinesSection contactId={contact.id} />
         <ContactEmailActivity contactId={contact.id} />
         <article className="card card-wide">
