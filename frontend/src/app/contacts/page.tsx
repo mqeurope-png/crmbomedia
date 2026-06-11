@@ -6,6 +6,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ColumnConfigurator } from "../components/ColumnConfigurator";
 import { ContactFiltersBuilder } from "../components/ContactFiltersBuilder";
+import { ContactsBulkBar } from "../components/ContactsBulkBar";
 import {
   ContactViewEditorModal,
   type ContactViewDraft,
@@ -20,6 +21,7 @@ import {
   createSavedView,
   deleteSavedView,
   duplicateSavedView,
+  getCurrentUser,
   listSavedViews,
   pushViewToBrevoList,
   saveViewAsSegment,
@@ -29,6 +31,7 @@ import {
   type Contact,
   type ContactListPage,
   type SavedView,
+  type User,
 } from "../lib/api";
 import {
   ALL_COLUMN_KEYS,
@@ -189,6 +192,11 @@ export default function ContactsListPage() {
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  // Bulk-action selection. `selected` is a Set of contact ids for
+  // O(1) membership checks; cleared whenever the underlying page
+  // changes so stale rows can't be acted on.
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [editorMode, setEditorMode] = useState<
     { kind: "create" } | { kind: "edit"; view: SavedView } | null
   >(null);
@@ -227,6 +235,12 @@ export default function ContactsListPage() {
     setSortBy((view.sort?.sort_by as string) ?? "created_at");
     setSortDir((view.sort?.sort_dir as "asc" | "desc") ?? "desc");
     setOffset(0);
+  }, []);
+
+  useEffect(() => {
+    getCurrentUser()
+      .then(setCurrentUser)
+      .catch(() => setCurrentUser(null));
   }, []);
 
   useEffect(() => {
@@ -312,6 +326,15 @@ export default function ContactsListPage() {
       .then((result) => {
         if (!cancelled) {
           setPage(result);
+          // Drop selections for rows that no longer match the page.
+          setSelected((prev) => {
+            const visible = new Set(result.items.map((r) => r.id));
+            const next = new Set<string>();
+            prev.forEach((id) => {
+              if (visible.has(id)) next.add(id);
+            });
+            return next;
+          });
           setError(null);
         }
       })
@@ -701,10 +724,42 @@ export default function ContactsListPage() {
           </p>
         ) : page ? (
           <>
+            <ContactsBulkBar
+              selectedIds={Array.from(selected)}
+              currentUser={currentUser}
+              onAfterAction={(action, affected) => {
+                setMessage(
+                  `${action === "deactivate" ? "Desactivados" : "Actualizados"} ${affected} contacto${affected === 1 ? "" : "s"}.`,
+                );
+                setSelected(new Set());
+                setOffset((cur) => cur);
+                // Force a reload via offset change trick: bump rules
+                // identity to refire the fetch effect.
+                setRules((r) => ({ ...r }));
+              }}
+              onClear={() => setSelected(new Set())}
+            />
             <div className="table-wrapper">
               <table className="data-table contacts-table">
                 <thead>
                   <tr>
+                    <th scope="col" className="bulk-checkbox-cell">
+                      <input
+                        type="checkbox"
+                        aria-label="Seleccionar todos los visibles"
+                        checked={
+                          page.items.length > 0 &&
+                          page.items.every((c) => selected.has(c.id))
+                        }
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            setSelected(new Set(page.items.map((c) => c.id)));
+                          } else {
+                            setSelected(new Set());
+                          }
+                        }}
+                      />
+                    </th>
                     {visibleColumns.map((key) => {
                       const def = findColumn(key);
                       if (!def) return null;
@@ -745,7 +800,25 @@ export default function ContactsListPage() {
                 </thead>
                 <tbody>
                   {page.items.map((contact) => (
-                    <tr key={contact.id}>
+                    <tr
+                      key={contact.id}
+                      className={selected.has(contact.id) ? "is-selected" : undefined}
+                    >
+                      <td className="bulk-checkbox-cell">
+                        <input
+                          type="checkbox"
+                          checked={selected.has(contact.id)}
+                          onChange={(e) => {
+                            setSelected((prev) => {
+                              const next = new Set(prev);
+                              if (e.target.checked) next.add(contact.id);
+                              else next.delete(contact.id);
+                              return next;
+                            });
+                          }}
+                          aria-label={`Seleccionar ${contact.first_name}`}
+                        />
+                      </td>
                       {visibleColumns.map((key) => (
                         <td key={key}>{renderCell(key, contact)}</td>
                       ))}

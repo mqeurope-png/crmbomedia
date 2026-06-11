@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.bulk import router as bulk_router
 from app.api.dashboard import router as dashboard_router
 from app.api.google_integrations import router as google_router
 from app.api.routes import router
@@ -47,6 +48,7 @@ app.include_router(router, prefix="/api")
 app.include_router(tasks_router)
 app.include_router(google_router)
 app.include_router(dashboard_router)
+app.include_router(bulk_router)
 
 
 @app.on_event("startup")

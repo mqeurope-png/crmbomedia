@@ -3830,3 +3830,56 @@ a.origin-chip:hover { filter: brightness(0.97); }
   color: var(--brand);
   min-width: 10px;
 }
+
+/* Contacts bulk-action selection */
+.bulk-checkbox-cell {
+  width: 32px;
+  text-align: center;
+  padding: 4px;
+}
+.data-table tr.is-selected { background: #f1f4fb; }
+.bulk-bar {
+  position: sticky;
+  top: 60px;
+  z-index: 5;
+  background: #1d2940;
+  color: white;
+  padding: 8px 14px;
+  border-radius: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 12px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.12);
+}
+.bulk-bar strong { font-size: 14px; }
+.bulk-bar-actions {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  flex: 1;
+  justify-content: flex-end;
+}
+.bulk-bar-close {
+  background: transparent;
+  border: none;
+  color: white;
+  cursor: pointer;
+}
+.bulk-bar-panel {
+  flex: 1 1 100%;
+  background: #fff;
+  color: #1d2940;
+  padding: 10px;
+  border-radius: 6px;
+}
+.bulk-bar-options {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.bulk-bar .form-error { flex: 1 1 100%; margin: 0; }
