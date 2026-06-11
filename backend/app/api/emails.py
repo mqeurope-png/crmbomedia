@@ -329,24 +329,36 @@ def list_threads(
         stmt = stmt.where(EmailThread.initiated_by_user_id == current_user.id)
     if q:
         # LIKE-match the term against the thread subject OR any
-        # message's from_email / subject / snippet / body_text.
-        # MySQL collates case-insensitively by default; SQLite (CI)
-        # needs the `ilike` analog.
+        # message's from_email / from_name / subject / snippet /
+        # body_text, plus the linked Contact's name fields (so the
+        # operator can find "Eduard Riera" even when the contact's
+        # row carries the canonical name and the message header
+        # ships the email alone).
+        from app.models.crm import Contact as _Contact  # noqa: PLC0415
         from sqlalchemy import or_ as _or  # noqa: PLC0415
 
         like = f"%{q}%"
         msg_match = select(EmailMessage.thread_id).where(
             _or(
                 EmailMessage.from_email.ilike(like),
+                EmailMessage.from_name.ilike(like),
                 EmailMessage.subject.ilike(like),
                 EmailMessage.snippet.ilike(like),
                 EmailMessage.body_text.ilike(like),
+            )
+        )
+        contact_match = select(_Contact.id).where(
+            _or(
+                _Contact.first_name.ilike(like),
+                _Contact.last_name.ilike(like),
+                _Contact.email.ilike(like),
             )
         )
         stmt = stmt.where(
             _or(
                 EmailThread.subject.ilike(like),
                 EmailThread.id.in_(msg_match),
+                EmailThread.contact_id.in_(contact_match),
             )
         )
     total = int(
@@ -366,6 +378,7 @@ def list_threads(
     # "Vista previa" columns the v2.1 list view exposes. One small
     # extra query per page, batched via `id IN (...)`.
     last_by_thread = _latest_messages(session, [t.id for t in items])
+    contacts_by_id = _contacts_for_threads(session, items)
     out: list[EmailThreadRead] = []
     for thread in items:
         last = last_by_thread.get(thread.id)
@@ -380,6 +393,10 @@ def list_threads(
             read.last_message_snippet = last.snippet or _snippet_from_body(
                 last.body_text, last.body_html
             )
+        read.contact_name = _resolve_contact_name(
+            contact=contacts_by_id.get(thread.contact_id) if thread.contact_id else None,
+            last_message=last,
+        )
         out.append(read)
     return EmailThreadList(items=out, total=total)
 
@@ -553,6 +570,50 @@ def _latest_messages(
         if row.thread_id not in out:
             out[row.thread_id] = row
     return out
+
+
+def _contacts_for_threads(
+    session: Session, threads: list[EmailThread]
+) -> dict[str, Any]:
+    """Batch-load the Contact rows referenced by `threads.contact_id`."""
+    from app.models.crm import Contact as _Contact  # noqa: PLC0415
+
+    ids = {t.contact_id for t in threads if t.contact_id}
+    if not ids:
+        return {}
+    rows = session.scalars(
+        select(_Contact).where(_Contact.id.in_(ids))
+    ).all()
+    return {c.id: c for c in rows}
+
+
+def _resolve_contact_name(
+    *,
+    contact: Any | None,
+    last_message: EmailMessage | None,
+) -> str | None:
+    """Pick the most operator-friendly name for a thread.
+
+    Order of preference:
+    1. Linked Contact's full name (or just first / last when one is
+       missing).
+    2. Last message's `from_name` header value.
+    3. Capitalised local part of the last message's email.
+    4. None — the UI will fall back to "(sin nombre)".
+    """
+    if contact is not None:
+        parts = [contact.first_name, contact.last_name]
+        joined = " ".join(p for p in parts if p)
+        if joined.strip():
+            return joined.strip()
+    if last_message is not None:
+        if last_message.from_name and last_message.from_name.strip():
+            return last_message.from_name.strip()
+        if last_message.from_email and "@" in last_message.from_email:
+            local = last_message.from_email.split("@", 1)[0]
+            local = local.replace(".", " ").replace("_", " ")
+            return local.title() or None
+    return None
 
 
 def _snippet_from_body(

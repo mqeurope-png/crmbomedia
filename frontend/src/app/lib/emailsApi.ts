@@ -70,6 +70,9 @@ export type EmailThread = {
   last_message_direction?: "outbound" | "inbound" | null;
   last_message_from?: string | null;
   last_message_snippet?: string | null;
+  /** v2.1.1: contact name resolved server-side from Contact row or
+   *  from the last message's `from_name` / email local part. */
+  contact_name?: string | null;
 };
 
 export type EmailThreadDetail = EmailThread & {
