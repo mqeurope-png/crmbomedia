@@ -62,6 +62,7 @@ export type TaskCreatePayload = {
   company_id?: string | null;
   pipeline_stage_id?: string | null;
   reminder_minutes_before?: number | null;
+  sync_with_google_calendar?: boolean;
 };
 
 export type TaskUpdatePayload = Partial<TaskCreatePayload>;

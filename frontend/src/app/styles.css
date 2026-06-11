@@ -3574,3 +3574,81 @@ a.origin-chip:hover { filter: brightness(0.97); }
 .tasks-row--priority-urgent { background: #fff7f6; }
 .tasks-row-contact { color: var(--brand); text-decoration: none; }
 .tasks-row-contact:hover { text-decoration: underline; }
+
+/* Account hub — index page that links to password, 2FA, Google. */
+.account-grid {
+  display: grid;
+  gap: 16px;
+  margin-top: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+}
+.account-grid .card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.account-grid .section-title h2 {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  margin: 0;
+}
+.account-card-wide { grid-column: 1 / -1; }
+
+/* Google calendar picker — the radio list in /account/google-setup. */
+.calendar-picker {
+  list-style: none;
+  padding: 0;
+  margin: 12px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.calendar-picker li label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.calendar-picker li label:hover { background: #f7faff; }
+.calendar-picker input[type="radio"] { margin: 0; }
+
+/* Inline warning blocks — same shape as form-error but yellow. */
+.form-warning {
+  background: #fffbe5;
+  color: #8a6d00;
+  border: 1px solid #f1e3a0;
+  border-radius: 6px;
+  padding: 8px 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  margin: 8px 0;
+}
+
+/* Sync-to-calendar checkbox inside the TaskModal. */
+.task-modal-gcal {
+  margin-top: 6px;
+  padding: 10px;
+  background: #f7faff;
+  border: 1px solid #e2eaf7;
+  border-radius: 6px;
+  font-size: 13px;
+}
+.task-modal-gcal label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  cursor: pointer;
+}
+.task-modal-gcal-hint {
+  color: #4b5563;
+  margin: 6px 0 0;
+  display: block;
+}

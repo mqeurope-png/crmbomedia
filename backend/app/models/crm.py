@@ -744,6 +744,43 @@ class User(TimestampMixin, Base):
     backup_codes_hash: Mapped[str | None] = mapped_column(Text)
 
 
+class UserGoogleIntegration(TimestampMixin, Base):
+    """Per-user Google Calendar connection.
+
+    Mini-PR C Fase 2. One row per user once they complete the OAuth
+    flow. `access_token` + `refresh_token` are encrypted with the same
+    Fernet key the integrations layer uses for API keys
+    (`INTEGRATION_SECRETS_KEY`). `selected_calendar_id` stays NULL
+    until the user picks one in the post-OAuth setup screen — the
+    sync layer is a no-op until then.
+    """
+
+    __tablename__ = "user_google_integrations"
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid4())
+    )
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+    google_email: Mapped[str] = mapped_column(String(255), nullable=False)
+    access_token_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
+    refresh_token_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
+    token_expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    selected_calendar_id: Mapped[str | None] = mapped_column(String(255))
+    selected_calendar_summary: Mapped[str | None] = mapped_column(String(255))
+    scopes: Mapped[str] = mapped_column(Text, nullable=False)
+    connected_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    last_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class GdprRequestType(StrEnum):
     ACCESS = "access"
     RECTIFICATION = "rectification"

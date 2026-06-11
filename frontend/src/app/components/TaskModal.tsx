@@ -1,8 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { createTask, type Task, type TaskCreatePayload } from "../lib/tasksApi";
 import { extractErrorMessage } from "../lib/errors";
+import { getGoogleStatus, type GoogleStatus } from "../lib/googleApi";
 
 type Props = {
   /** Pre-fill contact link — used by the contact detail "Tareas" tab. */
@@ -49,6 +50,17 @@ export function TaskModal({ contactId, onClose, onCreated }: Props) {
   const [reminder, setReminder] = useState<number | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Google Calendar sync — the checkbox only renders once we know
+  // the user has a connected + configured calendar. Default ON when
+  // it shows; default OFF (and tip shown) when they aren't connected.
+  const [googleStatus, setGoogleStatus] = useState<GoogleStatus | null>(null);
+  const [syncWithGoogle, setSyncWithGoogle] = useState(true);
+
+  useEffect(() => {
+    getGoogleStatus()
+      .then(setGoogleStatus)
+      .catch(() => setGoogleStatus(null));
+  }, []);
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
@@ -56,6 +68,10 @@ export function TaskModal({ contactId, onClose, onCreated }: Props) {
     setSubmitting(true);
     setError(null);
     try {
+      const canSync =
+        !!googleStatus?.connected &&
+        !!googleStatus?.selected_calendar &&
+        syncWithGoogle;
       const payload: TaskCreatePayload = {
         title: title.trim(),
         description: description.trim() || null,
@@ -63,6 +79,7 @@ export function TaskModal({ contactId, onClose, onCreated }: Props) {
         priority,
         reminder_minutes_before: reminder,
         contact_id: contactId ?? null,
+        sync_with_google_calendar: canSync,
       };
       const task = await createTask(payload);
       onCreated(task);
@@ -139,6 +156,30 @@ export function TaskModal({ contactId, onClose, onCreated }: Props) {
               ))}
             </select>
           </label>
+          {googleStatus?.connected && googleStatus.selected_calendar ? (
+            <div className="task-modal-gcal">
+              <label>
+                <input
+                  type="checkbox"
+                  checked={syncWithGoogle}
+                  onChange={(e) => setSyncWithGoogle(e.target.checked)}
+                />
+                Sincronizar con Google Calendar
+                {googleStatus.selected_calendar.summary ? (
+                  <span className="muted small">
+                    {" "}
+                    — &quot;{googleStatus.selected_calendar.summary}&quot;
+                  </span>
+                ) : null}
+              </label>
+            </div>
+          ) : googleStatus && !googleStatus.connected ? (
+            <p className="task-modal-gcal-hint muted small">
+              💡 Conecta Google Calendar en{" "}
+              <a href="/account">/account</a> para sincronizar tus tareas
+              con tu agenda.
+            </p>
+          ) : null}
           <div className="actions">
             <button
               type="button"

@@ -70,6 +70,20 @@ class Settings(BaseSettings):
     # (Settings → Webhooks → signature/auth header).
     brevo_webhook_secret: str | None = None
 
+    # Google Calendar OAuth. When any of these is unset the integration
+    # endpoints respond 503 instead of 500 — the UI surfaces a clear
+    # "not configured by admin" message. See
+    # docs/integrations-google-calendar.md for the Cloud Console setup.
+    google_oauth_client_id: str | None = None
+    google_oauth_client_secret: str | None = None
+    google_oauth_redirect_uri: str | None = None
+    # Timezone used when serialising task due_at to Google Calendar
+    # events. Single-tenant for now — multi-timezone is a future PR.
+    google_calendar_timezone: str = "Europe/Madrid"
+    # Default event duration when a task has no end time. 30 minutes
+    # matches the spec.
+    google_calendar_default_event_minutes: int = 30
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
     @field_validator("integration_secrets_key")
@@ -95,6 +109,14 @@ class Settings(BaseSettings):
     @property
     def ai_features_enabled(self) -> bool:
         return bool(self.anthropic_api_key)
+
+    @property
+    def google_calendar_configured(self) -> bool:
+        return bool(
+            self.google_oauth_client_id
+            and self.google_oauth_client_secret
+            and self.google_oauth_redirect_uri
+        )
 
 
 @lru_cache

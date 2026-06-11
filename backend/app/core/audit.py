@@ -149,6 +149,13 @@ class Action:
     SEGMENT_AI_GENERATED = "segment.ai_generated"
     SEGMENT_AI_EXPLAINED = "segment.ai_explained"
 
+    # Google Calendar integration (Mini-PR C Fase 2).
+    GOOGLE_CALENDAR_CONNECTED = "google_calendar.connected"
+    GOOGLE_CALENDAR_DISCONNECTED = "google_calendar.disconnected"
+    GOOGLE_CALENDAR_SELECTED = "google_calendar.calendar_selected"
+    GOOGLE_CALENDAR_EVENT_SYNCED = "google_calendar.event_synced"
+    GOOGLE_CALENDAR_EVENT_FAILED = "google_calendar.event_failed"
+
     # GDPR / RGPD subject-rights events
     GDPR_REQUEST_CREATED = "gdpr.request_created"
     GDPR_REQUEST_UPDATED = "gdpr.request_updated"

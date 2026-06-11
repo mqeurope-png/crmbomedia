@@ -730,6 +730,9 @@ class TaskCreate(BaseModel):
     omitted. `contact_id` / `company_id` / `pipeline_stage_id` are all
     optional links — the operator can build a personal todo with no
     CRM linkage and still get the calendar slot.
+
+    `sync_with_google_calendar` triggers a best-effort mirror to the
+    assignee's selected Google calendar after the task is persisted.
     """
 
     title: str = Field(min_length=1, max_length=200)
@@ -742,6 +745,7 @@ class TaskCreate(BaseModel):
     company_id: str | None = None
     pipeline_stage_id: str | None = None
     reminder_minutes_before: int | None = Field(default=None, ge=0, le=10080)
+    sync_with_google_calendar: bool = False
 
     @field_validator("title")
     @classmethod
@@ -808,6 +812,46 @@ class TaskBuckets(BaseModel):
 
 class TaskCompleteResponse(BaseModel):
     task: TaskRead
+
+
+class GoogleCalendarItem(BaseModel):
+    """One entry in the user's calendar list — feeds the post-OAuth
+    setup screen."""
+
+    id: str
+    summary: str
+    primary: bool = False
+    access_role: str | None = None
+    background_color: str | None = None
+
+
+class GoogleCalendarSelection(BaseModel):
+    """Currently selected calendar — embedded in the status payload."""
+
+    id: str
+    summary: str | None = None
+
+
+class GoogleCalendarStatus(BaseModel):
+    """Output of `GET /api/integrations/google/status`.
+
+    Three states the UI cares about: not connected, connected without
+    calendar (needs setup), fully wired. `configured` reflects the
+    *server-side* config — when False the UI shows "Pide al admin que
+    configure las credenciales".
+    """
+
+    configured: bool
+    connected: bool
+    google_email: str | None = None
+    selected_calendar: GoogleCalendarSelection | None = None
+    requires_calendar_selection: bool = False
+    connected_at: datetime | None = None
+    last_sync_at: datetime | None = None
+
+
+class GoogleCalendarSelectPayload(BaseModel):
+    calendar_id: str = Field(min_length=1, max_length=255)
 
 
 class NoteCreate(BaseModel):
