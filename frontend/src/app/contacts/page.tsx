@@ -1,33 +1,34 @@
 "use client";
 
+import { History, ListPlus, RotateCcw, Save } from "lucide-react";
 import Link from "next/link";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ColumnConfigurator } from "../components/ColumnConfigurator";
-import { ContactFilters } from "../components/ContactFilters";
+import { ContactQueryBuilder } from "../components/ContactQueryBuilder";
 import {
   ContactViewEditorModal,
   type ContactViewDraft,
 } from "../components/ContactViewEditorModal";
-import { ContactViewsSidebar } from "../components/ContactViewsSidebar";
+import { ContactViewsTabs } from "../components/ContactViewsTabs";
 import { ErrorState } from "../components/ErrorState";
-import { PageHeader } from "../components/PageHeader";
-import { TagChips } from "../components/TagChips";
 import { OriginChipsSummary } from "../components/OriginChips";
+import { PageHeader } from "../components/PageHeader";
+import { PushViewToBrevoModal } from "../components/PushViewToBrevoModal";
+import { TagChips } from "../components/TagChips";
 import {
   createSavedView,
   deleteSavedView,
   duplicateSavedView,
-  listContacts,
   listSavedViews,
+  pushViewToBrevoList,
+  saveViewAsSegment,
+  searchContacts,
   setDefaultSavedView,
   updateSavedView,
   type Contact,
-  type ContactListFilters,
   type ContactListPage,
   type SavedView,
-  type SavedViewColumns,
-  type SavedViewFilters,
-  type SavedViewSort,
 } from "../lib/api";
 import {
   ALL_COLUMN_KEYS,
@@ -35,21 +36,15 @@ import {
   findColumn,
   type ContactColumnKey,
 } from "../lib/contactColumns";
+import { legacyFiltersToRulesTree } from "../lib/contactRulesMigration";
 import {
-  clearLocalConfig,
-  loadLocalConfig,
-  saveLocalConfig,
-} from "../lib/contactViewStorage";
+  readUrlState,
+  serializeUrlState,
+} from "../lib/contactsUrlState";
 import { extractErrorMessage } from "../lib/errors";
 
 const PAGE_SIZE = 25;
-
-const DEFAULT_FILTERS: ContactListFilters = {
-  sort_by: "created_at",
-  sort_dir: "desc",
-  limit: PAGE_SIZE,
-  skip: 0,
-};
+const EMPTY_RULES: Record<string, unknown> = {};
 
 function fullName(contact: Contact): string {
   return [contact.first_name, contact.last_name].filter(Boolean).join(" ").trim();
@@ -122,50 +117,71 @@ function renderCell(key: ContactColumnKey, contact: Contact): React.ReactNode {
 }
 
 function normaliseOrder(order: string[] | undefined): ContactColumnKey[] {
-  const valid = (order ?? []).filter((key): key is ContactColumnKey =>
-    ALL_COLUMN_KEYS.includes(key as ContactColumnKey),
+  if (!order) return [...ALL_COLUMN_KEYS];
+  const valid = order.filter((k): k is ContactColumnKey =>
+    ALL_COLUMN_KEYS.includes(k as ContactColumnKey),
   );
-  const missing = ALL_COLUMN_KEYS.filter((key) => !valid.includes(key));
-  return [...valid, ...missing];
+  const remaining = ALL_COLUMN_KEYS.filter((k) => !valid.includes(k));
+  return [...valid, ...remaining];
 }
 
-function normaliseVisible(
-  visible: string[] | undefined,
-): ContactColumnKey[] {
-  const fromInput = (visible ?? DEFAULT_VISIBLE_COLUMNS).filter(
-    (key): key is ContactColumnKey =>
-      ALL_COLUMN_KEYS.includes(key as ContactColumnKey),
+function normaliseVisible(visible: string[] | undefined): ContactColumnKey[] {
+  if (!visible) return [...DEFAULT_VISIBLE_COLUMNS];
+  const valid = visible.filter((k): k is ContactColumnKey =>
+    ALL_COLUMN_KEYS.includes(k as ContactColumnKey),
   );
-  // "name" is always visible — even if the operator's saved view tried
-  // to hide it (legacy data) we force it back in.
-  if (!fromInput.includes("name")) return ["name", ...fromInput];
-  return fromInput;
+  return valid.length ? valid : [...DEFAULT_VISIBLE_COLUMNS];
+}
+
+/** The view's rules tree as we keep it in memory — pulled from the
+ * new `filters.rules_json` field when present, falling back to a
+ * translation of the legacy flat dropdown filters so old views still
+ * load into the query builder. */
+function viewToRulesTree(view: SavedView): Record<string, unknown> {
+  return legacyFiltersToRulesTree(view.filters);
+}
+
+function rulesEqual(
+  a: Record<string, unknown>,
+  b: Record<string, unknown>,
+): boolean {
+  return JSON.stringify(a ?? {}) === JSON.stringify(b ?? {});
 }
 
 export default function ContactsListPage() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+
   const [views, setViews] = useState<SavedView[]>([]);
   const [activeView, setActiveView] = useState<SavedView | null>(null);
-  const [filters, setFilters] = useState<ContactListFilters>(DEFAULT_FILTERS);
-  const [columnOrder, setColumnOrder] = useState<ContactColumnKey[]>(() => {
-    const local = loadLocalConfig();
-    return normaliseOrder(local?.columns.order);
-  });
-  const [visibleColumns, setVisibleColumns] = useState<ContactColumnKey[]>(() => {
-    const local = loadLocalConfig();
-    return normaliseVisible(local?.columns.visible);
-  });
+  const [rules, setRules] = useState<Record<string, unknown>>(EMPTY_RULES);
+  const [q, setQ] = useState("");
   const [searchInput, setSearchInput] = useState("");
+  const [sortBy, setSortBy] = useState("created_at");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+  const [offset, setOffset] = useState(0);
+  const [columnOrder, setColumnOrder] = useState<ContactColumnKey[]>(() =>
+    normaliseOrder(undefined),
+  );
+  const [visibleColumns, setVisibleColumns] = useState<ContactColumnKey[]>(() =>
+    normaliseVisible(undefined),
+  );
+
   const [page, setPage] = useState<ContactListPage | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [editorMode, setEditorMode] = useState<
-    | { kind: "create" }
-    | { kind: "edit"; view: SavedView }
-    | null
+    { kind: "create" } | { kind: "edit"; view: SavedView } | null
   >(null);
-  // First-load coordinates the localStorage → default view hand-off so
-  // we don't double-apply config on hot reloads.
+  const [showBrevoModal, setShowBrevoModal] = useState(false);
+  const [actionsMenu, setActionsMenu] = useState(false);
+
   const firstLoadRef = useRef(true);
+
+  // ---------------------------------------------------------------------------
+  // Views + initial state (URL → view_id → default view → blank)
+  // ---------------------------------------------------------------------------
 
   const loadViews = useCallback(async () => {
     try {
@@ -178,68 +194,98 @@ export default function ContactsListPage() {
     }
   }, []);
 
+  const applyView = useCallback((view: SavedView) => {
+    setActiveView(view);
+    setRules(viewToRulesTree(view));
+    setColumnOrder(normaliseOrder(view.columns?.order));
+    setVisibleColumns(normaliseVisible(view.columns?.visible));
+    setQ(view.filters.q ?? "");
+    setSearchInput(view.filters.q ?? "");
+    setSortBy((view.sort?.sort_by as string) ?? "created_at");
+    setSortDir((view.sort?.sort_dir as "asc" | "desc") ?? "desc");
+    setOffset(0);
+  }, []);
+
   useEffect(() => {
     loadViews().then((list) => {
       if (!firstLoadRef.current) return;
       firstLoadRef.current = false;
-      // Apply default view if present; otherwise stick with localStorage.
-      const def = list.find((v) => v.is_default);
-      if (def) {
-        applyView(def);
-      } else {
-        const local = loadLocalConfig();
-        if (local) {
-          setFilters((current) => ({
-            ...current,
-            ...(local.filters as Partial<ContactListFilters>),
-            sort_by: (local.sort.sort_by as ContactListFilters["sort_by"]) ?? current.sort_by,
-            sort_dir: local.sort.sort_dir,
-            skip: 0,
-          }));
+      const url = readUrlState(new URLSearchParams(searchParams.toString()));
+      if (url.viewId) {
+        const view = list.find((v) => v.id === url.viewId);
+        if (view) {
+          applyView(view);
+          if (url.q) {
+            setQ(url.q);
+            setSearchInput(url.q);
+          }
+          if (url.sortBy) setSortBy(url.sortBy);
+          if (url.sortDir) setSortDir(url.sortDir);
+          if (url.columns) setVisibleColumns(normaliseVisible(url.columns));
+          return;
         }
       }
+      if (url.rules) {
+        setRules(url.rules);
+        setQ(url.q);
+        setSearchInput(url.q);
+        setSortBy(url.sortBy);
+        setSortDir(url.sortDir);
+        if (url.columns) setVisibleColumns(normaliseVisible(url.columns));
+        return;
+      }
+      const def = list.find((v) => v.is_default);
+      if (def) applyView(def);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const applyView = useCallback((view: SavedView) => {
-    setActiveView(view);
-    setFilters({
-      ...DEFAULT_FILTERS,
-      view_id: view.id,
-      q: view.filters.q ?? undefined,
-      tag_ids: view.filters.tag_ids ?? undefined,
-      tag_match_mode: view.filters.tag_match_mode ?? undefined,
-      origin_system: view.filters.origin_system ?? undefined,
-      origin_account_id: view.filters.origin_account_id ?? undefined,
-      commercial_status: view.filters.commercial_status ?? undefined,
-      marketing_consent: view.filters.marketing_consent ?? undefined,
-      lead_score_min: view.filters.lead_score_min ?? undefined,
-      lead_score_max: view.filters.lead_score_max ?? undefined,
-      include_inactive: view.filters.is_active === false ? true : undefined,
-      sort_by: (view.sort?.sort_by as ContactListFilters["sort_by"]) ?? "created_at",
-      sort_dir: view.sort?.sort_dir ?? "desc",
+  // ---------------------------------------------------------------------------
+  // URL sync — push state to history so back-navigation from a contact
+  // detail page lands on the same filter, sort and columns.
+  // ---------------------------------------------------------------------------
+
+  useEffect(() => {
+    const params = serializeUrlState({
+      viewId: activeView?.id ?? null,
+      rules: activeView ? null : rules,
+      q,
+      sortBy,
+      sortDir,
+      columns: visibleColumns,
     });
-    setColumnOrder(normaliseOrder(view.columns?.order));
-    setVisibleColumns(normaliseVisible(view.columns?.visible));
-    setSearchInput(view.filters.q ?? "");
-  }, []);
+    const next = params ? `/contacts?${params}` : "/contacts";
+    router.replace(next, { scroll: false });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeView?.id, rules, q, sortBy, sortDir, visibleColumns]);
+
+  // ---------------------------------------------------------------------------
+  // Search box debounce
+  // ---------------------------------------------------------------------------
 
   useEffect(() => {
     const handle = window.setTimeout(() => {
-      setFilters((current) => ({
-        ...current,
-        q: searchInput.trim() || undefined,
-        skip: 0,
-      }));
+      setQ(searchInput.trim());
+      setOffset(0);
     }, 250);
     return () => window.clearTimeout(handle);
   }, [searchInput]);
 
+  // ---------------------------------------------------------------------------
+  // Fetch contacts (POST /api/contacts/search)
+  // ---------------------------------------------------------------------------
+
   useEffect(() => {
     let cancelled = false;
     setIsLoading(true);
-    listContacts(filters)
+    searchContacts({
+      rules_json: Object.keys(rules).length > 0 ? rules : null,
+      q: q || null,
+      sort_by: sortBy,
+      sort_dir: sortDir,
+      limit: PAGE_SIZE,
+      offset,
+    })
       .then((result) => {
         if (!cancelled) {
           setPage(result);
@@ -259,7 +305,7 @@ export default function ContactsListPage() {
     return () => {
       cancelled = true;
     };
-  }, [filters]);
+  }, [rules, q, sortBy, sortDir, offset]);
 
   const totalPages = useMemo(() => {
     if (!page || page.limit === 0) return 1;
@@ -270,79 +316,35 @@ export default function ContactsListPage() {
     return Math.floor(page.offset / page.limit) + 1;
   }, [page]);
 
-  function buildPayloadFromState(): {
-    filters: SavedViewFilters;
-    columns: SavedViewColumns;
-    sort: SavedViewSort;
-  } {
+  const isDirty = useMemo(() => {
+    if (!activeView) return Object.keys(rules).length > 0;
+    return !rulesEqual(rules, viewToRulesTree(activeView));
+  }, [activeView, rules]);
+
+  function goToPage(nextPage: number) {
+    if (!page) return;
+    const clamped = Math.max(1, Math.min(totalPages, nextPage));
+    setOffset((clamped - 1) * PAGE_SIZE);
+  }
+
+  // ---------------------------------------------------------------------------
+  // View actions
+  // ---------------------------------------------------------------------------
+
+  function buildPayloadFromState() {
     return {
       filters: {
-        q: filters.q ?? null,
-        tag_ids: filters.tag_ids ?? null,
-        tag_match_mode: filters.tag_match_mode ?? null,
-        origin_system: filters.origin_system ?? null,
-        origin_account_id: filters.origin_account_id ?? null,
-        commercial_status: filters.commercial_status ?? null,
-        marketing_consent: filters.marketing_consent ?? null,
-        lead_score_min: filters.lead_score_min ?? null,
-        lead_score_max: filters.lead_score_max ?? null,
-        is_active: filters.include_inactive ? false : null,
+        q: q || null,
+        rules_json: Object.keys(rules).length > 0 ? rules : null,
       },
       columns: {
         order: columnOrder,
         visible: visibleColumns,
         widths: {},
       },
-      sort: {
-        sort_by: filters.sort_by ?? "created_at",
-        sort_dir: filters.sort_dir ?? "desc",
-      },
+      sort: { sort_by: sortBy, sort_dir: sortDir },
     };
   }
-
-  const handleReset = useCallback(() => {
-    setActiveView(null);
-    setSearchInput("");
-    setFilters(DEFAULT_FILTERS);
-    clearLocalConfig();
-  }, []);
-
-  const handleSortChange = useCallback(
-    (event: React.ChangeEvent<HTMLSelectElement>) => {
-      const [sort_by, sort_dir] = event.target.value.split(":") as [
-        NonNullable<ContactListFilters["sort_by"]>,
-        NonNullable<ContactListFilters["sort_dir"]>,
-      ];
-      setFilters((current) => ({ ...current, sort_by, sort_dir, skip: 0 }));
-    },
-    [],
-  );
-
-  const goToPage = useCallback(
-    (nextPage: number) => {
-      if (!page) return;
-      const clamped = Math.max(1, Math.min(totalPages, nextPage));
-      setFilters((current) => ({
-        ...current,
-        skip: (clamped - 1) * (current.limit ?? PAGE_SIZE),
-      }));
-    },
-    [page, totalPages],
-  );
-
-  // Persist localStorage whenever filters/columns change AND no view
-  // is active. Saved views own their persistence via the API.
-  useEffect(() => {
-    if (activeView) return;
-    if (firstLoadRef.current) return;
-    const payload = buildPayloadFromState();
-    saveLocalConfig({
-      filters: payload.filters,
-      columns: payload.columns,
-      sort: payload.sort,
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filters, columnOrder, visibleColumns, activeView]);
 
   async function handleSaveView(draft: ContactViewDraft) {
     const payload = buildPayloadFromState();
@@ -362,11 +364,73 @@ export default function ContactsListPage() {
         ...payload,
       });
       setActiveView(created);
-      // First saved view kills the localStorage fallback.
-      clearLocalConfig();
     }
     await loadViews();
     setEditorMode(null);
+  }
+
+  async function handleSaveExistingView() {
+    if (!activeView) {
+      setEditorMode({ kind: "create" });
+      return;
+    }
+    try {
+      const updated = await updateSavedView(activeView.id, buildPayloadFromState());
+      setActiveView(updated);
+      await loadViews();
+      setMessage("Vista guardada.");
+    } catch (err) {
+      setError(extractErrorMessage(err, "No se pudo guardar la vista."));
+    }
+  }
+
+  function handleRevert() {
+    if (!activeView) {
+      setRules(EMPTY_RULES);
+      setSortBy("created_at");
+      setSortDir("desc");
+      setQ("");
+      setSearchInput("");
+      return;
+    }
+    applyView(activeView);
+  }
+
+  async function handleSaveAsSegment() {
+    if (!activeView) {
+      setError(
+        "Guarda la consulta como vista antes de promoverla a segmento.",
+      );
+      return;
+    }
+    const name = window.prompt(
+      "Nombre del nuevo segmento",
+      `Segmento desde "${activeView.name}"`,
+    );
+    if (!name?.trim()) return;
+    try {
+      const created = await saveViewAsSegment(activeView.id, {
+        name: name.trim(),
+      });
+      setMessage(`Segmento "${created.name}" creado.`);
+    } catch (err) {
+      setError(extractErrorMessage(err, "No se pudo crear el segmento."));
+    }
+  }
+
+  async function handlePushToBrevo(payload: {
+    brevo_account_id: string;
+    brevo_list_id?: number;
+    new_list_name?: string;
+  }) {
+    if (!activeView) return;
+    const result = await pushViewToBrevoList(activeView.id, payload);
+    setMessage(
+      `${result.contacts_to_push} contacto${
+        result.contacts_to_push === 1 ? "" : "s"
+      } en cola para sincronizar a Brevo (lista #${result.brevo_list_id}).`,
+    );
+    setShowBrevoModal(false);
   }
 
   async function handleDuplicateView(view: SavedView) {
@@ -400,7 +464,7 @@ export default function ContactsListPage() {
       await deleteSavedView(view.id);
       if (activeView?.id === view.id) {
         setActiveView(null);
-        setFilters(DEFAULT_FILTERS);
+        setRules(EMPTY_RULES);
       }
       await loadViews();
     } catch (err) {
@@ -408,12 +472,16 @@ export default function ContactsListPage() {
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // Render
+  // ---------------------------------------------------------------------------
+
   return (
     <main className="shell shell-wide">
       <PageHeader
         title="Lista de contactos"
         eyebrow="Contactos"
-        description="Busca, filtra y abre cualquier contacto. Guarda configuraciones como vistas para volver a ellas en un click."
+        description="Filtros AND/OR estilo Brevo. Guarda combinaciones como vistas o promociónalas a segmentos / listas de Brevo."
         actions={
           <Link href="/contacts/new" className="button small">
             + Crear contacto
@@ -421,158 +489,205 @@ export default function ContactsListPage() {
         }
       />
 
-      <section className="contacts-layout">
-        <ContactViewsSidebar
-          views={views}
-          activeId={activeView?.id ?? null}
-          onSelect={applyView}
-          onCreate={() => setEditorMode({ kind: "create" })}
-          onEdit={(view) => setEditorMode({ kind: "edit", view })}
-          onDuplicate={handleDuplicateView}
-          onSetDefault={handleSetDefault}
-          onDelete={handleDeleteView}
-        />
+      <ContactViewsTabs
+        views={views}
+        activeId={activeView?.id ?? null}
+        isDirty={isDirty}
+        onSelect={(view) => {
+          if (view) {
+            applyView(view);
+          } else {
+            setActiveView(null);
+            setRules(EMPTY_RULES);
+            setQ("");
+            setSearchInput("");
+            setOffset(0);
+          }
+        }}
+        onCreate={() => setEditorMode({ kind: "create" })}
+        onEdit={(view) => setEditorMode({ kind: "edit", view })}
+        onDuplicate={handleDuplicateView}
+        onSetDefault={handleSetDefault}
+        onDelete={handleDeleteView}
+      />
 
-        <section className="panel contacts-panel">
-          <div className="contact-toolbar">
-            <input
-              type="search"
-              className="search-input"
-              placeholder="Buscar por nombre, email o teléfono…"
-              value={searchInput}
-              onChange={(event) => setSearchInput(event.target.value)}
-              aria-label="Búsqueda de contactos"
-            />
-            <label className="sort-select">
-              <span>Ordenar por</span>
-              <select
-                value={`${filters.sort_by ?? "created_at"}:${filters.sort_dir ?? "desc"}`}
-                onChange={handleSortChange}
-              >
-                <option value="created_at:desc">Más recientes primero</option>
-                <option value="created_at:asc">Más antiguos primero</option>
-                <option value="updated_at:desc">Última actualización</option>
-                <option value="name:asc">Nombre (A→Z)</option>
-                <option value="email:asc">Email (A→Z)</option>
-                <option value="lead_score:desc">Lead score (mayor primero)</option>
-                <option value="lead_score:asc">Lead score (menor primero)</option>
-              </select>
-            </label>
-            <ColumnConfigurator
-              order={columnOrder}
-              visible={visibleColumns}
-              onApply={({ order, visible }) => {
-                setColumnOrder(order);
-                setVisibleColumns(visible);
-                if (activeView?.is_owner) {
-                  updateSavedView(activeView.id, {
-                    columns: { order, visible, widths: {} },
-                  })
-                    .then(async () => {
-                      const list = await loadViews();
-                      const refreshed = list.find(
-                        (v) => v.id === activeView.id,
-                      );
-                      if (refreshed) setActiveView(refreshed);
-                    })
-                    .catch((err) =>
-                      setError(
-                        extractErrorMessage(err, "No se pudo guardar el orden de columnas."),
-                      ),
-                    );
-                }
-              }}
-            />
-            <button
-              type="button"
-              className="button"
-              onClick={() => setEditorMode({ kind: "create" })}
-            >
-              Guardar vista
-            </button>
-            <button
-              type="button"
-              className="button secondary small"
-              onClick={handleReset}
-            >
-              Limpiar filtros
-            </button>
-          </div>
-
-          <ContactFilters
-            filters={filters}
-            onChange={setFilters}
-            onReset={handleReset}
+      <section className="panel contacts-panel">
+        <div className="contact-toolbar">
+          <input
+            type="search"
+            className="search-input"
+            placeholder="Buscar por nombre, email o teléfono…"
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
+            aria-label="Búsqueda de contactos"
           />
+          <label className="sort-select">
+            <span>Ordenar por</span>
+            <select
+              value={`${sortBy}:${sortDir}`}
+              onChange={(e) => {
+                const [sb, sd] = e.target.value.split(":") as [
+                  string,
+                  "asc" | "desc",
+                ];
+                setSortBy(sb);
+                setSortDir(sd);
+                setOffset(0);
+              }}
+            >
+              <option value="created_at:desc">Más recientes primero</option>
+              <option value="created_at:asc">Más antiguos primero</option>
+              <option value="updated_at:desc">Última actualización</option>
+              <option value="updated_at_external:desc">
+                Última actualización en origen
+              </option>
+              <option value="created_at_external:desc">
+                Creación en origen (más recientes)
+              </option>
+              <option value="name:asc">Nombre (A→Z)</option>
+              <option value="email:asc">Email (A→Z)</option>
+              <option value="lead_score:desc">Lead score (mayor primero)</option>
+            </select>
+          </label>
+          <ColumnConfigurator
+            order={columnOrder}
+            visible={visibleColumns}
+            onApply={({ order, visible }) => {
+              setColumnOrder(order);
+              setVisibleColumns(visible);
+            }}
+          />
+          <button
+            type="button"
+            className="button"
+            onClick={handleSaveExistingView}
+            disabled={!isDirty}
+            title={isDirty ? "Guardar cambios en la vista" : "Sin cambios"}
+          >
+            <Save size={13} aria-hidden /> Guardar
+          </button>
+          <button
+            type="button"
+            className="button secondary"
+            onClick={handleRevert}
+            disabled={!isDirty}
+            title="Descartar cambios"
+          >
+            <RotateCcw size={13} aria-hidden /> Revertir
+          </button>
+          <div className="dropdown">
+            <button
+              type="button"
+              className="button secondary"
+              onClick={() => setActionsMenu((open) => !open)}
+              aria-haspopup="menu"
+              aria-expanded={actionsMenu}
+            >
+              Acciones ▾
+            </button>
+            {actionsMenu ? (
+              <ActionsMenu
+                onClose={() => setActionsMenu(false)}
+                hasView={!!activeView}
+                onSaveAsNewView={() => {
+                  setActionsMenu(false);
+                  setEditorMode({ kind: "create" });
+                }}
+                onSaveAsSegment={async () => {
+                  setActionsMenu(false);
+                  await handleSaveAsSegment();
+                }}
+                onPushToBrevo={() => {
+                  setActionsMenu(false);
+                  if (!activeView) {
+                    setError(
+                      "Guarda la consulta como vista antes de enviar a Brevo.",
+                    );
+                    return;
+                  }
+                  setShowBrevoModal(true);
+                }}
+              />
+            ) : null}
+          </div>
+        </div>
 
-          {error ? <ErrorState title="Error" message={error} /> : null}
+        <ContactQueryBuilder rules={rules} onChange={setRules} />
 
-          {isLoading && !page ? (
-            <p className="muted">Cargando contactos…</p>
-          ) : page && page.items.length === 0 ? (
-            <p className="muted">
-              Ningún contacto coincide con los filtros aplicados.
-            </p>
-          ) : page ? (
-            <>
-              <div className="table-wrapper">
-                <table className="data-table contacts-table">
-                  <thead>
-                    <tr>
-                      {visibleColumns.map((key) => {
-                        const def = findColumn(key);
-                        return def ? (
-                          <th key={key} scope="col">
-                            {def.label}
-                          </th>
-                        ) : null;
-                      })}
+        {error ? <ErrorState title="Error" message={error} /> : null}
+        {message ? (
+          <p className="muted" role="status">
+            {message}
+          </p>
+        ) : null}
+
+        {isLoading && !page ? (
+          <p className="muted">Cargando contactos…</p>
+        ) : page && page.items.length === 0 ? (
+          <p className="muted">
+            Ningún contacto coincide con los filtros aplicados.
+          </p>
+        ) : page ? (
+          <>
+            <div className="table-wrapper">
+              <table className="data-table contacts-table">
+                <thead>
+                  <tr>
+                    {visibleColumns.map((key) => {
+                      const def = findColumn(key);
+                      return def ? (
+                        <th key={key} scope="col">
+                          {def.label}
+                        </th>
+                      ) : null;
+                    })}
+                  </tr>
+                </thead>
+                <tbody>
+                  {page.items.map((contact) => (
+                    <tr key={contact.id}>
+                      {visibleColumns.map((key) => (
+                        <td key={key}>{renderCell(key, contact)}</td>
+                      ))}
                     </tr>
-                  </thead>
-                  <tbody>
-                    {page.items.map((contact) => (
-                      <tr key={contact.id}>
-                        {visibleColumns.map((key) => (
-                          <td key={key}>{renderCell(key, contact)}</td>
-                        ))}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="pagination">
+              <span className="muted">
+                {page.total} contacto{page.total === 1 ? "" : "s"} · Página{" "}
+                {currentPage} / {totalPages}
+              </span>
+              <div className="pagination-buttons">
+                <button
+                  type="button"
+                  className="button secondary small"
+                  onClick={() => goToPage(currentPage - 1)}
+                  disabled={currentPage <= 1}
+                >
+                  Anterior
+                </button>
+                <button
+                  type="button"
+                  className="button secondary small"
+                  onClick={() => goToPage(currentPage + 1)}
+                  disabled={currentPage >= totalPages}
+                >
+                  Siguiente
+                </button>
               </div>
-              <div className="pagination">
-                <span className="muted">
-                  {page.total} contacto{page.total === 1 ? "" : "s"} ·
-                  {" "}Página {currentPage} / {totalPages}
-                </span>
-                <div className="pagination-buttons">
-                  <button
-                    type="button"
-                    className="button secondary small"
-                    onClick={() => goToPage(currentPage - 1)}
-                    disabled={currentPage <= 1}
-                  >
-                    Anterior
-                  </button>
-                  <button
-                    type="button"
-                    className="button secondary small"
-                    onClick={() => goToPage(currentPage + 1)}
-                    disabled={currentPage >= totalPages}
-                  >
-                    Siguiente
-                  </button>
-                </div>
-              </div>
-            </>
-          ) : null}
-        </section>
+            </div>
+          </>
+        ) : null}
       </section>
 
       <ContactViewEditorModal
         open={editorMode !== null}
         title={editorMode?.kind === "edit" ? "Editar vista" : "Guardar como vista"}
-        submitLabel={editorMode?.kind === "edit" ? "Guardar cambios" : "Crear vista"}
+        submitLabel={
+          editorMode?.kind === "edit" ? "Guardar cambios" : "Crear vista"
+        }
         initial={
           editorMode?.kind === "edit"
             ? {
@@ -591,7 +706,70 @@ export default function ContactsListPage() {
         onSubmit={handleSaveView}
         onClose={() => setEditorMode(null)}
       />
+
+      {showBrevoModal && activeView ? (
+        <PushViewToBrevoModal
+          viewName={activeView.name}
+          contactsCount={page?.total ?? 0}
+          onSubmit={handlePushToBrevo}
+          onClose={() => setShowBrevoModal(false)}
+        />
+      ) : null}
     </main>
   );
 }
 
+function ActionsMenu({
+  onClose,
+  hasView,
+  onSaveAsNewView,
+  onSaveAsSegment,
+  onPushToBrevo,
+}: {
+  onClose: () => void;
+  hasView: boolean;
+  onSaveAsNewView: () => void;
+  onSaveAsSegment: () => void;
+  onPushToBrevo: () => void;
+}) {
+  return (
+    <>
+      <div className="dropdown-overlay" onClick={onClose} aria-hidden />
+      <ul className="dropdown-menu" role="menu">
+        <li>
+          <button type="button" onClick={onSaveAsNewView}>
+            <Save size={12} aria-hidden /> Guardar como vista nueva
+          </button>
+        </li>
+        <li>
+          <button
+            type="button"
+            onClick={onSaveAsSegment}
+            disabled={!hasView}
+            title={
+              hasView
+                ? "Crea un segmento con las mismas reglas"
+                : "Guarda primero la consulta como vista"
+            }
+          >
+            <History size={12} aria-hidden /> Guardar como segmento
+          </button>
+        </li>
+        <li>
+          <button
+            type="button"
+            onClick={onPushToBrevo}
+            disabled={!hasView}
+            title={
+              hasView
+                ? "Encola un push a una lista Brevo"
+                : "Guarda primero la consulta como vista"
+            }
+          >
+            <ListPlus size={12} aria-hidden /> Enviar contactos a lista Brevo
+          </button>
+        </li>
+      </ul>
+    </>
+  );
+}

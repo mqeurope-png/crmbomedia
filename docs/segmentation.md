@@ -222,3 +222,77 @@ lista de UUIDs. El engine ahora también convierte ese
 `rules_json` malformado por API directa, la respuesta es 400 con
 mensaje claro (`Campo 'tags': Comparator 'contains_any' requires a
 non-empty list`) en lugar de 500.
+
+## Query builder en `/contacts` (Mini-PR B Fase 2)
+
+La lista de contactos usa el **mismo motor de segmentación** que
+`/segments`. Lo que cambia es la presentación:
+
+- **Tabs de vistas guardadas** en la cabecera. "Todos los contactos"
+  es una tab permanente que limpia el filtro. Cada `contact_view`
+  guardada es una tab; la activa marca un punto (·) en cuanto el árbol
+  se desvía del estado guardado, y un cogwheel abre el menú de
+  acciones por vista (renombrar / compartir / duplicar / marcar por
+  defecto / borrar).
+- **`ContactQueryBuilder`** — wrapper de `react-querybuilder` con tema
+  Brevo: cards blancas anidadas, combinadores Y/O como cápsulas, botones
+  "+ Y" / "+ O" / "×". Reusa la whitelist de campos
+  (`/api/segments/available-fields`), el traductor de comparadores y
+  el `SegmentValueEditor` tipado, así que todos los campos
+  (incluidos los 4 nuevos: `created_at_external`, `updated_at_external`,
+  `in_brevo_list`, `in_segment`) están disponibles sin duplicar lógica.
+- **Acciones**: arriba del builder, fila con "Guardar" (sólo cuando el
+  estado difiere de la vista activa), "Revertir" y menú "Acciones"
+  con:
+  - "Guardar como vista nueva" — modal de `ContactViewEditorModal`.
+  - "Guardar como segmento" — llama a
+    `POST /api/contact-views/{id}/save-as-segment` y muestra un
+    toast con el nombre.
+  - "Enviar contactos a lista Brevo" — abre `PushViewToBrevoModal`,
+    elige lista existente o crea una nueva, y llama a
+    `POST /api/contact-views/{id}/push-to-brevo-list`.
+
+### URL state preservation
+
+El estado completo (tab activa / árbol / búsqueda / sort / columnas)
+viaja en la URL para que la navegación de vuelta desde una ficha
+(`/contacts/{id}`) recupere exactamente el mismo screen:
+
+- `view_id=<uuid>` — carga una vista guardada.
+- `rules=<base64(json)>` — árbol inline (cuando no hay vista activa).
+  Usamos `encodeURIComponent` antes del `btoa` para que valores con
+  acentos no rompan el round-trip.
+- `q`, `sort=field:dir`, `cols=name,email,...`.
+
+El listener de la URL es one-way (re-aplicamos `router.replace` al
+cambiar el state); el push state lo gestiona el router de Next, no
+hay listener de `popstate` adicional.
+
+### Migración suave de vistas viejas
+
+Las vistas creadas antes de Sprint UX guardan filtros como un dict
+plano (`{q, tag_ids, origin_account_keys, commercial_status, ...}`).
+`legacyFiltersToRulesTree` (en `lib/contactRulesMigration.ts`) las
+convierte on-the-fly a un árbol AND/OR al cargar; cada filtro pasa a
+una rule:
+
+| Campo legacy | Regla resultante |
+|---|---|
+| `q` | grupo OR de `contains` sobre first_name/last_name/email/phone |
+| `tag_ids` + `tag_match_mode='all'` | `tags contains_all [...]` |
+| `tag_ids` + `tag_match_mode='any'` | `tags contains_any [...]` |
+| `origin_account_keys` | `origin_system in [...]` (extrayendo los sistemas únicos) |
+| `commercial_status` | `commercial_status eq X` |
+| `marketing_consent` | `marketing_consent eq X` |
+| `lead_score_min/max` | `lead_score gte/lte/between` |
+| `is_active=false` | `is_active eq false` |
+
+Si la vista nueva ya trae `filters.rules_json`, ese gana.
+
+### Bug fix de paso: DELETE 204 No Content
+
+El helper `apiFetch` siempre intentaba `response.json()` después de un
+status OK. En DELETE (204 No Content) eso lanzaba "Unexpected end of
+JSON input" y mostraba toast de error aunque la operación había
+funcionado. Ahora detecta `status === 204` y `content-length: 0` y
+devuelve `null` sin parsear.
