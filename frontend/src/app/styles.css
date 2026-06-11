@@ -3213,7 +3213,11 @@ a.origin-chip:hover { filter: brightness(0.97); }
   line-height: 1;
   margin-left: 2px;
 }
-.contact-views-tab-default { color: #b58105; }
+.contact-views-tab-default {
+  color: #d4a900;
+  font-size: 13px;
+  margin-left: 4px;
+}
 .contact-views-tab-menu-button {
   background: none;
   border: none;
