@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import UTC, datetime
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import func, select
@@ -51,6 +52,7 @@ def _emit_activity(
     subject: str | None,
     metadata: dict[str, str | int | None],
     occurred_at: datetime,
+    body: str | None = None,
 ) -> None:
     """Mirror an email mutation into the contact's activity timeline
     when we know which contact it belongs to."""
@@ -69,6 +71,7 @@ def _emit_activity(
             ),
             event_type=event_type,
             subject=(subject or "")[:200],
+            body=(body or "")[:200] or None,
             metadata_json=json.dumps(metadata, default=str),
             occurred_at=occurred_at,
             synced_at=datetime.now(UTC),
@@ -281,10 +284,14 @@ def send_email(
         contact_id=payload.contact_id,
         event_type="email.sent_from_crm",
         subject=payload.subject,
+        body=message.snippet or (payload.body_text or "")[:200] or None,
         metadata={
             "message_id": message.id,
             "thread_id": message.thread_id,
+            "direction": "outbound",
+            "from_email": message.from_email,
             "to": ", ".join(payload.to)[:200],
+            "snippet": message.snippet or "",
         },
         occurred_at=message.sent_at,
     )
@@ -309,6 +316,7 @@ def send_email(
 @router.get("/threads", response_model=EmailThreadList)
 def list_threads(
     contact_id: str | None = Query(default=None),
+    q: str | None = Query(default=None, description="LIKE on subject / from / snippet"),
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     session: Session = Depends(get_session),
@@ -319,6 +327,28 @@ def list_threads(
         stmt = stmt.where(EmailThread.contact_id == contact_id)
     if current_user.role not in (UserRole.ADMIN, UserRole.MANAGER):
         stmt = stmt.where(EmailThread.initiated_by_user_id == current_user.id)
+    if q:
+        # LIKE-match the term against the thread subject OR any
+        # message's from_email / subject / snippet / body_text.
+        # MySQL collates case-insensitively by default; SQLite (CI)
+        # needs the `ilike` analog.
+        from sqlalchemy import or_ as _or  # noqa: PLC0415
+
+        like = f"%{q}%"
+        msg_match = select(EmailMessage.thread_id).where(
+            _or(
+                EmailMessage.from_email.ilike(like),
+                EmailMessage.subject.ilike(like),
+                EmailMessage.snippet.ilike(like),
+                EmailMessage.body_text.ilike(like),
+            )
+        )
+        stmt = stmt.where(
+            _or(
+                EmailThread.subject.ilike(like),
+                EmailThread.id.in_(msg_match),
+            )
+        )
     total = int(
         session.scalar(
             select(func.count()).select_from(stmt.subquery())
@@ -332,10 +362,26 @@ def list_threads(
             .limit(limit)
         )
     )
-    return EmailThreadList(
-        items=[EmailThreadRead.model_validate(t) for t in items],
-        total=total,
-    )
+    # Last message per thread — driven the "Remitente último" +
+    # "Vista previa" columns the v2.1 list view exposes. One small
+    # extra query per page, batched via `id IN (...)`.
+    last_by_thread = _latest_messages(session, [t.id for t in items])
+    out: list[EmailThreadRead] = []
+    for thread in items:
+        last = last_by_thread.get(thread.id)
+        read = EmailThreadRead.model_validate(thread)
+        if last is not None:
+            read.last_message_direction = (
+                last.direction.value
+                if hasattr(last.direction, "value")
+                else str(last.direction)
+            )
+            read.last_message_from = last.from_email
+            read.last_message_snippet = last.snippet or _snippet_from_body(
+                last.body_text, last.body_html
+            )
+        out.append(read)
+    return EmailThreadList(items=out, total=total)
 
 
 @router.get("/threads/{thread_id}", response_model=EmailThreadDetail)
@@ -398,6 +444,73 @@ def mark_read(
     return {"message": "marked_read"}
 
 
+@router.get("/activity")
+def email_activity(
+    scope: str = Query(default="mine", pattern="^(mine|all)$"),
+    limit: int = Query(default=5, ge=1, le=50),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_user),
+) -> list[dict[str, Any]]:
+    """Recent CRM email activity for the dashboard widget.
+
+    Returns flat items `{type, thread_id, subject, contact_id,
+    contact_name, occurred_at, snippet, direction}` sorted by
+    `occurred_at` desc. `scope=mine` filters to threads the
+    current user initiated OR whose Gmail account belongs to
+    them. `scope=all` is admin-only — other roles get their own
+    activity regardless of what they passed.
+    """
+    from app.models.crm import Contact  # noqa: PLC0415
+
+    stmt = select(EmailMessage, EmailThread, Contact).join(
+        EmailThread, EmailMessage.thread_id == EmailThread.id
+    ).outerjoin(Contact, Contact.id == EmailMessage.contact_id)
+    if scope == "mine" or current_user.role not in (
+        UserRole.ADMIN,
+        UserRole.MANAGER,
+    ):
+        from sqlalchemy import or_ as _or  # noqa: PLC0415
+
+        stmt = stmt.where(
+            _or(
+                EmailThread.initiated_by_user_id == current_user.id,
+                EmailThread.gmail_account_user_id == current_user.id,
+            )
+        )
+    stmt = stmt.order_by(EmailMessage.sent_at.desc()).limit(limit)
+    rows = list(session.execute(stmt).all())
+    out: list[dict[str, Any]] = []
+    for msg, thread, contact in rows:
+        snippet = msg.snippet or _snippet_from_body(msg.body_text, msg.body_html)
+        contact_name = None
+        if contact is not None:
+            contact_name = (
+                " ".join(
+                    p for p in (contact.first_name, contact.last_name) if p
+                )
+                or contact.email
+            )
+        out.append(
+            {
+                "type": (
+                    "email.sent_from_crm"
+                    if msg.direction.value == "outbound"
+                    else "email.reply_received"
+                ),
+                "direction": msg.direction.value,
+                "thread_id": thread.id,
+                "message_id": msg.id,
+                "subject": thread.subject,
+                "contact_id": contact.id if contact else None,
+                "contact_name": contact_name,
+                "from_email": msg.from_email,
+                "occurred_at": msg.sent_at,
+                "snippet": snippet,
+            }
+        )
+    return out
+
+
 @router.get("/admin/all-threads", response_model=EmailThreadList)
 def admin_all_threads(
     limit: int = Query(default=50, ge=1, le=200),
@@ -420,3 +533,40 @@ def admin_all_threads(
 
 def _message_read(m: EmailMessage) -> EmailMessageRead:
     return EmailMessageRead.model_validate(m)
+
+
+def _latest_messages(
+    session: Session, thread_ids: list[str]
+) -> dict[str, EmailMessage]:
+    """Return the most recent EmailMessage per thread id. Avoids
+    the per-row N+1 the list view used to have."""
+    if not thread_ids:
+        return {}
+    rows = session.scalars(
+        select(EmailMessage)
+        .where(EmailMessage.thread_id.in_(thread_ids))
+        .order_by(EmailMessage.sent_at.desc())
+    ).all()
+    out: dict[str, EmailMessage] = {}
+    for row in rows:
+        if row.thread_id not in out:
+            out[row.thread_id] = row
+    return out
+
+
+def _snippet_from_body(
+    body_text: str | None, body_html: str | None
+) -> str | None:
+    """Derive a ~200-char snippet from the message body when the
+    message didn't already carry a Gmail snippet. Strips HTML tags
+    naively (no DOMPurify needed for a preview line)."""
+    import re  # noqa: PLC0415
+
+    if body_text:
+        text = body_text.strip()
+    elif body_html:
+        text = re.sub(r"<[^>]+>", " ", body_html)
+    else:
+        return None
+    flat = " ".join(text.split()).strip()
+    return flat[:200] or None

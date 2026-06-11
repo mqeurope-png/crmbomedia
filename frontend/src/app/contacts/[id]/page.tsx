@@ -395,8 +395,8 @@ export default function ContactDetailPage() {
 // ---------------------------------------------------------------------------
 
 const EVENT_TYPE_ICON: Record<string, string> = {
-  EMAIL_SENT: "✉️",
-  EMAIL_OPENED: "👁️",
+  EMAIL_SENT: "↗",
+  EMAIL_OPENED: "👁",
   EMAIL_CLICKED: "🔗",
   CALL_LOG: "📞",
   NOTE: "🗒️",
@@ -408,7 +408,29 @@ const EVENT_TYPE_ICON: Record<string, string> = {
   "task.completed": "✅",
   "task.updated": "📝",
   "task.deleted": "🗑️",
+  "email.sent_from_crm": "↗",
+  "email.reply_received": "↙",
+  "email.thread_marked_read": "👁",
 };
+
+function readMetadata(
+  meta: Record<string, unknown> | null | undefined,
+): Record<string, unknown> {
+  return meta && typeof meta === "object" ? meta : {};
+}
+
+function emailEventClass(type: string): string {
+  if (type === "email.sent_from_crm" || type === "EMAIL_SENT") {
+    return "timeline-row timeline-row-email-out";
+  }
+  if (type === "email.reply_received") {
+    return "timeline-row timeline-row-email-in";
+  }
+  if (type === "EMAIL_OPENED" || type === "EMAIL_CLICKED") {
+    return "timeline-row timeline-row-email-track";
+  }
+  return "timeline-row";
+}
 
 function ActivityTab({
   events,
@@ -430,21 +452,60 @@ function ActivityTab({
   }
   return (
     <ul className="timeline-list">
-      {events.map((event) => (
-        <li key={event.id} className="timeline-row">
-          <span className="timeline-icon" aria-hidden>
-            {EVENT_TYPE_ICON[event.event_type] ?? "•"}
-          </span>
-          <div className="timeline-content">
-            <div className="timeline-meta">
-              <strong>{event.subject || event.event_type}</strong>
-              <span className="muted">{formatDateTime(event.occurred_at)}</span>
+      {events.map((event) => {
+        const meta = readMetadata(event.metadata);
+        const threadId = typeof meta.thread_id === "string" ? meta.thread_id : null;
+        const direction =
+          typeof meta.direction === "string" ? meta.direction : null;
+        const fromEmail =
+          typeof meta.from_email === "string" ? meta.from_email : null;
+        const to = typeof meta.to === "string" ? meta.to : null;
+        const snippet =
+          typeof meta.snippet === "string" ? meta.snippet : event.body ?? null;
+        const isEmail = event.event_type.startsWith("email.");
+        const heading = (
+          <strong>
+            {threadId && isEmail ? (
+              <a
+                href={`/emails/${threadId}`}
+                target="_blank"
+                rel="noreferrer"
+              >
+                {event.subject || event.event_type}
+              </a>
+            ) : (
+              event.subject || event.event_type
+            )}
+          </strong>
+        );
+        const subline =
+          direction === "outbound" && to
+            ? `Enviado a ${to}`
+            : direction === "inbound" && fromEmail
+              ? `Recibido de ${fromEmail}`
+              : null;
+        return (
+          <li key={event.id} className={emailEventClass(event.event_type)}>
+            <span className="timeline-icon" aria-hidden>
+              {EVENT_TYPE_ICON[event.event_type] ?? "•"}
+            </span>
+            <div className="timeline-content">
+              <div className="timeline-meta">
+                {heading}
+                <span className="muted">{formatDateTime(event.occurred_at)}</span>
+              </div>
+              {subline ? (
+                <p className="timeline-subline muted small">{subline}</p>
+              ) : (
+                <span className="timeline-type">{event.event_type}</span>
+              )}
+              {snippet ? (
+                <p className="timeline-body">&quot;{snippet}&quot;</p>
+              ) : null}
             </div>
-            <span className="timeline-type">{event.event_type}</span>
-            {event.body ? <p className="timeline-body">{event.body}</p> : null}
-          </div>
-        </li>
-      ))}
+          </li>
+        );
+      })}
     </ul>
   );
 }

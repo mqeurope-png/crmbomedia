@@ -329,7 +329,60 @@ def _persist_inbound(
     thread.message_count = (thread.message_count or 0) + 1
     thread.has_unread_replies = True
     session.flush()
+    # Mirror the reply onto the contact's activity timeline so the
+    # ficha de contacto picks it up alongside the outbound sends and
+    # the rest of the activity. Skipped when the inbound came from
+    # an unknown address (no contact_id).
+    if contact is not None:
+        _emit_inbound_activity(
+            session,
+            contact_id=contact.id,
+            thread_id=thread.id,
+            message_id=message.id,
+            subject=subject,
+            from_email=from_email,
+            snippet=raw.get("snippet"),
+            occurred_at=sent_at,
+        )
     return message
+
+
+def _emit_inbound_activity(
+    session: Session,
+    *,
+    contact_id: str,
+    thread_id: str,
+    message_id: str,
+    subject: str | None,
+    from_email: str,
+    snippet: str | None,
+    occurred_at: datetime,
+) -> None:
+    from app.models.crm import ActivityEvent  # noqa: PLC0415
+
+    session.add(
+        ActivityEvent(
+            contact_id=contact_id,
+            system="crm",
+            account_id="emails",
+            external_id=f"email:{message_id}:reply_received",
+            event_type="email.reply_received",
+            subject=(subject or "")[:200],
+            body=(snippet or "")[:200] or None,
+            metadata_json=json.dumps(
+                {
+                    "message_id": message_id,
+                    "thread_id": thread_id,
+                    "from_email": from_email,
+                    "snippet": (snippet or "")[:300],
+                    "direction": "inbound",
+                },
+                default=str,
+            ),
+            occurred_at=occurred_at,
+            synced_at=datetime.now(UTC),
+        )
+    )
 
 
 def _get_or_create_thread(

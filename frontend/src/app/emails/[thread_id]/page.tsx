@@ -1,9 +1,9 @@
 "use client";
 
-import { ArrowLeft, Reply } from "lucide-react";
+import { ArrowDownLeft, ArrowLeft, ArrowUpRight, Reply } from "lucide-react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { EmailComposerModal } from "../../components/EmailComposerModal";
 import { PageHeader } from "../../components/PageHeader";
 import {
@@ -51,6 +51,16 @@ export default function EmailThreadPage() {
     load();
   }, [load]);
 
+  // Prefill the reply with the latest inbound message's sender so
+  // the operator doesn't end up replying to themselves when the
+  // most recent message in the thread is their own outbound.
+  // Hooks must stay above the conditional returns below so the
+  // call order matches across renders.
+  const lastInbound = useMemo(() => {
+    const msgs = thread?.messages ?? [];
+    return [...msgs].reverse().find((m) => m.direction === "inbound") ?? null;
+  }, [thread?.messages]);
+
   if (loading)
     return (
       <main className="shell"><p className="muted">Cargando…</p></main>
@@ -61,6 +71,11 @@ export default function EmailThreadPage() {
     );
 
   const last = thread.messages[thread.messages.length - 1];
+  const replyParent = lastInbound ?? last;
+  const replyTarget =
+    lastInbound?.from_email ??
+    thread.participants.find((p) => p !== last?.from_email) ??
+    null;
 
   return (
     <main className="shell shell-wide">
@@ -79,34 +94,70 @@ export default function EmailThreadPage() {
             <button
               type="button"
               className="button small"
-              onClick={() => setReplyTo(last)}
+              onClick={() => setReplyTo(replyParent)}
             >
               <Reply size={11} aria-hidden /> Responder
             </button>
           </>
         }
       />
-      <p className="muted small">
-        Participantes: {thread.participants.join(", ")}
-      </p>
+      <div className="email-thread-header">
+        <p className="muted small">
+          <strong>{thread.messages.length} mensaje
+          {thread.messages.length === 1 ? "" : "s"}</strong>
+          {" · Participantes: "}
+          {thread.participants.join(", ")}
+        </p>
+        {thread.contact_id ? (
+          <p className="muted small">
+            Contacto:{" "}
+            <Link href={`/contacts/${thread.contact_id}`}>
+              ver ficha
+            </Link>
+          </p>
+        ) : null}
+      </div>
       <ul className="email-thread-messages">
         {thread.messages.map((m) => (
           <li
             key={m.id}
             className={`email-message email-message-${m.direction}`}
           >
-            <header>
-              <strong>{m.from_name || m.from_email}</strong>
-              <span className="muted small">
-                {" "}
-                · para {m.to_emails.join(", ")}
+            <header className="email-message-header">
+              <span className="email-message-avatar" aria-hidden>
+                {m.direction === "outbound" ? (
+                  <ArrowUpRight size={11} />
+                ) : (
+                  <ArrowDownLeft size={11} />
+                )}
               </span>
-              <span className="muted small"> · {formatDateTime(m.sent_at)}</span>
+              <div className="email-message-meta">
+                <p className="email-message-from">
+                  <strong>{m.from_name || m.from_email}</strong>
+                  {m.from_name ? (
+                    <span className="muted small"> &lt;{m.from_email}&gt;</span>
+                  ) : null}
+                  {m.direction === "outbound" ? (
+                    <span className="badge ok"> Enviado desde el CRM</span>
+                  ) : (
+                    <span className="badge muted"> Respuesta</span>
+                  )}
+                </p>
+                <p className="muted small">
+                  Para: {m.to_emails.join(", ")}
+                  {m.cc_emails && m.cc_emails.length > 0
+                    ? ` · Cc: ${m.cc_emails.join(", ")}`
+                    : ""}
+                  {" · "}
+                  {formatDateTime(m.sent_at)}
+                </p>
+              </div>
             </header>
             {m.body_html ? (
               <iframe
                 title={`Mensaje ${m.id}`}
                 className="email-html-preview"
+                sandbox=""
                 srcDoc={m.body_html}
               />
             ) : (
@@ -118,11 +169,7 @@ export default function EmailThreadPage() {
       {replyTo ? (
         <EmailComposerModal
           contactId={thread.contact_id}
-          contactEmail={
-            replyTo.from_email === thread.participants[0]
-              ? replyTo.from_email
-              : null
-          }
+          contactEmail={replyTarget}
           replyTo={{
             messageId: replyTo.id,
             subject: thread.subject,

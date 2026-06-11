@@ -1,45 +1,42 @@
 "use client";
 
-import { Mail } from "lucide-react";
+import { ArrowDownLeft, ArrowUpRight, Mail } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import {
-  getDashboardRecentEmailActivity,
-  type RecentEmailEvent,
-} from "../../lib/dashboardApi";
+  getEmailActivity,
+  type EmailActivityItem,
+} from "../../lib/emailsApi";
 import { extractErrorMessage } from "../../lib/errors";
 
-const EVENT_LABEL: Record<string, string> = {
-  email_sent: "Enviado",
-  EMAIL_SENT: "Enviado",
-  email_opened: "Abierto",
-  EMAIL_OPENED: "Abierto",
-  email_clicked: "Click",
-  EMAIL_CLICKED: "Click",
-  email_bounced: "Rebotado",
-  email_unsubscribed: "Baja",
-};
-
-function formatTime(value: string): string {
-  const d = new Date(value);
-  return d.toLocaleString("es-ES", {
+function relativeTime(value: string): string {
+  const target = new Date(value).getTime();
+  const now = Date.now();
+  const diffMs = now - target;
+  if (diffMs < 0) return new Date(value).toLocaleString("es-ES");
+  const minutes = Math.floor(diffMs / 60_000);
+  if (minutes < 1) return "hace segundos";
+  if (minutes < 60) return `hace ${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `hace ${hours}h`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `hace ${days}d`;
+  return new Date(value).toLocaleDateString("es-ES", {
     day: "2-digit",
     month: "short",
-    hour: "2-digit",
-    minute: "2-digit",
   });
 }
 
 export function EmailActivityWidget() {
   const [scope, setScope] = useState<"mine" | "all">("all");
-  const [events, setEvents] = useState<RecentEmailEvent[]>([]);
+  const [items, setItems] = useState<EmailActivityItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     setLoading(true);
-    getDashboardRecentEmailActivity(scope)
-      .then(setEvents)
+    getEmailActivity(scope, 5)
+      .then(setItems)
       .catch((err) =>
         setError(extractErrorMessage(err, "No se pudieron cargar los eventos.")),
       )
@@ -73,28 +70,38 @@ export function EmailActivityWidget() {
         <p className="muted small">Cargando…</p>
       ) : error ? (
         <p className="form-error">{error}</p>
-      ) : events.length === 0 ? (
+      ) : items.length === 0 ? (
         <p className="muted small">Sin actividad reciente.</p>
       ) : (
         <ul className="widget-list">
-          {events.map((evt) => (
-            <li key={evt.id} className="widget-row">
-              <div className="widget-row-main">
-                <p className="widget-row-title">
-                  <span className={`email-event-tag email-event-${evt.event_type.toLowerCase()}`}>
-                    {EVENT_LABEL[evt.event_type] ?? evt.event_type}
-                  </span>{" "}
-                  <Link href={`/contacts/${evt.contact_id}`}>
-                    {evt.contact_name}
-                  </Link>
-                </p>
-                <p className="widget-row-meta muted small">
-                  {evt.subject ? `${evt.subject} · ` : null}
-                  {formatTime(evt.occurred_at)}
-                </p>
-              </div>
-            </li>
-          ))}
+          {items.map((evt) => {
+            const isOutbound = evt.direction === "outbound";
+            const counterparty =
+              evt.contact_name ??
+              (isOutbound ? evt.from_email : evt.from_email);
+            const subjectLine = evt.subject || "(sin asunto)";
+            return (
+              <li key={evt.message_id} className="widget-row">
+                <div className="widget-row-main">
+                  <p className="widget-row-title">
+                    {isOutbound ? (
+                      <ArrowUpRight size={11} aria-hidden />
+                    ) : (
+                      <ArrowDownLeft size={11} aria-hidden />
+                    )}{" "}
+                    <Link href={`/emails/${evt.thread_id}`}>
+                      {isOutbound ? `Tú → ${counterparty}` : `${counterparty} → Tú`}
+                    </Link>
+                    {": "}
+                    <span className="muted">{subjectLine}</span>
+                  </p>
+                  <p className="widget-row-meta muted small">
+                    {relativeTime(evt.occurred_at)}
+                  </p>
+                </div>
+              </li>
+            );
+          })}
         </ul>
       )}
     </article>
