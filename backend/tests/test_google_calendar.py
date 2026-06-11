@@ -675,3 +675,100 @@ def test_patch_task_to_disable_sync_deletes_event(
     body = response.json()
     assert body["google_event_id"] is None
     assert body["google_calendar_id"] is None
+
+
+def test_complete_task_renames_event_with_checkmark(
+    client: TestClient,
+    session_factory: sessionmaker,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Bug 4 — when an operator marks a synced task done, the Google
+    Calendar event title is prefixed with `✓ ` so completion is
+    visible at a glance from the calendar."""
+    with session_factory() as session:
+        uid = _user_id(session, UserRole.USER)
+    _seed_integration(session_factory, user_id=uid)
+
+    titles: list[str] = []
+
+    class _FakeClient:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            pass
+
+        def create_event(self, calendar_id: str, body: dict[str, Any]) -> dict[str, Any]:
+            titles.append(("create", body["summary"]))
+            return {"id": "event-done"}
+
+        def update_event(
+            self, calendar_id: str, event_id: str, body: dict[str, Any]
+        ) -> dict[str, Any]:
+            titles.append(("update", body["summary"]))
+            return {"id": event_id}
+
+    monkeypatch.setattr(
+        "app.integrations.google_calendar.service.GoogleCalendarClient",
+        _FakeClient,
+    )
+    task = client.post(
+        "/api/tasks",
+        json={"title": "Llamar cliente", "sync_with_google_calendar": True},
+        headers=auth_headers(client, "user"),
+    ).json()
+    response = client.post(
+        f"/api/tasks/{task['id']}/complete",
+        headers=auth_headers(client, "user"),
+    )
+    assert response.status_code == 200, response.text
+    update_titles = [t for op, t in titles if op == "update"]
+    assert update_titles == ["✓ Llamar cliente"]
+
+
+def test_reopen_task_reverts_event_title(
+    client: TestClient,
+    session_factory: sessionmaker,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Moving status from done back to pending strips the ✓ prefix
+    from the Google Calendar event so the title is again clean."""
+    with session_factory() as session:
+        uid = _user_id(session, UserRole.USER)
+    _seed_integration(session_factory, user_id=uid)
+
+    titles: list[str] = []
+
+    class _FakeClient:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            pass
+
+        def create_event(self, calendar_id: str, body: dict[str, Any]) -> dict[str, Any]:
+            return {"id": "event-reopen"}
+
+        def update_event(
+            self, calendar_id: str, event_id: str, body: dict[str, Any]
+        ) -> dict[str, Any]:
+            titles.append(body["summary"])
+            return {"id": event_id}
+
+    monkeypatch.setattr(
+        "app.integrations.google_calendar.service.GoogleCalendarClient",
+        _FakeClient,
+    )
+    task = client.post(
+        "/api/tasks",
+        json={"title": "Seguimiento", "sync_with_google_calendar": True},
+        headers=auth_headers(client, "user"),
+    ).json()
+    client.post(
+        f"/api/tasks/{task['id']}/complete",
+        headers=auth_headers(client, "user"),
+    )
+    # First update lands as "✓ Seguimiento".
+    assert titles[-1] == "✓ Seguimiento"
+    # Reopen via PATCH back to pending.
+    response = client.patch(
+        f"/api/tasks/{task['id']}",
+        json={"status": "pending"},
+        headers=auth_headers(client, "user"),
+    )
+    assert response.status_code == 200, response.text
+    assert titles[-1] == "Seguimiento"
