@@ -56,6 +56,7 @@ const NAV_ITEMS: ReadonlyArray<Item> = [
     children: [
       { href: "/marketing/campaigns", label: "Campañas" },
       { href: "/marketing/templates", label: "Plantillas" },
+      { href: "/marketing/listas", label: "Listas Brevo" },
     ],
   },
   {
