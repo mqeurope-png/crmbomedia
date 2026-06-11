@@ -919,3 +919,279 @@ def test_process_history_advances_watch_even_when_every_message_fails(
         )
         assert watch is not None
         assert watch.history_id == 42_000
+
+
+# ---------------------------------------------------------------------------
+# Email v2.1 — list search, thread detail, activity feed
+# ---------------------------------------------------------------------------
+
+
+def test_list_threads_returns_enriched_last_message_fields(
+    client: TestClient,
+    session_factory: sessionmaker,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """v2.1 list view needs last_message_from + snippet + direction
+    on each thread row so the table renders without an N+1."""
+    with session_factory() as session:
+        uid = _user_id(session, UserRole.USER)
+    _seed_gmail_integration(session_factory, user_id=uid)
+
+    class _FakeClient:
+        def __init__(self, *_a, **_k):
+            pass
+
+        def send_message(self, **_kwargs):
+            return {"id": "msg-list-1", "threadId": "thr-list-1"}
+
+    monkeypatch.setattr(
+        "app.integrations.gmail.service.GmailClient", _FakeClient
+    )
+    client.post(
+        "/api/emails/send",
+        json={
+            "from_alias": "info@bomedia.net",
+            "to": ["client@example.com"],
+            "subject": "Hola lista",
+            "body_text": "Cuerpo para snippet de lista",
+        },
+        headers=auth_headers(client, "user"),
+    )
+    response = client.get(
+        "/api/emails/threads", headers=auth_headers(client, "user")
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 1
+    item = body["items"][0]
+    assert item["last_message_direction"] == "outbound"
+    assert item["last_message_from"] == "info@bomedia.net"
+    assert "Cuerpo para snippet" in (item["last_message_snippet"] or "")
+
+
+def test_list_threads_filters_by_search_term(
+    client: TestClient,
+    session_factory: sessionmaker,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`?q=` ilike-matches subject + sender + snippet across the
+    thread's messages."""
+    with session_factory() as session:
+        uid = _user_id(session, UserRole.USER)
+    _seed_gmail_integration(session_factory, user_id=uid)
+
+    fake_ids = iter(["m1", "m2"])
+    fake_threads = iter(["t1", "t2"])
+
+    class _FakeClient:
+        def __init__(self, *_a, **_k):
+            pass
+
+        def send_message(self, **_kwargs):
+            return {
+                "id": next(fake_ids),
+                "threadId": next(fake_threads),
+            }
+
+    monkeypatch.setattr(
+        "app.integrations.gmail.service.GmailClient", _FakeClient
+    )
+    client.post(
+        "/api/emails/send",
+        json={
+            "from_alias": "info@bomedia.net",
+            "to": ["c1@example.com"],
+            "subject": "Probando filtro foo",
+            "body_text": "body",
+        },
+        headers=auth_headers(client, "user"),
+    )
+    client.post(
+        "/api/emails/send",
+        json={
+            "from_alias": "info@bomedia.net",
+            "to": ["c2@example.com"],
+            "subject": "Hola mundo",
+            "body_text": "body 2",
+        },
+        headers=auth_headers(client, "user"),
+    )
+    response = client.get(
+        "/api/emails/threads?q=foo", headers=auth_headers(client, "user")
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 1
+    assert body["items"][0]["subject"] == "Probando filtro foo"
+
+
+def test_activity_endpoint_returns_recent_items(
+    client: TestClient,
+    session_factory: sessionmaker,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with session_factory() as session:
+        uid = _user_id(session, UserRole.USER)
+    _seed_gmail_integration(session_factory, user_id=uid)
+
+    class _FakeClient:
+        def __init__(self, *_a, **_k):
+            pass
+
+        def send_message(self, **_kwargs):
+            return {"id": "msg-act-1", "threadId": "thr-act-1"}
+
+    monkeypatch.setattr(
+        "app.integrations.gmail.service.GmailClient", _FakeClient
+    )
+    client.post(
+        "/api/emails/send",
+        json={
+            "from_alias": "info@bomedia.net",
+            "to": ["client@example.com"],
+            "subject": "Para activity",
+            "body_text": "body",
+        },
+        headers=auth_headers(client, "user"),
+    )
+    response = client.get(
+        "/api/emails/activity?scope=mine&limit=5",
+        headers=auth_headers(client, "user"),
+    )
+    assert response.status_code == 200, response.text
+    items = response.json()
+    assert len(items) == 1
+    item = items[0]
+    assert item["type"] == "email.sent_from_crm"
+    assert item["direction"] == "outbound"
+    assert item["subject"] == "Para activity"
+
+
+def test_activity_scope_all_only_for_admin_manager(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    """A `user` role asking for scope=all gets quietly downgraded
+    to `mine` — defence in depth on top of the route gate."""
+    with session_factory() as session:
+        admin_id = _user_id(session, UserRole.ADMIN)
+        # Seed a thread owned by admin only.
+        session.add(
+            EmailThread(
+                initiated_by_user_id=admin_id,
+                gmail_thread_id="thr-admin",
+                gmail_account_user_id=admin_id,
+                first_message_at=datetime.now(UTC),
+                last_message_at=datetime.now(UTC),
+                message_count=1,
+            )
+        )
+        session.commit()
+    response = client.get(
+        "/api/emails/activity?scope=all&limit=5",
+        headers=auth_headers(client, "user"),
+    )
+    assert response.status_code == 200
+    # The user role can't see the admin's thread even though they
+    # asked for scope=all.
+    assert response.json() == []
+
+
+def test_inbound_reply_emits_activity_event_on_contact(
+    client: TestClient,
+    session_factory: sessionmaker,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The contact timeline should show an `email.reply_received`
+    event whenever the webhook imports an inbound reply tied to a
+    known contact."""
+    from app.models.crm import ActivityEvent, Contact, GmailPubsubWatch  # noqa: PLC0415
+
+    with session_factory() as session:
+        uid = _user_id(session, UserRole.USER)
+        contact = Contact(first_name="Cliente", email="client@example.com")
+        session.add(contact)
+        session.commit()
+        cid = contact.id
+    _seed_gmail_integration(session_factory, user_id=uid)
+
+    class _FakeClient:
+        def __init__(self, *_a, **_k):
+            pass
+
+        def send_message(self, **_kwargs):
+            return {"id": "out-act", "threadId": "thr-act"}
+
+        def list_history(self, _start):
+            return {
+                "history": [
+                    {
+                        "messagesAdded": [
+                            {"message": {"id": "in-act", "threadId": "thr-act"}}
+                        ]
+                    }
+                ]
+            }
+
+        def get_message(self, _mid):
+            return {
+                "id": "in-act",
+                "snippet": "Reply preview",
+                "payload": {
+                    "headers": [
+                        {"name": "From", "value": "client@example.com"},
+                        {"name": "To", "value": "info@bomedia.net"},
+                        {"name": "Subject", "value": "Re: Hola"},
+                        {
+                            "name": "Date",
+                            "value": "Fri, 31 Dec 2099 23:59:00 +0000",
+                        },
+                    ],
+                    "mimeType": "text/plain",
+                    "body": {
+                        "data": base64.urlsafe_b64encode(b"Texto").decode()
+                    },
+                },
+            }
+
+    monkeypatch.setattr(
+        "app.integrations.gmail.service.GmailClient", _FakeClient
+    )
+    client.post(
+        "/api/emails/send",
+        json={
+            "from_alias": "info@bomedia.net",
+            "to": ["client@example.com"],
+            "subject": "Hola",
+            "body_text": "Body",
+            "contact_id": cid,
+        },
+        headers=auth_headers(client, "user"),
+    )
+    with session_factory() as session:
+        session.add(
+            GmailPubsubWatch(
+                user_id=uid,
+                history_id=1,
+                watch_expires_at=datetime.now(UTC) + timedelta(days=6),
+                last_renewed_at=datetime.now(UTC),
+                topic_name="projects/x/topics/y",
+            )
+        )
+        session.commit()
+    from app.integrations.gmail import service as gmail_service  # noqa: PLC0415
+
+    with session_factory() as session:
+        gmail_service.process_history(
+            session, user_id=uid, new_history_id=999
+        )
+        session.commit()
+    with session_factory() as session:
+        events = list(
+            session.scalars(
+                select(ActivityEvent).where(
+                    ActivityEvent.event_type == "email.reply_received"
+                )
+            )
+        )
+    assert len(events) == 1
+    assert events[0].contact_id == cid
