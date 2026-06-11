@@ -465,10 +465,11 @@ def email_activity(
     stmt = select(EmailMessage, EmailThread, Contact).join(
         EmailThread, EmailMessage.thread_id == EmailThread.id
     ).outerjoin(Contact, Contact.id == EmailMessage.contact_id)
-    if scope == "mine" or current_user.role not in (
-        UserRole.ADMIN,
-        UserRole.MANAGER,
-    ):
+    # Spec: only the `admin` role can see other users' activity when
+    # `scope=all`. Every other role (including manager) is forced to
+    # the `mine` filter regardless of the scope they passed —
+    # defence in depth for managers who landed on the dashboard.
+    if scope == "mine" or current_user.role != UserRole.ADMIN:
         from sqlalchemy import or_ as _or  # noqa: PLC0415
 
         stmt = stmt.where(

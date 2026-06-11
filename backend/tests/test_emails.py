@@ -1067,33 +1067,55 @@ def test_activity_endpoint_returns_recent_items(
     assert item["subject"] == "Para activity"
 
 
-def test_activity_scope_all_only_for_admin_manager(
+def test_activity_scope_all_only_for_admin(
     client: TestClient, session_factory: sessionmaker
 ) -> None:
-    """A `user` role asking for scope=all gets quietly downgraded
-    to `mine` — defence in depth on top of the route gate."""
+    """v2.1.1 fix — only the `admin` role gets the unfiltered
+    `scope=all` view. Manager + user + viewer are forced into the
+    `mine` filter regardless of the scope they sent."""
+    from app.models.crm import EmailDirection  # noqa: PLC0415
+
     with session_factory() as session:
         admin_id = _user_id(session, UserRole.ADMIN)
-        # Seed a thread owned by admin only.
+        thread = EmailThread(
+            initiated_by_user_id=admin_id,
+            gmail_thread_id="thr-admin",
+            gmail_account_user_id=admin_id,
+            first_message_at=datetime.now(UTC),
+            last_message_at=datetime.now(UTC),
+            message_count=1,
+        )
+        session.add(thread)
+        session.flush()
         session.add(
-            EmailThread(
-                initiated_by_user_id=admin_id,
-                gmail_thread_id="thr-admin",
+            EmailMessage(
+                thread_id=thread.id,
+                gmail_message_id="msg-admin",
                 gmail_account_user_id=admin_id,
-                first_message_at=datetime.now(UTC),
-                last_message_at=datetime.now(UTC),
-                message_count=1,
+                direction=EmailDirection.OUTBOUND,
+                from_email="admin@example.com",
+                to_emails_json='["x@example.com"]',
+                sent_at=datetime.now(UTC),
             )
         )
         session.commit()
-    response = client.get(
+    # Both user and manager get filtered to "mine".
+    user_response = client.get(
         "/api/emails/activity?scope=all&limit=5",
         headers=auth_headers(client, "user"),
     )
-    assert response.status_code == 200
-    # The user role can't see the admin's thread even though they
-    # asked for scope=all.
-    assert response.json() == []
+    assert user_response.json() == []
+    manager_response = client.get(
+        "/api/emails/activity?scope=all&limit=5",
+        headers=auth_headers(client, "manager"),
+    )
+    assert manager_response.json() == []
+    # Admin sees the seeded thread.
+    admin_response = client.get(
+        "/api/emails/activity?scope=all&limit=5",
+        headers=auth_headers(client, "admin"),
+    )
+    assert len(admin_response.json()) == 1
 
 
 def test_inbound_reply_emits_activity_event_on_contact(
