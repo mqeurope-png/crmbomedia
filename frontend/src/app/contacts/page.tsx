@@ -12,6 +12,7 @@ import { ContactViewsSidebar } from "../components/ContactViewsSidebar";
 import { ErrorState } from "../components/ErrorState";
 import { PageHeader } from "../components/PageHeader";
 import { TagChips } from "../components/TagChips";
+import { OriginChipsSummary } from "../components/OriginChips";
 import {
   createSavedView,
   deleteSavedView,
@@ -84,7 +85,11 @@ function renderCell(key: ContactColumnKey, contact: Contact): React.ReactNode {
         "—"
       );
     case "origin":
-      return contact.origin ?? "—";
+      return contact.external_references_summary?.length ? (
+        <OriginChipsSummary summary={contact.external_references_summary} />
+      ) : (
+        contact.origin ?? "—"
+      );
     case "commercial_status":
       return contact.commercial_status;
     case "marketing_consent":

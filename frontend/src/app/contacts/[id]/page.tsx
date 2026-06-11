@@ -1,5 +1,6 @@
 "use client";
 
+import { ExternalLink } from "lucide-react";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ErrorState } from "../../components/ErrorState";
@@ -21,6 +22,7 @@ import {
 import { extractErrorMessage } from "../../lib/errors";
 import { TagChips } from "../../components/TagChips";
 import { TagPicker } from "../../components/TagPicker";
+import { OriginChips } from "../../components/OriginChips";
 import { ContactEditForm } from "./ContactEditForm";
 
 function formatDateTime(value: string | null | undefined): string {
@@ -73,6 +75,33 @@ function Row({ label, value }: RowProps) {
     <>
       <dt>{label}</dt>
       <dd>{value}</dd>
+    </>
+  );
+}
+
+/** "Creado en origen": prefer the real source-system date, falling
+ * back to the CRM row's `created_at` with a "del CRM" badge so the
+ * operator knows it's not the contact's real age. The CRM date rides
+ * along as a tooltip when the external date is shown. */
+function CreatedRow({ contact }: { contact: Contact }) {
+  if (contact.created_at_external) {
+    return (
+      <>
+        <dt>Creado en origen</dt>
+        <dd title={`En el CRM: ${formatDateTime(contact.created_at)}`}>
+          {formatDateTime(contact.created_at_external)}
+        </dd>
+      </>
+    );
+  }
+  if (!contact.created_at) return null;
+  return (
+    <>
+      <dt>Creado</dt>
+      <dd>
+        {formatDateTime(contact.created_at)}{" "}
+        <span className="badge muted">del CRM</span>
+      </dd>
     </>
   );
 }
@@ -155,8 +184,19 @@ function ExternalReferenceCard({ reference }: { reference: ExternalReference }) 
   return (
     <li className="external-ref">
       <div className="external-ref-header">
-        <strong>{reference.system}</strong>
-        <span className="muted">{reference.account_id}</span>
+        <strong>{reference.system_label ?? reference.system}</strong>
+        <span className="muted">{reference.account_label ?? reference.account_id}</span>
+        {reference.external_url ? (
+          <a
+            href={reference.external_url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="external-ref-link"
+            title="Abrir en el sistema de origen"
+          >
+            <ExternalLink size={13} aria-hidden /> Abrir
+          </a>
+        ) : null}
       </div>
       <dl className="definition-list">
         <Row label="ID externo" value={reference.external_id} />
@@ -279,7 +319,11 @@ export default function ContactDetailPage() {
           <h2>Datos CRM</h2>
           <dl className="definition-list">
             <Row label="Teléfono" value={contact.phone} />
-            <Row label="Origen" value={contact.origin} />
+            <CreatedRow contact={contact} />
+            <dt>Origen</dt>
+            <dd>
+              <OriginChips references={externalRefs} />
+            </dd>
             <Row label="Estado comercial" value={contact.commercial_status} />
             <Row label="Lead score" value={contact.lead_score} />
             <Row label="Dirección" value={address} />
