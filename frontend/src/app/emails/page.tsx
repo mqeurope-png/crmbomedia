@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowDownLeft, ArrowUpRight, Inbox, Search } from "lucide-react";
+import { Inbox, Search } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { PageHeader } from "../components/PageHeader";
@@ -10,26 +10,29 @@ import {
 } from "../lib/emailsApi";
 import { extractErrorMessage } from "../lib/errors";
 
-function formatDateTime(value: string): string {
+/** Gmail-style date column: time-only when the message landed
+ *  today, day+month when in the same calendar year, full date
+ *  otherwise. */
+function formatRelative(value: string): string {
   const d = new Date(value);
-  return d.toLocaleString("es-ES", {
+  const now = new Date();
+  if (d.toDateString() === now.toDateString()) {
+    return d.toLocaleTimeString("es-ES", {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  }
+  if (d.getFullYear() === now.getFullYear()) {
+    return d.toLocaleDateString("es-ES", {
+      day: "2-digit",
+      month: "short",
+    });
+  }
+  return d.toLocaleDateString("es-ES", {
     day: "2-digit",
     month: "short",
-    hour: "2-digit",
-    minute: "2-digit",
+    year: "numeric",
   });
-}
-
-function formatSender(thread: EmailThread): React.ReactNode {
-  if (!thread.last_message_from) return <span className="muted">—</span>;
-  if (thread.last_message_direction === "outbound") {
-    return (
-      <span title={thread.last_message_from}>
-        Tú · {thread.last_message_from}
-      </span>
-    );
-  }
-  return <span title={thread.last_message_from}>{thread.last_message_from}</span>;
 }
 
 export default function EmailsPage() {
@@ -75,7 +78,7 @@ export default function EmailsPage() {
             value={searchInput}
             onChange={(e) => setSearchInput(e.target.value)}
             placeholder="Buscar en emails…"
-            aria-label="Buscar hilos por asunto, remitente o cuerpo"
+            aria-label="Buscar hilos por contacto, asunto o cuerpo"
           />
         </div>
       </div>
@@ -95,62 +98,60 @@ export default function EmailsPage() {
           </p>
         )
       ) : (
-        <table className="data-table emails-list-table">
+        <table className="data-table emails-gmail-table">
           <thead>
             <tr>
-              <th>Asunto</th>
-              <th>Remitente último</th>
-              <th>Vista previa</th>
+              <th>Contacto</th>
+              <th>Email</th>
+              <th>Asunto · vista previa</th>
               <th>Último mensaje</th>
-              <th>#</th>
             </tr>
           </thead>
           <tbody>
             {threads.map((t) => {
-              const visibleParticipants = t.participants.slice(0, 3);
-              const overflow = t.participants.length - visibleParticipants.length;
+              const contactName = t.contact_name || "(sin nombre)";
+              const count = t.message_count;
+              const countSuffix = count > 1 ? ` (${count})` : "";
+              const subject = t.subject || "(sin asunto)";
               const snippet = t.last_message_snippet ?? "";
               return (
                 <tr
                   key={t.id}
-                  className={t.has_unread_replies ? "is-selected" : undefined}
+                  className={t.has_unread_replies ? "email-row-unread" : undefined}
                 >
-                  <td>
+                  <td className="email-cell-contact">
                     <Link href={`/emails/${t.id}`}>
-                      <strong>{t.subject || "(sin asunto)"}</strong>
+                      {contactName}
+                      {countSuffix ? (
+                        <span className="muted small">{countSuffix}</span>
+                      ) : null}
                     </Link>
-                    {t.has_unread_replies ? (
-                      <span className="badge ok"> Nuevo</span>
-                    ) : null}
-                    {visibleParticipants.length > 0 ? (
-                      <p className="muted small emails-participants">
-                        {visibleParticipants.join(", ")}
-                        {overflow > 0 ? ` +${overflow} más` : ""}
-                      </p>
-                    ) : null}
                   </td>
-                  <td className="muted small">
-                    {t.last_message_direction === "outbound" ? (
-                      <ArrowUpRight size={11} aria-hidden />
-                    ) : t.last_message_direction === "inbound" ? (
-                      <ArrowDownLeft size={11} aria-hidden />
-                    ) : null}{" "}
-                    {formatSender(t)}
+                  <td className="email-cell-email muted small">
+                    {t.last_message_from ?? "—"}
                   </td>
-                  <td
-                    className="muted small emails-snippet"
-                    title={snippet.length > 80 ? snippet : undefined}
-                  >
-                    {snippet ? (
-                      snippet.length > 80 ? `${snippet.slice(0, 80)}…` : snippet
-                    ) : (
-                      "—"
-                    )}
+                  <td className="email-cell-subject">
+                    <Link href={`/emails/${t.id}`}>
+                      <span
+                        className={
+                          t.has_unread_replies
+                            ? "email-subject email-subject-unread"
+                            : "email-subject"
+                        }
+                      >
+                        {subject}
+                      </span>
+                      {snippet ? (
+                        <>
+                          <span className="email-subject-sep"> · </span>
+                          <span className="email-snippet">{snippet}</span>
+                        </>
+                      ) : null}
+                    </Link>
                   </td>
-                  <td className="muted small">
-                    {formatDateTime(t.last_message_at)}
+                  <td className="muted small email-cell-date">
+                    {formatRelative(t.last_message_at)}
                   </td>
-                  <td className="muted small">{t.message_count}</td>
                 </tr>
               );
             })}

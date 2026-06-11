@@ -87,6 +87,12 @@ class EmailThreadRead(BaseModel):
     last_message_direction: str | None = None
     last_message_from: str | None = None
     last_message_snippet: str | None = None
+    # Email v2.1.1: Gmail-style list shows a single "Contact" column
+    # which prefers the linked Contact row's full name; falls back to
+    # the From-header display name; falls back to the capitalised
+    # local part of the email. Resolved server-side so the UI
+    # doesn't have to.
+    contact_name: str | None = None
 
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
