@@ -925,6 +925,44 @@ class GmailPubsubWatch(TimestampMixin, Base):
     topic_name: Mapped[str] = mapped_column(String(255), nullable=False)
 
 
+class UserEmailAliasPref(TimestampMixin, Base):
+    """Per-user Gmail "Send mail as" preference.
+
+    Operators routinely have 50+ aliases on their personal Gmail
+    (Bomedia, Norma, internal brands, …). The CRM stores only the
+    ones each user actively wants in the composer dropdown.
+
+    Unchecking = deleting the row. "At most one default per user"
+    is enforced inside the upsert endpoint — SQLite doesn't have
+    portable partial unique indices.
+    """
+
+    __tablename__ = "user_email_alias_prefs"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "alias_email",
+            name="uq_user_email_alias_prefs_user_alias",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid4())
+    )
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    alias_email: Mapped[str] = mapped_column(String(255), nullable=False)
+    is_allowed: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False
+    )
+    is_default: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )
+
+
 class GdprRequestType(StrEnum):
     ACCESS = "access"
     RECTIFICATION = "rectification"

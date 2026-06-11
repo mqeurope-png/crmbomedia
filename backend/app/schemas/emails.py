@@ -106,7 +106,50 @@ class EmailThreadList(BaseModel):
 
 
 class EmailAlias(BaseModel):
+    """Gmail alias enriched with the current user's preferences.
+
+    `is_default` here is the per-user CRM preference (alias to send
+    from by default), not Gmail's own default flag — the latter
+    lives in `is_primary`. Pre-Fase 2 callers that don't know about
+    prefs see `user_pref_*` mirror the legacy flags so they keep
+    working unchanged.
+    """
+
     send_as_email: str
     display_name: str
     is_primary: bool
     is_default: bool
+    verification_status: str | None = None
+    user_pref_allowed: bool = False
+    user_pref_default: bool = False
+
+
+class MyAlias(BaseModel):
+    """Trimmed alias shape used by the composer dropdown — only the
+    fields the modal actually renders."""
+
+    send_as_email: str
+    display_name: str
+    is_default: bool
+
+
+class AliasPreferenceItem(BaseModel):
+    alias_email: str = Field(min_length=1, max_length=255)
+    is_allowed: bool = True
+    is_default: bool = False
+
+
+class AliasPreferencesPayload(BaseModel):
+    preferences: list[AliasPreferenceItem]
+
+    @field_validator("preferences")
+    @classmethod
+    def _at_most_one_default(
+        cls, items: list[AliasPreferenceItem]
+    ) -> list[AliasPreferenceItem]:
+        defaults = [it for it in items if it.is_default and it.is_allowed]
+        if len(defaults) > 1:
+            raise ValueError(
+                "Solo un alias puede marcarse como predeterminado."
+            )
+        return items

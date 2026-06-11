@@ -5,7 +5,35 @@ export type EmailAlias = {
   display_name: string;
   is_primary: boolean;
   is_default: boolean;
+  verification_status: string | null;
+  user_pref_allowed: boolean;
+  user_pref_default: boolean;
 };
+
+export type MyAlias = {
+  send_as_email: string;
+  display_name: string;
+  is_default: boolean;
+};
+
+export type AliasPreferenceItem = {
+  alias_email: string;
+  is_allowed: boolean;
+  is_default: boolean;
+};
+
+export async function getMyEmailAliases(): Promise<MyAlias[]> {
+  return apiFetch<MyAlias[]>("/api/emails/my-aliases");
+}
+
+export async function putEmailAliasPreferences(
+  preferences: AliasPreferenceItem[],
+): Promise<EmailAlias[]> {
+  return apiFetch<EmailAlias[]>("/api/emails/aliases/preferences", {
+    method: "PUT",
+    body: JSON.stringify({ preferences }),
+  });
+}
 
 export type EmailMessage = {
   id: string;

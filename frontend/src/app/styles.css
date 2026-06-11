@@ -4188,3 +4188,51 @@ a.origin-chip:hover { filter: brightness(0.97); }
   cursor: pointer;
   font: inherit;
 }
+
+/* Gmail alias preferences editor in /account */
+.alias-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0;
+  flex-wrap: wrap;
+}
+.alias-toolbar .search-input.small {
+  flex: 1;
+  font-size: 12px;
+  padding: 4px 8px;
+  min-width: 160px;
+}
+.pill-toggle-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: #4b5563;
+}
+.alias-prefs-list {
+  list-style: none;
+  padding: 0;
+  margin: 6px 0;
+  max-height: 320px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.alias-pref-row {
+  display: grid;
+  grid-template-columns: 24px 24px 1fr;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-bottom: 1px solid #f1f3f9;
+  font-size: 13px;
+}
+.alias-pref-row:last-child { border-bottom: none; }
+.alias-pref-meta {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.form-success.small { font-size: 12px; padding: 6px 8px; }
