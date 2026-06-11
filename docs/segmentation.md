@@ -67,6 +67,10 @@ mapea a HTTP 400. La whitelist también limita los tipos de
 | external_data_refreshed_at | date | idem |
 | pipeline_id | uuid-multi | in, not_in |
 | pipeline_stage_id | uuid-multi | in, not_in |
+| created_at_external | date | before, after, between, in_last_n_days, not_in_last_n_days |
+| updated_at_external | date | idem |
+| in_segment | uuid-multi (segment ids) | in, not_in (resuelto recursivamente) |
+| in_brevo_list | uuid-multi (Brevo list ids) | in, not_in |
 
 ## API
 
@@ -103,6 +107,54 @@ Rate limit por user: 10 generaciones/hora, 30 explicaciones/hora.
 ### Audit
 
 `segment.created`, `segment.updated`, `segment.deleted`, `segment.duplicated`, `segment.evaluated` (count + duration_ms), `segment.ai_generated`, `segment.ai_explained`.
+
+### Búsqueda de contactos con `rules_json`
+
+El mismo árbol que aliments `/api/segments/preview` también filtra la
+lista de contactos vía `POST /api/contacts/search`:
+
+```json
+{
+  "rules_json": { "operator": "AND", "children": [ {"type":"rule", "field":"email", "comparator":"contains", "value":"@empresa.com"} ] },
+  "sort_by": "updated_at_external",
+  "sort_dir": "desc",
+  "limit": 25,
+  "offset": 0,
+  "q": "ana"
+}
+```
+
+- Body vacío (`{}`) devuelve todos los contactos activos — mismo
+  comportamiento que `GET /api/contacts` sin filtros.
+- `q` es un free-text que se suma al árbol con AND (matching contra
+  first_name/last_name/email/phone). Útil para narrow-down rápido
+  encima de una vista guardada.
+- El endpoint pasa por el engine, así que un campo o comparador
+  fuera de la whitelist → **400** con el mensaje del primer fallo.
+- Campos nuevos (Mini-PR B): `created_at_external`,
+  `updated_at_external`, `in_brevo_list` (uuid-multi de list_ids
+  Brevo, evaluado vía LIKE anclado en `external_references.metadata.list_ids`),
+  `in_segment` (uuid-multi, resuelve cada segmento referenciado por
+  un `segment_resolver` y OR'es los sub-árboles; detección de ciclos).
+
+### Acciones de vista (`/api/contact-views/{id}/...`)
+
+Vistas guardables del Sprint P.1 ahora son la fuente para dos
+acciones de "promoción":
+
+- `POST /save-as-segment` — materializa el `filters.rules_json` de la
+  vista como segmento regular (visible en `/segments`). Body: `{name,
+  description?, color?, is_shared?}`. Las vistas privadas de otros
+  usuarios devuelven **403**; las legacy (solo dropdowns) devuelven
+  un segmento con `rules: {}` (matches everything) en vez de
+  crashear.
+- `POST /push-to-brevo-list` — manager-only. Body: `{brevo_account_id,
+  brevo_list_id?, new_list_name?}` (exactamente uno). Crea un segmento
+  auxiliar con el árbol de la vista + un `BrevoSyncTarget` push-only +
+  encola `brevo:push_target`. Si pasa `new_list_name`, primero llama
+  `BrevoClient.create_list`. Responde con
+  `{sync_log_id, job_id, target_id, segment_id, contacts_to_push,
+  brevo_list_id}` para que la UI linke al sync log.
 
 ## Próximas extensiones
 
