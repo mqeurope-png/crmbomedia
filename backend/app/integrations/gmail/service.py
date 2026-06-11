@@ -193,6 +193,11 @@ def process_history(
         )
     }
 
+    # Late import: googleapiclient is heavy and tests sometimes
+    # patch the whole gmail client out, so importing at module top
+    # would create an import-order dependency.
+    from googleapiclient.errors import HttpError  # noqa: PLC0415
+
     imported = 0
     for entry in history.get("history", []):
         for added in entry.get("messagesAdded", []):
@@ -203,8 +208,8 @@ def process_history(
                 continue
             if mid in seen_messages:
                 continue
-            full = client.get_message(mid)
             try:
+                full = client.get_message(mid)
                 _persist_inbound(
                     session,
                     user_id=user_id,
@@ -212,6 +217,35 @@ def process_history(
                     gmail_thread_id=tid,
                 )
                 imported += 1
+            except HttpError as exc:
+                gone_status = (
+                    getattr(exc, "status_code", None)
+                    or getattr(exc.resp, "status", None)
+                )
+                if gone_status in (404, 410):
+                    # Message was deleted between Gmail's history.list
+                    # and our get_message call — common with drafts,
+                    # spam moves, Trash retention. Log and carry on;
+                    # leaving the whole batch un-advanced because of
+                    # one ghost message used to trap the watch on the
+                    # same range forever.
+                    logger.info(
+                        "gmail.process_history.message_gone "
+                        "user_id=%s msg=%s status=%s",
+                        user_id,
+                        mid,
+                        gone_status,
+                    )
+                    continue
+                logger.warning(
+                    "gmail.process_history.fetch_failed "
+                    "user_id=%s msg=%s status=%s",
+                    user_id,
+                    mid,
+                    gone_status,
+                    exc_info=True,
+                )
+                continue
             except Exception:  # noqa: BLE001
                 logger.warning(
                     "gmail.process_history.persist_failed user_id=%s msg=%s",
@@ -219,7 +253,11 @@ def process_history(
                     mid,
                     exc_info=True,
                 )
+                continue
 
+    # Always advance the watch — even when every message in the
+    # range failed individually. Otherwise a single ghost message
+    # would trap us reprocessing the same history forever.
     watch.history_id = new_history_id
     session.flush()
     return imported
