@@ -1,0 +1,96 @@
+import { apiFetch } from "./api";
+
+export type EmailAlias = {
+  send_as_email: string;
+  display_name: string;
+  is_primary: boolean;
+  is_default: boolean;
+};
+
+export type EmailMessage = {
+  id: string;
+  thread_id: string;
+  gmail_message_id: string;
+  direction: "outbound" | "inbound";
+  from_email: string;
+  from_name: string | null;
+  to_emails: string[];
+  cc_emails: string[] | null;
+  subject: string | null;
+  body_html: string | null;
+  body_text: string | null;
+  snippet: string | null;
+  sent_at: string;
+  contact_id: string | null;
+  created_by_user_id: string | null;
+  read_at: string | null;
+};
+
+export type EmailThread = {
+  id: string;
+  contact_id: string | null;
+  initiated_by_user_id: string;
+  gmail_thread_id: string;
+  gmail_account_user_id: string;
+  subject: string | null;
+  participants: string[];
+  first_message_at: string;
+  last_message_at: string;
+  message_count: number;
+  has_unread_replies: boolean;
+  is_archived: boolean;
+};
+
+export type EmailThreadDetail = EmailThread & {
+  messages: EmailMessage[];
+};
+
+export type EmailThreadList = {
+  items: EmailThread[];
+  total: number;
+};
+
+export type EmailSendPayload = {
+  from_alias: string;
+  from_name?: string | null;
+  to: string[];
+  cc?: string[] | null;
+  bcc?: string[] | null;
+  subject?: string;
+  body_html?: string | null;
+  body_text?: string | null;
+  contact_id?: string | null;
+  in_reply_to_message_id?: string | null;
+};
+
+export async function getEmailAliases(): Promise<EmailAlias[]> {
+  return apiFetch<EmailAlias[]>("/api/emails/aliases");
+}
+
+export async function sendEmail(
+  payload: EmailSendPayload,
+): Promise<EmailMessage> {
+  return apiFetch<EmailMessage>("/api/emails/send", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function listEmailThreads(
+  contactId?: string,
+): Promise<EmailThreadList> {
+  const qs = contactId ? `?contact_id=${encodeURIComponent(contactId)}` : "";
+  return apiFetch<EmailThreadList>(`/api/emails/threads${qs}`);
+}
+
+export async function getEmailThread(id: string): Promise<EmailThreadDetail> {
+  return apiFetch<EmailThreadDetail>(`/api/emails/threads/${id}`);
+}
+
+export async function markThreadRead(id: string): Promise<void> {
+  await apiFetch(`/api/emails/threads/${id}/mark-read`, { method: "POST" });
+}
+
+export async function listAdminEmailThreads(): Promise<EmailThreadList> {
+  return apiFetch<EmailThreadList>("/api/emails/admin/all-threads");
+}

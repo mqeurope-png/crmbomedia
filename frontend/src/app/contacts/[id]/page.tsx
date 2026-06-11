@@ -11,10 +11,11 @@ import {
 } from "lucide-react";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ContactEmailActivity } from "../../components/ContactEmailActivity";
+import { ContactEmailsSection } from "../../components/ContactEmailsSection";
 import { ContactPipelinesSection } from "../../components/ContactPipelinesSection";
 import { ContactTasksSection } from "../../components/ContactTasksSection";
 import { EditableField } from "../../components/EditableField";
+import { EmailComposerModal } from "../../components/EmailComposerModal";
 import { ErrorState } from "../../components/ErrorState";
 import { OriginChips } from "../../components/OriginChips";
 import { PageHeader } from "../../components/PageHeader";
@@ -79,6 +80,7 @@ export default function ContactDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<Tab>("activity");
+  const [showComposer, setShowComposer] = useState(false);
   const autoRefreshed = useRef(false);
 
   const loadContact = useCallback(async () => {
@@ -269,6 +271,26 @@ export default function ContactDetailPage() {
             />
           </section>
 
+          <section className="contact-card">
+            <h4>Acciones rápidas</h4>
+            <div className="actions">
+              <button
+                type="button"
+                className="button small"
+                onClick={() => setShowComposer(true)}
+              >
+                <Mail size={11} aria-hidden /> Email
+              </button>
+              <button
+                type="button"
+                className="button small secondary"
+                onClick={() => setActiveTab("tasks")}
+              >
+                <CheckSquare size={11} aria-hidden /> Tarea
+              </button>
+            </div>
+          </section>
+
           {externalRefs.length > 0 ? (
             <section className="contact-card">
               <h4>Origen</h4>
@@ -343,11 +365,27 @@ export default function ContactDetailPage() {
               <ContactPipelinesSection contactId={contact.id} />
             ) : null}
             {activeTab === "emails" ? (
-              <ContactEmailActivity contactId={contact.id} />
+              <ContactEmailsSection
+                contactId={contact.id}
+                contactEmail={contact.email}
+                onCompose={() => setShowComposer(true)}
+              />
             ) : null}
           </div>
         </section>
       </div>
+      {showComposer ? (
+        <EmailComposerModal
+          contactId={contact.id}
+          contactEmail={contact.email}
+          onClose={() => setShowComposer(false)}
+          onSent={async () => {
+            setShowComposer(false);
+            await loadContact();
+            setActiveTab("emails");
+          }}
+        />
+      ) : null}
     </main>
   );
 }
