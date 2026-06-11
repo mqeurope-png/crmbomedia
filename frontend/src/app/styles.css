@@ -3898,3 +3898,26 @@ a.origin-chip:hover { filter: brightness(0.97); }
   padding: 4px 10px;
   font-size: 12px;
 }
+
+/* "Mostrar completadas" toggle in the /tasks header */
+.task-show-completed {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--muted);
+  cursor: pointer;
+}
+.task-show-completed input { margin: 0; }
+
+/* Completed tasks section below the bucket grid */
+.tasks-completed {
+  margin-top: 24px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.tasks-completed .tasks-row-title {
+  text-decoration: line-through;
+  color: var(--muted);
+}

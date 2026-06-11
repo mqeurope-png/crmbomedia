@@ -17,9 +17,11 @@ import {
   completeTask,
   deleteTask,
   getMyBuckets,
+  listTasks,
   type Task,
   type TaskBuckets,
 } from "../lib/tasksApi";
+import { getCurrentUser } from "../lib/api";
 
 function formatDateTime(value: string | null | undefined): string {
   if (!value) return "—";
@@ -50,20 +52,36 @@ const PRIORITY_LABEL: Record<Task["priority"], string> = {
 
 export default function TasksPage() {
   const [buckets, setBuckets] = useState<TaskBuckets | null>(null);
+  const [completedTasks, setCompletedTasks] = useState<Task[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
   const [editingTask, setEditingTask] = useState<Task | null>(null);
+  // "Mostrar completadas" toggle. Off by default so done tasks don't
+  // clutter the urgency buckets. When on, an extra "Completadas"
+  // section appears at the bottom with the last 50 done tasks.
+  const [showCompleted, setShowCompleted] = useState(false);
 
   const reload = useCallback(async () => {
     try {
       const data = await getMyBuckets();
       setBuckets(data);
+      if (showCompleted) {
+        const me = await getCurrentUser();
+        const page = await listTasks({
+          assignedUserId: me.id,
+          status: "done",
+          limit: 50,
+        });
+        setCompletedTasks(page.items);
+      } else {
+        setCompletedTasks([]);
+      }
       setError(null);
     } catch (err) {
       setError(extractErrorMessage(err, "No se pudieron cargar las tareas."));
     }
-  }, []);
+  }, [showCompleted]);
 
   useEffect(() => {
     reload().finally(() => setLoading(false));
@@ -95,13 +113,23 @@ export default function TasksPage() {
         eyebrow="Productividad"
         description="Tus tareas pendientes agrupadas por urgencia."
         actions={
-          <button
-            type="button"
-            className="button"
-            onClick={() => setShowModal(true)}
-          >
-            <Plus size={13} aria-hidden /> Nueva tarea
-          </button>
+          <>
+            <label className="task-show-completed">
+              <input
+                type="checkbox"
+                checked={showCompleted}
+                onChange={(e) => setShowCompleted(e.target.checked)}
+              />
+              Mostrar completadas
+            </label>
+            <button
+              type="button"
+              className="button"
+              onClick={() => setShowModal(true)}
+            >
+              <Plus size={13} aria-hidden /> Nueva tarea
+            </button>
+          </>
         }
       />
 
@@ -141,6 +169,28 @@ export default function TasksPage() {
           })}
         </section>
       )}
+
+      {showCompleted && completedTasks.length > 0 ? (
+        <section className="tasks-completed">
+          <header className="section-title">
+            <h2>Completadas</h2>
+            <span className="muted small">
+              {completedTasks.length} última{completedTasks.length === 1 ? "" : "s"}
+            </span>
+          </header>
+          <ul className="tasks-list">
+            {completedTasks.map((task) => (
+              <TaskRow
+                key={task.id}
+                task={task}
+                onComplete={() => {}}
+                onDelete={() => handleDelete(task)}
+                onEdit={() => setEditingTask(task)}
+              />
+            ))}
+          </ul>
+        </section>
+      ) : null}
 
       {showModal ? (
         <TaskModal
