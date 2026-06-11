@@ -35,7 +35,15 @@ CONTACT_SORT_COLUMNS = {
 
 
 def get_user_by_email(session: Session, email: str) -> User | None:
-    return session.scalar(select(User).where(User.email == email.lower()))
+    """Case-insensitive lookup. The `users.email` column is unique +
+    indexed but our normalisation policy stores everything lower-cased
+    on write; `func.lower(...)` on read protects against rows from
+    pre-normalisation migrations / seed scripts that landed mixed
+    casing. Trims surrounding whitespace too — pasted addresses
+    sometimes carry a trailing newline."""
+    return session.scalar(
+        select(User).where(func.lower(User.email) == email.strip().lower())
+    )
 
 
 def list_users(session: Session, skip: int, limit: int) -> list[User]:

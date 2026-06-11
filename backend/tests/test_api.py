@@ -1530,6 +1530,87 @@ def test_admin_can_deactivate_and_reactivate_user(client: TestClient):
     assert reactivated.json()["is_active"] is True
 
 
+def test_create_user_rejects_existing_active_email(client: TestClient):
+    headers = auth_headers(client, "admin")
+    payload = {
+        "email": "dup@example.com",
+        "full_name": "Dup",
+        "password": "DupPasswordSecure123!",
+        "role": "viewer",
+    }
+    first = client.post("/api/users", json=payload, headers=headers)
+    assert first.status_code == 201, first.text
+    again = client.post("/api/users", json=payload, headers=headers)
+    assert again.status_code == 409
+    assert "already exists" in again.text
+
+
+def test_create_user_email_is_case_insensitive(client: TestClient):
+    """Same email in a different casing must collide instead of
+    sliding past the conflict check (and then dying on the unique
+    index with an opaque IntegrityError)."""
+    headers = auth_headers(client, "admin")
+    client.post(
+        "/api/users",
+        json={
+            "email": "case@example.com",
+            "full_name": "First",
+            "password": "FirstPasswordSecure123!",
+            "role": "viewer",
+        },
+        headers=headers,
+    )
+    response = client.post(
+        "/api/users",
+        json={
+            "email": "Case@Example.com",
+            "full_name": "Second",
+            "password": "SecondPasswordSecure123!",
+            "role": "viewer",
+        },
+        headers=headers,
+    )
+    assert response.status_code == 409
+
+
+def test_create_user_message_calls_out_soft_deleted_collisions(
+    client: TestClient,
+):
+    """When the colliding row is a deactivated user, the error has to
+    point at the reactivation flow — the previous opaque "already
+    exists" left the admin chasing a non-existent active user."""
+    headers = auth_headers(client, "admin")
+    created = client.post(
+        "/api/users",
+        json={
+            "email": "deact@example.com",
+            "full_name": "Deact",
+            "password": "DeactPasswordSecure123!",
+            "role": "viewer",
+        },
+        headers=headers,
+    ).json()
+    deactivate = client.patch(
+        f"/api/users/{created['id']}/deactivate", headers=headers
+    )
+    assert deactivate.status_code == 200
+    response = client.post(
+        "/api/users",
+        json={
+            "email": "deact@example.com",
+            "full_name": "Second",
+            "password": "SecondPasswordSecure123!",
+            "role": "viewer",
+        },
+        headers=headers,
+    )
+    assert response.status_code == 409
+    body = response.json()
+    detail = body.get("detail", body)
+    assert "deactivated" in str(detail).lower()
+    assert "reactivate" in str(detail).lower()
+
+
 def test_admin_can_update_user_password(client: TestClient):
     headers = auth_headers(client, "admin")
     created = client.post(
