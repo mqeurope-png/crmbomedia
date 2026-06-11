@@ -683,3 +683,152 @@ def test_push_target_queue_has_long_job_timeout():
     from app.workers.queues import LONG_JOB_TIMEOUTS
 
     assert LONG_JOB_TIMEOUTS.get("brevo:push_target", 0) >= 3600
+
+
+def test_push_view_with_tag_filter_only_includes_tagged_contacts(client: TestClient):
+    """End-to-end of the operator's actual workflow: filter by a tag,
+    push to a new list, assert that ONLY the tagged contacts end up on
+    Brevo's add-to-list call (not every contact in the CRM).
+
+    This pins the failure mode the operator hit in production
+    ("created the list but contacts not added" / "added wrong
+    contacts") to either the rules_json serialisation, the auxiliary
+    segment construction, or the worker's filter compilation — every
+    layer the push touches gets exercised here on a real-shape
+    rule from the new ContactFiltersBuilder."""
+    from unittest.mock import MagicMock, patch
+
+    from app.db.session import get_session
+    from app.integrations.brevo.sync_targets import push_brevo_target
+    from app.main import app
+    from app.models.crm import (
+        Contact,
+        ContactTag,
+        SyncLog,
+        Tag,
+    )
+
+    fake_redis = MagicMock()
+    fake_redis.set.return_value = True
+
+    session_factory = app.dependency_overrides[get_session]
+    session_gen = session_factory()
+    session = next(session_gen)
+    try:
+        hot_tag = Tag(name="Hot leads", name_normalized="hot leads")
+        session.add(hot_tag)
+        session.flush()
+        ana = Contact(first_name="Ana", email="ana@example.com")
+        boris = Contact(first_name="Boris", email="boris@example.com")
+        carla = Contact(first_name="Carla", email="carla@example.com")
+        session.add_all([ana, boris, carla])
+        session.flush()
+        session.add_all(
+            [
+                ContactTag(contact_id=ana.id, tag_id=hot_tag.id, source="manual"),
+                ContactTag(contact_id=carla.id, tag_id=hot_tag.id, source="manual"),
+            ]
+        )
+        session.commit()
+        tag_id = hot_tag.id
+    finally:
+        session_gen.close()
+
+    # Shape mirrors what ContactFiltersBuilder.serializeTree emits for
+    # ONE card with ONE condition — a bare rule, not an OR/AND wrapper.
+    view = _rules_view(
+        client,
+        "Hot leads only",
+        {
+            "type": "rule",
+            "field": "tags",
+            "comparator": "contains_any",
+            "value": [tag_id],
+        },
+    )
+    _seed_brevo_account(client)
+
+    class _FakeClient:
+        list_created_with: str | None = None
+        add_calls: list[tuple[int, list[str]]] = []
+        contact_writes: list[tuple[str, str]] = []  # (action, email)
+
+        def __init__(self, *_a, **_kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return None
+
+        async def create_list(self, name, folder_id=None):
+            _FakeClient.list_created_with = name
+            return {"id": 42, "name": name}
+
+        async def create_contact(self, payload):
+            _FakeClient.contact_writes.append(("create", payload["email"]))
+            return {"id": 1}
+
+        async def update_contact(self, identifier, payload):
+            _FakeClient.contact_writes.append(("update", identifier))
+
+        async def add_contacts_to_list(self, list_id, emails):
+            _FakeClient.add_calls.append((int(list_id), list(emails)))
+            return {}
+
+        async def remove_contacts_from_list(self, list_id, emails):
+            return {}
+
+    with (
+        patch("app.integrations.brevo.client.BrevoClient", _FakeClient),
+        patch("app.integrations.brevo.sync_targets.BrevoClient", _FakeClient),
+        patch(
+            "app.integrations.brevo.sync_targets.redis_connection",
+            return_value=fake_redis,
+        ),
+        patch(
+            "app.api.routes.enqueue_sync_job",
+            lambda *_a, **_kw: ("log-tag", "job-tag"),
+        ),
+    ):
+        push_response = client.post(
+            f"/api/contact-views/{view['id']}/push-to-brevo-list",
+            json={"brevo_account_id": "default", "new_list_name": "Hot leads push"},
+            headers=auth_headers(client, "manager"),
+        )
+        assert push_response.status_code == 200, push_response.text
+        body = push_response.json()
+        # Endpoint reported exactly 2 matches (Ana + Carla, NOT Boris).
+        assert body["contacts_to_push"] == 2
+        assert _FakeClient.list_created_with == "Hot leads push"
+
+        session_gen = session_factory()
+        session = next(session_gen)
+        try:
+            sync_log = SyncLog(
+                system="brevo",
+                account_id="default",
+                operation="push_target",
+                status="running",
+                metadata_json=(
+                    f'{{"payload": {{"target_id": "{body["target_id"]}"}}}}'
+                ),
+            )
+            session.add(sync_log)
+            session.flush()
+            outcome = push_brevo_target(session, sync_log)
+        finally:
+            session_gen.close()
+
+    assert outcome.records_failed == 0, outcome.error_summary
+    assert outcome.records_processed == 2
+    # The 2 tagged contacts reached create_contact (or update fallback)
+    # and the SINGLE add-to-list batch carried exactly their two
+    # emails on list id 42 — Boris (untagged) MUST NOT appear.
+    written_emails = {email for _action, email in _FakeClient.contact_writes}
+    assert written_emails == {"ana@example.com", "carla@example.com"}
+    assert len(_FakeClient.add_calls) == 1
+    list_id_used, emails_used = _FakeClient.add_calls[0]
+    assert list_id_used == 42
+    assert sorted(emails_used) == ["ana@example.com", "carla@example.com"]
