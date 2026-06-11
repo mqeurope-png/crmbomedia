@@ -461,11 +461,39 @@ def _sync_contact_tasks(
             for field, value in record.items():
                 setattr(existing, field, value)
         else:
-            session.add(Task(**record))
+            # Mini-PR C: the productivity-layer `Task` requires
+            # `assigned_user_id` + `created_by_user_id` NOT NULL.
+            # Imported AgileCRM tasks have no real CRM user behind
+            # them — bind them to the first admin so the row is
+            # storable; the operator can re-assign from the UI.
+            owner = _system_user_id(session)
+            session.add(
+                Task(
+                    **record,
+                    assigned_user_id=owner,
+                    created_by_user_id=owner,
+                )
+            )
         written += 1
     if written:
         session.flush()
     return written
+
+
+def _system_user_id(session: Session) -> str:
+    """Resolve the system fallback user for imported tasks. First
+    admin → first user → empty string (will fail FK and surface)."""
+    from sqlalchemy import select as _select  # noqa: PLC0415
+
+    from app.models.crm import User as _User  # noqa: PLC0415
+
+    candidate = session.scalar(
+        _select(_User.id)
+        .where(_User.role == "admin")
+        .order_by(_User.created_at.asc())
+        .limit(1)
+    )
+    return str(candidate) if candidate else ""
 
 
 def _sync_contact_events(

@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import router
+from app.api.tasks import router as tasks_router
 from app.core.config import get_settings
 from app.core.observability import setup_sentry
 
@@ -38,6 +39,10 @@ app.add_middleware(
 )
 
 app.include_router(router, prefix="/api")
+# Tasks router carries its own `/api/tasks` prefix and lives in its
+# own module — the routes.py monolith was already pushing 4k lines
+# before the productivity layer started.
+app.include_router(tasks_router)
 
 
 @app.on_event("startup")

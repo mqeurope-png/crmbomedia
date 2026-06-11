@@ -63,8 +63,8 @@ from app.models.crm import (
     Note,
     Pipeline,
     PipelineStage,
+    TaskStatus,
     Segment,
-    Task,
     User,
 )
 from app.models.integration_settings import IntegrationAccount
@@ -162,7 +162,6 @@ from app.schemas.crm import (
     PasswordResetConfirm,
     PasswordResetRequest,
     PasswordResetRequestRead,
-    TaskCreate,
     TaskRead,
     TokenRead,
     TotpConfirmRead,
@@ -1799,6 +1798,35 @@ def deactivate_contact(
 
 
 @router.get(
+    "/contacts/{contact_id}/tasks",
+    response_model=list[TaskRead],
+    responses=ERROR_RESPONSES,
+    tags=["crm"],
+)
+def list_contact_tasks(
+    contact_id: str,
+    include_completed: bool = Query(default=False),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_viewer),
+) -> list[TaskRead]:
+    """Tasks attached to a contact — drives the "Tareas" tab on the
+    contact detail page. By default the completed ones stay out of
+    sight; pass `include_completed=true` to see the full history."""
+    _ = current_user
+    from app.repositories import tasks as tasks_repository  # noqa: PLC0415
+
+    items = tasks_repository.list_tasks(
+        session,
+        contact_id=contact_id,
+        statuses=None
+        if include_completed
+        else [TaskStatus.PENDING, TaskStatus.IN_PROGRESS],
+        limit=200,
+    )
+    return [TaskRead.model_validate(t) for t in items]
+
+
+@router.get(
     "/contacts/{contact_id}/notes",
     response_model=list[NoteRead],
     responses=ERROR_RESPONSES,
@@ -1850,54 +1878,10 @@ def create_note(
     return note
 
 
-@router.get(
-    "/contacts/{contact_id}/tasks",
-    response_model=list[TaskRead],
-    responses=ERROR_RESPONSES,
-    tags=["crm"],
-)
-def list_contact_tasks(
-    contact_id: str,
-    session: Session = Depends(get_session),
-    current_user: User = Depends(require_viewer),
-) -> list[Task]:
-    _ = current_user
-    if not crm_repository.get_contact(session, contact_id):
-        raise not_found("Contact")
-    return crm_repository.list_tasks(session, contact_id)
-
-
-@router.post(
-    "/contacts/{contact_id}/tasks",
-    response_model=TaskRead,
-    status_code=status.HTTP_201_CREATED,
-    responses=ERROR_RESPONSES,
-    tags=["crm"],
-)
-def create_task(
-    contact_id: str,
-    payload: TaskCreate,
-    request: Request,
-    session: Session = Depends(get_session),
-    current_user: User = Depends(require_user),
-) -> Task:
-    if not crm_repository.get_contact(session, contact_id):
-        raise not_found("Contact")
-    task = Task(contact_id=contact_id, **payload.model_dump())
-    session.add(task)
-    session.flush()
-    record_event(
-        session,
-        action=Action.TASK_CREATED,
-        target_type="task",
-        target_id=task.id,
-        actor=current_user,
-        metadata={"contact_id": contact_id, "title": task.title},
-        request=request,
-    )
-    session.commit()
-    session.refresh(task)
-    return task
+# Legacy `/contacts/{contact_id}/tasks` GET + POST replaced by the
+# Mini-PR C productivity layer (`app/api/tasks.py`). The GET at the
+# same path lives there now; the POST belongs on `/api/tasks` so a
+# task can be created without scoping to a contact.
 
 
 # ---------------------------------------------------------------------------

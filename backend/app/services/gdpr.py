@@ -105,7 +105,7 @@ def _serialize_task(task: Task) -> dict[str, Any]:
         "title": task.title,
         "status": task.status.value,
         "due_at": task.due_at.isoformat() if task.due_at else None,
-        "assignee_user_id": task.assignee_user_id,
+        "assigned_user_id": task.assigned_user_id,
         "contact_id": task.contact_id,
         "created_at": task.created_at.isoformat(),
         "updated_at": task.updated_at.isoformat(),

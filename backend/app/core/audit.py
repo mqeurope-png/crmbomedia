@@ -57,6 +57,9 @@ class Action:
     CONTACT_DEACTIVATED = "contact.deactivated"
     NOTE_CREATED = "note.created"
     TASK_CREATED = "task.created"
+    TASK_UPDATED = "task.updated"
+    TASK_COMPLETED = "task.completed"
+    TASK_DELETED = "task.deleted"
 
     # Integration accounts (multi-account refactor 20260515_0007).
     # The legacy single-account names live on as aliases below so audit

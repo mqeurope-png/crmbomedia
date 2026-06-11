@@ -14,7 +14,6 @@ from app.models.crm import (
     ExternalSystem,
     GdprRequestStatus,
     GdprRequestType,
-    TaskStatus,
     UserRole,
 )
 
@@ -702,6 +701,115 @@ class ContactSearchRequest(BaseModel):
     q: str | None = None
 
 
+class TaskAssigneeRead(BaseModel):
+    id: str
+    full_name: str
+    email: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class TaskContactRead(BaseModel):
+    id: str
+    first_name: str
+    last_name: str | None = None
+    email: str | None = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def _tolerant_email(cls, value: object) -> str | None:
+        return _coerce_tolerant_email(value)
+
+
+class TaskCreate(BaseModel):
+    """Payload for `POST /api/tasks`.
+
+    `assigned_user_id` defaults to the caller at the route layer if
+    omitted. `contact_id` / `company_id` / `pipeline_stage_id` are all
+    optional links — the operator can build a personal todo with no
+    CRM linkage and still get the calendar slot.
+    """
+
+    title: str = Field(min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=4000)
+    due_at: datetime | None = None
+    status: str = "pending"
+    priority: str = "medium"
+    assigned_user_id: str | None = None
+    contact_id: str | None = None
+    company_id: str | None = None
+    pipeline_stage_id: str | None = None
+    reminder_minutes_before: int | None = Field(default=None, ge=0, le=10080)
+
+    @field_validator("title")
+    @classmethod
+    def _strip_title(cls, value: str) -> str:
+        return value.strip()
+
+
+class TaskUpdate(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=4000)
+    due_at: datetime | None = None
+    status: str | None = None
+    priority: str | None = None
+    assigned_user_id: str | None = None
+    contact_id: str | None = None
+    company_id: str | None = None
+    pipeline_stage_id: str | None = None
+    reminder_minutes_before: int | None = Field(default=None, ge=0, le=10080)
+
+
+class TaskRead(BaseModel):
+    id: str
+    title: str
+    description: str | None
+    due_at: datetime | None
+    status: str
+    priority: str
+    assigned_user_id: str
+    assigned_user: TaskAssigneeRead | None = None
+    contact_id: str | None
+    contact: TaskContactRead | None = None
+    company_id: str | None
+    pipeline_stage_id: str | None
+    created_by_user_id: str
+    google_event_id: str | None = None
+    google_calendar_id: str | None = None
+    reminder_minutes_before: int | None
+    completed_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class TaskListPage(BaseModel):
+    items: list[TaskRead]
+    total: int
+    limit: int
+    offset: int
+
+
+class TaskBuckets(BaseModel):
+    """Output of `GET /api/tasks/my-buckets` — drives the dashboard
+    widget. Counts ride alongside the trimmed item lists so the
+    badge can show e.g. "12 overdue" without re-querying."""
+
+    overdue: list[TaskRead] = Field(default_factory=list)
+    today: list[TaskRead] = Field(default_factory=list)
+    tomorrow: list[TaskRead] = Field(default_factory=list)
+    later: list[TaskRead] = Field(default_factory=list)
+    no_date: list[TaskRead] = Field(default_factory=list)
+    total_open: int = 0
+
+
+class TaskCompleteResponse(BaseModel):
+    task: TaskRead
+
+
 class NoteCreate(BaseModel):
     body: str = Field(min_length=1)
     author_user_id: str | None = None
@@ -720,27 +828,6 @@ class NoteRead(NoteCreate):
     external_author_email: str | None = None
     external_author_name: str | None = None
     external_created_at: datetime | None = None
-
-    model_config = ConfigDict(from_attributes=True)
-
-
-class TaskCreate(BaseModel):
-    title: str = Field(min_length=1, max_length=255)
-    status: TaskStatus = TaskStatus.OPEN
-    due_at: datetime | None = None
-    assignee_user_id: str | None = None
-
-
-class TaskRead(TaskCreate):
-    id: str
-    contact_id: str
-    created_at: datetime
-    updated_at: datetime
-    external_system: str | None = None
-    external_account_id: str | None = None
-    external_id: str | None = None
-    external_created_at: datetime | None = None
-    external_updated_at: datetime | None = None
 
     model_config = ConfigDict(from_attributes=True)
 

@@ -1433,15 +1433,22 @@ def test_user_can_create_note_and_task_for_contact(client: TestClient):
     headers = auth_headers(client, "user")
 
     note = client.post(
-        f"/api/contacts/{contact['id']}/notes", json={"body": "Llamada"}, headers=headers
+        f"/api/contacts/{contact['id']}/notes",
+        json={"body": "Llamada"},
+        headers=headers,
     )
+    # Mini-PR C: tasks live under their own router; the per-contact
+    # link rides on `POST /api/tasks` with `contact_id` in the body.
     task = client.post(
-        f"/api/contacts/{contact['id']}/tasks", json={"title": "Enviar propuesta"}, headers=headers
+        "/api/tasks",
+        json={"title": "Enviar propuesta", "contact_id": contact["id"]},
+        headers=headers,
     )
 
     assert note.status_code == 201
     assert task.status_code == 201
-    assert task.json()["status"] == "open"
+    assert task.json()["status"] == "pending"
+    assert task.json()["contact_id"] == contact["id"]
 
 
 def test_viewer_cannot_create_note_or_task(client: TestClient):
@@ -1452,21 +1459,32 @@ def test_viewer_cannot_create_note_or_task(client: TestClient):
         f"/api/contacts/{contact['id']}/notes", json={"body": "No"}, headers=headers
     )
     task = client.post(
-        f"/api/contacts/{contact['id']}/tasks", json={"title": "No"}, headers=headers
+        "/api/tasks",
+        json={"title": "No", "contact_id": contact["id"]},
+        headers=headers,
     )
 
     assert note.status_code == 403
     assert task.status_code == 403
 
 
-def test_reject_note_and_task_for_missing_contact(client: TestClient):
+def test_reject_note_for_missing_contact_and_task_for_missing_contact(
+    client: TestClient,
+):
     headers = auth_headers(client, "user")
 
-    note = client.post("/api/contacts/missing/notes", json={"body": "Nota"}, headers=headers)
-    task = client.post("/api/contacts/missing/tasks", json={"title": "Enviar"}, headers=headers)
+    note = client.post(
+        "/api/contacts/missing/notes", json={"body": "Nota"}, headers=headers
+    )
+    # The new tasks endpoint validates contact_id at the body level.
+    task = client.post(
+        "/api/tasks",
+        json={"title": "Enviar", "contact_id": "missing"},
+        headers=headers,
+    )
 
     assert note.status_code == 404
-    assert task.status_code == 404
+    assert task.status_code == 400
 
 
 def test_audit_log_records_login_and_crm_actions(client: TestClient):
