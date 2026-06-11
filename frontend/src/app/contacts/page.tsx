@@ -32,6 +32,7 @@ import {
 } from "../lib/api";
 import {
   ALL_COLUMN_KEYS,
+  COLUMN_SORT_KEY,
   DEFAULT_VISIBLE_COLUMNS,
   findColumn,
   type ContactColumnKey,
@@ -426,6 +427,21 @@ export default function ContactsListPage() {
     applyView(activeView);
   }
 
+  /** Click cycles asc → desc → default (created_at desc). Clicking a
+   *  different column starts at asc on that one. */
+  function handleHeaderSort(sortKey: string) {
+    if (sortKey !== sortBy) {
+      setSortBy(sortKey);
+      setSortDir("asc");
+    } else if (sortDir === "asc") {
+      setSortDir("desc");
+    } else {
+      setSortBy("created_at");
+      setSortDir("desc");
+    }
+    setOffset(0);
+  }
+
   async function handleSaveAsSegment() {
     if (!activeView) {
       setError(
@@ -691,11 +707,39 @@ export default function ContactsListPage() {
                   <tr>
                     {visibleColumns.map((key) => {
                       const def = findColumn(key);
-                      return def ? (
-                        <th key={key} scope="col">
+                      if (!def) return null;
+                      const sortKey = COLUMN_SORT_KEY[key];
+                      const isActive = sortKey && sortKey === sortBy;
+                      const arrow =
+                        isActive && sortDir === "asc"
+                          ? "▲"
+                          : isActive
+                            ? "▼"
+                            : "";
+                      return (
+                        <th
+                          key={key}
+                          scope="col"
+                          className={sortKey ? "sortable" : undefined}
+                          onClick={
+                            sortKey
+                              ? () => handleHeaderSort(sortKey)
+                              : undefined
+                          }
+                          aria-sort={
+                            !isActive
+                              ? undefined
+                              : sortDir === "asc"
+                                ? "ascending"
+                                : "descending"
+                          }
+                        >
                           {def.label}
+                          {sortKey ? (
+                            <span className="sort-arrow">{arrow}</span>
+                          ) : null}
                         </th>
-                      ) : null;
+                      );
                     })}
                   </tr>
                 </thead>

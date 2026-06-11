@@ -74,3 +74,19 @@ export const ALL_COLUMN_KEYS: ContactColumnKey[] = CONTACT_COLUMNS.map(
 export function findColumn(key: string): ContactColumnDef | undefined {
   return CONTACT_COLUMNS.find((column) => column.key === key);
 }
+
+/** Maps a column key to the backend `sort_by` value, or null when
+ *  the column isn't sortable (computed/legacy columns). The header
+ *  hides the sort arrow + click handler for null entries. */
+export const COLUMN_SORT_KEY: Partial<Record<ContactColumnKey, string>> = {
+  name: "name",
+  email: "email",
+  phone: "phone",
+  commercial_status: "commercial_status",
+  marketing_consent: "marketing_consent",
+  lead_score: "lead_score",
+  created_at: "created_at",
+  updated_at: "updated_at",
+  created_at_external: "created_at_external",
+  updated_at_external: "updated_at_external",
+};

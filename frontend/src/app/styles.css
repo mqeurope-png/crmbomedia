@@ -3816,3 +3816,17 @@ a.origin-chip:hover { filter: brightness(0.97); }
 
 /* Make the page itself wider on the dashboard */
 .shell-wide { max-width: 1320px; }
+
+/* Sortable column headers in the contacts list */
+.data-table th.sortable {
+  cursor: pointer;
+  user-select: none;
+}
+.data-table th.sortable:hover { background: #f3f6fb; }
+.data-table th .sort-arrow {
+  display: inline-block;
+  margin-left: 4px;
+  font-size: 10px;
+  color: var(--brand);
+  min-width: 10px;
+}
