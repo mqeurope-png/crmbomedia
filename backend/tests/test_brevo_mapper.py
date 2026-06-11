@@ -45,6 +45,18 @@ def test_well_formed_contact_maps_native_fields():
     ]
     assert extras["external_created_at"] is not None
     assert extras["metadata"]["list_ids"] == [4, 7]
+    # Source-system dates are promoted onto the record for the
+    # contact-level merge. ISO 8601 with offset parsed to UTC-aware.
+    assert record["created_at_external"] == extras["external_created_at"]
+    assert record["updated_at_external"] == extras["external_updated_at"]
+
+
+def test_external_dates_none_when_brevo_payload_omits_them():
+    record, _ = map_brevo_contact_to_internal(
+        _payload(createdAt=None, modifiedAt=None), "main"
+    )
+    assert record["created_at_external"] is None
+    assert record["updated_at_external"] is None
 
 
 def test_malformed_email_collapses_to_none_with_warning(caplog):

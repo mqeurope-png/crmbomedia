@@ -152,9 +152,11 @@ def map_brevo_contact_to_internal(
         if lid is not None
     ]
 
+    external_created_at = _parse_dt(payload.get("createdAt"))
+    external_updated_at = _parse_dt(payload.get("modifiedAt"))
     ref_extras: dict[str, Any] = {
-        "external_created_at": _parse_dt(payload.get("createdAt")),
-        "external_updated_at": _parse_dt(payload.get("modifiedAt")),
+        "external_created_at": external_created_at,
+        "external_updated_at": external_updated_at,
         "origin_detail": truncate_safe(
             "brevo",
             EXTERNAL_REFERENCE_FIELD_LIMITS.get("origin_detail"),
@@ -168,6 +170,12 @@ def map_brevo_contact_to_internal(
             "sms_blacklisted": bool(payload.get("smsBlacklisted", False)),
         },
     }
+    # Promote the source-system dates onto the contact record. The
+    # worker merges them (oldest creation, newest update); a payload
+    # without `createdAt`/`modifiedAt` yields None and the merge is a
+    # no-op for that column.
+    record["created_at_external"] = external_created_at
+    record["updated_at_external"] = external_updated_at
     return record, ref_extras
 
 

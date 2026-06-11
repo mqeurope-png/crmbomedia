@@ -320,9 +320,11 @@ def map_agilecrm_contact_to_internal(
         metadata["tags_raw"] = raw_tags
     source = _clean_str(payload.get("source"))
 
+    external_created_at = _to_datetime(payload.get("created_time"))
+    external_updated_at = _to_datetime(payload.get("updated_time"))
     extras: dict[str, Any] = {
-        "external_created_at": _to_datetime(payload.get("created_time")),
-        "external_updated_at": _to_datetime(payload.get("updated_time")),
+        "external_created_at": external_created_at,
+        "external_updated_at": external_updated_at,
         "origin_detail": source,
         "metadata": metadata or None,
     }
@@ -332,6 +334,12 @@ def map_agilecrm_contact_to_internal(
     apply_contact_field_limits(
         record, connector="agilecrm", external_id=payload.get("id")
     )
+    # Promote the source-system dates onto the contact record too. The
+    # worker applies the oldest-creation / newest-update merge policy
+    # (see `contact_merge`); when AgileCRM has no `created_time` the
+    # value is None and the merge leaves the column untouched.
+    record["created_at_external"] = external_created_at
+    record["updated_at_external"] = external_updated_at
     return record, extras
 
 

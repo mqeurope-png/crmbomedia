@@ -38,6 +38,7 @@ from app.integrations.agilecrm.mapper import (
     map_agilecrm_note_to_internal,
     map_agilecrm_task_to_internal,
 )
+from app.integrations.contact_merge import keep_first_origin, merge_external_dates
 from app.integrations.errors import IntegrationError
 from app.models.crm import (
     ActivityEvent,
@@ -333,6 +334,12 @@ def _apply_update(
     *,
     allow_email_overwrite: bool = True,
 ) -> None:
+    # Fields several systems contribute to follow a merge policy rather
+    # than last-writer-wins: keep the first origin, oldest external
+    # creation, newest external update. Both helpers pop their keys so
+    # the generic loop below never overwrites them.
+    keep_first_origin(contact, record)
+    merge_external_dates(contact, record)
     for key, value in record.items():
         if value in (None, "") and key != "tags":
             continue
