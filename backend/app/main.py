@@ -5,6 +5,7 @@ from app.api.bulk import router as bulk_router
 from app.api.dashboard import router as dashboard_router
 from app.api.emails import router as emails_router
 from app.api.google_integrations import router as google_router
+from app.integrations.gmail.webhook import router as gmail_webhook_router
 from app.api.routes import router
 from app.api.tasks import router as tasks_router
 from app.core.config import get_settings
@@ -51,6 +52,7 @@ app.include_router(google_router)
 app.include_router(dashboard_router)
 app.include_router(bulk_router)
 app.include_router(emails_router)
+app.include_router(gmail_webhook_router)
 
 
 @app.on_event("startup")
