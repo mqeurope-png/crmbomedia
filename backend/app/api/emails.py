@@ -21,14 +21,22 @@ from app.integrations.gmail.service import (
     GmailNotConnectedError,
     GmailScopeMissingError,
 )
-from app.models.crm import EmailMessage, EmailThread, User, UserRole
+from app.models.crm import (
+    EmailMessage,
+    EmailThread,
+    User,
+    UserEmailAliasPref,
+    UserRole,
+)
 from app.schemas.emails import (
+    AliasPreferencesPayload,
     EmailAlias,
     EmailMessageRead,
     EmailSendRequest,
     EmailThreadDetail,
     EmailThreadList,
     EmailThreadRead,
+    MyAlias,
 )
 
 router = APIRouter(prefix="/api/emails", tags=["emails"])
@@ -73,8 +81,8 @@ def list_aliases(
     session: Session = Depends(get_session),
     current_user: User = Depends(require_user),
 ) -> list[EmailAlias]:
-    """Verified "Send mail as" aliases the user can pick in the
-    composer. Empty list when Gmail isn't connected."""
+    """All verified "Send mail as" aliases from Gmail, enriched
+    with the current user's CRM preferences."""
     try:
         items = gmail_service.list_aliases(session, current_user.id)
     except GmailNotConnectedError:
@@ -83,7 +91,122 @@ def list_aliases(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)
         ) from exc
-    return [EmailAlias(**item) for item in items]
+    prefs = _prefs_index(session, current_user.id)
+    return [
+        EmailAlias(
+            send_as_email=item["send_as_email"],
+            display_name=item["display_name"],
+            is_primary=item["is_primary"],
+            is_default=item["is_default"],
+            verification_status=item.get("verification_status"),
+            user_pref_allowed=prefs.get(item["send_as_email"], (False, False))[0],
+            user_pref_default=prefs.get(item["send_as_email"], (False, False))[1],
+        )
+        for item in items
+    ]
+
+
+@router.get("/my-aliases", response_model=list[MyAlias])
+def my_aliases(
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_user),
+) -> list[MyAlias]:
+    """Only the aliases the user marked as allowed, used by the
+    composer dropdown. Cross-checked against the live Gmail list
+    so an alias removed from Gmail doesn't keep showing up."""
+    try:
+        items = gmail_service.list_aliases(session, current_user.id)
+    except (GmailNotConnectedError, GmailScopeMissingError):
+        return []
+    available = {it["send_as_email"]: it for it in items}
+    prefs = _prefs_index(session, current_user.id)
+    out: list[MyAlias] = []
+    for alias_email, (allowed, is_default) in prefs.items():
+        if not allowed:
+            continue
+        if alias_email not in available:
+            continue
+        out.append(
+            MyAlias(
+                send_as_email=alias_email,
+                display_name=available[alias_email]["display_name"],
+                is_default=is_default,
+            )
+        )
+    out.sort(key=lambda a: (not a.is_default, a.send_as_email))
+    return out
+
+
+@router.put("/aliases/preferences", response_model=list[EmailAlias])
+def upsert_alias_preferences(
+    payload: AliasPreferencesPayload,
+    request: Request,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_user),
+) -> list[EmailAlias]:
+    """Upsert the user's alias preferences in one shot.
+
+    Semantics:
+    - `is_allowed=true` upserts the row.
+    - `is_allowed=false` deletes the row (keep the table clean).
+    - Setting `is_default=true` on one row demotes the other
+      defaults to false inside the same transaction.
+    """
+    existing = {
+        p.alias_email: p
+        for p in session.scalars(
+            select(UserEmailAliasPref).where(
+                UserEmailAliasPref.user_id == current_user.id
+            )
+        )
+    }
+    incoming_default: str | None = None
+    for item in payload.preferences:
+        row = existing.get(item.alias_email)
+        if not item.is_allowed:
+            if row is not None:
+                session.delete(row)
+            continue
+        if item.is_default:
+            incoming_default = item.alias_email
+        if row is None:
+            session.add(
+                UserEmailAliasPref(
+                    user_id=current_user.id,
+                    alias_email=item.alias_email,
+                    is_allowed=True,
+                    is_default=item.is_default,
+                )
+            )
+        else:
+            row.is_allowed = True
+            row.is_default = item.is_default
+    session.flush()
+    if incoming_default is not None:
+        session.execute(
+            UserEmailAliasPref.__table__.update()  # type: ignore[attr-defined]
+            .where(
+                UserEmailAliasPref.user_id == current_user.id,
+                UserEmailAliasPref.alias_email != incoming_default,
+            )
+            .values(is_default=False)
+        )
+    _ = request
+    session.commit()
+    # Re-render the enriched list so the UI doesn't need a second
+    # round-trip.
+    return list_aliases(session=session, current_user=current_user)
+
+
+def _prefs_index(
+    session: Session, user_id: str
+) -> dict[str, tuple[bool, bool]]:
+    rows = session.scalars(
+        select(UserEmailAliasPref).where(
+            UserEmailAliasPref.user_id == user_id
+        )
+    )
+    return {r.alias_email: (r.is_allowed, r.is_default) for r in rows}
 
 
 @router.post("/send", response_model=EmailMessageRead, status_code=201)
@@ -93,6 +216,42 @@ def send_email(
     session: Session = Depends(get_session),
     current_user: User = Depends(require_user),
 ) -> EmailMessageRead:
+    # The user must have Gmail connected with the send scope before
+    # we even bother to check preferences — `_client_for` inside
+    # gmail_service.send_email raises GmailScopeMissingError, but
+    # we'd rather catch the scope problem here than return the
+    # less-helpful pref error.
+    from app.integrations.gmail.service import _client_for  # noqa: PLC0415
+
+    try:
+        _client_for(session, current_user.id)
+    except GmailNotConnectedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
+    except GmailScopeMissingError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)
+        ) from exc
+
+    # Validate that the alias is in the user's allowed preferences.
+    # Blocks an operator from spoofing an alias their colleague
+    # configured but they didn't opt into.
+    pref = session.scalar(
+        select(UserEmailAliasPref).where(
+            UserEmailAliasPref.user_id == current_user.id,
+            UserEmailAliasPref.alias_email == payload.from_alias,
+            UserEmailAliasPref.is_allowed.is_(True),
+        )
+    )
+    if pref is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "El alias seleccionado no está en tus preferencias. "
+                "Márcalo desde /account."
+            ),
+        )
     try:
         message = gmail_service.send_email(
             session,

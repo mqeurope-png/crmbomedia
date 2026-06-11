@@ -71,8 +71,17 @@ def _user_id(session: Session, role: UserRole) -> str:
 
 
 def _seed_gmail_integration(
-    session_factory: sessionmaker, *, user_id: str
+    session_factory: sessionmaker,
+    *,
+    user_id: str,
+    allowed_aliases: tuple[str, ...] = ("info@bomedia.net",),
 ) -> None:
+    """Seed the Gmail integration row + one alias preference per
+    `allowed_aliases`. The first alias becomes the default. Tests
+    that want to exercise the "alias not in prefs" path should pass
+    `allowed_aliases=()`."""
+    from app.models.crm import UserEmailAliasPref  # noqa: PLC0415
+
     with session_factory() as session:
         session.add(
             UserGoogleIntegration(
@@ -89,6 +98,15 @@ def _seed_gmail_integration(
                 connected_at=datetime.now(UTC),
             )
         )
+        for idx, alias in enumerate(allowed_aliases):
+            session.add(
+                UserEmailAliasPref(
+                    user_id=user_id,
+                    alias_email=alias,
+                    is_allowed=True,
+                    is_default=idx == 0,
+                )
+            )
         session.commit()
 
 

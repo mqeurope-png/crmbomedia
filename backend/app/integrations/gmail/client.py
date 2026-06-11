@@ -135,6 +135,7 @@ class GmailClient:
                     "display_name": item.get("displayName") or "",
                     "is_primary": bool(item.get("isPrimary")),
                     "is_default": bool(item.get("isDefault")),
+                    "verification_status": item.get("verificationStatus"),
                 }
             )
         return out
