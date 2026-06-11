@@ -447,3 +447,179 @@ def test_send_email_emits_activity_event_when_contact_id_set(
 # Suppress the unused-import lint on `patch` — kept available for
 # future tests that swap the entire client.
 _ = patch
+
+
+# ---------------------------------------------------------------------------
+# Sprint Email v1 follow-up — per-user alias preferences
+# ---------------------------------------------------------------------------
+
+
+def test_put_preferences_upserts_rows(
+    client: TestClient,
+    session_factory: sessionmaker,
+) -> None:
+    from app.models.crm import UserEmailAliasPref  # noqa: PLC0415
+
+    response = client.put(
+        "/api/emails/aliases/preferences",
+        json={
+            "preferences": [
+                {
+                    "alias_email": "info@bomedia.net",
+                    "is_allowed": True,
+                    "is_default": False,
+                },
+                {
+                    "alias_email": "ventas@bomedia.net",
+                    "is_allowed": True,
+                    "is_default": True,
+                },
+            ]
+        },
+        headers=auth_headers(client, "user"),
+    )
+    assert response.status_code == 200, response.text
+    with session_factory() as session:
+        prefs = list(session.scalars(select(UserEmailAliasPref)))
+        assert len(prefs) == 2
+        defaults = [p for p in prefs if p.is_default]
+        assert len(defaults) == 1
+        assert defaults[0].alias_email == "ventas@bomedia.net"
+
+
+def test_put_preferences_rejects_two_defaults(client: TestClient) -> None:
+    response = client.put(
+        "/api/emails/aliases/preferences",
+        json={
+            "preferences": [
+                {
+                    "alias_email": "info@bomedia.net",
+                    "is_allowed": True,
+                    "is_default": True,
+                },
+                {
+                    "alias_email": "ventas@bomedia.net",
+                    "is_allowed": True,
+                    "is_default": True,
+                },
+            ]
+        },
+        headers=auth_headers(client, "user"),
+    )
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert any("Solo un alias" in str(item) for item in detail)
+
+
+def test_put_preferences_disallow_removes_row(
+    client: TestClient,
+    session_factory: sessionmaker,
+) -> None:
+    from app.models.crm import UserEmailAliasPref  # noqa: PLC0415
+
+    # Seed.
+    client.put(
+        "/api/emails/aliases/preferences",
+        json={
+            "preferences": [
+                {
+                    "alias_email": "info@bomedia.net",
+                    "is_allowed": True,
+                    "is_default": False,
+                },
+            ]
+        },
+        headers=auth_headers(client, "user"),
+    )
+    # Disallow.
+    client.put(
+        "/api/emails/aliases/preferences",
+        json={
+            "preferences": [
+                {
+                    "alias_email": "info@bomedia.net",
+                    "is_allowed": False,
+                    "is_default": False,
+                },
+            ]
+        },
+        headers=auth_headers(client, "user"),
+    )
+    with session_factory() as session:
+        prefs = list(session.scalars(select(UserEmailAliasPref)))
+        assert prefs == []
+
+
+def test_my_aliases_intersects_gmail_and_prefs(
+    client: TestClient,
+    session_factory: sessionmaker,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`my-aliases` only returns prefs whose alias still exists in
+    Gmail. Stale prefs (alias removed from Gmail) drop out."""
+    with session_factory() as session:
+        uid = _user_id(session, UserRole.USER)
+    _seed_gmail_integration(
+        session_factory,
+        user_id=uid,
+        allowed_aliases=("info@bomedia.net", "ghost@bomedia.net"),
+    )
+
+    monkeypatch.setattr(
+        "app.api.emails.gmail_service.list_aliases",
+        lambda _s, _u: [
+            {
+                "send_as_email": "info@bomedia.net",
+                "display_name": "Bomedia",
+                "is_primary": False,
+                "is_default": False,
+                "verification_status": "accepted",
+            },
+        ],
+    )
+    response = client.get(
+        "/api/emails/my-aliases", headers=auth_headers(client, "user")
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert [a["send_as_email"] for a in body] == ["info@bomedia.net"]
+    assert body[0]["is_default"] is True
+
+
+def test_send_with_unmarked_alias_returns_403(
+    client: TestClient,
+    session_factory: sessionmaker,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The send endpoint rejects an alias that isn't in the user's
+    preferences, even when Gmail itself would accept it."""
+    with session_factory() as session:
+        uid = _user_id(session, UserRole.USER)
+    _seed_gmail_integration(
+        session_factory,
+        user_id=uid,
+        allowed_aliases=("info@bomedia.net",),  # only info@ allowed
+    )
+
+    class _FakeClient:
+        def __init__(self, *_a, **_k):
+            pass
+
+        def send_message(self, **_kw):  # pragma: no cover - never called
+            raise AssertionError("send_message must not run for unmarked alias")
+
+    monkeypatch.setattr(
+        "app.integrations.gmail.service.GmailClient", _FakeClient
+    )
+    response = client.post(
+        "/api/emails/send",
+        json={
+            "from_alias": "ventas@bomedia.net",  # NOT in prefs
+            "to": ["client@example.com"],
+            "subject": "x",
+            "body_text": "x",
+        },
+        headers=auth_headers(client, "user"),
+    )
+    assert response.status_code == 403
+    assert "preferencias" in response.json()["detail"].lower()
