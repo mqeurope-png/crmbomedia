@@ -4302,3 +4302,27 @@ a.origin-chip:hover { filter: brightness(0.97); }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* Email thread detail v2.1 */
+.email-thread-header { margin: 8px 0 16px; }
+.email-message-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+.email-message-avatar {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--brand);
+  color: white;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.email-message-inbound .email-message-avatar { background: #137a4d; }
+.email-message-meta { flex: 1; min-width: 0; }
+.email-message-from { margin: 0; font-size: 13px; }
+.email-message-from .badge { margin-left: 6px; font-size: 10px; }
