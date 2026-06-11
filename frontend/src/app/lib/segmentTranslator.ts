@@ -10,6 +10,20 @@ import type { RuleGroupType, RuleType } from "react-querybuilder";
 
 type BackendNode = Record<string, unknown>;
 
+/**
+ * Backend comparator → react-querybuilder operator NAME.
+ *
+ * We deliberately use the backend comparator string verbatim instead
+ * of the math symbol (`>`, `<`, etc.). The previous map sent BOTH
+ * `gt → ">"` and `after → ">"` (same for `lt`/`before`), and reversing
+ * collapsed `">" → "after"`, so a numeric `lead_score > 5` was sent
+ * to the backend as `comparator: "after"` and 400'd with
+ * "Comparator 'after' not allowed for field 'lead_score'".
+ *
+ * Each field config in `ContactQueryBuilder` declares only the
+ * comparators valid for its type, so the dropdown never shows
+ * date-only operators on a numeric column.
+ */
 const OPERATOR_MAP_TO_QB: Record<string, string> = {
   eq: "=",
   neq: "!=",
@@ -20,13 +34,17 @@ const OPERATOR_MAP_TO_QB: Record<string, string> = {
   is_not_null: "notNull",
   in: "in",
   not_in: "notIn",
-  gt: ">",
-  gte: ">=",
-  lt: "<",
-  lte: "<=",
+  // Numeric comparators keep distinct QB names so the reverse map
+  // round-trips cleanly.
+  gt: "gt",
+  gte: "gte",
+  lt: "lt",
+  lte: "lte",
   between: "between",
-  before: "<",
-  after: ">",
+  // Date comparators do the same; they only ever appear on date
+  // fields where `gt`/`lt` are not in the field's operator list.
+  before: "before",
+  after: "after",
   in_last_n_days: "in_last_n_days",
   not_in_last_n_days: "not_in_last_n_days",
   contains_any: "contains_any",
