@@ -4104,3 +4104,45 @@ a.origin-chip:hover { filter: brightness(0.97); }
   font-size: 13px;
   padding: 2px 6px;
 }
+
+/* Email composer modal */
+.modal-wide { max-width: 720px; }
+.email-html-preview {
+  width: 100%;
+  min-height: 220px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: white;
+  margin-top: 8px;
+}
+.email-body-text {
+  white-space: pre-wrap;
+  font-family: inherit;
+  background: #f7faff;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px;
+  margin: 0;
+}
+
+/* Email thread list of messages */
+.email-thread-messages {
+  list-style: none;
+  padding: 0;
+  margin: 16px 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.email-message {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+  background: white;
+}
+.email-message-inbound { background: #f7faff; }
+.email-message-outbound { background: #fffefb; border-color: #f1e3a0; }
+.email-message header {
+  font-size: 13px;
+  margin-bottom: 8px;
+}

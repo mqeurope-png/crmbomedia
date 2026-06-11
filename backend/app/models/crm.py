@@ -3,6 +3,7 @@ from enum import StrEnum
 from uuid import uuid4
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     DateTime,
     Enum,
@@ -779,6 +780,149 @@ class UserGoogleIntegration(TimestampMixin, Base):
         DateTime(timezone=True), nullable=False
     )
     last_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class EmailDirection(StrEnum):
+    """outbound = enviado desde el CRM; inbound = reply recibido."""
+
+    OUTBOUND = "outbound"
+    INBOUND = "inbound"
+
+
+class EmailThread(TimestampMixin, Base):
+    """Sprint Email v1. Conversation = Gmail threadId scoped to a
+    single user's mailbox. Each row groups all `email_messages` that
+    share the same `(gmail_account_user_id, gmail_thread_id)`.
+    """
+
+    __tablename__ = "email_threads"
+    __table_args__ = (
+        UniqueConstraint(
+            "gmail_account_user_id",
+            "gmail_thread_id",
+            name="uq_email_threads_account_thread",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid4())
+    )
+    contact_id: Mapped[str | None] = mapped_column(
+        ForeignKey("contacts.id", ondelete="SET NULL"), index=True
+    )
+    initiated_by_user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id"), nullable=False, index=True
+    )
+    gmail_thread_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    gmail_account_user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id"), nullable=False, index=True
+    )
+    subject: Mapped[str | None] = mapped_column(String(500))
+    participants_json: Mapped[str | None] = mapped_column(Text)
+    first_message_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    last_message_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    message_count: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    has_unread_replies: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )
+    is_archived: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )
+
+    messages: Mapped[list["EmailMessage"]] = relationship(
+        back_populates="thread",
+        order_by="EmailMessage.sent_at",
+        cascade="all, delete-orphan",
+    )
+
+
+class EmailMessage(TimestampMixin, Base):
+    """One individual email (outbound or inbound) inside a thread.
+
+    Unique by `(gmail_account_user_id, gmail_message_id)` so the
+    webhook + send paths can dedupe without coordinating.
+    """
+
+    __tablename__ = "email_messages"
+    __table_args__ = (
+        UniqueConstraint(
+            "gmail_account_user_id",
+            "gmail_message_id",
+            name="uq_email_messages_account_message",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid4())
+    )
+    thread_id: Mapped[str] = mapped_column(
+        ForeignKey("email_threads.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    gmail_message_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    gmail_account_user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id"), nullable=False
+    )
+    direction: Mapped[EmailDirection] = mapped_column(
+        Enum(EmailDirection, native_enum=False, values_callable=enum_values, length=16),
+        nullable=False,
+    )
+    from_email: Mapped[str] = mapped_column(String(255), nullable=False)
+    from_name: Mapped[str | None] = mapped_column(String(255))
+    to_emails_json: Mapped[str] = mapped_column(Text, nullable=False)
+    cc_emails_json: Mapped[str | None] = mapped_column(Text)
+    bcc_emails_json: Mapped[str | None] = mapped_column(Text)
+    subject: Mapped[str | None] = mapped_column(String(500))
+    body_html: Mapped[str | None] = mapped_column(Text)
+    body_text: Mapped[str | None] = mapped_column(Text)
+    snippet: Mapped[str | None] = mapped_column(String(255))
+    attachments_json: Mapped[str | None] = mapped_column(Text)
+    sent_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    contact_id: Mapped[str | None] = mapped_column(
+        ForeignKey("contacts.id", ondelete="SET NULL"), index=True
+    )
+    created_by_user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("users.id")
+    )
+    read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    thread: Mapped[EmailThread] = relationship(back_populates="messages")
+
+
+class GmailPubsubWatch(TimestampMixin, Base):
+    """Per-user Gmail Push Notifications watch.
+
+    One row per user. `history_id` is the last historyId we
+    successfully processed; the webhook resumes from there on every
+    incoming push. `watch_expires_at` is the upstream's hard 7-day
+    deadline; the renewer cron tops it up before then.
+    """
+
+    __tablename__ = "gmail_pubsub_watches"
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid4())
+    )
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+    )
+    history_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    watch_expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    last_renewed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    topic_name: Mapped[str] = mapped_column(String(255), nullable=False)
 
 
 class GdprRequestType(StrEnum):

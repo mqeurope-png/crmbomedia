@@ -31,6 +31,20 @@ export async function getGoogleStatus(): Promise<GoogleStatus> {
   return apiFetch<GoogleStatus>("/api/integrations/google/status");
 }
 
+export type GoogleScopesStatus = {
+  calendar_events: boolean;
+  calendar_readonly: boolean;
+  gmail_send: boolean;
+  gmail_modify: boolean;
+  gmail_settings: boolean;
+};
+
+export async function getGoogleScopesStatus(): Promise<GoogleScopesStatus> {
+  return apiFetch<GoogleScopesStatus>(
+    "/api/integrations/google/scopes-status",
+  );
+}
+
 export async function listGoogleCalendars(): Promise<GoogleCalendarItem[]> {
   return apiFetch<GoogleCalendarItem[]>("/api/integrations/google/calendars");
 }

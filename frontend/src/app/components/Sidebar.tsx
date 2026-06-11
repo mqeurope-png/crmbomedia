@@ -66,6 +66,7 @@ const NAV_ITEMS: ReadonlyArray<Item> = [
   { href: "/", label: "Dashboard", icon: BarChart3, public: true },
   { href: "/contacts", label: "Contactos", icon: Users, public: true },
   { href: "/tasks", label: "Tareas", icon: CheckSquare, public: true },
+  { href: "/emails", label: "Emails", icon: Mail, public: true },
   { href: "/companies", label: "Empresas", icon: Building2, public: true },
   {
     href: "/pipelines",

@@ -5,8 +5,10 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import {
   disconnectGoogle,
+  getGoogleScopesStatus,
   getGoogleStatus,
   startGoogleConnect,
+  type GoogleScopesStatus,
   type GoogleStatus,
 } from "../lib/googleApi";
 import { extractErrorMessage } from "../lib/errors";
@@ -21,14 +23,19 @@ import { extractErrorMessage } from "../lib/errors";
  */
 export function GoogleCalendarSection() {
   const [status, setStatus] = useState<GoogleStatus | null>(null);
+  const [scopes, setScopes] = useState<GoogleScopesStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
     try {
-      const data = await getGoogleStatus();
+      const [data, scopesData] = await Promise.all([
+        getGoogleStatus(),
+        getGoogleScopesStatus().catch(() => null),
+      ]);
       setStatus(data);
+      setScopes(scopesData);
       setError(null);
     } catch (err) {
       setError(extractErrorMessage(err, "No se pudo cargar el estado."));
@@ -122,11 +129,29 @@ export function GoogleCalendarSection() {
     );
   }
 
+  const needsGmailReauth =
+    scopes !== null && (!scopes.gmail_send || !scopes.gmail_modify);
+
   return (
     <>
       <p className="muted small">
         Cuenta: <strong>{status.google_email}</strong>
       </p>
+      {needsGmailReauth ? (
+        <div className="form-warning">
+          <span>
+            Necesitamos permisos adicionales para enviar emails desde el CRM.
+          </span>
+          <button
+            type="button"
+            className="button small"
+            onClick={handleConnect}
+            disabled={busy}
+          >
+            Autorizar Gmail
+          </button>
+        </div>
+      ) : null}
       {status.requires_calendar_selection ? (
         <>
           <p className="form-warning">

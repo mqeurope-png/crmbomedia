@@ -84,6 +84,14 @@ class Settings(BaseSettings):
     # matches the spec.
     google_calendar_default_event_minutes: int = 30
 
+    # Sprint Email v1 — Gmail Push Notifications via Cloud Pub/Sub.
+    # When `gmail_pubsub_topic` is empty the webhook path 503s with
+    # "not configured by admin" and watch registration is a no-op.
+    gmail_pubsub_project_id: str | None = None
+    gmail_pubsub_topic: str | None = None
+    gmail_pubsub_subscription: str | None = None
+    gmail_pubsub_verification_token: str | None = None
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
     @field_validator("integration_secrets_key")
