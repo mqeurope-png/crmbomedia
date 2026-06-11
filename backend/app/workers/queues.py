@@ -26,6 +26,13 @@ DEFAULT_RESULT_TTL = 86_400  # keep the result around for one day for the UI.
 #: comfortable headroom.
 LONG_JOB_TIMEOUTS: dict[str, int] = {
     "brevo:historical_backfill": 7_200,
+    # A push target upserts every matched contact serially before the
+    # list-add call. A view matching a few hundred contacts already
+    # outlives the 600 s default (1 create-or-update round-trip per
+    # contact against Brevo's ~100 req/min budget); the job was
+    # SIGKILL'd mid-run, which is how "the list got created but stayed
+    # empty" presented in production.
+    "brevo:push_target": 7_200,
 }
 
 
