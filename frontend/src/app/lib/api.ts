@@ -502,6 +502,22 @@ export async function searchContacts(
   });
 }
 
+export type ContactSearchIdsResult = {
+  ids: string[];
+  count: number;
+  truncated: boolean;
+  max_ids: number;
+};
+
+export async function searchContactIds(
+  payload: ContactSearchPayload,
+): Promise<ContactSearchIdsResult> {
+  return apiFetch<ContactSearchIdsResult>("/api/contacts/search/ids", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function saveViewAsSegment(
   viewId: string,
   payload: { name: string; description?: string | null; is_shared?: boolean },

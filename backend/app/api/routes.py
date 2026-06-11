@@ -1443,6 +1443,78 @@ def search_contacts_endpoint(
     )
 
 
+@router.post(
+    "/contacts/search/ids",
+    responses=ERROR_RESPONSES,
+    tags=["crm"],
+)
+def search_contact_ids_endpoint(
+    payload: ContactSearchRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_viewer),
+) -> dict[str, Any]:
+    """Same WHERE as `/contacts/search` but returns only the matching
+    UUIDs (no payload). Drives the "Seleccionar los X contactos del
+    filtro" link in the bulk-action banner — clients use this to expand
+    the visible-page selection into the whole filter cohort without
+    pulling every Contact body.
+
+    Hard-capped at 10 000 ids per call. When the filter would return
+    more, the response includes `truncated: true` and the operator
+    sees a warning in the UI before any bulk action runs.
+    """
+    from app.services.segments.engine import (  # noqa: PLC0415
+        SegmentRuleError,
+        build_filter,
+    )
+    from app.models.crm import Segment as _Segment  # noqa: PLC0415
+
+    def _segment_resolver(segment_id: str, _visited: set[str]) -> dict[str, Any] | None:
+        seg = session.get(_Segment, segment_id)
+        if seg is None or not seg.rules_json:
+            return None
+        try:
+            return json.loads(seg.rules_json)
+        except (TypeError, ValueError):
+            return None
+
+    try:
+        filter_clause = build_filter(
+            payload.rules_json or {},
+            segment_resolver=_segment_resolver,
+        )
+    except SegmentRuleError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+
+    if payload.assigned_to_me:
+        from sqlalchemy import and_ as _and_  # noqa: PLC0415
+
+        owner_clause = Contact.owner_user_id == current_user.id
+        filter_clause = (
+            owner_clause if filter_clause is None else _and_(filter_clause, owner_clause)
+        )
+
+    MAX_IDS = 10_000  # noqa: N806
+    stmt = select(Contact.id)
+    if filter_clause is not None:
+        stmt = stmt.where(filter_clause)
+    if not payload.include_inactive:
+        stmt = stmt.where(Contact.is_active.is_(True))
+    stmt = stmt.limit(MAX_IDS + 1)
+    raw_ids = list(session.scalars(stmt))
+    truncated = len(raw_ids) > MAX_IDS
+    ids = raw_ids[:MAX_IDS]
+    return {
+        "ids": ids,
+        "count": len(ids),
+        "truncated": truncated,
+        "max_ids": MAX_IDS,
+    }
+
+
 @router.get(
     "/contacts/count",
     response_model=CountRead,

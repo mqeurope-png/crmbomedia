@@ -3925,3 +3925,19 @@ a.origin-chip:hover { filter: brightness(0.97); }
   text-decoration: line-through;
   color: var(--muted);
 }
+
+/* "Seleccionar los X del filtro" banner that appears when all
+   visible rows are checked but the filter has more matches. */
+.select-all-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: #eef4fb;
+  border: 1px solid #bcd0eb;
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin: 0 0 8px;
+  font-size: 13px;
+}
+.select-all-banner .button.small { padding: 4px 10px; }

@@ -25,6 +25,7 @@ import {
   listSavedViews,
   pushViewToBrevoList,
   saveViewAsSegment,
+  searchContactIds,
   searchContacts,
   setDefaultSavedView,
   updateSavedView,
@@ -773,6 +774,72 @@ export default function ContactsListPage() {
               }}
               onClear={() => setSelected(new Set())}
             />
+            {(() => {
+              const allVisibleSelected =
+                page.items.length > 0 &&
+                page.items.every((c) => selected.has(c.id));
+              const visibleCount = page.items.length;
+              const selectedCount = selected.size;
+              const totalMatching = page.total;
+              const moreInFilter = totalMatching > visibleCount;
+              const allFilterSelected = selectedCount >= totalMatching;
+              if (!allVisibleSelected || !moreInFilter) return null;
+              return (
+                <div className="select-all-banner">
+                  {allFilterSelected ? (
+                    <>
+                      <span>
+                        ✓ {selectedCount} contactos seleccionados.
+                      </span>
+                      <button
+                        type="button"
+                        className="button small secondary"
+                        onClick={() => setSelected(new Set())}
+                      >
+                        Deseleccionar todos
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <span>
+                        ✓ {selectedCount} contactos seleccionados en esta página.
+                      </span>
+                      <button
+                        type="button"
+                        className="button small"
+                        onClick={async () => {
+                          try {
+                            const result = await searchContactIds({
+                              rules_json:
+                                Object.keys(rules).length > 0 ? rules : null,
+                              q: q || null,
+                              sort_by: sortBy,
+                              sort_dir: sortDir,
+                              assigned_to_me: assignedToMe,
+                            });
+                            setSelected(new Set(result.ids));
+                            if (result.truncated) {
+                              setError(
+                                `Solo se pudieron seleccionar los primeros ${result.max_ids}. Filtra más para abarcar todos.`,
+                              );
+                            }
+                          } catch (err) {
+                            setError(
+                              extractErrorMessage(
+                                err,
+                                "No se pudo expandir la selección al filtro completo.",
+                              ),
+                            );
+                          }
+                        }}
+                      >
+                        Seleccionar los {totalMatching} contactos que cumplen el filtro
+                      </button>
+                    </>
+                  )}
+                </div>
+              );
+            })()}
             <div className="table-wrapper">
               <table className="data-table contacts-table">
                 <thead>

@@ -184,3 +184,45 @@ def test_bulk_rejects_oversized_selection(client: TestClient) -> None:
         headers=auth_headers(client, "user"),
     )
     assert resp.status_code == 422
+
+
+def test_search_ids_returns_uuids_only(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    """`POST /api/contacts/search/ids` returns just the UUIDs of the
+    matching contacts — used by the "Seleccionar todos del filtro"
+    banner so the client can expand the selection without pulling
+    every Contact body."""
+    response = client.post(
+        "/api/contacts/search/ids",
+        json={},
+        headers=auth_headers(client, "user"),
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert isinstance(body["ids"], list)
+    assert body["count"] == 3
+    assert body["truncated"] is False
+    assert body["max_ids"] == 10_000
+
+
+def test_search_ids_respects_assigned_to_me(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    """The same `assigned_to_me` flag the search endpoint honours
+    must trim the id list — otherwise the bulk banner could end up
+    asking the user to act on contacts they don't own."""
+    with session_factory() as s:
+        user_id = s.scalar(select(User.id).where(User.role == UserRole.USER))
+        # Tag the first contact as owned by the user.
+        first = s.scalars(select(Contact)).first()
+        assert first is not None
+        first.owner_user_id = user_id
+        s.commit()
+    response = client.post(
+        "/api/contacts/search/ids",
+        json={"assigned_to_me": True},
+        headers=auth_headers(client, "user"),
+    )
+    assert response.status_code == 200
+    assert response.json()["count"] == 1
