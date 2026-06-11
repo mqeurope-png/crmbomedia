@@ -80,7 +80,19 @@ def connect_user(
     session: Session, *, user_id: str, code: str, state: str
 ) -> UserGoogleIntegration:
     """Complete the OAuth flow: exchange the code, persist (or
-    refresh) the row, return it."""
+    refresh) the row, return it.
+
+    Scope-expansion flow: when an existing user re-authorises (e.g.
+    to add Gmail to a Calendar-only integration), we merge the
+    scopes and KEEP the previously-selected calendar — the old
+    `selected_calendar_id` belongs to the same Google account so
+    resetting it would force the operator to re-pick on every
+    incremental authorisation.
+
+    The calendar selection IS dropped when the connected Google
+    email changes (the user authorised with a different account),
+    since calendar ids aren't portable across accounts.
+    """
     result = exchange_code_for_tokens(code=code, state=state)
     integration = get_integration(session, user_id)
     now = datetime.now(UTC)
@@ -96,16 +108,21 @@ def connect_user(
         )
         session.add(integration)
     else:
+        account_changed = integration.google_email != result.google_email
+        existing_scopes = set(
+            (integration.scopes or "").split()
+        )
+        merged_scopes = sorted(existing_scopes | set(result.scopes))
         integration.google_email = result.google_email
         integration.access_token_encrypted = encrypt(result.access_token)
         integration.refresh_token_encrypted = encrypt(result.refresh_token)
         integration.token_expires_at = result.expires_at
-        integration.scopes = " ".join(result.scopes)
+        integration.scopes = " ".join(merged_scopes)
         integration.connected_at = now
-        # Reset calendar selection so the user picks one for the new
-        # connection — the old id may belong to a different account.
-        integration.selected_calendar_id = None
-        integration.selected_calendar_summary = None
+        if account_changed:
+            # New Google account → old calendar id is meaningless.
+            integration.selected_calendar_id = None
+            integration.selected_calendar_summary = None
     session.flush()
     return integration
 
