@@ -661,7 +661,7 @@ def test_tag_contains_none_with_two_tags(session_factory):
     """`contains_none` with two tag_ids excludes any contact that
     carries either of them — not just contacts carrying both."""
     with session_factory() as session:
-        seeded = _seed(session)
+        _seed(session)
         vip_id = session.scalar(select(Tag.id).where(Tag.name_normalized == "vip"))
         cold_id = session.scalar(select(Tag.id).where(Tag.name_normalized == "cold"))
         condition = build_filter(
