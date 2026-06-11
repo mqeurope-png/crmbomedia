@@ -1217,3 +1217,167 @@ def test_inbound_reply_emits_activity_event_on_contact(
         )
     assert len(events) == 1
     assert events[0].contact_id == cid
+
+
+# ---------------------------------------------------------------------------
+# v2.1.1 — contact_name resolution + auto mark-read
+# ---------------------------------------------------------------------------
+
+
+def test_thread_list_resolves_contact_name_from_contact_row(
+    client: TestClient,
+    session_factory: sessionmaker,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.models.crm import Contact  # noqa: PLC0415
+
+    with session_factory() as session:
+        uid = _user_id(session, UserRole.USER)
+        contact = Contact(
+            first_name="Eduard", last_name="Riera", email="eduard@example.com"
+        )
+        session.add(contact)
+        session.commit()
+        cid = contact.id
+    _seed_gmail_integration(session_factory, user_id=uid)
+
+    class _FakeClient:
+        def __init__(self, *_a, **_k):
+            pass
+
+        def send_message(self, **_kwargs):
+            return {"id": "msg-eduard", "threadId": "thr-eduard"}
+
+    monkeypatch.setattr(
+        "app.integrations.gmail.service.GmailClient", _FakeClient
+    )
+    client.post(
+        "/api/emails/send",
+        json={
+            "from_alias": "info@bomedia.net",
+            "to": ["eduard@example.com"],
+            "subject": "Test",
+            "body_text": "body",
+            "contact_id": cid,
+        },
+        headers=auth_headers(client, "user"),
+    )
+    response = client.get(
+        "/api/emails/threads", headers=auth_headers(client, "user")
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["items"][0]["contact_name"] == "Eduard Riera"
+
+
+def test_thread_list_falls_back_to_email_local_when_no_contact(
+    client: TestClient,
+    session_factory: sessionmaker,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When there's no linked Contact and no `from_name` header,
+    capitalise the local part of the from_email."""
+    with session_factory() as session:
+        uid = _user_id(session, UserRole.USER)
+    _seed_gmail_integration(session_factory, user_id=uid)
+
+    class _FakeClient:
+        def __init__(self, *_a, **_k):
+            pass
+
+        def send_message(self, **_kwargs):
+            return {"id": "msg-fb", "threadId": "thr-fb"}
+
+    monkeypatch.setattr(
+        "app.integrations.gmail.service.GmailClient", _FakeClient
+    )
+    client.post(
+        "/api/emails/send",
+        json={
+            "from_alias": "info@bomedia.net",
+            "to": ["x@example.com"],
+            "subject": "Test",
+            "body_text": "body",
+        },
+        headers=auth_headers(client, "user"),
+    )
+    response = client.get(
+        "/api/emails/threads", headers=auth_headers(client, "user")
+    )
+    body = response.json()
+    # No Contact linked, message has no from_name, so the resolver
+    # falls back to capitalising the email's local part: "info".
+    assert body["items"][0]["contact_name"] == "Info"
+
+
+def test_detail_endpoint_auto_marks_read_for_initiator(
+    client: TestClient,
+    session_factory: sessionmaker,
+) -> None:
+    """Opening a thread you initiated flips `has_unread_replies`
+    off as a side effect of the GET — the front-end doesn't need
+    to chain a mark-read POST."""
+    from app.models.crm import EmailDirection  # noqa: PLC0415
+
+    with session_factory() as session:
+        uid = _user_id(session, UserRole.USER)
+        thread = EmailThread(
+            initiated_by_user_id=uid,
+            gmail_thread_id="thr-mark",
+            gmail_account_user_id=uid,
+            first_message_at=datetime.now(UTC),
+            last_message_at=datetime.now(UTC),
+            message_count=1,
+            has_unread_replies=True,
+        )
+        session.add(thread)
+        session.flush()
+        session.add(
+            EmailMessage(
+                thread_id=thread.id,
+                gmail_message_id="msg-mark",
+                gmail_account_user_id=uid,
+                direction=EmailDirection.INBOUND,
+                from_email="x@example.com",
+                to_emails_json='["info@bomedia.net"]',
+                sent_at=datetime.now(UTC),
+            )
+        )
+        session.commit()
+        thread_id = thread.id
+    response = client.get(
+        f"/api/emails/threads/{thread_id}",
+        headers=auth_headers(client, "user"),
+    )
+    assert response.status_code == 200
+    with session_factory() as session:
+        thread = session.get(EmailThread, thread_id)
+        assert thread.has_unread_replies is False
+
+
+def test_mark_unread_flips_flag_back_on(
+    client: TestClient,
+    session_factory: sessionmaker,
+) -> None:
+    with session_factory() as session:
+        uid = _user_id(session, UserRole.USER)
+        thread = EmailThread(
+            initiated_by_user_id=uid,
+            gmail_thread_id="thr-flip",
+            gmail_account_user_id=uid,
+            first_message_at=datetime.now(UTC),
+            last_message_at=datetime.now(UTC),
+            message_count=1,
+            has_unread_replies=False,
+        )
+        session.add(thread)
+        session.commit()
+        thread_id = thread.id
+    response = client.post(
+        f"/api/emails/threads/{thread_id}/mark-unread",
+        headers=auth_headers(client, "user"),
+    )
+    assert response.status_code == 200
+    with session_factory() as session:
+        thread = session.get(EmailThread, thread_id)
+        assert thread.has_unread_replies is True

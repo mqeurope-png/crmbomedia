@@ -334,8 +334,9 @@ def list_threads(
         # operator can find "Eduard Riera" even when the contact's
         # row carries the canonical name and the message header
         # ships the email alone).
-        from app.models.crm import Contact as _Contact  # noqa: PLC0415
         from sqlalchemy import or_ as _or  # noqa: PLC0415
+
+        from app.models.crm import Contact as _Contact  # noqa: PLC0415
 
         like = f"%{q}%"
         msg_match = select(EmailMessage.thread_id).where(
