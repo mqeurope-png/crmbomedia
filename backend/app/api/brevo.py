@@ -1129,6 +1129,28 @@ def _get_campaign_or_404(session: Session, campaign_id: str) -> BrevoCampaignCac
     return row
 
 
+def _campaign_error_detail(exc: IntegrationError) -> str:
+    """Operator-facing detail for campaign-call failures.
+
+    A 405 from Brevo on a documented route is almost always an
+    account-side restriction (API key created without Marketing
+    permissions, or a plan that doesn't expose the campaigns API) —
+    not a wrong URL. The raw "405 from brevo/default" gave the
+    operator nothing to act on; this points at the two checks that
+    actually resolve it."""
+    status_code = getattr(exc, "status_code", None)
+    if status_code == 405:
+        return (
+            "Brevo rechazó la operación de campañas (405 Method Not "
+            "Allowed). Esto suele indicar que la API key no tiene "
+            "permisos de Marketing/Campañas o que el plan de la cuenta "
+            "no permite gestionar campañas vía API. Revisa en Brevo → "
+            "Settings → SMTP & API que la key tenga acceso completo, o "
+            "genera una nueva sin restricciones de permisos."
+        )
+    return exc.message
+
+
 @router.get("/campaigns", response_model=list[BrevoCampaignRead])
 def list_campaigns(
     account_id: str = Query(...),
@@ -1270,15 +1292,28 @@ def create_campaign(
                 body["templateId"] = payload.template_id
             else:
                 body["htmlContent"] = payload.html_content
+            created = await client.create_email_campaign(body)
+            # Scheduling is a SECOND call on the draft (documented
+            # `PUT /emailCampaigns/{id}` with `scheduledAt`) instead of
+            # riding on the create body. Production hit 405s on the
+            # combined create; splitting means a scheduling rejection
+            # leaves a usable draft behind instead of nothing, and the
+            # error message can point at the scheduling step
+            # specifically.
             if payload.scheduled_at:
-                body["scheduledAt"] = payload.scheduled_at.isoformat()
-            return await client.create_email_campaign(body)
+                campaign_id = created.get("id")
+                if campaign_id is not None:
+                    await client.schedule_email_campaign(
+                        int(campaign_id), payload.scheduled_at.isoformat()
+                    )
+            return created
 
     try:
         created = asyncio.run(_create())
     except IntegrationError as exc:
         raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY, detail=exc.message
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=_campaign_error_detail(exc),
         ) from exc
 
     row = campaigns_service.upsert_campaign_row(
@@ -1471,7 +1506,8 @@ def schedule_campaign(
         asyncio.run(_schedule())
     except IntegrationError as exc:
         raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY, detail=exc.message
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=_campaign_error_detail(exc),
         ) from exc
     row.status = "queued"
     row.scheduled_at = scheduled_at
