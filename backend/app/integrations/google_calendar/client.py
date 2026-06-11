@@ -93,9 +93,9 @@ class GoogleCalendarClient:
 
     def _refresh_token(self) -> None:
         """Force a token refresh and persist the result."""
-        from google.oauth2.credentials import Credentials  # noqa: PLC0415
-        from google.auth.transport.requests import Request  # noqa: PLC0415
         from google.auth.exceptions import RefreshError  # noqa: PLC0415
+        from google.auth.transport.requests import Request  # noqa: PLC0415
+        from google.oauth2.credentials import Credentials  # noqa: PLC0415
 
         from app.core.config import get_settings  # noqa: PLC0415
 

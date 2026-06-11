@@ -73,11 +73,24 @@ El timeline de la ficha de contacto las pinta junto a emails y notas.
   `/api/contacts/{id}/tasks`, complete + delete inline, botón "Crear"
   que abre el TaskModal con el contacto pre-seleccionado.
 
+## Google Calendar sync (Fase 2)
+
+La Fase 2 añade la integración. Detalles en
+`docs/integrations-google-calendar.md`. Resumen:
+
+- Cada user conecta su cuenta desde `/account` y elige un calendario.
+- El modal de crear tarea muestra un checkbox "Sincronizar con
+  Google Calendar" (default ON cuando el user está conectado).
+- `POST /api/tasks` con `sync_with_google_calendar: true` espeja la
+  tarea como evento; `PATCH` y `DELETE` actualizan/eliminan el
+  evento si existe `google_event_id`.
+- Fallos de Google son warnings, nunca rompen la operación CRM.
+- Multi-user: el evento se crea en el calendario del **assignee**.
+
 ## Próximos pasos
 
-- **Google Calendar sync** (Fase siguiente): OAuth, cifrado de tokens,
-  espejo de eventos al crear/modificar/borrar tarea, calendario
-  configurable por usuario.
+- **Google Calendar — bidireccional** (futuro): por ahora solo
+  tarea→evento. Eventos manuales en Google no aparecen como tareas.
 - **Dashboard rediseñado** (Fase siguiente): widget "Mis tareas
   pendientes" usando `/api/tasks/my-buckets` como aquí.
 - **Vista calendario en /tasks** (no MVP): pintar las tareas en un

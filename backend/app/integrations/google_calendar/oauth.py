@@ -153,8 +153,8 @@ def _extract_email_from_id_token(credentials: Any) -> str:
     id_token = getattr(credentials, "id_token", None)
     if id_token:
         try:
-            from google.oauth2 import id_token as id_token_lib  # noqa: PLC0415
             from google.auth.transport import requests as g_requests  # noqa: PLC0415
+            from google.oauth2 import id_token as id_token_lib  # noqa: PLC0415
 
             settings = get_settings()
             info = id_token_lib.verify_oauth2_token(

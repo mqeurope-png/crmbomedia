@@ -43,8 +43,8 @@ from app.integrations.google_calendar.oauth import (
 from app.models.crm import User
 from app.schemas.crm import (
     GoogleCalendarItem,
-    GoogleCalendarSelectPayload,
     GoogleCalendarSelection,
+    GoogleCalendarSelectPayload,
     GoogleCalendarStatus,
 )
 
