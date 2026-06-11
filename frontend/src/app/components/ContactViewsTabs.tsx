@@ -1,7 +1,8 @@
 "use client";
 
 import { Plus, Settings2 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { SavedView } from "../lib/api";
 
 type Props = {
@@ -20,14 +21,14 @@ type Props = {
 
 const ALL_TAB_ID = "__all__";
 
-/** Brevo-style horizontal tabs of saved views. "Todos los contactos"
- * sits at the left as a permanent reset tab (active when no saved
- * view is loaded); each saved view becomes a tab to its right. The
- * cogwheel on the active tab opens a small menu with the per-view
- * actions (rename / share / duplicate / set-default / delete).
+/** Brevo-style horizontal tabs of saved views.
  *
- * Sharing / set-default flow through the existing endpoints; the
- * component is purely presentation + dispatching.
+ * The cogwheel on each tab opens a portalled dropdown — the previous
+ * `position: absolute` implementation was being clipped by the
+ * list's `overflow-x: auto` (rendering the menu invisible while
+ * leaving the horizontal scrollbar as a phantom "arrow"). Portalling
+ * to `document.body` sidesteps the clip and pins the menu to the
+ * cogwheel's bounding rect.
  */
 export function ContactViewsTabs({
   views,
@@ -41,9 +42,15 @@ export function ContactViewsTabs({
   onDelete,
 }: Props) {
   const [menuOpen, setMenuOpen] = useState<string | null>(null);
+  const buttonRefs = useRef<Record<string, HTMLButtonElement | null>>({});
 
   const activeView = views.find((v) => v.id === activeId) ?? null;
   const isAllActive = activeId === null;
+
+  const openMenuView = menuOpen
+    ? views.find((v) => v.id === menuOpen) ?? null
+    : null;
+  const anchor = menuOpen ? buttonRefs.current[menuOpen] ?? null : null;
 
   return (
     <nav className="contact-views-tabs" aria-label="Vistas guardadas">
@@ -92,6 +99,9 @@ export function ContactViewsTabs({
               <button
                 type="button"
                 className="contact-views-tab-menu-button"
+                ref={(el) => {
+                  buttonRefs.current[view.id] = el;
+                }}
                 onClick={(e) => {
                   e.stopPropagation();
                   setMenuOpen(menuOpen === view.id ? null : view.id);
@@ -102,16 +112,6 @@ export function ContactViewsTabs({
               >
                 <Settings2 size={13} aria-hidden />
               </button>
-              {menuOpen === view.id ? (
-                <ViewActionsMenu
-                  view={view}
-                  onClose={() => setMenuOpen(null)}
-                  onEdit={onEdit}
-                  onDuplicate={onDuplicate}
-                  onSetDefault={onSetDefault}
-                  onDelete={onDelete}
-                />
-              ) : null}
             </li>
           );
         })}
@@ -133,14 +133,28 @@ export function ContactViewsTabs({
             : "Vista privada."}
         </p>
       ) : null}
+      {openMenuView && anchor ? (
+        <PortalledViewActionsMenu
+          view={openMenuView}
+          anchor={anchor}
+          onClose={() => setMenuOpen(null)}
+          onEdit={onEdit}
+          onDuplicate={onDuplicate}
+          onSetDefault={onSetDefault}
+          onDelete={onDelete}
+        />
+      ) : null}
     </nav>
   );
 }
 
-/** Pop-up menu attached to the active tab. Auto-closes when the user
- * picks an action or clicks outside. */
-function ViewActionsMenu({
+/** Dropdown rendered via React Portal so the parent's
+ * `overflow-x: auto` (the horizontal-scrollable tabs list) doesn't
+ * clip it. Positioned absolutely against the cogwheel's bounding
+ * rect, re-measured each open. */
+function PortalledViewActionsMenu({
   view,
+  anchor,
   onClose,
   onEdit,
   onDuplicate,
@@ -148,20 +162,72 @@ function ViewActionsMenu({
   onDelete,
 }: {
   view: SavedView;
+  anchor: HTMLElement;
   onClose: () => void;
   onEdit: (view: SavedView) => void;
   onDuplicate: (view: SavedView) => void;
   onSetDefault: (view: SavedView) => void;
   onDelete: (view: SavedView) => void;
 }) {
-  return (
+  const [coords, setCoords] = useState<{ top: number; right: number } | null>(
+    null,
+  );
+
+  useEffect(() => {
+    function position() {
+      const rect = anchor.getBoundingClientRect();
+      setCoords({
+        top: rect.bottom + window.scrollY + 4,
+        right: window.innerWidth - rect.right - window.scrollX,
+      });
+    }
+    position();
+    window.addEventListener("resize", position);
+    window.addEventListener("scroll", position, true);
+    return () => {
+      window.removeEventListener("resize", position);
+      window.removeEventListener("scroll", position, true);
+    };
+  }, [anchor]);
+
+  useEffect(() => {
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  if (typeof document === "undefined") return null;
+  if (!coords) return null;
+
+  return createPortal(
     <>
       <div
         className="contact-views-tab-menu-overlay"
         onClick={onClose}
         aria-hidden
       />
-      <ul className="contact-views-tab-menu" role="menu">
+      <ul
+        className="contact-views-tab-menu"
+        role="menu"
+        style={{
+          position: "fixed",
+          top: coords.top,
+          right: coords.right,
+        }}
+      >
+        <li>
+          <button
+            type="button"
+            onClick={() => {
+              onSetDefault(view);
+              onClose();
+            }}
+          >
+            {view.is_default ? "Quitar de por defecto" : "Marcar como predeterminada"}
+          </button>
+        </li>
         <li>
           <button
             type="button"
@@ -187,17 +253,6 @@ function ViewActionsMenu({
         <li>
           <button
             type="button"
-            onClick={() => {
-              onSetDefault(view);
-              onClose();
-            }}
-          >
-            {view.is_default ? "Quitar de por defecto" : "Marcar por defecto"}
-          </button>
-        </li>
-        <li>
-          <button
-            type="button"
             className="danger"
             onClick={() => {
               onDelete(view);
@@ -208,7 +263,8 @@ function ViewActionsMenu({
           </button>
         </li>
       </ul>
-    </>
+    </>,
+    document.body,
   );
 }
 

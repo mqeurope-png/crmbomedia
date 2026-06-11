@@ -4,6 +4,7 @@ Tests run against an in-memory SQLite DB seeded with a few contacts,
 so the SQL plan is actually exercised — not just the AST.
 """
 from collections.abc import Generator
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import create_engine, select
@@ -563,3 +564,94 @@ def test_created_at_external_date_filter(session_factory):
         )
         matched = list(session.scalars(select(Contact).where(condition)))
         assert _ids(matched) == {seeded["ana"].id}
+
+
+def test_ends_with_string_operator(session_factory):
+    """Fase 4 — extended string operators include `ends_with`."""
+    with session_factory() as session:
+        seeded = _seed(session)
+        condition = build_filter(
+            {
+                "type": "rule",
+                "field": "email",
+                "comparator": "ends_with",
+                "value": "@example.com",
+            }
+        )
+        matched = list(session.scalars(select(Contact).where(condition)))
+        assert _ids(matched) == {
+            seeded["ana"].id,
+            seeded["boris"].id,
+            seeded["carla"].id,
+        }
+
+
+def test_not_in_enum_operator(session_factory):
+    """Fase 4 — `not_in` on enum fields (commercial_status,
+    marketing_consent) lets the operator carve out cohorts."""
+    with session_factory() as session:
+        seeded = _seed(session)
+        condition = build_filter(
+            {
+                "type": "rule",
+                "field": "commercial_status",
+                "comparator": "not_in",
+                "value": ["qualified"],
+            }
+        )
+        matched = list(session.scalars(select(Contact).where(condition)))
+        assert _ids(matched) == {seeded["boris"].id}
+
+
+def test_older_than_n_days_operator(session_factory):
+    with session_factory() as session:
+        seeded = _seed(session)
+        seeded["ana"].created_at_external = datetime.now(UTC) - timedelta(days=90)
+        seeded["boris"].created_at_external = datetime.now(UTC) - timedelta(days=5)
+        seeded["carla"].created_at_external = datetime.now(UTC) - timedelta(days=120)
+        session.commit()
+        condition = build_filter(
+            {
+                "type": "rule",
+                "field": "created_at_external",
+                "comparator": "older_than_n_days",
+                "value": 60,
+            }
+        )
+        matched = list(session.scalars(select(Contact).where(condition)))
+        assert _ids(matched) == {seeded["ana"].id, seeded["carla"].id}
+
+
+def test_first_name_field_with_string_operators(session_factory):
+    """Fase 4 — first_name + last_name now expose the full string
+    operator set (the legacy `name` concat field stays for
+    backward compat)."""
+    with session_factory() as session:
+        seeded = _seed(session)
+        condition = build_filter(
+            {
+                "type": "rule",
+                "field": "first_name",
+                "comparator": "starts_with",
+                "value": "C",
+            }
+        )
+        matched = list(session.scalars(select(Contact).where(condition)))
+        assert _ids(matched) == {seeded["carla"].id}
+
+
+def test_address_country_contains_operator(session_factory):
+    """The country field now accepts substring matches in addition
+    to exact ISO code matches."""
+    with session_factory() as session:
+        seeded = _seed(session)
+        condition = build_filter(
+            {
+                "type": "rule",
+                "field": "address_country",
+                "comparator": "contains",
+                "value": "F",
+            }
+        )
+        matched = list(session.scalars(select(Contact).where(condition)))
+        assert _ids(matched) == {seeded["boris"].id}

@@ -205,6 +205,8 @@ def _compile_column_leaf(
         return ~column.ilike(f"%{value}%")
     if comparator == "starts_with":
         return column.ilike(f"{value}%")
+    if comparator == "ends_with":
+        return column.ilike(f"%{value}")
     if comparator == "in":
         return column.in_(value)
     if comparator == "not_in":
@@ -230,6 +232,12 @@ def _compile_column_leaf(
     if comparator == "not_in_last_n_days":
         boundary = _now() - timedelta(days=int(value))
         return or_(column.is_(None), column < boundary)
+    if comparator == "older_than_n_days":
+        # "hace más de N días" — matches rows whose date is at least
+        # N days old. Symmetric to in_last_n_days for "stale lead"
+        # filters.
+        boundary = _now() - timedelta(days=int(value))
+        return column < boundary
     raise SegmentRuleError(f"Unsupported comparator {comparator!r}")
 
 
@@ -487,6 +495,8 @@ def _evaluate_leaf(
         return value.lower() not in str(actual).lower()
     if comparator == "starts_with":
         return str(actual).lower().startswith(value.lower())
+    if comparator == "ends_with":
+        return str(actual).lower().endswith(value.lower())
     if comparator == "in":
         return actual in value
     if comparator == "not_in":
@@ -510,6 +520,9 @@ def _evaluate_leaf(
         boundary = _now() - timedelta(days=int(value))
         return actual >= boundary
     if comparator == "not_in_last_n_days":
+        boundary = _now() - timedelta(days=int(value))
+        return actual < boundary
+    if comparator == "older_than_n_days":
         boundary = _now() - timedelta(days=int(value))
         return actual < boundary
     if comparator in {"contains_any", "contains_all", "contains_none"}:
