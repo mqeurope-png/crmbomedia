@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.google_integrations import router as google_router
 from app.api.routes import router
 from app.api.tasks import router as tasks_router
 from app.core.config import get_settings
@@ -43,6 +44,7 @@ app.include_router(router, prefix="/api")
 # own module — the routes.py monolith was already pushing 4k lines
 # before the productivity layer started.
 app.include_router(tasks_router)
+app.include_router(google_router)
 
 
 @app.on_event("startup")

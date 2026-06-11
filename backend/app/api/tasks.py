@@ -32,6 +32,7 @@ from app.core.audit import Action, record_event
 from app.core.auth import require_user, require_viewer
 from app.core.errors import not_found
 from app.db.session import get_session
+from app.integrations.google_calendar import service as google_service
 from app.models.crm import (
     Task,
     TaskPriority,
@@ -241,6 +242,10 @@ def create_task_endpoint(
         },
         request=request,
     )
+    if payload.sync_with_google_calendar:
+        # Best-effort: a Google outage or a user without Google
+        # connected must not block the task.
+        google_service.sync_task_to_calendar(session, task)
     session.commit()
     session.refresh(task)
     return TaskRead.model_validate(task)
@@ -281,6 +286,8 @@ def update_task_endpoint(
         metadata={"changes": list(changes.keys())},
         request=request,
     )
+    if task.google_event_id and task.google_calendar_id:
+        google_service.update_task_event(session, task)
     session.commit()
     session.refresh(task)
     return TaskRead.model_validate(task)
@@ -332,6 +339,11 @@ def delete_task_endpoint(
         metadata={"title": task.title},
         request=request,
     )
+    if task.google_event_id and task.google_calendar_id:
+        # Drop the calendar event before the DB row goes away so we
+        # still have the ids to dispatch the API call. Failures are
+        # swallowed inside the service — the local delete proceeds.
+        google_service.delete_task_event(session, task)
     tasks_repository.delete_task(session, task)
     session.commit()
     return {"message": "Task deleted"}
