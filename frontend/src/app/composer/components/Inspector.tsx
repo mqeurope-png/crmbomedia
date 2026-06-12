@@ -1,17 +1,17 @@
 "use client";
 
 /**
- * Inspector — always-visible column to the right of the canvas.
+ * Inspector — dispatches to the per-type editor for the currently
+ * selected block.
  *
- * Fase 2c ships the structural surface (selection-aware header, scroll
- * container, empty + raw-meta states). The per-type editors
- * (TextEditor / ProductSingleEditor / HeroEditor / etc.) port into
- * this component in sub-PR 2d alongside the Inspector primitives
- * (Field / Toggle / Section) from `bomedia-v4/app-inspector.jsx`.
+ * Fase 2c shipped this as a meta dump; Flujo A unlocks the first
+ * per-type editor (`PimpamHeroEditor`). Subsequent flows add their
+ * own editors here.
  */
 
 import { useComposerStore } from "../lib/store";
-import type { ComposerCatalog } from "../lib/types";
+import type { Block, ComposerCatalog } from "../lib/types";
+import { PimpamHeroEditor } from "./editors/PimpamHeroEditor";
 
 export interface InspectorProps {
   catalog: ComposerCatalog;
@@ -20,33 +20,22 @@ export interface InspectorProps {
 export function Inspector({ catalog }: InspectorProps) {
   const selectedId = useComposerStore((s) => s.selectedId);
   const blocks = useComposerStore((s) => s.blocks);
+  const lang = useComposerStore((s) => s.activeLang);
 
-  const block = selectedId
-    ? findBlock(blocks, selectedId)
-    : null;
+  const block = selectedId ? findBlock(blocks, selectedId) : null;
 
   if (!block) {
     return (
-      <aside className="cmp-inspector-panel">
-        <header className="cmp-inspector-header">
-          <h3>Inspector</h3>
-        </header>
-        <div className="cmp-inspector-empty">
-          <p style={{ fontSize: 13, color: "var(--text-muted)" }}>
-            Selecciona un bloque en el canvas para editar sus propiedades.
-          </p>
-        </div>
-      </aside>
+      <div className="cmp-inspector-empty">
+        <p style={{ fontSize: 13, color: "var(--text-muted)" }}>
+          Selecciona un bloque en el canvas para editar sus propiedades.
+        </p>
+      </div>
     );
   }
 
-  const product =
-    block.type === "product_single"
-      ? catalog.products.find((p) => p.id === block.product1)
-      : null;
-
   return (
-    <aside className="cmp-inspector-panel">
+    <div className="cmp-inspector-content">
       <header className="cmp-inspector-header">
         <h3>{block.type}</h3>
         <span
@@ -57,60 +46,43 @@ export function Inspector({ catalog }: InspectorProps) {
         </span>
       </header>
       <div className="cmp-inspector-body">
-        <dl className="cmp-inspector-meta">
-          {block._sourceType && (
-            <>
-              <dt>Fuente</dt>
-              <dd>{block._sourceType}</dd>
-            </>
-          )}
-          {block._sourceId && (
-            <>
-              <dt>Source ID</dt>
-              <dd className="mono">{block._sourceId}</dd>
-            </>
-          )}
-          {block.text && (
-            <>
-              <dt>Texto</dt>
-              <dd>{block.text}</dd>
-            </>
-          )}
-          {product && (
-            <>
-              <dt>Producto</dt>
-              <dd>
-                {product.name} · {product.price}
-              </dd>
-            </>
-          )}
-        </dl>
-        <p
-          style={{
-            fontSize: 11,
-            color: "var(--text-subtle)",
-            marginTop: 16,
-            padding: "12px 0",
-            borderTop: "1px dashed var(--border)",
-          }}
-        >
-          Editor completo (text / product / hero / brandstrip / cta /
-          divider / sections / steps / freebird / composed) en sub-PR
-          2d.
-        </p>
+        {renderEditor(block, catalog, lang)}
       </div>
-    </aside>
+    </div>
+  );
+}
+
+function renderEditor(
+  block: Block,
+  catalog: ComposerCatalog,
+  lang: ReturnType<typeof useComposerStore.getState>["activeLang"],
+) {
+  switch (block.type) {
+    case "pimpam_hero":
+    case "product_hero":
+    case "hero":
+      return <PimpamHeroEditor block={block} lang={lang} catalog={catalog} />;
+    default:
+      return <PlaceholderEditor block={block} />;
+  }
+}
+
+function PlaceholderEditor({ block }: { block: Block }) {
+  return (
+    <div style={{ padding: "12px 0", fontSize: 12, color: "var(--text-muted)" }}>
+      <p>Editor para <code className="mono">{block.type}</code> llega en un flujo siguiente.</p>
+      <p style={{ marginTop: 8, fontSize: 11 }}>
+        Por ahora solo está disponible PimpamHero. El resto (texto,
+        producto, brandstrip, cta, imagen, divisor, sección, pasos,
+        freebird, compuesto) ports uno por uno en los siguientes PRs.
+      </p>
+    </div>
   );
 }
 
 type BlocksTree = ReturnType<typeof useComposerStore.getState>["blocks"];
 
-/** Recursive find that walks into innerBlocks / column wrappers — the
- * inspector should resolve a selection from anywhere in the tree. */
-function findBlock(
-  blocks: BlocksTree,
-  id: string,
-): BlocksTree[number] | null {
+function findBlock(blocks: BlocksTree, id: string): Block | null {
   for (const b of blocks) {
     if (b.id === id) return b;
     if (b.type === "section" && Array.isArray(b.columns)) {
