@@ -7,10 +7,11 @@ import { Sidebar } from "./Sidebar";
 import { TopBar } from "./TopBar";
 
 const ANONYMOUS_ROUTES = ["/login", "/password-reset"];
-// `/composer/canvas` is a full-screen module (literal port of the
-// bomedia v5o editor). It has its own topbar / sidebar / footer
-// and shouldn't be wrapped by the CRM shell.
-const FULL_BLEED_ROUTES = ["/composer/canvas"];
+// `/composer` embeds the standalone Bomedia Composer (literal JSX
+// from `public/composer/`). It runs full-screen and shouldn't be
+// wrapped by the CRM shell — the embed has its own topbar / sidebar
+// / footer, and the redirect loader needs the full viewport.
+const FULL_BLEED_ROUTES = ["/composer"];
 const SIDEBAR_STORAGE_KEY = "crmbo:sidebar:collapsed";
 
 /**
