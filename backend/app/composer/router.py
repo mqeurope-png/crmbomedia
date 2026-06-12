@@ -42,7 +42,6 @@ from app.composer.models import (
     ComposerTemplateRevision,
 )
 from app.composer.permissions import (
-    assert_can_write_catalog,
     assert_composer_access,
     assert_is_admin,
     can_edit_template,

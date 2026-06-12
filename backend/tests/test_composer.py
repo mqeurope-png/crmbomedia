@@ -411,7 +411,12 @@ def test_settings_round_trip_never_leaks_plaintext(
 
 def test_ai_stubs_return_503_without_key(client: TestClient) -> None:
     headers = auth_headers(client, role="user")
-    for path in ("/api/composer/ai/agent/run", "/api/composer/ai/rewrite", "/api/composer/ai/translate"):
+    paths = (
+        "/api/composer/ai/agent/run",
+        "/api/composer/ai/rewrite",
+        "/api/composer/ai/translate",
+    )
+    for path in paths:
         response = client.post(path, json={"foo": "bar"}, headers=headers)
         assert response.status_code == 503, f"{path} returned {response.status_code}"
 
