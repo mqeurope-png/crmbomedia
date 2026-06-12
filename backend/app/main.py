@@ -10,6 +10,7 @@ from app.api.tasks import router as tasks_router
 from app.composer.router import router as composer_router
 from app.core.config import get_settings
 from app.core.observability import setup_sentry
+from app.email_templates.router import router as email_templates_router
 from app.integrations.gmail.webhook import router as gmail_webhook_router
 
 # Sentry must be initialized BEFORE the FastAPI app is created so its
@@ -55,6 +56,7 @@ app.include_router(bulk_router)
 app.include_router(emails_router)
 app.include_router(gmail_webhook_router)
 app.include_router(composer_router)
+app.include_router(email_templates_router)
 
 
 @app.on_event("startup")
