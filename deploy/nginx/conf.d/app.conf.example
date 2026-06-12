@@ -68,6 +68,24 @@ server {
         proxy_set_header X-Forwarded-Proto https;
         proxy_read_timeout 60s;
         proxy_send_timeout 60s;
+        # Composer asset uploads can be larger than the default 1 MB.
+        client_max_body_size 12m;
+    }
+
+    # Composer-uploaded assets are served straight off disk by Nginx so
+    # the API process never has to stream binary bytes back. The host
+    # mounts the directory matching the API container's
+    # `COMPOSER_ASSET_ROOT` env var (defaults to /opt/crmbo/uploads/composer).
+    location /assets/composer/ {
+        alias /opt/crmbo/uploads/composer/;
+        autoindex off;
+        # Hashed filenames (sha256 + ext) are content-addressed so safe
+        # to cache aggressively.
+        expires 30d;
+        add_header Cache-Control "public, max-age=2592000, immutable";
+        # Block executables masquerading as images via mime sniffing.
+        add_header X-Content-Type-Options nosniff always;
+        try_files $uri =404;
     }
 
     location / {

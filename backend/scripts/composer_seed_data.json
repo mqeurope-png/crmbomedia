@@ -1,0 +1,210 @@
+{
+  "_meta": {
+    "generated_from": "bomedia-v4/src/app-data.jsx getDefaultState()",
+    "note": "Minimal seed shipped with Sprint Composer Fase 1 — the operator imports the full catalogue (10 brands + 18 products + texts/blocks) from the source SPA via /composer/backoffice once the UI exposes the import flow in Fase 3. The shapes here are authoritative; the contents are intentionally stub-level so existing CI tests don't break on missing-asset URLs."
+  },
+  "brands": [
+    {
+      "id": "mbo",
+      "type": "brand",
+      "label": "MBO Láseres",
+      "color": "#0a3d62",
+      "logo": "https://placehold.co/200x80/0a3d62/ffffff?text=MBO",
+      "logo_text": "MBO",
+      "sort_order": 1,
+      "i18n_json": {
+        "es": {"url": "https://mbolasers.com", "urlLabel": "Ver web"},
+        "fr": {"url": "https://mbolasers.com/fr", "urlLabel": "Voir le site"},
+        "en": {"url": "https://mbolasers.com/en", "urlLabel": "Visit site"}
+      }
+    },
+    {
+      "id": "artisjet",
+      "type": "brand",
+      "label": "Artisjet",
+      "color": "#7e57c2",
+      "logo": "https://placehold.co/200x80/7e57c2/ffffff?text=Artisjet",
+      "logo_text": "artisjet",
+      "sort_order": 2,
+      "i18n_json": {
+        "es": {"url": "https://artisjet.com", "urlLabel": "Más información"},
+        "en": {"url": "https://artisjet.com/en", "urlLabel": "More info"}
+      }
+    },
+    {
+      "id": "pimpam",
+      "type": "brand",
+      "label": "Pim Pam",
+      "color": "#ff7043",
+      "logo": "https://placehold.co/200x80/ff7043/ffffff?text=PimPam",
+      "logo_text": "pim pam",
+      "sort_order": 3,
+      "i18n_json": {
+        "es": {"url": "https://pimpam.es", "urlLabel": "Ver tienda"}
+      }
+    },
+    {
+      "id": "muestras_uv",
+      "type": "category",
+      "label": "Muestras UV",
+      "color": "#fbc02d",
+      "logo": "https://placehold.co/200x80/fbc02d/000000?text=UV",
+      "sort_order": 4,
+      "i18n_json": {}
+    }
+  ],
+  "products": [
+    {
+      "id": "mbo3050",
+      "brand_id": "mbo",
+      "name": "MBO 3050",
+      "badge": "PRO",
+      "badge_bg": "#0a3d62",
+      "badge_color": "#ffffff",
+      "img": "https://placehold.co/400x300/0a3d62/ffffff?text=MBO+3050",
+      "description": "Láser CO2 de gran formato para industrial.",
+      "area": "300 × 500",
+      "feat1": "Área 300×500 mm",
+      "feat2": "Cabezal CO2 80W",
+      "price": "Desde 5.490 €",
+      "link": "https://mbolasers.com/mbo-3050",
+      "sort_order": 1,
+      "tags": ["industrial", "co2"],
+      "i18n_json": {
+        "en": {"name": "MBO 3050", "desc": "Large-format CO2 laser for industrial use.", "feat1": "300×500 mm work area", "feat2": "80W CO2 head"},
+        "fr": {"name": "MBO 3050", "desc": "Laser CO2 grand format pour l'industrie."}
+      }
+    },
+    {
+      "id": "young",
+      "brand_id": "artisjet",
+      "name": "Young UV",
+      "badge": "NEW",
+      "badge_bg": "#7e57c2",
+      "badge_color": "#ffffff",
+      "img": "https://placehold.co/400x300/7e57c2/ffffff?text=Young",
+      "description": "Impresora UV compacta para start-ups.",
+      "area": "A3",
+      "feat1": "A3 impresión directa",
+      "feat2": "Tinta LED-UV blanca",
+      "price": "Desde 9.900 €",
+      "link": "https://artisjet.com/young",
+      "sort_order": 1,
+      "tags": ["compacto", "indoor"],
+      "i18n_json": {
+        "en": {"name": "Young UV", "desc": "Compact UV printer for start-ups.", "feat1": "A3 direct print", "feat2": "LED-UV white ink"}
+      }
+    },
+    {
+      "id": "smartjet_flexone",
+      "brand_id": "artisjet",
+      "name": "Smartjet Flexone",
+      "img": "https://placehold.co/400x300/7e57c2/ffffff?text=Flexone",
+      "description": "Impresora UV híbrida flexible.",
+      "feat1": "A2 area",
+      "price": "Consultar",
+      "link": "https://artisjet.com/smartjet-flexone",
+      "sort_order": 2,
+      "tags": ["compacto", "indoor"],
+      "i18n_json": {
+        "de": {"link": "https://artisjet.com/de/smartjet-flexone"},
+        "nl": {"link": "https://artisjet.com/nl/smartjet-flexone"}
+      }
+    }
+  ],
+  "prewritten_texts": [
+    {
+      "id": "text-001",
+      "name": "Saludo otoño",
+      "icon": "🍂",
+      "brand_id": null,
+      "text": "Las novedades del otoño están aquí, pensadas para tu taller.",
+      "sort_order": 1,
+      "i18n_json": {
+        "en": {"text": "Fall novelties are here, made for your workshop."},
+        "fr": {"text": "Les nouveautés d'automne sont là, pensées pour votre atelier."}
+      }
+    },
+    {
+      "id": "text-002",
+      "name": "CTA presupuesto",
+      "icon": "💬",
+      "brand_id": "mbo",
+      "text": "Pídenos un presupuesto sin compromiso y te lo enviamos hoy mismo.",
+      "sort_order": 2,
+      "i18n_json": {
+        "en": {"text": "Ask us for a no-commitment quote — we send it today."}
+      }
+    }
+  ],
+  "composed_blocks": [
+    {
+      "id": "block-001",
+      "title": "Dúo Artisjet",
+      "description": "Young + Smartjet Flexone con intro y brand strip.",
+      "price_range": "9.900 € — Consultar",
+      "color_tag": "artisjet",
+      "intro_text": "Conoce el dúo Artisjet más vendido del año.",
+      "brand_strip": "artisjet",
+      "block_type": "product_pair",
+      "products": ["young", "smartjet_flexone"],
+      "include_hero": false,
+      "include_steps": false,
+      "sort_order": 1,
+      "i18n_json": {
+        "en": {"introText": "Meet the bestselling Artisjet pair of the year."}
+      },
+      "config_json": {}
+    }
+  ],
+  "standalone_blocks": [
+    {
+      "id": "sb-001",
+      "title": "Hero MBO",
+      "description": "Hero de cabecera con CTA y logo MBO.",
+      "icon": "🚀",
+      "icon_bg": "#0a3d62",
+      "brand_id": "mbo",
+      "section": "heroes",
+      "block_type": "hero",
+      "config_json": {
+        "headline": "Soluciones láser para tu taller",
+        "subhead": "Diseñadas para producción real.",
+        "cta": {"label": "Solicita demo", "url": "https://mbolasers.com/demo"}
+      },
+      "sort_order": 1,
+      "i18n_json": {
+        "en": {"config": {"headline": "Laser solutions for your workshop"}}
+      }
+    },
+    {
+      "id": "sb-002",
+      "title": "CTA presupuesto",
+      "description": "Botón de cierre con copy y URL.",
+      "icon": "✨",
+      "icon_bg": "#fbc02d",
+      "section": "ctas",
+      "block_type": "cta",
+      "config_json": {
+        "label": "Pedir presupuesto",
+        "url": "https://mbolasers.com/contacto",
+        "color": "#0a3d62"
+      },
+      "sort_order": 2,
+      "i18n_json": {}
+    }
+  ],
+  "templates": [
+    {
+      "id": "tpl-welcome",
+      "name": "Bienvenida MBO",
+      "description": "Plantilla base de bienvenida para nuevos contactos MBO.",
+      "color_class": "mbo",
+      "brand_id": "mbo",
+      "blocks_json": ["sb-001", "text-001", "block-001", "sb-002"],
+      "compositor_blocks_json": null,
+      "visible": true,
+      "is_global": true
+    }
+  ]
+}
