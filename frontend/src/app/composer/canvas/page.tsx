@@ -1,14 +1,24 @@
 "use client";
 
 /**
- * Composer canvas — wires Sidebar + Canvas under a single `DndContext`,
- * hydrates the draft from backend / localStorage on mount, and
- * subscribes the autosave routine to canvas-shape mutations.
+ * Composer editor — wires the literal Composer shell.
  *
- * Fase 2.1: structural surface only — drag from palette to canvas,
- * reorder within canvas, autosave round-trip. The inspector,
- * preview panel, command palette and template-save modal ship in
- * Fase 2.2 alongside the per-type editors.
+ * Structure (mirrors `bomedia-v4/app-main.jsx` lines 1387-1614):
+ *
+ *   <div class="composer-editor app-shell">
+ *     <header class="topbar">…</header>
+ *     <div class="main sidebar-collapsed/preview-hidden">
+ *       <Sidebar />
+ *       <Canvas />
+ *       <aside class="right-panel"><PreviewPanel/></aside>
+ *     </div>
+ *     <Footer />
+ *   </div>
+ *
+ * Wraps everything in a `<DndContext>` so the Sidebar's draggable
+ * palette items can drop on the canvas's `useDroppable` zone and
+ * the sortable list inside the canvas reorders without losing its
+ * own drag-end.
  */
 
 import {
@@ -19,38 +29,43 @@ import {
   useSensors,
   type DragEndEvent,
 } from "@dnd-kit/core";
-import { useEffect } from "react";
+import { useEffect, useMemo, useState } from "react";
 
-import { PageHeader } from "../../components/PageHeader";
-import { ComposerCanvas, CANVAS_DROPPABLE_ID } from "../components/Canvas";
-import { ComposerSidebar } from "../components/Sidebar";
+import { Canvas, CANVAS_DROPPABLE_ID } from "../components/Canvas";
+import { Footer } from "../components/Footer";
+import { PreviewPanel } from "../components/PreviewPanel";
+import { Sidebar } from "../components/Sidebar";
+import { TopBar } from "../components/TopBar";
 import { hydrateDraft, scheduleAutoSave } from "../lib/autoSave";
-import { useCatalog } from "../lib/useCatalog";
+import { renderEmailHtml } from "../lib/emailGen";
 import { useComposerStore } from "../lib/store";
+import { toAppState } from "../lib/types";
 import type { AddBlockSpec } from "../lib/types";
+import { useCatalog } from "../lib/useCatalog";
 
 interface PaletteDragData {
   kind: "palette";
-  itemId: string;
   spec: AddBlockSpec;
   label: string;
 }
 
-function isPaletteDragData(data: unknown): data is PaletteDragData {
+function isPaletteDragData(d: unknown): d is PaletteDragData {
   return (
-    typeof data === "object" &&
-    data !== null &&
-    (data as { kind?: unknown }).kind === "palette"
+    typeof d === "object" &&
+    d !== null &&
+    (d as { kind?: unknown }).kind === "palette"
   );
 }
 
-export default function ComposerCanvasPage() {
+export default function ComposerEditorPage() {
   const { catalog, loading, error } = useCatalog();
   const blocks = useComposerStore((s) => s.blocks);
-  const saveStatus = useComposerStore((s) => s.saveStatus);
-  const lastSavedAt = useComposerStore((s) => s.lastSavedAt);
+  const lang = useComposerStore((s) => s.activeLang);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [previewHidden, setPreviewHidden] = useState(false);
+  const [brandFilter, setBrandFilter] = useState<string>("all");
 
-  // Hydrate draft once on mount.
+  // Hydrate the draft once on mount.
   useEffect(() => {
     let cancelled = false;
     void hydrateDraft().then((draft) => {
@@ -66,7 +81,7 @@ export default function ComposerCanvasPage() {
     };
   }, []);
 
-  // Subscribe to canvas-shape changes → schedule autosave.
+  // Schedule autosave on any canvas-shape change.
   useEffect(() => {
     const unsub = useComposerStore.subscribe(
       (s) => ({
@@ -78,17 +93,18 @@ export default function ComposerCanvasPage() {
       () => {
         scheduleAutoSave(useComposerStore.getState());
       },
-      { equalityFn: (a, b) => a.blocks === b.blocks &&
-        a.activeLang === b.activeLang &&
-        a.emailTitle === b.emailTitle &&
-        a.editingTemplateId === b.editingTemplateId },
+      {
+        equalityFn: (a, b) =>
+          a.blocks === b.blocks &&
+          a.activeLang === b.activeLang &&
+          a.emailTitle === b.emailTitle &&
+          a.editingTemplateId === b.editingTemplateId,
+      },
     );
     return unsub;
   }, []);
 
   const sensors = useSensors(
-    // 6-px distance threshold so click-to-select still wins over a
-    // tiny accidental drag — matches the original Composer feel.
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
   );
 
@@ -103,7 +119,7 @@ export default function ComposerCanvasPage() {
       }
       return;
     }
-    // Sortable reorder — both ids are block ids.
+    // Sortable reorder.
     if (active.id !== over.id) {
       const fromIdx = store.blocks.findIndex((b) => b.id === active.id);
       const toIdx = store.blocks.findIndex((b) => b.id === over.id);
@@ -111,59 +127,88 @@ export default function ComposerCanvasPage() {
     }
   };
 
-  const saveLabel =
-    saveStatus === "saving"
-      ? "Guardando…"
-      : saveStatus === "error"
-        ? "Error al guardar"
-        : lastSavedAt
-          ? `Guardado ${new Date(lastSavedAt).toLocaleTimeString("es-ES")}`
-          : "Sin cambios";
-  const savePillClass =
-    saveStatus === "saving"
-      ? "is-saving"
-      : saveStatus === "error"
-        ? "is-error"
-        : saveStatus === "saved"
-          ? "is-saved"
-          : "";
+  // Live-render the email for the preview pane.
+  const emailHtml = useMemo(() => {
+    if (!catalog) return "";
+    return renderEmailHtml(blocks, toAppState(catalog), lang);
+  }, [blocks, catalog, lang]);
 
-  return (
-    <>
-      <PageHeader
-        title="Canvas"
-        eyebrow="Composer"
-        description="Editor del email. Arrastra elementos desde la biblioteca."
-        actions={
-          <span className={`composer-autosave-pill ${savePillClass}`}>
-            {saveLabel}
-          </span>
-        }
-      />
-      {error ? (
-        <div className="composer-placeholder" role="alert">
+  const handleCopyHtml = () => {
+    if (!emailHtml) return;
+    void navigator.clipboard?.writeText(emailHtml).catch(() => undefined);
+  };
+
+  if (error) {
+    return (
+      <div
+        className="composer-editor app-shell"
+        style={{ display: "flex", alignItems: "center", justifyContent: "center" }}
+      >
+        <div style={{ textAlign: "center", padding: 40 }}>
           <h2>No se pudo cargar el catálogo</h2>
           <p>{error}</p>
         </div>
-      ) : loading || !catalog ? (
-        <p>Cargando…</p>
-      ) : (
-        <DndContext
-          sensors={sensors}
-          collisionDetection={closestCenter}
-          onDragEnd={handleDragEnd}
+      </div>
+    );
+  }
+
+  if (loading || !catalog) {
+    return (
+      <div
+        className="composer-editor app-shell"
+        style={{ display: "flex", alignItems: "center", justifyContent: "center" }}
+      >
+        <p>Cargando editor…</p>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="composer-editor app-shell"
+      style={{ ["--right-panel-w" as string]: "420px" }}
+    >
+      <TopBar
+        onCopyHtml={handleCopyHtml}
+        onTogglePreview={() => setPreviewHidden((v) => !v)}
+        previewHidden={previewHidden}
+      />
+      <DndContext
+        sensors={sensors}
+        collisionDetection={closestCenter}
+        onDragEnd={handleDragEnd}
+      >
+        <div
+          className={
+            "main" +
+            (sidebarCollapsed ? " sidebar-collapsed" : "") +
+            (previewHidden ? " preview-hidden" : "")
+          }
         >
-          <div className="composer-editor">
-            <ComposerSidebar />
-            <ComposerCanvas catalog={catalog} />
-          </div>
-          <p className="composer-canvas-meta">
-            {blocks.length === 0
-              ? "Sin bloques."
-              : `${blocks.length} bloque${blocks.length === 1 ? "" : "s"} en el canvas.`}
-          </p>
-        </DndContext>
-      )}
-    </>
+          <Sidebar
+            collapsed={sidebarCollapsed}
+            onToggle={() => setSidebarCollapsed((v) => !v)}
+            brandFilter={brandFilter}
+            setBrandFilter={setBrandFilter}
+          />
+          <Canvas catalog={catalog} />
+          {!previewHidden && (
+            <aside
+              className="right-panel"
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                minHeight: 0,
+                background: "var(--bg-sunken)",
+                borderLeft: "1px solid var(--border)",
+              }}
+            >
+              <PreviewPanel emailHtml={emailHtml} embedded />
+            </aside>
+          )}
+        </div>
+      </DndContext>
+      <Footer />
+    </div>
   );
 }

@@ -7,6 +7,10 @@ import { Sidebar } from "./Sidebar";
 import { TopBar } from "./TopBar";
 
 const ANONYMOUS_ROUTES = ["/login", "/password-reset"];
+// `/composer/canvas` is a full-screen module (literal port of the
+// bomedia v5o editor). It has its own topbar / sidebar / footer
+// and shouldn't be wrapped by the CRM shell.
+const FULL_BLEED_ROUTES = ["/composer/canvas"];
 const SIDEBAR_STORAGE_KEY = "crmbo:sidebar:collapsed";
 
 /**
@@ -81,7 +85,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     });
   }
 
-  if (isAnonymous) {
+  const isFullBleed = FULL_BLEED_ROUTES.some(
+    (path) => pathname === path || pathname.startsWith(`${path}/`),
+  );
+
+  if (isAnonymous || isFullBleed) {
     return <>{children}</>;
   }
 
