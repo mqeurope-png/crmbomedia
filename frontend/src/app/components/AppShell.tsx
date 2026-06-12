@@ -7,10 +7,6 @@ import { Sidebar } from "./Sidebar";
 import { TopBar } from "./TopBar";
 
 const ANONYMOUS_ROUTES = ["/login", "/password-reset"];
-// The composer module renders inside the CRM main content area —
-// the CRM sidebar stays visible on the left. The composer brings
-// its own topbar / sidebar-of-area / canvas / inspector /
-// statusbar inside that content area.
 const FULL_BLEED_ROUTES: string[] = [];
 const SIDEBAR_STORAGE_KEY = "crmbo:sidebar:collapsed";
 
