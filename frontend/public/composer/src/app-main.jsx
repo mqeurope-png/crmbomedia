@@ -1420,6 +1420,20 @@ function App() {
         </button>
 
         <div className="topbar-actions">
+          {/* CRM-embed only: send the user back to the main CRM
+              dashboard. Hidden if the embed isn't running inside the
+              CRM (window.__COMPOSER_AUTH_BYPASSED__ is the flag set
+              by the index.html bootstrap). */}
+          {typeof window !== 'undefined' && window.__COMPOSER_AUTH_BYPASSED__ && (
+            <button
+              className="icon-btn"
+              onClick={() => { window.location.href = '/'; }}
+              title="Volver al CRM"
+              style={{display:'inline-flex', alignItems:'center', gap:6, padding:'4px 10px', fontSize:12}}
+            >
+              <Icon name="chevron" size={14} style={{transform:'rotate(180deg)'}} /> CRM
+            </button>
+          )}
           <div className="lang-pill">
             {LANGS.map(l => (
               <button key={l} className={lang === l ? 'active' : ''} onClick={() => setLang(l)}>{l.toUpperCase()}</button>
