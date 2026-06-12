@@ -113,9 +113,11 @@ function findBlock(
 ): BlocksTree[number] | null {
   for (const b of blocks) {
     if (b.id === id) return b;
-    if (Array.isArray(b.innerBlocks)) {
-      const found = findBlock(b.innerBlocks, id);
-      if (found) return found;
+    if (b.type === "section" && Array.isArray(b.columns)) {
+      for (const col of b.columns) {
+        const found = findBlock(col.blocks ?? [], id);
+        if (found) return found;
+      }
     }
   }
   return null;

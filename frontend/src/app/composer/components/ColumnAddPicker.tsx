@@ -187,12 +187,7 @@ export function ColumnAddPicker({
                 padding: "6px 8px",
                 gap: 6,
               }}
-              onClick={() =>
-                pick({
-                  type: "product_single",
-                  params: { product1: p.id },
-                })
-              }
+              onClick={() => pick({ type: "product", productId: p.id })}
             >
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
@@ -241,7 +236,7 @@ export function ColumnAddPicker({
               borderBottom: "1px solid var(--border)",
               gap: 6,
             }}
-            onClick={() => pick({ type: "text", params: { text: "" } })}
+            onClick={() => pick({ type: "text-blank" })}
           >
             <Icon name="plus" size={11} />
             <strong>Texto en blanco</strong>
@@ -259,16 +254,7 @@ export function ColumnAddPicker({
                 padding: "6px 8px",
                 gap: 6,
               }}
-              onClick={() =>
-                pick({
-                  type: "text",
-                  params: {
-                    _sourceType: "prewritten",
-                    _sourceId: t.id,
-                    text: t.text,
-                  },
-                })
-              }
+              onClick={() => pick({ type: "text", textId: t.id })}
             >
               <span style={{ marginRight: 6, fontSize: 14 }}>{t.icon || "📝"}</span>
               <span

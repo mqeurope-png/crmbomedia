@@ -41,23 +41,28 @@ import { BlockPreview } from "./BlockPreview";
 const BLOCK_TYPE_LABELS: Record<string, string> = {
   text: "Texto",
   text_from_library: "Texto biblioteca",
+  product: "Producto",
   product_single: "Producto",
   product_pair: "Par de productos",
   product_trio: "Trío de productos",
   brand_strip: "Strip de marca",
+  brand_artisjet: "Strip artisJet",
+  brand_mbo: "Strip MBO",
+  brand_pimpam: "Strip PimPam",
+  brand_smartjet: "Strip SmartJet",
+  brand_flux: "Strip FLUX",
   cta: "CTA",
   saved_cta: "CTA guardado",
   image: "Imagen",
   video: "Vídeo",
   freebird: "Vídeo (Freebird)",
   pimpam_hero: "Hero Pimpam",
+  product_hero: "Hero producto",
+  hero: "Hero",
   pimpam_steps: "Pasos Pimpam",
   composed: "Bloque compuesto",
-  section_2col: "Sección 2 columnas",
-  section_3col: "Sección 3 columnas",
-  divider_line: "Divisor — línea",
-  divider_short: "Divisor — corto",
-  divider_dots: "Divisor — puntos",
+  section: "Sección",
+  divider: "Divisor",
 };
 
 export interface BlockCardProps {
@@ -151,10 +156,13 @@ export function BlockCard({
 
   const label = BLOCK_TYPE_LABELS[block.type] ?? block.type;
   const preview = previewLabel(block, lang, appState);
+  // Sections are the only block kind with inline contents in the
+  // v5o shape — composed blocks resolve their inner blocks at render
+  // time from the catalog. So "ungroup" only makes sense for sections.
   const canUngroup =
-    block.type === "composed" &&
-    Array.isArray(block.innerBlocks) &&
-    block.innerBlocks.length > 0;
+    block.type === "section" &&
+    Array.isArray(block.columns) &&
+    block.columns.some((col) => (col.blocks ?? []).length > 0);
 
   return (
     <div

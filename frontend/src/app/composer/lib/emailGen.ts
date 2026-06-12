@@ -1095,7 +1095,15 @@ export const CSS_BLOCK =
 // resolves text/hero by language, and emits one wrapped <table>.
 // ───────────────────────────────────────────────────────────────────
 
-interface V2Block extends Block {
+/** Loose internal block shape the email renderer reads — kept as
+ * its own interface (not `extends Block`) so legacy v2 fields with
+ * looser types (`layout: string`, free-form `config`, …) don't
+ * collide with the narrowed Block typings. Every field that
+ * overlaps with a real Block field keeps the same name.
+ */
+type V2Block = {
+  id: string;
+  type: string;
   // legacy v2 fields the renderer keys off
   columns?: Array<{ blocks?: V2Block[] }>;
   composedId?: string;
@@ -1105,7 +1113,7 @@ interface V2Block extends Block {
   includeSteps?: boolean;
   blockType?: string;
   config?: Record<string, unknown>;
-  products?: string[];
+  products?: string[] | string;
   layout?: string;
   widthPct?: number;
   blockAlign?: "left" | "center" | "right";
@@ -1117,7 +1125,28 @@ interface V2Block extends Block {
   subtitle?: string;
   bullets?: string[];
   _richHtmlByLang?: Partial<Record<Lang, string>>;
-}
+  // Pull-through fields used by the renderer
+  text?: string;
+  url?: string;
+  align?: string;
+  brand?: string;
+  product1?: string;
+  product2?: string;
+  product3?: string;
+  fontSize?: number | string;
+  _richHtml?: string;
+  _sourceType?: string;
+  _sourceId?: string;
+  i18n?: Record<string, unknown>;
+  innerBlocks?: V2Block[];
+  heroBgColor?: string;
+  // Hero passthrough
+  heroTitle?: string;
+  heroSubtitle?: string;
+  heroBullets?: string[];
+  heroCtaButtons?: unknown;
+  heroImage?: string;
+};
 
 export function generateFullHtml(
   blocks: V2Block[],
@@ -1134,13 +1163,22 @@ export function generateFullHtml(
       return block._richHtmlByLang[activeLang]!;
     }
     if (block._richHtml != null && activeLang === "es") return block._richHtml;
-    if (block._sourceType) return getTextInLanguage(block, activeLang, appState);
-    if (block.i18n) return getLocalizedText(block, "text", activeLang) ?? "";
+    if (block._sourceType)
+      return getTextInLanguage(block as unknown as Block, activeLang, appState);
+    if (block.i18n)
+      return (
+        getLocalizedText(block as unknown as Block, "text", activeLang) ?? ""
+      );
     return block.text || "";
   };
 
   const resolveHero = (block: V2Block) => {
-    if (block._sourceType) return getHeroDataInLanguage(block, activeLang, appState);
+    if (block._sourceType)
+      return getHeroDataInLanguage(
+        block as unknown as Block,
+        activeLang,
+        appState,
+      );
     return block;
   };
 
@@ -1261,16 +1299,17 @@ export function generateFullHtml(
         out += ctaBlockHtml(b as unknown as CtaBlockData);
         break;
       }
-      case "divider_line":
-      case "divider_short":
-      case "divider_dots": {
-        const style =
-          b.type === "divider_short"
-            ? "short"
-            : b.type === "divider_dots"
-              ? "dots"
-              : "line";
-        out += dividerBlockHtml({ style, color: b.bgColor, paddingV: 24 });
+      case "divider": {
+        const dividerB = b as V2Block & {
+          style?: "line" | "short" | "dots";
+          color?: string;
+          paddingV?: number;
+        };
+        out += dividerBlockHtml({
+          style: dividerB.style ?? "line",
+          color: dividerB.color,
+          paddingV: dividerB.paddingV ?? 24,
+        });
         break;
       }
       case "pimpam_hero": {
