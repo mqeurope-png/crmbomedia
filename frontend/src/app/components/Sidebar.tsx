@@ -7,7 +7,6 @@ import {
   ChevronsRight,
   Kanban,
   Mail,
-  Palette,
   Plug,
   Settings,
   CheckSquare,
@@ -102,20 +101,6 @@ const NAV_ITEMS: ReadonlyArray<Item> = [
       { href: "/marketing/campaigns", label: "Campañas" },
       { href: "/marketing/templates", label: "Plantillas" },
       { href: "/marketing/listas", label: "Listas Brevo" },
-    ],
-  },
-  {
-    // Sprint Composer Fase 1: el módulo se monta entre Marketing y
-    // Tags. Visible para todos los roles excepto viewer; el backend
-    // ya rechaza viewer con 403 si llega a /api/composer/*.
-    href: "/composer",
-    label: "Composer",
-    icon: Palette,
-    allowedRoles: ["admin", "manager", "user"],
-    children: [
-      { href: "/composer/canvas", label: "Canvas" },
-      { href: "/composer/templates", label: "Plantillas" },
-      { href: "/composer/backoffice", label: "Backoffice" },
     ],
   },
   {
