@@ -3,24 +3,22 @@
 /**
  * Composer editor — fits inside the CRM main content area.
  *
- * Layout:
+ * Layout (post-PR #82 + the right-panel switch):
  *
  *   <div class="cmp-app-shell">              ← height: 100%
- *     <header class="cmp-topbar"/>
+ *     <header class="cmp-topbar"/>           ← search + lang + actions
  *     <div class="cmp-body">                 ← flex: 1; row
- *       <Sidebar />                          ← width: 280
  *       <Canvas />                           ← flex: 1
+ *       <RightPanel />                       ← width: 320; Biblioteca/Inspector tabs
  *     </div>
  *     <Footer />                             ← cmp-statusbar
  *   </div>
  *
- * No `DndContext` wrapper at this level — the page-level dnd context
- * in earlier revisions intercepted pointer events through the CRM
- * AppShell and silently killed clicks on the sidebar palette in some
- * browsers. The canvas BlockCard still uses `useSortable` via its
- * own dnd context inside `Canvas`. Drag from sidebar → canvas was
- * never actually wired in the original Composer either (the original
- * uses click-to-add, with `draggable` only as a visual affordance).
+ * The CRM sidebar (left of the whole thing) stays visible because
+ * `/composer/canvas` is no longer in `FULL_BLEED_ROUTES` (since #82).
+ * Biblioteca + Inspector were merged into a single right panel with
+ * tabs so the operator doesn't see two sidebars stacked on the
+ * left.
  */
 
 import { useEffect, useMemo, useState } from "react";
@@ -28,7 +26,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Canvas } from "../components/Canvas";
 import { Footer } from "../components/Footer";
 import { PreviewPanel } from "../components/PreviewPanel";
-import { Sidebar } from "../components/Sidebar";
+import { RightPanel } from "../components/RightPanel";
 import { TopBar } from "../components/TopBar";
 import { hydrateDraft, scheduleAutoSave } from "../lib/autoSave";
 import { renderEmailHtml } from "../lib/emailGen";
@@ -40,7 +38,6 @@ export default function ComposerEditorPage() {
   const { catalog, loading, error } = useCatalog();
   const blocks = useComposerStore((s) => s.blocks);
   const lang = useComposerStore((s) => s.activeLang);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [brandFilter, setBrandFilter] = useState<string>("all");
 
@@ -124,13 +121,12 @@ export default function ComposerEditorPage() {
         previewHidden={!previewOpen}
       />
       <div className="cmp-body">
-        <Sidebar
-          collapsed={sidebarCollapsed}
-          onToggle={() => setSidebarCollapsed((v) => !v)}
+        <Canvas catalog={catalog} />
+        <RightPanel
           brandFilter={brandFilter}
           setBrandFilter={setBrandFilter}
+          catalog={catalog}
         />
-        <Canvas catalog={catalog} />
       </div>
       <Footer />
       {previewOpen && (

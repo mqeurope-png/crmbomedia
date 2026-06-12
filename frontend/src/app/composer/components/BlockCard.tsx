@@ -31,6 +31,7 @@ import {
 
 import { getTextInLanguage } from "../lib/i18n";
 import type { Block, ComposerAppState, Lang } from "../lib/types";
+import { BlockPreview } from "./BlockPreview";
 
 const BLOCK_TYPE_LABELS: Record<string, string> = {
   text: "Texto",
@@ -173,7 +174,16 @@ export function BlockCard({
       </button>
       <div className="block-card-body">
         <span className="block-card-type">{label}</span>
-        <span className="block-card-preview">{preview}</span>
+        {appState ? (
+          // Visual preview ported from `bomedia-v4/app-compositor.jsx`
+          // — MiniProduct / BrandStripPreview / inline rich text /
+          // hero panel / steps / divider / etc. The catalog-derived
+          // label is kept as a fallback hover hint when the appState
+          // hasn't hydrated yet.
+          <BlockPreview block={block} lang={lang} appState={appState} />
+        ) : (
+          <span className="block-card-preview">{preview}</span>
+        )}
       </div>
       <div className="block-card-actions" onClick={(e) => e.stopPropagation()}>
         <button
