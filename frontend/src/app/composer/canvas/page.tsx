@@ -1,37 +1,31 @@
 "use client";
 
 /**
- * Composer editor — wires the literal Composer shell.
+ * Composer editor — fits inside the CRM main content area.
  *
- * Structure (mirrors `bomedia-v4/app-main.jsx` lines 1387-1614):
+ * Layout:
  *
- *   <div class="composer-editor app-shell">
- *     <header class="topbar">…</header>
- *     <div class="main sidebar-collapsed/preview-hidden">
- *       <Sidebar />
- *       <Canvas />
- *       <aside class="right-panel"><PreviewPanel/></aside>
+ *   <div class="cmp-app-shell">              ← height: 100%
+ *     <header class="cmp-topbar"/>
+ *     <div class="cmp-body">                 ← flex: 1; row
+ *       <Sidebar />                          ← width: 280
+ *       <Canvas />                           ← flex: 1
  *     </div>
- *     <Footer />
+ *     <Footer />                             ← cmp-statusbar
  *   </div>
  *
- * Wraps everything in a `<DndContext>` so the Sidebar's draggable
- * palette items can drop on the canvas's `useDroppable` zone and
- * the sortable list inside the canvas reorders without losing its
- * own drag-end.
+ * No `DndContext` wrapper at this level — the page-level dnd context
+ * in earlier revisions intercepted pointer events through the CRM
+ * AppShell and silently killed clicks on the sidebar palette in some
+ * browsers. The canvas BlockCard still uses `useSortable` via its
+ * own dnd context inside `Canvas`. Drag from sidebar → canvas was
+ * never actually wired in the original Composer either (the original
+ * uses click-to-add, with `draggable` only as a visual affordance).
  */
 
-import {
-  DndContext,
-  PointerSensor,
-  closestCenter,
-  useSensor,
-  useSensors,
-  type DragEndEvent,
-} from "@dnd-kit/core";
 import { useEffect, useMemo, useState } from "react";
 
-import { Canvas, CANVAS_DROPPABLE_ID } from "../components/Canvas";
+import { Canvas } from "../components/Canvas";
 import { Footer } from "../components/Footer";
 import { PreviewPanel } from "../components/PreviewPanel";
 import { Sidebar } from "../components/Sidebar";
@@ -40,32 +34,16 @@ import { hydrateDraft, scheduleAutoSave } from "../lib/autoSave";
 import { renderEmailHtml } from "../lib/emailGen";
 import { useComposerStore } from "../lib/store";
 import { toAppState } from "../lib/types";
-import type { AddBlockSpec } from "../lib/types";
 import { useCatalog } from "../lib/useCatalog";
-
-interface PaletteDragData {
-  kind: "palette";
-  spec: AddBlockSpec;
-  label: string;
-}
-
-function isPaletteDragData(d: unknown): d is PaletteDragData {
-  return (
-    typeof d === "object" &&
-    d !== null &&
-    (d as { kind?: unknown }).kind === "palette"
-  );
-}
 
 export default function ComposerEditorPage() {
   const { catalog, loading, error } = useCatalog();
   const blocks = useComposerStore((s) => s.blocks);
   const lang = useComposerStore((s) => s.activeLang);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [previewHidden, setPreviewHidden] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
   const [brandFilter, setBrandFilter] = useState<string>("all");
 
-  // Hydrate the draft once on mount.
   useEffect(() => {
     let cancelled = false;
     void hydrateDraft().then((draft) => {
@@ -81,7 +59,6 @@ export default function ComposerEditorPage() {
     };
   }, []);
 
-  // Schedule autosave on any canvas-shape change.
   useEffect(() => {
     const unsub = useComposerStore.subscribe(
       (s) => ({
@@ -104,30 +81,6 @@ export default function ComposerEditorPage() {
     return unsub;
   }, []);
 
-  const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
-  );
-
-  const handleDragEnd = (event: DragEndEvent): void => {
-    const { active, over } = event;
-    if (!over) return;
-    const store = useComposerStore.getState();
-    if (isPaletteDragData(active.data.current)) {
-      if (over.id === CANVAS_DROPPABLE_ID) {
-        const id = store.addBlock(active.data.current.spec);
-        store.setSelected(id);
-      }
-      return;
-    }
-    // Sortable reorder.
-    if (active.id !== over.id) {
-      const fromIdx = store.blocks.findIndex((b) => b.id === active.id);
-      const toIdx = store.blocks.findIndex((b) => b.id === over.id);
-      if (fromIdx >= 0 && toIdx >= 0) store.reorderBlocks(fromIdx, toIdx);
-    }
-  };
-
-  // Live-render the email for the preview pane.
   const emailHtml = useMemo(() => {
     if (!catalog) return "";
     return renderEmailHtml(blocks, toAppState(catalog), lang);
@@ -141,7 +94,7 @@ export default function ComposerEditorPage() {
   if (error) {
     return (
       <div
-        className="composer-editor app-shell"
+        className="composer-editor cmp-app-shell"
         style={{ display: "flex", alignItems: "center", justifyContent: "center" }}
       >
         <div style={{ textAlign: "center", padding: 40 }}>
@@ -155,7 +108,7 @@ export default function ComposerEditorPage() {
   if (loading || !catalog) {
     return (
       <div
-        className="composer-editor app-shell"
+        className="composer-editor cmp-app-shell"
         style={{ display: "flex", alignItems: "center", justifyContent: "center" }}
       >
         <p>Cargando editor…</p>
@@ -164,51 +117,37 @@ export default function ComposerEditorPage() {
   }
 
   return (
-    <div
-      className="composer-editor app-shell"
-      style={{ ["--right-panel-w" as string]: "420px" }}
-    >
+    <div className="composer-editor cmp-app-shell">
       <TopBar
         onCopyHtml={handleCopyHtml}
-        onTogglePreview={() => setPreviewHidden((v) => !v)}
-        previewHidden={previewHidden}
+        onTogglePreview={() => setPreviewOpen((v) => !v)}
+        previewHidden={!previewOpen}
       />
-      <DndContext
-        sensors={sensors}
-        collisionDetection={closestCenter}
-        onDragEnd={handleDragEnd}
-      >
-        <div
-          className={
-            "main" +
-            (sidebarCollapsed ? " sidebar-collapsed" : "") +
-            (previewHidden ? " preview-hidden" : "")
-          }
-        >
-          <Sidebar
-            collapsed={sidebarCollapsed}
-            onToggle={() => setSidebarCollapsed((v) => !v)}
-            brandFilter={brandFilter}
-            setBrandFilter={setBrandFilter}
-          />
-          <Canvas catalog={catalog} />
-          {!previewHidden && (
-            <aside
-              className="right-panel"
-              style={{
-                display: "flex",
-                flexDirection: "column",
-                minHeight: 0,
-                background: "var(--bg-sunken)",
-                borderLeft: "1px solid var(--border)",
-              }}
-            >
-              <PreviewPanel emailHtml={emailHtml} embedded />
-            </aside>
-          )}
-        </div>
-      </DndContext>
+      <div className="cmp-body">
+        <Sidebar
+          collapsed={sidebarCollapsed}
+          onToggle={() => setSidebarCollapsed((v) => !v)}
+          brandFilter={brandFilter}
+          setBrandFilter={setBrandFilter}
+        />
+        <Canvas catalog={catalog} />
+      </div>
       <Footer />
+      {previewOpen && (
+        <div
+          className="cmp-preview-modal"
+          role="dialog"
+          aria-label="Vista previa del email"
+          onClick={() => setPreviewOpen(false)}
+        >
+          <div
+            className="cmp-preview-modal-inner"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <PreviewPanel emailHtml={emailHtml} />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
