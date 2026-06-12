@@ -44,7 +44,7 @@ export function Footer() {
 
   return (
     <div className="footer">
-      <span className="status">
+      <span className="cmp-status">
         <span className="status-dot" /> {syncLabel}
       </span>
       <span className="dot" />

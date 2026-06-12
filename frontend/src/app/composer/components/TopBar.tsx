@@ -50,7 +50,7 @@ export function TopBar({
   const isBackoffice = pathname.startsWith("/composer/backoffice");
 
   return (
-    <header className="topbar">
+    <header className="cmp-topbar">
       <div className="topbar-brand">
         <div
           className="topbar-logo"

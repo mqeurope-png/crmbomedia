@@ -21,7 +21,6 @@
  * markup says is what we emit.
  */
 
-import { useDraggable } from "@dnd-kit/core";
 import { useEffect, useState } from "react";
 
 import { useComposerStore } from "../lib/store";
@@ -153,6 +152,17 @@ interface DraggablePaletteItemProps {
   children: React.ReactNode;
 }
 
+/** Click-only palette item.
+ *
+ * The original `bomedia-v4` composer uses `draggable` + a click
+ * handler; the drag itself is a visual affordance and the actual
+ * insertion always happens via the click. We follow that — the
+ * earlier dnd-kit wrapper here intercepted pointer events through
+ * the page-level `DndContext` and silently killed the click in
+ * some browsers when the sensor's activation distance triggered
+ * before pointerup. Reverting to plain `onClick` makes the sidebar
+ * behave like the original. Sortable drag inside the canvas still
+ * uses dnd-kit (`useSortable` on `BlockCard`). */
 function DraggablePaletteButton({
   id,
   label,
@@ -160,18 +170,12 @@ function DraggablePaletteButton({
   onAddBlock,
   children,
 }: DraggablePaletteItemProps) {
-  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
-    id,
-    data: { kind: "palette", spec, label },
-  });
   return (
     <button
-      ref={setNodeRef}
       type="button"
-      className={`lib-item${isDragging ? " is-dragging" : ""}`}
+      data-palette-id={id}
+      className="lib-item"
       onClick={() => onAddBlock(spec)}
-      {...attributes}
-      {...listeners}
       title={label}
     >
       {children}
@@ -210,7 +214,7 @@ export function Sidebar({
   // ────────────────────────────────────────────────────────────────
   if (collapsed) {
     return (
-      <aside className="sidebar">
+      <aside className="cmp-sidebar">
         <div className="sidebar-rail">
           <button
             type="button"
@@ -242,7 +246,7 @@ export function Sidebar({
   // ────────────────────────────────────────────────────────────────
   if (loading || !catalog) {
     return (
-      <aside className="sidebar">
+      <aside className="cmp-sidebar">
         <p style={{ padding: 16, color: "var(--text-muted)" }}>
           {error ?? "Cargando biblioteca…"}
         </p>
@@ -333,7 +337,7 @@ export function Sidebar({
   };
 
   return (
-      <aside className="sidebar">
+      <aside className="cmp-sidebar">
         <div className="sidebar-header">
           <span className="sidebar-title">Biblioteca</span>
           <button
