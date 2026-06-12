@@ -80,6 +80,11 @@ def _backfill_campaign_brevo_id() -> None:
     dialect = bind.dialect.name
 
     if dialect == "mysql":
+        # `system` became a reserved word in MySQL 8.0.31; backtick it
+        # in every reference so the parser doesn't bail with 1064.
+        # The original prod run on an older MySQL accepted it bare;
+        # the new MySQL CI job (and any fresh MySQL 8.4+ deploy)
+        # would otherwise refuse this migration.
         # 1. Rows whose external_id starts with `backfill:<int>:...`.
         bind.execute(
             sa.text(
@@ -90,7 +95,7 @@ def _backfill_campaign_brevo_id() -> None:
                         SUBSTRING(external_id, 10), ':', 1
                     ) AS UNSIGNED
                 )
-                WHERE system = 'brevo'
+                WHERE `system` = 'brevo'
                   AND campaign_brevo_id IS NULL
                   AND external_id LIKE 'backfill:%'
                   AND SUBSTRING_INDEX(
@@ -112,7 +117,7 @@ def _backfill_campaign_brevo_id() -> None:
                         JSON_EXTRACT(metadata, '$.campaign_id')
                     ) AS UNSIGNED
                 )
-                WHERE system = 'brevo'
+                WHERE `system` = 'brevo'
                   AND campaign_brevo_id IS NULL
                   AND metadata IS NOT NULL
                   AND (

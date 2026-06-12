@@ -29,6 +29,11 @@ JSON columns land as `Text` so SQLite (CI) and MySQL (prod) share
 the same shape — the application layer serialises / parses with
 `json.dumps` / `json.loads`. Enums likewise land as String with
 no DB-side CHECK; the model layer is the gatekeeper.
+
+MySQL note: MySQL 8 rejects literal `DEFAULT` on `TEXT`/`BLOB`
+columns. Every NOT NULL `Text` here therefore has NO `server_default`;
+the application layer (ORM `default=` + the seed script + every
+router call site) is responsible for supplying the empty `{}` / `[]`.
 """
 from __future__ import annotations
 
@@ -65,7 +70,7 @@ def upgrade() -> None:
         sa.Column(
             "sort_order", sa.Integer(), nullable=False, server_default="0"
         ),
-        sa.Column("i18n_json", sa.Text(), nullable=False, server_default="{}"),
+        sa.Column("i18n_json", sa.Text(), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
     )
@@ -94,8 +99,8 @@ def upgrade() -> None:
         sa.Column(
             "sort_order", sa.Integer(), nullable=False, server_default="0"
         ),
-        sa.Column("tags", sa.Text(), nullable=False, server_default="[]"),
-        sa.Column("i18n_json", sa.Text(), nullable=False, server_default="{}"),
+        sa.Column("tags", sa.Text(), nullable=False),
+        sa.Column("i18n_json", sa.Text(), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
         sa.ForeignKeyConstraint(["brand_id"], ["composer_brands.id"]),
@@ -120,7 +125,7 @@ def upgrade() -> None:
         sa.Column(
             "sort_order", sa.Integer(), nullable=False, server_default="0"
         ),
-        sa.Column("i18n_json", sa.Text(), nullable=False, server_default="{}"),
+        sa.Column("i18n_json", sa.Text(), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
         sa.ForeignKeyConstraint(
@@ -138,7 +143,7 @@ def upgrade() -> None:
         sa.Column("intro_text", sa.Text(), nullable=True),
         sa.Column("brand_strip", sa.String(length=64), nullable=True),
         sa.Column("block_type", sa.String(length=40), nullable=False),
-        sa.Column("products", sa.Text(), nullable=False, server_default="[]"),
+        sa.Column("products", sa.Text(), nullable=False),
         sa.Column(
             "include_hero",
             sa.Boolean(),
@@ -157,8 +162,8 @@ def upgrade() -> None:
         sa.Column(
             "sort_order", sa.Integer(), nullable=False, server_default="0"
         ),
-        sa.Column("i18n_json", sa.Text(), nullable=False, server_default="{}"),
-        sa.Column("config_json", sa.Text(), nullable=False, server_default="{}"),
+        sa.Column("i18n_json", sa.Text(), nullable=False),
+        sa.Column("config_json", sa.Text(), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
     )
@@ -173,14 +178,14 @@ def upgrade() -> None:
         sa.Column("brand_id", sa.String(length=64), nullable=True),
         sa.Column("section", sa.String(length=60), nullable=True),
         sa.Column("block_type", sa.String(length=40), nullable=False),
-        sa.Column("config_json", sa.Text(), nullable=False, server_default="{}"),
+        sa.Column("config_json", sa.Text(), nullable=False),
         sa.Column(
             "visible", sa.Boolean(), nullable=False, server_default=sa.true()
         ),
         sa.Column(
             "sort_order", sa.Integer(), nullable=False, server_default="0"
         ),
-        sa.Column("i18n_json", sa.Text(), nullable=False, server_default="{}"),
+        sa.Column("i18n_json", sa.Text(), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
         sa.ForeignKeyConstraint(
@@ -195,7 +200,7 @@ def upgrade() -> None:
         sa.Column("description", sa.Text(), nullable=True),
         sa.Column("color_class", sa.String(length=40), nullable=True),
         sa.Column("brand_id", sa.String(length=64), nullable=True),
-        sa.Column("blocks_json", sa.Text(), nullable=False, server_default="[]"),
+        sa.Column("blocks_json", sa.Text(), nullable=False),
         sa.Column("compositor_blocks_json", sa.Text(), nullable=True),
         sa.Column(
             "visible", sa.Boolean(), nullable=False, server_default=sa.true()
@@ -269,9 +274,7 @@ def upgrade() -> None:
             nullable=False,
             server_default="upload",
         ),
-        sa.Column(
-            "metadata_json", sa.Text(), nullable=False, server_default="{}"
-        ),
+        sa.Column("metadata_json", sa.Text(), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.ForeignKeyConstraint(
             ["user_id"], ["users.id"], ondelete="SET NULL"
@@ -289,9 +292,7 @@ def upgrade() -> None:
         "composer_settings",
         sa.Column("id", sa.Integer(), primary_key=True),
         sa.Column("openai_api_key_encrypted", sa.Text(), nullable=True),
-        sa.Column(
-            "ai_styles_json", sa.Text(), nullable=False, server_default="{}"
-        ),
+        sa.Column("ai_styles_json", sa.Text(), nullable=False),
         sa.Column("agent_system_prompt", sa.Text(), nullable=True),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
     )
@@ -331,9 +332,7 @@ def upgrade() -> None:
         sa.Column("action", sa.String(length=80), nullable=False),
         sa.Column("entity_type", sa.String(length=40), nullable=True),
         sa.Column("entity_id", sa.String(length=64), nullable=True),
-        sa.Column(
-            "metadata_json", sa.Text(), nullable=False, server_default="{}"
-        ),
+        sa.Column("metadata_json", sa.Text(), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.ForeignKeyConstraint(
             ["user_id"], ["users.id"], ondelete="SET NULL"
