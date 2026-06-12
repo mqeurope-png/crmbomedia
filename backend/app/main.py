@@ -1,5 +1,8 @@
+from pathlib import Path
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from app.api.bulk import router as bulk_router
 from app.api.dashboard import router as dashboard_router
@@ -55,6 +58,17 @@ app.include_router(bulk_router)
 app.include_router(emails_router)
 app.include_router(gmail_webhook_router)
 app.include_router(email_templates_router)
+
+# Sprint Email v2.2b — serve images uploaded from the Tiptap editor.
+# The dir is created lazily on first upload, but mounting needs it to
+# exist already, so we ensure it at boot.
+_email_image_dir = Path(settings.email_image_upload_dir)
+_email_image_dir.mkdir(parents=True, exist_ok=True)
+app.mount(
+    "/uploads/email_images",
+    StaticFiles(directory=str(_email_image_dir)),
+    name="email_images",
+)
 
 
 @app.on_event("startup")

@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { FolderOpen, Save, Sparkles } from "lucide-react";
 import Link from "next/link";
+import { useEffect, useState } from "react";
 import {
   getMyEmailAliases,
   sendEmail,
@@ -9,6 +10,12 @@ import {
   type MyAlias,
 } from "../lib/emailsApi";
 import { extractErrorMessage } from "../lib/errors";
+import { EmailComposer } from "./email/EmailComposer";
+import { SaveTemplateModal } from "./email/SaveTemplateModal";
+import {
+  TemplatePicker,
+  type TemplatePickerSelection,
+} from "./email/TemplatePicker";
 
 type Props = {
   contactId?: string | null;
@@ -19,6 +26,12 @@ type Props = {
   onClose: () => void;
   onSent?: (message: EmailMessage) => void;
 };
+
+const MERGE_TOKEN_RE = /\{(nombre|empresa|email)\}/;
+
+function hasMergeTokens(text: string): boolean {
+  return MERGE_TOKEN_RE.test(text);
+}
 
 export function EmailComposerModal({
   contactId,
@@ -39,11 +52,12 @@ export function EmailComposerModal({
         : `Re: ${replyTo.subject}`
       : "",
   );
-  const [bodyText, setBodyText] = useState("");
   const [bodyHtml, setBodyHtml] = useState("");
-  const [showHtmlPreview, setShowHtmlPreview] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const [showPicker, setShowPicker] = useState(false);
+  const [showSaveModal, setShowSaveModal] = useState(false);
 
   useEffect(() => {
     getMyEmailAliases()
@@ -61,6 +75,14 @@ export function EmailComposerModal({
       .split(/[,\n;]/)
       .map((s) => s.trim())
       .filter(Boolean);
+  }
+
+  function applyTemplate(selection: TemplatePickerSelection) {
+    setShowPicker(false);
+    setBodyHtml(selection.body_html);
+    if (selection.subject) {
+      setSubject((prev) => prev || selection.subject || "");
+    }
   }
 
   async function handleSubmit(event: React.FormEvent) {
@@ -86,7 +108,7 @@ export function EmailComposerModal({
         cc: cc.trim() ? splitEmails(cc) : null,
         subject,
         body_html: bodyHtml.trim() || null,
-        body_text: bodyText.trim() || null,
+        body_text: null,
         contact_id: contactId ?? null,
         in_reply_to_message_id: replyTo?.messageId ?? null,
       });
@@ -97,9 +119,12 @@ export function EmailComposerModal({
     }
   }
 
+  const hasMerge =
+    hasMergeTokens(bodyHtml) || hasMergeTokens(subject);
+
   return (
     <div className="modal-backdrop" role="dialog" aria-modal="true">
-      <div className="modal modal-wide">
+      <div className="modal modal-wide email-compose-modal">
         <header>
           <h2>{replyTo ? "Responder" : "Nuevo email"}</h2>
         </header>
@@ -167,39 +192,48 @@ export function EmailComposerModal({
               maxLength={500}
             />
           </label>
+
+          <div className="email-compose-tools">
+            <button
+              type="button"
+              className="button secondary small"
+              onClick={() => setShowPicker(true)}
+            >
+              <FolderOpen size={12} aria-hidden /> Cargar plantilla
+            </button>
+            <button
+              type="button"
+              className="button secondary small"
+              onClick={() => setShowSaveModal(true)}
+              disabled={!bodyHtml.trim()}
+              title={
+                bodyHtml.trim()
+                  ? undefined
+                  : "Escribe algo antes de guardar la plantilla."
+              }
+            >
+              <Save size={12} aria-hidden /> Guardar como plantilla
+            </button>
+          </div>
+
           <label className="field">
-            Cuerpo (texto)
-            <textarea
-              rows={6}
-              value={bodyText}
-              onChange={(e) => setBodyText(e.target.value)}
+            Cuerpo
+            <EmailComposer
+              value={bodyHtml}
+              onChange={setBodyHtml}
+              placeholder="Escribe tu email. Usa {nombre}, {empresa}, {email} para personalizar."
             />
           </label>
-          <details>
-            <summary>HTML opcional</summary>
-            <textarea
-              rows={6}
-              value={bodyHtml}
-              onChange={(e) => setBodyHtml(e.target.value)}
-              placeholder="<p>...</p>"
-            />
-            {bodyHtml ? (
-              <button
-                type="button"
-                className="button small secondary"
-                onClick={() => setShowHtmlPreview((v) => !v)}
-              >
-                {showHtmlPreview ? "Ocultar preview" : "Preview HTML"}
-              </button>
-            ) : null}
-            {showHtmlPreview ? (
-              <iframe
-                title="Preview HTML"
-                className="email-html-preview"
-                srcDoc={bodyHtml}
-              />
-            ) : null}
-          </details>
+
+          {hasMerge ? (
+            <p className="email-merge-hint">
+              <Sparkles size={12} aria-hidden /> El email contiene{" "}
+              <code>{"{nombre}"}</code>/<code>{"{empresa}"}</code>/
+              <code>{"{email}"}</code>. Se reemplazarán al enviar con los
+              datos del contacto destinatario.
+            </p>
+          ) : null}
+
           <div className="actions">
             <button
               type="button"
@@ -219,6 +253,22 @@ export function EmailComposerModal({
           </div>
         </form>
       </div>
+      {showPicker ? (
+        <TemplatePicker
+          onSelect={applyTemplate}
+          onClose={() => setShowPicker(false)}
+        />
+      ) : null}
+      {showSaveModal ? (
+        <SaveTemplateModal
+          bodyHtml={bodyHtml}
+          subject={subject}
+          onClose={() => setShowSaveModal(false)}
+          onSaved={() => {
+            /* no-op: SaveTemplateModal closes itself */
+          }}
+        />
+      ) : null}
     </div>
   );
 }

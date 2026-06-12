@@ -90,6 +90,30 @@ class BrevoPickerItem(BaseModel):
     has_html: bool
 
 
+class ComposerSourcePickerItem(BaseModel):
+    """composer.bomedia.net template, surfaced via the read-only
+    Supabase proxy. The CRM cannot edit these — clicking the row in
+    the UI opens the live Composer in a new tab."""
+
+    id: str
+    name: str
+    brand: str | None
+    blocks_count: int
+    open_url: str
+
+
+class ComposerSourceResponse(BaseModel):
+    items: list[ComposerSourcePickerItem]
+    error: str | None = None
+
+
+class ImageUploadResponse(BaseModel):
+    url: str
+    filename: str
+    content_type: str
+    size_bytes: int
+
+
 class PickerResponse(BaseModel):
     crm: list[TemplateListItem]
     brevo: list[BrevoPickerItem]

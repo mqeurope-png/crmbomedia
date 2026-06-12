@@ -1,13 +1,25 @@
 """REST surface for v2.2 — templates CRUD, folders CRUD, picker."""
 from __future__ import annotations
 
+import mimetypes
+import uuid
 from datetime import UTC, datetime
+from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    HTTPException,
+    Query,
+    UploadFile,
+    status,
+)
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.core.auth import require_user
+from app.core.config import get_settings
 from app.core.errors import not_found
 from app.db.session import get_session
 from app.models.brevo import BrevoTemplateCache
@@ -16,9 +28,12 @@ from app.models.crm import User, UserRole
 from .models import EmailTemplate, EmailTemplateFolder
 from .schemas import (
     BrevoPickerItem,
+    ComposerSourcePickerItem,
+    ComposerSourceResponse,
     FolderRead,
     FolderTreeNode,
     FolderWrite,
+    ImageUploadResponse,
     PickerResponse,
     TemplateListItem,
     TemplateRead,
@@ -28,7 +43,15 @@ from .services import (
     MAX_FOLDER_DEPTH,
     descendants,
     extract_text_from_html,
+    fetch_composer_templates,
     folder_depth,
+)
+
+# Tiptap accepts whatever image MIME types the browser produces. We
+# allowlist the common ones so an operator can't sneak SVG (XSS via
+# embedded <script>) or large RAW files through.
+ALLOWED_IMAGE_TYPES = frozenset(
+    {"image/png", "image/jpeg", "image/gif", "image/webp"}
 )
 
 router = APIRouter(prefix="/api", tags=["email-templates"])
@@ -457,4 +480,84 @@ def templates_picker(
         ],
         folders=folders,
         recent=[TemplateListItem.model_validate(r) for r in recent_rows],
+    )
+
+
+# ───────────────────────────────────────────────────────────────────
+# Composer-source proxy + image upload — Sprint Email v2.2b
+# ───────────────────────────────────────────────────────────────────
+
+
+@router.get(
+    "/emails/composer-source", response_model=ComposerSourceResponse
+)
+def list_composer_source(
+    current_user: User = Depends(require_user),  # noqa: ARG001
+) -> ComposerSourceResponse:
+    """Read-only mirror of composer.bomedia.net templates. Always
+    returns 200 — when Supabase is unreachable the items list is empty
+    and `error` carries a user-facing string. That way the picker tab
+    can render a notice and the rest of the picker keeps working."""
+    items, error = fetch_composer_templates()
+    return ComposerSourceResponse(
+        items=[
+            ComposerSourcePickerItem(
+                id=item.id,
+                name=item.name,
+                brand=item.brand,
+                blocks_count=item.blocks_count,
+                open_url=item.open_url,
+            )
+            for item in items
+        ],
+        error=error,
+    )
+
+
+@router.post(
+    "/emails/upload-image", response_model=ImageUploadResponse
+)
+async def upload_image(
+    file: UploadFile = File(...),
+    current_user: User = Depends(require_user),  # noqa: ARG001
+) -> ImageUploadResponse:
+    """Inline image upload for the Tiptap editor. Validates content
+    type + size, then writes to disk under `email_image_upload_dir`.
+    The URL we return is served by the StaticFiles mount in `main.py`
+    so it works in dev and prod without nginx help."""
+    settings = get_settings()
+    content_type = (file.content_type or "").lower()
+    if content_type not in ALLOWED_IMAGE_TYPES:
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail=(
+                "Formato no admitido. Sube PNG, JPG, GIF o WebP."
+            ),
+        )
+
+    # Read into memory once — caps the read at max_bytes + 1 so an
+    # oversized upload doesn't fill the disk before we reject it.
+    max_bytes = settings.email_image_max_bytes
+    data = await file.read(max_bytes + 1)
+    if len(data) > max_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=(
+                f"La imagen supera el máximo permitido "
+                f"({max_bytes // (1024 * 1024)} MB)."
+            ),
+        )
+
+    suffix = mimetypes.guess_extension(content_type) or ""
+    filename = f"{uuid.uuid4().hex}{suffix}"
+    target_dir = Path(settings.email_image_upload_dir)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target = target_dir / filename
+    target.write_bytes(data)
+
+    return ImageUploadResponse(
+        url=f"/uploads/email_images/{filename}",
+        filename=filename,
+        content_type=content_type,
+        size_bytes=len(data),
     )
