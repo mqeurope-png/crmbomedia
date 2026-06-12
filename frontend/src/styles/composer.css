@@ -2263,3 +2263,84 @@
   display: flex;
   flex-direction: column;
 }
+
+/* ─── Right panel (Biblioteca + Inspector tabs) ───
+   The Biblioteca sidebar moved from the left to a tabbed pane on the
+   right (alongside the Inspector). The old `.cmp-body > .cmp-sidebar`
+   rule keeps the legacy width for the embedded `Sidebar` component
+   while the wrapping `.cmp-right-panel` owns the column placement. */
+.composer-editor .cmp-body > .cmp-right-panel {
+  width: 320px;
+  flex: 0 0 320px;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--border);
+  background: var(--bg-panel);
+  min-height: 0;
+  overflow: hidden;
+}
+.composer-editor .cmp-right-tabs {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+.composer-editor .cmp-right-tab {
+  flex: 1;
+  padding: 10px 12px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text-muted);
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  transition: color 120ms, border-color 120ms;
+}
+.composer-editor .cmp-right-tab:hover {
+  color: var(--text);
+}
+.composer-editor .cmp-right-tab.active {
+  color: var(--text);
+  font-weight: 600;
+  border-bottom-color: var(--accent, #6366f1);
+}
+.composer-editor .cmp-right-content {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  min-height: 0;
+}
+/* Sidebar (Biblioteca) inside the right panel uses the existing
+   `.cmp-sidebar` styles but no longer needs the right-border or the
+   fixed 280-px width — let it fill the panel. */
+.composer-editor .cmp-right-content > .cmp-sidebar {
+  width: 100%;
+  border-right: none;
+  background: transparent;
+}
+
+/* Inspector placeholder */
+.composer-editor .cmp-inspector,
+.composer-editor .cmp-inspector-empty {
+  padding: 16px;
+}
+.composer-editor .cmp-inspector-meta {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  column-gap: 8px;
+  row-gap: 4px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.composer-editor .cmp-inspector-meta dt {
+  font-weight: 600;
+  color: var(--text-subtle);
+}
+.composer-editor .cmp-inspector-meta dd {
+  margin: 0;
+  color: var(--text);
+  word-break: break-word;
+}
+.composer-editor .cmp-inspector-meta dd.mono {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10px;
+}
