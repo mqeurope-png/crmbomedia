@@ -170,7 +170,12 @@ export function BlockCard({
       style={style}
       className={`block-card${selected ? " is-selected" : ""}`}
       data-block-type={block.type}
-      onClick={() => onSelect(block.id)}
+      onClick={(e) => {
+        // stopPropagation so the canvas backdrop's `setSelected(null)`
+        // doesn't fire on the bubbled event.
+        e.stopPropagation();
+        onSelect(block.id);
+      }}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") onSelect(block.id);
       }}

@@ -23,12 +23,7 @@
  * + AI popover land in 2.2 with the Inspector.
  */
 
-import {
-  getHeroDataInLanguage,
-  getLocalizedProduct,
-  getLocalizedText,
-  type HeroData,
-} from "../lib/i18n";
+import { getLocalizedProduct, getLocalizedText } from "../lib/i18n";
 import { sanitizeHtml } from "../lib/security";
 import { useComposerStore } from "../lib/store";
 import type {
@@ -37,6 +32,7 @@ import type {
   ComposerBrand,
   ComposerCatalog,
   ComposerProduct,
+  HeroCtaButton,
   Lang,
   SectionColumn,
 } from "../lib/types";
@@ -508,8 +504,19 @@ export function BlockPreview({
     case "pimpam_hero":
     case "product_hero":
     case "hero": {
-      const data = getHeroDataInLanguage(block, lang, appState);
-      return <PimpamHeroPreview data={data} />;
+      // Literal port of the hero render in `bomedia-v4/app-compositor.jsx`
+      // line 1167: merge sbSource.config with block (block wins), apply
+      // the override → i18n → cfg → default fallback chain. Without the
+      // hard-coded defaults the canvas reads as "Hero sin título" when
+      // the BD seed ships a sparse standalone config, even though the
+      // email-gen `pimpamHeroHtml` defaults fill the preview iframe.
+      return (
+        <PimpamHeroPreview
+          block={block}
+          lang={lang}
+          appState={appState}
+        />
+      );
     }
 
     case "pimpam_steps": {
@@ -797,53 +804,171 @@ function SectionColumns({
 }
 
 interface PimpamHeroPreviewProps {
-  data: HeroData;
+  block: Block;
+  lang: Lang;
+  appState: ComposerAppState;
 }
 
-/** Visual hero preview — port of the `pimpamHeroHtml` shape
- * (`bomedia-v4/app-email-gen.jsx` line 187) reduced to a layout the
- * canvas card can host. The same fields the email render uses
- * (image / title / subtitle / bullets / CTAs / bg) are read here. */
-function PimpamHeroPreview({ data }: PimpamHeroPreviewProps) {
+/** Hero canvas preview — literal port of the `isHero` branch of
+ * `BlockCard` in `bomedia-v4/app-compositor.jsx` lines 1167-1209.
+ *
+ * The original merges `sbSource.config` with `block` (block wins),
+ * then reads each field through a 4-step fallback:
+ *   ovr[key] || hi[key] || cfg[key] || hard-coded default
+ *
+ * where:
+ *   ovr = block._overrides?.[lang]  (legacy per-lang object override)
+ *   hi  = cfg.i18n?.[lang]          (standalone-source translations)
+ *   cfg = {...sbSource.config, ...block}
+ *
+ * The hard-coded defaults match the v5o composer so the canvas reads
+ * as a populated hero even when the CRM seed ships a sparse standalone
+ * config — same parity the email-gen `pimpamHeroHtml` already has. */
+function PimpamHeroPreview({
+  block,
+  lang,
+  appState,
+}: PimpamHeroPreviewProps) {
+  const sbLookupId = block._sourceId || block.standaloneId;
+  const sbSource = sbLookupId
+    ? appState.standaloneBlocks.find((s) => s.id === sbLookupId) ?? null
+    : null;
+  const cfg = {
+    ...((sbSource?.config as Record<string, unknown>) ?? {}),
+    ...block,
+  } as Record<string, unknown>;
+  const ovrRaw = block.overridesByLang?.[lang];
+  const ovr =
+    typeof ovrRaw === "object" && ovrRaw !== null
+      ? (ovrRaw as Record<string, unknown>)
+      : {};
+  const i18nBlob = cfg.i18n as
+    | Partial<Record<Lang, Record<string, unknown>>>
+    | undefined;
+  const hi = i18nBlob && lang ? i18nBlob[lang] ?? null : null;
+
+  const pick = (key: string, fallback = ""): string => {
+    const o = (ovr as Record<string, unknown>)[key];
+    if (typeof o === "string" && o) return o;
+    if (hi && typeof hi[key] === "string" && hi[key]) return hi[key] as string;
+    const c = cfg[key];
+    if (typeof c === "string" && c) return c;
+    return fallback;
+  };
+  const pickArr = <T,>(key: string, fallback: T[] = []): T[] => {
+    const o = (ovr as Record<string, unknown>)[key];
+    if (Array.isArray(o) && o.length > 0) return o as T[];
+    if (hi && Array.isArray(hi[key]) && (hi[key] as unknown[]).length > 0) {
+      return hi[key] as T[];
+    }
+    const c = cfg[key];
+    if (Array.isArray(c) && c.length > 0) return c as T[];
+    return fallback;
+  };
+
+  const title = pick("heroTitle", "Personaliza, imprime y vende");
+  const subtitle = pick("heroSubtitle");
+  const bullets = pickArr<string>("heroBullets");
+  const img = pick("heroImage");
+  const bg = pick("heroBgColor", "#fff");
+  let ctas = pickArr<HeroCtaButton>("heroCtaButtons");
+  if (ctas.length === 0) {
+    const t = pick("heroCtaText");
+    const u = pick("heroCtaUrl");
+    if (t && u) ctas = [{ text: t, url: u }];
+  }
+
   return (
     <div
-      className="hero-preview"
-      style={{ background: data.heroBgColor || "#fff" }}
+      style={{
+        display: "flex",
+        gap: 14,
+        padding: 14,
+        background: bg,
+        borderRadius: "var(--r-md)",
+        border: "1px solid var(--border)",
+      }}
     >
-      <div className="hero-row">
-        {data.heroImage ? (
-          /* eslint-disable-next-line @next/next/no-img-element */
-          <img src={data.heroImage} alt="" className="hero-img" />
-        ) : null}
-        <div className="hero-text">
-          <h2 className="hero-title">{data.heroTitle || "Hero sin título"}</h2>
-          {data.heroSubtitle ? (
-            <p className="hero-subtitle">{data.heroSubtitle}</p>
-          ) : null}
-          {data.heroBullets && data.heroBullets.length > 0 ? (
-            <ul className="hero-bullets">
-              {data.heroBullets.map((b, i) => (
-                <li key={i}>✓ {b}</li>
-              ))}
-            </ul>
-          ) : null}
-          {data.heroCtaButtons && data.heroCtaButtons.length > 0 ? (
-            <div className="hero-ctas">
-              {data.heroCtaButtons.map((cta, i) => (
-                <span
-                  key={i}
-                  className="hero-cta-btn"
-                  style={{
-                    background: cta.bg || "#ea580c",
-                    color: cta.color || "#ffffff",
-                  }}
-                >
-                  {cta.text}
-                </span>
-              ))}
-            </div>
-          ) : null}
+      {img && (
+        <div
+          style={{
+            flexShrink: 0,
+            width: 120,
+            height: 120,
+            borderRadius: "var(--r-sm)",
+            overflow: "hidden",
+          }}
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={img}
+            alt=""
+            style={{ width: "100%", height: "100%", objectFit: "cover" }}
+          />
         </div>
+      )}
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontWeight: 800, fontSize: 14, color: "#0f172a" }}>
+          {title}
+        </div>
+        {subtitle && (
+          <div
+            style={{
+              fontSize: 12,
+              color: "var(--text-muted)",
+              margin: "4px 0 6px",
+              lineHeight: 1.5,
+            }}
+          >
+            {subtitle}
+          </div>
+        )}
+        {bullets.length > 0 && (
+          <ul style={{ margin: "4px 0 0", padding: 0, listStyle: "none" }}>
+            {bullets.map((b, i) => (
+              <li
+                key={i}
+                style={{
+                  fontSize: 11,
+                  color: "var(--text-muted)",
+                  margin: "2px 0",
+                }}
+              >
+                ✓ {b}
+              </li>
+            ))}
+          </ul>
+        )}
+        {ctas.length > 0 && (
+          <div
+            style={{
+              display: "flex",
+              gap: 6,
+              marginTop: 8,
+              flexWrap: "wrap",
+            }}
+          >
+            {ctas.map(
+              (c, i) =>
+                c.text && (
+                  <span
+                    key={i}
+                    style={{
+                      display: "inline-block",
+                      padding: "5px 10px",
+                      borderRadius: 6,
+                      background: c.bg || "#ea580c",
+                      color: c.color || "#fff",
+                      fontSize: 11,
+                      fontWeight: 700,
+                    }}
+                  >
+                    {c.text}
+                  </span>
+                ),
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
