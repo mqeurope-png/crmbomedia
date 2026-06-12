@@ -1,33 +1,3 @@
-﻿<!DOCTYPE html>
-<html lang="es">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<!-- Content Security Policy: limits which origins can load scripts, styles,
-     fonts, images and which APIs the page may contact. Reduces XSS surface
-     for the public deploy. 'unsafe-inline' on style is required by the
-     in-line style="â€¦" attributes scattered through the JSX renderers; the
-     'unsafe-eval' on script is required by Babel-standalone. -->
-<meta http-equiv="Content-Security-Policy" content="
-  default-src 'self';
-  script-src 'self' 'unsafe-inline' 'unsafe-eval' https://unpkg.com;
-  style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;
-  font-src 'self' https://fonts.gstatic.com data:;
-  img-src 'self' data: blob: https:;
-  connect-src 'self' https://midvgxxndddasxlnstkg.supabase.co https://api.openai.com https://api.anthropic.com https://boprint.net;
-  frame-src 'self' blob:;
-  base-uri 'self';
-  form-action 'self';
-  object-src 'none';
-">
-<title>Bomedia Email Composer Â· v4 (AI agent)</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
-<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
-<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
-<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
-<style>
   :root {
     /* Base neutrals â€” warm slate */
     --bg:         #f7f6f3;
@@ -149,7 +119,7 @@
   .scroll::-webkit-scrollbar-track { background: transparent; }
 
   /* â”€â”€â”€â”€â”€ APP SHELL â”€â”€â”€â”€â”€ */
-  .app-shell {
+  .cmp-app-shell {
     display: grid;
     grid-template-rows: 52px 1fr 28px;
     height: 100vh;
@@ -157,7 +127,7 @@
   }
 
   /* Topbar */
-  .topbar {
+  .cmp-topbar {
     display: flex;
     align-items: center;
     gap: 12px;
@@ -360,7 +330,7 @@
   body.resizing-panel * { cursor: col-resize !important; }
 
   /* Sidebar */
-  .sidebar {
+  .cmp-sidebar {
     background: var(--bg-panel);
     border-right: 1px solid var(--border);
     display: flex;
@@ -949,7 +919,7 @@
   [data-theme="dark"] .insert-zone:hover .insert-btn { color: var(--bg); }
 
   /* Dropdown menu (canvas-header HTML button) */
-  .dropdown-menu {
+  .cmp-dropdown-menu {
     position: absolute;
     top: calc(100% + 4px);
     right: 0;
@@ -1282,7 +1252,7 @@
     color: var(--text-muted);
   }
   .footer .dot { width: 4px; height: 4px; border-radius: 50%; background: var(--border-strong); }
-  .footer .status {
+  .footer .cmp-status {
     display: inline-flex; align-items: center; gap: 5px;
   }
   .footer .status-dot {
@@ -2193,7 +2163,7 @@
   }
 
   /* Login modal */
-  .modal-overlay {
+  .cmp-modal-overlay {
     position: fixed; inset: 0;
     background: rgba(26,25,24,0.5);
     backdrop-filter: blur(4px);
@@ -2230,125 +2200,66 @@
     .topbar-search { width: 180px; }
     .canvas { padding: 16px; }
   }
-</style>
-</head>
-<body>
-<div id="root"></div>
 
-<!-- Business logic modules (ported from v2) â€” loaded BEFORE the UI so globals exist. -->
-<script>window.__bv = '20260429a'</script>
-<!--
-  CRM auth bootstrap. Runs before any app-X.jsx loads.
-  Reads the CRM JWT from sessionStorage (the Next.js loader at
-  /composer (page.tsx) copies it from localStorage before
-  redirecting here) and stashes it onto window.__CRM_TOKEN__ for
-  the CRM-adapted app-supabase.jsx to read.
+/* ─── CRM integration overrides ───
+   Applied at the end so they win the cascade. Adapts the
+   Composer's `.app-shell` (renamed `.cmp-app-shell`) to nest inside
+   the CRM's main content area instead of taking the full viewport. */
+.composer-editor.cmp-app-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  width: 100%;
+  min-height: 0;
+  overflow: hidden;
+  /* The original v5o palette includes a `background: var(--bg)`
+     rule on `.cmp-app-shell`; we keep that so the composer page
+     reads its tokens regardless of CRM context. */
+}
+.composer-editor .cmp-topbar {
+  flex: 0 0 auto;
+}
+.composer-editor .cmp-body {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: row;
+  min-height: 0;
+  overflow: hidden;
+}
+.composer-editor .cmp-body > .cmp-sidebar {
+  width: 280px;
+  flex: 0 0 280px;
+  overflow-y: auto;
+  border-right: 1px solid var(--border);
+  background: var(--bg-panel);
+}
+.composer-editor .cmp-body > .canvas {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  min-width: 0;
+}
+.composer-editor .footer {
+  flex: 0 0 auto;
+}
 
-  Also flips __COMPOSER_AUTH_BYPASSED__ so the original login
-  modal (designed for the standalone composer.bomedia.net deploy)
-  stays dismissed — the CRM has already authenticated the session
-  by the time the redirect lands here.
--->
-<script>
-(function bootstrapCrmAuth() {
-  try {
-    var t = window.sessionStorage.getItem('composer_crm_jwt');
-    if (!t) {
-      // Direct navigation — bounce back to the CRM login.
-      window.location.replace('/login?next=' + encodeURIComponent('/composer'));
-      return;
-    }
-    window.__CRM_TOKEN__ = t;
-    window.__COMPOSER_AUTH_BYPASSED__ = true;
-    // Expose a global helper the supabase replacement uses.
-    window.__crmFetch = function (url, opts) {
-      opts = opts || {};
-      var headers = Object.assign({}, opts.headers || {});
-      headers['Authorization'] = 'Bearer ' + window.__CRM_TOKEN__;
-      if (!(opts.body instanceof FormData) && !headers['Content-Type']) {
-        headers['Content-Type'] = 'application/json';
-      }
-      return fetch(url, Object.assign({}, opts, { headers: headers }));
-    };
-    // Synthesize a minimal currentUser injection — the embed reads
-    // it before it tries Supabase auth. Real role + name come from
-    // /api/composer/state once that endpoint replies.
-    window.__CRM_CURRENT_USER__ = { id: 'crm', name: 'CRM', role: 'admin' };
-  } catch (e) {
-    console.error('[composer.bootstrap]', e);
-  }
-})();
-</script>
-<script type="text/babel" data-presets="react" src="src/app-data.jsx?v=20260501v5o"></script>
-<script type="text/babel" data-presets="react" src="src/app-i18n.jsx?v=20260501v5o"></script>
-<script type="text/babel" data-presets="react" src="src/app-security.jsx?v=20260501v5o"></script>
-<script type="text/babel" data-presets="react" src="src/app-supabase.jsx?v=20260501v5o"></script>
-<script type="text/babel" data-presets="react" src="src/app-openai.jsx?v=20260501v5o"></script>
-<script type="text/babel" data-presets="react" src="src/app-email-gen.jsx?v=20260501v5o"></script>
-<script type="text/babel" data-presets="react" src="src/app-rich-editor.jsx?v=20260501v5o"></script>
-<script type="text/babel" data-presets="react" src="src/app-ai-agent.jsx?v=20260501v5o"></script>
-
-<script type="text/babel" data-presets="react">
-const { useState, useEffect, useRef, useMemo, useCallback } = React;
-
-/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ ICONS (data lives in src/app-data.jsx) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
-
-/* BRANDS, PRODUCTS, PREWRITTEN_TEXTS, TEMPLATES, STANDALONE_BLOCKS
-   are now declared in src/app-data.jsx (ported from v2). */
-
-/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ ICONS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
-const Icon = ({ name, size=16 }) => {
-  const paths = {
-    search: <><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></>,
-    plus: <><path d="M12 5v14M5 12h14"/></>,
-    x: <><path d="M18 6 6 18M6 6l12 12"/></>,
-    trash: <><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6h14Z"/></>,
-    copy: <><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></>,
-    arrowUp: <><path d="m18 15-6-6-6 6"/></>,
-    arrowDown: <><path d="m6 9 6 6 6-6"/></>,
-    eye: <><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></>,
-    eyeOff: <><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-10-8-10-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 10 8 10 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24M1 1l22 22"/></>,
-    code: <><path d="m16 18 6-6-6-6M8 6l-6 6 6 6"/></>,
-    download: <><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></>,
-    send: <><path d="m22 2-7 20-4-9-9-4Zm0 0L11 13"/></>,
-    panel: <><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M15 3v18"/></>,
-    sidebar: <><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/></>,
-    layers: <><path d="m12 2 10 5-10 5-10-5 10-5Z"/><path d="m2 17 10 5 10-5M2 12l10 5 10-5"/></>,
-    text: <><path d="M4 7V4h16v3M9 20h6M12 4v16"/></>,
-    box: <><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5M12 22V12"/></>,
-    template: <><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></>,
-    sparkles: <><path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3Z"/></>,
-    grid: <><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></>,
-    settings: <><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></>,
-    drag: <><circle cx="9" cy="5" r="1"/><circle cx="9" cy="12" r="1"/><circle cx="9" cy="19" r="1"/><circle cx="15" cy="5" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="15" cy="19" r="1"/></>,
-    dots: <><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></>,
-    monitor: <><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></>,
-    smartphone: <><rect x="5" y="2" width="14" height="20" rx="2"/><path d="M12 18h.01"/></>,
-    undo: <><path d="M3 7v6h6M21 17a9 9 0 0 0-15-6.7L3 13"/></>,
-    redo: <><path d="M21 7v6h-6M3 17a9 9 0 0 1 15-6.7L21 13"/></>,
-    share: <><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.59 13.51 6.83 3.98M15.41 6.51l-6.82 3.98"/></>,
-    zap: <><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8Z"/></>,
-    database: <><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5M3 12c0 1.66 4 3 9 3s9-1.34 9-3"/></>,
-    palette: <><circle cx="13.5" cy="6.5" r=".5"/><circle cx="17.5" cy="10.5" r=".5"/><circle cx="8.5" cy="7.5" r=".5"/><circle cx="6.5" cy="12.5" r=".5"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.8 0 1.5-.7 1.5-1.5 0-.4-.2-.8-.4-1-.3-.3-.5-.7-.5-1.1a1.5 1.5 0 0 1 1.5-1.5h1.8c2.8 0 5.1-2.3 5.1-5.1C22 6.1 17.5 2 12 2Z"/></>,
-    chevron: <><path d="m9 18 6-6-6-6"/></>,
-    lock: <><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></>,
-    star: <><path d="m12 2 3.1 6.3 6.9 1-5 4.9 1.2 6.9L12 17.8 5.8 21l1.2-6.9-5-4.9 6.9-1L12 2Z"/></>,
-  };
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
-      {paths[name] || null}
-    </svg>
-  );
-};
-
-Object.assign(window, { Icon });
-</script>
-
-<!-- UI Components -->
-<script type="text/babel" data-presets="react" src="src/app-compositor.jsx?v=20260501v5o"></script>
-<script type="text/babel" data-presets="react" src="src/app-inspector.jsx?v=20260501v5o"></script>
-<script type="text/babel" data-presets="react" src="src/app-backoffice.jsx?v=20260501v5o"></script>
-<script type="text/babel" data-presets="react" src="src/app-main.jsx?v=20260501v5o"></script>
-
-</body>
-</html>
+/* Preview modal — full-area overlay inside the composer. */
+.composer-editor .cmp-preview-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 999;
+  padding: 24px;
+}
+.composer-editor .cmp-preview-modal-inner {
+  background: var(--bg-panel);
+  border-radius: 12px;
+  width: min(880px, 100%);
+  max-height: 85vh;
+  overflow: hidden;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.32);
+  display: flex;
+  flex-direction: column;
+}

@@ -96,13 +96,18 @@ const NAV_ITEMS: ReadonlyArray<Item> = [
     ],
   },
   {
-    // Sprint Composer: el módulo embed el Composer original (JSX en
-    // public/composer/), no es Next.js. La entrada del sidebar lleva
-    // a /composer que redirige al index.html embeddado.
+    // Sprint Composer Fase 1: el módulo se monta entre Marketing y
+    // Tags. Visible para todos los roles excepto viewer; el backend
+    // ya rechaza viewer con 403 si llega a /api/composer/*.
     href: "/composer",
     label: "Composer",
     icon: Palette,
     allowedRoles: ["admin", "manager", "user"],
+    children: [
+      { href: "/composer/canvas", label: "Canvas" },
+      { href: "/composer/templates", label: "Plantillas" },
+      { href: "/composer/backoffice", label: "Backoffice" },
+    ],
   },
   {
     href: "/admin/tags",
