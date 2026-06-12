@@ -34,6 +34,16 @@ export function useCatalog(): UseCatalogResult {
         inFlight = getCatalog() as unknown as Promise<ComposerCatalog>;
       const next = await inFlight;
       cachedCatalog = next;
+      // Push the live catalog into the composer store so
+      // `addBlock(spec)` can materialise standalones / heroes /
+      // products against the latest data the user is seeing.
+      try {
+        // Dynamic import to avoid a hook-import cycle.
+        const { useComposerStore } = await import("./store");
+        useComposerStore.getState().setCatalog(next);
+      } catch {
+        /* store not loaded — fall through */
+      }
       setCatalog(next);
       setError(null);
     } catch (err) {

@@ -87,8 +87,8 @@ export function isAvailableInLang<T extends { langs?: Lang[] }>(
 }
 
 function readOverride(block: Block, lang: Lang): string | null {
-  if (!block._overrides) return null;
-  const ov = block._overrides[lang];
+  if (!block.overridesByLang) return null;
+  const ov = block.overridesByLang[lang];
   if (typeof ov === "string") return ov;
   return null;
 }
@@ -143,10 +143,10 @@ export function getTextInLanguage(
   }
 
   if (block._sourceType === "manual") {
-    if (block._overrides) {
-      const ov = block._overrides[lang];
+    if (block.overridesByLang) {
+      const ov = block.overridesByLang[lang];
       if (typeof ov === "string") return ov;
-      const fallback = block._overrides.es;
+      const fallback = block.overridesByLang.es;
       if (typeof fallback === "string") return fallback;
     }
     return block.text ?? "";
@@ -243,16 +243,10 @@ export function getHeroDataInLanguage(
     if (ctaText) result.heroCtaText = ctaText;
   }
 
-  if (block._overrides && block._overrides[lang]) {
-    const ovr = block._overrides[lang];
-    if (typeof ovr === "object" && ovr !== null) {
-      const ovrObj = ovr as Partial<HeroData>;
-      if (ovrObj.heroTitle) result.heroTitle = ovrObj.heroTitle;
-      if (ovrObj.heroSubtitle) result.heroSubtitle = ovrObj.heroSubtitle;
-      if (ovrObj.heroBullets) result.heroBullets = ovrObj.heroBullets;
-      if (ovrObj.heroCtaText) result.heroCtaText = ovrObj.heroCtaText;
-    }
-  }
+  // Hero per-lang overrides live under `block.i18n[lang]` (handled
+  // above). The v5o canvas never wrote a hero override into
+  // `overridesByLang` — that field stays exclusively for plain-text
+  // overrides on text blocks.
 
   return result;
 }

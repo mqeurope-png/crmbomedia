@@ -3,44 +3,29 @@
 /**
  * Composer editor state — zustand store.
  *
- * Keeps the canvas state (`blocks` + `selectedId` + `activeLang` + ...)
- * plus the undo/redo history stack. Mutations that change the canvas
- * shape (add / update / delete / reorder / duplicate / ungroup / clear)
- * push onto the history; pure metadata mutations (selection, lang,
- * save status) don't, so undo doesn't bounce the user out of their
- * editing context.
- *
- * The store is intentionally fat (one giant slice). Splitting it into
- * actions / computed / state slices is the standard zustand pattern
- * for big stores but adds 4 files of plumbing for ~600 LOC of state,
- * which isn't a tradeoff that pays off until selectors get expensive.
+ * Step 0 rebase: every action that mutates blocks routes through the
+ * v5o-shape tree (sections via `columns[].blocks`, NOT a custom
+ * `innerBlocks`). Block creation goes through `materialiseBlock` so
+ * heroes / products / standalones land already populated, the same
+ * way the original `addBlock` worked.
  */
 
 import { create } from "zustand";
 import { subscribeWithSelector } from "zustand/middleware";
 
-import type {
-  AddBlockSpec,
-  Block,
-  ComposerActions,
-  ComposerEditorState,
-  Lang,
-  SaveStatus,
+import { materialiseBlock } from "./createBlock";
+import {
+  toAppState,
+  type Block,
+  type ComposerActions,
+  type ComposerAppState,
+  type ComposerCatalog,
+  type ComposerEditorState,
+  type Lang,
+  type SaveStatus,
 } from "./types";
 
 const MAX_HISTORY = 30;
-
-function generateBlockId(type: string): string {
-  return `${type}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-function createBlockFromSpec(id: string, spec: AddBlockSpec): Block {
-  return {
-    id,
-    type: spec.type,
-    ...spec.params,
-  };
-}
 
 function pushHistory(
   history: Block[][],
@@ -53,225 +38,289 @@ function pushHistory(
   return { history: finalHistory, historyIdx: finalHistory.length - 1 };
 }
 
-function findBlockInTree(
-  blocks: Block[],
-  id: string,
-): { parent: Block[] | null; index: number; block: Block | null } {
-  for (let i = 0; i < blocks.length; i += 1) {
-    const b = blocks[i];
-    if (b.id === id) return { parent: blocks, index: i, block: b };
-    if (Array.isArray(b.innerBlocks)) {
-      const found = findBlockInTree(b.innerBlocks, id);
-      if (found.block !== null) return found;
-    }
-  }
-  return { parent: null, index: -1, block: null };
-}
-
+/** Recursively map every block in the tree, descending into
+ * sections' `columns[].blocks`. */
 function mapBlocksDeep(
   blocks: Block[],
   fn: (b: Block) => Block,
 ): Block[] {
   return blocks.map((b) => {
     const mapped = fn(b);
-    if (Array.isArray(mapped.innerBlocks) && mapped.innerBlocks.length > 0) {
-      return { ...mapped, innerBlocks: mapBlocksDeep(mapped.innerBlocks, fn) };
+    if (
+      mapped.type === "section" &&
+      Array.isArray(mapped.columns) &&
+      mapped.columns.length > 0
+    ) {
+      return {
+        ...mapped,
+        columns: mapped.columns.map((col) => ({
+          ...col,
+          blocks: mapBlocksDeep(col.blocks ?? [], fn),
+        })),
+      };
     }
     return mapped;
   });
 }
 
+/** Recursively remove a block by id from the tree, descending into
+ * section columns. */
 function deleteBlockFromTree(blocks: Block[], id: string): Block[] {
-  const filtered: Block[] = [];
+  const out: Block[] = [];
   for (const b of blocks) {
     if (b.id === id) continue;
-    if (Array.isArray(b.innerBlocks)) {
-      filtered.push({ ...b, innerBlocks: deleteBlockFromTree(b.innerBlocks, id) });
+    if (b.type === "section" && Array.isArray(b.columns)) {
+      out.push({
+        ...b,
+        columns: b.columns.map((col) => ({
+          ...col,
+          blocks: deleteBlockFromTree(col.blocks ?? [], id),
+        })),
+      });
     } else {
-      filtered.push(b);
+      out.push(b);
     }
   }
-  return filtered;
+  return out;
+}
+
+/** Walk the whole tree (top-level + section columns) and return the
+ * first block matching `id`. */
+function findBlockInTree(
+  blocks: Block[],
+  id: string,
+): { block: Block | null } {
+  for (const b of blocks) {
+    if (b.id === id) return { block: b };
+    if (b.type === "section" && Array.isArray(b.columns)) {
+      for (const col of b.columns) {
+        const found = findBlockInTree(col.blocks ?? [], id);
+        if (found.block !== null) return found;
+      }
+    }
+  }
+  return { block: null };
+}
+
+/** Append a new block to a section's column. Mirrors `_addToSection`
+ * in `app-main.jsx` lines 1057-1075. */
+function addToSection(
+  blocks: Block[],
+  sectionId: string,
+  columnIdx: number,
+  newBlock: Block,
+): Block[] {
+  return blocks.map((b) => {
+    if (b.id !== sectionId) {
+      if (b.type === "section" && Array.isArray(b.columns)) {
+        return {
+          ...b,
+          columns: b.columns.map((col) => ({
+            ...col,
+            blocks: addToSection(
+              col.blocks ?? [],
+              sectionId,
+              columnIdx,
+              newBlock,
+            ),
+          })),
+        };
+      }
+      return b;
+    }
+    if (b.type !== "section" || !Array.isArray(b.columns)) return b;
+    const cols = b.columns.map((col, idx) => {
+      if (idx !== columnIdx) return col;
+      return { ...col, blocks: [...(col.blocks ?? []), newBlock] };
+    });
+    return { ...b, columns: cols };
+  });
 }
 
 export const useComposerStore = create<ComposerEditorState & ComposerActions>()(
-  subscribeWithSelector((set, get) => ({
-    blocks: [],
-    selectedId: null,
-    activeLang: "es",
-    emailTitle: "",
-    editingTemplateId: null,
-    history: [[]],
-    historyIdx: 0,
-    saveStatus: "idle",
-    lastSavedAt: null,
-    lastError: null,
+  subscribeWithSelector((set, get) => {
+    let catalogRef: ComposerCatalog | null = null;
+    const appState = (): ComposerAppState =>
+      catalogRef
+        ? toAppState(catalogRef)
+        : {
+            brands: [],
+            products: [],
+            prewrittenTexts: [],
+            composedBlocks: [],
+            standaloneBlocks: [],
+          };
 
-    setBlocks: (blocks, opts) => {
-      const state = get();
-      if (opts?.skipHistory) {
-        set({ blocks });
-        return;
-      }
-      const { history, historyIdx } = pushHistory(
-        state.history,
-        state.historyIdx,
-        blocks,
-      );
-      set({ blocks, history, historyIdx });
-    },
+    return {
+      blocks: [],
+      selectedId: null,
+      activeLang: "es",
+      emailTitle: "",
+      editingTemplateId: null,
+      history: [[]],
+      historyIdx: 0,
+      saveStatus: "idle",
+      lastSavedAt: null,
+      lastError: null,
 
-    addBlock: (spec) => {
-      const id = generateBlockId(spec.type);
-      const block = createBlockFromSpec(id, spec);
-      const state = get();
-      state.setBlocks([...state.blocks, block]);
-      return id;
-    },
-
-    addBlockToColumn: (sectionId, columnIndex, spec) => {
-      const id = generateBlockId(spec.type);
-      const child = createBlockFromSpec(id, spec);
-      const state = get();
-      const nextBlocks = mapBlocksDeep(state.blocks, (b) => {
-        if (b.id !== sectionId) return b;
-        const cols: Block[] = Array.isArray(b.innerBlocks) ? [...b.innerBlocks] : [];
-        // section_2col / section_3col store one Block per column slot.
-        // We treat each `Block` in innerBlocks as a column placeholder
-        // wrapper whose `innerBlocks` holds the column's contents.
-        while (cols.length <= columnIndex) {
-          cols.push({ id: generateBlockId("section_col"), type: "text", innerBlocks: [] });
+      setBlocks: (blocks, opts) => {
+        const state = get();
+        if (opts?.skipHistory) {
+          set({ blocks });
+          return;
         }
-        const target = cols[columnIndex];
-        cols[columnIndex] = {
-          ...target,
-          innerBlocks: [...(target.innerBlocks ?? []), child],
-        };
-        return { ...b, innerBlocks: cols };
-      });
-      state.setBlocks(nextBlocks);
-      return id;
-    },
+        const { history, historyIdx } = pushHistory(
+          state.history,
+          state.historyIdx,
+          blocks,
+        );
+        set({ blocks, history, historyIdx });
+      },
 
-    updateBlock: (id, patch) => {
-      const state = get();
-      const next = mapBlocksDeep(state.blocks, (b) =>
-        b.id === id ? { ...b, ...patch } : b,
-      );
-      state.setBlocks(next);
-    },
+      addBlock: (spec, opts) => {
+        const block = materialiseBlock(spec, appState());
+        if (!block) return null;
+        const state = get();
+        if (opts?.into) {
+          const next = addToSection(
+            state.blocks,
+            opts.into.sectionId,
+            opts.into.columnIdx,
+            block,
+          );
+          state.setBlocks(next);
+        } else {
+          state.setBlocks([...state.blocks, block]);
+        }
+        return block.id;
+      },
 
-    deleteBlock: (id) => {
-      const state = get();
-      const next = deleteBlockFromTree(state.blocks, id);
-      state.setBlocks(next);
-      if (state.selectedId === id) set({ selectedId: null });
-    },
+      addBlockToColumn: (sectionId, columnIndex, spec) => {
+        const block = materialiseBlock(spec, appState());
+        if (!block) return null;
+        const state = get();
+        const next = addToSection(state.blocks, sectionId, columnIndex, block);
+        state.setBlocks(next);
+        return block.id;
+      },
 
-    reorderBlocks: (fromIdx, toIdx) => {
-      const state = get();
-      if (
-        fromIdx < 0 ||
-        toIdx < 0 ||
-        fromIdx >= state.blocks.length ||
-        toIdx >= state.blocks.length ||
-        fromIdx === toIdx
-      ) {
-        return;
-      }
-      const next = [...state.blocks];
-      const [moved] = next.splice(fromIdx, 1);
-      next.splice(toIdx, 0, moved);
-      state.setBlocks(next);
-    },
+      updateBlock: (id, patch) => {
+        const state = get();
+        const next = mapBlocksDeep(state.blocks, (b) =>
+          b.id === id ? { ...b, ...patch } : b,
+        );
+        state.setBlocks(next);
+      },
 
-    duplicateBlock: (id) => {
-      const state = get();
-      const idx = state.blocks.findIndex((b) => b.id === id);
-      if (idx < 0) return;
-      const source = state.blocks[idx];
-      const copy: Block = {
-        ...source,
-        id: generateBlockId(source.type),
-        innerBlocks: source.innerBlocks
-          ? source.innerBlocks.map((c) => ({
+      deleteBlock: (id) => {
+        const state = get();
+        const next = deleteBlockFromTree(state.blocks, id);
+        state.setBlocks(next);
+        if (state.selectedId === id) set({ selectedId: null });
+      },
+
+      reorderBlocks: (fromIdx, toIdx) => {
+        const state = get();
+        if (
+          fromIdx < 0 ||
+          toIdx < 0 ||
+          fromIdx >= state.blocks.length ||
+          toIdx >= state.blocks.length ||
+          fromIdx === toIdx
+        ) {
+          return;
+        }
+        const next = [...state.blocks];
+        const [moved] = next.splice(fromIdx, 1);
+        next.splice(toIdx, 0, moved);
+        state.setBlocks(next);
+      },
+
+      duplicateBlock: (id) => {
+        const state = get();
+        const idx = state.blocks.findIndex((b) => b.id === id);
+        if (idx < 0) return;
+        const source = state.blocks[idx];
+        const copyId = `b-dup-${Date.now().toString(36)}-${Math.random()
+          .toString(36)
+          .slice(2, 6)}`;
+        const copy: Block = {
+          ...source,
+          id: copyId,
+          columns: source.columns?.map((col) => ({
+            ...col,
+            blocks: (col.blocks ?? []).map((c) => ({
               ...c,
-              id: generateBlockId(c.type),
-            }))
-          : undefined,
-      };
-      const next = [...state.blocks];
-      next.splice(idx + 1, 0, copy);
-      state.setBlocks(next);
-    },
+              id: `${copyId}-${c.id}`,
+            })),
+          })),
+        };
+        const next = [...state.blocks];
+        next.splice(idx + 1, 0, copy);
+        state.setBlocks(next);
+      },
 
-    ungroupBlock: (id) => {
-      const state = get();
-      const idx = state.blocks.findIndex((b) => b.id === id);
-      if (idx < 0) return;
-      const target = state.blocks[idx];
-      if (!Array.isArray(target.innerBlocks) || target.innerBlocks.length === 0) {
-        return;
-      }
-      const next = [...state.blocks];
-      next.splice(
-        idx,
-        1,
-        ...target.innerBlocks.map((c) => ({
-          ...c,
-          id: generateBlockId(c.type),
-        })),
-      );
-      state.setBlocks(next);
-    },
+      ungroupBlock: (id) => {
+        const state = get();
+        const idx = state.blocks.findIndex((b) => b.id === id);
+        if (idx < 0) return;
+        const target = state.blocks[idx];
+        // For sections, flatten the columns' contents.
+        if (target.type === "section" && Array.isArray(target.columns)) {
+          const flat = target.columns.flatMap((col) => col.blocks ?? []);
+          if (flat.length === 0) return;
+          const next = [...state.blocks];
+          next.splice(idx, 1, ...flat);
+          state.setBlocks(next);
+        }
+      },
 
-    clearCanvas: () => {
-      const state = get();
-      state.setBlocks([]);
-      set({ selectedId: null });
-    },
+      clearCanvas: () => {
+        const state = get();
+        state.setBlocks([]);
+        set({ selectedId: null });
+      },
 
-    setSelected: (id) => set({ selectedId: id }),
+      setSelected: (id) => set({ selectedId: id }),
+      setLang: (lang: Lang) => set({ activeLang: lang }),
+      setEmailTitle: (title) => set({ emailTitle: title }),
+      setEditingTemplateId: (id) => set({ editingTemplateId: id }),
 
-    setLang: (lang: Lang) => set({ activeLang: lang }),
+      undo: () => {
+        const state = get();
+        if (state.historyIdx <= 0) return;
+        const prevIdx = state.historyIdx - 1;
+        set({
+          historyIdx: prevIdx,
+          blocks: state.history[prevIdx] ?? [],
+        });
+      },
 
-    setEmailTitle: (title) => set({ emailTitle: title }),
+      redo: () => {
+        const state = get();
+        if (state.historyIdx >= state.history.length - 1) return;
+        const nextIdx = state.historyIdx + 1;
+        set({
+          historyIdx: nextIdx,
+          blocks: state.history[nextIdx] ?? [],
+        });
+      },
 
-    setEditingTemplateId: (id) => set({ editingTemplateId: id }),
-
-    undo: () => {
-      const state = get();
-      if (state.historyIdx <= 0) return;
-      const prevIdx = state.historyIdx - 1;
-      set({
-        historyIdx: prevIdx,
-        blocks: state.history[prevIdx] ?? [],
-      });
-    },
-
-    redo: () => {
-      const state = get();
-      if (state.historyIdx >= state.history.length - 1) return;
-      const nextIdx = state.historyIdx + 1;
-      set({
-        historyIdx: nextIdx,
-        blocks: state.history[nextIdx] ?? [],
-      });
-    },
-
-    setSaveStatus: (status: SaveStatus, error: string | null = null) =>
-      set({ saveStatus: status, lastError: error }),
-
-    setLastSavedAt: (ts) => set({ lastSavedAt: ts }),
-  })),
+      setSaveStatus: (status: SaveStatus, error: string | null = null) =>
+        set({ saveStatus: status, lastError: error }),
+      setLastSavedAt: (ts) => set({ lastSavedAt: ts }),
+      setCatalog: (catalog) => {
+        catalogRef = catalog;
+      },
+    };
+  }),
 );
 
 export const __internal__ = {
-  generateBlockId,
-  createBlockFromSpec,
-  pushHistory,
   mapBlocksDeep,
   deleteBlockFromTree,
   findBlockInTree,
+  addToSection,
+  pushHistory,
   MAX_HISTORY,
 };

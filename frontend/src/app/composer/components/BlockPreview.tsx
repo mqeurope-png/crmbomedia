@@ -33,6 +33,7 @@ import type {
   ComposerCatalog,
   ComposerProduct,
   Lang,
+  SectionColumn,
 } from "../lib/types";
 import { ColumnAddPicker } from "./ColumnAddPicker";
 
@@ -242,22 +243,24 @@ export function InlineTextPreview({
   appState,
 }: InlineTextPreviewProps) {
   // Resolution chain (matches the original `getTextInLanguage` chain):
-  //  1. `_overrides[lang]` if set
-  //  2. prewritten text body via `_sourceId`
+  //  1. `overridesByLang[lang]` if set (v5o canonical)
+  //  2. prewritten text body via `_sourceId` / `textId`
   //  3. block.text
-  const sourceText = block._sourceId
-    ? appState.prewrittenTexts.find((t) => t.id === block._sourceId)
-    : null;
+  const sourceText =
+    block._sourceId || block.textId
+      ? appState.prewrittenTexts.find(
+          (t) => t.id === (block._sourceId || block.textId),
+        )
+      : null;
   const localized = sourceText
     ? getLocalizedText(sourceText, "text", lang)
     : block.text || "";
   const override =
-    block._overrides && typeof block._overrides[lang] === "string"
-      ? (block._overrides[lang] as string)
+    block.overridesByLang && typeof block.overridesByLang[lang] === "string"
+      ? (block.overridesByLang[lang] as string)
       : "";
   const plainSeed = override || localized || "";
-  const richByLang = (block as Block & { _richHtmlByLang?: Partial<Record<Lang, string>> })
-    ._richHtmlByLang;
+  const richByLang = block._richHtmlByLang;
   const legacyRich =
     lang === "es" && typeof block._richHtml === "string"
       ? block._richHtml
@@ -374,7 +377,7 @@ export function BlockPreview({
     }
 
     case "image": {
-      const src = block.imageUrl || "";
+      const src = block.src || "";
       return (
         <div
           style={{
@@ -430,8 +433,8 @@ export function BlockPreview({
                     padding: "10px 22px",
                     fontSize: 13,
                     fontWeight: 600,
-                    color: block.textColor || "#fff",
-                    background: block.bgColor || "#1d4ed8",
+                    color: block.color || "#fff",
+                    background: block.bg || "#1d4ed8",
                     borderRadius: 6,
                     textDecoration: "none",
                   }}
@@ -456,17 +459,10 @@ export function BlockPreview({
       );
     }
 
-    case "divider_line":
-    case "divider_short":
-    case "divider_dots": {
-      const style: "line" | "short" | "dots" =
-        block.type === "divider_short"
-          ? "short"
-          : block.type === "divider_dots"
-            ? "dots"
-            : "line";
-      const color = block.bgColor || "#e2e8f0";
-      const padV = 24;
+    case "divider": {
+      const style = block.style ?? "line";
+      const color = block.color || "#e2e8f0";
+      const padV = typeof block.paddingV === "number" ? block.paddingV : 24;
       if (style === "dots")
         return (
           <div
@@ -601,9 +597,25 @@ export function BlockPreview({
 
     case "freebird":
     case "video": {
-      const url = block.youtubeUrl || "";
+      // Standalone-sourced videos park their YouTube URL on the source
+      // config (per the v5o `_sourceId` → standaloneBlocks.config look-up).
+      // Inline blocks that the user pasted directly carry it under
+      // the same field name through the inspector — read from both.
+      const sb = block._sourceId
+        ? appState.standaloneBlocks.find((s) => s.id === block._sourceId)
+        : null;
+      const cfg = (sb?.config ?? {}) as {
+        youtubeUrl?: string;
+        thumbnailOverride?: string;
+      };
+      const inline = block as Block & {
+        youtubeUrl?: string;
+        thumbnailOverride?: string;
+      };
+      const url = inline.youtubeUrl || cfg.youtubeUrl || "";
       const thumb =
-        block.thumbnailOverride ||
+        inline.thumbnailOverride ||
+        cfg.thumbnailOverride ||
         (url.match(/(?:v=|youtu\.be\/)([^&\n?#]+)/)?.[1]
           ? `https://img.youtube.com/vi/${url.match(/(?:v=|youtu\.be\/)([^&\n?#]+)/)?.[1]}/hqdefault.jpg`
           : "");
@@ -696,14 +708,13 @@ export function BlockPreview({
       );
     }
 
-    case "section_2col":
-    case "section_3col": {
-      const cols = block.type === "section_3col" ? 3 : 2;
+    case "section": {
+      const cols = block.layout === "3col" ? 3 : 2;
       return (
         <SectionColumns
           sectionId={block.id}
           cols={cols}
-          innerBlocks={block.innerBlocks ?? []}
+          columns={block.columns ?? []}
           lang={lang}
           appState={appState}
           catalog={catalog}
@@ -719,7 +730,7 @@ export function BlockPreview({
 interface SectionColumnsProps {
   sectionId: string;
   cols: number;
-  innerBlocks: Block[];
+  columns: SectionColumn[];
   lang: Lang;
   appState: ComposerAppState;
   catalog?: ComposerCatalog;
@@ -732,7 +743,7 @@ interface SectionColumnsProps {
 function SectionColumns({
   sectionId,
   cols,
-  innerBlocks,
+  columns,
   lang,
   appState,
   catalog,
@@ -753,11 +764,9 @@ function SectionColumns({
       onClick={(e) => e.stopPropagation()}
     >
       {Array.from({ length: cols }).map((_, ci) => {
-        // Each column maps to one slot in innerBlocks. The store's
-        // addBlockToColumn materialises a wrapper block whose own
-        // innerBlocks holds the column contents.
-        const column = innerBlocks[ci];
-        const items: Block[] = column?.innerBlocks ?? [];
+        // v5o section shape: `columns[ci].blocks` is the list of
+        // blocks dropped into column `ci`.
+        const items: Block[] = columns[ci]?.blocks ?? [];
         return (
           <div
             key={ci}

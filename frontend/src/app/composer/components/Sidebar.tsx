@@ -664,10 +664,7 @@ export function Sidebar({
                         key={p.id}
                         id={`palette-product-${p.id}`}
                         label={p.name}
-                        spec={{
-                          type: "product_single",
-                          params: { product1: p.id },
-                        }}
+                        spec={{ type: "product", productId: p.id }}
                         onAddBlock={(spec) => addBlock(spec)}
                       >
                         <div className={`lib-icon ${p.brand}`}>
@@ -733,13 +730,7 @@ export function Sidebar({
                         key={c.id}
                         id={`palette-composed-${c.id}`}
                         label={c.title}
-                        spec={{
-                          type: "composed",
-                          params: {
-                            _sourceType: "composed",
-                            _sourceId: c.id,
-                          },
-                        }}
+                        spec={{ type: "composed", composedId: c.id }}
                         onAddBlock={(spec) => addBlock(spec)}
                       >
                         <div className={`lib-icon ${brandId || "mix"}`}>
@@ -801,13 +792,7 @@ export function Sidebar({
                         key={b.id}
                         id={`palette-standalone-${b.id}`}
                         label={b.title}
-                        spec={{
-                          type,
-                          params: {
-                            _sourceType: "standalone",
-                            _sourceId: b.id,
-                          },
-                        }}
+                        spec={{ type, standaloneId: b.id }}
                         onAddBlock={(spec) => addBlock(spec)}
                       >
                         <div className={`lib-icon ${b.brand_id ?? "mix"}`}>
@@ -851,7 +836,7 @@ export function Sidebar({
               <DraggablePaletteButton
                 id="palette-text-blank"
                 label="Texto en blanco"
-                spec={{ type: "text", params: { text: "" } }}
+                spec={{ type: "text-blank" }}
                 onAddBlock={(spec) => addBlock(spec)}
               >
                 <div className="lib-icon mix">
@@ -887,14 +872,7 @@ export function Sidebar({
                     key={t.id}
                     id={`palette-text-${t.id}`}
                     label={t.name}
-                    spec={{
-                      type: "text",
-                      params: {
-                        _sourceType: "prewritten",
-                        _sourceId: t.id,
-                        text: t.text,
-                      },
-                    }}
+                    spec={{ type: "text", textId: t.id }}
                     onAddBlock={(spec) => addBlock(spec)}
                   >
                     <div className={`lib-icon ${t.brand_id ?? "mix"}`}>
