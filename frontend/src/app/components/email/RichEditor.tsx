@@ -302,6 +302,15 @@ export function RichEditor({
   placeholder,
   minHeight = 240,
 }: RichEditorProps) {
+  // Track the last HTML we emitted to the parent. Tiptap normalises
+  // empty content to `<p></p>` while the parent stores it as `""`, so
+  // a naive `editor.getHTML() !== value` check fires on every keystroke
+  // and the resulting `setContent` blows away the cursor (the bug Bart
+  // hit). We compare against what WE emitted instead — that way a
+  // value change coming from outside (Cargar plantilla, controlled
+  // reset) still syncs in.
+  const lastEmittedRef = useRef<string>(value);
+
   const editor = useEditor({
     extensions: [
       StarterKit.configure({
@@ -322,17 +331,23 @@ export function RichEditor({
       Placeholder.configure({ placeholder: placeholder ?? "" }),
     ],
     content: value,
-    onUpdate: ({ editor: e }) => onChange(e.getHTML()),
+    onUpdate: ({ editor: e }) => {
+      const html = e.getHTML();
+      lastEmittedRef.current = html;
+      onChange(html);
+    },
     immediatelyRender: false,
   });
 
   // Sync external value changes (e.g. "Cargar plantilla") into Tiptap.
-  // We compare HTML to avoid infinite loops when the user is typing.
+  // Skip when the incoming value matches what we just emitted —
+  // otherwise typing each character would tear the cursor out of the
+  // editor on every re-render.
   useEffect(() => {
     if (!editor) return;
-    if (editor.getHTML() !== value) {
-      editor.commands.setContent(value || "", { emitUpdate: false });
-    }
+    if (value === lastEmittedRef.current) return;
+    editor.commands.setContent(value || "", { emitUpdate: false });
+    lastEmittedRef.current = value;
   }, [value, editor]);
 
   if (!editor) {
