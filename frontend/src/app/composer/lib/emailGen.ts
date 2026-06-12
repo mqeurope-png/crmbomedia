@@ -1146,6 +1146,7 @@ type V2Block = {
   heroBullets?: string[];
   heroCtaButtons?: unknown;
   heroImage?: string;
+  overridesByLang?: Partial<Record<Lang, string>>;
 };
 
 export function generateFullHtml(
@@ -1388,6 +1389,309 @@ export function generateFullHtml(
 // High-level entry: takes the CRM catalog + Block[] and produces HTML.
 // ───────────────────────────────────────────────────────────────────
 
+// ───────────────────────────────────────────────────────────────────
+// v3→v2 bridge — literal port of `v3BlocksToV2Blocks` from
+// `bomedia-v4/app-email-gen.jsx` (lines 561-808).
+//
+// The renderer expects v2-shape blocks (composed expanded into
+// child blocks, sections with their columns recursively translated,
+// dividers canonicalised to `{type:'divider', style:...}`, etc.).
+// The canvas stores v3-shape blocks. Without this bridge, a
+// composed block on the canvas (carrying only `composedId`) renders
+// as nothing and a `section` doesn't recurse into its columns.
+//
+// Field-name note: the v5o original emits `_overrides`. My renderer
+// + i18n resolver read `overridesByLang` after the Step-0 rebase,
+// so the bridge emits the rebased name. Same for `compositorBlocks`
+// — the CRM stores them on the composed-block row's `config_json`
+// blob; the catalog adapter on the backend re-exposes them at
+// `c.config.compositorBlocks` (camelCase) and the seed convention
+// also accepts `cb.compositorBlocks` direct.
+// ───────────────────────────────────────────────────────────────────
+
+function v3BlocksToV2Blocks(
+  v3Blocks: Block[],
+  appState: ComposerAppState,
+): V2Block[] {
+  const out: V2Block[] = [];
+  const standalone = appState.standaloneBlocks ?? [];
+  const composedList = appState.composedBlocks ?? [];
+  // v3Brands list is reserved for the `brandstrip` multi-brand case
+  // the original v5o handles. We don't expose that palette item yet,
+  // so the list isn't read — but the slot is here for symmetry with
+  // the source and so adding the multi-brand case later is trivial.
+  void (appState.brands ?? []).filter((b) => b.id !== "bomedia");
+
+  const resolveStandaloneConfig = (b: Block): Record<string, unknown> => {
+    const ref = b._sourceId ?? b.standaloneId;
+    if (!ref) return {};
+    const sb = standalone.find((s) => s.id === ref);
+    return (sb?.config ?? {}) as Record<string, unknown>;
+  };
+
+  for (const b of v3Blocks ?? []) {
+    const lengthBefore = out.length;
+    switch (b.type) {
+      // ─── section ───
+      case "section": {
+        const cols = Array.isArray(b.columns) ? b.columns : [];
+        out.push({
+          id: b.id,
+          type: "section",
+          layout: b.layout,
+          columns: cols.map((col) => ({
+            blocks: v3BlocksToV2Blocks(col.blocks ?? [], appState),
+          })),
+        });
+        break;
+      }
+      // ─── text ───
+      case "text":
+      case "text_from_library": {
+        const src = b.textId;
+        // overridesByLang has three legacy origins we accept (matches
+        // the original v5o `buildOverrides`):
+        //   1. block.overridesByLang (modern v3)
+        //   2. block.overrideText (legacy single-shot ES)
+        //   3. block.text + block.i18n (older template snapshots —
+        //      flatten i18n.<lang>.text into overridesByLang)
+        const buildOverrides = ():
+          | Partial<Record<Lang, string>>
+          | undefined => {
+          if (b.overridesByLang) return b.overridesByLang;
+          if (b.overrideText) return { es: b.overrideText };
+          if (b.text != null || b.i18n) {
+            const o: Partial<Record<Lang, string>> = { es: b.text || "" };
+            if (b.i18n) {
+              for (const [l, v] of Object.entries(b.i18n)) {
+                const flat = (v as { text?: unknown } | undefined)?.text;
+                if (typeof flat === "string") o[l as Lang] = flat;
+              }
+            }
+            return o;
+          }
+          return undefined;
+        };
+        const overrides = buildOverrides();
+        const base: V2Block = src
+          ? {
+              id: b.id,
+              type: "text",
+              _sourceType: "prewritten",
+              _sourceId: src,
+            }
+          : { id: b.id, type: "text", _sourceType: "manual" };
+        if (overrides) (base as V2Block).overridesByLang = overrides;
+        if (b._richHtml != null) base._richHtml = b._richHtml;
+        if (b._richHtmlByLang) base._richHtmlByLang = b._richHtmlByLang;
+        if (b.fontSize !== undefined) base.fontSize = b.fontSize;
+        if (b.align) base.align = b.align;
+        out.push(base);
+        break;
+      }
+
+      // ─── products ───
+      case "product": {
+        out.push({ id: b.id, type: "product_single", product1: b.productId });
+        break;
+      }
+      case "product_single": {
+        out.push({ id: b.id, type: "product_single", product1: b.product1 });
+        break;
+      }
+      case "product_pair": {
+        out.push({
+          id: b.id,
+          type: "product_pair",
+          product1: b.product1,
+          product2: b.product2,
+        });
+        break;
+      }
+      case "product_trio": {
+        out.push({
+          id: b.id,
+          type: "product_trio",
+          product1: b.product1,
+          product2: b.product2,
+          product3: b.product3,
+        });
+        break;
+      }
+
+      // ─── brand strips ───
+      case "brand_strip": {
+        out.push({ id: b.id, type: "brand_strip", brand: b.brand });
+        break;
+      }
+      case "brand_artisjet":
+      case "brand_mbo":
+      case "brand_pimpam":
+      case "brand_smartjet":
+      case "brand_flux": {
+        out.push({
+          id: b.id,
+          type: "brand_strip",
+          brand: b.brand || b.type.replace("brand_", ""),
+        });
+        break;
+      }
+
+      // ─── pimpam hero / product_hero / legacy hero ───
+      case "hero":
+      case "product_hero":
+      case "pimpam_hero": {
+        const cfg = resolveStandaloneConfig(b);
+        const cfgHero = cfg as {
+          heroTitle?: string;
+          heroSubtitle?: string;
+          heroBullets?: string[];
+          heroCtaButtons?: HeroCtaButton[];
+          heroImage?: string;
+          heroBgColor?: string;
+          heroCtaText?: string;
+          heroCtaUrl?: string;
+          heroImageLink?: string;
+          i18n?: Record<string, unknown>;
+        };
+        out.push({
+          id: b.id,
+          type: "pimpam_hero",
+          _sourceType: b._sourceType,
+          _sourceId: b._sourceId,
+          overridesByLang: b.overridesByLang,
+          heroTitle: b.heroTitle || cfgHero.heroTitle,
+          heroSubtitle: b.heroSubtitle || cfgHero.heroSubtitle,
+          heroBullets:
+            b.heroBullets && b.heroBullets.length > 0
+              ? b.heroBullets
+              : cfgHero.heroBullets,
+          heroCtaButtons:
+            b.heroCtaButtons && b.heroCtaButtons.length > 0
+              ? b.heroCtaButtons
+              : cfgHero.heroCtaButtons,
+          heroImage: b.heroImage || cfgHero.heroImage,
+          heroBgColor: b.heroBgColor || cfgHero.heroBgColor,
+          // Block-level i18n wins so a product_hero materialised in
+          // addBlock() switches language when the user changes lang.
+          i18n: b.i18n || cfgHero.i18n,
+        });
+        break;
+      }
+
+      // ─── pimpam steps ───
+      case "pimpam_steps": {
+        const cfg = resolveStandaloneConfig(b) as {
+          steps?: PimpamStep[];
+          stepsBgColor?: string;
+          stepsBorderColor?: string;
+        };
+        out.push({
+          id: b.id,
+          type: "pimpam_steps",
+          config: {
+            steps: b.steps || cfg.steps,
+            stepsBgColor: b.stepsBgColor || cfg.stepsBgColor,
+            stepsBorderColor: b.stepsBorderColor || cfg.stepsBorderColor,
+          },
+        });
+        break;
+      }
+
+      // ─── video / freebird ───
+      case "video":
+      case "freebird": {
+        const cfg = resolveStandaloneConfig(b) as {
+          youtubeUrl?: string;
+          thumbnailOverride?: string;
+        };
+        const inline = b as Block & {
+          youtubeUrl?: string;
+          thumbnailOverride?: string;
+        };
+        out.push({
+          id: b.id,
+          type: "freebird",
+          config: {
+            youtubeUrl: inline.youtubeUrl || cfg.youtubeUrl,
+            thumbnailOverride:
+              inline.thumbnailOverride || cfg.thumbnailOverride,
+          },
+        });
+        break;
+      }
+
+      // ─── image / cta / divider pass-through ───
+      case "image":
+      case "cta":
+      case "divider": {
+        out.push({ ...(b as unknown as V2Block) });
+        break;
+      }
+
+      // ─── composed ───
+      case "composed": {
+        const cbRef = b.composedId ?? b._sourceId;
+        const cb = cbRef ? composedList.find((c) => c.id === cbRef) : null;
+        if (cb) {
+          // Modern shape: `compositorBlocks` (a flat list of v3 blocks
+          // each child re-bridged for the full v3 vocabulary).
+          // CRM seed parks them on `config.compositorBlocks`; older
+          // imports use the top-level `compositorBlocks` field.
+          const compositor =
+            (cb.config?.compositorBlocks as Block[] | undefined) ||
+            (cb as { compositorBlocks?: Block[] }).compositorBlocks;
+          if (Array.isArray(compositor) && compositor.length > 0) {
+            const childV2 = v3BlocksToV2Blocks(compositor, appState);
+            for (const x of childV2) out.push(x);
+          } else {
+            // Legacy: pass the catalog row through as a composed block
+            // so generateFullHtml's `case "composed"` walks the
+            // introText / brandStrip / products / includeHero/Steps
+            // fields.
+            const cbProducts = Array.isArray(cb.products) ? cb.products : [];
+            out.push({
+              id: b.id,
+              type: "composed",
+              introText: cb.intro_text ?? cb.introText,
+              brandStrip: cb.brand_strip ?? undefined,
+              includeHero: cb.include_hero,
+              includeSteps: cb.include_steps,
+              blockType: cb.block_type,
+              products: cbProducts,
+            } as V2Block);
+          }
+        }
+        break;
+      }
+
+      default:
+        break;
+    }
+    // Propagate widthPct/blockAlign from v3 to every v2 emitted.
+    const bWithLayout = b as Block & {
+      widthPct?: number;
+      blockAlign?: "left" | "center" | "right";
+    };
+    if (
+      (typeof bWithLayout.widthPct === "number" || bWithLayout.blockAlign) &&
+      out.length > lengthBefore
+    ) {
+      for (let i = lengthBefore; i < out.length; i += 1) {
+        if (typeof bWithLayout.widthPct === "number") {
+          out[i].widthPct = bWithLayout.widthPct;
+        }
+        if (bWithLayout.blockAlign) out[i].blockAlign = bWithLayout.blockAlign;
+      }
+    }
+  }
+  return out;
+}
+
+// ───────────────────────────────────────────────────────────────────
+// High-level entry: takes the CRM catalog + Block[] and produces HTML.
+// ───────────────────────────────────────────────────────────────────
+
 export function renderEmailHtml(
   blocks: Block[],
   appState: ComposerAppState,
@@ -1395,7 +1699,8 @@ export function renderEmailHtml(
 ): string {
   const products = appState.products.map(toEmailProduct);
   const brands = appState.brands.map(toEmailBrand);
-  return generateFullHtml(blocks as V2Block[], products, lang, brands, appState);
+  const v2 = v3BlocksToV2Blocks(blocks, appState);
+  return generateFullHtml(v2, products, lang, brands, appState);
 }
 
 // ───────────────────────────────────────────────────────────────────
