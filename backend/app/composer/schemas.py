@@ -10,7 +10,7 @@ import json
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
 
 def _decode_json(value: Any, fallback: Any) -> Any:
@@ -36,7 +36,10 @@ class ComposerBrandRead(BaseModel):
     logo_max_width: str | None
     visible: bool
     sort_order: int
-    i18n: dict[str, Any] = Field(default_factory=dict)
+    i18n: dict[str, Any] = Field(
+        default_factory=dict,
+        validation_alias=AliasChoices("i18n", "i18n_json"),
+    )
     created_at: datetime
     updated_at: datetime
 
@@ -68,7 +71,10 @@ class ComposerProductRead(BaseModel):
     visible: bool
     sort_order: int
     tags: list[str] = Field(default_factory=list)
-    i18n: dict[str, Any] = Field(default_factory=dict)
+    i18n: dict[str, Any] = Field(
+        default_factory=dict,
+        validation_alias=AliasChoices("i18n", "i18n_json"),
+    )
     created_at: datetime
     updated_at: datetime
 
@@ -93,7 +99,10 @@ class ComposerPrewrittenTextRead(BaseModel):
     text: str
     visible: bool
     sort_order: int
-    i18n: dict[str, Any] = Field(default_factory=dict)
+    i18n: dict[str, Any] = Field(
+        default_factory=dict,
+        validation_alias=AliasChoices("i18n", "i18n_json"),
+    )
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -117,8 +126,14 @@ class ComposerComposedBlockRead(BaseModel):
     include_steps: bool
     visible: bool
     sort_order: int
-    i18n: dict[str, Any] = Field(default_factory=dict)
-    config: dict[str, Any] = Field(default_factory=dict)
+    i18n: dict[str, Any] = Field(
+        default_factory=dict,
+        validation_alias=AliasChoices("i18n", "i18n_json"),
+    )
+    config: dict[str, Any] = Field(
+        default_factory=dict,
+        validation_alias=AliasChoices("config", "config_json"),
+    )
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -147,10 +162,16 @@ class ComposerStandaloneBlockRead(BaseModel):
     brand_id: str | None
     section: str | None
     block_type: str
-    config: dict[str, Any] = Field(default_factory=dict)
+    config: dict[str, Any] = Field(
+        default_factory=dict,
+        validation_alias=AliasChoices("config", "config_json"),
+    )
     visible: bool
     sort_order: int
-    i18n: dict[str, Any] = Field(default_factory=dict)
+    i18n: dict[str, Any] = Field(
+        default_factory=dict,
+        validation_alias=AliasChoices("i18n", "i18n_json"),
+    )
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -182,8 +203,16 @@ class ComposerTemplateRead(BaseModel):
     description: str | None
     color_class: str | None
     brand_id: str | None
-    blocks: list[str] = Field(default_factory=list)
-    compositor_blocks: list[Any] | None = None
+    blocks: list[str] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("blocks", "blocks_json"),
+    )
+    compositor_blocks: list[Any] | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "compositor_blocks", "compositor_blocks_json"
+        ),
+    )
     visible: bool
     is_global: bool
     owner_user_id: str | None
@@ -218,11 +247,14 @@ class ComposerTemplateWrite(BaseModel):
 class ComposerTemplateRevisionRead(BaseModel):
     id: str
     template_id: str
-    snapshot: dict[str, Any]
+    snapshot: dict[str, Any] = Field(
+        default_factory=dict,
+        validation_alias=AliasChoices("snapshot", "snapshot_json"),
+    )
     created_by_user_id: str | None
     created_at: datetime
 
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
     @field_validator("snapshot", mode="before")
     @classmethod

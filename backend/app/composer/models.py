@@ -252,7 +252,15 @@ class ComposerUserAiStyle(Base):
 class ComposerActivityLog(Base):
     __tablename__ = "composer_activity_log"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    # `BigInteger.with_variant(Integer, "sqlite")` so SQLite's
+    # `INTEGER PRIMARY KEY` ROWID alias kicks in (SQLite has no
+    # autoincrement support for plain BIGINT). MySQL still gets the
+    # full 64-bit column the audit log was designed for.
+    id: Mapped[int] = mapped_column(
+        BigInteger().with_variant(Integer(), "sqlite"),
+        primary_key=True,
+        autoincrement=True,
+    )
     user_id: Mapped[str | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL")
     )
