@@ -3,29 +3,6 @@ import { withSentryConfig } from "@sentry/nextjs";
 
 const nextConfig: NextConfig = {
   output: "standalone",
-  async headers() {
-    return [
-      {
-        // The embedded Bomedia Composer lives under /composer/* and
-        // is served straight from /public. It boots Babel Standalone
-        // in the browser to transpile `<script type="text/babel">`
-        // tags, which needs `unsafe-eval`. The rest of the CRM keeps
-        // a stricter default-src — this override is segment-scoped.
-        source: "/composer/:path*",
-        headers: [
-          {
-            key: "Content-Security-Policy",
-            value:
-              "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: " +
-              "https:; " +
-              "img-src 'self' data: blob: https:; " +
-              "connect-src 'self' https:; " +
-              "frame-ancestors 'none'",
-          },
-        ],
-      },
-    ];
-  },
 };
 
 const sentryDsn = process.env.NEXT_PUBLIC_SENTRY_DSN;
