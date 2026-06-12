@@ -63,7 +63,13 @@ export function Canvas({ catalog }: CanvasProps) {
     <main
       ref={setNodeRef}
       className={`canvas scroll${isOver ? " is-droppable" : ""}`}
-      onClick={() => setSelected(null)}
+      onClick={(e) => {
+        // Only clear selection when the user clicks the canvas
+        // backdrop itself — not when a BlockCard click bubbles up.
+        // The BlockCard's own onClick already called `setSelected`
+        // and we'd undo it the moment the event bubbled here.
+        if (e.target === e.currentTarget) setSelected(null);
+      }}
     >
       <div className="canvas-inner">
         <div className="canvas-header">
