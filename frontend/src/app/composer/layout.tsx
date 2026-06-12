@@ -7,7 +7,7 @@ import type { ReactNode } from "react";
 // composer.css is loaded only on /composer/* routes, so the
 // `:root` token redefinitions inside it stay scoped to the
 // segment and don't pollute the CRM-wide tokens.
-import "../../../styles/composer.css";
+import "../../styles/composer.css";
 
 const TABS = [
   { href: "/composer/canvas", label: "Canvas" },
