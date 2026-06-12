@@ -21,8 +21,8 @@ import {
 
 import { Canvas } from "../components/Canvas";
 import { Footer } from "../components/Footer";
-import { Inspector } from "../components/Inspector";
-import { PreviewPanel } from "../components/PreviewPanel";
+import { PreviewPanel as PreviewModal } from "../components/PreviewPanel";
+import { RightPanel } from "../components/RightPanel";
 import { Sidebar } from "../components/Sidebar";
 import { TopBar } from "../components/TopBar";
 import { hydrateDraft, scheduleAutoSave } from "../lib/autoSave";
@@ -31,15 +31,15 @@ import { useComposerStore } from "../lib/store";
 import { toAppState } from "../lib/types";
 import { useCatalog } from "../lib/useCatalog";
 
-const LAYOUT_STORAGE_KEY = "composer-layout-v1";
-const PANEL_CANVAS = "p-canvas";
-const PANEL_INSPECTOR = "p-inspector";
+const LAYOUT_STORAGE_KEY = "composer-layout-v2";
 const PANEL_LIBRARY = "p-library";
+const PANEL_CANVAS = "p-canvas";
+const PANEL_RIGHT = "p-right";
 
 const DEFAULT_LAYOUT: Layout = {
-  [PANEL_CANVAS]: 50,
-  [PANEL_INSPECTOR]: 25,
-  [PANEL_LIBRARY]: 25,
+  [PANEL_LIBRARY]: 22,
+  [PANEL_CANVAS]: 45,
+  [PANEL_RIGHT]: 33,
 };
 
 function loadLayout(): Layout | undefined {
@@ -169,14 +169,6 @@ export default function ComposerEditorPage() {
           onLayoutChange={persistLayout}
           className="cmp-panel-group"
         >
-          <Panel id={PANEL_CANVAS} minSize={30}>
-            <Canvas catalog={catalog} />
-          </Panel>
-          <Separator className="cmp-resize-handle" />
-          <Panel id={PANEL_INSPECTOR} minSize={15}>
-            <Inspector catalog={catalog} />
-          </Panel>
-          <Separator className="cmp-resize-handle" />
           <Panel id={PANEL_LIBRARY} minSize={15}>
             <Sidebar
               collapsed={false}
@@ -185,6 +177,14 @@ export default function ComposerEditorPage() {
               setBrandFilter={setBrandFilter}
             />
           </Panel>
+          <Separator className="cmp-resize-handle" />
+          <Panel id={PANEL_CANVAS} minSize={30}>
+            <Canvas catalog={catalog} />
+          </Panel>
+          <Separator className="cmp-resize-handle" />
+          <Panel id={PANEL_RIGHT} minSize={20}>
+            <RightPanel catalog={catalog} emailHtml={emailHtml} />
+          </Panel>
         </Group>
       </div>
       <Footer />
@@ -192,14 +192,14 @@ export default function ComposerEditorPage() {
         <div
           className="cmp-preview-modal"
           role="dialog"
-          aria-label="Vista previa del email"
+          aria-label="Vista previa del email (modal ampliado)"
           onClick={() => setPreviewOpen(false)}
         >
           <div
             className="cmp-preview-modal-inner"
             onClick={(e) => e.stopPropagation()}
           >
-            <PreviewPanel emailHtml={emailHtml} />
+            <PreviewModal emailHtml={emailHtml} />
           </div>
         </div>
       )}

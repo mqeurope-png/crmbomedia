@@ -23,7 +23,12 @@
  * + AI popover land in 2.2 with the Inspector.
  */
 
-import { getLocalizedProduct, getLocalizedText } from "../lib/i18n";
+import {
+  getHeroDataInLanguage,
+  getLocalizedProduct,
+  getLocalizedText,
+  type HeroData,
+} from "../lib/i18n";
 import { sanitizeHtml } from "../lib/security";
 import { useComposerStore } from "../lib/store";
 import type {
@@ -500,64 +505,11 @@ export function BlockPreview({
       );
     }
 
-    case "pimpam_hero": {
-      const title = block.heroTitle || "Hero sin título";
-      const subtitle = block.heroSubtitle || "";
-      const bullets = block.heroBullets || [];
-      return (
-        <div
-          style={{
-            padding: 12,
-            background: block.heroBgColor || "var(--bg-sunken)",
-            borderRadius: 8,
-            display: "flex",
-            gap: 12,
-          }}
-        >
-          {block.heroImage ? (
-            /* eslint-disable-next-line @next/next/no-img-element */
-            <img
-              src={block.heroImage}
-              alt=""
-              style={{
-                width: 100,
-                height: 80,
-                objectFit: "cover",
-                borderRadius: 6,
-                flexShrink: 0,
-              }}
-            />
-          ) : null}
-          <div style={{ minWidth: 0, flex: 1 }}>
-            <div style={{ fontWeight: 800, fontSize: 14 }}>{title}</div>
-            {subtitle && (
-              <div
-                style={{
-                  fontSize: 12,
-                  color: "var(--text-muted)",
-                  marginTop: 4,
-                }}
-              >
-                {subtitle}
-              </div>
-            )}
-            {bullets.length > 0 && (
-              <ul
-                style={{
-                  margin: "8px 0 0",
-                  padding: "0 0 0 18px",
-                  fontSize: 11,
-                  color: "var(--text-muted)",
-                }}
-              >
-                {bullets.slice(0, 3).map((b, i) => (
-                  <li key={i}>{b}</li>
-                ))}
-              </ul>
-            )}
-          </div>
-        </div>
-      );
+    case "pimpam_hero":
+    case "product_hero":
+    case "hero": {
+      const data = getHeroDataInLanguage(block, lang, appState);
+      return <PimpamHeroPreview data={data} />;
     }
 
     case "pimpam_steps": {
@@ -840,6 +792,59 @@ function SectionColumns({
           </div>
         );
       })}
+    </div>
+  );
+}
+
+interface PimpamHeroPreviewProps {
+  data: HeroData;
+}
+
+/** Visual hero preview — port of the `pimpamHeroHtml` shape
+ * (`bomedia-v4/app-email-gen.jsx` line 187) reduced to a layout the
+ * canvas card can host. The same fields the email render uses
+ * (image / title / subtitle / bullets / CTAs / bg) are read here. */
+function PimpamHeroPreview({ data }: PimpamHeroPreviewProps) {
+  return (
+    <div
+      className="hero-preview"
+      style={{ background: data.heroBgColor || "#fff" }}
+    >
+      <div className="hero-row">
+        {data.heroImage ? (
+          /* eslint-disable-next-line @next/next/no-img-element */
+          <img src={data.heroImage} alt="" className="hero-img" />
+        ) : null}
+        <div className="hero-text">
+          <h2 className="hero-title">{data.heroTitle || "Hero sin título"}</h2>
+          {data.heroSubtitle ? (
+            <p className="hero-subtitle">{data.heroSubtitle}</p>
+          ) : null}
+          {data.heroBullets && data.heroBullets.length > 0 ? (
+            <ul className="hero-bullets">
+              {data.heroBullets.map((b, i) => (
+                <li key={i}>✓ {b}</li>
+              ))}
+            </ul>
+          ) : null}
+          {data.heroCtaButtons && data.heroCtaButtons.length > 0 ? (
+            <div className="hero-ctas">
+              {data.heroCtaButtons.map((cta, i) => (
+                <span
+                  key={i}
+                  className="hero-cta-btn"
+                  style={{
+                    background: cta.bg || "#ea580c",
+                    color: cta.color || "#ffffff",
+                  }}
+                >
+                  {cta.text}
+                </span>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      </div>
     </div>
   );
 }
