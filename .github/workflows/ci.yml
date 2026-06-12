@@ -83,12 +83,10 @@ jobs:
           fi
           alembic upgrade head
       - name: Application-layer defaults round-trip on MySQL
-        # The pytest suite uses in-memory SQLite by design, so we
-        # script a tiny insert/select cycle through the real models
-        # against the live MySQL service. This catches the case where
-        # a NOT NULL column has no DB default AND the ORM forgets to
-        # supply one — the exact failure mode we just shipped on
-        # composer 0033.
+        # The pytest suite uses in-memory SQLite by design, so we script
+        # a tiny insert/select cycle through the real models against the
+        # live MySQL service. Catches NOT NULL columns whose DEFAULT lives
+        # only in the ORM — the failure mode that shipped composer 0033.
         env:
           DATABASE_URL: mysql+pymysql://crm:crmpw@127.0.0.1:3306/crm_test
         run: |
@@ -96,63 +94,40 @@ jobs:
           python - <<'PY'
           from datetime import UTC, datetime
 
-          from app.composer.models import (
-              ComposerActivityLog,
-              ComposerBrand,
-              ComposerProduct,
-              ComposerSettings,
-          )
           from app.db.session import get_engine
+          from app.email_templates.models import (
+              EmailTemplate,
+              EmailTemplateFolder,
+          )
           from sqlalchemy.orm import Session
 
           now = datetime.now(UTC)
           with Session(get_engine()) as s:
               s.add(
-                  ComposerBrand(
-                      id="smoke-brand",
-                      type="brand",
-                      label="Smoke",
-                      color="#000",
-                      visible=True,
-                      sort_order=0,
+                  EmailTemplateFolder(
+                      id="smoke-folder",
+                      name="Smoke",
                       created_at=now,
                       updated_at=now,
                   )
               )
               s.add(
-                  ComposerProduct(
-                      id="smoke-product",
-                      brand_id="smoke-brand",
-                      name="Smoke product",
-                      img="https://example/x.png",
-                      visible=True,
-                      sort_order=0,
+                  EmailTemplate(
+                      id="smoke-template",
+                      name="Smoke template",
+                      body_html="<p>hola</p>",
+                      folder_id="smoke-folder",
                       created_at=now,
                       updated_at=now,
-                  )
-              )
-              s.add(
-                  ComposerSettings(
-                      id=1,
-                      openai_api_key_encrypted=None,
-                      agent_system_prompt=None,
-                      updated_at=now,
-                  )
-              )
-              s.add(
-                  ComposerActivityLog(
-                      user_id=None,
-                      action="smoke",
-                      entity_type=None,
-                      entity_id=None,
-                      created_at=now,
                   )
               )
               s.commit()
-              assert s.get(ComposerBrand, "smoke-brand").i18n_json == "{}"
-              assert s.get(ComposerProduct, "smoke-product").tags == "[]"
-              assert s.get(ComposerSettings, 1).ai_styles_json == "{}"
-          print("mysql.composer.smoke ok")
+              tpl = s.get(EmailTemplate, "smoke-template")
+              assert tpl is not None
+              assert tpl.is_global is False
+              assert tpl.usage_count == 0
+              assert s.get(EmailTemplateFolder, "smoke-folder").is_global is False
+          print("mysql.email_templates.smoke ok")
           PY
 
   frontend:
