@@ -158,6 +158,22 @@ Verifica el ciclo:
 sudo certbot renew --dry-run
 ```
 
+## 9b. Assets del Composer (`/assets/composer/`)
+
+El módulo Composer permite subir imágenes (PNG / JPG / WEBP / GIF, máx. 10 MB) que se sirven en `https://crm.tudominio.com/assets/composer/<año>/<mes>/<sha256>.<ext>`. El backend escribe en disco; Nginx los sirve directamente sin pasar por la API.
+
+Detalles operativos:
+
+- **Volumen Docker**: `composer_uploads` (declarado en `docker-compose.prod.yml`). Está montado RW en el contenedor `api` (`/opt/crmbo/uploads/composer`) y RO en `nginx` (mismo path). No hace falta crearlo a mano: se materializa en la primera subida.
+- **Variables**: `COMPOSER_ASSET_ROOT` (por defecto `/opt/crmbo/uploads/composer`) y `COMPOSER_ASSET_PUBLIC_BASE` (por defecto `/assets/composer`) se inyectan al `api` desde `docker-compose.prod.yml`. Solo cámbialas si reorganizas el bind path; el ejemplo de Nginx asume el path por defecto.
+- **Caché**: el `location /assets/composer/` envía `Cache-Control: public, max-age=2592000, immutable`. Como los nombres incluyen el sha256, sobreescribir nunca colisiona, así que el caché agresivo es seguro.
+- **Backup**: añade el volumen al backup periódico (ver §10). Una opción rápida:
+  ```bash
+  docker run --rm -v composer_uploads:/data -v /var/backups/crmbomedia:/backup alpine \
+    tar czf /backup/composer_uploads_$(date +%F).tar.gz -C /data .
+  ```
+- **Tamaño máximo**: el cap real lo impone la API (10 MB). El Nginx incluido sube `client_max_body_size` a 12 MB en `/api/` para dejar margen al multipart.
+
 ## 10. Backups MySQL
 
 El script `scripts/backup-mysql.sh` hace `mysqldump --single-transaction` desde el host, lo comprime y lo rota.
