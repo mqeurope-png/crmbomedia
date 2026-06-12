@@ -102,6 +102,10 @@ jobs:
           from sqlalchemy.orm import Session
 
           now = datetime.now(UTC)
+          # Insert each row in its own commit so the smoke doesn't lean
+          # on SQLAlchemy's FK-aware flush ordering. The intent here is
+          # to round-trip server_defaults on MySQL, not to exercise
+          # relational dependencies.
           with Session(get_engine()) as s:
               s.add(
                   EmailTemplateFolder(
@@ -111,6 +115,7 @@ jobs:
                       updated_at=now,
                   )
               )
+              s.commit()
               s.add(
                   EmailTemplate(
                       id="smoke-template",
