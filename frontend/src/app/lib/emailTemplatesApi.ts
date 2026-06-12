@@ -180,3 +180,20 @@ export async function deleteEmailTemplateFolder(
 export async function getEmailTemplatesPicker(): Promise<EmailTemplatesPicker> {
   return apiFetch<EmailTemplatesPicker>("/api/emails/templates-picker");
 }
+
+export type ComposerSourceItem = {
+  id: string;
+  name: string;
+  brand: string | null;
+  blocks_count: number;
+  open_url: string;
+};
+
+export type ComposerSourceResponse = {
+  items: ComposerSourceItem[];
+  error: string | null;
+};
+
+export async function getComposerSourceTemplates(): Promise<ComposerSourceResponse> {
+  return apiFetch<ComposerSourceResponse>("/api/emails/composer-source");
+}

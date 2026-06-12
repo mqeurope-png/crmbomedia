@@ -4590,3 +4590,323 @@ a.origin-chip:hover { filter: brightness(0.97); }
   resize: vertical;
   min-height: 200px;
 }
+
+/* ---------------------------------------------------------------------------
+ * Tiptap RichEditor + Visual/HTML toggle — Sprint Email v2.2b
+ * --------------------------------------------------------------------------- */
+
+.email-composer-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.composer-modes {
+  display: inline-flex;
+  background: var(--line);
+  border-radius: 8px;
+  padding: 2px;
+  align-self: flex-start;
+}
+
+.composer-mode-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted, #6b7280);
+  cursor: pointer;
+}
+
+.composer-mode-btn.is-active {
+  background: #fff;
+  color: var(--ink);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+}
+
+.composer-html-raw {
+  width: 100%;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 13px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  resize: vertical;
+}
+
+.re-shell {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.re-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--line);
+  background: #f8fafc;
+}
+
+.re-toolbar-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  color: var(--ink);
+  cursor: pointer;
+  padding: 0;
+}
+
+.re-toolbar-btn:hover {
+  background: var(--line);
+}
+
+.re-toolbar-btn.is-active {
+  background: #e0e7ff;
+  color: #312e81;
+}
+
+.re-toolbar-divider {
+  width: 1px;
+  height: 18px;
+  background: var(--line);
+  margin: 0 4px;
+}
+
+.re-toolbar-color {
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  overflow: hidden;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+}
+
+.re-toolbar-color input[type="color"] {
+  width: 28px;
+  height: 28px;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  background: transparent;
+}
+
+.re-toolbar-color:hover {
+  background: var(--line);
+}
+
+.re-content {
+  padding: 12px 16px;
+  font-size: 14px;
+  line-height: 1.55;
+  outline: none;
+}
+
+.re-content .ProseMirror {
+  outline: none;
+  min-height: inherit;
+}
+
+.re-content .ProseMirror p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  color: var(--muted, #6b7280);
+  pointer-events: none;
+  height: 0;
+  float: left;
+}
+
+.re-content h1,
+.re-content h2,
+.re-content h3 {
+  margin: 0.6em 0 0.3em;
+  font-weight: 700;
+}
+
+.re-content h1 { font-size: 1.6em; }
+.re-content h2 { font-size: 1.3em; }
+.re-content h3 { font-size: 1.1em; }
+
+.re-content ul,
+.re-content ol {
+  padding-left: 1.3em;
+  margin: 0.4em 0;
+}
+
+.re-content a {
+  color: #2563eb;
+  text-decoration: underline;
+}
+
+.re-content img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 6px;
+}
+
+.re-content hr {
+  border: 0;
+  border-top: 1px solid var(--line);
+  margin: 1em 0;
+}
+
+/* ---------------------------------------------------------------------------
+ * Send-email modal — extras (toolbar buttons + merge hint)
+ * --------------------------------------------------------------------------- */
+
+.email-compose-tools {
+  display: flex;
+  gap: 8px;
+  margin: 6px 0 8px;
+  flex-wrap: wrap;
+}
+
+.email-merge-hint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  background: #fef3c7;
+  border: 1px solid #fde68a;
+  color: #92400e;
+  padding: 6px 10px;
+  border-radius: 8px;
+  margin: 6px 0 0;
+}
+
+.email-merge-hint code {
+  background: rgba(146, 64, 14, 0.12);
+  padding: 1px 4px;
+  border-radius: 4px;
+  font-size: 11px;
+}
+
+/* ---------------------------------------------------------------------------
+ * TemplatePicker — 4 tabs
+ * --------------------------------------------------------------------------- */
+
+.tp-dialog {
+  max-width: 720px;
+}
+
+.tp-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--line);
+  margin: 0 0 12px;
+}
+
+.tp-tab {
+  background: transparent;
+  border: 0;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--muted, #6b7280);
+  padding: 8px 12px;
+  margin-bottom: -1px;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+}
+
+.tp-tab:hover {
+  color: var(--ink);
+}
+
+.tp-tab.is-active {
+  color: var(--ink);
+  border-bottom-color: var(--ink);
+}
+
+.tp-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 6px 10px;
+  margin: 0 0 10px;
+  background: #fff;
+}
+
+.tp-search input {
+  flex: 1 1 auto;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  font: inherit;
+}
+
+.tp-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 45vh;
+  overflow-y: auto;
+}
+
+.tp-row {
+  width: 100%;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 8px 12px;
+  font: inherit;
+  text-align: left;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  grid-template-areas:
+    "name meta"
+    "subject meta";
+  align-items: center;
+  gap: 0 12px;
+  cursor: pointer;
+}
+
+.tp-row:hover {
+  background: #f8fafc;
+  border-color: var(--line);
+}
+
+.tp-row-name {
+  grid-area: name;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.tp-row-subject {
+  grid-area: subject;
+  font-size: 12px;
+  color: var(--muted, #6b7280);
+}
+
+.tp-row-meta {
+  grid-area: meta;
+  font-size: 11px;
+  color: var(--muted, #6b7280);
+  background: #eef2ff;
+  padding: 2px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
