@@ -2264,64 +2264,88 @@
   flex-direction: column;
 }
 
-/* ─── Right panel (Biblioteca + Inspector tabs) ───
-   The Biblioteca sidebar moved from the left to a tabbed pane on the
-   right (alongside the Inspector). The old `.cmp-body > .cmp-sidebar`
-   rule keeps the legacy width for the embedded `Sidebar` component
-   while the wrapping `.cmp-right-panel` owns the column placement. */
-.composer-editor .cmp-body > .cmp-right-panel {
-  width: 320px;
-  flex: 0 0 320px;
+
+/* ─── 4-column resizable layout (react-resizable-panels) ───
+   Replaces the prior left+right sidebar pair with a single horizontal
+   PanelGroup whose handles persist via `autoSaveId`. */
+.composer-editor .cmp-panel-group {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: row;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.composer-editor .cmp-resize-handle {
+  width: 4px;
+  background: transparent;
+  cursor: col-resize;
+  transition: background 0.15s;
+  position: relative;
+  flex-shrink: 0;
+}
+.composer-editor .cmp-resize-handle:hover,
+.composer-editor .cmp-resize-handle[data-resize-handle-state="hover"],
+.composer-editor .cmp-resize-handle[data-resize-handle-state="drag"] {
+  background: var(--accent, #6366f1);
+}
+.composer-editor [data-panel] {
   display: flex;
   flex-direction: column;
+  overflow: hidden;
+  min-width: 0;
+}
+.composer-editor [data-panel] > .canvas {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  min-width: 0;
+}
+.composer-editor [data-panel] > .cmp-sidebar {
+  flex: 1 1 auto;
+  width: 100%;
+  border-right: none;
   border-left: 1px solid var(--border);
   background: var(--bg-panel);
+  overflow-y: auto;
+  min-width: 0;
+}
+.composer-editor [data-panel] > .cmp-inspector-panel {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-panel);
+  border-left: 1px solid var(--border);
   min-height: 0;
   overflow: hidden;
 }
-.composer-editor .cmp-right-tabs {
+
+/* Inspector internals */
+.composer-editor .cmp-inspector-header {
   display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 14px;
   border-bottom: 1px solid var(--border);
   flex: 0 0 auto;
 }
-.composer-editor .cmp-right-tab {
-  flex: 1;
-  padding: 10px 12px;
-  background: transparent;
-  border: none;
-  cursor: pointer;
+.composer-editor .cmp-inspector-header h3 {
+  margin: 0;
   font-size: 13px;
-  color: var(--text-muted);
-  border-bottom: 2px solid transparent;
-  margin-bottom: -1px;
-  transition: color 120ms, border-color 120ms;
+  font-weight: 700;
 }
-.composer-editor .cmp-right-tab:hover {
-  color: var(--text);
-}
-.composer-editor .cmp-right-tab.active {
-  color: var(--text);
-  font-weight: 600;
-  border-bottom-color: var(--accent, #6366f1);
-}
-.composer-editor .cmp-right-content {
+.composer-editor .cmp-inspector-body {
   flex: 1 1 auto;
   overflow-y: auto;
-  min-height: 0;
+  padding: 12px 14px;
 }
-/* Sidebar (Biblioteca) inside the right panel uses the existing
-   `.cmp-sidebar` styles but no longer needs the right-border or the
-   fixed 280-px width — let it fill the panel. */
-.composer-editor .cmp-right-content > .cmp-sidebar {
-  width: 100%;
-  border-right: none;
-  background: transparent;
-}
-
-/* Inspector placeholder */
-.composer-editor .cmp-inspector,
 .composer-editor .cmp-inspector-empty {
-  padding: 16px;
+  flex: 1 1 auto;
+  padding: 24px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
 }
 .composer-editor .cmp-inspector-meta {
   display: grid;
@@ -2330,6 +2354,7 @@
   row-gap: 4px;
   font-size: 11px;
   color: var(--text-muted);
+  margin: 0;
 }
 .composer-editor .cmp-inspector-meta dt {
   font-weight: 600;

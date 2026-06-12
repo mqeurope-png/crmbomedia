@@ -143,6 +143,7 @@ export function Canvas({ catalog }: CanvasProps) {
                     onMoveDown={moveDown}
                     lang={lang}
                     appState={appState}
+                    catalog={catalog}
                   />
                 </li>
               ))}

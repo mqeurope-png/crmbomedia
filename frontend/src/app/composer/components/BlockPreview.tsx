@@ -25,13 +25,16 @@
 
 import { getLocalizedProduct, getLocalizedText } from "../lib/i18n";
 import { sanitizeHtml } from "../lib/security";
+import { useComposerStore } from "../lib/store";
 import type {
   Block,
   ComposerAppState,
   ComposerBrand,
+  ComposerCatalog,
   ComposerProduct,
   Lang,
 } from "../lib/types";
+import { ColumnAddPicker } from "./ColumnAddPicker";
 
 interface MiniProductProps {
   p: ComposerProduct | null | undefined;
@@ -297,12 +300,18 @@ interface BlockPreviewProps {
   block: Block;
   lang: Lang;
   appState: ComposerAppState;
+  catalog?: ComposerCatalog;
 }
 
 /** Switch over `block.type` and emit the visual preview for the
  * matched kind. Falls back to a small "type label" pill for the
  * types that don't have a dedicated renderer yet. */
-export function BlockPreview({ block, lang, appState }: BlockPreviewProps) {
+export function BlockPreview({
+  block,
+  lang,
+  appState,
+  catalog,
+}: BlockPreviewProps) {
   switch (block.type) {
     case "text":
     case "text_from_library":
@@ -690,50 +699,138 @@ export function BlockPreview({ block, lang, appState }: BlockPreviewProps) {
     case "section_2col":
     case "section_3col": {
       const cols = block.type === "section_3col" ? 3 : 2;
-      const inner = block.innerBlocks ?? [];
       return (
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: `repeat(${cols}, 1fr)`,
-            gap: 8,
-            border: "1px dashed var(--border-strong)",
-            borderRadius: 8,
-            padding: 8,
-          }}
-        >
-          {Array.from({ length: cols }).map((_, ci) => {
-            const child = inner[ci];
-            return (
-              <div
-                key={ci}
-                style={{
-                  background: "var(--bg-sunken)",
-                  borderRadius: 6,
-                  padding: 8,
-                  minHeight: 60,
-                  fontSize: 11,
-                  color: "var(--text-muted)",
-                  textAlign: "center",
-                }}
-              >
-                {child ? (
-                  <BlockPreview
-                    block={child}
-                    lang={lang}
-                    appState={appState}
-                  />
-                ) : (
-                  `Columna ${ci + 1}`
-                )}
-              </div>
-            );
-          })}
-        </div>
+        <SectionColumns
+          sectionId={block.id}
+          cols={cols}
+          innerBlocks={block.innerBlocks ?? []}
+          lang={lang}
+          appState={appState}
+          catalog={catalog}
+        />
       );
     }
 
     default:
       return null;
   }
+}
+
+interface SectionColumnsProps {
+  sectionId: string;
+  cols: number;
+  innerBlocks: Block[];
+  lang: Lang;
+  appState: ComposerAppState;
+  catalog?: ComposerCatalog;
+}
+
+/** Renders the N column wrappers for a section block and exposes
+ * a `ColumnAddPicker` at the bottom of each empty column. The
+ * inner blocks recurse through `BlockPreview` so a column can host
+ * a product / text / image / etc. */
+function SectionColumns({
+  sectionId,
+  cols,
+  innerBlocks,
+  lang,
+  appState,
+  catalog,
+}: SectionColumnsProps) {
+  const addBlockToColumn = useComposerStore((s) => s.addBlockToColumn);
+  const deleteBlock = useComposerStore((s) => s.deleteBlock);
+
+  return (
+    <div
+      style={{
+        display: "grid",
+        gridTemplateColumns: `repeat(${cols}, 1fr)`,
+        gap: 8,
+        border: "1px dashed var(--border-strong)",
+        borderRadius: 8,
+        padding: 8,
+      }}
+      onClick={(e) => e.stopPropagation()}
+    >
+      {Array.from({ length: cols }).map((_, ci) => {
+        // Each column maps to one slot in innerBlocks. The store's
+        // addBlockToColumn materialises a wrapper block whose own
+        // innerBlocks holds the column contents.
+        const column = innerBlocks[ci];
+        const items: Block[] = column?.innerBlocks ?? [];
+        return (
+          <div
+            key={ci}
+            style={{
+              background: "var(--bg-sunken)",
+              borderRadius: 6,
+              padding: 8,
+              minHeight: 80,
+              display: "flex",
+              flexDirection: "column",
+              gap: 6,
+            }}
+          >
+            {items.length === 0 && (
+              <div
+                style={{
+                  fontSize: 11,
+                  color: "var(--text-muted)",
+                  textAlign: "center",
+                  padding: "16px 8px",
+                }}
+              >
+                Columna {ci + 1}
+              </div>
+            )}
+            {items.map((inner) => (
+              <div
+                key={inner.id}
+                style={{
+                  background: "var(--bg-panel)",
+                  borderRadius: 4,
+                  padding: 6,
+                  position: "relative",
+                }}
+              >
+                <button
+                  type="button"
+                  className="icon-btn danger"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    deleteBlock(inner.id);
+                  }}
+                  title="Borrar"
+                  aria-label="Borrar bloque interno"
+                  style={{
+                    position: "absolute",
+                    top: 2,
+                    right: 2,
+                    width: 18,
+                    height: 18,
+                    fontSize: 10,
+                  }}
+                >
+                  ×
+                </button>
+                <BlockPreview
+                  block={inner}
+                  lang={lang}
+                  appState={appState}
+                  catalog={catalog}
+                />
+              </div>
+            ))}
+            {catalog && (
+              <ColumnAddPicker
+                catalog={catalog}
+                columnLabel={String(ci + 1)}
+                onPick={(spec) => addBlockToColumn(sectionId, ci, spec)}
+              />
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
 }

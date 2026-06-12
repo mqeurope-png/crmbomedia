@@ -30,7 +30,12 @@ import {
 } from "lucide-react";
 
 import { getTextInLanguage } from "../lib/i18n";
-import type { Block, ComposerAppState, Lang } from "../lib/types";
+import type {
+  Block,
+  ComposerAppState,
+  ComposerCatalog,
+  Lang,
+} from "../lib/types";
 import { BlockPreview } from "./BlockPreview";
 
 const BLOCK_TYPE_LABELS: Record<string, string> = {
@@ -68,6 +73,7 @@ export interface BlockCardProps {
   onMoveDown: (id: string) => void;
   lang: Lang;
   appState: ComposerAppState | null;
+  catalog?: ComposerCatalog | null;
 }
 
 function previewLabel(block: Block, lang: Lang, appState: ComposerAppState | null): string {
@@ -126,6 +132,7 @@ export function BlockCard({
   onMoveDown,
   lang,
   appState,
+  catalog,
 }: BlockCardProps) {
   const {
     attributes,
@@ -180,7 +187,12 @@ export function BlockCard({
           // hero panel / steps / divider / etc. The catalog-derived
           // label is kept as a fallback hover hint when the appState
           // hasn't hydrated yet.
-          <BlockPreview block={block} lang={lang} appState={appState} />
+          <BlockPreview
+            block={block}
+            lang={lang}
+            appState={appState}
+            catalog={catalog ?? undefined}
+          />
         ) : (
           <span className="block-card-preview">{preview}</span>
         )}
