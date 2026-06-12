@@ -1,32 +1,29 @@
 "use client";
 
 /**
- * Composer editor — fits inside the CRM main content area.
+ * Composer editor — resizable 3-column layout inside the CRM
+ * content area. CRM sidebar (always-on, on the left) is provided
+ * by `AppShell`. The Composer arranges its own internal columns:
  *
- * Layout (post-PR #82 + the right-panel switch):
+ *   Canvas  | Inspector | Biblioteca
  *
- *   <div class="cmp-app-shell">              ← height: 100%
- *     <header class="cmp-topbar"/>           ← search + lang + actions
- *     <div class="cmp-body">                 ← flex: 1; row
- *       <Canvas />                           ← flex: 1
- *       <RightPanel />                       ← width: 320; Biblioteca/Inspector tabs
- *     </div>
- *     <Footer />                             ← cmp-statusbar
- *   </div>
- *
- * The CRM sidebar (left of the whole thing) stays visible because
- * `/composer/canvas` is no longer in `FULL_BLEED_ROUTES` (since #82).
- * Biblioteca + Inspector were merged into a single right panel with
- * tabs so the operator doesn't see two sidebars stacked on the
- * left.
+ * Each separator persists user resizes via localStorage; the
+ * layout key is `composer-layout-v1`.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  Group,
+  type Layout,
+  Panel,
+  Separator,
+} from "react-resizable-panels";
 
 import { Canvas } from "../components/Canvas";
 import { Footer } from "../components/Footer";
+import { Inspector } from "../components/Inspector";
 import { PreviewPanel } from "../components/PreviewPanel";
-import { RightPanel } from "../components/RightPanel";
+import { Sidebar } from "../components/Sidebar";
 import { TopBar } from "../components/TopBar";
 import { hydrateDraft, scheduleAutoSave } from "../lib/autoSave";
 import { renderEmailHtml } from "../lib/emailGen";
@@ -34,12 +31,57 @@ import { useComposerStore } from "../lib/store";
 import { toAppState } from "../lib/types";
 import { useCatalog } from "../lib/useCatalog";
 
+const LAYOUT_STORAGE_KEY = "composer-layout-v1";
+const PANEL_CANVAS = "p-canvas";
+const PANEL_INSPECTOR = "p-inspector";
+const PANEL_LIBRARY = "p-library";
+
+const DEFAULT_LAYOUT: Layout = {
+  [PANEL_CANVAS]: 50,
+  [PANEL_INSPECTOR]: 25,
+  [PANEL_LIBRARY]: 25,
+};
+
+function loadLayout(): Layout | undefined {
+  if (typeof window === "undefined") return undefined;
+  try {
+    const raw = window.localStorage.getItem(LAYOUT_STORAGE_KEY);
+    if (!raw) return undefined;
+    const parsed = JSON.parse(raw);
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      typeof parsed[PANEL_CANVAS] === "number"
+    ) {
+      return parsed;
+    }
+  } catch {
+    /* corrupted entry — fall back to defaults */
+  }
+  return undefined;
+}
+
+function persistLayout(layout: Layout): void {
+  try {
+    window.localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify(layout));
+  } catch {
+    /* quota / private mode — ignore */
+  }
+}
+
 export default function ComposerEditorPage() {
   const { catalog, loading, error } = useCatalog();
   const blocks = useComposerStore((s) => s.blocks);
   const lang = useComposerStore((s) => s.activeLang);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [brandFilter, setBrandFilter] = useState<string>("all");
+  // Resolve persisted layout client-side only so the SSR snapshot
+  // matches the default values everyone gets on first paint.
+  const initialLayoutRef = useRef<Layout | undefined>(undefined);
+  if (initialLayoutRef.current === undefined) {
+    initialLayoutRef.current = typeof window === "undefined" ? undefined : loadLayout();
+  }
+  const initialLayout = initialLayoutRef.current ?? DEFAULT_LAYOUT;
 
   useEffect(() => {
     let cancelled = false;
@@ -121,12 +163,29 @@ export default function ComposerEditorPage() {
         previewHidden={!previewOpen}
       />
       <div className="cmp-body">
-        <Canvas catalog={catalog} />
-        <RightPanel
-          brandFilter={brandFilter}
-          setBrandFilter={setBrandFilter}
-          catalog={catalog}
-        />
+        <Group
+          orientation="horizontal"
+          defaultLayout={initialLayout}
+          onLayoutChange={persistLayout}
+          className="cmp-panel-group"
+        >
+          <Panel id={PANEL_CANVAS} minSize={30}>
+            <Canvas catalog={catalog} />
+          </Panel>
+          <Separator className="cmp-resize-handle" />
+          <Panel id={PANEL_INSPECTOR} minSize={15}>
+            <Inspector catalog={catalog} />
+          </Panel>
+          <Separator className="cmp-resize-handle" />
+          <Panel id={PANEL_LIBRARY} minSize={15}>
+            <Sidebar
+              collapsed={false}
+              onToggle={() => undefined}
+              brandFilter={brandFilter}
+              setBrandFilter={setBrandFilter}
+            />
+          </Panel>
+        </Group>
       </div>
       <Footer />
       {previewOpen && (
