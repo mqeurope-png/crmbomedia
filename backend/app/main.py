@@ -7,7 +7,6 @@ from app.api.emails import router as emails_router
 from app.api.google_integrations import router as google_router
 from app.api.routes import router
 from app.api.tasks import router as tasks_router
-from app.composer.router import router as composer_router
 from app.core.config import get_settings
 from app.core.observability import setup_sentry
 from app.email_templates.router import router as email_templates_router
@@ -55,7 +54,6 @@ app.include_router(dashboard_router)
 app.include_router(bulk_router)
 app.include_router(emails_router)
 app.include_router(gmail_webhook_router)
-app.include_router(composer_router)
 app.include_router(email_templates_router)
 
 
