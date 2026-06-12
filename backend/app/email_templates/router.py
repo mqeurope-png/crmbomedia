@@ -489,7 +489,7 @@ def templates_picker(
 
 
 @router.get(
-    "/email-templates/composer-source", response_model=ComposerSourceResponse
+    "/emails/composer-source", response_model=ComposerSourceResponse
 )
 def list_composer_source(
     current_user: User = Depends(require_user),  # noqa: ARG001
@@ -515,7 +515,7 @@ def list_composer_source(
 
 
 @router.post(
-    "/email-templates/upload-image", response_model=ImageUploadResponse
+    "/emails/upload-image", response_model=ImageUploadResponse
 )
 async def upload_image(
     file: UploadFile = File(...),
