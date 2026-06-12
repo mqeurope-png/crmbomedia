@@ -17,12 +17,14 @@ from app.core.audit import Action, record_event
 from app.core.auth import require_admin, require_user
 from app.core.errors import not_found
 from app.db.session import get_session
+from app.email_templates.services import replace_merge_vars
 from app.integrations.gmail import service as gmail_service
 from app.integrations.gmail.service import (
     GmailNotConnectedError,
     GmailScopeMissingError,
 )
 from app.models.crm import (
+    Contact,
     EmailMessage,
     EmailThread,
     User,
@@ -255,6 +257,22 @@ def send_email(
                 "Márcalo desde /account."
             ),
         )
+
+    # Sprint Email v2.2b — substitute `{nombre}` / `{empresa}` /
+    # `{email}` placeholders against the contact this email is being
+    # sent to. When no contact is attached the body ships unchanged
+    # (placeholders stay literal so the operator can see what slipped
+    # through).
+    body_html = payload.body_html
+    body_text = payload.body_text
+    subject = payload.subject
+    if payload.contact_id is not None:
+        contact = session.get(Contact, payload.contact_id)
+        if contact is not None:
+            body_html = replace_merge_vars(body_html, contact)
+            body_text = replace_merge_vars(body_text, contact)
+            subject = replace_merge_vars(subject, contact) or ""
+
     try:
         message = gmail_service.send_email(
             session,
@@ -264,9 +282,9 @@ def send_email(
             to=list(payload.to),
             cc=list(payload.cc) if payload.cc else None,
             bcc=list(payload.bcc) if payload.bcc else None,
-            subject=payload.subject,
-            body_html=payload.body_html,
-            body_text=payload.body_text,
+            subject=subject,
+            body_html=body_html,
+            body_text=body_text,
             contact_id=payload.contact_id,
             in_reply_to_message_id=payload.in_reply_to_message_id,
         )
@@ -283,8 +301,8 @@ def send_email(
         session,
         contact_id=payload.contact_id,
         event_type="email.sent_from_crm",
-        subject=payload.subject,
-        body=message.snippet or (payload.body_text or "")[:200] or None,
+        subject=subject,
+        body=message.snippet or (body_text or "")[:200] or None,
         metadata={
             "message_id": message.id,
             "thread_id": message.thread_id,

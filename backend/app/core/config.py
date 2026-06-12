@@ -92,6 +92,20 @@ class Settings(BaseSettings):
     gmail_pubsub_subscription: str | None = None
     gmail_pubsub_verification_token: str | None = None
 
+    # Sprint Email v2.2b — Supabase backing composer.bomedia.net. When
+    # unset, the "Composer" tab in the template picker shows a clear
+    # "not configured" notice instead of breaking the picker. Both keys
+    # are required together; either both or neither.
+    supabase_composer_url: str | None = None
+    supabase_composer_key: str | None = None
+
+    # Sprint Email v2.2b — local disk path for images uploaded from the
+    # Tiptap editor in the send-email modal. Files are served via the
+    # `/uploads/email_images/` StaticFiles mount in `main.py`; nginx can
+    # take over the path in production but doesn't have to.
+    email_image_upload_dir: str = "var/email_images"
+    email_image_max_bytes: int = 5 * 1024 * 1024
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
     @field_validator("integration_secrets_key")
@@ -117,6 +131,10 @@ class Settings(BaseSettings):
     @property
     def ai_features_enabled(self) -> bool:
         return bool(self.anthropic_api_key)
+
+    @property
+    def supabase_composer_configured(self) -> bool:
+        return bool(self.supabase_composer_url and self.supabase_composer_key)
 
     @property
     def google_calendar_configured(self) -> bool:
