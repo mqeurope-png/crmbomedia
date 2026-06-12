@@ -5,8 +5,8 @@ import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
 
 // composer.css is loaded only on /composer/* routes, so the
-// `:root` token redefinitions inside it stay scoped to the
-// segment and don't pollute the CRM-wide tokens.
+// `.composer-editor` wrapper scoping inside the file stays
+// segment-local and doesn't pollute the CRM tokens.
 import "../../styles/composer.css";
 
 const TABS = [
@@ -18,9 +18,17 @@ const TABS = [
 export default function ComposerLayout({ children }: { children: ReactNode }) {
   const pathname = usePathname() ?? "";
 
-  function isActive(href: string): boolean {
-    return pathname === href || pathname.startsWith(`${href}/`);
+  // `/composer/canvas` renders the editor full-screen with its own
+  // TopBar (literal port of `bomedia-v4`'s topbar). The shell-level
+  // tab strip only makes sense on the secondary pages
+  // (`/composer/templates`, `/composer/backoffice`) that still use
+  // the CRM's chrome.
+  if (pathname.startsWith("/composer/canvas")) {
+    return <>{children}</>;
   }
+
+  const isActive = (href: string) =>
+    pathname === href || pathname.startsWith(`${href}/`);
 
   return (
     <div className="composer-shell">

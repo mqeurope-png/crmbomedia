@@ -77,9 +77,16 @@ export default function ComposerTemplatesPage() {
               </div>
               {tpl.description ? <p className="meta">{tpl.description}</p> : null}
               <p className="meta">
-                {tpl.blocks.length} bloque
-                {tpl.blocks.length === 1 ? "" : "s"} ·{" "}
-                Actualizada{" "}
+                {/* The 20 seeded templates carry their structure in
+                    `compositor_blocks_json`, not `blocks_json`. The
+                    `blocks` array is for legacy templates that store
+                    catalog item ids only; the inspector + canvas
+                    hidrate from `compositor_blocks` when it exists. */}
+                {(tpl.compositor_blocks?.length ?? tpl.blocks.length)} bloque
+                {(tpl.compositor_blocks?.length ?? tpl.blocks.length) === 1
+                  ? ""
+                  : "s"}{" "}
+                · Actualizada{" "}
                 {new Date(tpl.updated_at).toLocaleDateString("es-ES")}
               </p>
             </article>
