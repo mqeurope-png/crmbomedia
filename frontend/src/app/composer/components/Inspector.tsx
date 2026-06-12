@@ -12,6 +12,9 @@
 import { useComposerStore } from "../lib/store";
 import type { Block, ComposerCatalog } from "../lib/types";
 import { PimpamHeroEditor } from "./editors/PimpamHeroEditor";
+import { ProductPairEditor } from "./editors/ProductPairEditor";
+import { ProductSingleEditor } from "./editors/ProductSingleEditor";
+import { ProductTrioEditor } from "./editors/ProductTrioEditor";
 
 export interface InspectorProps {
   catalog: ComposerCatalog;
@@ -62,6 +65,12 @@ function renderEditor(
     case "product_hero":
     case "hero":
       return <PimpamHeroEditor block={block} lang={lang} catalog={catalog} />;
+    case "product_single":
+      return <ProductSingleEditor block={block} catalog={catalog} />;
+    case "product_pair":
+      return <ProductPairEditor block={block} catalog={catalog} />;
+    case "product_trio":
+      return <ProductTrioEditor block={block} catalog={catalog} />;
     default:
       return <PlaceholderEditor block={block} />;
   }
