@@ -1019,8 +1019,13 @@ export interface PimpamStepsConfig {
 
 export function pimpamStepsHtml(
   config: PimpamStepsConfig | null,
-  _lang: Lang,
+  lang: Lang,
 ): string {
+  // `lang` is reserved for future i18n on step labels; the original
+  // v5o signature passes it through unused, so the dispatcher calls
+  // every renderer uniformly. Touching the var here keeps tooling
+  // quiet without dropping it from the signature.
+  void lang;
   const cfg = config ?? {};
   const steps: PimpamStep[] = cfg.steps || [
     { n: "1️⃣", t: "Elige diseño", s: "Pantalla táctil" },

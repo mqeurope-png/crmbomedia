@@ -52,7 +52,8 @@ export function useCatalog(): UseCatalogResult {
       return;
     }
     void fetchOnce();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // fetchOnce closes over setters only — they're stable, so an
+    // empty deps array is intentional.
   }, []);
 
   const refetch = async (): Promise<void> => {

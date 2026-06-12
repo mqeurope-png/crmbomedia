@@ -228,6 +228,10 @@ export function ComposerSidebar() {
                 },
               }}
             >
+              {/* Catalog thumbnails are external CDN URLs without known
+                  intrinsic dimensions — `<img>` keeps the layout
+                  unsurprising. next/image upgrade tracked separately. */}
+              {/* eslint-disable-next-line @next/next/no-img-element */}
               <img src={p.img} alt={p.name} className="palette-thumb" />
               <span className="palette-label">{p.name}</span>
             </DraggableItem>
