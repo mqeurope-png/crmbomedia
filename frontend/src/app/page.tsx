@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { EmailActivityWidget } from "./components/dashboard/EmailActivityWidget";
+import { EmailTrackingStatsWidget } from "./components/dashboard/EmailTrackingStatsWidget";
 import { GoogleEventsWidget } from "./components/dashboard/GoogleEventsWidget";
 import { LeadsStatsWidget } from "./components/dashboard/LeadsStatsWidget";
 import { PipelineSummaryWidget } from "./components/dashboard/PipelineSummaryWidget";
@@ -96,6 +97,7 @@ export default function Home() {
         <UnattendedLeadsWidget currentUserId={user?.id ?? null} />
         <LeadsStatsWidget />
         <EmailActivityWidget />
+        <EmailTrackingStatsWidget />
       </section>
     </main>
   );

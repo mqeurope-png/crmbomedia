@@ -4954,3 +4954,69 @@ a.origin-chip:hover { filter: brightness(0.97); }
   border-radius: 4px;
   font-size: 11.5px;
 }
+
+/* Email event badges — Sprint Email v2.3b. Same styling shared across
+ * the thread page, the contact emails card and any other surface. */
+.ev-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.ev-badges-compact { margin-top: 4px; }
+
+.ev-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+  background: #f1f5f9;
+  color: #475569;
+  border: 1px solid #e2e8f0;
+}
+
+.ev-badge.ev-sent { background: #f1f5f9; color: #475569; }
+.ev-badge.ev-open { background: #ecfeff; color: #0e7490; border-color: #a5f3fc; }
+.ev-badge.ev-click { background: #eef2ff; color: #4338ca; border-color: #c7d2fe; }
+.ev-badge.ev-bounce { background: #fef2f2; color: #b91c1c; border-color: #fecaca; }
+.ev-badge.ev-unsub { background: #fef3c7; color: #92400e; border-color: #fde68a; }
+
+/* Dashboard widget — email tracking stats — Sprint Email v2.3b */
+.widget-emailstats { display: flex; flex-direction: column; gap: 8px; }
+
+.email-stats-grid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 10px;
+}
+
+.email-stats-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  background: #f8fafc;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+
+.email-stats-cell .email-stats-val {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--ink);
+  line-height: 1.1;
+}
+
+.email-stats-sent { background: #f1f5f9; }
+.email-stats-open { background: #ecfeff; }
+.email-stats-click { background: #eef2ff; }
+.email-stats-unsub { background: #fef3c7; }
+.email-stats-bounce { background: #fef2f2; }
