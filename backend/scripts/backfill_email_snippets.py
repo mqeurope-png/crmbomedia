@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import re
 from typing import Any
 
 from sqlalchemy import select
@@ -41,14 +42,22 @@ log = logging.getLogger("backfill_email_snippets")
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 
 
+_ENTITY_RE = re.compile(r"&(?:[a-zA-Z]+|#\d+);")
+
+
 def _looks_dirty(snippet: str | None) -> bool:
-    """True when the snippet still carries HTML / CSS we should clean.
-    Conservative: a `<` or a `{…}` CSS-rule signature is enough."""
+    """True when the snippet still carries HTML / CSS / entities we
+    should clean. Conservative signals: a `<`, a `{…}` CSS-rule
+    signature, or an un-decoded HTML entity like `&mdash;` / `&oacute;`
+    (so a re-run after the entity-decode fix repairs rows the first
+    pass left with raw entities)."""
     if not snippet:
         return False
     if "<" in snippet:
         return True
-    return "{" in snippet and "}" in snippet
+    if "{" in snippet and "}" in snippet:
+        return True
+    return bool(_ENTITY_RE.search(snippet))
 
 
 def _clean_snippet(message: EmailMessage) -> str | None:

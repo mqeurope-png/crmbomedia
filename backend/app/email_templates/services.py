@@ -1,6 +1,7 @@
 """Helpers for the v2.2 email templates layer."""
 from __future__ import annotations
 
+import html as _html_lib
 import logging
 import re
 import threading
@@ -46,14 +47,10 @@ def extract_text_from_html(html: str | None) -> str | None:
     body = _COMMENT_RE.sub(" ", html)
     body = _BLOCK_TAGS_RE.sub(" ", body)
     body = _TAG_RE.sub(" ", body)
-    body = (
-        body.replace("&nbsp;", " ")
-        .replace("&amp;", "&")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", '"')
-        .replace("&#39;", "'")
-    )
+    # Decode every HTML entity, not just the six we used to hand-roll.
+    # TinyMCE emits `&mdash;`, `&oacute;`, `&iacute;` etc.; the manual
+    # list left them raw, so previews showed "impresi&oacute;n directa".
+    body = _html_lib.unescape(body)
     body = _WS_RE.sub(" ", body).strip()
     return body or None
 

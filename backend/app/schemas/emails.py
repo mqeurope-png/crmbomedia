@@ -97,6 +97,12 @@ class EmailThreadRead(BaseModel):
     # local part of the email. Resolved server-side so the UI
     # doesn't have to.
     contact_name: str | None = None
+    # Email v2.3b: per-thread tracking counts (open / click / bounce /
+    # unsubscribe) aggregated across the thread's outbound messages, so
+    # the inbox list can show event badges per row without N+1 fetches.
+    # `sent` is intentionally excluded — every thread has it, so it's
+    # noise in the list.
+    tracking: dict[str, int] = Field(default_factory=dict)
 
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
