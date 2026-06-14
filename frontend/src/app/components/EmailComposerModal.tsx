@@ -1,9 +1,13 @@
 "use client";
 
-import { FolderOpen, Save, Sparkles } from "lucide-react";
+import { FolderOpen, PenLine, Save, Sparkles } from "lucide-react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
+import {
+  listEmailSignatures,
+  type EmailSignature,
+} from "../lib/emailSignaturesApi";
 import {
   getMyEmailAliases,
   sendEmail,
@@ -45,6 +49,32 @@ function hasMergeTokens(text: string): boolean {
   return MERGE_TOKEN_RE.test(text);
 }
 
+// HTML comment delimiters around the signature block. We use them to
+// find + replace a previously-inserted signature without parsing the
+// editor DOM. Avoids accidentally clobbering the operator's own
+// content that happens to look like a signature.
+const SIG_OPEN = "<!--crmbo:signature-->";
+const SIG_CLOSE = "<!--/crmbo:signature-->";
+const SIG_BLOCK_RE = new RegExp(
+  `${SIG_OPEN}[\\s\\S]*?${SIG_CLOSE}`,
+  "g",
+);
+
+function buildBodyWithSignature(
+  current: string,
+  _previousSigId: string,
+  next: EmailSignature | null,
+): string {
+  // Drop any signature block we ourselves inserted earlier. We
+  // intentionally don't try to detect raw signatures the operator
+  // typed by hand — the markers are how we discriminate.
+  const stripped = current.replace(SIG_BLOCK_RE, "").trimEnd();
+  if (!next) return stripped;
+  const block = `${SIG_OPEN}<p>&mdash;</p>${next.html_content}${SIG_CLOSE}`;
+  if (!stripped) return block;
+  return `${stripped}<p></p>${block}`;
+}
+
 export function EmailComposerModal({
   contactId,
   contactEmail,
@@ -70,6 +100,8 @@ export function EmailComposerModal({
 
   const [showPicker, setShowPicker] = useState(false);
   const [showSaveModal, setShowSaveModal] = useState(false);
+  const [signatures, setSignatures] = useState<EmailSignature[]>([]);
+  const [activeSignatureId, setActiveSignatureId] = useState<string>("");
   const rootRef = useRef<HTMLDivElement>(null);
 
   // The composer is rendered inline at the bottom of the thread page
@@ -92,6 +124,26 @@ export function EmailComposerModal({
       })
       .catch(() => setAliases([]))
       .finally(() => setLoadingAliases(false));
+  }, []);
+
+  // Load signatures + auto-insert the default at mount. Guarded with
+  // `inserted` so a re-render (the body state mutating) doesn't keep
+  // re-inserting the signature on every keystroke.
+  useEffect(() => {
+    let inserted = false;
+    listEmailSignatures()
+      .then((rows) => {
+        setSignatures(rows);
+        const def = rows.find((s) => s.is_default);
+        if (def && !inserted) {
+          inserted = true;
+          setActiveSignatureId(def.id);
+          setBodyHtml((prev) => buildBodyWithSignature(prev, "", def));
+        }
+      })
+      .catch(() => {
+        /* signatures are optional; never block the modal */
+      });
   }, []);
 
   function splitEmails(raw: string): string[] {
@@ -243,6 +295,37 @@ export function EmailComposerModal({
             >
               <Save size={12} aria-hidden /> Guardar como plantilla
             </button>
+            <label className="email-compose-signature">
+              <span className="email-compose-signature-label">
+                <PenLine size={12} aria-hidden /> Firma
+              </span>
+              <select
+                value={activeSignatureId}
+                onChange={(e) => {
+                  const nextId = e.target.value;
+                  const next =
+                    signatures.find((s) => s.id === nextId) ?? null;
+                  setActiveSignatureId(nextId);
+                  setBodyHtml((prev) =>
+                    buildBodyWithSignature(prev, activeSignatureId, next),
+                  );
+                }}
+                disabled={signatures.length === 0}
+                title={
+                  signatures.length === 0
+                    ? "Crea una firma en /account/firmas"
+                    : undefined
+                }
+              >
+                <option value="">Sin firma</option>
+                {signatures.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name}
+                    {s.is_default ? " (predeterminada)" : ""}
+                  </option>
+                ))}
+              </select>
+            </label>
           </div>
 
           <label className="field">

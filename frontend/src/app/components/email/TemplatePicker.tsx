@@ -4,6 +4,7 @@ import { ExternalLink, Search } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { extractErrorMessage } from "../../lib/errors";
 import {
+  getBrevoTemplateHtml,
   getComposerSourceTemplates,
   getEmailTemplate,
   getEmailTemplatesPicker,
@@ -112,17 +113,21 @@ export function TemplatePicker({ onSelect, onClose }: Props) {
     }
   }
 
-  function pickBrevo(item: BrevoPickerItem) {
-    // The Brevo cache only stores metadata for the picker. The
-    // backend will fetch the real HTML at send time when we wire
-    // the Brevo template_id into the send flow; for now we drop the
-    // operator into the editor with the subject so they can paste the
-    // body. (Marked as deuda menor in the spec.)
-    onSelect({
-      source: "brevo",
-      subject: item.subject,
-      body_html: "",
-    });
+  async function pickBrevo(item: BrevoPickerItem) {
+    try {
+      // Cache rows store html_content NULL until first detail open;
+      // the endpoint lazy-loads via the Brevo API when needed.
+      const full = await getBrevoTemplateHtml(item.id);
+      onSelect({
+        source: "brevo",
+        subject: full.subject ?? item.subject,
+        body_html: full.body_html,
+      });
+    } catch (err) {
+      setError(
+        extractErrorMessage(err, "No se pudo cargar la plantilla Brevo."),
+      );
+    }
   }
 
   function openComposer(item: ComposerSourceItem) {

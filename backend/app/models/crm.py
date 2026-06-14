@@ -721,6 +721,33 @@ class SyncLog(TimestampMixin, Base):
     contact_id: Mapped[str | None] = mapped_column(ForeignKey("contacts.id"))
 
 
+class EmailSignature(TimestampMixin, Base):
+    """Per-user reusable email signature. The user picks one when
+    sending; the default is auto-appended to a fresh compose. Stored
+    as HTML so a comercial can put a logo + links + small print
+    without the CRM caring about the structure."""
+
+    __tablename__ = "email_signatures"
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid4())
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    html_content: Mapped[str] = mapped_column(Text, nullable=False)
+    is_default: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )
+    sort_order: Mapped[int] = mapped_column(
+        Integer, default=0, nullable=False
+    )
+
+
 class User(TimestampMixin, Base):
     __tablename__ = "users"
 

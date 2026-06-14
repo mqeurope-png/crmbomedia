@@ -1,6 +1,7 @@
 """REST surface for v2.2 — templates CRUD, folders CRUD, picker."""
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import mimetypes
 from datetime import UTC, datetime
@@ -22,12 +23,15 @@ from app.core.auth import require_user
 from app.core.config import get_settings
 from app.core.errors import not_found
 from app.db.session import get_session
+from app.integrations.brevo import templates as _brevo_templates_service
+from app.integrations.errors import IntegrationError
 from app.models.brevo import BrevoTemplateCache
 from app.models.crm import User, UserRole
 
 from .models import EmailTemplate, EmailTemplateFolder
 from .schemas import (
     BrevoPickerItem,
+    BrevoTemplateHtmlResponse,
     ComposerSourcePickerItem,
     ComposerSourceResponse,
     FolderRead,
@@ -480,6 +484,56 @@ def templates_picker(
         ],
         folders=folders,
         recent=[TemplateListItem.model_validate(r) for r in recent_rows],
+    )
+
+
+@router.get(
+    "/emails/brevo-templates/{brevo_template_id}/html",
+    response_model=BrevoTemplateHtmlResponse,
+)
+def get_brevo_template_html(
+    brevo_template_id: int,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_user),  # noqa: ARG001
+) -> BrevoTemplateHtmlResponse:
+    """Lazy-loaded body for the send-modal picker's Brevo tab.
+
+    The marketing cache row stores html_content NULL until first
+    detail open; the picker was therefore handing the editor an
+    empty string. Here we fetch + persist on demand the same way
+    the /marketing detail screen does — first hit pays the Brevo
+    round-trip, every later open is served straight from the cache.
+
+    The `picker` field on the response is what the editor pastes
+    in; `subject` lets the front pre-fill the asunto field too.
+    """
+    row = session.scalar(
+        select(BrevoTemplateCache)
+        .where(BrevoTemplateCache.brevo_template_id == brevo_template_id)
+        .where(BrevoTemplateCache.is_active.is_(True))
+        .order_by(BrevoTemplateCache.cached_at.desc())
+    )
+    if row is None:
+        raise not_found("BrevoTemplate")
+    if row.html_content is None:
+        try:
+            # The Brevo client is async; the rest of this router is
+            # sync. Same trampoline pattern as /api/brevo/templates/{id}.
+            asyncio.run(
+                _brevo_templates_service.ensure_template_html(session, row)
+            )
+            session.commit()
+            session.refresh(row)
+        except IntegrationError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=exc.message,
+            ) from exc
+    return BrevoTemplateHtmlResponse(
+        id=row.brevo_template_id,
+        name=row.name,
+        subject=row.subject,
+        body_html=row.html_content or "",
     )
 
 

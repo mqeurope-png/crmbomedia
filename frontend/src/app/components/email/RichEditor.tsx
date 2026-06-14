@@ -184,6 +184,34 @@ export function RichEditor({
         automatic_uploads: true,
         images_upload_handler: (blobInfo) =>
           uploadBlob(blobInfo.blob(), blobInfo.filename()),
+        // Surface the "Subir" tab + a file picker button inside the
+        // Insertar imagen modal so the operator doesn't need to drag
+        // every time. The handler reuses the same Bearer-token
+        // upload path as the inline drop / paste flow.
+        image_uploadtab: true,
+        image_title: true,
+        image_description: true,
+        file_picker_types: "image",
+        file_picker_callback: (cb, _value, meta) => {
+          const input = document.createElement("input");
+          input.type = "file";
+          input.accept = meta.filetype === "image" ? "image/*" : "*/*";
+          input.onchange = async () => {
+            const file = input.files?.[0];
+            if (!file) return;
+            try {
+              const url = await uploadBlob(file, file.name);
+              cb(url, { alt: file.name, title: file.name });
+            } catch (err) {
+              window.alert(
+                err instanceof Error
+                  ? err.message
+                  : "Error subiendo imagen",
+              );
+            }
+          };
+          input.click();
+        },
         content_style: `
           body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif; font-size: 14px; line-height: 1.6; color: #1e293b; padding: 16px; }
           p { margin: 0 0 12px; }
