@@ -235,6 +235,9 @@ export function EmailComposerModal({
               onChange={setBodyHtml}
               placeholder="Escribe tu email. Usa {nombre}, {empresa}, {email} para personalizar."
               minHeight={460}
+              draftKey={
+                replyTo ? `reply-${replyTo.messageId}` : "compose-new"
+              }
             />
           </label>
 

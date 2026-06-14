@@ -30,6 +30,7 @@ import "tinymce/plugins/media";
 import "tinymce/plugins/table";
 import "tinymce/plugins/help";
 import "tinymce/plugins/wordcount";
+import "tinymce/plugins/autosave";
 import "tinymce/plugins/emoticons";
 import "tinymce/plugins/emoticons/js/emojis";
 // Spanish UI strings — the comerciales never see English chrome.
@@ -87,6 +88,11 @@ type RichEditorProps = {
   onChange: (html: string) => void;
   placeholder?: string;
   minHeight?: number;
+  /** Unique key for the built-in autosave plugin. The draft survives
+   *  a refresh / accidental close and TinyMCE surfaces a "restore"
+   *  toolbar button when one exists. Pass something stable per
+   *  conversation, e.g. `reply-{threadId}` or `compose-new`. */
+  draftKey?: string;
 };
 
 export function RichEditor({
@@ -94,6 +100,7 @@ export function RichEditor({
   onChange,
   placeholder,
   minHeight = 400,
+  draftKey = "default",
 }: RichEditorProps) {
   const editorRef = useRef<TinyMCEEditor | null>(null);
 
@@ -133,15 +140,26 @@ export function RichEditor({
           "table",
           "help",
           "wordcount",
+          "autosave",
           "emoticons",
         ],
         toolbar:
-          "undo redo | blocks | " +
+          "undo redo restoredraft | blocks | " +
           "bold italic underline strikethrough | forecolor backcolor | " +
           "alignleft aligncenter alignright alignjustify | " +
           "bullist numlist outdent indent | " +
           "link image media table emoticons | " +
           "removeformat code fullscreen | help",
+        // Built-in draft autosave: writes to localStorage on a timer
+        // so a refresh / accidental close doesn't lose the email. The
+        // prefix is keyed per conversation so a reply draft doesn't
+        // bleed into a fresh compose. `restoredraft` in the toolbar
+        // lets the operator pull the draft back when one exists.
+        autosave_prefix: `crmbo-email-{path}{query}-${draftKey}-`,
+        autosave_interval: "10s",
+        autosave_retention: "60m",
+        autosave_restore_when_empty: true,
+        autosave_ask_before_unload: true,
         // Paste: keep as much of the source email's look as possible.
         // The bar is "reads like the original", not pixel-perfect.
         paste_data_images: true,
