@@ -82,13 +82,26 @@ export default function EmailsLayout({
       <section className="email-thread-pane">{children}</section>
 
       {composeOpen ? (
-        <EmailComposerModal
-          onClose={() => setComposeOpen(false)}
-          onSent={() => {
-            setComposeOpen(false);
-            refreshAll();
+        // The composer renders as plain inline content (`.modal-backdrop`
+        // isn't an overlay class — it was designed to live at the
+        // bottom of the thread page for replies). Wrap it in a fixed
+        // overlay here so a fresh "Redactar" from the sidebar shows
+        // centred and isn't squashed inside the grid's columns.
+        <div
+          className="email-compose-overlay"
+          role="presentation"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) setComposeOpen(false);
           }}
-        />
+        >
+          <EmailComposerModal
+            onClose={() => setComposeOpen(false)}
+            onSent={() => {
+              setComposeOpen(false);
+              refreshAll();
+            }}
+          />
+        </div>
       ) : null}
 
       <EmailFolderDialog
