@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import UTC, datetime
 from email.utils import getaddresses, parsedate_to_datetime
 from typing import Any
@@ -360,6 +361,108 @@ def process_history(
     return imported
 
 
+_NDR_FROM_PREFIXES = (
+    "mailer-daemon@",
+    "postmaster@",
+    "noreply-daemon@",
+    "noreply@bounces.",
+)
+
+
+def _is_ndr(from_email: str, headers: dict[str, str]) -> bool:
+    """Best-effort: classify an inbound message as a non-delivery
+    report. Either the sender looks like a postmaster-style account,
+    or the message carries the `X-Failed-Recipients` header that
+    Gmail / Exchange / SES populate on bounce reports."""
+    if from_email and any(
+        from_email.lower().startswith(p) for p in _NDR_FROM_PREFIXES
+    ):
+        return True
+    return bool(headers.get("x-failed-recipients"))
+
+
+_NDR_FINAL_RE = re.compile(
+    r"final-recipient:\s*rfc822\s*;\s*([^\s\r\n]+)", re.IGNORECASE
+)
+_NDR_STATUS_RE = re.compile(
+    r"status:\s*(\d\.\d+\.\d+)", re.IGNORECASE
+)
+_NDR_DIAG_RE = re.compile(
+    r"diagnostic-code:\s*(.+?)(?:\r?\n[^\s])", re.IGNORECASE | re.DOTALL
+)
+
+
+def _parse_ndr(
+    headers: dict[str, str], body_text: str | None
+) -> dict[str, Any]:
+    """Extract failed recipient + reason from an NDR body.
+
+    Anything we can't pin down stays absent — the caller still gets
+    something useful (an empty dict means "we don't know who failed",
+    which the dashboard surfaces as 'bounce: unknown recipient')."""
+    info: dict[str, Any] = {}
+    failed = headers.get("x-failed-recipients")
+    if failed:
+        info["failed_to"] = failed.split(",")[0].strip()
+    haystack = body_text or ""
+    if "failed_to" not in info:
+        m = _NDR_FINAL_RE.search(haystack)
+        if m:
+            info["failed_to"] = m.group(1).strip("<>")
+    status_match = _NDR_STATUS_RE.search(haystack)
+    if status_match:
+        info["status"] = status_match.group(1)
+    diag = _NDR_DIAG_RE.search(haystack + "\n ")
+    if diag:
+        info["reason"] = " ".join(diag.group(1).split())[:200]
+    return info
+
+
+def _find_bounced_message(
+    session: Session,
+    *,
+    user_id: str,
+    gmail_thread_id: str,
+    failed_to: str | None,
+) -> EmailMessage | None:
+    """Locate the outbound EmailMessage whose recipient just bounced.
+
+    Strategy: most NDRs land in the SAME Gmail thread as the original
+    send (Gmail's threading heuristic matches Subject + References),
+    so we walk this thread's outbound messages newest-first. As a
+    fallback we look up by sender_account + recipient address.
+    """
+    thread = session.scalar(
+        select(EmailThread).where(
+            EmailThread.gmail_account_user_id == user_id,
+            EmailThread.gmail_thread_id == gmail_thread_id,
+        )
+    )
+    if thread is not None:
+        # Most recent outbound on the same thread.
+        candidate = session.scalar(
+            select(EmailMessage)
+            .where(EmailMessage.thread_id == thread.id)
+            .where(EmailMessage.direction == EmailDirection.OUTBOUND)
+            .order_by(EmailMessage.sent_at.desc())
+        )
+        if candidate is not None:
+            return candidate
+    if failed_to:
+        # Fallback: any outbound from this user whose to_emails_json
+        # contains the failed address. Case-insensitive substring is
+        # enough; emails aren't case-sensitive on the local part by
+        # convention.
+        return session.scalar(
+            select(EmailMessage)
+            .where(EmailMessage.gmail_account_user_id == user_id)
+            .where(EmailMessage.direction == EmailDirection.OUTBOUND)
+            .where(EmailMessage.to_emails_json.ilike(f"%{failed_to}%"))
+            .order_by(EmailMessage.sent_at.desc())
+        )
+    return None
+
+
 def _persist_inbound(
     session: Session,
     *,
@@ -380,6 +483,30 @@ def _persist_inbound(
     to_emails = [addr for _, addr in getaddresses([to_header]) if addr]
     cc_emails = [addr for _, addr in getaddresses([cc_header])] if cc_header else None
     body_text, body_html = _extract_bodies(raw.get("payload", {}))
+
+    # Sprint Email v2.3a — NDR detection. When this looks like a
+    # bounce, we attach the event to the ORIGINAL outbound message
+    # and store the rest of the inbound as an EmailMessage anyway so
+    # the operator can still see it in the thread (Gmail does the
+    # same).
+    if _is_ndr(from_email, headers):
+        ndr = _parse_ndr(headers, body_text)
+        original = _find_bounced_message(
+            session,
+            user_id=user_id,
+            gmail_thread_id=gmail_thread_id,
+            failed_to=ndr.get("failed_to"),
+        )
+        if original is not None:
+            from app.email_tracking.services import record_event  # noqa: PLC0415
+            from app.models.crm import EmailEventType  # noqa: PLC0415
+
+            record_event(
+                session,
+                message_id=original.id,
+                event_type=EmailEventType.BOUNCE,
+                metadata=ndr or {"raw_from": from_email},
+            )
 
     contact = session.scalar(
         select(Contact).where(Contact.email == from_email)
