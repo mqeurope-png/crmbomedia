@@ -3,6 +3,7 @@
 import { Inbox, Search } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { EmailTrackingStatsWidget } from "../components/dashboard/EmailTrackingStatsWidget";
 import { PageHeader } from "../components/PageHeader";
 import {
   listEmailThreads,
@@ -70,6 +71,9 @@ export default function EmailsPage() {
         eyebrow="Productividad"
         description="Hilos iniciados desde el CRM."
       />
+      <div className="email-inbox-stats">
+        <EmailTrackingStatsWidget />
+      </div>
       <div className="email-toolbar">
         <div className="email-search">
           <Search size={13} aria-hidden />

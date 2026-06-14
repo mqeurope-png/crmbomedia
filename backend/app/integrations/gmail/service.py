@@ -775,11 +775,33 @@ def register_watch(session: Session, *, user_id: str) -> GmailPubsubWatch:
 # Helpers
 
 def _snippet(text: str | None, html: str | None, max_chars: int = 200) -> str | None:
-    base = (text or html or "").strip()
-    if not base:
-        return None
-    flat = " ".join(base.split())
-    return flat[:max_chars]
+    """Plain-text snippet for inbox + activity-timeline previews.
+
+    `text` (multipart text body) is preferred when present. When the
+    only body we have is HTML — every TinyMCE-authored send now
+    (`body_text=null`) — we route it through `extract_text_from_html`
+    so the CSS reset block + `<style>` boilerplate the editor adds
+    don't bleed into the preview as raw CSS source. Without that
+    pass, the snippet for a fresh send rendered as e.g.
+    `<style>body,table,td,p,a,h1,h2,h3,h4{margin:0;…` instead of the
+    actual first sentence the operator typed.
+    """
+    if text and text.strip():
+        flat = " ".join(text.split())
+        return flat[:max_chars] or None
+    if html:
+        # Local import — `extract_text_from_html` lives in the
+        # email_templates module and pulls SQLAlchemy via its
+        # neighbours; deferring keeps the gmail.service import graph
+        # the same as before.
+        from app.email_templates.services import (  # noqa: PLC0415
+            extract_text_from_html,
+        )
+
+        clean = extract_text_from_html(html)
+        if clean:
+            return clean[:max_chars]
+    return None
 
 
 def _index_headers(headers: list[dict[str, str]]) -> dict[str, str]:
