@@ -5424,6 +5424,30 @@ a.origin-chip:hover { filter: brightness(0.97); }
   outline-offset: 2px;
 }
 
+/* Compose overlay (sidebar "Redactar" → centred modal). The composer
+ * itself isn't a real modal — the `.modal-backdrop` class is just a
+ * marker — so we wrap it in a fixed overlay only for this entry
+ * point. Replies from the thread page still render inline at the
+ * bottom of the conversation, which is what operators expect. */
+.email-compose-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.45);
+  z-index: 100;
+  overflow-y: auto;
+  padding: 32px 16px;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+}
+.email-compose-overlay > .modal-backdrop {
+  background: #ffffff;
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.25);
+  padding: 24px;
+  width: min(820px, 100%);
+}
+
 /* Responsive collapse: narrow viewports drop the sidebar so the
  * list + pane keep room to breathe. v2.4b ships as desktop-first;
  * v2.4c can add a hamburger to bring the sidebar back. */
