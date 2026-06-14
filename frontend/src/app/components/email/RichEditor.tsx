@@ -1,7 +1,11 @@
 "use client";
 
 import { Editor } from "@tinymce/tinymce-react";
-import { useRef } from "react";
+import {
+  forwardRef,
+  useImperativeHandle,
+  useRef,
+} from "react";
 import type { Editor as TinyMCEEditor } from "tinymce";
 
 // Self-host every TinyMCE asset — never the cloud build (no API key,
@@ -95,14 +99,50 @@ type RichEditorProps = {
   draftKey?: string;
 };
 
-export function RichEditor({
-  value,
-  onChange,
-  placeholder,
-  minHeight = 400,
-  draftKey = "default",
-}: RichEditorProps) {
+/** Imperative surface so the send-modal can call `clearDraft()` after
+ *  a successful send — the autosave entry survives a soft close and
+ *  would otherwise leak into the next conversation. */
+export type RichEditorHandle = {
+  clearDraft: () => void;
+};
+
+export const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
+  function RichEditor(
+    { value, onChange, placeholder, minHeight = 400, draftKey = "default" },
+    ref,
+  ) {
   const editorRef = useRef<TinyMCEEditor | null>(null);
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      clearDraft() {
+        // 1) Ask TinyMCE first so its in-memory cache also resets.
+        const editor = editorRef.current;
+        if (editor) {
+          const autosave = (
+            editor.plugins as Record<string, { removeDraft?: () => void }>
+          ).autosave;
+          autosave?.removeDraft?.();
+        }
+        // 2) Belt-and-braces: scan localStorage for any stale entries
+        // keyed by this draftKey. TinyMCE's removeDraft only wipes the
+        // current page-load's prefix; a prior session on the same
+        // thread could have left a sibling key around.
+        if (typeof window === "undefined") return;
+        const suffix = `-${draftKey}-draft`;
+        const remove: string[] = [];
+        for (let i = 0; i < window.localStorage.length; i++) {
+          const key = window.localStorage.key(i);
+          if (key && key.startsWith("crmbo-email-") && key.endsWith(suffix)) {
+            remove.push(key);
+          }
+        }
+        for (const key of remove) window.localStorage.removeItem(key);
+      },
+    }),
+    [draftKey],
+  );
 
   return (
     <Editor
@@ -212,40 +252,18 @@ export function RichEditor({
           };
           input.click();
         },
-        // Insertar medio: TinyMCE's `media` plugin only accepts raw
-        // embed code by default. Detect the two video sources our
-        // comerciales actually paste — YouTube + Vimeo — and synth
-        // the iframe ourselves. `media_live_embeds` then renders the
-        // result inline in the editor instead of a placeholder box.
+        // Insertar medio: TinyMCE 8 already detects YouTube + Vimeo
+        // and converts pasted URLs into iframes on its own —
+        // `media_live_embeds: true` renders the embed inline in the
+        // editor rather than a placeholder box. The hand-rolled
+        // `media_url_resolver` we shipped in PR #99 resolved with
+        // `{ html: "" }` for non-video URLs, which the plugin took
+        // as "the resolver gave me empty html" and surfaced as
+        // "Media embed handler threw unknown error". Dropping it
+        // lets the built-in path do the job for every URL — and
+        // anything not recognised falls back to TinyMCE's raw embed
+        // modal, the original behaviour.
         media_live_embeds: true,
-        media_url_resolver: (
-          data: { url: string },
-          resolve: (out: { html: string }) => void,
-        ) => {
-          const yt = data.url.match(
-            /(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|watch\?.+&v=))([\w-]+)/,
-          );
-          if (yt) {
-            resolve({
-              html:
-                `<iframe width="560" height="315" ` +
-                `src="https://www.youtube.com/embed/${yt[1]}" ` +
-                `frameborder="0" allowfullscreen></iframe>`,
-            });
-            return;
-          }
-          const vm = data.url.match(/vimeo\.com\/(\d+)/);
-          if (vm) {
-            resolve({
-              html:
-                `<iframe src="https://player.vimeo.com/video/${vm[1]}" ` +
-                `width="640" height="360" frameborder="0" ` +
-                `allowfullscreen></iframe>`,
-            });
-            return;
-          }
-          resolve({ html: "" });
-        },
         content_style: `
           body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif; font-size: 14px; line-height: 1.6; color: #1e293b; padding: 16px; }
           p { margin: 0 0 12px; }
@@ -255,4 +273,5 @@ export function RichEditor({
       }}
     />
   );
-}
+  },
+);

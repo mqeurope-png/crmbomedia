@@ -25,6 +25,9 @@ import {
 // must never render on the server. `ssr: false` keeps it in a
 // client-only chunk and shows a lightweight placeholder while the
 // (~200 KB) editor bundle streams in.
+type RichEditorHandle = {
+  clearDraft: () => void;
+};
 const RichEditor = dynamic(
   () => import("./email/RichEditor").then((m) => m.RichEditor),
   {
@@ -103,6 +106,17 @@ export function EmailComposerModal({
   const [signatures, setSignatures] = useState<EmailSignature[]>([]);
   const [activeSignatureId, setActiveSignatureId] = useState<string>("");
   const rootRef = useRef<HTMLDivElement>(null);
+  const editorRef = useRef<RichEditorHandle | null>(null);
+
+  // draftKey isolates the autosave entries per conversation. Replies
+  // carry the parent gmail message id (one per thread by construction);
+  // fresh composes use the contact id, falling back to "new" when
+  // composing from /emails. Without enough uniqueness here a draft
+  // from contact A's send leaks into contact B's next compose because
+  // TinyMCE keys off the same {path}{query} on /contacts/:id.
+  const draftKey = replyTo
+    ? `reply-${replyTo.messageId}`
+    : `compose-${contactId ?? "new"}`;
 
   // The composer is rendered inline at the bottom of the thread page
   // (the `.modal-backdrop` class isn't an overlay), so on "Responder"
@@ -188,6 +202,12 @@ export function EmailComposerModal({
         contact_id: contactId ?? null,
         in_reply_to_message_id: replyTo?.messageId ?? null,
       });
+      // Wipe the autosave entry for this conversation BEFORE handing
+      // control back to the parent so a quick "compose another"
+      // doesn't restore the just-sent body. We deliberately do NOT
+      // clear on Cancel — the operator may want to come back to the
+      // half-written reply later.
+      editorRef.current?.clearDraft();
       onSent?.(message);
     } catch (err) {
       setError(extractErrorMessage(err, "No se pudo enviar el email."));
@@ -331,13 +351,12 @@ export function EmailComposerModal({
           <label className="field">
             Cuerpo
             <RichEditor
+              ref={editorRef}
               value={bodyHtml}
               onChange={setBodyHtml}
               placeholder="Escribe tu email. Usa {nombre}, {empresa}, {email} para personalizar."
               minHeight={460}
-              draftKey={
-                replyTo ? `reply-${replyTo.messageId}` : "compose-new"
-              }
+              draftKey={draftKey}
             />
           </label>
 
