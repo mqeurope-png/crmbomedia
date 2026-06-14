@@ -193,6 +193,13 @@ export const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
         promotion: false,
         language: "es",
         placeholder: placeholder ?? "Escribe tu email…",
+        // TinyMCE's URL pass converts same-origin absolutes into
+        // relatives ("../assets/email-templates/…"). Fine for a
+        // webpage with a base href; catastrophic for an email — the
+        // recipient's client has no base to resolve against, so Gmail
+        // renders the alt text as a link and the inline image vanishes.
+        // Keep every URL we author exactly as we wrote it.
+        convert_urls: false,
         // Self-hosted skin assets are bundled via the CSS imports above;
         // tell TinyMCE not to try to fetch them from a base URL.
         skin: false,
