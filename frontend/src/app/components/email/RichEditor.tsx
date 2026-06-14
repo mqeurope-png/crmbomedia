@@ -13,6 +13,7 @@ import { TextStyle } from "@tiptap/extension-text-style";
 import Underline from "@tiptap/extension-underline";
 import { EditorContent, useEditor, type Editor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
+import { PreserveStyles } from "./extensions/PreserveStyles";
 import {
   AlignCenter,
   AlignJustify,
@@ -339,19 +340,25 @@ export function RichEditor({
       TableRow,
       TableHeader,
       TableCell,
+      // Keep inline style="" / bgcolor / width / height / align attrs
+      // alive through Tiptap's schema pass; the matching
+      // transformPastedHTML below only strips scripts and HTML
+      // comments so most of the pasted look survives.
+      PreserveStyles,
     ],
     editorProps: {
-      // Tiptap's default paste handler is aggressive — it strips
-      // most inline styles and table structure when pasting a
-      // formatted email from Gmail. Sanitise scripts + style blocks
-      // (XSS prevention) but keep inline `style="..."` attrs so
-      // pasted colors, alignment and column widths survive.
       transformPastedHTML(html: string) {
+        // Minimal sanitisation: the bar is "what an external email
+        // editor would have rendered". We can't accept <script> or
+        // HTML comments (Outlook ships `<!--[if mso]>` blocks that
+        // Tiptap chokes on), but inline `style="..."`, `<style>`
+        // blocks, `bgcolor`, and on-event attrs we now keep — the
+        // PreserveStyles extension surfaces the inline attrs and
+        // CSP at the email-send layer is the right place to block
+        // scripts at delivery time.
         return html
           .replace(/<script[\s\S]*?<\/script>/gi, "")
-          .replace(/<style[\s\S]*?<\/style>/gi, "")
-          .replace(/<link[^>]*?>/gi, "")
-          .replace(/\son\w+="[^"]*"/gi, "");
+          .replace(/<!--[\s\S]*?-->/g, "");
       },
     },
     content: value || "<p></p>",
