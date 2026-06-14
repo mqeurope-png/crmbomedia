@@ -5,15 +5,20 @@ import Link from "next/link";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  archiveThread,
   type EmailFolder,
   type EmailLabel,
   type EmailThread,
   type EmailThreadStateValue,
   listEmailThreads,
+  markThreadUnread,
+  restoreThread,
   starThread,
+  trashThread,
   unstarThread,
 } from "../../lib/emailsApi";
 import { extractErrorMessage } from "../../lib/errors";
+import { useEmailKeyboardShortcuts } from "../../lib/useEmailKeyboardShortcuts";
 import { EmailEventBadges } from "./EmailEventBadges";
 import { EmailBulkActionsBar } from "./EmailBulkActionsBar";
 
@@ -75,6 +80,11 @@ export function EmailThreadList({ folders, labels, refreshKey }: Props) {
   // the Shift-click range-select gesture.
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const lastClickedIdx = useRef<number | null>(null);
+  // Keyboard cursor — the row j/k navigates over. NULL means "no
+  // row focused"; the first j moves it to 0 so the user doesn't
+  // have to scroll-then-click to start a session.
+  const [cursor, setCursor] = useState<number | null>(null);
+  const rowRefs = useRef<(HTMLLIElement | null)[]>([]);
 
   // Debounce search input by 300 ms.
   useEffect(() => {
@@ -180,6 +190,71 @@ export function EmailThreadList({ folders, labels, refreshKey }: Props) {
     [],
   );
 
+  // The keyboard cursor target — the row j/k navigates over and
+  // single-key shortcuts (e/#/s/u/o) act on. Resolves to the focused
+  // row in the current page; null when the list is empty.
+  const cursorThread = cursor !== null ? threads[cursor] ?? null : null;
+
+  const moveCursor = useCallback(
+    (delta: number) => {
+      setCursor((prev) => {
+        if (threads.length === 0) return null;
+        const start = prev ?? -1;
+        const next = Math.max(0, Math.min(threads.length - 1, start + delta));
+        // Scroll into view on the next tick once the row picks up
+        // the `is-cursor` class.
+        window.requestAnimationFrame(() => {
+          rowRefs.current[next]?.scrollIntoView({
+            block: "nearest",
+            behavior: "smooth",
+          });
+        });
+        return next;
+      });
+    },
+    [threads.length],
+  );
+
+  // Wraps a per-row mutation: locks the API call, refetches, keeps
+  // the cursor on the same index so j/k keep working after archive.
+  const runOnCursor = useCallback(
+    async (fn: (t: EmailThread) => Promise<unknown>) => {
+      if (!cursorThread) return;
+      try {
+        await fn(cursorThread);
+        await fetchThreads();
+      } catch (err) {
+        setError(extractErrorMessage(err, "No se pudo aplicar la acción."));
+      }
+    },
+    [cursorThread, fetchThreads],
+  );
+
+  // List-context shortcuts. Disabled while a thread is open so the
+  // thread page's own handlers don't double-fire.
+  useEmailKeyboardShortcuts(
+    {
+      onNext: () => moveCursor(1),
+      onPrev: () => moveCursor(-1),
+      onOpen: () => {
+        if (cursorThread) router.push(`/emails/${cursorThread.id}`);
+      },
+      onArchive: () => runOnCursor((t) => archiveThread(t.id)),
+      onTrash: () => runOnCursor((t) => trashThread(t.id)),
+      onStar: () =>
+        cursorThread && onStar(cursorThread, !cursorThread.is_starred),
+      onMarkUnread: () => runOnCursor((t) => markThreadUnread(t.id)),
+    },
+    !openThreadId,
+  );
+
+  // Silence "imported but unused" warnings on the symbols the
+  // shortcuts wire up — `restoreThread` is only reached via the
+  // thread detail page today, but we keep it imported here so a
+  // future "u to restore" mapping in the trashed view doesn't
+  // require a roundtrip through this file.
+  void restoreThread;
+
   return (
     <div className="email-list-pane">
       <div className="email-list-toolbar">
@@ -242,16 +317,21 @@ export function EmailThreadList({ folders, labels, refreshKey }: Props) {
           {threads.map((t, idx) => {
             const isSelected = selected.has(t.id);
             const isOpen = openThreadId === t.id;
+            const isCursor = cursor === idx;
             const unread = t.has_unread_replies;
             const labelsForThread = t.labels ?? [];
             return (
               <li
                 key={t.id}
+                ref={(el) => {
+                  rowRefs.current[idx] = el;
+                }}
                 className={[
                   "email-list-row",
                   unread ? "is-unread" : "",
                   isSelected ? "is-selected" : "",
                   isOpen ? "is-open" : "",
+                  isCursor ? "is-cursor" : "",
                 ].join(" ")}
               >
                 <label

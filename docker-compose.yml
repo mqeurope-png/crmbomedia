@@ -81,6 +81,7 @@ services:
       - factusol:sync_invoices
       - gmail:process_history
       - gmail:renew_watches
+      - emails:snooze_sweep
     depends_on:
       db:
         condition: service_healthy

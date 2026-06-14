@@ -5424,6 +5424,165 @@ a.origin-chip:hover { filter: brightness(0.97); }
   outline-offset: 2px;
 }
 
+/* ------------------------------------------------------------------ */
+/* Sprint Email v2.4c — filters bar, keyboard cursor, shortcuts help, */
+/* snooze quick-picker                                                 */
+/* ------------------------------------------------------------------ */
+
+.email-middle-column {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: #ffffff;
+  border-right: 1px solid #e5e7eb;
+  overflow: hidden;
+}
+
+/* Filter chips above the thread list */
+.email-filters-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid #e5e7eb;
+  background: #fbfcfd;
+  position: relative;
+}
+.email-filter-icon { color: #6b7280; margin-right: 2px; }
+.email-filter-group {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+}
+.email-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid #e5e7eb;
+  background: #ffffff;
+  font: inherit;
+  font-size: 12px;
+  color: #1d2940;
+  cursor: pointer;
+}
+.email-filter-chip:hover { background: #f3f4f6; }
+.email-filter-chip.is-active {
+  background: #1d4ed8;
+  color: #ffffff;
+  border-color: #1d4ed8;
+}
+.email-filter-clear {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px dashed #cbd5e1;
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  color: #6b7280;
+  cursor: pointer;
+}
+.email-filter-clear:hover { color: #1d2940; border-color: #94a3b8; }
+.email-filter-help {
+  background: transparent;
+  border: 0;
+  color: #6b7280;
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+}
+.email-filter-help:hover { background: #eef2ff; color: #1d4ed8; }
+.email-filter-custom-range {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: flex-end;
+  padding: 8px 10px;
+  margin-top: 6px;
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  width: 100%;
+  font-size: 12px;
+}
+.email-filter-custom-range label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 11px;
+  color: #6b7280;
+}
+.email-filter-custom-range input[type="date"] {
+  padding: 3px 6px;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  font: inherit;
+}
+
+/* Keyboard cursor — vertical accent on the focused row */
+.email-list-row.is-cursor {
+  box-shadow: inset 3px 0 0 0 #1d4ed8;
+}
+.email-list-row.is-cursor.is-selected {
+  background: #e0e7ff;
+}
+
+/* Shortcuts help modal */
+.email-shortcuts-list {
+  list-style: none;
+  padding: 0;
+  margin: 12px 0 0;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 4px;
+}
+.email-shortcuts-list li {
+  display: grid;
+  grid-template-columns: 130px 1fr;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  border-bottom: 1px dotted #e5e7eb;
+  font-size: 13px;
+}
+.email-shortcuts-list kbd {
+  font-family: inherit;
+  background: #f3f4f6;
+  color: #1d2940;
+  border-radius: 4px;
+  border: 1px solid #d1d5db;
+  padding: 2px 6px;
+  font-size: 12px;
+}
+
+/* Snooze quick-picker */
+.email-snooze-dropdown { min-width: 260px; }
+.email-snooze-custom {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 4px 2px;
+  border-top: 1px solid #f3f4f6;
+  margin-top: 4px;
+}
+.email-snooze-custom input[type="datetime-local"] {
+  padding: 4px 6px;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  font: inherit;
+  font-size: 12px;
+}
+
 /* Compose overlay (sidebar "Redactar" → centred modal). The composer
  * itself isn't a real modal — the `.modal-backdrop` class is just a
  * marker — so we wrap it in a fixed overlay only for this entry

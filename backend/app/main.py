@@ -99,3 +99,20 @@ async def _arm_brevo_periodics() -> None:
         logging.getLogger(__name__).warning(
             "brevo.scheduler arm failed at startup", exc_info=True
         )
+
+
+@app.on_event("startup")
+async def _arm_email_snooze_sweep() -> None:
+    """Sprint Email v2.4c — arm the periodic snooze sweep at API
+    startup. SETNX-guarded so multiple API processes coexist; the
+    job re-schedules itself on every tick."""
+    try:
+        from app.email_snooze import arm_snooze_sweep  # noqa: PLC0415
+
+        arm_snooze_sweep()
+    except Exception:  # noqa: BLE001
+        import logging  # noqa: PLC0415
+
+        logging.getLogger(__name__).warning(
+            "email.snooze_sweep arm failed at startup", exc_info=True
+        )
