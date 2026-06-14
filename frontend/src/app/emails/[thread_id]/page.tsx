@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { EmailComposerModal } from "../../components/EmailComposerModal";
+import { EmailEventBadges } from "../../components/email/EmailEventBadges";
 import { PageHeader } from "../../components/PageHeader";
 import {
   getEmailThread,
@@ -12,6 +13,10 @@ import {
   type EmailMessage,
   type EmailThreadDetail,
 } from "../../lib/emailsApi";
+import {
+  getMessageEvents,
+  type EmailEvent,
+} from "../../lib/emailTrackingApi";
 import { extractErrorMessage } from "../../lib/errors";
 
 function formatDateTime(value: string): string {
@@ -27,6 +32,9 @@ function formatDateTime(value: string): string {
 export default function EmailThreadPage() {
   const params = useParams<{ thread_id: string }>();
   const [thread, setThread] = useState<EmailThreadDetail | null>(null);
+  const [eventsByMessage, setEventsByMessage] = useState<
+    Record<string, EmailEvent[]>
+  >({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [replyTo, setReplyTo] = useState<EmailMessage | null>(null);
@@ -38,6 +46,22 @@ export default function EmailThreadPage() {
       if (data.has_unread_replies) {
         await markThreadRead(data.id).catch(() => undefined);
       }
+      // Sprint Email v2.3b — fetch tracking events for each
+      // outbound message in parallel. Inbound messages don't have
+      // events (only the sends do), so we skip them up front to keep
+      // the network volume in check on long conversations.
+      const outboundIds = data.messages
+        .filter((m) => m.direction === "outbound")
+        .map((m) => m.id);
+      const settled = await Promise.allSettled(
+        outboundIds.map((id) => getMessageEvents(id)),
+      );
+      const next: Record<string, EmailEvent[]> = {};
+      settled.forEach((res, idx) => {
+        const id = outboundIds[idx];
+        next[id] = res.status === "fulfilled" ? res.value.events : [];
+      });
+      setEventsByMessage(next);
     } catch (err) {
       setError(
         extractErrorMessage(err, "No se pudo cargar el hilo."),
@@ -158,6 +182,11 @@ export default function EmailThreadPage() {
                   {" · "}
                   {formatDateTime(m.sent_at)}
                 </p>
+                {m.direction === "outbound" ? (
+                  <EmailEventBadges
+                    events={eventsByMessage[m.id] ?? []}
+                  />
+                ) : null}
               </div>
             </header>
             {m.body_html ? (

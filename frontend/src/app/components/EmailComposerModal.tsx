@@ -1,9 +1,10 @@
 "use client";
 
-import { FolderOpen, PenLine, Save, Sparkles } from "lucide-react";
+import { Ban, FolderOpen, PenLine, Save, Sparkles } from "lucide-react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
+import { getCurrentUser } from "../lib/api";
 import {
   listEmailSignatures,
   type EmailSignature,
@@ -105,6 +106,7 @@ export function EmailComposerModal({
   const [showSaveModal, setShowSaveModal] = useState(false);
   const [signatures, setSignatures] = useState<EmailSignature[]>([]);
   const [activeSignatureId, setActiveSignatureId] = useState<string>("");
+  const [includeUnsubscribe, setIncludeUnsubscribe] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<RichEditorHandle | null>(null);
 
@@ -157,6 +159,20 @@ export function EmailComposerModal({
       })
       .catch(() => {
         /* signatures are optional; never block the modal */
+      });
+  }, []);
+
+  // Seed the unsubscribe toggle from the operator's stored default.
+  // Reads /api/auth/me's `email_include_unsubscribe_default`, which is
+  // the same hydrated user the rest of the app uses — no extra round
+  // trip on every send.
+  useEffect(() => {
+    getCurrentUser()
+      .then((u) => {
+        if (u.email_include_unsubscribe_default) setIncludeUnsubscribe(true);
+      })
+      .catch(() => {
+        /* falls back to the unchecked default */
       });
   }, []);
 
@@ -214,6 +230,7 @@ export function EmailComposerModal({
         body_text: null,
         contact_id: contactId ?? null,
         in_reply_to_message_id: replyMessageId,
+        include_unsubscribe: includeUnsubscribe,
       });
       // Wipe the autosave entry for this conversation BEFORE handing
       // control back to the parent so a quick "compose another"
@@ -358,6 +375,23 @@ export function EmailComposerModal({
                   </option>
                 ))}
               </select>
+            </label>
+            <label
+              className="email-compose-unsubscribe"
+              title={
+                includeUnsubscribe
+                  ? "El email incluirá el enlace y la cabecera List-Unsubscribe."
+                  : "Recomendado para mailings / newsletters. Para 1-a-1, déjalo apagado."
+              }
+            >
+              <input
+                type="checkbox"
+                checked={includeUnsubscribe}
+                onChange={(e) => setIncludeUnsubscribe(e.target.checked)}
+              />
+              <span className="email-compose-unsubscribe-label">
+                <Ban size={12} aria-hidden /> Incluir opción de baja
+              </span>
             </label>
           </div>
 

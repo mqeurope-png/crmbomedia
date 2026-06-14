@@ -1,11 +1,21 @@
 "use client";
 
-import { CalendarClock, KeyRound, PenLine, ShieldCheck } from "lucide-react";
+import {
+  Ban,
+  CalendarClock,
+  KeyRound,
+  PenLine,
+  ShieldCheck,
+} from "lucide-react";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { PageHeader } from "../components/PageHeader";
 import { GoogleCalendarSection } from "../components/GoogleCalendarSection";
 import { getCurrentUser, type User } from "../lib/api";
+import {
+  getMyPreferences,
+  updateMyPreferences,
+} from "../lib/emailTrackingApi";
 import { extractErrorMessage } from "../lib/errors";
 
 /** Account hub — quick links to password + 2FA + Google Calendar.
@@ -16,6 +26,8 @@ import { extractErrorMessage } from "../lib/errors";
 export default function AccountPage() {
   const [user, setUser] = useState<User | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [includeUnsub, setIncludeUnsub] = useState(false);
+  const [prefsSaving, setPrefsSaving] = useState(false);
 
   useEffect(() => {
     getCurrentUser()
@@ -23,7 +35,32 @@ export default function AccountPage() {
       .catch((err) =>
         setError(extractErrorMessage(err, "No se pudo cargar el usuario actual")),
       );
+    getMyPreferences()
+      .then((p) => setIncludeUnsub(p.email_include_unsubscribe_default))
+      .catch(() => {
+        /* prefs optional — fail silently and keep the unchecked default */
+      });
   }, []);
+
+  async function handleTogglePref(next: boolean) {
+    setIncludeUnsub(next);
+    setPrefsSaving(true);
+    try {
+      const updated = await updateMyPreferences({
+        email_include_unsubscribe_default: next,
+      });
+      setIncludeUnsub(updated.email_include_unsubscribe_default);
+    } catch (err) {
+      // Roll the checkbox back if the API rejects — the operator's
+      // mental model trusts what they see, so we keep state honest.
+      setIncludeUnsub((prev) => !next || prev);
+      setError(
+        extractErrorMessage(err, "No se pudo guardar tu preferencia."),
+      );
+    } finally {
+      setPrefsSaving(false);
+    }
+  }
 
   if (error) {
     return (
@@ -84,6 +121,31 @@ export default function AccountPage() {
           <Link className="button small" href="/account/firmas">
             Gestionar firmas
           </Link>
+        </article>
+
+        <article className="card account-card-wide">
+          <header className="section-title">
+            <h2>
+              <Ban size={16} aria-hidden /> Preferencias de envío
+            </h2>
+          </header>
+          <label className="account-pref-row">
+            <input
+              type="checkbox"
+              checked={includeUnsub}
+              disabled={prefsSaving}
+              onChange={(e) => handleTogglePref(e.target.checked)}
+            />
+            <span>
+              <strong>Incluir opción de baja por defecto en mis emails.</strong>
+              <span className="muted small">
+                {" "}Si lo activas, cada email que envíes incluirá enlace de
+                desuscripción y la cabecera <code>List-Unsubscribe</code>.
+                Recomendado para newsletters / mailings; déjalo apagado para
+                correos 1-a-1 normales.
+              </span>
+            </span>
+          </label>
         </article>
 
         <article className="card account-card-wide">

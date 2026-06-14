@@ -164,6 +164,22 @@ class CurrentUserRead(UserRead):
     render the admin-no-2FA banner without re-deriving server policy."""
 
     requires_2fa_setup: bool = False
+    # Sprint Email v2.3b — operator default for the "Incluir opción de
+    # baja" toggle in the send modal. The frontend reads it once on
+    # session start and uses it as the modal's initial state.
+    email_include_unsubscribe_default: bool = False
+
+
+class UserPreferencesRead(BaseModel):
+    """Slim read model for the /account preferences section."""
+
+    email_include_unsubscribe_default: bool
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class UserPreferencesWrite(BaseModel):
+    email_include_unsubscribe_default: bool
 
 
 class AuditLogRead(BaseModel):

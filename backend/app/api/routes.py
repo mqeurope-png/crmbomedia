@@ -153,6 +153,8 @@ from app.schemas.crm import (
     CurrentUserRead,
     ErrorResponse,
     HealthRead,
+    UserPreferencesRead,
+    UserPreferencesWrite,
     IntegrationAccountSummary,
     IntegrationSystemGroup,
     LoginRequest,
@@ -594,7 +596,42 @@ def read_current_user(current_user: User = Depends(get_current_user)) -> Current
         # 2FA is opt-in for every role; the field is kept in the response for
         # backward compatibility and is always False.
         requires_2fa_setup=False,
+        email_include_unsubscribe_default=(
+            current_user.email_include_unsubscribe_default
+        ),
     )
+
+
+@router.get(
+    "/users/me/preferences",
+    response_model=UserPreferencesRead,
+    responses=ERROR_RESPONSES,
+    tags=["users"],
+)
+def read_my_preferences(
+    current_user: User = Depends(get_current_user),
+) -> UserPreferencesRead:
+    return UserPreferencesRead.model_validate(current_user)
+
+
+@router.put(
+    "/users/me/preferences",
+    response_model=UserPreferencesRead,
+    responses=ERROR_RESPONSES,
+    tags=["users"],
+)
+def update_my_preferences(
+    payload: UserPreferencesWrite,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> UserPreferencesRead:
+    current_user.email_include_unsubscribe_default = (
+        payload.email_include_unsubscribe_default
+    )
+    session.add(current_user)
+    session.commit()
+    session.refresh(current_user)
+    return UserPreferencesRead.model_validate(current_user)
 
 
 @router.post(

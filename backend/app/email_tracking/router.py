@@ -15,21 +15,29 @@ from __future__ import annotations
 
 import html as html_lib
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Query, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from pydantic import BaseModel, ConfigDict
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.core.auth import require_user
 from app.db.session import get_session
 from app.models.crm import (
     Contact,
     ContactTag,
+    EmailDirection,
     EmailEventType,
+    EmailMessage,
+    EmailMessageEvent,
     EmailUnsubscribe,
     EmailUnsubscribeScope,
     Tag,
+    User,
+    UserRole,
 )
 
 from .services import (
@@ -344,3 +352,173 @@ def unsubscribe_submit(
 
 
 _ = contact_is_unsubscribed  # exported for the send wrapper
+
+
+# ───────────────────────────────────────────────────────────────────
+# Authenticated read endpoints — Sprint Email v2.3b
+# ───────────────────────────────────────────────────────────────────
+
+
+class EmailEventRead(BaseModel):
+    id: str
+    message_id: str
+    event_type: str
+    occurred_at: datetime
+    ip: str | None = None
+    user_agent: str | None = None
+    metadata_json: str | None = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class EmailMessageEventsResponse(BaseModel):
+    message_id: str
+    events: list[EmailEventRead]
+
+
+class EmailStatsResponse(BaseModel):
+    """Aggregated counts for the dashboard widget.
+
+    `sent` is sourced from the EmailMessage table (outbound only); the
+    rest come from `email_message_events` keyed to those messages so
+    one operator's events never bleed into another's even when admins
+    later widen the scope. `unsubscribed` counts distinct contacts
+    that opted out via THIS operator's messages."""
+
+    sent: int
+    opened: int
+    clicked: int
+    unsubscribed: int
+    bounced: int
+    days: int
+
+
+def _events_for_messages(
+    session: Session, message_ids: list[str]
+) -> dict[str, list[EmailMessageEvent]]:
+    """One round-trip per thread instead of per-message; the dict
+    surfaces empty lists for messages with no events so the caller
+    doesn't have to special-case missing keys."""
+    if not message_ids:
+        return {}
+    rows = list(
+        session.scalars(
+            select(EmailMessageEvent)
+            .where(EmailMessageEvent.message_id.in_(message_ids))
+            .order_by(EmailMessageEvent.occurred_at.asc())
+        )
+    )
+    grouped: dict[str, list[EmailMessageEvent]] = {
+        mid: [] for mid in message_ids
+    }
+    for row in rows:
+        grouped.setdefault(row.message_id, []).append(row)
+    return grouped
+
+
+@router.get(
+    "/emails/messages/{message_id}/events",
+    response_model=EmailMessageEventsResponse,
+    tags=["emails"],
+)
+def list_message_events(
+    message_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_user),
+) -> EmailMessageEventsResponse:
+    """Per-message timeline used by the thread page + the contact
+    emails card. Scopes to messages the current user can see: admins +
+    managers get everything; regular users only their own outbound."""
+    message = session.get(EmailMessage, message_id)
+    if message is None:
+        from app.core.errors import not_found  # noqa: PLC0415
+
+        raise not_found("EmailMessage")
+    if (
+        current_user.role not in (UserRole.ADMIN, UserRole.MANAGER)
+        and message.created_by_user_id != current_user.id
+    ):
+        from fastapi import HTTPException  # noqa: PLC0415
+
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No tienes permiso para ver los eventos de este mensaje.",
+        )
+    events = list(
+        session.scalars(
+            select(EmailMessageEvent)
+            .where(EmailMessageEvent.message_id == message_id)
+            .order_by(EmailMessageEvent.occurred_at.asc())
+        )
+    )
+    return EmailMessageEventsResponse(
+        message_id=message_id,
+        events=[EmailEventRead.model_validate(e) for e in events],
+    )
+
+
+@router.get(
+    "/emails/stats",
+    response_model=EmailStatsResponse,
+    tags=["emails"],
+)
+def email_stats(
+    days: int = Query(default=30, ge=1, le=365),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_user),
+) -> EmailStatsResponse:
+    """Aggregated counters for the dashboard widget."""
+    cutoff = datetime.now(UTC) - timedelta(days=days)
+    sent_stmt = (
+        select(func.count(EmailMessage.id))
+        .where(EmailMessage.direction == EmailDirection.OUTBOUND)
+        .where(EmailMessage.sent_at >= cutoff)
+    )
+    if current_user.role not in (UserRole.ADMIN, UserRole.MANAGER):
+        sent_stmt = sent_stmt.where(
+            EmailMessage.created_by_user_id == current_user.id
+        )
+    sent_total = session.scalar(sent_stmt) or 0
+
+    # Per-type buckets we care about. UNIQUE distinct contacts for
+    # unsubscribe so a "1 click" doesn't surface as "5 unsubscribes"
+    # when the recipient bounces around the confirm page.
+    def _events_count(event_type: EmailEventType) -> int:
+        stmt = (
+            select(func.count(EmailMessageEvent.id))
+            .join(
+                EmailMessage,
+                EmailMessage.id == EmailMessageEvent.message_id,
+            )
+            .where(EmailMessage.direction == EmailDirection.OUTBOUND)
+            .where(EmailMessageEvent.event_type == event_type)
+            .where(EmailMessageEvent.occurred_at >= cutoff)
+        )
+        if current_user.role not in (UserRole.ADMIN, UserRole.MANAGER):
+            stmt = stmt.where(
+                EmailMessage.created_by_user_id == current_user.id
+            )
+        return session.scalar(stmt) or 0
+
+    unsub_stmt = (
+        select(
+            func.count(func.distinct(EmailUnsubscribe.contact_id))
+        )
+        .join(
+            EmailMessage, EmailMessage.id == EmailUnsubscribe.message_id
+        )
+        .where(EmailMessage.direction == EmailDirection.OUTBOUND)
+        .where(EmailUnsubscribe.unsubscribed_at >= cutoff)
+    )
+    if current_user.role not in (UserRole.ADMIN, UserRole.MANAGER):
+        unsub_stmt = unsub_stmt.where(
+            EmailMessage.created_by_user_id == current_user.id
+        )
+    return EmailStatsResponse(
+        sent=sent_total,
+        opened=_events_count(EmailEventType.OPEN),
+        clicked=_events_count(EmailEventType.CLICK),
+        bounced=_events_count(EmailEventType.BOUNCE),
+        unsubscribed=session.scalar(unsub_stmt) or 0,
+        days=days,
+    )
