@@ -1,6 +1,6 @@
 "use client";
 
-import { CalendarClock, KeyRound, ShieldCheck } from "lucide-react";
+import { CalendarClock, KeyRound, PenLine, ShieldCheck } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { PageHeader } from "../components/PageHeader";
@@ -68,6 +68,21 @@ export default function AccountPage() {
           </p>
           <Link className="button small" href="/account/security">
             Configurar 2FA
+          </Link>
+        </article>
+
+        <article className="card">
+          <header className="section-title">
+            <h2>
+              <PenLine size={16} aria-hidden /> Firmas de email
+            </h2>
+          </header>
+          <p className="muted small">
+            Crea varias firmas y marca una como predeterminada — se
+            añade automáticamente al redactar un email.
+          </p>
+          <Link className="button small" href="/account/firmas">
+            Gestionar firmas
           </Link>
         </article>
 
