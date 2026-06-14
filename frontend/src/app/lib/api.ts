@@ -14,6 +14,10 @@ export type User = {
    * backend issues a `limited` JWT that blocks sensitive admin endpoints
    * until 2FA setup is complete. */
   requires_2fa_setup?: boolean;
+  /** Sprint Email v2.3b — operator's stored default for the
+   *  "incluir opción de baja" toggle. The send modal uses it as the
+   *  toggle's initial value. */
+  email_include_unsubscribe_default?: boolean;
 };
 
 export type LoginResult = {

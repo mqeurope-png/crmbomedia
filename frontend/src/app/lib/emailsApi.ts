@@ -100,6 +100,11 @@ export type EmailSendPayload = {
   body_text?: string | null;
   contact_id?: string | null;
   in_reply_to_message_id?: string | null;
+  /** Sprint Email v2.3a/b — when omitted the backend falls back to the
+   *  operator's `email_include_unsubscribe_default`. The send modal
+   *  always sends an explicit value because the toggle defaults to
+   *  the operator's preference at mount time. */
+  include_unsubscribe?: boolean | null;
 };
 
 export async function getEmailAliases(): Promise<EmailAlias[]> {
