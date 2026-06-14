@@ -4,7 +4,6 @@ import {
   Archive,
   ArrowDownLeft,
   ArrowUpRight,
-  Clock,
   Folder as FolderIcon,
   MailWarning,
   Reply,
@@ -38,16 +37,13 @@ import {
   unstarThread,
 } from "../../lib/emailsApi";
 import {
-  snoozeThread,
-} from "../../lib/emailsApi";
-import {
   getMessageEvents,
   type EmailEvent,
 } from "../../lib/emailTrackingApi";
 import { extractErrorMessage } from "../../lib/errors";
-import { useEmailKeyboardShortcuts } from "../../lib/useEmailKeyboardShortcuts";
 
-function formatDateTime(value: string): string {
+function formatDateTime(value: string | null): string {
+  if (!value) return "—";
   return new Date(value).toLocaleString("es-ES", {
     day: "2-digit",
     month: "short",
@@ -73,10 +69,8 @@ export default function EmailThreadPage() {
   const [replyTo, setReplyTo] = useState<EmailMessage | null>(null);
   const [moveOpen, setMoveOpen] = useState(false);
   const [labelOpen, setLabelOpen] = useState(false);
-  const [snoozeOpen, setSnoozeOpen] = useState(false);
   const moveRef = useRef<HTMLDivElement>(null);
   const labelRef = useRef<HTMLDivElement>(null);
-  const snoozeRef = useRef<HTMLDivElement>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -138,46 +132,6 @@ export default function EmailThreadPage() {
       }
     },
     [load],
-  );
-
-  // Thread-context shortcuts. Hooks must be called unconditionally —
-  // the `enabled` flag inside the hook gates whether keys do anything
-  // until the thread has finished loading.
-  useEmailKeyboardShortcuts(
-    {
-      onArchive: () => {
-        if (thread)
-          runMutation(() =>
-            thread.state === "inbox"
-              ? archiveThread(thread.id)
-              : restoreThread(thread.id),
-          );
-      },
-      onTrash: () => {
-        if (!thread) return;
-        runMutation(async () => {
-          await trashThread(thread.id);
-          router.push("/emails");
-        });
-      },
-      onStar: () => {
-        if (!thread) return;
-        runMutation(() =>
-          thread.is_starred ? unstarThread(thread.id) : starThread(thread.id),
-        );
-      },
-      onReply: () => {
-        if (!thread) return;
-        const msgs = thread.messages;
-        const tail = msgs[msgs.length - 1];
-        const lastIn =
-          [...msgs].reverse().find((m) => m.direction === "inbound") ?? null;
-        setReplyTo(lastIn ?? tail);
-      },
-      onLabel: () => setLabelOpen(true),
-      onSnooze: () => setSnoozeOpen(true),
-    },
-    !!thread,
   );
 
   if (loading) return <p className="muted">Cargando…</p>;
@@ -365,33 +319,6 @@ export default function EmailThreadPage() {
             ) : null}
           </div>
 
-          <div className="email-bulk-dropdown-wrap" ref={snoozeRef}>
-            <ActionButton
-              icon={Clock}
-              label="Posponer"
-              onClick={() => {
-                setSnoozeOpen((v) => !v);
-                setMoveOpen(false);
-                setLabelOpen(false);
-              }}
-            />
-            {snoozeOpen ? (
-              <SnoozePicker
-                onPick={async (iso) => {
-                  setSnoozeOpen(false);
-                  await runMutation(async () => {
-                    await snoozeThread(thread.id, iso);
-                    // The thread is hidden from inbox right after
-                    // snoozing — bounce back so the operator doesn't
-                    // stare at an empty pane.
-                    router.push("/emails");
-                  });
-                }}
-                onCancel={() => setSnoozeOpen(false)}
-              />
-            ) : null}
-          </div>
-
           <button
             type="button"
             className="button small"
@@ -422,7 +349,11 @@ export default function EmailThreadPage() {
                   {m.from_name ? (
                     <span className="muted small"> &lt;{m.from_email}&gt;</span>
                   ) : null}
-                  {m.direction === "outbound" ? (
+                  {m.scheduled_status === "pending" ? (
+                    <span className="badge warn">
+                      {" "}📅 Programado para {formatDateTime(m.scheduled_for ?? null)}
+                    </span>
+                  ) : m.direction === "outbound" ? (
                     <span className="badge ok"> Enviado desde el CRM</span>
                   ) : (
                     <span className="badge muted"> Respuesta</span>
@@ -433,8 +364,12 @@ export default function EmailThreadPage() {
                   {m.cc_emails && m.cc_emails.length > 0
                     ? ` · Cc: ${m.cc_emails.join(", ")}`
                     : ""}
-                  {" · "}
-                  {formatDateTime(m.sent_at)}
+                  {m.sent_at ? (
+                    <>
+                      {" · "}
+                      {formatDateTime(m.sent_at)}
+                    </>
+                  ) : null}
                 </p>
                 {m.direction === "outbound" ? (
                   <EmailEventBadges events={eventsByMessage[m.id] ?? []} />
@@ -497,102 +432,5 @@ function ActionButton({
       <Icon size={13} aria-hidden />
       <span className="email-bulk-btn-label">{label}</span>
     </button>
-  );
-}
-
-/** Snooze quick-picker. Presets compute their target on every click
- *  so "mañana" doesn't drift if the picker stays open over midnight.
- *  Custom takes a datetime-local value so the operator can pick any
- *  point — backend validates `> now` and 400s a past date. */
-function SnoozePicker({
-  onPick,
-  onCancel,
-}: {
-  onPick: (iso: string) => void;
-  onCancel: () => void;
-}) {
-  const [custom, setCustom] = useState("");
-
-  const preset = (offset: () => Date) => () =>
-    onPick(offset().toISOString());
-
-  const inOneHour = () => {
-    const d = new Date();
-    d.setHours(d.getHours() + 1);
-    return d;
-  };
-  const inFourHours = () => {
-    const d = new Date();
-    d.setHours(d.getHours() + 4);
-    return d;
-  };
-  // 9 a.m. del día siguiente.
-  const tomorrowMorning = () => {
-    const d = new Date();
-    d.setDate(d.getDate() + 1);
-    d.setHours(9, 0, 0, 0);
-    return d;
-  };
-  // Lunes de la semana próxima a las 9 a.m.
-  const nextMonday = () => {
-    const d = new Date();
-    const day = d.getDay();
-    const delta = ((1 + 7 - day) % 7) || 7;
-    d.setDate(d.getDate() + delta);
-    d.setHours(9, 0, 0, 0);
-    return d;
-  };
-
-  return (
-    <div className="email-bulk-dropdown email-snooze-dropdown">
-      <button
-        type="button"
-        className="email-bulk-dropdown-item"
-        onClick={preset(inOneHour)}
-      >
-        <Clock size={12} aria-hidden /> En 1 hora
-      </button>
-      <button
-        type="button"
-        className="email-bulk-dropdown-item"
-        onClick={preset(inFourHours)}
-      >
-        <Clock size={12} aria-hidden /> En 4 horas
-      </button>
-      <button
-        type="button"
-        className="email-bulk-dropdown-item"
-        onClick={preset(tomorrowMorning)}
-      >
-        <Clock size={12} aria-hidden /> Mañana 9:00
-      </button>
-      <button
-        type="button"
-        className="email-bulk-dropdown-item"
-        onClick={preset(nextMonday)}
-      >
-        <Clock size={12} aria-hidden /> Próximo lunes 9:00
-      </button>
-      <div className="email-snooze-custom">
-        <input
-          type="datetime-local"
-          value={custom}
-          onChange={(e) => setCustom(e.target.value)}
-        />
-        <button
-          type="button"
-          className="btn btn-primary small"
-          disabled={!custom}
-          onClick={() => {
-            if (custom) onPick(new Date(custom).toISOString());
-          }}
-        >
-          Aplicar
-        </button>
-        <button type="button" className="btn small" onClick={onCancel}>
-          Cancelar
-        </button>
-      </div>
-    </div>
   );
 }

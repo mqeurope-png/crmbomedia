@@ -38,7 +38,8 @@ export async function putEmailAliasPreferences(
 export type EmailMessage = {
   id: string;
   thread_id: string;
-  gmail_message_id: string;
+  /** v2.4e: nullable while a scheduled-send row waits for Gmail. */
+  gmail_message_id: string | null;
   direction: "outbound" | "inbound";
   from_email: string;
   from_name: string | null;
@@ -48,10 +49,14 @@ export type EmailMessage = {
   body_html: string | null;
   body_text: string | null;
   snippet: string | null;
-  sent_at: string;
+  /** v2.4e: nullable for the same reason — set by the sweep on send. */
+  sent_at: string | null;
   contact_id: string | null;
   created_by_user_id: string | null;
   read_at: string | null;
+  /** v2.4e scheduled-send fields. */
+  scheduled_for?: string | null;
+  scheduled_status?: "pending" | "sent" | "cancelled" | "failed" | null;
 };
 
 export type EmailThread = {
@@ -165,6 +170,16 @@ export type EmailSendPayload = {
    *  always sends an explicit value because the toggle defaults to
    *  the operator's preference at mount time. */
   include_unsubscribe?: boolean | null;
+  /** Sprint Email v2.4e — ISO date in the future routes the send
+   *  through the pending queue instead of Gmail. NULL = send now. */
+  scheduled_for?: string | null;
+};
+
+export type ScheduledMessageUpdate = {
+  scheduled_for?: string;
+  subject?: string;
+  body_html?: string;
+  body_text?: string;
 };
 
 export async function getEmailAliases(): Promise<EmailAlias[]> {
@@ -295,22 +310,6 @@ export async function restoreThread(id: string): Promise<void> {
   await apiFetch(`/api/emails/threads/${id}/restore`, { method: "POST" });
 }
 
-export async function snoozeThread(
-  id: string,
-  snooze_until: string,
-): Promise<void> {
-  await apiFetch(`/api/emails/threads/${id}/snooze`, {
-    method: "POST",
-    body: JSON.stringify({ snooze_until }),
-  });
-}
-
-export async function unsnoozeThread(id: string): Promise<void> {
-  await apiFetch(`/api/emails/threads/${id}/unsnooze`, {
-    method: "POST",
-  });
-}
-
 export async function addThreadLabel(
   thread_id: string,
   label_id: string,
@@ -369,12 +368,34 @@ export const bulkMarkUnread = (ids: string[]) =>
   bulkPost("mark-unread", { thread_ids: ids });
 export const bulkMove = (ids: string[], folder_id: string | null) =>
   bulkPost("move", { thread_ids: ids, folder_id });
-export const bulkSnooze = (ids: string[], snooze_until: string) =>
-  bulkPost("snooze", { thread_ids: ids, snooze_until });
 export const bulkAddLabel = (ids: string[], label_id: string) =>
   bulkPost("labels/add", { thread_ids: ids, label_id });
 export const bulkRemoveLabel = (ids: string[], label_id: string) =>
   bulkPost("labels/remove", { thread_ids: ids, label_id });
+
+// --- v2.4e scheduled send --------------------------------------------
+
+export async function listScheduledMessages(): Promise<EmailMessage[]> {
+  return apiFetch<EmailMessage[]>("/api/emails/scheduled");
+}
+
+export async function cancelScheduledMessage(
+  id: string,
+): Promise<EmailMessage> {
+  return apiFetch<EmailMessage>(`/api/emails/scheduled/${id}/cancel`, {
+    method: "POST",
+  });
+}
+
+export async function updateScheduledMessage(
+  id: string,
+  payload: ScheduledMessageUpdate,
+): Promise<EmailMessage> {
+  return apiFetch<EmailMessage>(`/api/emails/scheduled/${id}`, {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });
+}
 
 export async function getEmailThread(id: string): Promise<EmailThreadDetail> {
   return apiFetch<EmailThreadDetail>(`/api/emails/threads/${id}`);

@@ -30,12 +30,31 @@ class EmailSendRequest(BaseModel):
     # to the sender's `users.email_include_unsubscribe_default` flag —
     # the per-operator preference for the modal toggle.
     include_unsubscribe: bool | None = None
+    # Sprint Email v2.4e — when set to a future datetime the message
+    # is persisted with `scheduled_status='pending'` and NOT handed
+    # to Gmail; the periodic worker sweeps it out at the right time.
+    # NULL keeps the legacy "send immediately" path.
+    scheduled_for: datetime | None = None
+
+
+class ScheduledMessageUpdate(BaseModel):
+    """PUT payload for editing a pending scheduled message. Every
+    field is optional — operator may rewrite just the time or just
+    the body. The backend ignores fields not present."""
+
+    scheduled_for: datetime | None = None
+    subject: str | None = Field(default=None, max_length=500)
+    body_html: str | None = None
+    body_text: str | None = None
 
 
 class EmailMessageRead(BaseModel):
     id: str
     thread_id: str
-    gmail_message_id: str
+    # Sprint Email v2.4e — nullable while a scheduled-send row is
+    # waiting for Gmail to accept it; populated when the sweep
+    # actually sends.
+    gmail_message_id: str | None = None
     direction: str
     from_email: str
     from_name: str | None
@@ -50,10 +69,14 @@ class EmailMessageRead(BaseModel):
     body_html: str | None
     body_text: str | None
     snippet: str | None
-    sent_at: datetime
+    sent_at: datetime | None
     contact_id: str | None
     created_by_user_id: str | None
     read_at: datetime | None
+    # Sprint Email v2.4e — scheduled send. NULL pair means the
+    # message went out immediately (every legacy row).
+    scheduled_for: datetime | None = None
+    scheduled_status: str | None = None
 
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
