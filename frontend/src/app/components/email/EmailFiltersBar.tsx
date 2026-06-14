@@ -1,18 +1,14 @@
 "use client";
 
-import { Calendar, Eye, Keyboard, X } from "lucide-react";
+import { Calendar, Eye, X } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useState } from "react";
-
-type Props = {
-  onShowHelp: () => void;
-};
 
 /** Quick-filter row above the thread list. Date ranges are stored
  *  as ISO strings in the URL so refresh keeps the filter; the
  *  "Última semana" / "Último mes" presets compute fresh boundaries
  *  on every click so they don't drift relative to today. */
-export function EmailFiltersBar({ onShowHelp }: Props) {
+export function EmailFiltersBar() {
   const router = useRouter();
   const params = useSearchParams();
   const hasUnread = params.get("has_unread") === "true";
@@ -175,16 +171,6 @@ export function EmailFiltersBar({ onShowHelp }: Props) {
           <X size={12} aria-hidden /> Limpiar filtros
         </button>
       ) : null}
-
-      <button
-        type="button"
-        className="email-filter-help"
-        onClick={onShowHelp}
-        title="Atajos de teclado (?)"
-        aria-label="Atajos de teclado"
-      >
-        <Keyboard size={13} aria-hidden />
-      </button>
     </div>
   );
 }

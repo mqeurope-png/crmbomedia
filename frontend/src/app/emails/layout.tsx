@@ -1,12 +1,10 @@
 "use client";
 
-import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { EmailComposerModal } from "../components/EmailComposerModal";
 import { EmailFiltersBar } from "../components/email/EmailFiltersBar";
 import { EmailFolderDialog } from "../components/email/EmailFolderDialog";
 import { EmailLabelDialog } from "../components/email/EmailLabelDialog";
-import { EmailShortcutsHelp } from "../components/email/EmailShortcutsHelp";
 import { EmailSidebar } from "../components/email/EmailSidebar";
 import { EmailThreadList } from "../components/email/EmailThreadList";
 import {
@@ -15,7 +13,6 @@ import {
   listEmailFolders,
   listEmailLabels,
 } from "../lib/emailsApi";
-import { useEmailKeyboardShortcuts } from "../lib/useEmailKeyboardShortcuts";
 
 /** Three-pane mailbox shell: sidebar (folders + labels) | thread list
  *  | right pane (the route's `page.tsx` — empty state on /emails, a
@@ -28,12 +25,10 @@ export default function EmailsLayout({
 }: {
   children: React.ReactNode;
 }) {
-  const router = useRouter();
   const [folders, setFolders] = useState<EmailFolder[]>([]);
   const [labels, setLabels] = useState<EmailLabel[]>([]);
   const [refreshKey, setRefreshKey] = useState(0);
   const [composeOpen, setComposeOpen] = useState(false);
-  const [helpOpen, setHelpOpen] = useState(false);
   const [folderEdit, setFolderEdit] = useState<{
     open: boolean;
     target: EmailFolder | null;
@@ -70,17 +65,6 @@ export default function EmailsLayout({
     setRefreshKey((k) => k + 1);
   }, [loadFolders, loadLabels]);
 
-  // Global shortcuts active everywhere inside /emails:
-  // - g-chord navigation between system boxes
-  // - "?" opens the keyboard-help modal
-  useEmailKeyboardShortcuts({
-    onHelp: () => setHelpOpen(true),
-    onGoInbox: () => router.push("/emails?state=inbox"),
-    onGoStarred: () => router.push("/emails?state=inbox&starred=true"),
-    onGoArchived: () => router.push("/emails?state=archived"),
-    onGoTrash: () => router.push("/emails?state=trashed"),
-  });
-
   return (
     <main className="email-mailbox">
       <EmailSidebar
@@ -92,7 +76,7 @@ export default function EmailsLayout({
         onChanged={refreshAll}
       />
       <div className="email-middle-column">
-        <EmailFiltersBar onShowHelp={() => setHelpOpen(true)} />
+        <EmailFiltersBar />
         <EmailThreadList
           folders={folders}
           labels={labels}
@@ -137,8 +121,6 @@ export default function EmailsLayout({
         onClose={() => setLabelEdit({ open: false, target: null })}
         onSaved={refreshAll}
       />
-
-      <EmailShortcutsHelp open={helpOpen} onClose={() => setHelpOpen(false)} />
     </main>
   );
 }
