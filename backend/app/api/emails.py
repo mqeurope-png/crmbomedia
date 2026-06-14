@@ -225,23 +225,41 @@ def send_email(
     session: Session = Depends(get_session),
     current_user: User = Depends(require_user),
 ) -> EmailMessageRead:
-    # The user must have Gmail connected with the send scope before
-    # we even bother to check preferences — `_client_for` inside
-    # gmail_service.send_email raises GmailScopeMissingError, but
-    # we'd rather catch the scope problem here than return the
-    # less-helpful pref error.
-    from app.integrations.gmail.service import _client_for  # noqa: PLC0415
+    # Sprint Email v2.4e — `scheduled_for` in the future routes the
+    # message through the pending queue instead of Gmail. We still
+    # need the alias-preference check below; the Gmail-scope check
+    # is only relevant for an immediate send (the sweep re-validates
+    # later) so the scheduled path skips it on purpose, otherwise
+    # an operator who hasn't completed the OAuth flow can't queue a
+    # send for "in 10 minutes" while they go grant the scope.
+    scheduled_future = (
+        payload.scheduled_for is not None
+        and (
+            payload.scheduled_for
+            if payload.scheduled_for.tzinfo
+            else payload.scheduled_for.replace(tzinfo=UTC)
+        )
+        > datetime.now(UTC)
+    )
 
-    try:
-        _client_for(session, current_user.id)
-    except GmailNotConnectedError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
-        ) from exc
-    except GmailScopeMissingError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)
-        ) from exc
+    if not scheduled_future:
+        # The user must have Gmail connected with the send scope before
+        # we even bother to check preferences — `_client_for` inside
+        # gmail_service.send_email raises GmailScopeMissingError, but
+        # we'd rather catch the scope problem here than return the
+        # less-helpful pref error.
+        from app.integrations.gmail.service import _client_for  # noqa: PLC0415
+
+        try:
+            _client_for(session, current_user.id)
+        except GmailNotConnectedError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+            ) from exc
+        except GmailScopeMissingError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)
+            ) from exc
 
     # Validate that the alias is in the user's allowed preferences.
     # Blocks an operator from spoofing an alias their colleague
@@ -307,6 +325,36 @@ def send_email(
         if payload.include_unsubscribe is not None
         else current_user.email_include_unsubscribe_default
     )
+
+    if scheduled_future:
+        # Pending row + early return. We skip activity timeline
+        # emission and the audit `EMAIL_SENT_FROM_CRM` record on
+        # purpose — those represent the actual send, which the
+        # sweep will perform later. include_unsubscribe is dropped
+        # here too; the sweep re-derives it at send time so a
+        # changed operator preference in the meantime takes effect.
+        from app.api.emails_scheduled import (  # noqa: PLC0415
+            persist_scheduled_message,
+        )
+
+        scheduled_msg = persist_scheduled_message(
+            session,
+            sender_user_id=current_user.id,
+            scheduled_for=payload.scheduled_for,  # type: ignore[arg-type]
+            from_alias=payload.from_alias,
+            from_name=payload.from_name,
+            to=list(payload.to),
+            cc=list(payload.cc) if payload.cc else None,
+            bcc=list(payload.bcc) if payload.bcc else None,
+            subject=subject,
+            body_html=body_html,
+            body_text=body_text,
+            contact_id=payload.contact_id,
+            in_reply_to_message_id=payload.in_reply_to_message_id,
+        )
+        session.commit()
+        session.refresh(scheduled_msg)
+        return _message_read(scheduled_msg)
 
     try:
         message = gmail_service.send_email(
