@@ -822,10 +822,26 @@ class EmailDirection(StrEnum):
     INBOUND = "inbound"
 
 
+class EmailThreadState(StrEnum):
+    """Top-level mailbox box the thread sits in. Independent of
+    `folder_id` so archiving/trashing doesn't lose the operator's
+    folder organisation."""
+
+    INBOX = "inbox"
+    ARCHIVED = "archived"
+    TRASHED = "trashed"
+    SPAM = "spam"
+
+
 class EmailThread(TimestampMixin, Base):
     """Sprint Email v1. Conversation = Gmail threadId scoped to a
     single user's mailbox. Each row groups all `email_messages` that
     share the same `(gmail_account_user_id, gmail_thread_id)`.
+
+    Sprint v2.4a added `folder_id` / `state` / `is_starred` /
+    `snooze_until` for the Gmail-style mailbox. `is_archived` is
+    kept for backwards-compat with older queries; new code reads
+    `state == ARCHIVED`.
     """
 
     __tablename__ = "email_threads"
@@ -865,11 +881,37 @@ class EmailThread(TimestampMixin, Base):
     is_archived: Mapped[bool] = mapped_column(
         Boolean, default=False, nullable=False
     )
+    folder_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("email_folders.id", ondelete="SET NULL"),
+        index=True,
+    )
+    state: Mapped[EmailThreadState] = mapped_column(
+        Enum(
+            EmailThreadState,
+            native_enum=False,
+            values_callable=enum_values,
+            length=16,
+        ),
+        default=EmailThreadState.INBOX,
+        nullable=False,
+        index=True,
+    )
+    is_starred: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )
+    snooze_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), index=True
+    )
 
     messages: Mapped[list["EmailMessage"]] = relationship(
         back_populates="thread",
         order_by="EmailMessage.sent_at",
         cascade="all, delete-orphan",
+    )
+    labels: Mapped[list["EmailLabel"]] = relationship(
+        secondary="email_thread_labels",
+        order_by="EmailLabel.sort_order",
     )
 
 
@@ -1050,6 +1092,94 @@ class EmailUnsubscribe(TimestampMixin, Base):
         ForeignKey("email_messages.id", ondelete="SET NULL"),
     )
     metadata_json: Mapped[str | None] = mapped_column(Text)
+
+
+class EmailFolder(TimestampMixin, Base):
+    """Sprint Email v2.4a. Per-user organisational folder for the
+    Gmail-style mailbox sidebar. Non-exclusive with labels — a
+    thread can carry a folder AND multiple labels. Never synced
+    with Gmail's own labels: this is CRM-only classification.
+
+    `is_system` flags the four built-ins (Bandeja / Enviados /
+    Archivados / Papelera) created lazily on first access so the
+    UI can prevent deletion without hardcoding ids.
+    """
+
+    __tablename__ = "email_folders"
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid4())
+    )
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    parent_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("email_folders.id", ondelete="SET NULL"),
+        index=True,
+    )
+    color: Mapped[str | None] = mapped_column(String(20))
+    icon: Mapped[str | None] = mapped_column(String(40))
+    sort_order: Mapped[int] = mapped_column(
+        Integer, default=0, nullable=False
+    )
+    is_system: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )
+
+
+class EmailLabel(TimestampMixin, Base):
+    """Sprint Email v2.4a. Per-user tag applied many-to-many to
+    threads via `email_thread_labels`. Unique by `(user_id, name)`
+    so a comercial can't accidentally create two "Leads en frío"
+    labels."""
+
+    __tablename__ = "email_labels"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "name", name="uq_email_labels_user_name"
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid4())
+    )
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    name: Mapped[str] = mapped_column(String(80), nullable=False)
+    color: Mapped[str | None] = mapped_column(String(20))
+    sort_order: Mapped[int] = mapped_column(
+        Integer, default=0, nullable=False
+    )
+
+
+class EmailThreadLabel(Base):
+    """Junction table between `email_threads` and `email_labels`.
+    No surrogate id — composite PK is the natural key. `applied_at`
+    is kept so we can later surface "etiquetado hace N días" in the
+    thread header without a separate audit log."""
+
+    __tablename__ = "email_thread_labels"
+
+    thread_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("email_threads.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    label_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("email_labels.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    applied_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
 
 
 class GmailPubsubWatch(TimestampMixin, Base):

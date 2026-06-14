@@ -156,6 +156,15 @@ class Action:
     GMAIL_WATCH_REGISTERED = "gmail.watch_registered"
     GMAIL_WATCH_RENEWED = "gmail.watch_renewed"
 
+    # Mailbox redesign (Sprint Email v2.4).
+    EMAIL_FOLDER_CREATED = "email.folder_created"
+    EMAIL_FOLDER_UPDATED = "email.folder_updated"
+    EMAIL_FOLDER_DELETED = "email.folder_deleted"
+    EMAIL_LABEL_CREATED = "email.label_created"
+    EMAIL_LABEL_UPDATED = "email.label_updated"
+    EMAIL_LABEL_DELETED = "email.label_deleted"
+    EMAIL_THREADS_UPDATED = "email.threads_updated"
+
     # Google Calendar integration (Mini-PR C Fase 2).
     GOOGLE_CALENDAR_CONNECTED = "google_calendar.connected"
     GOOGLE_CALENDAR_DISCONNECTED = "google_calendar.disconnected"
