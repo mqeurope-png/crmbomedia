@@ -1,8 +1,8 @@
 """REST surface for v2.2 — templates CRUD, folders CRUD, picker."""
 from __future__ import annotations
 
+import hashlib
 import mimetypes
-import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -515,16 +515,25 @@ def list_composer_source(
 
 
 @router.post(
-    "/emails/upload-image", response_model=ImageUploadResponse
+    "/email-templates/assets", response_model=ImageUploadResponse
 )
-async def upload_image(
+async def upload_email_asset(
     file: UploadFile = File(...),
     current_user: User = Depends(require_user),  # noqa: ARG001
 ) -> ImageUploadResponse:
-    """Inline image upload for the Tiptap editor. Validates content
-    type + size, then writes to disk under `email_image_upload_dir`.
-    The URL we return is served by the StaticFiles mount in `main.py`
-    so it works in dev and prod without nginx help."""
+    """Inline image upload for the Tiptap editor.
+
+    Content-addressed: same bytes → same SHA256 → same path. That way
+    re-uploading a logo doesn't multiply the dedup cost and the public
+    URL is stable across edits. Files land under
+    `{email_assets_dir}/{YYYY}/{MM}/{sha256}.{ext}` so a single
+    directory never grows past a few hundred entries.
+
+    The URL we return is absolute when `EMAIL_ASSETS_PUBLIC_BASE` is
+    set — recipients' inboxes need a full `https://` URL to render
+    inline images. In dev / tests we fall back to a root-relative
+    path served by the StaticFiles mount in `main.py`.
+    """
     settings = get_settings()
     content_type = (file.content_type or "").lower()
     if content_type not in ALLOWED_IMAGE_TYPES:
@@ -537,7 +546,7 @@ async def upload_image(
 
     # Read into memory once — caps the read at max_bytes + 1 so an
     # oversized upload doesn't fill the disk before we reject it.
-    max_bytes = settings.email_image_max_bytes
+    max_bytes = settings.email_assets_max_bytes
     data = await file.read(max_bytes + 1)
     if len(data) > max_bytes:
         raise HTTPException(
@@ -548,16 +557,26 @@ async def upload_image(
             ),
         )
 
+    digest = hashlib.sha256(data).hexdigest()
     suffix = mimetypes.guess_extension(content_type) or ""
-    filename = f"{uuid.uuid4().hex}{suffix}"
-    target_dir = Path(settings.email_image_upload_dir)
+    today = datetime.now(UTC)
+    year, month = f"{today.year:04d}", f"{today.month:02d}"
+    relative = f"{year}/{month}/{digest}{suffix}"
+    target_dir = Path(settings.email_assets_dir) / year / month
     target_dir.mkdir(parents=True, exist_ok=True)
-    target = target_dir / filename
-    target.write_bytes(data)
+    target = target_dir / f"{digest}{suffix}"
+    if not target.exists():
+        target.write_bytes(data)
 
+    public_path = f"/assets/email-templates/{relative}"
+    public_url = (
+        f"{settings.email_assets_public_base.rstrip('/')}{public_path}"
+        if settings.email_assets_public_base
+        else public_path
+    )
     return ImageUploadResponse(
-        url=f"/uploads/email_images/{filename}",
-        filename=filename,
+        public_url=public_url,
+        filename=f"{digest}{suffix}",
         content_type=content_type,
         size_bytes=len(data),
     )

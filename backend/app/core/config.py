@@ -100,11 +100,17 @@ class Settings(BaseSettings):
     supabase_composer_key: str | None = None
 
     # Sprint Email v2.2b — local disk path for images uploaded from the
-    # Tiptap editor in the send-email modal. Files are served via the
-    # `/uploads/email_images/` StaticFiles mount in `main.py`; nginx can
-    # take over the path in production but doesn't have to.
-    email_image_upload_dir: str = "var/email_images"
-    email_image_max_bytes: int = 5 * 1024 * 1024
+    # Tiptap editor in the send-email modal. Files are content-addressed
+    # (sha256) and partitioned by year/month so a single directory never
+    # grows past a few hundred entries.
+    #
+    # `email_assets_public_base` is the host that recipients' inboxes
+    # will resolve the `<img src="...">` against. When unset the
+    # endpoint emits a path-only URL — fine for dev / tests but images
+    # will never render once the email leaves the local machine.
+    email_assets_dir: str = "var/email_assets"
+    email_assets_public_base: str = ""
+    email_assets_max_bytes: int = 5 * 1024 * 1024
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 

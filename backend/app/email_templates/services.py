@@ -169,8 +169,18 @@ def fetch_composer_templates() -> tuple[list[ComposerSourceItem], str | None]:
             )
         return ([], error)
 
-    state = rows[0] if rows else {}
+    row = rows[0] if rows else {}
+    # composer.bomedia.net stores the whole app state under a single
+    # `data` JSON column on the `composer_data` row. Older snapshots
+    # kept the state at the row root, so we fall back to that shape
+    # if `data` is missing — keeps the proxy working across any
+    # incremental Supabase migration on the Composer side.
+    state = row.get("data") if isinstance(row.get("data"), dict) else row
     raw_templates = state.get("templates") or []
+    _log.info(
+        "composer-source proxy: fetched %d template(s)",
+        len(raw_templates) if isinstance(raw_templates, list) else 0,
+    )
     items: list[ComposerSourceItem] = []
     for raw in raw_templates:
         if not isinstance(raw, dict):

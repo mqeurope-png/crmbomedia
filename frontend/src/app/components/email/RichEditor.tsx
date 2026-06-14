@@ -4,6 +4,10 @@ import Color from "@tiptap/extension-color";
 import Image from "@tiptap/extension-image";
 import Link from "@tiptap/extension-link";
 import Placeholder from "@tiptap/extension-placeholder";
+import { Table } from "@tiptap/extension-table";
+import { TableCell } from "@tiptap/extension-table-cell";
+import { TableHeader } from "@tiptap/extension-table-header";
+import { TableRow } from "@tiptap/extension-table-row";
 import TextAlign from "@tiptap/extension-text-align";
 import { TextStyle } from "@tiptap/extension-text-style";
 import Underline from "@tiptap/extension-underline";
@@ -39,7 +43,7 @@ type RichEditorProps = {
 };
 
 type UploadImageResponse = {
-  url: string;
+  public_url: string;
   filename: string;
   content_type: string;
   size_bytes: number;
@@ -52,7 +56,7 @@ async function uploadImage(file: File): Promise<string> {
     ? window.localStorage.getItem("crmbomedia_access_token")
     : null);
   const base = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
-  const response = await fetch(`${base}/api/emails/upload-image`, {
+  const response = await fetch(`${base}/api/email-templates/assets`, {
     method: "POST",
     headers: token ? { Authorization: `Bearer ${token}` } : undefined,
     body: form,
@@ -65,13 +69,15 @@ async function uploadImage(file: File): Promise<string> {
     );
   }
   const body = (await response.json()) as UploadImageResponse;
-  // The upload endpoint returns a server-relative path; absolutise it
-  // against the API base so the URL still resolves when the email lands
-  // in the recipient's inbox.
-  if (body.url.startsWith("/")) {
-    return `${base}${body.url}`;
+  // Backend already returns an absolute URL when
+  // EMAIL_ASSETS_PUBLIC_BASE is set (required in production so the
+  // image renders in recipients' inboxes). In dev / tests the URL is
+  // root-relative; absolutise it against the API base so the editor
+  // preview shows it even before nginx is in front.
+  if (body.public_url.startsWith("/")) {
+    return `${base}${body.public_url}`;
   }
-  return body.url;
+  return body.public_url;
 }
 
 function ToolbarButton({
@@ -329,8 +335,27 @@ export function RichEditor({
       TextStyle,
       Color,
       Placeholder.configure({ placeholder: placeholder ?? "" }),
+      Table.configure({ resizable: true }),
+      TableRow,
+      TableHeader,
+      TableCell,
     ],
-    content: value,
+    editorProps: {
+      // Tiptap's default paste handler is aggressive — it strips
+      // most inline styles and table structure when pasting a
+      // formatted email from Gmail. Sanitise scripts + style blocks
+      // (XSS prevention) but keep inline `style="..."` attrs so
+      // pasted colors, alignment and column widths survive.
+      transformPastedHTML(html: string) {
+        return html
+          .replace(/<script[\s\S]*?<\/script>/gi, "")
+          .replace(/<style[\s\S]*?<\/style>/gi, "")
+          .replace(/<link[^>]*?>/gi, "")
+          .replace(/\son\w+="[^"]*"/gi, "");
+      },
+    },
+    content: value || "<p></p>",
+    autofocus: "end",
     onUpdate: ({ editor: e }) => {
       const html = e.getHTML();
       lastEmittedRef.current = html;
@@ -346,7 +371,7 @@ export function RichEditor({
   useEffect(() => {
     if (!editor) return;
     if (value === lastEmittedRef.current) return;
-    editor.commands.setContent(value || "", { emitUpdate: false });
+    editor.commands.setContent(value || "<p></p>", { emitUpdate: false });
     lastEmittedRef.current = value;
   }, [value, editor]);
 

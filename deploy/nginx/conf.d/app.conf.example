@@ -72,12 +72,12 @@ server {
         client_max_body_size 12m;
     }
 
-    # Composer-uploaded assets are served straight off disk by Nginx so
-    # the API process never has to stream binary bytes back. The host
-    # mounts the directory matching the API container's
-    # `COMPOSER_ASSET_ROOT` env var (defaults to /opt/crmbo/uploads/composer).
-    location /assets/composer/ {
-        alias /opt/crmbo/uploads/composer/;
+    # Email-template inline images (Tiptap uploads) are served straight
+    # off disk so the API process never has to stream binary bytes back.
+    # The host mounts the directory matching the API container's
+    # `EMAIL_ASSETS_DIR` env var (defaults to /opt/crmbo/uploads/email-templates).
+    location ^~ /assets/email-templates/ {
+        alias /opt/crmbo/uploads/email-templates/;
         autoindex off;
         # Hashed filenames (sha256 + ext) are content-addressed so safe
         # to cache aggressively.
