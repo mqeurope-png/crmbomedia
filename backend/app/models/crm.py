@@ -939,7 +939,10 @@ class EmailMessage(TimestampMixin, Base):
         nullable=False,
         index=True,
     )
-    gmail_message_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    # Nullable as of Sprint Email v2.4e: a "scheduled send" row is
+    # persisted before Gmail accepts the message, so it has no real
+    # id yet. The sweep fills it in on the actual send.
+    gmail_message_id: Mapped[str | None] = mapped_column(String(255))
     gmail_account_user_id: Mapped[str] = mapped_column(
         ForeignKey("users.id"), nullable=False
     )
@@ -957,8 +960,11 @@ class EmailMessage(TimestampMixin, Base):
     body_text: Mapped[str | None] = mapped_column(Text)
     snippet: Mapped[str | None] = mapped_column(String(255))
     attachments_json: Mapped[str | None] = mapped_column(Text)
-    sent_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
+    # Nullable as of v2.4e for the same reason as `gmail_message_id`:
+    # a scheduled message hasn't actually been sent yet, so the
+    # stamp is set by the sweep when Gmail accepts the payload.
+    sent_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
     )
     contact_id: Mapped[str | None] = mapped_column(
         ForeignKey("contacts.id", ondelete="SET NULL"), index=True
@@ -967,8 +973,27 @@ class EmailMessage(TimestampMixin, Base):
         ForeignKey("users.id")
     )
     read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Sprint Email v2.4e — scheduled send. Set together: a NULL pair
+    # means "sent immediately" (every legacy row); a non-NULL
+    # `scheduled_for` + `scheduled_status='pending'` means the
+    # message hasn't been handed to Gmail yet and the worker sweep
+    # owns it. `sent_at` stays NULL while pending.
+    scheduled_for: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    scheduled_status: Mapped[str | None] = mapped_column(String(16))
 
     thread: Mapped[EmailThread] = relationship(back_populates="messages")
+
+
+class EmailScheduledStatus(StrEnum):
+    """State machine for `EmailMessage.scheduled_status`. Stored as
+    plain VARCHAR(16) (no native ENUM) so MySQL alters stay cheap."""
+
+    PENDING = "pending"
+    SENT = "sent"
+    CANCELLED = "cancelled"
+    FAILED = "failed"
 
 
 class EmailEventType(StrEnum):
