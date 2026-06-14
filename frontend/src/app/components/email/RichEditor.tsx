@@ -330,7 +330,8 @@ export function RichEditor({
       Color,
       Placeholder.configure({ placeholder: placeholder ?? "" }),
     ],
-    content: value,
+    content: value || "<p></p>",
+    autofocus: "end",
     onUpdate: ({ editor: e }) => {
       const html = e.getHTML();
       lastEmittedRef.current = html;
@@ -346,7 +347,7 @@ export function RichEditor({
   useEffect(() => {
     if (!editor) return;
     if (value === lastEmittedRef.current) return;
-    editor.commands.setContent(value || "", { emitUpdate: false });
+    editor.commands.setContent(value || "<p></p>", { emitUpdate: false });
     lastEmittedRef.current = value;
   }, [value, editor]);
 
