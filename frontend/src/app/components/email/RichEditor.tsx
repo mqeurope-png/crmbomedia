@@ -4,6 +4,10 @@ import Color from "@tiptap/extension-color";
 import Image from "@tiptap/extension-image";
 import Link from "@tiptap/extension-link";
 import Placeholder from "@tiptap/extension-placeholder";
+import { Table } from "@tiptap/extension-table";
+import { TableCell } from "@tiptap/extension-table-cell";
+import { TableHeader } from "@tiptap/extension-table-header";
+import { TableRow } from "@tiptap/extension-table-row";
 import TextAlign from "@tiptap/extension-text-align";
 import { TextStyle } from "@tiptap/extension-text-style";
 import Underline from "@tiptap/extension-underline";
@@ -331,7 +335,25 @@ export function RichEditor({
       TextStyle,
       Color,
       Placeholder.configure({ placeholder: placeholder ?? "" }),
+      Table.configure({ resizable: true }),
+      TableRow,
+      TableHeader,
+      TableCell,
     ],
+    editorProps: {
+      // Tiptap's default paste handler is aggressive — it strips
+      // most inline styles and table structure when pasting a
+      // formatted email from Gmail. Sanitise scripts + style blocks
+      // (XSS prevention) but keep inline `style="..."` attrs so
+      // pasted colors, alignment and column widths survive.
+      transformPastedHTML(html: string) {
+        return html
+          .replace(/<script[\s\S]*?<\/script>/gi, "")
+          .replace(/<style[\s\S]*?<\/style>/gi, "")
+          .replace(/<link[^>]*?>/gi, "")
+          .replace(/\son\w+="[^"]*"/gi, "");
+      },
+    },
     content: value || "<p></p>",
     autofocus: "end",
     onUpdate: ({ editor: e }) => {

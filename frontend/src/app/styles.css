@@ -4910,3 +4910,49 @@ a.origin-chip:hover { filter: brightness(0.97); }
   border-radius: 999px;
   white-space: nowrap;
 }
+
+/* Tiptap table support — Sprint Email v2.2 fixes. Pasted HTML from
+ * external sources (Gmail compose, Outlook) commonly relies on tables
+ * for layout; without these the columns collapse and the editor looks
+ * broken. */
+.re-content table {
+  border-collapse: collapse;
+  table-layout: fixed;
+  margin: 0.5em 0;
+  width: 100%;
+}
+
+.re-content th,
+.re-content td {
+  border: 1px solid var(--line);
+  padding: 6px 8px;
+  vertical-align: top;
+  position: relative;
+}
+
+.re-content th {
+  background: #f8fafc;
+  font-weight: 600;
+}
+
+.re-content .selectedCell::after {
+  position: absolute;
+  inset: 0;
+  background: rgba(99, 102, 241, 0.12);
+  content: "";
+  pointer-events: none;
+}
+
+.re-content .column-resize-handle {
+  position: absolute;
+  right: -2px;
+  top: 0;
+  bottom: -2px;
+  width: 4px;
+  background: #4f46e5;
+  pointer-events: none;
+}
+
+.re-content .tableWrapper {
+  overflow-x: auto;
+}
