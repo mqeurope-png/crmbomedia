@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import UTC, datetime
 from email.utils import getaddresses, parsedate_to_datetime
 from typing import Any
@@ -76,6 +77,8 @@ def send_email(
     body_text: str | None,
     contact_id: str | None,
     in_reply_to_message_id: str | None = None,
+    include_unsubscribe: bool = False,
+    tracking_base_url: str | None = None,
 ) -> EmailMessage:
     """Send a new outbound email and persist the thread + message rows.
 
@@ -127,6 +130,48 @@ def send_email(
                 in_reply_to_header = rfc_message_id
                 references_header = [rfc_message_id]
 
+    # Sprint Email v2.3a — link wrap + open pixel + optional
+    # List-Unsubscribe. The body we end up sending differs from the
+    # body we persist (Tiptap output stays clean; the recipient
+    # version gets the redirect URLs and pixel).
+    from app.core.config import get_settings  # noqa: PLC0415
+    from app.email_tracking.services import (  # noqa: PLC0415
+        build_unsubscribe_block,
+        generate_token,
+        inject_open_pixel,
+        persist_tracking_token,
+        record_event,
+        wrap_links_for_tracking,
+    )
+    from app.models.crm import EmailEventType  # noqa: PLC0415
+
+    base_url = tracking_base_url or get_settings().frontend_base_url
+    track_token = generate_token()
+    extra_headers: dict[str, str] = {}
+    skip_links: set[str] = set()
+    unsubscribe_token: str | None = None
+    unsubscribe_url: str | None = None
+    if include_unsubscribe:
+        unsubscribe_token = generate_token()
+        unsub_html, unsub_headers, unsubscribe_url = build_unsubscribe_block(
+            token=unsubscribe_token, base_url=base_url
+        )
+        skip_links.add(unsubscribe_url)
+        extra_headers.update(unsub_headers)
+    outbound_html = body_html
+    if outbound_html:
+        outbound_html = wrap_links_for_tracking(
+            outbound_html,
+            token=track_token,
+            base_url=base_url,
+            extra_skip=skip_links,
+        )
+        outbound_html = inject_open_pixel(
+            outbound_html, token=track_token, base_url=base_url
+        )
+        if include_unsubscribe:
+            outbound_html += unsub_html
+
     response = client.send_message(
         from_alias=from_alias,
         from_name=from_name,
@@ -134,11 +179,12 @@ def send_email(
         cc=cc,
         bcc=bcc,
         subject=subject,
-        body_html=body_html,
+        body_html=outbound_html,
         body_text=body_text,
         in_reply_to_message_id=in_reply_to_header,
         references=references_header,
         thread_id=thread_id,
+        extra_headers=extra_headers or None,
     )
 
     gmail_message_id = response["id"]
@@ -178,6 +224,29 @@ def send_email(
     thread.message_count = (thread.message_count or 0) + 1
     thread.last_message_at = now
     session.flush()
+
+    # Tracking trail: one token row for the open + click endpoints,
+    # one `sent` event we can later aggregate against. The unsubscribe
+    # token (when set) reuses the same column on the unsubscribe row
+    # so we don't need a separate table.
+    persist_tracking_token(
+        session, message_id=message.id, token=track_token
+    )
+    if unsubscribe_token is not None:
+        # Same token table — the row exists ahead of the actual opt
+        # out so the /api/unsubscribe/{token} GET / POST can resolve
+        # the message. The opt-out itself only materialises as an
+        # EmailUnsubscribe row once the recipient submits.
+        persist_tracking_token(
+            session, message_id=message.id, token=unsubscribe_token
+        )
+    record_event(
+        session,
+        message_id=message.id,
+        event_type=EmailEventType.SENT,
+        metadata={"to": to, "subject": subject},
+        now=now,
+    )
     return message
 
 
@@ -292,6 +361,109 @@ def process_history(
     return imported
 
 
+_NDR_FROM_PREFIXES = (
+    "mailer-daemon@",
+    "postmaster@",
+    "noreply-daemon@",
+    "noreply@bounces.",
+)
+
+
+def _is_ndr(from_email: str, headers: dict[str, str]) -> bool:
+    """Best-effort: classify an inbound message as a non-delivery
+    report. Either the sender looks like a postmaster-style account,
+    or the message carries the `X-Failed-Recipients` header that
+    Gmail / Exchange / SES populate on bounce reports."""
+    if from_email and any(
+        from_email.lower().startswith(p) for p in _NDR_FROM_PREFIXES
+    ):
+        return True
+    return bool(headers.get("x-failed-recipients"))
+
+
+_NDR_FINAL_RE = re.compile(
+    r"final-recipient:\s*rfc822\s*;\s*([^\s\r\n]+)", re.IGNORECASE
+)
+_NDR_STATUS_RE = re.compile(
+    r"status:\s*(\d\.\d+\.\d+)", re.IGNORECASE
+)
+_NDR_DIAG_RE = re.compile(
+    r"diagnostic-code:\s*(.+?)(?:\r?\n(?:\S|$)|\Z)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _parse_ndr(
+    headers: dict[str, str], body_text: str | None
+) -> dict[str, Any]:
+    """Extract failed recipient + reason from an NDR body.
+
+    Anything we can't pin down stays absent — the caller still gets
+    something useful (an empty dict means "we don't know who failed",
+    which the dashboard surfaces as 'bounce: unknown recipient')."""
+    info: dict[str, Any] = {}
+    failed = headers.get("x-failed-recipients")
+    if failed:
+        info["failed_to"] = failed.split(",")[0].strip()
+    haystack = body_text or ""
+    if "failed_to" not in info:
+        m = _NDR_FINAL_RE.search(haystack)
+        if m:
+            info["failed_to"] = m.group(1).strip("<>")
+    status_match = _NDR_STATUS_RE.search(haystack)
+    if status_match:
+        info["status"] = status_match.group(1)
+    diag = _NDR_DIAG_RE.search(haystack + "\n ")
+    if diag:
+        info["reason"] = " ".join(diag.group(1).split())[:200]
+    return info
+
+
+def _find_bounced_message(
+    session: Session,
+    *,
+    user_id: str,
+    gmail_thread_id: str,
+    failed_to: str | None,
+) -> EmailMessage | None:
+    """Locate the outbound EmailMessage whose recipient just bounced.
+
+    Strategy: most NDRs land in the SAME Gmail thread as the original
+    send (Gmail's threading heuristic matches Subject + References),
+    so we walk this thread's outbound messages newest-first. As a
+    fallback we look up by sender_account + recipient address.
+    """
+    thread = session.scalar(
+        select(EmailThread).where(
+            EmailThread.gmail_account_user_id == user_id,
+            EmailThread.gmail_thread_id == gmail_thread_id,
+        )
+    )
+    if thread is not None:
+        # Most recent outbound on the same thread.
+        candidate = session.scalar(
+            select(EmailMessage)
+            .where(EmailMessage.thread_id == thread.id)
+            .where(EmailMessage.direction == EmailDirection.OUTBOUND)
+            .order_by(EmailMessage.sent_at.desc())
+        )
+        if candidate is not None:
+            return candidate
+    if failed_to:
+        # Fallback: any outbound from this user whose to_emails_json
+        # contains the failed address. Case-insensitive substring is
+        # enough; emails aren't case-sensitive on the local part by
+        # convention.
+        return session.scalar(
+            select(EmailMessage)
+            .where(EmailMessage.gmail_account_user_id == user_id)
+            .where(EmailMessage.direction == EmailDirection.OUTBOUND)
+            .where(EmailMessage.to_emails_json.ilike(f"%{failed_to}%"))
+            .order_by(EmailMessage.sent_at.desc())
+        )
+    return None
+
+
 def _persist_inbound(
     session: Session,
     *,
@@ -312,6 +484,30 @@ def _persist_inbound(
     to_emails = [addr for _, addr in getaddresses([to_header]) if addr]
     cc_emails = [addr for _, addr in getaddresses([cc_header])] if cc_header else None
     body_text, body_html = _extract_bodies(raw.get("payload", {}))
+
+    # Sprint Email v2.3a — NDR detection. When this looks like a
+    # bounce, we attach the event to the ORIGINAL outbound message
+    # and store the rest of the inbound as an EmailMessage anyway so
+    # the operator can still see it in the thread (Gmail does the
+    # same).
+    if _is_ndr(from_email, headers):
+        ndr = _parse_ndr(headers, body_text)
+        original = _find_bounced_message(
+            session,
+            user_id=user_id,
+            gmail_thread_id=gmail_thread_id,
+            failed_to=ndr.get("failed_to"),
+        )
+        if original is not None:
+            from app.email_tracking.services import record_event  # noqa: PLC0415
+            from app.models.crm import EmailEventType  # noqa: PLC0415
+
+            record_event(
+                session,
+                message_id=original.id,
+                event_type=EmailEventType.BOUNCE,
+                metadata=ndr or {"raw_from": from_email},
+            )
 
     contact = session.scalar(
         select(Contact).where(Contact.email == from_email)

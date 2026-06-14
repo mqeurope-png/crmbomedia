@@ -258,6 +258,29 @@ def send_email(
             ),
         )
 
+    # Sprint Email v2.3a — block the send when the contact already
+    # opted out. We check for any unsubscribe row whose scope covers
+    # marketing (the default scope of the One-Click footer) or `all`
+    # (a manual flag set by the operator). Transactional-only opt-outs
+    # don't block a 1-a-1 mail.
+    if payload.contact_id is not None:
+        from app.email_tracking.services import (  # noqa: PLC0415
+            contact_is_unsubscribed,
+        )
+
+        opted_out = contact_is_unsubscribed(
+            session, payload.contact_id
+        )
+        if opted_out is not None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    "Este contacto se ha dado de baja de tus envíos "
+                    "comerciales. Edita su preferencia en la ficha del "
+                    "contacto si crees que es un error."
+                ),
+            )
+
     # Sprint Email v2.2b — substitute `{nombre}` / `{empresa}` /
     # `{email}` placeholders against the contact this email is being
     # sent to. When no contact is attached the body ships unchanged
@@ -273,6 +296,14 @@ def send_email(
             body_text = replace_merge_vars(body_text, contact)
             subject = replace_merge_vars(subject, contact) or ""
 
+    # Sprint Email v2.3a — `include_unsubscribe` falls back to the
+    # operator's stored default when the modal didn't ship a value.
+    include_unsubscribe = (
+        payload.include_unsubscribe
+        if payload.include_unsubscribe is not None
+        else current_user.email_include_unsubscribe_default
+    )
+
     try:
         message = gmail_service.send_email(
             session,
@@ -287,6 +318,7 @@ def send_email(
             body_text=body_text,
             contact_id=payload.contact_id,
             in_reply_to_message_id=payload.in_reply_to_message_id,
+            include_unsubscribe=include_unsubscribe,
         )
     except GmailNotConnectedError as exc:
         raise HTTPException(

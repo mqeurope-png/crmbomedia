@@ -154,6 +154,7 @@ class GmailClient:
         in_reply_to_message_id: str | None = None,
         references: list[str] | None = None,
         thread_id: str | None = None,
+        extra_headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """Build the RFC 822 MIME message and dispatch via Gmail
         `users.messages.send`. Returns the upstream `{id, threadId,
@@ -169,6 +170,7 @@ class GmailClient:
             body_text=body_text,
             in_reply_to_message_id=in_reply_to_message_id,
             references=references,
+            extra_headers=extra_headers,
         )
         raw = base64.urlsafe_b64encode(mime.as_bytes()).decode()
         body: dict[str, Any] = {"raw": raw}
@@ -250,6 +252,7 @@ def _build_mime(
     body_text: str | None,
     in_reply_to_message_id: str | None,
     references: list[str] | None,
+    extra_headers: dict[str, str] | None = None,
 ) -> MIMEMultipart:
     """Construct an RFC 822 multipart/alternative MIME message with
     the reply headers Gmail needs to chain a thread on external
@@ -267,6 +270,9 @@ def _build_mime(
         msg["In-Reply-To"] = in_reply_to_message_id
     if references:
         msg["References"] = " ".join(references)
+    if extra_headers:
+        for header, value in extra_headers.items():
+            msg[header] = value
     if body_text:
         msg.attach(MIMEText(body_text, "plain", "utf-8"))
     if body_html:
