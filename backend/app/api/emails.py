@@ -273,6 +273,14 @@ def send_email(
             body_text = replace_merge_vars(body_text, contact)
             subject = replace_merge_vars(subject, contact) or ""
 
+    # Sprint Email v2.3a — `include_unsubscribe` falls back to the
+    # operator's stored default when the modal didn't ship a value.
+    include_unsubscribe = (
+        payload.include_unsubscribe
+        if payload.include_unsubscribe is not None
+        else current_user.email_include_unsubscribe_default
+    )
+
     try:
         message = gmail_service.send_email(
             session,
@@ -287,6 +295,7 @@ def send_email(
             body_text=body_text,
             contact_id=payload.contact_id,
             in_reply_to_message_id=payload.in_reply_to_message_id,
+            include_unsubscribe=include_unsubscribe,
         )
     except GmailNotConnectedError as exc:
         raise HTTPException(

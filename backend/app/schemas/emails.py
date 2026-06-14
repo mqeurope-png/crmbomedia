@@ -26,6 +26,10 @@ class EmailSendRequest(BaseModel):
     body_text: str | None = None
     contact_id: str | None = None
     in_reply_to_message_id: str | None = None
+    # Sprint Email v2.3a. When omitted (`None`) the route falls back
+    # to the sender's `users.email_include_unsubscribe_default` flag —
+    # the per-operator preference for the modal toggle.
+    include_unsubscribe: bool | None = None
 
 
 class EmailMessageRead(BaseModel):

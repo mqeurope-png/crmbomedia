@@ -76,6 +76,8 @@ def send_email(
     body_text: str | None,
     contact_id: str | None,
     in_reply_to_message_id: str | None = None,
+    include_unsubscribe: bool = False,
+    tracking_base_url: str | None = None,
 ) -> EmailMessage:
     """Send a new outbound email and persist the thread + message rows.
 
@@ -127,6 +129,48 @@ def send_email(
                 in_reply_to_header = rfc_message_id
                 references_header = [rfc_message_id]
 
+    # Sprint Email v2.3a — link wrap + open pixel + optional
+    # List-Unsubscribe. The body we end up sending differs from the
+    # body we persist (Tiptap output stays clean; the recipient
+    # version gets the redirect URLs and pixel).
+    from app.core.config import get_settings  # noqa: PLC0415
+    from app.email_tracking.services import (  # noqa: PLC0415
+        build_unsubscribe_block,
+        generate_token,
+        inject_open_pixel,
+        persist_tracking_token,
+        record_event,
+        wrap_links_for_tracking,
+    )
+    from app.models.crm import EmailEventType  # noqa: PLC0415
+
+    base_url = tracking_base_url or get_settings().frontend_base_url
+    track_token = generate_token()
+    extra_headers: dict[str, str] = {}
+    skip_links: set[str] = set()
+    unsubscribe_token: str | None = None
+    unsubscribe_url: str | None = None
+    if include_unsubscribe:
+        unsubscribe_token = generate_token()
+        unsub_html, unsub_headers, unsubscribe_url = build_unsubscribe_block(
+            token=unsubscribe_token, base_url=base_url
+        )
+        skip_links.add(unsubscribe_url)
+        extra_headers.update(unsub_headers)
+    outbound_html = body_html
+    if outbound_html:
+        outbound_html = wrap_links_for_tracking(
+            outbound_html,
+            token=track_token,
+            base_url=base_url,
+            extra_skip=skip_links,
+        )
+        outbound_html = inject_open_pixel(
+            outbound_html, token=track_token, base_url=base_url
+        )
+        if include_unsubscribe:
+            outbound_html += unsub_html
+
     response = client.send_message(
         from_alias=from_alias,
         from_name=from_name,
@@ -134,11 +178,12 @@ def send_email(
         cc=cc,
         bcc=bcc,
         subject=subject,
-        body_html=body_html,
+        body_html=outbound_html,
         body_text=body_text,
         in_reply_to_message_id=in_reply_to_header,
         references=references_header,
         thread_id=thread_id,
+        extra_headers=extra_headers or None,
     )
 
     gmail_message_id = response["id"]
@@ -178,6 +223,29 @@ def send_email(
     thread.message_count = (thread.message_count or 0) + 1
     thread.last_message_at = now
     session.flush()
+
+    # Tracking trail: one token row for the open + click endpoints,
+    # one `sent` event we can later aggregate against. The unsubscribe
+    # token (when set) reuses the same column on the unsubscribe row
+    # so we don't need a separate table.
+    persist_tracking_token(
+        session, message_id=message.id, token=track_token
+    )
+    if unsubscribe_token is not None:
+        # Same token table — the row exists ahead of the actual opt
+        # out so the /api/unsubscribe/{token} GET / POST can resolve
+        # the message. The opt-out itself only materialises as an
+        # EmailUnsubscribe row once the recipient submits.
+        persist_tracking_token(
+            session, message_id=message.id, token=unsubscribe_token
+        )
+    record_event(
+        session,
+        message_id=message.id,
+        event_type=EmailEventType.SENT,
+        metadata={"to": to, "subject": subject},
+        now=now,
+    )
     return message
 
 
