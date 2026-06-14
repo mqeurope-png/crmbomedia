@@ -86,6 +86,35 @@ async function uploadBlob(blob: Blob, filename: string): Promise<string> {
     : body.public_url;
 }
 
+/** Inline string escape for attribute values we paste into HTML
+ *  templates we ourselves write — keeps a video URL with a stray `"`
+ *  from breaking the surrounding tag. NOT a generic sanitiser. */
+function escapeAttr(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+/** Vimeo's thumbnail URL isn't predictable from the video id, so we
+ *  ask the public oEmbed endpoint. It's CORS-friendly, no API key
+ *  needed. Returns "" on failure so the caller can warn the operator
+ *  instead of inserting a broken `<img>`. */
+async function fetchVimeoThumbnail(videoId: string): Promise<string> {
+  const target = `https://vimeo.com/${videoId}`;
+  try {
+    const response = await fetch(
+      `https://vimeo.com/api/oembed.json?url=${encodeURIComponent(target)}`,
+    );
+    if (!response.ok) return "";
+    const meta = (await response.json()) as { thumbnail_url?: string };
+    return meta.thumbnail_url ?? "";
+  } catch {
+    return "";
+  }
+}
+
 type RichEditorProps = {
   value: string;
   onChange: (html: string) => void;
@@ -193,7 +222,7 @@ export const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
           "bold italic underline strikethrough | forecolor backcolor | " +
           "alignleft aligncenter alignright alignjustify | " +
           "bullist numlist outdent indent | " +
-          "link image insertvideo table emoticons | " +
+          "link insertimage insertvideo table emoticons | " +
           "removeformat code fullscreen | help",
         // Built-in draft autosave: writes to localStorage on a timer
         // so a refresh / accidental close doesn't lose the email. The
@@ -250,12 +279,49 @@ export const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
           };
           input.click();
         },
-        // Vídeo: the stock `media` plugin needs a manual preview image
-        // and never auto-detects YouTube in Community — terrible UX
-        // (the two earlier resolver attempts both broke). Replace it
-        // with a single "Video" toolbar button that asks for a URL
-        // and writes the iframe directly.
+        // Toolbar overrides for Imagen + Video. The stock `image` and
+        // `media` plugin dialogs are needlessly form-heavy ("Código
+        // fuente", Ancho, Altura, Avanzado…) and the operators kept
+        // hitting them by accident. Replace with two custom buttons
+        // that go straight to what they actually want.
         setup: (editor) => {
+          // Imagen: skip the modal entirely — file picker → upload →
+          // image inserted. Drag-drop and clipboard paste keep working
+          // via the editor's own automatic_uploads path, so URL-based
+          // inserts (rare) are still possible from the Code view.
+          editor.ui.registry.addButton("insertimage", {
+            text: "Imagen",
+            tooltip: "Insertar imagen desde tu PC",
+            icon: "image",
+            onAction: () => {
+              const input = document.createElement("input");
+              input.type = "file";
+              input.accept = "image/png,image/jpeg,image/gif,image/webp";
+              input.onchange = async () => {
+                const file = input.files?.[0];
+                if (!file) return;
+                try {
+                  const url = await uploadBlob(file, file.name);
+                  editor.insertContent(
+                    `<img src="${url}" alt="${escapeAttr(file.name)}" />`,
+                  );
+                } catch (err) {
+                  editor.windowManager.alert(
+                    err instanceof Error
+                      ? err.message
+                      : "Error subiendo imagen",
+                  );
+                }
+              };
+              input.click();
+            },
+          });
+
+          // Video: optional preview image. When the operator skips it,
+          // we fall back to YouTube/Vimeo's own thumbnail. Insert as
+          // <a><img></a> — iframes don't render in any major email
+          // client, so a clickable thumbnail is what actually reaches
+          // the recipient.
           editor.ui.registry.addButton("insertvideo", {
             text: "Video",
             tooltip: "Insertar vídeo de YouTube o Vimeo",
@@ -272,40 +338,65 @@ export const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
                       label: "URL del vídeo (YouTube o Vimeo)",
                       placeholder: "https://www.youtube.com/watch?v=…",
                     },
+                    {
+                      type: "urlinput",
+                      name: "thumb",
+                      label:
+                        "Imagen de preview (opcional — si la dejas en blanco, usamos la del vídeo)",
+                      filetype: "image",
+                    },
                   ],
                 },
                 buttons: [
                   { type: "cancel", text: "Cancelar" },
                   { type: "submit", text: "Insertar", primary: true },
                 ],
-                onSubmit: (api) => {
-                  const url = String(
-                    (api.getData() as { url?: string }).url ?? "",
-                  ).trim();
+                onSubmit: async (api) => {
+                  const data = api.getData() as {
+                    url?: string;
+                    thumb?: string | { value?: string };
+                  };
+                  const url = String(data.url ?? "").trim();
+                  const customThumb =
+                    typeof data.thumb === "string"
+                      ? data.thumb
+                      : (data.thumb?.value ?? "");
+
                   const yt = url.match(
                     /(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|watch\?.+&v=))([\w-]+)/,
                   );
                   const vm = url.match(/vimeo\.com\/(\d+)/);
-                  let html = "";
-                  if (yt) {
-                    html =
-                      `<iframe width="560" height="315" ` +
-                      `src="https://www.youtube.com/embed/${yt[1]}" ` +
-                      `frameborder="0" allow="accelerometer; autoplay; ` +
-                      `clipboard-write; encrypted-media; gyroscope; ` +
-                      `picture-in-picture" allowfullscreen></iframe>`;
-                  } else if (vm) {
-                    html =
-                      `<iframe src="https://player.vimeo.com/video/${vm[1]}" ` +
-                      `width="640" height="360" frameborder="0" ` +
-                      `allow="autoplay; fullscreen; picture-in-picture" ` +
-                      `allowfullscreen></iframe>`;
-                  } else {
+                  if (!yt && !vm) {
                     editor.windowManager.alert(
                       "URL no reconocida. Pega un enlace de YouTube o Vimeo.",
                     );
                     return;
                   }
+                  const link = yt
+                    ? `https://www.youtube.com/watch?v=${yt[1]}`
+                    : `https://vimeo.com/${vm![1]}`;
+
+                  let thumb = customThumb;
+                  if (!thumb) {
+                    thumb = yt
+                      ? // YouTube serves predictable JPEGs without an
+                        // API call — hqdefault is the universal one
+                        // (480x360, always present on every video).
+                        `https://img.youtube.com/vi/${yt[1]}/hqdefault.jpg`
+                      : await fetchVimeoThumbnail(vm![1]);
+                  }
+                  if (!thumb) {
+                    editor.windowManager.alert(
+                      "No se pudo obtener la miniatura del vídeo. Sube una imagen de preview manualmente.",
+                    );
+                    return;
+                  }
+                  const html =
+                    `<a href="${escapeAttr(link)}" target="_blank" rel="noopener" ` +
+                    `style="display:inline-block;text-decoration:none;">` +
+                    `<img src="${escapeAttr(thumb)}" alt="Ver vídeo" ` +
+                    `style="max-width:560px;width:100%;height:auto;border-radius:6px;" />` +
+                    `</a>`;
                   editor.insertContent(html);
                   api.close();
                 },
