@@ -1667,3 +1667,122 @@ def test_send_reply_falls_back_when_parent_message_lookup_fails(
     assert call["thread_id"] == "gmail-thr-x"
     assert call["in_reply_to_message_id"] is None
     assert call["references"] is None
+
+
+def test_snippet_from_body_strips_style_block_contents() -> None:
+    """The inbox list preview fell back to _snippet_from_body, which
+    only stripped tags — leaving the TinyMCE `<style>` reset block as
+    raw CSS in the preview. It now routes HTML through the shared
+    extractor."""
+    from app.api.emails import _snippet_from_body
+
+    html = (
+        "<p></p>"
+        "<style>body,table,td,p,a{margin:0;padding:0}img{border:0}</style>"
+        "<p>Hola Eduard, confirmo nuestra cita para mañana.</p>"
+    )
+    assert (
+        _snippet_from_body(None, html)
+        == "Hola Eduard, confirmo nuestra cita para mañana."
+    )
+    # Plain-text body short-circuits untouched.
+    assert _snippet_from_body("Hola directo", None) == "Hola directo"
+    assert _snippet_from_body(None, None) is None
+
+
+def test_backfill_helpers_detect_dirty_snippets() -> None:
+    from scripts.backfill_email_snippets import _looks_dirty
+
+    assert _looks_dirty("<p></p> <style>body{margin:0}") is True
+    assert _looks_dirty("table{border-collapse:collapse}") is True
+    assert _looks_dirty("Hola Eduard, confirmo la cita") is False
+    assert _looks_dirty(None) is False
+    assert _looks_dirty("") is False
+
+
+def test_backfill_rewrites_dirty_message_and_event(
+    session_factory: sessionmaker,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End-to-end: a stored message + activity event with CSS-dirty
+    snippets get repaired in place."""
+    import json as _json
+
+    from app.models.crm import ActivityEvent, EmailDirection
+    from scripts import backfill_email_snippets
+
+    dirty_html = (
+        "<p></p><style>body,td{margin:0}</style>"
+        "<p>Hola, te confirmo la reunión.</p>"
+    )
+    with session_factory() as session:
+        uid = _user_id(session, UserRole.USER)
+        thread = EmailThread(
+            initiated_by_user_id=uid,
+            gmail_thread_id="bf-thr",
+            gmail_account_user_id=uid,
+            first_message_at=datetime.now(UTC),
+            last_message_at=datetime.now(UTC),
+            message_count=1,
+            subject="x",
+        )
+        session.add(thread)
+        session.flush()
+        msg = EmailMessage(
+            thread_id=thread.id,
+            gmail_message_id="bf-msg",
+            gmail_account_user_id=uid,
+            direction=EmailDirection.OUTBOUND,
+            from_email="info@bomedia.net",
+            to_emails_json='["lead@example.com"]',
+            subject="x",
+            body_html=dirty_html,
+            body_text=None,
+            snippet="<style>body,td{margin:0}",
+            sent_at=datetime.now(UTC),
+            created_by_user_id=uid,
+        )
+        session.add(msg)
+        session.flush()
+        session.add(
+            ActivityEvent(
+                contact_id="c-bf",
+                system="crm",
+                account_id="emails",
+                external_id=f"email:{msg.id}:email.sent_from_crm",
+                event_type="email.sent_from_crm",
+                subject="x",
+                body="<style>body,td{margin:0}",
+                metadata_json=_json.dumps(
+                    {"message_id": msg.id, "snippet": "<style>body{margin:0}"}
+                ),
+                occurred_at=datetime.now(UTC),
+                synced_at=datetime.now(UTC),
+            )
+        )
+        session.commit()
+        msg_id = msg.id
+
+    engine = session_factory.kw["bind"]
+    monkeypatch.setattr(
+        backfill_email_snippets, "get_engine", lambda: engine
+    )
+    counts = backfill_email_snippets.backfill(dry_run=False)
+    assert counts["messages_fixed"] == 1
+    assert counts["events_fixed"] == 1
+
+    with session_factory() as session:
+        fixed = session.get(EmailMessage, msg_id)
+        assert fixed is not None
+        assert fixed.snippet == "Hola, te confirmo la reunión."
+        ev = session.scalar(
+            select(ActivityEvent).where(
+                ActivityEvent.event_type == "email.sent_from_crm"
+            )
+        )
+        assert ev is not None
+        assert ev.body == "Hola, te confirmo la reunión."
+        assert (
+            _json.loads(ev.metadata_json)["snippet"]
+            == "Hola, te confirmo la reunión."
+        )
