@@ -1,6 +1,7 @@
 "use client";
 
 import { FolderOpen, Save, Sparkles } from "lucide-react";
+import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import {
@@ -10,12 +11,23 @@ import {
   type MyAlias,
 } from "../lib/emailsApi";
 import { extractErrorMessage } from "../lib/errors";
-import { EmailComposer } from "./email/EmailComposer";
 import { SaveTemplateModal } from "./email/SaveTemplateModal";
 import {
   TemplatePicker,
   type TemplatePickerSelection,
 } from "./email/TemplatePicker";
+
+// TinyMCE touches `window` the moment its module loads, so the editor
+// must never render on the server. `ssr: false` keeps it in a
+// client-only chunk and shows a lightweight placeholder while the
+// (~200 KB) editor bundle streams in.
+const RichEditor = dynamic(
+  () => import("./email/RichEditor").then((m) => m.RichEditor),
+  {
+    ssr: false,
+    loading: () => <div className="re-loading">Cargando editor…</div>,
+  },
+);
 
 type Props = {
   contactId?: string | null;
@@ -218,10 +230,11 @@ export function EmailComposerModal({
 
           <label className="field">
             Cuerpo
-            <EmailComposer
+            <RichEditor
               value={bodyHtml}
               onChange={setBodyHtml}
               placeholder="Escribe tu email. Usa {nombre}, {empresa}, {email} para personalizar."
+              minHeight={460}
             />
           </label>
 
