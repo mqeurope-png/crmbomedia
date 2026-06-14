@@ -109,6 +109,13 @@ export function RichEditor({
       onInit={(_evt, editor) => {
         editorRef.current = editor;
       }}
+      // TinyMCE 7+ refuses to mount without a declared license key.
+      // We're on the self-hosted GPL Community build; "gpl" makes
+      // that explicit at no cost. The React wrapper requires this as
+      // a top-level prop — passing it inside `init` is rejected with
+      // a typed error. Swap to a paid key only if we ever move to
+      // TinyMCE Cloud or Enterprise.
+      licenseKey="gpl"
       value={value}
       onEditorChange={(content) => onChange(content)}
       init={{
