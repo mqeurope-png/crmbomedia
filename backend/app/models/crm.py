@@ -770,6 +770,12 @@ class User(TimestampMixin, Base):
     totp_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     totp_confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     backup_codes_hash: Mapped[str | None] = mapped_column(Text)
+    # Sprint Email v2.3 — per-user default for the "incluir opción de
+    # baja" toggle in the send modal. False keeps 1-a-1 emails clean;
+    # set true for operators who send mostly newsletters.
+    email_include_unsubscribe_default: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )
 
 
 class UserGoogleIntegration(TimestampMixin, Base):
@@ -921,6 +927,129 @@ class EmailMessage(TimestampMixin, Base):
     read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     thread: Mapped[EmailThread] = relationship(back_populates="messages")
+
+
+class EmailEventType(StrEnum):
+    """Lifecycle event recorded on an outbound EmailMessage. We start
+    with the seven HubSpot/Mailchimp use day-to-day; spam isn't on the
+    list because Gmail doesn't expose sender-side spam labels."""
+
+    SENT = "sent"
+    DELIVERED = "delivered"
+    OPEN = "open"
+    CLICK = "click"
+    BOUNCE = "bounce"
+    COMPLAINT = "complaint"
+    UNSUBSCRIBE = "unsubscribe"
+
+
+class EmailUnsubscribeScope(StrEnum):
+    """How wide the contact's opt-out reaches. Defaults to MARKETING
+    because the One-Click button + the modal toggle are meant for
+    newsletters; ALL is used when an operator manually flags a
+    contact as completely-do-not-contact."""
+
+    ALL = "all"
+    MARKETING = "marketing"
+    TRANSACTIONAL = "transactional"
+
+
+class EmailMessageEvent(TimestampMixin, Base):
+    """One observation about an outbound message: opened, clicked,
+    bounced, etc. The events are append-only — repeat opens emit
+    repeat rows, with the service layer deduping within a short
+    window so a single mail-client preview pane doesn't inflate the
+    count."""
+
+    __tablename__ = "email_message_events"
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid4())
+    )
+    message_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("email_messages.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    event_type: Mapped[EmailEventType] = mapped_column(
+        Enum(
+            EmailEventType,
+            native_enum=False,
+            values_callable=enum_values,
+            length=32,
+        ),
+        nullable=False,
+    )
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    ip: Mapped[str | None] = mapped_column(String(45))
+    user_agent: Mapped[str | None] = mapped_column(String(500))
+    metadata_json: Mapped[str | None] = mapped_column(Text)
+
+
+class EmailMessageToken(TimestampMixin, Base):
+    """URL-safe random token that points back at an EmailMessage.
+
+    One row per outbound message; the same token serves the open
+    pixel and the click redirect endpoints. The click URL appends
+    `?d=<base64>` so the click handler stays oblivious to the
+    destination — that keeps the table small and the routes
+    deterministic."""
+
+    __tablename__ = "email_message_tokens"
+
+    token: Mapped[str] = mapped_column(String(64), primary_key=True)
+    message_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("email_messages.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+
+class EmailUnsubscribe(TimestampMixin, Base):
+    """Marks a contact as having opted out of receiving mail at the
+    given scope. The token surface backs both the RFC 8058 One-Click
+    POST endpoint and a confirm-then-submit HTML page; the source
+    column distinguishes which mechanic produced the row."""
+
+    __tablename__ = "email_unsubscribes"
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid4())
+    )
+    contact_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("contacts.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    scope: Mapped[EmailUnsubscribeScope] = mapped_column(
+        Enum(
+            EmailUnsubscribeScope,
+            native_enum=False,
+            values_callable=enum_values,
+            length=32,
+        ),
+        default=EmailUnsubscribeScope.MARKETING,
+        nullable=False,
+    )
+    source: Mapped[str] = mapped_column(
+        String(60), default="one-click", nullable=False
+    )
+    token: Mapped[str] = mapped_column(
+        String(64), nullable=False, unique=True
+    )
+    unsubscribed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    message_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("email_messages.id", ondelete="SET NULL"),
+    )
+    metadata_json: Mapped[str | None] = mapped_column(Text)
 
 
 class GmailPubsubWatch(TimestampMixin, Base):
