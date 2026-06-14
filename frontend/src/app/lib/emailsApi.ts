@@ -310,22 +310,6 @@ export async function restoreThread(id: string): Promise<void> {
   await apiFetch(`/api/emails/threads/${id}/restore`, { method: "POST" });
 }
 
-export async function snoozeThread(
-  id: string,
-  snooze_until: string,
-): Promise<void> {
-  await apiFetch(`/api/emails/threads/${id}/snooze`, {
-    method: "POST",
-    body: JSON.stringify({ snooze_until }),
-  });
-}
-
-export async function unsnoozeThread(id: string): Promise<void> {
-  await apiFetch(`/api/emails/threads/${id}/unsnooze`, {
-    method: "POST",
-  });
-}
-
 export async function addThreadLabel(
   thread_id: string,
   label_id: string,
@@ -384,8 +368,6 @@ export const bulkMarkUnread = (ids: string[]) =>
   bulkPost("mark-unread", { thread_ids: ids });
 export const bulkMove = (ids: string[], folder_id: string | null) =>
   bulkPost("move", { thread_ids: ids, folder_id });
-export const bulkSnooze = (ids: string[], snooze_until: string) =>
-  bulkPost("snooze", { thread_ids: ids, snooze_until });
 export const bulkAddLabel = (ids: string[], label_id: string) =>
   bulkPost("labels/add", { thread_ids: ids, label_id });
 export const bulkRemoveLabel = (ids: string[], label_id: string) =>
