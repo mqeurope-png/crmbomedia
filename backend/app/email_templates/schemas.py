@@ -90,6 +90,17 @@ class BrevoPickerItem(BaseModel):
     has_html: bool
 
 
+class BrevoTemplateHtmlResponse(BaseModel):
+    """Lazy-loaded body fetched on demand when the operator picks a
+    Brevo template. The marketing cache stores html_content NULL
+    until first detail open; this surface fills it in transparently."""
+
+    id: int
+    name: str
+    subject: str | None
+    body_html: str
+
+
 class ComposerSourcePickerItem(BaseModel):
     """composer.bomedia.net template, surfaced via the read-only
     Supabase proxy. The CRM cannot edit these — clicking the row in

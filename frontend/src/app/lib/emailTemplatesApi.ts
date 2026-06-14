@@ -197,3 +197,21 @@ export type ComposerSourceResponse = {
 export async function getComposerSourceTemplates(): Promise<ComposerSourceResponse> {
   return apiFetch<ComposerSourceResponse>("/api/emails/composer-source");
 }
+
+export type BrevoTemplateHtml = {
+  id: number;
+  name: string;
+  subject: string | null;
+  body_html: string;
+};
+
+/** Lazy-loaded body for a Brevo template the operator picked. The
+ *  picker only ships subject + metadata; the editor pulls the body
+ *  through this endpoint on click. */
+export async function getBrevoTemplateHtml(
+  brevoTemplateId: number,
+): Promise<BrevoTemplateHtml> {
+  return apiFetch<BrevoTemplateHtml>(
+    `/api/emails/brevo-templates/${brevoTemplateId}/html`,
+  );
+}
