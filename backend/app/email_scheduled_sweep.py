@@ -171,9 +171,12 @@ def scheduled_send_sweep(*, now: datetime | None = None) -> dict[str, int]:
 
 
 def _purge_orphan_pending_threads(session: Session) -> None:
-    """Sentinel threads whose only message was cancelled or failed
-    have no useful surface anymore. Drop them so the operator's
-    inbox doesn't accumulate ghost rows over time."""
+    """Sentinel threads whose only message was cancelled have no
+    useful surface anymore — drop them so the inbox doesn't
+    accumulate ghost rows. Failed rows STAY so the operator can
+    audit what blew up. Sent threads are reconciled to a real
+    Gmail id inside `_send_one` and no longer match the sentinel
+    `pending:%` LIKE."""
     sentinel_threads = list(
         session.scalars(
             select(EmailThread).where(
@@ -182,16 +185,22 @@ def _purge_orphan_pending_threads(session: Session) -> None:
         )
     )
     for thread in sentinel_threads:
-        any_alive = session.scalar(
+        # Skip when ANY message in the thread is still pending or
+        # was failed — both shapes deserve to stay visible.
+        keep = session.scalar(
             select(EmailMessage.id)
             .where(
                 EmailMessage.thread_id == thread.id,
-                EmailMessage.scheduled_status
-                == EmailScheduledStatus.PENDING.value,
+                EmailMessage.scheduled_status.in_(
+                    [
+                        EmailScheduledStatus.PENDING.value,
+                        EmailScheduledStatus.FAILED.value,
+                    ]
+                ),
             )
             .limit(1)
         )
-        if any_alive is None:
+        if keep is None:
             session.execute(
                 delete(EmailMessage).where(
                     EmailMessage.thread_id == thread.id
