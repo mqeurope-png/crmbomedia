@@ -48,9 +48,11 @@ type Props = {
 };
 
 export function EmailEventBadges({ events, compact = false }: Props) {
-  // Count per type. Skip `sent` from the count display because every
-  // message we render here started life with a sent event; the
-  // operator wants to see what came AFTER.
+  // Count per type. `sent` was previously stripped from display
+  // (assumed implicit), but a message with only a sent event then
+  // rendered NOTHING — the operator couldn't tell whether the tracking
+  // pipeline was alive at all. Keep the sent pill so the row always
+  // shows something; opens / clicks etc. join it as they arrive.
   const counts: Partial<Record<EmailEvent["event_type"], number>> = {};
   const latest: Partial<Record<EmailEvent["event_type"], string>> = {};
   for (const e of events) {
@@ -59,6 +61,7 @@ export function EmailEventBadges({ events, compact = false }: Props) {
   }
 
   const ordered: EmailEvent["event_type"][] = [
+    "sent",
     "open",
     "click",
     "bounce",

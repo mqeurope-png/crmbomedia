@@ -96,8 +96,8 @@ export default function Home() {
         <PipelineSummaryWidget />
         <UnattendedLeadsWidget currentUserId={user?.id ?? null} />
         <LeadsStatsWidget />
-        <EmailActivityWidget />
         <EmailTrackingStatsWidget />
+        <EmailActivityWidget />
       </section>
     </main>
   );
