@@ -1786,3 +1786,78 @@ def test_backfill_rewrites_dirty_message_and_event(
             _json.loads(ev.metadata_json)["snippet"]
             == "Hola, te confirmo la reunión."
         )
+
+
+def test_thread_list_includes_tracking_counts(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    """The inbox list surfaces per-thread open/click/etc counts so the
+    rows can show badges. `sent` is excluded from the aggregate."""
+    from app.models.crm import (
+        EmailDirection,
+        EmailEventType,
+        EmailMessageEvent,
+    )
+
+    with session_factory() as session:
+        uid = _user_id(session, UserRole.USER)
+        thread = EmailThread(
+            initiated_by_user_id=uid,
+            gmail_thread_id="trk-thr",
+            gmail_account_user_id=uid,
+            first_message_at=datetime.now(UTC),
+            last_message_at=datetime.now(UTC),
+            message_count=1,
+            subject="x",
+        )
+        session.add(thread)
+        session.flush()
+        msg = EmailMessage(
+            thread_id=thread.id,
+            gmail_message_id="trk-msg",
+            gmail_account_user_id=uid,
+            direction=EmailDirection.OUTBOUND,
+            from_email="info@bomedia.net",
+            to_emails_json='["lead@example.com"]',
+            subject="x",
+            sent_at=datetime.now(UTC),
+            created_by_user_id=uid,
+        )
+        session.add(msg)
+        session.flush()
+        now = datetime.now(UTC)
+        session.add_all(
+            [
+                EmailMessageEvent(
+                    message_id=msg.id,
+                    event_type=EmailEventType.SENT,
+                    occurred_at=now,
+                ),
+                EmailMessageEvent(
+                    message_id=msg.id,
+                    event_type=EmailEventType.OPEN,
+                    occurred_at=now,
+                ),
+                EmailMessageEvent(
+                    message_id=msg.id,
+                    event_type=EmailEventType.OPEN,
+                    occurred_at=now,
+                ),
+                EmailMessageEvent(
+                    message_id=msg.id,
+                    event_type=EmailEventType.CLICK,
+                    occurred_at=now,
+                ),
+            ]
+        )
+        session.commit()
+
+    response = client.get(
+        "/api/emails/threads", headers=auth_headers(client, "user")
+    )
+    assert response.status_code == 200
+    item = next(
+        t for t in response.json()["items"] if t["gmail_thread_id"] == "trk-thr"
+    )
+    # 2 opens + 1 click; sent is NOT counted in the inbox aggregate.
+    assert item["tracking"] == {"open": 2, "click": 1}

@@ -365,3 +365,13 @@ def test_extract_text_strips_style_and_script_block_contents() -> None:
         extract_text_from_html(html)
         == "Hola Eduard, confirmo nuestra cita para mañana a las 10h."
     )
+
+
+def test_extract_text_decodes_named_html_entities() -> None:
+    """TinyMCE emits `&mdash;`, `&oacute;` etc. The manual six-entity
+    replace left them raw in previews; html.unescape covers them all."""
+    html = "<p>impresi&oacute;n directa &mdash; tecnolog&iacute;a UV &amp; m&aacute;s</p>"
+    assert (
+        extract_text_from_html(html)
+        == "impresión directa — tecnología UV & más"
+    )

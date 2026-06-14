@@ -73,6 +73,10 @@ export type EmailThread = {
   /** v2.1.1: contact name resolved server-side from Contact row or
    *  from the last message's `from_name` / email local part. */
   contact_name?: string | null;
+  /** v2.3b: per-thread tracking counts (open / click / bounce /
+   *  unsubscribe) aggregated across the thread's outbound messages.
+   *  `sent` is excluded. Empty object when nothing tracked yet. */
+  tracking?: Record<string, number>;
 };
 
 export type EmailThreadDetail = EmailThread & {

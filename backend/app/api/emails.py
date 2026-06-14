@@ -25,7 +25,9 @@ from app.integrations.gmail.service import (
 )
 from app.models.crm import (
     Contact,
+    EmailEventType,
     EmailMessage,
+    EmailMessageEvent,
     EmailThread,
     User,
     UserEmailAliasPref,
@@ -428,8 +430,10 @@ def list_threads(
     # Last message per thread — driven the "Remitente último" +
     # "Vista previa" columns the v2.1 list view exposes. One small
     # extra query per page, batched via `id IN (...)`.
-    last_by_thread = _latest_messages(session, [t.id for t in items])
+    thread_ids = [t.id for t in items]
+    last_by_thread = _latest_messages(session, thread_ids)
     contacts_by_id = _contacts_for_threads(session, items)
+    tracking_by_thread = _tracking_counts_for_threads(session, thread_ids)
     out: list[EmailThreadRead] = []
     for thread in items:
         last = last_by_thread.get(thread.id)
@@ -448,6 +452,7 @@ def list_threads(
             contact=contacts_by_id.get(thread.contact_id) if thread.contact_id else None,
             last_message=last,
         )
+        read.tracking = tracking_by_thread.get(thread.id, {})
         out.append(read)
     return EmailThreadList(items=out, total=total)
 
@@ -715,6 +720,50 @@ def _latest_messages(
     for row in rows:
         if row.thread_id not in out:
             out[row.thread_id] = row
+    return out
+
+
+# Event types the inbox surfaces per row. `sent` / `delivered` are
+# excluded — every thread has a send, so showing it is pure noise.
+_INBOX_EVENT_TYPES = (
+    EmailEventType.OPEN,
+    EmailEventType.CLICK,
+    EmailEventType.BOUNCE,
+    EmailEventType.UNSUBSCRIBE,
+)
+
+
+def _tracking_counts_for_threads(
+    session: Session, thread_ids: list[str]
+) -> dict[str, dict[str, int]]:
+    """Aggregate open/click/bounce/unsubscribe counts per thread in a
+    single grouped query (events → messages → thread). Threads with no
+    events simply don't appear in the result; the caller treats a
+    missing key as an empty dict."""
+    if not thread_ids:
+        return {}
+    rows = session.execute(
+        select(
+            EmailMessage.thread_id,
+            EmailMessageEvent.event_type,
+            func.count(EmailMessageEvent.id),
+        )
+        .join(
+            EmailMessage,
+            EmailMessage.id == EmailMessageEvent.message_id,
+        )
+        .where(EmailMessage.thread_id.in_(thread_ids))
+        .where(EmailMessageEvent.event_type.in_(_INBOX_EVENT_TYPES))
+        .group_by(EmailMessage.thread_id, EmailMessageEvent.event_type)
+    ).all()
+    out: dict[str, dict[str, int]] = {}
+    for thread_id, event_type, count in rows:
+        key = (
+            event_type.value
+            if hasattr(event_type, "value")
+            else str(event_type)
+        )
+        out.setdefault(thread_id, {})[key] = int(count)
     return out
 
 

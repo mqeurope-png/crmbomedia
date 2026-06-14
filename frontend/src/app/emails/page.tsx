@@ -4,6 +4,7 @@ import { Inbox, Search } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { EmailTrackingStatsWidget } from "../components/dashboard/EmailTrackingStatsWidget";
+import { EmailEventBadges } from "../components/email/EmailEventBadges";
 import { PageHeader } from "../components/PageHeader";
 import {
   listEmailThreads,
@@ -152,6 +153,9 @@ export default function EmailsPage() {
                         </>
                       ) : null}
                     </Link>
+                    {t.tracking && Object.keys(t.tracking).length > 0 ? (
+                      <EmailEventBadges counts={t.tracking} compact />
+                    ) : null}
                   </td>
                   <td className="muted small email-cell-date">
                     {formatRelative(t.last_message_at)}
