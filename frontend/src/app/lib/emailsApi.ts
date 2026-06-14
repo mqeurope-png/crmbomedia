@@ -77,6 +77,62 @@ export type EmailThread = {
    *  unsubscribe) aggregated across the thread's outbound messages.
    *  `sent` is excluded. Empty object when nothing tracked yet. */
   tracking?: Record<string, number>;
+  /** v2.4a: mailbox state — inbox / archived / trashed / spam. */
+  state?: EmailThreadStateValue;
+  folder_id?: string | null;
+  is_starred?: boolean;
+  snooze_until?: string | null;
+  labels?: EmailLabel[];
+};
+
+export type EmailThreadStateValue =
+  | "inbox"
+  | "archived"
+  | "trashed"
+  | "spam";
+
+export type EmailFolder = {
+  id: string;
+  name: string;
+  parent_id: string | null;
+  color: string | null;
+  icon: string | null;
+  sort_order: number;
+  is_system: boolean;
+  unread_count?: number;
+  total_count?: number;
+};
+
+export type EmailLabel = {
+  id: string;
+  name: string;
+  color: string | null;
+  sort_order: number;
+};
+
+export type EmailFolderWrite = {
+  name: string;
+  parent_id?: string | null;
+  color?: string | null;
+  icon?: string | null;
+  sort_order?: number;
+};
+
+export type EmailLabelWrite = {
+  name: string;
+  color?: string | null;
+  sort_order?: number;
+};
+
+export type EmailThreadListFilters = {
+  state?: EmailThreadStateValue;
+  folder_id?: string;
+  label_id?: string;
+  starred?: boolean;
+  has_unread?: boolean;
+  since?: string;
+  until?: string;
+  include_snoozed?: boolean;
 };
 
 export type EmailThreadDetail = EmailThread & {
@@ -127,13 +183,198 @@ export async function sendEmail(
 export async function listEmailThreads(
   contactId?: string,
   q?: string,
+  filters?: EmailThreadListFilters,
 ): Promise<EmailThreadList> {
   const params = new URLSearchParams();
   if (contactId) params.set("contact_id", contactId);
   if (q && q.trim()) params.set("q", q.trim());
+  if (filters?.state) params.set("state", filters.state);
+  if (filters?.folder_id) params.set("folder_id", filters.folder_id);
+  if (filters?.label_id) params.set("label_id", filters.label_id);
+  if (filters?.starred !== undefined) {
+    params.set("starred", String(filters.starred));
+  }
+  if (filters?.has_unread !== undefined) {
+    params.set("has_unread", String(filters.has_unread));
+  }
+  if (filters?.since) params.set("since", filters.since);
+  if (filters?.until) params.set("until", filters.until);
+  if (filters?.include_snoozed) params.set("include_snoozed", "true");
   const qs = params.toString();
   return apiFetch<EmailThreadList>(`/api/emails/threads${qs ? `?${qs}` : ""}`);
 }
+
+// --- v2.4a/b mailbox: folders, labels, mutations, bulk ----------------
+
+export async function listEmailFolders(): Promise<EmailFolder[]> {
+  return apiFetch<EmailFolder[]>("/api/emails/folders");
+}
+
+export async function createEmailFolder(
+  payload: EmailFolderWrite,
+): Promise<EmailFolder> {
+  return apiFetch<EmailFolder>("/api/emails/folders", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updateEmailFolder(
+  id: string,
+  payload: EmailFolderWrite,
+): Promise<EmailFolder> {
+  return apiFetch<EmailFolder>(`/api/emails/folders/${id}`, {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function deleteEmailFolder(id: string): Promise<void> {
+  await apiFetch(`/api/emails/folders/${id}`, { method: "DELETE" });
+}
+
+export async function listEmailLabels(): Promise<EmailLabel[]> {
+  return apiFetch<EmailLabel[]>("/api/emails/labels");
+}
+
+export async function createEmailLabel(
+  payload: EmailLabelWrite,
+): Promise<EmailLabel> {
+  return apiFetch<EmailLabel>("/api/emails/labels", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updateEmailLabel(
+  id: string,
+  payload: EmailLabelWrite,
+): Promise<EmailLabel> {
+  return apiFetch<EmailLabel>(`/api/emails/labels/${id}`, {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function deleteEmailLabel(id: string): Promise<void> {
+  await apiFetch(`/api/emails/labels/${id}`, { method: "DELETE" });
+}
+
+// Per-thread mutations.
+export async function starThread(id: string): Promise<void> {
+  await apiFetch(`/api/emails/threads/${id}/star`, { method: "POST" });
+}
+
+export async function unstarThread(id: string): Promise<void> {
+  await apiFetch(`/api/emails/threads/${id}/unstar`, { method: "POST" });
+}
+
+export async function moveThread(
+  id: string,
+  folder_id: string | null,
+): Promise<void> {
+  await apiFetch(`/api/emails/threads/${id}/move`, {
+    method: "POST",
+    body: JSON.stringify({ folder_id }),
+  });
+}
+
+export async function archiveThread(id: string): Promise<void> {
+  await apiFetch(`/api/emails/threads/${id}/archive`, { method: "POST" });
+}
+
+export async function trashThread(id: string): Promise<void> {
+  await apiFetch(`/api/emails/threads/${id}/trash`, { method: "POST" });
+}
+
+export async function spamThread(id: string): Promise<void> {
+  await apiFetch(`/api/emails/threads/${id}/spam`, { method: "POST" });
+}
+
+export async function restoreThread(id: string): Promise<void> {
+  await apiFetch(`/api/emails/threads/${id}/restore`, { method: "POST" });
+}
+
+export async function snoozeThread(
+  id: string,
+  snooze_until: string,
+): Promise<void> {
+  await apiFetch(`/api/emails/threads/${id}/snooze`, {
+    method: "POST",
+    body: JSON.stringify({ snooze_until }),
+  });
+}
+
+export async function unsnoozeThread(id: string): Promise<void> {
+  await apiFetch(`/api/emails/threads/${id}/unsnooze`, {
+    method: "POST",
+  });
+}
+
+export async function addThreadLabel(
+  thread_id: string,
+  label_id: string,
+): Promise<EmailLabel> {
+  return apiFetch<EmailLabel>(
+    `/api/emails/threads/${thread_id}/labels/${label_id}`,
+    { method: "POST" },
+  );
+}
+
+export async function removeThreadLabel(
+  thread_id: string,
+  label_id: string,
+): Promise<void> {
+  await apiFetch(
+    `/api/emails/threads/${thread_id}/labels/${label_id}`,
+    { method: "DELETE" },
+  );
+}
+
+export async function markThreadUnread(id: string): Promise<void> {
+  await apiFetch(`/api/emails/threads/${id}/mark-unread`, {
+    method: "POST",
+  });
+}
+
+// Bulk operations. All routes accept `{ thread_ids: string[], ... }`
+// and return `{ affected: number }`.
+export type BulkAffected = { affected: number };
+
+async function bulkPost<T = BulkAffected>(
+  path: string,
+  body: Record<string, unknown>,
+): Promise<T> {
+  return apiFetch<T>(`/api/emails/threads-bulk/${path}`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export const bulkArchive = (ids: string[]) =>
+  bulkPost("archive", { thread_ids: ids });
+export const bulkTrash = (ids: string[]) =>
+  bulkPost("trash", { thread_ids: ids });
+export const bulkSpam = (ids: string[]) =>
+  bulkPost("spam", { thread_ids: ids });
+export const bulkRestore = (ids: string[]) =>
+  bulkPost("restore", { thread_ids: ids });
+export const bulkStar = (ids: string[]) =>
+  bulkPost("star", { thread_ids: ids });
+export const bulkUnstar = (ids: string[]) =>
+  bulkPost("unstar", { thread_ids: ids });
+export const bulkMarkRead = (ids: string[]) =>
+  bulkPost("mark-read", { thread_ids: ids });
+export const bulkMarkUnread = (ids: string[]) =>
+  bulkPost("mark-unread", { thread_ids: ids });
+export const bulkMove = (ids: string[], folder_id: string | null) =>
+  bulkPost("move", { thread_ids: ids, folder_id });
+export const bulkSnooze = (ids: string[], snooze_until: string) =>
+  bulkPost("snooze", { thread_ids: ids, snooze_until });
+export const bulkAddLabel = (ids: string[], label_id: string) =>
+  bulkPost("labels/add", { thread_ids: ids, label_id });
+export const bulkRemoveLabel = (ids: string[], label_id: string) =>
+  bulkPost("labels/remove", { thread_ids: ids, label_id });
 
 export async function getEmailThread(id: string): Promise<EmailThreadDetail> {
   return apiFetch<EmailThreadDetail>(`/api/emails/threads/${id}`);
