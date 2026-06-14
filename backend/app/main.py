@@ -104,17 +104,22 @@ async def _arm_brevo_periodics() -> None:
 
 
 @app.on_event("startup")
-async def _arm_email_snooze_sweep() -> None:
-    """Sprint Email v2.4c — arm the periodic snooze sweep at API
-    startup. SETNX-guarded so multiple API processes coexist; the
-    job re-schedules itself on every tick."""
+async def _arm_email_scheduled_sweep() -> None:
+    """Sprint Email v2.4e — arm the periodic scheduled-send sweep
+    at API startup. SETNX-guarded so multiple API processes coexist;
+    the job re-schedules itself on every tick. The RQ queue name
+    stays `emails:snooze_sweep` (v2.4c heritage) so the prod worker
+    container doesn't need a config change."""
     try:
-        from app.email_snooze import arm_snooze_sweep  # noqa: PLC0415
+        from app.email_scheduled_sweep import (  # noqa: PLC0415
+            arm_scheduled_sweep,
+        )
 
-        arm_snooze_sweep()
+        arm_scheduled_sweep()
     except Exception:  # noqa: BLE001
         import logging  # noqa: PLC0415
 
         logging.getLogger(__name__).warning(
-            "email.snooze_sweep arm failed at startup", exc_info=True
+            "email.scheduled_send_sweep arm failed at startup",
+            exc_info=True,
         )
