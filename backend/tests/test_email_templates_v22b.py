@@ -170,19 +170,25 @@ def test_composer_source_returns_not_configured_when_unset(
 
 def test_composer_source_normalises_templates(client: TestClient) -> None:
     headers = auth_headers(client, role="user")
+    # composer.bomedia.net's current shape: state lives under `data`.
     payload = [
         {
             "id": "main",
-            "templates": [
-                {
-                    "id": "tpl-1",
-                    "name": "Pimpam Hero",
-                    "brand": "pimpam",
-                    "blocks": [{"type": "hero"}, {"type": "product_single"}],
-                },
-                {"id": "tpl-2", "compositorBlocks": []},
-                {"name": "no id, skipped"},
-            ],
+            "data": {
+                "templates": [
+                    {
+                        "id": "tpl-1",
+                        "name": "Pimpam Hero",
+                        "brand": "pimpam",
+                        "blocks": [
+                            {"type": "hero"},
+                            {"type": "product_single"},
+                        ],
+                    },
+                    {"id": "tpl-2", "compositorBlocks": []},
+                    {"name": "no id, skipped"},
+                ],
+            },
         }
     ]
     with patch.object(
@@ -213,6 +219,43 @@ def test_composer_source_normalises_templates(client: TestClient) -> None:
     assert first["open_url"].endswith("?template=tpl-1")
     # No-name fallback works.
     assert body["items"][1]["name"] == "Sin nombre"
+
+
+def test_composer_source_supports_legacy_root_shape(
+    client: TestClient,
+) -> None:
+    """Older snapshots stored the state at the row root, not inside
+    `data`. The proxy must keep working until the Composer migration
+    is fully rolled out."""
+    headers = auth_headers(client, role="user")
+    payload = [
+        {
+            "id": "main",
+            "templates": [
+                {"id": "legacy-1", "name": "Old hero", "blocks": []}
+            ],
+        }
+    ]
+    with patch.object(
+        et_services, "get_settings",
+        return_value=Settings(
+            **{
+                **get_settings().model_dump(),
+                "supabase_composer_url": "https://supa.example",
+                "supabase_composer_key": "secret",
+            }
+        ),
+    ), patch.object(
+        et_services.httpx, "Client",
+        return_value=_FakeClient(_FakeResponse(payload)),
+    ):
+        response = client.get(
+            "/api/emails/composer-source", headers=headers
+        )
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["items"]) == 1
+    assert body["items"][0]["id"] == "legacy-1"
 
 
 def test_composer_source_handles_supabase_failure(client: TestClient) -> None:
