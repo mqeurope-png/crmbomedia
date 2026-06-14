@@ -5518,6 +5518,64 @@ a.origin-chip:hover { filter: brightness(0.97); }
 }
 
 
+/* v2.4e — /emails/programados page */
+.email-scheduled-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.email-scheduled-item {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #ffffff;
+}
+.email-scheduled-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: #fffaeb;
+  color: #b54708;
+  border: 1px solid #fbe4a8;
+  font-weight: 600;
+}
+.email-scheduled-meta {
+  flex: 1;
+  min-width: 240px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.email-scheduled-subject {
+  margin: 0;
+  font-weight: 600;
+  color: #1d2940;
+  font-size: 14px;
+}
+.email-scheduled-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.email-scheduled-actions input[type="datetime-local"] {
+  padding: 4px 6px;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  font-size: 12px;
+}
+
 /* v2.4e — schedule-send dialog */
 .email-schedule-presets {
   list-style: none;

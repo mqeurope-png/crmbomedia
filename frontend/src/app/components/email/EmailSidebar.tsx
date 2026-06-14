@@ -2,6 +2,7 @@
 
 import {
   Archive,
+  CalendarClock,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
@@ -15,7 +16,8 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { useRouter, useSearchParams } from "next/navigation";
+import Link from "next/link";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useMemo, useState } from "react";
 import type {
   EmailFolder,
@@ -82,6 +84,8 @@ export function EmailSidebar({
   onChanged,
 }: Props) {
   const router = useRouter();
+  const pathname = usePathname();
+  const scheduledActive = pathname === "/emails/programados";
   const params = useSearchParams();
   const currentState = params.get("state") || "inbox";
   const currentFolder = params.get("folder_id");
@@ -151,6 +155,7 @@ export function EmailSidebar({
           {SYSTEM_VIEWS.map((view) => {
             const Icon = view.icon;
             const isActive =
+              !scheduledActive &&
               currentFolder === null &&
               currentLabel === null &&
               currentState === view.state &&
@@ -177,6 +182,15 @@ export function EmailSidebar({
               </li>
             );
           })}
+          <li>
+            <Link
+              href="/emails/programados"
+              className={`email-sidebar-item${scheduledActive ? " is-active" : ""}`}
+            >
+              <CalendarClock size={14} aria-hidden />
+              <span>Programados</span>
+            </Link>
+          </li>
         </ul>
       </nav>
 

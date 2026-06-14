@@ -42,7 +42,8 @@ import {
 } from "../../lib/emailTrackingApi";
 import { extractErrorMessage } from "../../lib/errors";
 
-function formatDateTime(value: string): string {
+function formatDateTime(value: string | null): string {
+  if (!value) return "—";
   return new Date(value).toLocaleString("es-ES", {
     day: "2-digit",
     month: "short",
@@ -348,7 +349,11 @@ export default function EmailThreadPage() {
                   {m.from_name ? (
                     <span className="muted small"> &lt;{m.from_email}&gt;</span>
                   ) : null}
-                  {m.direction === "outbound" ? (
+                  {m.scheduled_status === "pending" ? (
+                    <span className="badge warn">
+                      {" "}📅 Programado para {formatDateTime(m.scheduled_for ?? null)}
+                    </span>
+                  ) : m.direction === "outbound" ? (
                     <span className="badge ok"> Enviado desde el CRM</span>
                   ) : (
                     <span className="badge muted"> Respuesta</span>
