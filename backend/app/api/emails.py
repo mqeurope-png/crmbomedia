@@ -29,6 +29,8 @@ from app.models.crm import (
     EmailMessage,
     EmailMessageEvent,
     EmailThread,
+    EmailThreadLabel,
+    EmailThreadState,
     User,
     UserEmailAliasPref,
     UserRole,
@@ -369,16 +371,68 @@ def send_email(
 def list_threads(
     contact_id: str | None = Query(default=None),
     q: str | None = Query(default=None, description="LIKE on subject / from / snippet"),
+    # v2.4a: mailbox filters. `state` defaults to inbox so the old
+    # behaviour (no filter = active inbox) is preserved; pass
+    # `state=archived` etc. to see the other boxes. `folder_id` ===
+    # "inbox" means "no folder set" (top-level bandeja); a real UUID
+    # restricts to that folder. `include_snoozed` flips the snooze
+    # filter off so the dedicated "Pospuestos" view can see them.
+    state: str | None = Query(default=None, pattern="^(inbox|archived|trashed|spam)$"),
+    folder_id: str | None = Query(default=None),
+    label_id: str | None = Query(default=None),
+    starred: bool | None = Query(default=None),
+    has_unread: bool | None = Query(default=None),
+    since: datetime | None = Query(default=None),
+    until: datetime | None = Query(default=None),
+    include_snoozed: bool = Query(default=False),
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     session: Session = Depends(get_session),
     current_user: User = Depends(require_user),
 ) -> EmailThreadList:
-    stmt = select(EmailThread)
+    stmt = select(EmailThread).options(selectinload(EmailThread.labels))
     if contact_id:
         stmt = stmt.where(EmailThread.contact_id == contact_id)
     if current_user.role not in (UserRole.ADMIN, UserRole.MANAGER):
         stmt = stmt.where(EmailThread.initiated_by_user_id == current_user.id)
+    # State default = INBOX so the legacy list view keeps its
+    # narrow scope. The contact-detail panel (which passes
+    # `contact_id`) explicitly drops the default so it still shows
+    # every thread tied to the contact regardless of where the
+    # operator filed it.
+    if state is not None:
+        stmt = stmt.where(EmailThread.state == EmailThreadState(state))
+    elif contact_id is None:
+        stmt = stmt.where(EmailThread.state == EmailThreadState.INBOX)
+    if folder_id == "inbox":
+        stmt = stmt.where(EmailThread.folder_id.is_(None))
+    elif folder_id is not None:
+        stmt = stmt.where(EmailThread.folder_id == folder_id)
+    if label_id is not None:
+        # Subquery instead of join so the outer count/pagination
+        # stay unique-by-thread without DISTINCT gymnastics.
+        label_match = select(EmailThreadLabel.thread_id).where(
+            EmailThreadLabel.label_id == label_id
+        )
+        stmt = stmt.where(EmailThread.id.in_(label_match))
+    if starred is not None:
+        stmt = stmt.where(EmailThread.is_starred.is_(starred))
+    if has_unread is not None:
+        stmt = stmt.where(EmailThread.has_unread_replies.is_(has_unread))
+    if since is not None:
+        stmt = stmt.where(EmailThread.last_message_at >= since)
+    if until is not None:
+        stmt = stmt.where(EmailThread.last_message_at <= until)
+    if not include_snoozed:
+        from sqlalchemy import or_ as _or_sn  # noqa: PLC0415
+
+        now = datetime.now(UTC)
+        stmt = stmt.where(
+            _or_sn(
+                EmailThread.snooze_until.is_(None),
+                EmailThread.snooze_until <= now,
+            )
+        )
     if q:
         # LIKE-match the term against the thread subject OR any
         # message's from_email / from_name / subject / snippet /
@@ -466,7 +520,10 @@ def thread_detail(
     thread = session.scalar(
         select(EmailThread)
         .where(EmailThread.id == thread_id)
-        .options(selectinload(EmailThread.messages))
+        .options(
+            selectinload(EmailThread.messages),
+            selectinload(EmailThread.labels),
+        )
     )
     if thread is None:
         raise not_found("EmailThread")

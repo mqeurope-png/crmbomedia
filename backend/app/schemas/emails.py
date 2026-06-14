@@ -103,6 +103,16 @@ class EmailThreadRead(BaseModel):
     # `sent` is intentionally excluded — every thread has it, so it's
     # noise in the list.
     tracking: dict[str, int] = Field(default_factory=dict)
+    # Email v2.4a: mailbox state. `state` drives which "box" the
+    # thread lives in (inbox/archived/trashed/spam); `folder_id` is
+    # the custom-folder sub-classification; `labels` is the
+    # many-to-many label list resolved server-side so the list view
+    # can render colored chips without an N+1.
+    state: str = "inbox"
+    folder_id: str | None = None
+    is_starred: bool = False
+    snooze_until: datetime | None = None
+    labels: list[EmailLabelRead] = Field(default_factory=list)
 
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
@@ -184,3 +194,83 @@ class AliasPreferencesPayload(BaseModel):
                 "Solo un alias puede marcarse como predeterminado."
             )
         return items
+
+
+# --- Sprint Email v2.4a — mailbox redesign (folders + labels +
+# thread state/star/snooze). Backend-only foundation; the UI ships
+# in v2.4b. ---
+
+
+class EmailFolderWrite(BaseModel):
+    """Create / update payload for a custom folder. `name` is the
+    only required field; the rest are optional sidebar polish."""
+
+    name: str = Field(min_length=1, max_length=120)
+    parent_id: str | None = None
+    color: str | None = Field(default=None, max_length=20)
+    icon: str | None = Field(default=None, max_length=40)
+    sort_order: int = 0
+
+
+class EmailFolderRead(BaseModel):
+    id: str
+    name: str
+    parent_id: str | None
+    color: str | None
+    icon: str | None
+    sort_order: int
+    is_system: bool
+    # Populated by the tree endpoint so the sidebar can render
+    # badges next to each row without a follow-up call.
+    unread_count: int = 0
+    total_count: int = 0
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class EmailLabelWrite(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    color: str | None = Field(default=None, max_length=20)
+    sort_order: int = 0
+
+
+class EmailLabelRead(BaseModel):
+    id: str
+    name: str
+    color: str | None
+    sort_order: int
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class EmailThreadBulkAction(BaseModel):
+    """Generic bulk-action payload — the action verb is encoded in
+    the URL path so the schema stays flat and the API stays
+    explicit."""
+
+    thread_ids: list[str] = Field(min_length=1, max_length=200)
+
+
+class EmailThreadBulkMove(EmailThreadBulkAction):
+    """Move to a folder (NULL = bandeja). Kept separate so OpenAPI
+    documents the optional `folder_id`."""
+
+    folder_id: str | None = None
+
+
+class EmailThreadBulkLabel(EmailThreadBulkAction):
+    """Add or remove a single label from a batch of threads. The
+    verb (add/remove) lives on the URL."""
+
+    label_id: str
+
+
+class EmailThreadBulkSnooze(EmailThreadBulkAction):
+    snooze_until: datetime
+
+
+# EmailThreadRead refers to EmailLabelRead by string forward-ref
+# (the `from __future__ import annotations` at the top makes every
+# annotation a string). Resolve it now that EmailLabelRead exists.
+EmailThreadRead.model_rebuild()
+EmailThreadDetail.model_rebuild()
