@@ -212,6 +212,40 @@ export function RichEditor({
           };
           input.click();
         },
+        // Insertar medio: TinyMCE's `media` plugin only accepts raw
+        // embed code by default. Detect the two video sources our
+        // comerciales actually paste — YouTube + Vimeo — and synth
+        // the iframe ourselves. `media_live_embeds` then renders the
+        // result inline in the editor instead of a placeholder box.
+        media_live_embeds: true,
+        media_url_resolver: (
+          data: { url: string },
+          resolve: (out: { html: string }) => void,
+        ) => {
+          const yt = data.url.match(
+            /(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|watch\?.+&v=))([\w-]+)/,
+          );
+          if (yt) {
+            resolve({
+              html:
+                `<iframe width="560" height="315" ` +
+                `src="https://www.youtube.com/embed/${yt[1]}" ` +
+                `frameborder="0" allowfullscreen></iframe>`,
+            });
+            return;
+          }
+          const vm = data.url.match(/vimeo\.com\/(\d+)/);
+          if (vm) {
+            resolve({
+              html:
+                `<iframe src="https://player.vimeo.com/video/${vm[1]}" ` +
+                `width="640" height="360" frameborder="0" ` +
+                `allowfullscreen></iframe>`,
+            });
+            return;
+          }
+          resolve({ html: "" });
+        },
         content_style: `
           body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif; font-size: 14px; line-height: 1.6; color: #1e293b; padding: 16px; }
           p { margin: 0 0 12px; }
