@@ -1,6 +1,7 @@
 """Sprint Email v2.3a — tracking endpoints + send wiring tests."""
 from __future__ import annotations
 
+import base64
 from collections.abc import Generator
 from datetime import UTC, datetime
 from typing import Any
@@ -646,3 +647,204 @@ def test_send_without_unsubscribe_skips_footer_and_headers(
     call = sent[0]
     assert "Anular suscripción" not in (call["body_html"] or "")
     assert not call.get("extra_headers")
+
+
+# ───────────────────────────────────────────────────────────────────
+# Bounce parser — wider detection (Sprint v2.3a-fixes)
+# ───────────────────────────────────────────────────────────────────
+
+
+def test_is_ndr_detects_ionos_kundenserver_sender() -> None:
+    """Real-world: IONOS bounces come from `mailer-daemon@kundenserver.de`
+    with subject "Mail delivery failed: returning message to sender".
+    The narrow prefix list in v2.3a missed both signals."""
+    from app.integrations.gmail.service import _is_ndr
+
+    assert _is_ndr(
+        "mailer-daemon@kundenserver.de",
+        {"subject": "Mail delivery failed: returning message to sender"},
+    )
+
+
+def test_is_ndr_detects_by_subject_alone() -> None:
+    """A weird sender we don't recognise should still be classified when
+    the subject screams bounce."""
+    from app.integrations.gmail.service import _is_ndr
+
+    assert _is_ndr(
+        "delivery@some-weird-host.example",
+        {"subject": "Delivery Status Notification (Failure)"},
+    )
+    assert _is_ndr(
+        "delivery@some-weird-host.example",
+        {"subject": "Undelivered Mail Returned to Sender"},
+    )
+    assert _is_ndr(
+        "x@y.test",
+        {"subject": "Tu mensaje no se ha podido entregar"},
+    )
+
+
+def test_is_ndr_detects_auto_submitted_header() -> None:
+    from app.integrations.gmail.service import _is_ndr
+
+    assert _is_ndr(
+        "noreply@anywhere.test", {"auto-submitted": "auto-replied"}
+    )
+    assert _is_ndr(
+        "noreply@anywhere.test", {"auto-submitted": "auto-generated"}
+    )
+
+
+def test_is_ndr_detects_multipart_report_content_type() -> None:
+    from app.integrations.gmail.service import _is_ndr
+
+    assert _is_ndr(
+        "no-clue@unknown.test",
+        {
+            "content-type": (
+                'multipart/report; report-type=delivery-status; '
+                'boundary="abc"'
+            )
+        },
+    )
+
+
+def test_is_ndr_detects_empty_return_path() -> None:
+    from app.integrations.gmail.service import _is_ndr
+
+    assert _is_ndr("anywhere@x.test", {"return-path": "<>"})
+
+
+def test_parse_ndr_extracts_from_ionos_style_body() -> None:
+    """Exim / kundenserver default DSN body — the v2.3a parser only
+    looked at the `Final-Recipient` DSN field, missing the addresses
+    listed in the plain-text preamble."""
+    from app.integrations.gmail.service import _parse_ndr
+
+    body = """\
+This message was created automatically by mail delivery software.
+
+A message that you sent could not be delivered to one or more of its
+recipients. This is a permanent error. The following address(es) failed:
+
+  ghost@nowhere.test
+    SMTP error from remote server: 550 5.1.1 User unknown
+"""
+    info = _parse_ndr(
+        {"subject": "Mail delivery failed: returning message to sender"},
+        body,
+    )
+    assert info["failed_to"] == "ghost@nowhere.test"
+
+
+def test_parse_ndr_extracts_from_angle_addr_line() -> None:
+    """Postfix variant: `<addr>: reason` on a single line."""
+    from app.integrations.gmail.service import _parse_ndr
+
+    body = "<ghost@nowhere.test>: host mx1.example said: 550 mailbox full"
+    info = _parse_ndr({}, body)
+    assert info["failed_to"] == "ghost@nowhere.test"
+    assert "mailbox full" in info["reason"]
+
+
+def test_ndr_inbound_does_not_persist_message_and_records_bounce(
+    client: TestClient,
+    session_factory: sessionmaker,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End-to-end: an IONOS-style NDR comes in via process_history, the
+    parser identifies it, the BOUNCE event lands on the original
+    outbound, and the NDR ITSELF does NOT become a new EmailMessage row
+    in the thread (the operator's bandeja stays clean)."""
+    from app.integrations.gmail import service as gsvc
+
+    # Seed the user + outbound message + a Gmail thread that the
+    # process_history loop is allowed to look at.
+    user_id = _seed_gmail_for_user(session_factory)
+    with session_factory() as session:
+        thread = EmailThread(
+            initiated_by_user_id=user_id,
+            gmail_thread_id="thr-bounce",
+            gmail_account_user_id=user_id,
+            first_message_at=datetime.now(UTC),
+            last_message_at=datetime.now(UTC),
+            message_count=1,
+            subject="Hola",
+        )
+        session.add(thread)
+        session.flush()
+        sent_msg = EmailMessage(
+            thread_id=thread.id,
+            gmail_message_id="outbound-x",
+            gmail_account_user_id=user_id,
+            direction=EmailDirection.OUTBOUND,
+            from_email="info@bomedia.net",
+            to_emails_json='["ghost@nowhere.test"]',
+            subject="Hola",
+            sent_at=datetime.now(UTC),
+        )
+        session.add(sent_msg)
+        session.commit()
+        outbound_id = sent_msg.id
+
+    ndr_body = """\
+This message was created automatically by mail delivery software.
+
+A message that you sent could not be delivered to one or more of its
+recipients. This is a permanent error. The following address(es) failed:
+
+  ghost@nowhere.test
+    SMTP error from remote server: 550 5.1.1 User unknown
+"""
+    raw = {
+        "id": "ndr-1",
+        "threadId": "thr-bounce",
+        "payload": {
+            "headers": [
+                {"name": "From", "value": "mailer-daemon@kundenserver.de"},
+                {"name": "To", "value": "info@bomedia.net"},
+                {
+                    "name": "Subject",
+                    "value": "Mail delivery failed: returning message to sender",
+                },
+                {"name": "Date", "value": "Sun, 14 Jun 2026 17:30:00 +0000"},
+            ],
+            "body": {
+                "data": base64.urlsafe_b64encode(
+                    ndr_body.encode()
+                ).decode(),
+                "size": len(ndr_body),
+            },
+            "mimeType": "text/plain",
+        },
+    }
+
+    with session_factory() as session:
+        result = gsvc._persist_inbound(
+            session,
+            user_id=user_id,
+            raw=raw,
+            gmail_thread_id="thr-bounce",
+        )
+        session.commit()
+        assert result is None
+
+    with session_factory() as session:
+        # No new EmailMessage row materialised for the NDR.
+        inbound_count = session.scalar(
+            select(EmailMessage)
+            .where(EmailMessage.gmail_message_id == "ndr-1")
+            .limit(1)
+        )
+        assert inbound_count is None
+        # The BOUNCE event landed on the original outbound.
+        events = list(
+            session.scalars(
+                select(EmailMessageEvent).where(
+                    EmailMessageEvent.message_id == outbound_id,
+                    EmailMessageEvent.event_type == EmailEventType.BOUNCE,
+                )
+            )
+        )
+        assert len(events) == 1

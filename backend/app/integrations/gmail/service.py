@@ -366,23 +366,70 @@ _NDR_FROM_PREFIXES = (
     "postmaster@",
     "noreply-daemon@",
     "noreply@bounces.",
+    "mail-delivery-subsystem@",
+    "mail-daemon@",
+    "bounce@",
+    "bounces@",
+)
+
+# Subject phrases that, by themselves, make us treat the message as a
+# bounce. We match case-insensitive substrings (Spanish + English).
+_NDR_SUBJECT_NEEDLES = (
+    "delivery failed",
+    "delivery status notification",
+    "undelivered",
+    "undeliverable",
+    "returning message to sender",
+    "could not be delivered",
+    "failure notice",
+    "no se ha podido entregar",
+    "mensaje no entregado",
+    "devolución del correo",
 )
 
 
 def _is_ndr(from_email: str, headers: dict[str, str]) -> bool:
     """Best-effort: classify an inbound message as a non-delivery
-    report. Either the sender looks like a postmaster-style account,
-    or the message carries the `X-Failed-Recipients` header that
-    Gmail / Exchange / SES populate on bounce reports."""
+    report.
+
+    We accept any of several independent signals — sender prefix,
+    subject keywords, the `X-Failed-Recipients` header (Gmail / SES),
+    `Auto-Submitted: auto-replied`, or a `Content-Type:
+    multipart/report; report-type=delivery-status` boundary. A single
+    hit is enough; the consequences (skipping inbound persistence,
+    looking for the original) are conservative so over-detecting just
+    means the operator doesn't see a bounce message in their thread,
+    which is arguably an improvement.
+    """
     if from_email and any(
         from_email.lower().startswith(p) for p in _NDR_FROM_PREFIXES
     ):
         return True
-    return bool(headers.get("x-failed-recipients"))
+    if headers.get("x-failed-recipients"):
+        return True
+    auto = (headers.get("auto-submitted") or "").lower()
+    if auto.startswith("auto-replied") or auto.startswith("auto-generated"):
+        return True
+    content_type = (headers.get("content-type") or "").lower()
+    if (
+        "multipart/report" in content_type
+        and "delivery-status" in content_type
+    ):
+        return True
+    subject = (headers.get("subject") or "").lower()
+    if any(needle in subject for needle in _NDR_SUBJECT_NEEDLES):
+        return True
+    # An empty Return-Path (`<>`) is the SMTP convention for "this is a
+    # bounce; do not bounce me back". It's only set on the envelope so
+    # Gmail surfaces it as a header.
+    if (headers.get("return-path") or "").strip() == "<>":
+        return True
+    return False
 
 
 _NDR_FINAL_RE = re.compile(
-    r"final-recipient:\s*rfc822\s*;\s*([^\s\r\n]+)", re.IGNORECASE
+    r"(?:final|original)-recipient:\s*rfc822\s*;\s*([^\s\r\n]+)",
+    re.IGNORECASE,
 )
 _NDR_STATUS_RE = re.compile(
     r"status:\s*(\d\.\d+\.\d+)", re.IGNORECASE
@@ -391,16 +438,31 @@ _NDR_DIAG_RE = re.compile(
     r"diagnostic-code:\s*(.+?)(?:\r?\n(?:\S|$)|\Z)",
     re.IGNORECASE | re.DOTALL,
 )
+# IONOS / kundenserver and Exim's classic "The following address(es)
+# failed" body, plus generic `<addr>: reason` lines.
+_NDR_FAILED_BLOCK_RE = re.compile(
+    r"following\s+address\(?es\)?\s+failed:\s*\n+\s*([^\s<>,]+@[^\s<>,]+)",
+    re.IGNORECASE,
+)
+_NDR_ANGLE_ADDR_RE = re.compile(
+    r"<([^\s<>@]+@[^\s<>]+)>:\s*(.+?)$", re.IGNORECASE | re.MULTILINE
+)
 
 
 def _parse_ndr(
     headers: dict[str, str], body_text: str | None
 ) -> dict[str, Any]:
-    """Extract failed recipient + reason from an NDR body.
+    """Extract failed recipient + reason from an NDR.
 
-    Anything we can't pin down stays absent — the caller still gets
-    something useful (an empty dict means "we don't know who failed",
-    which the dashboard surfaces as 'bounce: unknown recipient')."""
+    Tries the three formats we see in the wild:
+      - SMTP DSN (`Final-Recipient: rfc822;…`, `Status: 5.x.x`).
+      - Gmail's `X-Failed-Recipients` header.
+      - Postfix / Exim / IONOS text bodies that list `<addr>: reason`.
+
+    Anything we can't pin down stays absent — empty result still
+    surfaces as a bounce event keyed off the message we found, just
+    without metadata.
+    """
     info: dict[str, Any] = {}
     failed = headers.get("x-failed-recipients")
     if failed:
@@ -410,11 +472,23 @@ def _parse_ndr(
         m = _NDR_FINAL_RE.search(haystack)
         if m:
             info["failed_to"] = m.group(1).strip("<>")
+    if "failed_to" not in info:
+        m = _NDR_FAILED_BLOCK_RE.search(haystack)
+        if m:
+            info["failed_to"] = m.group(1).strip("<>")
+    if "failed_to" not in info:
+        m = _NDR_ANGLE_ADDR_RE.search(haystack)
+        if m:
+            info["failed_to"] = m.group(1)
+            # The reason often sits on the same line as the angle addr.
+            info.setdefault(
+                "reason", " ".join(m.group(2).split())[:200]
+            )
     status_match = _NDR_STATUS_RE.search(haystack)
     if status_match:
         info["status"] = status_match.group(1)
     diag = _NDR_DIAG_RE.search(haystack + "\n ")
-    if diag:
+    if diag and "reason" not in info:
         info["reason"] = " ".join(diag.group(1).split())[:200]
     return info
 
@@ -470,7 +544,7 @@ def _persist_inbound(
     user_id: str,
     raw: dict[str, Any],
     gmail_thread_id: str,
-) -> EmailMessage:
+) -> EmailMessage | None:
     headers = _index_headers(raw.get("payload", {}).get("headers", []))
     from_header = headers.get("from") or ""
     to_header = headers.get("to") or ""
@@ -486,10 +560,11 @@ def _persist_inbound(
     body_text, body_html = _extract_bodies(raw.get("payload", {}))
 
     # Sprint Email v2.3a — NDR detection. When this looks like a
-    # bounce, we attach the event to the ORIGINAL outbound message
-    # and store the rest of the inbound as an EmailMessage anyway so
-    # the operator can still see it in the thread (Gmail does the
-    # same).
+    # bounce we attach the event to the ORIGINAL outbound message and
+    # SKIP persisting the NDR itself: the operator doesn't want a
+    # "Mail delivery failed" row cluttering their thread. The original
+    # send still lives in the thread and now has a BOUNCE event next
+    # to it, which is what the timeline UI surfaces.
     if _is_ndr(from_email, headers):
         ndr = _parse_ndr(headers, body_text)
         original = _find_bounced_message(
@@ -498,16 +573,30 @@ def _persist_inbound(
             gmail_thread_id=gmail_thread_id,
             failed_to=ndr.get("failed_to"),
         )
-        if original is not None:
-            from app.email_tracking.services import record_event  # noqa: PLC0415
-            from app.models.crm import EmailEventType  # noqa: PLC0415
+        from app.email_tracking.services import record_event  # noqa: PLC0415
+        from app.models.crm import EmailEventType  # noqa: PLC0415
 
+        if original is not None:
             record_event(
                 session,
                 message_id=original.id,
                 event_type=EmailEventType.BOUNCE,
-                metadata=ndr or {"raw_from": from_email},
+                metadata={
+                    **(ndr or {}),
+                    "from": from_email,
+                    "subject": subject,
+                },
             )
+            session.commit()
+        else:
+            logger.info(
+                "gmail.ndr.original_not_found user=%s subject=%r failed_to=%s",
+                user_id,
+                (subject or "")[:80],
+                ndr.get("failed_to"),
+            )
+        # Signal the caller: nothing to insert.
+        return None
 
     contact = session.scalar(
         select(Contact).where(Contact.email == from_email)
