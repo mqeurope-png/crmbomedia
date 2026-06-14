@@ -93,10 +93,39 @@ def send_email(
     if in_reply_to_message_id:
         existing = session.get(EmailMessage, in_reply_to_message_id)
         if existing is not None:
-            in_reply_to_header = existing.gmail_message_id
-            references_header = [existing.gmail_message_id]
+            # Gmail's send API documents three requirements to chain
+            # onto an existing thread: a valid `threadId`, a matching
+            # `Subject`, and `In-Reply-To` + `References` headers in
+            # RFC 2822 form. The parent's `gmail_message_id` we have
+            # in the DB is the API id (a hex token like
+            # `1893a8c5b1f2dac3`) — NOT the angle-bracketed RFC
+            # Message-Id (`<CABc…@mail.gmail.com>`) — so a header
+            # built from it gets rejected as malformed and Gmail
+            # silently breaks the conversation chain.
+            #
+            # Pull the actual Message-Id out of the parent message's
+            # headers right now. One extra round-trip per reply, but
+            # it's the only way to thread reliably without persisting
+            # a new column on every message we have.
+            rfc_message_id: str | None = None
+            try:
+                parent_meta = client.get_message(existing.gmail_message_id)
+                parent_headers = _index_headers(
+                    parent_meta.get("payload", {}).get("headers", []) or []
+                )
+                # Gmail returns header names case-preserved; _index_headers
+                # lower-cases the keys so this lookup is canonical.
+                rfc_message_id = parent_headers.get("message-id")
+            except Exception:  # noqa: BLE001
+                # If Gmail 404s the parent (deleted, expired) we still
+                # try with the threadId — better a partial chain than
+                # outright failure.
+                rfc_message_id = None
             existing_thread = existing.thread
             thread_id = existing_thread.gmail_thread_id
+            if rfc_message_id:
+                in_reply_to_header = rfc_message_id
+                references_header = [rfc_message_id]
 
     response = client.send_message(
         from_alias=from_alias,

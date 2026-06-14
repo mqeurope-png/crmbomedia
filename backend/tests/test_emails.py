@@ -1501,3 +1501,169 @@ def test_reply_to_suggestion_falls_back_to_first_recipient(
     )
     assert response.status_code == 200, response.text
     assert response.json()["reply_to_suggestion"] == "nuevo-lead@example.com"
+
+
+def test_send_reply_uses_parent_rfc_message_id_for_threading(
+    client: TestClient,
+    session_factory: sessionmaker,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The parent's gmail API id isn't an RFC-compliant Message-Id.
+    Gmail rejects a malformed `In-Reply-To` and breaks threading even
+    when threadId is passed. send_email must fetch the parent's real
+    Message-Id header before building the reply MIME."""
+    from app.models.crm import EmailDirection
+
+    with session_factory() as session:
+        uid = _user_id(session, UserRole.USER)
+        thread = EmailThread(
+            initiated_by_user_id=uid,
+            gmail_thread_id="gmail-thr-original",
+            gmail_account_user_id=uid,
+            first_message_at=datetime.now(UTC),
+            last_message_at=datetime.now(UTC),
+            message_count=1,
+            subject="Hola",
+        )
+        session.add(thread)
+        session.flush()
+        parent = EmailMessage(
+            thread_id=thread.id,
+            gmail_message_id="gmail-msg-parent",
+            gmail_account_user_id=uid,
+            direction=EmailDirection.INBOUND,
+            from_email="lead@example.com",
+            to_emails_json='["info@bomedia.net"]',
+            sent_at=datetime.now(UTC),
+        )
+        session.add(parent)
+        session.commit()
+        parent_id = parent.id
+    _seed_gmail_integration(session_factory, user_id=uid)
+
+    sent: list[dict[str, Any]] = []
+
+    class _FakeClient:
+        def __init__(self, *_a: Any, **_k: Any) -> None:
+            pass
+
+        def get_message(self, message_id: str) -> dict[str, Any]:
+            assert message_id == "gmail-msg-parent"
+            return {
+                "id": message_id,
+                "payload": {
+                    "headers": [
+                        {
+                            "name": "Message-Id",
+                            "value": "<CABcDeFgHiJk@mail.gmail.com>",
+                        },
+                        {"name": "Subject", "value": "Hola"},
+                    ],
+                },
+            }
+
+        def send_message(self, **kwargs: Any) -> dict[str, Any]:
+            sent.append(kwargs)
+            return {
+                "id": "gmail-msg-reply",
+                "threadId": kwargs.get("thread_id") or "gmail-thr-original",
+            }
+
+    monkeypatch.setattr(
+        "app.integrations.gmail.service.GmailClient", _FakeClient
+    )
+
+    response = client.post(
+        "/api/emails/send",
+        json={
+            "from_alias": "info@bomedia.net",
+            "to": ["lead@example.com"],
+            "subject": "Re: Hola",
+            "body_html": "<p>Hola de vuelta</p>",
+            "body_text": None,
+            "in_reply_to_message_id": parent_id,
+        },
+        headers=auth_headers(client, "user"),
+    )
+    assert response.status_code == 201, response.text
+    assert sent
+    call = sent[0]
+    # threadId still piped through so Gmail groups by conversation.
+    assert call["thread_id"] == "gmail-thr-original"
+    # The crucial bit: header carries the parent's RFC Message-Id
+    # (angle brackets and all), not the API id.
+    assert call["in_reply_to_message_id"] == "<CABcDeFgHiJk@mail.gmail.com>"
+    assert call["references"] == ["<CABcDeFgHiJk@mail.gmail.com>"]
+
+
+def test_send_reply_falls_back_when_parent_message_lookup_fails(
+    client: TestClient,
+    session_factory: sessionmaker,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If Gmail 404s the parent (deleted / expired), the reply still
+    flies — just without the In-Reply-To header. Partial chain >
+    outright failure."""
+    from app.models.crm import EmailDirection
+
+    with session_factory() as session:
+        uid = _user_id(session, UserRole.USER)
+        thread = EmailThread(
+            initiated_by_user_id=uid,
+            gmail_thread_id="gmail-thr-x",
+            gmail_account_user_id=uid,
+            first_message_at=datetime.now(UTC),
+            last_message_at=datetime.now(UTC),
+            message_count=1,
+            subject="X",
+        )
+        session.add(thread)
+        session.flush()
+        parent = EmailMessage(
+            thread_id=thread.id,
+            gmail_message_id="gone",
+            gmail_account_user_id=uid,
+            direction=EmailDirection.OUTBOUND,
+            from_email="user@example.com",
+            to_emails_json='["lead@example.com"]',
+            sent_at=datetime.now(UTC),
+        )
+        session.add(parent)
+        session.commit()
+        parent_id = parent.id
+    _seed_gmail_integration(session_factory, user_id=uid)
+
+    sent: list[dict[str, Any]] = []
+
+    class _FakeClient:
+        def __init__(self, *_a: Any, **_k: Any) -> None:
+            pass
+
+        def get_message(self, _message_id: str) -> dict[str, Any]:
+            raise RuntimeError("parent gone")
+
+        def send_message(self, **kwargs: Any) -> dict[str, Any]:
+            sent.append(kwargs)
+            return {"id": "gmail-msg-y", "threadId": "gmail-thr-x"}
+
+    monkeypatch.setattr(
+        "app.integrations.gmail.service.GmailClient", _FakeClient
+    )
+
+    response = client.post(
+        "/api/emails/send",
+        json={
+            "from_alias": "info@bomedia.net",
+            "to": ["lead@example.com"],
+            "subject": "Re: X",
+            "body_html": "<p>retry</p>",
+            "body_text": None,
+            "in_reply_to_message_id": parent_id,
+        },
+        headers=auth_headers(client, "user"),
+    )
+    assert response.status_code == 201, response.text
+    call = sent[0]
+    assert call["thread_id"] == "gmail-thr-x"
+    assert call["in_reply_to_message_id"] is None
+    assert call["references"] is None
