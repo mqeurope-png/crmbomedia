@@ -388,7 +388,8 @@ _NDR_STATUS_RE = re.compile(
     r"status:\s*(\d\.\d+\.\d+)", re.IGNORECASE
 )
 _NDR_DIAG_RE = re.compile(
-    r"diagnostic-code:\s*(.+?)(?:\r?\n[^\s])", re.IGNORECASE | re.DOTALL
+    r"diagnostic-code:\s*(.+?)(?:\r?\n(?:\S|$)|\Z)",
+    re.IGNORECASE | re.DOTALL,
 )
 
 
