@@ -348,3 +348,20 @@ def test_recent_orders_by_last_used(
     assert response.status_code == 200
     recent_ids = [r["id"] for r in response.json()["recent"]]
     assert recent_ids[0] == a["id"]
+
+
+def test_extract_text_strips_style_and_script_block_contents() -> None:
+    """Bart's verified bug: TinyMCE-authored sends shipped CSS reset
+    boilerplate inside `<style>`, and our snippet preview rendered
+    raw CSS source instead of the operator's words."""
+    html = (
+        "<p></p>"
+        "<style>body,table,td,p,a{margin:0;padding:0}img{border:0}</style>"
+        "<script>alert('x')</script>"
+        "<!--[if mso]><b>outlook</b><![endif]-->"
+        "<p>Hola Eduard, confirmo nuestra cita para mañana a las 10h.</p>"
+    )
+    assert (
+        extract_text_from_html(html)
+        == "Hola Eduard, confirmo nuestra cita para mañana a las 10h."
+    )

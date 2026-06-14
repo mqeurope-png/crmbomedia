@@ -22,19 +22,30 @@ MAX_FOLDER_DEPTH = 3
 
 _TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"\s+")
+# Strip `<style>`, `<script>`, and `<head>` blocks INCLUDING their
+# contents. Without these, any TinyMCE / Outlook boilerplate that
+# ships CSS reset blocks inline (very common when pasting templates)
+# bleeds into the plain-text fallback as raw CSS source.
+_BLOCK_TAGS_RE = re.compile(
+    r"<(?P<tag>style|script|head)\b[^>]*>[\s\S]*?</(?P=tag)>",
+    re.IGNORECASE,
+)
+_COMMENT_RE = re.compile(r"<!--[\s\S]*?-->")
 
 _log = logging.getLogger(__name__)
 
 
 def extract_text_from_html(html: str | None) -> str | None:
     """Strip tags + collapse whitespace. Used for the multipart
-    `body_text` column on every template write. Falls back to the
-    same input when the parser surface gets weird; the multipart
-    text is informational and a noisy fallback beats a silent
-    nullable."""
+    `body_text` column on every template write AND the inbox snippet
+    when a TinyMCE-authored body ships without a plaintext companion.
+    Block-tag stripping has to land BEFORE the simple tag pass —
+    otherwise the CSS / JS contents leak into the result as raw text."""
     if not html:
         return None
-    body = _TAG_RE.sub(" ", html)
+    body = _COMMENT_RE.sub(" ", html)
+    body = _BLOCK_TAGS_RE.sub(" ", body)
+    body = _TAG_RE.sub(" ", body)
     body = (
         body.replace("&nbsp;", " ")
         .replace("&amp;", "&")

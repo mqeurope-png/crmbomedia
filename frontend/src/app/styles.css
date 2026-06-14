@@ -5020,3 +5020,7 @@ a.origin-chip:hover { filter: brightness(0.97); }
 .email-stats-click { background: #eef2ff; }
 .email-stats-unsub { background: #fef3c7; }
 .email-stats-bounce { background: #fef2f2; }
+
+/* Tracking widget inside the /emails inbox — Sprint Email v2.3b fixes */
+.email-inbox-stats { margin: 12px 0 16px; }
+.email-inbox-stats .card { margin: 0; }
