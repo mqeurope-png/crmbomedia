@@ -1,6 +1,13 @@
 "use client";
 
-import { Ban, FolderOpen, PenLine, Save, Sparkles } from "lucide-react";
+import {
+  Ban,
+  CalendarClock,
+  FolderOpen,
+  PenLine,
+  Save,
+  Sparkles,
+} from "lucide-react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
@@ -17,6 +24,7 @@ import {
 } from "../lib/emailsApi";
 import { extractErrorMessage } from "../lib/errors";
 import { SaveTemplateModal } from "./email/SaveTemplateModal";
+import { ScheduleSendDialog } from "./email/ScheduleSendDialog";
 import {
   TemplatePicker,
   type TemplatePickerSelection,
@@ -104,6 +112,7 @@ export function EmailComposerModal({
 
   const [showPicker, setShowPicker] = useState(false);
   const [showSaveModal, setShowSaveModal] = useState(false);
+  const [showScheduleDialog, setShowScheduleDialog] = useState(false);
   const [signatures, setSignatures] = useState<EmailSignature[]>([]);
   const [activeSignatureId, setActiveSignatureId] = useState<string>("");
   const [includeUnsubscribe, setIncludeUnsubscribe] = useState(false);
@@ -191,7 +200,10 @@ export function EmailComposerModal({
     }
   }
 
-  async function handleSubmit(event: React.FormEvent) {
+  async function handleSubmit(
+    event: React.FormEvent,
+    scheduledFor: string | null = null,
+  ) {
     event.preventDefault();
     if (submitting) return;
     if (!fromAlias) {
@@ -231,6 +243,7 @@ export function EmailComposerModal({
         contact_id: contactId ?? null,
         in_reply_to_message_id: replyMessageId,
         include_unsubscribe: includeUnsubscribe,
+        scheduled_for: scheduledFor,
       });
       // Wipe the autosave entry for this conversation BEFORE handing
       // control back to the parent so a quick "compose another"
@@ -426,11 +439,19 @@ export function EmailComposerModal({
               Cancelar
             </button>
             <button
+              type="button"
+              className="button secondary"
+              onClick={() => setShowScheduleDialog(true)}
+              disabled={submitting || !fromAlias}
+            >
+              <CalendarClock size={11} aria-hidden /> Programar envío
+            </button>
+            <button
               type="submit"
               className="button"
               disabled={submitting || !fromAlias}
             >
-              {submitting ? "Enviando…" : "Enviar"}
+              {submitting ? "Enviando…" : "Enviar ahora"}
             </button>
           </div>
         </form>
@@ -451,6 +472,20 @@ export function EmailComposerModal({
           }}
         />
       ) : null}
+      <ScheduleSendDialog
+        open={showScheduleDialog}
+        onClose={() => setShowScheduleDialog(false)}
+        onSchedule={(iso) => {
+          setShowScheduleDialog(false);
+          // Fake a form-submit event to reuse the same validation
+          // path; the second arg routes the call through the
+          // backend's pending-message branch.
+          void handleSubmit(
+            { preventDefault: () => undefined } as unknown as React.FormEvent,
+            iso,
+          );
+        }}
+      />
     </div>
   );
 }

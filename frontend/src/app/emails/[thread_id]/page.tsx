@@ -359,8 +359,12 @@ export default function EmailThreadPage() {
                   {m.cc_emails && m.cc_emails.length > 0
                     ? ` · Cc: ${m.cc_emails.join(", ")}`
                     : ""}
-                  {" · "}
-                  {formatDateTime(m.sent_at)}
+                  {m.sent_at ? (
+                    <>
+                      {" · "}
+                      {formatDateTime(m.sent_at)}
+                    </>
+                  ) : null}
                 </p>
                 {m.direction === "outbound" ? (
                   <EmailEventBadges events={eventsByMessage[m.id] ?? []} />

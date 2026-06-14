@@ -5518,6 +5518,40 @@ a.origin-chip:hover { filter: brightness(0.97); }
 }
 
 
+/* v2.4e — schedule-send dialog */
+.email-schedule-presets {
+  list-style: none;
+  padding: 0;
+  margin: 12px 0;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 6px;
+}
+.email-schedule-presets .btn {
+  width: 100%;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  justify-content: center;
+}
+.email-schedule-custom {
+  border-top: 1px solid #e5e7eb;
+  padding-top: 8px;
+}
+.email-schedule-custom label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: #6b7280;
+}
+.email-schedule-custom input[type="datetime-local"] {
+  padding: 4px 6px;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  font: inherit;
+}
+
 /* Compose overlay (sidebar "Redactar" → centred modal). The composer
  * itself isn't a real modal — the `.modal-backdrop` class is just a
  * marker — so we wrap it in a fixed overlay only for this entry
