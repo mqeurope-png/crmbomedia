@@ -1,7 +1,11 @@
 "use client";
 
 import { Editor } from "@tinymce/tinymce-react";
-import { useRef } from "react";
+import {
+  forwardRef,
+  useImperativeHandle,
+  useRef,
+} from "react";
 import type { Editor as TinyMCEEditor } from "tinymce";
 
 // Self-host every TinyMCE asset — never the cloud build (no API key,
@@ -95,14 +99,50 @@ type RichEditorProps = {
   draftKey?: string;
 };
 
-export function RichEditor({
-  value,
-  onChange,
-  placeholder,
-  minHeight = 400,
-  draftKey = "default",
-}: RichEditorProps) {
+/** Imperative surface so the send-modal can call `clearDraft()` after
+ *  a successful send — the autosave entry survives a soft close and
+ *  would otherwise leak into the next conversation. */
+export type RichEditorHandle = {
+  clearDraft: () => void;
+};
+
+export const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
+  function RichEditor(
+    { value, onChange, placeholder, minHeight = 400, draftKey = "default" },
+    ref,
+  ) {
   const editorRef = useRef<TinyMCEEditor | null>(null);
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      clearDraft() {
+        // 1) Ask TinyMCE first so its in-memory cache also resets.
+        const editor = editorRef.current;
+        if (editor) {
+          const autosave = (
+            editor.plugins as Record<string, { removeDraft?: () => void }>
+          ).autosave;
+          autosave?.removeDraft?.();
+        }
+        // 2) Belt-and-braces: scan localStorage for any stale entries
+        // keyed by this draftKey. TinyMCE's removeDraft only wipes the
+        // current page-load's prefix; a prior session on the same
+        // thread could have left a sibling key around.
+        if (typeof window === "undefined") return;
+        const suffix = `-${draftKey}-draft`;
+        const remove: string[] = [];
+        for (let i = 0; i < window.localStorage.length; i++) {
+          const key = window.localStorage.key(i);
+          if (key && key.startsWith("crmbo-email-") && key.endsWith(suffix)) {
+            remove.push(key);
+          }
+        }
+        for (const key of remove) window.localStorage.removeItem(key);
+      },
+    }),
+    [draftKey],
+  );
 
   return (
     <Editor
@@ -255,4 +295,5 @@ export function RichEditor({
       }}
     />
   );
-}
+  },
+);
