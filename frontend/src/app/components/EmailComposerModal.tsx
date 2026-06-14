@@ -192,6 +192,19 @@ export function EmailComposerModal({
     setSubmitting(true);
     setError(null);
     try {
+      // Subject-change ⇒ new thread. Gmail's send API also requires
+      // the Subject to match for chaining; if the operator typed a
+      // different subject we honour that intent by stripping the
+      // in_reply_to id so the server doesn't try to thread.
+      const normalise = (s: string) =>
+        s.replace(/^re:\s*/i, "").trim().toLowerCase();
+      const subjectChanged =
+        replyTo != null &&
+        normalise(subject) !== normalise(replyTo.subject ?? "");
+      const replyMessageId = subjectChanged
+        ? null
+        : (replyTo?.messageId ?? null);
+
       const message = await sendEmail({
         from_alias: fromAlias,
         to: toList,
@@ -200,7 +213,7 @@ export function EmailComposerModal({
         body_html: bodyHtml.trim() || null,
         body_text: null,
         contact_id: contactId ?? null,
-        in_reply_to_message_id: replyTo?.messageId ?? null,
+        in_reply_to_message_id: replyMessageId,
       });
       // Wipe the autosave entry for this conversation BEFORE handing
       // control back to the parent so a quick "compose another"
