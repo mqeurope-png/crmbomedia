@@ -23,13 +23,12 @@ from app.core.auth import require_user
 from app.core.config import get_settings
 from app.core.errors import not_found
 from app.db.session import get_session
+from app.integrations.brevo import templates as _brevo_templates_service
+from app.integrations.errors import IntegrationError
 from app.models.brevo import BrevoTemplateCache
 from app.models.crm import User, UserRole
 
 from .models import EmailTemplate, EmailTemplateFolder
-from app.integrations.brevo import templates as _brevo_templates_service
-from app.integrations.errors import IntegrationError
-
 from .schemas import (
     BrevoPickerItem,
     BrevoTemplateHtmlResponse,

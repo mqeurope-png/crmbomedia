@@ -12,6 +12,7 @@ from app.api.routes import router
 from app.api.tasks import router as tasks_router
 from app.core.config import get_settings
 from app.core.observability import setup_sentry
+from app.email_signatures.router import router as email_signatures_router
 from app.email_templates.router import router as email_templates_router
 from app.integrations.gmail.webhook import router as gmail_webhook_router
 
@@ -58,6 +59,7 @@ app.include_router(bulk_router)
 app.include_router(emails_router)
 app.include_router(gmail_webhook_router)
 app.include_router(email_templates_router)
+app.include_router(email_signatures_router)
 
 # Sprint Email v2.2 — serve email-template assets (Tiptap inline
 # uploads). In production nginx aliases `/assets/email-templates/`
