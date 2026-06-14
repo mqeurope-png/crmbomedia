@@ -765,16 +765,25 @@ def _resolve_contact_name(
 def _snippet_from_body(
     body_text: str | None, body_html: str | None
 ) -> str | None:
-    """Derive a ~200-char snippet from the message body when the
-    message didn't already carry a Gmail snippet. Strips HTML tags
-    naively (no DOMPurify needed for a preview line)."""
-    import re  # noqa: PLC0415
+    """Derive a ~200-char snippet for the inbox list preview.
 
-    if body_text:
-        text = body_text.strip()
-    elif body_html:
-        text = re.sub(r"<[^>]+>", " ", body_html)
-    else:
-        return None
-    flat = " ".join(text.split()).strip()
-    return flat[:200] or None
+    Prefers the multipart text body; when only HTML exists (every
+    TinyMCE-authored send → `body_text=null`) it routes through
+    `extract_text_from_html`, which strips `<style>` / `<script>` /
+    `<head>` BLOCK contents — not just the tags — so the CSS reset
+    boilerplate the editor injects doesn't bleed into the preview as
+    raw CSS source. (Naive `re.sub("<[^>]+>", …)` left the block
+    contents behind; that was the `<style>body,table,td{…` Bart saw.)
+    """
+    from app.email_templates.services import (  # noqa: PLC0415
+        extract_text_from_html,
+    )
+
+    if body_text and body_text.strip():
+        flat = " ".join(body_text.split()).strip()
+        return flat[:200] or None
+    if body_html:
+        clean = extract_text_from_html(body_html)
+        if clean:
+            return clean[:200]
+    return None
