@@ -72,13 +72,14 @@ export default function EmailThreadPage() {
 
   const last = thread.messages[thread.messages.length - 1];
   const replyParent = lastInbound ?? last;
-  // Reply target: the lead, NEVER the comercial.
-  //   - If there's any inbound message in the thread, use its sender —
-  //     that's the lead writing in.
-  //   - Else the thread is comercial-initiated; use the first
-  //     outbound's `to[0]` since the comercial's own alias would
-  //     surface otherwise.
+  // Reply target: the lead, NEVER the comercial. The backend computes
+  // this by filtering out the operator's own aliases — `direction`
+  // alone lies when a comercial replies straight from Gmail (it comes
+  // back through the account watch labelled inbound). The client-side
+  // fallbacks only matter during a rolling deploy where the API is a
+  // version behind and hasn't started sending `reply_to_suggestion`.
   const replyTarget =
+    thread.reply_to_suggestion ??
     lastInbound?.from_email ??
     thread.messages[0]?.to_emails?.[0] ??
     null;

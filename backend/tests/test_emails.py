@@ -1381,3 +1381,123 @@ def test_mark_unread_flips_flag_back_on(
     with session_factory() as session:
         thread = session.get(EmailThread, thread_id)
         assert thread.has_unread_replies is True
+
+
+def test_reply_to_suggestion_skips_comercial_alias(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    """Email v2.2 r4: a comercial replying to a lead straight from
+    Gmail comes back through the account watch as `inbound` with
+    `from_email` set to one of their own aliases. The reply target
+    must still be the lead, not the comercial."""
+    from app.models.crm import EmailDirection, UserEmailAliasPref
+
+    with session_factory() as session:
+        uid = _user_id(session, UserRole.USER)  # email user@example.com
+        # The operator also sends as info@bomedia.net.
+        session.add(
+            UserEmailAliasPref(
+                user_id=uid,
+                alias_email="info@bomedia.net",
+                is_allowed=True,
+                is_default=True,
+            )
+        )
+        thread = EmailThread(
+            initiated_by_user_id=uid,
+            gmail_thread_id="thr-reply",
+            gmail_account_user_id=uid,
+            first_message_at=datetime.now(UTC),
+            last_message_at=datetime.now(UTC),
+            message_count=3,
+        )
+        session.add(thread)
+        session.flush()
+        base = datetime.now(UTC)
+        session.add_all(
+            [
+                # 1) comercial -> lead (genuine outbound)
+                EmailMessage(
+                    thread_id=thread.id,
+                    gmail_message_id="m1",
+                    gmail_account_user_id=uid,
+                    direction=EmailDirection.OUTBOUND,
+                    from_email="info@bomedia.net",
+                    to_emails_json='["lead@example.com"]',
+                    sent_at=base,
+                ),
+                # 2) lead -> comercial (genuine inbound)
+                EmailMessage(
+                    thread_id=thread.id,
+                    gmail_message_id="m2",
+                    gmail_account_user_id=uid,
+                    direction=EmailDirection.INBOUND,
+                    from_email="lead@example.com",
+                    to_emails_json='["info@bomedia.net"]',
+                    sent_at=base + timedelta(minutes=5),
+                ),
+                # 3) comercial replies FROM GMAIL — mislabelled inbound,
+                #    from_email is the operator's own alias.
+                EmailMessage(
+                    thread_id=thread.id,
+                    gmail_message_id="m3",
+                    gmail_account_user_id=uid,
+                    direction=EmailDirection.INBOUND,
+                    from_email="info@bomedia.net",
+                    to_emails_json='["lead@example.com"]',
+                    sent_at=base + timedelta(minutes=10),
+                ),
+            ]
+        )
+        session.commit()
+        thread_id = thread.id
+
+    response = client.get(
+        f"/api/emails/threads/{thread_id}",
+        headers=auth_headers(client, "user"),
+    )
+    assert response.status_code == 200, response.text
+    # Despite m3 being the most recent AND labelled inbound, the
+    # suggestion is the lead — m3's sender is the operator's alias.
+    assert response.json()["reply_to_suggestion"] == "lead@example.com"
+
+
+def test_reply_to_suggestion_falls_back_to_first_recipient(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    """Thread with only the operator's own outbound (lead never
+    replied) → fall back to whoever the first message was sent to."""
+    from app.models.crm import EmailDirection
+
+    with session_factory() as session:
+        uid = _user_id(session, UserRole.USER)
+        thread = EmailThread(
+            initiated_by_user_id=uid,
+            gmail_thread_id="thr-out",
+            gmail_account_user_id=uid,
+            first_message_at=datetime.now(UTC),
+            last_message_at=datetime.now(UTC),
+            message_count=1,
+        )
+        session.add(thread)
+        session.flush()
+        session.add(
+            EmailMessage(
+                thread_id=thread.id,
+                gmail_message_id="only",
+                gmail_account_user_id=uid,
+                direction=EmailDirection.OUTBOUND,
+                from_email="user@example.com",
+                to_emails_json='["nuevo-lead@example.com"]',
+                sent_at=datetime.now(UTC),
+            )
+        )
+        session.commit()
+        thread_id = thread.id
+
+    response = client.get(
+        f"/api/emails/threads/{thread_id}",
+        headers=auth_headers(client, "user"),
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["reply_to_suggestion"] == "nuevo-lead@example.com"

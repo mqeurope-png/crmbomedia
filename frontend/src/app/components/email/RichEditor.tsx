@@ -30,7 +30,6 @@ import "tinymce/plugins/visualblocks";
 import "tinymce/plugins/code";
 import "tinymce/plugins/fullscreen";
 import "tinymce/plugins/insertdatetime";
-import "tinymce/plugins/media";
 import "tinymce/plugins/table";
 import "tinymce/plugins/help";
 import "tinymce/plugins/wordcount";
@@ -183,7 +182,6 @@ export const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
           "code",
           "fullscreen",
           "insertdatetime",
-          "media",
           "table",
           "help",
           "wordcount",
@@ -195,7 +193,7 @@ export const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
           "bold italic underline strikethrough | forecolor backcolor | " +
           "alignleft aligncenter alignright alignjustify | " +
           "bullist numlist outdent indent | " +
-          "link image media table emoticons | " +
+          "link image insertvideo table emoticons | " +
           "removeformat code fullscreen | help",
         // Built-in draft autosave: writes to localStorage on a timer
         // so a refresh / accidental close doesn't lose the email. The
@@ -252,18 +250,69 @@ export const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
           };
           input.click();
         },
-        // Insertar medio: TinyMCE 8 already detects YouTube + Vimeo
-        // and converts pasted URLs into iframes on its own —
-        // `media_live_embeds: true` renders the embed inline in the
-        // editor rather than a placeholder box. The hand-rolled
-        // `media_url_resolver` we shipped in PR #99 resolved with
-        // `{ html: "" }` for non-video URLs, which the plugin took
-        // as "the resolver gave me empty html" and surfaced as
-        // "Media embed handler threw unknown error". Dropping it
-        // lets the built-in path do the job for every URL — and
-        // anything not recognised falls back to TinyMCE's raw embed
-        // modal, the original behaviour.
-        media_live_embeds: true,
+        // Vídeo: the stock `media` plugin needs a manual preview image
+        // and never auto-detects YouTube in Community — terrible UX
+        // (the two earlier resolver attempts both broke). Replace it
+        // with a single "Video" toolbar button that asks for a URL
+        // and writes the iframe directly.
+        setup: (editor) => {
+          editor.ui.registry.addButton("insertvideo", {
+            text: "Video",
+            tooltip: "Insertar vídeo de YouTube o Vimeo",
+            icon: "embed",
+            onAction: () => {
+              editor.windowManager.open({
+                title: "Insertar vídeo",
+                body: {
+                  type: "panel",
+                  items: [
+                    {
+                      type: "input",
+                      name: "url",
+                      label: "URL del vídeo (YouTube o Vimeo)",
+                      placeholder: "https://www.youtube.com/watch?v=…",
+                    },
+                  ],
+                },
+                buttons: [
+                  { type: "cancel", text: "Cancelar" },
+                  { type: "submit", text: "Insertar", primary: true },
+                ],
+                onSubmit: (api) => {
+                  const url = String(
+                    (api.getData() as { url?: string }).url ?? "",
+                  ).trim();
+                  const yt = url.match(
+                    /(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|watch\?.+&v=))([\w-]+)/,
+                  );
+                  const vm = url.match(/vimeo\.com\/(\d+)/);
+                  let html = "";
+                  if (yt) {
+                    html =
+                      `<iframe width="560" height="315" ` +
+                      `src="https://www.youtube.com/embed/${yt[1]}" ` +
+                      `frameborder="0" allow="accelerometer; autoplay; ` +
+                      `clipboard-write; encrypted-media; gyroscope; ` +
+                      `picture-in-picture" allowfullscreen></iframe>`;
+                  } else if (vm) {
+                    html =
+                      `<iframe src="https://player.vimeo.com/video/${vm[1]}" ` +
+                      `width="640" height="360" frameborder="0" ` +
+                      `allow="autoplay; fullscreen; picture-in-picture" ` +
+                      `allowfullscreen></iframe>`;
+                  } else {
+                    editor.windowManager.alert(
+                      "URL no reconocida. Pega un enlace de YouTube o Vimeo.",
+                    );
+                    return;
+                  }
+                  editor.insertContent(html);
+                  api.close();
+                },
+              });
+            },
+          });
+        },
         content_style: `
           body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif; font-size: 14px; line-height: 1.6; color: #1e293b; padding: 16px; }
           p { margin: 0 0 12px; }
