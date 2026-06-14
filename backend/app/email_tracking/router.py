@@ -25,9 +25,11 @@ from sqlalchemy.orm import Session
 from app.db.session import get_session
 from app.models.crm import (
     Contact,
+    ContactTag,
     EmailEventType,
     EmailUnsubscribe,
     EmailUnsubscribeScope,
+    Tag,
 )
 
 from .services import (
@@ -52,6 +54,43 @@ def _client_ip(request: Request) -> str | None:
     if fwd:
         return fwd.split(",")[0].strip() or None
     return request.client.host if request.client else None
+
+
+UNSUBSCRIBED_TAG_NAME = "unsubscribed"
+
+
+def _ensure_unsubscribed_tag(session: Session, contact_id: str) -> None:
+    """Auto-add the `unsubscribed` tag to the contact. The tag is
+    created on first use (same case-normalised dedup rule the manual
+    tag UI uses) so the operator can filter `tag:unsubscribed` in the
+    contacts list."""
+    from sqlalchemy import select  # noqa: PLC0415
+
+    normalised = UNSUBSCRIBED_TAG_NAME.lower()
+    tag = session.scalar(
+        select(Tag).where(Tag.name_normalized == normalised)
+    )
+    if tag is None:
+        tag = Tag(
+            name=UNSUBSCRIBED_TAG_NAME,
+            name_normalized=normalised,
+            color="#94a3b8",
+            description=(
+                "Asignado automáticamente cuando el contacto pulsó "
+                "el botón de anular suscripción."
+            ),
+        )
+        session.add(tag)
+        session.flush()
+    already = session.get(ContactTag, (contact_id, tag.id))
+    if already is None:
+        session.add(
+            ContactTag(
+                contact_id=contact_id,
+                tag_id=tag.id,
+                source="email-unsubscribe",
+            )
+        )
 
 
 def _pixel_response() -> Response:
@@ -283,6 +322,7 @@ def unsubscribe_submit(
         message_id=message.id,
     )
     session.add(row)
+    _ensure_unsubscribed_tag(session, contact_id)
     record_event(
         session,
         message_id=message.id,
