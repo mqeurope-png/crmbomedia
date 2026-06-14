@@ -63,7 +63,11 @@ services:
       REDIS_URL: redis://redis:6379/0
       EMAIL_ASSETS_DIR: /opt/crmbo/uploads/email-templates
     volumes:
-      - email_template_assets:/opt/crmbo/uploads/email-templates
+      # Bind mount instead of a named volume so nginx can alias the
+      # same `/opt/crmbo/uploads/email-templates/` path on the host —
+      # named volumes live under /var/lib/docker/volumes/ and were
+      # invisible from nginx's perspective.
+      - /opt/crmbo/uploads/email-templates:/opt/crmbo/uploads/email-templates
     depends_on:
       db:
         condition: service_healthy
@@ -160,8 +164,9 @@ services:
       - /var/lib/letsencrypt:/var/lib/letsencrypt:ro
       - certbot_webroot:/var/www/certbot:ro
       # Email-template inline images served straight off disk; read-only
-      # mirror of the api container's write path.
-      - email_template_assets:/opt/crmbo/uploads/email-templates:ro
+      # mirror of the api container's write path. Bind mount so the
+      # host path matches what the nginx alias expects.
+      - /opt/crmbo/uploads/email-templates:/opt/crmbo/uploads/email-templates:ro
     depends_on:
       api:
         condition: service_healthy
@@ -178,4 +183,3 @@ volumes:
   mysql_data:
   redis_data:
   certbot_webroot:
-  email_template_assets:

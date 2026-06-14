@@ -33,11 +33,12 @@ services:
       - "127.0.0.1:8080:80"
     # Replace, do not append: drops /etc/letsencrypt and certbot_webroot
     # mounts that are irrelevant when Plesk handles TLS. The email
-    # assets volume is preserved so /assets/email-templates/ stays served.
+    # assets bind mount is preserved so /assets/email-templates/ stays
+    # served from the host path nginx aliases against.
     volumes: !override
       - ./deploy/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./deploy/nginx/conf.d:/etc/nginx/conf.d:ro
-      - email_template_assets:/opt/crmbo/uploads/email-templates:ro
+      - /opt/crmbo/uploads/email-templates:/opt/crmbo/uploads/email-templates:ro
 
   frontend:
     # Next.js 15 standalone server defaults to listening on the container
