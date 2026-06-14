@@ -461,6 +461,9 @@ def thread_detail(
     return EmailThreadDetail(
         **EmailThreadRead.model_validate(thread).model_dump(),
         messages=[_message_read(m) for m in thread.messages],
+        reply_to_suggestion=_reply_to_suggestion(
+            session, thread, current_user
+        ),
     )
 
 
@@ -614,6 +617,54 @@ def admin_all_threads(
 
 def _message_read(m: EmailMessage) -> EmailMessageRead:
     return EmailMessageRead.model_validate(m)
+
+
+def _user_own_emails(session: Session, user: User) -> set[str]:
+    """Every address that belongs to the operator: their login email
+    plus every alias they've ever configured a preference for. Cheap
+    (one indexed query) and crucially does NOT hit Gmail, so it's safe
+    to call on every thread-detail open."""
+    own = {user.email.lower()} if user.email else set()
+    rows = session.scalars(
+        select(UserEmailAliasPref.alias_email).where(
+            UserEmailAliasPref.user_id == user.id
+        )
+    )
+    for alias in rows:
+        if alias:
+            own.add(alias.lower())
+    return own
+
+
+def _reply_to_suggestion(
+    session: Session, thread: EmailThread, user: User
+) -> str | None:
+    """The address "Responder" should target.
+
+    We can't trust `direction`: a comercial replying to a lead
+    straight from Gmail lands back in the watched account via
+    history.list and gets materialised as `inbound` with `from_email`
+    set to the comercial's own alias. Filtering by the operator's
+    address set fixes it — pick the most recent message whose sender
+    is NOT the operator. Fallback: the first outbound's first
+    recipient, which is the lead by construction.
+    """
+    own = _user_own_emails(session, user)
+    msgs = sorted(thread.messages, key=lambda m: m.sent_at)
+    for m in reversed(msgs):
+        sender = (m.from_email or "").lower()
+        if sender and sender not in own:
+            return m.from_email
+    # No message from anyone but the operator — fall back to whoever
+    # the first message was addressed to.
+    if msgs:
+        try:
+            to_list = json.loads(msgs[0].to_emails_json or "[]")
+        except (TypeError, ValueError):
+            to_list = []
+        if to_list:
+            return str(to_list[0])
+    return None
 
 
 def _latest_messages(

@@ -77,6 +77,11 @@ export type EmailThread = {
 
 export type EmailThreadDetail = EmailThread & {
   messages: EmailMessage[];
+  /** Server-computed address the "Responder" button should target —
+   *  the last sender that isn't one of the operator's own aliases.
+   *  Trustworthy where `direction` isn't (a comercial replying from
+   *  Gmail surfaces as inbound). */
+  reply_to_suggestion?: string | null;
 };
 
 export type EmailThreadList = {

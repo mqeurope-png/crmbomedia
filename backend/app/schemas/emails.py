@@ -111,6 +111,14 @@ class EmailThreadRead(BaseModel):
 
 class EmailThreadDetail(EmailThreadRead):
     messages: list[EmailMessageRead]
+    # Email v2.2 round 4: the address the "Responder" button should
+    # pre-fill. Computed server-side as the last message NOT sent from
+    # one of the operator's own aliases — `direction` can't be trusted
+    # because a comercial replying straight from Gmail surfaces via the
+    # account's history watch as `inbound` even though it's really their
+    # own outbound. Null only when the thread has no resolvable other
+    # party (shouldn't happen in practice).
+    reply_to_suggestion: str | None = None
 
 
 class EmailThreadList(BaseModel):
