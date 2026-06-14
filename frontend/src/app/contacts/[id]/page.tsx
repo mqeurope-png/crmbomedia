@@ -12,6 +12,7 @@ import {
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ContactEmailsSection } from "../../components/ContactEmailsSection";
+import { EmailEventBadges } from "../../components/email/EmailEventBadges";
 import { ContactPipelinesSection } from "../../components/ContactPipelinesSection";
 import { ContactTasksSection } from "../../components/ContactTasksSection";
 import { EditableField } from "../../components/EditableField";
@@ -22,6 +23,10 @@ import { PageHeader } from "../../components/PageHeader";
 import { RefreshExternalDataButton } from "../../components/RefreshExternalDataButton";
 import { TagChips } from "../../components/TagChips";
 import { TagPicker } from "../../components/TagPicker";
+import {
+  getMessageEvents,
+  type EmailEvent,
+} from "../../lib/emailTrackingApi";
 import {
   addTagToContact,
   deactivateContact,
@@ -439,6 +444,38 @@ function ActivityTab({
   events: ActivityEvent[];
   lastRefresh: string | null | undefined;
 }) {
+  // Sprint Email v2.3b — collect outbound-email message ids from the
+  // event metadata and pull their tracking events. Bounded by how many
+  // emails the contact has been sent; typical: a handful.
+  const [eventsByMessage, setEventsByMessage] = useState<
+    Record<string, EmailEvent[]>
+  >({});
+  useEffect(() => {
+    const ids = events
+      .map((e) => {
+        const m = readMetadata(e.metadata);
+        return e.event_type === "email.sent_from_crm" &&
+          typeof m.message_id === "string"
+          ? m.message_id
+          : null;
+      })
+      .filter((x): x is string => Boolean(x));
+    if (ids.length === 0) return;
+    let cancelled = false;
+    Promise.allSettled(ids.map((id) => getMessageEvents(id))).then((rs) => {
+      if (cancelled) return;
+      const next: Record<string, EmailEvent[]> = {};
+      rs.forEach((r, idx) => {
+        next[ids[idx]] =
+          r.status === "fulfilled" ? r.value.events : [];
+      });
+      setEventsByMessage(next);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [events]);
+
   if (events.length === 0) {
     return (
       <p className="muted small">
@@ -460,6 +497,11 @@ function ActivityTab({
         const fromEmail =
           typeof meta.from_email === "string" ? meta.from_email : null;
         const to = typeof meta.to === "string" ? meta.to : null;
+        const messageId =
+          typeof meta.message_id === "string" ? meta.message_id : null;
+        const trackingEvents = messageId
+          ? eventsByMessage[messageId] ?? []
+          : [];
         const snippet =
           typeof meta.snippet === "string" ? meta.snippet : event.body ?? null;
         const isEmail = event.event_type.startsWith("email.");
@@ -501,6 +543,9 @@ function ActivityTab({
               )}
               {snippet ? (
                 <p className="timeline-body">&quot;{snippet}&quot;</p>
+              ) : null}
+              {event.event_type === "email.sent_from_crm" && messageId ? (
+                <EmailEventBadges events={trackingEvents} />
               ) : null}
             </div>
           </li>
