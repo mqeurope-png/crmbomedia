@@ -39,7 +39,7 @@ type RichEditorProps = {
 };
 
 type UploadImageResponse = {
-  url: string;
+  public_url: string;
   filename: string;
   content_type: string;
   size_bytes: number;
@@ -52,7 +52,7 @@ async function uploadImage(file: File): Promise<string> {
     ? window.localStorage.getItem("crmbomedia_access_token")
     : null);
   const base = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
-  const response = await fetch(`${base}/api/emails/upload-image`, {
+  const response = await fetch(`${base}/api/email-templates/assets`, {
     method: "POST",
     headers: token ? { Authorization: `Bearer ${token}` } : undefined,
     body: form,
@@ -65,13 +65,15 @@ async function uploadImage(file: File): Promise<string> {
     );
   }
   const body = (await response.json()) as UploadImageResponse;
-  // The upload endpoint returns a server-relative path; absolutise it
-  // against the API base so the URL still resolves when the email lands
-  // in the recipient's inbox.
-  if (body.url.startsWith("/")) {
-    return `${base}${body.url}`;
+  // Backend already returns an absolute URL when
+  // EMAIL_ASSETS_PUBLIC_BASE is set (required in production so the
+  // image renders in recipients' inboxes). In dev / tests the URL is
+  // root-relative; absolutise it against the API base so the editor
+  // preview shows it even before nginx is in front.
+  if (body.public_url.startsWith("/")) {
+    return `${base}${body.public_url}`;
   }
-  return body.url;
+  return body.public_url;
 }
 
 function ToolbarButton({

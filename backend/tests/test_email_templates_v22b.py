@@ -53,8 +53,8 @@ def client(
     overridden = Settings(
         **{
             **base_settings.model_dump(),
-            "email_image_upload_dir": str(tmp_path / "imgs"),
-            "email_image_max_bytes": 1024,
+            "email_assets_dir": str(tmp_path / "imgs"),
+            "email_assets_max_bytes": 1024,
         }
     )
     app.dependency_overrides[get_session] = override_session
@@ -298,22 +298,66 @@ def test_composer_source_handles_supabase_failure(client: TestClient) -> None:
 def test_upload_image_accepts_png(client: TestClient) -> None:
     headers = auth_headers(client, role="user")
     response = client.post(
-        "/api/emails/upload-image",
+        "/api/email-templates/assets",
         files={"file": ("x.png", b"\x89PNG fake bytes", "image/png")},
         headers=headers,
     )
     assert response.status_code == 200
     body = response.json()
-    assert body["url"].startswith("/uploads/email_images/")
-    assert body["url"].endswith(".png")
+    assert body["public_url"].startswith("/assets/email-templates/")
+    assert body["public_url"].endswith(".png")
     assert body["content_type"] == "image/png"
     assert body["size_bytes"] == len(b"\x89PNG fake bytes")
+
+
+def test_upload_image_deduplicates_by_sha(client: TestClient) -> None:
+    headers = auth_headers(client, role="user")
+    payload = b"\x89PNG dedup payload"
+    first = client.post(
+        "/api/email-templates/assets",
+        files={"file": ("a.png", payload, "image/png")},
+        headers=headers,
+    )
+    second = client.post(
+        "/api/email-templates/assets",
+        files={"file": ("b.png", payload, "image/png")},
+        headers=headers,
+    )
+    assert first.status_code == 200 and second.status_code == 200
+    assert first.json()["public_url"] == second.json()["public_url"]
+
+
+def test_upload_image_emits_absolute_url_when_base_set(
+    client: TestClient, tmp_path: Path
+) -> None:
+    headers = auth_headers(client, role="user")
+    overridden = Settings(
+        **{
+            **get_settings().model_dump(),
+            "email_assets_dir": str(tmp_path / "imgs2"),
+            "email_assets_max_bytes": 1024,
+            "email_assets_public_base": "https://bo-crm.mbolasers.com",
+        }
+    )
+    with patch(
+        "app.email_templates.router.get_settings",
+        return_value=overridden,
+    ):
+        response = client.post(
+            "/api/email-templates/assets",
+            files={"file": ("x.png", b"abs", "image/png")},
+            headers=headers,
+        )
+    assert response.status_code == 200
+    assert response.json()["public_url"].startswith(
+        "https://bo-crm.mbolasers.com/assets/email-templates/"
+    )
 
 
 def test_upload_image_rejects_svg(client: TestClient) -> None:
     headers = auth_headers(client, role="user")
     response = client.post(
-        "/api/emails/upload-image",
+        "/api/email-templates/assets",
         files={"file": ("evil.svg", b"<svg/>", "image/svg+xml")},
         headers=headers,
     )
@@ -322,9 +366,9 @@ def test_upload_image_rejects_svg(client: TestClient) -> None:
 
 def test_upload_image_rejects_oversized(client: TestClient) -> None:
     headers = auth_headers(client, role="user")
-    # The fixture caps email_image_max_bytes at 1024.
+    # The fixture caps email_assets_max_bytes at 1024.
     response = client.post(
-        "/api/emails/upload-image",
+        "/api/email-templates/assets",
         files={"file": ("big.png", b"0" * 2048, "image/png")},
         headers=headers,
     )

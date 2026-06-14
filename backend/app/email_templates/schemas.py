@@ -108,7 +108,11 @@ class ComposerSourceResponse(BaseModel):
 
 
 class ImageUploadResponse(BaseModel):
-    url: str
+    """Sprint Email v2.2 (post-fixes). `public_url` is what the editor
+    inlines into the email — absolute when `email_assets_public_base`
+    is configured, root-relative otherwise (dev / tests)."""
+
+    public_url: str
     filename: str
     content_type: str
     size_bytes: int

@@ -59,15 +59,16 @@ app.include_router(emails_router)
 app.include_router(gmail_webhook_router)
 app.include_router(email_templates_router)
 
-# Sprint Email v2.2b — serve images uploaded from the Tiptap editor.
-# The dir is created lazily on first upload, but mounting needs it to
-# exist already, so we ensure it at boot.
-_email_image_dir = Path(settings.email_image_upload_dir)
-_email_image_dir.mkdir(parents=True, exist_ok=True)
+# Sprint Email v2.2 — serve email-template assets (Tiptap inline
+# uploads). In production nginx aliases `/assets/email-templates/`
+# straight to the host bind mount, so this mount mostly exists for
+# dev / tests where there's no reverse proxy.
+_email_assets_dir = Path(settings.email_assets_dir)
+_email_assets_dir.mkdir(parents=True, exist_ok=True)
 app.mount(
-    "/uploads/email_images",
-    StaticFiles(directory=str(_email_image_dir)),
-    name="email_images",
+    "/assets/email-templates",
+    StaticFiles(directory=str(_email_assets_dir)),
+    name="email_assets",
 )
 
 

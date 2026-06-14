@@ -61,10 +61,9 @@ services:
     environment:
       DATABASE_URL: mysql+pymysql://${MYSQL_USER}:${MYSQL_PASSWORD}@db:3306/${MYSQL_DATABASE}
       REDIS_URL: redis://redis:6379/0
-      COMPOSER_ASSET_ROOT: /opt/crmbo/uploads/composer
-      COMPOSER_ASSET_PUBLIC_BASE: /assets/composer
+      EMAIL_ASSETS_DIR: /opt/crmbo/uploads/email-templates
     volumes:
-      - composer_uploads:/opt/crmbo/uploads/composer
+      - email_template_assets:/opt/crmbo/uploads/email-templates
     depends_on:
       db:
         condition: service_healthy
@@ -160,9 +159,9 @@ services:
       - /etc/letsencrypt:/etc/letsencrypt:ro
       - /var/lib/letsencrypt:/var/lib/letsencrypt:ro
       - certbot_webroot:/var/www/certbot:ro
-      # Composer-uploaded assets served straight off disk; read-only
+      # Email-template inline images served straight off disk; read-only
       # mirror of the api container's write path.
-      - composer_uploads:/opt/crmbo/uploads/composer:ro
+      - email_template_assets:/opt/crmbo/uploads/email-templates:ro
     depends_on:
       api:
         condition: service_healthy
@@ -179,4 +178,4 @@ volumes:
   mysql_data:
   redis_data:
   certbot_webroot:
-  composer_uploads:
+  email_template_assets:
