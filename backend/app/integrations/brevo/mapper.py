@@ -114,6 +114,89 @@ CUSTOM_FIELDS_WHITELIST: frozenset[str] = frozenset(
 )
 
 
+#: Brevo attributes that carry a secondary phone number. Each is
+#: lifted into a `contact_phones` row in sub-PR 3 — the label is
+#: the original key (TELEFONO_1, MOVIL, …) so the operator can
+#: still tell them apart in the ficha.
+SECONDARY_PHONE_ATTRS: tuple[str, ...] = (
+    "TELEFONO_1",
+    "TELEFONO_2",
+    "TELEFONO_3",
+    "TELEFONO_4",
+    "TELEFONO_5",
+    "TELEFONO_6",
+    "LANDLINE_NUMBER",
+    "TEL",
+)
+
+#: Brevo attributes that carry a secondary email address.
+SECONDARY_EMAIL_ATTRS: tuple[str, ...] = (
+    "EMAIL_SECUNDARIO",
+    "EMAIL2",
+    "EMAIL_2",
+)
+
+
+def extract_brevo_secondary_channels(
+    payload: dict[str, Any],
+) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    """Pull every secondary phone + email from the Brevo payload.
+
+    Returns `(phones, emails)` where each item is a dict the
+    upsert helper feeds to `(ContactPhone | ContactEmail)`:
+    `{label, number|email, source='brevo'}`. Dedupes per type by
+    normalised value so two Brevo attrs holding the same number
+    don't materialise twice.
+
+    The contact's canonical `phone` / `email` (from the native
+    mapping) is NOT included here — the upsert helper deals with
+    those separately because they live on the Contact row itself.
+    """
+    attributes = payload.get("attributes") or {}
+    if not isinstance(attributes, dict):
+        return [], []
+
+    phones: list[dict[str, str]] = []
+    seen_phones: set[str] = set()
+    for key in SECONDARY_PHONE_ATTRS:
+        value = attributes.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if not text:
+            continue
+        digits = "".join(c for c in text if c.isdigit() or c == "+")
+        if not digits or digits in seen_phones:
+            continue
+        seen_phones.add(digits)
+        phones.append(
+            {
+                "label": key,
+                "number": text,
+                "source": "brevo",
+            }
+        )
+
+    emails: list[dict[str, str]] = []
+    seen_emails: set[str] = set()
+    for key in SECONDARY_EMAIL_ATTRS:
+        value = attributes.get(key)
+        if value is None:
+            continue
+        text = str(value).strip().lower()
+        if "@" not in text or text in seen_emails:
+            continue
+        seen_emails.add(text)
+        emails.append(
+            {
+                "label": key,
+                "email": text,
+                "source": "brevo",
+            }
+        )
+    return phones, emails
+
+
 def brevo_external_id(payload: dict[str, Any]) -> str:
     value = payload.get("id")
     return str(value) if value is not None else ""
