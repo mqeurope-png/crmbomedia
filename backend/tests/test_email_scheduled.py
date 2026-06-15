@@ -402,6 +402,67 @@ def test_sweep_marks_row_failed_when_gmail_raises(
         assert msg.scheduled_status == "failed"
 
 
+def test_thread_detail_handles_pending_message_in_sort(
+    client: TestClient, db: _Fixture
+) -> None:
+    """Regression: a pending message has `sent_at=NULL`. Earlier
+    versions of the route ordered messages via a Python `sorted`
+    that raised TypeError on the NULL comparison. The fix is a
+    SQL coalesce + filtering pending rows out of the reply-to
+    suggestion."""
+    with db.factory() as session:
+        uid = _user_id(session, UserRole.USER)
+    # One sent message in the thread + one pending one. The route
+    # used to blow up while computing the reply-to suggestion.
+    target = datetime.now(UTC) + timedelta(hours=2)
+    with db.factory() as session:
+        thread = EmailThread(
+            initiated_by_user_id=uid,
+            gmail_account_user_id=uid,
+            gmail_thread_id="real-thread-1",
+            subject="Mixed",
+            first_message_at=datetime.now(UTC) - timedelta(days=1),
+            last_message_at=datetime.now(UTC) - timedelta(days=1),
+            message_count=1,
+        )
+        session.add(thread)
+        session.flush()
+        sent_msg = EmailMessage(
+            thread_id=thread.id,
+            gmail_message_id="g-1",
+            gmail_account_user_id=uid,
+            direction="outbound",
+            from_email="info@bomedia.net",
+            to_emails_json=json.dumps(["lead@example.com"]),
+            subject="Mixed",
+            sent_at=datetime.now(UTC) - timedelta(days=1),
+            created_by_user_id=uid,
+        )
+        pending_msg = EmailMessage(
+            thread_id=thread.id,
+            gmail_account_user_id=uid,
+            direction="outbound",
+            from_email="info@bomedia.net",
+            to_emails_json=json.dumps(["lead@example.com"]),
+            subject="Mixed",
+            sent_at=None,
+            scheduled_for=target,
+            scheduled_status=EmailScheduledStatus.PENDING.value,
+            created_by_user_id=uid,
+        )
+        session.add_all([sent_msg, pending_msg])
+        session.commit()
+        thread_id = thread.id
+
+    res = client.get(
+        f"/api/emails/threads/{thread_id}",
+        headers=auth_headers(client, "user"),
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert len(body["messages"]) == 2
+
+
 def test_sweep_purges_orphan_pending_thread(db: _Fixture) -> None:
     """A sentinel thread whose only message was cancelled should
     be cleaned out by the sweep so the inbox doesn't accumulate

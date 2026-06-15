@@ -514,11 +514,15 @@ def _find_bounced_message(
         )
     )
     if thread is not None:
-        # Most recent outbound on the same thread.
+        # Most recent outbound on the same thread. Pending
+        # scheduled messages can't have bounced (they haven't
+        # been sent), so we filter them out before the ORDER BY
+        # to keep the comparison happy too.
         candidate = session.scalar(
             select(EmailMessage)
             .where(EmailMessage.thread_id == thread.id)
             .where(EmailMessage.direction == EmailDirection.OUTBOUND)
+            .where(EmailMessage.sent_at.is_not(None))
             .order_by(EmailMessage.sent_at.desc())
         )
         if candidate is not None:
@@ -532,6 +536,7 @@ def _find_bounced_message(
             select(EmailMessage)
             .where(EmailMessage.gmail_account_user_id == user_id)
             .where(EmailMessage.direction == EmailDirection.OUTBOUND)
+            .where(EmailMessage.sent_at.is_not(None))
             .where(EmailMessage.to_emails_json.ilike(f"%{failed_to}%"))
             .order_by(EmailMessage.sent_at.desc())
         )

@@ -12,6 +12,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    func,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -906,7 +907,20 @@ class EmailThread(TimestampMixin, Base):
 
     messages: Mapped[list["EmailMessage"]] = relationship(
         back_populates="thread",
-        order_by="EmailMessage.sent_at",
+        # Sprint Email v2.4e — `sent_at` is now nullable (pending
+        # scheduled messages stamp it on send), so a raw ORDER BY
+        # on the column would either crash a Python-side sort or
+        # order pending rows ambiguously. Coalesce to `scheduled_for`
+        # so a pending message slots into the conversation where it
+        # WILL appear when sent, then to `created_at` so legacy rows
+        # with neither still have a stable order. Lambda form keeps
+        # SQLAlchemy from eval'ing the string against a namespace
+        # that lacks `func`.
+        order_by=lambda: func.coalesce(
+            EmailMessage.sent_at,
+            EmailMessage.scheduled_for,
+            EmailMessage.created_at,
+        ),
         cascade="all, delete-orphan",
     )
     labels: Mapped[list["EmailLabel"]] = relationship(
