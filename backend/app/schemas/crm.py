@@ -317,6 +317,7 @@ class ContactUpdate(BaseModel):
     # v2 sub-PR 3/4: socials editable from the ficha too.
     twitter_url: str | None = Field(default=None, max_length=500)
     facebook_url: str | None = Field(default=None, max_length=500)
+    social_profiles_json: str | None = None
 
     @field_validator("first_name")
     @classmethod

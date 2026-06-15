@@ -5652,6 +5652,35 @@ a.origin-chip:hover { filter: brightness(0.97); }
   align-items: center;
 }
 
+.contact-socials-list {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 8px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.contact-socials-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  flex-wrap: wrap;
+}
+.contact-socials-row a {
+  color: #1d4ed8;
+  text-decoration: underline;
+  word-break: break-all;
+}
+.contact-socials-form textarea {
+  width: 100%;
+  padding: 4px 6px;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  font: inherit;
+  font-size: 12px;
+}
+
 /* Sprint Empresas sub-PR 3 — multichannel phones / emails / socials */
 .contact-channel-list {
   list-style: none;
