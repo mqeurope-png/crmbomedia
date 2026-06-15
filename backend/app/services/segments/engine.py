@@ -411,7 +411,23 @@ def _compile_brevo_list_leaf(
     # so the engine module stays decoupled from the enum value.
     from app.models.crm import ExternalSystem  # noqa: PLC0415
 
-    list_ids = [str(int(item)) for item in value]
+    # PR-Ce: el editor de `in_brevo_list` cae a CsvEditor si no hay
+    # picker → el operador puede teclear "fespa" (intentando el nombre
+    # de la lista) y `int("fespa")` 500-eaba el endpoint. Capturamos el
+    # parse y devolvemos 400 con un mensaje accionable. El picker nuevo
+    # en el frontend (BrevoListPicker) ya emite los ids numéricos
+    # correctos, pero esto blinda el motor frente a clientes legacy o
+    # peticiones manuales.
+    list_ids: list[str] = []
+    for item in value:
+        try:
+            list_ids.append(str(int(item)))
+        except (TypeError, ValueError) as exc:
+            raise SegmentRuleError(
+                f"`in_brevo_list` espera ids numéricos de lista Brevo "
+                f"(recibido {item!r}). Usa el selector para elegir la "
+                f"lista en vez de teclear el nombre."
+            ) from exc
     patterns: list[Any] = []
     for lid in list_ids:
         patterns.append(

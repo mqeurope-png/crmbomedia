@@ -19,6 +19,7 @@ is the reference implementation; the other entities live under
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -26,6 +27,14 @@ from app.models.crm import (
     Contact,
     ContactPipelineStage,
     ContactTag,
+)
+
+# 36-char canonical UUID. Acepta también el hex-32 sin guiones por si
+# algún cliente legacy lo envía así.
+_LOOKS_LIKE_UUID = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    r"|^[0-9a-f]{32}$",
+    re.IGNORECASE,
 )
 
 
@@ -73,7 +82,20 @@ _COMMON_STRING = (
     "is_not_null",
 )
 _COMMON_NULLABLE = ("is_null", "is_not_null")
-_NUMERIC = ("eq", "neq", "gt", "gte", "lt", "lte", "between", "is_null")
+# PR-Ce: numeric whitelist gana `is_not_null` para paridad con la tabla
+# normativa (auditoría §1) — el motor ya lo soportaba; sólo era un
+# olvido del whitelist.
+_NUMERIC = (
+    "eq",
+    "neq",
+    "gt",
+    "gte",
+    "lt",
+    "lte",
+    "between",
+    "is_null",
+    "is_not_null",
+)
 _DATE = (
     "before",
     "after",
@@ -85,7 +107,11 @@ _DATE = (
     "is_not_null",
 )
 _REFERENCE = ("eq", "neq", "in", "not_in", "is_null", "is_not_null")
-_ENUM = ("eq", "neq", "in", "not_in")
+# PR-Ce: los 3 enums (origin_system, commercial_status,
+# marketing_consent) usaban (eq, neq, in, not_in) — sin nullable. Hay
+# casos en producción con esos campos NULL (importados sin estado, sin
+# consent) que el operador necesita encontrar.
+_ENUM_NULLABLE = ("eq", "neq", "in", "not_in", "is_null", "is_not_null")
 
 FIELD_SPECS: dict[str, FieldSpec] = {
     "name": FieldSpec(
@@ -175,6 +201,13 @@ FIELD_SPECS: dict[str, FieldSpec] = {
         key="origin_system",
         label="Sistema de origen",
         type="enum",
+        # PR-Ce: las otras enums ganan is_null/is_not_null (son columnas
+        # NOT NULL hoy pero los matchers compilan a clausa válida —
+        # zero rows hasta que alguien las haga nullable). Aquí
+        # `origin_system` es relacional (external_refs.system) y el
+        # leaf compiler de relaciones no soporta los nullable
+        # matchers; mantengo sin ellos hasta que se decida una
+        # semántica clara para "contacto sin external_refs".
         comparators=("eq", "neq", "in", "not_in"),
         enum_values=("agilecrm", "brevo", "freshdesk", "factusol", "manual"),
         relation="external_refs.system",
@@ -195,7 +228,7 @@ FIELD_SPECS: dict[str, FieldSpec] = {
         key="commercial_status",
         label="Estado comercial",
         type="enum",
-        comparators=("eq", "neq", "in", "not_in"),
+        comparators=_ENUM_NULLABLE,
         enum_values=("new", "qualified", "won", "lost"),
         column=Contact.commercial_status,
         sortable=True,
@@ -206,7 +239,7 @@ FIELD_SPECS: dict[str, FieldSpec] = {
         key="marketing_consent",
         label="Consentimiento marketing",
         type="enum",
-        comparators=("eq", "neq", "in", "not_in"),
+        comparators=_ENUM_NULLABLE,
         enum_values=("granted", "denied", "unknown", "unsubscribed"),
         column=Contact.marketing_consent,
         sortable=True,
@@ -507,10 +540,18 @@ def _coerce_scalar(spec: FieldSpec, value: Any) -> Any:
             )
         return sval
     if spec.type == "reference":
-        # Foreign-key id (owner_user_id, company_id, …). Compared as a
-        # string id; no enum constraint (the universe of ids is the
-        # referenced table, validated by the FK at write time).
-        return str(value)
+        # Foreign-key id (owner_user_id, company_id, …). PR-Ce: el
+        # editor por defecto solía ser un text input — si el operador
+        # tecleaba algo no-UUID, el motor lo aceptaba y producía 0
+        # matches en silencio. Ahora 400 con mensaje claro; los
+        # pickers nuevos emiten UUIDs reales así que esto sólo se
+        # dispara en peticiones legacy o manuales.
+        text = str(value).strip()
+        if not _LOOKS_LIKE_UUID.match(text):
+            raise ValueError(
+                f"Expected UUID for {spec.key} (got {text!r})"
+            )
+        return text
     if spec.type == "date":
         from datetime import datetime as _dt
 

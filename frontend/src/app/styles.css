@@ -6239,3 +6239,35 @@ a.origin-chip:hover { filter: brightness(0.97); }
 .entity-views-menu li button.danger:hover {
   background: #fef2f2;
 }
+
+/* PR-Ce — pickers nuevos (UserPicker, CompanyPicker, SegmentPicker,
+ * BrevoListPicker). Ellipsis + tooltip + grupos colapsables para listas
+ * largas (>100 listas Brevo reportadas por Bart). */
+.picker-label {
+  display: inline-block;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+.picker-group {
+  border: 1px solid #f1f5f9;
+  border-radius: 4px;
+  padding: 4px 6px;
+  margin-bottom: 4px;
+}
+.picker-group-header {
+  background: transparent;
+  border: 0;
+  padding: 2px 4px;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 12px;
+  color: #334155;
+  text-align: left;
+  width: 100%;
+}
+.picker-group-header:hover {
+  background: #f1f5f9;
+}
