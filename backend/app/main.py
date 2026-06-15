@@ -7,6 +7,7 @@ from fastapi.staticfiles import StaticFiles
 from app.api.bulk import router as bulk_router
 from app.api.companies import assign_router as contacts_assign_router
 from app.api.companies import router as companies_router
+from app.api.contact_channels import router as contact_channels_router
 from app.api.dashboard import router as dashboard_router
 from app.api.email_drafts import router as email_drafts_router
 from app.api.emails import router as emails_router
@@ -62,6 +63,7 @@ app.add_middleware(
 # different path, not shadowed by the prefix.
 app.include_router(companies_router)
 app.include_router(contacts_assign_router)
+app.include_router(contact_channels_router)
 app.include_router(router, prefix="/api")
 # Tasks router carries its own `/api/tasks` prefix and lives in its
 # own module — the routes.py monolith was already pushing 4k lines
