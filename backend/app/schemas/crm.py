@@ -279,6 +279,10 @@ class ContactCreate(BaseModel):
     address_line: str | None = Field(default=None, max_length=500)
     address_postal_code: str | None = Field(default=None, max_length=20)
     address_region: str | None = Field(default=None, max_length=120)
+    # Sprint Empresas — sub-PR 3/4. Twitter + Facebook get their
+    # own columns; every other social goes into the JSON bucket.
+    twitter_url: str | None = Field(default=None, max_length=500)
+    facebook_url: str | None = Field(default=None, max_length=500)
     lead_score: int | None = None
 
     @field_validator("first_name")
@@ -310,6 +314,10 @@ class ContactUpdate(BaseModel):
     address_region: str | None = Field(default=None, max_length=120)
     address_country: str | None = Field(default=None, max_length=120)
     address_country_name: str | None = Field(default=None, max_length=255)
+    # v2 sub-PR 3/4: socials editable from the ficha too.
+    twitter_url: str | None = Field(default=None, max_length=500)
+    facebook_url: str | None = Field(default=None, max_length=500)
+    social_profiles_json: str | None = None
 
     @field_validator("first_name")
     @classmethod

@@ -33,6 +33,7 @@ from app.integrations.agilecrm.client import AgileCRMClient
 from app.integrations.agilecrm.mapper import (
     agilecrm_account_label,
     agilecrm_external_id,
+    extract_agilecrm_secondary_channels,
     map_agilecrm_contact_to_internal,
     map_agilecrm_event_to_internal,
     map_agilecrm_note_to_internal,
@@ -43,6 +44,8 @@ from app.integrations.errors import IntegrationError
 from app.models.crm import (
     ActivityEvent,
     Contact,
+    ContactEmail,
+    ContactPhone,
     ExternalReference,
     ExternalSystem,
     Note,
@@ -177,6 +180,9 @@ def _upsert_contact_for_payload(
                 account_id=account_id,
                 desired_names=tag_names,
             )
+            reconcile_agile_channels(
+                session, contact_id=contact.id, payload=payload
+            )
             session.flush()
             return ("updated", False, contact.id, external_id)
 
@@ -206,6 +212,9 @@ def _upsert_contact_for_payload(
             account_id=account_id,
             desired_names=tag_names,
         )
+        reconcile_agile_channels(
+            session, contact_id=existing_contact.id, payload=payload
+        )
         session.flush()
         return ("updated", True, existing_contact.id, external_id)
 
@@ -228,8 +237,83 @@ def _upsert_contact_for_payload(
         account_id=account_id,
         desired_names=tag_names,
     )
+    reconcile_agile_channels(
+        session, contact_id=contact.id, payload=payload
+    )
     session.flush()
     return ("created", False, contact.id, external_id)
+
+
+def reconcile_agile_channels(
+    session: Session,
+    *,
+    contact_id: str,
+    payload: dict[str, Any],
+) -> tuple[int, int]:
+    """Sprint Empresas — sub-PR 3/4. Materialise secondary phones +
+    emails AgileCRM ships (`phone` with subtypes work/mobile/…,
+    `email` with personal/work). Idempotent on re-sync."""
+    from datetime import UTC, datetime  # noqa: PLC0415
+
+    if not contact_id:
+        return 0, 0
+    phones, emails, _socials = extract_agilecrm_secondary_channels(payload)
+    now = datetime.now(UTC)
+    phones_added = 0
+    emails_added = 0
+
+    if phones:
+        existing_numbers = {
+            "".join(c for c in (p.number or "") if c.isdigit() or c == "+")
+            for p in session.scalars(
+                select(ContactPhone).where(ContactPhone.contact_id == contact_id)
+            )
+        }
+        for entry in phones:
+            digits = "".join(
+                c for c in entry["number"] if c.isdigit() or c == "+"
+            )
+            if not digits or digits in existing_numbers:
+                continue
+            row = ContactPhone(
+                contact_id=contact_id,
+                label=entry.get("label"),
+                number=entry["number"],
+                is_primary=False,
+                source="agilecrm",
+            )
+            row.created_at = now
+            row.updated_at = now
+            session.add(row)
+            existing_numbers.add(digits)
+            phones_added += 1
+
+    if emails:
+        existing_emails = {
+            (e.email or "").strip().lower()
+            for e in session.scalars(
+                select(ContactEmail).where(ContactEmail.contact_id == contact_id)
+            )
+        }
+        for entry in emails:
+            value = entry["email"].strip().lower()
+            if not value or value in existing_emails:
+                continue
+            row = ContactEmail(
+                contact_id=contact_id,
+                label=entry.get("label"),
+                email=value,
+                is_primary=False,
+                is_verified=False,
+                source="agilecrm",
+            )
+            row.created_at = now
+            row.updated_at = now
+            session.add(row)
+            existing_emails.add(value)
+            emails_added += 1
+
+    return phones_added, emails_added
 
 
 def _sync_tag_delta(

@@ -159,6 +159,15 @@ class Contact(TimestampMixin, Base):
     address_line: Mapped[str | None] = mapped_column(String(500))
     address_postal_code: Mapped[str | None] = mapped_column(String(20))
     address_region: Mapped[str | None] = mapped_column(String(120))
+    # Sprint Empresas — sub-PR 3/4. Twitter + Facebook get their
+    # own columns because the v3 ficha pin them above the dynamic
+    # JSON list. Every other social network (Skype, Github, Blog,
+    # Xing, Flickr, Google+, YouTube) lands as a key in
+    # `social_profiles_json` so a future network doesn't require
+    # a migration.
+    twitter_url: Mapped[str | None] = mapped_column(String(500))
+    facebook_url: Mapped[str | None] = mapped_column(String(500))
+    social_profiles_json: Mapped[str | None] = mapped_column(Text)
     # AgileCRM lead score. Other systems push their own scoring under
     # the same column for consistency.
     lead_score: Mapped[int | None] = mapped_column(Integer)
@@ -202,6 +211,16 @@ class Contact(TimestampMixin, Base):
     )
     tag_assignments: Mapped[list["ContactTag"]] = relationship(
         back_populates="contact", cascade="all, delete-orphan"
+    )
+    phones: Mapped[list["ContactPhone"]] = relationship(
+        back_populates="contact",
+        cascade="all, delete-orphan",
+        order_by="ContactPhone.is_primary.desc(), ContactPhone.created_at.asc()",
+    )
+    emails_alt: Mapped[list["ContactEmail"]] = relationship(
+        back_populates="contact",
+        cascade="all, delete-orphan",
+        order_by="ContactEmail.is_primary.desc(), ContactEmail.created_at.asc()",
     )
 
     @property
@@ -249,6 +268,67 @@ class Tag(TimestampMixin, Base):
     assignments: Mapped[list["ContactTag"]] = relationship(
         back_populates="tag", cascade="all, delete-orphan"
     )
+
+
+class ContactPhone(TimestampMixin, Base):
+    """Sprint Empresas — sub-PR 3/4. One phone number a contact
+    owns. `label` is preserved verbatim from the source system
+    (Brevo `TELEFONO_3` / Agile `mobile`) so the operator can tell
+    a fax from a centralita without a separate type column."""
+
+    __tablename__ = "contact_phones"
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid4())
+    )
+    contact_id: Mapped[str] = mapped_column(
+        ForeignKey("contacts.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    label: Mapped[str | None] = mapped_column(String(80))
+    number: Mapped[str] = mapped_column(String(80), nullable=False)
+    is_primary: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )
+    source: Mapped[str] = mapped_column(
+        String(40), default="manual", nullable=False
+    )
+
+    contact: Mapped[Contact] = relationship(back_populates="phones")
+
+
+class ContactEmail(TimestampMixin, Base):
+    """Sprint Empresas — sub-PR 3/4. Secondary email channels.
+
+    `is_verified` mirrors what the upstream system reports
+    (Brevo's deliverability flag, Agile's verified marker).
+    `is_primary` flags the canonical address that the contact's
+    main `email` column mirrors."""
+
+    __tablename__ = "contact_emails"
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid4())
+    )
+    contact_id: Mapped[str] = mapped_column(
+        ForeignKey("contacts.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    label: Mapped[str | None] = mapped_column(String(80))
+    email: Mapped[str] = mapped_column(String(255), nullable=False)
+    is_primary: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )
+    is_verified: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )
+    source: Mapped[str] = mapped_column(
+        String(40), default="manual", nullable=False
+    )
+
+    contact: Mapped[Contact] = relationship(back_populates="emails_alt")
 
 
 class ContactTag(Base):

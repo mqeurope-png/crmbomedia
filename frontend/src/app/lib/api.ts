@@ -179,6 +179,12 @@ export type Contact = {
   address_line?: string | null;
   address_postal_code?: string | null;
   address_region?: string | null;
+  /** Sprint Empresas — sub-PR 3/4. Twitter + Facebook pinned to
+   *  columns; the rest of the operator's social handles live in
+   *  the JSON bucket the ficha renders dynamically. */
+  twitter_url?: string | null;
+  facebook_url?: string | null;
+  social_profiles_json?: string | null;
   lead_score?: number | null;
   custom_fields?: Record<string, unknown> | null;
   notes?: Note[];

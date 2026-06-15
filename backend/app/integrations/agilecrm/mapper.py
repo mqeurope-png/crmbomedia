@@ -146,6 +146,102 @@ _EMPTY_ADDRESS: dict[str, str | None] = {
 }
 
 
+def extract_agilecrm_secondary_channels(
+    payload: dict[str, Any],
+) -> tuple[list[dict[str, str]], list[dict[str, str]], dict[str, str]]:
+    """Sprint Empresas — sub-PR 3/4. Walk every `properties[]` entry
+    and gather:
+
+    - Secondary phones: `name=='phone'` with subtypes `work`,
+      `home`, `mobile`, `main`, `home-fax`, `work-fax`, `other`
+      (8 AgileCRM variants).
+    - Secondary emails: `name=='email'` with subtypes `personal`,
+      `work`, plus any non-default.
+    - Socials: `twitter`, `facebook`, plus the niche set
+      (`skype`, `xing`, `blog`, `googleplus`, `flickr`, `github`,
+      `youtube`) — returned as a flat `{label: url}` dict for the
+      `social_profiles_json` bucket.
+
+    The contact's canonical `phone` / `email` (the property whose
+    subtype is `default` or empty) is NOT included in the
+    secondary lists — those still go through the main record.
+    """
+    properties = payload.get("properties") or []
+    if not isinstance(properties, list):
+        return [], [], {}
+
+    phones: list[dict[str, str]] = []
+    seen_phones: set[str] = set()
+    emails: list[dict[str, str]] = []
+    seen_emails: set[str] = set()
+    socials: dict[str, str] = {}
+
+    default_phone_taken = False
+    default_email_taken = False
+
+    for prop in properties:
+        if not isinstance(prop, dict):
+            continue
+        name = str(prop.get("name") or "").lower()
+        subtype = str(prop.get("subtype") or "").lower()
+        raw_value = prop.get("value")
+        if raw_value is None:
+            continue
+        value = str(raw_value).strip()
+        if not value:
+            continue
+
+        if name == "phone":
+            digits = "".join(c for c in value if c.isdigit() or c == "+")
+            # The first "default" / empty-subtype phone we see goes
+            # to the canonical Contact.phone column — every later
+            # variant becomes a secondary row.
+            if subtype in ("", "default") and not default_phone_taken:
+                default_phone_taken = True
+                continue
+            if not digits or digits in seen_phones:
+                continue
+            seen_phones.add(digits)
+            phones.append(
+                {
+                    "label": subtype or "other",
+                    "number": value,
+                    "source": "agilecrm",
+                }
+            )
+        elif name == "email":
+            text = value.lower()
+            if subtype in ("", "default") and not default_email_taken:
+                default_email_taken = True
+                continue
+            if "@" not in text or text in seen_emails:
+                continue
+            seen_emails.add(text)
+            emails.append(
+                {
+                    "label": subtype or "other",
+                    "email": text,
+                    "source": "agilecrm",
+                }
+            )
+        elif name in (
+            "twitter",
+            "facebook",
+            "skype",
+            "xing",
+            "blog",
+            "googleplus",
+            "google+",
+            "flickr",
+            "github",
+            "youtube",
+            "instagram",
+        ):
+            socials[name] = value
+
+    return phones, emails, socials
+
+
 def _parse_address(raw: Any) -> dict[str, str | None]:
     """AgileCRM packs the address into a JSON string under the
     `address` property: `{"country":"ES","city":"Madrid",...}`. Some
@@ -333,6 +429,16 @@ def map_agilecrm_contact_to_internal(
             "street", "street_address", "address_line"
         )
 
+    # Sprint Empresas — sub-PR 3/4. Pull socials off the
+    # properties list; twitter + facebook are pinned to columns,
+    # everything else lands in the JSON bucket.
+    _, _, socials_map = extract_agilecrm_secondary_channels(payload)
+    twitter_url = socials_map.pop("twitter", None)
+    facebook_url = socials_map.pop("facebook", None)
+    social_profiles_json = (
+        json.dumps(socials_map, default=str) if socials_map else None
+    )
+
     record: dict[str, Any] = {
         # AgileCRM sometimes omits first_name; the model requires it as
         # NOT NULL, so we fall back to the email local-part or a stable
@@ -352,6 +458,9 @@ def map_agilecrm_contact_to_internal(
         "job_title": job_title,
         "linkedin_url": linkedin_url,
         "personal_website": personal_website,
+        "twitter_url": twitter_url,
+        "facebook_url": facebook_url,
+        "social_profiles_json": social_profiles_json,
         "lead_score": lead_score,
         "custom_fields": json.dumps(custom_fields, default=str) if custom_fields else None,
     }
