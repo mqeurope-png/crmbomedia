@@ -40,7 +40,10 @@ export function ContactCustomFieldsSection({ contact }: Props) {
 
 /** Custom-field keys already promoted into first-class columns —
  *  hidden here to avoid duplicating them in two places on the
- *  ficha. */
+ *  ficha. Belt-and-suspenders: as of sub-PR 2 fix the backend
+ *  enforces a strict whitelist on every import, so this list is
+ *  only a safety net for legacy rows the cleanup script hasn't
+ *  walked yet. */
 const HIDDEN_KEYS = new Set(
   [
     // Identidad / contacto (en columnas propias).

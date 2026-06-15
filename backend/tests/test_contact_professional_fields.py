@@ -325,6 +325,89 @@ def test_backfill_lifts_json_into_columns_and_is_idempotent(
         assert len(rows) == 1
 
 
+# -- whitelist + cleanup -------------------------------------------
+
+
+def test_cleanup_removes_non_whitelist_keys_only(db: _Fixture) -> None:
+    from scripts.cleanup_contact_custom_fields_whitelist import cleanup  # noqa: PLC0415
+
+    with db.factory() as session:
+        contact = Contact(
+            first_name="Bart",
+            email="bart@bomedia.net",
+            tags="",
+            commercial_status="new",
+            custom_fields=json.dumps(
+                {
+                    # Whitelisted — must survive.
+                    "GRADO_DE_INTERES": "alto",
+                    "INTERESADO_EN_DEMO": True,
+                    "HORARIO": "L-V 9-18",
+                    # Out-of-whitelist noise — must go.
+                    "ETIQUETA": "newsletter",
+                    "TELEFONO_2": "+34111222333",
+                    "sib_contact_owner": "ops@bomedia.net",
+                    "EXT_ID": "X-123",
+                }
+            ),
+        )
+        session.add(contact)
+        session.commit()
+        contact_id = contact.id
+
+    with patch(
+        "scripts.cleanup_contact_custom_fields_whitelist.get_engine",
+        return_value=db.engine,
+    ):
+        summary = cleanup(dry_run=False)
+        # Second run is a no-op — idempotent.
+        idempotent = cleanup(dry_run=False)
+
+    assert summary["contacts_touched"] == 1
+    assert summary["keys_removed"] == 4
+    assert idempotent["contacts_touched"] == 0
+
+    with db.factory() as session:
+        c = session.get(Contact, contact_id)
+        decoded = json.loads(c.custom_fields)
+        assert decoded == {
+            "GRADO_DE_INTERES": "alto",
+            "INTERESADO_EN_DEMO": True,
+            "HORARIO": "L-V 9-18",
+        }
+
+
+def test_cleanup_nulls_custom_fields_when_no_whitelist_keys_remain(
+    db: _Fixture,
+) -> None:
+    from scripts.cleanup_contact_custom_fields_whitelist import cleanup  # noqa: PLC0415
+
+    with db.factory() as session:
+        contact = Contact(
+            first_name="Bart",
+            email="bart@bomedia.net",
+            tags="",
+            commercial_status="new",
+            custom_fields=json.dumps(
+                {"ETIQUETA": "newsletter", "EXT_ID": "X-1"}
+            ),
+        )
+        session.add(contact)
+        session.commit()
+        contact_id = contact.id
+
+    with patch(
+        "scripts.cleanup_contact_custom_fields_whitelist.get_engine",
+        return_value=db.engine,
+    ):
+        summary = cleanup(dry_run=False)
+
+    assert summary["rows_cleared_to_null"] == 1
+    with db.factory() as session:
+        c = session.get(Contact, contact_id)
+        assert c.custom_fields is None
+
+
 def test_backfill_does_not_overwrite_existing_column(
     db: _Fixture,
 ) -> None:
