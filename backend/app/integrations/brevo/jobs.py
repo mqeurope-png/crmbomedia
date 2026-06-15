@@ -27,14 +27,13 @@ from sqlalchemy.orm import Session
 from app.integrations.brevo.client import BrevoClient
 from app.integrations.brevo.mapper import (
     brevo_external_id,
-    extract_brevo_secondary_channels,
+    extract_brevo_secondary_phones,
     map_brevo_contact_to_internal,
 )
 from app.integrations.contact_merge import keep_first_origin, merge_external_dates
 from app.models.crm import (
     Company,
     Contact,
-    ContactEmail,
     ContactPhone,
     ContactTag,
     EmailUnsubscribe,
@@ -188,74 +187,52 @@ def reconcile_brevo_channels(
     *,
     contact_id: str,
     payload: dict[str, Any],
-) -> tuple[int, int]:
-    """Materialise secondary phones + emails Brevo carries (TELEFONO_*,
-    LANDLINE_NUMBER, TEL, EMAIL_SECUNDARIO, EMAIL2, EMAIL_2).
+) -> int:
+    """Materialise secondary phones Brevo carries (TELEFONO_*,
+    LANDLINE_NUMBER, TEL).
 
     Idempotent: a row whose normalised value already exists for
-    the contact (regardless of source) is left alone. Returns
-    `(phones_added, emails_added)` for logging.
+    the contact (regardless of source) is left alone. Returns the
+    number of phones added for logging.
+
+    Sub-PR 3 follow-up: the parallel email path was dropped
+    together with `contact_emails`. Secondary email attrs land
+    in `custom_fields` via the whitelist.
     """
     if not contact_id:
-        return 0, 0
+        return 0
 
-    phones, emails = extract_brevo_secondary_channels(payload)
+    phones = extract_brevo_secondary_phones(payload)
+    if not phones:
+        return 0
+
     now = datetime.now(UTC)
+    existing_numbers = {
+        "".join(c for c in (p.number or "") if c.isdigit() or c == "+")
+        for p in session.scalars(
+            select(ContactPhone).where(ContactPhone.contact_id == contact_id)
+        )
+    }
     phones_added = 0
-    emails_added = 0
-
-    if phones:
-        existing_numbers = {
-            "".join(c for c in (p.number or "") if c.isdigit() or c == "+")
-            for p in session.scalars(
-                select(ContactPhone).where(ContactPhone.contact_id == contact_id)
-            )
-        }
-        for entry in phones:
-            digits = "".join(
-                c for c in entry["number"] if c.isdigit() or c == "+"
-            )
-            if not digits or digits in existing_numbers:
-                continue
-            row = ContactPhone(
-                contact_id=contact_id,
-                label=entry.get("label"),
-                number=entry["number"],
-                is_primary=False,
-                source="brevo",
-            )
-            row.created_at = now
-            row.updated_at = now
-            session.add(row)
-            existing_numbers.add(digits)
-            phones_added += 1
-
-    if emails:
-        existing_emails = {
-            (e.email or "").strip().lower()
-            for e in session.scalars(
-                select(ContactEmail).where(ContactEmail.contact_id == contact_id)
-            )
-        }
-        for entry in emails:
-            value = entry["email"].strip().lower()
-            if not value or value in existing_emails:
-                continue
-            row = ContactEmail(
-                contact_id=contact_id,
-                label=entry.get("label"),
-                email=value,
-                is_primary=False,
-                is_verified=False,
-                source="brevo",
-            )
-            row.created_at = now
-            row.updated_at = now
-            session.add(row)
-            existing_emails.add(value)
-            emails_added += 1
-
-    return phones_added, emails_added
+    for entry in phones:
+        digits = "".join(
+            c for c in entry["number"] if c.isdigit() or c == "+"
+        )
+        if not digits or digits in existing_numbers:
+            continue
+        row = ContactPhone(
+            contact_id=contact_id,
+            label=entry.get("label"),
+            number=entry["number"],
+            is_primary=False,
+            source="brevo",
+        )
+        row.created_at = now
+        row.updated_at = now
+        session.add(row)
+        existing_numbers.add(digits)
+        phones_added += 1
+    return phones_added
 
 
 def reconcile_brevo_unsubscribe(
