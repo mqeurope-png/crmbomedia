@@ -1433,12 +1433,14 @@ def test_update_and_deactivate_contact(client: TestClient):
 
 
 def test_user_can_create_note_and_task_for_contact(client: TestClient):
+    # Sprint Empresas — sub-PR 4: `/api/contacts/{id}/notes` now
+    # writes the new `contact_notes` row (content/pinned/source).
     contact = create_contact(client)
     headers = auth_headers(client, "user")
 
     note = client.post(
         f"/api/contacts/{contact['id']}/notes",
-        json={"body": "Llamada"},
+        json={"content": "Llamada"},
         headers=headers,
     )
     # Mini-PR C: tasks live under their own router; the per-contact
@@ -1460,7 +1462,9 @@ def test_viewer_cannot_create_note_or_task(client: TestClient):
     headers = auth_headers(client, "viewer")
 
     note = client.post(
-        f"/api/contacts/{contact['id']}/notes", json={"body": "No"}, headers=headers
+        f"/api/contacts/{contact['id']}/notes",
+        json={"content": "No"},
+        headers=headers,
     )
     task = client.post(
         "/api/tasks",
@@ -1478,7 +1482,9 @@ def test_reject_note_for_missing_contact_and_task_for_missing_contact(
     headers = auth_headers(client, "user")
 
     note = client.post(
-        "/api/contacts/missing/notes", json={"body": "Nota"}, headers=headers
+        "/api/contacts/missing/notes",
+        json={"content": "Nota"},
+        headers=headers,
     )
     # The new tasks endpoint validates contact_id at the body level.
     task = client.post(

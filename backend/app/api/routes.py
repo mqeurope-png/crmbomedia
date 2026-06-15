@@ -60,7 +60,6 @@ from app.models.crm import (
     ContactView,
     ExternalReference,
     ExternalSystem,
-    Note,
     Pipeline,
     PipelineStage,
     TaskStatus,
@@ -159,8 +158,6 @@ from app.schemas.crm import (
     IntegrationSystemGroup,
     LoginRequest,
     MessageRead,
-    NoteCreate,
-    NoteRead,
     PasswordResetConfirm,
     PasswordResetRequest,
     PasswordResetRequestRead,
@@ -1943,58 +1940,14 @@ def list_contact_tasks(
     return [TaskRead.model_validate(t) for t in items]
 
 
-@router.get(
-    "/contacts/{contact_id}/notes",
-    response_model=list[NoteRead],
-    responses=ERROR_RESPONSES,
-    tags=["crm"],
-)
-def list_contact_notes(
-    contact_id: str,
-    session: Session = Depends(get_session),
-    current_user: User = Depends(require_viewer),
-) -> list[Note]:
-    _ = current_user
-    if not crm_repository.get_contact(session, contact_id):
-        raise not_found("Contact")
-    return crm_repository.list_notes(session, contact_id)
-
-
-@router.post(
-    "/contacts/{contact_id}/notes",
-    response_model=NoteRead,
-    status_code=status.HTTP_201_CREATED,
-    responses=ERROR_RESPONSES,
-    tags=["crm"],
-)
-def create_note(
-    contact_id: str,
-    payload: NoteCreate,
-    request: Request,
-    session: Session = Depends(get_session),
-    current_user: User = Depends(require_user),
-) -> Note:
-    if not crm_repository.get_contact(session, contact_id):
-        raise not_found("Contact")
-    data = payload.model_dump()
-    data["author_user_id"] = data.get("author_user_id") or current_user.id
-    note = Note(contact_id=contact_id, **data)
-    session.add(note)
-    session.flush()
-    record_event(
-        session,
-        action=Action.NOTE_CREATED,
-        target_type="note",
-        target_id=note.id,
-        actor=current_user,
-        metadata={"contact_id": contact_id},
-        request=request,
-    )
-    session.commit()
-    session.refresh(note)
-    return note
-
-
+# Sprint Empresas — sub-PR 4: `/api/contacts/{id}/notes` moved to
+# `app/api/contact_notes.py`, backed by the new `contact_notes`
+# table (cleaner schema with pinning + source provenance). The
+# legacy `notes` table + sync (`_sync_contact_notes` in the
+# AgileCRM jobs) still populate activity-stream notes embedded in
+# the contact detail response — they just no longer get a
+# standalone API endpoint, which the frontend never called.
+#
 # Legacy `/contacts/{contact_id}/tasks` GET + POST replaced by the
 # Mini-PR C productivity layer (`app/api/tasks.py`). The GET at the
 # same path lives there now; the POST belongs on `/api/tasks` so a
