@@ -1907,8 +1907,27 @@ td {
   flex-wrap: wrap;
 }
 
-.pagination-buttons { display: flex; gap: 8px; }
+.pagination-buttons { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .pagination-buttons .button[disabled] { opacity: 0.5; cursor: not-allowed; }
+.pagination-jump {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 6px;
+}
+.pagination-jump label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.pagination-jump input {
+  width: 60px;
+  padding: 3px 5px;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  font: inherit;
+  font-size: 12px;
+}
 
 .external-ref-list {
   list-style: none;
