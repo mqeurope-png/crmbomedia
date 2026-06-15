@@ -271,6 +271,14 @@ class ContactCreate(BaseModel):
     address_country_name: str | None = Field(default=None, max_length=255)
     address_state: str | None = Field(default=None, max_length=120)
     address_city: str | None = Field(default=None, max_length=120)
+    # Sprint Empresas — sub-PR 2/4. Professional + finer-grained
+    # address columns lifted from `custom_fields` JSON.
+    job_title: str | None = Field(default=None, max_length=200)
+    linkedin_url: str | None = Field(default=None, max_length=500)
+    personal_website: str | None = Field(default=None, max_length=500)
+    address_line: str | None = Field(default=None, max_length=500)
+    address_postal_code: str | None = Field(default=None, max_length=20)
+    address_region: str | None = Field(default=None, max_length=120)
     lead_score: int | None = None
 
     @field_validator("first_name")
@@ -290,6 +298,18 @@ class ContactUpdate(BaseModel):
     marketing_consent: ConsentStatus | None = None
     company_id: str | None = None
     is_active: bool | None = None
+    # v2 sub-PR 2/4: same fields the create payload accepts so the
+    # ficha can PATCH any of them individually.
+    job_title: str | None = Field(default=None, max_length=200)
+    linkedin_url: str | None = Field(default=None, max_length=500)
+    personal_website: str | None = Field(default=None, max_length=500)
+    address_line: str | None = Field(default=None, max_length=500)
+    address_city: str | None = Field(default=None, max_length=120)
+    address_state: str | None = Field(default=None, max_length=120)
+    address_postal_code: str | None = Field(default=None, max_length=20)
+    address_region: str | None = Field(default=None, max_length=120)
+    address_country: str | None = Field(default=None, max_length=120)
+    address_country_name: str | None = Field(default=None, max_length=255)
 
     @field_validator("first_name")
     @classmethod
