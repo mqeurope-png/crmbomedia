@@ -33,6 +33,7 @@ from app.integrations.agilecrm.client import AgileCRMClient
 from app.integrations.agilecrm.mapper import (
     agilecrm_account_label,
     agilecrm_external_id,
+    extract_agilecrm_notes,
     extract_agilecrm_secondary_phones,
     map_agilecrm_contact_to_internal,
     map_agilecrm_event_to_internal,
@@ -44,6 +45,7 @@ from app.integrations.errors import IntegrationError
 from app.models.crm import (
     ActivityEvent,
     Contact,
+    ContactNote,
     ContactPhone,
     ExternalReference,
     ExternalSystem,
@@ -182,6 +184,9 @@ def _upsert_contact_for_payload(
             reconcile_agile_channels(
                 session, contact_id=contact.id, payload=payload
             )
+            reconcile_agile_notes(
+                session, contact_id=contact.id, payload=payload
+            )
             session.flush()
             return ("updated", False, contact.id, external_id)
 
@@ -214,6 +219,9 @@ def _upsert_contact_for_payload(
         reconcile_agile_channels(
             session, contact_id=existing_contact.id, payload=payload
         )
+        reconcile_agile_notes(
+            session, contact_id=existing_contact.id, payload=payload
+        )
         session.flush()
         return ("updated", True, existing_contact.id, external_id)
 
@@ -237,6 +245,9 @@ def _upsert_contact_for_payload(
         desired_names=tag_names,
     )
     reconcile_agile_channels(
+        session, contact_id=contact.id, payload=payload
+    )
+    reconcile_agile_notes(
         session, contact_id=contact.id, payload=payload
     )
     session.flush()
@@ -293,6 +304,56 @@ def reconcile_agile_channels(
         existing_numbers.add(digits)
         phones_added += 1
     return phones_added
+
+
+def reconcile_agile_notes(
+    session: Session,
+    *,
+    contact_id: str,
+    payload: dict[str, Any],
+) -> int:
+    """Sprint Empresas — sub-PR 4/4. Materialise `Note1..Note10`
+    AgileCRM contact-form properties into the new `contact_notes`
+    table. Idempotent across re-syncs: dedupe by
+    (contact_id, source, content) so manual edits to imported
+    rows aren't clobbered and re-syncs don't spawn duplicates
+    when Agile happens to ship the same content.
+
+    Returns the number of notes inserted, for stats / observability.
+    """
+    from datetime import UTC, datetime  # noqa: PLC0415
+
+    if not contact_id:
+        return 0
+    notes = extract_agilecrm_notes(payload)
+    if not notes:
+        return 0
+
+    existing_keys: set[tuple[str, str]] = {
+        (row.source, row.content)
+        for row in session.scalars(
+            select(ContactNote).where(ContactNote.contact_id == contact_id)
+        )
+    }
+    now = datetime.now(UTC)
+    notes_added = 0
+    for entry in notes:
+        key = (entry["source"], entry["content"])
+        if key in existing_keys:
+            continue
+        row = ContactNote(
+            contact_id=contact_id,
+            content=entry["content"],
+            source=entry["source"],
+            pinned=False,
+            created_by_user_id=None,
+        )
+        row.created_at = now
+        row.updated_at = now
+        session.add(row)
+        existing_keys.add(key)
+        notes_added += 1
+    return notes_added
 
 
 def _sync_tag_delta(

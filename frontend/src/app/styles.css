@@ -5736,6 +5736,73 @@ a.origin-chip:hover { filter: brightness(0.97); }
   font-size: 12px;
 }
 
+/* Sprint Empresas sub-PR 4 — contact notes section */
+.contact-notes-list {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 6px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.contact-note-row {
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+.contact-note-row.is-pinned {
+  background: #fffbeb;
+  border-color: #fde68a;
+}
+.contact-note-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+}
+.contact-note-pin {
+  background: transparent;
+  border: 0;
+  padding: 2px;
+  cursor: pointer;
+}
+.contact-note-meta {
+  flex: 1;
+}
+.contact-note-actions {
+  display: flex;
+  gap: 4px;
+}
+.contact-note-content {
+  margin: 4px 0 0 0;
+  font-size: 13px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.contact-note-edit textarea,
+.contact-note-add textarea {
+  width: 100%;
+  padding: 4px 6px;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  font: inherit;
+  font-size: 13px;
+  resize: vertical;
+  box-sizing: border-box;
+}
+.contact-note-edit-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+}
+.contact-note-add {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 6px;
+}
+
 /* Sprint Empresas sub-PR 2 — contact ficha new sections */
 .contact-pro-row {
   display: flex;

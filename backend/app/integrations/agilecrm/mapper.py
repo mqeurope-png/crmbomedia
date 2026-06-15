@@ -146,6 +146,85 @@ _EMPTY_ADDRESS: dict[str, str | None] = {
 }
 
 
+#: AgileCRM custom property names that carry free-form note text.
+#: Templates we've seen in the wild use `Note1..Note10`; legacy
+#: accounts sometimes ship them lowercased (`note1`) or with a
+#: separator (`Note_1`) so we match canonically. The exhaustive
+#: list (rather than a regex) keeps the surface auditable.
+_AGILE_NOTE_KEYS: tuple[str, ...] = tuple(f"NOTE{n}" for n in range(1, 11))
+
+
+def _normalise_agile_note_key(key: str) -> str:
+    """Canonicalise an Agile custom-property name for note matching:
+    upper-case + drop spaces / hyphens / underscores so `Note 1`,
+    `note-1`, `NOTE_1` and `Note1` all collapse to `NOTE1`. Keeps
+    the original key as the row's display label upstream so the
+    operator sees what Agile shipped."""
+    upper = str(key).strip().upper()
+    return "".join(c for c in upper if c not in {" ", "-", "_", "."})
+
+
+_AGILE_NOTE_KEY_SET: frozenset[str] = frozenset(_AGILE_NOTE_KEYS)
+
+
+def extract_agilecrm_notes(
+    payload: dict[str, Any],
+) -> list[dict[str, str]]:
+    """Sprint Empresas — sub-PR 4/4. Pull every `Note1..Note10`
+    custom property from the AgileCRM contact payload and emit one
+    `{label, content, source}` dict per non-empty entry. `source`
+    follows the `agile:Note{n}` convention so the new
+    `contact_notes.source` column carries enough provenance to
+    re-key on the next sync.
+
+    Tolerant to casing + separator variants the way
+    `extract_brevo_secondary_phones` is — Agile templates in the
+    wild ship `Note1`, `note1`, `Note_1`, `NOTE 1`, all of which
+    map to the same `NOTE1` slot.
+    """
+    properties = payload.get("properties") or []
+    if not isinstance(properties, list):
+        return []
+
+    notes: list[dict[str, str]] = []
+    # An account is unlikely to ship the same Note slot twice, but
+    # if a template glitch does it we keep the first occurrence
+    # only — re-syncs would otherwise spawn parallel rows when the
+    # dedupe key (contact_id, source, content) doesn't quite
+    # match.
+    seen_slots: set[str] = set()
+    for prop in properties:
+        if not isinstance(prop, dict):
+            continue
+        name = prop.get("name")
+        if not isinstance(name, str):
+            continue
+        normalised = _normalise_agile_note_key(name)
+        if normalised not in _AGILE_NOTE_KEY_SET:
+            continue
+        raw_value = prop.get("value")
+        if raw_value is None:
+            continue
+        content = str(raw_value).strip()
+        if not content:
+            continue
+        if normalised in seen_slots:
+            continue
+        seen_slots.add(normalised)
+        # `agile:Note{n}` uses the canonical form (`NOTE3` → `Note3`)
+        # so re-keying on the next sync ignores the original
+        # casing variant Agile happened to ship.
+        slot_index = normalised.removeprefix("NOTE")
+        notes.append(
+            {
+                "label": name,
+                "content": content,
+                "source": f"agile:Note{slot_index}",
+            }
+        )
+    return notes
+
+
 def extract_agilecrm_secondary_phones(
     payload: dict[str, Any],
 ) -> list[dict[str, str]]:

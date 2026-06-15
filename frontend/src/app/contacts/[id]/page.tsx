@@ -15,6 +15,7 @@ import { ContactAddressSection } from "../../components/ContactAddressSection";
 import { ContactCompanySection } from "../../components/ContactCompanySection";
 import { ContactCustomFieldsSection } from "../../components/ContactCustomFieldsSection";
 import { ContactEmailsSection } from "../../components/ContactEmailsSection";
+import { ContactNotesSection } from "../../components/ContactNotesSection";
 import { ContactPhonesSection } from "../../components/ContactPhonesSection";
 import { ContactProfessionalSection } from "../../components/ContactProfessionalSection";
 import { EmailEventBadges } from "../../components/email/EmailEventBadges";
@@ -320,6 +321,8 @@ export default function ContactDetailPage() {
           />
 
           <ContactPhonesSection contactId={contact.id} />
+
+          <ContactNotesSection contactId={contact.id} />
 
           <ContactAddressSection
             contact={contact}
