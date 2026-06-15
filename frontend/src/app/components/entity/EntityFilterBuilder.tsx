@@ -14,12 +14,22 @@
  * "advanced" — AND/OR/NOT con anidamiento arbitrario sin pérdida en el
  * round-trip, vía el `segmentTranslator` ya existente.
  *
- * El componente es controlado: la pantalla mantiene `value`
- * (árbol IR) y le pasa `onChange` con cada edición. La pantalla decide
- * cuándo persistir (en `entity_views.filters_json.rules_json` o en
- * estado local).
+ * El componente es controlado solo en su mounting: el `value` siembra
+ * el árbol al inicio; cambios posteriores del padre se ignoran. Para
+ * forzar un árbol nuevo (cargar vista guardada, cambiar de entidad),
+ * el consumer monta con `key={someStableId}` (sandbox lo hace con
+ * `key={`${entity}:${activeViewId}`}`). Sin esto, cada re-render del
+ * padre forzaba un setQuery → remount del input → pérdida de foco.
+ *
+ * PR-Cd: el editor de valores se inyecta por `controlElements`
+ * (global, vía React Context con el mapa de specs) en lugar de
+ * `Field.valueEditor` per-field. El patrón global garantiza que RQB
+ * use NUESTRO editor para CUALQUIER operador, incluidos los nombres
+ * custom como `contains_any` / `tag_name_contains` — los operadores
+ * built-in de RQB (`=`, `in`, `null`, …) tienen tratamiento especial
+ * y a veces bypassean el editor per-field.
  */
-import { useMemo, useState } from "react";
+import { createContext, useContext, useMemo, useState } from "react";
 import {
   QueryBuilder,
   type Field,
@@ -39,10 +49,7 @@ import { SegmentValueEditor } from "../SegmentValueEditor";
 
 type Props = {
   fields: FieldDescriptor[];
-  /** Initial IR tree. CHANGES TO `value` AFTER MOUNT ARE IGNORED on
-   * purpose — see the comment below for why. To force the builder to
-   * adopt a different tree (e.g. when loading a saved view), remount
-   * the component via `key={someStableId}`. */
+  /** Initial IR tree. Cambios posteriores son ignorados — ver doc. */
   value: Record<string, unknown>;
   onChange: (next: Record<string, unknown>) => void;
 };
@@ -74,16 +81,47 @@ const COMPARATOR_LABELS: Record<string, string> = {
   tag_name_contains: "tag cuyo nombre contiene",
 };
 
+// Mapa de field-key → FieldDescriptor para que el editor global sepa
+// qué tipo / enum / comparator está editando. Context para evitar
+// recrear el componente editor en cada render (la identidad estable es
+// lo que permite que RQB no remontee el input en cada keystroke).
+const FieldsByKeyContext = createContext<Map<string, FieldDescriptor>>(
+  new Map(),
+);
+
+function GlobalValueEditor(props: ValueEditorProps) {
+  const fieldsByKey = useContext(FieldsByKeyContext);
+  const spec = fieldsByKey.get(String(props.field));
+  if (!spec) {
+    // Fallback al input por defecto de RQB si el field no está en el
+    // schema (no debería pasar — `qbFields` se deriva del mismo array).
+    return (
+      <input
+        type="text"
+        className="qb-value"
+        value={typeof props.value === "string" ? props.value : ""}
+        onChange={(event) => props.handleOnChange(event.target.value)}
+      />
+    );
+  }
+  return (
+    <SegmentValueEditor
+      spec={spec}
+      comparator={qbOpToBackend(props.operator)}
+      value={props.value}
+      onChange={props.handleOnChange}
+    />
+  );
+}
+
 export function EntityFilterBuilder({ fields, value, onChange }: Props) {
-  // PR-Cc fix: the builder is "uncontrolled with initialValue". The
-  // `value` prop seeds the RQB query at mount time only; further parent
-  // updates are NOT pushed back into RQB state. Without this rule, the
-  // previous `useEffect(..., [value])` re-sync remounted every value
-  // input on every keystroke (parent → setRules → setQuery → React
-  // remount → cursor lost). The parent forces a fresh tree by changing
-  // the component's `key`.
   const [query, setQuery] = useState<RuleGroupType>(() =>
     value && Object.keys(value).length ? backendToQB(value) : EMPTY_QB_GROUP,
+  );
+
+  const fieldsByKey = useMemo(
+    () => new Map(fields.map((spec) => [spec.key, spec])),
+    [fields],
   );
 
   const qbFields: Field[] = useMemo(() => {
@@ -92,24 +130,11 @@ export function EntityFilterBuilder({ fields, value, onChange }: Props) {
       .map((spec) => ({
         name: spec.key,
         label: spec.label,
-        // RQB groups by the first field's `group` (string) when set.
         group: spec.grouped_under,
         operators: spec.comparators.map((c) => ({
           name: backendOpToQB(c),
           label: COMPARATOR_LABELS[c] ?? c,
         })),
-        // Reuse the segment value editor — `FieldDescriptor` is a
-        // superset of `SegmentFieldDescriptor` so it accepts the new
-        // shape unchanged (key/label/type/comparators/enum_values are
-        // identical; extra columns are ignored).
-        valueEditor: (props: ValueEditorProps) => (
-          <SegmentValueEditor
-            spec={spec}
-            comparator={qbOpToBackend(props.operator)}
-            value={props.value}
-            onChange={props.handleOnChange}
-          />
-        ),
       }));
   }, [fields]);
 
@@ -123,21 +148,24 @@ export function EntityFilterBuilder({ fields, value, onChange }: Props) {
   }
 
   return (
-    <div className="entity-filter-builder">
-      <QueryBuilder
-        fields={qbFields}
-        query={query}
-        onQueryChange={(next) => handleQbChange(next as RuleGroupType)}
-        controlClassnames={{
-          queryBuilder: "qb-root",
-          ruleGroup: "qb-group",
-          combinators: "qb-combinator",
-          addRule: "button secondary small",
-          addGroup: "button secondary small",
-          removeRule: "button secondary small",
-          removeGroup: "button secondary small",
-        }}
-      />
-    </div>
+    <FieldsByKeyContext.Provider value={fieldsByKey}>
+      <div className="entity-filter-builder">
+        <QueryBuilder
+          fields={qbFields}
+          query={query}
+          onQueryChange={(next) => handleQbChange(next as RuleGroupType)}
+          controlElements={{ valueEditor: GlobalValueEditor }}
+          controlClassnames={{
+            queryBuilder: "qb-root",
+            ruleGroup: "qb-group",
+            combinators: "qb-combinator",
+            addRule: "button secondary small",
+            addGroup: "button secondary small",
+            removeRule: "button secondary small",
+            removeGroup: "button secondary small",
+          }}
+        />
+      </div>
+    </FieldsByKeyContext.Provider>
   );
 }
