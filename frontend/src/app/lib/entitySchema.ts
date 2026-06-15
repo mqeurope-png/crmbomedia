@@ -109,12 +109,17 @@ export const getEntityFilterSchema = (entity: EntityKey | string) =>
 
 // Engine IR — same tree the backend's `build_entity_filter` consumes
 // and `segments.rules_json` / `entity_views.filters.rules_json` persist.
+// Strict shape for new code; the wider `RuleTree` alias accommodates the
+// opaque object the translator emits (`segmentTranslator.qbToBackend`
+// returns a `Record<string, unknown>` for typing flexibility).
 export type RuleNode =
   | { type: "rule"; field: string; comparator: Operator; value: unknown }
   | { operator: "AND" | "OR" | "NOT"; children: RuleNode[] };
 
+export type RuleTree = RuleNode | Record<string, unknown>;
+
 export type EntitySearchRequest = {
-  rules_json?: RuleNode | null;
+  rules_json?: RuleTree | null;
   sort_by?: string | null;
   sort_dir?: "asc" | "desc";
   limit?: number;
