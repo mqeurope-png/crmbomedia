@@ -40,13 +40,20 @@ listas, hay que promocionarlos a columnas.
 - `FAIG_PPTO_ENVIADO`
 - `HORARIO`
 
-## C — Multi-canal (sub-PR 3, no incluido en este sprint)
+## C — Multi-canal (sub-PR 3/4 ✓)
 
-Datos de comunicación adicional que necesitan tabla aparte.
+Datos de comunicación adicional que necesitan tabla aparte. **Cubierto en sub-PR 3.**
 
-- Múltiples teléfonos (`PHONE2`, `MOBILE`, `WHATSAPP`).
-- Múltiples emails (`EMAIL2`, `EMAIL_TRABAJO`).
-- Redes sociales adicionales (Twitter / X, Instagram, Facebook).
+| Sistema | Campo origen                                    | Destino                       |
+| ------- | ----------------------------------------------- | ----------------------------- |
+| Brevo   | `TELEFONO_1..6`, `LANDLINE_NUMBER`, `TEL`       | `contact_phones` (source=brevo) |
+| Brevo   | `EMAIL_SECUNDARIO`, `EMAIL2`, `EMAIL_2`         | `contact_emails`              |
+| Agile   | `phone(work/home/mobile/main/home-fax/work-fax/other)` | `contact_phones` (label=subtype) |
+| Agile   | `email(personal/work)`                          | `contact_emails`              |
+| Agile   | `twitter`, `facebook`                           | `contacts.twitter_url` + `facebook_url` |
+| Agile   | `skype`, `xing`, `blog`, `googleplus`, `flickr`, `github`, `youtube`, `instagram` | `contacts.social_profiles_json` |
+
+Backfill mirroring de `Contact.phone` / `Contact.email` a las nuevas colecciones via `scripts/backfill_contact_channels.py`. Backend enforce de "1 primary por contacto" en `/api/contacts/{id}/phones/{id}/primary` + `/emails/{id}/primary`.
 
 ## D — Estado de suscripción (sub-PR 2/4 ✓)
 
