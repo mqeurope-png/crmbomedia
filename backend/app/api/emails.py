@@ -687,9 +687,16 @@ def email_activity(
     """
     from app.models.crm import Contact  # noqa: PLC0415
 
-    stmt = select(EmailMessage, EmailThread, Contact).join(
-        EmailThread, EmailMessage.thread_id == EmailThread.id
-    ).outerjoin(Contact, Contact.id == EmailMessage.contact_id)
+    stmt = (
+        select(EmailMessage, EmailThread, Contact)
+        .join(EmailThread, EmailMessage.thread_id == EmailThread.id)
+        .outerjoin(Contact, Contact.id == EmailMessage.contact_id)
+        # Activity timeline = messages that actually went out. A
+        # pending scheduled message hasn't reached anyone yet, so
+        # it must NOT surface here (it would also crash the ORDER
+        # BY since `sent_at` is NULL).
+        .where(EmailMessage.sent_at.is_not(None))
+    )
     # Spec: only the `admin` role can see other users' activity when
     # `scope=all`. Every other role (including manager) is forced to
     # the `mine` filter regardless of the scope they passed —
@@ -792,7 +799,12 @@ def _reply_to_suggestion(
     recipient, which is the lead by construction.
     """
     own = _user_own_emails(session, user)
-    msgs = sorted(thread.messages, key=lambda m: m.sent_at)
+    # Pending scheduled messages have `sent_at IS NULL`; they
+    # haven't reached anyone yet so they don't influence the
+    # reply-to suggestion. Drop them BEFORE sorting so the
+    # `<` comparison doesn't blow up on None.
+    actual = [m for m in thread.messages if m.sent_at is not None]
+    msgs = sorted(actual, key=lambda m: m.sent_at)
     for m in reversed(msgs):
         sender = (m.from_email or "").lower()
         if sender and sender not in own:
@@ -818,7 +830,14 @@ def _latest_messages(
         return {}
     rows = session.scalars(
         select(EmailMessage)
-        .where(EmailMessage.thread_id.in_(thread_ids))
+        .where(
+            EmailMessage.thread_id.in_(thread_ids),
+            # Skip pending scheduled rows — the inbox list's
+            # "Último mensaje" + snippet columns should reflect
+            # what's been received, not what the operator queued
+            # to send later.
+            EmailMessage.sent_at.is_not(None),
+        )
         .order_by(EmailMessage.sent_at.desc())
     ).all()
     out: dict[str, EmailMessage] = {}
