@@ -86,6 +86,25 @@ def _send_one(session: Session, msg: EmailMessage, now: datetime) -> None:
         bool(user.email_include_unsubscribe_default) if user else False
     )
 
+    # Threading: when the pending message lives in a thread that
+    # already has at least one real Gmail message (a sent outbound
+    # or imported inbound), pick the most recent of those as the
+    # reply target so `send_email`'s threading lookup can wire up
+    # In-Reply-To / References. A fresh scheduled compose lives in
+    # a sentinel thread with no other rows, so the parent stays
+    # None and we just create a brand-new conversation.
+    parent = session.scalar(
+        select(EmailMessage)
+        .where(
+            EmailMessage.thread_id == msg.thread_id,
+            EmailMessage.id != msg.id,
+            EmailMessage.gmail_message_id.is_not(None),
+        )
+        .order_by(EmailMessage.sent_at.desc())
+        .limit(1)
+    )
+    parent_message_id = parent.id if parent is not None else None
+
     new_message = gmail_send_email(
         session,
         sender_user_id=msg.created_by_user_id,
@@ -98,28 +117,41 @@ def _send_one(session: Session, msg: EmailMessage, now: datetime) -> None:
         body_html=msg.body_html,
         body_text=msg.body_text,
         contact_id=msg.contact_id,
-        in_reply_to_message_id=None,
+        in_reply_to_message_id=parent_message_id,
         include_unsubscribe=include_unsubscribe,
     )
 
-    # The pending row is the operator-visible canonical message
-    # (it already has a stable id the UI carries in the
-    # "Programados" entry). Carry the real Gmail ids onto it and
-    # drop the stub `gmail_send_email` minted.
-    msg.gmail_message_id = new_message.gmail_message_id
+    # The pending row is the operator-visible canonical message —
+    # it already has a stable id the UI references from
+    # /emails/programados — so we carry the real Gmail ids onto it
+    # and drop the stub `gmail_send_email` minted. Snapshot the
+    # ids first, then DELETE-then-flush the stub so the
+    # `(account, gmail_message_id)` unique constraint doesn't blow
+    # up while both rows momentarily share the new id.
+    new_gmail_message_id = new_message.gmail_message_id
+    new_thread_id = new_message.thread_id
+    new_snippet = new_message.snippet
+    sentinel_thread = session.get(EmailThread, msg.thread_id)
+    sentinel_to_drop = (
+        sentinel_thread
+        if (
+            sentinel_thread is not None
+            and sentinel_thread.gmail_thread_id.startswith("pending:")
+            and sentinel_thread.id != new_thread_id
+        )
+        else None
+    )
+    session.delete(new_message)
+    if sentinel_to_drop is not None:
+        session.delete(sentinel_to_drop)
+    session.flush()
+
+    msg.gmail_message_id = new_gmail_message_id
     msg.sent_at = now
     msg.scheduled_status = EmailScheduledStatus.SENT.value
-    msg.snippet = new_message.snippet
-    sentinel_thread = session.get(EmailThread, msg.thread_id)
-    if (
-        sentinel_thread is not None
-        and sentinel_thread.gmail_thread_id.startswith("pending:")
-        and sentinel_thread.id != new_message.thread_id
-    ):
-        msg.thread_id = new_message.thread_id
-        # Drop the now-empty sentinel thread.
-        session.delete(sentinel_thread)
-    session.delete(new_message)
+    msg.snippet = new_snippet
+    if sentinel_to_drop is not None:
+        msg.thread_id = new_thread_id
 
 
 def scheduled_send_sweep(*, now: datetime | None = None) -> dict[str, int]:
