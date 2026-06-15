@@ -149,6 +149,16 @@ class Contact(TimestampMixin, Base):
     address_country_name: Mapped[str | None] = mapped_column(String(255))
     address_state: Mapped[str | None] = mapped_column(String(120))
     address_city: Mapped[str | None] = mapped_column(String(120))
+    # Sprint Empresas — sub-PR 2/4. Professional + finer-grained
+    # address columns lifted from `custom_fields` JSON so they're
+    # filterable in lists + searches and don't need a JSON probe
+    # on every render.
+    job_title: Mapped[str | None] = mapped_column(String(200))
+    linkedin_url: Mapped[str | None] = mapped_column(String(500))
+    personal_website: Mapped[str | None] = mapped_column(String(500))
+    address_line: Mapped[str | None] = mapped_column(String(500))
+    address_postal_code: Mapped[str | None] = mapped_column(String(20))
+    address_region: Mapped[str | None] = mapped_column(String(120))
     # AgileCRM lead score. Other systems push their own scoring under
     # the same column for consistency.
     lead_score: Mapped[int | None] = mapped_column(Integer)
