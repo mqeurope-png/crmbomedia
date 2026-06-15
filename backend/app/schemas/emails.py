@@ -92,9 +92,23 @@ class EmailDraftRead(BaseModel):
 
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
-    @field_validator("to_emails", "cc_emails", "bcc_emails", mode="before")
+    @field_validator("to_emails", mode="before")
     @classmethod
-    def _decode_json(cls, value: Any) -> Any:
+    def _decode_to(cls, value: Any) -> Any:
+        # `to_emails` is non-optional on the model, so a NULL column
+        # has to become an empty list rather than propagate None.
+        if value is None:
+            return []
+        if isinstance(value, str):
+            try:
+                return json.loads(value)
+            except (TypeError, ValueError):
+                return []
+        return value
+
+    @field_validator("cc_emails", "bcc_emails", mode="before")
+    @classmethod
+    def _decode_cc_bcc(cls, value: Any) -> Any:
         if isinstance(value, str):
             try:
                 return json.loads(value)
