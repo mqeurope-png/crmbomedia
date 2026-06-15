@@ -23,12 +23,14 @@ Bart can backfill the small accounts first (e.g. `mbolasers` /
 across the 7 independent quotas, or re-launch a single account
 after a partial failure.
 
-Usage:
-    INTEGRATION_SECRETS_KEY=…  python -m scripts.backfill_contact_notes_from_agile
-    INTEGRATION_SECRETS_KEY=…  python -m scripts.backfill_contact_notes_from_agile --dry-run
-    INTEGRATION_SECRETS_KEY=…  python -m scripts.backfill_contact_notes_from_agile --limit 100
-    INTEGRATION_SECRETS_KEY=…  python -m scripts.backfill_contact_notes_from_agile --account-id mbolasers --dry-run
-    INTEGRATION_SECRETS_KEY=…  python -m scripts.backfill_contact_notes_from_agile --account-id mbolasers --account-id mboprinters
+Usage (set `INTEGRATION_SECRETS_KEY=…` in the env first):
+    python -m scripts.backfill_contact_notes_from_agile
+    python -m scripts.backfill_contact_notes_from_agile --dry-run
+    python -m scripts.backfill_contact_notes_from_agile --limit 100
+    python -m scripts.backfill_contact_notes_from_agile \\
+        --account-id mbolasers --dry-run
+    python -m scripts.backfill_contact_notes_from_agile \\
+        --account-id mbolasers --account-id mboprinters
 
 Commits in batches of 100 so a partial run still makes progress
 if the AgileCRM API rate-limits midway.

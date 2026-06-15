@@ -94,7 +94,7 @@ class _FakeClient:
     def __init__(self, session: Session, account_id: str) -> None:
         self.account_id = account_id
 
-    async def __aenter__(self) -> "_FakeClient":
+    async def __aenter__(self) -> _FakeClient:
         return self
 
     async def __aexit__(self, *_: Any) -> None:
