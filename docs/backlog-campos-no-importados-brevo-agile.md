@@ -4,7 +4,7 @@ Sprint Empresas. Inventario de campos que las plantillas Brevo o
 AgileCRM exponen pero que el CRM aún no persiste en columnas
 propias. Categorizado para priorizar.
 
-Última actualización: 2026-06-15 (sub-PR 2/4 de Sprint Empresas).
+Última actualización: 2026-06-15 (sub-PR 4/4 de Sprint Empresas).
 
 ## A — Lifted into first-class columns (sub-PR 2/4)
 
@@ -67,12 +67,32 @@ Backfill mirroring de `Contact.phone` a `contact_phones` via `scripts/backfill_c
 Reconciliado en cada upsert + en el backfill. Idempotente por
 contacto.
 
-## E — Notas + actividad (sub-PR 4, no incluido)
+## E — Notas + actividad (sub-PR 4 ✓ parcial)
 
-- `Notes` libres de AgileCRM (tabla aparte ya existe; falta map).
+| Sistema | Campo origen                                  | Destino                                     |
+| ------- | --------------------------------------------- | ------------------------------------------- |
+| Agile   | `Note1..Note10` (custom properties libres)    | `contact_notes` (source=`agile:Note{n}`)    |
+| Manual  | Operador desde la ficha → sección "Notas"     | `contact_notes` (source=`manual`)           |
+
+Reconciliado en cada upsert (`reconcile_agile_notes` en las 3
+ramas del `_upsert_contact_for_payload`). Idempotente por
+`(contact_id, source, content)`. Pinning + edición + borrado
+desde UI vía `/api/contacts/{id}/notes`. Backfill histórico:
+`scripts/backfill_contact_notes_from_agile.py` (re-fetch contra
+la API de Agile porque los Note* no están en
+`CUSTOM_FIELDS_WHITELIST` y se descartaban en imports previos).
+
+Pendiente (no incluido en sub-PR 4):
+
 - Histórico de campañas Brevo recibidas / abiertas / clicadas
   (probablemente debería vivir en `email_message_events` con un
   `system='brevo'`).
+- Los notes de la actividad-stream de Agile
+  (`/dev/api/contacts/{id}/notes`) siguen sincronizándose a la
+  tabla `notes` legacy pero ya no tienen endpoint API propio;
+  aparecen embebidos en el detalle del contacto. Si en algún
+  momento el negocio quiere verlos en la ficha, hay que unificar
+  con `contact_notes`.
 
 ## F — Subscriber state granular (sub-PR 2/4 ✓ parcial)
 
