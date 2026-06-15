@@ -17,8 +17,14 @@ segment X").
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
+from dataclasses import dataclass
+from dataclasses import field as _dc_field
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from app.services.entities.registry import EntityDescriptor
 
 from sqlalchemy import (
     Boolean,
@@ -49,6 +55,37 @@ from app.services.segments.fields import (
 MAX_DEPTH = 10
 LOGICAL_OPERATORS = {"AND", "OR", "NOT"}
 
+
+@dataclass(frozen=True)
+class _EntityCtx:
+    """Per-entity compilation context. Sprint Filtros & Listas (PR-A)
+    lifted the engine off the hardcoded `Contact` so the same tree
+    grammar compiles against companies / email threads / Brevo caches.
+
+    `field_specs` is the entity's whitelist (the anti-injection
+    boundary); `id_column` anchors the `_true`/`_false` tautologies and
+    the relation `EXISTS` subqueries; `base_model` resolves the `name`
+    concat. The relation join handlers (tags, pipelines, external_refs,
+    segment/brevo membership) remain Contact-specific and are only
+    reached when a Contact field declares that relation — other
+    entities simply don't register those fields.
+    """
+
+    field_specs: Mapping[str, FieldSpec]
+    id_column: Any
+    base_model: Any
+    resolver: SegmentResolver | None = None
+    visited: set[str] = _dc_field(default_factory=set)
+
+
+def _contact_ctx(resolver: SegmentResolver | None) -> _EntityCtx:
+    return _EntityCtx(
+        field_specs=FIELD_SPECS,
+        id_column=Contact.id,
+        base_model=Contact,
+        resolver=resolver,
+    )
+
 #: Callable that returns the `rules_json` tree for a segment id, or
 #: None when the id doesn't resolve. The route layer passes a
 #: closure backed by the SQLAlchemy session; tests pass an in-memory
@@ -67,7 +104,9 @@ def build_filter(
     *,
     segment_resolver: SegmentResolver | None = None,
 ) -> ColumnElement[bool]:
-    """Compile the rule tree into a SQLAlchemy boolean expression.
+    """Compile the rule tree into a SQLAlchemy boolean expression for
+    **contacts** (back-compat entry point — segments, `/contacts/search`,
+    Brevo target sync all call this).
 
     Empty / falsy input compiles to `True` so a brand-new segment
     matches every contact instead of crashing the preview.
@@ -77,19 +116,40 @@ def build_filter(
     its absence the engine raises `SegmentRuleError` instead of
     silently ignoring the rule.
     """
+    ctx = _contact_ctx(segment_resolver)
     if not tree:
-        return _true()
-    return _compile(tree, depth=0, resolver=segment_resolver, visited=set())
+        return _true(ctx)
+    return _compile(tree, ctx=ctx, depth=0)
+
+
+def build_entity_filter(
+    entity: EntityDescriptor,
+    tree: dict[str, Any],
+    *,
+    segment_resolver: SegmentResolver | None = None,
+) -> ColumnElement[bool]:
+    """Sprint Filtros & Listas (PR-A): compile a rule tree against an
+    arbitrary registered entity. The Contact path stays on `build_filter`
+    for byte-for-byte back-compat; this is the generic sibling the
+    unified `/api/{entity}/search` will use in PR-B.
+    """
+    ctx = _EntityCtx(
+        field_specs=entity.field_specs,
+        id_column=entity.id_column,
+        base_model=entity.base_model,
+        resolver=segment_resolver,
+    )
+    if not tree:
+        return _true(ctx)
+    return _compile(tree, ctx=ctx, depth=0)
 
 
 def _compile(
     node: dict[str, Any],
     *,
+    ctx: _EntityCtx,
     depth: int,
-    resolver: SegmentResolver | None = None,
-    visited: set[str] | None = None,
 ) -> ColumnElement[bool]:
-    visited = visited if visited is not None else set()
     if depth > MAX_DEPTH:
         raise SegmentRuleError(f"Rule tree exceeds max depth {MAX_DEPTH}")
     if not isinstance(node, dict):
@@ -104,10 +164,10 @@ def _compile(
         if not isinstance(children, list) or not children:
             # An empty logical block matches everything (AND) / nothing
             # (OR / NOT). We pick a friendly default: empty means no
-            # filter so the operator sees their contact universe.
-            return _true()
+            # filter so the operator sees their full universe.
+            return _true(ctx)
         compiled = [
-            _compile(child, depth=depth + 1, resolver=resolver, visited=visited)
+            _compile(child, ctx=ctx, depth=depth + 1)
             for child in children
         ]
         if op_upper == "AND":
@@ -128,7 +188,7 @@ def _compile(
     comparator = str(node.get("comparator") or "")
     raw_value = node.get("value")
 
-    spec = get_field_spec(field_key)
+    spec = ctx.field_specs.get(field_key)
     if spec is None:
         raise SegmentRuleError(f"Unknown field {field_key!r}")
     if comparator not in spec.comparators:
@@ -146,9 +206,7 @@ def _compile(
         raise SegmentRuleError(
             f"Campo {spec.key!r}: {exc}"
         ) from exc
-    return _compile_leaf(
-        spec, comparator, value, resolver=resolver, visited=visited, depth=depth
-    )
+    return _compile_leaf(spec, comparator, value, ctx=ctx, depth=depth)
 
 
 def _compile_leaf(
@@ -156,13 +214,15 @@ def _compile_leaf(
     comparator: str,
     value: Any,
     *,
-    resolver: SegmentResolver | None = None,
-    visited: set[str] | None = None,
+    ctx: _EntityCtx,
     depth: int = 0,
 ) -> ColumnElement[bool]:
+    # Relation leaves are Contact-specific joins; only Contact's
+    # registry declares these relations, so the generic entities never
+    # reach this branch.
     if spec.relation == "segment_membership":
         return _compile_segment_membership(
-            comparator, value, resolver=resolver, visited=visited or set(), depth=depth
+            comparator, value, ctx=ctx, depth=depth
         )
     if spec.relation == "tags":
         return _compile_tag_leaf(comparator, value)
@@ -176,8 +236,8 @@ def _compile_leaf(
     column = spec.column
     if column is None and "concat" in spec.extras:
         first, last = spec.extras["concat"]
-        column = func.coalesce(getattr(Contact, first), "") + " " + func.coalesce(
-            getattr(Contact, last), ""
+        column = func.coalesce(getattr(ctx.base_model, first), "") + " " + func.coalesce(
+            getattr(ctx.base_model, last), ""
         )
     if column is None:
         raise SegmentRuleError(f"Field {spec.key!r} has no resolved column")
@@ -365,51 +425,57 @@ def _compile_segment_membership(
     comparator: str,
     value: list[str],
     *,
-    resolver: SegmentResolver | None,
-    visited: set[str],
+    ctx: _EntityCtx,
     depth: int,
 ) -> ColumnElement[bool]:
     """`in_segment` references other segments by id; each referenced
-    segment's rules tree is loaded via `resolver` and compiled in
+    segment's rules tree is loaded via the ctx resolver and compiled in
     place (OR'd across the listed ids). Cycles are detected via the
-    `visited` set so a segment that references itself can't loop."""
-    if resolver is None:
+    ctx `visited` set so a segment that references itself can't loop.
+
+    Contact-only: segments are a Contact concept, so the recursive
+    `_compile` runs with the same Contact ctx."""
+    if ctx.resolver is None:
         raise SegmentRuleError(
             "in_segment requires a segment_resolver; pass one via build_filter"
         )
     sub_filters: list[ColumnElement[bool]] = []
     for segment_id in value:
         sid = str(segment_id)
-        if sid in visited:
+        if sid in ctx.visited:
             raise SegmentRuleError(
                 f"in_segment cycle detected at segment {sid!r}"
             )
-        sub_tree = resolver(sid, visited)
+        sub_tree = ctx.resolver(sid, ctx.visited)
         if sub_tree is None:
             # Unknown segment id → contributes no matches. Skipping
             # silently would be too kind (it'd match every contact via
             # the AND-empty rule), so we add a dead clause that filters
             # nothing out.
-            sub_filters.append(_false())
+            sub_filters.append(_false(ctx))
             continue
-        next_visited = visited | {sid}
-        sub_filters.append(
-            _compile(sub_tree, depth=depth + 1, resolver=resolver, visited=next_visited)
+        sub_ctx = _EntityCtx(
+            field_specs=ctx.field_specs,
+            id_column=ctx.id_column,
+            base_model=ctx.base_model,
+            resolver=ctx.resolver,
+            visited=ctx.visited | {sid},
         )
+        sub_filters.append(_compile(sub_tree, ctx=sub_ctx, depth=depth + 1))
     if not sub_filters:
-        return _false() if comparator == "in" else _true()
+        return _false(ctx) if comparator == "in" else _true(ctx)
     combined = or_(*sub_filters) if len(sub_filters) > 1 else sub_filters[0]
     return combined if comparator == "in" else not_(combined)
 
 
-def _false() -> ColumnElement[bool]:
-    return Contact.id != Contact.id
+def _false(ctx: _EntityCtx) -> ColumnElement[bool]:
+    return ctx.id_column != ctx.id_column
 
 
-def _true() -> ColumnElement[bool]:
+def _true(ctx: _EntityCtx) -> ColumnElement[bool]:
     """Portable 1=1 for SQLite + MySQL. SQLAlchemy's `true()` literal
     would be ideal but it falls back to `1` on MySQL strict modes."""
-    return Contact.id == Contact.id
+    return ctx.id_column == ctx.id_column
 
 
 def _now() -> datetime:
@@ -566,6 +632,7 @@ def _resolve_attr(contact: Contact, spec: FieldSpec) -> Any:
 __all__ = [
     "SegmentRuleError",
     "build_filter",
+    "build_entity_filter",
     "evaluate_contact_against_rules",
     "FIELD_SPECS",
     "Mapped",  # re-export so type-hint imports don't break the engine consumer
