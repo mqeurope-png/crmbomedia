@@ -245,6 +245,106 @@ def test_tag_contains_any_matches_by_tag_id(session_factory):
         assert _ids(matched) == {seeded["ana"].id, seeded["carla"].id}
 
 
+def test_in_brevo_list_non_numeric_value_is_400_not_500(session_factory):
+    """PR-Ce: blindar el motor. Antes `int('fespa')` 500-eaba el
+    endpoint; ahora el engine emite `SegmentRuleError` con un mensaje
+    accionable que el route layer mapea a 400."""
+    factory = session_factory
+    with factory() as session:
+        _seed(session)
+        with pytest.raises(SegmentRuleError) as exc_info:
+            build_filter(
+                {
+                    "type": "rule",
+                    "field": "in_brevo_list",
+                    "comparator": "in",
+                    "value": ["fespa"],
+                }
+            )
+        assert "in_brevo_list" in str(exc_info.value)
+        assert "fespa" in str(exc_info.value)
+
+
+def test_enum_is_null_compiles_for_column_enums(session_factory):
+    """PR-Ce: `commercial_status` y `marketing_consent` ganaron
+    `is_null/is_not_null` en su whitelist. En el modelo actual las dos
+    columnas son NOT NULL con default ('new' / 'unknown'), así que el
+    matching real es 0 / total — pero el motor debe COMPILAR sin
+    raise (sin esto el operador veía un 400 con "comparator not
+    allowed"). El día que alguien las haga nullable, el matching ya
+    funciona sin tocar nada más."""
+    factory = session_factory
+    with factory() as session:
+        seeded = _seed(session)
+
+        # is_null sobre columna NOT NULL: matching empty, NO raise.
+        condition = build_filter(
+            {
+                "type": "rule",
+                "field": "marketing_consent",
+                "comparator": "is_null",
+                "value": None,
+            }
+        )
+        matched = list(session.scalars(select(Contact).where(condition)))
+        assert _ids(matched) == set()  # NOT NULL → siempre vacío
+
+        # is_not_null: matching total porque ninguna fila tiene NULL.
+        condition_not = build_filter(
+            {
+                "type": "rule",
+                "field": "commercial_status",
+                "comparator": "is_not_null",
+                "value": None,
+            }
+        )
+        matched_not = list(session.scalars(select(Contact).where(condition_not)))
+        assert _ids(matched_not) == {
+            seeded["ana"].id,
+            seeded["boris"].id,
+            seeded["carla"].id,
+        }
+
+
+def test_lead_score_is_not_null_matches_assigned_scores(session_factory):
+    """PR-Ce: lead_score ganó `is_not_null`. Pin de la rama numeric."""
+    factory = session_factory
+    with factory() as session:
+        seeded = _seed(session)  # Ana=80, Boris=30, Carla=60
+        condition = build_filter(
+            {
+                "type": "rule",
+                "field": "lead_score",
+                "comparator": "is_not_null",
+                "value": None,
+            }
+        )
+        matched = list(session.scalars(select(Contact).where(condition)))
+        assert _ids(matched) == {
+            seeded["ana"].id,
+            seeded["boris"].id,
+            seeded["carla"].id,
+        }
+
+
+def test_reference_field_rejects_non_uuid_value(session_factory):
+    """PR-Ce: `validate_value` para type=reference exige UUID. Un texto
+    suelto (`'raul'`, `'fespa'`) ahora 400-ea con mensaje en lugar de
+    devolver 0 matches silenciosos."""
+    factory = session_factory
+    with factory() as session:
+        _seed(session)
+        with pytest.raises(SegmentRuleError):
+            build_filter(
+                {
+                    "type": "rule",
+                    "field": "owner_user_id",
+                    "comparator": "eq",
+                    "value": "raul",
+                }
+            )
+
+
 def test_tag_name_contains_matches_substring(session_factory):
     """PR-Cc: nuevo comparador para "todos los contactos con cualquier
     tag cuyo nombre contenga X" (case-insensitive). Resuelve el caso

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { listTags, type TagDetail } from "../lib/api";
 import { TagChips } from "./TagChips";
 
@@ -64,14 +64,18 @@ export function TagMultiSelectFilter({
     return tags.filter((tag) => idSet.has(tag.id));
   }, [tags, selectedIds]);
 
+  // PR-Ce bonus UX: bump del slice 80 → 300 + useDeferredValue para
+  // que el typing siga siendo fluido aunque haya cientos de tags
+  // brevo-list:* (Bart reportó >100 listas reales).
+  const deferredQuery = useDeferredValue(query);
   const filtered = useMemo(() => {
     if (!tags) return [] as TagDetail[];
-    const normalized = query.trim().toLowerCase();
-    if (!normalized) return tags.slice(0, 80);
+    const normalized = deferredQuery.trim().toLowerCase();
+    if (!normalized) return tags.slice(0, 300);
     return tags.filter((tag) =>
       tag.name.toLowerCase().includes(normalized),
     );
-  }, [tags, query]);
+  }, [tags, deferredQuery]);
 
   function toggle(tagId: string) {
     if (selectedIds.includes(tagId)) {
