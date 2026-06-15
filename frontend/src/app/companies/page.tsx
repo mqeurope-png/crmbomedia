@@ -4,6 +4,7 @@ import { Building2, Plus, Search } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { PageHeader } from "../components/PageHeader";
+import { Pagination } from "../components/Pagination";
 import {
   type Company,
   type CompanyListFilters,
@@ -20,6 +21,8 @@ const SOURCE_LABELS: Record<string, string> = {
   "auto-domain": "Auto (dominio)",
 };
 
+const PAGE_SIZE = 100;
+
 export default function CompaniesPage() {
   const [items, setItems] = useState<Company[]>([]);
   const [total, setTotal] = useState(0);
@@ -32,6 +35,8 @@ export default function CompaniesPage() {
   const [hasContacts, setHasContacts] = useState<boolean | undefined>(
     undefined,
   );
+  // 1-indexed in the UI. Backend takes offset = (page-1) * pageSize.
+  const [page, setPage] = useState(1);
   const [createOpen, setCreateOpen] = useState(false);
   const [createBusy, setCreateBusy] = useState(false);
   const [newName, setNewName] = useState("");
@@ -42,6 +47,13 @@ export default function CompaniesPage() {
     return () => window.clearTimeout(t);
   }, [q]);
 
+  // Reset to page 1 whenever the filters change — otherwise an
+  // operator who narrowed a 7k-row dataset to 3 rows stays stuck on
+  // page 79 of the new (empty) result.
+  useEffect(() => {
+    setPage(1);
+  }, [debounced, country, source, hasContacts]);
+
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -51,17 +63,18 @@ export default function CompaniesPage() {
         country: country || undefined,
         source: source || undefined,
         has_contacts: hasContacts,
-        limit: 100,
+        limit: PAGE_SIZE,
+        offset: (page - 1) * PAGE_SIZE,
       };
-      const page = await listCompanies(filters);
-      setItems(page.items);
-      setTotal(page.total);
+      const result = await listCompanies(filters);
+      setItems(result.items);
+      setTotal(result.total);
     } catch (err) {
       setError(extractErrorMessage(err, "No se pudieron cargar las empresas."));
     } finally {
       setLoading(false);
     }
-  }, [debounced, country, source, hasContacts]);
+  }, [debounced, country, source, hasContacts, page]);
 
   useEffect(() => {
     void load();
@@ -163,16 +176,26 @@ export default function CompaniesPage() {
       {error ? <p className="form-error">{error}</p> : null}
       {loading ? (
         <p className="muted">Cargando…</p>
-      ) : items.length === 0 ? (
+      ) : total === 0 ? (
         <p className="muted">
           <Building2 size={14} aria-hidden /> No hay empresas que coincidan.
         </p>
+      ) : items.length === 0 ? (
+        <>
+          <p className="muted">
+            Esta página está vacía. Vuelve a una anterior para ver
+            resultados.
+          </p>
+          <Pagination
+            total={total}
+            currentPage={page}
+            pageSize={PAGE_SIZE}
+            visibleCount={items.length}
+            onChange={setPage}
+          />
+        </>
       ) : (
         <>
-          <p className="muted small">
-            {total} empresa{total === 1 ? "" : "s"} ·{" "}
-            {items.length} mostrada{items.length === 1 ? "" : "s"}
-          </p>
           <table className="data-table">
             <thead>
               <tr>
@@ -205,6 +228,13 @@ export default function CompaniesPage() {
               ))}
             </tbody>
           </table>
+          <Pagination
+            total={total}
+            currentPage={page}
+            pageSize={PAGE_SIZE}
+            visibleCount={items.length}
+            onChange={setPage}
+          />
         </>
       )}
 
