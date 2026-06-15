@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import secrets
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -33,6 +34,8 @@ from app.models.crm import (
     Company,
     Contact,
     ContactTag,
+    EmailUnsubscribe,
+    EmailUnsubscribeScope,
     ExternalReference,
     ExternalSystem,
     SyncLog,
@@ -177,6 +180,68 @@ def resolve_brevo_company(
     return company.id
 
 
+def reconcile_brevo_unsubscribe(
+    session: Session,
+    *,
+    contact_id: str,
+    payload: dict[str, Any],
+) -> bool:
+    """Sprint Empresas — sub-PR 2/4. Materialise an `EmailUnsubscribe`
+    row whenever the Brevo payload flags the contact as opted out
+    (the `emailBlacklisted` boolean OR a truthy `EMAILABLE_UNSUBSCRIBED`
+    custom attribute).
+
+    Idempotent: skips when a row with `(contact_id, source='brevo')`
+    already exists for the marketing scope. Returns True when a
+    new row was added.
+    """
+    if not contact_id:
+        return False
+    attributes = payload.get("attributes") or {}
+    if not isinstance(attributes, dict):
+        attributes = {}
+    blacklisted = bool(payload.get("emailBlacklisted"))
+    custom_unsub = attributes.get("EMAILABLE_UNSUBSCRIBED") or attributes.get(
+        "emailable_unsubscribed"
+    )
+    is_unsub = blacklisted or bool(
+        str(custom_unsub or "").strip().lower()
+        in {"1", "true", "yes", "si", "sí"}
+    )
+    if not is_unsub:
+        return False
+
+    existing = session.scalar(
+        select(EmailUnsubscribe).where(
+            EmailUnsubscribe.contact_id == contact_id,
+            EmailUnsubscribe.source == "brevo",
+            EmailUnsubscribe.scope == EmailUnsubscribeScope.MARKETING,
+        )
+    )
+    if existing is not None:
+        return False
+
+    token = secrets.token_urlsafe(32)
+    session.add(
+        EmailUnsubscribe(
+            contact_id=contact_id,
+            scope=EmailUnsubscribeScope.MARKETING,
+            source="brevo",
+            token=token,
+            unsubscribed_at=datetime.now(UTC),
+            metadata_json=json.dumps(
+                {
+                    "brevo_external_id": str(payload.get("id") or ""),
+                    "emailBlacklisted": blacklisted,
+                    "custom_unsubscribed": bool(custom_unsub),
+                },
+                default=str,
+            ),
+        )
+    )
+    return True
+
+
 def upsert_brevo_contact(
     session: Session,
     *,
@@ -230,6 +295,9 @@ def upsert_brevo_contact(
                 account_id=account_id,
                 desired_names=tag_names,
             )
+            reconcile_brevo_unsubscribe(
+                session, contact_id=contact.id, payload=payload
+            )
             session.flush()
             return ("updated", contact.id)
 
@@ -248,6 +316,9 @@ def upsert_brevo_contact(
                 contact_id=existing.id,
                 account_id=account_id,
                 desired_names=tag_names,
+            )
+            reconcile_brevo_unsubscribe(
+                session, contact_id=existing.id, payload=payload
             )
             session.flush()
             return ("updated", existing.id)
@@ -271,6 +342,9 @@ def upsert_brevo_contact(
         contact_id=contact.id,
         account_id=account_id,
         desired_names=tag_names,
+    )
+    reconcile_brevo_unsubscribe(
+        session, contact_id=contact.id, payload=payload
     )
     session.flush()
     return ("created", contact.id)
