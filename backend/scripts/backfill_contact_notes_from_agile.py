@@ -17,11 +17,20 @@ Idempotent — re-running converges instead of duplicating. The
 `--dry-run` flag rolls the transaction back so an operator can
 preview the diff. `--limit` caps the contact count for staged
 runs (small batches against the prod API quota first).
+`--account-id` filters to one (or more) AgileCRM accounts so
+Bart can backfill the small accounts first (e.g. `mbolasers` /
+`mboprinters`) for visual validation, spread rate-limit usage
+across the 7 independent quotas, or re-launch a single account
+after a partial failure.
 
-Usage:
-    INTEGRATION_SECRETS_KEY=…  python -m scripts.backfill_contact_notes_from_agile
-    INTEGRATION_SECRETS_KEY=…  python -m scripts.backfill_contact_notes_from_agile --dry-run
-    INTEGRATION_SECRETS_KEY=…  python -m scripts.backfill_contact_notes_from_agile --limit 100
+Usage (set `INTEGRATION_SECRETS_KEY=…` in the env first):
+    python -m scripts.backfill_contact_notes_from_agile
+    python -m scripts.backfill_contact_notes_from_agile --dry-run
+    python -m scripts.backfill_contact_notes_from_agile --limit 100
+    python -m scripts.backfill_contact_notes_from_agile \\
+        --account-id mbolasers --dry-run
+    python -m scripts.backfill_contact_notes_from_agile \\
+        --account-id mbolasers --account-id mboprinters
 
 Commits in batches of 100 so a partial run still makes progress
 if the AgileCRM API rate-limits midway.
@@ -91,7 +100,11 @@ def _apply_notes(
 
 
 async def _drive(
-    *, dry_run: bool, batch: int, limit: int | None
+    *,
+    dry_run: bool,
+    batch: int,
+    limit: int | None,
+    account_ids: list[str] | None,
 ) -> dict[str, int]:
     counts = {
         "scanned": 0,
@@ -110,10 +123,19 @@ async def _drive(
             .join(ExternalReference, ExternalReference.contact_id == Contact.id)
             .where(ExternalReference.system == ExternalSystem.AGILECRM)
         )
+        if account_ids:
+            stmt = stmt.where(ExternalReference.account_id.in_(account_ids))
         if limit is not None:
             stmt = stmt.limit(limit)
         targets = list(session.execute(stmt).all())
         counts["scanned"] = len(targets)
+        log.info(
+            "backfill_notes scope: account_ids=%s dry_run=%s limit=%s total_external_refs=%d",
+            account_ids if account_ids else "ALL",
+            dry_run,
+            limit,
+            counts["scanned"],
+        )
 
         # Group by account so one AgileCRMClient covers many contacts.
         by_account: dict[str, list[tuple[str, str]]] = {}
@@ -168,24 +190,51 @@ async def _drive(
 
 
 def backfill(
-    *, dry_run: bool, batch: int = 100, limit: int | None = None
+    *,
+    dry_run: bool,
+    batch: int = 100,
+    limit: int | None = None,
+    account_ids: list[str] | None = None,
 ) -> dict[str, int]:
-    return asyncio.run(_drive(dry_run=dry_run, batch=batch, limit=limit))
+    return asyncio.run(
+        _drive(
+            dry_run=dry_run,
+            batch=batch,
+            limit=limit,
+            account_ids=account_ids,
+        )
+    )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument(
+        "--account-id",
+        action="append",
+        dest="account_ids",
+        metavar="ACCOUNT_ID",
+        help=(
+            "Restrict backfill to one AgileCRM account; repeat the "
+            "flag to allow several (e.g. `--account-id mbolasers "
+            "--account-id mboprinters`). Default: all 7 accounts."
+        ),
+    )
     args = parser.parse_args()
-    summary = backfill(dry_run=args.dry_run, limit=args.limit)
+    summary = backfill(
+        dry_run=args.dry_run,
+        limit=args.limit,
+        account_ids=args.account_ids,
+    )
     log.info(
-        "backfill summary scanned=%d fetched=%d notes_added=%d failed=%d dry_run=%s",
+        "backfill summary scanned=%d fetched=%d notes_added=%d failed=%d dry_run=%s account_ids=%s",
         summary["scanned"],
         summary["fetched"],
         summary["notes_added"],
         summary["failed"],
         args.dry_run,
+        args.account_ids if args.account_ids else "ALL",
     )
     print(json.dumps(summary))
 
