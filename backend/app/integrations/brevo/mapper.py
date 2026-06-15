@@ -59,6 +59,31 @@ NATIVE_ATTRIBUTE_MAP = {
     "CIUDAD": "address_city",
     "CITY": "address_city",
     "LEAD_SCORE": "lead_score",
+    # Sprint Empresas — sub-PR 2/4. Professional + finer-grained
+    # address attributes lifted into first-class columns. The
+    # uppercase + Spanish + English spellings are all accepted so
+    # an account that didn't standardise on a convention still
+    # populates the right column.
+    "JOB_TITLE": "job_title",
+    "JOBTITLE": "job_title",
+    "PUESTO": "job_title",
+    "CARGO": "job_title",
+    "LINKEDIN": "linkedin_url",
+    "LINKEDIN_URL": "linkedin_url",
+    "WEB": "personal_website",
+    "WEBSITE": "personal_website",
+    "ADDRESS": "address_line",
+    "DIRECCION": "address_line",
+    "DIRECCIO": "address_line",
+    "PROVINCIA": "address_state",
+    "STATE": "address_state",
+    "CODIGO_POSTAL": "address_postal_code",
+    "CODIGOPOSTAL": "address_postal_code",
+    "POSTAL_CODE": "address_postal_code",
+    "POSTCODE": "address_postal_code",
+    "ZIP": "address_postal_code",
+    "PAIS_REGION": "address_region",
+    "REGION": "address_region",
 }
 
 #: Prefix for the auto-tags that mirror Brevo list membership so the
@@ -131,6 +156,13 @@ def map_brevo_contact_to_internal(
         payload.get("emailBlacklisted") or payload.get("smsBlacklisted")
     )
 
+    def _clean_native(key: str) -> str | None:
+        raw = native.get(key)
+        if raw is None:
+            return None
+        s = str(raw).strip()
+        return s or None
+
     record: dict[str, Any] = {
         "first_name": first_name or _local_part(email or "") or "Sin nombre",
         "last_name": str(native.get("last_name") or "").strip() or None,
@@ -144,7 +176,16 @@ def map_brevo_contact_to_internal(
         # the operator filled the field. Normalise to (iso2,
         # display_name) so the CRM stays canonical.
         **_country_pair(native.get("address_country")),
-        "address_city": str(native.get("address_city") or "").strip() or None,
+        "address_city": _clean_native("address_city"),
+        # Sprint Empresas — sub-PR 2/4. Promote the professional +
+        # finer-grained address attributes off `native` directly.
+        "job_title": _clean_native("job_title"),
+        "linkedin_url": _clean_native("linkedin_url"),
+        "personal_website": _clean_native("personal_website"),
+        "address_line": _clean_native("address_line"),
+        "address_state": _clean_native("address_state"),
+        "address_postal_code": _clean_native("address_postal_code"),
+        "address_region": _clean_native("address_region"),
         "lead_score": lead_score,
         "custom_fields": json.dumps(custom, default=str) if custom else None,
     }
