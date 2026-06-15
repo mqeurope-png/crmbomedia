@@ -412,6 +412,63 @@ def test_search_unknown_entity_404(client: TestClient) -> None:
     assert res.status_code == 404
 
 
+def test_search_in_segment_resolves_segment_rules(client: TestClient) -> None:
+    """PR-Cf: `/api/entities/{entity}/search` debe inyectar el
+    `segment_resolver` igual que el endpoint legacy. Sin esto, una
+    rule `in_segment` levantaba `SegmentRuleError("in_segment requires
+    a segment_resolver")` → 400 con mensaje técnico, y antes incluso
+    500 al sandbox que cogía el error sin handle. Test e2e: sembra un
+    contacto + un segmento que lo matchea por commercial_status, luego
+    busca contactos `in_segment IN (<segment_id>)` y verifica que el
+    matching aplica."""
+    from app.models.crm import Segment  # noqa: PLC0415
+
+    factory = client._factory  # type: ignore[attr-defined]
+    with factory() as session:
+        contact = Contact(
+            first_name="Bart",
+            email="bart@bomedia.net",
+            tags="",
+            commercial_status="qualified",
+        )
+        session.add(contact)
+        session.flush()
+        # Segmento: "contacts donde commercial_status == 'qualified'".
+        segment = Segment(
+            name="Qualified",
+            owner_user_id=session.scalar(
+                select(Base.metadata.tables["users"].c.id)
+            ),
+            is_dynamic=True,
+            rules_json=(
+                '{"type":"rule","field":"commercial_status",'
+                '"comparator":"eq","value":"qualified"}'
+            ),
+        )
+        session.add(segment)
+        session.commit()
+        segment_id = segment.id
+
+    headers = auth_headers(client, "viewer")
+    res = client.post(
+        "/api/entities/contact/search",
+        json={
+            "rules_json": {
+                "type": "rule",
+                "field": "in_segment",
+                "comparator": "in",
+                "value": [segment_id],
+            }
+        },
+        headers=headers,
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    # El segmento matchea al Bart sembrado.
+    assert body["total"] == 1
+    assert body["items"][0]["email"] == "bart@bomedia.net"
+
+
 # -- PR-Cb hotfix: serialize_row handles computed/concat fields ----
 
 
