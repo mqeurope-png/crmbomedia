@@ -59,13 +59,45 @@ class UserRole(StrEnum):
 
 
 class Company(TimestampMixin, Base):
+    """Sprint Empresas. Backing table for `/api/companies`. The
+    `tax_id` column has carried the Spanish CIF (and any other VAT
+    id we got from upstream CRMs) since the initial schema; the
+    rest of the v2 columns landed in migration 0041.
+
+    `domain` is the canonical de-dupe key — a bare-bones manual
+    row created without a domain stays unique (MySQL 8 accepts
+    multiple NULLs in a UNIQUE), while a Brevo sync + an
+    auto-domain backfill converge on the same row once they both
+    know `bomedia.net`.
+    """
+
     __tablename__ = "companies"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
-    tax_id: Mapped[str | None] = mapped_column(String(64), unique=True)
+    tax_id: Mapped[str | None] = mapped_column(String(64))
     website: Mapped[str | None] = mapped_column(String(255))
+    domain: Mapped[str | None] = mapped_column(String(255), unique=True)
+    vat: Mapped[str | None] = mapped_column(String(40))
+    country: Mapped[str | None] = mapped_column(String(120))
+    region: Mapped[str | None] = mapped_column(String(120))
+    state: Mapped[str | None] = mapped_column(String(200))
+    city: Mapped[str | None] = mapped_column(String(200))
+    address_line: Mapped[str | None] = mapped_column(String(500))
+    postal_code: Mapped[str | None] = mapped_column(String(20))
+    sector: Mapped[str | None] = mapped_column(String(120))
+    size_category: Mapped[str | None] = mapped_column(String(40))
+    notes: Mapped[str | None] = mapped_column(Text)
+    source: Mapped[str] = mapped_column(
+        String(40), default="manual", nullable=False
+    )
+    # JSON text columns kept as strings + decoded in the API layer
+    # so existing helpers handle them without a side dialect.
+    external_references_json: Mapped[str | None] = mapped_column(Text)
+    custom_fields_json: Mapped[str | None] = mapped_column(Text)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+    contacts: Mapped[list["Contact"]] = relationship(back_populates="company")
 
     contacts: Mapped[list["Contact"]] = relationship(back_populates="company")
 
@@ -101,7 +133,10 @@ class Contact(TimestampMixin, Base):
     )
     is_email_valid: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    company_id: Mapped[str | None] = mapped_column(ForeignKey("companies.id"))
+    company_id: Mapped[str | None] = mapped_column(
+        ForeignKey("companies.id", ondelete="SET NULL")
+    )
+    company: Mapped["Company | None"] = relationship(back_populates="contacts")
     # Free-form per-system extras (AgileCRM custom properties today,
     # other systems' equivalents tomorrow). Stored as JSON text so the
     # operator can query it cheaply without a side table; the API
