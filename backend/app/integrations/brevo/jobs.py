@@ -303,10 +303,24 @@ def upsert_brevo_contact(
     account_id: str,
     payload: dict[str, Any],
     list_names: dict[int, str] | None = None,
+    stats: dict[str, int] | None = None,
 ) -> tuple[str, str]:
     """Insert or update one internal contact for a Brevo payload.
     Returns `(action, contact_id)` with action ∈ {created, updated,
-    skipped}."""
+    skipped}.
+
+    `stats`, when passed, is a mutable counter the sync loop owns;
+    the secondary-phone reconciler bumps `stats['secondary_phones_added']`
+    so the run's `SyncOutcome.metadata` can report how many
+    `contact_phones` rows the sync created — the observability the
+    "zero secondary phones" investigation was missing.
+    """
+
+    def _bump_phones(added: int) -> None:
+        if stats is not None and added:
+            stats["secondary_phones_added"] = (
+                stats.get("secondary_phones_added", 0) + added
+            )
     external_id = brevo_external_id(payload)
     if not external_id:
         raise ValueError("Brevo payload missing 'id'")
@@ -353,8 +367,10 @@ def upsert_brevo_contact(
             reconcile_brevo_unsubscribe(
                 session, contact_id=contact.id, payload=payload
             )
-            reconcile_brevo_channels(
-                session, contact_id=contact.id, payload=payload
+            _bump_phones(
+                reconcile_brevo_channels(
+                    session, contact_id=contact.id, payload=payload
+                )
             )
             session.flush()
             return ("updated", contact.id)
@@ -378,8 +394,10 @@ def upsert_brevo_contact(
             reconcile_brevo_unsubscribe(
                 session, contact_id=existing.id, payload=payload
             )
-            reconcile_brevo_channels(
-                session, contact_id=existing.id, payload=payload
+            _bump_phones(
+                reconcile_brevo_channels(
+                    session, contact_id=existing.id, payload=payload
+                )
             )
             session.flush()
             return ("updated", existing.id)
@@ -407,8 +425,10 @@ def upsert_brevo_contact(
     reconcile_brevo_unsubscribe(
         session, contact_id=contact.id, payload=payload
     )
-    reconcile_brevo_channels(
-        session, contact_id=contact.id, payload=payload
+    _bump_phones(
+        reconcile_brevo_channels(
+            session, contact_id=contact.id, payload=payload
+        )
     )
     session.flush()
     return ("created", contact.id)
@@ -561,6 +581,7 @@ def sync_brevo_contacts(session: Session, sync_log: SyncLog) -> SyncOutcome:
     skipped = 0
     failed = 0
     errors: list[str] = []
+    phone_stats: dict[str, int] = {"secondary_phones_added": 0}
 
     async def _drive() -> None:
         nonlocal created, updated, skipped, failed
@@ -592,6 +613,7 @@ def sync_brevo_contacts(session: Session, sync_log: SyncLog) -> SyncOutcome:
                             account_id=account_id,
                             payload=item,
                             list_names=list_names,
+                            stats=phone_stats,
                         )
                         if action == "created":
                             created += 1
@@ -626,6 +648,7 @@ def sync_brevo_contacts(session: Session, sync_log: SyncLog) -> SyncOutcome:
             "skipped": skipped,
             "full_sync": full_sync,
             "modified_since": modified_since,
+            "secondary_phones_added": phone_stats["secondary_phones_added"],
         },
     )
 

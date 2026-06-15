@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import logging
+import unicodedata
 from datetime import datetime
 from typing import Any
 
@@ -124,10 +125,14 @@ CUSTOM_FIELDS_WHITELIST: frozenset[str] = frozenset(
 )
 
 
-#: Brevo attributes that carry a secondary phone number. Each is
-#: lifted into a `contact_phones` row — the label is the original
-#: key (TELEFONO_1, MOVIL, …) so the operator can still tell them
-#: apart in the ficha.
+#: Brevo attributes that carry a secondary phone number. Stored in
+#: the canonical (accent-free, upper-case) form used for matching —
+#: see `_normalise_attr_key`. The match is deliberately
+#: format-tolerant: Spanish Sendinblue-era accounts surface these
+#: attributes with accents (`TELÉFONO_2`), mixed case (`Telefono_2`)
+#: or stray spaces, none of which an exact `dict.get("TELEFONO_2")`
+#: would catch — which is exactly why a full prod sync produced
+#: zero secondary phones before this fix.
 SECONDARY_PHONE_ATTRS: tuple[str, ...] = (
     "TELEFONO_1",
     "TELEFONO_2",
@@ -140,15 +145,42 @@ SECONDARY_PHONE_ATTRS: tuple[str, ...] = (
 )
 
 
+def _normalise_attr_key(key: str) -> str:
+    """Canonicalise a Brevo attribute key for matching: strip
+    accents, upper-case, collapse spaces/hyphens to underscores.
+
+    `TELÉFONO 2` / `telefono-2` / `Telefono_2` all map to
+    `TELEFONO_2`. This mirrors the `str(key).upper()` normalisation
+    `NATIVE_ATTRIBUTE_MAP` already relies on, extended to the
+    accent + separator variants real ES accounts ship.
+    """
+    decomposed = unicodedata.normalize("NFKD", str(key))
+    ascii_only = "".join(c for c in decomposed if not unicodedata.combining(c))
+    upper = ascii_only.strip().upper()
+    return "".join(
+        "_" if c in {" ", "-", "."} else c for c in upper
+    )
+
+
+#: Pre-normalised lookup set so the per-contact loop stays O(1).
+_SECONDARY_PHONE_KEYS: frozenset[str] = frozenset(
+    _normalise_attr_key(k) for k in SECONDARY_PHONE_ATTRS
+)
+
+
 def extract_brevo_secondary_phones(
     payload: dict[str, Any],
 ) -> list[dict[str, str]]:
     """Pull every secondary phone number from the Brevo payload.
 
     Returns a list of dicts the upsert helper feeds to
-    `ContactPhone`: `{label, number, source='brevo'}`. Dedupes by
-    digits-only normalised value so two attrs holding the same
-    number don't materialise twice.
+    `ContactPhone`: `{label, number, source='brevo'}`. The `label`
+    is the ORIGINAL payload key (e.g. `TELÉFONO_2`) so the operator
+    sees exactly what Brevo carried; matching is done against the
+    accent/case-normalised form so the lookup is robust to how the
+    account named its attributes. Dedupes by digits-only normalised
+    value so two attrs holding the same number don't materialise
+    twice.
 
     The contact's canonical `phone` (from the native mapping) is
     NOT included here — the upsert helper deals with that
@@ -166,8 +198,9 @@ def extract_brevo_secondary_phones(
 
     phones: list[dict[str, str]] = []
     seen_phones: set[str] = set()
-    for key in SECONDARY_PHONE_ATTRS:
-        value = attributes.get(key)
+    for raw_key, value in attributes.items():
+        if _normalise_attr_key(raw_key) not in _SECONDARY_PHONE_KEYS:
+            continue
         if value is None:
             continue
         text = str(value).strip()
@@ -177,7 +210,9 @@ def extract_brevo_secondary_phones(
         if not digits or digits in seen_phones:
             continue
         seen_phones.add(digits)
-        phones.append({"label": key, "number": text, "source": "brevo"})
+        phones.append(
+            {"label": str(raw_key), "number": text, "source": "brevo"}
+        )
     return phones
 
 

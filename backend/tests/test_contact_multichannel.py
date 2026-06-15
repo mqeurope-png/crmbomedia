@@ -115,6 +115,39 @@ def test_brevo_extracts_secondary_phones() -> None:
     ]
 
 
+def test_brevo_extracts_secondary_phones_case_and_accent_insensitive() -> None:
+    """Regression for the prod "zero secondary phones" bug. ES
+    Sendinblue-era accounts ship the phone attributes with accents
+    (`TELÉFONO_2`), mixed case (`Telefono_3`), or stray separators
+    (`TELEFONO 4`). The old exact-`dict.get("TELEFONO_2")` match
+    silently skipped every one of them. The label preserves the
+    real payload key so the operator sees what Brevo carried."""
+    phones = extract_brevo_secondary_phones(
+        {
+            "id": 1,
+            "attributes": {
+                "TELÉFONO_2": "+34600111222",
+                "Telefono_3": "+34987654321",
+                "TELEFONO 4": "933334444",
+                "landline_number": "934567890",
+            },
+        }
+    )
+    assert [p["number"] for p in phones] == [
+        "+34600111222",
+        "+34987654321",
+        "933334444",
+        "934567890",
+    ]
+    # Labels keep the exact key Brevo sent, not the normalised form.
+    assert [p["label"] for p in phones] == [
+        "TELÉFONO_2",
+        "Telefono_3",
+        "TELEFONO 4",
+        "landline_number",
+    ]
+
+
 def test_agilecrm_extracts_phone_subtypes() -> None:
     payload = {
         "id": 1,
@@ -170,6 +203,51 @@ def test_brevo_reconcile_channels_inserts_then_idempotent(
     assert len(phones) == 1
     assert phones[0].source == "brevo"
     assert phones[0].label == "TELEFONO_2"
+
+
+def test_upsert_brevo_contact_persists_secondary_phone_and_stats(
+    db: _Fixture,
+) -> None:
+    """End-to-end regression: a brand-new Brevo contact with an
+    accented secondary-phone attribute lands a `contact_phones`
+    row via `upsert_brevo_contact`, and the `stats` counter the
+    sync loop threads through reports it."""
+    from app.integrations.brevo.jobs import upsert_brevo_contact  # noqa: PLC0415
+
+    stats: dict[str, int] = {"secondary_phones_added": 0}
+    with db.factory() as session:
+        action, contact_id = upsert_brevo_contact(
+            session,
+            account_id="acc-1",
+            payload={
+                "id": 18518,
+                "email": "lead@th-containers.es",
+                "attributes": {
+                    "NOMBRE": "Lead",
+                    "SMS": "+34600000000",  # → Contact.phone (native)
+                    "TELÉFONO_2": "+34911223344",
+                    "LANDLINE_NUMBER": "934567890",
+                },
+            },
+            stats=stats,
+        )
+        session.commit()
+    assert action == "created"
+    assert stats["secondary_phones_added"] == 2
+
+    with db.factory() as session:
+        phones = list(
+            session.scalars(
+                select(ContactPhone).where(
+                    ContactPhone.contact_id == contact_id
+                )
+            )
+        )
+    labels = {p.label for p in phones}
+    assert labels == {"TELÉFONO_2", "LANDLINE_NUMBER"}
+    assert all(p.source == "brevo" for p in phones)
+    # The native SMS phone is NOT duplicated as a secondary row.
+    assert all(p.number != "+34600000000" for p in phones)
 
 
 # -- /api/contacts/{id}/phones CRUD ---------------------------------
