@@ -126,6 +126,14 @@ class Action:
     CONTACT_VIEW_DUPLICATED = "contact_view.duplicated"
     CONTACT_VIEW_DEFAULT_SET = "contact_view.default_set"
 
+    # Saved entity views — multi-entity generalization
+    # (Sprint Filtros & Listas PR-B). Metadata carries `entity_type`.
+    ENTITY_VIEW_CREATED = "entity_view.created"
+    ENTITY_VIEW_UPDATED = "entity_view.updated"
+    ENTITY_VIEW_DELETED = "entity_view.deleted"
+    ENTITY_VIEW_DUPLICATED = "entity_view.duplicated"
+    ENTITY_VIEW_DEFAULT_SET = "entity_view.default_set"
+
     # Pipelines (Sprint P.2).
     PIPELINE_CREATED = "pipeline.created"
     PIPELINE_UPDATED = "pipeline.updated"

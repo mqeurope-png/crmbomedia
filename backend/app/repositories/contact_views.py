@@ -1,13 +1,20 @@
-"""Repository helpers for `contact_views`.
+"""Repository helpers for `contact_views` (saved list configurations).
 
-Three concerns live here:
+Sprint Filtros & Listas (PR-B) hizo la tabla multi-entidad: la columna
+`entity_type` discrimina contact / company / email_thread /
+brevo_template / brevo_campaign sin renombrar la tabla. Las firmas
+existentes mantienen `entity_type='contact'` por defecto para que
+todo el código legacy del Sprint P.1 (contact-views) siga funcionando
+sin tocar.
 
-1. CRUD + duplicate + default-toggling on the table itself.
-2. JSON encode/decode of `filters_json` / `columns_json` / `sort_json`
-   so the route layer stays in plain dicts.
-3. Merging a saved view's filters with URL overrides from
-   `GET /api/contacts?view_id=...`, so individual params win and a
-   partial override doesn't accidentally drop other view filters.
+Tres concerns viven aquí:
+
+1. CRUD + duplicate + default-toggling sobre la tabla, scoped por
+   `entity_type`.
+2. JSON encode/decode de `filters_json` / `columns_json` / `sort_json`
+   para que la capa de rutas use dicts.
+3. Merge de filtros de vista con overrides de URL en
+   `GET /api/contacts?view_id=...`.
 """
 from __future__ import annotations
 
@@ -18,6 +25,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.crm import ContactView
+
+DEFAULT_ENTITY_TYPE = "contact"
 
 
 def _encode(payload: Any) -> str | None:
@@ -40,11 +49,17 @@ def _decode_dict(value: str | None) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
-def list_views_for_user(session: Session, *, user_id: str) -> list[ContactView]:
-    """Return every view the user can SEE: own rows + every shared row
-    from other owners. Sorted owner-first, then by name."""
+def list_views_for_user(
+    session: Session,
+    *,
+    user_id: str,
+    entity_type: str = DEFAULT_ENTITY_TYPE,
+) -> list[ContactView]:
+    """Return every view the user can SEE for this entity: own rows + every
+    shared row from other owners. Sorted owner-first, then by name."""
     statement = (
         select(ContactView)
+        .where(ContactView.entity_type == entity_type)
         .where(
             (ContactView.owner_user_id == user_id)
             | (ContactView.is_shared.is_(True))
@@ -72,13 +87,17 @@ def create_view(
     filters: dict[str, Any],
     columns: dict[str, Any],
     sort: dict[str, Any],
+    entity_type: str = DEFAULT_ENTITY_TYPE,
 ) -> ContactView:
     if is_default:
-        _demote_other_defaults(session, owner_user_id=owner_user_id)
+        _demote_other_defaults(
+            session, owner_user_id=owner_user_id, entity_type=entity_type
+        )
     view = ContactView(
         name=name,
         description=description,
         owner_user_id=owner_user_id,
+        entity_type=entity_type,
         is_shared=is_shared,
         is_default=is_default,
         filters_json=_encode(filters),
@@ -110,7 +129,10 @@ def update_view(
         view.is_shared = is_shared
     if is_default is True:
         _demote_other_defaults(
-            session, owner_user_id=view.owner_user_id, except_id=view.id
+            session,
+            owner_user_id=view.owner_user_id,
+            entity_type=view.entity_type,
+            except_id=view.id,
         )
         view.is_default = True
     elif is_default is False:
@@ -126,12 +148,18 @@ def update_view(
 
 
 def _demote_other_defaults(
-    session: Session, *, owner_user_id: str, except_id: str | None = None
+    session: Session,
+    *,
+    owner_user_id: str,
+    entity_type: str = DEFAULT_ENTITY_TYPE,
+    except_id: str | None = None,
 ) -> None:
-    """At most one default per owner. Clear any sibling row that still
-    claims default=True before the caller sets the new one."""
+    """At most one default per `(owner, entity_type)`. Clear any sibling
+    row of the same entity that still claims `default=True` before the
+    caller sets the new one."""
     statement = select(ContactView).where(
         ContactView.owner_user_id == owner_user_id,
+        ContactView.entity_type == entity_type,
         ContactView.is_default.is_(True),
     )
     if except_id:
@@ -149,12 +177,14 @@ def duplicate_view(
     name: str | None = None,
 ) -> ContactView:
     """Clone the source view into a new row owned by `owner_user_id`.
-    The duplicate never inherits `is_shared` or `is_default` so the
-    operator opts in deliberately after editing."""
+    The duplicate inherits `entity_type` (you can't duplicate a contact
+    view into the company space) but never inherits `is_shared` or
+    `is_default` so the operator opts in deliberately after editing."""
     new_view = ContactView(
         name=name or f"{source.name} (copia)",
         description=source.description,
         owner_user_id=owner_user_id,
+        entity_type=source.entity_type,
         is_shared=False,
         is_default=False,
         filters_json=source.filters_json,
