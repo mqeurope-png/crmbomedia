@@ -8,28 +8,8 @@ import {
   listScheduledMessages,
   updateScheduledMessage,
 } from "../../lib/emailsApi";
+import { formatBackendDateTime, toLocalInputValue } from "../../lib/dates";
 import { extractErrorMessage } from "../../lib/errors";
-
-function formatDateTime(value: string | null): string {
-  if (!value) return "—";
-  return new Date(value).toLocaleString("es-ES", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-}
-
-/** Convert an ISO datetime string into a value the browser's
- *  `<input type="datetime-local">` understands (no timezone, no
- *  seconds). The picker rounds to the minute so we drop the rest. */
-function toLocalInputValue(iso: string): string {
-  const d = new Date(iso);
-  const off = d.getTimezoneOffset();
-  const local = new Date(d.getTime() - off * 60 * 1000);
-  return local.toISOString().slice(0, 16);
-}
 
 /** Right-pane view for `/emails/programados`. Lists every pending
  *  scheduled message owned by the current operator with inline
@@ -136,7 +116,7 @@ export default function ScheduledMessagesPage() {
                 <div className="email-scheduled-meta">
                   <span className="email-scheduled-badge">
                     <CalendarClock size={11} aria-hidden /> Programado para{" "}
-                    {formatDateTime(m.scheduled_for ?? null)}
+                    {formatBackendDateTime(m.scheduled_for)}
                   </span>
                   <p className="email-scheduled-subject">
                     {m.subject || "(sin asunto)"}
