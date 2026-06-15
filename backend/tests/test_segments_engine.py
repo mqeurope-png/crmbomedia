@@ -245,6 +245,38 @@ def test_tag_contains_any_matches_by_tag_id(session_factory):
         assert _ids(matched) == {seeded["ana"].id, seeded["carla"].id}
 
 
+def test_tag_name_contains_matches_substring(session_factory):
+    """PR-Cc: nuevo comparador para "todos los contactos con cualquier
+    tag cuyo nombre contenga X" (case-insensitive). Resuelve el caso
+    'mbo' → 'mbo-cliente' / 'brevo-list:mbo-x' sin tener que
+    seleccionar cada tag individualmente desde el picker."""
+    factory = session_factory
+    with factory() as session:
+        seeded = _seed(session)
+        # Ana + Carla tienen "VIP"; Boris no tiene tags.
+        condition = build_filter(
+            {
+                "type": "rule",
+                "field": "tags",
+                "comparator": "tag_name_contains",
+                "value": "vi",
+            }
+        )
+        matched = list(session.scalars(select(Contact).where(condition)))
+        assert _ids(matched) == {seeded["ana"].id, seeded["carla"].id}
+
+        # Empty/whitespace value → 400 antes de tocar SQL.
+        with pytest.raises(SegmentRuleError):
+            build_filter(
+                {
+                    "type": "rule",
+                    "field": "tags",
+                    "comparator": "tag_name_contains",
+                    "value": "  ",
+                }
+            )
+
+
 def test_tag_contains_none_excludes_tagged_contacts(session_factory):
     factory = session_factory
     with factory() as session:

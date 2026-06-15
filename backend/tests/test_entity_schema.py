@@ -239,6 +239,44 @@ def test_filter_schema_requires_auth(client: TestClient) -> None:
     assert res.status_code in (401, 403)
 
 
+def test_contact_schema_includes_sprint_empresas_fields() -> None:
+    """PR-Cc: Sprint Empresas trajo job_title / linkedin_url /
+    personal_website / address granular, y la ficha los filtra. Aquí
+    queda pinned que el filter-schema los expone para que el builder
+    los liste. Si alguien borra alguno, el test falla."""
+    fields = list_fields_for_entity("contact")
+    assert fields is not None
+    keys = {f["key"] for f in fields}
+    expected_added = {
+        "job_title",
+        "linkedin_url",
+        "personal_website",
+        "company_id",
+        "is_email_valid",
+        "address_state",
+        "address_line",
+        "address_postal_code",
+        "address_region",
+    }
+    missing = expected_added - keys
+    assert not missing, f"missing schema fields: {missing}"
+
+    # company_id sigue convención de reference→companies.
+    company_field = next(f for f in fields if f["key"] == "company_id")
+    assert company_field["type"] == "reference"
+    assert company_field["reference_table"] == "companies"
+    assert "is_null" in company_field["comparators"]  # "sin empresa"
+
+
+def test_contact_tags_has_substring_comparator() -> None:
+    """PR-Cc: el spec 'tags' añade 'tag_name_contains' para el match
+    parcial por nombre. Pin que sobrevive futuros refactors."""
+    fields = list_fields_for_entity("contact")
+    assert fields is not None
+    tags = next(f for f in fields if f["key"] == "tags")
+    assert "tag_name_contains" in tags["comparators"]
+
+
 def test_segments_available_fields_still_works(client: TestClient) -> None:
     """Back-compat: the legacy Contact endpoint keeps its shape (plus the
     additive PR-A keys)."""

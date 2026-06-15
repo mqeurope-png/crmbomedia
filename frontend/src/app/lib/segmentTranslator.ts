@@ -50,6 +50,10 @@ const OPERATOR_MAP_TO_QB: Record<string, string> = {
   contains_any: "contains_any",
   contains_all: "contains_all",
   contains_none: "contains_none",
+  // PR-Cc — substring match against tag names (single string value, not
+  // a list). Distinct backend↔QB name so the reverse map round-trips
+  // cleanly without colliding with `contains`.
+  tag_name_contains: "tag_name_contains",
 };
 
 const OPERATOR_MAP_TO_BACKEND: Record<string, string> = Object.fromEntries(

@@ -44,6 +44,7 @@ from app.models.crm import (
     ContactPipelineStage,
     ContactTag,
     ExternalReference,
+    Tag,
 )
 from app.services.segments.fields import (
     FIELD_SPECS,
@@ -301,13 +302,32 @@ def _compile_column_leaf(
     raise SegmentRuleError(f"Unsupported comparator {comparator!r}")
 
 
-def _compile_tag_leaf(comparator: str, value: list[str]) -> ColumnElement[bool]:
+def _compile_tag_leaf(comparator: str, value: Any) -> ColumnElement[bool]:
     """Build an EXISTS subquery against `contact_tags`.
 
     - contains_any: ≥1 of the listed tag ids is attached.
     - contains_all: every listed tag id is attached.
     - contains_none: NONE of the listed tag ids is attached.
+    - tag_name_contains: ≥1 attached tag's name matches the substring
+      (case-insensitive LIKE). Useful for the "mbo" → "mbo-cliente" /
+      "brevo-list:mbo-x" pattern where the operator doesn't want to
+      cherry-pick from the tag picker. PR-Cc.
     """
+    if comparator == "tag_name_contains":
+        if not isinstance(value, str):
+            raise SegmentRuleError(
+                "tag_name_contains requires a string value"
+            )
+        needle = value.strip().lower()
+        if not needle:
+            raise SegmentRuleError(
+                "tag_name_contains requires a non-empty string"
+            )
+        return Contact.id.in_(
+            select(ContactTag.contact_id)
+            .join(Tag, Tag.id == ContactTag.tag_id)
+            .where(func.lower(Tag.name).like(f"%{needle}%"))
+        )
     if comparator == "contains_any":
         return Contact.id.in_(
             select(ContactTag.contact_id).where(
