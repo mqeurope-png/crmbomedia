@@ -44,8 +44,18 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    op.drop_index("ix_contact_emails_primary", table_name="contact_emails")
-    op.drop_index("ix_contact_emails_contact", table_name="contact_emails")
+    # MySQL refuses to drop the per-FK index while the foreign-key
+    # constraint still references it (error 1553). Drop the FK
+    # explicitly first (best-effort: the constraint name differs
+    # between deployments — `batch_alter_table` lets us
+    # tolerate the rename without a hard failure). After the FK
+    # is gone, `drop_table` sweeps the indexes implicitly so the
+    # two `drop_index` calls are no longer needed.
+    with op.batch_alter_table("contact_emails") as batch_op:
+        try:
+            batch_op.drop_constraint("contact_emails_ibfk_1", type_="foreignkey")
+        except Exception:  # noqa: BLE001
+            pass
     op.drop_table("contact_emails")
 
     op.drop_column("contacts", "social_profiles_json")
