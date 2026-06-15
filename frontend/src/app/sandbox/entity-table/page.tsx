@@ -279,7 +279,12 @@ export default function EntityTableSandboxPage() {
 
       <section style={{ marginTop: 12 }}>
         <h4 style={{ margin: "0 0 6px 0" }}>Filtros</h4>
+        {/* PR-Cc: `key` cambia con la vista activa (o con la entidad)
+         * para forzar un remount limpio del builder cuando el árbol
+         * inicial cambia desde fuera (cargar vista, cambiar de
+         * entidad). El builder ya no auto-sincroniza `value`. */}
         <EntityFilterBuilder
+          key={`${entity}:${activeViewId ?? "none"}`}
           fields={fields}
           value={rules}
           onChange={(next) => {

@@ -19,7 +19,7 @@
  * cuándo persistir (en `entity_views.filters_json.rules_json` o en
  * estado local).
  */
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import {
   QueryBuilder,
   type Field,
@@ -39,6 +39,10 @@ import { SegmentValueEditor } from "../SegmentValueEditor";
 
 type Props = {
   fields: FieldDescriptor[];
+  /** Initial IR tree. CHANGES TO `value` AFTER MOUNT ARE IGNORED on
+   * purpose — see the comment below for why. To force the builder to
+   * adopt a different tree (e.g. when loading a saved view), remount
+   * the component via `key={someStableId}`. */
   value: Record<string, unknown>;
   onChange: (next: Record<string, unknown>) => void;
 };
@@ -67,23 +71,20 @@ const COMPARATOR_LABELS: Record<string, string> = {
   contains_any: "incluye alguno",
   contains_all: "incluye todos",
   contains_none: "no incluye ninguno",
+  tag_name_contains: "tag cuyo nombre contiene",
 };
 
 export function EntityFilterBuilder({ fields, value, onChange }: Props) {
-  // QueryBuilder owns its in-memory tree state; we sync it from the
-  // controlled `value` only when the controlled tree changes
-  // identity-wise (avoids feedback loops while typing).
+  // PR-Cc fix: the builder is "uncontrolled with initialValue". The
+  // `value` prop seeds the RQB query at mount time only; further parent
+  // updates are NOT pushed back into RQB state. Without this rule, the
+  // previous `useEffect(..., [value])` re-sync remounted every value
+  // input on every keystroke (parent → setRules → setQuery → React
+  // remount → cursor lost). The parent forces a fresh tree by changing
+  // the component's `key`.
   const [query, setQuery] = useState<RuleGroupType>(() =>
     value && Object.keys(value).length ? backendToQB(value) : EMPTY_QB_GROUP,
   );
-
-  useEffect(() => {
-    // Re-sync only when the parent's tree identity changes; typing
-    // inside the builder already drives `onChange` below.
-    setQuery(
-      value && Object.keys(value).length ? backendToQB(value) : EMPTY_QB_GROUP,
-    );
-  }, [value]);
 
   const qbFields: Field[] = useMemo(() => {
     return fields

@@ -91,6 +91,20 @@ export function SegmentValueEditor({
   }
 
   if (spec.type === "tag-multi") {
+    // PR-Cc: substring match by tag name — single free-text value, not
+    // a list of tag ids. Avoids the chips picker when the operator
+    // wants "todos los tags con 'mbo' en el nombre".
+    if (comparator === "tag_name_contains") {
+      return (
+        <input
+          type="text"
+          className="qb-value"
+          value={typeof value === "string" ? value : ""}
+          placeholder="texto del tag"
+          onChange={(event) => onChange(event.target.value)}
+        />
+      );
+    }
     return <TagsEditor value={value} onChange={onChange} />;
   }
 
