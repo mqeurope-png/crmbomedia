@@ -40,18 +40,11 @@ import {
   getMessageEvents,
   type EmailEvent,
 } from "../../lib/emailTrackingApi";
+import { formatBackendDateTime } from "../../lib/dates";
 import { extractErrorMessage } from "../../lib/errors";
 
-function formatDateTime(value: string | null): string {
-  if (!value) return "—";
-  return new Date(value).toLocaleString("es-ES", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-}
+const formatDateTime = (value: string | null) =>
+  formatBackendDateTime(value);
 
 /** Right-pane thread view. The sidebar + list stay mounted in
  *  `layout.tsx`; this component fills the remaining column. */
