@@ -5576,6 +5576,19 @@ a.origin-chip:hover { filter: brightness(0.97); }
   font-size: 12px;
 }
 
+/* v2.4d — sidebar count badge */
+.email-sidebar-count {
+  margin-left: auto;
+  background: #e0e7ff;
+  color: #1d4ed8;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 999px;
+  min-width: 20px;
+  text-align: center;
+}
+
 /* v2.4d — drafts list page */
 .email-drafts-list {
   list-style: none;
