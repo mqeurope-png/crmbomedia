@@ -15,6 +15,7 @@ from app.api.emails import router as emails_router
 from app.api.emails_mailbox import router as emails_mailbox_router
 from app.api.emails_scheduled import router as emails_scheduled_router
 from app.api.entities import router as entities_router
+from app.api.entity_views import router as entity_views_router
 from app.api.google_integrations import router as google_router
 from app.api.routes import router
 from app.api.tasks import router as tasks_router
@@ -68,6 +69,7 @@ app.include_router(contacts_assign_router)
 app.include_router(contact_channels_router)
 app.include_router(contact_notes_router)
 app.include_router(entities_router)
+app.include_router(entity_views_router)
 app.include_router(router, prefix="/api")
 # Tasks router carries its own `/api/tasks` prefix and lives in its
 # own module — the routes.py monolith was already pushing 4k lines

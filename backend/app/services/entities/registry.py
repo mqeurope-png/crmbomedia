@@ -43,6 +43,40 @@ class EntityDescriptor:
     def id_column(self) -> Any:
         return getattr(self.base_model, self.id_attr)
 
+    def sort_column(self, key: str) -> Any | None:
+        """Resolve a sort key against the entity's registered fields.
+        Returns the SQLAlchemy column for valid keys, None otherwise —
+        the route layer maps None → 400 so callers can't sort on
+        arbitrary attributes (extends the anti-injection boundary to
+        ordering)."""
+        spec = self.field_specs.get(key)
+        if spec is None or not spec.sortable or spec.column is None:
+            return None
+        return spec.column
+
+    def serialize_row(self, row: Any) -> dict[str, Any]:
+        """Project a model row to a dict using the registered fields.
+        Each `column`-source spec contributes its raw attribute (column
+        keys come from `spec.column.key`). Computed/related fields are
+        skipped — the row-level join expansion happens in per-entity
+        rendering (PR-E for contacts adds tag_objects etc.).
+
+        Sprint Filtros & Listas (PR-B): this keeps the new generic
+        `/api/entities/{entity}/search` from needing a Pydantic schema
+        per entity; each registered field is the contract."""
+        out: dict[str, Any] = {"id": getattr(row, self.id_attr)}
+        for spec in self.field_specs.values():
+            if spec.source != "column" or spec.column is None:
+                continue
+            attr = spec.column.key
+            value = getattr(row, attr, None)
+            # Enum → its string value so JSON serialises cleanly across
+            # SQLAlchemy native_enum / values_callable variants.
+            if hasattr(value, "value") and not isinstance(value, (bytes, str, int, float, bool)):
+                value = value.value
+            out[spec.key] = value
+        return out
+
 
 _REGISTRY: dict[str, EntityDescriptor] = {}
 

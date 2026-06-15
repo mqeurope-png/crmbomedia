@@ -369,6 +369,16 @@ class ContactView(TimestampMixin, Base):
     owner_user_id: Mapped[str] = mapped_column(
         ForeignKey("users.id"), nullable=False, index=True
     )
+    # Sprint Filtros & Listas (PR-B). Discriminator that turns
+    # `contact_views` into a multi-entity store without renaming the
+    # table. Legacy rows default to 'contact'; new generic endpoint
+    # writes 'company' / 'email_thread' / 'brevo_template' /
+    # 'brevo_campaign'. Index `(owner_user_id, entity_type)` keeps the
+    # "list my views for entity X" lookup cheap. Default-uniqueness is
+    # enforced per `(owner_user_id, entity_type)` in the repository.
+    entity_type: Mapped[str] = mapped_column(
+        String(40), nullable=False, default="contact", server_default="contact"
+    )
     is_shared: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     is_default: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     # Three opaque JSON blobs (text). The route layer decodes them

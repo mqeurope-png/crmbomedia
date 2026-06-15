@@ -104,3 +104,51 @@ export const listEntities = () =>
 
 export const getEntityFilterSchema = (entity: EntityKey | string) =>
   apiFetch<EntityFilterSchema>(`/api/entities/${entity}/filter-schema`);
+
+// --- search (PR-B) -----------------------------------------------
+
+// Engine IR — same tree the backend's `build_entity_filter` consumes
+// and `segments.rules_json` / `entity_views.filters.rules_json` persist.
+export type RuleNode =
+  | { type: "rule"; field: string; comparator: Operator; value: unknown }
+  | { operator: "AND" | "OR" | "NOT"; children: RuleNode[] };
+
+export type EntitySearchRequest = {
+  rules_json?: RuleNode | null;
+  sort_by?: string | null;
+  sort_dir?: "asc" | "desc";
+  limit?: number;
+  offset?: number;
+};
+
+export type EntitySearchPage<T = Record<string, unknown>> = {
+  items: T[];
+  total: number;
+  limit: number;
+  offset: number;
+};
+
+export type EntitySearchIdsResult = {
+  ids: string[];
+  count: number;
+  truncated: boolean;
+  max_ids: number;
+};
+
+export const searchEntity = <T = Record<string, unknown>>(
+  entity: EntityKey | string,
+  body: EntitySearchRequest = {},
+) =>
+  apiFetch<EntitySearchPage<T>>(`/api/entities/${entity}/search`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+
+export const searchEntityIds = (
+  entity: EntityKey | string,
+  body: EntitySearchRequest = {},
+) =>
+  apiFetch<EntitySearchIdsResult>(`/api/entities/${entity}/search/ids`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
