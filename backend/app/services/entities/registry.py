@@ -38,6 +38,12 @@ class EntityDescriptor:
     # doesn't ask for one (PR-B consumes this).
     default_sort: str = "created_at"
     default_sort_dir: str = "desc"
+    # SQLAlchemy loader options applied to every `entity_search` query
+    # so the row-level join expansion (tag_objects, …) doesn't N+1.
+    # Strings = paths into the model graph, applied as
+    # `selectinload(*path)` by the search endpoint to keep this module
+    # free of orm-loader imports.
+    eager_load_paths: tuple[tuple[str, ...], ...] = ()
 
     @property
     def id_column(self) -> Any:
@@ -57,19 +63,24 @@ class EntityDescriptor:
     def serialize_row(self, row: Any) -> dict[str, Any]:
         """Project a model row to a dict using the registered fields.
 
-        Each `column`-source spec contributes its raw attribute (column
-        keys come from `spec.column.key`). `computed` specs with a
-        `concat` extras tuple (Contact's `name` = first_name + " " +
-        last_name) get their parts joined here so the column renders
-        a real value in `<EntityTable>` instead of "—". Other computed
-        sources (no `concat`) and `related_table` sources are skipped —
-        their join expansion happens in per-entity rendering (PR-E for
-        contacts adds tag_objects etc.).
+        - `column`-source specs contribute their raw attribute (column
+          keys come from `spec.column.key`).
+        - `computed` specs with a `concat` extras tuple (Contact's
+          `name` = first_name + " " + last_name) get their parts
+          joined here.
+        - `related_table` specs with `relation="tags"` get their
+          `tag_objects` expanded to a list of `{id, name, color}` so
+          the unified `<EntityTable>` can render chips. Eager loading
+          is the descriptor's responsibility (`eager_load_paths`); the
+          search endpoint applies them so this doesn't N+1.
 
-        Sprint Filtros & Listas (PR-B + PR-Cb hotfix): this keeps the
-        new generic `/api/entities/{entity}/search` from needing a
-        Pydantic schema per entity; each registered field is the
-        contract."""
+        Other related/computed sources fall through silently (their
+        screen renders them via custom `renderCell` props).
+
+        Sprint Filtros & Listas (PR-B → PR-Cd): este keeps the new
+        generic `/api/entities/{entity}/search` from needing a Pydantic
+        schema per entity; each registered field is the contract.
+        """
         out: dict[str, Any] = {"id": getattr(row, self.id_attr)}
         for spec in self.field_specs.values():
             # Computed with explicit `concat(first, last)` extras — e.g.
@@ -81,6 +92,20 @@ class EntityDescriptor:
                 ]
                 joined = " ".join(str(p) for p in parts if p).strip()
                 out[spec.key] = joined or None
+                continue
+            # PR-Cd: tags relation → list of {id, name, color} so the
+            # Tags column renders chips in `<EntityTable>` instead of
+            # an empty cell. Other relations are screen-rendered.
+            if spec.relation == "tags":
+                tag_objects = getattr(row, "tag_objects", None) or []
+                out[spec.key] = [
+                    {
+                        "id": tag.id,
+                        "name": tag.name,
+                        "color": getattr(tag, "color", None),
+                    }
+                    for tag in tag_objects
+                ]
                 continue
             if spec.source != "column" or spec.column is None:
                 continue
@@ -140,6 +165,10 @@ def _register_builtin_entities() -> None:
             field_specs=CONTACT_FIELD_SPECS,
             default_sort="created_at",
             default_sort_dir="desc",
+            # PR-Cd: tag_assignments → tag for the Tags column in the
+            # unified table. Without this every row triggers two extra
+            # queries when `tag_objects` is accessed during serialize.
+            eager_load_paths=(("tag_assignments", "tag"),),
         )
     )
     register_entity(

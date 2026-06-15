@@ -6035,6 +6035,18 @@ a.origin-chip:hover { filter: brightness(0.97); }
   padding: 16px;
   text-align: center;
 }
+.entity-table-tag-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.entity-table-tag-overflow {
+  display: inline-block;
+  padding: 1px 6px;
+  background: #f1f5f9;
+  border-radius: 8px;
+}
 .entity-table-pagination {
   display: flex;
   gap: 8px;

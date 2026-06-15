@@ -431,3 +431,62 @@ def test_contact_serialize_row_computes_full_name() -> None:
     # No name at all → None (column shows "—" upstream).
     nobody = Contact(first_name=None, last_name=None, email="x@bomedia.net")
     assert descriptor.serialize_row(nobody)["name"] is None
+
+
+def test_contact_serialize_row_expands_tags(client: TestClient) -> None:
+    """PR-Cd: la columna Tags estaba vacía porque `serialize_row`
+    saltaba `source='related_table'`. Ahora expone tag_objects como
+    `[{id, name, color}]` para que `<EntityTable>` pinte chips.
+
+    Also exercises the eager-load path so the test catches an N+1
+    regression if `eager_load_paths` desaparece."""
+    from sqlalchemy import select as _select  # noqa: PLC0415
+
+    from app.models.crm import ContactTag, Tag  # noqa: PLC0415
+
+    descriptor = get_entity("contact")
+    assert descriptor is not None
+    factory = client._factory  # type: ignore[attr-defined]
+
+    with factory() as session:
+        vip = Tag(name="VIP", name_normalized="vip", color="#ef4444")
+        cold = Tag(name="Cold", name_normalized="cold")
+        session.add_all([vip, cold])
+        session.flush()
+        contact = Contact(
+            first_name="Bart",
+            last_name="Simpson",
+            email="b@bomedia.net",
+            tags="",
+            commercial_status="new",
+        )
+        session.add(contact)
+        session.flush()
+        session.add_all(
+            [
+                ContactTag(
+                    contact_id=contact.id, tag_id=vip.id, source="manual"
+                ),
+                ContactTag(
+                    contact_id=contact.id, tag_id=cold.id, source="manual"
+                ),
+            ]
+        )
+        session.commit()
+
+    headers = auth_headers(client, "viewer")
+    body = client.post(
+        "/api/entities/contact/search",
+        json={"limit": 10},
+        headers=headers,
+    ).json()
+    assert body["total"] == 1
+    item = body["items"][0]
+    tag_payload = item["tags"]
+    assert isinstance(tag_payload, list)
+    assert {t["name"] for t in tag_payload} == {"VIP", "Cold"}
+    # Cada chip lleva id + color para que <TagChips> los pinte.
+    vip_payload = next(t for t in tag_payload if t["name"] == "VIP")
+    assert vip_payload["color"] == "#ef4444"
+    assert vip_payload["id"]
+    _ = _select  # silence unused

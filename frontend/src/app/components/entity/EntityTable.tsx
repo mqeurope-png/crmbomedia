@@ -29,7 +29,10 @@ import {
 import { ArrowDown, ArrowUp, ArrowUpDown, Settings } from "lucide-react";
 import { useMemo, useState } from "react";
 import type { FieldDescriptor } from "../../lib/entitySchema";
+import { TagChips } from "../TagChips";
 import { EntityColumnConfigurator } from "./EntityColumnConfigurator";
+
+const MAX_TAG_CHIPS = 3;
 
 type Row = Record<string, unknown>;
 
@@ -68,6 +71,26 @@ function defaultRender(field: FieldDescriptor, row: Row): React.ReactNode {
   const value = row[field.key];
   if (value === null || value === undefined || value === "") {
     return <span className="muted">—</span>;
+  }
+  // PR-Cd: tag-multi columns ship as `[{id, name, color}]` from the
+  // backend (`EntityDescriptor.serialize_row` expands `relation='tags'`).
+  // Render up to 3 chips + "+N" badge for the overflow so the cell
+  // stays narrow.
+  if (field.type === "tag-multi" && Array.isArray(value)) {
+    const tags = value as Array<{ id: string; name: string; color?: string | null }>;
+    if (tags.length === 0) return <span className="muted">—</span>;
+    const visible = tags.slice(0, MAX_TAG_CHIPS);
+    const overflow = tags.length - visible.length;
+    return (
+      <span className="entity-table-tag-cell">
+        <TagChips tags={visible} size="dense" />
+        {overflow > 0 ? (
+          <span className="entity-table-tag-overflow muted small">
+            +{overflow}
+          </span>
+        ) : null}
+      </span>
+    );
   }
   if (typeof value === "boolean") return value ? "Sí" : "No";
   if (field.type === "date" || field.type === "datetime") {

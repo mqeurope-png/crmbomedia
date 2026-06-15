@@ -25,7 +25,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.core.auth import require_viewer
 from app.core.errors import not_found
@@ -165,15 +165,36 @@ def entity_search(
         select(func.count()).select_from(descriptor.base_model).where(clause)
     ) or 0
 
-    rows = list(
-        session.scalars(
-            select(descriptor.base_model)
-            .where(clause)
-            .order_by(order_by)
-            .offset(payload.offset)
-            .limit(payload.limit)
-        )
+    stmt = (
+        select(descriptor.base_model)
+        .where(clause)
+        .order_by(order_by)
+        .offset(payload.offset)
+        .limit(payload.limit)
     )
+    # PR-Cd: apply per-entity loader paths so serialize_row doesn't N+1
+    # on every list expansion (Contact's tag_objects is the obvious
+    # one; other entities have an empty `eager_load_paths`). Each path
+    # walks `(rel_name, rel_name, ...)` and resolves each step against
+    # the previous step's target mapper so multi-hop chains
+    # (`tag_assignments → tag`) become
+    # `selectinload(Contact.tag_assignments).selectinload(ContactTag.tag)`.
+    for path in descriptor.eager_load_paths:
+        loader = None
+        current_model = descriptor.base_model
+        for attr_name in path:
+            attr = getattr(current_model, attr_name)
+            loader = (
+                selectinload(attr)
+                if loader is None
+                else loader.selectinload(attr)
+            )
+            rel = current_model.__mapper__.relationships.get(attr_name)
+            if rel is not None:
+                current_model = rel.mapper.class_
+        if loader is not None:
+            stmt = stmt.options(loader)
+    rows = list(session.scalars(stmt).unique())
     items = [descriptor.serialize_row(row) for row in rows]
     return EntitySearchPage(
         items=items, total=int(total), limit=payload.limit, offset=payload.offset
