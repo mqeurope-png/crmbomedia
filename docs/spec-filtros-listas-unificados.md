@@ -677,8 +677,22 @@ headless.)
 | `<Pagination>` compartido | `components/Pagination.tsx` | Reusar en EntityTable |
 | URL state (serialize/deserialize) | `lib/contactsUrlState.ts` | Generalizar (PR-E) |
 
-**Decisiones que requieren OK explícito de Bart antes de implementar:**
-(1) tabla única `entity_views` vs por-entidad · (2) instalar las 2 dependencias ·
-(3) tratamiento de campos ambiguos §2.7 (dirección, tax_id/vat, owner vacío) ·
-(4) si filtrar por métricas de campaña / custom_fields entra en el sprint o se
-difiere · (5) multi-sort ahora o diferido.
+## 7. Decisiones aprobadas por Bart (2026-06-15)
+
+Resueltas tras la entrega del spec — quedan bloqueadas para la implementación:
+
+1. **Vistas guardadas:** ✅ **tabla única `entity_views`** con discriminador
+   `entity_type` (no tabla por entidad). → PR-B.
+2. **Filtrar por JSON (métricas de campaña open%/CTR + `custom_fields`):** ✅
+   **diferido — display-only en v1.** Se muestran como columnas pero sin filtro;
+   `JSON_EXTRACT`/materialización de columnas queda para una iteración posterior.
+   → sale del alcance de PR-A…H salvo como columnas display.
+3. **Multi-sort:** ✅ **diferido — 1 columna primero** (paridad con
+   `sort_by`/`sort_dir`). TanStack lo soporta en UI; el backend se extiende a
+   `sort=[{by,dir}]` en otra iteración. → afecta §3.8 y los endpoints de PR-B.
+4. **Dependencias (TanStack Table v8 + react-querybuilder, ambas MIT):** ✅
+   **aprobadas**; se instalan en su PR (D) sin necesidad de re-confirmar.
+
+**Pendiente de decidir (no bloquea el arranque; se resuelve en PR-A):**
+tratamiento de campos ambiguos §2.7 — dirección Contact vs Company, `tax_id`/`vat`,
+`owner_user_id` vacío en importados. Recomendaciones ya propuestas en §2.7.
