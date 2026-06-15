@@ -10,6 +10,7 @@ import { EmailThreadList } from "../components/email/EmailThreadList";
 import {
   type EmailFolder,
   type EmailLabel,
+  listEmailDrafts,
   listEmailFolders,
   listEmailLabels,
 } from "../lib/emailsApi";
@@ -27,6 +28,7 @@ export default function EmailsLayout({
 }) {
   const [folders, setFolders] = useState<EmailFolder[]>([]);
   const [labels, setLabels] = useState<EmailLabel[]>([]);
+  const [draftsCount, setDraftsCount] = useState(0);
   const [refreshKey, setRefreshKey] = useState(0);
   const [composeOpen, setComposeOpen] = useState(false);
   const [folderEdit, setFolderEdit] = useState<{
@@ -54,22 +56,34 @@ export default function EmailsLayout({
     }
   }, []);
 
+  const loadDraftsCount = useCallback(async () => {
+    try {
+      const drafts = await listEmailDrafts();
+      setDraftsCount(drafts.length);
+    } catch {
+      setDraftsCount(0);
+    }
+  }, []);
+
   useEffect(() => {
     void loadFolders();
     void loadLabels();
-  }, [loadFolders, loadLabels]);
+    void loadDraftsCount();
+  }, [loadFolders, loadLabels, loadDraftsCount]);
 
   const refreshAll = useCallback(() => {
     void loadFolders();
     void loadLabels();
+    void loadDraftsCount();
     setRefreshKey((k) => k + 1);
-  }, [loadFolders, loadLabels]);
+  }, [loadFolders, loadLabels, loadDraftsCount]);
 
   return (
     <main className="email-mailbox">
       <EmailSidebar
         folders={folders}
         labels={labels}
+        draftsCount={draftsCount}
         onComposeClick={() => setComposeOpen(true)}
         onEditFolder={(target) => setFolderEdit({ open: true, target })}
         onEditLabel={(target) => setLabelEdit({ open: true, target })}

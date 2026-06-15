@@ -1133,6 +1133,53 @@ class EmailUnsubscribe(TimestampMixin, Base):
     metadata_json: Mapped[str | None] = mapped_column(Text)
 
 
+class EmailDraft(TimestampMixin, Base):
+    """Sprint Email v2.4d. Per-user in-flight compose.
+
+    Stored separately from `email_messages` because drafts are
+    mutable (every auto-save overwrites) while sent messages are
+    append-only. Foreign keys are SET NULL on delete so an
+    operator's draft survives the parent contact/thread/signature
+    being removed — they just lose the auto-attached context.
+    """
+
+    __tablename__ = "email_drafts"
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid4())
+    )
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    thread_id: Mapped[str | None] = mapped_column(
+        ForeignKey("email_threads.id", ondelete="SET NULL"), index=True
+    )
+    contact_id: Mapped[str | None] = mapped_column(
+        ForeignKey("contacts.id", ondelete="SET NULL")
+    )
+    from_alias: Mapped[str | None] = mapped_column(String(255))
+    from_name: Mapped[str | None] = mapped_column(String(255))
+    subject: Mapped[str | None] = mapped_column(String(500))
+    body_html: Mapped[str | None] = mapped_column(Text)
+    body_text: Mapped[str | None] = mapped_column(Text)
+    to_emails_json: Mapped[str | None] = mapped_column(Text)
+    cc_emails_json: Mapped[str | None] = mapped_column(Text)
+    bcc_emails_json: Mapped[str | None] = mapped_column(Text)
+    in_reply_to_message_id: Mapped[str | None] = mapped_column(String(36))
+    signature_id: Mapped[str | None] = mapped_column(
+        ForeignKey("email_signatures.id", ondelete="SET NULL")
+    )
+    include_unsubscribe: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )
+    scheduled_for: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    metadata_json: Mapped[str | None] = mapped_column(Text)
+
+
 class EmailFolder(TimestampMixin, Base):
     """Sprint Email v2.4a. Per-user organisational folder for the
     Gmail-style mailbox sidebar. Non-exclusive with labels — a

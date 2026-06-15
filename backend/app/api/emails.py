@@ -425,7 +425,9 @@ def list_threads(
     # "inbox" means "no folder set" (top-level bandeja); a real UUID
     # restricts to that folder. `include_snoozed` flips the snooze
     # filter off so the dedicated "Pospuestos" view can see them.
-    state: str | None = Query(default=None, pattern="^(inbox|archived|trashed|spam)$"),
+    state: str | None = Query(
+        default=None, pattern="^(inbox|archived|trashed|spam|sent)$"
+    ),
     folder_id: str | None = Query(default=None),
     label_id: str | None = Query(default=None),
     starred: bool | None = Query(default=None),
@@ -448,7 +450,25 @@ def list_threads(
     # `contact_id`) explicitly drops the default so it still shows
     # every thread tied to the contact regardless of where the
     # operator filed it.
-    if state is not None:
+    #
+    # v2.4d — `sent` is a virtual view: threads where the operator
+    # initiated at least one outbound message that actually went
+    # out (excluding pending scheduled rows), AND the thread isn't
+    # currently in archived/trashed/spam. It's NOT a column on
+    # EmailThread; we encode the filter as a subquery rather than
+    # add a "sent" enum member so a thread can simultaneously
+    # belong to "Enviados" and to a custom folder.
+    if state == "sent":
+        sent_subq = select(EmailMessage.thread_id).where(
+            EmailMessage.direction == "outbound",
+            EmailMessage.sent_at.is_not(None),
+            EmailMessage.gmail_account_user_id == current_user.id,
+        )
+        stmt = stmt.where(
+            EmailThread.id.in_(sent_subq),
+            EmailThread.state == EmailThreadState.INBOX,
+        )
+    elif state is not None:
         stmt = stmt.where(EmailThread.state == EmailThreadState(state))
     elif contact_id is None:
         stmt = stmt.where(EmailThread.state == EmailThreadState.INBOX)

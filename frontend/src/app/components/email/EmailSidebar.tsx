@@ -10,7 +10,9 @@ import {
   Inbox,
   MailWarning,
   Pencil,
+  PenLine,
   Plus,
+  Send,
   Star,
   Tag,
   Trash2,
@@ -29,6 +31,10 @@ import { deleteEmailFolder, deleteEmailLabel } from "../../lib/emailsApi";
 type Props = {
   folders: EmailFolder[];
   labels: EmailLabel[];
+  /** Drafts owned by the operator. Length surfaces as a badge
+   *  next to the Borradores entry; the actual list lives in
+   *  `/emails/drafts`. */
+  draftsCount: number;
   onComposeClick: () => void;
   onEditFolder: (folder: EmailFolder | null) => void;
   onEditLabel: (label: EmailLabel | null) => void;
@@ -78,6 +84,7 @@ function buildHref(
 export function EmailSidebar({
   folders,
   labels,
+  draftsCount,
   onComposeClick,
   onEditFolder,
   onEditLabel,
@@ -85,12 +92,14 @@ export function EmailSidebar({
 }: Props) {
   const router = useRouter();
   const pathname = usePathname();
-  const scheduledActive = pathname === "/emails/programados";
   const params = useSearchParams();
   const currentState = params.get("state") || "inbox";
   const currentFolder = params.get("folder_id");
   const currentLabel = params.get("label_id");
   const currentStarred = params.get("starred") === "true";
+  const scheduledActive = pathname === "/emails/programados";
+  const draftsActive = pathname === "/emails/drafts";
+  const sentActive = pathname === "/emails" && currentState === "sent";
 
   // Folder tree: nest by `parent_id`. Top-level are folders with
   // parent_id === null; children indent one level. The CRM's API
@@ -156,6 +165,8 @@ export function EmailSidebar({
             const Icon = view.icon;
             const isActive =
               !scheduledActive &&
+              !draftsActive &&
+              !sentActive &&
               currentFolder === null &&
               currentLabel === null &&
               currentState === view.state &&
@@ -190,6 +201,37 @@ export function EmailSidebar({
               <CalendarClock size={14} aria-hidden />
               <span>Programados</span>
             </Link>
+          </li>
+          <li>
+            <Link
+              href="/emails/drafts"
+              className={`email-sidebar-item${draftsActive ? " is-active" : ""}`}
+            >
+              <PenLine size={14} aria-hidden />
+              <span>Borradores</span>
+              {draftsCount > 0 ? (
+                <span className="email-sidebar-count">{draftsCount}</span>
+              ) : null}
+            </Link>
+          </li>
+          <li>
+            <button
+              type="button"
+              className={`email-sidebar-item${sentActive ? " is-active" : ""}`}
+              onClick={() =>
+                router.push(
+                  buildHref(params, {
+                    state: "sent",
+                    folder_id: null,
+                    label_id: null,
+                    starred: null,
+                  }),
+                )
+              }
+            >
+              <Send size={14} aria-hidden />
+              <span>Enviados</span>
+            </button>
           </li>
         </ul>
       </nav>

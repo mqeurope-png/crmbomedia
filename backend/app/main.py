@@ -6,6 +6,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api.bulk import router as bulk_router
 from app.api.dashboard import router as dashboard_router
+from app.api.email_drafts import router as email_drafts_router
 from app.api.emails import router as emails_router
 from app.api.emails_mailbox import router as emails_mailbox_router
 from app.api.emails_scheduled import router as emails_scheduled_router
@@ -62,6 +63,7 @@ app.include_router(bulk_router)
 app.include_router(emails_router)
 app.include_router(emails_mailbox_router)
 app.include_router(emails_scheduled_router)
+app.include_router(email_drafts_router)
 app.include_router(gmail_webhook_router)
 app.include_router(email_templates_router)
 app.include_router(email_signatures_router)

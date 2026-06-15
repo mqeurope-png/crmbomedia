@@ -373,6 +373,83 @@ export const bulkAddLabel = (ids: string[], label_id: string) =>
 export const bulkRemoveLabel = (ids: string[], label_id: string) =>
   bulkPost("labels/remove", { thread_ids: ids, label_id });
 
+// --- v2.4d drafts ----------------------------------------------------
+
+export type EmailDraft = {
+  id: string;
+  user_id: string;
+  thread_id: string | null;
+  contact_id: string | null;
+  from_alias: string | null;
+  from_name: string | null;
+  subject: string | null;
+  body_html: string | null;
+  body_text: string | null;
+  to_emails: string[];
+  cc_emails: string[] | null;
+  bcc_emails: string[] | null;
+  in_reply_to_message_id: string | null;
+  signature_id: string | null;
+  include_unsubscribe: boolean;
+  scheduled_for: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type EmailDraftWrite = {
+  thread_id?: string | null;
+  contact_id?: string | null;
+  from_alias?: string | null;
+  from_name?: string | null;
+  subject?: string | null;
+  body_html?: string | null;
+  body_text?: string | null;
+  to_emails?: string[] | null;
+  cc_emails?: string[] | null;
+  bcc_emails?: string[] | null;
+  in_reply_to_message_id?: string | null;
+  signature_id?: string | null;
+  include_unsubscribe?: boolean;
+  scheduled_for?: string | null;
+};
+
+export async function listEmailDrafts(): Promise<EmailDraft[]> {
+  return apiFetch<EmailDraft[]>("/api/email-drafts");
+}
+
+export async function getEmailDraft(id: string): Promise<EmailDraft> {
+  return apiFetch<EmailDraft>(`/api/email-drafts/${id}`);
+}
+
+export async function createEmailDraft(
+  payload: EmailDraftWrite,
+): Promise<EmailDraft> {
+  return apiFetch<EmailDraft>("/api/email-drafts", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updateEmailDraft(
+  id: string,
+  payload: EmailDraftWrite,
+): Promise<EmailDraft> {
+  return apiFetch<EmailDraft>(`/api/email-drafts/${id}`, {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function deleteEmailDraft(id: string): Promise<void> {
+  await apiFetch(`/api/email-drafts/${id}`, { method: "DELETE" });
+}
+
+export async function sendEmailDraft(id: string): Promise<EmailMessage> {
+  return apiFetch<EmailMessage>(`/api/email-drafts/${id}/send`, {
+    method: "POST",
+  });
+}
+
 // --- v2.4e scheduled send --------------------------------------------
 
 export async function listScheduledMessages(): Promise<EmailMessage[]> {

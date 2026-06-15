@@ -37,6 +37,86 @@ class EmailSendRequest(BaseModel):
     scheduled_for: datetime | None = None
 
 
+class EmailDraftWrite(BaseModel):
+    """Create / update payload for an email draft. Every field is
+    optional — the auto-save endpoint accepts whatever the modal
+    has at the moment of the tick. `to_emails` / `cc_emails` /
+    `bcc_emails` ship as plain string arrays so the operator can
+    save half-typed addresses without the EmailStr validator
+    refusing the payload."""
+
+    thread_id: str | None = None
+    contact_id: str | None = None
+    from_alias: str | None = Field(default=None, max_length=255)
+    from_name: str | None = Field(default=None, max_length=255)
+    subject: str | None = Field(default=None, max_length=500)
+    body_html: str | None = None
+    body_text: str | None = None
+    to_emails: list[str] | None = None
+    cc_emails: list[str] | None = None
+    bcc_emails: list[str] | None = None
+    in_reply_to_message_id: str | None = None
+    signature_id: str | None = None
+    include_unsubscribe: bool = False
+    scheduled_for: datetime | None = None
+
+
+class EmailDraftRead(BaseModel):
+    id: str
+    user_id: str
+    thread_id: str | None
+    contact_id: str | None
+    from_alias: str | None
+    from_name: str | None
+    subject: str | None
+    body_html: str | None
+    body_text: str | None
+    to_emails: list[str] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("to_emails", "to_emails_json"),
+    )
+    cc_emails: list[str] | None = Field(
+        default=None,
+        validation_alias=AliasChoices("cc_emails", "cc_emails_json"),
+    )
+    bcc_emails: list[str] | None = Field(
+        default=None,
+        validation_alias=AliasChoices("bcc_emails", "bcc_emails_json"),
+    )
+    in_reply_to_message_id: str | None
+    signature_id: str | None
+    include_unsubscribe: bool
+    scheduled_for: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    @field_validator("to_emails", mode="before")
+    @classmethod
+    def _decode_to(cls, value: Any) -> Any:
+        # `to_emails` is non-optional on the model, so a NULL column
+        # has to become an empty list rather than propagate None.
+        if value is None:
+            return []
+        if isinstance(value, str):
+            try:
+                return json.loads(value)
+            except (TypeError, ValueError):
+                return []
+        return value
+
+    @field_validator("cc_emails", "bcc_emails", mode="before")
+    @classmethod
+    def _decode_cc_bcc(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            try:
+                return json.loads(value)
+            except (TypeError, ValueError):
+                return []
+        return value
+
+
 class ScheduledMessageUpdate(BaseModel):
     """PUT payload for editing a pending scheduled message. Every
     field is optional — operator may rewrite just the time or just
