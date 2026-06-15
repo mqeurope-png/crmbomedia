@@ -54,6 +54,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Sprint Empresas — the companies router takes precedence over the
+# legacy /companies handler that lives inside routes.py so the v2
+# Pydantic shape (domain, source, address, …) ships instead of the
+# original {id, name, tax_id, website, is_active} subset. The
+# legacy `/api/companies/count` stays accessible because it's a
+# different path, not shadowed by the prefix.
+app.include_router(companies_router)
+app.include_router(contacts_assign_router)
 app.include_router(router, prefix="/api")
 # Tasks router carries its own `/api/tasks` prefix and lives in its
 # own module — the routes.py monolith was already pushing 4k lines
@@ -63,8 +71,6 @@ app.include_router(google_router)
 app.include_router(dashboard_router)
 app.include_router(bulk_router)
 app.include_router(emails_router)
-app.include_router(companies_router)
-app.include_router(contacts_assign_router)
 app.include_router(emails_mailbox_router)
 app.include_router(emails_scheduled_router)
 app.include_router(email_drafts_router)

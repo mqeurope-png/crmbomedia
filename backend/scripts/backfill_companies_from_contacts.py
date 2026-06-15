@@ -191,7 +191,7 @@ def backfill(
                     city=_brevo_value(cf, "CIUDAD"),
                     state=_brevo_value(cf, "PROVINCIA"),
                     postal_code=_brevo_value(cf, "CODIGO_POSTAL"),
-                    country=contact.address_country or contact.country,
+                    country=contact.address_country,
                     region=_brevo_value(cf, "PAIS_REGION"),
                 )
                 counts["linked_brevo"] += 1

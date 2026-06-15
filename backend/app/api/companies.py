@@ -15,7 +15,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.audit import Action, record_event
-from app.core.auth import require_admin, require_user
+from app.core.auth import require_admin, require_user, require_viewer
 from app.core.errors import not_found
 from app.db.session import get_session
 from app.models.crm import Company, Contact, User
@@ -36,9 +36,9 @@ def _to_read(session: Session, row: Company) -> CompanyRead:
     count = session.scalar(
         select(func.count(Contact.id)).where(Contact.company_id == row.id)
     ) or 0
-    return CompanyRead.model_validate(
-        {**row.__dict__, "contacts_count": int(count)}
-    )
+    read = CompanyRead.model_validate(row)
+    read.contacts_count = int(count)
+    return read
 
 
 def _apply(row: Company, payload: CompanyWrite) -> None:
@@ -79,7 +79,7 @@ def list_companies(
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_user),
+    current_user: User = Depends(require_viewer),
 ) -> CompanyList:
     _ = current_user
     stmt = select(Company)
@@ -155,11 +155,33 @@ def create_company(
     return _to_read(session, row)
 
 
+@router.get("/count")
+def count_companies(
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_viewer),
+) -> dict[str, int]:
+    """Legacy stat-card endpoint preserved across the v2 rewrite.
+    The dashboard's "Empresas" KPI reads this; we keep the
+    response shape (`{total: N}`) so the frontend doesn't have to
+    change. Counts only active rows, mirroring the legacy
+    handler."""
+    _ = current_user
+    total = int(
+        session.scalar(
+            select(func.count()).select_from(Company).where(
+                Company.is_active.is_(True)
+            )
+        )
+        or 0
+    )
+    return {"total": total}
+
+
 @router.get("/{company_id}", response_model=CompanyRead)
 def get_company(
     company_id: str,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_user),
+    current_user: User = Depends(require_viewer),
 ) -> CompanyRead:
     _ = current_user
     row = session.get(Company, company_id)
@@ -274,7 +296,7 @@ def merge_companies(
 def list_company_contacts(
     company_id: str,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_user),
+    current_user: User = Depends(require_viewer),
 ) -> list[dict]:
     _ = current_user
     row = session.get(
