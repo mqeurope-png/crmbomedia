@@ -30,6 +30,7 @@ from app.integrations.brevo.mapper import (
 )
 from app.integrations.contact_merge import keep_first_origin, merge_external_dates
 from app.models.crm import (
+    Company,
     Contact,
     ContactTag,
     ExternalReference,
@@ -38,6 +39,10 @@ from app.models.crm import (
     Tag,
 )
 from app.models.integration_settings import IntegrationAccount
+from app.services.company_extraction import (
+    extract_company_domain,
+    normalise_domain,
+)
 from app.workers.jobs import OPERATIONS, SyncOutcome
 from app.workers.queues import redis_connection
 
@@ -92,6 +97,86 @@ def _last_successful_sync_at(
     )
 
 
+def resolve_brevo_company(
+    session: Session,
+    attributes: dict[str, Any],
+    *,
+    fallback_email: str | None = None,
+) -> str | None:
+    """Sprint Empresas. Resolve (or create) the company a Brevo
+    contact belongs to. Tries the explicit EMPRESA + CIF + WEB
+    attributes first, then falls back to the email domain.
+
+    Returns the Company id, or None when neither path yields a
+    usable company (e.g. free-mail contact with no Brevo
+    `EMPRESA` field).
+    """
+
+    def _attr(key: str) -> str | None:
+        raw = attributes.get(key) or attributes.get(key.upper())
+        if raw is None:
+            return None
+        s = str(raw).strip()
+        return s or None
+
+    empresa = _attr("EMPRESA")
+    cif = _attr("CIF")
+    web = _attr("WEB")
+    domain = normalise_domain(web)
+
+    company: Company | None = None
+    if empresa:
+        if cif:
+            company = session.scalar(
+                select(Company).where(Company.tax_id == cif)
+            )
+        if company is None and domain:
+            company = session.scalar(
+                select(Company).where(Company.domain == domain)
+            )
+        if company is None:
+            refs_payload = {"brevo": {"empresa": empresa}}
+            company = Company(
+                name=empresa,
+                website=web,
+                domain=domain,
+                tax_id=cif,
+                address_line=_attr("ADDRESS"),
+                city=_attr("CIUDAD"),
+                state=_attr("PROVINCIA"),
+                postal_code=_attr("CODIGO_POSTAL"),
+                country=_attr("PAIS"),
+                region=_attr("PAIS_REGION"),
+                source="brevo",
+                external_references_json=json.dumps(refs_payload),
+            )
+            session.add(company)
+            session.flush()
+        return company.id
+
+    # Fall back to the email domain. Free-mail addresses return
+    # None and the contact stays company-less.
+    email_domain = extract_company_domain(fallback_email)
+    if not email_domain:
+        return None
+    company = session.scalar(
+        select(Company).where(Company.domain == email_domain)
+    )
+    if company is None:
+        from app.services.company_extraction import (  # noqa: PLC0415
+            derive_company_name_from_domain,
+        )
+
+        company = Company(
+            name=derive_company_name_from_domain(email_domain),
+            domain=email_domain,
+            source="auto-domain",
+        )
+        session.add(company)
+        session.flush()
+    return company.id
+
+
 def upsert_brevo_contact(
     session: Session,
     *,
@@ -111,6 +196,17 @@ def upsert_brevo_contact(
     )
     email = record.get("email")
     tag_names: list[str] = record.pop("tag_names", []) or []
+    # Sprint Empresas — resolve / create the company before we
+    # apply the record so a new Contact picks up `company_id` on
+    # the first INSERT.
+    attributes = payload.get("attributes") if isinstance(payload, dict) else None
+    company_id = resolve_brevo_company(
+        session,
+        attributes if isinstance(attributes, dict) else {},
+        fallback_email=email,
+    )
+    if company_id is not None:
+        record["company_id"] = company_id
 
     # 1. Existing reference for THIS account → update in place.
     ref = session.scalar(

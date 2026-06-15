@@ -136,12 +136,16 @@ def test_list_companies_with_search_and_pagination(client: TestClient):
 
     response = client.get(
         "/api/companies",
-        params={"q": "alp", "skip": 0, "limit": 10},
+        params={"q": "alp", "limit": 10},
         headers=auth_headers(client, "viewer"),
     )
 
     assert response.status_code == 200
-    assert [company["name"] for company in response.json()] == ["Alpha"]
+    # Sprint Empresas — the list response is now paginated:
+    # `{items, total}` instead of a bare array.
+    body = response.json()
+    assert [c["name"] for c in body["items"]] == ["Alpha"]
+    assert body["total"] == 1
 
 
 def test_update_and_deactivate_company(client: TestClient):

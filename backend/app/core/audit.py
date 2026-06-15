@@ -52,6 +52,7 @@ class Action:
     COMPANY_CREATED = "company.created"
     COMPANY_UPDATED = "company.updated"
     COMPANY_DEACTIVATED = "company.deactivated"
+    COMPANY_DELETED = "company.deleted"
     CONTACT_CREATED = "contact.created"
     CONTACT_UPDATED = "contact.updated"
     CONTACT_DEACTIVATED = "contact.deactivated"

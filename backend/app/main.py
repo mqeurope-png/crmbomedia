@@ -5,6 +5,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app.api.bulk import router as bulk_router
+from app.api.companies import assign_router as contacts_assign_router
+from app.api.companies import router as companies_router
 from app.api.dashboard import router as dashboard_router
 from app.api.email_drafts import router as email_drafts_router
 from app.api.emails import router as emails_router
@@ -52,6 +54,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Sprint Empresas — the companies router takes precedence over the
+# legacy /companies handler that lives inside routes.py so the v2
+# Pydantic shape (domain, source, address, …) ships instead of the
+# original {id, name, tax_id, website, is_active} subset. The
+# legacy `/api/companies/count` stays accessible because it's a
+# different path, not shadowed by the prefix.
+app.include_router(companies_router)
+app.include_router(contacts_assign_router)
 app.include_router(router, prefix="/api")
 # Tasks router carries its own `/api/tasks` prefix and lives in its
 # own module — the routes.py monolith was already pushing 4k lines

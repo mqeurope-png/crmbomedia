@@ -649,7 +649,13 @@ export async function deactivateContact(id: string): Promise<Contact> {
 }
 
 export async function getCompanies(): Promise<Company[]> {
-  return apiFetch<Company[]>("/api/companies?limit=20");
+  // Sprint Empresas — `/api/companies` now returns a paginated
+  // envelope; the legacy callers (contact-create dropdown) only
+  // need the items.
+  const page = await apiFetch<{ items: Company[]; total: number }>(
+    "/api/companies?limit=20",
+  );
+  return page.items;
 }
 
 export async function getCompaniesCount(): Promise<number> {

@@ -5633,6 +5633,34 @@ a.origin-chip:hover { filter: brightness(0.97); }
   align-items: center;
 }
 
+/* Sprint Empresas — company edit grid + merge list */
+.company-edit-form .form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.company-edit-form textarea {
+  width: 100%;
+  font: inherit;
+  padding: 6px 8px;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+}
+.company-merge-list {
+  list-style: none;
+  padding: 0;
+  margin: 8px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.company-merge-list .btn {
+  text-align: left;
+  width: 100%;
+  justify-content: flex-start;
+}
+
 /* v2.4d — composer draft indicator */
 .composer-header {
   display: flex;
