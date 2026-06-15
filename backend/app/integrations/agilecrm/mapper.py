@@ -136,19 +136,25 @@ def _to_datetime(value: Any) -> datetime | None:
         return None
 
 
+_EMPTY_ADDRESS: dict[str, str | None] = {
+    "address_country": None,
+    "address_country_name": None,
+    "address_state": None,
+    "address_city": None,
+    "address_line": None,
+    "address_postal_code": None,
+}
+
+
 def _parse_address(raw: Any) -> dict[str, str | None]:
     """AgileCRM packs the address into a JSON string under the
     `address` property: `{"country":"ES","city":"Madrid",...}`. Some
     accounts ship it as a plain dict already. Either way, normalise to
-    a 4-field dict; any field can be None when the remote didn't fill
-    it."""
+    a 6-field dict (Sprint Empresas v2 added `address_line` +
+    `address_postal_code` to the surface); any field can be None
+    when the remote didn't fill it."""
     if not raw:
-        return {
-            "address_country": None,
-            "address_country_name": None,
-            "address_state": None,
-            "address_city": None,
-        }
+        return dict(_EMPTY_ADDRESS)
     parsed: Any = raw
     if isinstance(raw, str):
         try:
@@ -156,12 +162,7 @@ def _parse_address(raw: Any) -> dict[str, str | None]:
         except (ValueError, TypeError):
             parsed = None
     if not isinstance(parsed, dict):
-        return {
-            "address_country": None,
-            "address_country_name": None,
-            "address_state": None,
-            "address_city": None,
-        }
+        return dict(_EMPTY_ADDRESS)
     # AgileCRM ships either ISO Alpha-2 ("ES") or a localised name
     # ("España" / "Spain") under `country`. Normalise both into our
     # canonical pair (ISO under `address_country`, display name under
@@ -174,6 +175,13 @@ def _parse_address(raw: Any) -> dict[str, str | None]:
         "address_country_name": display or raw_country_name,
         "address_state": _clean_str(parsed.get("state")),
         "address_city": _clean_str(parsed.get("city")),
+        # Sprint Empresas — sub-PR 2/4. AgileCRM's address dict
+        # carries the street line under `address` and the postal
+        # code under `zip` (occasionally `postcode`).
+        "address_line": _clean_str(parsed.get("address")),
+        "address_postal_code": _clean_str(
+            parsed.get("zip") or parsed.get("postcode")
+        ),
     }
 
 
@@ -288,6 +296,29 @@ def map_agilecrm_contact_to_internal(
     custom_fields = _custom_properties(payload)
     lead_score = _lead_score(payload)
 
+    # Sprint Empresas — sub-PR 2/4. Lift AgileCRM's professional
+    # attributes off the flat properties index. The property names
+    # are the AgileCRM defaults; if an account renamed them they
+    # land in custom_fields just like any other unknown column.
+    def _prop(*keys: str) -> str | None:
+        for k in keys:
+            raw = props.get(k)
+            if isinstance(raw, str) and raw.strip():
+                return raw.strip()
+        return None
+
+    job_title = _prop("title", "Title", "job_title", "Job Title")
+    linkedin_url = _prop("linkedin", "Linkedin", "LinkedIn", "linkedin_url")
+    personal_website = _prop("website", "Website", "url", "URL")
+    # The properties index also has `address` as the JSON dict we
+    # already parsed; only the plain-text `street` / `street_address`
+    # variants are relevant here as a fallback when the dict was
+    # empty.
+    if address_fields.get("address_line") is None:
+        address_fields["address_line"] = _prop(
+            "street", "street_address", "address_line"
+        )
+
     record: dict[str, Any] = {
         # AgileCRM sometimes omits first_name; the model requires it as
         # NOT NULL, so we fall back to the email local-part or a stable
@@ -304,6 +335,9 @@ def map_agilecrm_contact_to_internal(
         "commercial_status": "new",
         "marketing_consent": "unknown",
         **address_fields,
+        "job_title": job_title,
+        "linkedin_url": linkedin_url,
+        "personal_website": personal_website,
         "lead_score": lead_score,
         "custom_fields": json.dumps(custom_fields, default=str) if custom_fields else None,
     }
