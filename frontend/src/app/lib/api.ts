@@ -170,6 +170,15 @@ export type Contact = {
   address_country_name?: string | null;
   address_state?: string | null;
   address_city?: string | null;
+  /** Sprint Empresas — sub-PR 2/4 added these as first-class
+   *  columns. The mapper writes them off Brevo / Agile; older
+   *  rows are filled via the backfill script. */
+  job_title?: string | null;
+  linkedin_url?: string | null;
+  personal_website?: string | null;
+  address_line?: string | null;
+  address_postal_code?: string | null;
+  address_region?: string | null;
   lead_score?: number | null;
   custom_fields?: Record<string, unknown> | null;
   notes?: Note[];
