@@ -5576,6 +5576,19 @@ a.origin-chip:hover { filter: brightness(0.97); }
   font-size: 12px;
 }
 
+/* v2.4d — composer draft indicator */
+.composer-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  justify-content: space-between;
+}
+.composer-draft-status {
+  font-size: 12px;
+  color: #6b7280;
+  font-style: italic;
+}
+
 /* v2.4e — schedule-send dialog */
 .email-schedule-presets {
   list-style: none;

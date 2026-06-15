@@ -7,6 +7,7 @@ import {
   PenLine,
   Save,
   Sparkles,
+  Trash2,
 } from "lucide-react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
@@ -17,10 +18,14 @@ import {
   type EmailSignature,
 } from "../lib/emailSignaturesApi";
 import {
+  createEmailDraft,
+  deleteEmailDraft,
   getMyEmailAliases,
   sendEmail,
+  type EmailDraft,
   type EmailMessage,
   type MyAlias,
+  updateEmailDraft,
 } from "../lib/emailsApi";
 import { extractErrorMessage } from "../lib/errors";
 import { SaveTemplateModal } from "./email/SaveTemplateModal";
@@ -51,6 +56,10 @@ type Props = {
   /** When set, the modal opens in reply mode with the parent
    *  message id passed straight to the backend. */
   replyTo?: { messageId: string; subject?: string | null } | null;
+  /** When set, the modal hydrates from the existing draft and
+   *  auto-saves under the same id. Send-flow deletes the draft
+   *  on success. */
+  initialDraft?: EmailDraft | null;
   onClose: () => void;
   onSent?: (message: EmailMessage) => void;
 };
@@ -91,22 +100,33 @@ export function EmailComposerModal({
   contactId,
   contactEmail,
   replyTo,
+  initialDraft,
   onClose,
   onSent,
 }: Props) {
   const [aliases, setAliases] = useState<MyAlias[]>([]);
   const [loadingAliases, setLoadingAliases] = useState(true);
-  const [fromAlias, setFromAlias] = useState("");
-  const [to, setTo] = useState(contactEmail ?? "");
-  const [cc, setCc] = useState("");
-  const [subject, setSubject] = useState(
-    replyTo?.subject
-      ? replyTo.subject.toLowerCase().startsWith("re:")
-        ? replyTo.subject
-        : `Re: ${replyTo.subject}`
-      : "",
+  const [fromAlias, setFromAlias] = useState(initialDraft?.from_alias ?? "");
+  const [to, setTo] = useState(
+    initialDraft?.to_emails?.join(", ") ?? contactEmail ?? "",
   );
-  const [bodyHtml, setBodyHtml] = useState("");
+  const [cc, setCc] = useState(initialDraft?.cc_emails?.join(", ") ?? "");
+  const [subject, setSubject] = useState(
+    initialDraft?.subject ??
+      (replyTo?.subject
+        ? replyTo.subject.toLowerCase().startsWith("re:")
+          ? replyTo.subject
+          : `Re: ${replyTo.subject}`
+        : ""),
+  );
+  const [bodyHtml, setBodyHtml] = useState(initialDraft?.body_html ?? "");
+  const [draftId, setDraftId] = useState<string | null>(
+    initialDraft?.id ?? null,
+  );
+  const [draftSavedAt, setDraftSavedAt] = useState<Date | null>(
+    initialDraft ? new Date(initialDraft.updated_at) : null,
+  );
+  const dirtyRef = useRef(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -114,10 +134,61 @@ export function EmailComposerModal({
   const [showSaveModal, setShowSaveModal] = useState(false);
   const [showScheduleDialog, setShowScheduleDialog] = useState(false);
   const [signatures, setSignatures] = useState<EmailSignature[]>([]);
-  const [activeSignatureId, setActiveSignatureId] = useState<string>("");
-  const [includeUnsubscribe, setIncludeUnsubscribe] = useState(false);
+  const [activeSignatureId, setActiveSignatureId] = useState<string>(
+    initialDraft?.signature_id ?? "",
+  );
+  const [includeUnsubscribe, setIncludeUnsubscribe] = useState(
+    initialDraft?.include_unsubscribe ?? false,
+  );
   const rootRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<RichEditorHandle | null>(null);
+
+  // Auto-save every 5s when the operator has changed something.
+  // The dirty flag is a ref so typing doesn't re-render the
+  // effect dependencies; we read the latest values inside the
+  // timer.
+  useEffect(() => {
+    const timer = window.setInterval(async () => {
+      if (!dirtyRef.current) return;
+      const payload = {
+        thread_id: null,
+        contact_id: contactId ?? null,
+        from_alias: fromAlias || null,
+        subject: subject || null,
+        body_html: bodyHtml || null,
+        to_emails: splitEmails(to),
+        cc_emails: cc.trim() ? splitEmails(cc) : null,
+        in_reply_to_message_id: replyTo?.messageId ?? null,
+        signature_id: activeSignatureId || null,
+        include_unsubscribe: includeUnsubscribe,
+      };
+      try {
+        if (draftId) {
+          const fresh = await updateEmailDraft(draftId, payload);
+          setDraftSavedAt(new Date(fresh.updated_at));
+        } else {
+          const fresh = await createEmailDraft(payload);
+          setDraftId(fresh.id);
+          setDraftSavedAt(new Date(fresh.updated_at));
+        }
+        dirtyRef.current = false;
+      } catch {
+        /* keep dirty; retry on next tick */
+      }
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [
+    contactId,
+    fromAlias,
+    subject,
+    bodyHtml,
+    to,
+    cc,
+    replyTo?.messageId,
+    activeSignatureId,
+    includeUnsubscribe,
+    draftId,
+  ]);
 
   // draftKey isolates the autosave entries per conversation. Replies
   // carry the parent gmail message id (one per thread by construction);
@@ -251,11 +322,27 @@ export function EmailComposerModal({
       // clear on Cancel — the operator may want to come back to the
       // half-written reply later.
       editorRef.current?.clearDraft();
+      // v2.4d — the draft row only mirrored the in-flight compose;
+      // once the message is actually sent (or scheduled), the
+      // operator doesn't expect to see it under Borradores anymore.
+      if (draftId) {
+        await deleteEmailDraft(draftId).catch(() => undefined);
+        setDraftId(null);
+      }
       onSent?.(message);
     } catch (err) {
       setError(extractErrorMessage(err, "No se pudo enviar el email."));
       setSubmitting(false);
     }
+  }
+
+  async function handleDiscard() {
+    if (!confirm("¿Descartar el borrador? Se perderá el contenido.")) return;
+    if (draftId) {
+      await deleteEmailDraft(draftId).catch(() => undefined);
+    }
+    editorRef.current?.clearDraft();
+    onClose();
   }
 
   const hasMerge =
@@ -269,8 +356,12 @@ export function EmailComposerModal({
       ref={rootRef}
     >
       <div className="modal modal-wide email-compose-modal">
-        <header>
+        <header className="composer-header">
           <h2>{replyTo ? "Responder" : "Nuevo email"}</h2>
+          <ComposerDraftStatus
+            savedAt={draftSavedAt}
+            hasDraft={draftId !== null}
+          />
         </header>
         {error ? <p className="form-error">{error}</p> : null}
         {!loadingAliases && aliases.length === 0 ? (
@@ -295,7 +386,10 @@ export function EmailComposerModal({
               De
               <select
                 value={fromAlias}
-                onChange={(e) => setFromAlias(e.target.value)}
+                onChange={(e) => {
+                  setFromAlias(e.target.value);
+                  dirtyRef.current = true;
+                }}
                 disabled={loadingAliases || aliases.length === 0}
               >
                 {aliases.map((a) => (
@@ -314,7 +408,10 @@ export function EmailComposerModal({
             <input
               type="text"
               value={to}
-              onChange={(e) => setTo(e.target.value)}
+              onChange={(e) => {
+                setTo(e.target.value);
+                dirtyRef.current = true;
+              }}
               placeholder="email@dominio.com, otro@dominio.com"
             />
           </label>
@@ -323,7 +420,10 @@ export function EmailComposerModal({
             <input
               type="text"
               value={cc}
-              onChange={(e) => setCc(e.target.value)}
+              onChange={(e) => {
+                setCc(e.target.value);
+                dirtyRef.current = true;
+              }}
               placeholder="opcional"
             />
           </label>
@@ -332,7 +432,10 @@ export function EmailComposerModal({
             <input
               type="text"
               value={subject}
-              onChange={(e) => setSubject(e.target.value)}
+              onChange={(e) => {
+                setSubject(e.target.value);
+                dirtyRef.current = true;
+              }}
               maxLength={500}
             />
           </label>
@@ -413,7 +516,10 @@ export function EmailComposerModal({
             <RichEditor
               ref={editorRef}
               value={bodyHtml}
-              onChange={setBodyHtml}
+              onChange={(html) => {
+                setBodyHtml(html);
+                dirtyRef.current = true;
+              }}
               placeholder="Escribe tu email. Usa {nombre}, {empresa}, {email} para personalizar."
               minHeight={460}
               draftKey={draftKey}
@@ -438,6 +544,16 @@ export function EmailComposerModal({
             >
               Cancelar
             </button>
+            {draftId ? (
+              <button
+                type="button"
+                className="button secondary"
+                onClick={handleDiscard}
+                disabled={submitting}
+              >
+                <Trash2 size={11} aria-hidden /> Descartar borrador
+              </button>
+            ) : null}
             <button
               type="button"
               className="button secondary"
@@ -488,4 +604,34 @@ export function EmailComposerModal({
       />
     </div>
   );
+}
+
+/** "Guardado hace Xs" indicator in the composer header. Re-renders
+ *  every 15 s so the relative timestamp stays current without the
+ *  parent paying a full composer re-render. */
+function ComposerDraftStatus({
+  savedAt,
+  hasDraft,
+}: {
+  savedAt: Date | null;
+  hasDraft: boolean;
+}) {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (!savedAt) return;
+    const timer = window.setInterval(() => setTick((n) => n + 1), 15000);
+    return () => window.clearInterval(timer);
+  }, [savedAt]);
+
+  if (!hasDraft || !savedAt) return null;
+  const secs = Math.max(0, Math.floor((Date.now() - savedAt.getTime()) / 1000));
+  let label: string;
+  if (secs < 10) label = "Guardado";
+  else if (secs < 60) label = `Guardado hace ${secs}s`;
+  else if (secs < 3600) {
+    label = `Guardado hace ${Math.floor(secs / 60)} min`;
+  } else {
+    label = `Guardado hace ${Math.floor(secs / 3600)} h`;
+  }
+  return <span className="composer-draft-status">{label}</span>;
 }
