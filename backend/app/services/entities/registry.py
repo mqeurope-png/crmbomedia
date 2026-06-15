@@ -56,16 +56,32 @@ class EntityDescriptor:
 
     def serialize_row(self, row: Any) -> dict[str, Any]:
         """Project a model row to a dict using the registered fields.
-        Each `column`-source spec contributes its raw attribute (column
-        keys come from `spec.column.key`). Computed/related fields are
-        skipped — the row-level join expansion happens in per-entity
-        rendering (PR-E for contacts adds tag_objects etc.).
 
-        Sprint Filtros & Listas (PR-B): this keeps the new generic
-        `/api/entities/{entity}/search` from needing a Pydantic schema
-        per entity; each registered field is the contract."""
+        Each `column`-source spec contributes its raw attribute (column
+        keys come from `spec.column.key`). `computed` specs with a
+        `concat` extras tuple (Contact's `name` = first_name + " " +
+        last_name) get their parts joined here so the column renders
+        a real value in `<EntityTable>` instead of "—". Other computed
+        sources (no `concat`) and `related_table` sources are skipped —
+        their join expansion happens in per-entity rendering (PR-E for
+        contacts adds tag_objects etc.).
+
+        Sprint Filtros & Listas (PR-B + PR-Cb hotfix): this keeps the
+        new generic `/api/entities/{entity}/search` from needing a
+        Pydantic schema per entity; each registered field is the
+        contract."""
         out: dict[str, Any] = {"id": getattr(row, self.id_attr)}
         for spec in self.field_specs.values():
+            # Computed with explicit `concat(first, last)` extras — e.g.
+            # Contact `name`. Project as " ".join(non-empty parts) so
+            # the column lands a real string in the row dict.
+            if spec.source == "computed" and "concat" in spec.extras:
+                parts = [
+                    getattr(row, attr, None) for attr in spec.extras["concat"]
+                ]
+                joined = " ".join(str(p) for p in parts if p).strip()
+                out[spec.key] = joined or None
+                continue
             if spec.source != "column" or spec.column is None:
                 continue
             attr = spec.column.key

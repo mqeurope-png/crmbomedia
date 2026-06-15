@@ -37,6 +37,7 @@ import {
   setDefaultEntityView,
   type EntityView,
 } from "../../lib/entityViewsApi";
+import { pruneRulesTree } from "../../lib/segmentTranslator";
 
 const SUPPORTED: EntityKey[] = [
   "contact",
@@ -118,8 +119,17 @@ export default function EntityTableSandboxPage() {
     if (!schema) return;
     let cancelled = false;
     setLoading(true);
+    // PR-Cb hotfix: prune half-typed rules (e.g. a Tags rule whose
+    // multi-select picker is still empty) so the engine doesn't 400
+    // with "Comparator 'contains_any' requires a non-empty list". The
+    // builder state stays unpruned so the half-typed rule remains
+    // visible to the operator while they fill it in.
+    const pruned = pruneRulesTree(
+      rules,
+      schema.fields.map((f) => ({ key: f.key, type: f.type })),
+    );
     searchEntity(entity, {
-      rules_json: Object.keys(rules).length ? rules : null,
+      rules_json: Object.keys(pruned).length ? pruned : null,
       sort_by: sort?.field ?? schema.default_sort,
       sort_dir: sort?.direction ?? schema.default_sort_dir,
       limit: PAGE_SIZE,

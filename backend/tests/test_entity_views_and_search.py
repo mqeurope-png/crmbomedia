@@ -26,7 +26,8 @@ from sqlalchemy.pool import StaticPool
 
 from app.db.session import get_session
 from app.main import app
-from app.models.crm import Base, Company, ContactView
+from app.models.crm import Base, Company, Contact, ContactView
+from app.services.entities import get_entity
 from tests._test_helpers import auth_headers, seed_test_users
 
 
@@ -409,3 +410,24 @@ def test_search_unknown_entity_404(client: TestClient) -> None:
     headers = auth_headers(client, "viewer")
     res = client.post("/api/entities/dragons/search", json={}, headers=headers)
     assert res.status_code == 404
+
+
+# -- PR-Cb hotfix: serialize_row handles computed/concat fields ----
+
+
+def test_contact_serialize_row_computes_full_name() -> None:
+    """Regression guard for the empty `name` column in the entity table:
+    PR-B's `serialize_row` skipped `computed` specs and `Contact.name`
+    is declared computed with `extras={'concat': (first, last)}`. PR-Cb
+    handles that case so the unified table shows the full name."""
+    descriptor = get_entity("contact")
+    assert descriptor is not None
+    bart = Contact(first_name="Bart", last_name="Simpson", email="b@bomedia.net")
+    row = descriptor.serialize_row(bart)
+    assert row["name"] == "Bart Simpson"
+    # Only first → still renders without the trailing space.
+    homer = Contact(first_name="Homer", last_name=None, email="h@bomedia.net")
+    assert descriptor.serialize_row(homer)["name"] == "Homer"
+    # No name at all → None (column shows "—" upstream).
+    nobody = Contact(first_name=None, last_name=None, email="x@bomedia.net")
+    assert descriptor.serialize_row(nobody)["name"] is None
