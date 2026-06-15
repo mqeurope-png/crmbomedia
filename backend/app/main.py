@@ -5,6 +5,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app.api.bulk import router as bulk_router
+from app.api.companies import assign_router as contacts_assign_router
+from app.api.companies import router as companies_router
 from app.api.dashboard import router as dashboard_router
 from app.api.email_drafts import router as email_drafts_router
 from app.api.emails import router as emails_router
@@ -61,6 +63,8 @@ app.include_router(google_router)
 app.include_router(dashboard_router)
 app.include_router(bulk_router)
 app.include_router(emails_router)
+app.include_router(companies_router)
+app.include_router(contacts_assign_router)
 app.include_router(emails_mailbox_router)
 app.include_router(emails_scheduled_router)
 app.include_router(email_drafts_router)
