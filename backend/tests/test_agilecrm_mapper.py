@@ -277,10 +277,15 @@ def test_address_garbage_string_does_not_crash():
 
 
 def test_custom_properties_collected_into_json_blob():
+    # Sprint Empresas — sub-PR 2 fix. Only the business-curated
+    # whitelist (HORARIO, GRADO_DE_INTERES, …) survives the import
+    # now. Non-whitelist customs are dropped, mirroring the Brevo
+    # mapper change.
     payload = _payload(
         properties=[
             {"name": "first_name", "value": "Ana"},
             {"name": "email", "value": "ana@example.com"},
+            {"name": "HORARIO", "type": "CUSTOM", "value": "L-V 9-18"},
             {"name": "industry", "type": "CUSTOM", "value": "Marine"},
             {"name": "boat_length", "type": "CUSTOM", "value": "12m"},
             # Non-custom properties stay out of the custom_fields bag.
@@ -288,9 +293,8 @@ def test_custom_properties_collected_into_json_blob():
         ],
     )
     record, _ = map_agilecrm_contact_to_internal(payload)
-    assert record["custom_fields"] is not None
     decoded = json.loads(record["custom_fields"])
-    assert decoded == {"industry": "Marine", "boat_length": "12m"}
+    assert decoded == {"HORARIO": "L-V 9-18"}
 
 
 def test_lead_score_picked_from_top_level_then_property():

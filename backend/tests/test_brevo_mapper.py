@@ -79,22 +79,38 @@ def test_garbage_phone_is_dropped(caplog):
     assert any("phone looks malformed" in rec.message for rec in caplog.records)
 
 
-def test_unknown_attributes_land_in_custom_fields():
+def test_only_whitelisted_attributes_land_in_custom_fields():
+    """Sprint Empresas — sub-PR 2 fix. The mapper used to copy every
+    unknown attribute into `custom_fields`, which surfaced internal
+    Brevo housekeeping (sib_contact_owner, EXT_ID, TELEFONO_2..,
+    ETIQUETA, EMAILABLE_UNSUBSCRIBED) on the contact's ficha.
+    Now only the business-curated whitelist makes it through."""
     record, _ = map_brevo_contact_to_internal(
         _payload(
             attributes={
+                # Native — routed to a column, never custom.
                 "NOMBRE": "Ana",
+                # Whitelisted business attrs.
+                "GRADO_DE_INTERES": "alto",
+                "INTERESADO_EN_DEMO": True,
+                # Out-of-whitelist noise — must NOT show up.
+                "ETIQUETA": "newsletter",
+                "TELEFONO_2": "+34111222333",
+                "sib_contact_owner": "ops@bomedia.net",
+                "EXT_ID": "X-123",
                 "EMPRESA_SECTOR": "impresión UV",
                 "MAQUINA": "MBO 3050",
             }
         ),
         "main",
     )
-    assert record["custom_fields"] is not None
-    assert "EMPRESA_SECTOR" in record["custom_fields"]
-    assert "MAQUINA" in record["custom_fields"]
-    # Native field is NOT duplicated into custom.
-    assert "NOMBRE" not in record["custom_fields"]
+    import json as _json  # noqa: PLC0415
+
+    custom = _json.loads(record["custom_fields"])
+    assert custom == {
+        "GRADO_DE_INTERES": "alto",
+        "INTERESADO_EN_DEMO": True,
+    }
 
 
 def test_blacklisted_email_marks_unsubscribed():

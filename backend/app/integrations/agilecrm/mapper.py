@@ -195,7 +195,19 @@ def _clean_str(value: Any) -> str | None:
 def _custom_properties(payload: dict[str, Any]) -> dict[str, Any]:
     """Collect every `properties[].type == "CUSTOM"` entry into a dict.
     The original AgileCRM property name is the key. Values stay as the
-    remote sent them (strings, numbers, raw JSON-y blobs)."""
+    remote sent them (strings, numbers, raw JSON-y blobs).
+
+    Sprint Empresas — sub-PR 2 fix: only the business-curated
+    whitelist (see `brevo.mapper.CUSTOM_FIELDS_WHITELIST`) lands in
+    the contact's `custom_fields` JSON. Everything else is dropped
+    on import — Agile installations carry the same housekeeping
+    noise the Brevo accounts do (sib_contact_owner, ETIQUETA,
+    secondary phones), and we don't want it leaking into the ficha.
+    """
+    from app.integrations.brevo.mapper import (  # noqa: PLC0415
+        CUSTOM_FIELDS_WHITELIST,
+    )
+
     properties = payload.get("properties") or []
     if not isinstance(properties, list):
         return {}
@@ -210,6 +222,8 @@ def _custom_properties(payload: dict[str, Any]) -> dict[str, Any]:
             continue
         value = prop.get("value")
         if value is None:
+            continue
+        if name.upper() not in CUSTOM_FIELDS_WHITELIST:
             continue
         out[name] = value
     return out

@@ -91,6 +91,29 @@ NATIVE_ATTRIBUTE_MAP = {
 LIST_TAG_PREFIX = "brevo-list:"
 
 
+#: Whitelist of Brevo custom attributes the business actually wants
+#: surfaced on the contact ficha. Anything outside this set is
+#: dropped on import — the previous wide-open behaviour leaked
+#: internal Brevo housekeeping (sib_contact_owner, EXT_ID,
+#: TELEFONO_2..6, EMAILABLE_UNSUBSCRIBED, …) into every contact's
+#: "Datos adicionales" section. The keys are normalised to upper
+#: case for the comparison.
+CUSTOM_FIELDS_WHITELIST: frozenset[str] = frozenset(
+    {
+        "GRADO_DE_INTERES",
+        "TIPO_DE_CENTRO",
+        "INTERES",
+        "PRODUCTOS_DE_INTERES",
+        "EQUIPO_INTERESADO",
+        "INTERESADO_EN_DEMO",
+        "TITULARITAT_CENTRE",
+        "ESTUDIS_ETIQUETES",
+        "FAIG_PPTO_ENVIADO",
+        "HORARIO",
+    }
+)
+
+
 def brevo_external_id(payload: dict[str, Any]) -> str:
     value = payload.get("id")
     return str(value) if value is not None else ""
@@ -119,10 +142,17 @@ def map_brevo_contact_to_internal(
     native: dict[str, Any] = {}
     custom: dict[str, Any] = {}
     for key, value in attributes.items():
-        target = NATIVE_ATTRIBUTE_MAP.get(str(key).upper())
+        upper = str(key).upper()
+        target = NATIVE_ATTRIBUTE_MAP.get(upper)
         if target and value not in (None, ""):
             native[target] = value
-        elif value not in (None, ""):
+            continue
+        # Sprint Empresas — sub-PR 2 fix: only the business-curated
+        # attributes leak into `custom_fields`. Everything else
+        # (Brevo housekeeping, secondary phones / emails awaiting
+        # sub-PR 3, unsubscribe flags routed to email_unsubscribes,
+        # ETIQUETA that already went to tags) is dropped on import.
+        if upper in CUSTOM_FIELDS_WHITELIST and value not in (None, ""):
             custom[str(key)] = value
 
     phone = _sanitize_phone(
