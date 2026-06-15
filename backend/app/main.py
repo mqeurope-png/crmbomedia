@@ -9,12 +9,12 @@ from app.api.companies import assign_router as contacts_assign_router
 from app.api.companies import router as companies_router
 from app.api.contact_channels import router as contact_channels_router
 from app.api.contact_notes import router as contact_notes_router
-from app.api.entities import router as entities_router
 from app.api.dashboard import router as dashboard_router
 from app.api.email_drafts import router as email_drafts_router
 from app.api.emails import router as emails_router
 from app.api.emails_mailbox import router as emails_mailbox_router
 from app.api.emails_scheduled import router as emails_scheduled_router
+from app.api.entities import router as entities_router
 from app.api.google_integrations import router as google_router
 from app.api.routes import router
 from app.api.tasks import router as tasks_router
