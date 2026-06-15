@@ -40,20 +40,22 @@ listas, hay que promocionarlos a columnas.
 - `FAIG_PPTO_ENVIADO`
 - `HORARIO`
 
-## C — Multi-canal (sub-PR 3/4 ✓)
+## C — Multi-canal (sub-PR 3 + revert ✓)
 
-Datos de comunicación adicional que necesitan tabla aparte. **Cubierto en sub-PR 3.**
+Datos de comunicación adicional. **Cubierto en sub-PR 3** sólo para
+teléfonos. La parte de emails secundarios + redes sociales se
+revertió porque el negocio en realidad usa un único email por
+contacto y nunca ha registrado handles sociales.
 
 | Sistema | Campo origen                                    | Destino                       |
 | ------- | ----------------------------------------------- | ----------------------------- |
 | Brevo   | `TELEFONO_1..6`, `LANDLINE_NUMBER`, `TEL`       | `contact_phones` (source=brevo) |
-| Brevo   | `EMAIL_SECUNDARIO`, `EMAIL2`, `EMAIL_2`         | `contact_emails`              |
+| Brevo   | `EMAIL_SECUNDARIO`, `EMAIL2`, `EMAIL_2`         | `custom_fields` JSON (whitelisted, informativo) |
 | Agile   | `phone(work/home/mobile/main/home-fax/work-fax/other)` | `contact_phones` (label=subtype) |
-| Agile   | `email(personal/work)`                          | `contact_emails`              |
-| Agile   | `twitter`, `facebook`                           | `contacts.twitter_url` + `facebook_url` |
-| Agile   | `skype`, `xing`, `blog`, `googleplus`, `flickr`, `github`, `youtube`, `instagram` | `contacts.social_profiles_json` |
+| Agile   | `email(personal/work)`                          | descartado en import (CRM usa `contacts.email` UNIQUE) |
+| Agile   | `twitter`, `facebook`, `skype`, `xing`, `blog`, `googleplus`, `flickr`, `github`, `youtube`, `instagram` | descartados en import |
 
-Backfill mirroring de `Contact.phone` / `Contact.email` a las nuevas colecciones via `scripts/backfill_contact_channels.py`. Backend enforce de "1 primary por contacto" en `/api/contacts/{id}/phones/{id}/primary` + `/emails/{id}/primary`.
+Backfill mirroring de `Contact.phone` a `contact_phones` via `scripts/backfill_contact_channels.py`. Backend enforce de "1 primary por contacto" en `/api/contacts/{id}/phones/{id}/primary`.
 
 ## D — Estado de suscripción (sub-PR 2/4 ✓)
 

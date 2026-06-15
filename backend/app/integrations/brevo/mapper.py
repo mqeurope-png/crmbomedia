@@ -110,14 +110,24 @@ CUSTOM_FIELDS_WHITELIST: frozenset[str] = frozenset(
         "ESTUDIS_ETIQUETES",
         "FAIG_PPTO_ENVIADO",
         "HORARIO",
+        # v3 follow-up. Sub-PR 3 originally materialised these
+        # into a `contact_emails` table; that was reverted because
+        # contacts only ever have one email in practice. The
+        # secondary addresses still ship from Brevo, so they
+        # surface in the ficha's "Datos adicionales" section as
+        # informational — readable by the operator, not
+        # synchronised back.
+        "EMAIL_SECUNDARIO",
+        "EMAIL2",
+        "EMAIL_2",
     }
 )
 
 
 #: Brevo attributes that carry a secondary phone number. Each is
-#: lifted into a `contact_phones` row in sub-PR 3 — the label is
-#: the original key (TELEFONO_1, MOVIL, …) so the operator can
-#: still tell them apart in the ficha.
+#: lifted into a `contact_phones` row — the label is the original
+#: key (TELEFONO_1, MOVIL, …) so the operator can still tell them
+#: apart in the ficha.
 SECONDARY_PHONE_ATTRS: tuple[str, ...] = (
     "TELEFONO_1",
     "TELEFONO_2",
@@ -129,32 +139,30 @@ SECONDARY_PHONE_ATTRS: tuple[str, ...] = (
     "TEL",
 )
 
-#: Brevo attributes that carry a secondary email address.
-SECONDARY_EMAIL_ATTRS: tuple[str, ...] = (
-    "EMAIL_SECUNDARIO",
-    "EMAIL2",
-    "EMAIL_2",
-)
 
-
-def extract_brevo_secondary_channels(
+def extract_brevo_secondary_phones(
     payload: dict[str, Any],
-) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
-    """Pull every secondary phone + email from the Brevo payload.
+) -> list[dict[str, str]]:
+    """Pull every secondary phone number from the Brevo payload.
 
-    Returns `(phones, emails)` where each item is a dict the
-    upsert helper feeds to `(ContactPhone | ContactEmail)`:
-    `{label, number|email, source='brevo'}`. Dedupes per type by
-    normalised value so two Brevo attrs holding the same number
-    don't materialise twice.
+    Returns a list of dicts the upsert helper feeds to
+    `ContactPhone`: `{label, number, source='brevo'}`. Dedupes by
+    digits-only normalised value so two attrs holding the same
+    number don't materialise twice.
 
-    The contact's canonical `phone` / `email` (from the native
-    mapping) is NOT included here — the upsert helper deals with
-    those separately because they live on the Contact row itself.
+    The contact's canonical `phone` (from the native mapping) is
+    NOT included here — the upsert helper deals with that
+    separately because it lives on the Contact row itself.
+
+    Sub-PR 3 follow-up: the parallel email return path was
+    dropped together with `contact_emails`. Secondary email
+    attributes (EMAIL_SECUNDARIO, EMAIL2, EMAIL_2) now travel
+    through `CUSTOM_FIELDS_WHITELIST` and surface in the ficha's
+    "Datos adicionales" section.
     """
     attributes = payload.get("attributes") or {}
     if not isinstance(attributes, dict):
-        return [], []
+        return []
 
     phones: list[dict[str, str]] = []
     seen_phones: set[str] = set()
@@ -169,32 +177,8 @@ def extract_brevo_secondary_channels(
         if not digits or digits in seen_phones:
             continue
         seen_phones.add(digits)
-        phones.append(
-            {
-                "label": key,
-                "number": text,
-                "source": "brevo",
-            }
-        )
-
-    emails: list[dict[str, str]] = []
-    seen_emails: set[str] = set()
-    for key in SECONDARY_EMAIL_ATTRS:
-        value = attributes.get(key)
-        if value is None:
-            continue
-        text = str(value).strip().lower()
-        if "@" not in text or text in seen_emails:
-            continue
-        seen_emails.add(text)
-        emails.append(
-            {
-                "label": key,
-                "email": text,
-                "source": "brevo",
-            }
-        )
-    return phones, emails
+        phones.append({"label": key, "number": text, "source": "brevo"})
+    return phones
 
 
 def brevo_external_id(payload: dict[str, Any]) -> str:

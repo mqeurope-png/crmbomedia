@@ -33,7 +33,7 @@ from app.integrations.agilecrm.client import AgileCRMClient
 from app.integrations.agilecrm.mapper import (
     agilecrm_account_label,
     agilecrm_external_id,
-    extract_agilecrm_secondary_channels,
+    extract_agilecrm_secondary_phones,
     map_agilecrm_contact_to_internal,
     map_agilecrm_event_to_internal,
     map_agilecrm_note_to_internal,
@@ -44,7 +44,6 @@ from app.integrations.errors import IntegrationError
 from app.models.crm import (
     ActivityEvent,
     Contact,
-    ContactEmail,
     ContactPhone,
     ExternalReference,
     ExternalSystem,
@@ -249,71 +248,51 @@ def reconcile_agile_channels(
     *,
     contact_id: str,
     payload: dict[str, Any],
-) -> tuple[int, int]:
-    """Sprint Empresas — sub-PR 3/4. Materialise secondary phones +
-    emails AgileCRM ships (`phone` with subtypes work/mobile/…,
-    `email` with personal/work). Idempotent on re-sync."""
+) -> int:
+    """Sprint Empresas — sub-PR 3 (post-revert). Materialise
+    secondary phones AgileCRM ships (`phone` with subtypes
+    work/mobile/…). Idempotent on re-sync. Returns the number of
+    phones added for logging.
+
+    Email variants + socials extraction were dropped — see the
+    matching change in `brevo.jobs.reconcile_brevo_channels` for
+    rationale.
+    """
     from datetime import UTC, datetime  # noqa: PLC0415
 
     if not contact_id:
-        return 0, 0
-    phones, emails, _socials = extract_agilecrm_secondary_channels(payload)
+        return 0
+    phones = extract_agilecrm_secondary_phones(payload)
+    if not phones:
+        return 0
+
     now = datetime.now(UTC)
+    existing_numbers = {
+        "".join(c for c in (p.number or "") if c.isdigit() or c == "+")
+        for p in session.scalars(
+            select(ContactPhone).where(ContactPhone.contact_id == contact_id)
+        )
+    }
     phones_added = 0
-    emails_added = 0
-
-    if phones:
-        existing_numbers = {
-            "".join(c for c in (p.number or "") if c.isdigit() or c == "+")
-            for p in session.scalars(
-                select(ContactPhone).where(ContactPhone.contact_id == contact_id)
-            )
-        }
-        for entry in phones:
-            digits = "".join(
-                c for c in entry["number"] if c.isdigit() or c == "+"
-            )
-            if not digits or digits in existing_numbers:
-                continue
-            row = ContactPhone(
-                contact_id=contact_id,
-                label=entry.get("label"),
-                number=entry["number"],
-                is_primary=False,
-                source="agilecrm",
-            )
-            row.created_at = now
-            row.updated_at = now
-            session.add(row)
-            existing_numbers.add(digits)
-            phones_added += 1
-
-    if emails:
-        existing_emails = {
-            (e.email or "").strip().lower()
-            for e in session.scalars(
-                select(ContactEmail).where(ContactEmail.contact_id == contact_id)
-            )
-        }
-        for entry in emails:
-            value = entry["email"].strip().lower()
-            if not value or value in existing_emails:
-                continue
-            row = ContactEmail(
-                contact_id=contact_id,
-                label=entry.get("label"),
-                email=value,
-                is_primary=False,
-                is_verified=False,
-                source="agilecrm",
-            )
-            row.created_at = now
-            row.updated_at = now
-            session.add(row)
-            existing_emails.add(value)
-            emails_added += 1
-
-    return phones_added, emails_added
+    for entry in phones:
+        digits = "".join(
+            c for c in entry["number"] if c.isdigit() or c == "+"
+        )
+        if not digits or digits in existing_numbers:
+            continue
+        row = ContactPhone(
+            contact_id=contact_id,
+            label=entry.get("label"),
+            number=entry["number"],
+            is_primary=False,
+            source="agilecrm",
+        )
+        row.created_at = now
+        row.updated_at = now
+        session.add(row)
+        existing_numbers.add(digits)
+        phones_added += 1
+    return phones_added
 
 
 def _sync_tag_delta(

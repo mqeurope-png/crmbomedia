@@ -44,7 +44,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db.session import get_engine
-from app.models.crm import Contact, ContactEmail, ContactPhone
+from app.models.crm import Contact, ContactPhone
 
 log = logging.getLogger("backfill_channels")
 logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -52,10 +52,6 @@ logging.basicConfig(level=logging.INFO, format="%(message)s")
 
 def _normalise_phone(raw: str) -> str:
     return "".join(c for c in (raw or "") if c.isdigit() or c == "+")
-
-
-def _normalise_email(raw: str) -> str:
-    return (raw or "").strip().lower()
 
 
 def _mirror_primary_phone(
@@ -84,38 +80,12 @@ def _mirror_primary_phone(
     return True
 
 
-def _mirror_primary_email(
-    session: Session, contact: Contact, now: datetime
-) -> bool:
-    if not contact.email:
-        return False
-    target = _normalise_email(contact.email)
-    if "@" not in target:
-        return False
-    for e in contact.emails_alt:
-        if _normalise_email(e.email) == target:
-            return False
-    row = ContactEmail(
-        contact_id=contact.id,
-        label="primary",
-        email=target,
-        is_primary=True,
-        is_verified=bool(contact.is_email_valid),
-        source="backfill",
-    )
-    row.created_at = now
-    row.updated_at = now
-    session.add(row)
-    return True
-
-
 def backfill(
     *, dry_run: bool, batch: int = 200, limit: int | None = None
 ) -> dict[str, int]:
     counts = {
         "scanned": 0,
         "primary_phones_added": 0,
-        "primary_emails_added": 0,
     }
     engine = get_engine()
     with Session(engine) as session:
@@ -127,13 +97,8 @@ def backfill(
         now = datetime.now(UTC)
         pending = 0
         for contact in contacts:
-            added_phone = _mirror_primary_phone(session, contact, now)
-            added_email = _mirror_primary_email(session, contact, now)
-            if added_phone:
+            if _mirror_primary_phone(session, contact, now):
                 counts["primary_phones_added"] += 1
-            if added_email:
-                counts["primary_emails_added"] += 1
-            if added_phone or added_email:
                 pending += 1
                 if not dry_run and pending >= batch:
                     session.commit()
@@ -152,11 +117,9 @@ def main() -> None:
     args = parser.parse_args()
     summary = backfill(dry_run=args.dry_run, limit=args.limit)
     log.info(
-        "backfill summary scanned=%d phones_added=%d emails_added=%d "
-        "dry_run=%s",
+        "backfill summary scanned=%d phones_added=%d dry_run=%s",
         summary["scanned"],
         summary["primary_phones_added"],
-        summary["primary_emails_added"],
         args.dry_run,
     )
     print(json.dumps(summary))

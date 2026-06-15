@@ -1,13 +1,16 @@
-"""Sprint Empresas — sub-PR 3/4 backend tests.
+"""Sprint Empresas — sub-PR 3 (post-revert) backend tests.
 
-Covers the new contact_phones / contact_emails CRUD endpoints,
-the Brevo + Agile mapper extraction helpers, the reconcilers'
-idempotency, and the backfill that mirrors the canonical
-phone/email into the new collections.
+Covers the surviving multichannel surface: `contact_phones` CRUD,
+Brevo + Agile secondary-phone extractors, the reconcilers'
+idempotency, and the backfill that mirrors the canonical phone
+into the new collection.
+
+The email + socials counterparts that the original sub-PR 3
+shipped were reverted in this PR — contacts only have one email
+in practice and the CRM has never used social links.
 """
 from __future__ import annotations
 
-import json
 from collections.abc import Generator
 from dataclasses import dataclass
 
@@ -20,15 +23,13 @@ from sqlalchemy.pool import StaticPool
 
 from app.db.session import get_session
 from app.integrations.agilecrm.mapper import (
-    extract_agilecrm_secondary_channels,
-    map_agilecrm_contact_to_internal,
+    extract_agilecrm_secondary_phones,
 )
-from app.integrations.brevo.mapper import extract_brevo_secondary_channels
+from app.integrations.brevo.mapper import extract_brevo_secondary_phones
 from app.main import app
 from app.models.crm import (
     Base,
     Contact,
-    ContactEmail,
     ContactPhone,
     User,
     UserRole,
@@ -89,18 +90,16 @@ def _seed_contact(factory: sessionmaker) -> str:
 # -- Brevo + Agile extractors ---------------------------------------
 
 
-def test_brevo_extracts_secondary_phones_and_emails() -> None:
-    phones, emails = extract_brevo_secondary_channels(
+def test_brevo_extracts_secondary_phones() -> None:
+    phones = extract_brevo_secondary_phones(
         {
             "id": 1,
             "attributes": {
                 "TELEFONO_1": "+34600111222",
-                "TELEFONO_2": "+34 600 111 222",  # dup of 1 after normalise
+                "TELEFONO_2": "+34 600 111 222",  # dup after normalise
                 "TELEFONO_3": "+34987654321",
                 "LANDLINE_NUMBER": "934567890",
                 "TEL": "",
-                "EMAIL_SECUNDARIO": "Bart@OTHER.com",
-                "EMAIL2": "bart@other.com",  # dup after lowercase
             },
         }
     )
@@ -114,11 +113,9 @@ def test_brevo_extracts_secondary_phones_and_emails() -> None:
         "TELEFONO_3",
         "LANDLINE_NUMBER",
     ]
-    assert [e["email"] for e in emails] == ["bart@other.com"]
-    assert emails[0]["label"] == "EMAIL_SECUNDARIO"
 
 
-def test_agilecrm_extracts_phone_email_subtypes_and_socials() -> None:
+def test_agilecrm_extracts_phone_subtypes() -> None:
     payload = {
         "id": 1,
         "properties": [
@@ -126,61 +123,21 @@ def test_agilecrm_extracts_phone_email_subtypes_and_socials() -> None:
             {"name": "phone", "subtype": "mobile", "value": "+34600111111"},
             {"name": "phone", "subtype": "work", "value": "+34932222222"},
             {"name": "phone", "subtype": "home-fax", "value": "+34933333333"},
-            {"name": "email", "subtype": "", "value": "default@example.com"},
-            {
-                "name": "email",
-                "subtype": "personal",
-                "value": "Personal@Example.com",
-            },
-            {"name": "email", "subtype": "work", "value": "work@example.com"},
+            # Non-phone properties are ignored entirely.
+            {"name": "email", "subtype": "personal", "value": "x@y.com"},
             {"name": "twitter", "value": "https://twitter.com/bart"},
-            {"name": "facebook", "value": "fb.com/bart"},
-            {"name": "github", "value": "https://github.com/bart"},
-            {"name": "skype", "value": "bart.skype"},
         ],
     }
-    phones, emails, socials = extract_agilecrm_secondary_channels(payload)
+    phones = extract_agilecrm_secondary_phones(payload)
     labels = [(p["label"], p["number"]) for p in phones]
     assert ("mobile", "+34600111111") in labels
     assert ("work", "+34932222222") in labels
     assert ("home-fax", "+34933333333") in labels
     # default phone went to Contact.phone, NOT into the secondary list.
     assert all(p["number"] != "+34600000000" for p in phones)
-    addresses = [(e["label"], e["email"]) for e in emails]
-    assert ("personal", "personal@example.com") in addresses
-    assert ("work", "work@example.com") in addresses
-    assert all("default" not in e["email"] for e in emails)
-    assert socials == {
-        "twitter": "https://twitter.com/bart",
-        "facebook": "fb.com/bart",
-        "github": "https://github.com/bart",
-        "skype": "bart.skype",
-    }
 
 
-def test_agilecrm_mapper_pins_twitter_facebook_and_jsons_the_rest() -> None:
-    payload = {
-        "id": 7,
-        "properties": [
-            {"name": "first_name", "value": "Bart"},
-            {"name": "email", "value": "bart@bomedia.net"},
-            {"name": "twitter", "value": "https://twitter.com/bart"},
-            {"name": "facebook", "value": "https://facebook.com/bart"},
-            {"name": "github", "value": "https://github.com/bart"},
-            {"name": "skype", "value": "bart.skype"},
-        ],
-    }
-    record, _ = map_agilecrm_contact_to_internal(payload)
-    assert record["twitter_url"] == "https://twitter.com/bart"
-    assert record["facebook_url"] == "https://facebook.com/bart"
-    others = json.loads(record["social_profiles_json"])
-    assert others == {
-        "github": "https://github.com/bart",
-        "skype": "bart.skype",
-    }
-
-
-# -- Brevo + Agile reconcilers --------------------------------------
+# -- Brevo reconciler ----------------------------------------------
 
 
 def test_brevo_reconcile_channels_inserts_then_idempotent(
@@ -191,10 +148,7 @@ def test_brevo_reconcile_channels_inserts_then_idempotent(
     contact_id = _seed_contact(db.factory)
     payload = {
         "id": 1,
-        "attributes": {
-            "TELEFONO_2": "+34600111222",
-            "EMAIL_SECUNDARIO": "alt@bomedia.net",
-        },
+        "attributes": {"TELEFONO_2": "+34600111222"},
     }
     with db.factory() as session:
         first = reconcile_brevo_channels(
@@ -205,25 +159,17 @@ def test_brevo_reconcile_channels_inserts_then_idempotent(
             session, contact_id=contact_id, payload=payload
         )
         session.commit()
-    assert first == (1, 1)
-    assert second == (0, 0)
+    assert first == 1
+    assert second == 0
     with db.factory() as session:
         phones = list(
             session.scalars(
                 select(ContactPhone).where(ContactPhone.contact_id == contact_id)
             )
         )
-        emails = list(
-            session.scalars(
-                select(ContactEmail).where(ContactEmail.contact_id == contact_id)
-            )
-        )
     assert len(phones) == 1
     assert phones[0].source == "brevo"
     assert phones[0].label == "TELEFONO_2"
-    assert len(emails) == 1
-    assert emails[0].label == "EMAIL_SECUNDARIO"
-    assert emails[0].source == "brevo"
 
 
 # -- /api/contacts/{id}/phones CRUD ---------------------------------
@@ -279,47 +225,41 @@ def test_phones_crud_round_trip(client: TestClient, db: _Fixture) -> None:
     assert res.status_code == 204
 
 
-def test_emails_dedupe_and_primary_flip(
-    client: TestClient, db: _Fixture
-) -> None:
-    contact_id = _seed_contact(db.factory)
-    headers = auth_headers(client, "user")
+# -- Brevo whitelist -----------------------------------------------
 
-    res = client.post(
-        f"/api/contacts/{contact_id}/emails",
-        json={"email": "Personal@Example.com", "label": "personal"},
-        headers=headers,
+
+def test_brevo_secondary_emails_land_in_custom_fields_whitelist() -> None:
+    """EMAIL_SECUNDARIO / EMAIL2 used to materialise into
+    `contact_emails`; the table was dropped so they must instead
+    survive the whitelist and reach `custom_fields` JSON."""
+    import json as _json  # noqa: PLC0415
+
+    from app.integrations.brevo.mapper import (  # noqa: PLC0415
+        map_brevo_contact_to_internal,
     )
-    assert res.status_code == 201
-    assert res.json()["email"] == "personal@example.com"
 
-    res = client.post(
-        f"/api/contacts/{contact_id}/emails",
-        json={"email": "PERSONAL@example.COM"},
-        headers=headers,
+    record, _ = map_brevo_contact_to_internal(
+        {
+            "id": 100,
+            "email": "bart@bomedia.net",
+            "attributes": {
+                "EMAIL_SECUNDARIO": "bart.alt@bomedia.net",
+                "EMAIL2": "bart2@bomedia.net",
+            },
+        },
+        account_id="acc-1",
     )
-    assert res.status_code == 409
-
-    res = client.post(
-        f"/api/contacts/{contact_id}/emails",
-        json={"email": "work@example.com", "is_primary": True},
-        headers=headers,
-    )
-    assert res.status_code == 201
-    work_id = res.json()["id"]
-
-    res = client.get(f"/api/contacts/{contact_id}/emails", headers=headers)
-    by_email = {r["email"]: r for r in res.json()}
-    assert by_email["work@example.com"]["is_primary"] is True
-    assert by_email["personal@example.com"]["is_primary"] is False
-
-    _ = work_id  # only used by the assertion shape above
+    custom = _json.loads(record["custom_fields"])
+    assert custom == {
+        "EMAIL_SECUNDARIO": "bart.alt@bomedia.net",
+        "EMAIL2": "bart2@bomedia.net",
+    }
 
 
 # -- backfill -------------------------------------------------------
 
 
-def test_backfill_mirrors_primary_phone_and_email(db: _Fixture) -> None:
+def test_backfill_mirrors_primary_phone(db: _Fixture) -> None:
     from scripts.backfill_contact_channels import backfill  # noqa: PLC0415
 
     with db.factory() as session:
@@ -345,12 +285,7 @@ def test_backfill_mirrors_primary_phone_and_email(db: _Fixture) -> None:
         second = backfill(dry_run=False)
 
     assert first["primary_phones_added"] == 1
-    assert first["primary_emails_added"] == 1
-    assert second == {
-        "scanned": 1,
-        "primary_phones_added": 0,
-        "primary_emails_added": 0,
-    }
+    assert second == {"scanned": 1, "primary_phones_added": 0}
 
     with db.factory() as session:
         phones = list(
@@ -358,12 +293,6 @@ def test_backfill_mirrors_primary_phone_and_email(db: _Fixture) -> None:
                 select(ContactPhone).where(ContactPhone.contact_id == contact_id)
             )
         )
-        emails = list(
-            session.scalars(
-                select(ContactEmail).where(ContactEmail.contact_id == contact_id)
-            )
-        )
     assert len(phones) == 1 and phones[0].is_primary is True
     assert phones[0].source == "backfill"
-    assert len(emails) == 1 and emails[0].is_primary is True
-    _ = _user_id  # silence pyflakes when the helper isn't called directly
+    _ = _user_id  # silence pyflakes when the helper isn't used directly
