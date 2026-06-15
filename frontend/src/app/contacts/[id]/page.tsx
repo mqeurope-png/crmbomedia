@@ -11,8 +11,11 @@ import {
 } from "lucide-react";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { ContactAddressSection } from "../../components/ContactAddressSection";
 import { ContactCompanySection } from "../../components/ContactCompanySection";
+import { ContactCustomFieldsSection } from "../../components/ContactCustomFieldsSection";
 import { ContactEmailsSection } from "../../components/ContactEmailsSection";
+import { ContactProfessionalSection } from "../../components/ContactProfessionalSection";
 import { EmailEventBadges } from "../../components/email/EmailEventBadges";
 import { ContactPipelinesSection } from "../../components/ContactPipelinesSection";
 import { ContactTasksSection } from "../../components/ContactTasksSection";
@@ -309,6 +312,18 @@ export default function ContactDetailPage() {
             companyId={contact.company_id ?? null}
             onChanged={loadContact}
           />
+
+          <ContactProfessionalSection
+            contact={contact}
+            onSaved={loadContact}
+          />
+
+          <ContactAddressSection
+            contact={contact}
+            onSaved={loadContact}
+          />
+
+          <ContactCustomFieldsSection contact={contact} />
 
           <section className="contact-card">
             <h4>Tags</h4>

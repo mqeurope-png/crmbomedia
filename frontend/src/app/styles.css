@@ -5652,6 +5652,55 @@ a.origin-chip:hover { filter: brightness(0.97); }
   align-items: center;
 }
 
+/* Sprint Empresas sub-PR 2 — contact ficha new sections */
+.contact-pro-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  margin: 4px 0;
+  flex-wrap: wrap;
+}
+.contact-pro-row a {
+  color: #1d4ed8;
+  text-decoration: underline;
+}
+.contact-pro-row-editing input {
+  flex: 1;
+  min-width: 140px;
+  padding: 3px 6px;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  font: inherit;
+}
+.contact-pro-edit {
+  margin-left: auto;
+  background: transparent;
+  border: 0;
+  color: #6b7280;
+  cursor: pointer;
+  font-size: 11px;
+  text-decoration: underline;
+}
+.contact-pro-edit:hover { color: #1d4ed8; }
+.contact-address-form .contact-address-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.contact-custom-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.contact-custom-list li {
+  font-size: 13px;
+  word-break: break-word;
+}
+
 /* Sprint Empresas — company edit grid + merge list */
 .company-edit-form .form-grid {
   display: grid;
