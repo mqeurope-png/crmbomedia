@@ -104,6 +104,7 @@ class Action:
     INTEGRATION_SYNC_STARTED = "integration.sync_started"
     INTEGRATION_SYNC_SUCCEEDED = "integration.sync_succeeded"
     INTEGRATION_SYNC_PARTIAL = "integration.sync_partial"
+    INTEGRATION_SYNC_SKIPPED = "integration.sync_skipped"
     INTEGRATION_SYNC_FAILED = "integration.sync_failed"
     INTEGRATION_WEBHOOK_RECEIVED = "integration.webhook_received"
     # Per-record cleanups (e.g. AgileCRM quota purge). Metadata includes

@@ -189,6 +189,7 @@ export type SyncStatus =
   | "running"
   | "success"
   | "partial_success"
+  | "skipped"
   | "failed";
 
 export type SyncLogEntry = {

@@ -31,6 +31,7 @@ from app.integrations.brevo.mapper import (
     map_brevo_contact_to_internal,
 )
 from app.integrations.contact_merge import keep_first_origin, merge_external_dates
+from app.integrations.errors import IntegrationSkipped
 from app.models.crm import (
     Company,
     Contact,
@@ -70,6 +71,18 @@ def _load_account(session: Session, account_id: str) -> IntegrationAccount:
     )
     if account is None:
         raise ValueError(f"Brevo account {account_id!r} not configured")
+    # PR-Da hotfix: cuentas deshabilitadas se marcan como SKIPPED, no
+    # FAILED — es una decisión del operador, no un error real. NO
+    # añadimos check de credential_status aquí para no romper la suite
+    # legacy (Brevo nunca lo exigió en _load_account; el handler de
+    # cada operación valida ya las credenciales antes de llamar a la
+    # API remota).
+    if not account.enabled:
+        raise IntegrationSkipped(
+            f"Brevo account '{account_id}' is disabled",
+            system="brevo",
+            account_id=account_id,
+        )
     return account
 
 

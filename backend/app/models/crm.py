@@ -923,12 +923,15 @@ class SyncStatus(StrEnum):
     """Lifecycle of a sync_logs row. Created as `PENDING` when an
     operator enqueues a job; flipped to `RUNNING` when the worker picks
     it up; ends in `SUCCESS`, `PARTIAL_SUCCESS` (some records processed,
-    some skipped/failed) or `FAILED` (the whole operation aborted)."""
+    some skipped/failed), `SKIPPED` (account disabled or unconfigured —
+    no work attempted, NOT an error) or `FAILED` (the whole operation
+    aborted)."""
 
     PENDING = "pending"
     RUNNING = "running"
     SUCCESS = "success"
     PARTIAL_SUCCESS = "partial_success"
+    SKIPPED = "skipped"
     FAILED = "failed"
 
 

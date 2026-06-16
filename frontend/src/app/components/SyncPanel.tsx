@@ -21,6 +21,7 @@ const STATUS_LABEL: Record<SyncStatus, string> = {
   running: "En curso",
   success: "Completada",
   partial_success: "Parcial",
+  skipped: "Saltada",
   failed: "Fallida",
 };
 
@@ -34,6 +35,10 @@ function statusClass(status: string | SyncStatus): string {
       return "badge ok";
     case "partial_success":
       return "badge warn";
+    case "skipped":
+      // PR-Da hotfix: "Saltada" es estado no-error (cuenta disabled /
+      // not_configured). Gris para que no llame la atención como un fallo.
+      return "badge muted";
     case "failed":
       return "badge bad";
     case "running":

@@ -429,25 +429,92 @@ def _compile_primary_assignment_leaf(
 def _compile_external_ref_leaf(
     spec: FieldSpec, comparator: str, value: Any
 ) -> ColumnElement[bool]:
-    column = (
-        ExternalReference.system
-        if spec.relation == "external_refs.system"
-        else ExternalReference.account_id
-    )
+    if spec.relation == "external_refs.system":
+        column = ExternalReference.system
+        subq = select(ExternalReference.contact_id)
+        if comparator == "eq":
+            return Contact.id.in_(subq.where(column == value))
+        if comparator == "neq":
+            return ~Contact.id.in_(subq.where(column == value))
+        if comparator == "in":
+            return Contact.id.in_(subq.where(column.in_(value)))
+        if comparator == "not_in":
+            return ~Contact.id.in_(subq.where(column.in_(value)))
+        raise SegmentRuleError(
+            f"Unsupported origin comparator {comparator!r}"
+        )
+
+    # PR-Da hotfix: el filtro de cuenta debe ser sobre la tupla
+    # `(system, account_id)`, no solo sobre `account_id`. Brevo y
+    # AgileCRM (y futuros sistemas) usan el mismo literal "default"
+    # como account_id, así que un EXISTS plano sobre account_id
+    # matcheaba cross-system y devolvía contactos de cuentas
+    # equivocadas. La UI OriginAccountMultiSelect ya emite compound
+    # keys "system:account_id"; este compilador las parsea de vuelta
+    # a la pareja antes de generar SQL.
+    #
+    # Backward-compat: si el value NO contiene ":", se trata como
+    # account_id legacy (puede matchear cross-system, igual que antes
+    # del fix — sólo afecta a vistas guardadas pre-OriginAccountMultiSelect).
+    pairs = _parse_account_keys(value, comparator)
+    legacy_ids = [aid for sys, aid in pairs if sys is None]
+    tuple_pairs = [(sys, aid) for sys, aid in pairs if sys is not None]
+
     subq = select(ExternalReference.contact_id)
-    if comparator == "eq":
-        subq = subq.where(column == value)
+    branches: list[ColumnElement[bool]] = []
+    if tuple_pairs:
+        branches.append(
+            or_(
+                *(
+                    and_(
+                        ExternalReference.system == sys,
+                        ExternalReference.account_id == aid,
+                    )
+                    for sys, aid in tuple_pairs
+                )
+            )
+        )
+    if legacy_ids:
+        branches.append(ExternalReference.account_id.in_(legacy_ids))
+    if not branches:
+        # No deberíamos llegar aquí — validate_value habría rechazado
+        # value vacío para in/not_in. Defensivo: cláusula false.
+        return Contact.id.is_(None)
+
+    where_clause = or_(*branches) if len(branches) > 1 else branches[0]
+    subq = subq.where(where_clause)
+    if comparator in {"eq", "in"}:
         return Contact.id.in_(subq)
-    if comparator == "neq":
-        subq = subq.where(column == value)
-        return ~Contact.id.in_(subq)
-    if comparator == "in":
-        subq = subq.where(column.in_(value))
-        return Contact.id.in_(subq)
-    if comparator == "not_in":
-        subq = subq.where(column.in_(value))
+    if comparator in {"neq", "not_in"}:
         return ~Contact.id.in_(subq)
     raise SegmentRuleError(f"Unsupported origin comparator {comparator!r}")
+
+
+def _parse_account_keys(
+    value: Any, comparator: str
+) -> list[tuple[str | None, str]]:
+    """Acepta "system:account_id" o "account_id" plano. Devuelve la
+    lista de pares (system_or_None, account_id). Comparators escalares
+    (`eq`, `neq`) reciben un string; los multi-value reciben lista."""
+    raw_items: list[str]
+    if comparator in {"eq", "neq"}:
+        raw_items = [str(value)]
+    elif isinstance(value, list):
+        raw_items = [str(item) for item in value]
+    else:
+        raw_items = [str(value)]
+    out: list[tuple[str | None, str]] = []
+    for item in raw_items:
+        if ":" in item:
+            sys_part, _, aid_part = item.partition(":")
+            sys_part = sys_part.strip()
+            aid_part = aid_part.strip()
+            if sys_part and aid_part:
+                out.append((sys_part, aid_part))
+                continue
+        # Fallback legacy: no prefix → treat as bare account_id.
+        out.append((None, item))
+    return out
 
 
 def _compile_pipeline_leaf(

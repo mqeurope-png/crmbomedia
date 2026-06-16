@@ -41,7 +41,7 @@ from app.integrations.agilecrm.mapper import (
     map_agilecrm_task_to_internal,
 )
 from app.integrations.contact_merge import keep_first_origin, merge_external_dates
-from app.integrations.errors import IntegrationError
+from app.integrations.errors import IntegrationError, IntegrationSkipped
 from app.models.crm import (
     ActivityEvent,
     Contact,
@@ -114,14 +114,17 @@ def _load_account(session: Session, account_id: str) -> IntegrationAccount:
             system="agilecrm",
             account_id=account_id,
         )
+    # PR-Da hotfix: cuentas deshabilitadas / no configuradas dejan de
+    # generar SyncLog FAILED. Es una situación elegida por el operador
+    # (no un error real), así que el wrapper la mapea a SKIPPED.
     if not account.enabled:
-        raise IntegrationError(
+        raise IntegrationSkipped(
             f"AgileCRM account '{account_id}' is disabled",
             system="agilecrm",
             account_id=account_id,
         )
     if account.credential_status != "configured":
-        raise IntegrationError(
+        raise IntegrationSkipped(
             f"AgileCRM account '{account_id}' has credential_status='"
             f"{account.credential_status}', expected 'configured'",
             system="agilecrm",

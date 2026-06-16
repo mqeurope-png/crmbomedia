@@ -20,6 +20,7 @@ const STATUSES: SyncStatus[] = [
   "running",
   "success",
   "partial_success",
+  "skipped",
   "failed",
 ];
 
@@ -28,6 +29,7 @@ const STATUS_LABEL: Record<SyncStatus, string> = {
   running: "En curso",
   success: "Completada",
   partial_success: "Parcial",
+  skipped: "Saltada",
   failed: "Fallida",
 };
 
