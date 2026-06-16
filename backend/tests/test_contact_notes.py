@@ -328,3 +328,86 @@ def test_viewer_cannot_write_notes(client: TestClient, db: _Fixture) -> None:
 # la unificación 0049 — `reconcile_agile_notes` (probado arriba)
 # cubre la misma lógica idempotente sin necesidad de un script
 # separado.
+
+
+# -- PR-Notes2 (post-merge fix) -------------------------------------
+
+
+def test_list_notes_empty_returns_200_no_500(
+    client: TestClient, db: _Fixture
+) -> None:
+    """Regression: la query del list_notes ordenaba por
+    `external_created_at DESC NULLS LAST`, sintaxis no soportada por
+    MySQL → 500. Tras retirar `.nullslast()` el endpoint debe
+    devolver 200 + lista vacía para un contacto sin notas."""
+    contact_id = _seed_contact(db.factory)
+    response = client.get(
+        f"/api/contacts/{contact_id}/notes",
+        headers=auth_headers(client, "user"),
+    )
+    assert response.status_code == 200, response.text
+    assert response.json() == []
+
+
+def test_list_notes_orders_mixed_null_and_non_null_external_dates(
+    client: TestClient, db: _Fixture
+) -> None:
+    """El endpoint mezcla notas Agile (con `external_created_at`) y
+    manuales (NULL). Garantiza que el ORDER BY sin NULLS LAST funciona
+    en SQLite y produce un orden razonable.
+
+    Patrón esperado: pinned arriba → por `external_created_at` DESC
+    (las Agile más recientes primero) → al final las que tienen
+    external NULL ordenadas por `created_at` DESC.
+    """
+    from datetime import UTC as _UTC  # noqa: PLC0415
+    from datetime import datetime as _dt  # noqa: PLC0415
+
+    from app.models.crm import Note  # noqa: PLC0415
+
+    contact_id = _seed_contact(db.factory)
+    with db.factory() as session:
+        # 1. Manual sin external_*.
+        manual = Note(
+            contact_id=contact_id,
+            body="Manual reciente",
+            source="manual",
+        )
+        manual.created_at = _dt(2026, 6, 10, tzinfo=_UTC)
+        manual.updated_at = manual.created_at
+        session.add(manual)
+        # 2. Agile timeline VIEJA con external_created_at marzo.
+        agile_old = Note(
+            contact_id=contact_id,
+            body="Agile vieja",
+            source="agile:timeline",
+            external_author_name="Scott Dörflein",
+            external_created_at=_dt(2026, 3, 15, tzinfo=_UTC),
+        )
+        agile_old.created_at = _dt(2026, 5, 1, tzinfo=_UTC)
+        agile_old.updated_at = agile_old.created_at
+        session.add(agile_old)
+        # 3. Agile timeline NUEVA con external_created_at mayo.
+        agile_new = Note(
+            contact_id=contact_id,
+            body="Agile nueva",
+            source="agile:timeline",
+            external_author_name="Scott Dörflein",
+            external_created_at=_dt(2026, 5, 20, tzinfo=_UTC),
+        )
+        agile_new.created_at = _dt(2026, 5, 1, tzinfo=_UTC)
+        agile_new.updated_at = agile_new.created_at
+        session.add(agile_new)
+        session.commit()
+
+    response = client.get(
+        f"/api/contacts/{contact_id}/notes",
+        headers=auth_headers(client, "user"),
+    )
+    assert response.status_code == 200, response.text
+    bodies = [r["content"] for r in response.json()]
+    # Las Agile (external_created_at no-NULL) salen primero ordenadas
+    # DESC. La manual (NULL) queda al final.
+    assert bodies[0] == "Agile nueva"
+    assert bodies[1] == "Agile vieja"
+    assert bodies[2] == "Manual reciente"

@@ -82,7 +82,11 @@ def list_notes(
                 # Display by the remote date when present (Agile
                 # timeline notes have a real `external_created_at`),
                 # falling back to our import timestamp otherwise.
-                Note.external_created_at.desc().nullslast(),
+                # NB: no `.nullslast()` — MySQL no soporta `NULLS LAST`
+                # como sintaxis ANSI (es PG/SQLite); con `DESC` los
+                # NULL caen automáticamente al final, que es lo que
+                # queremos. El bug salió en prod tras PR-Notes-Unif.
+                Note.external_created_at.desc(),
                 Note.created_at.desc(),
             )
         )
