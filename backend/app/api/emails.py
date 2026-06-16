@@ -86,30 +86,46 @@ def _emit_activity(
     )
 
 
-@router.get("/gmail-templates", response_model=list[GmailTemplate])
+@router.get("/gmail-templates")
 def list_gmail_templates(
     q: str | None = Query(
         default=None,
         description=(
-            "Override del query de búsqueda Gmail. Default filtra "
-            "drafts marcados como `^smartlabel_canned_response` (los "
-            '"Templates" del compose Gmail). Operadores Gmail '
-            "estándar son válidos: `label:foo`, `subject:Hi`."
+            "Override del query de búsqueda Gmail (`label:foo`, etc.). "
+            "Por defecto pedimos todos los drafts y filtramos en "
+            "código por `labelIds` que matchean canned-response/"
+            "template."
         ),
     ),
     limit: int = Query(default=30, ge=1, le=100),
+    debug: bool = Query(
+        default=False,
+        description=(
+            "Modo diagnóstico: devuelve TODOS los drafts del user "
+            "con `label_ids` + `thread_id` para identificar el patrón "
+            "real de templates en cuentas con setup raro. Body queda "
+            "vacío para no inflar el payload."
+        ),
+    ),
     session: Session = Depends(get_session),
     current_user: User = Depends(require_user),
-) -> list[GmailTemplate]:
-    """Plantillas Gmail nativas del user (canned responses).
+) -> list[dict]:
+    """Plantillas Gmail nativas del user (canned responses / templates).
 
-    Todas las cuentas Gmail del CRM son compartidas, así que la lista
-    es la misma para todo el equipo. Sin cache — fetch on-demand cada
-    vez que la UI abre el dropdown.
+    El producto Gmail los expone como drafts con un label sistema
+    `^smartlabel_*` (Google ha cambiado el nombre exacto varias veces).
+    Listamos todos los drafts y filtramos en código por `labelIds` —
+    el query `label:^smartlabel_canned_response` no matchea fiable.
+
+    Sin cache — fetch on-demand cuando la UI abre el dropdown.
     """
     try:
         items = gmail_service.list_gmail_templates(
-            session, current_user.id, query=q, max_results=limit
+            session,
+            current_user.id,
+            query=q,
+            max_results=limit,
+            debug=debug,
         )
     except GmailNotConnectedError:
         return []
@@ -117,7 +133,22 @@ def list_gmail_templates(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)
         ) from exc
-    return [GmailTemplate.model_validate(item) for item in items]
+    if debug:
+        # Modo debug devuelve el shape ampliado tal cual.
+        return [
+            {
+                "id": it.get("id"),
+                "subject": it.get("subject"),
+                "snippet": it.get("snippet"),
+                "label_ids": it.get("label_ids"),
+                "thread_id": it.get("thread_id"),
+                "updated_at": it.get("updated_at").isoformat()
+                if it.get("updated_at")
+                else None,
+            }
+            for it in items
+        ]
+    return [GmailTemplate.model_validate(item).model_dump() for item in items]
 
 
 @router.get("/aliases", response_model=list[EmailAlias])
