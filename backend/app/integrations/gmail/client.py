@@ -230,13 +230,16 @@ class GmailClient:
         )
 
     def get_draft_template(self, draft_id: str) -> dict[str, Any]:
-        """Pull subject + body de un draft template. Devuelve el shape
-        que el endpoint adapta al schema público."""
+        """Pull subject + body de un draft template. `format=raw`
+        devuelve el MIME completo en `message.raw` (base64url) para
+        que el caller parsee subject/body con email.message_from_bytes
+        sin tener que navegar la estructura `payload.parts[].body.data`
+        de `format=full`."""
         service = self._build_service()
         return (
             service.users()
             .drafts()
-            .get(userId="me", id=draft_id, format="full")
+            .get(userId="me", id=draft_id, format="raw")
             .execute()
         )
 
