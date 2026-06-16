@@ -374,3 +374,21 @@ def test_duplicate_segment_creates_owned_copy(client: TestClient):
     assert body["name"] == "Mi copia"
     assert body["is_owner"] is True
     assert body["is_shared"] is False
+
+
+def test_list_segments_supports_q_substring(client: TestClient):
+    """PR-Cg: `/api/segments?q=...` filtra por nombre case-insensitive
+    para alimentar el SegmentPicker server-side. Mismo creador que
+    consultador para mantenerlos dentro del scope `own | is_shared`
+    del repo."""
+    headers = auth_headers(client, "manager")
+    for name in ["Hot leads", "Cold leads", "New customers"]:
+        client.post(
+            "/api/segments",
+            json={"name": name, "rules": _basic_rules()},
+            headers=headers,
+        )
+    response = client.get("/api/segments?q=leads&limit=10", headers=headers)
+    assert response.status_code == 200, response.text
+    names = sorted(row["name"] for row in response.json())
+    assert names == ["Cold leads", "Hot leads"]

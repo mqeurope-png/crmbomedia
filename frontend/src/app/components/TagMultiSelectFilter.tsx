@@ -1,7 +1,8 @@
 "use client";
 
-import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { listTags, type TagDetail } from "../lib/api";
+import { useDebouncedValue } from "../lib/useDebouncedValue";
 import { TagChips } from "./TagChips";
 
 type Props = {
@@ -22,6 +23,13 @@ type Props = {
  *    `/admin/tags`.
  *  - Click-outside closes the panel; Escape clears the search.
  *  - Re-clicking a selected option (or its "x" chip) deselects it.
+ *
+ * PR-Cg: pasa de "fetch lista completa + filter cliente" a "fetch
+ * debounced 300ms + server-side q". El cliente NO descarga la base
+ * completa de tags — sólo el subset que matchea la búsqueda. Las
+ * selecciones ya elegidas (`selectedIds`) se renderizan como chips
+ * desde un fetch separado por id para que el operador vea sus
+ * elecciones aunque salgan del subset filtrado.
  */
 export function TagMultiSelectFilter({
   selectedIds,
@@ -30,18 +38,65 @@ export function TagMultiSelectFilter({
   placeholder = "Buscar tag…",
 }: Props) {
   const [tags, setTags] = useState<TagDetail[] | null>(null);
+  // Cache local para los labels de tags ya seleccionados — el subset
+  // server-side puede no contenerlos. Se hidrata bajo demanda.
+  const [selectedTags, setSelectedTags] = useState<Record<string, TagDetail>>({});
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
   const wrapper = useRef<HTMLDivElement>(null);
   const searchInput = useRef<HTMLInputElement>(null);
+  const debouncedQuery = useDebouncedValue(query, 300);
 
+  // Fetch server-side cada vez que cambia el debouncedQuery (mientras
+  // el panel está abierto). Si está cerrado, no consume rate-limit.
   useEffect(() => {
-    if (!open || tags !== null) return;
+    if (!open) return;
+    let cancelled = false;
+    setLoading(true);
+    listTags(debouncedQuery || undefined)
+      .then((page) => {
+        if (!cancelled) {
+          setTags(page.items);
+          setError(null);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setError("Tags no disponibles");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, debouncedQuery]);
+
+  // Hidrata los labels de tags seleccionados que no aparezcan en el
+  // subset actual (e.g. el operador re-abre un filtro guardado con
+  // ids que ya no están en el top-N). Un único listTags() sin q hasta
+  // 200 cubre el caso real; queda en cache.
+  useEffect(() => {
+    const missing = selectedIds.filter((id) => !(id in selectedTags));
+    if (missing.length === 0) return;
+    let cancelled = false;
     listTags()
-      .then((page) => setTags(page.items))
-      .catch(() => setError("Tags no disponibles"));
-  }, [open, tags]);
+      .then((page) => {
+        if (cancelled) return;
+        setSelectedTags((cur) => {
+          const next = { ...cur };
+          for (const tag of page.items) next[tag.id] = tag;
+          return next;
+        });
+      })
+      .catch(() => {
+        /* swallow; chips quedan sin label hasta el próximo intento */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedIds, selectedTags]);
 
   useEffect(() => {
     function handleClick(event: MouseEvent) {
@@ -58,24 +113,11 @@ export function TagMultiSelectFilter({
     if (open) searchInput.current?.focus();
   }, [open]);
 
-  const selected = useMemo(() => {
-    if (!tags) return [] as TagDetail[];
-    const idSet = new Set(selectedIds);
-    return tags.filter((tag) => idSet.has(tag.id));
-  }, [tags, selectedIds]);
-
-  // PR-Ce bonus UX: bump del slice 80 → 300 + useDeferredValue para
-  // que el typing siga siendo fluido aunque haya cientos de tags
-  // brevo-list:* (Bart reportó >100 listas reales).
-  const deferredQuery = useDeferredValue(query);
-  const filtered = useMemo(() => {
-    if (!tags) return [] as TagDetail[];
-    const normalized = deferredQuery.trim().toLowerCase();
-    if (!normalized) return tags.slice(0, 300);
-    return tags.filter((tag) =>
-      tag.name.toLowerCase().includes(normalized),
-    );
-  }, [tags, deferredQuery]);
+  const selectedAsTags = useMemo(() => {
+    return selectedIds
+      .map((id) => selectedTags[id])
+      .filter((t): t is TagDetail => Boolean(t));
+  }, [selectedIds, selectedTags]);
 
   function toggle(tagId: string) {
     if (selectedIds.includes(tagId)) {
@@ -84,6 +126,8 @@ export function TagMultiSelectFilter({
       onChange([...selectedIds, tagId]);
     }
   }
+
+  const items = tags ?? [];
 
   return (
     <div ref={wrapper} className="tag-multiselect">
@@ -94,11 +138,11 @@ export function TagMultiSelectFilter({
         aria-expanded={open}
         aria-haspopup="listbox"
       >
-        {selected.length === 0 ? (
+        {selectedAsTags.length === 0 ? (
           <span className="muted">Filtrar por tags</span>
         ) : (
           <TagChips
-            tags={selected}
+            tags={selectedAsTags}
             size="dense"
             onRemove={(id) => toggle(id)}
           />
@@ -126,13 +170,13 @@ export function TagMultiSelectFilter({
 
           {error ? (
             <p className="tag-multiselect-empty">{error}</p>
-          ) : tags === null ? (
+          ) : tags === null || loading ? (
             <p className="tag-multiselect-empty">Cargando…</p>
-          ) : filtered.length === 0 ? (
+          ) : items.length === 0 ? (
             <p className="tag-multiselect-empty">Sin resultados.</p>
           ) : (
             <ul className="tag-multiselect-list">
-              {filtered.map((tag) => {
+              {items.map((tag) => {
                 const isSelected = selectedIds.includes(tag.id);
                 return (
                   <li

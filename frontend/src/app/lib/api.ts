@@ -718,8 +718,17 @@ export type AuditLogPage = {
   limit: number;
 };
 
-export async function getUsers(): Promise<User[]> {
-  return apiFetch<User[]>("/api/users?limit=100");
+export async function getUsers(
+  options: { q?: string; limit?: number; skip?: number } = {},
+): Promise<User[]> {
+  // PR-Cg: el UserPicker autocompleta server-side, así que el cliente
+  // manda `q`. Sin args, mantiene el shape original que usa el módulo
+  // admin (limit=100 por defecto).
+  const params = new URLSearchParams();
+  if (options.q) params.set("q", options.q);
+  params.set("limit", String(options.limit ?? 100));
+  if (options.skip !== undefined) params.set("skip", String(options.skip));
+  return apiFetch<User[]>(`/api/users?${params.toString()}`);
 }
 
 export async function createUser(payload: Record<string, unknown>): Promise<User> {
@@ -1402,8 +1411,17 @@ export async function listIntegrationAccountGroups(): Promise<
   return apiFetch<IntegrationSystemGroup[]>("/api/integrations/accounts");
 }
 
-export async function listSegments(): Promise<Segment[]> {
-  return apiFetch<Segment[]>("/api/segments");
+export async function listSegments(
+  options: { q?: string; limit?: number } = {},
+): Promise<Segment[]> {
+  // PR-Cg: `q` + `limit` para autocomplete del SegmentPicker
+  // server-side. Sin args, el endpoint devuelve la lista completa
+  // como antes (la pantalla `/segments` no aplica filtros).
+  const params = new URLSearchParams();
+  if (options.q) params.set("q", options.q);
+  if (options.limit !== undefined) params.set("limit", String(options.limit));
+  const qs = params.toString();
+  return apiFetch<Segment[]>(`/api/segments${qs ? `?${qs}` : ""}`);
 }
 
 export async function getSegment(id: string): Promise<Segment> {

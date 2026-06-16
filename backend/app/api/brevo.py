@@ -255,6 +255,15 @@ def run_sync_target(
 @router.get("/lists", response_model=list[BrevoListRead])
 def list_brevo_lists(
     account_id: str = Query(...),
+    # PR-Cg: `q` substring case-insensitive sobre `name` para
+    # autocomplete server-side del BrevoListPicker. Brevo API no
+    # soporta búsqueda nativa, así que paginamos hasta 1000 listas en
+    # memoria (paged limit=200, max 5 pages) y filtramos aquí. Para
+    # cuentas con miles de listas esto fuerza tipear suficiente texto
+    # para que el subset entre en el cap — el endpoint no carga la
+    # base completa al picker. `limit` final acota lo que se devuelve.
+    q: str | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=200),
     session: Session = Depends(get_session),
     current_user: User = Depends(require_user),
 ) -> list[BrevoListRead]:
@@ -262,9 +271,19 @@ def list_brevo_lists(
     _require_brevo_account(session, account_id)
 
     async def _fetch() -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        page_size = 200
+        max_pages = 5  # cap blando: 1000 listas
         async with BrevoClient(session, account_id) as client:
-            body = await client.list_lists(limit=50, offset=0)
-            return body.get("lists") or []
+            for page in range(max_pages):
+                body = await client.list_lists(
+                    limit=page_size, offset=page * page_size
+                )
+                rows = body.get("lists") or []
+                out.extend(rows)
+                if len(rows) < page_size:
+                    break
+        return out
 
     try:
         rows = asyncio.run(_fetch())
@@ -272,6 +291,11 @@ def list_brevo_lists(
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY, detail=exc.message
         ) from exc
+
+    if q:
+        needle = q.lower()
+        rows = [r for r in rows if needle in str(r.get("name") or "").lower()]
+    rows = rows[:limit]
     return [_list_row_to_read(row) for row in rows if row.get("id") is not None]
 
 

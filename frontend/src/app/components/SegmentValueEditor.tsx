@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useDeferredValue, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useDebouncedValue } from "../lib/useDebouncedValue";
 import {
   getUsers,
   listPipelines,
@@ -724,11 +725,10 @@ function PipelineEditor({
 // PR-Ce — pickers genéricos para `owner_user_id`, `company_id`,
 // `in_segment`, `in_brevo_list`. Comparten patrón con `OriginAccountEditor`:
 // dropdown plano cuando hay <=20 items, autocomplete + chips cuando hay
-// más. Las listas largas se trocean con `MAX_DROPDOWN_ITEMS=300` y
-// `useDeferredValue` mantiene el typing fluido al filtrar — bonus UX §5
-// de la auditoría.
-
-const MAX_DROPDOWN_ITEMS = 300;
+// más. PR-Cg movió todos los pickers de "fetch full list + filter
+// cliente" a "fetch debounced server-side" — los caps por consulta
+// viven ahora en cada llamada al endpoint (top 100 sin q, top 50
+// con q), siguiendo la convención que Bart fijó para autocompletado.
 
 /**
  * Trunca strings largos con ellipsis CSS + tooltip nativo `title`. Se
@@ -779,32 +779,33 @@ function UserPicker({
   value: unknown;
   onChange: (next: unknown) => void;
 }) {
-  const [users, setUsers] = useState<User[] | null>(null);
+  // PR-Cg: refactor a fetch debounced server-side. El operador puede
+  // tener 200+ usuarios; descargar y filtrar en cliente corta los que
+  // entren en cualquier slice arbitrario y obliga a teclear el nombre
+  // exacto para encontrarlos.
+  const [users, setUsers] = useState<User[]>([]);
+  const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
-  const deferredQuery = useDeferredValue(query);
+  const debouncedQuery = useDebouncedValue(query, 300);
   useEffect(() => {
-    getUsers()
-      .then((u) => setUsers(u.filter((row) => row.is_active)))
-      .catch(() => setUsers([]));
-  }, []);
+    let cancelled = false;
+    setLoading(true);
+    getUsers({ q: debouncedQuery || undefined, limit: 100 })
+      .then((u) => {
+        if (!cancelled) setUsers(u.filter((row) => row.is_active));
+      })
+      .catch(() => {
+        if (!cancelled) setUsers([]);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [debouncedQuery]);
 
-  if (users === null) {
-    return <span className="muted small">Cargando usuarios…</span>;
-  }
-  if (users.length === 0) {
-    return <span className="muted small">No hay usuarios activos.</span>;
-  }
   const multi = comparator === "in" || comparator === "not_in";
-  const norm = deferredQuery.trim().toLowerCase();
-  const filtered = norm
-    ? users.filter(
-        (u) =>
-          u.full_name.toLowerCase().includes(norm) ||
-          u.email.toLowerCase().includes(norm),
-      )
-    : users;
-  const visible = filtered.slice(0, MAX_DROPDOWN_ITEMS);
-  const truncated = filtered.length > MAX_DROPDOWN_ITEMS;
 
   if (multi) {
     const selected = Array.isArray(value)
@@ -826,40 +827,49 @@ function UserPicker({
           onChange={(e) => setQuery(e.target.value)}
         />
         <div className="qb-value-multi">
-          {visible.map((u) => (
-            <label key={u.id} className="qb-value-chip">
-              <input
-                type="checkbox"
-                checked={selected.includes(u.id)}
-                onChange={() => toggle(u.id)}
-              />
-              <PickerLabel text={`${u.full_name} (${u.email})`} />
-            </label>
-          ))}
-          {truncated ? (
-            <span className="muted small">
-              … {filtered.length - MAX_DROPDOWN_ITEMS} más (afina la búsqueda)
-            </span>
-          ) : null}
+          {loading ? (
+            <span className="muted small">Cargando…</span>
+          ) : users.length === 0 ? (
+            <span className="muted small">Sin resultados.</span>
+          ) : (
+            users.map((u) => (
+              <label key={u.id} className="qb-value-chip">
+                <input
+                  type="checkbox"
+                  checked={selected.includes(u.id)}
+                  onChange={() => toggle(u.id)}
+                />
+                <PickerLabel text={`${u.full_name} (${u.email})`} />
+              </label>
+            ))
+          )}
         </div>
       </div>
     );
   }
 
-  const safe = typeof value === "string" ? value : "";
   return (
-    <select
-      className="qb-value"
-      value={safe}
-      onChange={(e) => onChange(e.target.value)}
-    >
-      <option value="">— elige usuario —</option>
-      {users.map((u) => (
-        <option key={u.id} value={u.id}>
-          {u.full_name} ({u.email})
-        </option>
-      ))}
-    </select>
+    <div className="qb-value-multi qb-value-multi-stacked">
+      <input
+        type="search"
+        className="qb-value"
+        value={query}
+        placeholder="Buscar usuario…"
+        onChange={(e) => setQuery(e.target.value)}
+      />
+      <select
+        className="qb-value"
+        value={typeof value === "string" ? value : ""}
+        onChange={(e) => onChange(e.target.value)}
+      >
+        <option value="">— elige usuario —</option>
+        {users.map((u) => (
+          <option key={u.id} value={u.id}>
+            {u.full_name} ({u.email})
+          </option>
+        ))}
+      </select>
+    </div>
   );
 }
 
@@ -874,17 +884,19 @@ function CompanyPicker({
 }) {
   // Companies pueden ser miles → siempre con búsqueda contra el endpoint.
   const [query, setQuery] = useState("");
-  const deferredQuery = useDeferredValue(query);
+  const deferredQuery = useDebouncedValue(query, 300);
   const [results, setResults] = useState<Company[]>([]);
   const [loading, setLoading] = useState(false);
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    // PR-Cf: backend GET /api/companies capa `limit` a 200 — usar
-    // MAX_DROPDOWN_ITEMS (300) producía 422 silencioso y el dropdown
-    // quedaba vacío. 200 es suficiente para autocomplete; el operador
-    // afina la búsqueda si necesita más resolución.
-    listCompanies({ q: deferredQuery || undefined, limit: 200 })
+    // PR-Cg: convención "top 100 sin q, top 50 con q" — suficiente
+    // para autocomplete; el operador refina la query si necesita
+    // más resolución. Backend cap `limit` a 200.
+    listCompanies({
+      q: deferredQuery || undefined,
+      limit: deferredQuery ? 50 : 100,
+    })
       .then((page) => {
         if (!cancelled) setResults(page.items);
       })
@@ -979,32 +991,33 @@ function SegmentPicker({
   value: unknown;
   onChange: (next: unknown) => void;
 }) {
-  const [segments, setSegments] = useState<Segment[] | null>(null);
+  // PR-Cg: server-side debounced. La cuenta puede tener cientos de
+  // segmentos (especialmente con espejos Brevo); descargar todo y
+  // filtrar en cliente cortaba alfabéticamente.
+  const [segments, setSegments] = useState<Segment[]>([]);
+  const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
-  const deferredQuery = useDeferredValue(query);
+  const debouncedQuery = useDebouncedValue(query, 300);
   useEffect(() => {
-    listSegments()
-      .then(setSegments)
-      .catch(() => setSegments([]));
-  }, []);
-
-  if (segments === null) {
-    return <span className="muted small">Cargando segmentos…</span>;
-  }
-  if (segments.length === 0) {
-    return (
-      <span className="muted small">
-        No hay segmentos en <Link href="/segments">/segments</Link>.
-      </span>
-    );
-  }
-
-  const norm = deferredQuery.trim().toLowerCase();
-  const filtered = norm
-    ? segments.filter((s) => s.name.toLowerCase().includes(norm))
-    : segments;
-  const visible = filtered.slice(0, MAX_DROPDOWN_ITEMS);
-  const truncated = filtered.length > MAX_DROPDOWN_ITEMS;
+    let cancelled = false;
+    setLoading(true);
+    listSegments({
+      q: debouncedQuery || undefined,
+      limit: debouncedQuery ? 50 : 100,
+    })
+      .then((rows) => {
+        if (!cancelled) setSegments(rows);
+      })
+      .catch(() => {
+        if (!cancelled) setSegments([]);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [debouncedQuery]);
 
   // in_segment es uuid-multi → siempre multi-select.
   const selected = Array.isArray(value)
@@ -1026,24 +1039,28 @@ function SegmentPicker({
         onChange={(e) => setQuery(e.target.value)}
       />
       <div className="qb-value-multi">
-        {visible.map((s) => (
-          <label key={s.id} className="qb-value-chip">
-            <input
-              type="checkbox"
-              checked={selected.includes(s.id)}
-              onChange={() => toggle(s.id)}
-            />
-            <PickerLabel text={s.name} />
-            {s.cached_count != null ? (
-              <span className="muted small">{` (${s.cached_count})`}</span>
-            ) : null}
-          </label>
-        ))}
-        {truncated ? (
+        {loading ? (
+          <span className="muted small">Cargando…</span>
+        ) : segments.length === 0 ? (
           <span className="muted small">
-            … {filtered.length - MAX_DROPDOWN_ITEMS} más (afina la búsqueda)
+            Sin resultados — crea segmentos en{" "}
+            <Link href="/segments">/segments</Link>.
           </span>
-        ) : null}
+        ) : (
+          segments.map((s) => (
+            <label key={s.id} className="qb-value-chip">
+              <input
+                type="checkbox"
+                checked={selected.includes(s.id)}
+                onChange={() => toggle(s.id)}
+              />
+              <PickerLabel text={s.name} />
+              {s.cached_count != null ? (
+                <span className="muted small">{` (${s.cached_count})`}</span>
+              ) : null}
+            </label>
+          ))
+        )}
       </div>
       <span className="muted small">
         {comparator === "not_in"
@@ -1068,9 +1085,10 @@ function BrevoListPicker({
   const [accountId, setAccountId] = useState<string | null | undefined>(
     undefined,
   );
-  const [lists, setLists] = useState<BrevoList[] | null>(null);
+  const [lists, setLists] = useState<BrevoList[]>([]);
+  const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
-  const deferredQuery = useDeferredValue(query);
+  const debouncedQuery = useDebouncedValue(query, 300);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(
     new Set(),
   );
@@ -1082,13 +1100,32 @@ function BrevoListPicker({
   }, []);
   useEffect(() => {
     if (!accountId) return;
-    listBrevoLists(accountId)
-      .then(setLists)
-      .catch(() => setLists([]));
-  }, [accountId]);
+    let cancelled = false;
+    setLoading(true);
+    // PR-Cg: server-side `q`. Brevo no soporta búsqueda nativa; el
+    // endpoint pagina hasta 1000 listas en backend, filtra y devuelve
+    // el subset. Cuentas con miles necesitan teclear suficiente
+    // texto para entrar en el cap — el cliente no descarga la base.
+    listBrevoLists(accountId, {
+      q: debouncedQuery || undefined,
+      limit: debouncedQuery ? 50 : 100,
+    })
+      .then((rows) => {
+        if (!cancelled) setLists(rows);
+      })
+      .catch(() => {
+        if (!cancelled) setLists([]);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [accountId, debouncedQuery]);
 
-  if (accountId === undefined || lists === null) {
-    return <span className="muted small">Cargando listas Brevo…</span>;
+  if (accountId === undefined) {
+    return <span className="muted small">Cargando cuenta Brevo…</span>;
   }
   if (accountId === null) {
     return (
@@ -1098,20 +1135,11 @@ function BrevoListPicker({
       </span>
     );
   }
-  if (lists.length === 0) {
-    return <span className="muted small">No hay listas en la cuenta.</span>;
-  }
 
   // PR-Ce: id de Brevo viene como número; el motor lo trata como string.
   // El picker envía siempre el id como string para que el round-trip
   // RQB↔IR no rompa.
-  const norm = deferredQuery.trim().toLowerCase();
-  const filtered = norm
-    ? lists.filter((l) => l.name.toLowerCase().includes(norm))
-    : lists;
-  const visible = filtered.slice(0, MAX_DROPDOWN_ITEMS);
-  const truncated = filtered.length > MAX_DROPDOWN_ITEMS;
-  const grouped = groupByPrefix(visible);
+  const grouped = groupByPrefix(lists);
 
   const selected = Array.isArray(value)
     ? value.map((v) => String(v))
@@ -1140,6 +1168,11 @@ function BrevoListPicker({
         onChange={(e) => setQuery(e.target.value)}
       />
       <div className="qb-value-multi qb-value-multi-stacked">
+        {loading ? (
+          <span className="muted small">Cargando…</span>
+        ) : lists.length === 0 ? (
+          <span className="muted small">Sin resultados.</span>
+        ) : null}
         {[...grouped.entries()].map(([group, bucket]) => {
           const collapsed = collapsedGroups.has(group);
           return (
@@ -1176,11 +1209,6 @@ function BrevoListPicker({
             </div>
           );
         })}
-        {truncated ? (
-          <span className="muted small">
-            … {filtered.length - MAX_DROPDOWN_ITEMS} más (afina la búsqueda)
-          </span>
-        ) : null}
       </div>
     </div>
   );
