@@ -8,6 +8,7 @@ from sqlalchemy import (
     DateTime,
     Enum,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -213,6 +214,15 @@ class Contact(TimestampMixin, Base):
         cascade="all, delete-orphan",
         order_by="ContactNote.pinned.desc(), ContactNote.created_at.desc()",
     )
+    # Sprint Reglas-Assign. Multi-comercial (primary + secundarios).
+    # `owner_user_id` (arriba) se mantiene como CACHÉ desnormalizado del
+    # primary, recalculado en código cuando cambia este conjunto. La
+    # fuente de verdad es esta relación.
+    assignments: Mapped[list["ContactAssignment"]] = relationship(
+        back_populates="contact",
+        cascade="all, delete-orphan",
+        order_by="ContactAssignment.is_primary.desc(), ContactAssignment.assigned_at.asc()",
+    )
 
     @property
     def tag_objects(self) -> list["Tag"]:
@@ -325,6 +335,115 @@ class ContactNote(TimestampMixin, Base):
     created_by_user_id: Mapped[str | None] = mapped_column(String(36))
 
     contact: Mapped[Contact] = relationship(back_populates="contact_notes")
+
+
+class ContactAssignment(TimestampMixin, Base):
+    """Sprint Reglas-Assign. One commercial assigned to a contact.
+
+    Multi-asignación primary + secundarios: a contact can have one
+    `is_primary=True` row (el responsable) plus N watchers/secundarios.
+    `contacts.owner_user_id` is kept as a denormalised cache of the
+    primary's `user_id`, recomputed in code (`repositories.assignments.
+    recompute_primary_cache`) whenever this set changes — no DB trigger.
+
+    Modelled on `ContactTag`: M:N row with `assigned_at` /
+    `assigned_by_user_id` / `source` provenance. `source` discriminates
+    `manual` / `rule:<rule_id>` / `backfill` / `brevo:auto` /
+    `agile:auto`. The `(contact_id, user_id)` UNIQUE prevents the same
+    user being added twice; "max 1 primary per contact" is enforced in
+    app logic (clear+set transaction), same as `contact_phones`.
+    """
+
+    __tablename__ = "contact_assignments"
+    __table_args__ = (
+        UniqueConstraint(
+            "contact_id", "user_id", name="uq_contact_assignment_user"
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid4())
+    )
+    contact_id: Mapped[str] = mapped_column(
+        ForeignKey("contacts.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    is_primary: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )
+    assigned_by_user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    assigned_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+    source: Mapped[str] = mapped_column(
+        String(40), default="manual", nullable=False
+    )
+    # FK to assignment_rules when source is rule-driven. SET NULL on
+    # rule delete keeps the assignment but loses the provenance link.
+    rule_id: Mapped[str | None] = mapped_column(
+        ForeignKey("assignment_rules.id", ondelete="SET NULL")
+    )
+    notes: Mapped[str | None] = mapped_column(Text)
+
+    contact: Mapped[Contact] = relationship(back_populates="assignments")
+
+
+class AssignmentRule(TimestampMixin, Base):
+    """Sprint Reglas-Assign. Auto-assignment rule.
+
+    `conditions_json` is the segment-engine IR tree (same AND/OR/NOT
+    grammar the filter builder produces) — stored as TEXT, not native
+    JSON, to match `segments.rules_json` / `contact_views.filters_json`
+    and keep SQLite (tests) ↔ MySQL 8 (prod) identical. The rules engine
+    compiles it via `build_filter(tree)`.
+
+    Rules fire ONLY on contact creation (manual + sync fresh-create) and
+    on manual run (decision §5.1) — never on update (loop risk).
+    `priority` orders evaluation (menor = mayor prioridad);
+    `stop_on_match` short-circuits lower-priority rules. `apply_to`
+    scopes a manual run (`unassigned_only` default).
+    """
+
+    __tablename__ = "assignment_rules"
+    __table_args__ = (
+        Index("ix_assignment_rules_active_priority", "is_active", "priority"),
+    )
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid4())
+    )
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False
+    )
+    priority: Mapped[int] = mapped_column(Integer, default=100, nullable=False)
+    conditions_json: Mapped[str] = mapped_column(Text, nullable=False)
+    primary_user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    # JSON array (TEXT) of secondary/watcher user_ids.
+    secondary_user_ids_json: Mapped[str | None] = mapped_column(Text)
+    apply_to: Mapped[str] = mapped_column(
+        String(20), default="unassigned_only", nullable=False
+    )
+    override_existing: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )
+    stop_on_match: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False
+    )
+    created_by_user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id"), nullable=False
+    )
 
 
 class ContactTag(Base):
