@@ -5,6 +5,7 @@ from datetime import datetime
 from uuid import uuid4
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy.dialects import mysql
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.crm import Base, TimestampMixin
@@ -39,7 +40,13 @@ class EmailTemplate(TimestampMixin, Base):
     )
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     subject: Mapped[str | None] = mapped_column(String(500))
-    body_html: Mapped[str] = mapped_column(Text, nullable=False)
+    # MEDIUMTEXT (16 MB) en MySQL para alojar imágenes inline base64
+    # de Gmail Templates importadas. Migración 0050. En SQLite (tests)
+    # el variant se ignora y queda como TEXT.
+    body_html: Mapped[str] = mapped_column(
+        Text().with_variant(mysql.MEDIUMTEXT(), "mysql"),
+        nullable=False,
+    )
     body_text: Mapped[str | None] = mapped_column(Text)
     folder_id: Mapped[str | None] = mapped_column(
         ForeignKey("email_template_folders.id", ondelete="SET NULL"),
