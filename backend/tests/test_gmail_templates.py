@@ -97,8 +97,13 @@ def _build_raw_email(*, subject: str, body_html: str) -> str:
 
 
 class _FakeGmailClient:
-    """Minimal stand-in: solo implementa los métodos que el servicio
-    consume + un constructor compatible (session, integration)."""
+    """Stand-in del cliente Gmail. Modelo:
+
+    - `draft-1` y `draft-2` son templates (label `^smartlabel_canned_
+      response` y `^smartlabel_canned_response_template`).
+    - `draft-3` es un draft normal, sin label de template — debe ser
+      filtrado salvo en modo debug.
+    """
 
     def __init__(self, *_a, **_kw) -> None:
         pass
@@ -108,7 +113,46 @@ class _FakeGmailClient:
     ) -> list[dict]:
         _ = query
         _ = max_results
-        return [{"id": "draft-1"}, {"id": "draft-2"}]
+        return [{"id": "draft-1"}, {"id": "draft-2"}, {"id": "draft-3"}]
+
+    def get_draft_metadata(self, draft_id: str) -> dict:
+        catalog = {
+            "draft-1": {
+                "snippet": "Hola equipo,",
+                "internalDate": "1718000000000",
+                "labelIds": ["DRAFT", "^smartlabel_canned_response"],
+                "threadId": "thr-1",
+                "payload": {
+                    "headers": [
+                        {"name": "Subject", "value": "Plantilla de bienvenida"},
+                    ]
+                },
+            },
+            "draft-2": {
+                "snippet": "Adjunto",
+                "internalDate": "1718500000000",
+                "labelIds": [
+                    "DRAFT",
+                    "^smartlabel_canned_response_template",
+                ],
+                "threadId": "thr-2",
+                "payload": {
+                    "headers": [
+                        {"name": "Subject", "value": "Reenvío plantilla"},
+                    ]
+                },
+            },
+            "draft-3": {
+                "snippet": "Borrador normal",
+                "internalDate": "1719000000000",
+                "labelIds": ["DRAFT"],
+                "threadId": "thr-3",
+                "payload": {
+                    "headers": [{"name": "Subject", "value": "Borrador X"}]
+                },
+            },
+        }
+        return {"id": draft_id, "message": catalog[draft_id]}
 
     def get_draft_template(self, draft_id: str) -> dict:
         if draft_id == "draft-1":
@@ -138,11 +182,13 @@ class _FakeGmailClient:
         }
 
 
-def test_gmail_templates_returns_parsed_drafts(
+def test_gmail_templates_filters_by_label_ignoring_non_templates(
     client: TestClient,
     session_factory: sessionmaker,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """3 drafts: 2 con label de template (legacy + moderno), 1 sin.
+    El endpoint debe devolver SOLO los 2 con label de template."""
     uid = _user_id(session_factory, UserRole.USER)
     _seed_gmail(
         session_factory,
@@ -163,12 +209,51 @@ def test_gmail_templates_returns_parsed_drafts(
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert len(body) == 2
+    ids = {item["id"] for item in body}
+    assert ids == {"draft-1", "draft-2"}, body
     by_id = {item["id"]: item for item in body}
     assert by_id["draft-1"]["subject"] == "Plantilla de bienvenida"
     assert "<p>Bienvenido al CRM</p>" in by_id["draft-1"]["body_html"]
     assert by_id["draft-1"]["snippet"] == "Hola equipo,"
     assert by_id["draft-2"]["subject"] == "Reenvío plantilla"
+
+
+def test_gmail_templates_debug_returns_all_drafts_with_labels(
+    client: TestClient,
+    session_factory: sessionmaker,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Modo debug ignora el filtro: TODOS los drafts vuelven con
+    `label_ids` + `thread_id` para diagnosticar el patrón real."""
+    uid = _user_id(session_factory, UserRole.USER)
+    _seed_gmail(
+        session_factory,
+        user_id=uid,
+        scopes=(
+            "https://www.googleapis.com/auth/gmail.send "
+            "https://www.googleapis.com/auth/gmail.modify"
+        ),
+    )
+    monkeypatch.setattr(
+        "app.integrations.gmail.service.GmailClient",
+        _FakeGmailClient,
+    )
+
+    resp = client.get(
+        "/api/emails/gmail-templates?debug=true",
+        headers=auth_headers(client, "user"),
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    ids = {item["id"] for item in body}
+    assert ids == {"draft-1", "draft-2", "draft-3"}
+    by_id = {item["id"]: item for item in body}
+    assert by_id["draft-1"]["label_ids"] == [
+        "DRAFT",
+        "^smartlabel_canned_response",
+    ]
+    assert by_id["draft-3"]["label_ids"] == ["DRAFT"]
+    assert by_id["draft-3"]["thread_id"] == "thr-3"
 
 
 def test_gmail_templates_returns_empty_when_not_connected(

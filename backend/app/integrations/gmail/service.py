@@ -63,21 +63,57 @@ def list_aliases(session: Session, user_id: str) -> list[dict[str, Any]]:
     return _client_for(session, user_id).list_send_as_aliases()
 
 
+def _extract_subject_from_headers(headers: list[dict[str, Any]]) -> str:
+    """Saca el Subject de la lista de headers que devuelve Gmail con
+    `format=metadata`. Case-insensitive porque la API a veces ship
+    `Subject` y a veces `subject`."""
+    for h in headers or []:
+        if str(h.get("name", "")).lower() == "subject":
+            return str(h.get("value") or "")
+    return ""
+
+
+def _is_template_label(label_id: str) -> bool:
+    """Cualquier label del sistema `^smartlabel_*` relacionado con
+    canned response / template. Cubre ambos:
+
+    - `^smartlabel_canned_response` (legacy "Canned Responses").
+    - `^smartlabel_canned_response_template` (templates modernos).
+    - Cualquier `^smartlabel_*` que Google añada con sufijo template/
+      canned_response en el futuro.
+    """
+    lid = label_id.lower()
+    return (
+        "canned_response" in lid
+        or "smartlabel_template" in lid
+        or "_template" in lid and lid.startswith("^smartlabel")
+    )
+
+
 def list_gmail_templates(
     session: Session,
     user_id: str,
     *,
     query: str | None = None,
     max_results: int = 30,
+    debug: bool = False,
 ) -> list[dict[str, Any]]:
-    """Devuelve las plantillas Gmail (canned responses) del user
-    autenticado en el shape público del endpoint público:
-    `[{id, subject, body_html, snippet, updated_at}]`.
+    """Devuelve las plantillas Gmail (canned responses / templates)
+    del user autenticado.
 
-    El producto Gmail llama "Templates" a lo que la API guarda como
-    drafts con label sistema `^smartlabel_canned_response`. Como el
-    CRM usa una sola cuenta Gmail compartida, todos los users del
-    team ven los mismos templates automáticamente."""
+    Mecánica: Gmail expone los Templates del compose UI como drafts
+    con un `labelIds` que contiene un system label tipo
+    `^smartlabel_canned_response` o `^smartlabel_canned_response_template`
+    (Google ha cambiado el nombre varias veces; mantenemos el filtro
+    en `_is_template_label` para tolerar ambos). Como el query Gmail
+    `label:^smartlabel_*` devuelve 0 hits en algunas cuentas, listamos
+    todos los drafts y filtramos en código por `labelIds`.
+
+    Si `debug=True`, devolvemos metadata cruda de TODOS los drafts
+    (sin filtrar por label) para identificar el patrón correcto en
+    cuentas con setup raro. La respuesta debug incluye `labelIds` y
+    `threadId` además del shape público.
+    """
     import base64  # noqa: PLC0415
     from email import message_from_bytes  # noqa: PLC0415
     from email.policy import default as _default_policy  # noqa: PLC0415
@@ -85,29 +121,74 @@ def list_gmail_templates(
     client = _client_for(session, user_id)
     listing = client.list_draft_templates(query=query, max_results=max_results)
     out: list[dict[str, Any]] = []
+
     for entry in listing:
+        draft_id = entry["id"]
+        # Paso 1: metadata (rápido, sin raw) para inspeccionar labelIds
+        # + subject + snippet. Usado tanto para debug como para filtrar
+        # antes de pedir el body completo.
         try:
-            full = client.get_draft_template(entry["id"])
+            meta = client.get_draft_metadata(draft_id)
         except Exception as exc:  # noqa: BLE001
             logger.warning(
-                "gmail.template.get failed draft_id=%s err=%s",
-                entry["id"],
+                "gmail.template.meta failed draft_id=%s err=%s",
+                draft_id,
                 exc,
             )
             continue
-        message = full.get("message", {})
-        # 1. snippet rápido (sin parsear body).
+        message = meta.get("message", {})
+        label_ids = list(message.get("labelIds") or [])
         snippet = message.get("snippet") or ""
-        # 2. subject + body parseados del MIME raw.
-        raw_b64 = message.get("raw")
-        subject = ""
+        headers = (message.get("payload") or {}).get("headers") or []
+        subject = _extract_subject_from_headers(headers)
+        internal_ms = message.get("internalDate")
+        updated_at = None
+        if internal_ms:
+            try:
+                updated_at = datetime.fromtimestamp(
+                    int(internal_ms) / 1000, tz=UTC
+                )
+            except (TypeError, ValueError):
+                updated_at = None
+
+        if debug:
+            out.append(
+                {
+                    "id": draft_id,
+                    "subject": subject,
+                    "body_html": "",  # debug skip body
+                    "snippet": snippet,
+                    "updated_at": updated_at,
+                    "label_ids": label_ids,
+                    "thread_id": message.get("threadId"),
+                }
+            )
+            continue
+
+        # Paso 2: filtro por labelIds. Si no es template → siguiente.
+        if not any(_is_template_label(lid) for lid in label_ids):
+            continue
+
+        # Paso 3: bajar body completo solo para los que pasan el filtro.
+        try:
+            full = client.get_draft_template(draft_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "gmail.template.get failed draft_id=%s err=%s",
+                draft_id,
+                exc,
+            )
+            continue
+        full_message = full.get("message", {})
+        raw_b64 = full_message.get("raw")
         body_html = ""
         if raw_b64:
             try:
                 raw_bytes = base64.urlsafe_b64decode(raw_b64.encode("ascii"))
                 parsed = message_from_bytes(raw_bytes, policy=_default_policy)
-                subject = str(parsed.get("subject") or "")
-                # Prefer text/html, fallback text/plain.
+                # Subject del raw si headers metadata era vacío.
+                if not subject:
+                    subject = str(parsed.get("subject") or "")
                 html_part = parsed.get_body(preferencelist=("html",))
                 plain_part = parsed.get_body(preferencelist=("plain",))
                 if html_part is not None:
@@ -118,22 +199,13 @@ def list_gmail_templates(
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "gmail.template.parse failed draft_id=%s err=%s",
-                    entry["id"],
+                    draft_id,
                     exc,
                 )
-        # 3. updated_at from internalDate (ms epoch).
-        internal_ms = message.get("internalDate")
-        updated_at = None
-        if internal_ms:
-            try:
-                updated_at = datetime.fromtimestamp(
-                    int(internal_ms) / 1000, tz=UTC
-                )
-            except (TypeError, ValueError):
-                updated_at = None
+
         out.append(
             {
-                "id": entry["id"],
+                "id": draft_id,
                 "subject": subject,
                 "body_html": body_html,
                 "snippet": snippet,

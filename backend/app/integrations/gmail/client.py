@@ -196,31 +196,38 @@ class GmailClient:
     def list_draft_templates(
         self, *, query: str | None = None, max_results: int = 30
     ) -> list[dict[str, Any]]:
-        """Lista drafts marcados como "canned response" en Gmail. El
-        producto los expone como "Templates" en la UI de Gmail (compose
-        → 3 puntos → Templates) pero internamente siguen siendo drafts
-        con el label sistema `^smartlabel_canned_response`.
-
-        El caller puede sobreescribir el `query` (operadores avanzados
-        de Gmail funcionan: `label:foo`, `subject:Welcome`, etc.) para
-        adaptarse a setups con otro label custom; default cubre el caso
-        99%.
-        """
+        """Lista drafts del user. Filtro lo ponemos en código tras
+        inspeccionar los `labelIds` porque el query Gmail con
+        `label:^smartlabel_canned_response` matchea 0 drafts en algunas
+        cuentas (Google cambió el label sistema entre "Canned
+        Responses" legacy y "Templates" modernos)."""
         service = self._build_service()
-        q = query or "label:^smartlabel_canned_response"
-        # `drafts.list` con `q` filtra como Gmail buscador. Pedimos
-        # `format=metadata` en `drafts.get` y luego, solo si el caller
-        # necesita el body, se hace un get adicional `format=full`.
         response = (
             service.users()
             .drafts()
-            .list(userId="me", q=q, maxResults=max_results)
+            .list(
+                userId="me",
+                q=query,
+                maxResults=max_results,
+            )
             .execute()
         )
         out: list[dict[str, Any]] = []
         for entry in response.get("drafts", []) or []:
             out.append({"id": entry["id"]})
         return out
+
+    def get_draft_metadata(self, draft_id: str) -> dict[str, Any]:
+        """Solo headers + labelIds — más barato que `format=full`.
+        Usado para filtrar drafts por etiqueta antes de pedir el body
+        completo."""
+        service = self._build_service()
+        return (
+            service.users()
+            .drafts()
+            .get(userId="me", id=draft_id, format="metadata")
+            .execute()
+        )
 
     def get_draft_template(self, draft_id: str) -> dict[str, Any]:
         """Pull subject + body de un draft template. Devuelve el shape
