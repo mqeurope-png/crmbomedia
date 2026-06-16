@@ -14,7 +14,9 @@ import type { RuleTree } from "./entitySchema";
  *
  *  - El builder ya emite un `rules` (puede estar vacío).
  *  - `q` añade `OR(name contains q, email contains q, phone contains q)`.
- *  - `assignedToMe` añade `owner_user_id == currentUserId`.
+ *  - `assignedToMe` añade `assigned_users contains_any [currentUserId]`,
+ *    que cubre primary + secundarios (PR-B Reglas-Assign). Antes era
+ *    `owner_user_id == currentUserId`, que solo veía al primary.
  *
  * Si hay más de una rama, las une bajo un AND.
  */
@@ -46,9 +48,9 @@ export function buildContactQuery(args: {
   if (assignedToMe && currentUserId) {
     branches.push({
       type: "rule",
-      field: "owner_user_id",
-      comparator: "eq",
-      value: currentUserId,
+      field: "assigned_users",
+      comparator: "contains_any",
+      value: [currentUserId],
     });
   }
 

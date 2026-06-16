@@ -107,6 +107,18 @@ _DATE = (
     "is_not_null",
 )
 _REFERENCE = ("eq", "neq", "in", "not_in", "is_null", "is_not_null")
+# Sprint Reglas-Assign PR-B: comparadores M:N para `assigned_users`.
+# `is_empty` / `is_not_empty` operan sobre el conjunto entero (sin/con
+# asignaciones), por eso no usan `is_null`/`is_not_null` que están
+# pensados para columnas escalares. Sintaxis distinta, semántica
+# análoga.
+_ASSIGNMENT_MULTI = (
+    "contains_any",
+    "contains_all",
+    "is_empty",
+    "is_not_empty",
+)
+_PRIMARY_REFERENCE = ("eq", "neq", "is_null", "is_not_null")
 # PR-Ce: los 3 enums (origin_system, commercial_status,
 # marketing_consent) usaban (eq, neq, in, not_in) — sin nullable. Hay
 # casos en producción con esos campos NULL (importados sin estado, sin
@@ -189,12 +201,42 @@ FIELD_SPECS: dict[str, FieldSpec] = {
     # Reglas-Assign sprint, NULL on every imported contact today.
     "owner_user_id": FieldSpec(
         key="owner_user_id",
-        label="Propietario",
+        label="Propietario (legacy)",
         type="reference",
         comparators=_REFERENCE,
         column=Contact.owner_user_id,
         sortable=True,
+        # Sprint Reglas-Assign PR-B: el campo histórico se mantiene
+        # operativo (apunta al caché del primary) pero se oculta del
+        # constructor por defecto a favor de `assigned_users` y
+        # `primary_user`, que reflejan el modelo multi-comercial.
+        default_visible=False,
+        displayable=False,
         grouped_under="Comercial",
+        reference_table="users",
+    ),
+    # Sprint Reglas-Assign PR-B. M:N — un contacto puede estar asignado
+    # a varios comerciales (primary + secundarios). El motor expande a
+    # EXISTS sobre contact_assignments cubriendo TODOS los roles.
+    "assigned_users": FieldSpec(
+        key="assigned_users",
+        label="Asignado a",
+        type="reference-multi",
+        comparators=_ASSIGNMENT_MULTI,
+        relation="assignments",
+        default_visible=True,
+        grouped_under="Comercial",
+        source="related_table",
+        reference_table="users",
+    ),
+    "primary_user": FieldSpec(
+        key="primary_user",
+        label="Responsable (primary)",
+        type="reference",
+        comparators=_PRIMARY_REFERENCE,
+        relation="primary_assignment",
+        grouped_under="Comercial",
+        source="related_table",
         reference_table="users",
     ),
     "origin_system": FieldSpec(
@@ -507,7 +549,7 @@ def validate_value(spec: FieldSpec, comparator: str, value: Any) -> Any:
     booleans / ints are normalised so the comparator doesn't receive
     strings from a JSON payload.
     """
-    if comparator in {"is_null", "is_not_null"}:
+    if comparator in {"is_null", "is_not_null", "is_empty", "is_not_empty"}:
         return None
     if comparator in {"in", "not_in", "contains_any", "contains_all", "contains_none"}:
         if not isinstance(value, list) or not value:
@@ -539,7 +581,7 @@ def _coerce_scalar(spec: FieldSpec, value: Any) -> Any:
                 f"Unknown enum value {sval!r} for {spec.key}"
             )
         return sval
-    if spec.type == "reference":
+    if spec.type in {"reference", "reference-multi"}:
         # Foreign-key id (owner_user_id, company_id, …). PR-Ce: el
         # editor por defecto solía ser un text input — si el operador
         # tecleaba algo no-UUID, el motor lo aceptaba y producía 0

@@ -41,6 +41,7 @@ from sqlalchemy.orm import Mapped
 
 from app.models.crm import (
     Contact,
+    ContactAssignment,
     ContactPipelineStage,
     ContactTag,
     ExternalReference,
@@ -233,6 +234,12 @@ def _compile_leaf(
         return _compile_pipeline_leaf(spec, comparator, value)
     if spec.relation == "brevo_list_membership":
         return _compile_brevo_list_leaf(comparator, value)
+    # Sprint Reglas-Assign PR-B: assigned_users (M:N a contact_assignments,
+    # primary + secondaries) y primary_user (filtrado por la fila primary).
+    if spec.relation == "assignments":
+        return _compile_assignment_leaf(comparator, value)
+    if spec.relation == "primary_assignment":
+        return _compile_primary_assignment_leaf(comparator, value)
 
     column = spec.column
     if column is None and "concat" in spec.extras:
@@ -348,6 +355,75 @@ def _compile_tag_leaf(comparator: str, value: Any) -> ColumnElement[bool]:
             )
         )
     raise SegmentRuleError(f"Unsupported tag comparator {comparator!r}")
+
+
+def _compile_assignment_leaf(
+    comparator: str, value: Any
+) -> ColumnElement[bool]:
+    """`assigned_users`: EXISTS sobre `contact_assignments` cubriendo
+    primary + secundarios. El operador "asignado a X" matchea tanto si
+    X es el primary como un watcher.
+
+    - contains_any: ≥1 de los user_ids tiene una assignment al contacto.
+    - contains_all: TODOS los user_ids tienen assignment al contacto.
+    - is_empty: el contacto no tiene NINGUNA assignment (== "Sin asignar"
+      multi-comercial). El operador antiguo "owner_user_id is_null" sigue
+      válido vía la FieldSpec heredada.
+    - is_not_empty: el contacto tiene ≥1 assignment.
+    """
+    if comparator == "contains_any":
+        return Contact.id.in_(
+            select(ContactAssignment.contact_id).where(
+                ContactAssignment.user_id.in_(value)
+            )
+        )
+    if comparator == "contains_all":
+        return Contact.id.in_(
+            select(ContactAssignment.contact_id)
+            .where(ContactAssignment.user_id.in_(value))
+            .group_by(ContactAssignment.contact_id)
+            .having(
+                func.count(func.distinct(ContactAssignment.user_id))
+                == len(value)
+            )
+        )
+    if comparator == "is_empty":
+        return ~Contact.id.in_(select(ContactAssignment.contact_id))
+    if comparator == "is_not_empty":
+        return Contact.id.in_(select(ContactAssignment.contact_id))
+    raise SegmentRuleError(
+        f"Unsupported assigned_users comparator {comparator!r}"
+    )
+
+
+def _compile_primary_assignment_leaf(
+    comparator: str, value: Any
+) -> ColumnElement[bool]:
+    """`primary_user`: filtro contra el comercial primary (responsable).
+
+    Compila contra `contact_assignments WHERE is_primary` en vez de
+    `Contact.owner_user_id` para no depender del estado del caché — el
+    caché puede quedar momentáneamente desfasado durante un set_primary
+    transaccional. Equivalente funcional con la fuente de verdad.
+    """
+    primary = select(ContactAssignment.contact_id).where(
+        ContactAssignment.is_primary.is_(True)
+    )
+    if comparator == "eq":
+        return Contact.id.in_(
+            primary.where(ContactAssignment.user_id == value)
+        )
+    if comparator == "neq":
+        return ~Contact.id.in_(
+            primary.where(ContactAssignment.user_id == value)
+        )
+    if comparator == "is_null":
+        return ~Contact.id.in_(primary)
+    if comparator == "is_not_null":
+        return Contact.id.in_(primary)
+    raise SegmentRuleError(
+        f"Unsupported primary_user comparator {comparator!r}"
+    )
 
 
 def _compile_external_ref_leaf(

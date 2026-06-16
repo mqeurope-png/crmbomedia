@@ -22,6 +22,7 @@ from app.models.crm import (
     User,
     UserRole,
 )
+from app.repositories import assignments as assignments_repo
 from tests._test_helpers import auth_headers, seed_test_users
 
 
@@ -92,6 +93,15 @@ def test_pipeline_summary_counts_stages(
         )
         session.add(contact)
         session.flush()
+        # Sprint Reglas-Assign PR-B: el widget mira contact_assignments
+        # (EXISTS) en vez del caché owner_user_id. La fila multi-comercial
+        # es la fuente de verdad.
+        assignments_repo.add_assignment(
+            session,
+            contact_id=contact.id,
+            user_id=user_id,
+            is_primary=True,
+        )
         session.add(
             ContactPipelineStage(
                 contact_id=contact.id,
