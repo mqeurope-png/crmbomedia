@@ -458,11 +458,12 @@ def test_import_creates_email_templates_in_dedicated_folder(
     assert summary["total_drafts_scanned"] == 3
 
     # Sanity: las plantillas viven en la folder dedicada.
+    from sqlalchemy import select as _select  # noqa: PLC0415
+
     from app.email_templates.models import (  # noqa: PLC0415
         EmailTemplate,
         EmailTemplateFolder,
     )
-    from sqlalchemy import select as _select  # noqa: PLC0415
 
     with session_factory() as session:
         folder = session.scalar(
