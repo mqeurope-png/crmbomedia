@@ -1,6 +1,6 @@
 "use client";
 
-import { Plus, RefreshCw } from "lucide-react";
+import { Download, Plus, RefreshCw } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { ErrorState } from "../../components/ErrorState";
@@ -14,6 +14,7 @@ import {
   createIntegrationAccount,
   deleteIntegrationAccount,
   listIntegrationAccounts,
+  triggerGmailTemplatesImport,
   triggerSyncAllAccounts,
   updateIntegrationAccount,
   type ExternalSystem,
@@ -53,8 +54,45 @@ export default function IntegrationAccountsPage() {
   // recuperar campos nuevos del mapper (Note1..Note10) en contactos
   // antiguos.
   const [fullSync, setFullSync] = useState(false);
+  // Importador one-shot de templates Gmail con prefijo `[TPL] `.
+  const [importingTpls, setImportingTpls] = useState(false);
+  const [deleteAfterImport, setDeleteAfterImport] = useState(false);
 
   const isAdmin = user?.role === "admin";
+
+  async function onImportGmailTemplates() {
+    const confirmMsg = deleteAfterImport
+      ? "Importa todos los drafts Gmail con prefijo `[TPL] ` a las plantillas CRM y BORRA cada draft de Gmail tras un insert exitoso. ¿Continuar?"
+      : "Importa todos los drafts Gmail con prefijo `[TPL] ` a las plantillas CRM. Los drafts Gmail NO se borran (limpia manualmente o relanza con la opción 'borrar tras importar'). ¿Continuar?";
+    if (!window.confirm(confirmMsg)) return;
+    setImportingTpls(true);
+    setError(null);
+    setMessage(null);
+    try {
+      const summary = await triggerGmailTemplatesImport({
+        deleteAfter: deleteAfterImport,
+      });
+      const parts = [
+        `Importadas: ${summary.imported}`,
+        `Saltadas (ya existían): ${summary.skipped}`,
+        `Errores: ${summary.errors}`,
+      ];
+      if (deleteAfterImport) parts.push(`Borradas de Gmail: ${summary.deleted}`);
+      parts.push(
+        `(${summary.tpl_drafts_found} drafts [TPL] de ${summary.total_drafts_scanned} totales escaneados)`,
+      );
+      setMessage(parts.join(" · "));
+    } catch (err) {
+      setError(
+        extractErrorMessage(
+          err,
+          "No se pudo importar las plantillas de Gmail.",
+        ),
+      );
+    } finally {
+      setImportingTpls(false);
+    }
+  }
 
   async function onSyncAll() {
     if (
@@ -222,6 +260,34 @@ export default function IntegrationAccountsPage() {
                 }
               >
                 <Plus size={12} aria-hidden /> Añadir cuenta
+              </button>
+              <label
+                className="checkbox-inline small"
+                title="Si marcado, cada draft Gmail se borra de tu buzón tras un insert exitoso. Si no, se queda en Gmail y limpias manualmente."
+              >
+                <input
+                  type="checkbox"
+                  checked={deleteAfterImport}
+                  disabled={importingTpls}
+                  onChange={(e) => setDeleteAfterImport(e.target.checked)}
+                />
+                Borrar de Gmail tras importar
+              </label>
+              <button
+                type="button"
+                className="button small secondary"
+                onClick={onImportGmailTemplates}
+                disabled={importingTpls}
+                title="One-shot: copia los drafts Gmail con prefijo [TPL] a las plantillas CRM"
+              >
+                <Download
+                  size={12}
+                  aria-hidden
+                  className={importingTpls ? "spin" : undefined}
+                />{" "}
+                {importingTpls
+                  ? "Importando plantillas…"
+                  : "📥 Importar plantillas desde Gmail"}
               </button>
             </div>
           ) : undefined

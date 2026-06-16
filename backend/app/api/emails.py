@@ -86,6 +86,50 @@ def _emit_activity(
     )
 
 
+@router.post("/gmail-templates/import")
+def import_gmail_templates(
+    delete_after: bool = Query(
+        default=False,
+        description=(
+            "Si true, borra cada draft Gmail tras un INSERT exitoso "
+            "— útil para limpiar el buzón desde la misma llamada. "
+            "Recomendado un dry-run primero (delete_after=false) "
+            "para validar counts."
+        ),
+    ),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_admin),
+) -> dict:
+    """Importa drafts Gmail con prefijo `[TPL] ` a `email_templates`.
+
+    One-shot: pensado para correr UNA vez, validar visualmente que
+    todas las plantillas están en `/admin/email-templates`, y luego
+    borrarlas de Gmail (manual o vía `delete_after=true` en una
+    segunda llamada).
+
+    Idempotente: re-runs no duplican; los templates ya presentes con
+    el mismo `name` en la folder "Gmail (importados)" se cuentan
+    como `skipped`.
+    """
+    try:
+        summary = gmail_service.import_gmail_templates_with_tpl_prefix(
+            session,
+            user_id=current_user.id,
+            created_by_user_id=current_user.id,
+            delete_after=delete_after,
+        )
+    except GmailNotConnectedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
+    except GmailScopeMissingError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)
+        ) from exc
+    session.commit()
+    return summary
+
+
 @router.get("/gmail-templates")
 def list_gmail_templates(
     q: str | None = Query(

@@ -276,6 +276,29 @@ export interface SyncAllAccountsResult {
   }[];
 }
 
+export interface GmailTemplatesImportSummary {
+  imported: number;
+  skipped: number;
+  errors: number;
+  deleted: number;
+  total_drafts_scanned: number;
+  tpl_drafts_found: number;
+}
+
+export async function triggerGmailTemplatesImport(
+  options: { deleteAfter?: boolean } = {},
+): Promise<GmailTemplatesImportSummary> {
+  // POST one-shot. `deleteAfter=true` borra cada draft Gmail tras
+  // un INSERT exitoso — útil para limpiar de raíz.
+  const params = new URLSearchParams();
+  if (options.deleteAfter) params.set("delete_after", "true");
+  const qs = params.toString();
+  return apiFetch<GmailTemplatesImportSummary>(
+    `/api/emails/gmail-templates/import${qs ? `?${qs}` : ""}`,
+    { method: "POST" },
+  );
+}
+
 export async function triggerSyncAllAccounts(
   options: { fullSync?: boolean } = {},
 ): Promise<SyncAllAccountsResult> {

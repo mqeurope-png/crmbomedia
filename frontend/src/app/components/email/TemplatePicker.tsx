@@ -8,17 +8,15 @@ import {
   getComposerSourceTemplates,
   getEmailTemplate,
   getEmailTemplatesPicker,
-  getGmailTemplates,
   recordEmailTemplateUse,
   type BrevoPickerItem,
   type ComposerSourceItem,
   type EmailTemplate,
   type EmailTemplateListItem,
   type EmailTemplatesPicker,
-  type GmailTemplate,
 } from "../../lib/emailTemplatesApi";
 
-type Tab = "crm" | "brevo" | "composer" | "gmail" | "recent";
+type Tab = "crm" | "brevo" | "composer" | "recent";
 
 export type TemplatePickerSelection = {
   source: Tab;
@@ -38,7 +36,6 @@ const TAB_LABELS: Record<Tab, string> = {
   crm: "CRM",
   brevo: "Brevo",
   composer: "Composer ⚡",
-  gmail: "📧 Gmail",
   recent: "Recientes",
 };
 
@@ -55,14 +52,6 @@ export function TemplatePicker({ onSelect, onClose }: Props) {
   const [composerNotice, setComposerNotice] = useState<ComposerSourceItem | null>(
     null,
   );
-  // Gmail templates: lazy fetch al abrir la pestaña. Sin cache global
-  // — el primer click hace la fetch, las pestañas siguientes la
-  // reusan en este render.
-  const [gmail, setGmail] = useState<{
-    items: GmailTemplate[];
-    error: string | null;
-  } | null>(null);
-  const [gmailLoading, setGmailLoading] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -88,43 +77,6 @@ export function TemplatePicker({ onSelect, onClose }: Props) {
     };
   }, []);
 
-  // Lazy fetch al cambiar a la pestaña Gmail. Si falla, persistimos
-  // el error in-state para que el operador vea el motivo en lugar de
-  // un dropdown vacío sin explicación.
-  //
-  // Importante: NO chequeamos `gmailLoading` en la guard ni
-  // protegemos el setGmailLoading(false) por `cancelled`. Si el
-  // operador cambia de pestaña ida-vuelta rápido, queremos que el
-  // próximo fetch se dispare; React batchea el setState aunque el
-  // componente esté desmontado.
-  useEffect(() => {
-    if (tab !== "gmail" || gmail !== null) return;
-    let cancelled = false;
-    setGmailLoading(true);
-    getGmailTemplates()
-      .then((items) => {
-        if (!cancelled) setGmail({ items, error: null });
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        setGmail({
-          items: [],
-          error: extractErrorMessage(
-            err,
-            "No se pudieron cargar las plantillas de Gmail.",
-          ),
-        });
-      })
-      .finally(() => {
-        // Siempre toggle off — si la unmount lo hizo huérfano,
-        // React descarta el set sin advertir.
-        setGmailLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [tab, gmail]);
-
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     function matches(name: string, subject?: string | null) {
@@ -138,20 +90,9 @@ export function TemplatePicker({ onSelect, onClose }: Props) {
       crm: (picker?.crm ?? []).filter((t) => matches(t.name, t.subject)),
       brevo: (picker?.brevo ?? []).filter((t) => matches(t.name, t.subject)),
       composer: (composer?.items ?? []).filter((t) => matches(t.name)),
-      gmail: (gmail?.items ?? []).filter((t) =>
-        matches(t.subject || t.snippet, t.subject),
-      ),
       recent: (picker?.recent ?? []).filter((t) => matches(t.name, t.subject)),
     };
-  }, [picker, composer, gmail, search]);
-
-  function pickGmail(item: GmailTemplate) {
-    onSelect({
-      source: "gmail",
-      subject: item.subject || null,
-      body_html: item.body_html,
-    });
-  }
+  }, [picker, composer, search]);
 
   async function pickCrm(item: EmailTemplateListItem) {
     try {
@@ -250,13 +191,6 @@ export function TemplatePicker({ onSelect, onClose }: Props) {
               items={filtered.composer}
               error={composer?.error ?? null}
               onPick={openComposer}
-            />
-          ) : tab === "gmail" ? (
-            <GmailList
-              items={filtered.gmail}
-              error={gmail?.error ?? null}
-              loading={gmailLoading}
-              onPick={pickGmail}
             />
           ) : (
             <CrmList
@@ -444,51 +378,7 @@ function ComposerOpenModal({
   );
 }
 
-function GmailList({
-  items,
-  error,
-  loading,
-  onPick,
-}: {
-  items: GmailTemplate[];
-  error: string | null;
-  loading: boolean;
-  onPick: (item: GmailTemplate) => void;
-}) {
-  if (loading && items.length === 0 && !error) {
-    return <p className="muted">Cargando plantillas de Gmail…</p>;
-  }
-  if (error) {
-    return (
-      <div>
-        <p className="modal-error">{error}</p>
-        <p className="muted small">
-          Gestiona las plantillas desde Gmail: en compose → menú &quot;⋮&quot; →
-          &quot;Templates&quot;.
-        </p>
-      </div>
-    );
-  }
-  if (items.length === 0) {
-    return (
-      <p className="muted small">
-        No hay plantillas en Gmail. Crea una desde compose → &quot;⋮&quot; → Templates
-        → &quot;Save draft as template&quot;.
-      </p>
-    );
-  }
-  return (
-    <ul className="tp-list">
-      {items.map((item) => (
-        <li key={item.id}>
-          <button type="button" className="tp-item" onClick={() => onPick(item)}>
-            <strong>{item.subject || "(sin asunto)"}</strong>
-            {item.snippet ? (
-              <span className="muted small tp-snippet">{item.snippet}</span>
-            ) : null}
-          </button>
-        </li>
-      ))}
-    </ul>
-  );
-}
+// GmailList eliminado: las plantillas Gmail se importan UNA vez a
+// `email_templates` vía POST /api/emails/gmail-templates/import; el
+// operador las ve en la pestaña CRM como cualquier otra. El endpoint
+// GET /gmail-templates queda solo para uso admin / debug.
