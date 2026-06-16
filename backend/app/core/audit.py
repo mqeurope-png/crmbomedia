@@ -69,6 +69,11 @@ class Action:
     ASSIGNMENT_RULE_DELETED = "assignment_rule.deleted"
     ASSIGNMENT_RULE_AUTO_DISABLED = "assignment_rule.auto_disabled"
     ASSIGNMENT_RULE_RUN = "assignment_rule.run"
+    # PR-F (cierre): emitido por evaluate_for_contact y por
+    # run_rule_over_universe cada vez que una regla se aplica a un
+    # contacto concreto. Permite reconstruir "por qué este contacto
+    # acabó asignado al user X" desde el audit log.
+    ASSIGNMENT_RULE_APPLIED = "assignment_rule.applied"
     NOTE_CREATED = "note.created"
     TASK_CREATED = "task.created"
     TASK_UPDATED = "task.updated"
