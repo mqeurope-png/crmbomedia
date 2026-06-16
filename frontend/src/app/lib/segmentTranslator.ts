@@ -154,7 +154,17 @@ type FieldSpecLite = {
   type: string; // string | int | bool | date | enum | tag-multi | uuid-multi
 };
 
-const NO_VALUE_COMPARATORS = new Set(["is_null", "is_not_null"]);
+// QoL hotfix — `is_empty` / `is_not_empty` también son comparadores
+// sin valor (set membership: contacto sin/con ≥1 nota o assignment).
+// Pre-hotfix `pruneRulesTree` los eliminaba en silencio porque
+// requería value, dejando el árbol vacío → motor devolvía todo el
+// universo (19968 contactos en prod en vez de los matches reales).
+const NO_VALUE_COMPARATORS = new Set([
+  "is_null",
+  "is_not_null",
+  "is_empty",
+  "is_not_empty",
+]);
 const LIST_COMPARATORS = new Set([
   "in",
   "not_in",

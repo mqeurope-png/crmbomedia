@@ -56,6 +56,16 @@ export type EmailStats = {
   days: number;
 };
 
-export async function getEmailStats(days = 30): Promise<EmailStats> {
-  return apiFetch<EmailStats>(`/api/emails/stats?days=${days}`);
+export async function getEmailStats(
+  days = 30,
+  options: { scope?: "mine" | "team"; teamUserId?: string } = {},
+): Promise<EmailStats> {
+  // QoL hotfix — el widget en /emails ahora respeta el toggle Mías/
+  // Equipo igual que la lista de threads. Default mine.
+  const params = new URLSearchParams({ days: String(days) });
+  if (options.scope && options.scope !== "mine") {
+    params.set("scope", options.scope);
+  }
+  if (options.teamUserId) params.set("team_user_id", options.teamUserId);
+  return apiFetch<EmailStats>(`/api/emails/stats?${params.toString()}`);
 }
