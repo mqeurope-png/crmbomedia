@@ -170,6 +170,43 @@ def _seed_contact(client: TestClient, email: str, **overrides) -> dict:
 # ---------------------------------------------------------------------------
 
 
+def test_list_brevo_lists_filters_by_q_substring(client: TestClient):
+    """PR-Cg: el endpoint añade `q` server-side. Sin él, el cliente
+    cargaba toda la lista y filtraba en cliente cortando alfabéticamente.
+    Pin que el subset devuelto matchea solo los nombres que contienen
+    `q` (case-insensitive)."""
+    _FakeClient.lists = {
+        1: {"id": 1, "name": "fespa-2024", "totalSubscribers": 10},
+        2: {"id": 2, "name": "mbo-leads", "totalSubscribers": 20},
+        3: {"id": 3, "name": "FESPA-warm", "totalSubscribers": 5},
+        4: {"id": 4, "name": "artisjet", "totalSubscribers": 1},
+    }
+    with _patch_api():
+        response = client.get(
+            "/api/brevo/lists?account_id=main&q=fespa",
+            headers=auth_headers(client, "user"),
+        )
+    assert response.status_code == 200, response.text
+    names = sorted(row["name"] for row in response.json())
+    assert names == ["FESPA-warm", "fespa-2024"]
+
+
+def test_list_brevo_lists_caps_with_limit(client: TestClient):
+    """PR-Cg: `limit` recorta el listado devuelto. Convención del
+    picker: 100 sin q, 50 con q. Endpoint cap a 200."""
+    _FakeClient.lists = {
+        i: {"id": i, "name": f"lst-{i:03d}", "totalSubscribers": 0}
+        for i in range(1, 50)
+    }
+    with _patch_api():
+        response = client.get(
+            "/api/brevo/lists?account_id=main&limit=10",
+            headers=auth_headers(client, "user"),
+        )
+    assert response.status_code == 200
+    assert len(response.json()) == 10
+
+
 def test_get_list_detail_surfaces_counters(client: TestClient):
     _FakeClient.lists[42] = {
         "id": 42,

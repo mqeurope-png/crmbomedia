@@ -692,13 +692,23 @@ def create_user(
 
 @router.get("/users", response_model=list[UserRead], responses=ERROR_RESPONSES, tags=["users"])
 def list_users(
+    # PR-Cg: `q` para alimentar el UserPicker server-side; el
+    # admin module sigue funcionando sin pasarlo. `require_viewer`
+    # en lugar de `require_admin` porque el picker de owner se usa
+    # desde la lista de contactos (cualquier usuario logueado debe
+    # poder ver la lista de usuarios para asignar / filtrar). El
+    # PATCH/DELETE siguen siendo admin-only.
+    q: str | None = Query(
+        default=None,
+        description="Filtro substring case-insensitive sobre email + full_name",
+    ),
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=100),
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_admin),
+    current_user: User = Depends(require_viewer),
 ) -> list[User]:
     _ = current_user
-    return crm_repository.list_users(session=session, skip=skip, limit=limit)
+    return crm_repository.list_users(session=session, skip=skip, limit=limit, q=q)
 
 
 @router.patch(
@@ -3756,10 +3766,19 @@ def segment_templates(
     tags=["crm"],
 )
 def list_segments(
+    # PR-Cg: `q` + `limit` para el SegmentPicker server-side. Sin
+    # params, sigue devolviendo el listado completo igual que /segments.
+    q: str | None = Query(
+        default=None,
+        description="Filtro substring case-insensitive sobre `name`",
+    ),
+    limit: int | None = Query(default=None, ge=1, le=200),
     session: Session = Depends(get_session),
     current_user: User = Depends(require_viewer),
 ) -> list[SegmentRead]:
-    rows = segments_repository.list_segments(session, user_id=current_user.id)
+    rows = segments_repository.list_segments(
+        session, user_id=current_user.id, q=q, limit=limit
+    )
     return [_segment_to_read(row, current_user=current_user) for row in rows]
 
 

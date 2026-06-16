@@ -112,9 +112,38 @@ def test_admin_can_create_and_list_users(client: TestClient):
 
 
 def test_non_admin_cannot_manage_users(client: TestClient):
-    response = client.get("/api/users", headers=auth_headers(client, "manager"))
+    # PR-Cg: el GET /api/users pasó a require_viewer para alimentar el
+    # UserPicker del filter builder (cualquier usuario logueado debe
+    # poder filtrar contactos por propietario). Las mutaciones siguen
+    # siendo admin-only: el siguiente POST 403-ea.
+    listed = client.get("/api/users", headers=auth_headers(client, "manager"))
+    assert listed.status_code == 200
 
-    assert response.status_code == 403
+    created = client.post(
+        "/api/users",
+        json={
+            "email": "mgr-created@example.com",
+            "full_name": "Should not pass",
+            "password": "password123",
+            "role": "viewer",
+        },
+        headers=auth_headers(client, "manager"),
+    )
+    assert created.status_code == 403
+
+
+def test_list_users_supports_q_substring(client: TestClient):
+    """PR-Cg: `/api/users?q=...` filtra por substring case-insensitive
+    sobre email + full_name para el UserPicker."""
+    response = client.get(
+        "/api/users?q=admin",
+        headers=auth_headers(client, "viewer"),
+    )
+    assert response.status_code == 200
+    emails = [row["email"] for row in response.json()]
+    assert "admin@example.com" in emails
+    assert all("admin" in row["email"].lower() or "admin" in row["full_name"].lower()
+               for row in response.json())
 
 
 def test_create_company_requires_manager(client: TestClient):

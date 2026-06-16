@@ -21,18 +21,30 @@ from app.services.segments.engine import (
 
 
 def list_segments(
-    session: Session, *, user_id: str
+    session: Session,
+    *,
+    user_id: str,
+    q: str | None = None,
+    limit: int | None = None,
 ) -> list[Segment]:
+    """PR-Cg: `q` substring case-insensitive sobre `name` + `limit`
+    para el autocomplete server-side del SegmentPicker. Sin params,
+    devuelve la lista completa visible al usuario (own + shared)
+    como antes, para que `/segments` no pierda ningún segmento."""
     statement = (
         select(Segment)
         .where(
             (Segment.owner_user_id == user_id) | (Segment.is_shared.is_(True))
         )
-        .order_by(
-            Segment.owner_user_id != user_id,  # own first
-            Segment.name,
-        )
     )
+    if q:
+        statement = statement.where(func.lower(Segment.name).like(f"%{q.lower()}%"))
+    statement = statement.order_by(
+        Segment.owner_user_id != user_id,  # own first
+        Segment.name,
+    )
+    if limit is not None:
+        statement = statement.limit(limit)
     return list(session.scalars(statement))
 
 

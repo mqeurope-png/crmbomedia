@@ -48,8 +48,24 @@ def get_user_by_email(session: Session, email: str) -> User | None:
     )
 
 
-def list_users(session: Session, skip: int, limit: int) -> list[User]:
-    statement = select(User).order_by(User.created_at.desc()).offset(skip).limit(limit)
+def list_users(
+    session: Session,
+    skip: int,
+    limit: int,
+    q: str | None = None,
+) -> list[User]:
+    """PR-Cg: `q` (substring case-insensitive sobre email + full_name)
+    para alimentar el autocomplete del UserPicker server-side. Sin `q`
+    se devuelve el listado paginado plano que el módulo de admin
+    usaba antes."""
+    statement = select(User)
+    if q:
+        needle = f"%{q.lower()}%"
+        statement = statement.where(
+            func.lower(User.email).like(needle)
+            | func.lower(User.full_name).like(needle)
+        )
+    statement = statement.order_by(User.created_at.desc()).offset(skip).limit(limit)
     return list(session.scalars(statement))
 
 

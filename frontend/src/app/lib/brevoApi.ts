@@ -135,10 +135,17 @@ export type BrevoSender = {
   active: boolean;
 };
 
-export async function listBrevoLists(accountId: string): Promise<BrevoList[]> {
-  return apiFetch<BrevoList[]>(
-    `/api/brevo/lists?account_id=${encodeURIComponent(accountId)}`,
-  );
+export async function listBrevoLists(
+  accountId: string,
+  options: { q?: string; limit?: number } = {},
+): Promise<BrevoList[]> {
+  // PR-Cg: `q` + `limit` para autocomplete server-side del
+  // BrevoListPicker. Sin params, sigue devolviendo el listado por
+  // defecto (top 100) — `/marketing/lists` no necesita filtros.
+  const params = new URLSearchParams({ account_id: accountId });
+  if (options.q) params.set("q", options.q);
+  if (options.limit !== undefined) params.set("limit", String(options.limit));
+  return apiFetch<BrevoList[]>(`/api/brevo/lists?${params.toString()}`);
 }
 
 export async function getBrevoList(
