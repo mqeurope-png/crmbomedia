@@ -219,13 +219,25 @@ def test_integration_api_key_events_recorded_and_metadata_safe(
 
 
 def test_forbidden_access_is_audited(client: TestClient, stack):
-    """A non-admin hitting an admin endpoint produces an access.forbidden row.
+    """A non-admin hitting an admin-only endpoint produces an
+    access.forbidden row.
 
-    `auth_headers` lands a manager token; calling /api/users (admin-only)
-    triggers the role gate which audits the denial before raising 403.
+    PR-Cg: el GET /api/users pasó a `require_viewer` para alimentar el
+    UserPicker — un manager ya puede listar. El POST /api/users (crear
+    usuario) sigue siendo admin-only, así que el gate audita el rechazo
+    igual.
     """
     manager = auth_headers(client, "manager")
-    response = client.get("/api/users", headers=manager)
+    response = client.post(
+        "/api/users",
+        json={
+            "email": "x@example.com",
+            "full_name": "x",
+            "password": "password123",
+            "role": "viewer",
+        },
+        headers=manager,
+    )
     assert response.status_code == 403
 
     # Inspect the audit table directly via the test session factory rather
@@ -245,7 +257,7 @@ def test_forbidden_access_is_audited(client: TestClient, stack):
     metadata = json.loads(last.metadata_json or "{}")
     assert metadata["required_role"] == "admin"
     assert metadata["actual_role"] == "manager"
-    assert metadata["method"] == "GET"
+    assert metadata["method"] == "POST"
 
 
 # ---------------------------------------------------------------------------
