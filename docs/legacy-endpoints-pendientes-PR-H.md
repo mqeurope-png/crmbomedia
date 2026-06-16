@@ -1,78 +1,42 @@
-# Endpoints legacy pendientes de retirar en PR-H
+# Endpoints legacy pendientes — estado post Sprint Filtros & Listas
 
-Sprint Filtros & Listas — auditoría post-PR-E.
+> **Estado:** cierre de sprint en PR-H. Este doc refleja el estado
+> **real** de los endpoints legacy tras la limpieza, no el plan inicial.
 
-Tras la migración de `/contacts` al stack nuevo (PR-E), los siguientes
-endpoints viejos del backend ya **no los usa el frontend de la lista
-de contactos**, pero se mantienen vivos porque otras pantallas /
-integraciones aún los consumen. Limpieza programada para **PR-H**
-(último PR del sprint).
+## Frontend ya migrado
 
-## Endpoints
+Tras PR-H:
 
-### `POST /api/contacts/search` y `POST /api/contacts/search/ids`
+- ❌ Borrados (frontend, código muerto):
+  - `lib/api.ts::searchContacts` + `searchContactIds` + types `ContactSearchPayload` / `ContactSearchIdsResult` / `ContactListPage` (este último se mantiene porque `getContacts` lo usa para el dashboard widget).
+  - `lib/api.ts::listSavedViews`, `createSavedView`, `updateSavedView`, `deleteSavedView`, `duplicateSavedView`, `setDefaultSavedView` y los types `SavedView*`.
+  - Componentes: `ContactFiltersBuilder.tsx`, `ContactViewsTabs.tsx`, `ColumnConfigurator.tsx`, `ContactViewEditorModal.tsx`.
+  - Libs: `contactColumns.ts`, `contactColumnsStorage.ts`, `contactRulesMigration.ts`, `contactsUrlState.ts`.
+  - Sandbox: `/sandbox/entity-table/` directory.
 
-- **Reemplazo genérico:** `POST /api/entities/contact/search` /
-  `/search/ids` (envelope normalizado `{items, total, limit, offset}`,
-  motor `build_entity_filter`, segment_resolver inyectado).
-- **Consumidores legacy todavía activos:**
-  - `app/integrations/brevo/sync_targets.py` — usa `build_filter`
-    directamente, no via API. **NO bloquea la retirada del endpoint
-    HTTP.**
-  - Scripts de admin / herramientas internas pueden tener bookmarks.
-    Verificar logs antes de retirar.
-- **Diferencia funcional:** el legacy aceptaba `q` (free-text sobre
-  name/email/phone) y `assigned_to_me` como params top-level. El
-  genérico no — el frontend ahora traduce ambos a rules del motor en
-  `lib/contactsRules.ts::buildContactQuery`.
+- ✅ Mantenidos vivos (siguen usándose):
+  - `lib/api.ts::saveViewAsSegment` + `pushViewToBrevoList` — la pantalla nueva `/contacts` las usa para los flujos "Guardar como segmento" y "Enviar a lista Brevo". Los endpoints backend correspondientes están en `/api/contact-views/{id}/save-as-segment` y `/push-to-brevo-list` y comparten tabla con `entity_views`.
+  - `<ContactsBulkBar>` — la pantalla nueva `/contacts` lo monta. Cuando llegue el bulk set-based, se generaliza a `<EntityBulkBar>` y este se retira.
 
-### `GET/POST/PATCH/DELETE /api/contact-views/*`
+## Backend legacy aún vivo
 
-- **Reemplazo:** `/api/entity-views/contact` (mismo backing table
-  `contact_views` con `entity_type='contact'` por defecto desde la
-  migración 0046).
-- **Consumidores legacy todavía activos:**
-  - `POST /api/contact-views/{view_id}/save-as-segment` — usado por
-    la pantalla **NUEVA** de `/contacts` también (PR-E). Comparte
-    tabla con entity_views, así que opera sobre cualquier view_id
-    contact-typed. Cuando se retire, hay que mover esta acción a
-    `/api/entity-views/contact/{id}/save-as-segment`.
-  - `POST /api/contact-views/{view_id}/push-to-brevo-list` — idem.
-- **Plan PR-H:** mover las dos acciones bridge (save-as-segment +
-  push-to-brevo-list) al namespace `/api/entity-views/contact/...`,
-  luego retirar todos los endpoints CRUD legacy.
+Los siguientes endpoints **no los usa ninguna pantalla del frontend** tras PR-H, pero **siguen vivos** porque tienen tests asociados (~29 referencias en `tests/test_api.py`, `tests/test_bulk_contacts.py`, `tests/test_contact_views.py`, `tests/test_entity_views_and_search.py`). Migrar esos tests al stack nuevo es trabajo aparte (Deuda menor).
 
-### `POST /api/contacts/bulk-action`
+| Endpoint | Reemplazo nuevo | Estado |
+|---|---|---|
+| `POST /api/contacts/search` | `POST /api/entities/contact/search` | Inactivo en frontend; vivo en tests. |
+| `POST /api/contacts/search/ids` | `POST /api/entities/contact/search/ids` | Inactivo en frontend; vivo en tests. |
+| `GET/POST/PATCH/DELETE /api/contact-views/*` | `/api/entity-views/contact/*` | CRUD inactivo en frontend; vivo en tests. |
+| `POST /api/contact-views/{id}/save-as-segment` | (mismo) | **ACTIVO** en frontend (`/contacts`). |
+| `POST /api/contact-views/{id}/push-to-brevo-list` | (mismo) | **ACTIVO** en frontend (`/contacts`). |
+| `POST /api/contacts/bulk-action` | (sin reemplazo aún) | **ACTIVO** en frontend (`/contacts`). Migrar cuando aparezca bulk set-based. |
+| `POST /api/contacts/bulk-tag` | (sin reemplazo) | **ACTIVO** en `/admin/tags`. Out of scope. |
 
-- **Sigue vivo** y lo usa la pantalla nueva (`<ContactsBulkBar>`).
-- Bart explícitamente diferió el bulk **set-based** (`UPDATE … WHERE
-  build_entity_filter(tree)` en una sentencia, sin enumerar ids) a
-  un PR posterior. Cuando llegue, este endpoint queda obsoleto.
-- **Plan:** dejar como está hasta el PR de bulk set-based.
+## Plan de retirada futuro (Deuda menor, fuera del sprint)
 
-### `POST /api/contacts/bulk-tag`
+1. Migrar `tests/test_api.py` + `tests/test_bulk_contacts.py` + `tests/test_contact_views.py` para apuntar al stack nuevo `/api/entities/contact/*` + `/api/entity-views/contact/*`.
+2. Mover `save-as-segment` + `push-to-brevo-list` al namespace `/api/entity-views/contact/{id}/…` (cambia la URL pero la pantalla solo necesita un find-replace).
+3. Borrar las funciones legacy de `routes.py` (≈ 400 líneas de los endpoints `/api/contact-views/*` + `/api/contacts/search*`).
+4. Borrar el repositorio `app/repositories/contact_views.py` y sus schemas.
 
-- Usado por `/admin/tags`. **No tocar** — fuera de scope del sprint
-  de filtros.
-
-## Limpieza del frontend (ya hecha en PR-E)
-
-- `BulkAction` TS union: removidos `add_tag` / `remove_tag` (botones
-  muertos en `<ContactsBulkBar>` desde Sprint A). Los tag bulk ops
-  reales se hacen vía `/admin/tags` → `POST /api/contacts/bulk-tag`,
-  no por `<ContactsBulkBar>`.
-
-## Componentes legacy pendientes de borrar en PR-H
-
-Tras PR-E, los siguientes componentes ya no tienen consumidores
-activos:
-
-- `frontend/src/app/components/ContactFiltersBuilder.tsx`
-- `frontend/src/app/components/ContactsBulkBar.tsx` — **EXCEPCIÓN:**
-  PR-E aún lo monta porque el bulk set-based queda para otro PR.
-  Retirar cuando el bulk se migre.
-- `frontend/src/app/components/ContactViewsTabs.tsx`
-- `frontend/src/app/components/ColumnConfigurator.tsx`
-
-Mantener vivos hasta PR-H. Sandbox `/sandbox/entity-table` permanente
-como herramienta de debug.
+Estimación: 1 PR aparte, ~3-4h. Programado cuando alguien tenga ganas (no bloquea ningún flujo).
