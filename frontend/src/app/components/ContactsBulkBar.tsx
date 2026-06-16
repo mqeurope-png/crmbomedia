@@ -1,9 +1,13 @@
 "use client";
 
-import { Tag as TagIcon, UserCheck, X, XCircle } from "lucide-react";
+import { Download, Tag as TagIcon, UserCheck, X, XCircle } from "lucide-react";
 import { useEffect, useState } from "react";
 import { getUsers, type User } from "../lib/api";
-import { bulkContactAction, type BulkAction } from "../lib/bulkApi";
+import {
+  bulkContactAction,
+  bulkExportContactsCsv,
+  type BulkAction,
+} from "../lib/bulkApi";
 import { extractErrorMessage } from "../lib/errors";
 
 type Props = {
@@ -47,6 +51,10 @@ export function ContactsBulkBar({
   // sigue excluido porque no tiene permisos de escritura en absoluto.
   const canAssign = role === "admin" || role === "manager" || role === "user";
   const canDeactivate = role === "admin";
+  // QoL sprint — manager+ pueden exportar CSV de la selección (antes
+  // sólo admin via paths internos). Backend permission alineada en
+  // /api/contacts/bulk-export-csv.
+  const canExport = role === "admin" || role === "manager";
 
   useEffect(() => {
     if (open !== "assign_owner" || users.length > 0) return;
@@ -92,6 +100,26 @@ export function ContactsBulkBar({
     await run("deactivate");
   }
 
+  async function handleExport() {
+    setBusy(true);
+    setError(null);
+    try {
+      const blob = await bulkExportContactsCsv(selectedIds);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `contacts-${new Date().toISOString().slice(0, 10)}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setError(extractErrorMessage(err, "No se pudo exportar el CSV."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div className="bulk-bar" role="region" aria-label="Acciones masivas">
       <strong>
@@ -117,6 +145,17 @@ export function ContactsBulkBar({
         >
           <TagIcon size={11} aria-hidden /> Cambiar estado
         </button>
+        {canExport ? (
+          <button
+            type="button"
+            className="button small secondary"
+            disabled={busy}
+            onClick={handleExport}
+            title="Exportar la selección a CSV"
+          >
+            <Download size={11} aria-hidden /> Exportar CSV
+          </button>
+        ) : null}
         {canDeactivate ? (
           <button
             type="button"

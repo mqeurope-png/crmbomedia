@@ -119,6 +119,17 @@ _ASSIGNMENT_MULTI = (
     "is_not_empty",
 )
 _PRIMARY_REFERENCE = ("eq", "neq", "is_null", "is_not_null")
+# QoL sprint — filtro notes_content. Comparadores de texto sobre el
+# join con `contact_notes.content`. `is_empty` / `is_not_empty`
+# operan sobre el conjunto (contacto SIN notas / con ≥1 nota), no
+# sobre el contenido literal vacío.
+_NOTES_CONTENT = (
+    "contains",
+    "starts_with",
+    "ends_with",
+    "is_empty",
+    "is_not_empty",
+)
 # PR-Ce: los 3 enums (origin_system, commercial_status,
 # marketing_consent) usaban (eq, neq, in, not_in) — sin nullable. Hay
 # casos en producción con esos campos NULL (importados sin estado, sin
@@ -256,6 +267,20 @@ FIELD_SPECS: dict[str, FieldSpec] = {
         default_visible=True,
         grouped_under="Origen",
         source="related_table",
+    ),
+    # QoL sprint. Texto libre en cualquiera de las contact_notes del
+    # contacto (importadas Agile Note1..10 + manuales). Útil para
+    # rescatar leads por palabras clave que el operador anotó hace
+    # tiempo. Compila a EXISTS sobre contact_notes con LIKE.
+    "notes_content": FieldSpec(
+        key="notes_content",
+        label="Notas (texto libre)",
+        type="string",
+        comparators=_NOTES_CONTENT,
+        relation="contact_notes.content",
+        grouped_under="Notas",
+        source="related_table",
+        displayable=False,
     ),
     "origin_account_id": FieldSpec(
         key="origin_account_id",

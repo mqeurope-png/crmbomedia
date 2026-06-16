@@ -6565,3 +6565,19 @@ tr.is-inactive {
   background: #dbeafe;
   border-color: #3b82f6;
 }
+
+/* QoL sprint — pill-select para toggles con filtro de user */
+.pill-select {
+  font-size: 12px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: white;
+  cursor: pointer;
+}
+.email-scope-toggle {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  flex-wrap: wrap;
+}

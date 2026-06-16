@@ -435,6 +435,14 @@ def list_threads(
     since: datetime | None = Query(default=None),
     until: datetime | None = Query(default=None),
     include_snoozed: bool = Query(default=False),
+    # QoL sprint — toggle "Mías ↔ Todo el equipo" del listing /emails.
+    # Pre-QoL: el manager veía TODOS los threads por defecto (overload).
+    # Post-QoL: el manager por defecto ve solo los suyos (`mine`); con
+    # `scope=team` ve los del equipo entero (o de un user concreto via
+    # `team_user_id`). Manager puede LEER otros threads, pero el envío
+    # sigue usando el Gmail integration del propio caller.
+    scope: str = Query(default="mine", pattern="^(mine|team)$"),
+    team_user_id: str | None = Query(default=None),
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     session: Session = Depends(get_session),
@@ -443,8 +451,22 @@ def list_threads(
     stmt = select(EmailThread).options(selectinload(EmailThread.labels))
     if contact_id:
         stmt = stmt.where(EmailThread.contact_id == contact_id)
-    if current_user.role not in (UserRole.ADMIN, UserRole.MANAGER):
-        stmt = stmt.where(EmailThread.initiated_by_user_id == current_user.id)
+    is_privileged = current_user.role in (UserRole.ADMIN, UserRole.MANAGER)
+    if scope == "team":
+        if not is_privileged:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Solo manager+ puede ver emails del equipo.",
+            )
+        if team_user_id:
+            stmt = stmt.where(
+                EmailThread.initiated_by_user_id == team_user_id
+            )
+        # else: no filter → todos los threads del equipo.
+    else:  # scope == "mine" (default)
+        stmt = stmt.where(
+            EmailThread.initiated_by_user_id == current_user.id
+        )
     # State default = INBOX so the legacy list view keeps its
     # narrow scope. The contact-detail panel (which passes
     # `contact_id`) explicitly drops the default so it still shows

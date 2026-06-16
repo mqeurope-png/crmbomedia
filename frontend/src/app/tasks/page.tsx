@@ -24,7 +24,7 @@ import {
   type Task,
   type TaskBuckets,
 } from "../lib/tasksApi";
-import { getCurrentUser } from "../lib/api";
+import { getCurrentUser, getUsers, type User } from "../lib/api";
 
 function formatDateTime(value: string | null | undefined): string {
   if (!value) return "—";
@@ -65,15 +65,42 @@ export default function TasksPage() {
   // section appears at the bottom with the last 50 done tasks.
   const [showCompleted, setShowCompleted] = useState(false);
   const [mode, setMode] = useState<"list" | "calendar">("list");
+  // QoL sprint — toggle "Mías ↔ Todo el equipo" (manager+). Default
+  // `mine`; al cambiar a `team` aparece dropdown opcional para filtrar
+  // a un comercial concreto.
+  const [scope, setScope] = useState<"mine" | "team">("mine");
+  const [teamUserId, setTeamUserId] = useState<string>("");
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [teamUsers, setTeamUsers] = useState<User[]>([]);
+
+  const canSeeTeam =
+    currentUser?.role === "admin" || currentUser?.role === "manager";
+
+  useEffect(() => {
+    getCurrentUser().then(setCurrentUser).catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    if (!canSeeTeam) return;
+    getUsers({ limit: 100 })
+      .then((rows) => setTeamUsers(rows.filter((u) => u.is_active)))
+      .catch(() => setTeamUsers([]));
+  }, [canSeeTeam]);
 
   const reload = useCallback(async () => {
     try {
-      const data = await getMyBuckets();
+      const data = await getMyBuckets({
+        scope,
+        userId:
+          scope === "team" && teamUserId ? teamUserId : undefined,
+      });
       setBuckets(data);
       if (showCompleted) {
         const me = await getCurrentUser();
+        const completedUserId =
+          scope === "team" ? teamUserId || undefined : me.id;
         const page = await listTasks({
-          assignedUserId: me.id,
+          assignedUserId: completedUserId,
           status: "done",
           limit: 50,
         });
@@ -85,7 +112,7 @@ export default function TasksPage() {
     } catch (err) {
       setError(extractErrorMessage(err, "No se pudieron cargar las tareas."));
     }
-  }, [showCompleted]);
+  }, [showCompleted, scope, teamUserId]);
 
   useEffect(() => {
     reload().finally(() => setLoading(false));
@@ -118,6 +145,46 @@ export default function TasksPage() {
         description="Tus tareas pendientes agrupadas por urgencia."
         actions={
           <>
+            {canSeeTeam ? (
+              <div
+                className="task-mode-toggle"
+                role="group"
+                aria-label="Alcance de las tareas"
+              >
+                <button
+                  type="button"
+                  className={`pill-toggle ${scope === "mine" ? "is-active" : ""}`}
+                  onClick={() => {
+                    setScope("mine");
+                    setTeamUserId("");
+                  }}
+                >
+                  Mías
+                </button>
+                <button
+                  type="button"
+                  className={`pill-toggle ${scope === "team" ? "is-active" : ""}`}
+                  onClick={() => setScope("team")}
+                >
+                  Todo el equipo
+                </button>
+              </div>
+            ) : null}
+            {canSeeTeam && scope === "team" ? (
+              <select
+                className="pill-select"
+                value={teamUserId}
+                onChange={(e) => setTeamUserId(e.target.value)}
+                aria-label="Filtrar por comercial"
+              >
+                <option value="">Todos los comerciales</option>
+                {teamUsers.map((u) => (
+                  <option key={u.id} value={u.id}>
+                    {u.full_name || u.email}
+                  </option>
+                ))}
+              </select>
+            ) : null}
             <div className="task-mode-toggle" role="group" aria-label="Modo de vista">
               <button
                 type="button"
