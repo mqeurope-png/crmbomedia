@@ -1,435 +1,376 @@
 "use client";
 
+/**
+ * Sprint Filtros & Listas — PR-E. `/contacts` rehecha sobre los
+ * componentes genéricos (PR-A…PR-Cg):
+ *
+ *  - `<EntityTable>` (TanStack headless) sustituye el `<table>` inline
+ *    de 200+ líneas que el legacy tenía.
+ *  - `<EntityFilterBuilder>` (react-querybuilder advanced) sustituye al
+ *    `<ContactFiltersBuilder>` casero de 2 niveles AND/OR. Soporta
+ *    NOT + anidamiento arbitrario y los 4 pickers nuevos
+ *    (User/Company/Segment/BrevoList) que PR-Cd…Cg trajeron.
+ *  - `<EntityViewsTabs>` + `/api/entity-views/contact` sustituyen al
+ *    `<ContactViewsTabs>` + `/api/contact-views`. El backend lee la
+ *    misma tabla (`contact_views` con `entity_type='contact'`), así que
+ *    las 4 vistas guardadas existentes ("lead score alto", "test",
+ *    "xav", "NL") se cargan idénticas.
+ *  - `<EntityColumnConfigurator>` (heredado por EntityTable) sustituye
+ *    al `<ColumnConfigurator>` legacy.
+ *
+ * Funcionalidad preservada:
+ *  - búsqueda libre `q` (traducida a `OR(name/email/phone contains q)`
+ *    contra el motor genérico, ver `lib/contactsRules.ts`).
+ *  - toggle "Solo asignados a mí" (traducido a
+ *    `owner_user_id == current_user.id`).
+ *  - sort por cabecera + select dropdown (1 columna).
+ *  - paginación offset/limit con PAGE_SIZE=25.
+ *  - vistas guardadas (crear, editar inline, duplicar, set-default,
+ *    borrar, dirty indicator).
+ *  - acciones de vista: guardar-como-segmento + push a lista Brevo
+ *    (legacy `/api/contact-views/{id}/...` que comparten la misma
+ *    tabla → siguen funcionando sobre views entity-typed 'contact').
+ *  - bulk actions (`<ContactsBulkBar>` legacy) — el bulk
+ *    set-based viene en PR posterior.
+ *  - "seleccionar los N filtrados" via
+ *    `/api/entities/contact/search/ids` (la versión nueva que aplica
+ *    `build_entity_filter` + el `segment_resolver` inyectado por PR-Cf).
+ *  - click en fila → `/contacts/[id]`.
+ *  - URL state (view_id, rules, q, sort, cols) — `contactsUrlState`.
+ *  - back-compat con vistas legacy (flat filters → rules tree via
+ *    `legacyFiltersToRulesTree`).
+ *
+ * Endpoints LEGACY no migrados (siguen sirviendo a otras pantallas;
+ * limpieza en PR-H):
+ *  - `POST /api/contacts/search` y `/search/ids` — Brevo sync targets,
+ *    integrations module.
+ *  - `GET /api/contact-views` y CRUD — back-compat URL.
+ *  - `POST /api/contact-views/{id}/save-as-segment` — usado aquí
+ *    porque comparte tabla con `entity_views`.
+ *  - `POST /api/contact-views/{id}/push-to-brevo-list` — idem.
+ *  - `POST /api/contacts/bulk-action` — usado por `<ContactsBulkBar>`.
+ */
 import { History, ListPlus, RotateCcw, Save } from "lucide-react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ColumnConfigurator } from "../components/ColumnConfigurator";
-import { ContactFiltersBuilder } from "../components/ContactFiltersBuilder";
 import { ContactsBulkBar } from "../components/ContactsBulkBar";
-import {
-  ContactViewEditorModal,
-  type ContactViewDraft,
-} from "../components/ContactViewEditorModal";
-import { ContactViewsTabs } from "../components/ContactViewsTabs";
 import { ErrorState } from "../components/ErrorState";
 import { OriginChipsSummary } from "../components/OriginChips";
 import { PageHeader } from "../components/PageHeader";
 import { PushViewToBrevoModal } from "../components/PushViewToBrevoModal";
-import { TagChips } from "../components/TagChips";
+import { EntityFilterBuilder } from "../components/entity/EntityFilterBuilder";
 import {
-  createSavedView,
-  deleteSavedView,
-  duplicateSavedView,
+  EntityTable,
+  type SortState,
+} from "../components/entity/EntityTable";
+import { EntityViewsTabs } from "../components/entity/EntityViewsTabs";
+import {
   getCurrentUser,
-  listSavedViews,
+  getUsers,
   pushViewToBrevoList,
   saveViewAsSegment,
-  searchContactIds,
-  searchContacts,
-  setDefaultSavedView,
-  updateSavedView,
-  type Contact,
-  type ContactListPage,
-  type SavedView,
   type User,
 } from "../lib/api";
+import { buildContactQuery } from "../lib/contactsRules";
 import {
-  ALL_COLUMN_KEYS,
-  COLUMN_SORT_KEY,
-  DEFAULT_VISIBLE_COLUMNS,
-  findColumn,
-  type ContactColumnKey,
-} from "../lib/contactColumns";
-import { legacyFiltersToRulesTree } from "../lib/contactRulesMigration";
-import { pruneRulesTree } from "../lib/segmentTranslator";
+  loadColumnConfig,
+  saveColumnConfig,
+} from "../lib/entityColumnsStorage";
 import {
-  readUrlState,
-  serializeUrlState,
-} from "../lib/contactsUrlState";
+  getEntityFilterSchema,
+  searchEntity,
+  searchEntityIds,
+  type EntityFilterSchema,
+  type FieldDescriptor,
+} from "../lib/entitySchema";
 import {
-  loadLocalColumns,
-  saveLocalColumns,
-} from "../lib/contactColumnsStorage";
+  createEntityView,
+  deleteEntityView,
+  duplicateEntityView,
+  listEntityViews,
+  setDefaultEntityView,
+  updateEntityView,
+  type EntityView,
+} from "../lib/entityViewsApi";
 import { extractErrorMessage } from "../lib/errors";
+import { pruneRulesTree } from "../lib/segmentTranslator";
 
 const PAGE_SIZE = 25;
 const EMPTY_RULES: Record<string, unknown> = {};
 
-function fullName(contact: Contact): string {
-  return [contact.first_name, contact.last_name].filter(Boolean).join(" ").trim();
-}
-
-function formatDate(value: string | null | undefined): string {
-  if (!value) return "—";
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return "—";
-  return parsed.toLocaleDateString("es-ES", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-  });
-}
-
-function renderCell(key: ContactColumnKey, contact: Contact): React.ReactNode {
-  switch (key) {
-    case "name":
-      return (
-        <Link href={`/contacts/${contact.id}`}>
-          {fullName(contact) || "(Sin nombre)"}
-        </Link>
-      );
-    case "email":
-      return contact.email;
-    case "phone":
-      return contact.phone ?? "—";
-    case "tags":
-      return contact.tag_objects?.length ? (
-        <TagChips tags={contact.tag_objects} size="dense" />
-      ) : (
-        "—"
-      );
-    case "origin":
-      return contact.external_references_summary?.length ? (
-        <OriginChipsSummary summary={contact.external_references_summary} />
-      ) : (
-        contact.origin ?? "—"
-      );
-    case "commercial_status":
-      return contact.commercial_status;
-    case "marketing_consent":
-      return (
-        <span className={`status status-${contact.marketing_consent}`}>
-          {contact.marketing_consent}
-        </span>
-      );
-    case "lead_score":
-      return contact.lead_score ?? "—";
-    case "is_active":
-      return contact.is_active ? "Sí" : "No";
-    case "created_at":
-      return formatDate(contact.created_at);
-    case "updated_at":
-      return formatDate(contact.updated_at);
-    case "created_at_external":
-      return formatDate(contact.created_at_external);
-    case "updated_at_external":
-      return formatDate(contact.updated_at_external);
-    case "external_data_freshness":
-      return contact.external_data_freshness ? (
-        <span
-          className={`freshness-badge freshness-${contact.external_data_freshness}`}
-        >
-          {contact.external_data_freshness}
-        </span>
-      ) : (
-        "—"
-      );
-    case "last_external_refresh_at":
-      return formatDate(contact.last_external_refresh_at);
-  }
-}
-
-function normaliseOrder(order: string[] | undefined): ContactColumnKey[] {
-  if (!order) return [...ALL_COLUMN_KEYS];
-  const valid = order.filter((k): k is ContactColumnKey =>
-    ALL_COLUMN_KEYS.includes(k as ContactColumnKey),
-  );
-  const remaining = ALL_COLUMN_KEYS.filter((k) => !valid.includes(k));
-  return [...valid, ...remaining];
-}
-
-function normaliseVisible(visible: string[] | undefined): ContactColumnKey[] {
-  if (!visible) return [...DEFAULT_VISIBLE_COLUMNS];
-  const valid = visible.filter((k): k is ContactColumnKey =>
-    ALL_COLUMN_KEYS.includes(k as ContactColumnKey),
-  );
-  return valid.length ? valid : [...DEFAULT_VISIBLE_COLUMNS];
-}
-
-/** The view's rules tree as we keep it in memory — pulled from the
- * new `filters.rules_json` field when present, falling back to a
- * translation of the legacy flat dropdown filters so old views still
- * load into the query builder. */
-function viewToRulesTree(view: SavedView): Record<string, unknown> {
-  return legacyFiltersToRulesTree(view.filters);
-}
-
-function rulesEqual(
-  a: Record<string, unknown>,
-  b: Record<string, unknown>,
-): boolean {
-  // Normalise both sides through the same prune the builder applies on
-  // output. Views saved before the prune landed store the raw tree
-  // (e.g. a single-rule AND wrapper); without this the dirty badge
-  // would light up the moment the builder re-emits the semantically
-  // identical pruned shape.
-  return (
-    JSON.stringify(pruneRulesTree(a ?? {}, [])) ===
-    JSON.stringify(pruneRulesTree(b ?? {}, []))
-  );
-}
+type ContactRow = Record<string, unknown>;
 
 export default function ContactsListPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
-  const [views, setViews] = useState<SavedView[]>([]);
-  const [activeView, setActiveView] = useState<SavedView | null>(null);
+  // Carga inicial
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [userMap, setUserMap] = useState<Map<string, User>>(new Map());
+  const [schema, setSchema] = useState<EntityFilterSchema | null>(null);
+  const [views, setViews] = useState<EntityView[]>([]);
+  const firstLoadRef = useRef(true);
+
+  // Filtros / búsqueda
   const [rules, setRules] = useState<Record<string, unknown>>(EMPTY_RULES);
   const [q, setQ] = useState("");
   const [searchInput, setSearchInput] = useState("");
-  const [sortBy, setSortBy] = useState("created_at");
-  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
-  const [offset, setOffset] = useState(0);
-  const [columnOrder, setColumnOrder] = useState<ContactColumnKey[]>(() =>
-    normaliseOrder(loadLocalColumns()?.order),
-  );
-  const [visibleColumns, setVisibleColumns] = useState<ContactColumnKey[]>(() =>
-    normaliseVisible(loadLocalColumns()?.visible),
-  );
+  const [assignedToMe, setAssignedToMe] = useState(false);
+  const [sort, setSort] = useState<SortState | null>({
+    field: "created_at",
+    direction: "desc",
+  });
 
-  const [page, setPage] = useState<ContactListPage | null>(null);
+  // Paginación + selección + view activa
+  const [offset, setOffset] = useState(0);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [activeView, setActiveView] = useState<EntityView | null>(null);
+  const [visibleColumns, setVisibleColumns] = useState<string[]>([]);
+  // Re-mount key del builder para que cargar una vista no remontee
+  // el input + pierda foco (decisión §3.8 / PR-Cc).
+  const [builderKey, setBuilderKey] = useState(0);
+
+  // Resultados
+  const [rows, setRows] = useState<ContactRow[]>([]);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
-  // Bulk-action selection. `selected` is a Set of contact ids for
-  // O(1) membership checks; cleared whenever the underlying page
-  // changes so stale rows can't be acted on.
-  const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [currentUser, setCurrentUser] = useState<User | null>(null);
-  const [assignedToMe, setAssignedToMe] = useState(false);
+
+  // UI de acciones / modales
+  const [actionsOpen, setActionsOpen] = useState(false);
   const [editorMode, setEditorMode] = useState<
-    { kind: "create" } | { kind: "edit"; view: SavedView } | null
+    | { kind: "create" }
+    | { kind: "edit"; view: EntityView }
+    | null
   >(null);
-  const [showBrevoModal, setShowBrevoModal] = useState(false);
-  const [actionsMenu, setActionsMenu] = useState(false);
-  // When the user picks "Enviar a lista Brevo" with no active view we
-  // auto-create a transient one for them (the push endpoint needs a
-  // view id). This flag tells the post-save hook to chain straight
-  // into the Brevo modal instead of dropping back to the list.
   const [pushAfterSave, setPushAfterSave] = useState(false);
+  const [showBrevoModal, setShowBrevoModal] = useState(false);
 
-  const firstLoadRef = useRef(true);
+  // --- Loaders ---------------------------------------------------
 
-  // ---------------------------------------------------------------------------
-  // Views + initial state (URL → view_id → default view → blank)
-  // ---------------------------------------------------------------------------
-
-  const loadViews = useCallback(async () => {
-    try {
-      const list = await listSavedViews();
-      setViews(list);
-      return list;
-    } catch (err) {
-      setError(extractErrorMessage(err, "No se pudieron cargar las vistas."));
-      return [];
-    }
+  const reloadViews = useCallback(async () => {
+    const list = await listEntityViews("contact");
+    setViews(list);
+    return list;
   }, []);
 
-  const applyView = useCallback((view: SavedView) => {
+  const applyView = useCallback((view: EntityView) => {
     setActiveView(view);
-    setRules(viewToRulesTree(view));
-    setColumnOrder(normaliseOrder(view.columns?.order));
-    setVisibleColumns(normaliseVisible(view.columns?.visible));
-    setQ(view.filters.q ?? "");
-    setSearchInput(view.filters.q ?? "");
-    setSortBy((view.sort?.sort_by as string) ?? "created_at");
-    setSortDir((view.sort?.sort_dir as "asc" | "desc") ?? "desc");
+    const filters = view.filters as Record<string, unknown>;
+    const treeFromView =
+      (filters?.rules_json as Record<string, unknown> | undefined) ?? {};
+    setRules(treeFromView);
+    setQ((filters?.q as string) ?? "");
+    setSearchInput((filters?.q as string) ?? "");
+    if (view.sort?.sort_by) {
+      setSort({
+        field: view.sort.sort_by,
+        direction: view.sort.sort_dir === "asc" ? "asc" : "desc",
+      });
+    } else {
+      setSort({ field: "created_at", direction: "desc" });
+    }
+    if (view.columns?.visible && view.columns.visible.length > 0) {
+      setVisibleColumns(view.columns.visible);
+    }
     setOffset(0);
+    setBuilderKey((k) => k + 1);
   }, []);
 
+  // Carga única: usuario, schema, vistas, lista de users para el
+  // mapa de owner → full_name en la columna "Propietario".
   useEffect(() => {
-    getCurrentUser()
-      .then((u) => {
-        setCurrentUser(u);
-        // Sales user → default to "Solo asignados a mí" so they
-        // don't land on the whole org list and have to filter
-        // every session.
-        if (u.role === "user") setAssignedToMe(true);
-      })
-      .catch(() => setCurrentUser(null));
-  }, []);
+    let cancelled = false;
+    (async () => {
+      try {
+        const [me, sch, viewList, allUsers] = await Promise.all([
+          getCurrentUser().catch(() => null),
+          getEntityFilterSchema("contact"),
+          listEntityViews("contact").catch(() => [] as EntityView[]),
+          getUsers({ limit: 100 }).catch(() => [] as User[]),
+        ]);
+        if (cancelled) return;
+        setCurrentUser(me);
+        setSchema(sch);
+        setViews(viewList);
+        setUserMap(new Map(allUsers.map((u) => [u.id, u])));
+        // Sales → solo míos por defecto.
+        if (me?.role === "user") setAssignedToMe(true);
 
-  useEffect(() => {
-    loadViews().then((list) => {
-      if (!firstLoadRef.current) return;
-      firstLoadRef.current = false;
-      const url = readUrlState(new URLSearchParams(searchParams.toString()));
-      if (url.viewId) {
-        const view = list.find((v) => v.id === url.viewId);
-        if (view) {
-          applyView(view);
-          if (url.q) {
-            setQ(url.q);
-            setSearchInput(url.q);
+        // Hidrata estado desde URL si la tiene, si no carga la vista
+        // por defecto (si hay una).
+        if (firstLoadRef.current) {
+          firstLoadRef.current = false;
+          const urlState = readUrlState(
+            new URLSearchParams(searchParams.toString()),
+          );
+          if (urlState.viewId) {
+            const view = viewList.find((v) => v.id === urlState.viewId);
+            if (view) {
+              applyView(view);
+              if (urlState.q) {
+                setQ(urlState.q);
+                setSearchInput(urlState.q);
+              }
+              if (urlState.sortBy)
+                setSort({
+                  field: urlState.sortBy,
+                  direction: urlState.sortDir ?? "desc",
+                });
+              return;
+            }
           }
-          if (url.sortBy) setSortBy(url.sortBy);
-          if (url.sortDir) setSortDir(url.sortDir);
-          if (url.columns) setVisibleColumns(normaliseVisible(url.columns));
-          return;
+          if (urlState.rules) {
+            setRules(urlState.rules);
+            setQ(urlState.q ?? "");
+            setSearchInput(urlState.q ?? "");
+            if (urlState.sortBy)
+              setSort({
+                field: urlState.sortBy,
+                direction: urlState.sortDir ?? "desc",
+              });
+            return;
+          }
+          const def = viewList.find((v) => v.is_default);
+          if (def) {
+            applyView(def);
+            return;
+          }
+          // Sin vista activa → columnas default del schema o
+          // localStorage del usuario.
+          const defaults = sch.fields
+            .filter((f) => f.displayable && f.default_visible)
+            .map((f) => f.key);
+          const stored = loadColumnConfig("contact", defaults);
+          setVisibleColumns(stored.visible);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setError(
+            extractErrorMessage(
+              err,
+              "No se pudo cargar el esquema de contactos.",
+            ),
+          );
         }
       }
-      if (url.rules) {
-        setRules(url.rules);
-        setQ(url.q);
-        setSearchInput(url.q);
-        setSortBy(url.sortBy);
-        setSortDir(url.sortDir);
-        if (url.columns) setVisibleColumns(normaliseVisible(url.columns));
-        return;
-      }
-      const def = list.find((v) => v.is_default);
-      if (def) applyView(def);
-    });
+    })();
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ---------------------------------------------------------------------------
-  // URL sync — push state to history so back-navigation from a contact
-  // detail page lands on the same filter, sort and columns.
-  // ---------------------------------------------------------------------------
+  // --- URL sync --------------------------------------------------
 
   useEffect(() => {
+    if (firstLoadRef.current) return;
     const params = serializeUrlState({
       viewId: activeView?.id ?? null,
       rules: activeView ? null : rules,
       q,
-      sortBy,
-      sortDir,
+      sortBy: sort?.field ?? "created_at",
+      sortDir: sort?.direction ?? "desc",
       columns: visibleColumns,
     });
     const next = params ? `/contacts?${params}` : "/contacts";
     router.replace(next, { scroll: false });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeView?.id, rules, q, sortBy, sortDir, visibleColumns]);
+  }, [activeView, rules, q, sort, visibleColumns]);
 
-  // ---------------------------------------------------------------------------
-  // Search box debounce
-  // ---------------------------------------------------------------------------
+  // --- Debounce búsqueda libre -----------------------------------
 
   useEffect(() => {
-    const handle = window.setTimeout(() => {
-      setQ(searchInput.trim());
-      setOffset(0);
-    }, 250);
-    return () => window.clearTimeout(handle);
+    const handle = setTimeout(() => setQ(searchInput.trim()), 250);
+    return () => clearTimeout(handle);
   }, [searchInput]);
 
-  // ---------------------------------------------------------------------------
-  // Fetch contacts (POST /api/contacts/search)
-  // ---------------------------------------------------------------------------
+  // --- Fetch -----------------------------------------------------
+
+  const fetchKey = useMemo(
+    () =>
+      JSON.stringify({
+        rules,
+        q,
+        assignedToMe,
+        owner: currentUser?.id ?? null,
+        sort,
+        offset,
+      }),
+    [rules, q, assignedToMe, currentUser, sort, offset],
+  );
 
   useEffect(() => {
+    if (!schema) return;
     let cancelled = false;
-    setIsLoading(true);
-    searchContacts({
-      rules_json: Object.keys(rules).length > 0 ? rules : null,
-      q: q || null,
-      sort_by: sortBy,
-      sort_dir: sortDir,
+    setLoading(true);
+    const liteSpecs = schema.fields.map((f) => ({
+      key: f.key,
+      type: f.type,
+    }));
+    const effective = buildContactQuery({
+      rules,
+      q,
+      assignedToMe,
+      currentUserId: currentUser?.id ?? null,
+    });
+    const pruned = effective
+      ? pruneRulesTree(effective as Record<string, unknown>, liteSpecs)
+      : {};
+    searchEntity<ContactRow>("contact", {
+      rules_json: Object.keys(pruned).length ? pruned : null,
+      sort_by: sort?.field ?? "created_at",
+      sort_dir: sort?.direction ?? "desc",
       limit: PAGE_SIZE,
       offset,
-      assigned_to_me: assignedToMe,
     })
-      .then((result) => {
-        if (!cancelled) {
-          setPage(result);
-          // Drop selections for rows that no longer match the page.
-          setSelected((prev) => {
-            const visible = new Set(result.items.map((r) => r.id));
-            const next = new Set<string>();
-            prev.forEach((id) => {
-              if (visible.has(id)) next.add(id);
-            });
-            return next;
+      .then((page) => {
+        if (cancelled) return;
+        setRows(page.items);
+        setTotal(page.total);
+        // Drop selecciones que ya no estén visibles.
+        const visible = new Set(page.items.map((r) => String(r.id)));
+        setSelected((prev) => {
+          const next = new Set<string>();
+          prev.forEach((id) => {
+            if (visible.has(id)) next.add(id);
           });
-          setError(null);
-        }
+          return next;
+        });
+        setError(null);
       })
       .catch((err) => {
-        if (!cancelled) {
-          setError(
-            extractErrorMessage(err, "No se pudieron cargar los contactos."),
-          );
-        }
+        if (cancelled) return;
+        setError(
+          extractErrorMessage(err, "No se pudieron cargar los contactos."),
+        );
       })
       .finally(() => {
-        if (!cancelled) setIsLoading(false);
+        if (!cancelled) setLoading(false);
       });
     return () => {
       cancelled = true;
     };
-  }, [rules, q, sortBy, sortDir, offset, assignedToMe]);
+    // fetchKey absorbe todas las deps relevantes; lo bypasea schema
+    // que apunta al mismo array de campos cargado una vez.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fetchKey, schema]);
 
-  const totalPages = useMemo(() => {
-    if (!page || page.limit === 0) return 1;
-    return Math.max(1, Math.ceil(page.total / page.limit));
-  }, [page]);
-  const currentPage = useMemo(() => {
-    if (!page || page.limit === 0) return 1;
-    return Math.floor(page.offset / page.limit) + 1;
-  }, [page]);
+  // --- View CRUD -------------------------------------------------
 
-  const isDirty = useMemo(() => {
-    if (!activeView) return Object.keys(rules).length > 0;
-    return !rulesEqual(rules, viewToRulesTree(activeView));
-  }, [activeView, rules]);
-
-  function goToPage(nextPage: number) {
-    if (!page) return;
-    const clamped = Math.max(1, Math.min(totalPages, nextPage));
-    setOffset((clamped - 1) * PAGE_SIZE);
-  }
-
-  // ---------------------------------------------------------------------------
-  // View actions
-  // ---------------------------------------------------------------------------
-
-  function buildPayloadFromState() {
+  function buildViewPayload() {
     return {
       filters: {
         q: q || null,
         rules_json: Object.keys(rules).length > 0 ? rules : null,
       },
-      columns: {
-        order: columnOrder,
-        visible: visibleColumns,
-        widths: {},
-      },
-      sort: { sort_by: sortBy, sort_dir: sortDir },
+      columns: { visible: visibleColumns, order: visibleColumns, widths: {} },
+      sort: sort
+        ? { sort_by: sort.field, sort_dir: sort.direction }
+        : { sort_by: "created_at", sort_dir: "desc" as const },
     };
-  }
-
-  async function handleSaveView(draft: ContactViewDraft) {
-    const payload = buildPayloadFromState();
-    if (editorMode?.kind === "edit") {
-      const updated = await updateSavedView(editorMode.view.id, {
-        name: draft.name,
-        description: draft.description || null,
-        is_shared: draft.isShared,
-        ...payload,
-      });
-      setActiveView(updated);
-    } else {
-      const created = await createSavedView({
-        name: draft.name,
-        description: draft.description || null,
-        is_shared: draft.isShared,
-        ...payload,
-      });
-      setActiveView(created);
-    }
-    await loadViews();
-    setEditorMode(null);
-    // Chained flow: the operator clicked "Enviar a lista Brevo" before
-    // any view existed, we forced them through the save modal, and
-    // now we drop them straight onto the Brevo push modal so they
-    // don't lose the action click.
-    if (pushAfterSave) {
-      setPushAfterSave(false);
-      setShowBrevoModal(true);
-    }
   }
 
   async function handleSaveExistingView() {
@@ -438,47 +379,64 @@ export default function ContactsListPage() {
       return;
     }
     try {
-      const updated = await updateSavedView(activeView.id, buildPayloadFromState());
+      const updated = await updateEntityView(
+        "contact",
+        activeView.id,
+        buildViewPayload(),
+      );
       setActiveView(updated);
-      await loadViews();
+      await reloadViews();
       setMessage("Vista guardada.");
     } catch (err) {
       setError(extractErrorMessage(err, "No se pudo guardar la vista."));
     }
   }
 
+  async function handleSaveView(draft: {
+    name: string;
+    description: string;
+    isShared: boolean;
+  }) {
+    const payload = {
+      name: draft.name,
+      description: draft.description || null,
+      is_shared: draft.isShared,
+      ...buildViewPayload(),
+    };
+    if (editorMode?.kind === "edit") {
+      const updated = await updateEntityView(
+        "contact",
+        editorMode.view.id,
+        payload,
+      );
+      setActiveView(updated);
+    } else {
+      const created = await createEntityView("contact", payload);
+      setActiveView(created);
+    }
+    await reloadViews();
+    setEditorMode(null);
+    if (pushAfterSave) {
+      setPushAfterSave(false);
+      setShowBrevoModal(true);
+    }
+  }
+
   function handleRevert() {
     if (!activeView) {
       setRules(EMPTY_RULES);
-      setSortBy("created_at");
-      setSortDir("desc");
       setQ("");
       setSearchInput("");
+      setSort({ field: "created_at", direction: "desc" });
+      setBuilderKey((k) => k + 1);
       return;
     }
     applyView(activeView);
   }
 
-  /** Click cycles asc → desc → default (created_at desc). Clicking a
-   *  different column starts at asc on that one. */
-  function handleHeaderSort(sortKey: string) {
-    if (sortKey !== sortBy) {
-      setSortBy(sortKey);
-      setSortDir("asc");
-    } else if (sortDir === "asc") {
-      setSortDir("desc");
-    } else {
-      setSortBy("created_at");
-      setSortDir("desc");
-    }
-    setOffset(0);
-  }
-
   async function handleSaveAsSegment() {
     if (!activeView) {
-      setError(
-        "Guarda la consulta como vista antes de promoverla a segmento.",
-      );
+      setError("Guarda la consulta como vista antes de promoverla a segmento.");
       return;
     }
     const name = window.prompt(
@@ -504,31 +462,29 @@ export default function ContactsListPage() {
     if (!activeView) return;
     const result = await pushViewToBrevoList(activeView.id, payload);
     setMessage(
-      `${result.contacts_to_push} contacto${
-        result.contacts_to_push === 1 ? "" : "s"
-      } en cola para sincronizar a Brevo (lista #${result.brevo_list_id}).`,
+      `${result.contacts_to_push} contacto${result.contacts_to_push === 1 ? "" : "s"} en cola para sincronizar a Brevo (lista #${result.brevo_list_id}).`,
     );
     setShowBrevoModal(false);
   }
 
-  async function handleDuplicateView(view: SavedView) {
+  async function handleDuplicateView(view: EntityView) {
     try {
-      const copy = await duplicateSavedView(view.id);
-      await loadViews();
+      const copy = await duplicateEntityView("contact", view.id);
+      await reloadViews();
       applyView(copy);
     } catch (err) {
       setError(extractErrorMessage(err, "No se pudo duplicar la vista."));
     }
   }
 
-  async function handleSetDefault(view: SavedView) {
+  async function handleSetDefault(view: EntityView) {
     try {
       if (view.is_default) {
-        await updateSavedView(view.id, { is_default: false });
+        await updateEntityView("contact", view.id, { is_default: false });
       } else {
-        await setDefaultSavedView(view.id);
+        await setDefaultEntityView("contact", view.id);
       }
-      const list = await loadViews();
+      const list = await reloadViews();
       const refreshed = list.find((v) => v.id === view.id);
       if (refreshed && activeView?.id === view.id) setActiveView(refreshed);
     } catch (err) {
@@ -536,30 +492,143 @@ export default function ContactsListPage() {
     }
   }
 
-  async function handleDeleteView(view: SavedView) {
+  async function handleDeleteView(view: EntityView) {
     if (!window.confirm(`¿Borrar la vista "${view.name}"?`)) return;
     try {
-      await deleteSavedView(view.id);
+      await deleteEntityView("contact", view.id);
       if (activeView?.id === view.id) {
         setActiveView(null);
         setRules(EMPTY_RULES);
+        setBuilderKey((k) => k + 1);
       }
-      await loadViews();
+      await reloadViews();
     } catch (err) {
       setError(extractErrorMessage(err, "No se pudo borrar la vista."));
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // Render
-  // ---------------------------------------------------------------------------
+  // --- Columnas --------------------------------------------------
+
+  function handleVisibleColumnsChange(next: string[]) {
+    setVisibleColumns(next);
+    if (activeView) {
+      updateEntityView("contact", activeView.id, {
+        columns: { visible: next, order: next, widths: {} },
+      }).catch((err) =>
+        setError(extractErrorMessage(err, "No se pudo guardar la vista.")),
+      );
+    } else {
+      saveColumnConfig("contact", { visible: next });
+    }
+  }
+
+  // --- Selección + bulk ------------------------------------------
+
+  function refireFetch() {
+    // Bump identidad de rules para forzar re-fetch tras un bulk
+    // action (mismo truco que el legacy usaba).
+    setRules((r) => ({ ...r }));
+  }
+
+  async function handleSelectAllFiltered() {
+    try {
+      const liteSpecs = schema!.fields.map((f) => ({
+        key: f.key,
+        type: f.type,
+      }));
+      const effective = buildContactQuery({
+        rules,
+        q,
+        assignedToMe,
+        currentUserId: currentUser?.id ?? null,
+      });
+      const pruned = effective
+        ? pruneRulesTree(effective as Record<string, unknown>, liteSpecs)
+        : {};
+      const result = await searchEntityIds("contact", {
+        rules_json: Object.keys(pruned).length ? pruned : null,
+      });
+      setSelected(new Set(result.ids));
+      if (result.truncated) {
+        setError(
+          `Solo se pudieron seleccionar los primeros ${result.max_ids}. Filtra más para abarcar todos.`,
+        );
+      }
+    } catch (err) {
+      setError(
+        extractErrorMessage(
+          err,
+          "No se pudo expandir la selección al filtro completo.",
+        ),
+      );
+    }
+  }
+
+  // --- Render ----------------------------------------------------
+
+  const renderCell = useCallback(
+    (field: FieldDescriptor, row: ContactRow) => {
+      if (field.key === "name") {
+        const name = String(row.name ?? "").trim();
+        const email = String(row.email ?? "");
+        return (
+          <strong className="contact-name-cell">
+            {name || email || "—"}
+          </strong>
+        );
+      }
+      if (field.key === "owner_user_id") {
+        const id = row.owner_user_id ? String(row.owner_user_id) : "";
+        const user = userMap.get(id);
+        if (!user) return <span className="muted">—</span>;
+        return <span>{user.full_name}</span>;
+      }
+      if (field.key === "origin" || field.key === "origin_system") {
+        const origin = String(row.origin ?? "");
+        if (!origin) return <span className="muted">—</span>;
+        return (
+          <OriginChipsSummary
+            summary={[{ system: origin, account_id: "" }]}
+          />
+        );
+      }
+      // El resto cae al defaultRender genérico (tag-multi, date,
+      // bool, string, etc).
+      return undefined;
+    },
+    [userMap],
+  );
+
+  const isDirty = useMemo(() => {
+    if (!activeView) return Object.keys(rules).length > 0 || q.length > 0;
+    const filters = activeView.filters as Record<string, unknown>;
+    const savedTree =
+      (filters?.rules_json as Record<string, unknown> | undefined) ?? {};
+    const savedQ = (filters?.q as string) ?? "";
+    return (
+      JSON.stringify(savedTree) !== JSON.stringify(rules) || savedQ !== q
+    );
+  }, [activeView, rules, q]);
+
+  if (!schema) {
+    return (
+      <main className="shell shell-wide">
+        <PageHeader title="Contactos" eyebrow="Contactos" />
+        {error ? (
+          <ErrorState title="Error" message={error} />
+        ) : (
+          <p>Cargando…</p>
+        )}
+      </main>
+    );
+  }
 
   return (
     <main className="shell shell-wide">
       <PageHeader
         title="Lista de contactos"
         eyebrow="Contactos"
-        description="Filtros AND/OR estilo Brevo. Guarda combinaciones como vistas o promociónalas a segmentos / listas de Brevo."
+        description="Filtros AND/OR/NOT estilo Brevo. Guarda combinaciones como vistas o promociónalas a segmentos / listas de Brevo."
         actions={
           <Link href="/contacts/new" className="button small">
             + Crear contacto
@@ -567,7 +636,7 @@ export default function ContactsListPage() {
         }
       />
 
-      <ContactViewsTabs
+      <EntityViewsTabs
         views={views}
         activeId={activeView?.id ?? null}
         isDirty={isDirty}
@@ -579,7 +648,9 @@ export default function ContactsListPage() {
             setRules(EMPTY_RULES);
             setQ("");
             setSearchInput("");
+            setSort({ field: "created_at", direction: "desc" });
             setOffset(0);
+            setBuilderKey((k) => k + 1);
           }
         }}
         onCreate={() => setEditorMode({ kind: "create" })}
@@ -598,17 +669,7 @@ export default function ContactsListPage() {
           >
             <button
               type="button"
-              className={`pill-toggle ${assignedToMe ? "" : "is-active"}`}
-              onClick={() => {
-                setAssignedToMe(false);
-                setOffset(0);
-              }}
-            >
-              Todos
-            </button>
-            <button
-              type="button"
-              className={`pill-toggle ${assignedToMe ? "is-active" : ""}`}
+              className={`button small ${assignedToMe ? "" : "secondary"}`}
               onClick={() => {
                 setAssignedToMe(true);
                 setOffset(0);
@@ -616,121 +677,71 @@ export default function ContactsListPage() {
             >
               Solo asignados a mí
             </button>
-          </div>
-          <input
-            type="search"
-            className="search-input"
-            placeholder="Buscar por nombre, email o teléfono…"
-            value={searchInput}
-            onChange={(e) => setSearchInput(e.target.value)}
-            aria-label="Búsqueda de contactos"
-          />
-          <label className="sort-select">
-            <span>Ordenar por</span>
-            <select
-              value={`${sortBy}:${sortDir}`}
-              onChange={(e) => {
-                const [sb, sd] = e.target.value.split(":") as [
-                  string,
-                  "asc" | "desc",
-                ];
-                setSortBy(sb);
-                setSortDir(sd);
+            <button
+              type="button"
+              className={`button small ${assignedToMe ? "secondary" : ""}`}
+              onClick={() => {
+                setAssignedToMe(false);
                 setOffset(0);
               }}
             >
-              <option value="created_at:desc">Más recientes primero</option>
-              <option value="created_at:asc">Más antiguos primero</option>
-              <option value="updated_at:desc">Última actualización</option>
-              <option value="updated_at_external:desc">
-                Última actualización en origen
-              </option>
-              <option value="created_at_external:desc">
-                Creación en origen (más recientes)
-              </option>
-              <option value="name:asc">Nombre (A→Z)</option>
-              <option value="email:asc">Email (A→Z)</option>
-              <option value="lead_score:desc">Lead score (mayor primero)</option>
-            </select>
-          </label>
-          <ColumnConfigurator
-            order={columnOrder}
-            visible={visibleColumns}
-            onApply={({ order, visible }) => {
-              setColumnOrder(order);
-              setVisibleColumns(visible);
-              // Persist BEFORE the URL effect re-runs: PATCH the
-              // active view's columns_json so every member sees the
-              // same config, or fall back to localStorage on the
-              // "Todos los contactos" tab so a reload keeps the
-              // operator's pick.
-              if (activeView) {
-                updateSavedView(activeView.id, {
-                  columns: { order, visible, widths: {} },
-                })
-                  .then((updated) => {
-                    setActiveView(updated);
-                  })
-                  .catch((err) =>
-                    setError(
-                      extractErrorMessage(
-                        err,
-                        "No se pudo guardar la configuración de columnas.",
-                      ),
-                    ),
-                  );
-              } else {
-                saveLocalColumns({ order, visible });
+              Todos
+            </button>
+          </div>
+          <input
+            type="search"
+            className="contact-search"
+            placeholder="Buscar por nombre, email o teléfono…"
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                setQ(searchInput.trim());
+                setOffset(0);
               }
             }}
           />
+          <div className="contact-toolbar-spacer" />
           <button
             type="button"
-            className="button"
-            onClick={handleSaveExistingView}
-            disabled={!isDirty}
-            title={isDirty ? "Guardar cambios en la vista" : "Sin cambios"}
-          >
-            <Save size={13} aria-hidden /> Guardar
-          </button>
-          <button
-            type="button"
-            className="button secondary"
+            className="button secondary small"
             onClick={handleRevert}
-            disabled={!isDirty}
             title="Descartar cambios"
           >
-            <RotateCcw size={13} aria-hidden /> Revertir
+            <RotateCcw size={11} aria-hidden /> Revertir
           </button>
-          <div className="dropdown">
+          <button
+            type="button"
+            className="button small"
+            onClick={handleSaveExistingView}
+            disabled={activeView ? !isDirty : false}
+            title={activeView ? "Guardar vista actual" : "Guardar como nueva"}
+          >
+            <Save size={11} aria-hidden /> Guardar
+          </button>
+          <div className="actions-dropdown">
             <button
               type="button"
-              className="button secondary"
-              onClick={() => setActionsMenu((open) => !open)}
-              aria-haspopup="menu"
-              aria-expanded={actionsMenu}
+              className="button secondary small"
+              onClick={() => setActionsOpen((v) => !v)}
             >
               Acciones ▾
             </button>
-            {actionsMenu ? (
+            {actionsOpen ? (
               <ActionsMenu
-                onClose={() => setActionsMenu(false)}
-                hasView={!!activeView}
+                onClose={() => setActionsOpen(false)}
+                hasView={Boolean(activeView)}
                 onSaveAsNewView={() => {
-                  setActionsMenu(false);
+                  setActionsOpen(false);
                   setEditorMode({ kind: "create" });
                 }}
-                onSaveAsSegment={async () => {
-                  setActionsMenu(false);
-                  await handleSaveAsSegment();
+                onSaveAsSegment={() => {
+                  setActionsOpen(false);
+                  handleSaveAsSegment();
                 }}
                 onPushToBrevo={() => {
-                  setActionsMenu(false);
+                  setActionsOpen(false);
                   if (!activeView) {
-                    // The push endpoint needs a view id, so divert
-                    // the operator through the save modal first and
-                    // chain into the Brevo modal once it lands
-                    // (`pushAfterSave` flag handled by handleSaveView).
                     setPushAfterSave(true);
                     setEditorMode({ kind: "create" });
                     return;
@@ -742,256 +753,179 @@ export default function ContactsListPage() {
           </div>
         </div>
 
-        <ContactFiltersBuilder rules={rules} onChange={setRules} />
+        <EntityFilterBuilder
+          key={`builder:${builderKey}`}
+          fields={schema.fields}
+          value={rules}
+          onChange={(next) => {
+            setRules(next);
+            setOffset(0);
+          }}
+        />
 
-        {error ? <ErrorState title="Error" message={error} /> : null}
         {message ? (
-          <p className="muted" role="status">
-            {message}
-          </p>
+          <p className="notice notice-success">{message}</p>
         ) : null}
+        {error ? <p className="form-error">{error}</p> : null}
 
-        {isLoading && !page ? (
-          <p className="muted">Cargando contactos…</p>
-        ) : page && page.items.length === 0 ? (
-          <p className="muted">
-            Ningún contacto coincide con los filtros aplicados.
-          </p>
-        ) : page ? (
-          <>
-            <ContactsBulkBar
-              selectedIds={Array.from(selected)}
-              currentUser={currentUser}
-              onAfterAction={(action, affected) => {
-                setMessage(
-                  `${action === "deactivate" ? "Desactivados" : "Actualizados"} ${affected} contacto${affected === 1 ? "" : "s"}.`,
-                );
-                setSelected(new Set());
-                setOffset((cur) => cur);
-                // Force a reload via offset change trick: bump rules
-                // identity to refire the fetch effect.
-                setRules((r) => ({ ...r }));
-              }}
-              onClear={() => setSelected(new Set())}
-            />
-            {(() => {
-              const allVisibleSelected =
-                page.items.length > 0 &&
-                page.items.every((c) => selected.has(c.id));
-              const visibleCount = page.items.length;
-              const selectedCount = selected.size;
-              const totalMatching = page.total;
-              const moreInFilter = totalMatching > visibleCount;
-              const allFilterSelected = selectedCount >= totalMatching;
-              if (!allVisibleSelected || !moreInFilter) return null;
-              return (
-                <div className="select-all-banner">
-                  {allFilterSelected ? (
-                    <>
-                      <span>
-                        ✓ {selectedCount} contactos seleccionados.
-                      </span>
-                      <button
-                        type="button"
-                        className="button small secondary"
-                        onClick={() => setSelected(new Set())}
-                      >
-                        Deseleccionar todos
-                      </button>
-                    </>
-                  ) : (
-                    <>
-                      <span>
-                        ✓ {selectedCount} contactos seleccionados en esta página.
-                      </span>
-                      <button
-                        type="button"
-                        className="button small"
-                        onClick={async () => {
-                          try {
-                            const result = await searchContactIds({
-                              rules_json:
-                                Object.keys(rules).length > 0 ? rules : null,
-                              q: q || null,
-                              sort_by: sortBy,
-                              sort_dir: sortDir,
-                              assigned_to_me: assignedToMe,
-                            });
-                            setSelected(new Set(result.ids));
-                            if (result.truncated) {
-                              setError(
-                                `Solo se pudieron seleccionar los primeros ${result.max_ids}. Filtra más para abarcar todos.`,
-                              );
-                            }
-                          } catch (err) {
-                            setError(
-                              extractErrorMessage(
-                                err,
-                                "No se pudo expandir la selección al filtro completo.",
-                              ),
-                            );
-                          }
-                        }}
-                      >
-                        Seleccionar los {totalMatching} contactos que cumplen el filtro
-                      </button>
-                    </>
-                  )}
-                </div>
-              );
-            })()}
-            <div className="table-wrapper">
-              <table className="data-table contacts-table">
-                <thead>
-                  <tr>
-                    <th scope="col" className="bulk-checkbox-cell">
-                      <input
-                        type="checkbox"
-                        aria-label="Seleccionar todos los visibles"
-                        checked={
-                          page.items.length > 0 &&
-                          page.items.every((c) => selected.has(c.id))
-                        }
-                        onChange={(e) => {
-                          if (e.target.checked) {
-                            setSelected(new Set(page.items.map((c) => c.id)));
-                          } else {
-                            setSelected(new Set());
-                          }
-                        }}
-                      />
-                    </th>
-                    {visibleColumns.map((key) => {
-                      const def = findColumn(key);
-                      if (!def) return null;
-                      const sortKey = COLUMN_SORT_KEY[key];
-                      const isActive = sortKey && sortKey === sortBy;
-                      const arrow =
-                        isActive && sortDir === "asc"
-                          ? "▲"
-                          : isActive
-                            ? "▼"
-                            : "";
-                      return (
-                        <th
-                          key={key}
-                          scope="col"
-                          className={sortKey ? "sortable" : undefined}
-                          onClick={
-                            sortKey
-                              ? () => handleHeaderSort(sortKey)
-                              : undefined
-                          }
-                          aria-sort={
-                            !isActive
-                              ? undefined
-                              : sortDir === "asc"
-                                ? "ascending"
-                                : "descending"
-                          }
-                        >
-                          {def.label}
-                          {sortKey ? (
-                            <span className="sort-arrow">{arrow}</span>
-                          ) : null}
-                        </th>
-                      );
-                    })}
-                  </tr>
-                </thead>
-                <tbody>
-                  {page.items.map((contact) => (
-                    <tr
-                      key={contact.id}
-                      className={selected.has(contact.id) ? "is-selected" : undefined}
-                    >
-                      <td className="bulk-checkbox-cell">
-                        <input
-                          type="checkbox"
-                          checked={selected.has(contact.id)}
-                          onChange={(e) => {
-                            setSelected((prev) => {
-                              const next = new Set(prev);
-                              if (e.target.checked) next.add(contact.id);
-                              else next.delete(contact.id);
-                              return next;
-                            });
-                          }}
-                          aria-label={`Seleccionar ${contact.first_name}`}
-                        />
-                      </td>
-                      {visibleColumns.map((key) => (
-                        <td key={key}>{renderCell(key, contact)}</td>
-                      ))}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            <div className="pagination">
-              <span className="muted">
-                {page.total} contacto{page.total === 1 ? "" : "s"} · Página{" "}
-                {currentPage} / {totalPages}
-              </span>
-              <div className="pagination-buttons">
+        <ContactsBulkBar
+          selectedIds={Array.from(selected)}
+          currentUser={currentUser}
+          onAfterAction={(action, affected) => {
+            setMessage(
+              `${action === "deactivate" ? "Desactivados" : "Actualizados"} ${affected} contacto${affected === 1 ? "" : "s"}.`,
+            );
+            setSelected(new Set());
+            refireFetch();
+          }}
+          onClear={() => setSelected(new Set())}
+        />
+
+        {(() => {
+          const visibleIds = rows.map((r) => String(r.id));
+          const allVisibleSelected =
+            visibleIds.length > 0 && visibleIds.every((id) => selected.has(id));
+          const moreInFilter = total > visibleIds.length;
+          const allFilterSelected = selected.size >= total;
+          if (!allVisibleSelected || !moreInFilter) return null;
+          if (allFilterSelected) {
+            return (
+              <div className="select-all-banner">
+                <span>✓ {selected.size} contactos seleccionados.</span>
                 <button
                   type="button"
-                  className="button secondary small"
-                  onClick={() => goToPage(currentPage - 1)}
-                  disabled={currentPage <= 1}
+                  className="button small secondary"
+                  onClick={() => setSelected(new Set())}
                 >
-                  Anterior
-                </button>
-                <button
-                  type="button"
-                  className="button secondary small"
-                  onClick={() => goToPage(currentPage + 1)}
-                  disabled={currentPage >= totalPages}
-                >
-                  Siguiente
+                  Deseleccionar todos
                 </button>
               </div>
+            );
+          }
+          return (
+            <div className="select-all-banner">
+              <span>
+                ✓ {selected.size} contactos seleccionados en esta página.
+              </span>
+              <button
+                type="button"
+                className="button small"
+                onClick={handleSelectAllFiltered}
+              >
+                Seleccionar los {total} contactos que cumplen el filtro
+              </button>
             </div>
-          </>
-        ) : null}
+          );
+        })()}
+
+        <EntityTable
+          fields={schema.fields}
+          visibleColumns={visibleColumns}
+          onVisibleColumnsChange={handleVisibleColumnsChange}
+          rows={rows}
+          total={total}
+          limit={PAGE_SIZE}
+          offset={offset}
+          onPageChange={setOffset}
+          sort={sort}
+          onSortChange={(next) => {
+            setSort(next);
+            setOffset(0);
+          }}
+          selection={selected}
+          onSelectionChange={setSelected}
+          loading={loading}
+          renderCell={renderCell}
+          onRowClick={(row) => router.push(`/contacts/${row.id}`)}
+        />
       </section>
 
-      <ContactViewEditorModal
-        open={editorMode !== null}
-        title={editorMode?.kind === "edit" ? "Editar vista" : "Guardar como vista"}
-        submitLabel={
-          editorMode?.kind === "edit" ? "Guardar cambios" : "Crear vista"
-        }
-        initial={
-          editorMode?.kind === "edit"
-            ? {
-                name: editorMode.view.name,
-                description: editorMode.view.description ?? "",
-                isShared: editorMode.view.is_shared,
-              }
-            : activeView
-              ? {
-                  name: "",
-                  description: "",
-                  isShared: activeView.is_shared,
-                }
-              : undefined
-        }
-        onSubmit={handleSaveView}
-        onClose={() => setEditorMode(null)}
-      />
-
+      {editorMode ? (
+        <ViewEditorModal
+          mode={editorMode}
+          onClose={() => {
+            setEditorMode(null);
+            setPushAfterSave(false);
+          }}
+          onSave={handleSaveView}
+        />
+      ) : null}
       {showBrevoModal && activeView ? (
         <PushViewToBrevoModal
           viewName={activeView.name}
-          contactsCount={page?.total ?? 0}
-          onSubmit={handlePushToBrevo}
+          contactsCount={total}
           onClose={() => setShowBrevoModal(false)}
+          onSubmit={handlePushToBrevo}
         />
       ) : null}
     </main>
   );
 }
+
+// --- URL state -----------------------------------------------------
+
+type UrlState = {
+  viewId: string | null;
+  rules: Record<string, unknown> | null;
+  q: string | null;
+  sortBy: string | null;
+  sortDir: "asc" | "desc" | null;
+};
+
+function readUrlState(params: URLSearchParams): UrlState {
+  const viewId = params.get("view_id");
+  const rulesRaw = params.get("rules");
+  let rules: Record<string, unknown> | null = null;
+  if (rulesRaw) {
+    try {
+      const decoded = decodeURIComponent(atob(rulesRaw));
+      rules = JSON.parse(decoded);
+    } catch {
+      rules = null;
+    }
+  }
+  const sort = params.get("sort");
+  let sortBy: string | null = null;
+  let sortDir: "asc" | "desc" | null = null;
+  if (sort) {
+    const [by, dir] = sort.split(":");
+    sortBy = by || null;
+    sortDir = dir === "asc" ? "asc" : "desc";
+  }
+  return {
+    viewId,
+    rules,
+    q: params.get("q"),
+    sortBy,
+    sortDir,
+  };
+}
+
+function serializeUrlState(state: {
+  viewId: string | null;
+  rules: Record<string, unknown> | null;
+  q: string;
+  sortBy: string;
+  sortDir: "asc" | "desc";
+  columns: string[];
+}): string {
+  const params = new URLSearchParams();
+  if (state.viewId) params.set("view_id", state.viewId);
+  if (state.rules && Object.keys(state.rules).length > 0) {
+    const raw = btoa(encodeURIComponent(JSON.stringify(state.rules)));
+    params.set("rules", raw);
+  }
+  if (state.q) params.set("q", state.q);
+  if (state.sortBy !== "created_at" || state.sortDir !== "desc") {
+    params.set("sort", `${state.sortBy}:${state.sortDir}`);
+  }
+  if (state.columns.length > 0) {
+    params.set("cols", state.columns.join(","));
+  }
+  return params.toString();
+}
+
+// --- ActionsMenu ---------------------------------------------------
 
 function ActionsMenu({
   onClose,
@@ -1044,5 +978,105 @@ function ActionsMenu({
         </li>
       </ul>
     </>
+  );
+}
+
+// --- ViewEditorModal ----------------------------------------------
+
+function ViewEditorModal({
+  mode,
+  onSave,
+  onClose,
+}: {
+  mode: { kind: "create" } | { kind: "edit"; view: EntityView };
+  onSave: (draft: {
+    name: string;
+    description: string;
+    isShared: boolean;
+  }) => Promise<void>;
+  onClose: () => void;
+}) {
+  const initial =
+    mode.kind === "edit"
+      ? mode.view
+      : { name: "", description: null, is_shared: false };
+  const [name, setName] = useState(initial.name);
+  const [description, setDescription] = useState(initial.description ?? "");
+  const [isShared, setIsShared] = useState(initial.is_shared ?? false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!name.trim()) {
+      setErr("El nombre es obligatorio.");
+      return;
+    }
+    setBusy(true);
+    try {
+      await onSave({
+        name: name.trim(),
+        description: description.trim(),
+        isShared,
+      });
+    } catch (error) {
+      setErr(extractErrorMessage(error, "No se pudo guardar."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="modal-overlay" onClick={onClose} role="dialog">
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <h3>{mode.kind === "edit" ? "Editar vista" : "Nueva vista"}</h3>
+        <form onSubmit={handleSubmit} className="form-stack">
+          <label>
+            Nombre
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              autoFocus
+              required
+            />
+          </label>
+          <label>
+            Descripción (opcional)
+            <textarea
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              rows={2}
+            />
+          </label>
+          <label className="form-check">
+            <input
+              type="checkbox"
+              checked={isShared}
+              onChange={(e) => setIsShared(e.target.checked)}
+            />{" "}
+            Compartir vista con todo el equipo (sólo lectura)
+          </label>
+          {err ? <p className="form-error">{err}</p> : null}
+          <div className="modal-actions">
+            <button
+              type="button"
+              className="button secondary small"
+              onClick={onClose}
+              disabled={busy}
+            >
+              Cancelar
+            </button>
+            <button
+              type="submit"
+              className="button small"
+              disabled={busy}
+            >
+              {busy ? "Guardando…" : "Guardar"}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
   );
 }
