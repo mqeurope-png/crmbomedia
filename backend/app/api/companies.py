@@ -368,3 +368,110 @@ def assign_company_to_contact(
         "company_id": contact.company_id,
         "updated_at": datetime.now(UTC).isoformat(),
     }
+
+
+# ---------------------------------------------------------------------------
+# Bulk actions (Sprint Filtros & Listas — PR-F).
+# ---------------------------------------------------------------------------
+
+from typing import Any, Literal  # noqa: PLC0415, E402
+
+from pydantic import BaseModel, Field  # noqa: PLC0415, E402
+
+#: Cap defensivo de filas por llamada — espejo de
+#: `MAX_BULK_CONTACTS` en `app/api/bulk.py` (Sprint A).
+MAX_BULK_COMPANIES = 1000
+
+
+CompanyBulkAction = Literal["activate", "deactivate", "change_sector"]
+
+
+class CompanyBulkPayload(BaseModel):
+    company_ids: list[str] = Field(min_length=1, max_length=MAX_BULK_COMPANIES)
+    action: CompanyBulkAction
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class CompanyBulkResult(BaseModel):
+    action: CompanyBulkAction
+    affected_count: int
+    company_ids: list[str]
+
+
+@router.post("/bulk-action", response_model=CompanyBulkResult)
+def bulk_company_action(
+    payload: CompanyBulkPayload,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_user),
+) -> CompanyBulkResult:
+    """Dispatch genérico para acciones masivas desde la lista de
+    empresas (PR-F). Las acciones soportadas hoy son las más
+    útiles según la auditoría:
+
+    - `activate` / `deactivate` — flag `is_active`. Admin / manager /
+      user pueden hacerlo (no es destructivo).
+    - `change_sector` — espera `payload.sector` y lo aplica en bulk.
+      Útil para etiquetar empresas tras una importación masiva sin
+      necesidad de PATCH una a una.
+
+    `delete` queda fuera del set por v1 — el delete individual sigue
+    siendo admin-only en `/api/companies/{id}` y el flujo de borrado
+    masivo merece más diseño (qué hacer con los contacts asociados).
+    """
+    if len(payload.company_ids) > MAX_BULK_COMPANIES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Maximum {MAX_BULK_COMPANIES} companies per bulk call.",
+        )
+
+    rows = list(
+        session.scalars(
+            select(Company).where(Company.id.in_(payload.company_ids))
+        )
+    )
+
+    affected: list[str] = []
+    metadata: dict[str, Any] = {"action": payload.action}
+
+    if payload.action in ("activate", "deactivate"):
+        target = payload.action == "activate"
+        for row in rows:
+            if row.is_active != target:
+                row.is_active = target
+                affected.append(row.id)
+        metadata["is_active"] = target
+    elif payload.action == "change_sector":
+        sector = payload.payload.get("sector")
+        if not isinstance(sector, str) or not sector.strip():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="`payload.sector` is required for change_sector.",
+            )
+        sector = sector.strip()
+        for row in rows:
+            if row.sector != sector:
+                row.sector = sector
+                affected.append(row.id)
+        metadata["sector"] = sector
+    else:  # pragma: no cover — Literal exhausts this
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unknown action {payload.action!r}",
+        )
+
+    metadata["requested"] = len(payload.company_ids)
+    metadata["affected"] = len(affected)
+    record_event(
+        session,
+        action=Action.COMPANY_BULK_ACTION,
+        target_type="company",
+        target_id=None,
+        actor=current_user,
+        metadata=metadata,
+    )
+    session.commit()
+    return CompanyBulkResult(
+        action=payload.action,
+        affected_count=len(affected),
+        company_ids=affected,
+    )
