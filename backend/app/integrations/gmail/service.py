@@ -116,6 +116,162 @@ def _looks_like_template(subject: str, snippet: str) -> bool:
     return True
 
 
+def import_gmail_templates_with_tpl_prefix(
+    session: Session,
+    *,
+    user_id: str,
+    created_by_user_id: str,
+    delete_after: bool = False,
+) -> dict[str, Any]:
+    """One-shot import de drafts Gmail con subject `[TPL] …` a la
+    tabla `email_templates` (Sprint Email v2.2). Pensado para correr
+    una vez tras lo cual el operador limpia Gmail.
+
+    Idempotente: si ya existe un template CRM con el mismo `name`
+    dentro de la folder "Gmail (importados)", se salta. Re-runs no
+    duplican.
+
+    `delete_after=True` borra el draft Gmail tras un INSERT exitoso
+    — útil para hacer la limpieza desde la misma llamada en vez de
+    a mano.
+
+    Devuelve `{imported, skipped, errors, deleted, total_drafts_
+    scanned, tpl_drafts_found}`.
+    """
+    import base64  # noqa: PLC0415
+    from email import message_from_bytes  # noqa: PLC0415
+    from email.policy import default as _default_policy  # noqa: PLC0415
+
+    from app.email_templates.models import (  # noqa: PLC0415
+        EmailTemplate,
+        EmailTemplateFolder,
+    )
+
+    client = _client_for(session, user_id)
+
+    # Folder destino: "Gmail (importados)" como is_global. Se crea
+    # si no existe — idempotente.
+    folder = session.scalar(
+        select(EmailTemplateFolder).where(
+            EmailTemplateFolder.name == "Gmail (importados)",
+            EmailTemplateFolder.is_global.is_(True),
+        )
+    )
+    if folder is None:
+        folder = EmailTemplateFolder(
+            name="Gmail (importados)",
+            is_global=True,
+        )
+        session.add(folder)
+        session.flush()
+    folder_id = folder.id
+
+    # Set de names ya existentes en esta folder para idempotencia O(1).
+    existing_names = {
+        row.name
+        for row in session.scalars(
+            select(EmailTemplate).where(EmailTemplate.folder_id == folder_id)
+        )
+    }
+
+    all_draft_ids = client.list_all_drafts()
+    counters = {
+        "imported": 0,
+        "skipped": 0,
+        "errors": 0,
+        "deleted": 0,
+        "total_drafts_scanned": len(all_draft_ids),
+        "tpl_drafts_found": 0,
+    }
+
+    for draft_id in all_draft_ids:
+        # Paso 1: metadata para inspeccionar Subject. Saltamos los que
+        # no tengan prefijo [TPL] para no bajar el raw inútilmente.
+        try:
+            meta = client.get_draft_metadata(draft_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "gmail.import.meta failed draft_id=%s err=%s",
+                draft_id,
+                exc,
+            )
+            counters["errors"] += 1
+            continue
+        meta_msg = meta.get("message", {})
+        headers = (meta_msg.get("payload") or {}).get("headers") or []
+        subject = _extract_subject_from_headers(headers)
+        if not subject.startswith("[TPL] "):
+            continue
+        counters["tpl_drafts_found"] += 1
+        name = subject[len("[TPL] ") :].strip()
+        if not name:
+            counters["skipped"] += 1
+            continue
+        if name in existing_names:
+            counters["skipped"] += 1
+            continue
+
+        # Paso 2: full raw para extraer body_html.
+        try:
+            full = client.get_draft_template(draft_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "gmail.import.get failed draft_id=%s err=%s",
+                draft_id,
+                exc,
+            )
+            counters["errors"] += 1
+            continue
+        raw_b64 = (full.get("message") or {}).get("raw")
+        body_html = ""
+        if raw_b64:
+            try:
+                raw_bytes = base64.urlsafe_b64decode(raw_b64.encode("ascii"))
+                parsed = message_from_bytes(raw_bytes, policy=_default_policy)
+                html_part = parsed.get_body(preferencelist=("html",))
+                plain_part = parsed.get_body(preferencelist=("plain",))
+                if html_part is not None:
+                    body_html = html_part.get_content() or ""
+                elif plain_part is not None:
+                    text = plain_part.get_content() or ""
+                    body_html = "<p>" + text.replace("\n", "<br>") + "</p>"
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "gmail.import.parse failed draft_id=%s err=%s",
+                    draft_id,
+                    exc,
+                )
+        if not body_html.strip():
+            counters["errors"] += 1
+            continue
+
+        template = EmailTemplate(
+            name=name,
+            subject=name,  # útil como subject default al elegir el template
+            body_html=body_html,
+            folder_id=folder_id,
+            is_global=True,
+            owner_user_id=created_by_user_id,
+        )
+        session.add(template)
+        session.flush()
+        existing_names.add(name)
+        counters["imported"] += 1
+
+        if delete_after:
+            try:
+                client.delete_draft(draft_id)
+                counters["deleted"] += 1
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "gmail.import.delete failed draft_id=%s err=%s",
+                    draft_id,
+                    exc,
+                )
+
+    return counters
+
+
 def list_gmail_templates(
     session: Session,
     user_id: str,

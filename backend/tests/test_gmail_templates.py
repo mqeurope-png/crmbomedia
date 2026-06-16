@@ -368,3 +368,195 @@ def test_gmail_templates_403_when_scope_missing(
     )
     assert resp.status_code == 403
     assert "gmail.send" in resp.json()["detail"]
+
+
+# -- importador one-shot a email_templates ---------------------------
+
+
+class _FakeGmailImportClient:
+    """Fake distinto del usado por list/heuristic. Modelo: 3 drafts:
+    1 con prefijo [TPL] (debería importarse), 1 sin prefijo, 1 con
+    prefijo [TPL] pero name duplicado tras stripped (importable pero
+    salta en re-run para test idempotencia)."""
+
+    def __init__(self, *_a, **_kw) -> None:
+        self.deleted: list[str] = []
+
+    def list_all_drafts(self) -> list[str]:
+        return ["draft-tpl-a", "draft-no-tpl", "draft-tpl-b"]
+
+    def get_draft_metadata(self, draft_id: str) -> dict:
+        subjects = {
+            "draft-tpl-a": "[TPL] Bienvenida CRM",
+            "draft-no-tpl": "Re: tu consulta",
+            "draft-tpl-b": "[TPL] Adquisición equipos",
+        }
+        return {
+            "id": draft_id,
+            "message": {
+                "payload": {
+                    "headers": [{"name": "Subject", "value": subjects[draft_id]}]
+                },
+            },
+        }
+
+    def get_draft_template(self, draft_id: str) -> dict:
+        bodies = {
+            "draft-tpl-a": (
+                "[TPL] Bienvenida CRM",
+                "<p>Hola, bienvenido al CRM.</p>",
+            ),
+            "draft-tpl-b": (
+                "[TPL] Adquisición equipos",
+                "<p>Confirmamos compra.</p>",
+            ),
+        }
+        subject, body_html = bodies[draft_id]
+        return {
+            "id": draft_id,
+            "message": {
+                "id": f"msg-{draft_id}",
+                "raw": _build_raw_email(subject=subject, body_html=body_html),
+            },
+        }
+
+    def delete_draft(self, draft_id: str) -> None:
+        self.deleted.append(draft_id)
+
+
+def test_import_creates_email_templates_in_dedicated_folder(
+    client: TestClient,
+    session_factory: sessionmaker,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    uid = _user_id(session_factory, UserRole.ADMIN)
+    _seed_gmail(
+        session_factory,
+        user_id=uid,
+        scopes=(
+            "https://www.googleapis.com/auth/gmail.send "
+            "https://www.googleapis.com/auth/gmail.modify"
+        ),
+    )
+    fake = _FakeGmailImportClient()
+    monkeypatch.setattr(
+        "app.integrations.gmail.service.GmailClient",
+        lambda *_a, **_kw: fake,
+    )
+
+    resp = client.post(
+        "/api/emails/gmail-templates/import",
+        headers=auth_headers(client, "admin"),
+    )
+    assert resp.status_code == 200, resp.text
+    summary = resp.json()
+    assert summary["imported"] == 2
+    assert summary["skipped"] == 0
+    assert summary["errors"] == 0
+    assert summary["deleted"] == 0
+    assert summary["tpl_drafts_found"] == 2
+    assert summary["total_drafts_scanned"] == 3
+
+    # Sanity: las plantillas viven en la folder dedicada.
+    from app.email_templates.models import (  # noqa: PLC0415
+        EmailTemplate,
+        EmailTemplateFolder,
+    )
+    from sqlalchemy import select as _select  # noqa: PLC0415
+
+    with session_factory() as session:
+        folder = session.scalar(
+            _select(EmailTemplateFolder).where(
+                EmailTemplateFolder.name == "Gmail (importados)"
+            )
+        )
+        assert folder is not None
+        rows = list(
+            session.scalars(
+                _select(EmailTemplate).where(
+                    EmailTemplate.folder_id == folder.id
+                )
+            )
+        )
+        names = sorted(r.name for r in rows)
+        assert names == ["Adquisición equipos", "Bienvenida CRM"]
+        # body_html no vacío, source/owner OK.
+        for row in rows:
+            assert row.body_html
+            assert row.is_global is True
+            assert row.owner_user_id == uid
+
+
+def test_import_is_idempotent(
+    client: TestClient,
+    session_factory: sessionmaker,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Segundo run no duplica — counters reflejan skipped."""
+    uid = _user_id(session_factory, UserRole.ADMIN)
+    _seed_gmail(
+        session_factory,
+        user_id=uid,
+        scopes=(
+            "https://www.googleapis.com/auth/gmail.send "
+            "https://www.googleapis.com/auth/gmail.modify"
+        ),
+    )
+    fake = _FakeGmailImportClient()
+    monkeypatch.setattr(
+        "app.integrations.gmail.service.GmailClient",
+        lambda *_a, **_kw: fake,
+    )
+
+    client.post(
+        "/api/emails/gmail-templates/import",
+        headers=auth_headers(client, "admin"),
+    )
+    resp = client.post(
+        "/api/emails/gmail-templates/import",
+        headers=auth_headers(client, "admin"),
+    )
+    assert resp.status_code == 200
+    summary = resp.json()
+    assert summary["imported"] == 0
+    assert summary["skipped"] == 2
+
+
+def test_import_delete_after_removes_drafts(
+    client: TestClient,
+    session_factory: sessionmaker,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    uid = _user_id(session_factory, UserRole.ADMIN)
+    _seed_gmail(
+        session_factory,
+        user_id=uid,
+        scopes=(
+            "https://www.googleapis.com/auth/gmail.send "
+            "https://www.googleapis.com/auth/gmail.modify"
+        ),
+    )
+    fake = _FakeGmailImportClient()
+    monkeypatch.setattr(
+        "app.integrations.gmail.service.GmailClient",
+        lambda *_a, **_kw: fake,
+    )
+
+    resp = client.post(
+        "/api/emails/gmail-templates/import?delete_after=true",
+        headers=auth_headers(client, "admin"),
+    )
+    assert resp.status_code == 200
+    summary = resp.json()
+    assert summary["imported"] == 2
+    assert summary["deleted"] == 2
+    assert sorted(fake.deleted) == ["draft-tpl-a", "draft-tpl-b"]
+
+
+def test_import_requires_admin(client: TestClient) -> None:
+    for role in ("manager", "user"):
+        resp = client.post(
+            "/api/emails/gmail-templates/import",
+            headers=auth_headers(client, role),
+        )
+        assert resp.status_code == 403, f"{role}: {resp.text}"

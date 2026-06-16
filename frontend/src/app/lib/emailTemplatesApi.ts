@@ -198,20 +198,11 @@ export async function getComposerSourceTemplates(): Promise<ComposerSourceRespon
   return apiFetch<ComposerSourceResponse>("/api/emails/composer-source");
 }
 
-export interface GmailTemplate {
-  id: string;
-  subject: string;
-  body_html: string;
-  snippet: string;
-  updated_at: string | null;
-}
-
-export async function getGmailTemplates(): Promise<GmailTemplate[]> {
-  // Sin cache — fetch on-demand cada vez que el operador abre el
-  // dropdown. Cuenta Gmail compartida en el CRM, así que la lista
-  // es la misma para todo el equipo.
-  return apiFetch<GmailTemplate[]>("/api/emails/gmail-templates");
-}
+// Gmail templates en vivo retiradas del modal de envío: ahora se
+// importan UNA vez a `email_templates` y aparecen en la pestaña CRM.
+// El endpoint /api/emails/gmail-templates queda solo para admin
+// (debug + helper del importador), expuesto vía
+// `triggerGmailTemplatesImport` en integrationSettings.ts.
 
 export type BrevoTemplateHtml = {
   id: number;

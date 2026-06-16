@@ -196,11 +196,9 @@ class GmailClient:
     def list_draft_templates(
         self, *, query: str | None = None, max_results: int = 30
     ) -> list[dict[str, Any]]:
-        """Lista drafts del user. Filtro lo ponemos en código tras
-        inspeccionar los `labelIds` porque el query Gmail con
-        `label:^smartlabel_canned_response` matchea 0 drafts en algunas
-        cuentas (Google cambió el label sistema entre "Canned
-        Responses" legacy y "Templates" modernos)."""
+        """Lista drafts del user. Una sola página (max_results).
+        Para enumerar TODOS los drafts del buzón usa
+        `list_all_drafts()` que pagina con `nextPageToken`."""
         service = self._build_service()
         response = (
             service.users()
@@ -216,6 +214,36 @@ class GmailClient:
         for entry in response.get("drafts", []) or []:
             out.append({"id": entry["id"]})
         return out
+
+    def list_all_drafts(self, *, page_size: int = 100) -> list[str]:
+        """Itera con `nextPageToken` hasta agotar todos los drafts del
+        usuario. Usado por `gmail-templates/import` que necesita
+        inspeccionar el buzón completo para filtrar por subject.
+        Devuelve sólo los ids; el caller hace `drafts.get` para los
+        que vayan a importarse."""
+        service = self._build_service()
+        ids: list[str] = []
+        page_token: str | None = None
+        while True:
+            kwargs: dict[str, Any] = {
+                "userId": "me",
+                "maxResults": page_size,
+            }
+            if page_token:
+                kwargs["pageToken"] = page_token
+            response = service.users().drafts().list(**kwargs).execute()
+            for entry in response.get("drafts", []) or []:
+                ids.append(entry["id"])
+            page_token = response.get("nextPageToken")
+            if not page_token:
+                break
+        return ids
+
+    def delete_draft(self, draft_id: str) -> None:
+        """Borra el draft. Usado por la flag `delete_after=true` del
+        importador para limpiar Gmail después de copiar el template."""
+        service = self._build_service()
+        service.users().drafts().delete(userId="me", id=draft_id).execute()
 
     def get_draft_metadata(self, draft_id: str) -> dict[str, Any]:
         """Solo headers + labelIds — más barato que `format=full`.
