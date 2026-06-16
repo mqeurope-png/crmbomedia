@@ -1,4 +1,4 @@
-import { apiFetch } from "./api";
+import { apiFetch, getStoredToken } from "./api";
 
 // PR-E (Sprint Filtros & Listas): `add_tag` y `remove_tag` viven
 // también en el backend pero nunca tuvieron botón en `<ContactsBulkBar>`
@@ -30,4 +30,33 @@ export async function bulkContactAction(
       payload,
     }),
   });
+}
+
+// QoL sprint — export CSV de la selección. Devuelve un Blob para que
+// el caller lo dispare como descarga sin que `apiFetch` intente
+// parsear JSON. Mantenemos el flujo de errores del backend (JSON con
+// detail) para 4xx leyéndolos antes de tocar el Blob.
+export async function bulkExportContactsCsv(
+  contactIds: string[],
+): Promise<Blob> {
+  const token = getStoredToken();
+  const resp = await fetch("/api/contacts/bulk-export-csv", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify({ contact_ids: contactIds }),
+  });
+  if (!resp.ok) {
+    let detail = `Export falló (${resp.status})`;
+    try {
+      const body = await resp.json();
+      if (body?.detail) detail = String(body.detail);
+    } catch {
+      /* keep generic detail */
+    }
+    throw new Error(detail);
+  }
+  return resp.blob();
 }

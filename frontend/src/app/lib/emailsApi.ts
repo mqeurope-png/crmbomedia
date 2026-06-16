@@ -138,6 +138,9 @@ export type EmailThreadListFilters = {
   since?: string;
   until?: string;
   include_snoozed?: boolean;
+  // QoL sprint — toggle "Mías ↔ Todo el equipo" en /emails.
+  scope?: "mine" | "team";
+  team_user_id?: string;
 };
 
 export type EmailThreadDetail = EmailThread & {
@@ -215,6 +218,8 @@ export async function listEmailThreads(
   if (filters?.since) params.set("since", filters.since);
   if (filters?.until) params.set("until", filters.until);
   if (filters?.include_snoozed) params.set("include_snoozed", "true");
+  if (filters?.scope) params.set("scope", filters.scope);
+  if (filters?.team_user_id) params.set("team_user_id", filters.team_user_id);
   const qs = params.toString();
   return apiFetch<EmailThreadList>(`/api/emails/threads${qs ? `?${qs}` : ""}`);
 }

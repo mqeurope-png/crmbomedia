@@ -281,20 +281,27 @@ def resolve_contact(session: Session, contact_id: str | None) -> Contact | None:
 
 
 def buckets_for_user(
-    session: Session, user_id: str, *, limit_per_bucket: int = 25
+    session: Session,
+    user_id: str | None,
+    *,
+    limit_per_bucket: int = 25,
 ) -> dict[str, list[Task]]:
-    """Group the user's open tasks into "overdue / today / tomorrow /
-    later" buckets for the dashboard widget."""
+    """Group open tasks into "overdue / today / tomorrow / later /
+    no_date" buckets for the dashboard widget.
+
+    QoL sprint — `user_id=None` devuelve los buckets del EQUIPO entero
+    (filtro `assigned_user_id` desaparece). Esto es lo que pinta el
+    toggle "Todo el equipo" del manager.
+    """
     from datetime import timedelta as _timedelta  # noqa: PLC0415
 
     now = datetime.now(UTC)
     today_end = now.replace(hour=23, minute=59, second=59, microsecond=0)
     tomorrow_end = today_end + _timedelta(days=1)
     open_statuses = [TaskStatus.PENDING, TaskStatus.IN_PROGRESS]
-    base = select(Task).where(
-        Task.assigned_user_id == user_id,
-        Task.status.in_(open_statuses),
-    )
+    base = select(Task).where(Task.status.in_(open_statuses))
+    if user_id is not None:
+        base = base.where(Task.assigned_user_id == user_id)
 
     overdue = list(
         session.scalars(

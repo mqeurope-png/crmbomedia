@@ -95,8 +95,18 @@ export async function listTasks(params: {
   return apiFetch<TaskListPage>(`/api/tasks${qs ? `?${qs}` : ""}`);
 }
 
-export async function getMyBuckets(): Promise<TaskBuckets> {
-  return apiFetch<TaskBuckets>("/api/tasks/my-buckets");
+export async function getMyBuckets(
+  options: { scope?: "mine" | "team"; userId?: string } = {},
+): Promise<TaskBuckets> {
+  // QoL sprint — `scope=team` muestra tareas del equipo entero
+  // (manager+); con `userId` añadido, filtra a un comercial concreto.
+  const params = new URLSearchParams();
+  if (options.scope && options.scope !== "mine") {
+    params.set("scope", options.scope);
+  }
+  if (options.userId) params.set("user_id", options.userId);
+  const qs = params.toString();
+  return apiFetch<TaskBuckets>(`/api/tasks/my-buckets${qs ? `?${qs}` : ""}`);
 }
 
 /** Calendar slice: tasks whose `due_at` falls within [from, to].

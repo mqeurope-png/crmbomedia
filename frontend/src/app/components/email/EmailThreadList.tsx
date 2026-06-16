@@ -13,6 +13,7 @@ import {
   starThread,
   unstarThread,
 } from "../../lib/emailsApi";
+import { getCurrentUser, getUsers, type User } from "../../lib/api";
 import { extractErrorMessage } from "../../lib/errors";
 import { EmailEventBadges } from "./EmailEventBadges";
 import { EmailBulkActionsBar } from "./EmailBulkActionsBar";
@@ -75,6 +76,25 @@ export function EmailThreadList({ folders, labels, refreshKey }: Props) {
   // the Shift-click range-select gesture.
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const lastClickedIdx = useRef<number | null>(null);
+  // QoL sprint — toggle "Mías ↔ Todo el equipo" + dropdown manager+.
+  const [scope, setScope] = useState<"mine" | "team">("mine");
+  const [teamUserId, setTeamUserId] = useState<string>("");
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [teamUsers, setTeamUsers] = useState<User[]>([]);
+
+  const canSeeTeam =
+    currentUser?.role === "admin" || currentUser?.role === "manager";
+
+  useEffect(() => {
+    getCurrentUser().then(setCurrentUser).catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    if (!canSeeTeam) return;
+    getUsers({ limit: 100 })
+      .then((rows) => setTeamUsers(rows.filter((u) => u.is_active)))
+      .catch(() => setTeamUsers([]));
+  }, [canSeeTeam]);
 
   // Debounce search input by 300 ms.
   useEffect(() => {
@@ -98,6 +118,9 @@ export function EmailThreadList({ folders, labels, refreshKey }: Props) {
         folder_id: folderId ?? undefined,
         label_id: labelId ?? undefined,
         starred,
+        scope,
+        team_user_id:
+          scope === "team" && teamUserId ? teamUserId : undefined,
       });
       setThreads(page.items);
       // Drop any selection that no longer exists in the new page
@@ -210,6 +233,46 @@ export function EmailThreadList({ folders, labels, refreshKey }: Props) {
             aria-label="Buscar hilos por contacto, asunto o cuerpo"
           />
         </div>
+        {canSeeTeam ? (
+          <div
+            className="email-scope-toggle"
+            role="group"
+            aria-label="Alcance"
+          >
+            <button
+              type="button"
+              className={`pill-toggle ${scope === "mine" ? "is-active" : ""}`}
+              onClick={() => {
+                setScope("mine");
+                setTeamUserId("");
+              }}
+            >
+              Mías
+            </button>
+            <button
+              type="button"
+              className={`pill-toggle ${scope === "team" ? "is-active" : ""}`}
+              onClick={() => setScope("team")}
+            >
+              Todo el equipo
+            </button>
+            {scope === "team" ? (
+              <select
+                className="pill-select"
+                value={teamUserId}
+                onChange={(e) => setTeamUserId(e.target.value)}
+                aria-label="Filtrar por comercial"
+              >
+                <option value="">Todos los comerciales</option>
+                {teamUsers.map((u) => (
+                  <option key={u.id} value={u.id}>
+                    {u.full_name || u.email}
+                  </option>
+                ))}
+              </select>
+            ) : null}
+          </div>
+        ) : null}
       </div>
 
       {someSelected ? (

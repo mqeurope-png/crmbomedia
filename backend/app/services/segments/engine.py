@@ -42,6 +42,7 @@ from sqlalchemy.orm import Mapped
 from app.models.crm import (
     Contact,
     ContactAssignment,
+    ContactNote,
     ContactPipelineStage,
     ContactTag,
     ExternalReference,
@@ -240,6 +241,10 @@ def _compile_leaf(
         return _compile_assignment_leaf(comparator, value)
     if spec.relation == "primary_assignment":
         return _compile_primary_assignment_leaf(comparator, value)
+    # QoL sprint — filtro notes_content: EXISTS contra contact_notes
+    # con LIKE %value% accent+case insensitive (vía func.lower).
+    if spec.relation == "contact_notes.content":
+        return _compile_notes_content_leaf(comparator, value)
 
     column = spec.column
     if column is None and "concat" in spec.extras:
@@ -423,6 +428,45 @@ def _compile_primary_assignment_leaf(
         return Contact.id.in_(primary)
     raise SegmentRuleError(
         f"Unsupported primary_user comparator {comparator!r}"
+    )
+
+
+def _compile_notes_content_leaf(
+    comparator: str, value: Any
+) -> ColumnElement[bool]:
+    """QoL sprint — filtro `notes_content`. EXISTS contra
+    `contact_notes` con LIKE case-insensitive sobre `content`. La
+    "accent insensitivity" depende de la collation MySQL (`utf8mb4_
+    unicode_ci`, default en prod); SQLite no la implementa pero los
+    tests viven con eso.
+
+    `is_empty` / `is_not_empty` se interpretan sobre el set de notas:
+    "el contacto NO tiene ninguna nota" / "tiene ≥1 nota".
+    """
+    if comparator == "is_empty":
+        return ~Contact.id.in_(select(ContactNote.contact_id))
+    if comparator == "is_not_empty":
+        return Contact.id.in_(select(ContactNote.contact_id))
+    if comparator not in {"contains", "starts_with", "ends_with"}:
+        raise SegmentRuleError(
+            f"Unsupported notes_content comparator {comparator!r}"
+        )
+    needle = str(value).strip()
+    if not needle:
+        raise SegmentRuleError(
+            f"notes_content {comparator} requires non-empty value"
+        )
+    needle_lower = needle.lower()
+    if comparator == "contains":
+        pattern = f"%{needle_lower}%"
+    elif comparator == "starts_with":
+        pattern = f"{needle_lower}%"
+    else:  # ends_with
+        pattern = f"%{needle_lower}"
+    return Contact.id.in_(
+        select(ContactNote.contact_id).where(
+            func.lower(ContactNote.content).like(pattern)
+        )
     )
 
 

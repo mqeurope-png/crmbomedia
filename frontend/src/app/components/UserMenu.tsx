@@ -1,6 +1,13 @@
 "use client";
 
-import { ChevronDown, KeyRound, LogOut, ShieldCheck, UserCircle2 } from "lucide-react";
+import {
+  ChevronDown,
+  KeyRound,
+  LogOut,
+  ShieldCheck,
+  User as UserIcon,
+  UserCircle2,
+} from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
@@ -66,6 +73,14 @@ export function UserMenu({ user }: Props) {
             <span className="muted small">{user.email}</span>
             <span className="muted small">Rol: {user.role}</span>
           </div>
+          <Link
+            href="/account"
+            role="menuitem"
+            className="user-menu-item"
+            onClick={() => setOpen(false)}
+          >
+            <UserIcon size={14} aria-hidden /> Mi cuenta
+          </Link>
           <Link
             href="/account/password"
             role="menuitem"

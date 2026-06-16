@@ -133,14 +133,31 @@ def list_tasks_endpoint(
 
 @router.get("/my-buckets", response_model=TaskBuckets)
 def my_buckets(
+    scope: str = Query(default="mine", pattern="^(mine|team)$"),
+    user_id: str | None = Query(default=None),
     session: Session = Depends(get_session),
     current_user: User = Depends(require_viewer),
 ) -> TaskBuckets:
-    """Dashboard widget feed: my open tasks grouped by urgency."""
-    buckets = tasks_repository.buckets_for_user(session, current_user.id)
+    """Dashboard widget feed: open tasks grouped by urgency.
+
+    QoL sprint — el toggle "Mías ↔ Todo el equipo" cambia `scope`:
+    - `scope=mine` (default): solo tareas asignadas al user actual.
+    - `scope=team`: tareas del equipo entero (requiere manager+).
+    - `scope=team&user_id=X`: tareas del user X (manager+, dropdown).
+    """
+    target_user_id: str | None = current_user.id
+    if scope == "team":
+        if current_user.role not in (UserRole.ADMIN, UserRole.MANAGER):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Solo manager+ puede ver tareas del equipo.",
+            )
+        target_user_id = user_id  # None = todos; o uno concreto.
+
+    buckets = tasks_repository.buckets_for_user(session, target_user_id)
     total_open = tasks_repository.count_tasks(
         session,
-        assigned_user_id=current_user.id,
+        assigned_user_id=target_user_id,
         statuses=[TaskStatus.PENDING, TaskStatus.IN_PROGRESS],
     )
     return TaskBuckets(

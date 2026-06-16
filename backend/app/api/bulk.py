@@ -19,7 +19,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -255,6 +255,90 @@ def _require_tag(session: Session, tag_id: str | None) -> Tag:
             detail="El tag indicado no existe.",
         )
     return tag
+
+
+# QoL sprint — export CSV de contactos seleccionados desde la lista.
+# Permiso: manager+ (admin lo tiene por herencia). El export legacy
+# /api/audit-logs/export sigue siendo admin-only por la sensibilidad
+# del audit log; aquí el dato es comercial y los managers ya lo ven
+# en pantalla, así que el rol mínimo se baja.
+
+_CSV_COLUMNS = (
+    "id",
+    "first_name",
+    "last_name",
+    "email",
+    "phone",
+    "job_title",
+    "company_id",
+    "commercial_status",
+    "tags",
+    "owner_user_id",
+    "address_country",
+    "address_city",
+    "created_at",
+    "updated_at",
+)
+
+
+class BulkExportPayload(BaseModel):
+    contact_ids: list[str] = Field(
+        min_length=1, max_length=MAX_BULK_CONTACTS
+    )
+
+
+@router.post("/bulk-export-csv")
+def bulk_export_csv(
+    body: BulkExportPayload,
+    request: Request,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_manager),
+) -> Response:
+    """Devuelve un text/csv con las columnas básicas del contacto. La
+    UI lo dispara desde la bulk-bar (acción 'Exportar CSV'). Limitado
+    al mismo cap que el resto del bulk (50000)."""
+    contacts = list(
+        session.scalars(
+            select(Contact).where(Contact.id.in_(body.contact_ids))
+        )
+    )
+    if not contacts:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Ningún contacto válido en la selección.",
+        )
+    lines = [",".join(_CSV_COLUMNS)]
+    for c in contacts:
+        row = []
+        for col in _CSV_COLUMNS:
+            val = getattr(c, col, None)
+            text = "" if val is None else str(val)
+            # Strip embedded commas y newlines — patrón usado también
+            # en /audit-logs/export para evitar parser caprichosos.
+            text = text.replace(",", " ").replace("\n", " ").replace("\r", " ")
+            row.append(text)
+        lines.append(",".join(row))
+    record_event(
+        session,
+        action=Action.CONTACT_UPDATED,
+        target_type="contact",
+        actor=current_user,
+        metadata={
+            "bulk_action": "export_csv",
+            "affected_count": len(contacts),
+            "contact_ids": [c.id for c in contacts][:50],
+            "total_targets": len(contacts),
+        },
+        request=request,
+    )
+    session.commit()
+    return Response(
+        content="\n".join(lines) + "\n",
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": "attachment; filename=contacts.csv",
+        },
+    )
 
 
 # Imports kept for explicit role-gate references upstream.

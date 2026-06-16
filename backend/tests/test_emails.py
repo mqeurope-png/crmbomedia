@@ -369,12 +369,12 @@ def test_threads_list_scopes_to_current_user(
     session_factory: sessionmaker,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """User role only sees threads they initiated; manager/admin
-    see all."""
+    """QoL sprint: el default es scope=mine para TODOS los roles
+    (antes manager/admin veían todo por defecto, ahora explicito con
+    `?scope=team`). El user role nunca puede subir a `team`."""
     with session_factory() as session:
         user_id = _user_id(session, UserRole.USER)
         admin_id = _user_id(session, UserRole.ADMIN)
-        # Two threads, one per user.
         for owner in (user_id, admin_id):
             session.add(
                 EmailThread(
@@ -388,15 +388,23 @@ def test_threads_list_scopes_to_current_user(
             )
         session.commit()
 
-    _ = monkeypatch  # quiet the unused-arg lint
+    _ = monkeypatch
+    # User: default mine → 1 thread propio.
     user_response = client.get(
         "/api/emails/threads", headers=auth_headers(client, "user")
     )
     assert user_response.json()["total"] == 1
-    admin_response = client.get(
+    # Admin: default mine → 1 thread propio (cambio vs pre-QoL).
+    admin_default = client.get(
         "/api/emails/threads", headers=auth_headers(client, "admin")
     )
-    assert admin_response.json()["total"] == 2
+    assert admin_default.json()["total"] == 1
+    # Admin con scope=team → ambos.
+    admin_team = client.get(
+        "/api/emails/threads?scope=team",
+        headers=auth_headers(client, "admin"),
+    )
+    assert admin_team.json()["total"] == 2
 
 
 def test_send_email_emits_activity_event_when_contact_id_set(
