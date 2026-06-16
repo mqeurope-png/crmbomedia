@@ -455,8 +455,8 @@ function GmailList({
       <div>
         <p className="modal-error">{error}</p>
         <p className="muted small">
-          Gestiona las plantillas desde Gmail: en compose → menú "⋮" →
-          "Templates".
+          Gestiona las plantillas desde Gmail: en compose → menú &quot;⋮&quot; →
+          &quot;Templates&quot;.
         </p>
       </div>
     );
@@ -464,8 +464,8 @@ function GmailList({
   if (items.length === 0) {
     return (
       <p className="muted small">
-        No hay plantillas en Gmail. Crea una desde compose → "⋮" → Templates
-        → "Save draft as template".
+        No hay plantillas en Gmail. Crea una desde compose → &quot;⋮&quot; → Templates
+        → &quot;Save draft as template&quot;.
       </p>
     );
   }
