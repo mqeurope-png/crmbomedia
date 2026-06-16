@@ -19,6 +19,7 @@ from app.core.auth import require_admin, require_manager
 from app.core.errors import not_found
 from app.db.session import get_session
 from app.models.crm import ExternalSystem, SyncLog, SyncStatus, SyncTrigger, User
+from app.models.integration_settings import IntegrationAccount
 from app.repositories.integration_settings import get_integration_account
 from app.workers.jobs import enqueue_sync_job, is_operation_registered
 
@@ -138,6 +139,94 @@ def _trigger(
         operation=operation,
         status=SyncStatus.PENDING,
     )
+
+
+@router.post(
+    "/_/sync-all",
+    response_model=dict,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def trigger_sync_all(
+    request: Request,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_admin),
+) -> dict[str, Any]:
+    """Sprint Reglas-Assign PR-Db. Lanza una sincronización manual a
+    TODAS las cuentas habilitadas de TODOS los sistemas con un solo
+    click. Crea N SyncLogs (uno por cuenta) y devuelve el resumen para
+    que la UI pueda navegar al listado. Las cuentas deshabilitadas se
+    ignoran silenciosamente (no aparecen en el resumen)."""
+    accounts = list(
+        session.scalars(
+            select(IntegrationAccount).where(
+                IntegrationAccount.enabled.is_(True)
+            )
+        )
+    )
+    enqueued: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    for acc in accounts:
+        operation = _DEFAULT_READ_OPERATION.get(acc.system.value)
+        if not operation:
+            skipped.append(
+                {
+                    "system": acc.system.value,
+                    "account_id": acc.account_id,
+                    "reason": "no_default_operation",
+                }
+            )
+            continue
+        if not is_operation_registered(acc.system.value, operation):
+            skipped.append(
+                {
+                    "system": acc.system.value,
+                    "account_id": acc.account_id,
+                    "reason": "operation_not_registered",
+                }
+            )
+            continue
+        try:
+            sync_log_id, job_id = enqueue_sync_job(
+                session,
+                system=acc.system,
+                account_id=acc.account_id,
+                operation=operation,
+                triggered_by=SyncTrigger.MANUAL,
+                triggered_by_user_id=current_user.id,
+                payload=None,
+                request=request,
+            )
+            enqueued.append(
+                {
+                    "system": acc.system.value,
+                    "account_id": acc.account_id,
+                    "sync_log_id": sync_log_id,
+                    "job_id": job_id,
+                }
+            )
+        except Exception as exc:  # noqa: BLE001 - keep siblings alive
+            skipped.append(
+                {
+                    "system": acc.system.value,
+                    "account_id": acc.account_id,
+                    "reason": "enqueue_failed",
+                    "error": str(exc),
+                }
+            )
+    return {
+        "enqueued_count": len(enqueued),
+        "skipped_count": len(skipped),
+        "enqueued": enqueued,
+        "skipped": skipped,
+    }
+
+
+_DEFAULT_READ_OPERATION: dict[str, str] = {
+    "brevo": "sync_contacts",
+    "agilecrm": "sync_contacts",
+    "freshdesk": "sync_contacts",
+    "factusol": "sync_customers",
+}
 
 
 @router.post(

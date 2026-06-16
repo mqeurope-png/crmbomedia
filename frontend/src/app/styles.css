@@ -6385,3 +6385,17 @@ a.origin-chip:hover { filter: brightness(0.97); }
   background: #dbeafe;
   border-bottom: 2px solid #3b82f6;
 }
+
+/* Sprint Reglas-Assign PR-Db — botón "sync todas las cuentas" */
+.header-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+.spin {
+  animation: spin 1s linear infinite;
+}
