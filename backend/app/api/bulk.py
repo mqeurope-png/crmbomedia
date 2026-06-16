@@ -34,6 +34,7 @@ from app.models.crm import (
     User,
     UserRole,
 )
+from app.repositories import assignments as assignments_repo
 
 router = APIRouter(prefix="/api/contacts", tags=["contacts"])
 logger = logging.getLogger(__name__)
@@ -133,16 +134,30 @@ def _dispatch(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Falta `owner_user_id` en payload.",
             )
-        if session.get(User, owner_id) is None:
+        owner = session.get(User, owner_id)
+        if owner is None or not owner.is_active:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="El owner indicado no existe.",
+                detail="El owner indicado no existe o está inactivo.",
             )
+        # Sprint Reglas-Assign PR-B: el bulk legacy "assign_owner" ahora
+        # mantiene el invariante multi-comercial — pasa por add_assignment
+        # con is_primary=True, que demota la primary previa si la había y
+        # recalcula el caché owner_user_id. La acción semántica sigue
+        # siendo "fijar al responsable", no "borrar secundarios".
         n = 0
         for c in contacts:
-            if c.owner_user_id != owner_id:
-                c.owner_user_id = owner_id
-                n += 1
+            if c.owner_user_id == owner_id:
+                # Ya era primary — nada que tocar.
+                continue
+            assignments_repo.add_assignment(
+                session,
+                contact_id=c.id,
+                user_id=owner_id,
+                is_primary=True,
+                source="manual",
+            )
+            n += 1
         return n
     if body.action == "add_tag":
         tag = _require_tag(session, body.payload.get("tag_id"))

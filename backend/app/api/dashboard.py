@@ -24,6 +24,7 @@ from app.integrations.google_calendar.client import (
 from app.models.crm import (
     ActivityEvent,
     Contact,
+    ContactAssignment,
     ContactPipelineStage,
     Pipeline,
     Task,
@@ -34,6 +35,18 @@ from app.repositories import tasks as tasks_repository
 from app.schemas.crm import TaskRead
 
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
+
+
+def _assigned_to_user_predicate(user_id: str):
+    """Sprint Reglas-Assign PR-B. "Contactos del usuario" ahora incluye
+    primary + secundarios — EXISTS sobre contact_assignments en vez del
+    chequeo escalar contra el caché owner_user_id, que sólo cubre el
+    primary."""
+    return Contact.id.in_(
+        select(ContactAssignment.contact_id).where(
+            ContactAssignment.user_id == user_id
+        )
+    )
 
 
 @router.get("/tasks-pending", response_model=list[TaskRead])
@@ -164,7 +177,7 @@ def pipeline_summary(
             .where(
                 ContactPipelineStage.pipeline_id == pipeline.id,
                 ContactPipelineStage.is_archived.is_(False),
-                Contact.owner_user_id == current_user.id,
+                _assigned_to_user_predicate(current_user.id),
                 Contact.is_active.is_(True),
             )
             .group_by(ContactPipelineStage.stage_id)
@@ -211,7 +224,12 @@ def unattended_leads(
             Contact.commercial_status == "new",
             Contact.created_at >= since,
             or_(
-                Contact.owner_user_id.is_(None),
+                # Sprint Reglas-Assign PR-B: "sin asignar" en multi-comercial
+                # === sin NINGUNA fila en contact_assignments. Antes era
+                # owner_user_id IS NULL; equivalente hoy porque el caché
+                # refleja al primary, pero el filtro semántico correcto es
+                # "no hay assignments en absoluto".
+                ~Contact.id.in_(select(ContactAssignment.contact_id)),
                 Contact.id.not_in(open_task_contact_ids),
             ),
         )
@@ -355,7 +373,7 @@ def recent_email_activity(
         .where(ActivityEvent.event_type.in_(_EMAIL_EVENT_TYPES))
     )
     if scope == "mine":
-        stmt = stmt.where(Contact.owner_user_id == current_user.id)
+        stmt = stmt.where(_assigned_to_user_predicate(current_user.id))
     stmt = stmt.order_by(ActivityEvent.occurred_at.desc()).limit(limit)
     rows = list(session.execute(stmt).all())
     return [

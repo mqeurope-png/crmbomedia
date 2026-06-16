@@ -22,7 +22,8 @@
  *  - búsqueda libre `q` (traducida a `OR(name/email/phone contains q)`
  *    contra el motor genérico, ver `lib/contactsRules.ts`).
  *  - toggle "Solo asignados a mí" (traducido a
- *    `owner_user_id == current_user.id`).
+ *    `assigned_users contains_any [current_user.id]`, que cubre tanto
+ *    al primary como a watchers — PR-B Reglas-Assign).
  *  - sort por cabecera + select dropdown (1 columna).
  *  - paginación offset/limit con PAGE_SIZE=25.
  *  - vistas guardadas (crear, editar inline, duplicar, set-default,

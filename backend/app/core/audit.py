@@ -59,6 +59,10 @@ class Action:
     CONTACT_CREATED = "contact.created"
     CONTACT_UPDATED = "contact.updated"
     CONTACT_DEACTIVATED = "contact.deactivated"
+    # Sprint Reglas-Assign PR-B — multi-asignación de comerciales.
+    CONTACT_ASSIGNMENT_ADDED = "contact.assignment_added"
+    CONTACT_ASSIGNMENT_REMOVED = "contact.assignment_removed"
+    CONTACT_PRIMARY_CHANGED = "contact.primary_changed"
     NOTE_CREATED = "note.created"
     TASK_CREATED = "task.created"
     TASK_UPDATED = "task.updated"
