@@ -36,6 +36,7 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.audit import Action, record_event
 from app.models.crm import (
     AssignmentRule,
     Contact,
@@ -202,7 +203,12 @@ def _apply_rule(
     secondaries: list[str],
 ) -> None:
     """Aplica una regla. Filtra targets inactivos en silencio — la
-    regla siguió match-eando, no se desactiva por un secundario malo."""
+    regla siguió match-eando, no se desactiva por un secundario malo.
+
+    PR-F: escribe `assignment_rule.applied` con `target_id=contact_id`
+    y metadata de la regla. Permite reconstruir "¿por qué este contacto
+    acabó asignado a X?" desde el audit log.
+    """
     source = f"rule:{rule.id}"
     if rule.primary_user_id and _is_user_active(session, rule.primary_user_id):
         assignments_repo.add_assignment(
@@ -224,6 +230,19 @@ def _apply_rule(
             source=source,
             rule_id=rule.id,
         )
+    record_event(
+        session,
+        action=Action.ASSIGNMENT_RULE_APPLIED,
+        target_type="contact",
+        target_id=contact_id,
+        metadata={
+            "rule_id": rule.id,
+            "rule_name": rule.name,
+            "primary_user_id": rule.primary_user_id,
+            "secondary_count": len(secondaries),
+            "source": source,
+        },
+    )
 
 
 def run_rule_over_universe(
