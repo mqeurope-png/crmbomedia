@@ -46,22 +46,40 @@ export default function IntegrationAccountsPage() {
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
   const [modal, setModal] = useState<ModalState>({ kind: "closed" });
   const [syncingAll, setSyncingAll] = useState(false);
+  // QoL post-Notes — checkbox "Sincronización completa". Pasa
+  // `full_sync=true` al backend, que encola con payload {"full_sync":
+  // true}. El handler de cada integración lo respeta para ignorar la
+  // watermark del último sync y re-fetch todo el universo. Útil para
+  // recuperar campos nuevos del mapper (Note1..Note10) en contactos
+  // antiguos.
+  const [fullSync, setFullSync] = useState(false);
 
   const isAdmin = user?.role === "admin";
 
   async function onSyncAll() {
+    if (
+      fullSync &&
+      !window.confirm(
+        "Esto re-procesa TODOS los contactos de TODAS las cuentas habilitadas. Puede tardar varias horas. ¿Continuar?",
+      )
+    ) {
+      return;
+    }
     setSyncingAll(true);
     setError(null);
     setMessage(null);
     try {
-      const result = await triggerSyncAllAccounts();
+      const result = await triggerSyncAllAccounts({ fullSync });
       const enq = result.enqueued_count;
       const skp = result.skipped_count;
       const skipNote = skp > 0 ? ` (${skp} sin operación o ya en curso)` : "";
+      const kind = result.full_sync ? "Full sync" : "Sincronización";
       setMessage(
-        `Sincronización lanzada para ${enq} cuenta${enq === 1 ? "" : "s"}` +
+        `${kind} lanzada para ${enq} cuenta${enq === 1 ? "" : "s"} activa${
+          enq === 1 ? "" : "s"
+        }` +
           skipNote +
-          ". Mira el progreso desde cada cuenta o el listado de sync-logs."
+          ". Mira el progreso desde cada cuenta o el listado de sync-logs.",
       );
     } catch (err) {
       setError(
@@ -166,6 +184,18 @@ export default function IntegrationAccountsPage() {
         actions={
           isAdmin ? (
             <div className="header-actions">
+              <label
+                className="checkbox-inline small"
+                title="Re-fetch completo: ignora la watermark del último sync y procesa todo el universo. Recomendado tras cambios del mapper (p.ej. recuperar Note1..Note10 históricas)."
+              >
+                <input
+                  type="checkbox"
+                  checked={fullSync}
+                  disabled={syncingAll}
+                  onChange={(e) => setFullSync(e.target.checked)}
+                />
+                Sync completa
+              </label>
               <button
                 type="button"
                 className="button small secondary"
@@ -178,7 +208,11 @@ export default function IntegrationAccountsPage() {
                   aria-hidden
                   className={syncingAll ? "spin" : undefined}
                 />{" "}
-                {syncingAll ? "Sincronizando…" : "Sincronizar todas las cuentas"}
+                {syncingAll
+                  ? "Sincronizando…"
+                  : fullSync
+                  ? "Re-fetch completo (full sync)"
+                  : "Sincronizar todas las cuentas"}
               </button>
               <button
                 type="button"
