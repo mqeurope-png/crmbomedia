@@ -7,8 +7,10 @@ import { ErrorState } from "../../components/ErrorState";
 import { PageHeader } from "../../components/PageHeader";
 import {
   createBrevoList,
+  deleteBrevoList,
   listBrevoLists,
   resolvePrimaryBrevoAccount,
+  updateBrevoList,
   type BrevoList,
 } from "../../lib/brevoApi";
 import { extractErrorMessage } from "../../lib/errors";
@@ -22,6 +24,12 @@ export default function MarketingListsPage() {
   const [refreshing, setRefreshing] = useState(false);
   const [query, setQuery] = useState("");
   const [showCreate, setShowCreate] = useState(false);
+  // Deuda #2: Renombrar/Borrar inline aquí desde que el detalle de
+  // /marketing/listas/[id] pasó a ser una redirección pura a /contacts.
+  // Estado mínimo: id de la lista en modo "rename" + valor del input.
+  const [renamingId, setRenamingId] = useState<number | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const [working, setWorking] = useState(false);
 
   const load = useCallback(async (account: string) => {
     try {
@@ -60,6 +68,43 @@ export default function MarketingListsPage() {
       setShowCreate(false);
     } catch (err) {
       setError(extractErrorMessage(err, "No se pudo crear la lista."));
+    }
+  }
+
+  async function handleRename(list: BrevoList) {
+    if (!accountId || !renameValue.trim() || renameValue.trim() === list.name) {
+      setRenamingId(null);
+      return;
+    }
+    setWorking(true);
+    try {
+      await updateBrevoList(accountId, list.id, { name: renameValue.trim() });
+      await load(accountId);
+      setRenamingId(null);
+    } catch (err) {
+      setError(extractErrorMessage(err, "No se pudo renombrar."));
+    } finally {
+      setWorking(false);
+    }
+  }
+
+  async function handleDelete(list: BrevoList) {
+    if (!accountId) return;
+    if (
+      !confirm(
+        `Borrar la lista "${list.name}" de Brevo. Los contactos no se borran, solo la lista. ¿Continuar?`,
+      )
+    ) {
+      return;
+    }
+    setWorking(true);
+    try {
+      await deleteBrevoList(accountId, list.id);
+      await load(accountId);
+    } catch (err) {
+      setError(extractErrorMessage(err, "No se pudo borrar."));
+    } finally {
+      setWorking(false);
     }
   }
 
@@ -150,39 +195,107 @@ export default function MarketingListsPage() {
                 <th style={{ textAlign: "right" }}>Únicos</th>
                 <th style={{ textAlign: "right" }}>Blacklist</th>
                 <th>Folder</th>
-                <th />
+                <th style={{ textAlign: "right" }}>Acciones</th>
               </tr>
             </thead>
             <tbody>
-              {filtered.map((list) => (
-                <tr key={list.id}>
-                  <td>
-                    <Link href={`/marketing/listas/${list.id}`}>{list.name}</Link>
-                  </td>
-                  <td style={{ textAlign: "right" }}>
-                    {list.total_subscribers.toLocaleString("es-ES")}
-                  </td>
-                  <td style={{ textAlign: "right" }}>
-                    {list.unique_subscribers != null
-                      ? list.unique_subscribers.toLocaleString("es-ES")
-                      : "—"}
-                  </td>
-                  <td style={{ textAlign: "right" }}>
-                    {list.total_blacklisted != null
-                      ? list.total_blacklisted.toLocaleString("es-ES")
-                      : "—"}
-                  </td>
-                  <td>{list.folder_id ?? "—"}</td>
-                  <td style={{ textAlign: "right" }}>
-                    <Link
-                      href={`/marketing/listas/${list.id}`}
-                      className="muted small"
-                    >
-                      Ver contactos →
-                    </Link>
-                  </td>
-                </tr>
-              ))}
+              {filtered.map((list) => {
+                const isRenaming = renamingId === list.id;
+                return (
+                  <tr key={list.id}>
+                    <td>
+                      {isRenaming ? (
+                        <form
+                          onSubmit={(e) => {
+                            e.preventDefault();
+                            handleRename(list);
+                          }}
+                          style={{ display: "flex", gap: 6 }}
+                        >
+                          <input
+                            type="text"
+                            value={renameValue}
+                            onChange={(e) => setRenameValue(e.target.value)}
+                            maxLength={200}
+                            autoFocus
+                            disabled={working}
+                          />
+                          <button
+                            type="submit"
+                            className="button small"
+                            disabled={working || !renameValue.trim()}
+                          >
+                            Guardar
+                          </button>
+                          <button
+                            type="button"
+                            className="button secondary small"
+                            onClick={() => setRenamingId(null)}
+                            disabled={working}
+                          >
+                            Cancelar
+                          </button>
+                        </form>
+                      ) : (
+                        <Link href={`/marketing/listas/${list.id}`}>
+                          {list.name}
+                        </Link>
+                      )}
+                    </td>
+                    <td style={{ textAlign: "right" }}>
+                      {list.total_subscribers.toLocaleString("es-ES")}
+                    </td>
+                    <td style={{ textAlign: "right" }}>
+                      {list.unique_subscribers != null
+                        ? list.unique_subscribers.toLocaleString("es-ES")
+                        : "—"}
+                    </td>
+                    <td style={{ textAlign: "right" }}>
+                      {list.total_blacklisted != null
+                        ? list.total_blacklisted.toLocaleString("es-ES")
+                        : "—"}
+                    </td>
+                    <td>{list.folder_id ?? "—"}</td>
+                    <td style={{ textAlign: "right" }}>
+                      {!isRenaming ? (
+                        <div
+                          style={{
+                            display: "inline-flex",
+                            gap: 8,
+                            alignItems: "center",
+                          }}
+                        >
+                          <Link
+                            href={`/marketing/listas/${list.id}`}
+                            className="muted small"
+                          >
+                            Ver contactos →
+                          </Link>
+                          <button
+                            type="button"
+                            className="button secondary small"
+                            onClick={() => {
+                              setRenamingId(list.id);
+                              setRenameValue(list.name);
+                            }}
+                            disabled={working}
+                          >
+                            Renombrar
+                          </button>
+                          <button
+                            type="button"
+                            className="button secondary small danger"
+                            onClick={() => handleDelete(list)}
+                            disabled={working}
+                          >
+                            Borrar
+                          </button>
+                        </div>
+                      ) : null}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </article>
