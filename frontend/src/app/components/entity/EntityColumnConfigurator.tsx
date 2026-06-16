@@ -1,15 +1,38 @@
 "use client";
 
 /**
- * Sprint Filtros & Listas (PR-C) — popover para mostrar/ocultar y
- * reordenar columnas de un `<EntityTable>`.
+ * Sprint Filtros & Listas (PR-Eb) — popover de configuración de
+ * columnas con drag-and-drop real vía `@dnd-kit/sortable`.
  *
- * Generalización del `ColumnConfigurator` específico de contactos.
- * El listado de columnas viene del `filter-schema` de la entidad
- * (solo campos con `displayable: true`). El callback `onApply` emite
- * el nuevo array de keys visibles en orden — la pantalla decide si lo
- * persiste en `entity_views.columns_json` o en localStorage.
+ * Antes (PR-C) el reorden era con HTML5 drag-and-drop nativo, que
+ * en algunos navegadores se quedaba pegado o no daba el feedback
+ * correcto. Bart pidió drag-drop con feedback visual claro y orden
+ * que persista en la vista guardada / localStorage. dnd-kit ya
+ * estaba instalado para `/pipelines/[id]/edit-stages` así que no
+ * añade peso al bundle.
+ *
+ * El listado del configurator muestra:
+ *  - Columnas visibles primero, en su orden actual, con drag handle.
+ *  - Columnas ocultas después, sin drag handle (toggle del checkbox
+ *    las mueve al final de las visibles).
+ *  - El padre recibe el array `visible` ordenado en `onApply`.
  */
+import {
+  DndContext,
+  closestCenter,
+  KeyboardSensor,
+  PointerSensor,
+  type DragEndEvent,
+  useSensor,
+  useSensors,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import { Check, GripVertical, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import type { FieldDescriptor } from "../../lib/entitySchema";
@@ -27,34 +50,36 @@ export function EntityColumnConfigurator({
   onApply,
   onClose,
 }: Props) {
-  // Local draft so cancelling discards changes. Initialised once per open.
+  // Local draft so cancelling discards changes.
   const [draft, setDraft] = useState<string[]>(visible);
-  const [dragKey, setDragKey] = useState<string | null>(null);
   useEffect(() => setDraft(visible), [visible]);
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, {
+      // Activation distance pequeño pero >0 evita "clicks accidentales"
+      // que dispararían drag al togglear el checkbox.
+      activationConstraint: { distance: 4 },
+    }),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    }),
+  );
 
   const displayable = useMemo(
     () => fields.filter((f) => f.displayable),
     [fields],
   );
+  const fieldByKey = useMemo(() => {
+    const out: Record<string, FieldDescriptor> = {};
+    for (const f of displayable) out[f.key] = f;
+    return out;
+  }, [displayable]);
 
   const visibleSet = useMemo(() => new Set(draft), [draft]);
-
-  // Ordered list = draft (visible) first, then non-visible in the
-  // order they appear in the schema. Always-visible fields (like a
-  // primary "name" column on contacts) are not forced here; the
-  // schema doesn't model `alwaysVisible` yet, so we rely on the
-  // entity's spec design to put critical fields first.
-  const ordered = useMemo(() => {
-    const out: { key: string; visible: boolean; field: FieldDescriptor }[] = [];
-    for (const key of draft) {
-      const field = displayable.find((f) => f.key === key);
-      if (field) out.push({ key, visible: true, field });
-    }
-    for (const f of displayable) {
-      if (!visibleSet.has(f.key)) out.push({ key: f.key, visible: false, field: f });
-    }
-    return out;
-  }, [draft, displayable, visibleSet]);
+  const hiddenKeys = useMemo(
+    () => displayable.filter((f) => !visibleSet.has(f.key)).map((f) => f.key),
+    [displayable, visibleSet],
+  );
 
   function toggle(key: string) {
     setDraft((cur) =>
@@ -62,22 +87,18 @@ export function EntityColumnConfigurator({
     );
   }
 
-  function handleDrop(targetKey: string) {
-    if (!dragKey || dragKey === targetKey) return;
+  function handleDragEnd(event: DragEndEvent) {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
     setDraft((cur) => {
-      const without = cur.filter((k) => k !== dragKey);
-      const targetIdx = without.indexOf(targetKey);
-      if (targetIdx === -1) {
-        // dropping onto a hidden row → put dragged at the end of visible
-        return [...without, dragKey];
-      }
-      return [
-        ...without.slice(0, targetIdx),
-        dragKey,
-        ...without.slice(targetIdx),
-      ];
+      const oldIdx = cur.indexOf(String(active.id));
+      const newIdx = cur.indexOf(String(over.id));
+      if (oldIdx === -1 || newIdx === -1) return cur;
+      const next = cur.slice();
+      next.splice(oldIdx, 1);
+      next.splice(newIdx, 0, String(active.id));
+      return next;
     });
-    setDragKey(null);
   }
 
   return (
@@ -93,44 +114,71 @@ export function EntityColumnConfigurator({
           <X size={14} />
         </button>
       </header>
-      <ul className="entity-column-configurator-list">
-        {ordered.map(({ key, visible: isVisible, field }) => (
-          <li
-            key={key}
-            className={`entity-column-row${isVisible ? " is-visible" : ""}`}
-            draggable={isVisible}
-            onDragStart={() => setDragKey(key)}
-            onDragOver={(e) => {
-              if (dragKey && isVisible) e.preventDefault();
-            }}
-            onDrop={() => handleDrop(key)}
-          >
-            <button
-              type="button"
-              className="entity-column-toggle"
-              onClick={() => toggle(key)}
-              aria-pressed={isVisible}
-            >
-              {isVisible ? <Check size={12} /> : <span className="entity-column-toggle-blank" />}
-            </button>
-            {isVisible ? (
-              <GripVertical
-                size={12}
-                className="entity-column-grip"
-                aria-hidden
-              />
-            ) : (
-              <span className="entity-column-grip-spacer" aria-hidden />
-            )}
-            <span className="entity-column-label">{field.label}</span>
-            {field.grouped_under ? (
-              <span className="entity-column-group muted small">
-                {field.grouped_under}
-              </span>
-            ) : null}
-          </li>
-        ))}
-      </ul>
+
+      <DndContext
+        sensors={sensors}
+        collisionDetection={closestCenter}
+        onDragEnd={handleDragEnd}
+      >
+        <SortableContext items={draft} strategy={verticalListSortingStrategy}>
+          <ul className="entity-column-configurator-list">
+            {draft.map((key) => {
+              const field = fieldByKey[key];
+              if (!field) return null;
+              return (
+                <SortableRow
+                  key={key}
+                  id={key}
+                  field={field}
+                  isVisible
+                  onToggle={() => toggle(key)}
+                />
+              );
+            })}
+          </ul>
+        </SortableContext>
+      </DndContext>
+
+      {hiddenKeys.length > 0 ? (
+        <>
+          <p className="entity-column-section-label muted small">
+            Ocultas
+          </p>
+          <ul className="entity-column-configurator-list">
+            {hiddenKeys.map((key) => {
+              const field = fieldByKey[key];
+              if (!field) return null;
+              return (
+                <li
+                  key={key}
+                  className="entity-column-row"
+                  onClick={() => toggle(key)}
+                >
+                  <button
+                    type="button"
+                    className="entity-column-toggle"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      toggle(key);
+                    }}
+                    aria-pressed={false}
+                  >
+                    <span className="entity-column-toggle-blank" />
+                  </button>
+                  <span className="entity-column-grip-spacer" aria-hidden />
+                  <span className="entity-column-label">{field.label}</span>
+                  {field.grouped_under ? (
+                    <span className="entity-column-group muted small">
+                      {field.grouped_under}
+                    </span>
+                  ) : null}
+                </li>
+              );
+            })}
+          </ul>
+        </>
+      ) : null}
+
       <footer className="entity-column-configurator-actions">
         <button
           type="button"
@@ -151,5 +199,64 @@ export function EntityColumnConfigurator({
         </button>
       </footer>
     </div>
+  );
+}
+
+function SortableRow({
+  id,
+  field,
+  isVisible,
+  onToggle,
+}: {
+  id: string;
+  field: FieldDescriptor;
+  isVisible: boolean;
+  onToggle: () => void;
+}) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id });
+
+  const style: React.CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : 1,
+  };
+
+  return (
+    <li
+      ref={setNodeRef}
+      style={style}
+      className={`entity-column-row is-visible${isDragging ? " is-dragging" : ""}`}
+    >
+      <button
+        type="button"
+        className="entity-column-toggle"
+        onClick={onToggle}
+        aria-pressed={isVisible}
+      >
+        <Check size={12} />
+      </button>
+      <button
+        type="button"
+        className="entity-column-grip-button"
+        aria-label={`Reordenar ${field.label}`}
+        {...attributes}
+        {...listeners}
+      >
+        <GripVertical size={12} aria-hidden />
+      </button>
+      <span className="entity-column-label">{field.label}</span>
+      {field.grouped_under ? (
+        <span className="entity-column-group muted small">
+          {field.grouped_under}
+        </span>
+      ) : null}
+    </li>
   );
 }

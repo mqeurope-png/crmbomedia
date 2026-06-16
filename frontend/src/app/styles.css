@@ -6271,3 +6271,50 @@ a.origin-chip:hover { filter: brightness(0.97); }
 .picker-group-header:hover {
   background: #f1f5f9;
 }
+
+/* PR-Eb — botones del editor de vista. Pegado al patrón existente
+ * `.modal-dialog` + `.modal-form` (definido más arriba). */
+.modal-dialog-form {
+  padding: 24px;
+}
+.modal-dialog-form .modal-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 16px;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+.modal-dialog-form .form-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+
+/* PR-Eb — drag-reorder feedback */
+.entity-column-row.is-dragging {
+  background: #dbeafe;
+  border: 1px dashed #3b82f6;
+}
+.entity-column-grip-button {
+  background: transparent;
+  border: 0;
+  cursor: grab;
+  color: #94a3b8;
+  padding: 0 4px;
+}
+.entity-column-grip-button:active {
+  cursor: grabbing;
+}
+.entity-column-section-label {
+  margin: 8px 4px 4px;
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.05em;
+}
+.entity-table-th.is-dragging {
+  background: #dbeafe;
+  border-bottom: 2px solid #3b82f6;
+}

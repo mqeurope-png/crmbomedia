@@ -20,11 +20,28 @@
  * URL state en la pantalla, donde tiene sentido para PR-E/F/G/H.
  */
 import {
+  DndContext,
+  closestCenter,
+  KeyboardSensor,
+  PointerSensor,
+  type DragEndEvent,
+  useSensor,
+  useSensors,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  horizontalListSortingStrategy,
+  sortableKeyboardCoordinates,
+  useSortable,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+import {
   createColumnHelper,
   flexRender,
   getCoreRowModel,
   useReactTable,
   type ColumnDef,
+  type Header,
 } from "@tanstack/react-table";
 import { ArrowDown, ArrowUp, ArrowUpDown, Settings } from "lucide-react";
 import { useMemo, useState } from "react";
@@ -243,6 +260,28 @@ export function EntityTable({
     onSortChange(null); // back to default
   }
 
+  // PR-Eb: drag-reorder de columnas desde los headers. dnd-kit ya
+  // está en package.json. PointerSensor activación a 6px evita
+  // confundir un click de sort con un drag accidental.
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    }),
+  );
+
+  function handleHeaderDragEnd(event: DragEndEvent) {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+    const oldIdx = visibleColumns.indexOf(String(active.id));
+    const newIdx = visibleColumns.indexOf(String(over.id));
+    if (oldIdx === -1 || newIdx === -1) return;
+    const next = visibleColumns.slice();
+    next.splice(oldIdx, 1);
+    next.splice(newIdx, 0, String(active.id));
+    onVisibleColumnsChange(next);
+  }
+
   return (
     <div className="entity-table-wrapper">
       <div className="entity-table-toolbar">
@@ -273,57 +312,47 @@ export function EntityTable({
 
       <table className="entity-table">
         <thead>
-          {table.getHeaderGroups().map((hg) => (
-            <tr key={hg.id}>
-              {hg.headers.map((header) => {
-                const headerCol = header.column.id;
-                const field = fieldByKey[headerCol];
-                const isSelectCol = headerCol === "_select";
-                const isActiveSort = sort?.field === headerCol;
-                return (
-                  <th
-                    key={header.id}
-                    className={`entity-table-th${
-                      field?.sortable ? " is-sortable" : ""
-                    }${isActiveSort ? " is-active-sort" : ""}`}
-                    onClick={
-                      field?.sortable ? () => cycleSort(field) : undefined
+          <DndContext
+            sensors={sensors}
+            collisionDetection={closestCenter}
+            onDragEnd={handleHeaderDragEnd}
+          >
+            <SortableContext
+              items={visibleColumns}
+              strategy={horizontalListSortingStrategy}
+            >
+              {table.getHeaderGroups().map((hg) => (
+                <tr key={hg.id}>
+                  {hg.headers.map((header) => {
+                    const headerCol = header.column.id;
+                    const field = fieldByKey[headerCol];
+                    const isSelectCol = headerCol === "_select";
+                    if (isSelectCol) {
+                      return (
+                        <th key={header.id} className="entity-table-th">
+                          <span className="entity-table-th-inner">
+                            {flexRender(
+                              header.column.columnDef.header,
+                              header.getContext(),
+                            )}
+                          </span>
+                        </th>
+                      );
                     }
-                    aria-sort={
-                      isActiveSort
-                        ? sort.direction === "asc"
-                          ? "ascending"
-                          : "descending"
-                        : undefined
-                    }
-                  >
-                    <span className="entity-table-th-inner">
-                      {isSelectCol
-                        ? flexRender(
-                            header.column.columnDef.header,
-                            header.getContext(),
-                          )
-                        : flexRender(
-                            header.column.columnDef.header,
-                            header.getContext(),
-                          )}
-                      {field?.sortable ? (
-                        isActiveSort ? (
-                          sort.direction === "asc" ? (
-                            <ArrowUp size={11} aria-hidden />
-                          ) : (
-                            <ArrowDown size={11} aria-hidden />
-                          )
-                        ) : (
-                          <ArrowUpDown size={11} aria-hidden className="muted" />
-                        )
-                      ) : null}
-                    </span>
-                  </th>
-                );
-              })}
-            </tr>
-          ))}
+                    return (
+                      <SortableHeader
+                        key={header.id}
+                        header={header}
+                        field={field}
+                        sort={sort}
+                        onCycleSort={cycleSort}
+                      />
+                    );
+                  })}
+                </tr>
+              ))}
+            </SortableContext>
+          </DndContext>
         </thead>
         <tbody>
           {table.getRowModel().rows.length === 0 ? (
@@ -382,5 +411,75 @@ export function EntityTable({
         </button>
       </nav>
     </div>
+  );
+}
+
+/**
+ * Header reordenable (PR-Eb). Mismo render que el header normal +
+ * los atributos de dnd-kit. La activación a 6px de PointerSensor
+ * desambigua el click-para-sort del drag-para-reorder.
+ */
+function SortableHeader({
+  header,
+  field,
+  sort,
+  onCycleSort,
+}: {
+  header: Header<Row, unknown>;
+  field: FieldDescriptor | undefined;
+  sort: SortState | null;
+  onCycleSort: (field: FieldDescriptor) => void;
+}) {
+  const id = header.column.id;
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id });
+
+  const style: React.CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : 1,
+    position: "relative",
+  };
+
+  const isActiveSort = sort?.field === id;
+  return (
+    <th
+      ref={setNodeRef}
+      style={style}
+      className={`entity-table-th${
+        field?.sortable ? " is-sortable" : ""
+      }${isActiveSort ? " is-active-sort" : ""}${isDragging ? " is-dragging" : ""}`}
+      onClick={field?.sortable ? () => onCycleSort(field) : undefined}
+      aria-sort={
+        isActiveSort
+          ? sort.direction === "asc"
+            ? "ascending"
+            : "descending"
+          : undefined
+      }
+      {...attributes}
+      {...listeners}
+    >
+      <span className="entity-table-th-inner">
+        {flexRender(header.column.columnDef.header, header.getContext())}
+        {field?.sortable ? (
+          isActiveSort ? (
+            sort.direction === "asc" ? (
+              <ArrowUp size={11} aria-hidden />
+            ) : (
+              <ArrowDown size={11} aria-hidden />
+            )
+          ) : (
+            <ArrowUpDown size={11} aria-hidden className="muted" />
+          )
+        ) : null}
+      </span>
+    </th>
   );
 }
