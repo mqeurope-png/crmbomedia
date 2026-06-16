@@ -63,6 +63,12 @@ class Action:
     CONTACT_ASSIGNMENT_ADDED = "contact.assignment_added"
     CONTACT_ASSIGNMENT_REMOVED = "contact.assignment_removed"
     CONTACT_PRIMARY_CHANGED = "contact.primary_changed"
+    # Sprint Reglas-Assign PR-C — motor de auto-asignación.
+    ASSIGNMENT_RULE_CREATED = "assignment_rule.created"
+    ASSIGNMENT_RULE_UPDATED = "assignment_rule.updated"
+    ASSIGNMENT_RULE_DELETED = "assignment_rule.deleted"
+    ASSIGNMENT_RULE_AUTO_DISABLED = "assignment_rule.auto_disabled"
+    ASSIGNMENT_RULE_RUN = "assignment_rule.run"
     NOTE_CREATED = "note.created"
     TASK_CREATED = "task.created"
     TASK_UPDATED = "task.updated"

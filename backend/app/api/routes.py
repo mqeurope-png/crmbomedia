@@ -72,6 +72,7 @@ from app.repositories import crm as crm_repository
 from app.repositories import pipelines as pipelines_repository
 from app.repositories import segments as segments_repository
 from app.workers.jobs import enqueue_sync_job
+from app.services import assignment_rules as assignment_rules_engine
 from app.services import llm as llm_service
 from app.services import pipeline_templates as pipeline_templates_service
 from app.services.email import EmailService, get_email_service
@@ -1208,6 +1209,12 @@ def create_contact(
         actor=current_user,
         metadata={"email": contact.email},
         request=request,
+    )
+    # Sprint Reglas-Assign PR-C — fire-on-create del motor de reglas.
+    # Antes del commit: las assignments + audit rows entran en la misma
+    # transacción que el CONTACT_CREATED. El motor no commitea él mismo.
+    assignment_rules_engine.evaluate_for_contact(
+        session, contact, trigger="manual"
     )
     session.commit()
     session.refresh(contact)

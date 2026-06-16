@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from app.api.assignment_rules import router as assignment_rules_router
 from app.api.bulk import router as bulk_router
 from app.api.companies import assign_router as contacts_assign_router
 from app.api.companies import router as companies_router
@@ -70,6 +71,7 @@ app.include_router(contacts_assign_router)
 app.include_router(contact_channels_router)
 app.include_router(contact_notes_router)
 app.include_router(contact_assignments_router)
+app.include_router(assignment_rules_router)
 app.include_router(entities_router)
 app.include_router(entity_views_router)
 app.include_router(router, prefix="/api")

@@ -44,6 +44,7 @@ from app.models.crm import (
     Tag,
 )
 from app.models.integration_settings import IntegrationAccount
+from app.services import assignment_rules as assignment_rules_engine
 from app.services.company_extraction import (
     extract_company_domain,
     normalise_domain,
@@ -429,6 +430,12 @@ def upsert_brevo_contact(
         reconcile_brevo_channels(
             session, contact_id=contact.id, payload=payload
         )
+    )
+    # Sprint Reglas-Assign PR-C — fresh-create trigger del motor.
+    # Solo en la rama "created" (este código); las actualizaciones de
+    # contactos ya existentes NO disparan reglas (decisión §2 spec).
+    assignment_rules_engine.evaluate_for_contact(
+        session, contact, trigger="brevo:create"
     )
     session.flush()
     return ("created", contact.id)
