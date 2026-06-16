@@ -262,79 +262,17 @@ export type SavedViewSort = {
   sort_dir: "asc" | "desc";
 };
 
-export type SavedView = {
-  id: string;
-  name: string;
-  description?: string | null;
-  owner_user_id: string;
-  is_owner: boolean;
-  is_shared: boolean;
-  is_default: boolean;
-  filters: SavedViewFilters;
-  columns: SavedViewColumns;
-  sort: SavedViewSort;
-  created_at: string;
-  updated_at: string;
-};
-
-export async function listSavedViews(): Promise<SavedView[]> {
-  return apiFetch<SavedView[]>("/api/contact-views");
-}
-
-export async function createSavedView(payload: {
-  name: string;
-  description?: string | null;
-  is_shared?: boolean;
-  is_default?: boolean;
-  filters: SavedViewFilters;
-  columns: SavedViewColumns;
-  sort: SavedViewSort;
-}): Promise<SavedView> {
-  return apiFetch<SavedView>("/api/contact-views", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  });
-}
-
-export async function updateSavedView(
-  id: string,
-  payload: Partial<{
-    name: string;
-    description: string | null;
-    is_shared: boolean;
-    is_default: boolean;
-    filters: SavedViewFilters;
-    columns: SavedViewColumns;
-    sort: SavedViewSort;
-  }>,
-): Promise<SavedView> {
-  return apiFetch<SavedView>(`/api/contact-views/${id}`, {
-    method: "PATCH",
-    body: JSON.stringify(payload),
-  });
-}
-
-export async function deleteSavedView(id: string): Promise<{ message: string }> {
-  return apiFetch<{ message: string }>(`/api/contact-views/${id}`, {
-    method: "DELETE",
-  });
-}
-
-export async function duplicateSavedView(
-  id: string,
-  payload: { name?: string } = {},
-): Promise<SavedView> {
-  return apiFetch<SavedView>(`/api/contact-views/${id}/duplicate`, {
-    method: "POST",
-    body: JSON.stringify(payload),
-  });
-}
-
-export async function setDefaultSavedView(id: string): Promise<SavedView> {
-  return apiFetch<SavedView>(`/api/contact-views/${id}/set-default`, {
-    method: "POST",
-  });
-}
+// PR-H: las funciones `listSavedViews / createSavedView / …` que
+// servían a `/api/contact-views` se quitaron al cerrar el Sprint
+// Filtros & Listas. La pantalla nueva de `/contacts` usa
+// `lib/entityViewsApi.ts` contra `/api/entity-views/contact`. Los
+// types `SavedView*` legacy también se retiraron.
+//
+// Excepción: `saveViewAsSegment` y `pushViewToBrevoList` (más abajo)
+// siguen vivas porque la pantalla nueva usa esos dos bridges
+// `/api/contact-views/{id}/{save-as-segment|push-to-brevo-list}` —
+// comparten tabla con entity_views y operan sobre cualquier view_id
+// con `entity_type='contact'`.
 
 export type ContactListPage = {
   items: Contact[];
@@ -493,43 +431,13 @@ export async function listContacts(
   return apiFetch<ContactListPage>(`/api/contacts${query ? `?${query}` : ""}`);
 }
 
-export type ContactSearchPayload = {
-  rules_json?: Record<string, unknown> | null;
-  q?: string | null;
-  sort_by?: string;
-  sort_dir?: "asc" | "desc";
-  limit?: number;
-  offset?: number;
-  include_inactive?: boolean;
-  /** Mini-PR C Fase 3: "leads asignados a mí" toggle. Backend AND's
-   *  `Contact.owner_user_id == current_user.id` into the query. */
-  assigned_to_me?: boolean;
-};
+// PR-H: `searchContacts` y `searchContactIds` (legacy
+// `/api/contacts/search` y `/search/ids`) se retiraron junto con
+// los types `ContactSearchPayload` / `ContactSearchIdsResult` —
+// la pantalla nueva usa `searchEntity('contact', …)` y
+// `searchEntityIds('contact', …)` de `lib/entitySchema.ts`. Los
+// endpoints backend siguen vivos por compatibilidad con tests.
 
-export async function searchContacts(
-  payload: ContactSearchPayload,
-): Promise<ContactListPage> {
-  return apiFetch<ContactListPage>("/api/contacts/search", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  });
-}
-
-export type ContactSearchIdsResult = {
-  ids: string[];
-  count: number;
-  truncated: boolean;
-  max_ids: number;
-};
-
-export async function searchContactIds(
-  payload: ContactSearchPayload,
-): Promise<ContactSearchIdsResult> {
-  return apiFetch<ContactSearchIdsResult>("/api/contacts/search/ids", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  });
-}
 
 export async function saveViewAsSegment(
   viewId: string,
