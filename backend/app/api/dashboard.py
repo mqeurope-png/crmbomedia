@@ -11,7 +11,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.auth import require_viewer
@@ -27,7 +27,6 @@ from app.models.crm import (
     ContactAssignment,
     ContactPipelineStage,
     Pipeline,
-    Task,
     TaskStatus,
     User,
 )
@@ -210,28 +209,24 @@ def unattended_leads(
 ) -> list[dict[str, Any]]:
     """Contacts marked `new` created in the last 14 days that nobody
     owns AND have no open task. The widget calls these "leads sin
-    atender"."""
+    atender".
+
+    Sprint Reglas-Assign PR-D: cambio de OR a AND. La versión legacy
+    incluía cualquier contacto sin tareas abiertas, así que tras pulsar
+    "Asignarme" en el widget el lead seguía apareciendo (no tenía
+    tareas). Con multi-comercial el indicador correcto es: "no hay
+    NINGUNA asignación". Las tareas abiertas dejan de ser señal de
+    atención (las gestiona el widget de tareas separado).
+    """
     _ = current_user
     since = datetime.now(UTC) - timedelta(days=14)
-    open_task_contact_ids = select(Task.contact_id).where(
-        Task.contact_id.is_not(None),
-        Task.status.in_([TaskStatus.PENDING, TaskStatus.IN_PROGRESS]),
-    )
     stmt = (
         select(Contact)
         .where(
             Contact.is_active.is_(True),
             Contact.commercial_status == "new",
             Contact.created_at >= since,
-            or_(
-                # Sprint Reglas-Assign PR-B: "sin asignar" en multi-comercial
-                # === sin NINGUNA fila en contact_assignments. Antes era
-                # owner_user_id IS NULL; equivalente hoy porque el caché
-                # refleja al primary, pero el filtro semántico correcto es
-                # "no hay assignments en absoluto".
-                ~Contact.id.in_(select(ContactAssignment.contact_id)),
-                Contact.id.not_in(open_task_contact_ids),
-            ),
+            ~Contact.id.in_(select(ContactAssignment.contact_id)),
         )
         .order_by(Contact.created_at.desc())
         .limit(limit)

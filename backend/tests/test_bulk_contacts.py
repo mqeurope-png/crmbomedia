@@ -5,7 +5,7 @@ from collections.abc import Generator
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -177,10 +177,13 @@ def test_deactivate_only_admin(
 
 
 def test_bulk_rejects_oversized_selection(client: TestClient) -> None:
+    """Sprint Reglas-Assign PR-D — el cap subió de 1000 a 50000. Sigue
+    siendo un seguro de memoria contra requests maliciosas; el límite
+    real lo aplica el chunking server-side de la operación."""
     resp = client.post(
         "/api/contacts/bulk-action",
         json={
-            "contact_ids": [f"x-{i}" for i in range(1001)],
+            "contact_ids": [f"x-{i}" for i in range(50_001)],
             "action": "change_status",
             "payload": {"new_status": "qualified"},
         },
@@ -229,3 +232,49 @@ def test_search_ids_respects_assigned_to_me(
     )
     assert response.status_code == 200
     assert response.json()["count"] == 1
+
+
+def test_bulk_assign_owner_handles_more_than_1000(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    """Sprint Reglas-Assign PR-D — el bulk antes capaba a 1000. Ahora
+    50000 con chunks server-side de 500. Genera 1500 contactos y
+    verifica que se asignan todos en una sola request."""
+    with session_factory() as s:
+        owner_id = s.scalar(select(User.id).where(User.role == UserRole.USER))
+        rows = [
+            Contact(
+                first_name=f"Bulk{i:04d}",
+                email=f"bulk_{i:04d}@example.com",
+                tags="",
+                commercial_status="new",
+            )
+            for i in range(1500)
+        ]
+        s.add_all(rows)
+        s.commit()
+        ids = [c.id for c in rows]
+
+    response = client.post(
+        "/api/contacts/bulk-action",
+        json={
+            "contact_ids": ids,
+            "action": "assign_owner",
+            "payload": {"owner_user_id": owner_id},
+        },
+        headers=auth_headers(client, "manager"),
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["affected_count"] == 1500
+    assert len(body["contact_ids"]) == 1500
+
+    from app.models.crm import ContactAssignment  # noqa: PLC0415
+
+    with session_factory() as s:
+        assigned = s.scalar(
+            select(func.count(ContactAssignment.id)).where(
+                ContactAssignment.user_id == owner_id
+            )
+        )
+        assert assigned == 1500
