@@ -254,6 +254,57 @@ def delete_rule(
 
 
 @router.post(
+    "/preview", response_model=AssignmentRuleDryRun
+)
+def preview_rule(
+    payload: AssignmentRuleWrite,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_manager),
+) -> AssignmentRuleDryRun:
+    """PR-E: dry-run para REGLAS NO GUARDADAS. La UI del editor lo
+    llama mientras el operador edita conditions / primary / apply_to
+    para mostrar "X contactos matchean ahora" sin tener que crear la
+    regla primero.
+
+    Construye un `AssignmentRule` transient (NO se persiste — no
+    `session.add`) y delega en `run_rule_over_universe(dry_run=True)`.
+    Sólo `validate_conditions` se ejecuta antes del transient para
+    devolver 400 limpio si el árbol IR no compila.
+    """
+    _ = current_user
+    _validate_conditions(payload.conditions)
+    # `created_at` del transient = ahora; necesario para que `new_only`
+    # tenga semántica (no devuelve nada ahora mismo, lo cual es
+    # razonable para preview).
+    transient = AssignmentRule(
+        id="preview",
+        name=payload.name,
+        conditions_json=json.dumps(payload.conditions),
+        primary_user_id=payload.primary_user_id,
+        secondary_user_ids_json=json.dumps(payload.secondary_user_ids)
+        if payload.secondary_user_ids
+        else None,
+        priority=payload.priority,
+        apply_to=payload.apply_to,
+        override_existing=payload.override_existing,
+        stop_on_match=payload.stop_on_match,
+        is_active=True,
+        created_by_user_id=current_user.id,
+    )
+    now = datetime.now(UTC)
+    transient.created_at = now
+    transient.updated_at = now
+    summary = run_rule_over_universe(
+        session,
+        rule=transient,
+        actor_user_id=current_user.id,
+        dry_run=True,
+    )
+    # `rule_id="preview"` en la respuesta — el UI lo descarta.
+    return AssignmentRuleDryRun(**_normalise_summary(summary))
+
+
+@router.post(
     "/{rule_id}/dry-run", response_model=AssignmentRuleDryRun
 )
 def dry_run_rule(

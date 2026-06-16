@@ -266,10 +266,23 @@ def run_rule_over_universe(
 
     flt = build_filter(tree)
     stmt = select(Contact).where(flt, Contact.is_active.is_(True))
+    # PR-E: apply_to ahora soporta `new_only` (contactos creados
+    # después de la creación de la regla — útil para reglas que sólo
+    # deben afectar a leads entrantes), `unassigned_only` (sin
+    # asignaciones — comportamiento histórico), y `all_matching` /
+    # `all` (cualquier match; equivalente a un "force"). Mantiene
+    # `all` como alias de `all_matching` por compatibilidad con
+    # reglas pre-PR-E.
     if rule.apply_to == "unassigned_only" and not rule.override_existing:
         stmt = stmt.where(
             ~Contact.id.in_(select(ContactAssignment.contact_id))
         )
+    elif rule.apply_to == "new_only":
+        stmt = stmt.where(Contact.created_at >= rule.created_at)
+        if not rule.override_existing:
+            stmt = stmt.where(
+                ~Contact.id.in_(select(ContactAssignment.contact_id))
+            )
     candidates = list(session.scalars(stmt))
     if dry_run:
         return {

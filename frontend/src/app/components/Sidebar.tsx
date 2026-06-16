@@ -9,6 +9,7 @@ import {
   Mail,
   Plug,
   Settings,
+  Shuffle,
   CheckSquare,
   Tag,
   Target,
@@ -122,6 +123,15 @@ const NAV_ITEMS: ReadonlyArray<Item> = [
     label: "Usuarios",
     icon: UserCog,
     allowedRoles: ["admin"],
+  },
+  // Sprint Reglas-Assign PR-E. Visible para manager+ (la API permite
+  // que un manager configure reglas y las dispare manualmente sobre
+  // su cartera). El admin las gestiona como cualquier otro recurso.
+  {
+    href: "/admin/assignment-rules",
+    label: "Reglas de asignación",
+    icon: Shuffle,
+    allowedRoles: ["admin", "manager"],
   },
   {
     href: "/admin/audit",

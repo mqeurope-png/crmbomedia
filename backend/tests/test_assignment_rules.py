@@ -686,3 +686,153 @@ def test_post_contacts_no_rule_no_assignment(
             ).first()
             is None
         )
+
+
+# -- PR-E: preview endpoint + new apply_to options ------------------
+
+
+def test_preview_endpoint_returns_matched_without_persisting(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    """`POST /api/assignment-rules/preview` calcula matches sin
+    persistir nada: no aparece la regla en la BD y los contactos
+    siguen sin asignación."""
+    uid = _user_id(session_factory, UserRole.USER)
+    with session_factory() as session:
+        c = Contact(first_name="Z", email="z@z.com", address_country="ES")
+        session.add(c)
+        session.commit()
+
+    payload = {
+        "name": "Preview (no save)",
+        "conditions": {
+            "operator": "AND",
+            "children": [
+                {
+                    "type": "rule",
+                    "field": "address_country",
+                    "comparator": "eq",
+                    "value": "ES",
+                }
+            ],
+        },
+        "primary_user_id": uid,
+        "secondary_user_ids": [],
+        "priority": 100,
+        "apply_to": "unassigned_only",
+        "override_existing": False,
+        "stop_on_match": True,
+    }
+    resp = client.post(
+        "/api/assignment-rules/preview",
+        headers=auth_headers(client, "admin"),
+        json=payload,
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["matched"] == 1
+    assert body["applied"] == 0
+    assert body["dry_run"] is True
+
+    with session_factory() as session:
+        assert (
+            session.scalars(select(AssignmentRule)).first() is None
+        )
+        assert (
+            session.scalars(select(ContactAssignment)).first() is None
+        )
+
+
+def test_preview_rejects_invalid_conditions(
+    client: TestClient,
+) -> None:
+    uid = "0" * 32
+    resp = client.post(
+        "/api/assignment-rules/preview",
+        headers=auth_headers(client, "admin"),
+        json={
+            "name": "bad",
+            "conditions": {
+                "operator": "AND",
+                "children": [
+                    {
+                        "type": "rule",
+                        "field": "no_such_field",
+                        "comparator": "eq",
+                        "value": "x",
+                    }
+                ],
+            },
+            "primary_user_id": uid,
+            "secondary_user_ids": [],
+            "priority": 100,
+            "apply_to": "unassigned_only",
+            "override_existing": False,
+            "stop_on_match": True,
+        },
+    )
+    assert resp.status_code == 400, resp.text
+
+
+def test_apply_to_new_only_filters_by_rule_created_at(
+    session_factory: sessionmaker,
+) -> None:
+    """apply_to=new_only sólo afecta a contactos creados después de
+    la creación de la regla. Útil cuando el operador no quiere
+    reasignar la cartera existente al introducir la regla."""
+    import datetime as _dt  # noqa: PLC0415
+
+    target_uid = _user_id(session_factory, UserRole.USER)
+    creator_uid = _user_id(session_factory, UserRole.ADMIN)
+    with session_factory() as session:
+        old = Contact(
+            first_name="Old", email="old@x.com", address_country="ES"
+        )
+        old.created_at = _dt.datetime(2020, 1, 1, tzinfo=_dt.UTC)
+        session.add(old)
+        session.flush()
+        old_id = old.id
+
+        rule = _seed_rule(
+            session,
+            name="ES new_only",
+            conditions={
+                "operator": "AND",
+                "children": [
+                    {
+                        "type": "rule",
+                        "field": "address_country",
+                        "comparator": "eq",
+                        "value": "ES",
+                    }
+                ],
+            },
+            primary_user_id=target_uid,
+            creator_id=creator_uid,
+            apply_to="new_only",
+        )
+        new = Contact(
+            first_name="New", email="new@x.com", address_country="ES"
+        )
+        session.add(new)
+        session.commit()
+        new_id = new.id
+
+        summary = run_rule_over_universe(
+            session, rule=rule, actor_user_id=creator_uid
+        )
+        session.commit()
+        assert summary["matched"] == 1
+        assert summary["applied"] == 1
+
+    with session_factory() as session:
+        rows = list(
+            session.scalars(
+                select(ContactAssignment).where(
+                    ContactAssignment.user_id == target_uid
+                )
+            )
+        )
+        assigned = {r.contact_id for r in rows}
+        assert assigned == {new_id}
+        assert old_id not in assigned

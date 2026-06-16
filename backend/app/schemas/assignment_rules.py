@@ -20,7 +20,9 @@ class AssignmentRuleWrite(BaseModel):
     conditions: dict[str, Any] = Field(default_factory=dict)
     primary_user_id: str | None = None
     secondary_user_ids: list[str] = Field(default_factory=list)
-    apply_to: Literal["unassigned_only", "all"] = "unassigned_only"
+    apply_to: Literal[
+        "new_only", "unassigned_only", "all_matching", "all"
+    ] = "unassigned_only"
     override_existing: bool = False
     stop_on_match: bool = True
 
