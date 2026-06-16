@@ -146,6 +146,22 @@ def test_list_users_supports_q_substring(client: TestClient):
                for row in response.json())
 
 
+def test_list_users_accepts_limit_up_to_500(client: TestClient):
+    """PR-Ea hotfix: cap subido de 100 a 500. El RuleEditorDrawer del
+    sprint Reglas-Assign pedía `limit=200`, que con el cap viejo
+    devolvía 422 silencioso → picker mostraba "No hay usuarios"."""
+    resp_ok = client.get(
+        "/api/users?limit=500",
+        headers=auth_headers(client, "viewer"),
+    )
+    assert resp_ok.status_code == 200
+    resp_too_big = client.get(
+        "/api/users?limit=501",
+        headers=auth_headers(client, "viewer"),
+    )
+    assert resp_too_big.status_code == 422
+
+
 def test_create_company_requires_manager(client: TestClient):
     viewer_response = client.post(
         "/api/companies", json={"name": "MQ Europe"}, headers=auth_headers(client, "viewer")
