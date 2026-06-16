@@ -85,10 +85,10 @@ def _extract_subject_from_headers(headers: list[dict[str, Any]]) -> str:
 #     ("On … wrote:", "El … escribió:", "Am … schrieb:", "Le … a
 #     écrit:").
 #   - Snippet NO empieza con `>` (texto citado).
-import re  # noqa: E402
-
-# `RE:`, `Re:`, `RE :`, `Re :`, `Fwd:`, `Fw:`, `Tr:` (FR), `AW:` (DE),
-# `WG:` (DE), `RV:` (ES), `R:` (IT). Case-insensitive.
+#
+# `re` ya está importado al top del módulo. `RE:`, `Re:`, `RE :`,
+# `Re :`, `Fwd:`, `Fw:`, `Tr:` (FR), `AW:` (DE), `WG:` (DE),
+# `RV:` (ES), `R:` (IT). Case-insensitive.
 _REPLY_FORWARD_PREFIX = re.compile(
     r"^\s*(re|fwd?|tr|aw|wg|rv|r)\s*:\s*", re.IGNORECASE
 )
