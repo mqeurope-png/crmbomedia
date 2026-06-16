@@ -189,31 +189,71 @@ class _FakeGmailClient:
         return {"id": draft_id, "message": catalog[draft_id]}
 
     def get_draft_template(self, draft_id: str) -> dict:
-        if draft_id == "draft-1":
-            return {
-                "id": draft_id,
-                "message": {
-                    "id": "msg-1",
-                    "snippet": "Hola equipo,",
-                    "internalDate": "1718000000000",
-                    "raw": _build_raw_email(
-                        subject="Plantilla de bienvenida",
-                        body_html="<p>Bienvenido al CRM</p>",
-                    ),
-                },
-            }
+        # Match el subject del metadata para no confundir al parser
+        # cuando el código intenta llenar el subject desde el raw.
+        bodies = {
+            "draft-tpl1": (
+                "Pressupost sol·licitat",
+                "<p>Hola, adjuntamos el presupuesto solicitado.</p>",
+            ),
+            "draft-tpl2": (
+                "Adquisición equipos FLUX",
+                "<p>Te confirmo la adquisición de equipos.</p>",
+            ),
+        }
+        subject, body_html = bodies[draft_id]
         return {
             "id": draft_id,
             "message": {
-                "id": "msg-2",
-                "snippet": "Adjunto",
+                "id": f"msg-{draft_id}",
                 "internalDate": "1718500000000",
                 "raw": _build_raw_email(
-                    subject="Reenvío plantilla",
-                    body_html="<p>Cuerpo adicional</p>",
+                    subject=subject,
+                    body_html=body_html,
                 ),
             },
         }
+
+
+def test_body_html_populated_from_raw_format(
+    client: TestClient,
+    session_factory: sessionmaker,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pin que body_html NO sale vacío para los templates que pasan
+    la heurística. Pre-fix, get_draft_template pedía format=full que
+    devuelve payload structured sin `raw`, así que el parseo MIME
+    nunca encontraba el body y todos los items salían con
+    body_html="". Tras pedir format=raw el cliente devuelve el MIME
+    completo y el parseo extrae el cuerpo."""
+    uid = _user_id(session_factory, UserRole.USER)
+    _seed_gmail(
+        session_factory,
+        user_id=uid,
+        scopes=(
+            "https://www.googleapis.com/auth/gmail.send "
+            "https://www.googleapis.com/auth/gmail.modify"
+        ),
+    )
+    monkeypatch.setattr(
+        "app.integrations.gmail.service.GmailClient",
+        _FakeGmailClient,
+    )
+
+    resp = client.get(
+        "/api/emails/gmail-templates",
+        headers=auth_headers(client, "user"),
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    for item in body:
+        assert item["body_html"], (
+            f"body_html vacío para {item['id']} subject={item['subject']!r}"
+        )
+    # Sanity sobre el body parseado: el HTML del template 1 debe
+    # contener el texto distintivo del fake.
+    by_id = {item["id"]: item for item in body}
+    assert "presupuesto" in by_id["draft-tpl1"]["body_html"].lower()
 
 
 def test_heuristic_keeps_templates_drops_replies_and_quoted(

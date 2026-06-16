@@ -91,8 +91,14 @@ export function TemplatePicker({ onSelect, onClose }: Props) {
   // Lazy fetch al cambiar a la pestaña Gmail. Si falla, persistimos
   // el error in-state para que el operador vea el motivo en lugar de
   // un dropdown vacío sin explicación.
+  //
+  // Importante: NO chequeamos `gmailLoading` en la guard ni
+  // protegemos el setGmailLoading(false) por `cancelled`. Si el
+  // operador cambia de pestaña ida-vuelta rápido, queremos que el
+  // próximo fetch se dispare; React batchea el setState aunque el
+  // componente esté desmontado.
   useEffect(() => {
-    if (tab !== "gmail" || gmail !== null || gmailLoading) return;
+    if (tab !== "gmail" || gmail !== null) return;
     let cancelled = false;
     setGmailLoading(true);
     getGmailTemplates()
@@ -110,12 +116,14 @@ export function TemplatePicker({ onSelect, onClose }: Props) {
         });
       })
       .finally(() => {
-        if (!cancelled) setGmailLoading(false);
+        // Siempre toggle off — si la unmount lo hizo huérfano,
+        // React descarta el set sin advertir.
+        setGmailLoading(false);
       });
     return () => {
       cancelled = true;
     };
-  }, [tab, gmail, gmailLoading]);
+  }, [tab, gmail]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
