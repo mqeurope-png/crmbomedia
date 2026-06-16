@@ -261,6 +261,7 @@ export async function triggerIntegrationSync(
 export interface SyncAllAccountsResult {
   enqueued_count: number;
   skipped_count: number;
+  full_sync?: boolean;
   enqueued: {
     system: string;
     account_id: string;
@@ -275,10 +276,18 @@ export interface SyncAllAccountsResult {
   }[];
 }
 
-export async function triggerSyncAllAccounts(): Promise<SyncAllAccountsResult> {
+export async function triggerSyncAllAccounts(
+  options: { fullSync?: boolean } = {},
+): Promise<SyncAllAccountsResult> {
+  // QoL post-Notes: `fullSync=true` se traduce a `{full_sync: true}`
+  // en el body, que el backend convierte en payload de cada job.
+  // Sin opción, mantiene el delta-sync legacy.
   return apiFetch<SyncAllAccountsResult>(
     "/api/integration-accounts/_/sync-all",
-    { method: "POST" },
+    {
+      method: "POST",
+      body: JSON.stringify({ full_sync: !!options.fullSync }),
+    },
   );
 }
 

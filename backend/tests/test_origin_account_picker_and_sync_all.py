@@ -160,3 +160,81 @@ def test_sync_all_requires_admin(
             headers=auth_headers(client, role),
         )
         assert resp.status_code == 403, f"{role}: {resp.text}"
+
+
+def test_sync_all_full_sync_passes_payload(
+    client: TestClient,
+    session_factory: sessionmaker,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """QoL post-Notes — `full_sync=True` en el body se traduce a
+    `payload={"full_sync": True}` en cada SyncLog encolado."""
+    import json  # noqa: PLC0415
+    from unittest.mock import MagicMock  # noqa: PLC0415
+
+    from app.workers import jobs as workers_jobs  # noqa: PLC0415
+
+    def _fake_queue(system: str, operation: str):
+        queue = MagicMock()
+        queue.enqueue.return_value = MagicMock(id=f"job-{system}-{operation}")
+        return queue
+
+    monkeypatch.setattr(workers_jobs, "queue_for", _fake_queue)
+
+    resp = client.post(
+        "/api/integration-accounts/_/sync-all",
+        headers=auth_headers(client, "admin"),
+        json={"full_sync": True},
+    )
+    assert resp.status_code == 202, resp.text
+    body = resp.json()
+    assert body["full_sync"] is True
+    assert body["enqueued_count"] == 2
+
+    # Cada SyncLog persistido lleva `full_sync` en metadata_json.
+    with session_factory() as session:
+        rows = list(
+            session.scalars(
+                select(SyncLog).where(SyncLog.operation == "sync_contacts")
+            )
+        )
+        assert len(rows) == 2
+        for row in rows:
+            meta = json.loads(row.metadata_json or "{}")
+            assert meta.get("full_sync") is True
+
+
+def test_sync_all_default_is_delta(
+    client: TestClient,
+    session_factory: sessionmaker,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Sin body → delta (full_sync=False). metadata_json queda en
+    NULL — paridad con el comportamiento pre-flag."""
+    from unittest.mock import MagicMock  # noqa: PLC0415
+
+    from app.workers import jobs as workers_jobs  # noqa: PLC0415
+
+    def _fake_queue(system: str, operation: str):
+        queue = MagicMock()
+        queue.enqueue.return_value = MagicMock(id=f"job-{system}-{operation}")
+        return queue
+
+    monkeypatch.setattr(workers_jobs, "queue_for", _fake_queue)
+
+    resp = client.post(
+        "/api/integration-accounts/_/sync-all",
+        headers=auth_headers(client, "admin"),
+    )
+    assert resp.status_code == 202
+    body = resp.json()
+    assert body["full_sync"] is False
+
+    with session_factory() as session:
+        rows = list(
+            session.scalars(
+                select(SyncLog).where(SyncLog.operation == "sync_contacts")
+            )
+        )
+        for row in rows:
+            assert row.metadata_json is None

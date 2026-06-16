@@ -6581,3 +6581,15 @@ tr.is-inactive {
   align-items: center;
   flex-wrap: wrap;
 }
+
+/* QoL post-Notes — checkbox inline para "Sync completa" en header */
+.checkbox-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+}
+.checkbox-inline.small {
+  font-size: 12px;
+}

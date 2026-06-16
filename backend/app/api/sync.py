@@ -141,6 +141,17 @@ def _trigger(
     )
 
 
+class SyncAllRequest(BaseModel):
+    """Body opcional de `POST /_/sync-all`. `full_sync=True` pasa
+    `payload={"full_sync": True}` al handler del worker, que se
+    interpreta como "ignora la watermark de last finished_at y re-fetch
+    todo el universo de Agile/Brevo/…". Útil tras un cambio del mapper
+    para recuperar campos que no se materializaron en syncs delta
+    anteriores (p.ej. las Note1..Note10 que Bart está rescatando)."""
+
+    full_sync: bool = False
+
+
 @router.post(
     "/_/sync-all",
     response_model=dict,
@@ -148,14 +159,22 @@ def _trigger(
 )
 def trigger_sync_all(
     request: Request,
+    body: SyncAllRequest | None = None,
     session: Session = Depends(get_session),
     current_user: User = Depends(require_admin),
 ) -> dict[str, Any]:
-    """Sprint Reglas-Assign PR-Db. Lanza una sincronización manual a
-    TODAS las cuentas habilitadas de TODOS los sistemas con un solo
-    click. Crea N SyncLogs (uno por cuenta) y devuelve el resumen para
-    que la UI pueda navegar al listado. Las cuentas deshabilitadas se
-    ignoran silenciosamente (no aparecen en el resumen)."""
+    """Lanza una sincronización manual a TODAS las cuentas habilitadas
+    de TODOS los sistemas con un solo click. Crea N SyncLogs (uno por
+    cuenta) y devuelve el resumen. Las cuentas deshabilitadas se
+    ignoran silenciosamente.
+
+    QoL post-Notes: si `full_sync=True` se pasa al body, los jobs
+    encolados llevan `payload={"full_sync": True}` para forzar un
+    re-fetch completo (ignorar watermark delta). El handler en
+    `app/integrations/*/jobs.py` ya lo respeta — solo encolar con el
+    flag puesto era lo que faltaba.
+    """
+    full_sync = bool(body and body.full_sync)
     accounts = list(
         session.scalars(
             select(IntegrationAccount).where(
@@ -193,7 +212,7 @@ def trigger_sync_all(
                 operation=operation,
                 triggered_by=SyncTrigger.MANUAL,
                 triggered_by_user_id=current_user.id,
-                payload=None,
+                payload={"full_sync": True} if full_sync else None,
                 request=request,
             )
             enqueued.append(
@@ -216,6 +235,7 @@ def trigger_sync_all(
     return {
         "enqueued_count": len(enqueued),
         "skipped_count": len(skipped),
+        "full_sync": full_sync,
         "enqueued": enqueued,
         "skipped": skipped,
     }
