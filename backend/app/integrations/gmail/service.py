@@ -116,6 +116,61 @@ def _looks_like_template(subject: str, snippet: str) -> bool:
     return True
 
 
+def _inline_cid_attachments(body_html: str, parsed_message) -> str:
+    """Reemplaza cada `src="cid:ii_*"` por un `data:` URI con el
+    contenido del attachment correspondiente.
+
+    Gmail embebe las imágenes inline como parts del MIME con un
+    `Content-ID: <ii_*>` header. El HTML las referencia con
+    `<img src="cid:ii_*">`. Esa indirection solo es válida dentro
+    del MIME original — al guardar el HTML en `email_templates` y
+    enviarlo desde el CRM, el cid: no resuelve y la imagen sale rota.
+
+    Construimos un `{cid: data_uri}` map paseando por `walk()`,
+    extraemos `Content-ID` (sin `<>`), `Content-Type` y `payload`
+    bytes; aplicamos un re.sub que cubre tanto comillas dobles como
+    simples (TinyMCE las normaliza pero por defensa).
+
+    No-op si no hay parts con Content-ID.
+    """
+    import base64 as _base64  # noqa: PLC0415
+    import re as _re  # noqa: PLC0415
+
+    cid_to_data: dict[str, str] = {}
+    for part in parsed_message.walk():
+        cid_header = part.get("Content-ID") or part.get("X-Attachment-Id")
+        if not cid_header:
+            continue
+        cid = cid_header.strip("<>").strip()
+        if not cid:
+            continue
+        content_type = part.get_content_type() or "application/octet-stream"
+        try:
+            data = part.get_payload(decode=True)
+        except Exception:  # noqa: BLE001
+            data = None
+        if not data:
+            continue
+        try:
+            b64 = _base64.b64encode(data).decode("ascii")
+        except Exception:  # noqa: BLE001
+            continue
+        cid_to_data[cid] = f"data:{content_type};base64,{b64}"
+
+    if not cid_to_data:
+        return body_html
+
+    def _replace(match: _re.Match[str]) -> str:
+        quote = match.group(1)
+        cid = match.group(2).strip()
+        return f"src={quote}{cid_to_data.get(cid, 'cid:' + cid)}{quote}"
+
+    # Captura `src="cid:..."` y `src='cid:...'`. Tolera espacios en
+    # torno al cid pero no internos.
+    pattern = _re.compile(r"""src=(['"])cid:([^'"]+)\1""", _re.IGNORECASE)
+    return pattern.sub(_replace, body_html)
+
+
 def import_gmail_templates_with_tpl_prefix(
     session: Session,
     *,
@@ -235,6 +290,13 @@ def import_gmail_templates_with_tpl_prefix(
                 elif plain_part is not None:
                     text = plain_part.get_content() or ""
                     body_html = "<p>" + text.replace("\n", "<br>") + "</p>"
+                # Sustituye src="cid:ii_*" por data URIs leyendo los
+                # inline attachments del MIME. Las imágenes incrustadas
+                # con `cid:` solo son válidas dentro del MIME original;
+                # al salirse del email pierden la referencia. Convertir
+                # a data URI mantiene la imagen embebida en el HTML
+                # de forma autocontenida.
+                body_html = _inline_cid_attachments(body_html, parsed)
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "gmail.import.parse failed draft_id=%s err=%s",

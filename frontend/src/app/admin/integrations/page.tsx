@@ -83,12 +83,14 @@ export default function IntegrationAccountsPage() {
       );
       setMessage(parts.join(" · "));
     } catch (err) {
-      setError(
-        extractErrorMessage(
-          err,
-          "No se pudo importar las plantillas de Gmail.",
-        ),
+      // Banner rojo prominente con detail del backend. Bart reportó
+      // "silent fail" previo; ahora el detail se concatena con el
+      // contexto para que el operador sepa qué acción falló.
+      const detail = extractErrorMessage(
+        err,
+        "No se pudo importar las plantillas de Gmail.",
       );
+      setError(`Import Gmail falló: ${detail}`);
     } finally {
       setImportingTpls(false);
     }
