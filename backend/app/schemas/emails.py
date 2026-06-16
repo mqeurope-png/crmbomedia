@@ -249,6 +249,18 @@ class EmailThreadList(BaseModel):
     total: int
 
 
+class GmailTemplate(BaseModel):
+    """Plantilla nativa Gmail (canned response) en el shape que
+    consume el `EmailComposerModal`. Los templates Gmail se guardan
+    como drafts con el label sistema `^smartlabel_canned_response`."""
+
+    id: str
+    subject: str = ""
+    body_html: str = ""
+    snippet: str = ""
+    updated_at: datetime | None = None
+
+
 class EmailAlias(BaseModel):
     """Gmail alias enriched with the current user's preferences.
 

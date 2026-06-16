@@ -43,6 +43,7 @@ from app.schemas.emails import (
     EmailThreadDetail,
     EmailThreadList,
     EmailThreadRead,
+    GmailTemplate,
     MyAlias,
 )
 
@@ -83,6 +84,40 @@ def _emit_activity(
             synced_at=datetime.now(UTC),
         )
     )
+
+
+@router.get("/gmail-templates", response_model=list[GmailTemplate])
+def list_gmail_templates(
+    q: str | None = Query(
+        default=None,
+        description=(
+            "Override del query de búsqueda Gmail. Default filtra "
+            "drafts marcados como `^smartlabel_canned_response` (los "
+            '"Templates" del compose Gmail). Operadores Gmail '
+            "estándar son válidos: `label:foo`, `subject:Hi`."
+        ),
+    ),
+    limit: int = Query(default=30, ge=1, le=100),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_user),
+) -> list[GmailTemplate]:
+    """Plantillas Gmail nativas del user (canned responses).
+
+    Todas las cuentas Gmail del CRM son compartidas, así que la lista
+    es la misma para todo el equipo. Sin cache — fetch on-demand cada
+    vez que la UI abre el dropdown.
+    """
+    try:
+        items = gmail_service.list_gmail_templates(
+            session, current_user.id, query=q, max_results=limit
+        )
+    except GmailNotConnectedError:
+        return []
+    except GmailScopeMissingError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)
+        ) from exc
+    return [GmailTemplate.model_validate(item) for item in items]
 
 
 @router.get("/aliases", response_model=list[EmailAlias])

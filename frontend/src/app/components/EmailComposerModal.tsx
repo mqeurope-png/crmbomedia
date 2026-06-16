@@ -264,6 +264,21 @@ export function EmailComposerModal({
   }
 
   function applyTemplate(selection: TemplatePickerSelection) {
+    // QoL: si el operador ya tiene contenido en el editor, pedimos
+    // confirmación antes de sobreescribirlo. Comparamos contra el
+    // signature de "editor recién inicializado" (TinyMCE emite `<p></p>`
+    // o cadena vacía) para no preguntar si solo hay placeholder.
+    const stripped = (bodyHtml || "")
+      .replace(/<p>(?:&nbsp;|\s)*<\/p>/g, "")
+      .trim();
+    if (
+      stripped.length > 0 &&
+      !window.confirm(
+        "Ya hay contenido en el editor. ¿Reemplazar con la plantilla seleccionada?",
+      )
+    ) {
+      return;
+    }
     setShowPicker(false);
     setBodyHtml(selection.body_html);
     if (selection.subject) {
