@@ -571,14 +571,67 @@ export async function updateContact(id: string, payload: Record<string, unknown>
 export async function assignContactToUser(
   contactId: string,
   userId: string,
-  options: { isPrimary?: boolean } = {},
-): Promise<void> {
-  await apiFetch(`/api/contacts/${contactId}/assignments`, {
+  options: { isPrimary?: boolean; notes?: string | null } = {},
+): Promise<ContactAssignment> {
+  return apiFetch<ContactAssignment>(`/api/contacts/${contactId}/assignments`, {
     method: "POST",
     body: JSON.stringify({
       user_id: userId,
       is_primary: options.isPrimary ?? true,
+      notes: options.notes ?? null,
     }),
+  });
+}
+
+// Sprint Reglas-Assign PR-D — helpers de la sección "Comerciales
+// asignados" de la ficha.
+
+export interface AssignmentUserRef {
+  id: string;
+  email: string;
+  full_name?: string | null;
+  is_active: boolean;
+}
+
+export interface ContactAssignment {
+  id: string;
+  contact_id: string;
+  user_id: string;
+  user: AssignmentUserRef;
+  is_primary: boolean;
+  source: string;
+  rule_id: string | null;
+  notes: string | null;
+  assigned_by_user_id: string | null;
+  assigned_at: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export async function listContactAssignments(
+  contactId: string,
+): Promise<ContactAssignment[]> {
+  return apiFetch<ContactAssignment[]>(
+    `/api/contacts/${contactId}/assignments`,
+  );
+}
+
+export async function promoteAssignment(
+  contactId: string,
+  assignmentId: string,
+): Promise<ContactAssignment> {
+  return apiFetch<ContactAssignment>(
+    `/api/contacts/${contactId}/assignments/${assignmentId}/promote`,
+    { method: "POST" },
+  );
+}
+
+export async function deleteAssignment(
+  contactId: string,
+  assignmentId: string,
+): Promise<void> {
+  await apiFetch(`/api/contacts/${contactId}/assignments/${assignmentId}`, {
+    method: "DELETE",
   });
 }
 

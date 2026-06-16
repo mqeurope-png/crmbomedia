@@ -25,7 +25,7 @@ const STATUS_OPTIONS = [
 
 /** Floating action bar that pops up when 1+ contacts are selected.
  *  Visibility of each action follows the role table:
- *  - assign_owner → admin / manager
+ *  - assign_owner → user / manager / admin (PR-D Reglas-Assign)
  *  - change_status / add_tag / remove_tag → any signed-in user
  *  - deactivate → admin only
  */
@@ -41,7 +41,11 @@ export function ContactsBulkBar({
   const [users, setUsers] = useState<User[]>([]);
 
   const role = currentUser?.role;
-  const canAssign = role === "admin" || role === "manager";
+  // Sprint Reglas-Assign PR-D: el botón de "Asignar comercial" pasa a
+  // estar visible para cualquier comercial (user+) — decisión §1 del
+  // spec, ya alineada en el endpoint backend desde PR-Ca. El viewer
+  // sigue excluido porque no tiene permisos de escritura en absoluto.
+  const canAssign = role === "admin" || role === "manager" || role === "user";
   const canDeactivate = role === "admin";
 
   useEffect(() => {

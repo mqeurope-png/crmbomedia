@@ -47,7 +47,15 @@ BulkAction = Literal[
     "deactivate",
 ]
 
-MAX_BULK_CONTACTS = 1000
+# Sprint Reglas-Assign PR-D: subido de 1000 a 50000. El cap antiguo
+# bloqueaba la reasignación de carteras grandes ("asignar todos los
+# 1200 leads filtrados al comercial X"). El cap nuevo es un seguro de
+# memoria contra requests maliciosas / accidentales — 50k UUIDs son
+# ~2 MB de payload, suficiente para los volúmenes reales de la CRM.
+# Internamente procesamos por chunks (CHUNK_SIZE) para no atascar
+# una sola transacción gigante.
+MAX_BULK_CONTACTS = 50_000
+CHUNK_SIZE = 500
 
 
 class BulkActionPayload(BaseModel):
@@ -73,17 +81,35 @@ def bulk_action(
       dep already excludes viewers).
     """
     _check_role_for(body.action, current_user)
-    contacts = list(
-        session.scalars(
-            select(Contact).where(Contact.id.in_(body.contact_ids))
+    # Sprint Reglas-Assign PR-D: chunking server-side. Sin esto, una
+    # selección de >>1000 contactos generaba una sola transacción
+    # gigante que (a) lockeaba la tabla durante segundos en MySQL y
+    # (b) explotaba la memoria de PyMySQL al cargar todos los Contact
+    # rows. Chunks de CHUNK_SIZE con commit por chunk: progreso real,
+    # transacciones cortas, y al fallo a mitad lo procesado queda.
+    affected_total = 0
+    touched_ids: list[str] = []
+    for chunk_idx in range(0, len(body.contact_ids), CHUNK_SIZE):
+        ids_chunk = body.contact_ids[chunk_idx : chunk_idx + CHUNK_SIZE]
+        contacts = list(
+            session.scalars(
+                select(Contact).where(Contact.id.in_(ids_chunk))
+            )
         )
-    )
-    if not contacts:
+        if not contacts:
+            continue
+        affected_total += _dispatch(session, body, contacts)
+        touched_ids.extend(c.id for c in contacts)
+        session.commit()
+
+    if not touched_ids:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Ningún contacto válido en la selección.",
         )
-    affected = _dispatch(session, body, contacts)
+    # Una única audit row para el bulk completo — describe el alcance
+    # total, no cada chunk. `contact_ids` capado a 50 para que el JSON
+    # no se infle en payloads grandes.
     record_event(
         session,
         action=Action.CONTACT_TAGS_BULK_ACTION
@@ -93,8 +119,9 @@ def bulk_action(
         actor=current_user,
         metadata={
             "bulk_action": body.action,
-            "affected_count": affected,
-            "contact_ids": [c.id for c in contacts][:50],
+            "affected_count": affected_total,
+            "total_targets": len(touched_ids),
+            "contact_ids": touched_ids[:50],
             "payload_keys": sorted(body.payload.keys()),
         },
         request=request,
@@ -102,8 +129,8 @@ def bulk_action(
     session.commit()
     return {
         "action": body.action,
-        "affected_count": affected,
-        "contact_ids": [c.id for c in contacts],
+        "affected_count": affected_total,
+        "contact_ids": touched_ids,
     }
 
 

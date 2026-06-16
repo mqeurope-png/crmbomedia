@@ -15,6 +15,7 @@ import { ContactAddressSection } from "../../components/ContactAddressSection";
 import { ContactCompanySection } from "../../components/ContactCompanySection";
 import { ContactCustomFieldsSection } from "../../components/ContactCustomFieldsSection";
 import { ContactEmailsSection } from "../../components/ContactEmailsSection";
+import { ContactAssignmentsSection } from "../../components/ContactAssignmentsSection";
 import { ContactNotesSection } from "../../components/ContactNotesSection";
 import { ContactPhonesSection } from "../../components/ContactPhonesSection";
 import { ContactProfessionalSection } from "../../components/ContactProfessionalSection";
@@ -319,6 +320,8 @@ export default function ContactDetailPage() {
             contact={contact}
             onSaved={loadContact}
           />
+
+          <ContactAssignmentsSection contactId={contact.id} />
 
           <ContactPhonesSection contactId={contact.id} />
 

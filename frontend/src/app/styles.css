@@ -5736,6 +5736,73 @@ a.origin-chip:hover { filter: brightness(0.97); }
   font-size: 12px;
 }
 
+/* Sprint Reglas-Assign PR-D — contact assignments section */
+.contact-assignment-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 130px;
+}
+.contact-assignment-info strong {
+  font-size: 13px;
+}
+.contact-assignment-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+.contact-assignment-picker {
+  margin-top: 8px;
+  padding: 8px;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  background: #fafafa;
+}
+.contact-assignment-picker-header {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 6px;
+}
+.contact-assignment-picker-header input {
+  flex: 1;
+  padding: 3px 6px;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  font: inherit;
+  font-size: 12px;
+}
+.contact-assignment-picker-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  max-height: 220px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.contact-assignment-picker-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  width: 100%;
+  text-align: left;
+  padding: 6px 8px;
+  background: white;
+  border: 1px solid #e5e7eb;
+  border-radius: 4px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+}
+.contact-assignment-picker-item:hover {
+  background: #f3f4f6;
+}
+
 /* Sprint Empresas sub-PR 4 — contact notes section */
 .contact-notes-list {
   list-style: none;
