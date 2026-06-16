@@ -116,27 +116,22 @@ def _looks_like_template(subject: str, snippet: str) -> bool:
     return True
 
 
-def _inline_cid_attachments(body_html: str, parsed_message) -> str:
-    """Reemplaza cada `src="cid:ii_*"` por un `data:` URI con el
-    contenido del attachment correspondiente.
+# Captura `src="cid:..."` y `src='cid:...'` con grupos para quote
+# y cid. Compartido entre el importador y el send-path (en el send
+# se usa otra expresión que reconoce URLs del CRM, pero el flujo
+# de extracción comparte la misma idea).
+_CID_SRC_PATTERN = re.compile(
+    r"""src=(['"])cid:([^'"]+)\1""", re.IGNORECASE
+)
 
-    Gmail embebe las imágenes inline como parts del MIME con un
-    `Content-ID: <ii_*>` header. El HTML las referencia con
-    `<img src="cid:ii_*">`. Esa indirection solo es válida dentro
-    del MIME original — al guardar el HTML en `email_templates` y
-    enviarlo desde el CRM, el cid: no resuelve y la imagen sale rota.
 
-    Construimos un `{cid: data_uri}` map paseando por `walk()`,
-    extraemos `Content-ID` (sin `<>`), `Content-Type` y `payload`
-    bytes; aplicamos un re.sub que cubre tanto comillas dobles como
-    simples (TinyMCE las normaliza pero por defensa).
-
-    No-op si no hay parts con Content-ID.
-    """
-    import base64 as _base64  # noqa: PLC0415
-    import re as _re  # noqa: PLC0415
-
-    cid_to_data: dict[str, str] = {}
+def _extract_cid_attachments(
+    parsed_message,
+) -> dict[str, tuple[str, str | None, bytes]]:
+    """Walk del MIME para sacar cada part con `Content-ID`. Devuelve
+    `{cid: (content_type, filename, raw_bytes)}`. Vacío si no hay
+    inline attachments. El cid llega sin los `<>` envolventes."""
+    out: dict[str, tuple[str, str | None, bytes]] = {}
     for part in parsed_message.walk():
         cid_header = part.get("Content-ID") or part.get("X-Attachment-Id")
         if not cid_header:
@@ -145,30 +140,110 @@ def _inline_cid_attachments(body_html: str, parsed_message) -> str:
         if not cid:
             continue
         content_type = part.get_content_type() or "application/octet-stream"
+        filename = part.get_filename()
         try:
             data = part.get_payload(decode=True)
         except Exception:  # noqa: BLE001
             data = None
         if not data:
             continue
-        try:
-            b64 = _base64.b64encode(data).decode("ascii")
-        except Exception:  # noqa: BLE001
-            continue
-        cid_to_data[cid] = f"data:{content_type};base64,{b64}"
+        out[cid] = (content_type, filename, data)
+    return out
 
-    if not cid_to_data:
-        return body_html
 
-    def _replace(match: _re.Match[str]) -> str:
+def _rewrite_cid_to_crm_urls(
+    body_html: str,
+    attachments: dict[str, tuple[str, str | None, bytes]],
+    template_id: str,
+) -> tuple[str, set[str]]:
+    """Reescribe cada `src="cid:X"` por la URL del CRM que sirve el
+    binario. Devuelve `(new_html, referenced_cids)` — el set sólo
+    contiene los cids que realmente aparecen en el HTML; los que se
+    quedaron sólo en el MIME pero no se referenciaban no se persisten.
+    """
+    if not attachments:
+        return body_html, set()
+
+    referenced: set[str] = set()
+
+    def _replace(match: re.Match[str]) -> str:
         quote = match.group(1)
         cid = match.group(2).strip()
-        return f"src={quote}{cid_to_data.get(cid, 'cid:' + cid)}{quote}"
+        if cid not in attachments:
+            return match.group(0)
+        referenced.add(cid)
+        return (
+            f"src={quote}/api/email-templates/{template_id}"
+            f"/attachments/by-cid/{cid}{quote}"
+        )
 
-    # Captura `src="cid:..."` y `src='cid:...'`. Tolera espacios en
-    # torno al cid pero no internos.
-    pattern = _re.compile(r"""src=(['"])cid:([^'"]+)\1""", _re.IGNORECASE)
-    return pattern.sub(_replace, body_html)
+    new_html = _CID_SRC_PATTERN.sub(_replace, body_html)
+    return new_html, referenced
+
+
+# Match `src="…/api/email-templates/{template_id}/attachments/by-cid/
+# {cid}…"` con prefijo opcional (origin absoluto o root-relative) y
+# query/fragment opcionales después del cid. Inverso del rewrite que
+# hace `_rewrite_cid_to_crm_urls` en el import.
+_CRM_ATTACHMENT_SRC_PATTERN = re.compile(
+    r"""src=(['"])(?:https?://[^'"]+?)?/api/email-templates/"""
+    r"""([^/'"?#]+)/attachments/by-cid/([^'"?#]+)(?:[?#][^'"]*)?\1""",
+    re.IGNORECASE,
+)
+
+
+def _swap_crm_urls_to_cid(
+    session: Session, body_html: str
+) -> tuple[str, list[dict[str, Any]]]:
+    """Para cada `src="…/api/email-templates/<id>/attachments/by-cid/
+    <cid>…"` en el HTML, busca la fila en `email_template_attachments`,
+    sustituye por `src="cid:<cid>"` y devuelve la lista de attachments
+    para inline-MIME.
+
+    Devuelve `(new_html, inline_parts)` donde cada item es
+    `{cid, content_type, filename, data}`. Si la fila no existe la
+    URL se deja intacta — el destinatario fallará al cargarla pero
+    no rompemos el envío.
+
+    Idempotente: dedupea por (template_id, cid).
+    """
+    from app.email_templates.models import (  # noqa: PLC0415
+        EmailTemplateAttachment,
+    )
+
+    cache: dict[tuple[str, str], EmailTemplateAttachment | None] = {}
+    parts: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def _replace(match: re.Match[str]) -> str:
+        quote = match.group(1)
+        tpl_id = match.group(2)
+        cid = match.group(3)
+        key = (tpl_id, cid)
+        if key not in cache:
+            cache[key] = session.scalar(
+                select(EmailTemplateAttachment).where(
+                    EmailTemplateAttachment.template_id == tpl_id,
+                    EmailTemplateAttachment.original_cid == cid,
+                )
+            )
+        row = cache[key]
+        if row is None:
+            return match.group(0)
+        if cid not in seen:
+            seen.add(cid)
+            parts.append(
+                {
+                    "cid": cid,
+                    "content_type": row.content_type,
+                    "filename": row.filename,
+                    "data": bytes(row.data),
+                }
+            )
+        return f"src={quote}cid:{cid}{quote}"
+
+    new_html = _CRM_ATTACHMENT_SRC_PATTERN.sub(_replace, body_html)
+    return new_html, parts
 
 
 def import_gmail_templates_with_tpl_prefix(
@@ -196,9 +271,11 @@ def import_gmail_templates_with_tpl_prefix(
     import base64  # noqa: PLC0415
     from email import message_from_bytes  # noqa: PLC0415
     from email.policy import default as _default_policy  # noqa: PLC0415
+    from uuid import uuid4  # noqa: PLC0415
 
     from app.email_templates.models import (  # noqa: PLC0415
         EmailTemplate,
+        EmailTemplateAttachment,
         EmailTemplateFolder,
     )
 
@@ -279,6 +356,7 @@ def import_gmail_templates_with_tpl_prefix(
             continue
         raw_b64 = (full.get("message") or {}).get("raw")
         body_html = ""
+        attachments_map: dict[str, tuple[str, str | None, bytes]] = {}
         if raw_b64:
             try:
                 raw_bytes = base64.urlsafe_b64decode(raw_b64.encode("ascii"))
@@ -290,13 +368,7 @@ def import_gmail_templates_with_tpl_prefix(
                 elif plain_part is not None:
                     text = plain_part.get_content() or ""
                     body_html = "<p>" + text.replace("\n", "<br>") + "</p>"
-                # Sustituye src="cid:ii_*" por data URIs leyendo los
-                # inline attachments del MIME. Las imágenes incrustadas
-                # con `cid:` solo son válidas dentro del MIME original;
-                # al salirse del email pierden la referencia. Convertir
-                # a data URI mantiene la imagen embebida en el HTML
-                # de forma autocontenida.
-                body_html = _inline_cid_attachments(body_html, parsed)
+                attachments_map = _extract_cid_attachments(parsed)
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "gmail.import.parse failed draft_id=%s err=%s",
@@ -307,7 +379,16 @@ def import_gmail_templates_with_tpl_prefix(
             counters["errors"] += 1
             continue
 
+        # Generamos `template.id` con antelación para que las URLs
+        # de los attachments inline del HTML puedan apuntar al endpoint
+        # del CRM antes del flush.
+        template_id = str(uuid4())
+        body_html, referenced_cids = _rewrite_cid_to_crm_urls(
+            body_html, attachments_map, template_id
+        )
+
         template = EmailTemplate(
+            id=template_id,
             name=name,
             subject=name,  # útil como subject default al elegir el template
             body_html=body_html,
@@ -316,6 +397,22 @@ def import_gmail_templates_with_tpl_prefix(
             owner_user_id=created_by_user_id,
         )
         session.add(template)
+        # Solo persistimos los attachments que el HTML referencia. Los
+        # parts huérfanos del MIME (Gmail a veces deja attachments sin
+        # uso) no merecen ocupar BLOB.
+        now = datetime.now(UTC)
+        for cid in referenced_cids:
+            content_type, filename, data = attachments_map[cid]
+            session.add(
+                EmailTemplateAttachment(
+                    template_id=template_id,
+                    original_cid=cid,
+                    filename=filename,
+                    content_type=content_type,
+                    data=data,
+                    created_at=now,
+                )
+            )
         session.flush()
         existing_names.add(name)
         counters["imported"] += 1
@@ -581,6 +678,16 @@ def send_email(
         if include_unsubscribe:
             outbound_html += unsub_html
 
+    # Sustituye los `src="/api/email-templates/.../by-cid/X"` que las
+    # plantillas Gmail importadas dejan en el body por `src="cid:X"`,
+    # recoge los blobs para adjuntarlos como inline parts. Si la
+    # plantilla no usa attachments, no-op.
+    inline_attachments: list[dict[str, Any]] = []
+    if outbound_html:
+        outbound_html, inline_attachments = _swap_crm_urls_to_cid(
+            session, outbound_html
+        )
+
     response = client.send_message(
         from_alias=from_alias,
         from_name=from_name,
@@ -594,6 +701,7 @@ def send_email(
         references=references_header,
         thread_id=thread_id,
         extra_headers=extra_headers or None,
+        inline_attachments=inline_attachments or None,
     )
 
     gmail_message_id = response["id"]

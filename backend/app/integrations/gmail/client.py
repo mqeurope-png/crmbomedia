@@ -16,6 +16,8 @@ from __future__ import annotations
 import base64
 import logging
 from datetime import UTC, datetime, timedelta
+from email import encoders
+from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Any
@@ -155,10 +157,16 @@ class GmailClient:
         references: list[str] | None = None,
         thread_id: str | None = None,
         extra_headers: dict[str, str] | None = None,
+        inline_attachments: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Build the RFC 822 MIME message and dispatch via Gmail
         `users.messages.send`. Returns the upstream `{id, threadId,
-        labelIds, ...}` response."""
+        labelIds, ...}` response.
+
+        `inline_attachments`: cuando el body referencia imágenes con
+        `cid:`, cada item `{cid, content_type, filename, data}` se
+        adjunta como inline MIME part dentro de un wrapper
+        `multipart/related`."""
         mime = _build_mime(
             from_alias=from_alias,
             from_name=from_name,
@@ -171,6 +179,7 @@ class GmailClient:
             in_reply_to_message_id=in_reply_to_message_id,
             references=references,
             extra_headers=extra_headers,
+            inline_attachments=inline_attachments,
         )
         raw = base64.urlsafe_b64encode(mime.as_bytes()).decode()
         body: dict[str, Any] = {"raw": raw}
@@ -331,11 +340,53 @@ def _build_mime(
     in_reply_to_message_id: str | None,
     references: list[str] | None,
     extra_headers: dict[str, str] | None = None,
+    inline_attachments: list[dict[str, Any]] | None = None,
 ) -> MIMEMultipart:
-    """Construct an RFC 822 multipart/alternative MIME message with
-    the reply headers Gmail needs to chain a thread on external
-    clients."""
-    msg = MIMEMultipart("alternative")
+    """Construct an RFC 822 MIME message with the reply headers Gmail
+    needs to chain a thread on external clients.
+
+    Sin attachments inline → `multipart/alternative` plano (text +
+    html). Con attachments → `multipart/related` envolviendo el
+    alternative + cada binario como part inline con `Content-ID`,
+    que es la estructura que esperan Gmail/Outlook/Apple Mail para
+    renderizar `<img src="cid:X">`.
+    """
+    alt = MIMEMultipart("alternative")
+    if body_text:
+        alt.attach(MIMEText(body_text, "plain", "utf-8"))
+    if body_html:
+        alt.attach(MIMEText(body_html, "html", "utf-8"))
+    if not body_text and not body_html:
+        alt.attach(MIMEText("", "plain", "utf-8"))
+
+    if inline_attachments:
+        root: MIMEMultipart = MIMEMultipart("related")
+        root.attach(alt)
+        for item in inline_attachments:
+            cid = item["cid"]
+            data: bytes = item["data"]
+            content_type: str = (
+                item.get("content_type") or "application/octet-stream"
+            )
+            maintype, _, subtype = content_type.partition("/")
+            part = MIMEBase(maintype or "application", subtype or "octet-stream")
+            part.set_payload(data)
+            encoders.encode_base64(part)
+            part.add_header("Content-ID", f"<{cid}>")
+            filename = item.get("filename")
+            if filename:
+                part.add_header(
+                    "Content-Disposition",
+                    "inline",
+                    filename=filename,
+                )
+            else:
+                part.add_header("Content-Disposition", "inline")
+            root.attach(part)
+        msg: MIMEMultipart = root
+    else:
+        msg = alt
+
     msg["Subject"] = subject or ""
     sender = f"{from_name} <{from_alias}>" if from_name else from_alias
     msg["From"] = sender
@@ -351,10 +402,4 @@ def _build_mime(
     if extra_headers:
         for header, value in extra_headers.items():
             msg[header] = value
-    if body_text:
-        msg.attach(MIMEText(body_text, "plain", "utf-8"))
-    if body_html:
-        msg.attach(MIMEText(body_html, "html", "utf-8"))
-    if not body_text and not body_html:
-        msg.attach(MIMEText("", "plain", "utf-8"))
     return msg

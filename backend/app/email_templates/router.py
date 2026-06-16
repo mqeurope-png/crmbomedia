@@ -13,6 +13,7 @@ from fastapi import (
     File,
     HTTPException,
     Query,
+    Response,
     UploadFile,
     status,
 )
@@ -28,7 +29,7 @@ from app.integrations.errors import IntegrationError
 from app.models.brevo import BrevoTemplateCache
 from app.models.crm import User, UserRole
 
-from .models import EmailTemplate, EmailTemplateFolder
+from .models import EmailTemplate, EmailTemplateAttachment, EmailTemplateFolder
 from .schemas import (
     BrevoPickerItem,
     BrevoTemplateHtmlResponse,
@@ -175,6 +176,42 @@ def get_template(
                 detail="No tienes permiso para ver esta plantilla.",
             )
     return TemplateRead.model_validate(template)
+
+
+@router.get(
+    "/email-templates/{template_id}/attachments/by-cid/{cid}",
+    response_class=Response,
+)
+def get_template_attachment_by_cid(
+    template_id: str,
+    cid: str,
+    session: Session = Depends(get_session),
+) -> Response:
+    """Sirve el binario inline de un attachment (Gmail Templates
+    import). El editor TinyMCE incrusta `<img src="…/by-cid/X">`
+    apuntando aquí; el endpoint devuelve los bytes con `Cache-Control:
+    immutable` para que el navegador no los re-pida.
+
+    Endpoint público (sin `require_user`) — los <img> tags del HTML
+    se cargan desde el browser sin headers Authorization, así que
+    forzar Bearer lo rompería todo. La protección efectiva es la
+    indirection: hace falta conocer `template_id` (UUID, 122 bits) y
+    `cid` para encontrar la fila. Mismo patrón que sigue
+    `/assets/email-templates/` para imágenes subidas vía editor.
+    """
+    row = session.scalar(
+        select(EmailTemplateAttachment).where(
+            EmailTemplateAttachment.template_id == template_id,
+            EmailTemplateAttachment.original_cid == cid,
+        )
+    )
+    if row is None:
+        raise not_found("EmailTemplateAttachment")
+    return Response(
+        content=bytes(row.data),
+        media_type=row.content_type,
+        headers={"Cache-Control": "public, max-age=31536000, immutable"},
+    )
 
 
 @router.put("/email-templates/{template_id}", response_model=TemplateRead)

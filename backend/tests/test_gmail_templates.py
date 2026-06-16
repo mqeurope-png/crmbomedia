@@ -638,14 +638,15 @@ class _FakeGmailImportClientInline:
         }
 
 
-def test_import_inlines_cid_attachments_as_data_uris(
+def test_import_rewrites_cid_to_crm_attachment_urls(
     client: TestClient,
     session_factory: sessionmaker,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Las imágenes inline `<img src="cid:ii_*">` deben quedar
-    embebidas como `data:image/png;base64,...` para que sean
-    visibles fuera del MIME original (en TinyMCE del CRM)."""
+    """Tras migrar a `email_template_attachments` el body deja de
+    llevar base64: los `<img src="cid:ii_*">` se reescriben a la URL
+    `/api/email-templates/{id}/attachments/by-cid/{cid}` y los
+    binarios se guardan en la nueva tabla."""
     uid = _user_id(session_factory, UserRole.ADMIN)
     _seed_gmail(
         session_factory,
@@ -672,6 +673,7 @@ def test_import_inlines_cid_attachments_as_data_uris(
 
     from app.email_templates.models import (  # noqa: PLC0415
         EmailTemplate,
+        EmailTemplateAttachment,
     )
 
     with session_factory() as session:
@@ -680,4 +682,287 @@ def test_import_inlines_cid_attachments_as_data_uris(
         )
         assert row is not None
         assert "cid:ii_abc123" not in row.body_html
-        assert "data:image/png;base64," in row.body_html
+        assert "data:image/" not in row.body_html
+        expected_url = (
+            f"/api/email-templates/{row.id}/attachments/by-cid/ii_abc123"
+        )
+        assert expected_url in row.body_html
+
+        attachment = session.scalar(
+            _select(EmailTemplateAttachment).where(
+                EmailTemplateAttachment.template_id == row.id,
+                EmailTemplateAttachment.original_cid == "ii_abc123",
+            )
+        )
+        assert attachment is not None
+        assert attachment.content_type == "image/png"
+        assert bytes(attachment.data) == _PNG_1x1
+
+
+def test_attachment_endpoint_serves_binary_with_cache_headers(
+    client: TestClient,
+    session_factory: sessionmaker,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """El endpoint del CRM devuelve los bytes con el `Content-Type`
+    original y `Cache-Control: immutable` para que el navegador no
+    re-pida la imagen entre aperturas del modal."""
+    uid = _user_id(session_factory, UserRole.ADMIN)
+    _seed_gmail(
+        session_factory,
+        user_id=uid,
+        scopes=(
+            "https://www.googleapis.com/auth/gmail.send "
+            "https://www.googleapis.com/auth/gmail.modify"
+        ),
+    )
+    monkeypatch.setattr(
+        "app.integrations.gmail.service.GmailClient",
+        _FakeGmailImportClientInline,
+    )
+    client.post(
+        "/api/email-templates/import-gmail",
+        headers=auth_headers(client, "admin"),
+    )
+
+    from sqlalchemy import select as _select  # noqa: PLC0415
+
+    from app.email_templates.models import EmailTemplate  # noqa: PLC0415
+
+    with session_factory() as session:
+        tpl = session.scalar(
+            _select(EmailTemplate).where(EmailTemplate.name == "Con imagen")
+        )
+        assert tpl is not None
+        tpl_id = tpl.id
+
+    # Un user normal puede leer la plantilla porque es is_global.
+    resp = client.get(
+        f"/api/email-templates/{tpl_id}/attachments/by-cid/ii_abc123",
+        headers=auth_headers(client, "user"),
+    )
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("image/png")
+    assert "immutable" in resp.headers.get("cache-control", "")
+    assert resp.content == _PNG_1x1
+
+
+def test_attachment_endpoint_is_public(
+    client: TestClient,
+    session_factory: sessionmaker,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """El endpoint NO usa `require_user` porque el browser carga las
+    imágenes desde un `<img src=...>` sin el header `Authorization:
+    Bearer`. La protección efectiva es conocer el `template_id`
+    (UUID) + `cid`."""
+    uid = _user_id(session_factory, UserRole.ADMIN)
+    _seed_gmail(
+        session_factory,
+        user_id=uid,
+        scopes=(
+            "https://www.googleapis.com/auth/gmail.send "
+            "https://www.googleapis.com/auth/gmail.modify"
+        ),
+    )
+    monkeypatch.setattr(
+        "app.integrations.gmail.service.GmailClient",
+        _FakeGmailImportClientInline,
+    )
+    client.post(
+        "/api/email-templates/import-gmail",
+        headers=auth_headers(client, "admin"),
+    )
+
+    from sqlalchemy import select as _select  # noqa: PLC0415
+
+    from app.email_templates.models import EmailTemplate  # noqa: PLC0415
+
+    with session_factory() as session:
+        tpl = session.scalar(
+            _select(EmailTemplate).where(EmailTemplate.name == "Con imagen")
+        )
+        assert tpl is not None
+        tpl_id = tpl.id
+
+    # Sin Authorization header — emula el `<img>` del navegador.
+    resp = client.get(
+        f"/api/email-templates/{tpl_id}/attachments/by-cid/ii_abc123",
+    )
+    assert resp.status_code == 200
+    assert resp.content == _PNG_1x1
+
+
+def test_attachment_endpoint_404_for_unknown_cid(
+    client: TestClient,
+    session_factory: sessionmaker,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    uid = _user_id(session_factory, UserRole.ADMIN)
+    _seed_gmail(
+        session_factory,
+        user_id=uid,
+        scopes=(
+            "https://www.googleapis.com/auth/gmail.send "
+            "https://www.googleapis.com/auth/gmail.modify"
+        ),
+    )
+    monkeypatch.setattr(
+        "app.integrations.gmail.service.GmailClient",
+        _FakeGmailImportClientInline,
+    )
+    client.post(
+        "/api/email-templates/import-gmail",
+        headers=auth_headers(client, "admin"),
+    )
+
+    from sqlalchemy import select as _select  # noqa: PLC0415
+
+    from app.email_templates.models import EmailTemplate  # noqa: PLC0415
+
+    with session_factory() as session:
+        tpl = session.scalar(
+            _select(EmailTemplate).where(EmailTemplate.name == "Con imagen")
+        )
+        assert tpl is not None
+        tpl_id = tpl.id
+
+    resp = client.get(
+        f"/api/email-templates/{tpl_id}/attachments/by-cid/does-not-exist",
+        headers=auth_headers(client, "user"),
+    )
+    assert resp.status_code == 404
+
+
+def test_build_mime_wraps_in_multipart_related_with_inline_parts() -> None:
+    """Con `inline_attachments` el MIME pasa a `multipart/related`
+    envolviendo el `alternative` + cada attachment como part inline
+    con `Content-ID: <cid>`. Es la forma que esperan los clientes de
+    correo (Gmail, Outlook, Apple Mail) para resolver `cid:` en
+    `<img>` tags."""
+    from app.integrations.gmail.client import _build_mime  # noqa: PLC0415
+
+    mime = _build_mime(
+        from_alias="ops@bomedia.es",
+        from_name="Bomedia",
+        to=["client@example.com"],
+        cc=None,
+        bcc=None,
+        subject="Hola",
+        body_html='<p><img src="cid:ii_xyz" alt="logo"></p>',
+        body_text="Hola",
+        in_reply_to_message_id=None,
+        references=None,
+        extra_headers=None,
+        inline_attachments=[
+            {
+                "cid": "ii_xyz",
+                "content_type": "image/png",
+                "filename": "logo.png",
+                "data": _PNG_1x1,
+            }
+        ],
+    )
+
+    assert mime.get_content_type() == "multipart/related"
+    assert mime["Subject"] == "Hola"
+    assert mime["From"] == "Bomedia <ops@bomedia.es>"
+
+    payload = mime.get_payload()
+    # Primer part: el alternative con text + html.
+    assert payload[0].get_content_type() == "multipart/alternative"
+    sub_types = [p.get_content_type() for p in payload[0].get_payload()]
+    assert "text/plain" in sub_types
+    assert "text/html" in sub_types
+    # Segundo part: la imagen con Content-ID y disposition inline.
+    img = payload[1]
+    assert img.get_content_type() == "image/png"
+    assert img["Content-ID"] == "<ii_xyz>"
+    assert "inline" in img["Content-Disposition"]
+
+
+def test_build_mime_without_inline_attachments_stays_alternative() -> None:
+    """Backwards compat: sin attachments inline el MIME mantiene la
+    estructura `multipart/alternative` que llevaba antes del refactor.
+    """
+    from app.integrations.gmail.client import _build_mime  # noqa: PLC0415
+
+    mime = _build_mime(
+        from_alias="ops@bomedia.es",
+        from_name=None,
+        to=["client@example.com"],
+        cc=None,
+        bcc=None,
+        subject="x",
+        body_html="<p>hi</p>",
+        body_text="hi",
+        in_reply_to_message_id=None,
+        references=None,
+        extra_headers=None,
+        inline_attachments=None,
+    )
+    assert mime.get_content_type() == "multipart/alternative"
+
+
+def test_swap_crm_urls_to_cid_round_trip() -> None:
+    """`_swap_crm_urls_to_cid` deja el HTML con `src="cid:X"` y
+    devuelve los blobs cargados en la lista. Es la pieza que el send
+    path usa para reinyectar attachments inline."""
+    import re as _re  # noqa: PLC0415
+
+    from sqlalchemy import create_engine  # noqa: PLC0415
+    from sqlalchemy.orm import sessionmaker as _sm  # noqa: PLC0415
+    from sqlalchemy.pool import StaticPool  # noqa: PLC0415
+
+    from app.db.base import Base as _Base  # noqa: PLC0415
+    from app.email_templates.models import (  # noqa: PLC0415
+        EmailTemplate,
+        EmailTemplateAttachment,
+        EmailTemplateFolder,
+    )
+    from app.integrations.gmail.service import (  # noqa: PLC0415
+        _swap_crm_urls_to_cid,
+    )
+
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    _Base.metadata.create_all(engine)
+    Session_ = _sm(bind=engine, autoflush=False, autocommit=False)
+
+    with Session_() as session:
+        folder = EmailTemplateFolder(name="F", is_global=True)
+        session.add(folder)
+        session.flush()
+        tpl = EmailTemplate(
+            name="T",
+            body_html="x",
+            folder_id=folder.id,
+            is_global=True,
+        )
+        session.add(tpl)
+        session.flush()
+        att = EmailTemplateAttachment(
+            template_id=tpl.id,
+            original_cid="ii_xyz",
+            filename="logo.png",
+            content_type="image/png",
+            data=_PNG_1x1,
+            created_at=datetime.now(UTC),
+        )
+        session.add(att)
+        session.flush()
+
+        body = (
+            f'<p><img src="/api/email-templates/{tpl.id}'
+            f'/attachments/by-cid/ii_xyz" alt="x"></p>'
+        )
+        new_body, parts = _swap_crm_urls_to_cid(session, body)
+        assert 'src="cid:ii_xyz"' in new_body
+        assert _re.search(r"/by-cid/", new_body) is None
+        assert len(parts) == 1
+        assert parts[0]["cid"] == "ii_xyz"
+        assert parts[0]["content_type"] == "image/png"
+        assert parts[0]["data"] == _PNG_1x1
