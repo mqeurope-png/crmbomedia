@@ -704,7 +704,12 @@ def list_users(
         description="Filtro substring case-insensitive sobre email + full_name",
     ),
     skip: int = Query(default=0, ge=0),
-    limit: int = Query(default=50, ge=1, le=100),
+    # PR-Ea hotfix: cap subido de 100 a 500. Pickers de la UI
+    # (RuleEditor primary/secundarios, OwnerPicker bulk, etc.) cargan
+    # la lista entera de usuarios activos para mostrarla sin paginar.
+    # 500 cubre cualquier equipo realista; con autocomplete server-side
+    # vía `q` el coste de un dropdown es despreciable.
+    limit: int = Query(default=50, ge=1, le=500),
     session: Session = Depends(get_session),
     current_user: User = Depends(require_viewer),
 ) -> list[User]:

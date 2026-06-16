@@ -115,7 +115,13 @@ export function RuleEditorDrawer({ mode, rule, onClose, onSaved }: Props) {
 
   useEffect(() => {
     let cancelled = false;
-    getUsers({ limit: 200 })
+    // PR-Ea hotfix: /api/users limita `limit ≤ 100`. Pedir 200 daba
+    // 422 silencioso (catch → setUsers([])) y el picker mostraba
+    // "No hay usuarios activos" aunque la BD tuviese 6 users
+    // activos. 100 cubre cualquier tamaño realista de equipo CRM;
+    // si en el futuro se supera, hay que paginar el picker o
+    // ampliar el cap server-side.
+    getUsers({ limit: 100 })
       .then((rows) => {
         if (cancelled) return;
         setUsers(rows.filter((u) => u.is_active));
