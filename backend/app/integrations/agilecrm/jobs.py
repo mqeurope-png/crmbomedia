@@ -45,7 +45,6 @@ from app.integrations.errors import IntegrationError, IntegrationSkipped
 from app.models.crm import (
     ActivityEvent,
     Contact,
-    ContactNote,
     ContactPhone,
     ExternalReference,
     ExternalSystem,
@@ -321,14 +320,12 @@ def reconcile_agile_notes(
     contact_id: str,
     payload: dict[str, Any],
 ) -> int:
-    """Sprint Empresas — sub-PR 4/4. Materialise `Note1..Note10`
-    AgileCRM contact-form properties into the new `contact_notes`
-    table. Idempotent across re-syncs: dedupe by
-    (contact_id, source, content) so manual edits to imported
-    rows aren't clobbered and re-syncs don't spawn duplicates
-    when Agile happens to ship the same content.
+    """Materialise `Note1..Note10` AgileCRM contact-form properties
+    into `notes` (post-migration 0049 unification). Idempotent across
+    re-syncs: dedupe por (contact_id, source, body) — manual edits to
+    imported rows no se clobban y re-syncs no generan duplicados.
 
-    Returns the number of notes inserted, for stats / observability.
+    Devuelve el número de notas insertadas para stats / observability.
     """
     from datetime import UTC, datetime  # noqa: PLC0415
 
@@ -339,9 +336,12 @@ def reconcile_agile_notes(
         return 0
 
     existing_keys: set[tuple[str, str]] = {
-        (row.source, row.content)
+        (row.source, row.body)
         for row in session.scalars(
-            select(ContactNote).where(ContactNote.contact_id == contact_id)
+            select(Note).where(
+                Note.contact_id == contact_id,
+                Note.source.like("agile:Note%"),
+            )
         )
     }
     now = datetime.now(UTC)
@@ -350,9 +350,9 @@ def reconcile_agile_notes(
         key = (entry["source"], entry["content"])
         if key in existing_keys:
             continue
-        row = ContactNote(
+        row = Note(
             contact_id=contact_id,
-            content=entry["content"],
+            body=entry["content"],
             source=entry["source"],
             pinned=False,
             created_by_user_id=None,

@@ -209,11 +209,6 @@ class Contact(TimestampMixin, Base):
         cascade="all, delete-orphan",
         order_by="ContactPhone.is_primary.desc(), ContactPhone.created_at.asc()",
     )
-    contact_notes: Mapped[list["ContactNote"]] = relationship(
-        back_populates="contact",
-        cascade="all, delete-orphan",
-        order_by="ContactNote.pinned.desc(), ContactNote.created_at.desc()",
-    )
     # Sprint Reglas-Assign. Multi-comercial (primary + secundarios).
     # `owner_user_id` (arriba) se mantiene como CACHÉ desnormalizado del
     # primary, recalculado en código cuando cambia este conjunto. La
@@ -297,44 +292,6 @@ class ContactPhone(TimestampMixin, Base):
     )
 
     contact: Mapped[Contact] = relationship(back_populates="phones")
-
-
-class ContactNote(TimestampMixin, Base):
-    """Sprint Empresas — sub-PR 4/4. Free-form note attached to a
-    contact. Distinct from the legacy `Note` table (which mirrors
-    AgileCRM's `/dev/api/contacts/{id}/notes` activity-stream
-    sub-resource): `ContactNote` carries the `Note1..Note10`
-    contact-form properties some AgileCRM accounts use as
-    scratchpads, plus operator-typed notes from the new ficha
-    section.
-
-    `source` discriminates provenance (`agile:Note1` …
-    `agile:Note10` / `manual`). The mapper + backfill dedupe on
-    (contact_id, source, content) so re-syncing is idempotent; no
-    DB unique because manual notes can legitimately repeat
-    content.
-    """
-
-    __tablename__ = "contact_notes"
-
-    id: Mapped[str] = mapped_column(
-        String(36), primary_key=True, default=lambda: str(uuid4())
-    )
-    contact_id: Mapped[str] = mapped_column(
-        ForeignKey("contacts.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    content: Mapped[str] = mapped_column(Text, nullable=False)
-    source: Mapped[str] = mapped_column(
-        String(40), default="manual", nullable=False
-    )
-    pinned: Mapped[bool] = mapped_column(
-        Boolean, default=False, nullable=False
-    )
-    created_by_user_id: Mapped[str | None] = mapped_column(String(36))
-
-    contact: Mapped[Contact] = relationship(back_populates="contact_notes")
 
 
 class ContactAssignment(TimestampMixin, Base):
@@ -726,6 +683,19 @@ class Note(TimestampMixin, Base):
     external_author_email: Mapped[str | None] = mapped_column(String(255))
     external_author_name: Mapped[str | None] = mapped_column(String(255))
     external_created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Migration 0049 — unification of `notes` + `contact_notes`. Lets
+    # the same table carry timeline notes from Agile, custom-field
+    # Note1..Note10 imports, and manual CRM notes. `source`
+    # discriminates: `manual` / `agile:timeline` / `agile:Note1` …
+    # `agile:Note10`. `pinned` floats top of list. `created_by_user_id`
+    # is the CRM operator for manual rows (NULL for imported).
+    source: Mapped[str] = mapped_column(
+        String(40), default="manual", nullable=False
+    )
+    pinned: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )
+    created_by_user_id: Mapped[str | None] = mapped_column(String(36))
 
     contact: Mapped[Contact] = relationship(back_populates="notes")
 

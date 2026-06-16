@@ -43,7 +43,6 @@ import {
   type ActivityEvent,
   type Contact,
   type ExternalRefreshResult,
-  type Note,
 } from "../../lib/api";
 import { extractErrorMessage } from "../../lib/errors";
 
@@ -325,7 +324,9 @@ export default function ContactDetailPage() {
 
           <ContactPhonesSection contactId={contact.id} />
 
-          <ContactNotesSection contactId={contact.id} />
+          {/* Notas: la sección vive ahora solo en la pestaña "Notas"
+              del top tab (más prominente + unificada con el timeline
+              Agile post-migration 0049). */}
 
           <ContactAddressSection
             contact={contact}
@@ -395,7 +396,7 @@ export default function ContactDetailPage() {
               <ContactTasksSection contactId={contact.id} />
             ) : null}
             {activeTab === "notes" ? (
-              <NotesTab notes={contact.notes ?? []} />
+              <ContactNotesSection contactId={contact.id} />
             ) : null}
             {activeTab === "pipelines" ? (
               <ContactPipelinesSection contactId={contact.id} />
@@ -586,29 +587,7 @@ function ActivityTab({
   );
 }
 
-function NotesTab({ notes }: { notes: Note[] }) {
-  if (notes.length === 0) {
-    return <p className="muted small">Sin notas todavía.</p>;
-  }
-  return (
-    <ul className="note-list">
-      {notes.map((note) => {
-        const author =
-          note.external_author_name || note.external_author_email || "Sistema";
-        const date = note.external_created_at ?? note.created_at;
-        return (
-          <li key={note.id} className="note-card">
-            <div className="note-card-header">
-              <strong title={note.external_author_email ?? undefined}>
-                {author}
-              </strong>
-              <span className="muted">{formatDateTime(date)}</span>
-            </div>
-            <p className="note-body">{note.body}</p>
-          </li>
-        );
-      })}
-    </ul>
-  );
-}
+// NotesTab eliminado post-unification — la pestaña "Notas" usa el
+// componente compartido `<ContactNotesSection>` que lee del endpoint
+// `/api/contacts/{id}/notes` (tabla `notes` unificada).
 

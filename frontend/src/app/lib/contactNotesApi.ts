@@ -7,6 +7,12 @@ export type ContactNote = {
   source: string;
   pinned: boolean;
   created_by_user_id: string | null;
+  /** Post-unification (migration 0049) — los siguientes campos vienen
+   *  de las notas importadas del timeline AgileCRM. NULL para notas
+   *  manuales o de Note1..Note10 custom-properties. */
+  external_author_name: string | null;
+  external_author_email: string | null;
+  external_created_at: string | null;
   created_at: string;
   updated_at: string;
 };
