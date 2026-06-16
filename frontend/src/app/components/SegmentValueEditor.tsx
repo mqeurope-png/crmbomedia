@@ -880,7 +880,11 @@ function CompanyPicker({
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    listCompanies({ q: deferredQuery || undefined, limit: MAX_DROPDOWN_ITEMS })
+    // PR-Cf: backend GET /api/companies capa `limit` a 200 — usar
+    // MAX_DROPDOWN_ITEMS (300) producía 422 silencioso y el dropdown
+    // quedaba vacío. 200 es suficiente para autocomplete; el operador
+    // afina la búsqueda si necesita más resolución.
+    listCompanies({ q: deferredQuery || undefined, limit: 200 })
       .then((page) => {
         if (!cancelled) setResults(page.items);
       })

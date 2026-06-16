@@ -136,6 +136,33 @@ def _resolve_sort(descriptor: Any, payload: EntitySearchRequest):
     return column, sort_dir
 
 
+def _segment_resolver_for(session: Session):
+    """Closure factory for `in_segment` field. Sprint Filtros & Listas
+    (PR-Cf): el motor levanta `SegmentRuleError("in_segment requires a
+    segment_resolver")` si una rule usa `in_segment` y nadie pasa el
+    resolver. El endpoint legacy `/api/contacts/search` ya lo hace —
+    el genérico `/api/entities/{entity}/search` también debe.
+
+    El resolver es Contact-only en la práctica (los segmentos son un
+    concepto de contactos), pero pasarlo a cualquier entidad es
+    inocuo porque sólo se invoca cuando una rule lo necesita.
+    """
+    import json as _json  # noqa: PLC0415
+
+    from app.models.crm import Segment  # noqa: PLC0415
+
+    def _resolver(segment_id: str, _visited: set[str]) -> dict[str, Any] | None:
+        seg = session.get(Segment, segment_id)
+        if seg is None or not seg.rules_json:
+            return None
+        try:
+            return _json.loads(seg.rules_json)
+        except (TypeError, ValueError):
+            return None
+
+    return _resolver
+
+
 @router.post("/{entity}/search")
 def entity_search(
     entity: str,
@@ -152,7 +179,11 @@ def entity_search(
         raise not_found("Entity")
 
     try:
-        clause = build_entity_filter(descriptor, payload.rules_json or {})
+        clause = build_entity_filter(
+            descriptor,
+            payload.rules_json or {},
+            segment_resolver=_segment_resolver_for(session),
+        )
     except SegmentRuleError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
@@ -218,7 +249,11 @@ def entity_search_ids(
         raise not_found("Entity")
 
     try:
-        clause = build_entity_filter(descriptor, payload.rules_json or {})
+        clause = build_entity_filter(
+            descriptor,
+            payload.rules_json or {},
+            segment_resolver=_segment_resolver_for(session),
+        )
     except SegmentRuleError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
