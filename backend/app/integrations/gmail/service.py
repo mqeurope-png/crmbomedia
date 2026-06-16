@@ -73,21 +73,47 @@ def _extract_subject_from_headers(headers: list[dict[str, Any]]) -> str:
     return ""
 
 
-def _is_template_label(label_id: str) -> bool:
-    """Cualquier label del sistema `^smartlabel_*` relacionado con
-    canned response / template. Cubre ambos:
+# Investigación post-deploy (Bart, 2026-06-16): la Gmail API NO
+# expone qué drafts son templates. TODOS los drafts (templates y
+# borradores normales) vienen con `labelIds = ["DRAFT"]` o
+# `["DRAFT", "IMPORTANT"]`. Por eso filtrar por label no funciona.
+#
+# Heurística: lo que el operador considera "template" es un draft
+# CREADO DESDE CERO sin ser respuesta ni reenvío. Las pistas:
+#   - Subject NO empieza por Re:/Fwd:/AW:/WG:/RV: (variantes idioma).
+#   - Snippet/body NO contiene la cabecera típica del quoted reply
+#     ("On … wrote:", "El … escribió:", "Am … schrieb:", "Le … a
+#     écrit:").
+#   - Snippet NO empieza con `>` (texto citado).
+import re  # noqa: E402
 
-    - `^smartlabel_canned_response` (legacy "Canned Responses").
-    - `^smartlabel_canned_response_template` (templates modernos).
-    - Cualquier `^smartlabel_*` que Google añada con sufijo template/
-      canned_response en el futuro.
-    """
-    lid = label_id.lower()
-    return (
-        "canned_response" in lid
-        or "smartlabel_template" in lid
-        or "_template" in lid and lid.startswith("^smartlabel")
-    )
+# `RE:`, `Re:`, `RE :`, `Re :`, `Fwd:`, `Fw:`, `Tr:` (FR), `AW:` (DE),
+# `WG:` (DE), `RV:` (ES), `R:` (IT). Case-insensitive.
+_REPLY_FORWARD_PREFIX = re.compile(
+    r"^\s*(re|fwd?|tr|aw|wg|rv|r)\s*:\s*", re.IGNORECASE
+)
+# "On Mon, Jun 16 2026 at 10:00, Person <…> wrote:"
+# "El 16 jun 2026, a las 10:00, Person escribió:"
+# "Am 16.06.2026 schrieb Person:"
+# "Le 16 juin 2026 à 10:00, Person a écrit:"
+_QUOTED_HEADER = re.compile(
+    r"(wrote\s*:|escribi[oó]\s*:|schrieb\s*:|a\s+[ée]crit\s*:|scriveva\s*:)",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_template(subject: str, snippet: str) -> bool:
+    """Aplica la heurística reply/forward/quoted al subject + snippet
+    de un draft. True == el operador lo consideraría un template;
+    False == es respuesta/forward/draft en progreso."""
+    if subject and _REPLY_FORWARD_PREFIX.match(subject):
+        return False
+    text = snippet or ""
+    if text.lstrip().startswith(">"):
+        return False
+    if text and _QUOTED_HEADER.search(text):
+        return False
+    return True
 
 
 def list_gmail_templates(
@@ -98,21 +124,21 @@ def list_gmail_templates(
     max_results: int = 30,
     debug: bool = False,
 ) -> list[dict[str, Any]]:
-    """Devuelve las plantillas Gmail (canned responses / templates)
-    del user autenticado.
+    """Devuelve las plantillas Gmail (drafts auto-creados desde la UI
+    Templates de Gmail) del user autenticado.
 
-    Mecánica: Gmail expone los Templates del compose UI como drafts
-    con un `labelIds` que contiene un system label tipo
-    `^smartlabel_canned_response` o `^smartlabel_canned_response_template`
-    (Google ha cambiado el nombre varias veces; mantenemos el filtro
-    en `_is_template_label` para tolerar ambos). Como el query Gmail
-    `label:^smartlabel_*` devuelve 0 hits en algunas cuentas, listamos
-    todos los drafts y filtramos en código por `labelIds`.
+    Mecánica (post 2026-06-16): la Gmail API NO expone qué drafts son
+    templates — todos vienen con `labelIds=["DRAFT"]`. Aplicamos una
+    heurística sobre subject + snippet: un draft es template si NO
+    parece respuesta (Re:/Fwd:) NI tiene cabecera de quoted reply
+    (`… wrote:` / `… escribió:` / `… schrieb:` / `… a écrit:`).
+
+    El resultado se ordena por `updated_at DESC` (más reciente
+    primero) — coherente con la UI de Gmail.
 
     Si `debug=True`, devolvemos metadata cruda de TODOS los drafts
-    (sin filtrar por label) para identificar el patrón correcto en
-    cuentas con setup raro. La respuesta debug incluye `labelIds` y
-    `threadId` además del shape público.
+    (sin filtrar) con `label_ids`, `thread_id`, `is_template` (decision
+    de la heurística) para validación visual.
     """
     import base64  # noqa: PLC0415
     from email import message_from_bytes  # noqa: PLC0415
@@ -151,6 +177,8 @@ def list_gmail_templates(
             except (TypeError, ValueError):
                 updated_at = None
 
+        is_template = _looks_like_template(subject, snippet)
+
         if debug:
             out.append(
                 {
@@ -161,12 +189,15 @@ def list_gmail_templates(
                     "updated_at": updated_at,
                     "label_ids": label_ids,
                     "thread_id": message.get("threadId"),
+                    "is_template": is_template,
                 }
             )
             continue
 
-        # Paso 2: filtro por labelIds. Si no es template → siguiente.
-        if not any(_is_template_label(lid) for lid in label_ids):
+        # Paso 2: filtro por heurística reply/forward/quoted. Si el
+        # draft tiene pinta de respuesta o borrador en progreso, no
+        # es template.
+        if not is_template:
             continue
 
         # Paso 3: bajar body completo solo para los que pasan el filtro.
@@ -212,6 +243,14 @@ def list_gmail_templates(
                 "updated_at": updated_at,
             }
         )
+    # Orden estable: más reciente primero (paridad con la UI Gmail).
+    # `updated_at=None` cae al final.
+    out.sort(
+        key=lambda item: (
+            item.get("updated_at") or datetime(1970, 1, 1, tzinfo=UTC)
+        ),
+        reverse=True,
+    )
     return out
 
 

@@ -97,12 +97,20 @@ def _build_raw_email(*, subject: str, body_html: str) -> str:
 
 
 class _FakeGmailClient:
-    """Stand-in del cliente Gmail. Modelo:
+    """Stand-in. Modelo:
 
-    - `draft-1` y `draft-2` son templates (label `^smartlabel_canned_
-      response` y `^smartlabel_canned_response_template`).
-    - `draft-3` es un draft normal, sin label de template — debe ser
-      filtrado salvo en modo debug.
+    - `draft-tpl1`: template puro ("Pressupost sol·licitat"), pasa
+      la heurística.
+    - `draft-tpl2`: template ("Adquisición equipos FLUX"), también pasa.
+    - `draft-reply`: borrador de respuesta con subject "Re: Tu
+      consulta" — NO debería contar como template.
+    - `draft-quoted`: borrador con snippet quoted "On Mon, Jun 16
+      Bart wrote:" — NO debería contar.
+    - `draft-gt`: snippet empieza con `> texto citado` — NO debería
+      contar.
+
+    Todos los drafts vienen con `labelIds=["DRAFT"]` para reflejar el
+    hallazgo: la API NO expone qué es template.
     """
 
     def __init__(self, *_a, **_kw) -> None:
@@ -113,42 +121,68 @@ class _FakeGmailClient:
     ) -> list[dict]:
         _ = query
         _ = max_results
-        return [{"id": "draft-1"}, {"id": "draft-2"}, {"id": "draft-3"}]
+        return [
+            {"id": "draft-tpl1"},
+            {"id": "draft-tpl2"},
+            {"id": "draft-reply"},
+            {"id": "draft-quoted"},
+            {"id": "draft-gt"},
+        ]
 
     def get_draft_metadata(self, draft_id: str) -> dict:
         catalog = {
-            "draft-1": {
-                "snippet": "Hola equipo,",
-                "internalDate": "1718000000000",
-                "labelIds": ["DRAFT", "^smartlabel_canned_response"],
+            "draft-tpl1": {
+                "snippet": "Hola, adjuntamos el presupuesto solicitado",
+                "internalDate": "1718500000000",  # más reciente
+                "labelIds": ["DRAFT"],
                 "threadId": "thr-1",
                 "payload": {
                     "headers": [
-                        {"name": "Subject", "value": "Plantilla de bienvenida"},
+                        {"name": "Subject", "value": "Pressupost sol·licitat"},
                     ]
                 },
             },
-            "draft-2": {
-                "snippet": "Adjunto",
-                "internalDate": "1718500000000",
-                "labelIds": [
-                    "DRAFT",
-                    "^smartlabel_canned_response_template",
-                ],
+            "draft-tpl2": {
+                "snippet": "Te confirmo la adquisición de equipos",
+                "internalDate": "1718000000000",  # más antiguo
+                "labelIds": ["DRAFT"],
                 "threadId": "thr-2",
                 "payload": {
                     "headers": [
-                        {"name": "Subject", "value": "Reenvío plantilla"},
+                        {
+                            "name": "Subject",
+                            "value": "Adquisición equipos FLUX",
+                        },
                     ]
                 },
             },
-            "draft-3": {
-                "snippet": "Borrador normal",
+            "draft-reply": {
+                "snippet": "Gracias por la información",
                 "internalDate": "1719000000000",
                 "labelIds": ["DRAFT"],
                 "threadId": "thr-3",
                 "payload": {
-                    "headers": [{"name": "Subject", "value": "Borrador X"}]
+                    "headers": [{"name": "Subject", "value": "Re: Tu consulta"}]
+                },
+            },
+            "draft-quoted": {
+                "snippet": "On Mon, Jun 16 2026 at 10:00, Bart wrote: hola",
+                "internalDate": "1719500000000",
+                "labelIds": ["DRAFT"],
+                "threadId": "thr-4",
+                "payload": {
+                    "headers": [
+                        {"name": "Subject", "value": "Borrador con quote"}
+                    ]
+                },
+            },
+            "draft-gt": {
+                "snippet": "> Texto citado por completo",
+                "internalDate": "1720000000000",
+                "labelIds": ["DRAFT"],
+                "threadId": "thr-5",
+                "payload": {
+                    "headers": [{"name": "Subject", "value": "Reply gt"}]
                 },
             },
         }
@@ -182,13 +216,18 @@ class _FakeGmailClient:
         }
 
 
-def test_gmail_templates_filters_by_label_ignoring_non_templates(
+def test_heuristic_keeps_templates_drops_replies_and_quoted(
     client: TestClient,
     session_factory: sessionmaker,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """3 drafts: 2 con label de template (legacy + moderno), 1 sin.
-    El endpoint debe devolver SOLO los 2 con label de template."""
+    """5 drafts:
+    - 2 templates puros → quedan.
+    - 1 con subject 'Re: …' → fuera.
+    - 1 con snippet 'On … wrote:' → fuera.
+    - 1 con snippet '> citado' → fuera.
+
+    Resultado: solo los 2 templates, ordenados por updated_at DESC."""
     uid = _user_id(session_factory, UserRole.USER)
     _seed_gmail(
         session_factory,
@@ -209,22 +248,20 @@ def test_gmail_templates_filters_by_label_ignoring_non_templates(
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    ids = {item["id"] for item in body}
-    assert ids == {"draft-1", "draft-2"}, body
-    by_id = {item["id"]: item for item in body}
-    assert by_id["draft-1"]["subject"] == "Plantilla de bienvenida"
-    assert "<p>Bienvenido al CRM</p>" in by_id["draft-1"]["body_html"]
-    assert by_id["draft-1"]["snippet"] == "Hola equipo,"
-    assert by_id["draft-2"]["subject"] == "Reenvío plantilla"
+    ids = [item["id"] for item in body]
+    # Solo los 2 templates, en orden updated_at desc (tpl1 más reciente).
+    assert ids == ["draft-tpl1", "draft-tpl2"], body
+    assert body[0]["subject"] == "Pressupost sol·licitat"
+    assert body[1]["subject"] == "Adquisición equipos FLUX"
 
 
-def test_gmail_templates_debug_returns_all_drafts_with_labels(
+def test_debug_returns_all_drafts_with_summary_and_is_template_flag(
     client: TestClient,
     session_factory: sessionmaker,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Modo debug ignora el filtro: TODOS los drafts vuelven con
-    `label_ids` + `thread_id` para diagnosticar el patrón real."""
+    """Modo debug devuelve TODOS los drafts marcados con
+    `is_template` boolean + entrada `_summary` con counters."""
     uid = _user_id(session_factory, UserRole.USER)
     _seed_gmail(
         session_factory,
@@ -245,15 +282,20 @@ def test_gmail_templates_debug_returns_all_drafts_with_labels(
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    ids = {item["id"] for item in body}
-    assert ids == {"draft-1", "draft-2", "draft-3"}
-    by_id = {item["id"]: item for item in body}
-    assert by_id["draft-1"]["label_ids"] == [
-        "DRAFT",
-        "^smartlabel_canned_response",
-    ]
-    assert by_id["draft-3"]["label_ids"] == ["DRAFT"]
-    assert by_id["draft-3"]["thread_id"] == "thr-3"
+    summary = body[0]
+    assert summary["id"] == "_summary"
+    assert summary["total_drafts"] == 5
+    assert summary["detected_templates"] == 2
+
+    drafts = body[1:]
+    by_id = {item["id"]: item for item in drafts}
+    assert by_id["draft-tpl1"]["is_template"] is True
+    assert by_id["draft-tpl2"]["is_template"] is True
+    assert by_id["draft-reply"]["is_template"] is False
+    assert by_id["draft-quoted"]["is_template"] is False
+    assert by_id["draft-gt"]["is_template"] is False
+    # label_ids siempre ["DRAFT"] (refleja el hallazgo Bart).
+    assert by_id["draft-tpl1"]["label_ids"] == ["DRAFT"]
 
 
 def test_gmail_templates_returns_empty_when_not_connected(

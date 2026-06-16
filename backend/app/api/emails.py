@@ -134,14 +134,28 @@ def list_gmail_templates(
             status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)
         ) from exc
     if debug:
-        # Modo debug devuelve el shape ampliado tal cual.
-        return [
+        # Modo debug devuelve el shape ampliado + counters como
+        # primera entrada (id="_summary") para que el caller vea de
+        # un vistazo cuántos drafts pasan la heurística.
+        total = len(items)
+        templates = sum(1 for it in items if it.get("is_template"))
+        summary = {
+            "id": "_summary",
+            "total_drafts": total,
+            "detected_templates": templates,
+            "comment": (
+                f"Heurística: {templates} de {total} drafts cumplen "
+                "el criterio (no Re:/Fwd:, no quoted reply, no >…)."
+            ),
+        }
+        return [summary] + [
             {
                 "id": it.get("id"),
                 "subject": it.get("subject"),
                 "snippet": it.get("snippet"),
                 "label_ids": it.get("label_ids"),
                 "thread_id": it.get("thread_id"),
+                "is_template": it.get("is_template"),
                 "updated_at": it.get("updated_at").isoformat()
                 if it.get("updated_at")
                 else None,
