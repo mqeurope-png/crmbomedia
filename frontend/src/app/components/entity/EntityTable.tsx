@@ -154,6 +154,23 @@ export function EntityTable({
     return out;
   }, [fields]);
 
+  // PR-Fa: fallback genérico cuando el consumer pasa `visibleColumns=[]`
+  // (e.g. la pantalla `/contacts` recibió `?rules=…` por URL sin
+  // `view_id` ni columnas guardadas en localStorage; el redirect desde
+  // `/marketing/listas/[id]` cae aquí). En ese caso usamos las
+  // columnas marcadas `default_visible=true` en el schema declarativo
+  // — la fuente de verdad que el backend ya emite por entidad. El
+  // consumer no necesita conocer `default_visible` para que la tabla
+  // arranque utilizable. La primera vez que el usuario abra el
+  // configurator o reordene, su elección se materializa vía
+  // `onVisibleColumnsChange` y a partir de ahí manda `visibleColumns`.
+  const effectiveColumns = useMemo(() => {
+    if (visibleColumns.length > 0) return visibleColumns;
+    return fields
+      .filter((f) => f.displayable && f.default_visible)
+      .map((f) => f.key);
+  }, [visibleColumns, fields]);
+
   // Build TanStack columns from the visible-column order. Selection +
   // sort are owned by the parent (controlled), so we don't pass sort
   // state into TanStack — we just render the header arrows manually.
@@ -207,7 +224,7 @@ export function EntityTable({
       enableSorting: false,
     };
 
-    const dataCols = visibleColumns
+    const dataCols = effectiveColumns
       .map((key) => fieldByKey[key])
       .filter((f): f is FieldDescriptor => Boolean(f && f.displayable))
       .map((field) =>
@@ -230,7 +247,7 @@ export function EntityTable({
     return [select, ...dataCols];
   }, [
     fieldByKey,
-    visibleColumns,
+    effectiveColumns,
     rows,
     selection,
     onSelectionChange,
@@ -273,10 +290,13 @@ export function EntityTable({
   function handleHeaderDragEnd(event: DragEndEvent) {
     const { active, over } = event;
     if (!over || active.id === over.id) return;
-    const oldIdx = visibleColumns.indexOf(String(active.id));
-    const newIdx = visibleColumns.indexOf(String(over.id));
+    // PR-Fa: arranca desde `effectiveColumns` para que el reorden
+    // sobre el set por defecto materialise una elección explícita —
+    // a partir de ahí el consumer manda el array no-vacío.
+    const oldIdx = effectiveColumns.indexOf(String(active.id));
+    const newIdx = effectiveColumns.indexOf(String(over.id));
     if (oldIdx === -1 || newIdx === -1) return;
-    const next = visibleColumns.slice();
+    const next = effectiveColumns.slice();
     next.splice(oldIdx, 1);
     next.splice(newIdx, 0, String(active.id));
     onVisibleColumnsChange(next);
@@ -302,7 +322,7 @@ export function EntityTable({
           <div className="entity-table-configurator-popover">
             <EntityColumnConfigurator
               fields={fields}
-              visible={visibleColumns}
+              visible={effectiveColumns}
               onApply={onVisibleColumnsChange}
               onClose={() => setConfigOpen(false)}
             />
@@ -318,7 +338,7 @@ export function EntityTable({
             onDragEnd={handleHeaderDragEnd}
           >
             <SortableContext
-              items={visibleColumns}
+              items={effectiveColumns}
               strategy={horizontalListSortingStrategy}
             >
               {table.getHeaderGroups().map((hg) => (
@@ -358,7 +378,7 @@ export function EntityTable({
           {table.getRowModel().rows.length === 0 ? (
             <tr>
               <td
-                colSpan={visibleColumns.length + 1}
+                colSpan={effectiveColumns.length + 1}
                 className="entity-table-empty muted"
               >
                 {loading ? "Cargando…" : "Sin resultados."}
