@@ -18,7 +18,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import func, select
@@ -464,25 +464,45 @@ def list_message_events(
 )
 def email_stats(
     days: int = Query(default=30, ge=1, le=365),
+    scope: str = Query(default="mine", pattern="^(mine|team)$"),
+    team_user_id: str | None = Query(default=None),
     session: Session = Depends(get_session),
     current_user: User = Depends(require_user),
 ) -> EmailStatsResponse:
-    """Aggregated counters for the dashboard widget."""
+    """Aggregated counters for the dashboard widget.
+
+    QoL hotfix — paridad con `/api/emails/threads`. El widget arriba
+    de la pantalla `/emails` ahora pasa `scope` igual que la lista de
+    threads. Default `mine`; `team` requiere manager+ y acepta
+    `team_user_id` opcional para filtrar a un comercial concreto.
+    """
     cutoff = datetime.now(UTC) - timedelta(days=days)
+    is_privileged = current_user.role in (UserRole.ADMIN, UserRole.MANAGER)
+    if scope == "team" and not is_privileged:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Solo manager+ puede ver stats del equipo.",
+        )
+
+    # `user_filter_id` queda None cuando manager+ pide `team` sin
+    # filtrar a uno concreto (= visión global). En el resto de casos
+    # apunta al user_id por el que filtrar `created_by_user_id`.
+    if scope == "team":
+        user_filter_id = team_user_id  # None → todos
+    else:
+        user_filter_id = current_user.id
+
     sent_stmt = (
         select(func.count(EmailMessage.id))
         .where(EmailMessage.direction == EmailDirection.OUTBOUND)
         .where(EmailMessage.sent_at >= cutoff)
     )
-    if current_user.role not in (UserRole.ADMIN, UserRole.MANAGER):
+    if user_filter_id is not None:
         sent_stmt = sent_stmt.where(
-            EmailMessage.created_by_user_id == current_user.id
+            EmailMessage.created_by_user_id == user_filter_id
         )
     sent_total = session.scalar(sent_stmt) or 0
 
-    # Per-type buckets we care about. UNIQUE distinct contacts for
-    # unsubscribe so a "1 click" doesn't surface as "5 unsubscribes"
-    # when the recipient bounces around the confirm page.
     def _events_count(event_type: EmailEventType) -> int:
         stmt = (
             select(func.count(EmailMessageEvent.id))
@@ -494,9 +514,9 @@ def email_stats(
             .where(EmailMessageEvent.event_type == event_type)
             .where(EmailMessageEvent.occurred_at >= cutoff)
         )
-        if current_user.role not in (UserRole.ADMIN, UserRole.MANAGER):
+        if user_filter_id is not None:
             stmt = stmt.where(
-                EmailMessage.created_by_user_id == current_user.id
+                EmailMessage.created_by_user_id == user_filter_id
             )
         return session.scalar(stmt) or 0
 
@@ -510,9 +530,9 @@ def email_stats(
         .where(EmailMessage.direction == EmailDirection.OUTBOUND)
         .where(EmailUnsubscribe.unsubscribed_at >= cutoff)
     )
-    if current_user.role not in (UserRole.ADMIN, UserRole.MANAGER):
+    if user_filter_id is not None:
         unsub_stmt = unsub_stmt.where(
-            EmailMessage.created_by_user_id == current_user.id
+            EmailMessage.created_by_user_id == user_filter_id
         )
     return EmailStatsResponse(
         sent=sent_total,

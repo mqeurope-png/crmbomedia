@@ -77,10 +77,30 @@ export function EmailThreadList({ folders, labels, refreshKey }: Props) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const lastClickedIdx = useRef<number | null>(null);
   // QoL sprint — toggle "Mías ↔ Todo el equipo" + dropdown manager+.
-  const [scope, setScope] = useState<"mine" | "team">("mine");
-  const [teamUserId, setTeamUserId] = useState<string>("");
+  // QoL2 hotfix — scope vive en URL params para que el widget de
+  // tracking arriba pueda leerlo y refetch en paralelo.
+  const urlScope: "mine" | "team" =
+    params.get("scope") === "team" ? "team" : "mine";
+  const urlTeamUserId = params.get("team_user_id") ?? "";
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [teamUsers, setTeamUsers] = useState<User[]>([]);
+
+  function setScopeUrl(next: "mine" | "team") {
+    const sp = new URLSearchParams(params.toString());
+    if (next === "team") sp.set("scope", "team");
+    else {
+      sp.delete("scope");
+      sp.delete("team_user_id");
+    }
+    router.replace(`/emails?${sp.toString()}`);
+  }
+
+  function setTeamUserUrl(uid: string) {
+    const sp = new URLSearchParams(params.toString());
+    if (uid) sp.set("team_user_id", uid);
+    else sp.delete("team_user_id");
+    router.replace(`/emails?${sp.toString()}`);
+  }
 
   const canSeeTeam =
     currentUser?.role === "admin" || currentUser?.role === "manager";
@@ -118,9 +138,9 @@ export function EmailThreadList({ folders, labels, refreshKey }: Props) {
         folder_id: folderId ?? undefined,
         label_id: labelId ?? undefined,
         starred,
-        scope,
+        scope: urlScope,
         team_user_id:
-          scope === "team" && teamUserId ? teamUserId : undefined,
+          urlScope === "team" && urlTeamUserId ? urlTeamUserId : undefined,
       });
       setThreads(page.items);
       // Drop any selection that no longer exists in the new page
@@ -135,7 +155,7 @@ export function EmailThreadList({ folders, labels, refreshKey }: Props) {
     } finally {
       setLoading(false);
     }
-  }, [debounced, state, folderId, labelId, starred]);
+  }, [debounced, state, folderId, labelId, starred, urlScope, urlTeamUserId]);
 
   useEffect(() => {
     fetchThreads();
@@ -241,26 +261,23 @@ export function EmailThreadList({ folders, labels, refreshKey }: Props) {
           >
             <button
               type="button"
-              className={`pill-toggle ${scope === "mine" ? "is-active" : ""}`}
-              onClick={() => {
-                setScope("mine");
-                setTeamUserId("");
-              }}
+              className={`pill-toggle ${urlScope === "mine" ? "is-active" : ""}`}
+              onClick={() => setScopeUrl("mine")}
             >
               Mías
             </button>
             <button
               type="button"
-              className={`pill-toggle ${scope === "team" ? "is-active" : ""}`}
-              onClick={() => setScope("team")}
+              className={`pill-toggle ${urlScope === "team" ? "is-active" : ""}`}
+              onClick={() => setScopeUrl("team")}
             >
               Todo el equipo
             </button>
-            {scope === "team" ? (
+            {urlScope === "team" ? (
               <select
                 className="pill-select"
-                value={teamUserId}
-                onChange={(e) => setTeamUserId(e.target.value)}
+                value={urlTeamUserId}
+                onChange={(e) => setTeamUserUrl(e.target.value)}
                 aria-label="Filtrar por comercial"
               >
                 <option value="">Todos los comerciales</option>

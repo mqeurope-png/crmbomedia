@@ -14,17 +14,28 @@ import {
 } from "../../lib/emailTrackingApi";
 import { extractErrorMessage } from "../../lib/errors";
 
-/** Aggregated tracking counters for the dashboard, mirroring the
- *  scope rules of `GET /api/emails/stats`: regular users see only
- *  events tied to their own sends; admins + managers see all. */
-export function EmailTrackingStatsWidget() {
+type Props = {
+  /** QoL hotfix — refleja el toggle de la lista de threads para que
+   *  el widget arriba muestre los mismos counters que la lista de
+   *  abajo. Default `mine`. */
+  scope?: "mine" | "team";
+  teamUserId?: string;
+};
+
+/** Aggregated tracking counters. Pre-QoL2, el widget ignoraba el
+ *  toggle Mías/Equipo y siempre llamaba a `/api/emails/stats` sin
+ *  scope — manager+ veía contadores globales fijos en `/emails`
+ *  aunque la lista de threads de abajo estuviera filtrada a las
+ *  suyas. Ahora el caller propaga `scope` + `teamUserId` y el widget
+ *  refetch al cambiar. */
+export function EmailTrackingStatsWidget({ scope, teamUserId }: Props = {}) {
   const [stats, setStats] = useState<EmailStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     setLoading(true);
-    getEmailStats(30)
+    getEmailStats(30, { scope, teamUserId })
       .then(setStats)
       .catch((err) =>
         setError(
@@ -32,7 +43,7 @@ export function EmailTrackingStatsWidget() {
         ),
       )
       .finally(() => setLoading(false));
-  }, []);
+  }, [scope, teamUserId]);
 
   function rate(numer: number | undefined, denom: number | undefined) {
     if (!denom || denom === 0 || numer === undefined) return null;
