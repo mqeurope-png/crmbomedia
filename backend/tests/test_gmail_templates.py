@@ -96,6 +96,35 @@ def _build_raw_email(*, subject: str, body_html: str) -> str:
     return base64.urlsafe_b64encode(raw.encode("utf-8")).decode("ascii")
 
 
+def _build_raw_email_with_inline_image(
+    *, subject: str, body_html: str, cid: str, png_bytes: bytes
+) -> str:
+    """Construye un MIME multipart/related con una imagen inline
+    referenciada por `cid`. El HTML body apunta a la imagen con
+    `src="cid:{cid}"`. Usado para testear que el importador resuelve
+    los cid: a data URIs."""
+    img_b64 = base64.b64encode(png_bytes).decode("ascii")
+    boundary = "===BOUNDARY==="
+    raw = (
+        f"Subject: {subject}\r\n"
+        "MIME-Version: 1.0\r\n"
+        f"Content-Type: multipart/related; boundary=\"{boundary}\"\r\n"
+        "\r\n"
+        f"--{boundary}\r\n"
+        "Content-Type: text/html; charset=utf-8\r\n"
+        "\r\n"
+        f"{body_html}\r\n"
+        f"--{boundary}\r\n"
+        "Content-Type: image/png\r\n"
+        f"Content-ID: <{cid}>\r\n"
+        "Content-Transfer-Encoding: base64\r\n"
+        "\r\n"
+        f"{img_b64}\r\n"
+        f"--{boundary}--\r\n"
+    )
+    return base64.urlsafe_b64encode(raw.encode("utf-8")).decode("ascii")
+
+
 class _FakeGmailClient:
     """Stand-in. Modelo:
 
@@ -561,3 +590,94 @@ def test_import_requires_admin(client: TestClient) -> None:
             headers=auth_headers(client, role),
         )
         assert resp.status_code == 403, f"{role}: {resp.text}"
+
+
+# 1x1 transparent PNG bytes
+_PNG_1x1 = bytes.fromhex(
+    "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4"
+    "890000000a49444154789c63000100000005000196f7250b0000000049454e44"
+    "ae426082"
+)
+
+
+class _FakeGmailImportClientInline:
+    def __init__(self, *_a, **_kw) -> None:
+        pass
+
+    def list_all_drafts(self) -> list[str]:
+        return ["draft-tpl-img"]
+
+    def get_draft_metadata(self, draft_id: str) -> dict:
+        return {
+            "id": draft_id,
+            "message": {
+                "payload": {
+                    "headers": [
+                        {"name": "Subject", "value": "[TPL] Con imagen"},
+                    ]
+                }
+            },
+        }
+
+    def get_draft_template(self, draft_id: str) -> dict:
+        body_html = (
+            '<p>Hola</p>'
+            '<p><img src="cid:ii_abc123" alt="logo"></p>'
+        )
+        return {
+            "id": draft_id,
+            "message": {
+                "id": f"msg-{draft_id}",
+                "raw": _build_raw_email_with_inline_image(
+                    subject="[TPL] Con imagen",
+                    body_html=body_html,
+                    cid="ii_abc123",
+                    png_bytes=_PNG_1x1,
+                ),
+            },
+        }
+
+
+def test_import_inlines_cid_attachments_as_data_uris(
+    client: TestClient,
+    session_factory: sessionmaker,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Las imágenes inline `<img src="cid:ii_*">` deben quedar
+    embebidas como `data:image/png;base64,...` para que sean
+    visibles fuera del MIME original (en TinyMCE del CRM)."""
+    uid = _user_id(session_factory, UserRole.ADMIN)
+    _seed_gmail(
+        session_factory,
+        user_id=uid,
+        scopes=(
+            "https://www.googleapis.com/auth/gmail.send "
+            "https://www.googleapis.com/auth/gmail.modify"
+        ),
+    )
+    monkeypatch.setattr(
+        "app.integrations.gmail.service.GmailClient",
+        _FakeGmailImportClientInline,
+    )
+
+    resp = client.post(
+        "/api/email-templates/import-gmail",
+        headers=auth_headers(client, "admin"),
+    )
+    assert resp.status_code == 200, resp.text
+    summary = resp.json()
+    assert summary["imported"] == 1
+
+    from sqlalchemy import select as _select  # noqa: PLC0415
+
+    from app.email_templates.models import (  # noqa: PLC0415
+        EmailTemplate,
+    )
+
+    with session_factory() as session:
+        row = session.scalar(
+            _select(EmailTemplate).where(EmailTemplate.name == "Con imagen")
+        )
+        assert row is not None
+        assert "cid:ii_abc123" not in row.body_html
+        assert "data:image/png;base64," in row.body_html
