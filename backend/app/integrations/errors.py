@@ -41,6 +41,14 @@ class IntegrationError(Exception):
         return " ".join(bits)
 
 
+class IntegrationSkipped(IntegrationError):
+    """La cuenta no puede sincronizarse pero NO es un fallo: está
+    deshabilitada por el operador o pendiente de configurar. El
+    handler en `app/workers/jobs.py` mapea esta excepción a
+    `SyncStatus.SKIPPED` en vez de `FAILED`, para que la UI muestre
+    "Saltada" en gris y no haga ruido como un error real."""
+
+
 class IntegrationAuthError(IntegrationError):
     """401/403 from the remote — the stored credentials are bad. The HTTP
     client flips `credential_status='error'` on the account before

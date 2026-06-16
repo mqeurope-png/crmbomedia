@@ -34,6 +34,7 @@ from sqlalchemy.orm import Session
 
 from app.core.audit import Action, record_event
 from app.db.session import get_engine
+from app.integrations.errors import IntegrationSkipped
 from app.models.crm import ExternalSystem, SyncLog, SyncStatus, SyncTrigger
 from app.workers.queues import queue_for, redis_connection
 
@@ -189,6 +190,19 @@ def run_sync_job(
                 if payload:
                     outcome.metadata = (outcome.metadata or {}) | {"payload": payload}
                 final_status = outcome.status()
+        except IntegrationSkipped as exc:
+            # PR-Da hotfix: cuenta deshabilitada / no configurada. El
+            # operador eligió no usarla — no es un fallo. SyncLog
+            # queda en SKIPPED con un message claro y sin traceback.
+            logger.info(
+                "sync_log_id=%s skipped for %s:%s reason=%s",
+                sync_log_id,
+                system,
+                operation,
+                exc.message,
+            )
+            outcome = SyncOutcome(error_summary=str(exc))
+            final_status = SyncStatus.SKIPPED
         except Exception as exc:  # noqa: BLE001 - we capture *anything* the handler raises
             tb = traceback.format_exc(limit=10)
             logger.exception(
@@ -210,6 +224,7 @@ def run_sync_job(
         action = {
             SyncStatus.SUCCESS: Action.INTEGRATION_SYNC_SUCCEEDED,
             SyncStatus.PARTIAL_SUCCESS: Action.INTEGRATION_SYNC_PARTIAL,
+            SyncStatus.SKIPPED: Action.INTEGRATION_SYNC_SKIPPED,
             SyncStatus.FAILED: Action.INTEGRATION_SYNC_FAILED,
         }.get(final_status, Action.INTEGRATION_SYNC_FAILED)
         record_event(
