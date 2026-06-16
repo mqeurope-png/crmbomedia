@@ -556,14 +556,25 @@ as_primary, mode}`. `canAssign` baja de `admin|manager` a cualquier user
    UPDATE` sobre los assignments del contacto (o re-check post-commit). Bajo
    riesgo (raro que dos toquen el mismo contacto a la vez) pero documentado.
 
-### Decisiones que requieren OK de Bart antes de implementar
+### Decisiones aprobadas por Bart (2026-06-16)
 
-1. **Permiso de asignación manual**: `require_user` (cualquier user) confirmado
-   — diverge del manager+ actual.
-2. **Reglas solo fire-on-create** (no on-update) — confirmar.
-3. **Agile consolidate-by-email**: ¿dispara reglas o no? (recomendado: no, solo
-   fresh-create).
-4. **apply_to default `unassigned_only`** para `run-all` — confirmar que no
-   queremos que pise asignaciones manuales.
-5. **Notificaciones**: confirmar que se difieren.
-6. **Reporte "por comercial"**: ¿entra en PR-F o queda como deuda?
+1. ✅ **Permiso de asignación manual**: `require_user` (cualquier user).
+   Diverge del manager+ actual — cambio deliberado. Un viewer sigue sin poder
+   (read-only). → PR-B gate en la ruta.
+2. ✅ **Reglas solo fire-on-create + manual.** Verbatim: "SOLO CREACIÓN Y
+   MANUAL, Y EN NUEVOS LEADS CUANDO ENTREN O SEAN CREADOS". → dispara en
+   `create_contact` (manual) + rama fresh-create de los upserts Brevo/Agile
+   (lead nuevo entra por sync) + botón "Aplicar ahora". **NO on-update.**
+3. ✅ **apply_to default `unassigned_only`** para `run-all` — no pisa
+   asignaciones manuales.
+4. ✅ **Notificaciones diferidas** — fuera de scope. Futuro badge in-app, no
+   email.
+
+### Pendiente de decidir (no bloquea arranque; se resuelve dentro del PR)
+
+- **Agile consolidate-by-email**: ¿dispara reglas o solo fresh-create?
+  Recomendación en §5.2: **solo fresh-create** (consistente con Brevo). Como
+  Bart dijo "nuevos leads cuando entren o sean creados", un lead consolidado
+  por email NO es nuevo → confirma solo-fresh-create. Se cierra en PR-C.
+- **Reporte "por comercial"**: ¿entra en PR-F o queda como deuda? Se decide al
+  llegar a PR-F.
