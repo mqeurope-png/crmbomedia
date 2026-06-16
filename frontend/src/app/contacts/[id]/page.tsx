@@ -43,7 +43,6 @@ import {
   type ActivityEvent,
   type Contact,
   type ExternalRefreshResult,
-  type Note,
 } from "../../lib/api";
 import { extractErrorMessage } from "../../lib/errors";
 
