@@ -561,6 +561,27 @@ export async function updateContact(id: string, payload: Record<string, unknown>
   });
 }
 
+// Sprint Reglas-Assign PR-Ca hotfix. Antes el botón "Asignarme" del
+// dashboard hacía PATCH /api/contacts/{id} con owner_user_id — eso (1)
+// requería require_manager y rompía para users normales, y (2) tocaba
+// solo el caché sin crear la fila en contact_assignments, así que el
+// widget seguía mostrando el lead como sin asignar. La ruta correcta
+// es el endpoint multi-comercial (require_user, crea fila + recalcula
+// caché + audit).
+export async function assignContactToUser(
+  contactId: string,
+  userId: string,
+  options: { isPrimary?: boolean } = {},
+): Promise<void> {
+  await apiFetch(`/api/contacts/${contactId}/assignments`, {
+    method: "POST",
+    body: JSON.stringify({
+      user_id: userId,
+      is_primary: options.isPrimary ?? true,
+    }),
+  });
+}
+
 export async function deactivateContact(id: string): Promise<Contact> {
   return apiFetch<Contact>(`/api/contacts/${id}/deactivate`, { method: "PATCH" });
 }

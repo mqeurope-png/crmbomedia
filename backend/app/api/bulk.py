@@ -108,14 +108,13 @@ def bulk_action(
 
 
 def _check_role_for(action: BulkAction, user: User) -> None:
-    if action == "assign_owner" and user.role not in (
-        UserRole.ADMIN,
-        UserRole.MANAGER,
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Solo admin/manager puede reasignar contactos.",
-        )
+    # PR-Ca hotfix: assign_owner se bajó de manager+ a require_user
+    # para alinearse con la decisión §1 del spec Reglas-Assign — un
+    # comercial puede auto-asignarse o asignar a otro (ya valía vía
+    # /api/contacts/{id}/assignments; el bulk seguía con la restricción
+    # legacy por error). `deactivate` se queda en admin-only, no se
+    # toca.
+    _ = user  # no role check for assign_owner anymore
     if action == "deactivate" and user.role != UserRole.ADMIN:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

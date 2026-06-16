@@ -383,8 +383,12 @@ class ContactAssignment(TimestampMixin, Base):
     assigned_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
     )
+    # PR-Ca hotfix: ampliado de 40→80. `source` puede ser
+    # "rule:<uuid>" (41 chars) y reventaba el INSERT en MySQL strict
+    # mode con "Data too long". 80 cubre cualquier prefijo razonable
+    # ("rule:<uuid>", "brevo:account:<uuid>", etc.).
     source: Mapped[str] = mapped_column(
-        String(40), default="manual", nullable=False
+        String(80), default="manual", nullable=False
     )
     # FK to assignment_rules when source is rule-driven. SET NULL on
     # rule delete keeps the assignment but loses the provenance link.
@@ -1656,7 +1660,12 @@ class AuditLog(TimestampMixin, Base):
     actor_email: Mapped[str | None] = mapped_column(String(255))
     action: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
     target_type: Mapped[str] = mapped_column(String(120), nullable=False)
-    target_id: Mapped[str | None] = mapped_column(String(36))
+    # PR-Ca hotfix: ampliado de 36→120. Aunque hoy solo escribimos
+    # UUIDs (36 chars), prod reportó "Data too long for column
+    # target_id" durante creación de contactos; algún caller podría
+    # estar pasando un id compuesto. 120 cubre cualquier id razonable
+    # y empareja `target_type`. Sin coste de espacio en VARCHAR MySQL.
+    target_id: Mapped[str | None] = mapped_column(String(120))
     # `metadata` collides with SQLAlchemy's Base.metadata, so the Python
     # attribute is metadata_json while the underlying column keeps the
     # short name in SQL.
