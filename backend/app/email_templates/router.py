@@ -634,3 +634,57 @@ async def upload_email_asset(
         content_type=content_type,
         size_bytes=len(data),
     )
+
+
+# Helper proxy to keep the heavy `gmail.service` import out of the
+# router's top-of-module imports — only loaded when the import-gmail
+# endpoint is actually hit. The endpoint is admin-only and rare.
+def _gmail_service():
+    from app.integrations.gmail import service as _svc  # noqa: PLC0415
+    from app.integrations.gmail.service import (  # noqa: PLC0415
+        GmailNotConnectedError,
+        GmailScopeMissingError,
+    )
+
+    return _svc, GmailNotConnectedError, GmailScopeMissingError
+
+
+@router.post("/email-templates/import-gmail")
+def import_gmail_templates(
+    delete_after: bool = False,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_user),
+):
+    """One-shot: importa drafts Gmail con prefijo `[TPL] ` a
+    `email_templates` bajo la folder global "Gmail (importadas)".
+
+    Idempotente: re-runs no duplican (skip por `(name, folder_id)`).
+    Si `delete_after=True`, borra cada draft Gmail tras un INSERT
+    exitoso.
+
+    Admin-only — comparte cuenta Gmail del CRM, los users normales
+    no tocan el buzón compartido.
+    """
+    if current_user.role != UserRole.ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Solo admin puede importar plantillas desde Gmail.",
+        )
+    svc, GmailNotConnectedError, GmailScopeMissingError = _gmail_service()
+    try:
+        summary = svc.import_gmail_templates_with_tpl_prefix(
+            session,
+            user_id=current_user.id,
+            created_by_user_id=current_user.id,
+            delete_after=delete_after,
+        )
+    except GmailNotConnectedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
+    except GmailScopeMissingError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)
+        ) from exc
+    session.commit()
+    return summary

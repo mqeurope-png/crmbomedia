@@ -294,7 +294,7 @@ export async function triggerGmailTemplatesImport(
   if (options.deleteAfter) params.set("delete_after", "true");
   const qs = params.toString();
   return apiFetch<GmailTemplatesImportSummary>(
-    `/api/emails/gmail-templates/import${qs ? `?${qs}` : ""}`,
+    `/api/email-templates/import-gmail${qs ? `?${qs}` : ""}`,
     { method: "POST" },
   );
 }

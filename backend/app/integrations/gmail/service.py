@@ -128,7 +128,7 @@ def import_gmail_templates_with_tpl_prefix(
     una vez tras lo cual el operador limpia Gmail.
 
     Idempotente: si ya existe un template CRM con el mismo `name`
-    dentro de la folder "Gmail (importados)", se salta. Re-runs no
+    dentro de la folder "Gmail (importadas)", se salta. Re-runs no
     duplican.
 
     `delete_after=True` borra el draft Gmail tras un INSERT exitoso
@@ -149,17 +149,17 @@ def import_gmail_templates_with_tpl_prefix(
 
     client = _client_for(session, user_id)
 
-    # Folder destino: "Gmail (importados)" como is_global. Se crea
+    # Folder destino: "Gmail (importadas)" como is_global. Se crea
     # si no existe — idempotente.
     folder = session.scalar(
         select(EmailTemplateFolder).where(
-            EmailTemplateFolder.name == "Gmail (importados)",
+            EmailTemplateFolder.name == "Gmail (importadas)",
             EmailTemplateFolder.is_global.is_(True),
         )
     )
     if folder is None:
         folder = EmailTemplateFolder(
-            name="Gmail (importados)",
+            name="Gmail (importadas)",
             is_global=True,
         )
         session.add(folder)

@@ -445,7 +445,7 @@ def test_import_creates_email_templates_in_dedicated_folder(
     )
 
     resp = client.post(
-        "/api/emails/gmail-templates/import",
+        "/api/email-templates/import-gmail",
         headers=auth_headers(client, "admin"),
     )
     assert resp.status_code == 200, resp.text
@@ -468,7 +468,7 @@ def test_import_creates_email_templates_in_dedicated_folder(
     with session_factory() as session:
         folder = session.scalar(
             _select(EmailTemplateFolder).where(
-                EmailTemplateFolder.name == "Gmail (importados)"
+                EmailTemplateFolder.name == "Gmail (importadas)"
             )
         )
         assert folder is not None
@@ -510,11 +510,11 @@ def test_import_is_idempotent(
     )
 
     client.post(
-        "/api/emails/gmail-templates/import",
+        "/api/email-templates/import-gmail",
         headers=auth_headers(client, "admin"),
     )
     resp = client.post(
-        "/api/emails/gmail-templates/import",
+        "/api/email-templates/import-gmail",
         headers=auth_headers(client, "admin"),
     )
     assert resp.status_code == 200
@@ -544,7 +544,7 @@ def test_import_delete_after_removes_drafts(
     )
 
     resp = client.post(
-        "/api/emails/gmail-templates/import?delete_after=true",
+        "/api/email-templates/import-gmail?delete_after=true",
         headers=auth_headers(client, "admin"),
     )
     assert resp.status_code == 200
@@ -557,7 +557,7 @@ def test_import_delete_after_removes_drafts(
 def test_import_requires_admin(client: TestClient) -> None:
     for role in ("manager", "user"):
         resp = client.post(
-            "/api/emails/gmail-templates/import",
+            "/api/email-templates/import-gmail",
             headers=auth_headers(client, role),
         )
         assert resp.status_code == 403, f"{role}: {resp.text}"
