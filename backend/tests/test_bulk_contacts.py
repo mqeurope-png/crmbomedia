@@ -63,13 +63,15 @@ def _all_contact_ids(session_factory: sessionmaker) -> list[str]:
         return [c.id for c in s.scalars(select(Contact))]
 
 
-def test_assign_owner_requires_manager(
+def test_assign_owner_accepts_role_user(
     client: TestClient, session_factory: sessionmaker
 ) -> None:
+    """PR-Ca hotfix — decisión §1 spec Reglas-Assign. Cualquier
+    comercial puede auto-asignarse o asignar a otro vía bulk; antes el
+    endpoint pedía manager+ y rompía el flujo de cartera personal."""
     contact_ids = _all_contact_ids(session_factory)
     with session_factory() as s:
         manager_id = s.scalar(select(User.id).where(User.role == UserRole.MANAGER))
-    # User role can NOT reassign.
     resp = client.post(
         "/api/contacts/bulk-action",
         json={
@@ -79,7 +81,8 @@ def test_assign_owner_requires_manager(
         },
         headers=auth_headers(client, "user"),
     )
-    assert resp.status_code == 403
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["affected_count"] == len(contact_ids)
 
 
 def test_assign_owner_manager_succeeds(

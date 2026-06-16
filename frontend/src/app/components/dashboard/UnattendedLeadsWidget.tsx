@@ -3,7 +3,7 @@
 import { UserPlus } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
-import { updateContact } from "../../lib/api";
+import { assignContactToUser } from "../../lib/api";
 import { extractErrorMessage } from "../../lib/errors";
 import {
   getDashboardUnattendedLeads,
@@ -37,7 +37,7 @@ export function UnattendedLeadsWidget({
   async function assignToMe(lead: UnattendedLead) {
     if (!currentUserId) return;
     try {
-      await updateContact(lead.id, { owner_user_id: currentUserId });
+      await assignContactToUser(lead.id, currentUserId, { isPrimary: true });
       await load();
     } catch (err) {
       setError(extractErrorMessage(err, "No se pudo asignar el lead."));

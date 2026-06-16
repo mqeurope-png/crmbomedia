@@ -1174,7 +1174,12 @@ def create_contact(
     payload: ContactCreate,
     request: Request,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_manager),
+    # PR-Ca hotfix: bajado de require_manager a require_user — la
+    # creación de contactos no es operación admin: cualquier comercial
+    # que captura un lead debería poder dar de alta el contacto en CRM
+    # (la decisión §1 del spec extendió este criterio a todo el flujo
+    # de asignación). Manager+ ya tiene acceso vía la jerarquía.
+    current_user: User = Depends(require_user),
 ) -> Contact:
     email = str(payload.email).lower()
     if crm_repository.get_contact_by_email(session, email):
