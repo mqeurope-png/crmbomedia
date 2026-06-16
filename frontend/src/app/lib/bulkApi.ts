@@ -1,9 +1,13 @@
 import { apiFetch } from "./api";
 
+// PR-E (Sprint Filtros & Listas): `add_tag` y `remove_tag` viven
+// también en el backend pero nunca tuvieron botón en `<ContactsBulkBar>`
+// — los tag bulk ops se hacen desde `/admin/tags` vía
+// `POST /api/contacts/bulk-tag` (otro endpoint). Para no exponer
+// flags muertos al frontend, el TS union solo lista las acciones
+// realmente disparables desde la lista de contactos.
 export type BulkAction =
   | "assign_owner"
-  | "add_tag"
-  | "remove_tag"
   | "change_status"
   | "deactivate";
 

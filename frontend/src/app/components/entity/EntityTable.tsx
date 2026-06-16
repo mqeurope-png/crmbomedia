@@ -59,8 +59,10 @@ export type EntityTableProps = {
   onSelectionChange: (next: Set<string>) => void;
 
   loading?: boolean;
-  /** Override cell rendering for a field. Falls back to a generic stringifier. */
-  renderCell?: (field: FieldDescriptor, row: Row) => React.ReactNode;
+  /** Override cell rendering for a field. Return `undefined` para
+   * delegar al defaultRender genérico (útil para customizar solo
+   * algunas columnas, e.g. `owner_user_id` → user name). */
+  renderCell?: (field: FieldDescriptor, row: Row) => React.ReactNode | undefined;
   /** Click handler on a row body (excludes the checkbox cell). */
   onRowClick?: (row: Row) => void;
 };
@@ -195,8 +197,16 @@ export function EntityTable({
         columnHelper.display({
           id: field.key,
           header: field.label,
-          cell: (info) =>
-            (renderCell ?? defaultRender)(field, info.row.original),
+          cell: (info) => {
+            // PR-E: renderCell devuelve undefined → fallback al
+            // defaultRender genérico. Permite personalizar solo
+            // contadas columnas (e.g. owner_user_id → user.full_name).
+            if (renderCell) {
+              const custom = renderCell(field, info.row.original);
+              if (custom !== undefined) return custom;
+            }
+            return defaultRender(field, info.row.original);
+          },
         }),
       );
 
