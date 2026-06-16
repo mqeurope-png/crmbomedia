@@ -63,6 +63,86 @@ def list_aliases(session: Session, user_id: str) -> list[dict[str, Any]]:
     return _client_for(session, user_id).list_send_as_aliases()
 
 
+def list_gmail_templates(
+    session: Session,
+    user_id: str,
+    *,
+    query: str | None = None,
+    max_results: int = 30,
+) -> list[dict[str, Any]]:
+    """Devuelve las plantillas Gmail (canned responses) del user
+    autenticado en el shape público del endpoint público:
+    `[{id, subject, body_html, snippet, updated_at}]`.
+
+    El producto Gmail llama "Templates" a lo que la API guarda como
+    drafts con label sistema `^smartlabel_canned_response`. Como el
+    CRM usa una sola cuenta Gmail compartida, todos los users del
+    team ven los mismos templates automáticamente."""
+    import base64  # noqa: PLC0415
+    from email import message_from_bytes  # noqa: PLC0415
+    from email.policy import default as _default_policy  # noqa: PLC0415
+
+    client = _client_for(session, user_id)
+    listing = client.list_draft_templates(query=query, max_results=max_results)
+    out: list[dict[str, Any]] = []
+    for entry in listing:
+        try:
+            full = client.get_draft_template(entry["id"])
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "gmail.template.get failed draft_id=%s err=%s",
+                entry["id"],
+                exc,
+            )
+            continue
+        message = full.get("message", {})
+        # 1. snippet rápido (sin parsear body).
+        snippet = message.get("snippet") or ""
+        # 2. subject + body parseados del MIME raw.
+        raw_b64 = message.get("raw")
+        subject = ""
+        body_html = ""
+        if raw_b64:
+            try:
+                raw_bytes = base64.urlsafe_b64decode(raw_b64.encode("ascii"))
+                parsed = message_from_bytes(raw_bytes, policy=_default_policy)
+                subject = str(parsed.get("subject") or "")
+                # Prefer text/html, fallback text/plain.
+                html_part = parsed.get_body(preferencelist=("html",))
+                plain_part = parsed.get_body(preferencelist=("plain",))
+                if html_part is not None:
+                    body_html = html_part.get_content() or ""
+                elif plain_part is not None:
+                    text = plain_part.get_content() or ""
+                    body_html = "<p>" + text.replace("\n", "<br>") + "</p>"
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "gmail.template.parse failed draft_id=%s err=%s",
+                    entry["id"],
+                    exc,
+                )
+        # 3. updated_at from internalDate (ms epoch).
+        internal_ms = message.get("internalDate")
+        updated_at = None
+        if internal_ms:
+            try:
+                updated_at = datetime.fromtimestamp(
+                    int(internal_ms) / 1000, tz=UTC
+                )
+            except (TypeError, ValueError):
+                updated_at = None
+        out.append(
+            {
+                "id": entry["id"],
+                "subject": subject,
+                "body_html": body_html,
+                "snippet": snippet,
+                "updated_at": updated_at,
+            }
+        )
+    return out
+
+
 def send_email(
     session: Session,
     *,
