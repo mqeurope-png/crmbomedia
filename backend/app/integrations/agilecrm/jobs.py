@@ -54,6 +54,7 @@ from app.models.crm import (
     Task,
 )
 from app.models.integration_settings import IntegrationAccount, QuotaStrategy
+from app.services import assignment_rules as assignment_rules_engine
 from app.workers.jobs import OPERATIONS, SyncOutcome
 
 logger = logging.getLogger(__name__)
@@ -249,6 +250,11 @@ def _upsert_contact_for_payload(
     )
     reconcile_agile_notes(
         session, contact_id=contact.id, payload=payload
+    )
+    # Sprint Reglas-Assign PR-C — fresh-create trigger. Igual que
+    # Brevo: solo en esta rama (created), nunca en update.
+    assignment_rules_engine.evaluate_for_contact(
+        session, contact, trigger="agile:create"
     )
     session.flush()
     return ("created", False, contact.id, external_id)
