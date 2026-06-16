@@ -3736,12 +3736,18 @@ def segment_available_origin_accounts(
     session: Session = Depends(get_session),
     current_user: User = Depends(require_viewer),
 ) -> list[SegmentOriginAccountOption]:
-    """Enabled integration accounts in `{value, label, system}` shape.
+    """Enabled integration accounts en formato `{value, label, system}`.
 
-    The engine compares `external_refs.account_id` directly against the
-    `value`, so the picker must surface the same slug. The `label` is
-    "{Display Name} · {account_id}" so the operator can tell two
-    AgileCRM accounts apart even if both share a display name."""
+    PR-Db: `value` es ahora la clave compuesta `"system:account_id"`
+    para que el motor de filtros (`_compile_external_ref_leaf`) genere
+    SQL con la tupla `(system, account_id)`. Antes era `account_id`
+    plano y matcheaba cross-system — Brevo y Agile pueden compartir el
+    mismo literal "default", así un filtro `origin_account_id = "default"`
+    devolvía contactos de ambos sistemas.
+
+    El `label` sigue siendo "{Display Name} · {account_id}" para que el
+    operador distinga dos cuentas AgileCRM con el mismo display name.
+    """
     _ = current_user
     rows = session.execute(
         select(IntegrationAccount)
@@ -3750,7 +3756,10 @@ def segment_available_origin_accounts(
     ).scalars().all()
     return [
         SegmentOriginAccountOption(
-            value=row.account_id,
+            value=(
+                f"{row.system.value if hasattr(row.system, 'value') else row.system}"
+                f":{row.account_id}"
+            ),
             label=f"{row.display_name} · {row.account_id}",
             system=row.system.value if hasattr(row.system, "value") else str(row.system),
         )

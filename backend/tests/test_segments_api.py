@@ -137,7 +137,8 @@ def test_available_origin_accounts_returns_enabled_accounts(client: TestClient):
     assert response.status_code == 200, response.text
     body = response.json()
     values = {row["value"] for row in body}
-    assert values == {"default", "es"}
+    # PR-Db: ahora los values son compound keys "system:account_id".
+    assert values == {"agilecrm:default", "agilecrm:es"}
     assert all("·" in row["label"] for row in body)
     assert all(row["system"] == "agilecrm" for row in body)
 

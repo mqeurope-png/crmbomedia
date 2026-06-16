@@ -1,6 +1,6 @@
 "use client";
 
-import { Plus } from "lucide-react";
+import { Plus, RefreshCw } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { ErrorState } from "../../components/ErrorState";
@@ -14,6 +14,7 @@ import {
   createIntegrationAccount,
   deleteIntegrationAccount,
   listIntegrationAccounts,
+  triggerSyncAllAccounts,
   updateIntegrationAccount,
   type ExternalSystem,
   type IntegrationAccount,
@@ -44,8 +45,32 @@ export default function IntegrationAccountsPage() {
   const [activeSystem, setActiveSystem] = useState<ExternalSystem>("agilecrm");
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
   const [modal, setModal] = useState<ModalState>({ kind: "closed" });
+  const [syncingAll, setSyncingAll] = useState(false);
 
   const isAdmin = user?.role === "admin";
+
+  async function onSyncAll() {
+    setSyncingAll(true);
+    setError(null);
+    setMessage(null);
+    try {
+      const result = await triggerSyncAllAccounts();
+      const enq = result.enqueued_count;
+      const skp = result.skipped_count;
+      const skipNote = skp > 0 ? ` (${skp} sin operación o ya en curso)` : "";
+      setMessage(
+        `Sincronización lanzada para ${enq} cuenta${enq === 1 ? "" : "s"}` +
+          skipNote +
+          ". Mira el progreso desde cada cuenta o el listado de sync-logs."
+      );
+    } catch (err) {
+      setError(
+        extractErrorMessage(err, "No se pudo lanzar la sincronización global.")
+      );
+    } finally {
+      setSyncingAll(false);
+    }
+  }
 
   async function loadAccounts() {
     setAccounts(await listIntegrationAccounts());
@@ -140,15 +165,31 @@ export default function IntegrationAccountsPage() {
         description="Múltiples cuentas por sistema. AgileCRM y Freshdesk admiten una cuenta por mercado o equipo; Brevo y FactuSOL típicamente quedan en una sola cuenta. Las API keys se cifran en reposo."
         actions={
           isAdmin ? (
-            <button
-              type="button"
-              className="button small"
-              onClick={() =>
-                setModal({ kind: "create", system: activeSystem })
-              }
-            >
-              <Plus size={12} aria-hidden /> Añadir cuenta
-            </button>
+            <div className="header-actions">
+              <button
+                type="button"
+                className="button small secondary"
+                onClick={onSyncAll}
+                disabled={syncingAll}
+                title="Encola un sync para cada cuenta habilitada de todos los sistemas"
+              >
+                <RefreshCw
+                  size={12}
+                  aria-hidden
+                  className={syncingAll ? "spin" : undefined}
+                />{" "}
+                {syncingAll ? "Sincronizando…" : "Sincronizar todas las cuentas"}
+              </button>
+              <button
+                type="button"
+                className="button small"
+                onClick={() =>
+                  setModal({ kind: "create", system: activeSystem })
+                }
+              >
+                <Plus size={12} aria-hidden /> Añadir cuenta
+              </button>
+            </div>
           ) : undefined
         }
       />

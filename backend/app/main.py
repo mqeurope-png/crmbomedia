@@ -128,6 +128,24 @@ async def _arm_brevo_periodics() -> None:
 
 
 @app.on_event("startup")
+async def _arm_agilecrm_periodics() -> None:
+    """Sprint Reglas-Assign PR-Db. Espejo del scheduler Brevo para
+    AgileCRM. Mismo blindaje contra Redis outage al boot."""
+    try:
+        from app.integrations.agilecrm.scheduler import (  # noqa: PLC0415
+            arm_periodic_jobs,
+        )
+
+        arm_periodic_jobs()
+    except Exception:  # noqa: BLE001
+        import logging  # noqa: PLC0415
+
+        logging.getLogger(__name__).warning(
+            "agilecrm.scheduler arm failed at startup", exc_info=True
+        )
+
+
+@app.on_event("startup")
 async def _arm_email_scheduled_sweep() -> None:
     """Sprint Email v2.4e — arm the periodic scheduled-send sweep
     at API startup. SETNX-guarded so multiple API processes coexist;

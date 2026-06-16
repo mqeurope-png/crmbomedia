@@ -254,6 +254,34 @@ export async function triggerIntegrationSync(
   );
 }
 
+// Sprint Reglas-Assign PR-Db. Botón "Sincronizar todas las cuentas"
+// de /admin/integrations. Encola N sync jobs (uno por cuenta
+// habilitada) y devuelve el resumen para que la UI pueda navegar al
+// listado de sync-logs.
+export interface SyncAllAccountsResult {
+  enqueued_count: number;
+  skipped_count: number;
+  enqueued: {
+    system: string;
+    account_id: string;
+    sync_log_id: string;
+    job_id: string;
+  }[];
+  skipped: {
+    system: string;
+    account_id: string;
+    reason: string;
+    error?: string;
+  }[];
+}
+
+export async function triggerSyncAllAccounts(): Promise<SyncAllAccountsResult> {
+  return apiFetch<SyncAllAccountsResult>(
+    "/api/integration-accounts/_/sync-all",
+    { method: "POST" },
+  );
+}
+
 export async function listIntegrationSyncLogs(
   system: ExternalSystem,
   accountId: string,
