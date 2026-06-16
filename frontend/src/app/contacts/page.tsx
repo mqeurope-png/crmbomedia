@@ -1028,9 +1028,22 @@ function ViewEditorModal({
 
   return (
     <div className="modal-overlay" onClick={onClose} role="dialog">
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h3>{mode.kind === "edit" ? "Editar vista" : "Nueva vista"}</h3>
-        <form onSubmit={handleSubmit} className="form-stack">
+      <div
+        className="modal-dialog modal-dialog-form"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <header className="modal-header">
+          <h2>{mode.kind === "edit" ? "Editar vista" : "Nueva vista"}</h2>
+          <button
+            type="button"
+            className="modal-close"
+            onClick={onClose}
+            aria-label="Cerrar"
+          >
+            ×
+          </button>
+        </header>
+        <form onSubmit={handleSubmit} className="modal-form">
           <label>
             Nombre
             <input

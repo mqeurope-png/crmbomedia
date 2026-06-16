@@ -272,8 +272,13 @@ def list_brevo_lists(
 
     async def _fetch() -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
-        page_size = 200
-        max_pages = 5  # cap blando: 1000 listas
+        # PR-Eb hotfix: Brevo `/contacts/lists` capa `limit` a 50 por
+        # petición. PR-Cg pedía 200 → 400 silencioso → la pantalla
+        # `/marketing/listas` quedaba vacía con "400 from brevo/default".
+        # Subimos `max_pages` a 20 para cubrir el mismo techo blando
+        # de 1000 listas.
+        page_size = 50
+        max_pages = 20
         async with BrevoClient(session, account_id) as client:
             for page in range(max_pages):
                 body = await client.list_lists(
