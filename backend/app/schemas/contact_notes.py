@@ -1,10 +1,10 @@
 """Pydantic schemas for the contact-notes endpoints.
 
-Sprint Empresas — sub-PR 4/4. The "Notas" section on the ficha
-reads/writes through `/api/contacts/{id}/notes`; the schemas
-mirror the storage model except for `created_by_user_id`, which
-the backend sets from the auth context (never trusted from the
-client).
+Post-unification (migration 0049): la fuente backend es la tabla
+`notes`, pero el shape del endpoint mantiene `content` (no `body`)
+por backwards-compat con el frontend pre-unification. Añade los
+`external_*` para que la UI pinte el autor remoto en las notas
+importadas de Agile.
 """
 from __future__ import annotations
 
@@ -25,6 +25,9 @@ class ContactNoteRead(BaseModel):
     source: str
     pinned: bool
     created_by_user_id: str | None
+    external_author_name: str | None = None
+    external_author_email: str | None = None
+    external_created_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
 

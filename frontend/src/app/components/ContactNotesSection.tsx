@@ -31,8 +31,20 @@ const formatDate = (iso: string) => {
 
 const sourceLabel = (source: string) => {
   if (source === "manual") return "manual";
+  if (source === "agile:timeline") return "Agile timeline";
   if (source.startsWith("agile:")) return source.replace("agile:", "Agile ");
   return source;
+};
+
+/** Pinta el bloque de meta de una nota: autor + fecha + source. Las
+ *  notas Agile timeline traen autor remoto; el resto van por
+ *  source. */
+const renderMeta = (row: ContactNote): string => {
+  const author = row.external_author_name || row.external_author_email;
+  const date = row.external_created_at ?? row.created_at;
+  const dt = formatDate(date);
+  if (author) return `${author} · ${sourceLabel(row.source)} · ${dt}`;
+  return `${sourceLabel(row.source)} · ${dt}`;
 };
 
 export function ContactNotesSection({ contactId }: Props) {
@@ -143,8 +155,11 @@ export function ContactNotesSection({ contactId }: Props) {
                     <PinOff size={12} aria-hidden color="#cbd5e1" />
                   )}
                 </button>
-                <span className="contact-note-meta small muted">
-                  {sourceLabel(row.source)} · {formatDate(row.created_at)}
+                <span
+                  className="contact-note-meta small muted"
+                  title={row.external_author_email ?? undefined}
+                >
+                  {renderMeta(row)}
                 </span>
                 <div className="contact-note-actions">
                   {editingId === row.id ? null : (

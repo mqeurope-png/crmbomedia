@@ -120,9 +120,9 @@ _ASSIGNMENT_MULTI = (
 )
 _PRIMARY_REFERENCE = ("eq", "neq", "is_null", "is_not_null")
 # QoL sprint — filtro notes_content. Comparadores de texto sobre el
-# join con `contact_notes.content`. `is_empty` / `is_not_empty`
-# operan sobre el conjunto (contacto SIN notas / con ≥1 nota), no
-# sobre el contenido literal vacío.
+# join con `notes.body` (post-unification 0049). `is_empty` /
+# `is_not_empty` operan sobre el conjunto (contacto SIN notas /
+# con ≥1 nota), no sobre el contenido literal vacío.
 _NOTES_CONTENT = (
     "contains",
     "starts_with",
@@ -268,16 +268,17 @@ FIELD_SPECS: dict[str, FieldSpec] = {
         grouped_under="Origen",
         source="related_table",
     ),
-    # QoL sprint. Texto libre en cualquiera de las contact_notes del
-    # contacto (importadas Agile Note1..10 + manuales). Útil para
-    # rescatar leads por palabras clave que el operador anotó hace
-    # tiempo. Compila a EXISTS sobre contact_notes con LIKE.
+    # QoL sprint. Texto libre en cualquiera de las notas del contacto
+    # (timeline Agile importado + Note1..10 + manuales del CRM, todo
+    # unificado en `notes` tras migration 0049). Útil para rescatar
+    # leads por palabras clave que el operador anotó hace tiempo.
+    # Compila a EXISTS sobre `notes` con LIKE sobre `body`.
     "notes_content": FieldSpec(
         key="notes_content",
         label="Notas (texto libre)",
         type="string",
         comparators=_NOTES_CONTENT,
-        relation="contact_notes.content",
+        relation="notes.body",
         grouped_under="Notas",
         source="related_table",
         displayable=False,

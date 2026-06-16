@@ -23,8 +23,8 @@ from app.main import app
 from app.models.crm import (
     Base,
     Contact,
-    ContactNote,
     EmailThread,
+    Note,
     Task,
     TaskStatus,
     User,
@@ -80,13 +80,13 @@ def test_notes_content_contains_matches_contact_with_note(
         session.add_all([a, b, c])
         session.flush()
         session.add(
-            ContactNote(
-                contact_id=a.id, content="Cliente Brevo VIP", source="manual"
+            Note(
+                contact_id=a.id, body="Cliente Brevo VIP", source="manual"
             )
         )
         session.add(
-            ContactNote(
-                contact_id=b.id, content="Solo correo Agile, no Brevo aún",
+            Note(
+                contact_id=b.id, body="Solo correo Agile, no Brevo aún",
                 source="manual",
             )
         )
@@ -120,7 +120,7 @@ def test_notes_content_is_empty_matches_contacts_without_notes(
         session.add_all([a, b])
         session.flush()
         session.add(
-            ContactNote(contact_id=a.id, content="con notas", source="manual")
+            Note(contact_id=a.id, body="con notas", source="manual")
         )
         session.commit()
         ids = {"a": a.id, "b": b.id}

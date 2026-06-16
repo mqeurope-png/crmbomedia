@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from collections.abc import Generator
 from dataclasses import dataclass
-from datetime import UTC, datetime
 
 import pytest
 from fastapi.testclient import TestClient
@@ -25,7 +24,7 @@ from app.main import app
 from app.models.crm import (
     Base,
     Contact,
-    ContactNote,
+    Note,
 )
 from tests._test_helpers import auth_headers, seed_test_users
 
@@ -176,7 +175,7 @@ def test_reconcile_agile_notes_inserts_then_idempotent(
     with db.factory() as session:
         rows = list(
             session.scalars(
-                select(ContactNote).where(ContactNote.contact_id == contact_id)
+                select(Note).where(Note.contact_id == contact_id)
             )
         )
     assert {r.source for r in rows} == {"agile:Note1", "agile:Note2"}
@@ -208,10 +207,10 @@ def test_reconcile_agile_notes_dedup_protects_manual_edits(
         session.commit()
         # Operator edits the imported note.
         row = session.scalar(
-            select(ContactNote).where(ContactNote.contact_id == contact_id)
+            select(Note).where(Note.contact_id == contact_id)
         )
         assert row is not None
-        row.content = "Llamada inicial — al final no respondieron"
+        row.body = "Llamada inicial — al final no respondieron"
         session.commit()
         # Next sync: same Agile payload. The original content is
         # missing from the dedup set now, so a fresh row gets added.
@@ -223,7 +222,7 @@ def test_reconcile_agile_notes_dedup_protects_manual_edits(
     with db.factory() as session:
         rows = list(
             session.scalars(
-                select(ContactNote).where(ContactNote.contact_id == contact_id)
+                select(Note).where(Note.contact_id == contact_id)
             )
         )
     assert len(rows) == 2
@@ -325,43 +324,7 @@ def test_viewer_cannot_write_notes(client: TestClient, db: _Fixture) -> None:
     assert res.status_code == 403
 
 
-# -- backfill ------------------------------------------------------
-
-
-def test_backfill_apply_notes_is_idempotent(db: _Fixture) -> None:
-    """The backfill's `_apply_notes` is the same dedupe shape as
-    the per-sync reconciler — exercising it directly avoids
-    standing up an HTTP mock of the Agile API for the assertion."""
-    from scripts.backfill_contact_notes_from_agile import (  # noqa: PLC0415
-        _apply_notes,
-    )
-
-    contact_id = _seed_contact(db.factory)
-    payload = {
-        "id": 1,
-        "properties": [
-            {"name": "Note1", "value": "Histórico A"},
-            {"name": "Note3", "value": "Histórico B"},
-        ],
-    }
-    now = datetime.now(UTC)
-    with db.factory() as session:
-        first = _apply_notes(
-            session, contact_id=contact_id, payload=payload, now=now
-        )
-        session.commit()
-        second = _apply_notes(
-            session, contact_id=contact_id, payload=payload, now=now
-        )
-        session.commit()
-    assert first == 2
-    assert second == 0
-
-    with db.factory() as session:
-        rows = list(
-            session.scalars(
-                select(ContactNote).where(ContactNote.contact_id == contact_id)
-            )
-        )
-    assert {r.source for r in rows} == {"agile:Note1", "agile:Note3"}
-    assert all(r.source.startswith("agile:") for r in rows)
+# Backfill script `backfill_contact_notes_from_agile.py` borrado en
+# la unificación 0049 — `reconcile_agile_notes` (probado arriba)
+# cubre la misma lógica idempotente sin necesidad de un script
+# separado.
