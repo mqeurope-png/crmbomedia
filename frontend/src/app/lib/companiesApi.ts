@@ -135,3 +135,32 @@ export async function assignContactCompany(
     body: JSON.stringify({ company_id }),
   });
 }
+
+// Sprint Filtros & Listas — PR-F. Bulk dispatch para la migración de
+// /companies. Antes la pantalla legacy no tenía bulk en absoluto.
+
+export type CompanyBulkAction =
+  | "activate"
+  | "deactivate"
+  | "change_sector";
+
+export type CompanyBulkResult = {
+  action: CompanyBulkAction;
+  affected_count: number;
+  company_ids: string[];
+};
+
+export async function bulkCompanyAction(
+  companyIds: string[],
+  action: CompanyBulkAction,
+  payload: Record<string, unknown> = {},
+): Promise<CompanyBulkResult> {
+  return apiFetch<CompanyBulkResult>("/api/companies/bulk-action", {
+    method: "POST",
+    body: JSON.stringify({
+      company_ids: companyIds,
+      action,
+      payload,
+    }),
+  });
+}

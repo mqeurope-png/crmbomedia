@@ -53,6 +53,9 @@ class Action:
     COMPANY_UPDATED = "company.updated"
     COMPANY_DEACTIVATED = "company.deactivated"
     COMPANY_DELETED = "company.deleted"
+    # PR-F — bulk dispatch en /api/companies/bulk-action. La acción
+    # concreta viaja en el metadata para auditar qué se hizo.
+    COMPANY_BULK_ACTION = "company.bulk_action"
     CONTACT_CREATED = "contact.created"
     CONTACT_UPDATED = "contact.updated"
     CONTACT_DEACTIVATED = "contact.deactivated"
