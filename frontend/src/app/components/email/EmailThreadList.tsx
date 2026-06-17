@@ -2,7 +2,12 @@
 
 import { Inbox, Search, Star } from "lucide-react";
 import Link from "next/link";
-import { useParams, useRouter, useSearchParams } from "next/navigation";
+import {
+  useParams,
+  usePathname,
+  useRouter,
+  useSearchParams,
+} from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   type EmailFolder,
@@ -64,6 +69,7 @@ function parseState(raw: string | null): EmailThreadStateValue {
 export function EmailThreadList({ folders, labels, refreshKey }: Props) {
   const router = useRouter();
   const params = useSearchParams();
+  const pathname = usePathname();
   const routeParams = useParams<{ thread_id?: string }>();
   const openThreadId = routeParams.thread_id ?? null;
 
@@ -90,18 +96,31 @@ export function EmailThreadList({ folders, labels, refreshKey }: Props) {
   // al volver a /emails sin params. El URL sigue siendo la fuente de
   // verdad dentro de la sesión / back-nav; localStorage cubre entrada
   // limpia + casos donde el Router Cache de Next pierde el estado.
+  //
+  // v2.5-fix: dividimos en dos efectos. EmailThreadList vive en el
+  // layout, así que al navegar a /emails/{thread_id} permanece
+  // montado y `useSearchParams` devuelve la query VACÍA (la nueva
+  // URL no la lleva). El efecto único con dep `[params]` veía esa
+  // query vacía y re-ejecutaba `router.replace('/emails?stored')`,
+  // pisando la navegación al detalle. El usuario clicaba y la URL
+  // volvía sola a /emails. Ahora: (1) escribimos en cada cambio;
+  // (2) restauramos solo en el mount inicial Y solo si estamos en
+  // /emails exactamente.
   const VIEW_STATE_KEY = "crmbomedia_view_state:emails:full";
 
   useEffect(() => {
     const current = params.toString();
-    if (current) {
-      try {
-        window.localStorage.setItem(VIEW_STATE_KEY, current);
-      } catch {
-        // best-effort
-      }
-      return;
+    if (!current) return;
+    try {
+      window.localStorage.setItem(VIEW_STATE_KEY, current);
+    } catch {
+      // best-effort
     }
+  }, [params]);
+
+  useEffect(() => {
+    if (pathname !== "/emails") return;
+    if (params.toString()) return;
     let stored: string | null = null;
     try {
       stored = window.localStorage.getItem(VIEW_STATE_KEY);
@@ -111,10 +130,10 @@ export function EmailThreadList({ folders, labels, refreshKey }: Props) {
     if (stored) {
       router.replace(`/emails?${stored}`);
     }
-    // Sólo en el montaje inicial — los cambios subsecuentes los
-    // captura el persist al detectar `current` no-vacío.
+    // Mount-only: restaurar al entrar limpio a /emails. Los cambios
+    // posteriores los captura el efecto de escritura.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [params]);
+  }, []);
 
   function setScopeUrl(next: "mine" | "team") {
     const sp = new URLSearchParams(params.toString());
