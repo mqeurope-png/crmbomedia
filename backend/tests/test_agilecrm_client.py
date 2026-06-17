@@ -184,7 +184,7 @@ def test_list_contacts_returns_items_and_cursor(session_factory):
     assert cursor == "cur-10"
     assert "page_size=10" in captured["url"]
     assert captured["auth"].startswith("Basic ")
-    assert "CRMBO-Media-CRM" in captured["ua"]
+    assert "BoHub-CRM" in captured["ua"]
 
 
 def test_list_contacts_empty_page_returns_no_cursor(session_factory):

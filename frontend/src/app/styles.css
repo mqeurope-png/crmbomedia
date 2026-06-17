@@ -1,15 +1,45 @@
 :root {
   color-scheme: light;
-  --bg: #f6f8fb;
-  --ink: #102033;
-  --muted: #5b6778;
-  --brand: #244bd8;
-  --brand-dark: #183597;
-  --card: #ffffff;
-  --line: #dfe5ef;
-  --danger: #b42318;
+  /* Sprint Rebranding BoHub CRM (PR-A). La paleta nueva sustituye los
+     azules de "CRMBO Media CRM". Mapeo de identidad:
+       --color-primary       #2563EB  azul royal (nodos + arcos + CTAs)
+       --color-primary-light #0EA5E9  cyan acento (hover, charts)
+       --color-accent        #14B8A6  teal (badges, conversiones)
+       --color-dark          #0F172A  slate ink (texto principal)
+       --color-gray          #6B7280  grises secundarios
+       --color-bg-light      #F1F5F9  fondos cards / page bg
+     Los aliases viejos `--brand` / `--ink` etc. se mantienen mapeados
+     a los nuevos hex para no tener que reescribir 6.5K líneas de CSS
+     en este PR (PR-E hará el clean-up). */
+  --color-primary: #2563EB;
+  --color-primary-light: #0EA5E9;
+  --color-accent: #14B8A6;
+  --color-dark: #0F172A;
+  --color-gray: #6B7280;
+  --color-bg-light: #F1F5F9;
+  --color-bg: #FFFFFF;
+
+  /* Aliases legacy → nuevos. Mantener orden por importancia visual. */
+  --bg: var(--color-bg-light);
+  --ink: var(--color-dark);
+  --muted: var(--color-gray);
+  --brand: var(--color-primary);
+  --brand-dark: #1D4ED8;
+  --card: var(--color-bg);
+  --line: #E2E8F0;
+  --danger: #B42318;
   --success: #067647;
-  --warning: #b54708;
+  --warning: #B54708;
+
+  /* Fuente base — Inter, cargada por next/font en layout.tsx. La var
+     `--font-base` se sobreescribe desde el <html className>. */
+  --font-base: "Inter", system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+}
+
+html,
+body {
+  font-family: var(--font-base);
 }
 
 * { box-sizing: border-box; }
@@ -391,7 +421,7 @@ body {
 
 .campaign-chart { width: 100%; max-width: 760px; }
 
-.campaign-chart-open { fill: #244bd8; }
+.campaign-chart-open { fill: var(--color-primary); }
 .campaign-chart-click { fill: #10b981; }
 
 .campaign-chart-label {
@@ -399,7 +429,7 @@ body {
   fill: var(--muted);
 }
 
-.campaign-chart-legend { font-size: 11px; fill: #244bd8; }
+.campaign-chart-legend { font-size: 11px; fill: var(--color-primary); }
 .campaign-chart-legend-click { font-size: 11px; fill: #10b981; }
 
 /* Integrations refactor (Sprint UX)                                */
@@ -730,22 +760,17 @@ body {
   color: var(--ink);
 }
 
-.app-topbar-brand-mark {
-  width: 28px;
-  height: 28px;
-  border-radius: 8px;
-  background: var(--brand);
-  color: #ffffff;
+.app-topbar-brand-logo {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  font-weight: 800;
-  font-size: 14px;
 }
 
-.app-topbar-brand-name {
-  font-size: 14px;
-  white-space: nowrap;
+/* Desktop visible por defecto; mobile oculto. El @media en l.1196 cambia
+   esto bajo 768px. Las clases viejas .app-topbar-brand-mark /
+   -brand-name se quedan inertes (sin markup que las consuma) y el
+   PR-E las limpiará junto al resto de hojas de estilo legacy. */
+.app-topbar-brand-logo.is-mobile {
+  display: none;
 }
 
 .app-topbar-search {
@@ -1163,8 +1188,11 @@ body {
   .app-shell.drawer-open .app-shell-scrim {
     display: block;
   }
-  .app-topbar-brand-name {
+  .app-topbar-brand-logo.is-desktop {
     display: none;
+  }
+  .app-topbar-brand-logo.is-mobile {
+    display: inline-flex;
   }
 }
 
@@ -1190,6 +1218,13 @@ a { color: inherit; }
 }
 
 .hero.compact h1 { font-size: clamp(2.2rem, 5vw, 4rem); }
+
+/* Login: logo grande centrado encima del eyebrow. PR-A Rebranding. */
+.login-brand {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 24px;
+}
 
 .detail-header {
   align-items: flex-start;

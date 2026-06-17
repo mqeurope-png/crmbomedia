@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { BoHubLogo } from "../components/branding/BoHubLogo";
 import { login, verifyTotp } from "../lib/api";
 import { extractErrorMessage } from "../lib/errors";
 
@@ -78,13 +79,19 @@ export default function LoginPage() {
   }
 
   return (
-    <main className="shell narrow">
+    <main className="shell narrow login-page">
       <section className="hero compact">
-        <p className="eyebrow">Acceso CRM</p>
+        {/* Logo grande centrado. Variant horizontal incluye el wordmark
+            "BoHub CRM" — el login es el primer contacto visual del
+            operador con la marca tras el rebranding. */}
+        <div className="login-brand" aria-hidden>
+          <BoHubLogo variant="horizontal" size={56} />
+        </div>
+        <p className="eyebrow">Acceso BoHub CRM</p>
         <h1>{stage === "password" ? "Iniciar sesión" : "Verificación 2FA"}</h1>
         <p className="lead">
           {stage === "password"
-            ? "Usa tu usuario interno para acceder al CRM MVP."
+            ? "Usa tu usuario interno para acceder a BoHub CRM."
             : "Introduce el código de 6 dígitos de tu app de autenticación o un código de respaldo."}
         </p>
       </section>

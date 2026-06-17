@@ -42,6 +42,8 @@ const COMMON_PASSWORDS = new Set<string>([
   "123456789",
   "1234567890",
   "crmbomedia",
+  "bohub",
+  "bohubcrm",
 ]);
 
 type Rule = {

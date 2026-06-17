@@ -1,4 +1,4 @@
-# CRMBO Media — CRM central e integraciones
+# BoHub CRM — CRM central e integraciones
 
 Base técnica inicial para construir una plataforma CRM propia con conectores hacia AgileCRM, Brevo, Freshdesk y FactuSOL/DELSOL.
 

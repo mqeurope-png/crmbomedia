@@ -5,7 +5,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    app_name: str = "CRMBO Media CRM"
+    app_name: str = "BoHub CRM"
     environment: str = "development"
     database_url: str = "sqlite+pysqlite:///:memory:"
     redis_url: str = "redis://localhost:6379/0"
@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     smtp_user: str | None = None
     smtp_password: str | None = None
     smtp_from: str | None = None
-    smtp_from_name: str = "CRMBO Media CRM"
+    smtp_from_name: str = "BoHub CRM"
     smtp_use_tls: bool = True   # STARTTLS on port 587
     smtp_use_ssl: bool = False  # implicit SSL on port 465; mutually exclusive with use_tls
 

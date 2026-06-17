@@ -41,7 +41,7 @@ from app.integrations.http_client import IntegrationHTTPClient
 
 logger = logging.getLogger(__name__)
 
-USER_AGENT = "CRMBO-Media-CRM/1.0 (mqeurope-png/crmbomedia)"
+USER_AGENT = "BoHub-CRM/1.0 (mqeurope-png/crmbomedia)"
 
 DEFAULT_PAGE_SIZE = int(os.environ.get("AGILECRM_PAGE_SIZE", "50") or "50")
 MAX_PAGE_SIZE = 100
