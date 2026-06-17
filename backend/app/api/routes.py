@@ -199,10 +199,37 @@ def health(settings: Settings = Depends(get_settings)) -> HealthRead:
         ai_features_enabled=settings.ai_features_enabled,
     )
 
+# PR-F: cookie de sesión nombrada `bohub_token`. Sin Max-Age para que
+# el browser la borre al cerrar la ventana completa (Bart spec — cierre
+# de UNA pestaña con otras abiertas debe preservarla). Read by the
+# frontend para inyectar el `Authorization: Bearer` header — backend
+# sigue autenticando vía Bearer. `secure` se activa cuando la request
+# entró por HTTPS (Nginx setea X-Forwarded-Proto en prod).
+_AUTH_COOKIE_NAME = "bohub_token"
+
+
+def _set_auth_cookie(response: Response, token: str, request: Request) -> None:
+    response.set_cookie(
+        key=_AUTH_COOKIE_NAME,
+        value=token,
+        path="/",
+        max_age=None,
+        expires=None,
+        secure=request.url.scheme == "https",
+        httponly=False,
+        samesite="lax",
+    )
+
+
+def _clear_auth_cookie(response: Response) -> None:
+    response.delete_cookie(key=_AUTH_COOKIE_NAME, path="/")
+
+
 @router.post("/auth/login", response_model=TokenRead, responses=ERROR_RESPONSES, tags=["auth"])
 def login(
     payload: LoginRequest,
     request: Request,
+    response: Response,
     session: Session = Depends(get_session),
 ) -> TokenRead:
     attempted_email = str(payload.email)
@@ -238,6 +265,9 @@ def login(
 
     if user.totp_enabled:
         # 2FA enrolled → return a short-lived token good only for /2fa/verify.
+        # NO seteamos cookie aquí — el pre-2FA token no debe permitir
+        # acceso a endpoints normales. El cookie definitivo se setea al
+        # completar /auth/2fa/verify.
         temp_token = create_access_token(
             subject=user.id,
             role=user.role.value,
@@ -251,6 +281,7 @@ def login(
     # is left in place in create_access_token so old tokens with limited=true
     # still parse cleanly while they live out their 8-hour TTL.
     token = create_access_token(subject=user.id, role=user.role.value)
+    _set_auth_cookie(response, token, request)
     return TokenRead(access_token=token, limited=False)
 
 
@@ -263,6 +294,7 @@ def login(
 def verify_2fa(
     payload: TotpVerifyRequest,
     request: Request,
+    response: Response,
     session: Session = Depends(get_session),
 ) -> TokenRead:
     """Second step of login: exchanges a pre-2FA token + TOTP code (or a
@@ -313,7 +345,23 @@ def verify_2fa(
     session.commit()
 
     token = create_access_token(subject=user.id, role=user.role.value)
+    _set_auth_cookie(response, token, request)
     return TokenRead(access_token=token)
+
+
+@router.post(
+    "/auth/logout",
+    status_code=status.HTTP_204_NO_CONTENT,
+    tags=["auth"],
+)
+def logout(response: Response) -> Response:
+    """Clear the session cookie. PR-F idle timeout + cierre de ventana
+    llaman aquí desde el frontend. El backend no mantiene estado de
+    sesión (JWT stateless), así que el server-side es solo el
+    Set-Cookie con Max-Age=0."""
+    _clear_auth_cookie(response)
+    response.status_code = status.HTTP_204_NO_CONTENT
+    return response
 
 
 @router.post(

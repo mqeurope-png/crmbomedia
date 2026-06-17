@@ -7,6 +7,7 @@ import {
   useRef,
 } from "react";
 import type { Editor as TinyMCEEditor } from "tinymce";
+import { getStoredToken } from "../../lib/api";
 
 // Self-host every TinyMCE asset — never the cloud build (no API key,
 // no external CDN, works offline / behind the VPN). The static imports
@@ -46,7 +47,6 @@ import "tinymce/skins/content/default/content.min.css";
 
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
-const TOKEN_STORAGE_KEY = "crmbomedia_access_token";
 
 type UploadResponse = {
   public_url: string;
@@ -64,10 +64,11 @@ async function uploadBlob(blob: Blob, filename: string): Promise<string> {
   form.append("file", blob, filename);
   const token =
     typeof window !== "undefined"
-      ? window.localStorage.getItem(TOKEN_STORAGE_KEY)
+      ? getStoredToken()
       : null;
   const response = await fetch(`${API_BASE_URL}/api/email-templates/assets`, {
     method: "POST",
+    credentials: "include",
     headers: token ? { Authorization: `Bearer ${token}` } : undefined,
     body: form,
   });

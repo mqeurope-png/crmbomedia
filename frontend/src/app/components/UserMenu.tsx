@@ -11,7 +11,7 @@ import {
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
-import { clearStoredToken, type User } from "../lib/api";
+import { logout as apiLogout, type User } from "../lib/api";
 
 type Props = {
   user: User | null;
@@ -31,8 +31,7 @@ export function UserMenu({ user }: Props) {
   }, []);
 
   function logout() {
-    clearStoredToken();
-    router.push("/login");
+    apiLogout().finally(() => router.push("/welcome"));
   }
 
   if (!user) {

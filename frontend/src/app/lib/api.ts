@@ -282,19 +282,95 @@ export type ContactListPage = {
 };
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
-const TOKEN_STORAGE_KEY = "crmbomedia_access_token";
+// PR-F: cookie de sesión `bohub_token`. Sin Max-Age → el browser la
+// borra al cerrar la ventana completa (Bart spec). Otras pestañas la
+// comparten. El TOKEN_STORAGE_KEY legacy se mantiene SOLO para limpiar
+// sesiones viejas del localStorage en el primer login post-deploy.
+const AUTH_COOKIE_NAME = "bohub_token";
+const LEGACY_TOKEN_STORAGE_KEY = "crmbomedia_access_token";
+
+function readCookie(name: string): string | null {
+  if (typeof document === "undefined") return null;
+  const prefix = `${name}=`;
+  for (const part of document.cookie.split(";")) {
+    const trimmed = part.trim();
+    if (trimmed.startsWith(prefix)) {
+      return decodeURIComponent(trimmed.slice(prefix.length));
+    }
+  }
+  return null;
+}
+
+function writeSessionCookie(name: string, value: string): void {
+  if (typeof document === "undefined") return;
+  // En dev (http://localhost) sin Secure; en prod el backend ya seteó
+  // Secure mediante Set-Cookie y el cliente normalmente no escribe la
+  // cookie. Esta función cubre el fallback (frontend-managed) cuando
+  // el backend no la setea (p. ej. 2FA verify desde otro cliente).
+  const secure =
+    typeof location !== "undefined" && location.protocol === "https:"
+      ? "; Secure"
+      : "";
+  document.cookie = `${name}=${encodeURIComponent(value)}; Path=/; SameSite=Lax${secure}`;
+}
+
+function deleteCookie(name: string): void {
+  if (typeof document === "undefined") return;
+  document.cookie = `${name}=; Path=/; Max-Age=0; SameSite=Lax`;
+}
 
 export function getStoredToken(): string | null {
   if (typeof window === "undefined") return null;
-  return window.localStorage.getItem(TOKEN_STORAGE_KEY);
+  const fromCookie = readCookie(AUTH_COOKIE_NAME);
+  if (fromCookie) return fromCookie;
+  // Bridge transicional: si la cookie no existe (post-deploy del PR-F
+  // sin logout) pero el legacy localStorage sí tiene token, migramos
+  // a cookie y limpiamos localStorage. Esto evita que un user activo
+  // pierda sesión justo al deploy.
+  try {
+    const legacy = window.localStorage.getItem(LEGACY_TOKEN_STORAGE_KEY);
+    if (legacy) {
+      writeSessionCookie(AUTH_COOKIE_NAME, legacy);
+      window.localStorage.removeItem(LEGACY_TOKEN_STORAGE_KEY);
+      return legacy;
+    }
+  } catch {
+    // localStorage no disponible
+  }
+  return null;
 }
 
 export function setStoredToken(token: string) {
-  window.localStorage.setItem(TOKEN_STORAGE_KEY, token);
+  writeSessionCookie(AUTH_COOKIE_NAME, token);
+  // Limpiamos cualquier rastro del localStorage legacy.
+  try {
+    window.localStorage.removeItem(LEGACY_TOKEN_STORAGE_KEY);
+  } catch {
+    // ignore
+  }
 }
 
 export function clearStoredToken() {
-  window.localStorage.removeItem(TOKEN_STORAGE_KEY);
+  deleteCookie(AUTH_COOKIE_NAME);
+  try {
+    window.localStorage.removeItem(LEGACY_TOKEN_STORAGE_KEY);
+  } catch {
+    // ignore
+  }
+}
+
+export async function logout(): Promise<void> {
+  // Best-effort: pegamos al endpoint para auditar; pase lo que pase
+  // limpiamos el estado local antes de redirigir.
+  try {
+    await fetch(`${API_BASE_URL}/api/auth/logout`, {
+      method: "POST",
+      credentials: "include",
+    });
+  } catch {
+    // sin red — seguimos limpiando local.
+  }
+  clearStoredToken();
 }
 
 export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
@@ -303,6 +379,11 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
   try {
     response = await fetch(`${API_BASE_URL}${path}`, {
       ...init,
+      // PR-F: incluye cookies cross-origin para que el `Set-Cookie:
+      // bohub_token` del backend llegue al browser y para que las
+      // requests subsecuentes la lleven. CORS allow_credentials=True
+      // ya estaba habilitado en el backend.
+      credentials: "include",
       headers: {
         "Content-Type": "application/json",
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -781,6 +862,7 @@ export async function getAuditLogs(filters: AuditLogFilters = {}): Promise<Audit
   const query = buildAuditQuery({ limit: 50, ...filters });
   const url = `${API_BASE_URL}/api/audit-logs${query ? `?${query}` : ""}`;
   const response = await fetch(url, {
+    credentials: "include",
     headers: token ? { Authorization: `Bearer ${token}` } : {},
     cache: "no-store",
   });
@@ -894,6 +976,7 @@ export async function exportAuditLogs(
     query ? `&${query}` : ""
   }`;
   const response = await fetch(url, {
+    credentials: "include",
     headers: token ? { Authorization: `Bearer ${token}` } : {},
   });
   if (!response.ok) {
