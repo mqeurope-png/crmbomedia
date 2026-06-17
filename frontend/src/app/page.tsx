@@ -1,41 +1,46 @@
 "use client";
 
+import { Calendar, Mail, Plus } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
+import { DashboardKpis, type DashboardRange } from "./components/dashboard/DashboardKpis";
 import { EmailActivityWidget } from "./components/dashboard/EmailActivityWidget";
 import { EmailTrackingStatsWidget } from "./components/dashboard/EmailTrackingStatsWidget";
 import { GoogleEventsWidget } from "./components/dashboard/GoogleEventsWidget";
-import { LeadsStatsWidget } from "./components/dashboard/LeadsStatsWidget";
+import { HotOpportunitiesWidget } from "./components/dashboard/HotOpportunitiesWidget";
 import { PipelineSummaryWidget } from "./components/dashboard/PipelineSummaryWidget";
+import { RecentInteractionsWidget } from "./components/dashboard/RecentInteractionsWidget";
 import { TasksWidget } from "./components/dashboard/TasksWidget";
 import { UnattendedLeadsWidget } from "./components/dashboard/UnattendedLeadsWidget";
 import { ErrorState } from "./components/ErrorState";
-import { PageHeader } from "./components/PageHeader";
 import { getCurrentUser, type User } from "./lib/api";
 import { extractErrorMessage } from "./lib/errors";
 
-const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
-
-/** Dashboard.
+/**
+ * Dashboard BoHub (PR-C). Layout:
+ *   - Header con saludo, selector temporal y dos acciones rápidas.
+ *   - Tira de 6 KPIs (`DashboardKpis`).
+ *   - Grid de 4 columnas × 2 filas con widgets reutilizados de Fase 3
+ *     + 2 placeholders nuevos (Oportunidades calientes + Últimas
+ *     interacciones) hasta que aterricen sus endpoints dedicados.
  *
- * Fase 3 redesign. Six widgets in a responsive grid: tasks, Google
- * Calendar events, pipeline summary, unattended leads, lead stats
- * chart, recent email activity. Each widget owns its own fetch so a
- * slow endpoint doesn't block the rest. */
+ * El selector temporal pasa por props a `DashboardKpis` para que los
+ * tiles de Leads / Emails se re-fetchen con el rango elegido. El
+ * resto de widgets mantiene su propio control de rango (legacy) para
+ * no romper la lógica que ya funciona.
+ */
 export default function Home() {
   const router = useRouter();
   const [user, setUser] = useState<User | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [range, setRange] = useState<DashboardRange>("today");
 
   useEffect(() => {
     getCurrentUser()
       .then(setUser)
       .catch((err) => {
-        // 401 → no hay sesión; redirige al pre-login splash en vez de
-        // dejar el mensaje genérico "Arranca la API…". Cualquier otro
-        // error sí lo enseñamos para que el operador vea qué pasa.
         const message = extractErrorMessage(
           err,
           "Arranca la API o inicia sesión de nuevo.",
@@ -51,8 +56,7 @@ export default function Home() {
 
   if (isLoading) {
     return (
-      <main className="shell shell-wide">
-        <PageHeader title="Dashboard" eyebrow="CRM" />
+      <main className="shell shell-wide dashboard-page">
         <p className="muted">Cargando CRM…</p>
       </main>
     );
@@ -60,57 +64,85 @@ export default function Home() {
 
   if (error) {
     return (
-      <main className="shell shell-wide">
-        <PageHeader title="Dashboard" eyebrow="CRM" />
+      <main className="shell shell-wide dashboard-page">
         <ErrorState title="No se pudo cargar el CRM" message={error} />
       </main>
     );
   }
 
-  const isAdmin = user?.role === "admin";
   const canCreate = user?.role !== "viewer";
+  const firstName = user?.full_name?.split(" ")[0] || user?.full_name || "operador";
 
   return (
-    <main className="shell shell-wide">
-      <PageHeader
-        title="Dashboard"
-        eyebrow="CRM"
-        description={
-          // Mostramos el nombre completo del user — `full_name.split(" ")[0]`
-          // dejaba al "Default Admin" como "Default" (Bart pidió ver el
-          // nombre real). El nombre puede ser corto o largo, da igual: el
-          // h1 del PageHeader se trunca con CSS si hace falta.
-          user ? `Hola, ${user.full_name}.` : undefined
-        }
-        actions={
-          <>
-            {canCreate ? (
-              <Link href="/contacts/new" className="button small">
-                + Nuevo contacto
-              </Link>
-            ) : null}
-            {isAdmin ? (
-              <a
-                href={`${apiBaseUrl}/api/docs`}
-                className="button secondary small"
-                target="_blank"
-                rel="noreferrer"
+    <main className="shell shell-wide dashboard-page">
+      <header className="dashboard-header">
+        <div className="dashboard-header-greeting">
+          <h1>
+            Hola, {firstName} <span aria-hidden>👋</span>
+          </h1>
+          <p className="muted">Resumen comercial de hoy</p>
+        </div>
+        <div className="dashboard-header-controls">
+          <div
+            className="range-segment"
+            role="radiogroup"
+            aria-label="Rango temporal del resumen"
+          >
+            {(
+              [
+                { value: "today" as const, label: "Hoy" },
+                { value: "7d" as const, label: "7 días" },
+                { value: "30d" as const, label: "30 días" },
+              ]
+            ).map((opt) => (
+              <button
+                key={opt.value}
+                type="button"
+                role="radio"
+                aria-checked={range === opt.value}
+                className={`range-segment-item${
+                  range === opt.value ? " is-active" : ""
+                }`}
+                onClick={() => setRange(opt.value)}
               >
-                OpenAPI
-              </a>
-            ) : null}
-          </>
-        }
-      />
+                {opt.label}
+              </button>
+            ))}
+            {/* Picker de fecha custom — placeholder. Bart lo pidió en el
+                mockup pero sin endpoint todavía; el botón abre nada por
+                ahora para no introducir un componente vacío. */}
+            <button
+              type="button"
+              className="range-segment-item is-icon"
+              aria-label="Personalizar rango"
+              title="Próximamente"
+              disabled
+            >
+              <Calendar size={14} aria-hidden />
+            </button>
+          </div>
+          {canCreate ? (
+            <Link href="/contacts/new" className="button">
+              <Plus size={16} aria-hidden /> Nuevo contacto
+            </Link>
+          ) : null}
+          <Link href="/emails" className="button secondary">
+            <Mail size={16} aria-hidden /> Nuevo email
+          </Link>
+        </div>
+      </header>
 
-      <section className="dashboard-grid">
+      <DashboardKpis range={range} />
+
+      <section className="dashboard-widgets-grid">
         <TasksWidget />
-        <GoogleEventsWidget />
         <PipelineSummaryWidget />
         <UnattendedLeadsWidget currentUserId={user?.id ?? null} />
-        <LeadsStatsWidget />
-        <EmailTrackingStatsWidget />
         <EmailActivityWidget />
+        <EmailTrackingStatsWidget />
+        <GoogleEventsWidget />
+        <HotOpportunitiesWidget />
+        <RecentInteractionsWidget />
       </section>
     </main>
   );
