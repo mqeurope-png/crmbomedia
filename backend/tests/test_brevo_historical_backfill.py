@@ -889,7 +889,7 @@ def test_run_historical_backfill_passes_campaign_brevo_ids_payload(
     from app.integrations.brevo.historical_backfill import (  # noqa: PLC0415
         run_historical_backfill,
     )
-    from app.models.crm import SyncLog, SyncStatus, ExternalSystem  # noqa: PLC0415
+    from app.models.crm import ExternalSystem, SyncLog, SyncStatus  # noqa: PLC0415
 
     with session_factory() as session:
         sync_log = SyncLog(
