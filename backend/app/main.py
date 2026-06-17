@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from app.api.admin_backups import router as admin_backups_router
 from app.api.assignment_rules import router as assignment_rules_router
 from app.api.bulk import router as bulk_router
 from app.api.companies import assign_router as contacts_assign_router
@@ -90,6 +91,7 @@ app.include_router(gmail_webhook_router)
 app.include_router(email_templates_router)
 app.include_router(email_signatures_router)
 app.include_router(email_tracking_router)
+app.include_router(admin_backups_router)
 
 # Sprint Email v2.2 — serve email-template assets (Tiptap inline
 # uploads). In production nginx aliases `/assets/email-templates/`

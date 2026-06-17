@@ -1689,3 +1689,51 @@ class AuditLog(TimestampMixin, Base):
     message: Mapped[str | None] = mapped_column(Text)
     ip_address: Mapped[str | None] = mapped_column(String(45))  # fits IPv6
     user_agent: Mapped[str | None] = mapped_column(Text)
+
+
+class BackupStatus(StrEnum):
+    """Sprint Backup. Lifecycle de una row en `backups`:
+    RUNNING → SUCCESS | FAILED. No hay PENDING porque el row se
+    inserta cuando el worker arranca el job (no encolado)."""
+
+    RUNNING = "running"
+    SUCCESS = "success"
+    FAILED = "failed"
+
+
+class BackupTrigger(StrEnum):
+    CRON = "cron"
+    MANUAL = "manual"
+
+
+class Backup(Base):
+    """Sprint Backup. Trazabilidad de cada ejecución del script
+    `scripts/backup-crmbo.sh` — disparada por cron (cada 72 h) o por
+    un admin desde `/admin/backups`. El binario `.tar.gz.gpg` vive en
+    `/var/backups/crmbo/` y opcionalmente se replica a Google Drive
+    vía rclone (la URL queda en `drive_url`)."""
+
+    __tablename__ = "backups"
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid4())
+    )
+    filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    filepath: Mapped[str] = mapped_column(String(500), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default=BackupStatus.RUNNING.value, index=True
+    )
+    drive_url: Mapped[str | None] = mapped_column(String(500))
+    error_summary: Mapped[str | None] = mapped_column(Text)
+    triggered_by: Mapped[str] = mapped_column(
+        String(40), nullable=False, default=BackupTrigger.CRON.value
+    )
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, index=True
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_by_user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+

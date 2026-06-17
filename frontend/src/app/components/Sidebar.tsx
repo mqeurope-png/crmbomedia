@@ -5,6 +5,7 @@ import {
   Building2,
   ChevronsLeft,
   ChevronsRight,
+  Database,
   Kanban,
   Mail,
   Plug,
@@ -132,6 +133,15 @@ const NAV_ITEMS: ReadonlyArray<Item> = [
     label: "Reglas de asignación",
     icon: Shuffle,
     allowedRoles: ["admin", "manager"],
+  },
+  // Sprint Backup. Inserción admin-only justo antes de Ajustes para
+  // agrupar el surface "infra" del CRM (Usuarios → Reglas → Backups
+  // → Ajustes). Lleva a la página de descarga + disparo manual.
+  {
+    href: "/admin/backups",
+    label: "Backups",
+    icon: Database,
+    allowedRoles: ["admin"],
   },
   {
     href: "/admin/audit",
