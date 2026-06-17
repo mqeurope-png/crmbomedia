@@ -18,6 +18,7 @@ import { ContactCompanySection } from "../../components/ContactCompanySection";
 import { ContactCustomFieldsSection } from "../../components/ContactCustomFieldsSection";
 import { ContactDetailHeader } from "../../components/contact-detail/ContactDetailHeader";
 import { ContactKeyDataStrip } from "../../components/contact-detail/ContactKeyDataStrip";
+import { ContactBrevoEngagementCard } from "../../components/contact-detail/ContactBrevoEngagementCard";
 import { ContactNotesPreviewCard } from "../../components/contact-detail/ContactNotesPreviewCard";
 import { ContactSummaryTab } from "../../components/contact-detail/ContactSummaryTab";
 import { ContactSupportTab } from "../../components/contact-detail/ContactSupportTab";
@@ -41,9 +42,11 @@ import {
   type EmailEvent,
 } from "../../lib/emailTrackingApi";
 import {
+  addTagToContact,
   deactivateContact,
   getContact,
   listContactAssignments,
+  removeTagFromContact,
   updateContact,
   type ActivityEvent,
   type Contact,
@@ -315,6 +318,14 @@ export default function ContactDetailPage() {
         origin={origin}
         lastActivityAt={lastActivityAt}
         onPatch={handlePatch}
+        onAddTag={async (choice) => {
+          await addTagToContact(contact.id, choice);
+          await loadContact();
+        }}
+        onRemoveTag={async (tagId) => {
+          await removeTagFromContact(contact.id, tagId);
+          await loadContact();
+        }}
       />
 
       {refreshWarnings.length > 0 ? (
@@ -364,6 +375,7 @@ export default function ContactDetailPage() {
                     contactId={contact.id}
                     onSeeAll={() => setActiveTab("notes")}
                   />
+                  <ContactBrevoEngagementCard contactId={contact.id} />
                 </div>
               </div>
             ) : null}
@@ -419,8 +431,9 @@ export default function ContactDetailPage() {
             />
           </div>
 
-          <ContactNotesSection contactId={contact.id} />
-
+          {/* PR-Db dejó duplicada la card "Notas" en sidebar + tab.
+              PR-Dc: el sidebar SIEMPRE se queda sin notas. Las notas
+              viven en el tab "Notas" full + preview en Resumen. */}
           <ContactAssignmentsSection contactId={contact.id} />
         </aside>
       </div>
@@ -543,8 +556,12 @@ function ActivityTab({
       </p>
     );
   }
+  // PR-Dc: compactamos a una línea por evento — icono + título +
+  // (badges si aplica) + tiempo relativo. Snippets + sublines viven en
+  // el `title=` para HOVER (sin reflow). Click en email.sent_from_crm
+  // abre el thread en una pestaña nueva.
   return (
-    <ul className="timeline-list">
+    <ul className="timeline-list timeline-list-dense">
       {events.map((event) => {
         const meta = readMetadata(event.metadata);
         const threadId = typeof meta.thread_id === "string" ? meta.thread_id : null;
@@ -561,52 +578,69 @@ function ActivityTab({
         const snippet =
           typeof meta.snippet === "string" ? meta.snippet : event.body ?? null;
         const isEmail = event.event_type.startsWith("email.");
-        const heading = (
-          <strong>
-            {threadId && isEmail ? (
-              <a
-                href={`/emails/${threadId}`}
-                target="_blank"
-                rel="noreferrer"
-              >
-                {event.subject || event.event_type}
-              </a>
-            ) : (
-              event.subject || event.event_type
-            )}
-          </strong>
-        );
+        const titleText = event.subject || event.event_type;
         const subline =
           direction === "outbound" && to
             ? `Enviado a ${to}`
             : direction === "inbound" && fromEmail
               ? `Recibido de ${fromEmail}`
               : null;
+        const tooltipParts = [
+          formatDateTime(event.occurred_at),
+          subline,
+          snippet ? `"${snippet}"` : null,
+        ].filter((p): p is string => Boolean(p));
         return (
-          <li key={event.id} className={emailEventClass(event.event_type)}>
+          <li
+            key={event.id}
+            className={`${emailEventClass(event.event_type)} is-dense`}
+            title={tooltipParts.join(" — ")}
+          >
             <span className="timeline-icon" aria-hidden>
               {EVENT_TYPE_ICON[event.event_type] ?? "•"}
             </span>
-            <div className="timeline-content">
-              <div className="timeline-meta">
-                {heading}
-                <span className="muted">{formatDateTime(event.occurred_at)}</span>
-              </div>
-              {subline ? (
-                <p className="timeline-subline muted small">{subline}</p>
+            <span className="timeline-title-dense">
+              {threadId && isEmail ? (
+                <a
+                  href={`/emails/${threadId}`}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  {titleText}
+                </a>
               ) : (
-                <span className="timeline-type">{event.event_type}</span>
+                titleText
               )}
-              {snippet ? (
-                <p className="timeline-body">&quot;{snippet}&quot;</p>
-              ) : null}
-              {event.event_type === "email.sent_from_crm" && messageId ? (
-                <EmailEventBadges events={trackingEvents} />
-              ) : null}
-            </div>
+            </span>
+            {event.event_type === "email.sent_from_crm" && messageId ? (
+              <EmailEventBadges events={trackingEvents} />
+            ) : null}
+            <span className="muted small timeline-time-dense">
+              {relativeTimeShort(event.occurred_at)}
+            </span>
           </li>
         );
       })}
     </ul>
   );
+}
+
+// Tiempo relativo compacto compartido. Coincide con `relativeTime` de
+// ContactSummaryTab pero local para no acoplar archivos. Considerar
+// extraer a `lib/time.ts` en un PR de cleanup posterior.
+function relativeTimeShort(value: string | null | undefined): string {
+  if (!value) return "—";
+  const then = new Date(value).getTime();
+  if (Number.isNaN(then)) return "—";
+  const diffSec = Math.floor((Date.now() - then) / 1000);
+  if (diffSec < 60) return "ahora";
+  const min = Math.floor(diffSec / 60);
+  if (min < 60) return `hace ${min}m`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `hace ${hr}h`;
+  const day = Math.floor(hr / 24);
+  if (day < 30) return `hace ${day}d`;
+  const mo = Math.floor(day / 30);
+  if (mo < 12) return `hace ${mo}mo`;
+  return `hace ${Math.floor(mo / 12)}y`;
 }

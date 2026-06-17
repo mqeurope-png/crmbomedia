@@ -7173,6 +7173,124 @@ tr.is-inactive {
 .contact-summary-timeline-title { margin: 0; font-size: 0.85rem; }
 .contact-summary-timeline-desc { margin: 0; }
 
+/* PR-Dc: timeline 1 línea por item. Sustituye el `body` apilado por
+   una fila flex con icono + título (flex 1, ellipsis) + tiempo. */
+.contact-summary-timeline-dense .contact-summary-timeline-item {
+  align-items: center;
+  gap: 10px;
+  padding: 4px 0;
+}
+.contact-summary-timeline-dense .contact-summary-timeline-icon {
+  width: 24px;
+  height: 24px;
+}
+.contact-summary-timeline-dense .contact-summary-timeline-title {
+  flex: 1 1 auto;
+  font-size: 0.85rem;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.contact-summary-timeline-dense .contact-summary-timeline-time {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+/* Pestaña Actividad full — versión densa en el mismo patrón. */
+.timeline-list-dense .timeline-row.is-dense {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+}
+.timeline-list-dense .timeline-icon {
+  flex: 0 0 24px;
+  height: 24px;
+  font-size: 12px;
+}
+.timeline-title-dense {
+  flex: 1 1 auto;
+  font-size: 0.9rem;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.timeline-title-dense a {
+  color: var(--color-primary);
+  text-decoration: none;
+}
+.timeline-time-dense { flex-shrink: 0; white-space: nowrap; }
+
+/* Tags inline edit en strip — el wrapper del TagPicker hereda el
+   look del strip. Botón "+" pequeño con paleta BoHub. */
+.contact-strip-tag-remove {
+  background: none;
+  border: 0;
+  margin-left: 4px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+  color: inherit;
+  opacity: 0.7;
+}
+.contact-strip-tag-remove:hover { opacity: 1; }
+
+.contact-strip-tag-add {
+  background: var(--color-bg-light);
+  border: 1px dashed var(--line);
+  border-radius: 999px;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: var(--color-gray);
+}
+.contact-strip-tag-add:hover {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
+.contact-strip-tag-picker {
+  display: inline-block;
+  min-width: 180px;
+}
+
+/* Brevo engagement recent list */
+.contact-brevo-recent {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.contact-brevo-recent-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: var(--color-bg-light);
+  font-size: 0.85rem;
+}
+.contact-brevo-recent-name {
+  flex: 1 1 auto;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.contact-brevo-recent-link {
+  color: var(--color-primary);
+  display: inline-flex;
+  align-items: center;
+}
+
 .contact-summary-link {
   background: none;
   border: 0;

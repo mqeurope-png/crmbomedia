@@ -42,7 +42,7 @@ export function ContactAddressSection({ contact, onSaved }: Props) {
         )}
         <button
           type="button"
-          className="btn small"
+          className="button secondary small"
           onClick={() => setEditing(true)}
         >
           Editar
@@ -140,7 +140,7 @@ export function ContactAddressSection({ contact, onSaved }: Props) {
         <div className="form-actions">
           <button
             type="button"
-            className="btn small"
+            className="button secondary small"
             onClick={() => setEditing(false)}
             disabled={busy}
           >
@@ -148,7 +148,7 @@ export function ContactAddressSection({ contact, onSaved }: Props) {
           </button>
           <button
             type="submit"
-            className="btn btn-primary small"
+            className="button small"
             disabled={busy}
           >
             {busy ? "Guardando…" : "Guardar"}

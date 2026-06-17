@@ -187,7 +187,7 @@ export function ContactAssignmentsSection({ contactId }: Props) {
                 </div>
                 <button
                   type="button"
-                  className="btn small"
+                  className="button secondary small"
                   onClick={() => onRemove(row.id)}
                   title="Quitar asignación"
                   aria-label="Quitar asignación"
@@ -204,7 +204,7 @@ export function ContactAssignmentsSection({ contactId }: Props) {
         {me && !userAlreadyInList ? (
           <button
             type="button"
-            className="btn small"
+            className="button secondary small"
             onClick={onAssignMe}
           >
             <Plus size={11} aria-hidden /> Asignarme
@@ -212,7 +212,7 @@ export function ContactAssignmentsSection({ contactId }: Props) {
         ) : null}
         <button
           type="button"
-          className="btn small"
+          className="button secondary small"
           onClick={() => {
             setPickerOpen((open) => !open);
             setQuery("");
@@ -234,7 +234,7 @@ export function ContactAssignmentsSection({ contactId }: Props) {
             />
             <button
               type="button"
-              className="btn small"
+              className="button secondary small"
               onClick={() => {
                 setPickerOpen(false);
                 setQuery("");

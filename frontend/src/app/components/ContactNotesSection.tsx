@@ -165,7 +165,7 @@ export function ContactNotesSection({ contactId }: Props) {
                   {editingId === row.id ? null : (
                     <button
                       type="button"
-                      className="btn small"
+                      className="button secondary small"
                       onClick={() => {
                         setEditingId(row.id);
                         setEditingContent(row.content);
@@ -177,7 +177,7 @@ export function ContactNotesSection({ contactId }: Props) {
                   )}
                   <button
                     type="button"
-                    className="btn small"
+                    className="button secondary small"
                     onClick={() => onDelete(row.id)}
                     title="Borrar"
                   >
@@ -196,14 +196,14 @@ export function ContactNotesSection({ contactId }: Props) {
                   <div className="contact-note-edit-actions">
                     <button
                       type="button"
-                      className="btn btn-primary small"
+                      className="button small"
                       onClick={() => onSaveEdit(row)}
                     >
                       Guardar
                     </button>
                     <button
                       type="button"
-                      className="btn small"
+                      className="button secondary small"
                       onClick={() => {
                         setEditingId(null);
                         setEditingContent("");
@@ -231,12 +231,12 @@ export function ContactNotesSection({ contactId }: Props) {
             required
           />
           <div className="contact-note-edit-actions">
-            <button type="submit" className="btn btn-primary small">
+            <button type="submit" className="button small">
               Añadir
             </button>
             <button
               type="button"
-              className="btn small"
+              className="button secondary small"
               onClick={() => {
                 setAdding(false);
                 setDraft("");
@@ -249,7 +249,7 @@ export function ContactNotesSection({ contactId }: Props) {
       ) : (
         <button
           type="button"
-          className="btn small"
+          className="button secondary small"
           onClick={() => setAdding(true)}
         >
           <Plus size={11} aria-hidden /> Nueva nota

@@ -1867,6 +1867,131 @@ def list_contact_activity_events(
     )
 
 
+@router.get(
+    "/contacts/{contact_id}/brevo-engagement",
+    responses=ERROR_RESPONSES,
+    tags=["crm"],
+)
+def get_contact_brevo_engagement(
+    contact_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_viewer),
+) -> dict[str, Any]:
+    """Resumen del engagement del contacto con campañas Brevo.
+
+    Agrega `activity_events` filtrados por `contact_id` y
+    `campaign_brevo_id IS NOT NULL` agrupados por campaña:
+
+    - `campaigns_total`: nº de campañas en las que figura como
+      destinatario (cualquier evento, opened o no).
+    - `opens`: distinct campaigns con event_type que contiene "open".
+    - `clicks`: distinct campaigns con event_type que contiene
+      "click".
+    - `opens_pct` / `clicks_pct`: porcentajes vs `campaigns_total`.
+    - `recent`: top 3 campañas más recientes con
+      `{brevo_campaign_id, name, sent_at, status}` donde status =
+      "clicked" / "opened" / "no_open" según el evento más
+      "engaged" disponible.
+
+    Sin endpoint dedicado en Brevo para esta agregación — calculamos
+    en la BD local porque ya tenemos los events sincronizados por el
+    webhook + backfill (PR #176).
+    """
+    from sqlalchemy import func  # noqa: PLC0415
+
+    from app.models.brevo import BrevoCampaignCache  # noqa: PLC0415
+    from app.models.crm import ActivityEvent as _ActivityEvent  # noqa: PLC0415
+
+    _ = current_user
+    if not crm_repository.get_contact(session, contact_id):
+        raise not_found("Contact")
+
+    base = (
+        select(_ActivityEvent.campaign_brevo_id, _ActivityEvent.event_type)
+        .where(_ActivityEvent.contact_id == contact_id)
+        .where(_ActivityEvent.campaign_brevo_id.isnot(None))
+    )
+    rows = list(session.execute(base))
+
+    seen_campaigns: set[int] = set()
+    opened_campaigns: set[int] = set()
+    clicked_campaigns: set[int] = set()
+    for campaign_id, event_type in rows:
+        seen_campaigns.add(campaign_id)
+        if event_type and "click" in event_type.lower():
+            clicked_campaigns.add(campaign_id)
+            opened_campaigns.add(campaign_id)  # click implica open
+        elif event_type and "open" in event_type.lower():
+            opened_campaigns.add(campaign_id)
+
+    campaigns_total = len(seen_campaigns)
+    opens = len(opened_campaigns)
+    clicks = len(clicked_campaigns)
+
+    def pct(n: int) -> float:
+        return round((n / campaigns_total) * 100, 1) if campaigns_total else 0.0
+
+    recent_rows: list[dict[str, Any]] = []
+    if seen_campaigns:
+        # Última fecha de evento por campaña + status (clicked > opened > no_open).
+        last_event = (
+            select(
+                _ActivityEvent.campaign_brevo_id,
+                func.max(_ActivityEvent.occurred_at).label("last_at"),
+            )
+            .where(_ActivityEvent.contact_id == contact_id)
+            .where(_ActivityEvent.campaign_brevo_id.in_(seen_campaigns))
+            .group_by(_ActivityEvent.campaign_brevo_id)
+            .order_by(func.max(_ActivityEvent.occurred_at).desc())
+            .limit(3)
+        )
+        recent_pairs = list(session.execute(last_event))
+        # Trae los nombres desde el cache local.
+        cache_rows = list(
+            session.execute(
+                select(
+                    BrevoCampaignCache.brevo_campaign_id,
+                    BrevoCampaignCache.name,
+                    BrevoCampaignCache.sent_at,
+                ).where(
+                    BrevoCampaignCache.brevo_campaign_id.in_(
+                        [c for c, _ in recent_pairs]
+                    )
+                )
+            )
+        )
+        cache_by_id: dict[int, dict[str, Any]] = {
+            cid: {"name": name, "sent_at": sent_at}
+            for cid, name, sent_at in cache_rows
+        }
+        for campaign_id, _last_at in recent_pairs:
+            cached = cache_by_id.get(campaign_id, {})
+            status_str = (
+                "clicked"
+                if campaign_id in clicked_campaigns
+                else "opened"
+                if campaign_id in opened_campaigns
+                else "no_open"
+            )
+            recent_rows.append(
+                {
+                    "brevo_campaign_id": campaign_id,
+                    "name": cached.get("name"),
+                    "sent_at": cached.get("sent_at"),
+                    "status": status_str,
+                }
+            )
+
+    return {
+        "campaigns_total": campaigns_total,
+        "opens": opens,
+        "opens_pct": pct(opens),
+        "clicks": clicks,
+        "clicks_pct": pct(clicks),
+        "recent": recent_rows,
+    }
+
+
 @router.patch(
     "/contacts/{contact_id}",
     response_model=ContactRead,
