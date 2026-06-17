@@ -19,6 +19,21 @@
   --color-bg-light: #F1F5F9;
   --color-bg: #FFFFFF;
 
+  /* PR-E polish tokens: tamaños + radios + sombras compartidos por
+     buttons / cards / inputs. Sustituyen hex hardcoded dispersos en
+     el archivo. */
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --shadow-card: 0 1px 3px rgba(15, 23, 42, 0.05);
+  --shadow-card-hover: 0 4px 12px rgba(15, 23, 42, 0.08);
+  --shadow-modal: 0 25px 50px rgba(15, 23, 42, 0.15);
+  /* Capa "tinted" del primary para hover de botones secondary,
+     active de sidebar items y row selected. #EFF6FF como tinte
+     suave sobre fondos blancos. */
+  --primary-tint: #EFF6FF;
+  --primary-tint-strong: #DBEAFE;
+
   /* Aliases legacy → nuevos. Mantener orden por importancia visual. */
   --bg: var(--color-bg-light);
   --ink: var(--color-dark);
@@ -119,10 +134,10 @@ body {
 }
 
 .status-pill.is-on { background: #e6f4ec; color: var(--success); }
-.status-pill.is-off { background: #f1f4fa; color: var(--muted); }
+.status-pill.is-off { background: var(--color-bg-light); color: var(--muted); }
 
 .marketing-tag-chip {
-  background: #e7ecfb;
+  background: var(--primary-tint);
   color: var(--brand-dark);
   padding: 2px 8px;
   border-radius: 6px;
@@ -292,7 +307,7 @@ body {
 }
 
 .brevo-webhook-url code {
-  background: #eef2fa;
+  background: var(--color-bg-light);
   padding: 4px 8px;
   border-radius: 6px;
   font-size: 12px;
@@ -317,12 +332,12 @@ body {
   text-decoration: none;
 }
 
-.sidebar-sublink:hover { background: #f1f4fa; color: var(--ink); }
+.sidebar-sublink:hover { background: var(--color-bg-light); color: var(--ink); }
 
 .sidebar-sublink.is-active {
   color: var(--brand-dark);
   font-weight: 600;
-  background: #e7ecfb;
+  background: var(--primary-tint);
 }
 
 .email-activity-list {
@@ -392,7 +407,7 @@ body {
   width: 18px;
   height: 18px;
   border-radius: 50%;
-  background: #e7ecfb;
+  background: var(--primary-tint);
   font-size: 11px;
   font-weight: 700;
 }
@@ -473,7 +488,7 @@ body {
   padding: 0 6px;
   height: 18px;
   border-radius: 999px;
-  background: #e7ecfb;
+  background: var(--primary-tint);
   color: var(--brand-dark);
   font-size: 11px;
   font-weight: 600;
@@ -599,7 +614,7 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  background: #e7ecfb;
+  background: var(--primary-tint);
   color: var(--brand-dark);
   padding: 2px 6px;
   border-radius: 6px;
@@ -684,11 +699,11 @@ body {
 }
 
 .origin-multiselect-row:hover {
-  background: #f1f4fa;
+  background: var(--color-bg-light);
 }
 
 .origin-multiselect-row.is-selected {
-  background: #e7ecfb;
+  background: var(--primary-tint);
   color: var(--brand-dark);
 }
 
@@ -796,7 +811,7 @@ body {
 }
 
 .app-topbar-icon-button:hover {
-  background: #f1f4fa;
+  background: var(--color-bg-light);
 }
 
 .app-topbar-badge {
@@ -855,13 +870,16 @@ body {
 }
 
 .sidebar-link:hover {
-  background: #f1f4fa;
+  background: var(--color-bg-light);
 }
 
 .sidebar-link.is-active {
-  background: #e7ecfb;
-  color: var(--brand-dark);
+  background: var(--primary-tint);
+  color: var(--color-primary);
   font-weight: 700;
+  /* Borde izquierda azul para reforzar la sección activa. Mantiene
+     el ancho del link constante usando inset shadow en vez de border. */
+  box-shadow: inset 3px 0 0 var(--color-primary);
 }
 
 .sidebar-link-label {
@@ -889,7 +907,7 @@ body {
 }
 
 .sidebar-collapse:hover {
-  background: #f1f4fa;
+  background: var(--color-bg-light);
 }
 
 .app-shell-content {
@@ -987,7 +1005,7 @@ body {
   padding: 7px 10px 7px 30px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: #f6f8fb;
+  background: var(--color-bg-light);
   font: inherit;
   font-size: 13px;
 }
@@ -1032,7 +1050,7 @@ body {
 }
 
 .global-search-row:hover {
-  background: #f1f4fa;
+  background: var(--color-bg-light);
 }
 
 .global-search-row-name {
@@ -1073,7 +1091,7 @@ body {
 }
 
 .user-menu-trigger:hover {
-  background: #f1f4fa;
+  background: var(--color-bg-light);
 }
 
 .user-menu-avatar {
@@ -1137,7 +1155,7 @@ body {
 }
 
 .user-menu-item:hover {
-  background: #f1f4fa;
+  background: var(--color-bg-light);
 }
 
 /* Density tweaks for tables that render inside the shell. */
@@ -1151,13 +1169,13 @@ body {
 }
 
 .app-shell-content table.data-table tbody tr:hover {
-  background: #f6f8fb;
+  background: var(--color-bg-light);
 }
 
 .app-shell-content table.data-table thead th {
   position: sticky;
   top: 0;
-  background: #f6f8fb;
+  background: var(--color-bg-light);
   z-index: 2;
 }
 
@@ -1268,26 +1286,45 @@ h1 {
 }
 
 .button {
-  background: var(--brand);
-  border: 0;
-  border-radius: 999px;
+  background: var(--color-primary);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
   color: white;
   cursor: pointer;
   display: inline-block;
   font: inherit;
-  font-weight: 700;
-  padding: 13px 20px;
+  font-weight: 600;
+  padding: 10px 18px;
   text-decoration: none;
+  transition: background-color 120ms ease, border-color 120ms ease,
+    color 120ms ease;
 }
 
 .button:hover { background: var(--brand-dark); }
-.button:disabled { cursor: not-allowed; opacity: 0.65; }
-
-.button.secondary {
-  background: white;
-  border: 1px solid var(--line);
-  color: var(--ink);
+.button:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--color-primary) 35%, transparent);
+  outline-offset: 1px;
 }
+.button:disabled { cursor: not-allowed; opacity: 0.55; }
+
+/* Outline secondary — fondo transparente, borde primary, hover en
+   tinte suave. La spec de Bart marca esta variante como contraparte
+   visual al primario azul. */
+.button.secondary {
+  background: transparent;
+  border: 1px solid var(--color-primary);
+  color: var(--color-primary);
+}
+.button.secondary:hover { background: var(--primary-tint); }
+
+/* Ghost — sin borde, hover tinte gris. Útil para acciones secundarias
+   "más" cuando el outline secondary sería demasiado peso visual. */
+.button.ghost {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--color-dark);
+}
+.button.ghost:hover { background: var(--color-bg-light); }
 
 .grid,
 .stats-grid {
@@ -1307,8 +1344,9 @@ h1 {
 .error-state {
   background: var(--card);
   border: 1px solid var(--line);
-  border-radius: 22px;
+  border-radius: var(--radius-md);
   padding: 24px;
+  box-shadow: var(--shadow-card);
 }
 
 .card h2,
@@ -1359,12 +1397,29 @@ h1 {
 
 label { color: var(--muted); display: grid; gap: 8px; font-weight: 700; }
 input,
-select {
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  color: var(--ink);
+select,
+textarea {
+  border: 1px solid #D1D5DB;
+  border-radius: var(--radius-sm);
+  color: var(--color-dark);
   font: inherit;
-  padding: 12px 14px;
+  padding: 10px 12px;
+  background: var(--color-bg);
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+input::placeholder,
+textarea::placeholder { color: #9CA3AF; }
+
+input:focus,
+input:focus-visible,
+select:focus,
+select:focus-visible,
+textarea:focus,
+textarea:focus-visible {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 18%, transparent);
 }
 
 .back-link {
@@ -1415,11 +1470,26 @@ select {
 .inline-actions { justify-content: flex-start; }
 
 .button.danger {
-  background: var(--danger);
+  background: #EF4444;
+  border-color: transparent;
+  color: white;
 }
+.button.danger:hover { background: #DC2626; }
 
+/* Tamaños — Bart spec: sm 32px alto / md 40px / lg 48px. El default
+   (.button base) está en md. .small = sm. Añadimos .md/.lg para uso
+   explícito cuando hace falta. */
 .button.small {
-  padding: 9px 12px;
+  padding: 6px 12px;
+  font-size: 13px;
+}
+.button.md {
+  padding: 10px 18px;
+  font-size: 14px;
+}
+.button.lg {
+  padding: 14px 22px;
+  font-size: 15px;
 }
 
 .company-editor {
@@ -2180,7 +2250,7 @@ td {
 }
 a.origin-chip:hover { filter: brightness(0.97); }
 .origin-chip-id { font-weight: 600; opacity: 0.7; font-size: 0.92em; }
-.origin-chip--agilecrm { background: #e7ecfb; color: #2c3e8c; }
+.origin-chip--agilecrm { background: var(--primary-tint); color: #2c3e8c; }
 .origin-chip--brevo { background: #e3f4ec; color: #137a4d; }
 .origin-chip--freshdesk { background: #eaf0fe; color: #1f5fb0; }
 .origin-chip--factusol { background: #fdeede; color: #9a5b12; }
@@ -6095,11 +6165,14 @@ a.origin-chip:hover { filter: brightness(0.97); }
 }
 .entity-table-th {
   text-align: left;
-  padding: 6px 8px;
-  border-bottom: 1px solid #e5e7eb;
-  background: #f9fafb;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  background: #F9FAFB;
   font-weight: 600;
-  color: #334155;
+  color: var(--color-gray);
+  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: 0.05em;
   white-space: nowrap;
   user-select: none;
 }
@@ -6107,10 +6180,10 @@ a.origin-chip:hover { filter: brightness(0.97); }
   cursor: pointer;
 }
 .entity-table-th.is-sortable:hover {
-  background: #f1f5f9;
+  background: var(--color-bg-light);
 }
 .entity-table-th.is-active-sort {
-  color: #0f172a;
+  color: var(--color-dark);
 }
 .entity-table-th-inner {
   display: inline-flex;
@@ -6118,16 +6191,16 @@ a.origin-chip:hover { filter: brightness(0.97); }
   gap: 4px;
 }
 .entity-table-row {
-  border-bottom: 1px solid #f1f5f9;
+  border-bottom: 1px solid var(--color-bg-light);
 }
 .entity-table-row.is-clickable {
   cursor: pointer;
 }
 .entity-table-row.is-clickable:hover {
-  background: #f8fafc;
+  background: var(--color-bg-light);
 }
 .entity-table-row.is-selected {
-  background: #eff6ff;
+  background: var(--primary-tint);
 }
 .entity-table-td {
   padding: 6px 8px;
@@ -6276,7 +6349,7 @@ a.origin-chip:hover { filter: brightness(0.97); }
   background: #f1f5f9;
 }
 .entity-views-tab.is-active {
-  color: #0f172a;
+  color: var(--color-dark);
   font-weight: 600;
 }
 .entity-views-tab-cog {
@@ -7563,3 +7636,138 @@ tr.is-inactive {
     display: none;
   }
 }
+
+/* ------------------------------------------------------------------ */
+/* PR-E Rebranding — polish utilities (toast, skeleton, empty-state)  */
+/* ------------------------------------------------------------------ */
+
+/* Empty state — patrón compartido para listas / tablas vacías. Icono
+   outline + título + descripción + opcional botón. Componentes que
+   quieran adoptarlo añaden `.empty-state` + `.empty-state-icon`. */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 40px 24px;
+  gap: 12px;
+  color: var(--color-gray);
+}
+
+.empty-state-icon {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: var(--color-bg-light);
+  color: var(--color-gray);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.empty-state h3 {
+  margin: 0;
+  font-size: 1rem;
+  color: var(--color-dark);
+}
+
+.empty-state p { margin: 0; max-width: 360px; }
+
+/* Skeletons — placeholders animados para tablas y cards mientras
+   carga el contenido. Variantes: .skeleton (rect), .skeleton-line
+   (1 línea con altura típica), .skeleton-circle (avatar). */
+@keyframes skeleton-pulse {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 0.85; }
+}
+
+.skeleton {
+  display: block;
+  background: var(--color-bg-light);
+  border-radius: var(--radius-sm);
+  animation: skeleton-pulse 1.2s ease-in-out infinite;
+}
+
+.skeleton-line { height: 12px; margin: 6px 0; }
+.skeleton-line.is-short { width: 40%; }
+.skeleton-line.is-mid { width: 70%; }
+.skeleton-line.is-long { width: 100%; }
+
+.skeleton-circle {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--color-bg-light);
+  animation: skeleton-pulse 1.2s ease-in-out infinite;
+}
+
+/* Toast — slide-in top-right, autodismiss 3s controlado por JS. El
+   tono lo determina la clase modificadora (.is-success / .is-error
+   / .is-info / .is-warn). Los componentes que usan `.success-state`
+   / `.error-state` pueden adoptar este patrón cuando el banner deba
+   superponerse al contenido en vez de ocupar flow. */
+.toast-stack {
+  position: fixed;
+  top: 80px;
+  right: 24px;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  pointer-events: none;
+}
+
+.toast {
+  pointer-events: auto;
+  min-width: 280px;
+  max-width: 420px;
+  padding: 14px 18px;
+  border-radius: var(--radius-md);
+  background: var(--color-bg);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow-card-hover);
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  font-size: 0.9rem;
+  animation: toast-slide-in 200ms ease-out;
+}
+
+.toast.is-success {
+  border-left: 4px solid #16a34a;
+}
+.toast.is-error {
+  border-left: 4px solid #dc2626;
+}
+.toast.is-info {
+  border-left: 4px solid var(--color-primary);
+}
+.toast.is-warn {
+  border-left: 4px solid #d97706;
+}
+
+@keyframes toast-slide-in {
+  from { transform: translateX(12px); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+
+/* Chip / badge tonal palette — consolida los pegotes de tonos del
+   archivo. Las clases existentes (`.badge.ok` / `.status-pill.is-
+   success` / etc.) siguen funcionando; estas son la nueva línea
+   base para nuevos componentes. */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  background: var(--color-bg-light);
+  color: var(--color-gray);
+}
+.chip.is-success { background: #dcfce7; color: #15803d; }
+.chip.is-info { background: var(--primary-tint); color: var(--color-primary); }
+.chip.is-warning { background: #fef3c7; color: #92400e; }
+.chip.is-error { background: #fee2e2; color: #b91c1c; }
+.chip.is-muted { background: var(--color-bg-light); color: var(--color-gray); }
