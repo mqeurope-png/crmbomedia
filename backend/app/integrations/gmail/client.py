@@ -158,6 +158,7 @@ class GmailClient:
         thread_id: str | None = None,
         extra_headers: dict[str, str] | None = None,
         inline_attachments: list[dict[str, Any]] | None = None,
+        attachments: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Build the RFC 822 MIME message and dispatch via Gmail
         `users.messages.send`. Returns the upstream `{id, threadId,
@@ -166,7 +167,12 @@ class GmailClient:
         `inline_attachments`: cuando el body referencia imágenes con
         `cid:`, cada item `{cid, content_type, filename, data}` se
         adjunta como inline MIME part dentro de un wrapper
-        `multipart/related`."""
+        `multipart/related`.
+
+        `attachments`: archivos regulares subidos por el operador en el
+        composer. Cada item `{filename, content_type, data}` se adjunta
+        como `Content-Disposition: attachment` dentro de un wrapper
+        `multipart/mixed` que envuelve el resto del MIME."""
         mime = _build_mime(
             from_alias=from_alias,
             from_name=from_name,
@@ -180,6 +186,7 @@ class GmailClient:
             references=references,
             extra_headers=extra_headers,
             inline_attachments=inline_attachments,
+            attachments=attachments,
         )
         raw = base64.urlsafe_b64encode(mime.as_bytes()).decode()
         body: dict[str, Any] = {"raw": raw}
@@ -341,15 +348,22 @@ def _build_mime(
     references: list[str] | None,
     extra_headers: dict[str, str] | None = None,
     inline_attachments: list[dict[str, Any]] | None = None,
+    attachments: list[dict[str, Any]] | None = None,
 ) -> MIMEMultipart:
     """Construct an RFC 822 MIME message with the reply headers Gmail
     needs to chain a thread on external clients.
 
-    Sin attachments inline → `multipart/alternative` plano (text +
-    html). Con attachments → `multipart/related` envolviendo el
-    alternative + cada binario como part inline con `Content-ID`,
-    que es la estructura que esperan Gmail/Outlook/Apple Mail para
-    renderizar `<img src="cid:X">`.
+    Estructura MIME (de adentro hacia afuera):
+      - `multipart/alternative` con text + html (siempre).
+      - Si hay `inline_attachments`: `multipart/related` envuelve el
+        alternative + parts inline con `Content-ID`, para que el
+        cliente renderice `<img src="cid:X">`.
+      - Si hay `attachments`: `multipart/mixed` envuelve todo lo
+        anterior + cada binario como part con `Content-Disposition:
+        attachment`.
+    Esta es la jerarquía que esperan Gmail/Outlook/Apple Mail; saltarse
+    el alternative o el related rompe la previsualización de imágenes
+    en algunos clientes.
     """
     alt = MIMEMultipart("alternative")
     if body_text:
@@ -359,9 +373,10 @@ def _build_mime(
     if not body_text and not body_html:
         alt.attach(MIMEText("", "plain", "utf-8"))
 
+    body_root: MIMEMultipart
     if inline_attachments:
-        root: MIMEMultipart = MIMEMultipart("related")
-        root.attach(alt)
+        related: MIMEMultipart = MIMEMultipart("related")
+        related.attach(alt)
         for item in inline_attachments:
             cid = item["cid"]
             data: bytes = item["data"]
@@ -382,10 +397,33 @@ def _build_mime(
                 )
             else:
                 part.add_header("Content-Disposition", "inline")
-            root.attach(part)
-        msg: MIMEMultipart = root
+            related.attach(part)
+        body_root = related
     else:
-        msg = alt
+        body_root = alt
+
+    if attachments:
+        mixed: MIMEMultipart = MIMEMultipart("mixed")
+        mixed.attach(body_root)
+        for item in attachments:
+            data: bytes = item["data"]
+            content_type = (
+                item.get("content_type") or "application/octet-stream"
+            )
+            maintype, _, subtype = content_type.partition("/")
+            part = MIMEBase(maintype or "application", subtype or "octet-stream")
+            part.set_payload(data)
+            encoders.encode_base64(part)
+            filename = item.get("filename") or "archivo"
+            part.add_header(
+                "Content-Disposition",
+                "attachment",
+                filename=filename,
+            )
+            mixed.attach(part)
+        msg: MIMEMultipart = mixed
+    else:
+        msg = body_root
 
     msg["Subject"] = subject or ""
     sender = f"{from_name} <{from_alias}>" if from_name else from_alias

@@ -13,6 +13,7 @@ from sqlalchemy import (
     LargeBinary,
     String,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy.dialects import mysql
 from sqlalchemy.orm import Mapped, mapped_column
@@ -38,7 +39,47 @@ class EmailTemplateFolder(TimestampMixin, Base):
     is_global: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False
     )
+    # Sprint Email v2.5 — C. `private`/`team`/`shared`. `team`
+    # convive con `is_global=True` (la columna legacy queda como
+    # sombra para retrocompat). `shared` consulta
+    # `email_template_folder_shares`.
+    visibility: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="private", server_default="private"
+    )
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
+class EmailTemplateFolderShare(Base):
+    """Lista de users con acceso a una carpeta `visibility='shared'`.
+    No diferencia read/write — quien está dentro puede leer y editar
+    las plantillas de la carpeta. (Si Bart quiere granularidad por
+    permiso lo añadimos en una columna `role` enum más adelante.)"""
+
+    __tablename__ = "email_template_folder_shares"
+    __table_args__ = (
+        UniqueConstraint(
+            "folder_id",
+            "user_id",
+            name="uq_email_template_folder_share_folder_user",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid4())
+    )
+    folder_id: Mapped[str] = mapped_column(
+        ForeignKey("email_template_folders.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
 
 
 class EmailTemplate(TimestampMixin, Base):

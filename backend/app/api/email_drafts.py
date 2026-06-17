@@ -10,21 +10,38 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
-from sqlalchemy import select
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    HTTPException,
+    Request,
+    Response,
+    UploadFile,
+    status,
+)
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.auth import require_user
 from app.core.errors import not_found
 from app.db.session import get_session
-from app.models.crm import EmailDraft, User
+from app.models.crm import EmailDraft, EmailDraftAttachment, User
 from app.schemas.emails import (
+    EmailDraftAttachmentRead,
     EmailDraftRead,
     EmailDraftWrite,
     EmailMessageRead,
     EmailSendRequest,
 )
+
+# Sprint Email v2.5 — A. Gmail limit total por mensaje = 25 MB. Lo
+# enforce-amos en el endpoint de upload: el draft no puede acumular
+# más de 25 MB de adjuntos. El body html/text suelen ser kilobytes;
+# usamos los 25 MB como cap aproximado del MIME total.
+MAX_ATTACHMENTS_TOTAL_BYTES = 25 * 1024 * 1024
 
 router = APIRouter(prefix="/api/email-drafts", tags=["emails-drafts"])
 
@@ -130,6 +147,103 @@ def delete_draft(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
+@router.get(
+    "/{draft_id}/attachments",
+    response_model=list[EmailDraftAttachmentRead],
+)
+def list_attachments(
+    draft_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_user),
+) -> list[EmailDraftAttachmentRead]:
+    """Sprint Email v2.5 — A. Lista metadata (sin binario) de los
+    adjuntos de un draft. El binario solo se materializa en el
+    handler del send."""
+    _own(session, draft_id, current_user)
+    rows = list(
+        session.scalars(
+            select(EmailDraftAttachment)
+            .where(EmailDraftAttachment.draft_id == draft_id)
+            .order_by(EmailDraftAttachment.created_at.asc())
+        )
+    )
+    return [EmailDraftAttachmentRead.model_validate(r) for r in rows]
+
+
+@router.post(
+    "/{draft_id}/attachments",
+    response_model=EmailDraftAttachmentRead,
+    status_code=status.HTTP_201_CREATED,
+)
+async def upload_attachment(
+    draft_id: str,
+    file: UploadFile = File(...),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_user),
+) -> EmailDraftAttachmentRead:
+    """Sprint Email v2.5 — A. Sube un archivo binario al draft. El
+    operador puede llamar N veces; validamos que la suma no exceda
+    25 MB (Gmail). Cualquier MIME type se acepta — Gmail filtra los
+    ejecutables (.exe/.bat/.dll) al enviar y devuelve error si los
+    detecta; lo documentamos en el frontend."""
+    draft = _own(session, draft_id, current_user)
+    data = await file.read()
+    size = len(data)
+    if size <= 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Archivo vacío.",
+        )
+    current_total = (
+        session.scalar(
+            select(func.coalesce(func.sum(EmailDraftAttachment.size_bytes), 0))
+            .where(EmailDraftAttachment.draft_id == draft_id)
+        )
+        or 0
+    )
+    if current_total + size > MAX_ATTACHMENTS_TOTAL_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Se superaría el límite de 25 MB de adjuntos por mensaje "
+                "(Gmail)."
+            ),
+        )
+    now = datetime.now(UTC)
+    attachment = EmailDraftAttachment(
+        draft_id=draft.id,
+        filename=file.filename or "archivo",
+        content_type=file.content_type or None,
+        size_bytes=size,
+        data=data,
+        created_at=now,
+    )
+    session.add(attachment)
+    draft.updated_at = now
+    session.commit()
+    session.refresh(attachment)
+    return EmailDraftAttachmentRead.model_validate(attachment)
+
+
+@router.delete(
+    "/{draft_id}/attachments/{attachment_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def delete_attachment(
+    draft_id: str,
+    attachment_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_user),
+) -> Response:
+    _own(session, draft_id, current_user)
+    row = session.get(EmailDraftAttachment, attachment_id)
+    if row is None or row.draft_id != draft_id:
+        raise not_found("EmailDraftAttachment")
+    session.delete(row)
+    session.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @router.post("/{draft_id}/send", response_model=EmailMessageRead, status_code=201)
 def send_draft(
     draft_id: str,
@@ -142,7 +256,7 @@ def send_draft(
     unsubscribe + Gmail-scope guards stay in one place; the draft
     row is deleted only on success. A failed send leaves the
     draft intact so the operator can fix the issue and retry."""
-    from app.api.emails import send_email as send_email_handler  # noqa: PLC0415
+    from app.api.emails import _send_email_core  # noqa: PLC0415
 
     draft = _own(session, draft_id, current_user)
     to_list = json.loads(draft.to_emails_json or "[]") or []
@@ -156,6 +270,26 @@ def send_draft(
                 "antes de enviarse."
             ),
         )
+
+    # Sprint Email v2.5 — A. Cargamos los binarios de los adjuntos del
+    # draft y los pasamos como `attachments` al send_email_handler.
+    # Cada item: {filename, content_type, data}. Tras el éxito, las
+    # rows se borran junto con el draft por la cascada del FK.
+    attachment_rows = list(
+        session.scalars(
+            select(EmailDraftAttachment)
+            .where(EmailDraftAttachment.draft_id == draft.id)
+            .order_by(EmailDraftAttachment.created_at.asc())
+        )
+    )
+    attachments: list[dict[str, Any]] = [
+        {
+            "filename": row.filename,
+            "content_type": row.content_type or "application/octet-stream",
+            "data": bytes(row.data),
+        }
+        for row in attachment_rows
+    ]
 
     payload = EmailSendRequest.model_validate(
         {
@@ -175,8 +309,12 @@ def send_draft(
             ),
         }
     )
-    result = send_email_handler(
-        payload, request, session=session, current_user=current_user
+    result = _send_email_core(
+        payload,
+        request,
+        session,
+        current_user,
+        attachments=attachments or None,
     )
     session.delete(draft)
     session.commit()

@@ -29,13 +29,19 @@ from app.integrations.errors import IntegrationError
 from app.models.brevo import BrevoTemplateCache
 from app.models.crm import User, UserRole
 
-from .models import EmailTemplate, EmailTemplateAttachment, EmailTemplateFolder
+from .models import (
+    EmailTemplate,
+    EmailTemplateAttachment,
+    EmailTemplateFolder,
+    EmailTemplateFolderShare,
+)
 from .schemas import (
     BrevoPickerItem,
     BrevoTemplateHtmlResponse,
     ComposerSourcePickerItem,
     ComposerSourceResponse,
     FolderRead,
+    FolderShareWrite,
     FolderTreeNode,
     FolderWrite,
     ImageUploadResponse,
@@ -66,31 +72,178 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
-def _can_edit_template(template: EmailTemplate, user: User) -> bool:
+def _folder_share_user_ids(
+    session: Session, folder_id: str
+) -> set[str]:
+    """Set de user_id con acceso explícito a una carpeta `shared`."""
+    rows = session.scalars(
+        select(EmailTemplateFolderShare.user_id).where(
+            EmailTemplateFolderShare.folder_id == folder_id
+        )
+    )
+    return {r for r in rows}
+
+
+def _can_view_folder(
+    session: Session, folder: EmailTemplateFolder, user: User
+) -> bool:
+    """Sprint Email v2.5 — C. Visibilidad: private (solo owner),
+    team (todo el CRM), shared (owner + lista de email_template_folder_
+    shares). Admin todo."""
+    if user.role == UserRole.ADMIN:
+        return True
+    visibility = folder.visibility or "private"
+    if visibility == "team":
+        return True
+    if folder.owner_user_id == user.id:
+        return True
+    if visibility == "shared":
+        return user.id in _folder_share_user_ids(session, folder.id)
+    return False
+
+
+def _can_edit_folder(
+    session: Session, folder: EmailTemplateFolder, user: User
+) -> bool:
+    """Sprint Email v2.5 — C. Edit-rights == view-rights para team /
+    shared (Bart's spec: cualquiera dentro puede editar). Private sigue
+    siendo owner-only."""
+    return _can_view_folder(session, folder, user)
+
+
+def _can_view_template(
+    session: Session, template: EmailTemplate, user: User
+) -> bool:
+    """View == edit con la única diferencia de los globals legacy:
+    cualquier user los ve aunque no los pueda editar."""
+    if user.role == UserRole.ADMIN:
+        return True
+    if template.is_global:
+        return True
+    if template.owner_user_id and template.owner_user_id == user.id:
+        return True
+    if template.folder_id:
+        folder = session.get(EmailTemplateFolder, template.folder_id)
+        if folder is not None and _can_view_folder(session, folder, user):
+            return True
+    return False
+
+
+def _can_edit_template(
+    session: Session, template: EmailTemplate, user: User
+) -> bool:
+    """Sprint Email v2.5 — C. Hereda permisos de la carpeta cuando
+    existe. Sin carpeta vuelve al chequeo legacy (owner-only) para que
+    los Gmail Templates importados (folder is_global) sigan siendo
+    visibles a través del mecanismo team."""
     if user.role == UserRole.ADMIN:
         return True
     if template.owner_user_id and template.owner_user_id == user.id:
         return True
+    if template.folder_id:
+        folder = session.get(EmailTemplateFolder, template.folder_id)
+        if folder is not None and _can_edit_folder(session, folder, user):
+            return True
     return False
 
 
-def _can_edit_folder(folder: EmailTemplateFolder, user: User) -> bool:
+def _visible_templates_query(session: Session, user: User):
+    """Sprint Email v2.5 — C. Filtra a templates visibles:
+
+    - Admin: todo.
+    - Cualquier user: templates propias.
+    - Templates con folder `team`: visibles para todos.
+    - Templates con folder `shared`: visibles si user está en
+      `email_template_folder_shares` o es owner de la carpeta.
+    - Templates con `is_global=True` y sin folder (legacy): visibles
+      para todos (cubre el caso "Gmail (importadas)" pre v2.5).
+    """
     if user.role == UserRole.ADMIN:
-        return True
-    if folder.owner_user_id and folder.owner_user_id == user.id:
-        return True
-    return False
+        return select(EmailTemplate)
 
-
-def _visible_templates_query(user: User):
-    """Build the WHERE clause that filters to templates the user can
-    see (global + their own)."""
+    team_folder_ids = select(EmailTemplateFolder.id).where(
+        EmailTemplateFolder.visibility == "team"
+    )
+    shared_folder_ids = select(EmailTemplateFolder.id).where(
+        EmailTemplateFolder.visibility == "shared",
+        EmailTemplateFolder.id.in_(
+            select(EmailTemplateFolderShare.folder_id).where(
+                EmailTemplateFolderShare.user_id == user.id
+            )
+        ),
+    )
+    owned_shared_folder_ids = select(EmailTemplateFolder.id).where(
+        EmailTemplateFolder.visibility == "shared",
+        EmailTemplateFolder.owner_user_id == user.id,
+    )
     return select(EmailTemplate).where(
         or_(
-            EmailTemplate.is_global.is_(True),
             EmailTemplate.owner_user_id == user.id,
+            EmailTemplate.is_global.is_(True),
+            EmailTemplate.folder_id.in_(team_folder_ids),
+            EmailTemplate.folder_id.in_(shared_folder_ids),
+            EmailTemplate.folder_id.in_(owned_shared_folder_ids),
         )
     )
+
+
+def _normalise_visibility(payload: FolderWrite) -> str:
+    """Maps the legacy `is_global` flag onto `visibility` when the
+    client doesn't ship the new field. Keeps pre-v2.5 frontends
+    working without changes."""
+    if payload.visibility is not None:
+        return payload.visibility
+    return "team" if payload.is_global else "private"
+
+
+def _folder_read(
+    session: Session, folder: EmailTemplateFolder
+) -> FolderRead:
+    """Hydrate a FolderRead with the shared_user_ids list. Pulled into
+    a helper so create/update/delete share-handlers reuse it without
+    re-querying."""
+    shared_ids: list[str] = []
+    if (folder.visibility or "private") == "shared":
+        shared_ids = sorted(_folder_share_user_ids(session, folder.id))
+    base = FolderRead.model_validate(folder).model_dump()
+    base["shared_user_ids"] = shared_ids
+    return FolderRead.model_validate(base)
+
+
+def _sync_folder_shares(
+    session: Session,
+    folder: EmailTemplateFolder,
+    user_ids: list[str],
+) -> None:
+    """Reconcilia la tabla `email_template_folder_shares` con la lista
+    deseada. Idempotente: existing rows que ya estén en `user_ids` se
+    mantienen, las que sobran se borran, las nuevas se insertan."""
+    from uuid import uuid4  # noqa: PLC0415
+
+    target = {uid for uid in user_ids if uid}
+    existing = list(
+        session.scalars(
+            select(EmailTemplateFolderShare).where(
+                EmailTemplateFolderShare.folder_id == folder.id
+            )
+        )
+    )
+    keep: set[str] = set()
+    for row in existing:
+        if row.user_id in target:
+            keep.add(row.user_id)
+        else:
+            session.delete(row)
+    now = _now()
+    for uid in target - keep:
+        session.add(
+            EmailTemplateFolderShare(
+                id=str(uuid4()),
+                folder_id=folder.id,
+                user_id=uid,
+                created_at=now,
+            )
+        )
 
 
 # ───────────────────────────────────────────────────────────────────
@@ -106,7 +259,7 @@ def list_templates(
     session: Session = Depends(get_session),
     current_user: User = Depends(require_user),
 ) -> list[TemplateListItem]:
-    stmt = _visible_templates_query(current_user)
+    stmt = _visible_templates_query(session, current_user)
     if my_only:
         stmt = stmt.where(EmailTemplate.owner_user_id == current_user.id)
     if folder_id is not None:
@@ -140,6 +293,16 @@ def create_template(
         folder = session.get(EmailTemplateFolder, payload.folder_id)
         if folder is None:
             raise not_found("EmailTemplateFolder")
+        # Sprint Email v2.5 — C. El operador necesita derechos de
+        # edición en la carpeta destino. team/shared son no-op para
+        # cualquier user; private fuera de la propia rechaza.
+        if not _can_edit_folder(session, folder, current_user):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    "No tienes permiso para crear plantillas en esta carpeta."
+                ),
+            )
     now = _now()
     template = EmailTemplate(
         name=payload.name.strip(),
@@ -169,12 +332,11 @@ def get_template(
     template = session.get(EmailTemplate, template_id)
     if template is None:
         raise not_found("EmailTemplate")
-    if not template.is_global and template.owner_user_id != current_user.id:
-        if current_user.role != UserRole.ADMIN:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="No tienes permiso para ver esta plantilla.",
-            )
+    if not _can_view_template(session, template, current_user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No tienes permiso para ver esta plantilla.",
+        )
     return TemplateRead.model_validate(template)
 
 
@@ -224,10 +386,12 @@ def update_template(
     template = session.get(EmailTemplate, template_id)
     if template is None:
         raise not_found("EmailTemplate")
-    if not _can_edit_template(template, current_user):
+    if not _can_edit_template(session, template, current_user):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Solo el creador o un admin pueden editar esta plantilla.",
+            detail=(
+                "No tienes permiso para editar esta plantilla."
+            ),
         )
     if payload.is_global and current_user.role != UserRole.ADMIN:
         raise HTTPException(
@@ -238,6 +402,13 @@ def update_template(
         folder = session.get(EmailTemplateFolder, payload.folder_id)
         if folder is None:
             raise not_found("EmailTemplateFolder")
+        if not _can_edit_folder(session, folder, current_user):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    "No tienes permiso para mover plantillas a esta carpeta."
+                ),
+            )
     template.name = payload.name.strip()
     template.subject = payload.subject
     template.body_html = payload.body_html
@@ -260,10 +431,12 @@ def delete_template(
     template = session.get(EmailTemplate, template_id)
     if template is None:
         raise not_found("EmailTemplate")
-    if not _can_edit_template(template, current_user):
+    if not _can_edit_template(session, template, current_user):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Solo el creador o un admin pueden borrar esta plantilla.",
+            detail=(
+                "No tienes permiso para borrar esta plantilla."
+            ),
         )
     session.delete(template)
     session.commit()
@@ -279,12 +452,11 @@ def record_template_use(
     template = session.get(EmailTemplate, template_id)
     if template is None:
         raise not_found("EmailTemplate")
-    if not template.is_global and template.owner_user_id != current_user.id:
-        if current_user.role != UserRole.ADMIN:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="No tienes permiso para esta plantilla.",
-            )
+    if not _can_view_template(session, template, current_user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No tienes permiso para esta plantilla.",
+        )
     template.usage_count = (template.usage_count or 0) + 1
     template.last_used_at = _now()
     session.commit()
@@ -297,16 +469,31 @@ def record_template_use(
 
 
 def _build_tree_nodes(
-    session: Session, parent_id: str | None, depth: int
+    session: Session,
+    parent_id: str | None,
+    depth: int,
+    user: User,
 ) -> list[FolderTreeNode]:
-    """Recursively build the folder tree from a starting parent."""
+    """Recursively build the folder tree from a starting parent.
+
+    Sprint Email v2.5 — C. Filtra por visibilidad del user: admin lo ve
+    todo; el resto solo ve private propios, team, y shared en los que
+    estén invitados. La jerarquía se mantiene aunque un nodo
+    intermedio sea private de otro user — en ese caso ese nodo se
+    salta pero sus hijos visibles suben un nivel (poco común, pero
+    evita árboles colgados)."""
     nodes: list[FolderTreeNode] = []
     for folder in descendants(session, parent_id):
         children = (
-            _build_tree_nodes(session, folder.id, depth + 1)
+            _build_tree_nodes(session, folder.id, depth + 1, user)
             if depth + 1 < MAX_FOLDER_DEPTH
             else []
         )
+        if not _can_view_folder(session, folder, user):
+            # Propagamos los hijos visibles al padre para no perder
+            # subcarpetas team/shared dentro de un private ajeno.
+            nodes.extend(children)
+            continue
         template_count = (
             session.scalar(
                 select(EmailTemplate)
@@ -328,6 +515,7 @@ def _build_tree_nodes(
                 id=folder.id,
                 name=folder.name,
                 is_global=folder.is_global,
+                visibility=folder.visibility or "private",
                 sort_order=folder.sort_order,
                 children=children,
                 template_count=template_count,
@@ -339,13 +527,15 @@ def _build_tree_nodes(
 @router.get("/email-template-folders", response_model=list[FolderTreeNode])
 def list_folder_tree(
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_user),  # noqa: ARG001
+    current_user: User = Depends(require_user),
 ) -> list[FolderTreeNode]:
-    """Recursive tree from the root. The frontend filters by ownership
-    + `is_global` at render time; we ship every folder because the
-    tree is small (<100 rows in expected workloads) and the picker
-    needs cross-user visibility for global folders anyway."""
-    return _build_tree_nodes(session, None, 0)
+    """Recursive tree from the root.
+
+    Sprint Email v2.5 — C. La visibilidad se aplica en backend: el
+    user solo recibe nodos que puede ver (private suyo, team del
+    equipo, shared invitado). El frontend agrupa por icono según
+    `visibility`."""
+    return _build_tree_nodes(session, None, 0, current_user)
 
 
 @router.post(
@@ -358,11 +548,7 @@ def create_folder(
     session: Session = Depends(get_session),
     current_user: User = Depends(require_user),
 ) -> FolderRead:
-    if payload.is_global and current_user.role != UserRole.ADMIN:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Solo un admin puede crear carpetas globales.",
-        )
+    visibility = _normalise_visibility(payload)
     if payload.parent_folder_id is not None:
         parent = session.get(EmailTemplateFolder, payload.parent_folder_id)
         if parent is None:
@@ -374,20 +560,31 @@ def create_folder(
                     f"Profundidad máxima alcanzada ({MAX_FOLDER_DEPTH} niveles)."
                 ),
             )
+        if not _can_edit_folder(session, parent, current_user):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    "No tienes permiso para crear subcarpetas aquí."
+                ),
+            )
     now = _now()
     folder = EmailTemplateFolder(
         name=payload.name.strip(),
         parent_folder_id=payload.parent_folder_id,
         owner_user_id=current_user.id,
-        is_global=payload.is_global,
+        is_global=(visibility == "team"),
+        visibility=visibility,
         sort_order=payload.sort_order,
         created_at=now,
         updated_at=now,
     )
     session.add(folder)
+    session.flush()
+    if visibility == "shared":
+        _sync_folder_shares(session, folder, payload.shared_user_ids)
     session.commit()
     session.refresh(folder)
-    return FolderRead.model_validate(folder)
+    return _folder_read(session, folder)
 
 
 @router.put("/email-template-folders/{folder_id}", response_model=FolderRead)
@@ -400,15 +597,10 @@ def update_folder(
     folder = session.get(EmailTemplateFolder, folder_id)
     if folder is None:
         raise not_found("EmailTemplateFolder")
-    if not _can_edit_folder(folder, current_user):
+    if not _can_edit_folder(session, folder, current_user):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Solo el creador o un admin pueden editar esta carpeta.",
-        )
-    if payload.is_global and current_user.role != UserRole.ADMIN:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Solo un admin puede cambiar el flag is_global.",
+            detail="No tienes permiso para editar esta carpeta.",
         )
     if payload.parent_folder_id is not None and payload.parent_folder_id != folder_id:
         parent = session.get(EmailTemplateFolder, payload.parent_folder_id)
@@ -432,13 +624,100 @@ def update_folder(
         )
     folder.name = payload.name.strip()
     folder.parent_folder_id = payload.parent_folder_id
-    if current_user.role == UserRole.ADMIN:
-        folder.is_global = payload.is_global
+    visibility = _normalise_visibility(payload)
+    folder.visibility = visibility
+    folder.is_global = (visibility == "team")
     folder.sort_order = payload.sort_order
     folder.updated_at = _now()
+    if visibility == "shared":
+        _sync_folder_shares(session, folder, payload.shared_user_ids)
+    else:
+        # Cambio a private/team → vaciar la lista de shares para que el
+        # estado sea consistente.
+        _sync_folder_shares(session, folder, [])
     session.commit()
     session.refresh(folder)
-    return FolderRead.model_validate(folder)
+    return _folder_read(session, folder)
+
+
+@router.post(
+    "/email-template-folders/{folder_id}/shares",
+    response_model=FolderRead,
+    status_code=status.HTTP_201_CREATED,
+)
+def add_folder_share(
+    folder_id: str,
+    payload: FolderShareWrite,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_user),
+) -> FolderRead:
+    """Sprint Email v2.5 — C. Añade un user a la lista de acceso de una
+    carpeta `shared`. Idempotente: si el user ya está, devuelve 201
+    igual (la UNIQUE garantiza una sola fila)."""
+    folder = session.get(EmailTemplateFolder, folder_id)
+    if folder is None:
+        raise not_found("EmailTemplateFolder")
+    if not _can_edit_folder(session, folder, current_user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No tienes permiso para gestionar accesos de esta carpeta.",
+        )
+    if (folder.visibility or "private") != "shared":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Solo las carpetas 'shared' admiten lista de acceso.",
+        )
+    user = session.get(User, payload.user_id)
+    if user is None:
+        raise not_found("User")
+    existing_ids = _folder_share_user_ids(session, folder_id)
+    if payload.user_id not in existing_ids:
+        from uuid import uuid4  # noqa: PLC0415
+
+        session.add(
+            EmailTemplateFolderShare(
+                id=str(uuid4()),
+                folder_id=folder_id,
+                user_id=payload.user_id,
+                created_at=_now(),
+            )
+        )
+        session.commit()
+        session.refresh(folder)
+    return _folder_read(session, folder)
+
+
+@router.delete(
+    "/email-template-folders/{folder_id}/shares/{user_id}",
+    response_model=FolderRead,
+)
+def remove_folder_share(
+    folder_id: str,
+    user_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_user),
+) -> FolderRead:
+    """Quita un user de la lista de acceso de una carpeta shared.
+    Idempotente: 200 también si el user no estaba."""
+    folder = session.get(EmailTemplateFolder, folder_id)
+    if folder is None:
+        raise not_found("EmailTemplateFolder")
+    if not _can_edit_folder(session, folder, current_user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No tienes permiso para gestionar accesos de esta carpeta.",
+        )
+    row = session.scalar(
+        select(EmailTemplateFolderShare).where(
+            EmailTemplateFolderShare.folder_id == folder_id,
+            EmailTemplateFolderShare.user_id == user_id,
+        )
+    )
+    if row is not None:
+        session.delete(row)
+        session.commit()
+        session.refresh(folder)
+    return _folder_read(session, folder)
 
 
 @router.delete("/email-template-folders/{folder_id}")
@@ -450,10 +729,10 @@ def delete_folder(
     folder = session.get(EmailTemplateFolder, folder_id)
     if folder is None:
         raise not_found("EmailTemplateFolder")
-    if not _can_edit_folder(folder, current_user):
+    if not _can_edit_folder(session, folder, current_user):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Solo el creador o un admin pueden borrar esta carpeta.",
+            detail="No tienes permiso para borrar esta carpeta.",
         )
     # Explicit nullification: in production the FK ON DELETE SET NULL
     # handles this, but SQLite (tests) doesn't enforce FK actions by
@@ -484,7 +763,9 @@ def templates_picker(
 ) -> PickerResponse:
     crm_rows = list(
         session.scalars(
-            _visible_templates_query(current_user).order_by(EmailTemplate.name)
+            _visible_templates_query(session, current_user).order_by(
+                EmailTemplate.name
+            )
         )
     )
     brevo_rows = list(
@@ -494,10 +775,10 @@ def templates_picker(
             .order_by(BrevoTemplateCache.name)
         )
     )
-    folders = _build_tree_nodes(session, None, 0)
+    folders = _build_tree_nodes(session, None, 0, current_user)
     recent_rows = list(
         session.scalars(
-            _visible_templates_query(current_user)
+            _visible_templates_query(session, current_user)
             .where(EmailTemplate.last_used_at.isnot(None))
             .order_by(
                 EmailTemplate.last_used_at.desc(),

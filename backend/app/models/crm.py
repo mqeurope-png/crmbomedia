@@ -10,11 +10,13 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
     func,
 )
+from sqlalchemy.dialects import mysql
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -1411,6 +1413,41 @@ class EmailDraft(TimestampMixin, Base):
         DateTime(timezone=True)
     )
     metadata_json: Mapped[str | None] = mapped_column(Text)
+
+
+class EmailDraftAttachment(Base):
+    """Sprint Email v2.5 — A. Attachments regulares (no inline) que el
+    operador adjunta al draft antes de enviar. El binario vive aquí
+    hasta el `POST /send`: el handler los inyecta en el MIME como
+    `multipart/mixed > Content-Disposition: attachment` y borra las
+    filas tras el éxito.
+
+    Distinto de `EmailTemplateAttachment` (PR-167): aquellos son
+    inline `cid:` de imágenes en plantillas; estos son archivos
+    estándar (PDFs, docs, fotos) que el destinatario descarga."""
+
+    __tablename__ = "email_draft_attachments"
+    __table_args__ = (
+        Index("ix_email_draft_attachments_draft_id", "draft_id"),
+    )
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid4())
+    )
+    draft_id: Mapped[str] = mapped_column(
+        ForeignKey("email_drafts.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    content_type: Mapped[str | None] = mapped_column(String(100))
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    data: Mapped[bytes] = mapped_column(
+        LargeBinary().with_variant(mysql.MEDIUMBLOB(), "mysql"),
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
 
 
 class EmailFolder(TimestampMixin, Base):

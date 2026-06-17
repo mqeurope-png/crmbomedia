@@ -6,15 +6,32 @@ import {
   Folder,
   FolderPlus,
   Globe2,
+  Lock,
   Pencil,
   Plus,
   Search,
+  Share2,
   Trash2,
+  Users,
 } from "lucide-react";
+import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ErrorState } from "../../components/ErrorState";
 import { PageHeader } from "../../components/PageHeader";
 import { extractErrorMessage } from "../../lib/errors";
+
+// TinyMCE touches `window` at module load; keep it client-only via
+// next/dynamic. Sprint Email v2.5 — B: reusamos el mismo editor que
+// EmailComposerModal (mismas plugins/toolbar/upload de imágenes)
+// para que el operador no salte entre dos editores distintos.
+const RichEditor = dynamic(
+  () =>
+    import("../../components/email/RichEditor").then((m) => m.RichEditor),
+  {
+    ssr: false,
+    loading: () => <div className="re-loading">Cargando editor…</div>,
+  },
+);
 import {
   createEmailTemplate,
   createEmailTemplateFolder,
@@ -26,8 +43,47 @@ import {
   updateEmailTemplate,
   type EmailTemplate,
   type EmailTemplateFolderNode,
+  type EmailTemplateFolderVisibility,
   type EmailTemplateListItem,
 } from "../../lib/emailTemplatesApi";
+
+// Sprint Email v2.5 — C. Iconos por modo de visibilidad. Coherente
+// con la spec de Bart: 🔒 private, 👥 team, 🤝 shared. Lucide
+// suministra los tres en estilo monocromo a 11/14 px sin pixelar.
+function VisibilityIcon({
+  visibility,
+  size = 11,
+}: {
+  visibility: EmailTemplateFolderVisibility;
+  size?: number;
+}) {
+  switch (visibility) {
+    case "team":
+      return (
+        <Users
+          size={size}
+          aria-label="Carpeta del equipo"
+          className="et-visibility-icon"
+        />
+      );
+    case "shared":
+      return (
+        <Share2
+          size={size}
+          aria-label="Carpeta compartida"
+          className="et-visibility-icon"
+        />
+      );
+    default:
+      return (
+        <Lock
+          size={size}
+          aria-label="Carpeta privada"
+          className="et-visibility-icon"
+        />
+      );
+  }
+}
 
 const ROOT_KEY = "__root__";
 const ALL_KEY = "__all__";
@@ -99,13 +155,7 @@ function FolderTree({
               >
                 <Folder size={14} aria-hidden />
                 <span>{node.name}</span>
-                {node.is_global ? (
-                  <Globe2
-                    size={11}
-                    aria-label="Global"
-                    className="et-global-icon"
-                  />
-                ) : null}
+                <VisibilityIcon visibility={node.visibility} />
                 <span className="et-tree-count">{node.template_count}</span>
               </button>
             </div>
@@ -156,6 +206,8 @@ export default function PlantillasPage() {
   const [folderModalOpen, setFolderModalOpen] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
   const [newFolderParent, setNewFolderParent] = useState<string | null>(null);
+  const [newFolderVisibility, setNewFolderVisibility] =
+    useState<EmailTemplateFolderVisibility>("private");
   const [folderError, setFolderError] = useState<string | null>(null);
 
   const flatFolders = useMemo(() => flattenFolders(folders), [folders]);
@@ -321,10 +373,12 @@ export default function PlantillasPage() {
       await createEmailTemplateFolder({
         name: newFolderName.trim(),
         parent_folder_id: newFolderParent,
+        visibility: newFolderVisibility,
       });
       setFolderModalOpen(false);
       setNewFolderName("");
       setNewFolderParent(null);
+      setNewFolderVisibility("private");
       setFolderError(null);
       await refreshFolders();
     } catch (err) {
@@ -609,20 +663,23 @@ export default function PlantillasPage() {
                   </select>
                 </label>
                 <label>
-                  <span>Cuerpo HTML</span>
-                  <textarea
-                    required
-                    rows={12}
+                  <span>Cuerpo</span>
+                  <RichEditor
                     value={draft.body_html}
-                    onChange={(e) =>
-                      setDraft({ ...draft, body_html: e.target.value })
+                    onChange={(html) =>
+                      setDraft({ ...draft, body_html: html })
                     }
-                    placeholder="<p>Hola {nombre}, ...</p>"
-                    className="et-html-textarea"
+                    placeholder="Escribe la plantilla. Usa {nombre}, {empresa}, {email} para personalizar."
+                    minHeight={420}
+                    draftKey={
+                      editingId ? `template-${editingId}` : "template-new"
+                    }
                   />
                   <small className="muted">
-                    Variables disponibles: {"{nombre}"}, {"{empresa}"},{" "}
-                    {"{email}"}. El editor visual llegará en la siguiente fase.
+                    Variables disponibles: <code>{"{nombre}"}</code>,{" "}
+                    <code>{"{empresa}"}</code>, <code>{"{email}"}</code>. Se
+                    reemplazan al enviar con los datos del contacto
+                    destinatario.
                   </small>
                 </label>
                 {draftError ? (
@@ -768,6 +825,31 @@ export default function PlantillasPage() {
                       </option>
                     ))}
                   </select>
+                </label>
+                <label>
+                  <span>Visibilidad</span>
+                  <select
+                    value={newFolderVisibility}
+                    onChange={(e) =>
+                      setNewFolderVisibility(
+                        e.target.value as EmailTemplateFolderVisibility,
+                      )
+                    }
+                  >
+                    <option value="private">
+                      🔒 Privada — solo tú
+                    </option>
+                    <option value="team">
+                      👥 Del equipo — todos pueden ver / editar
+                    </option>
+                    <option value="shared">
+                      🤝 Compartida — invitas a usuarios concretos
+                    </option>
+                  </select>
+                  <small className="muted">
+                    Las plantillas dentro heredan el modo. Puedes cambiarlo
+                    luego desde la carpeta.
+                  </small>
                 </label>
                 {folderError ? (
                   <p className="modal-error">{folderError}</p>
