@@ -401,6 +401,83 @@ def priority_leads(
     return out
 
 
+@router.get("/my-campaign-stats")
+def my_campaign_stats(
+    period: str = Query(
+        default="30d", regex="^(3d|7d|14d|15d|30d|custom)$"
+    ),
+    start: datetime | None = Query(default=None),
+    end: datetime | None = Query(default=None),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_viewer),
+) -> dict[str, Any]:
+    """Stats de campañas Brevo del CURRENT USER (no ranking del
+    equipo). Cuántos de SUS contactos primary recibieron / abrieron /
+    clickearon campañas enviadas en el período.
+
+    PR-E4: sustituye el modo "leaderboard" del widget del dashboard.
+    Bart quiere ver solo sus números (4-5 mini-stats), no la tabla
+    del equipo. La métrica subyacente es idéntica a la de
+    `user-campaign-stats` filtrando por `user_id = current_user`.
+    """
+    from app.models.brevo import BrevoCampaignCache  # noqa: PLC0415
+
+    since, until = _resolve_period_window(period, start, end, default_days=30)
+
+    rows = list(
+        session.execute(
+            select(
+                ContactAssignment.contact_id,
+                ActivityEvent.event_type,
+            )
+            .join(
+                ActivityEvent,
+                ActivityEvent.contact_id == ContactAssignment.contact_id,
+            )
+            .join(
+                BrevoCampaignCache,
+                BrevoCampaignCache.brevo_campaign_id
+                == ActivityEvent.campaign_brevo_id,
+            )
+            .where(
+                ContactAssignment.user_id == current_user.id,
+                ContactAssignment.is_primary.is_(True),
+                ActivityEvent.campaign_brevo_id.isnot(None),
+                BrevoCampaignCache.sent_at.isnot(None),
+                BrevoCampaignCache.sent_at >= since,
+                BrevoCampaignCache.sent_at <= until,
+            )
+        )
+    )
+
+    delivered: set[str] = set()
+    opened: set[str] = set()
+    clicked: set[str] = set()
+    for contact_id, event_type in rows:
+        et = (event_type or "").lower()
+        if "click" in et:
+            clicked.add(contact_id)
+            opened.add(contact_id)
+            delivered.add(contact_id)
+        elif "open" in et:
+            opened.add(contact_id)
+            delivered.add(contact_id)
+        elif "deliver" in et:
+            delivered.add(contact_id)
+
+    received = len(delivered)
+    opens = len(opened)
+    clicks = len(clicked)
+    return {
+        "received": received,
+        "opened": opens,
+        "clicked": clicks,
+        "open_rate": round((opens / received) * 100, 1) if received else 0.0,
+        # CTR clásico: clicks / opens. Si no hay opens, 0.
+        "click_rate": round((clicks / opens) * 100, 1) if opens else 0.0,
+    }
+
+
 @router.get("/user-campaign-stats")
 def user_campaign_stats(
     period: str = Query(

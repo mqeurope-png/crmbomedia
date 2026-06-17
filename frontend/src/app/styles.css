@@ -7704,36 +7704,99 @@ tr.is-inactive {
 }
 .period-selector-custom input { padding: 6px 8px; font-size: 0.8rem; }
 
-/* Editor composite del field brevo_campaign_interaction (/contacts). */
+/* Editor composite del field brevo_campaign_interaction (/contacts).
+   PR-E4: layout compacto. Acción + Período en una fila; campañas como
+   trigger + popover; seleccionadas como chips horizontales. */
 .brevo-interaction-editor {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  min-width: 280px;
+  gap: 8px;
+  min-width: 320px;
+  max-width: 480px;
 }
-.brevo-interaction-row {
+.brevo-interaction-controls {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
 }
-.brevo-interaction-row-stack {
-  flex-direction: column;
-  align-items: stretch;
+.brevo-interaction-action {
+  flex: 0 1 auto;
+  min-width: 150px;
 }
-.brevo-interaction-label {
-  font-size: 0.72rem;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--color-gray);
+.brevo-interaction-picker {
+  position: relative;
 }
-.brevo-interaction-campaigns {
-  max-height: 180px;
-  overflow-y: auto;
+.brevo-interaction-trigger {
+  width: 100%;
+  text-align: left;
+}
+.brevo-interaction-popover {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 30;
+  background: var(--color-bg);
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-card-hover);
   padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 280px;
 }
+.brevo-interaction-options {
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 220px;
+}
+.brevo-interaction-option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border-radius: 4px;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+.brevo-interaction-option:hover { background: var(--color-bg-light); }
+.brevo-interaction-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.brevo-interaction-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px 2px 8px;
+  border-radius: 999px;
+  background: var(--primary-tint);
+  color: var(--color-primary);
+  font-size: 0.78rem;
+  font-weight: 600;
+  max-width: 220px;
+}
+.brevo-interaction-chip-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.brevo-interaction-chip-remove {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: 0.95rem;
+  line-height: 1;
+  padding: 0 4px;
+  border-radius: 50%;
+}
+.brevo-interaction-chip-remove:hover { background: rgba(37, 99, 235, 0.18); }
 
 /* Modo "cabe en pantalla": solo en desktop ancho (grid 4×2 real).
    Por debajo de 1281px el grid pasa a 2 cols (4 filas) y dejamos

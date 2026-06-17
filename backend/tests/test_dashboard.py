@@ -378,3 +378,78 @@ def test_recent_interactions_custom_requires_dates(
     )
     assert resp.status_code == 200
     assert isinstance(resp.json(), list)
+
+
+def test_my_campaign_stats_counts_current_user_only(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    """PR-E4: nuevo endpoint /my-campaign-stats devuelve solo las
+    cifras del current_user (no leaderboard). Mismo cálculo que
+    /user-campaign-stats filtrado por user_id=current."""
+    import app.models.brevo  # noqa: F401
+    from app.models.brevo import BrevoCampaignCache
+    from app.models.crm import ActivityEvent
+
+    uid = _user_id(session_factory, UserRole.USER)
+    other_uid = _user_id(session_factory, UserRole.MANAGER)
+    now = datetime.now(UTC)
+    with session_factory() as session:
+        session.add(
+            BrevoCampaignCache(
+                brevo_account_id="main",
+                brevo_campaign_id=11,
+                name="C",
+                status="sent",
+                type="classic",
+                sent_at=now - timedelta(days=2),
+                cached_at=now,
+            )
+        )
+        c_mine = Contact(first_name="Mio", email="mio@example.com", is_active=True)
+        c_other = Contact(
+            first_name="Otro", email="otro@example.com", is_active=True
+        )
+        session.add_all([c_mine, c_other])
+        session.flush()
+        assignments_repo.add_assignment(
+            session,
+            contact_id=c_mine.id,
+            user_id=uid,
+            is_primary=True,
+            assigned_by_user_id=uid,
+        )
+        assignments_repo.add_assignment(
+            session,
+            contact_id=c_other.id,
+            user_id=other_uid,
+            is_primary=True,
+            assigned_by_user_id=other_uid,
+        )
+        for cid in (c_mine.id, c_other.id):
+            for et in ("email.delivered", "email.opened", "email.clicked"):
+                session.add(
+                    ActivityEvent(
+                        contact_id=cid,
+                        system="brevo",
+                        account_id="main",
+                        event_type=et,
+                        external_id=f"{cid}:{et}:11",
+                        campaign_brevo_id=11,
+                        occurred_at=now - timedelta(days=1),
+                    )
+                )
+        session.commit()
+    resp = client.get(
+        "/api/dashboard/my-campaign-stats?period=30d",
+        headers=auth_headers(client, "user"),
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    # Solo cuenta el contacto del current user, no el del manager.
+    assert body == {
+        "received": 1,
+        "opened": 1,
+        "clicked": 1,
+        "open_rate": 100.0,
+        "click_rate": 100.0,
+    }

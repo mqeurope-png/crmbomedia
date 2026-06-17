@@ -85,37 +85,38 @@ export function EmailThreadList({ folders, labels, refreshKey }: Props) {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [teamUsers, setTeamUsers] = useState<User[]>([]);
 
-  // PR-E3 (B): persistimos el último scope para restaurarlo al volver
-  // a /emails sin params (navegación fresca desde el sidebar). El URL
-  // sigue siendo la fuente de verdad dentro de la sesión / back-nav;
-  // localStorage sólo cubre la entrada limpia.
+  // PR-E4 (B): persistimos el querystring completo (scope + state + q
+  // + folder_id + label_id + starred + team_user_id) para restaurarlo
+  // al volver a /emails sin params. El URL sigue siendo la fuente de
+  // verdad dentro de la sesión / back-nav; localStorage cubre entrada
+  // limpia + casos donde el Router Cache de Next pierde el estado.
+  const VIEW_STATE_KEY = "crmbomedia_view_state:emails:full";
+
   useEffect(() => {
-    if (params.get("scope") || params.get("state") || params.get("q")) {
-      return; // hay estado en URL → respétalo, no restaures.
+    const current = params.toString();
+    if (current) {
+      try {
+        window.localStorage.setItem(VIEW_STATE_KEY, current);
+      } catch {
+        // best-effort
+      }
+      return;
     }
     let stored: string | null = null;
     try {
-      stored = window.localStorage.getItem(
-        "crmbomedia_view_state:emails:scope",
-      );
+      stored = window.localStorage.getItem(VIEW_STATE_KEY);
     } catch {
       stored = null;
     }
-    if (stored === "team") {
-      const sp = new URLSearchParams(params.toString());
-      sp.set("scope", "team");
-      router.replace(`/emails?${sp.toString()}`);
+    if (stored) {
+      router.replace(`/emails?${stored}`);
     }
-    // Sólo en el montaje inicial.
+    // Sólo en el montaje inicial — los cambios subsecuentes los
+    // captura el persist al detectar `current` no-vacío.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [params]);
 
   function setScopeUrl(next: "mine" | "team") {
-    try {
-      window.localStorage.setItem("crmbomedia_view_state:emails:scope", next);
-    } catch {
-      // best-effort
-    }
     const sp = new URLSearchParams(params.toString());
     if (next === "team") sp.set("scope", "team");
     else {

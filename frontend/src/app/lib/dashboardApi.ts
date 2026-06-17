@@ -168,6 +168,22 @@ export async function getDashboardPriorityLeads(
   );
 }
 
+export type MyCampaignStats = {
+  received: number;
+  opened: number;
+  clicked: number;
+  open_rate: number;
+  click_rate: number;
+};
+
+export async function getDashboardMyCampaignStats(
+  window: DashboardWindow = { period: "30d" },
+): Promise<MyCampaignStats> {
+  return apiFetch<MyCampaignStats>(
+    `/api/dashboard/my-campaign-stats?${windowParams(window)}`,
+  );
+}
+
 export async function getDashboardUserCampaignStats(
   window: DashboardWindow = { period: "30d" },
   limit = 5,

@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useDebouncedValue } from "../lib/useDebouncedValue";
 import {
   getUsers,
@@ -1277,6 +1277,11 @@ function BrevoCampaignInteractionEditor({
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
   const debouncedQuery = useDebouncedValue(query, 300);
+  // PR-E4: el picker de campañas pasa a dropdown contraído. Sólo se
+  // expande al click del trigger; las seleccionadas quedan como chips
+  // bajo el trigger. Patrón parecido a TagPicker.
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const pickerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     resolvePrimaryBrevoAccount()
@@ -1288,9 +1293,6 @@ function BrevoCampaignInteractionEditor({
     if (!accountId) return;
     let cancelled = false;
     setLoading(true);
-    // Sólo campañas enviadas/archivadas tienen sentido para filtrar
-    // interacción; pedimos `status=sent`. El endpoint devuelve el cache
-    // local (sin round-trip a Brevo salvo refresh).
     listBrevoCampaigns(accountId, { status: "sent" })
       .then((rows) => {
         if (!cancelled) setCampaigns(rows);
@@ -1305,6 +1307,20 @@ function BrevoCampaignInteractionEditor({
       cancelled = true;
     };
   }, [accountId]);
+
+  useEffect(() => {
+    if (!pickerOpen) return;
+    function onDocClick(e: MouseEvent) {
+      if (
+        pickerRef.current &&
+        !pickerRef.current.contains(e.target as Node | null)
+      ) {
+        setPickerOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, [pickerOpen]);
 
   if (accountId === undefined) {
     return <span className="muted small">Cargando cuenta Brevo…</span>;
@@ -1323,6 +1339,9 @@ function BrevoCampaignInteractionEditor({
     ? campaigns.filter((c) => c.name.toLowerCase().includes(needle))
     : campaigns;
   const selected = new Set(current.campaigns);
+  const campaignsById = new Map(
+    campaigns.map((c) => [c.brevo_campaign_id, c]),
+  );
 
   const patch = (next: Partial<BrevoInteractionValue>) =>
     onChange({ ...current, ...next });
@@ -1340,14 +1359,22 @@ function BrevoCampaignInteractionEditor({
     end: current.end,
   };
 
+  const triggerLabel =
+    selected.size === 0
+      ? "+ Seleccionar campañas"
+      : `${selected.size} campaña${selected.size === 1 ? "" : "s"} seleccionada${
+          selected.size === 1 ? "" : "s"
+        }`;
+
   return (
     <div className="brevo-interaction-editor">
-      <div className="brevo-interaction-row">
-        <label className="brevo-interaction-label">Acción</label>
+      {/* PR-E4: Acción + Período en UNA fila horizontal. */}
+      <div className="brevo-interaction-controls">
         <select
-          className="qb-value"
+          className="qb-value brevo-interaction-action"
           value={current.action}
           onChange={(e) => patch({ action: e.target.value })}
+          aria-label="Acción"
         >
           {BREVO_ACTION_OPTIONS.map(([v, label]) => (
             <option key={v} value={v}>
@@ -1355,39 +1382,6 @@ function BrevoCampaignInteractionEditor({
             </option>
           ))}
         </select>
-      </div>
-
-      <div className="brevo-interaction-row brevo-interaction-row-stack">
-        <label className="brevo-interaction-label">Campañas</label>
-        <input
-          type="search"
-          className="qb-value"
-          value={query}
-          placeholder="Buscar campaña…"
-          onChange={(e) => setQuery(e.target.value)}
-        />
-        <div className="qb-value-multi qb-value-multi-stacked brevo-interaction-campaigns">
-          {loading ? (
-            <span className="muted small">Cargando campañas…</span>
-          ) : filtered.length === 0 ? (
-            <span className="muted small">Sin campañas.</span>
-          ) : (
-            filtered.map((c) => (
-              <label key={c.brevo_campaign_id} className="qb-value-chip">
-                <input
-                  type="checkbox"
-                  checked={selected.has(c.brevo_campaign_id)}
-                  onChange={() => toggleCampaign(c.brevo_campaign_id)}
-                />
-                <PickerLabel text={c.name} />
-              </label>
-            ))
-          )}
-        </div>
-      </div>
-
-      <div className="brevo-interaction-row brevo-interaction-row-stack">
-        <label className="brevo-interaction-label">Período (sent_at)</label>
         <PeriodSelector
           value={windowValue}
           includeAll
@@ -1396,6 +1390,75 @@ function BrevoCampaignInteractionEditor({
           }
         />
       </div>
+
+      <div className="brevo-interaction-picker" ref={pickerRef}>
+        <button
+          type="button"
+          className="button secondary small brevo-interaction-trigger"
+          onClick={() => setPickerOpen((open) => !open)}
+          aria-expanded={pickerOpen}
+        >
+          {triggerLabel} ▾
+        </button>
+        {pickerOpen ? (
+          <div className="brevo-interaction-popover">
+            <input
+              type="search"
+              className="qb-value"
+              value={query}
+              placeholder="Buscar campaña…"
+              autoFocus
+              onChange={(e) => setQuery(e.target.value)}
+            />
+            <div className="brevo-interaction-options">
+              {loading ? (
+                <span className="muted small">Cargando campañas…</span>
+              ) : filtered.length === 0 ? (
+                <span className="muted small">Sin campañas.</span>
+              ) : (
+                filtered.map((c) => (
+                  <label
+                    key={c.brevo_campaign_id}
+                    className="brevo-interaction-option"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selected.has(c.brevo_campaign_id)}
+                      onChange={() => toggleCampaign(c.brevo_campaign_id)}
+                    />
+                    <PickerLabel text={c.name} />
+                  </label>
+                ))
+              )}
+            </div>
+          </div>
+        ) : null}
+      </div>
+
+      {/* Chips de campañas seleccionadas — X para deseleccionar. */}
+      {selected.size > 0 ? (
+        <div className="brevo-interaction-chips">
+          {[...selected].map((id) => {
+            const c = campaignsById.get(id);
+            const label = c?.name ?? `Campaña #${id}`;
+            return (
+              <span key={id} className="brevo-interaction-chip">
+                <span className="brevo-interaction-chip-name" title={label}>
+                  {label}
+                </span>
+                <button
+                  type="button"
+                  className="brevo-interaction-chip-remove"
+                  aria-label={`Quitar ${label}`}
+                  onClick={() => toggleCampaign(id)}
+                >
+                  ×
+                </button>
+              </span>
+            );
+          })}
+        </div>
+      ) : null}
     </div>
   );
 }
