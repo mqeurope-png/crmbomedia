@@ -235,6 +235,12 @@ export default function ContactsListPage() {
             const view = viewList.find((v) => v.id === urlState.viewId);
             if (view) {
               applyView(view);
+              // PR-E4b: si la URL trae rules además de view_id, son las
+              // modificaciones dirty del operador encima de la vista.
+              // Las aplicamos AFTER applyView para que pisen el baseline.
+              if (urlState.rules) {
+                setRules(urlState.rules);
+              }
               if (urlState.q) {
                 setQ(urlState.q);
                 setSearchInput(urlState.q);
@@ -286,11 +292,31 @@ export default function ContactsListPage() {
 
   // --- URL sync --------------------------------------------------
 
+  // PR-E4b: detectamos modo "dirty" (rules modificados encima de una
+  // vista guardada) comparando contra el snapshot de la vista. Cuando
+  // hay dirt, incluimos los rules en URL aunque haya view_id — sin
+  // esto el browser back perdía las reglas extra y restauraba sólo la
+  // vista pelada.
+  const viewBaselineRules = useMemo(() => {
+    if (!activeView) return null;
+    const filters = activeView.filters as Record<string, unknown> | undefined;
+    return (filters?.rules_json as Record<string, unknown> | undefined) ?? {};
+  }, [activeView]);
+  const rulesAreDirty = useMemo(() => {
+    if (!activeView) return false;
+    return (
+      JSON.stringify(rules ?? {}) !== JSON.stringify(viewBaselineRules ?? {})
+    );
+  }, [activeView, rules, viewBaselineRules]);
+
   useEffect(() => {
     if (firstLoadRef.current) return;
     const params = serializeUrlState({
       viewId: activeView?.id ?? null,
-      rules: activeView ? null : rules,
+      // Si no hay vista activa, los rules son la única fuente; si hay
+      // vista activa pero el operador encadenó reglas extra, hay que
+      // serializarlas también para que el browser back las recupere.
+      rules: !activeView || rulesAreDirty ? rules : null,
       q,
       sortBy: sort?.field ?? "created_at",
       sortDir: sort?.direction ?? "desc",
@@ -303,7 +329,7 @@ export default function ContactsListPage() {
     // Cache de Next cuando el browser back resucita la página.
     writeStoredView(params);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeView, rules, q, sort, visibleColumns, offset]);
+  }, [activeView, rules, rulesAreDirty, q, sort, visibleColumns, offset]);
 
   // --- Debounce búsqueda libre -----------------------------------
 
