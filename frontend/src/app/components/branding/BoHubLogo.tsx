@@ -1,23 +1,20 @@
 "use client";
 
 /**
- * BoHub CRM logo, reconstructed geométricamente desde la guía de
- * estilo. Tres componentes visuales en uno:
+ * BoHub CRM logo. Tres variantes:
  *
- *   - una órbita circular con 3 arcos separados (cada arco un color de
- *     la paleta primaria),
- *   - 3 nodos posicionados a las 12, 4 y 8 en punto,
- *   - un símbolo "target" en el centro (anillo + disco filled).
+ *   - `icon`: el isotipo solo (sólo SVG cuadrado).
+ *   - `horizontal`: isotipo + wordmark "BoHub CRM" alineados horizontal.
+ *     El wordmark se renderiza con `<span>` HTML, NO con `<text>` SVG —
+ *     así el browser usa las métricas reales de Inter y no se solapan
+ *     los textos como pasaba en PR-A.
+ *   - `monochrome`: misma estructura en `currentColor`, para fondos de
+ *     color o exportes a PDF.
  *
- * Variants:
- *   - `icon`: el isotipo solo (cuadrado), favicons y sidebar collapsed.
- *   - `horizontal`: isotipo + "BoHub" + "CRM" alineados horizontal,
- *     para el sidebar expanded y el header del login.
- *   - `monochrome`: misma estructura en negro/slate dark, para fondos
- *     coloreados o contextos sin color (emails, PDFs).
- *
- * El SVG se renderiza inline (no externo) para que herede `color:` de
- * CSS y se vea nítido a cualquier zoom sin pedir un asset extra.
+ * El isotipo se genera geometricamente (3 arcos + 3 nodos + target):
+ *   - órbita radius 35 sobre un viewBox 100×100,
+ *   - nodos a las 12 / 4 / 8 horarias,
+ *   - target central (anillo + disco filled).
  */
 import type { CSSProperties } from "react";
 
@@ -31,22 +28,17 @@ type Props = {
   style?: CSSProperties;
 };
 
-// Paleta — alineada con los CSS vars de styles.css. Mantener
-// sincronizado si Bart afina los hex.
-const COLOR_PRIMARY = "#2563EB"; // azul nodo 8 + arco upper-left
-const COLOR_LIGHT = "#0EA5E9"; // azul cielo arco upper-right
-const COLOR_TEAL = "#14B8A6"; // teal nodo 4 + arco bottom
-const COLOR_DARK = "#0F172A"; // slate dark nodo 12 + target centro
+const COLOR_PRIMARY = "#2563EB";
+const COLOR_LIGHT = "#0EA5E9";
+const COLOR_TEAL = "#14B8A6";
+const COLOR_DARK = "#0F172A";
 
-// Geometría — viewBox 0 0 100 100, center (50,50). Las funciones
-// `nodeAt` y `arcPoint` se usan para mantener la simetría exacta.
 const ORBIT_RADIUS = 35;
 const NODE_RADIUS = 6.5;
-const NODE_GAP_DEG = 18; // separación arco↔nodo a cada lado
+const NODE_GAP_DEG = 18;
 
 function polarToCartesian(angleDeg: number, radius: number) {
-  // 0° = 12 en punto, sentido horario. SVG y crece hacia abajo, así
-  // que la fórmula clásica clock es: x = cx + r·sin(θ), y = cy − r·cos(θ).
+  // 0° = 12 en punto, sentido horario. SVG y crece hacia abajo.
   const rad = (angleDeg * Math.PI) / 180;
   return {
     x: 50 + radius * Math.sin(rad),
@@ -57,21 +49,19 @@ function polarToCartesian(angleDeg: number, radius: number) {
 function arcPath(fromDeg: number, toDeg: number): string {
   const start = polarToCartesian(fromDeg, ORBIT_RADIUS);
   const end = polarToCartesian(toDeg, ORBIT_RADIUS);
-  // largeArcFlag=0 (cada arco < 180°), sweepFlag=1 (sentido horario).
   return `M ${start.x.toFixed(2)} ${start.y.toFixed(2)} A ${ORBIT_RADIUS} ${ORBIT_RADIUS} 0 0 1 ${end.x.toFixed(2)} ${end.y.toFixed(2)}`;
 }
 
-// 3 arcos + 3 nodos. Los ángulos están medidos desde las 12 horarias.
 const ARCS = [
-  { from: 0 + NODE_GAP_DEG, to: 120 - NODE_GAP_DEG, colorKey: "light" }, // 12 → 4
-  { from: 120 + NODE_GAP_DEG, to: 240 - NODE_GAP_DEG, colorKey: "teal" }, // 4 → 8
-  { from: 240 + NODE_GAP_DEG, to: 360 - NODE_GAP_DEG, colorKey: "blue" }, // 8 → 12
+  { from: 0 + NODE_GAP_DEG, to: 120 - NODE_GAP_DEG, colorKey: "light" },
+  { from: 120 + NODE_GAP_DEG, to: 240 - NODE_GAP_DEG, colorKey: "teal" },
+  { from: 240 + NODE_GAP_DEG, to: 360 - NODE_GAP_DEG, colorKey: "blue" },
 ] as const;
 
 const NODES = [
-  { deg: 0, colorKey: "dark" }, // 12 en punto
-  { deg: 120, colorKey: "teal" }, // 4 en punto
-  { deg: 240, colorKey: "blue" }, // 8 en punto
+  { deg: 0, colorKey: "dark" },
+  { deg: 120, colorKey: "teal" },
+  { deg: 240, colorKey: "blue" },
 ] as const;
 
 function colorFor(
@@ -87,11 +77,26 @@ function colorFor(
   }[key];
 }
 
-function IsotypeSvg({ monochrome }: { monochrome: boolean }) {
+function IsotypeSvg({
+  monochrome,
+  size,
+  title,
+}: {
+  monochrome: boolean;
+  size: number;
+  title: string;
+}) {
   return (
-    <>
-      {/* Arcos de la órbita. stroke-linecap=round redondea las
-          puntas para que los gaps no queden "cortados". */}
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 100 100"
+      width={size}
+      height={size}
+      role="img"
+      aria-label={title}
+      style={{ flexShrink: 0 }}
+    >
+      <title>{title}</title>
       {ARCS.map((arc, idx) => (
         <path
           key={`arc-${idx}`}
@@ -102,7 +107,6 @@ function IsotypeSvg({ monochrome }: { monochrome: boolean }) {
           strokeLinecap="round"
         />
       ))}
-      {/* Nodos */}
       {NODES.map((node, idx) => {
         const p = polarToCartesian(node.deg, ORBIT_RADIUS);
         return (
@@ -115,8 +119,6 @@ function IsotypeSvg({ monochrome }: { monochrome: boolean }) {
           />
         );
       })}
-      {/* Target central: anillo + disco filled + tiny inner dot.
-          La diana resume la idea de "centralizar leads" en un foco. */}
       <circle
         cx={50}
         cy={50}
@@ -126,7 +128,7 @@ function IsotypeSvg({ monochrome }: { monochrome: boolean }) {
         strokeWidth={3}
       />
       <circle cx={50} cy={50} r={4.5} fill={colorFor("dark", monochrome)} />
-    </>
+    </svg>
   );
 }
 
@@ -141,66 +143,57 @@ export function BoHubLogo({
 
   if (variant === "icon") {
     return (
-      <svg
-        xmlns="http://www.w3.org/2000/svg"
-        viewBox="0 0 100 100"
-        width={size}
-        height={size}
-        className={className}
-        role="img"
-        aria-label={title}
-        style={style}
-      >
-        <title>{title}</title>
-        <IsotypeSvg monochrome={false} />
-      </svg>
+      <IsotypeSvg monochrome={false} size={size} title={title} />
     );
   }
 
-  // horizontal + monochrome — mismo lockup, sólo cambia la paleta.
-  // viewBox 0 0 320 100: isotipo de 100×100 + wordmark a la derecha.
-  const wordmarkInk = monochrome ? "currentColor" : COLOR_DARK;
-  const wordmarkAccent = monochrome ? "currentColor" : "#475569";
-  // Altura calculada vía aspect-ratio para que el caller pase solo
-  // `size` (= altura) y obtenga el ancho correcto.
-  const aspect = 320 / 100;
+  // horizontal + monochrome: flex con icono SVG y wordmark HTML. El
+  // wordmark se renderiza con `<span>` para que herede la fuente
+  // Inter cargada por next/font (ver layout.tsx) y respete las
+  // métricas reales de cada glyph. PR-A intentaba hacerlo con
+  // `<text>` SVG, pero la fuente del SVG cae al system default y los
+  // anchors x= hardcodeados solapaban "BoHub" y "CRM".
+  const ink = monochrome ? "currentColor" : COLOR_DARK;
+  const accent = monochrome ? "currentColor" : "#475569";
+
   return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 320 100"
-      width={size * aspect}
-      height={size}
+    <span
       className={className}
-      role="img"
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: size * 0.36,
+        fontFamily:
+          "var(--font-base, 'Inter', system-ui, -apple-system, sans-serif)",
+        lineHeight: 1,
+        ...style,
+      }}
       aria-label={title}
-      style={style}
     >
-      <title>{title}</title>
-      <IsotypeSvg monochrome={monochrome} />
-      {/* Wordmark: "BoHub" en peso 800, "CRM" en peso 500 + tracking.
-          system-ui fallback para que se vea bien aun sin Inter cargada. */}
-      <text
-        x={115}
-        y={62}
-        fontFamily="var(--font-base, 'Inter', system-ui, sans-serif)"
-        fontWeight={800}
-        fontSize={46}
-        fill={wordmarkInk}
-        letterSpacing="-1.2"
+      <IsotypeSvg monochrome={monochrome} size={size} title={title} />
+      <span
+        style={{
+          display: "inline-flex",
+          alignItems: "baseline",
+          gap: size * 0.24,
+          fontSize: size * 0.68,
+          letterSpacing: "-0.02em",
+          color: ink,
+          fontWeight: 800,
+        }}
       >
         BoHub
-      </text>
-      <text
-        x={245}
-        y={62}
-        fontFamily="var(--font-base, 'Inter', system-ui, sans-serif)"
-        fontWeight={500}
-        fontSize={28}
-        fill={wordmarkAccent}
-        letterSpacing="2"
-      >
-        CRM
-      </text>
-    </svg>
+        <span
+          style={{
+            fontSize: size * 0.48,
+            letterSpacing: "0.08em",
+            color: accent,
+            fontWeight: 500,
+          }}
+        >
+          CRM
+        </span>
+      </span>
+    </span>
   );
 }

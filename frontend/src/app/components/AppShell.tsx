@@ -6,7 +6,7 @@ import { getCurrentUser, type User } from "../lib/api";
 import { Sidebar } from "./Sidebar";
 import { TopBar } from "./TopBar";
 
-const ANONYMOUS_ROUTES = ["/login", "/password-reset"];
+const ANONYMOUS_ROUTES = ["/login", "/password-reset", "/welcome"];
 const FULL_BLEED_ROUTES: string[] = [];
 const SIDEBAR_STORAGE_KEY = "crmbo:sidebar:collapsed";
 
