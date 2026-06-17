@@ -1,58 +1,69 @@
 "use client";
 
 /**
- * "🕐 Últimas interacciones" — feed cross-contacto. PR-C mock-up.
+ * "🕐 Últimas interacciones" — PR-E2 reescrito para usar el endpoint
+ * `/api/dashboard/recent-interactions` que mezcla email + call + note
+ * + task events ordenados por `occurred_at` desc.
  *
- * El feed por-contacto YA existe en `/api/contacts/{id}/activity-
- * events`. Para el dashboard necesitamos una vista agregada con TODAS
- * las interacciones recientes de los contactos del operador. Hasta
- * que aterrice ese endpoint reusamos el de "recent-email-activity"
- * que sí ofrece un timeline agregado (limitado a emails).
+ * Toggle scope `mine` / `team` para que el operador vea su perímetro
+ * o el del equipo. Default `mine`.
  */
-import { Mail, Phone, StickyNote } from "lucide-react";
-import { useEffect, useState } from "react";
+import { CheckSquare, Mail, MessageCircle, Phone, StickyNote } from "lucide-react";
 import Link from "next/link";
-import { getDashboardRecentEmailActivity } from "../../lib/dashboardApi";
-import type { RecentEmailEvent } from "../../lib/dashboardApi";
+import { useEffect, useState } from "react";
+import {
+  getDashboardRecentInteractions,
+  type RecentInteraction,
+} from "../../lib/dashboardApi";
 
-function relativeFromNow(iso: string): string {
-  const then = new Date(iso).getTime();
+type Scope = "mine" | "team";
+
+function relative(value: string): string {
+  const then = new Date(value).getTime();
+  if (Number.isNaN(then)) return "—";
   const diff = Date.now() - then;
-  const sec = Math.floor(diff / 1000);
-  if (sec < 60) return `hace ${sec}s`;
-  const min = Math.floor(sec / 60);
-  if (min < 60) return `hace ${min}min`;
+  const min = Math.floor(diff / 60_000);
+  if (min < 1) return "ahora";
+  if (min < 60) return `hace ${min}m`;
   const hr = Math.floor(min / 60);
   if (hr < 24) return `hace ${hr}h`;
   const day = Math.floor(hr / 24);
   return `hace ${day}d`;
 }
 
-function iconForEvent(event_type: string) {
-  if (event_type.includes("call")) return <Phone size={14} aria-hidden />;
-  if (event_type.includes("note")) return <StickyNote size={14} aria-hidden />;
-  return <Mail size={14} aria-hidden />;
+function iconFor(eventType: string): React.ReactNode {
+  const t = eventType.toLowerCase();
+  if (t.includes("call")) return <Phone size={12} aria-hidden />;
+  if (t.includes("note")) return <StickyNote size={12} aria-hidden />;
+  if (t.includes("task")) return <CheckSquare size={12} aria-hidden />;
+  if (t.includes("email")) return <Mail size={12} aria-hidden />;
+  return <MessageCircle size={12} aria-hidden />;
 }
 
-function labelForEvent(event_type: string): string {
-  if (event_type === "sent") return "Email enviado";
-  if (event_type === "opened") return "Email abierto";
-  if (event_type === "clicked") return "Click en email";
-  if (event_type === "bounced") return "Email rebotado";
-  if (event_type === "unsubscribed") return "Baja de email";
-  return event_type.replace("_", " ");
+function labelFor(eventType: string): string {
+  const t = eventType.toLowerCase();
+  if (t.includes("sent")) return "Email enviado";
+  if (t.includes("opened")) return "Email abierto";
+  if (t.includes("clicked")) return "Click en email";
+  if (t.includes("call")) return "Llamada registrada";
+  if (t.includes("note")) return "Nota añadida";
+  if (t.includes("task.completed")) return "Tarea completada";
+  if (t.includes("task.created")) return "Tarea creada";
+  return eventType.replace(/[_.]/g, " ");
 }
 
 export function RecentInteractionsWidget() {
-  const [events, setEvents] = useState<RecentEmailEvent[]>([]);
+  const [scope, setScope] = useState<Scope>("mine");
+  const [events, setEvents] = useState<RecentInteraction[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    getDashboardRecentEmailActivity("mine")
+    setLoading(true);
+    getDashboardRecentInteractions(scope, 15)
       .then((rows) => {
-        if (!cancelled) setEvents(rows.slice(0, 6));
+        if (!cancelled) setEvents(rows);
       })
       .catch(() => {
         if (!cancelled)
@@ -64,12 +75,36 @@ export function RecentInteractionsWidget() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [scope]);
 
   return (
     <article className="card widget widget-interactions">
       <header className="section-title">
         <h2>🕐 Últimas interacciones</h2>
+        <div className="widget-segment" role="radiogroup" aria-label="Scope">
+          <button
+            type="button"
+            role="radio"
+            aria-checked={scope === "mine"}
+            className={`widget-segment-item${
+              scope === "mine" ? " is-active" : ""
+            }`}
+            onClick={() => setScope("mine")}
+          >
+            Mías
+          </button>
+          <button
+            type="button"
+            role="radio"
+            aria-checked={scope === "team"}
+            className={`widget-segment-item${
+              scope === "team" ? " is-active" : ""
+            }`}
+            onClick={() => setScope("team")}
+          >
+            Equipo
+          </button>
+        </div>
       </header>
       {loading ? (
         <p className="muted small">Cargando…</p>
@@ -84,16 +119,20 @@ export function RecentInteractionsWidget() {
           {events.map((ev) => (
             <li key={ev.id} className="widget-row">
               <span className="widget-row-icon" aria-hidden>
-                {iconForEvent(ev.event_type)}
+                {iconFor(ev.event_type)}
               </span>
               <div className="widget-row-main">
                 <p className="widget-row-title">
-                  <Link href={`/contacts/${ev.contact_id}`}>{ev.contact_name}</Link>{" "}
-                  <span className="muted small">· {labelForEvent(ev.event_type)}</span>
+                  <Link href={`/contacts/${ev.contact_id}`}>
+                    {ev.contact_name}
+                  </Link>{" "}
+                  <span className="muted small">· {labelFor(ev.event_type)}</span>
                 </p>
                 <p className="widget-row-meta">
-                  <span className="muted small">{ev.subject ?? "Sin asunto"}</span>
-                  <span className="muted small">{relativeFromNow(ev.occurred_at)}</span>
+                  <span className="muted small">
+                    {ev.subject ?? "Sin asunto"}
+                  </span>
+                  <span className="muted small">{relative(ev.occurred_at)}</span>
                 </p>
               </div>
             </li>

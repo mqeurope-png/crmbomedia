@@ -100,3 +100,68 @@ export async function getDashboardRecentEmailActivity(
     `/api/dashboard/recent-email-activity?limit=15&scope=${scope}`,
   );
 }
+
+// PR-E2: nuevos endpoints del dashboard.
+export type PriorityLead = {
+  id: string;
+  first_name: string;
+  last_name: string | null;
+  email: string;
+  phone: string | null;
+  signal_at: string;
+  reason: "recent" | "assigned" | "active" | string;
+};
+
+export type UserCampaignStat = {
+  user_id: string;
+  full_name: string;
+  email: string;
+  leads: number;
+  clicks: number;
+  conversion_pct: number;
+};
+
+export type RecentInteraction = {
+  id: string;
+  event_type: string;
+  subject: string | null;
+  body: string | null;
+  occurred_at: string;
+  contact_id: string;
+  contact_name: string;
+  contact_email: string | null;
+  campaign_brevo_id: number | null;
+};
+
+export type DashboardPeriod = "7d" | "14d" | "30d";
+
+export async function getDashboardUpcomingTasks(limit = 8): Promise<Task[]> {
+  return apiFetch<Task[]>(`/api/dashboard/upcoming-tasks?limit=${limit}`);
+}
+
+export async function getDashboardPriorityLeads(
+  period: DashboardPeriod = "14d",
+  limit = 10,
+): Promise<PriorityLead[]> {
+  return apiFetch<PriorityLead[]>(
+    `/api/dashboard/priority-leads?period=${period}&limit=${limit}`,
+  );
+}
+
+export async function getDashboardUserCampaignStats(
+  period: DashboardPeriod = "30d",
+  limit = 5,
+): Promise<UserCampaignStat[]> {
+  return apiFetch<UserCampaignStat[]>(
+    `/api/dashboard/user-campaign-stats?period=${period}&limit=${limit}`,
+  );
+}
+
+export async function getDashboardRecentInteractions(
+  scope: "mine" | "team" = "mine",
+  limit = 20,
+): Promise<RecentInteraction[]> {
+  return apiFetch<RecentInteraction[]>(
+    `/api/dashboard/recent-interactions?scope=${scope}&limit=${limit}`,
+  );
+}
