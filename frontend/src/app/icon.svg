@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <title>BoHub CRM</title>
+  <!-- Órbita: 3 arcos separados (azul, light blue, teal). Coordenadas
+       calculadas con angle gap 18° desde cada nodo, mismo geometría
+       que BoHubLogo.tsx. -->
+  <path d="M 60.81 16.71 A 35 35 0 0 1 84.23 57.28" fill="none" stroke="#0EA5E9" stroke-width="7" stroke-linecap="round"/>
+  <path d="M 73.42 76.01 A 35 35 0 0 1 26.58 76.01" fill="none" stroke="#14B8A6" stroke-width="7" stroke-linecap="round"/>
+  <path d="M 15.77 57.28 A 35 35 0 0 1 39.19 16.71" fill="none" stroke="#2563EB" stroke-width="7" stroke-linecap="round"/>
+  <!-- Nodos a 12, 4 y 8 en punto -->
+  <circle cx="50" cy="15" r="6.5" fill="#0F172A"/>
+  <circle cx="80.31" cy="67.5" r="6.5" fill="#14B8A6"/>
+  <circle cx="19.69" cy="67.5" r="6.5" fill="#2563EB"/>
+  <!-- Target central -->
+  <circle cx="50" cy="50" r="10" fill="none" stroke="#0F172A" stroke-width="3"/>
+  <circle cx="50" cy="50" r="4.5" fill="#0F172A"/>
+</svg>

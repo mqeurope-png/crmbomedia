@@ -1,10 +1,22 @@
 import type { Metadata } from "next";
+import { Inter } from "next/font/google";
 import { AppShell } from "./components/AppShell";
 import "./styles.css";
 
+// Inter (variable) — fuente del rebranding BoHub. Self-hosted vía
+// next/font para evitar la dependencia de fonts.googleapis.com en
+// runtime y mejorar LCP. El CSS var `--font-base` la consume desde
+// styles.css y el logo SVG.
+const inter = Inter({
+  subsets: ["latin"],
+  variable: "--font-base",
+  display: "swap",
+});
+
 export const metadata: Metadata = {
-  title: "CRMBO Media CRM",
-  description: "CRM central para contactos, integraciones y trazabilidad RGPD.",
+  title: "BoHub CRM",
+  description:
+    "BoHub CRM: leads, campañas, tareas y comunicación con clientes en un solo lugar.",
 };
 
 // Every page in the CRM is a "use client" component that fetches data
@@ -21,7 +33,7 @@ export const dynamic = "force-dynamic";
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="es">
+    <html lang="es" className={inter.variable}>
       <body>
         <AppShell>{children}</AppShell>
       </body>
