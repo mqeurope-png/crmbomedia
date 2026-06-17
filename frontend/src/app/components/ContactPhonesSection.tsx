@@ -126,7 +126,7 @@ export function ContactPhonesSection({ contactId }: Props) {
               />
               <button
                 type="button"
-                className="btn small"
+                className="button secondary small"
                 onClick={() => onDelete(row.id)}
               >
                 <Trash2 size={11} aria-hidden />
@@ -151,12 +151,12 @@ export function ContactPhonesSection({ contactId }: Props) {
             required
             autoFocus
           />
-          <button type="submit" className="btn btn-primary small">
+          <button type="submit" className="button small">
             Añadir
           </button>
           <button
             type="button"
-            className="btn small"
+            className="button secondary small"
             onClick={() => {
               setAdding(false);
               setDraft({ label: "", number: "" });
@@ -168,7 +168,7 @@ export function ContactPhonesSection({ contactId }: Props) {
       ) : (
         <button
           type="button"
-          className="btn small"
+          className="button secondary small"
           onClick={() => setAdding(true)}
         >
           <Plus size={11} aria-hidden /> Añadir teléfono

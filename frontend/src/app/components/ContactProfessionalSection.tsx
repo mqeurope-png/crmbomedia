@@ -137,14 +137,14 @@ function InlineField({ icon: Icon, label, value, href, onSave }: FieldProps) {
       />
       <button
         type="submit"
-        className="btn btn-primary small"
+        className="button small"
         disabled={busy}
       >
         {busy ? "…" : "Guardar"}
       </button>
       <button
         type="button"
-        className="btn small"
+        className="button secondary small"
         onClick={() => setEditing(false)}
         disabled={busy}
       >

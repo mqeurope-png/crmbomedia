@@ -105,6 +105,23 @@ function formatDateTime(value: string | null | undefined): string {
   });
 }
 
+function relativeTime(value: string | null | undefined): string {
+  if (!value) return "—";
+  const then = new Date(value).getTime();
+  if (Number.isNaN(then)) return "—";
+  const diffSec = Math.floor((Date.now() - then) / 1000);
+  if (diffSec < 60) return "ahora";
+  const min = Math.floor(diffSec / 60);
+  if (min < 60) return `hace ${min}m`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `hace ${hr}h`;
+  const day = Math.floor(hr / 24);
+  if (day < 30) return `hace ${day}d`;
+  const mo = Math.floor(day / 30);
+  if (mo < 12) return `hace ${mo}mo`;
+  return `hace ${Math.floor(mo / 12)}y`;
+}
+
 function countEvents(events: ActivityEvent[], types: string[]): number {
   return events.filter((e) => types.includes(e.event_type)).length;
 }
@@ -124,28 +141,32 @@ export function ContactSummaryTab({ events, onSeeAllActivity }: Props) {
         {recent.length === 0 ? (
           <p className="muted small">Sin actividad reciente.</p>
         ) : (
-          <ul className="contact-summary-timeline">
+          <ul className="contact-summary-timeline contact-summary-timeline-dense">
             {recent.map((e) => {
               const b = bucketFor(e.event_type);
+              const title = e.subject || b.label;
               return (
-                <li key={e.id} className="contact-summary-timeline-item">
+                <li
+                  key={e.id}
+                  className="contact-summary-timeline-item"
+                  title={
+                    e.body
+                      ? `${title} — ${e.body} (${formatDateTime(e.occurred_at)})`
+                      : `${title} (${formatDateTime(e.occurred_at)})`
+                  }
+                >
                   <span
                     className={`contact-summary-timeline-icon is-${b.tone}`}
                     aria-hidden
                   >
                     {b.icon}
                   </span>
-                  <div className="contact-summary-timeline-body">
-                    <p className="contact-summary-timeline-title">
-                      <strong>{e.subject || b.label}</strong>
-                    </p>
-                    {e.body ? (
-                      <p className="muted small contact-summary-timeline-desc">
-                        {e.body}
-                      </p>
-                    ) : null}
-                    <p className="muted small">{formatDateTime(e.occurred_at)}</p>
-                  </div>
+                  <span className="contact-summary-timeline-title">
+                    <strong>{title}</strong>
+                  </span>
+                  <span className="muted small contact-summary-timeline-time">
+                    {relativeTime(e.occurred_at)}
+                  </span>
                 </li>
               );
             })}

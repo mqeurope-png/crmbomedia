@@ -7,8 +7,10 @@
  * actividad | Score | Estado del ciclo. Si el campo es largo (e.g.
  * 5 etiquetas), se trunca con "+N" + tooltip nativo.
  */
-import { Copy, Phone as PhoneIcon } from "lucide-react";
+import { Copy, Phone as PhoneIcon, Plus, X } from "lucide-react";
+import { useState } from "react";
 import type { Contact, Tag } from "../../lib/api";
+import { TagPicker } from "../TagPicker";
 import { InlineEdit } from "./InlineEdit";
 
 type Props = {
@@ -21,6 +23,10 @@ type Props = {
   /** PATCH callback compartido con header — recibe el payload parcial
       y devuelve cuando la mutación está aplicada. */
   onPatch: (payload: Record<string, unknown>) => Promise<void>;
+  /** Tags inline edit handlers — el wrapper TagPicker existe (Sprint
+      Filtros) y solo pulsamos sus callbacks. PR-Dc. */
+  onAddTag?: (choice: { tag_id?: string; tag_name?: string }) => Promise<void>;
+  onRemoveTag?: (tagId: string) => Promise<void>;
 };
 
 function formatDate(value?: string | null): string {
@@ -66,7 +72,10 @@ export function ContactKeyDataStrip({
   lastActivityAt,
   primaryPhone,
   onPatch,
+  onAddTag,
+  onRemoveTag,
 }: Props) {
+  const [editingTags, setEditingTags] = useState(false);
   const visibleTags = tags.slice(0, 3);
   const extraTags = Math.max(0, tags.length - visibleTags.length);
   const phone = primaryPhone ?? contact.phone ?? null;
@@ -140,6 +149,16 @@ export function ContactKeyDataStrip({
               style={{ ["--tag-color" as string]: t.color ?? "var(--color-primary)" }}
             >
               {t.name}
+              {editingTags && onRemoveTag ? (
+                <button
+                  type="button"
+                  className="contact-strip-tag-remove"
+                  aria-label={`Quitar ${t.name}`}
+                  onClick={() => onRemoveTag(t.id)}
+                >
+                  <X size={10} aria-hidden />
+                </button>
+              ) : null}
             </span>
           ))}
           {extraTags > 0 ? (
@@ -152,6 +171,41 @@ export function ContactKeyDataStrip({
             >
               +{extraTags}
             </span>
+          ) : null}
+          {/* Toggle edición — un solo botón "+" para abrir el TagPicker
+              inline. Bart spec: save al blur del picker; aquí el blur
+              cierra el modo edición. */}
+          {onAddTag ? (
+            editingTags ? (
+              <span
+                className="contact-strip-tag-picker"
+                onBlur={(e) => {
+                  // El TagPicker tiene su propio handler de clic-fuera;
+                  // aquí solo cerramos cuando el focus salga del wrapper.
+                  if (
+                    !e.currentTarget.contains(e.relatedTarget as Node | null)
+                  ) {
+                    setEditingTags(false);
+                  }
+                }}
+              >
+                <TagPicker
+                  excludeTagIds={tags.map((t) => t.id)}
+                  onPick={async (choice) => {
+                    await onAddTag(choice);
+                  }}
+                />
+              </span>
+            ) : (
+              <button
+                type="button"
+                className="contact-strip-tag-add"
+                aria-label="Editar etiquetas"
+                onClick={() => setEditingTags(true)}
+              >
+                <Plus size={11} aria-hidden />
+              </button>
+            )
           ) : null}
         </span>
       </div>

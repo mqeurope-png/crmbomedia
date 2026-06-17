@@ -91,14 +91,14 @@ export function ContactCompanySection({
           <div className="form-actions">
             <button
               type="button"
-              className="btn small"
+              className="button secondary small"
               onClick={() => setPickerOpen(true)}
             >
               Cambiar
             </button>
             <button
               type="button"
-              className="btn small"
+              className="button secondary small"
               onClick={() => onPick(null)}
             >
               Quitar
@@ -110,7 +110,7 @@ export function ContactCompanySection({
           <p className="muted small">Sin empresa asignada.</p>
           <button
             type="button"
-            className="btn small"
+            className="button secondary small"
             onClick={() => setPickerOpen(true)}
           >
             Asignar empresa
