@@ -7036,6 +7036,94 @@ tr.is-inactive {
 
 .contact-detail-v2 .contact-detail-tab-body { padding: 20px; }
 
+/* PR-Db inline edits + extras Resumen ---------------------------------- */
+.inline-edit-trigger {
+  background: transparent;
+  border: 0;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 6px;
+  margin-left: -4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  position: relative;
+}
+.inline-edit-trigger:hover { background: var(--color-bg-light); }
+.inline-edit-trigger:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--color-primary) 35%, transparent);
+  outline-offset: 1px;
+}
+
+.inline-edit-editing { display: inline-flex; gap: 6px; align-items: center; }
+
+.inline-edit-editing input,
+.inline-edit-editing select {
+  padding: 4px 8px;
+  font-size: inherit;
+  font-family: inherit;
+  border-radius: 6px;
+  min-width: 0;
+}
+
+.inline-edit-done {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: #dcfce7;
+  color: #15803d;
+  border-radius: 50%;
+  width: 16px;
+  height: 16px;
+}
+
+.contact-summary-wrapper { display: flex; flex-direction: column; gap: 14px; }
+.contact-summary-extra { margin-top: 0; }
+
+.contact-tasks-pending { display: flex; flex-direction: column; gap: 14px; }
+
+.contact-tasks-pending-bucket-title {
+  margin: 0 0 6px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.contact-tasks-pending-bucket-title.is-danger { color: #b91c1c; }
+.contact-tasks-pending-bucket-title.is-primary { color: var(--color-primary); }
+.contact-tasks-pending-bucket-title.is-info { color: #0369a1; }
+
+.contact-tasks-pending-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; }
+
+.contact-tasks-pending-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: var(--color-bg-light);
+  font-size: 0.85rem;
+}
+.contact-tasks-pending-row-title { flex: 1; min-width: 0; }
+
+.contact-notes-preview-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 10px; }
+
+.contact-notes-preview-item {
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--color-bg-light);
+}
+
+.contact-notes-preview-text {
+  margin: 0 0 4px;
+  font-size: 0.88rem;
+  color: var(--color-dark);
+  line-height: 1.4;
+}
+
 .contact-summary { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; }
 
 .contact-summary-card {
