@@ -208,9 +208,29 @@ export default function ContactsListPage() {
         // por defecto (si hay una).
         if (firstLoadRef.current) {
           firstLoadRef.current = false;
-          const urlState = readUrlState(
-            new URLSearchParams(searchParams.toString()),
-          );
+          // PR-E4 (B): si la URL llega vacía (entrada fresca por
+          // sidebar o por el Router Cache de Next) restauramos el
+          // último view-state guardado en localStorage antes de
+          // pintar el default. Con URL no-vacía respetamos la URL
+          // como fuente de verdad (browser back / shared link).
+          let qsToHydrate = searchParams.toString();
+          if (!qsToHydrate) {
+            const stored = readStoredView();
+            if (stored) qsToHydrate = stored;
+          }
+          const urlState = readUrlState(new URLSearchParams(qsToHydrate));
+          // Aplicamos sort + offset + columnas en todas las ramas que
+          // hidratan algo, para no perder pieces del estado.
+          const applyCommon = () => {
+            if (urlState.sortBy)
+              setSort({
+                field: urlState.sortBy,
+                direction: urlState.sortDir ?? "desc",
+              });
+            if (urlState.offset !== null) setOffset(urlState.offset);
+            if (urlState.columns && urlState.columns.length > 0)
+              setVisibleColumns(urlState.columns);
+          };
           if (urlState.viewId) {
             const view = viewList.find((v) => v.id === urlState.viewId);
             if (view) {
@@ -219,11 +239,7 @@ export default function ContactsListPage() {
                 setQ(urlState.q);
                 setSearchInput(urlState.q);
               }
-              if (urlState.sortBy)
-                setSort({
-                  field: urlState.sortBy,
-                  direction: urlState.sortDir ?? "desc",
-                });
+              applyCommon();
               return;
             }
           }
@@ -231,25 +247,25 @@ export default function ContactsListPage() {
             setRules(urlState.rules);
             setQ(urlState.q ?? "");
             setSearchInput(urlState.q ?? "");
-            if (urlState.sortBy)
-              setSort({
-                field: urlState.sortBy,
-                direction: urlState.sortDir ?? "desc",
-              });
+            applyCommon();
             return;
           }
           const def = viewList.find((v) => v.is_default);
           if (def) {
             applyView(def);
+            applyCommon();
             return;
           }
           // Sin vista activa → columnas default del schema o
-          // localStorage del usuario.
-          const defaults = sch.fields
-            .filter((f) => f.displayable && f.default_visible)
-            .map((f) => f.key);
-          const stored = loadColumnConfig("contact", defaults);
-          setVisibleColumns(stored.visible);
+          // localStorage del usuario (cuando tampoco hay URL guardada).
+          if (!urlState.columns || urlState.columns.length === 0) {
+            const defaults = sch.fields
+              .filter((f) => f.displayable && f.default_visible)
+              .map((f) => f.key);
+            const stored = loadColumnConfig("contact", defaults);
+            setVisibleColumns(stored.visible);
+          }
+          applyCommon();
         }
       } catch (err) {
         if (!cancelled) {
@@ -279,11 +295,15 @@ export default function ContactsListPage() {
       sortBy: sort?.field ?? "created_at",
       sortDir: sort?.direction ?? "desc",
       columns: visibleColumns,
+      offset,
     });
     const next = params ? `/contacts?${params}` : "/contacts";
     router.replace(next, { scroll: false });
+    // PR-E4 (B): espejamos en localStorage para sobrevivir al Router
+    // Cache de Next cuando el browser back resucita la página.
+    writeStoredView(params);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeView, rules, q, sort, visibleColumns]);
+  }, [activeView, rules, q, sort, visibleColumns, offset]);
 
   // --- Debounce búsqueda libre -----------------------------------
 
@@ -877,12 +897,18 @@ type UrlState = {
   q: string | null;
   sortBy: string | null;
   sortDir: "asc" | "desc" | null;
+  offset: number | null;
+  columns: string[] | null;
 };
 
-// PR-E3 (B): persistencia del toggle "Mías/Todas" por pantalla. El
-// resto del estado de vista (rules, q, sort, cols) ya viaja por URL y
-// sobrevive al back-nav; el toggle vivía sólo en useState y se perdía.
+// PR-E3 (B): persistencia del toggle "Mías/Todas" por pantalla.
 const SCOPE_STORAGE_KEY = "crmbomedia_view_state:contacts:assignedToMe";
+// PR-E4 (B): persistencia del URL state completo. El URL ya carga
+// rules/sort/q/cols pero (a) `offset` faltaba y (b) cuando el browser
+// back resucita la página desde el Router Cache de Next, el estado de
+// React puede haberse perdido. Espejamos en localStorage en cada
+// cambio y restauramos sólo si la URL llega vacía (entrada fresca).
+const VIEW_STATE_KEY = "crmbomedia_view_state:contacts:full";
 
 function readStoredScope(): boolean | null {
   try {
@@ -897,6 +923,22 @@ function readStoredScope(): boolean | null {
 function writeStoredScope(value: boolean): void {
   try {
     window.localStorage.setItem(SCOPE_STORAGE_KEY, String(value));
+  } catch {
+    // best-effort
+  }
+}
+
+function readStoredView(): string | null {
+  try {
+    return window.localStorage.getItem(VIEW_STATE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredView(qs: string): void {
+  try {
+    window.localStorage.setItem(VIEW_STATE_KEY, qs);
   } catch {
     // best-effort
   }
@@ -922,12 +964,19 @@ function readUrlState(params: URLSearchParams): UrlState {
     sortBy = by || null;
     sortDir = dir === "asc" ? "asc" : "desc";
   }
+  const offsetRaw = params.get("offset");
+  const offset =
+    offsetRaw && /^\d+$/.test(offsetRaw) ? Number(offsetRaw) : null;
+  const colsRaw = params.get("cols");
+  const columns = colsRaw ? colsRaw.split(",").filter(Boolean) : null;
   return {
     viewId,
     rules,
     q: params.get("q"),
     sortBy,
     sortDir,
+    offset,
+    columns,
   };
 }
 
@@ -938,6 +987,7 @@ function serializeUrlState(state: {
   sortBy: string;
   sortDir: "asc" | "desc";
   columns: string[];
+  offset: number;
 }): string {
   const params = new URLSearchParams();
   if (state.viewId) params.set("view_id", state.viewId);
@@ -951,6 +1001,9 @@ function serializeUrlState(state: {
   }
   if (state.columns.length > 0) {
     params.set("cols", state.columns.join(","));
+  }
+  if (state.offset > 0) {
+    params.set("offset", String(state.offset));
   }
   return params.toString();
 }

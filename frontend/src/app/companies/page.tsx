@@ -146,9 +146,24 @@ export default function CompaniesListPage() {
 
         if (firstLoadRef.current) {
           firstLoadRef.current = false;
-          const urlState = readUrlState(
-            new URLSearchParams(searchParams.toString()),
-          );
+          // PR-E4 (B): URL → si vacía, restaurar última vista de
+          // localStorage antes del default.
+          let qsToHydrate = searchParams.toString();
+          if (!qsToHydrate) {
+            const stored = readStoredView();
+            if (stored) qsToHydrate = stored;
+          }
+          const urlState = readUrlState(new URLSearchParams(qsToHydrate));
+          const applyCommon = () => {
+            if (urlState.sortBy)
+              setSort({
+                field: urlState.sortBy,
+                direction: urlState.sortDir ?? "asc",
+              });
+            if (urlState.offset !== null) setOffset(urlState.offset);
+            if (urlState.columns && urlState.columns.length > 0)
+              setVisibleColumns(urlState.columns);
+          };
           if (urlState.viewId) {
             const view = viewList.find((v) => v.id === urlState.viewId);
             if (view) {
@@ -157,11 +172,7 @@ export default function CompaniesListPage() {
                 setQ(urlState.q);
                 setSearchInput(urlState.q);
               }
-              if (urlState.sortBy)
-                setSort({
-                  field: urlState.sortBy,
-                  direction: urlState.sortDir ?? "asc",
-                });
+              applyCommon();
               return;
             }
           }
@@ -169,24 +180,23 @@ export default function CompaniesListPage() {
             setRules(urlState.rules);
             setQ(urlState.q ?? "");
             setSearchInput(urlState.q ?? "");
-            if (urlState.sortBy)
-              setSort({
-                field: urlState.sortBy,
-                direction: urlState.sortDir ?? "asc",
-              });
+            applyCommon();
             return;
           }
           const def = viewList.find((v) => v.is_default);
           if (def) {
             applyView(def);
+            applyCommon();
             return;
           }
-          // Sin vista activa → columnas default del schema o localStorage.
-          const defaults = sch.fields
-            .filter((f) => f.displayable && f.default_visible)
-            .map((f) => f.key);
-          const stored = loadColumnConfig("company", defaults);
-          setVisibleColumns(stored.visible);
+          if (!urlState.columns || urlState.columns.length === 0) {
+            const defaults = sch.fields
+              .filter((f) => f.displayable && f.default_visible)
+              .map((f) => f.key);
+            const stored = loadColumnConfig("company", defaults);
+            setVisibleColumns(stored.visible);
+          }
+          applyCommon();
         }
       } catch (err) {
         if (!cancelled) {
@@ -215,11 +225,13 @@ export default function CompaniesListPage() {
       sortBy: sort?.field ?? "name",
       sortDir: sort?.direction ?? "asc",
       columns: visibleColumns,
+      offset,
     });
     const next = params ? `/companies?${params}` : "/companies";
     router.replace(next, { scroll: false });
+    writeStoredView(params);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeView, rules, q, sort, visibleColumns]);
+  }, [activeView, rules, q, sort, visibleColumns, offset]);
 
   // Debounce búsqueda libre → q
   useEffect(() => {
@@ -664,12 +676,35 @@ export default function CompaniesListPage() {
 
 // --- URL state -----------------------------------------------------
 
+// PR-E4 (B): mismo patrón que /contacts — espejamos el URL state en
+// localStorage para que el browser back resucitando la página desde
+// el Router Cache de Next siga restaurando el filtro.
+const VIEW_STATE_KEY = "crmbomedia_view_state:companies:full";
+
+function readStoredView(): string | null {
+  try {
+    return window.localStorage.getItem(VIEW_STATE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredView(qs: string): void {
+  try {
+    window.localStorage.setItem(VIEW_STATE_KEY, qs);
+  } catch {
+    // best-effort
+  }
+}
+
 type UrlState = {
   viewId: string | null;
   rules: Record<string, unknown> | null;
   q: string | null;
   sortBy: string | null;
   sortDir: "asc" | "desc" | null;
+  offset: number | null;
+  columns: string[] | null;
 };
 
 function readUrlState(params: URLSearchParams): UrlState {
@@ -692,12 +727,19 @@ function readUrlState(params: URLSearchParams): UrlState {
     sortBy = by || null;
     sortDir = dir === "desc" ? "desc" : "asc";
   }
+  const offsetRaw = params.get("offset");
+  const offset =
+    offsetRaw && /^\d+$/.test(offsetRaw) ? Number(offsetRaw) : null;
+  const colsRaw = params.get("cols");
+  const columns = colsRaw ? colsRaw.split(",").filter(Boolean) : null;
   return {
     viewId,
     rules,
     q: params.get("q"),
     sortBy,
     sortDir,
+    offset,
+    columns,
   };
 }
 
@@ -708,6 +750,7 @@ function serializeUrlState(state: {
   sortBy: string;
   sortDir: "asc" | "desc";
   columns: string[];
+  offset: number;
 }): string {
   const params = new URLSearchParams();
   if (state.viewId) params.set("view_id", state.viewId);
@@ -721,6 +764,9 @@ function serializeUrlState(state: {
   }
   if (state.columns.length > 0) {
     params.set("cols", state.columns.join(","));
+  }
+  if (state.offset > 0) {
+    params.set("offset", String(state.offset));
   }
   return params.toString();
 }
