@@ -17,7 +17,9 @@ import {
   type User,
 } from "../lib/api";
 import {
+  type BrevoCampaign,
   type BrevoList,
+  listBrevoCampaigns,
   listBrevoLists,
   resolvePrimaryBrevoAccount,
 } from "../lib/brevoApi";
@@ -25,6 +27,8 @@ import {
   type Company,
   listCompanies,
 } from "../lib/companiesApi";
+import type { DashboardWindow } from "../lib/dashboardApi";
+import { PeriodSelector } from "./dashboard/PeriodSelector";
 import { TagMultiSelectFilter } from "./TagMultiSelectFilter";
 
 /**
@@ -173,6 +177,12 @@ export function SegmentValueEditor({
         value={value}
         onChange={onChange}
       />
+    );
+  }
+
+  if (spec.key === "brevo_campaign_interaction") {
+    return (
+      <BrevoCampaignInteractionEditor value={value} onChange={onChange} />
     );
   }
 
@@ -1209,6 +1219,182 @@ function BrevoListPicker({
             </div>
           );
         })}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// PR-E3 (Deuda #8) — editor composite del field `brevo_campaign_interaction`
+// ---------------------------------------------------------------------------
+
+type BrevoInteractionValue = {
+  campaigns: number[];
+  action: string;
+  period: string;
+  start?: string | null;
+  end?: string | null;
+};
+
+const BREVO_ACTION_OPTIONS: ReadonlyArray<[string, string]> = [
+  ["received", "recibió"],
+  ["opened", "abrió"],
+  ["clicked", "clickeó"],
+  ["not_opened", "NO abrió"],
+  ["not_clicked", "NO clickeó"],
+  ["bounced", "rebotó"],
+  ["unsubscribed", "se dió de baja"],
+];
+
+function asInteractionValue(raw: unknown): BrevoInteractionValue {
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+    const v = raw as Record<string, unknown>;
+    return {
+      campaigns: Array.isArray(v.campaigns)
+        ? v.campaigns.map((c) => Number(c)).filter((n) => !Number.isNaN(n))
+        : [],
+      action: typeof v.action === "string" ? v.action : "opened",
+      period: typeof v.period === "string" ? v.period : "all",
+      start: typeof v.start === "string" ? v.start : null,
+      end: typeof v.end === "string" ? v.end : null,
+    };
+  }
+  return { campaigns: [], action: "opened", period: "all" };
+}
+
+function BrevoCampaignInteractionEditor({
+  value,
+  onChange,
+}: {
+  value: unknown;
+  onChange: (next: unknown) => void;
+}) {
+  const current = asInteractionValue(value);
+  const [accountId, setAccountId] = useState<string | null | undefined>(
+    undefined,
+  );
+  const [campaigns, setCampaigns] = useState<BrevoCampaign[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [query, setQuery] = useState("");
+  const debouncedQuery = useDebouncedValue(query, 300);
+
+  useEffect(() => {
+    resolvePrimaryBrevoAccount()
+      .then((id) => setAccountId(id ?? null))
+      .catch(() => setAccountId(null));
+  }, []);
+
+  useEffect(() => {
+    if (!accountId) return;
+    let cancelled = false;
+    setLoading(true);
+    // Sólo campañas enviadas/archivadas tienen sentido para filtrar
+    // interacción; pedimos `status=sent`. El endpoint devuelve el cache
+    // local (sin round-trip a Brevo salvo refresh).
+    listBrevoCampaigns(accountId, { status: "sent" })
+      .then((rows) => {
+        if (!cancelled) setCampaigns(rows);
+      })
+      .catch(() => {
+        if (!cancelled) setCampaigns([]);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [accountId]);
+
+  if (accountId === undefined) {
+    return <span className="muted small">Cargando cuenta Brevo…</span>;
+  }
+  if (accountId === null) {
+    return (
+      <span className="muted small">
+        Configura una cuenta Brevo en{" "}
+        <a href="/admin/integrations">/admin/integrations</a> primero.
+      </span>
+    );
+  }
+
+  const needle = debouncedQuery.trim().toLowerCase();
+  const filtered = needle
+    ? campaigns.filter((c) => c.name.toLowerCase().includes(needle))
+    : campaigns;
+  const selected = new Set(current.campaigns);
+
+  const patch = (next: Partial<BrevoInteractionValue>) =>
+    onChange({ ...current, ...next });
+
+  const toggleCampaign = (id: number) => {
+    const nextSet = new Set(selected);
+    if (nextSet.has(id)) nextSet.delete(id);
+    else nextSet.add(id);
+    patch({ campaigns: [...nextSet] });
+  };
+
+  const windowValue: DashboardWindow = {
+    period: current.period as DashboardWindow["period"],
+    start: current.start,
+    end: current.end,
+  };
+
+  return (
+    <div className="brevo-interaction-editor">
+      <div className="brevo-interaction-row">
+        <label className="brevo-interaction-label">Acción</label>
+        <select
+          className="qb-value"
+          value={current.action}
+          onChange={(e) => patch({ action: e.target.value })}
+        >
+          {BREVO_ACTION_OPTIONS.map(([v, label]) => (
+            <option key={v} value={v}>
+              {label}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      <div className="brevo-interaction-row brevo-interaction-row-stack">
+        <label className="brevo-interaction-label">Campañas</label>
+        <input
+          type="search"
+          className="qb-value"
+          value={query}
+          placeholder="Buscar campaña…"
+          onChange={(e) => setQuery(e.target.value)}
+        />
+        <div className="qb-value-multi qb-value-multi-stacked brevo-interaction-campaigns">
+          {loading ? (
+            <span className="muted small">Cargando campañas…</span>
+          ) : filtered.length === 0 ? (
+            <span className="muted small">Sin campañas.</span>
+          ) : (
+            filtered.map((c) => (
+              <label key={c.brevo_campaign_id} className="qb-value-chip">
+                <input
+                  type="checkbox"
+                  checked={selected.has(c.brevo_campaign_id)}
+                  onChange={() => toggleCampaign(c.brevo_campaign_id)}
+                />
+                <PickerLabel text={c.name} />
+              </label>
+            ))
+          )}
+        </div>
+      </div>
+
+      <div className="brevo-interaction-row brevo-interaction-row-stack">
+        <label className="brevo-interaction-label">Período (sent_at)</label>
+        <PeriodSelector
+          value={windowValue}
+          includeAll
+          onChange={(w) =>
+            patch({ period: w.period, start: w.start, end: w.end })
+          }
+        />
       </div>
     </div>
   );

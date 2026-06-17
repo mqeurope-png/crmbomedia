@@ -11,6 +11,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
+import app.models.brevo  # noqa: F401 — registra brevo_campaigns_cache en Base.metadata
 from app.models.crm import (
     Base,
     Contact,
@@ -837,3 +838,172 @@ def test_tag_contains_none_combined_with_and(session_factory):
         matched = list(session.scalars(select(Contact).where(condition)))
         # Boris has denied marketing AND no VIP tag (he's Cold).
         assert _ids(matched) == {seeded["boris"].id}
+
+
+# ---------------------------------------------------------------------------
+# PR-E3 (Deuda #8) — brevo_campaign_interaction composite field
+# ---------------------------------------------------------------------------
+
+
+def _seed_brevo_interactions(session: Session) -> dict[str, Contact]:
+    """Siembra 3 contactos + campaña Brevo + activity_events para cubrir
+    received / opened / clicked / not_opened."""
+    from app.models.brevo import BrevoCampaignCache
+    from app.models.crm import ActivityEvent, ExternalSystem
+
+    now = datetime.now(UTC)
+    cache = BrevoCampaignCache(
+        brevo_account_id="main",
+        brevo_campaign_id=42,
+        name="FESPA 2026",
+        status="sent",
+        type="classic",
+        sent_at=now - timedelta(days=5),
+        cached_at=now,
+    )
+    session.add(cache)
+
+    contacts = {
+        "abrio": Contact(first_name="Abrio", email="abrio@example.com"),
+        "clicko": Contact(first_name="Clicko", email="clicko@example.com"),
+        "solo_recibio": Contact(
+            first_name="Recibio", email="recibio@example.com"
+        ),
+    }
+    session.add_all(contacts.values())
+    session.flush()
+
+    def _ev(contact_id: str, event_type: str) -> ActivityEvent:
+        return ActivityEvent(
+            contact_id=contact_id,
+            system=ExternalSystem.BREVO,
+            account_id="main",
+            event_type=event_type,
+            external_id=f"{contact_id}:{event_type}:42",
+            campaign_brevo_id=42,
+            occurred_at=now - timedelta(days=4),
+        )
+
+    session.add_all(
+        [
+            # "abrio": delivered + opened (pero no click).
+            _ev(contacts["abrio"].id, "email.delivered"),
+            _ev(contacts["abrio"].id, "email.opened"),
+            # "clicko": delivered + opened + clicked.
+            _ev(contacts["clicko"].id, "email.delivered"),
+            _ev(contacts["clicko"].id, "email.opened"),
+            _ev(contacts["clicko"].id, "email.clicked"),
+            # "solo_recibio": delivered solo.
+            _ev(contacts["solo_recibio"].id, "email.delivered"),
+        ]
+    )
+    session.commit()
+    return contacts
+
+
+def test_brevo_interaction_opened_matches_openers(session_factory):
+    with session_factory() as session:
+        seeded = _seed_brevo_interactions(session)
+        condition = build_filter(
+            {
+                "type": "rule",
+                "field": "brevo_campaign_interaction",
+                "comparator": "matches",
+                "value": {
+                    "campaigns": [42],
+                    "action": "opened",
+                    "period": "all",
+                },
+            }
+        )
+        matched = list(session.scalars(select(Contact).where(condition)))
+        assert _ids(matched) == {
+            seeded["abrio"].id,
+            seeded["clicko"].id,
+        }
+
+
+def test_brevo_interaction_clicked_matches_clickers(session_factory):
+    with session_factory() as session:
+        seeded = _seed_brevo_interactions(session)
+        condition = build_filter(
+            {
+                "type": "rule",
+                "field": "brevo_campaign_interaction",
+                "comparator": "matches",
+                "value": {
+                    "campaigns": [42],
+                    "action": "clicked",
+                    "period": "all",
+                },
+            }
+        )
+        matched = list(session.scalars(select(Contact).where(condition)))
+        assert _ids(matched) == {seeded["clicko"].id}
+
+
+def test_brevo_interaction_not_opened_matches_delivered_only(session_factory):
+    with session_factory() as session:
+        seeded = _seed_brevo_interactions(session)
+        condition = build_filter(
+            {
+                "type": "rule",
+                "field": "brevo_campaign_interaction",
+                "comparator": "matches",
+                "value": {
+                    "campaigns": [42],
+                    "action": "not_opened",
+                    "period": "all",
+                },
+            }
+        )
+        matched = list(session.scalars(select(Contact).where(condition)))
+        # Solo "solo_recibio": recibió pero no abrió.
+        assert _ids(matched) == {seeded["solo_recibio"].id}
+
+
+def test_brevo_interaction_period_excludes_old_campaigns(session_factory):
+    """Con period=3d una campaña enviada hace 5 días queda fuera de la
+    ventana sent_at → 0 matches."""
+    with session_factory() as session:
+        _seed_brevo_interactions(session)
+        condition = build_filter(
+            {
+                "type": "rule",
+                "field": "brevo_campaign_interaction",
+                "comparator": "matches",
+                "value": {
+                    "campaigns": [42],
+                    "action": "opened",
+                    "period": "3d",
+                },
+            }
+        )
+        matched = list(session.scalars(select(Contact).where(condition)))
+        assert _ids(matched) == set()
+
+
+def test_brevo_interaction_invalid_value_is_400_not_500(session_factory):
+    with session_factory() as session:
+        _seed_brevo_interactions(session)
+        with pytest.raises(SegmentRuleError):
+            build_filter(
+                {
+                    "type": "rule",
+                    "field": "brevo_campaign_interaction",
+                    "comparator": "matches",
+                    "value": {"campaigns": [], "action": "opened"},
+                }
+            )
+        with pytest.raises(SegmentRuleError):
+            build_filter(
+                {
+                    "type": "rule",
+                    "field": "brevo_campaign_interaction",
+                    "comparator": "matches",
+                    "value": {
+                        "campaigns": [42],
+                        "action": "bogus_action",
+                    },
+                }
+            )

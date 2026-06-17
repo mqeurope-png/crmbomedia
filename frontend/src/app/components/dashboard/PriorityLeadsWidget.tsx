@@ -1,35 +1,26 @@
 "use client";
 
 /**
- * "👥 Leads prioritarios" — PR-E2 reemplaza al widget legacy "Leads
- * sin atender" (UnattendedLeadsWidget). Cambios:
- *
- * - Solo lista contactos asignados al current_user (no leads sueltos).
- * - Cada lead trae un `reason` (`recent` / `assigned` / `active`) →
- *   chip de color para que el operador entienda por qué aparece.
- * - Selector temporal independiente del header [7d] [14d] [30d].
- * - Click → ficha contacto. Sin botón "Asignarme" (son del current).
+ * "👥 Leads prioritarios" — PR-E2, selector temporal ampliado en
+ * PR-E3 ([3d][1sem][15d][30d][Custom]) + persistencia localStorage.
+ * Lista contactos asignados al user con razón recent/assigned/active.
  */
 import { Users } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import {
   getDashboardPriorityLeads,
-  type DashboardPeriod,
+  type DashboardWindow,
   type PriorityLead,
 } from "../../lib/dashboardApi";
+import { usePersistentState } from "../../lib/usePersistentState";
+import { PeriodSelector } from "./PeriodSelector";
 
 const REASON_LABEL: Record<string, { label: string; tone: string }> = {
   recent: { label: "Recién creado", tone: "is-info" },
   assigned: { label: "Recién asignado", tone: "is-success" },
   active: { label: "Activo", tone: "is-warning" },
 };
-
-const PERIOD_OPTIONS: ReadonlyArray<[DashboardPeriod, string]> = [
-  ["7d", "7 días"],
-  ["14d", "14 días"],
-  ["30d", "30 días"],
-];
 
 function relative(value: string): string {
   const then = new Date(value).getTime();
@@ -46,7 +37,10 @@ function relative(value: string): string {
 }
 
 export function PriorityLeadsWidget() {
-  const [period, setPeriod] = useState<DashboardPeriod>("14d");
+  const [window_, setWindow] = usePersistentState<DashboardWindow>(
+    "crmbomedia_dash:priority_leads:period",
+    { period: "7d" },
+  );
   const [leads, setLeads] = useState<PriorityLead[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -54,7 +48,7 @@ export function PriorityLeadsWidget() {
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    getDashboardPriorityLeads(period, 10)
+    getDashboardPriorityLeads(window_, 10)
       .then((rows) => {
         if (!cancelled) setLeads(rows);
       })
@@ -67,7 +61,7 @@ export function PriorityLeadsWidget() {
     return () => {
       cancelled = true;
     };
-  }, [period]);
+  }, [window_]);
 
   return (
     <article className="card widget widget-priority-leads">
@@ -75,66 +69,49 @@ export function PriorityLeadsWidget() {
         <h2>
           <Users size={14} aria-hidden /> Leads prioritarios
         </h2>
-        <div
-          className="widget-segment"
-          role="radiogroup"
-          aria-label="Rango temporal"
-        >
-          {PERIOD_OPTIONS.map(([value, label]) => (
-            <button
-              key={value}
-              type="button"
-              role="radio"
-              aria-checked={period === value}
-              className={`widget-segment-item${
-                period === value ? " is-active" : ""
-              }`}
-              onClick={() => setPeriod(value)}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
+        <PeriodSelector value={window_} onChange={setWindow} />
       </header>
-      {loading ? (
-        <p className="muted small">Cargando…</p>
-      ) : error ? (
-        <p className="form-error">{error}</p>
-      ) : leads.length === 0 ? (
-        <div className="widget-empty">
-          <p className="muted small">
-            No tienes leads prioritarios en este período.
-          </p>
-        </div>
-      ) : (
-        <ul className="widget-list">
-          {leads.map((lead) => {
-            const reason = REASON_LABEL[lead.reason] ?? {
-              label: lead.reason,
-              tone: "is-muted",
-            };
-            const name =
-              [lead.first_name, lead.last_name].filter(Boolean).join(" ") ||
-              lead.email;
-            return (
-              <li key={lead.id} className="widget-row">
-                <div className="widget-row-main">
-                  <p className="widget-row-title">
-                    <Link href={`/contacts/${lead.id}`}>{name}</Link>
-                  </p>
-                  <p className="widget-row-meta">
-                    <span className="muted small">{lead.email}</span>
-                    <span className="muted small">
-                      · {relative(lead.signal_at)}
-                    </span>
-                  </p>
-                </div>
-                <span className={`chip ${reason.tone}`}>{reason.label}</span>
-              </li>
-            );
-          })}
-        </ul>
-      )}
+      <div className="widget-scroll">
+        {loading ? (
+          <p className="muted small">Cargando…</p>
+        ) : error ? (
+          <p className="form-error">{error}</p>
+        ) : leads.length === 0 ? (
+          <div className="widget-empty">
+            <p className="muted small">
+              No tienes leads prioritarios en este período.
+            </p>
+          </div>
+        ) : (
+          <ul className="widget-list">
+            {leads.map((lead) => {
+              const reason = REASON_LABEL[lead.reason] ?? {
+                label: lead.reason,
+                tone: "is-muted",
+              };
+              const name =
+                [lead.first_name, lead.last_name].filter(Boolean).join(" ") ||
+                lead.email;
+              return (
+                <li key={lead.id} className="widget-row">
+                  <div className="widget-row-main">
+                    <p className="widget-row-title">
+                      <Link href={`/contacts/${lead.id}`}>{name}</Link>
+                    </p>
+                    <p className="widget-row-meta">
+                      <span className="muted small">{lead.email}</span>
+                      <span className="muted small">
+                        · {relative(lead.signal_at)}
+                      </span>
+                    </p>
+                  </div>
+                  <span className={`chip ${reason.tone}`}>{reason.label}</span>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
     </article>
   );
 }

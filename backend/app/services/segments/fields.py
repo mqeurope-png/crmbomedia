@@ -135,6 +135,33 @@ _NOTES_CONTENT = (
 # casos en producción con esos campos NULL (importados sin estado, sin
 # consent) que el operador necesita encontrar.
 _ENUM_NULLABLE = ("eq", "neq", "in", "not_in", "is_null", "is_not_null")
+# PR-E3 (Deuda #8) — filtro composite de interacción con campañas Brevo.
+# Un único comparator `matches` cuyo `value` es un objeto
+# `{campaigns:[int], action, period, start?, end?}`. El motor lo
+# compila a EXISTS / NOT EXISTS sobre activity_events.
+_BREVO_INTERACTION = ("matches",)
+#: Acciones soportadas → event_type(s) de activity_events. `not_opened`
+#: y `not_clicked` son negativas (delivered-pero-no-X / opened-pero-no-X)
+#: y se compilan distinto.
+BREVO_INTERACTION_ACTIONS: dict[str, tuple[str, ...]] = {
+    "received": ("email.delivered",),
+    "opened": ("email.opened",),
+    "clicked": ("email.clicked",),
+    "not_opened": ("email.opened",),  # negativa sobre delivered
+    "not_clicked": ("email.clicked",),  # negativa sobre opened
+    "bounced": ("email.bounced_hard", "email.bounced_soft"),
+    "unsubscribed": ("email.unsubscribed",),
+}
+#: Períodos referidos a `brevo_campaigns_cache.sent_at`. "all" = sin
+#: cota temporal. Reusa la misma escala que los widgets del dashboard.
+BREVO_INTERACTION_PERIODS: dict[str, int | None] = {
+    "all": None,
+    "3d": 3,
+    "7d": 7,
+    "15d": 15,
+    "30d": 30,
+    "custom": None,  # usa start/end explícitos
+}
 
 FIELD_SPECS: dict[str, FieldSpec] = {
     "name": FieldSpec(
@@ -529,6 +556,21 @@ FIELD_SPECS: dict[str, FieldSpec] = {
         source="related_table",
         reference_table="pipeline_stages",
     ),
+    # PR-E3 (Deuda #8). Composite — el editor frontend pinta 3
+    # sub-pickers (campañas multi-select + acción + período). El value
+    # es un objeto, no un escalar; `validate_value` lo valida y el
+    # motor compila a EXISTS/NOT EXISTS contra activity_events.
+    "brevo_campaign_interaction": FieldSpec(
+        key="brevo_campaign_interaction",
+        label="Interacción con campañas",
+        type="brevo_campaign_interaction",
+        comparators=_BREVO_INTERACTION,
+        relation="brevo_campaign_interaction",
+        displayable=False,
+        grouped_under="Marketing",
+        source="related_table",
+        reference_table="brevo_campaigns",
+    ),
 }
 
 
@@ -577,6 +619,8 @@ def validate_value(spec: FieldSpec, comparator: str, value: Any) -> Any:
     """
     if comparator in {"is_null", "is_not_null", "is_empty", "is_not_empty"}:
         return None
+    if spec.type == "brevo_campaign_interaction":
+        return _validate_brevo_interaction(value)
     if comparator in {"in", "not_in", "contains_any", "contains_all", "contains_none"}:
         if not isinstance(value, list) or not value:
             raise ValueError(f"Comparator {comparator!r} requires a non-empty list")
@@ -586,6 +630,80 @@ def validate_value(spec: FieldSpec, comparator: str, value: Any) -> Any:
             raise ValueError("between requires a 2-element list")
         return [_coerce_scalar(spec, item) for item in value]
     return _coerce_scalar(spec, value)
+
+
+def _validate_brevo_interaction(value: Any) -> dict[str, Any]:
+    """Valida el value composite de `brevo_campaign_interaction`:
+
+        {
+          "campaigns": [123, 456],        # brevo_campaign_id (int)
+          "action": "opened",            # ∈ BREVO_INTERACTION_ACTIONS
+          "period": "30d",               # ∈ BREVO_INTERACTION_PERIODS
+          "start": "2026-01-01T...",     # solo si period == custom
+          "end":   "2026-01-31T..."
+        }
+
+    Devuelve el dict normalizado (campaigns como list[int], period
+    default "all"). Raises ValueError en cualquier inconsistencia → el
+    motor lo mapea a 400.
+    """
+    from datetime import datetime as _dt
+
+    if not isinstance(value, dict):
+        raise ValueError(
+            "brevo_campaign_interaction requiere un objeto "
+            "{campaigns, action, period}"
+        )
+    raw_campaigns = value.get("campaigns")
+    if not isinstance(raw_campaigns, list) or not raw_campaigns:
+        raise ValueError("Selecciona al menos una campaña")
+    campaigns: list[int] = []
+    for item in raw_campaigns:
+        try:
+            campaigns.append(int(item))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"brevo_campaign_id no numérico: {item!r}"
+            ) from exc
+
+    action = str(value.get("action") or "")
+    if action not in BREVO_INTERACTION_ACTIONS:
+        raise ValueError(
+            f"Acción desconocida {action!r}. Válidas: "
+            f"{', '.join(BREVO_INTERACTION_ACTIONS)}"
+        )
+
+    period = str(value.get("period") or "all")
+    if period not in BREVO_INTERACTION_PERIODS:
+        raise ValueError(
+            f"Período desconocido {period!r}. Válidos: "
+            f"{', '.join(BREVO_INTERACTION_PERIODS)}"
+        )
+
+    normalized: dict[str, Any] = {
+        "campaigns": campaigns,
+        "action": action,
+        "period": period,
+    }
+    if period == "custom":
+        start_raw = value.get("start")
+        end_raw = value.get("end")
+        if not start_raw or not end_raw:
+            raise ValueError(
+                "El período 'custom' requiere start + end"
+            )
+        try:
+            normalized["start"] = _dt.fromisoformat(
+                str(start_raw).replace("Z", "+00:00")
+            )
+            normalized["end"] = _dt.fromisoformat(
+                str(end_raw).replace("Z", "+00:00")
+            )
+        except ValueError as exc:
+            raise ValueError(
+                "start/end deben ser ISO datetime"
+            ) from exc
+    return normalized
 
 
 def _coerce_scalar(spec: FieldSpec, value: Any) -> Any:

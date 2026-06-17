@@ -197,8 +197,12 @@ export default function ContactsListPage() {
         setSchema(sch);
         setViews(viewList);
         setUserMap(new Map(allUsers.map((u) => [u.id, u])));
-        // Sales → solo míos por defecto.
-        if (me?.role === "user") setAssignedToMe(true);
+        // PR-E3 (B): default "Mías" para TODOS los roles + persistencia.
+        // Si el user ya eligió antes, restauramos su última selección;
+        // si no, arrancamos en "Mías" (true). Antes sólo el rol `user`
+        // empezaba en Mías.
+        const storedScope = readStoredScope();
+        setAssignedToMe(storedScope ?? true);
 
         // Hidrata estado desde URL si la tiene, si no carga la vista
         // por defecto (si hay una).
@@ -673,6 +677,7 @@ export default function ContactsListPage() {
               className={`button small ${assignedToMe ? "" : "secondary"}`}
               onClick={() => {
                 setAssignedToMe(true);
+                writeStoredScope(true);
                 setOffset(0);
               }}
             >
@@ -683,6 +688,7 @@ export default function ContactsListPage() {
               className={`button small ${assignedToMe ? "secondary" : ""}`}
               onClick={() => {
                 setAssignedToMe(false);
+                writeStoredScope(false);
                 setOffset(0);
               }}
             >
@@ -872,6 +878,29 @@ type UrlState = {
   sortBy: string | null;
   sortDir: "asc" | "desc" | null;
 };
+
+// PR-E3 (B): persistencia del toggle "Mías/Todas" por pantalla. El
+// resto del estado de vista (rules, q, sort, cols) ya viaja por URL y
+// sobrevive al back-nav; el toggle vivía sólo en useState y se perdía.
+const SCOPE_STORAGE_KEY = "crmbomedia_view_state:contacts:assignedToMe";
+
+function readStoredScope(): boolean | null {
+  try {
+    const raw = window.localStorage.getItem(SCOPE_STORAGE_KEY);
+    if (raw === null) return null;
+    return raw === "true";
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredScope(value: boolean): void {
+  try {
+    window.localStorage.setItem(SCOPE_STORAGE_KEY, String(value));
+  } catch {
+    // best-effort
+  }
+}
 
 function readUrlState(params: URLSearchParams): UrlState {
   const viewId = params.get("view_id");

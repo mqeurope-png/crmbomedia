@@ -1,20 +1,20 @@
 "use client";
 
 /**
- * "🕐 Últimas interacciones" — PR-E2 reescrito para usar el endpoint
- * `/api/dashboard/recent-interactions` que mezcla email + call + note
- * + task events ordenados por `occurred_at` desc.
- *
- * Toggle scope `mine` / `team` para que el operador vea su perímetro
- * o el del equipo. Default `mine`.
+ * "🕐 Últimas interacciones" — PR-E2 timeline mixto, PR-E3 añade
+ * selector temporal + persistencia. Toggle scope Mías/Equipo +
+ * período [3d][1sem][15d][30d][Custom].
  */
 import { CheckSquare, Mail, MessageCircle, Phone, StickyNote } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import {
   getDashboardRecentInteractions,
+  type DashboardWindow,
   type RecentInteraction,
 } from "../../lib/dashboardApi";
+import { usePersistentState } from "../../lib/usePersistentState";
+import { PeriodSelector } from "./PeriodSelector";
 
 type Scope = "mine" | "team";
 
@@ -53,7 +53,14 @@ function labelFor(eventType: string): string {
 }
 
 export function RecentInteractionsWidget() {
-  const [scope, setScope] = useState<Scope>("mine");
+  const [scope, setScope] = usePersistentState<Scope>(
+    "crmbomedia_dash:recent_interactions:scope",
+    "mine",
+  );
+  const [window_, setWindow] = usePersistentState<DashboardWindow>(
+    "crmbomedia_dash:recent_interactions:period",
+    { period: "7d" },
+  );
   const [events, setEvents] = useState<RecentInteraction[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -61,7 +68,7 @@ export function RecentInteractionsWidget() {
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    getDashboardRecentInteractions(scope, 15)
+    getDashboardRecentInteractions(scope, window_, 20)
       .then((rows) => {
         if (!cancelled) setEvents(rows);
       })
@@ -75,70 +82,79 @@ export function RecentInteractionsWidget() {
     return () => {
       cancelled = true;
     };
-  }, [scope]);
+  }, [scope, window_]);
 
   return (
     <article className="card widget widget-interactions">
-      <header className="section-title">
+      <header className="section-title section-title-stack">
         <h2>🕐 Últimas interacciones</h2>
-        <div className="widget-segment" role="radiogroup" aria-label="Scope">
-          <button
-            type="button"
-            role="radio"
-            aria-checked={scope === "mine"}
-            className={`widget-segment-item${
-              scope === "mine" ? " is-active" : ""
-            }`}
-            onClick={() => setScope("mine")}
-          >
-            Mías
-          </button>
-          <button
-            type="button"
-            role="radio"
-            aria-checked={scope === "team"}
-            className={`widget-segment-item${
-              scope === "team" ? " is-active" : ""
-            }`}
-            onClick={() => setScope("team")}
-          >
-            Equipo
-          </button>
+        <div className="widget-header-controls">
+          <div className="widget-segment" role="radiogroup" aria-label="Scope">
+            <button
+              type="button"
+              role="radio"
+              aria-checked={scope === "mine"}
+              className={`widget-segment-item${
+                scope === "mine" ? " is-active" : ""
+              }`}
+              onClick={() => setScope("mine")}
+            >
+              Mías
+            </button>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={scope === "team"}
+              className={`widget-segment-item${
+                scope === "team" ? " is-active" : ""
+              }`}
+              onClick={() => setScope("team")}
+            >
+              Equipo
+            </button>
+          </div>
+          <PeriodSelector value={window_} onChange={setWindow} />
         </div>
       </header>
-      {loading ? (
-        <p className="muted small">Cargando…</p>
-      ) : error ? (
-        <p className="form-error">{error}</p>
-      ) : events.length === 0 ? (
-        <div className="widget-empty">
-          <p className="muted small">Sin interacciones recientes.</p>
-        </div>
-      ) : (
-        <ul className="widget-list">
-          {events.map((ev) => (
-            <li key={ev.id} className="widget-row">
-              <span className="widget-row-icon" aria-hidden>
-                {iconFor(ev.event_type)}
-              </span>
-              <div className="widget-row-main">
-                <p className="widget-row-title">
-                  <Link href={`/contacts/${ev.contact_id}`}>
-                    {ev.contact_name}
-                  </Link>{" "}
-                  <span className="muted small">· {labelFor(ev.event_type)}</span>
-                </p>
-                <p className="widget-row-meta">
-                  <span className="muted small">
-                    {ev.subject ?? "Sin asunto"}
-                  </span>
-                  <span className="muted small">{relative(ev.occurred_at)}</span>
-                </p>
-              </div>
-            </li>
-          ))}
-        </ul>
-      )}
+      <div className="widget-scroll">
+        {loading ? (
+          <p className="muted small">Cargando…</p>
+        ) : error ? (
+          <p className="form-error">{error}</p>
+        ) : events.length === 0 ? (
+          <div className="widget-empty">
+            <p className="muted small">Sin interacciones recientes.</p>
+          </div>
+        ) : (
+          <ul className="widget-list">
+            {events.map((ev) => (
+              <li key={ev.id} className="widget-row">
+                <span className="widget-row-icon" aria-hidden>
+                  {iconFor(ev.event_type)}
+                </span>
+                <div className="widget-row-main">
+                  <p className="widget-row-title">
+                    <Link href={`/contacts/${ev.contact_id}`}>
+                      {ev.contact_name}
+                    </Link>{" "}
+                    <span className="muted small">
+                      · {labelFor(ev.event_type)}
+                    </span>
+                  </p>
+                  <p className="widget-row-meta">
+                    <span className="muted small">
+                      {ev.subject ?? "Sin asunto"}
+                    </span>
+                    <span className="muted small">
+                      {relative(ev.occurred_at)}
+                    </span>
+                  </p>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
     </article>
   );
 }

@@ -85,7 +85,37 @@ export function EmailThreadList({ folders, labels, refreshKey }: Props) {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [teamUsers, setTeamUsers] = useState<User[]>([]);
 
+  // PR-E3 (B): persistimos el último scope para restaurarlo al volver
+  // a /emails sin params (navegación fresca desde el sidebar). El URL
+  // sigue siendo la fuente de verdad dentro de la sesión / back-nav;
+  // localStorage sólo cubre la entrada limpia.
+  useEffect(() => {
+    if (params.get("scope") || params.get("state") || params.get("q")) {
+      return; // hay estado en URL → respétalo, no restaures.
+    }
+    let stored: string | null = null;
+    try {
+      stored = window.localStorage.getItem(
+        "crmbomedia_view_state:emails:scope",
+      );
+    } catch {
+      stored = null;
+    }
+    if (stored === "team") {
+      const sp = new URLSearchParams(params.toString());
+      sp.set("scope", "team");
+      router.replace(`/emails?${sp.toString()}`);
+    }
+    // Sólo en el montaje inicial.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   function setScopeUrl(next: "mine" | "team") {
+    try {
+      window.localStorage.setItem("crmbomedia_view_state:emails:scope", next);
+    } catch {
+      // best-effort
+    }
     const sp = new URLSearchParams(params.toString());
     if (next === "team") sp.set("scope", "team");
     else {
