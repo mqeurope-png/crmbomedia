@@ -10,6 +10,7 @@ import { ConfirmDialog } from "../../../components/ConfirmDialog";
 import { ErrorState } from "../../../components/ErrorState";
 import { PageHeader } from "../../../components/PageHeader";
 import {
+  backfillBrevoCampaignRecipients,
   CAMPAIGN_STATUS_LABEL,
   campaignRates,
   campaignStatusClass,
@@ -48,6 +49,8 @@ export default function CampaignDetailPage() {
   const [message, setMessage] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [confirmBackfill, setConfirmBackfill] = useState(false);
+  const [backfillBusy, setBackfillBusy] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -209,6 +212,21 @@ export default function CampaignDetailPage() {
                 onClick={() => setConfirmDelete(true)}
               >
                 Borrar
+              </button>
+            ) : null}
+            {/* Sprint Brevo Backfill: solo aplica a campañas ya enviadas.
+                Encola un job RQ que tira de los recipients del export de
+                Brevo. Bart restringe a manager+ desde el backend; aquí
+                el botón sale para cualquiera que pueda ver la ficha y el
+                403 sale del API si no tienen rol suficiente. */}
+            {isSent ? (
+              <button
+                type="button"
+                className="button secondary small"
+                disabled={backfillBusy}
+                onClick={() => setConfirmBackfill(true)}
+              >
+                {backfillBusy ? "Encolando…" : "Sincronizar destinatarios"}
               </button>
             ) : null}
             <a
@@ -382,6 +400,40 @@ export default function CampaignDetailPage() {
           }
         }}
         onCancel={() => setConfirmDelete(false)}
+      />
+      <ConfirmDialog
+        open={confirmBackfill}
+        title="Sincronizar destinatarios"
+        message={
+          `Vamos a encolar un backfill de los recipients de "${campaign.name}". ` +
+          "Tira del export de Brevo y rellena los eventos (delivered, opened, " +
+          "clicked, bounces, unsubscribed) en la BD. Tarda ~5-10 min en background."
+        }
+        confirmLabel="Encolar"
+        onConfirm={async () => {
+          setConfirmBackfill(false);
+          setBackfillBusy(true);
+          setError(null);
+          try {
+            const enq = await backfillBrevoCampaignRecipients(
+              campaign.brevo_campaign_id,
+            );
+            setMessage(
+              `Sincronización en marcha (sync_log_id=${enq.sync_log_id ?? "—"}). ` +
+                "Los eventos aparecerán en la pestaña 'Destinatarios por evento' en ~5-10 min.",
+            );
+          } catch (err) {
+            setError(
+              extractErrorMessage(
+                err,
+                "No se pudo encolar el backfill de destinatarios.",
+              ),
+            );
+          } finally {
+            setBackfillBusy(false);
+          }
+        }}
+        onCancel={() => setConfirmBackfill(false)}
       />
     </main>
   );

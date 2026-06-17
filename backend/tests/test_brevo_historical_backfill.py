@@ -824,3 +824,169 @@ def test_status_endpoint_returns_never_with_no_log(client):
     )
     assert response.status_code == 200
     assert response.json() == {"status": "never"}
+
+
+def test_backfill_account_campaigns_filters_by_campaign_brevo_ids(
+    session_factory,
+):
+    """`backfill_account_campaigns(campaign_brevo_ids=[N])` debe
+    procesar SOLO esas campañas, dejando el resto del cache intacto.
+    Soporta el botón "Sincronizar destinatarios" de una campaña suelta
+    sin re-procesar las 60 anteriores."""
+    with session_factory() as session:
+        _seed_contacts(session, "ana@example.com")
+        _seed_campaign(
+            session,
+            brevo_id=10,
+            sent_at=datetime(2026, 3, 1, 9, 0, tzinfo=UTC),
+            name="Old",
+        )
+        _seed_campaign(
+            session,
+            brevo_id=11,
+            sent_at=datetime(2026, 5, 1, 9, 0, tzinfo=UTC),
+            name="Target",
+        )
+        _seed_campaign(
+            session,
+            brevo_id=12,
+            sent_at=datetime(2026, 6, 1, 9, 0, tzinfo=UTC),
+            name="New",
+        )
+        session.commit()
+
+        delivered_row = _csv_row(
+            Email_ID="ana@example.com",
+            Send_Date="03-10-2025 10:45:06",
+            Delivered_Date="03-10-2025 10:45:13",
+        )
+        _FakeBrevoClient.csv_by_campaign = {
+            10: _csv_bytes(delivered_row),
+            11: _csv_bytes(delivered_row),
+            12: _csv_bytes(delivered_row),
+        }
+
+        with _patch_client():
+            stats = backfill_account_campaigns(
+                session,
+                account_id="main",
+                campaign_brevo_ids=[11],
+            )
+
+        # Solo la campaña 11 se procesó; 10 y 12 ni se tocan.
+        assert stats["campaigns_processed"] == 1
+        assert stats["per_campaign"][0]["campaign_name"] == "Target"
+
+
+def test_run_historical_backfill_passes_campaign_brevo_ids_payload(
+    session_factory,
+):
+    """El handler `run_historical_backfill` debe leer
+    `campaign_brevo_ids` del payload y pasarlo a `backfill_account_
+    campaigns`. Stub minimal — confirma el contrato del payload."""
+    from unittest.mock import patch as _patch  # noqa: PLC0415
+
+    from app.integrations.brevo.historical_backfill import (  # noqa: PLC0415
+        run_historical_backfill,
+    )
+    from app.models.crm import SyncLog, SyncStatus, ExternalSystem  # noqa: PLC0415
+
+    with session_factory() as session:
+        sync_log = SyncLog(
+            system=ExternalSystem.BREVO,
+            account_id="main",
+            operation="historical_backfill",
+            status=SyncStatus.RUNNING.value,
+            metadata_json='{"campaign_brevo_ids": [42, "43", "bogus"]}',
+        )
+        session.add(sync_log)
+        session.commit()
+        with _patch(
+            "app.integrations.brevo.historical_backfill"
+            ".backfill_account_campaigns"
+        ) as fake:
+            fake.return_value = {
+                "campaigns_processed": 1,
+                "campaigns_skipped": 0,
+                "events_inserted_total": 5,
+                "events_skipped_total": 0,
+                "contacts_unknown_total": 0,
+                "errors": [],
+                "per_campaign": [],
+            }
+            outcome = run_historical_backfill(session, sync_log)
+        # "bogus" se descarta, 42 + 43 se coercen a int.
+        assert fake.call_args.kwargs["campaign_brevo_ids"] == [42, 43]
+        assert outcome.records_processed == 5
+
+
+def test_backfill_recipients_endpoint_enqueues_with_campaign_id(
+    client, session_factory
+):
+    """`POST /api/brevo/campaigns/{id}/backfill-recipients` encola un
+    `historical_backfill` con `campaign_brevo_ids=[id]`."""
+    from unittest.mock import patch  # noqa: PLC0415
+
+    from tests._test_helpers import auth_headers  # noqa: PLC0415
+
+    with session_factory() as session:
+        _seed_campaign(
+            session,
+            brevo_id=42,
+            sent_at=datetime(2026, 3, 1, 9, 0, tzinfo=UTC),
+            name="Target",
+        )
+        session.commit()
+
+    with patch("app.api.brevo.enqueue_sync_job") as fake:
+        fake.return_value = ("log-id", "job-id")
+        resp = client.post(
+            "/api/brevo/campaigns/42/backfill-recipients",
+            headers=auth_headers(client, "manager"),
+        )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body == {
+        "sync_log_id": "log-id",
+        "job_id": "job-id",
+        "status": "pending",
+    }
+    assert fake.call_args.kwargs["payload"] == {"campaign_brevo_ids": [42]}
+
+
+def test_backfill_recipients_endpoint_404_when_campaign_missing(client):
+    from tests._test_helpers import auth_headers  # noqa: PLC0415
+
+    resp = client.post(
+        "/api/brevo/campaigns/999/backfill-recipients",
+        headers=auth_headers(client, "manager"),
+    )
+    assert resp.status_code == 404
+
+
+def test_backfill_recipients_endpoint_requires_manager(client):
+    from tests._test_helpers import auth_headers  # noqa: PLC0415
+
+    for role in ("user", "viewer"):
+        resp = client.post(
+            "/api/brevo/campaigns/42/backfill-recipients",
+            headers=auth_headers(client, role),
+        )
+        assert resp.status_code == 403, role
+
+
+def test_backfill_missing_endpoint_skips_when_no_gaps(client):
+    """Sin campañas en cache (o todas con events) el endpoint devuelve
+    `status="skipped"` y no encola nada. Aquí el cache está vacío →
+    `find_sent_campaigns_without_events` devuelve []."""
+    from tests._test_helpers import auth_headers  # noqa: PLC0415
+
+    resp = client.post(
+        "/api/brevo/campaigns/backfill-missing-recipients?account_id=main",
+        headers=auth_headers(client, "admin"),
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "skipped"
+    assert body["campaigns_to_process"] == 0
+    assert body["job_id"] is None

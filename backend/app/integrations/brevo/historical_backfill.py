@@ -500,6 +500,7 @@ def backfill_account_campaigns(
     *,
     account_id: str,
     max_campaigns: int | None = None,
+    campaign_brevo_ids: list[int] | None = None,
 ) -> dict[str, Any]:
     """Iterate every sent/archived campaign in the local cache (most
     recent first) and call `backfill_campaign_events` — one export
@@ -509,7 +510,12 @@ def backfill_account_campaigns(
     Operates on the CACHE only — campaigns missing from
     `brevo_campaigns_cache` aren't fetched here (that's
     `refresh_campaigns_cache`'s job). Bart's runbook is: refresh
-    first, backfill second."""
+    first, backfill second.
+
+    `campaign_brevo_ids` (opt): cuando se pasa, sólo procesamos las
+    campañas con `brevo_campaign_id IN (…)` — usado por el botón
+    "Sincronizar destinatarios" para tirar de UNA campaña suelta sin
+    re-procesar las 60 anteriores."""
     statement = (
         select(BrevoCampaignCache)
         .where(BrevoCampaignCache.brevo_account_id == account_id)
@@ -520,6 +526,10 @@ def backfill_account_campaigns(
         # need to jump the queue).
         .order_by(BrevoCampaignCache.sent_at.desc())
     )
+    if campaign_brevo_ids:
+        statement = statement.where(
+            BrevoCampaignCache.brevo_campaign_id.in_(campaign_brevo_ids)
+        )
     if max_campaigns is not None:
         statement = statement.limit(max_campaigns)
     rows = list(session.scalars(statement))
@@ -570,8 +580,12 @@ def backfill_account_campaigns(
 def run_historical_backfill(
     session: Session, sync_log: SyncLog
 ) -> SyncOutcome:
-    """`brevo:historical_backfill` worker entry. Payload may carry
-    `{max_campaigns: N}` to bound the run."""
+    """`brevo:historical_backfill` worker entry. Payload puede llevar:
+
+    - `max_campaigns` (int) — bound del run completo.
+    - `campaign_brevo_ids` (list[int]) — sólo procesar esas campañas
+      (botón "Sincronizar destinatarios" / auto-disparo desde refresh).
+    """
     account_id = sync_log.account_id or ""
     payload: dict[str, Any] = {}
     if sync_log.metadata_json:
@@ -590,11 +604,24 @@ def run_historical_backfill(
     except (TypeError, ValueError):
         max_campaigns = None
 
+    raw_ids = payload.get("campaign_brevo_ids")
+    campaign_brevo_ids: list[int] | None = None
+    if isinstance(raw_ids, list) and raw_ids:
+        campaign_brevo_ids = []
+        for item in raw_ids:
+            try:
+                campaign_brevo_ids.append(int(item))
+            except (TypeError, ValueError):
+                continue
+        if not campaign_brevo_ids:
+            campaign_brevo_ids = None
+
     try:
         stats = backfill_account_campaigns(
             session,
             account_id=account_id,
             max_campaigns=max_campaigns,
+            campaign_brevo_ids=campaign_brevo_ids,
         )
     except Exception as exc:  # noqa: BLE001
         return SyncOutcome(records_failed=1, error_summary=str(exc))
