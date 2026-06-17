@@ -395,6 +395,37 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
     throw new Error(extractErrorMessage(networkError));
   }
 
+  return parseApiResponse<T>(response);
+}
+
+/** Sprint Email v2.5 — A. Multipart variant for binary uploads
+ * (draft attachments). The browser sets the multipart boundary on
+ * `Content-Type` automatically when `body` is FormData — so we
+ * deliberately don't merge a JSON header here.
+ */
+export async function apiUpload<T>(
+  path: string,
+  formData: FormData,
+): Promise<T> {
+  const token = getStoredToken();
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE_URL}${path}`, {
+      method: "POST",
+      credentials: "include",
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: formData,
+      cache: "no-store",
+    });
+  } catch (networkError) {
+    throw new Error(extractErrorMessage(networkError));
+  }
+  return parseApiResponse<T>(response);
+}
+
+async function parseApiResponse<T>(response: Response): Promise<T> {
   if (!response.ok) {
     const fallback = `Error de la API (${response.status})`;
     let body: unknown = null;

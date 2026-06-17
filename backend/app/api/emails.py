@@ -305,6 +305,23 @@ def send_email(
     session: Session = Depends(get_session),
     current_user: User = Depends(require_user),
 ) -> EmailMessageRead:
+    """HTTP route handler — no attachments. JSON `payload` only.
+    Drafts with attachments go through `send_draft` which calls
+    `_send_email_core` directly with the binaries it pulled from the
+    `email_draft_attachments` table."""
+    return _send_email_core(
+        payload, request, session, current_user, attachments=None
+    )
+
+
+def _send_email_core(
+    payload: EmailSendRequest,
+    request: Request,
+    session: Session,
+    current_user: User,
+    *,
+    attachments: list[dict[str, Any]] | None,
+) -> EmailMessageRead:
     # Sprint Email v2.4e — `scheduled_for` in the future routes the
     # message through the pending queue instead of Gmail. We still
     # need the alias-preference check below; the Gmail-scope check
@@ -451,6 +468,7 @@ def send_email(
             contact_id=payload.contact_id,
             in_reply_to_message_id=payload.in_reply_to_message_id,
             include_unsubscribe=include_unsubscribe,
+            attachments=attachments,
         )
     except GmailNotConnectedError as exc:
         raise HTTPException(

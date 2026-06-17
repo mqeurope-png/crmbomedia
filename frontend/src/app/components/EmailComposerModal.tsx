@@ -4,15 +4,23 @@ import {
   Ban,
   CalendarClock,
   FolderOpen,
+  Paperclip,
   PenLine,
   Save,
   Sparkles,
   Trash2,
+  X,
 } from "lucide-react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { getCurrentUser } from "../lib/api";
+import {
+  deleteEmailDraftAttachment,
+  listEmailDraftAttachments,
+  uploadEmailDraftAttachment,
+  type EmailDraftAttachment,
+} from "../lib/emailDraftAttachmentsApi";
 import {
   listEmailSignatures,
   type EmailSignature,
@@ -22,7 +30,9 @@ import {
   deleteEmailDraft,
   getMyEmailAliases,
   sendEmail,
+  sendEmailDraft,
   type EmailDraft,
+  type EmailDraftWrite,
   type EmailMessage,
   type MyAlias,
   updateEmailDraft,
@@ -34,6 +44,18 @@ import {
   TemplatePicker,
   type TemplatePickerSelection,
 } from "./email/TemplatePicker";
+
+// Gmail's hard cap is 25 MB total per message (body + attachments +
+// headers + MIME overhead). We enforce it client-side as a soft cap
+// at 25 MB across the attachment binaries; the backend re-checks at
+// upload time so a stale tab can't bypass it.
+const MAX_ATTACHMENTS_TOTAL_BYTES = 25 * 1024 * 1024;
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
 
 // TinyMCE touches `window` the moment its module loads, so the editor
 // must never render on the server. `ssr: false` keeps it in a
@@ -140,8 +162,14 @@ export function EmailComposerModal({
   const [includeUnsubscribe, setIncludeUnsubscribe] = useState(
     initialDraft?.include_unsubscribe ?? false,
   );
+  const [attachments, setAttachments] = useState<EmailDraftAttachment[]>([]);
+  const [uploading, setUploading] = useState(false);
+  const [dragging, setDragging] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const editorRef = useRef<RichEditorHandle | null>(null);
+  const draftIdRef = useRef<string | null>(initialDraft?.id ?? null);
+  draftIdRef.current = draftId;
 
   // Auto-save every 5s when the operator has changed something.
   // The dirty flag is a ref so typing doesn't re-render the
@@ -242,6 +270,16 @@ export function EmailComposerModal({
       });
   }, []);
 
+  // Sprint Email v2.5 — A. Pull existing attachments for a hydrated
+  // draft. New composes start with an empty list; the row gets
+  // created the first time the operator drops a file.
+  useEffect(() => {
+    if (!initialDraft?.id) return;
+    listEmailDraftAttachments(initialDraft.id)
+      .then(setAttachments)
+      .catch(() => setAttachments([]));
+  }, [initialDraft?.id]);
+
   // Seed the unsubscribe toggle from the operator's stored default.
   // Reads /api/auth/me's `email_include_unsubscribe_default`, which is
   // the same hydrated user the rest of the app uses — no extra round
@@ -261,6 +299,74 @@ export function EmailComposerModal({
       .split(/[,\n;]/)
       .map((s) => s.trim())
       .filter(Boolean);
+  }
+
+  // The draft row is needed before we can attach a binary (the
+  // attachment FK points at email_drafts.id). Auto-save normally
+  // creates it on the 5 s tick; uploading a file forces it now so
+  // the operator doesn't lose the binary while typing.
+  async function ensureDraft(): Promise<string> {
+    if (draftIdRef.current) return draftIdRef.current;
+    const payload: EmailDraftWrite = {
+      thread_id: null,
+      contact_id: contactId ?? null,
+      from_alias: fromAlias || null,
+      subject: subject || null,
+      body_html: bodyHtml || null,
+      to_emails: splitEmails(to),
+      cc_emails: cc.trim() ? splitEmails(cc) : null,
+      in_reply_to_message_id: replyTo?.messageId ?? null,
+      signature_id: activeSignatureId || null,
+      include_unsubscribe: includeUnsubscribe,
+    };
+    const created = await createEmailDraft(payload);
+    setDraftId(created.id);
+    setDraftSavedAt(new Date(created.updated_at));
+    draftIdRef.current = created.id;
+    dirtyRef.current = false;
+    return created.id;
+  }
+
+  async function handleFilesPicked(files: FileList | File[]) {
+    const list = Array.from(files);
+    if (list.length === 0) return;
+    const currentTotal = attachments.reduce(
+      (sum, a) => sum + a.size_bytes,
+      0,
+    );
+    const incomingTotal = list.reduce((sum, f) => sum + f.size, 0);
+    if (currentTotal + incomingTotal > MAX_ATTACHMENTS_TOTAL_BYTES) {
+      setError(
+        `Gmail no acepta más de 25 MB de adjuntos por mensaje. Llevas ${formatBytes(
+          currentTotal,
+        )} y estás añadiendo ${formatBytes(incomingTotal)}.`,
+      );
+      return;
+    }
+    setError(null);
+    setUploading(true);
+    try {
+      const id = await ensureDraft();
+      for (const file of list) {
+        const created = await uploadEmailDraftAttachment(id, file);
+        setAttachments((prev) => [...prev, created]);
+      }
+    } catch (err) {
+      setError(extractErrorMessage(err, "No se pudo subir el adjunto."));
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  }
+
+  async function handleRemoveAttachment(attachmentId: string) {
+    if (!draftId) return;
+    try {
+      await deleteEmailDraftAttachment(draftId, attachmentId);
+      setAttachments((prev) => prev.filter((a) => a.id !== attachmentId));
+    } catch (err) {
+      setError(extractErrorMessage(err, "No se pudo borrar el adjunto."));
+    }
   }
 
   function applyTemplate(selection: TemplatePickerSelection) {
@@ -319,31 +425,63 @@ export function EmailComposerModal({
         ? null
         : (replyTo?.messageId ?? null);
 
-      const message = await sendEmail({
-        from_alias: fromAlias,
-        to: toList,
-        cc: cc.trim() ? splitEmails(cc) : null,
-        subject,
-        body_html: bodyHtml.trim() || null,
-        body_text: null,
-        contact_id: contactId ?? null,
-        in_reply_to_message_id: replyMessageId,
-        include_unsubscribe: includeUnsubscribe,
-        scheduled_for: scheduledFor,
-      });
+      let message: EmailMessage;
+      // Sprint Email v2.5 — A. Cuando hay adjuntos, el binario vive
+      // en email_draft_attachments y solo lo materializa el send
+      // route a través de `send_draft`. Por eso forzamos primero un
+      // flush del estado actual al draft (PUT) y luego llamamos al
+      // endpoint que lee los attachments + send. Sin adjuntos
+      // seguimos por el atajo `sendEmail` para no introducir latency
+      // al flujo histórico.
+      if (attachments.length > 0) {
+        const id = await ensureDraft();
+        const payload: EmailDraftWrite = {
+          thread_id: null,
+          contact_id: contactId ?? null,
+          from_alias: fromAlias,
+          subject,
+          body_html: bodyHtml.trim() || null,
+          body_text: null,
+          to_emails: toList,
+          cc_emails: cc.trim() ? splitEmails(cc) : null,
+          in_reply_to_message_id: replyMessageId,
+          signature_id: activeSignatureId || null,
+          include_unsubscribe: includeUnsubscribe,
+          scheduled_for: scheduledFor,
+        };
+        await updateEmailDraft(id, payload);
+        message = await sendEmailDraft(id);
+        // sendEmailDraft borra la row en éxito → no llamar deleteEmailDraft.
+        setDraftId(null);
+        draftIdRef.current = null;
+      } else {
+        message = await sendEmail({
+          from_alias: fromAlias,
+          to: toList,
+          cc: cc.trim() ? splitEmails(cc) : null,
+          subject,
+          body_html: bodyHtml.trim() || null,
+          body_text: null,
+          contact_id: contactId ?? null,
+          in_reply_to_message_id: replyMessageId,
+          include_unsubscribe: includeUnsubscribe,
+          scheduled_for: scheduledFor,
+        });
+        // v2.4d — the draft row only mirrored the in-flight compose;
+        // once the message is actually sent (or scheduled), the
+        // operator doesn't expect to see it under Borradores anymore.
+        if (draftId) {
+          await deleteEmailDraft(draftId).catch(() => undefined);
+          setDraftId(null);
+          draftIdRef.current = null;
+        }
+      }
       // Wipe the autosave entry for this conversation BEFORE handing
       // control back to the parent so a quick "compose another"
       // doesn't restore the just-sent body. We deliberately do NOT
       // clear on Cancel — the operator may want to come back to the
       // half-written reply later.
       editorRef.current?.clearDraft();
-      // v2.4d — the draft row only mirrored the in-flight compose;
-      // once the message is actually sent (or scheduled), the
-      // operator doesn't expect to see it under Borradores anymore.
-      if (draftId) {
-        await deleteEmailDraft(draftId).catch(() => undefined);
-        setDraftId(null);
-      }
       onSent?.(message);
     } catch (err) {
       setError(extractErrorMessage(err, "No se pudo enviar el email."));
@@ -476,6 +614,25 @@ export function EmailComposerModal({
             >
               <Save size={12} aria-hidden /> Guardar como plantilla
             </button>
+            <button
+              type="button"
+              className="button secondary small"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploading}
+              title="Adjuntar archivo (máx. 25 MB en total)"
+            >
+              <Paperclip size={12} aria-hidden />{" "}
+              {uploading ? "Subiendo…" : "Adjuntar"}
+            </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              hidden
+              onChange={(e) => {
+                if (e.target.files) void handleFilesPicked(e.target.files);
+              }}
+            />
             <label className="email-compose-signature">
               <span className="email-compose-signature-label">
                 <PenLine size={12} aria-hidden /> Firma
@@ -526,20 +683,75 @@ export function EmailComposerModal({
             </label>
           </div>
 
-          <label className="field">
-            Cuerpo
-            <RichEditor
-              ref={editorRef}
-              value={bodyHtml}
-              onChange={(html) => {
-                setBodyHtml(html);
-                dirtyRef.current = true;
-              }}
-              placeholder="Escribe tu email. Usa {nombre}, {empresa}, {email} para personalizar."
-              minHeight={460}
-              draftKey={draftKey}
-            />
-          </label>
+          <div
+            className={`field email-compose-body${dragging ? " dragging" : ""}`}
+            onDragOver={(e) => {
+              e.preventDefault();
+              setDragging(true);
+            }}
+            onDragLeave={() => setDragging(false)}
+            onDrop={(e) => {
+              e.preventDefault();
+              setDragging(false);
+              if (e.dataTransfer.files.length > 0) {
+                void handleFilesPicked(e.dataTransfer.files);
+              }
+            }}
+          >
+            <label>
+              Cuerpo
+              <RichEditor
+                ref={editorRef}
+                value={bodyHtml}
+                onChange={(html) => {
+                  setBodyHtml(html);
+                  dirtyRef.current = true;
+                }}
+                placeholder="Escribe tu email. Usa {nombre}, {empresa}, {email} para personalizar."
+                minHeight={460}
+                draftKey={draftKey}
+              />
+            </label>
+            {dragging ? (
+              <div className="email-compose-dropzone" aria-hidden>
+                Suelta para adjuntar
+              </div>
+            ) : null}
+          </div>
+
+          {attachments.length > 0 ? (
+            <div className="email-compose-attachments">
+              <p className="muted small">
+                Adjuntos ({attachments.length}) ·{" "}
+                {formatBytes(
+                  attachments.reduce((s, a) => s + a.size_bytes, 0),
+                )}{" "}
+                de 25 MB
+              </p>
+              <ul className="email-compose-attachments-list">
+                {attachments.map((a) => (
+                  <li key={a.id}>
+                    <Paperclip size={11} aria-hidden />
+                    <span className="email-compose-attachment-name">
+                      {a.filename}
+                    </span>
+                    <span className="muted small">
+                      {formatBytes(a.size_bytes)}
+                    </span>
+                    <button
+                      type="button"
+                      className="icon-button"
+                      onClick={() => handleRemoveAttachment(a.id)}
+                      title="Quitar adjunto"
+                      aria-label={`Quitar ${a.filename}`}
+                    >
+                      <X size={12} aria-hidden />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
 
           {hasMerge ? (
             <p className="email-merge-hint">

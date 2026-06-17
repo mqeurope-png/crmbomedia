@@ -27,21 +27,29 @@ export type EmailTemplateListItem = {
   updated_at: string;
 };
 
+/** Sprint Email v2.5 — C. Modos de visibilidad de carpeta. `team`
+ *  reemplaza al legacy `is_global=True`; el flag queda como sombra
+ *  para retrocompat. */
+export type EmailTemplateFolderVisibility = "private" | "team" | "shared";
+
 export type EmailTemplateFolder = {
   id: string;
   name: string;
   parent_folder_id: string | null;
   owner_user_id: string | null;
   is_global: boolean;
+  visibility: EmailTemplateFolderVisibility;
   sort_order: number;
   created_at: string;
   updated_at: string;
+  shared_user_ids: string[];
 };
 
 export type EmailTemplateFolderNode = {
   id: string;
   name: string;
   is_global: boolean;
+  visibility: EmailTemplateFolderVisibility;
   sort_order: number;
   children: EmailTemplateFolderNode[];
   template_count: number;
@@ -59,7 +67,9 @@ export type EmailTemplateFolderWrite = {
   name: string;
   parent_folder_id?: string | null;
   is_global?: boolean;
+  visibility?: EmailTemplateFolderVisibility | null;
   sort_order?: number;
+  shared_user_ids?: string[];
 };
 
 export type BrevoPickerItem = {
@@ -173,6 +183,29 @@ export async function deleteEmailTemplateFolder(
 ): Promise<{ message: string }> {
   return apiFetch<{ message: string }>(
     `/api/email-template-folders/${id}`,
+    { method: "DELETE" },
+  );
+}
+
+export async function addEmailTemplateFolderShare(
+  folderId: string,
+  userId: string,
+): Promise<EmailTemplateFolder> {
+  return apiFetch<EmailTemplateFolder>(
+    `/api/email-template-folders/${folderId}/shares`,
+    {
+      method: "POST",
+      body: JSON.stringify({ user_id: userId }),
+    },
+  );
+}
+
+export async function removeEmailTemplateFolderShare(
+  folderId: string,
+  userId: string,
+): Promise<EmailTemplateFolder> {
+  return apiFetch<EmailTemplateFolder>(
+    `/api/email-template-folders/${folderId}/shares/${userId}`,
     { method: "DELETE" },
   );
 }

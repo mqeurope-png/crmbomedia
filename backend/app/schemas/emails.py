@@ -389,3 +389,18 @@ class EmailThreadBulkSnooze(EmailThreadBulkAction):
 # annotation a string). Resolve it now that EmailLabelRead exists.
 EmailThreadRead.model_rebuild()
 EmailThreadDetail.model_rebuild()
+
+
+class EmailDraftAttachmentRead(BaseModel):
+    """Sprint Email v2.5 — A. Metadata de un adjunto de draft
+    (filename, content_type, size). El binario NO se serializa —
+    sólo viaja del POST de upload al MIME del send."""
+
+    id: str
+    draft_id: str
+    filename: str
+    content_type: str | None
+    size_bytes: int
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
