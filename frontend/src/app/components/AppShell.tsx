@@ -2,7 +2,7 @@
 
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { getCurrentUser, logout, type User } from "../lib/api";
+import { getCurrentUser, getStoredToken, logout, type User } from "../lib/api";
 import { useIdleTimeout } from "../lib/useIdleTimeout";
 import { Sidebar } from "./Sidebar";
 import { TopBar } from "./TopBar";
@@ -67,14 +67,27 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       setUserLoaded(true);
       return;
     }
+    // PR-F fix: si no hay token/cookie no llamamos al backend — redirect
+    // inmediato a /welcome. Esto evita el destello de la shell con
+    // sidebar/topbar antes de que el page guard reaccione, y mata el
+    // mensaje "Invalid authentication credentials" que confundía al
+    // visitante no autenticado.
+    const token = getStoredToken();
+    if (!token) {
+      router.replace("/welcome");
+      return;
+    }
     let cancelled = false;
     getCurrentUser()
       .then((u) => {
-        if (!cancelled) setUser(u);
+        if (!cancelled) {
+          if (u) setUser(u);
+          else router.replace("/welcome");
+        }
       })
       .catch(() => {
-        // 401 → page-level guards already redirect to /login; the
-        // shell stays user-less in the meantime.
+        // Cualquier fallo (incluido 401 por cookie inválida) — splash.
+        if (!cancelled) router.replace("/welcome");
       })
       .finally(() => {
         if (!cancelled) setUserLoaded(true);
@@ -82,7 +95,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [isAnonymous]);
+  }, [isAnonymous, router]);
 
   function toggleCollapsed() {
     setCollapsed((prev) => {
@@ -102,6 +115,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   if (isAnonymous || isFullBleed) {
     return <>{children}</>;
+  }
+
+  // PR-F fix: hasta que el `getCurrentUser` confirme la sesión NO
+  // pintamos topbar/sidebar/main. El user no autenticado verá nada
+  // (en cuanto el redirect en el effect dispare) en lugar del CRM
+  // con un banner de error.
+  if (!userLoaded || !user) {
+    return null;
   }
 
   return (

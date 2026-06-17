@@ -14,52 +14,63 @@ import { TasksWidget } from "./components/dashboard/TasksWidget";
 import { UpcomingTasksWidget } from "./components/dashboard/UpcomingTasksWidget";
 import { UserCampaignStatsWidget } from "./components/dashboard/UserCampaignStatsWidget";
 import { ErrorState } from "./components/ErrorState";
-import { getCurrentUser, type User } from "./lib/api";
+import { getCurrentUser, getStoredToken, type User } from "./lib/api";
 import { extractErrorMessage } from "./lib/errors";
 
-/**
- * Dashboard BoHub (PR-C). Layout:
- *   - Header con saludo, selector temporal y dos acciones rápidas.
- *   - Tira de 6 KPIs (`DashboardKpis`).
- *   - Grid de 4 columnas × 2 filas con widgets reutilizados de Fase 3
- *     + 2 placeholders nuevos (Oportunidades calientes + Últimas
- *     interacciones) hasta que aterricen sus endpoints dedicados.
- *
- * El selector temporal pasa por props a `DashboardKpis` para que los
- * tiles de Leads / Emails se re-fetchen con el rango elegido. El
- * resto de widgets mantiene su propio control de rango (legacy) para
- * no romper la lógica que ya funciona.
- */
 export default function Home() {
   const router = useRouter();
   const [user, setUser] = useState<User | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // PR-F fix: empezamos en "auth-checking" en vez de "loading". Si no
+  // hay cookie/token, redirigimos a /welcome ANTES de renderizar
+  // cualquier shell, sin tocar la API. Sólo cuando hay token se hace
+  // el fetch del usuario.
   const [isLoading, setIsLoading] = useState(true);
   const [range, setRange] = useState<DashboardRange>("today");
 
   useEffect(() => {
+    // 1) Sin token en cliente → redirect inmediato, no API call.
+    const token = getStoredToken();
+    if (!token) {
+      router.replace("/welcome");
+      return;
+    }
+    // 2) Hay token (o cookie). Validamos contra el backend; CUALQUIER
+    //    fallo (incluido 401 con cookie caducada / inválida) redirige
+    //    a /welcome. Antes el regex sobre el mensaje no matchaba
+    //    "Invalid authentication credentials" y el operador veía la
+    //    shell del CRM con un banner de error en lugar del splash.
     getCurrentUser()
-      .then(setUser)
+      .then((u) => {
+        if (u) {
+          setUser(u);
+          setIsLoading(false);
+          return;
+        }
+        // Defensa extra — no debería pasar, pero por si acaso.
+        router.replace("/welcome");
+      })
       .catch((err) => {
         const message = extractErrorMessage(
           err,
-          "Arranca la API o inicia sesión de nuevo.",
+          "No se pudo validar la sesión.",
         );
-        if (/401|no autenticado|unauthor/i.test(message)) {
-          router.replace("/welcome");
+        // Mensajes de transporte (CORS, DNS, network error sin status)
+        // se quedan visibles para el operador; cualquier respuesta del
+        // backend (incluida 401) tira a /welcome.
+        if (/network|fetch failed|aborted/i.test(message)) {
+          setError(message);
+          setIsLoading(false);
           return;
         }
-        setError(message);
-      })
-      .finally(() => setIsLoading(false));
+        router.replace("/welcome");
+      });
   }, [router]);
 
   if (isLoading) {
-    return (
-      <main className="shell shell-wide dashboard-page">
-        <p className="muted">Cargando CRM…</p>
-      </main>
-    );
+    // Pantalla vacía mientras decidimos. Sin shell del CRM ni topbar
+    // para no leak'ear UI a un visitante no autenticado.
+    return null;
   }
 
   if (error) {
