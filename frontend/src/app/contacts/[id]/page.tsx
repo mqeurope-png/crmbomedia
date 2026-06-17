@@ -2,18 +2,23 @@
 
 import {
   Activity as ActivityIcon,
+  Briefcase,
   CheckSquare,
-  Kanban,
+  Layers,
+  LifeBuoy,
   Mail,
-  Phone as PhoneIcon,
-  StickyNote,
-  Trash2,
+  Sparkles,
 } from "lucide-react";
+import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ContactAddressSection } from "../../components/ContactAddressSection";
 import { ContactCompanySection } from "../../components/ContactCompanySection";
 import { ContactCustomFieldsSection } from "../../components/ContactCustomFieldsSection";
+import { ContactDetailHeader } from "../../components/contact-detail/ContactDetailHeader";
+import { ContactKeyDataStrip } from "../../components/contact-detail/ContactKeyDataStrip";
+import { ContactSummaryTab } from "../../components/contact-detail/ContactSummaryTab";
+import { ContactSupportTab } from "../../components/contact-detail/ContactSupportTab";
 import { ContactEmailsSection } from "../../components/ContactEmailsSection";
 import { ContactAssignmentsSection } from "../../components/ContactAssignmentsSection";
 import { ContactNotesSection } from "../../components/ContactNotesSection";
@@ -22,24 +27,18 @@ import { ContactProfessionalSection } from "../../components/ContactProfessional
 import { EmailEventBadges } from "../../components/email/EmailEventBadges";
 import { ContactPipelinesSection } from "../../components/ContactPipelinesSection";
 import { ContactTasksSection } from "../../components/ContactTasksSection";
-import { EditableField } from "../../components/EditableField";
 import { EmailComposerModal } from "../../components/EmailComposerModal";
 import { ErrorState } from "../../components/ErrorState";
-import { OriginChips } from "../../components/OriginChips";
 import { PageHeader } from "../../components/PageHeader";
 import { RefreshExternalDataButton } from "../../components/RefreshExternalDataButton";
-import { TagChips } from "../../components/TagChips";
-import { TagPicker } from "../../components/TagPicker";
+import { TaskModal } from "../../components/TaskModal";
 import {
   getMessageEvents,
   type EmailEvent,
 } from "../../lib/emailTrackingApi";
 import {
-  addTagToContact,
   deactivateContact,
   getContact,
-  removeTagFromContact,
-  updateContact,
   type ActivityEvent,
   type Contact,
   type ExternalRefreshResult,
@@ -59,29 +58,15 @@ function formatDateTime(value: string | null | undefined): string {
   });
 }
 
-const COMMERCIAL_OPTIONS: ReadonlyArray<[string, string]> = [
-  ["new", "Nuevo"],
-  ["qualified", "Calificado"],
-  ["working", "Trabajando"],
-  ["won", "Ganado"],
-  ["lost", "Perdido"],
-];
-
-const CONSENT_OPTIONS: ReadonlyArray<[string, string]> = [
-  ["unknown", "Sin definir"],
-  ["granted", "Otorgado"],
-  ["denied", "Denegado"],
-  ["unsubscribed", "Baja"],
-];
-
-type Tab = "activity" | "tasks" | "notes" | "pipelines" | "emails";
+type Tab = "summary" | "activity" | "emails" | "tasks" | "opportunities" | "support";
 
 const TABS: Array<{ id: Tab; label: string; icon: React.ElementType }> = [
+  { id: "summary", label: "Resumen", icon: Sparkles },
   { id: "activity", label: "Actividad", icon: ActivityIcon },
-  { id: "tasks", label: "Tareas", icon: CheckSquare },
-  { id: "notes", label: "Notas", icon: StickyNote },
-  { id: "pipelines", label: "Pipelines", icon: Kanban },
   { id: "emails", label: "Emails", icon: Mail },
+  { id: "tasks", label: "Tareas", icon: CheckSquare },
+  { id: "opportunities", label: "Oportunidades", icon: Layers },
+  { id: "support", label: "Soporte", icon: LifeBuoy },
 ];
 
 export default function ContactDetailPage() {
@@ -90,8 +75,10 @@ export default function ContactDetailPage() {
   const [refreshWarnings, setRefreshWarnings] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<Tab>("activity");
+  const [activeTab, setActiveTab] = useState<Tab>("summary");
   const [showComposer, setShowComposer] = useState(false);
+  const [showTaskModal, setShowTaskModal] = useState(false);
+  const [overflowOpen, setOverflowOpen] = useState(false);
   const autoRefreshed = useRef(false);
 
   const loadContact = useCallback(async () => {
@@ -128,18 +115,6 @@ export default function ContactDetailPage() {
         .catch(() => undefined);
     });
   }, [contact, handleRefreshDone]);
-
-  async function patch(payload: Record<string, unknown>): Promise<void> {
-    if (!contact) return;
-    try {
-      await updateContact(contact.id, payload);
-      await loadContact();
-    } catch (err) {
-      throw new Error(
-        extractErrorMessage(err, "No se pudo actualizar el contacto."),
-      );
-    }
-  }
 
   async function handleDeactivate() {
     if (!contact) return;
@@ -184,21 +159,50 @@ export default function ContactDetailPage() {
     );
   }
 
-  const fullName =
-    [contact.first_name, contact.last_name].filter(Boolean).join(" ") ||
-    "(Sin nombre)";
-  const externalRefs = contact.external_refs ?? [];
+  // El primary owner sale del bloque assignments; sin endpoint cruzado
+  // en este nivel mostramos un placeholder neutro y dejamos el dato
+  // real al card "Comerciales asignados" del sidebar.
+  const ownerName = null;
+  const ownerInitials = null;
+  const assignedSince = contact.updated_at ?? contact.created_at ?? null;
+  const lastActivityAt =
+    contact.activity_events?.[0]?.occurred_at ??
+    contact.updated_at_external ??
+    contact.updated_at ??
+    null;
+  const origin = contact.origin ?? null;
+  const tags = contact.tag_objects ?? [];
 
   return (
-    <main className="shell shell-wide contact-detail">
-      <PageHeader
-        title={fullName}
-        eyebrow="Ficha de contacto"
-        crumbs={[
-          { label: "Contactos", href: "/contacts" },
-          { label: fullName },
-        ]}
-        actions={
+    <main className="shell shell-wide contact-detail contact-detail-v2">
+      <nav className="contact-breadcrumb">
+        <Link href="/contacts" className="muted small">
+          Contactos
+        </Link>
+        <span className="muted small"> · </span>
+        <span className="muted small">
+          {[contact.first_name, contact.last_name].filter(Boolean).join(" ") ||
+            "(Sin nombre)"}
+        </span>
+      </nav>
+
+      <ContactDetailHeader
+        contact={contact}
+        ownerName={ownerName}
+        ownerInitials={ownerInitials}
+        assignedSince={assignedSince}
+        onSendEmail={() => setShowComposer(true)}
+        onCreateTask={() => setShowTaskModal(true)}
+        onLogCall={() => setShowTaskModal(true)}
+        onEdit={() => {
+          // Scrolla al card de info, donde el operador puede editar los
+          // campos inline. Sin modal de edición global todavía.
+          const target = document.getElementById("sidebar-info");
+          target?.scrollIntoView({ behavior: "smooth", block: "start" });
+        }}
+        onOpenOverflow={() => setOverflowOpen((v) => !v)}
+        overflowOpen={overflowOpen}
+        overflowChildren={
           <>
             <RefreshExternalDataButton
               contactId={contact.id}
@@ -207,17 +211,26 @@ export default function ContactDetailPage() {
             {contact.is_active ? (
               <button
                 type="button"
-                className="button small danger"
-                onClick={handleDeactivate}
-                title="Desactivar contacto"
+                className="contact-header-overflow-item is-danger"
+                onClick={() => {
+                  setOverflowOpen(false);
+                  handleDeactivate();
+                }}
               >
-                <Trash2 size={11} aria-hidden /> Desactivar
+                Desactivar contacto
               </button>
             ) : (
               <span className="badge bad">Inactivo</span>
             )}
           </>
         }
+      />
+
+      <ContactKeyDataStrip
+        contact={contact}
+        tags={tags}
+        origin={origin}
+        lastActivityAt={lastActivityAt}
       />
 
       {refreshWarnings.length > 0 ? (
@@ -228,144 +241,7 @@ export default function ContactDetailPage() {
         </ul>
       ) : null}
 
-      <div className="contact-detail-grid">
-        <aside className="contact-detail-sidebar">
-          <section className="contact-card">
-            <h3 className="contact-card-title">{fullName}</h3>
-            <ul className="contact-card-meta">
-              {contact.email ? (
-                <li>
-                  <Mail size={11} aria-hidden /> {contact.email}
-                </li>
-              ) : null}
-              {contact.phone ? (
-                <li>
-                  <PhoneIcon size={11} aria-hidden /> {contact.phone}
-                </li>
-              ) : null}
-            </ul>
-          </section>
-
-          <section className="contact-card">
-            <h4>Estado</h4>
-            <EditableField
-              label="Comercial"
-              kind="select"
-              options={COMMERCIAL_OPTIONS}
-              display={contact.commercial_status ?? "new"}
-              onSave={(v) => patch({ commercial_status: v })}
-            />
-            <EditableField
-              label="Consentimiento"
-              kind="select"
-              options={CONSENT_OPTIONS}
-              display={contact.marketing_consent ?? "unknown"}
-              onSave={(v) => patch({ marketing_consent: v })}
-            />
-            <EditableField
-              label="Lead score"
-              display={
-                contact.lead_score === null || contact.lead_score === undefined
-                  ? ""
-                  : String(contact.lead_score)
-              }
-              onSave={(v) =>
-                patch({
-                  lead_score: v.trim() === "" ? null : Number(v),
-                })
-              }
-            />
-            <EditableField
-              label="Teléfono"
-              display={contact.phone ?? ""}
-              onSave={(v) => patch({ phone: v.trim() || null })}
-            />
-          </section>
-
-          <section className="contact-card">
-            <h4>Acciones rápidas</h4>
-            <div className="actions">
-              <button
-                type="button"
-                className="button small"
-                onClick={() => setShowComposer(true)}
-              >
-                <Mail size={11} aria-hidden /> Email
-              </button>
-              <button
-                type="button"
-                className="button small secondary"
-                onClick={() => setActiveTab("tasks")}
-              >
-                <CheckSquare size={11} aria-hidden /> Tarea
-              </button>
-            </div>
-          </section>
-
-          {externalRefs.length > 0 ? (
-            <section className="contact-card">
-              <h4>Origen</h4>
-              <OriginChips references={externalRefs} />
-            </section>
-          ) : null}
-
-          <ContactCompanySection
-            contactId={contact.id}
-            companyId={contact.company_id ?? null}
-            onChanged={loadContact}
-          />
-
-          <ContactProfessionalSection
-            contact={contact}
-            onSaved={loadContact}
-          />
-
-          <ContactAssignmentsSection contactId={contact.id} />
-
-          <ContactPhonesSection contactId={contact.id} />
-
-          {/* Notas: la sección vive ahora solo en la pestaña "Notas"
-              del top tab (más prominente + unificada con el timeline
-              Agile post-migration 0049). */}
-
-          <ContactAddressSection
-            contact={contact}
-            onSaved={loadContact}
-          />
-
-          <ContactCustomFieldsSection contact={contact} />
-
-          <section className="contact-card">
-            <h4>Tags</h4>
-            <TagChips
-              tags={contact.tag_objects ?? []}
-              onRemove={async (tagId) => {
-                try {
-                  await removeTagFromContact(contact.id, tagId);
-                  await loadContact();
-                } catch (err) {
-                  setError(
-                    extractErrorMessage(err, "No se pudo quitar el tag."),
-                  );
-                }
-              }}
-            />
-            <TagPicker
-              excludeTagIds={(contact.tag_objects ?? []).map((t) => t.id)}
-              onPick={async (choice) => {
-                try {
-                  await addTagToContact(contact.id, choice);
-                  await loadContact();
-                } catch (err) {
-                  setError(
-                    extractErrorMessage(err, "No se pudo añadir el tag."),
-                  );
-                }
-              }}
-            />
-          </section>
-        </aside>
-
+      <div className="contact-detail-grid contact-detail-grid-v2">
         <section className="contact-detail-main">
           <nav className="contact-detail-tabs" aria-label="Pestañas">
             {TABS.map((t) => {
@@ -379,13 +255,19 @@ export default function ContactDetailPage() {
                   }`}
                   onClick={() => setActiveTab(t.id)}
                 >
-                  <Icon size={12} aria-hidden /> {t.label}
+                  <Icon size={14} aria-hidden /> {t.label}
                 </button>
               );
             })}
           </nav>
 
           <div className="contact-detail-tab-body">
+            {activeTab === "summary" ? (
+              <ContactSummaryTab
+                events={contact.activity_events ?? []}
+                onSeeAllActivity={() => setActiveTab("activity")}
+              />
+            ) : null}
             {activeTab === "activity" ? (
               <ActivityTab
                 events={contact.activity_events ?? []}
@@ -395,10 +277,7 @@ export default function ContactDetailPage() {
             {activeTab === "tasks" ? (
               <ContactTasksSection contactId={contact.id} />
             ) : null}
-            {activeTab === "notes" ? (
-              <ContactNotesSection contactId={contact.id} />
-            ) : null}
-            {activeTab === "pipelines" ? (
+            {activeTab === "opportunities" ? (
               <ContactPipelinesSection contactId={contact.id} />
             ) : null}
             {activeTab === "emails" ? (
@@ -408,9 +287,42 @@ export default function ContactDetailPage() {
                 onCompose={() => setShowComposer(true)}
               />
             ) : null}
+            {activeTab === "support" ? <ContactSupportTab /> : null}
           </div>
         </section>
+
+        <aside className="contact-detail-sidebar contact-detail-sidebar-v2">
+          <div
+            id="sidebar-info"
+            className="contact-card contact-sidebar-card contact-sidebar-info"
+          >
+            <header className="contact-sidebar-card-header">
+              <Briefcase size={14} aria-hidden />
+              <h3>Información de contacto</h3>
+            </header>
+            <ContactPhonesSection contactId={contact.id} />
+            <ContactProfessionalSection
+              contact={contact}
+              onSaved={loadContact}
+            />
+            <ContactAddressSection contact={contact} onSaved={loadContact} />
+            <ContactCustomFieldsSection contact={contact} />
+          </div>
+
+          <div id="sidebar-company">
+            <ContactCompanySection
+              contactId={contact.id}
+              companyId={contact.company_id ?? null}
+              onChanged={loadContact}
+            />
+          </div>
+
+          <ContactNotesSection contactId={contact.id} />
+
+          <ContactAssignmentsSection contactId={contact.id} />
+        </aside>
       </div>
+
       {showComposer ? (
         <EmailComposerModal
           contactId={contact.id}
@@ -423,12 +335,25 @@ export default function ContactDetailPage() {
           }}
         />
       ) : null}
+      {showTaskModal ? (
+        <TaskModal
+          contactId={contact.id}
+          onClose={() => setShowTaskModal(false)}
+          onCreated={async () => {
+            setShowTaskModal(false);
+            await loadContact();
+            setActiveTab("tasks");
+          }}
+        />
+      ) : null}
     </main>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Sub-views
+// Sub-views — la `ActivityTab` se mantiene 1:1 desde la versión anterior;
+// pintar la timeline completa con tracking de email events es lógica que
+// no aporta cambiar en PR-D (que es puramente visual).
 // ---------------------------------------------------------------------------
 
 const EVENT_TYPE_ICON: Record<string, string> = {
@@ -476,9 +401,6 @@ function ActivityTab({
   events: ActivityEvent[];
   lastRefresh: string | null | undefined;
 }) {
-  // Sprint Email v2.3b — collect outbound-email message ids from the
-  // event metadata and pull their tracking events. Bounded by how many
-  // emails the contact has been sent; typical: a handful.
   const [eventsByMessage, setEventsByMessage] = useState<
     Record<string, EmailEvent[]>
   >({});
@@ -586,8 +508,3 @@ function ActivityTab({
     </ul>
   );
 }
-
-// NotesTab eliminado post-unification — la pestaña "Notas" usa el
-// componente compartido `<ContactNotesSection>` que lee del endpoint
-// `/api/contacts/{id}/notes` (tabla `notes` unificada).
-
