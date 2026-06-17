@@ -167,3 +167,24 @@ async def _arm_email_scheduled_sweep() -> None:
             "email.scheduled_send_sweep arm failed at startup",
             exc_info=True,
         )
+
+
+@app.on_event("startup")
+async def _arm_periodic_backup() -> None:
+    """Sprint Backup-Hardening. Reemplaza el cron de Linux con un job
+    RQ self-rescheduling cada 72 h. Las ejecuciones disparadas por el
+    scheduler entran a la tabla `backups` con `triggered_by='cron'`
+    y aparecen en `/admin/backups` como cualquier backup manual."""
+    try:
+        from app.backups.service import (  # noqa: PLC0415
+            schedule_periodic_backup,
+        )
+
+        schedule_periodic_backup()
+    except Exception:  # noqa: BLE001
+        import logging  # noqa: PLC0415
+
+        logging.getLogger(__name__).warning(
+            "backups.scheduler arm failed at startup",
+            exc_info=True,
+        )

@@ -116,6 +116,21 @@ def create_backup(
     )
 
 
+# Sprint Backup-Hardening. Cache-Control NO-store en TODA respuesta
+# del download — sin ello el navegador cachea agresivamente:
+#   - Un 410 (archivo rotado) se sirve desde caché durante varios
+#     minutos aunque el backup esté de vuelta.
+#   - Un 200 con `Content-Disposition: attachment` se reusa para el
+#     siguiente backup distinto (mismo URL pattern), entregando el
+#     binario equivocado.
+# El header lo aplicamos en TODAS las salidas (FileResponse + las
+# excepciones HTTP) para que el browser nunca cachee este endpoint.
+_NO_STORE_HEADERS = {
+    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+    "Pragma": "no-cache",
+}
+
+
 @router.get("/{backup_id}/download")
 def download_backup(
     backup_id: str,
@@ -128,7 +143,11 @@ def download_backup(
     _ = current_user
     backup = session.get(Backup, backup_id)
     if backup is None:
-        raise not_found("Backup")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Backup not found.",
+            headers=_NO_STORE_HEADERS,
+        )
     if backup.status != BackupStatus.SUCCESS.value:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -136,6 +155,7 @@ def download_backup(
                 "Este backup no terminó con éxito; no hay archivo para "
                 "descargar."
             ),
+            headers=_NO_STORE_HEADERS,
         )
     path = Path(backup.filepath)
     if not path.exists():
@@ -149,11 +169,13 @@ def download_backup(
                 "Probable rotación FIFO (3 más recientes). Mira tu Google "
                 "Drive si necesitas uno antiguo."
             ),
+            headers=_NO_STORE_HEADERS,
         )
     return FileResponse(
         path=str(path),
         filename=backup.filename,
         media_type="application/octet-stream",
+        headers=_NO_STORE_HEADERS,
     )
 
 
