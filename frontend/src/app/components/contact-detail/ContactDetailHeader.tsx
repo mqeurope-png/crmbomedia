@@ -16,6 +16,7 @@
  */
 import { Mail, MoreVertical, Pencil, Phone, Plus } from "lucide-react";
 import type { Contact, User } from "../../lib/api";
+import { InlineEdit } from "./InlineEdit";
 
 type Action = {
   key: string;
@@ -30,12 +31,15 @@ type Props = {
   ownerName?: string | null;
   ownerInitials?: string | null;
   assignedSince?: string | null;
+  /** PATCH callback compartido por todos los inline edits del header
+      (nombre, puesto). Recibe el payload parcial y devuelve cuando la
+      mutación está aplicada. */
+  onPatch: (payload: Record<string, unknown>) => Promise<void>;
   onSendEmail: () => void;
   onCreateTask: () => void;
   onLogCall: () => void;
   onEdit: () => void;
   onOpenOverflow: () => void;
-  /** Acciones extra del overflow (Refresh, Desactivar…). */
   overflowChildren?: React.ReactNode;
   overflowOpen: boolean;
   currentUser?: User | null;
@@ -48,6 +52,14 @@ const STATUS_LABELS: Record<string, { label: string; tone: string }> = {
   won: { label: "Cliente", tone: "success" },
   lost: { label: "Perdido", tone: "muted" },
 };
+
+const STATUS_OPTIONS: ReadonlyArray<[string, string]> = [
+  ["new", "Lead nuevo"],
+  ["qualified", "Calificado"],
+  ["working", "Trabajando"],
+  ["won", "Cliente"],
+  ["lost", "Perdido"],
+];
 
 function initials(first: string, last?: string | null): string {
   const f = (first ?? "").trim()[0] ?? "";
@@ -71,6 +83,7 @@ export function ContactDetailHeader({
   ownerName,
   ownerInitials,
   assignedSince,
+  onPatch,
   onSendEmail,
   onCreateTask,
   onLogCall,
@@ -88,10 +101,6 @@ export function ContactDetailHeader({
     label: contact.commercial_status ?? "—",
     tone: "muted",
   };
-  const subtitleParts = [
-    contact.job_title,
-    contact.company_id ? "Empresa" : null,
-  ].filter(Boolean);
 
   const actions: Action[] = [
     {
@@ -132,23 +141,58 @@ export function ContactDetailHeader({
         </div>
         <div className="contact-header-info">
           <div className="contact-header-name-row">
-            <h1 className="contact-header-name">{fullName}</h1>
+            {/* Click sobre el nombre → input inline. Save al blur o Enter
+                vía PATCH `first_name + last_name`. Si solo escribe 1 palabra
+                queda como first_name + last_name vacío — el split por
+                primer espacio cubre la mayoría de casos. */}
+            <h1 className="contact-header-name">
+              <InlineEdit
+                value={fullName === "(Sin nombre)" ? "" : fullName}
+                emptyLabel="(Sin nombre)"
+                ariaLabel="Nombre completo"
+                display={<span>{fullName}</span>}
+                onSave={async (next) => {
+                  const parts = next.split(" ");
+                  const first = parts.shift() ?? "";
+                  const last = parts.join(" ");
+                  await onPatch({
+                    first_name: first || null,
+                    last_name: last || null,
+                  });
+                }}
+              />
+            </h1>
             <span className={`contact-status-chip is-${status.tone}`}>
               <span className="contact-status-dot" aria-hidden />
-              {status.label}
+              <InlineEdit
+                kind="select"
+                value={contact.commercial_status ?? "new"}
+                options={STATUS_OPTIONS}
+                ariaLabel="Estado comercial"
+                display={<span>{status.label}</span>}
+                onSave={(next) => onPatch({ commercial_status: next })}
+              />
             </span>
           </div>
-          {subtitleParts.length ? (
-            <p className="contact-header-subtitle">
-              {contact.job_title}
-              {contact.job_title && contact.company_id ? " · " : null}
-              {contact.company_id ? (
-                <a className="contact-header-company-link" href="#sidebar-company">
-                  Empresa asociada
-                </a>
-              ) : null}
-            </p>
-          ) : null}
+          {/* Subtítulo limpio — el link "Empresa asociada" que loopeaba al
+              sidebar se quita; el dato vive en el sidebar derecha. */}
+          <p className="contact-header-subtitle">
+            <InlineEdit
+              value={contact.job_title ?? ""}
+              emptyLabel="Sin puesto"
+              ariaLabel="Puesto"
+              display={
+                contact.job_title ? (
+                  <span>{contact.job_title}</span>
+                ) : (
+                  <span className="muted">Sin puesto</span>
+                )
+              }
+              onSave={(next) =>
+                onPatch({ job_title: next.trim() || null })
+              }
+            />
+          </p>
           <p className="contact-header-meta muted small">
             {ownerName ? (
               <>

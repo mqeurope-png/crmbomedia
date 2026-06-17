@@ -8,6 +8,7 @@ import {
   LifeBuoy,
   Mail,
   Sparkles,
+  StickyNote,
 } from "lucide-react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
@@ -17,8 +18,10 @@ import { ContactCompanySection } from "../../components/ContactCompanySection";
 import { ContactCustomFieldsSection } from "../../components/ContactCustomFieldsSection";
 import { ContactDetailHeader } from "../../components/contact-detail/ContactDetailHeader";
 import { ContactKeyDataStrip } from "../../components/contact-detail/ContactKeyDataStrip";
+import { ContactNotesPreviewCard } from "../../components/contact-detail/ContactNotesPreviewCard";
 import { ContactSummaryTab } from "../../components/contact-detail/ContactSummaryTab";
 import { ContactSupportTab } from "../../components/contact-detail/ContactSupportTab";
+import { ContactTasksPendingCard } from "../../components/contact-detail/ContactTasksPendingCard";
 import { ContactEmailsSection } from "../../components/ContactEmailsSection";
 import { ContactAssignmentsSection } from "../../components/ContactAssignmentsSection";
 import { ContactNotesSection } from "../../components/ContactNotesSection";
@@ -32,6 +35,7 @@ import { ErrorState } from "../../components/ErrorState";
 import { PageHeader } from "../../components/PageHeader";
 import { RefreshExternalDataButton } from "../../components/RefreshExternalDataButton";
 import { TaskModal } from "../../components/TaskModal";
+import { getCompany } from "../../lib/companiesApi";
 import {
   getMessageEvents,
   type EmailEvent,
@@ -39,8 +43,11 @@ import {
 import {
   deactivateContact,
   getContact,
+  listContactAssignments,
+  updateContact,
   type ActivityEvent,
   type Contact,
+  type ContactAssignment,
   type ExternalRefreshResult,
 } from "../../lib/api";
 import { extractErrorMessage } from "../../lib/errors";
@@ -58,13 +65,25 @@ function formatDateTime(value: string | null | undefined): string {
   });
 }
 
-type Tab = "summary" | "activity" | "emails" | "tasks" | "opportunities" | "support";
+type Tab =
+  | "summary"
+  | "activity"
+  | "emails"
+  | "tasks"
+  | "notes"
+  | "opportunities"
+  | "support";
 
+// Bart pidió re-añadir la pestaña "Notas" perdida en el rediseño
+// PR-D. Posición entre Tareas y Oportunidades — el `tasks` flow + el
+// `notes` flow comparten sidebar y resultaba intuitivo en la ficha
+// vieja.
 const TABS: Array<{ id: Tab; label: string; icon: React.ElementType }> = [
   { id: "summary", label: "Resumen", icon: Sparkles },
   { id: "activity", label: "Actividad", icon: ActivityIcon },
   { id: "emails", label: "Emails", icon: Mail },
   { id: "tasks", label: "Tareas", icon: CheckSquare },
+  { id: "notes", label: "Notas", icon: StickyNote },
   { id: "opportunities", label: "Oportunidades", icon: Layers },
   { id: "support", label: "Soporte", icon: LifeBuoy },
 ];
@@ -79,6 +98,9 @@ export default function ContactDetailPage() {
   const [showComposer, setShowComposer] = useState(false);
   const [showTaskModal, setShowTaskModal] = useState(false);
   const [overflowOpen, setOverflowOpen] = useState(false);
+  const [primaryAssignment, setPrimaryAssignment] =
+    useState<ContactAssignment | null>(null);
+  const [companyName, setCompanyName] = useState<string | null>(null);
   const autoRefreshed = useRef(false);
 
   const loadContact = useCallback(async () => {
@@ -86,6 +108,58 @@ export default function ContactDetailPage() {
     setContact(fresh);
     return fresh;
   }, [params.id]);
+
+  // Side fetches — primary assignment + nombre empresa. Sin estos, el
+  // header pintaba "Sin propietario asignado" aunque hubiera primary
+  // (bug PR-D) y el strip pintaba "Sin empresa" con company_id seteado.
+  const reloadPrimary = useCallback(async () => {
+    try {
+      const rows = await listContactAssignments(params.id);
+      const primary = rows.find((r) => r.is_primary) ?? null;
+      setPrimaryAssignment(primary);
+    } catch {
+      setPrimaryAssignment(null);
+    }
+  }, [params.id]);
+
+  useEffect(() => {
+    reloadPrimary();
+  }, [reloadPrimary]);
+
+  useEffect(() => {
+    if (!contact?.company_id) {
+      setCompanyName(null);
+      return;
+    }
+    let cancelled = false;
+    getCompany(contact.company_id)
+      .then((co) => {
+        if (!cancelled) setCompanyName(co.name);
+      })
+      .catch(() => {
+        if (!cancelled) setCompanyName(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [contact?.company_id]);
+
+  // PATCH callback compartido por header + strip para los inline edits
+  // (nombre, puesto, score, status). Refresca tanto el contacto como
+  // el primario por si el cambio dispara un assignment side-effect.
+  const handlePatch = useCallback(
+    async (payload: Record<string, unknown>) => {
+      try {
+        await updateContact(params.id, payload);
+        await loadContact();
+      } catch (err) {
+        throw new Error(
+          extractErrorMessage(err, "No se pudo actualizar el contacto."),
+        );
+      }
+    },
+    [loadContact, params.id],
+  );
 
   useEffect(() => {
     loadContact()
@@ -159,12 +233,19 @@ export default function ContactDetailPage() {
     );
   }
 
-  // El primary owner sale del bloque assignments; sin endpoint cruzado
-  // en este nivel mostramos un placeholder neutro y dejamos el dato
-  // real al card "Comerciales asignados" del sidebar.
-  const ownerName = null;
-  const ownerInitials = null;
-  const assignedSince = contact.updated_at ?? contact.created_at ?? null;
+  const ownerFull = primaryAssignment?.user.full_name ?? null;
+  const ownerName = ownerFull;
+  const ownerInitials = ownerFull
+    ? ownerFull
+        .split(" ")
+        .map((p) => p[0])
+        .filter(Boolean)
+        .slice(0, 2)
+        .join("")
+        .toUpperCase()
+    : null;
+  const assignedSince =
+    primaryAssignment?.assigned_at ?? contact.updated_at ?? null;
   const lastActivityAt =
     contact.activity_events?.[0]?.occurred_at ??
     contact.updated_at_external ??
@@ -191,6 +272,7 @@ export default function ContactDetailPage() {
         ownerName={ownerName}
         ownerInitials={ownerInitials}
         assignedSince={assignedSince}
+        onPatch={handlePatch}
         onSendEmail={() => setShowComposer(true)}
         onCreateTask={() => setShowTaskModal(true)}
         onLogCall={() => setShowTaskModal(true)}
@@ -228,9 +310,11 @@ export default function ContactDetailPage() {
 
       <ContactKeyDataStrip
         contact={contact}
+        companyName={companyName}
         tags={tags}
         origin={origin}
         lastActivityAt={lastActivityAt}
+        onPatch={handlePatch}
       />
 
       {refreshWarnings.length > 0 ? (
@@ -263,10 +347,25 @@ export default function ContactDetailPage() {
 
           <div className="contact-detail-tab-body">
             {activeTab === "summary" ? (
-              <ContactSummaryTab
-                events={contact.activity_events ?? []}
-                onSeeAllActivity={() => setActiveTab("activity")}
-              />
+              <div className="contact-summary-wrapper">
+                <ContactSummaryTab
+                  events={contact.activity_events ?? []}
+                  onSeeAllActivity={() => setActiveTab("activity")}
+                />
+                {/* Extras PR-Db: Tareas pendientes + Notas recientes en
+                    el grid del Resumen. Se sitúan tras los 4 cards
+                    originales — el grid del padre los acomoda en filas. */}
+                <div className="contact-summary contact-summary-extra">
+                  <ContactTasksPendingCard
+                    contactId={contact.id}
+                    onSeeAll={() => setActiveTab("tasks")}
+                  />
+                  <ContactNotesPreviewCard
+                    contactId={contact.id}
+                    onSeeAll={() => setActiveTab("notes")}
+                  />
+                </div>
+              </div>
             ) : null}
             {activeTab === "activity" ? (
               <ActivityTab
@@ -276,6 +375,9 @@ export default function ContactDetailPage() {
             ) : null}
             {activeTab === "tasks" ? (
               <ContactTasksSection contactId={contact.id} />
+            ) : null}
+            {activeTab === "notes" ? (
+              <ContactNotesSection contactId={contact.id} />
             ) : null}
             {activeTab === "opportunities" ? (
               <ContactPipelinesSection contactId={contact.id} />

@@ -9,6 +9,7 @@
  */
 import { Copy, Phone as PhoneIcon } from "lucide-react";
 import type { Contact, Tag } from "../../lib/api";
+import { InlineEdit } from "./InlineEdit";
 
 type Props = {
   contact: Contact;
@@ -17,6 +18,9 @@ type Props = {
   origin?: string | null;
   lastActivityAt?: string | null;
   primaryPhone?: string | null;
+  /** PATCH callback compartido con header — recibe el payload parcial
+      y devuelve cuando la mutación está aplicada. */
+  onPatch: (payload: Record<string, unknown>) => Promise<void>;
 };
 
 function formatDate(value?: string | null): string {
@@ -40,6 +44,14 @@ const STATUS_LABEL: Record<string, string> = {
   lost: "Perdido",
 };
 
+const STATUS_OPTIONS: ReadonlyArray<[string, string]> = [
+  ["new", "Lead nuevo"],
+  ["qualified", "Calificado"],
+  ["working", "Trabajando"],
+  ["won", "Cliente"],
+  ["lost", "Perdido"],
+];
+
 function copyToClipboard(value: string) {
   if (typeof navigator !== "undefined" && navigator.clipboard) {
     navigator.clipboard.writeText(value).catch(() => undefined);
@@ -53,6 +65,7 @@ export function ContactKeyDataStrip({
   origin,
   lastActivityAt,
   primaryPhone,
+  onPatch,
 }: Props) {
   const visibleTags = tags.slice(0, 3);
   const extraTags = Math.max(0, tags.length - visibleTags.length);
@@ -151,19 +164,42 @@ export function ContactKeyDataStrip({
       <div className="contact-strip-cell">
         <span className="contact-strip-label">Score</span>
         <span className="contact-strip-value">
-          {contact.lead_score !== null && contact.lead_score !== undefined ? (
-            <strong>{contact.lead_score}</strong>
-          ) : (
-            <span className="muted">—</span>
-          )}
+          {/* Bart: editable por cualquier user — click → input numérico
+              save-on-blur. Sin validación de rango (mantenemos el
+              lead_score libre como el modelo backend). */}
+          <InlineEdit
+            kind="number"
+            value={contact.lead_score ?? null}
+            ariaLabel="Lead score"
+            emptyLabel="—"
+            display={
+              contact.lead_score !== null && contact.lead_score !== undefined ? (
+                <strong>{contact.lead_score}</strong>
+              ) : (
+                <span className="muted">—</span>
+              )
+            }
+            onSave={(next) => onPatch({ lead_score: next })}
+          />
         </span>
       </div>
       <div className="contact-strip-cell">
         <span className="contact-strip-label">Estado del ciclo</span>
         <span className="contact-strip-value">
-          {STATUS_LABEL[contact.commercial_status ?? "new"] ??
-            contact.commercial_status ??
-            "—"}
+          <InlineEdit
+            kind="select"
+            value={contact.commercial_status ?? "new"}
+            options={STATUS_OPTIONS}
+            ariaLabel="Estado del ciclo"
+            display={
+              <span>
+                {STATUS_LABEL[contact.commercial_status ?? "new"] ??
+                  contact.commercial_status ??
+                  "—"}
+              </span>
+            }
+            onSave={(next) => onPatch({ commercial_status: next })}
+          />
         </span>
       </div>
     </section>
