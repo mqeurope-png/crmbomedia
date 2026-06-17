@@ -7,12 +7,12 @@ import { useEffect, useState } from "react";
 import { DashboardKpis, type DashboardRange } from "./components/dashboard/DashboardKpis";
 import { EmailActivityWidget } from "./components/dashboard/EmailActivityWidget";
 import { EmailTrackingStatsWidget } from "./components/dashboard/EmailTrackingStatsWidget";
-import { GoogleEventsWidget } from "./components/dashboard/GoogleEventsWidget";
-import { HotOpportunitiesWidget } from "./components/dashboard/HotOpportunitiesWidget";
 import { PipelineSummaryWidget } from "./components/dashboard/PipelineSummaryWidget";
+import { PriorityLeadsWidget } from "./components/dashboard/PriorityLeadsWidget";
 import { RecentInteractionsWidget } from "./components/dashboard/RecentInteractionsWidget";
 import { TasksWidget } from "./components/dashboard/TasksWidget";
-import { UnattendedLeadsWidget } from "./components/dashboard/UnattendedLeadsWidget";
+import { UpcomingTasksWidget } from "./components/dashboard/UpcomingTasksWidget";
+import { UserCampaignStatsWidget } from "./components/dashboard/UserCampaignStatsWidget";
 import { ErrorState } from "./components/ErrorState";
 import { getCurrentUser, type User } from "./lib/api";
 import { extractErrorMessage } from "./lib/errors";
@@ -137,11 +137,11 @@ export default function Home() {
       <section className="dashboard-widgets-grid">
         <TasksWidget />
         <PipelineSummaryWidget />
-        <UnattendedLeadsWidget currentUserId={user?.id ?? null} />
+        <PriorityLeadsWidget />
         <EmailActivityWidget />
         <EmailTrackingStatsWidget />
-        <GoogleEventsWidget />
-        <HotOpportunitiesWidget />
+        <UpcomingTasksWidget />
+        <UserCampaignStatsWidget />
         <RecentInteractionsWidget />
       </section>
     </main>

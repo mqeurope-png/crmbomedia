@@ -1,45 +1,102 @@
 "use client";
 
-import { AlertCircle, CheckCircle2, Plus } from "lucide-react";
+/**
+ * "📋 Mis tareas y agenda" — PR-E2. Reusa `getMyBuckets({scope:
+ * "mine"})` que ya devuelve `{overdue, today, tomorrow, …}`.
+ * Cada item lleva checkbox para marcar completada (POST a
+ * `/api/tasks/{id}/complete`).
+ */
+import { CheckCircle2, Plus } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { extractErrorMessage } from "../../lib/errors";
-import { getDashboardTasksPending } from "../../lib/dashboardApi";
-import type { Task } from "../../lib/tasksApi";
+import {
+  completeTask,
+  getMyBuckets,
+  type Task,
+  type TaskBuckets,
+} from "../../lib/tasksApi";
 import { TaskModal } from "../TaskModal";
 
-function dueLabel(dueAt: string | null): {
-  label: string;
-  cls: string;
-} {
-  if (!dueAt) return { label: "Sin fecha", cls: "muted" };
-  const d = new Date(dueAt);
-  const now = new Date();
-  const startOfDay = (x: Date) =>
-    new Date(x.getFullYear(), x.getMonth(), x.getDate());
-  const diffDays = Math.round(
-    (startOfDay(d).getTime() - startOfDay(now).getTime()) / (24 * 3600 * 1000),
+function fmtTime(due: string | null): string {
+  if (!due) return "Sin hora";
+  const d = new Date(due);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleTimeString("es-ES", {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function fmtAyer(due: string | null): string {
+  if (!due) return "—";
+  const d = new Date(due);
+  const yesterday = new Date();
+  yesterday.setDate(yesterday.getDate() - 1);
+  const isYesterday = d.toDateString() === yesterday.toDateString();
+  return `${isYesterday ? "Ayer" : d.toLocaleDateString("es-ES", {
+    day: "2-digit",
+    month: "short",
+  })} · ${fmtTime(due)}`;
+}
+
+function Bucket({
+  title,
+  rows,
+  tone,
+  formatRow,
+  onComplete,
+  pendingId,
+}: {
+  title: string;
+  rows: Task[];
+  tone: "danger" | "primary" | "info";
+  formatRow: (t: Task) => string;
+  onComplete: (id: string) => Promise<void>;
+  pendingId: string | null;
+}) {
+  if (rows.length === 0) return null;
+  return (
+    <div className="contact-tasks-pending-bucket">
+      <h4 className={`contact-tasks-pending-bucket-title is-${tone}`}>
+        {title} ({rows.length})
+      </h4>
+      <ul className="contact-tasks-pending-list">
+        {rows.slice(0, 5).map((t) => (
+          <li key={t.id} className="contact-tasks-pending-row">
+            <input
+              type="checkbox"
+              aria-label={`Completar "${t.title}"`}
+              checked={false}
+              disabled={pendingId === t.id}
+              onChange={() => onComplete(t.id)}
+            />
+            <span className="contact-tasks-pending-row-title">
+              {t.contact_id ? (
+                <Link href={`/contacts/${t.contact_id}`}>{t.title}</Link>
+              ) : (
+                t.title
+              )}
+            </span>
+            <span className="muted small">{formatRow(t)}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
-  const time = d.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" });
-  if (d < now) return { label: `Vencida · ${time}`, cls: "due-overdue" };
-  if (diffDays === 0) return { label: `Hoy · ${time}`, cls: "due-today" };
-  if (diffDays === 1) return { label: `Mañana · ${time}`, cls: "due-soon" };
-  return {
-    label: d.toLocaleDateString("es-ES", { day: "2-digit", month: "short" }),
-    cls: "muted",
-  };
 }
 
 export function TasksWidget() {
-  const [tasks, setTasks] = useState<Task[]>([]);
+  const [buckets, setBuckets] = useState<TaskBuckets | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showModal, setShowModal] = useState(false);
+  const [pendingId, setPendingId] = useState<string | null>(null);
 
   async function load() {
     try {
-      const items = await getDashboardTasksPending();
-      setTasks(items);
+      const res = await getMyBuckets({ scope: "mine" });
+      setBuckets(res);
       setError(null);
     } catch (err) {
       setError(extractErrorMessage(err, "No se pudieron cargar las tareas."));
@@ -52,11 +109,29 @@ export function TasksWidget() {
     load();
   }, []);
 
+  async function handleComplete(id: string) {
+    setPendingId(id);
+    try {
+      await completeTask(id);
+      await load();
+    } catch (err) {
+      setError(extractErrorMessage(err, "No se pudo completar la tarea."));
+    } finally {
+      setPendingId(null);
+    }
+  }
+
+  const empty =
+    buckets &&
+    buckets.overdue.length === 0 &&
+    buckets.today.length === 0 &&
+    buckets.tomorrow.length === 0;
+
   return (
     <article className="card widget widget-tasks">
       <header className="section-title">
         <h2>
-          <CheckCircle2 size={14} aria-hidden /> Mis tareas pendientes
+          <CheckCircle2 size={14} aria-hidden /> Mis tareas y agenda
         </h2>
         <Link href="/tasks" className="small muted">
           Ver todas
@@ -66,9 +141,11 @@ export function TasksWidget() {
         <p className="muted small">Cargando…</p>
       ) : error ? (
         <p className="form-error">{error}</p>
-      ) : tasks.length === 0 ? (
+      ) : empty ? (
         <div className="widget-empty">
-          <p className="muted small">No tienes tareas pendientes. ¡Buen trabajo!</p>
+          <p className="muted small">
+            No tienes tareas pendientes. ¡Buen trabajo!
+          </p>
           <button
             type="button"
             className="button small"
@@ -78,40 +155,32 @@ export function TasksWidget() {
           </button>
         </div>
       ) : (
-        <ul className="widget-list">
-          {tasks.map((task) => {
-            const due = dueLabel(task.due_at);
-            return (
-              <li key={task.id} className="widget-row">
-                <div className="widget-row-main">
-                  <p className="widget-row-title">
-                    {task.title}
-                    {task.priority === "urgent" || task.priority === "high" ? (
-                      <AlertCircle
-                        size={11}
-                        className={`task-priority-${task.priority}`}
-                        aria-hidden
-                      />
-                    ) : null}
-                  </p>
-                  <p className="widget-row-meta">
-                    <span className={due.cls}>{due.label}</span>
-                    {task.contact ? (
-                      <>
-                        {" · "}
-                        <Link href={`/contacts/${task.contact.id}`}>
-                          {[task.contact.first_name, task.contact.last_name]
-                            .filter(Boolean)
-                            .join(" ") || task.contact.email}
-                        </Link>
-                      </>
-                    ) : null}
-                  </p>
-                </div>
-              </li>
-            );
-          })}
-        </ul>
+        <div className="contact-tasks-pending">
+          <Bucket
+            title="Vencidas"
+            tone="danger"
+            rows={buckets?.overdue ?? []}
+            formatRow={(t) => fmtAyer(t.due_at)}
+            onComplete={handleComplete}
+            pendingId={pendingId}
+          />
+          <Bucket
+            title="Hoy"
+            tone="primary"
+            rows={buckets?.today ?? []}
+            formatRow={(t) => fmtTime(t.due_at)}
+            onComplete={handleComplete}
+            pendingId={pendingId}
+          />
+          <Bucket
+            title="Mañana"
+            tone="info"
+            rows={buckets?.tomorrow ?? []}
+            formatRow={(t) => fmtTime(t.due_at)}
+            onComplete={handleComplete}
+            pendingId={pendingId}
+          />
+        </div>
       )}
       {showModal ? (
         <TaskModal
