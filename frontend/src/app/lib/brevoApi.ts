@@ -506,6 +506,36 @@ export async function sendBrevoCampaignTest(
   );
 }
 
+// Sprint Brevo Backfill (post #54-56). El handler async reusa
+// `brevo:historical_backfill` con `campaign_brevo_ids=[id]` para tirar
+// SÓLO de los recipients de una campaña suelta (botón "Sincronizar
+// destinatarios" de la ficha) sin re-procesar el cache entero.
+export interface CampaignBackfillEnqueueResponse {
+  sync_log_id: string | null;
+  job_id: string | null;
+  status: "pending" | "skipped" | string;
+  campaigns_to_process?: number;
+}
+
+export async function backfillBrevoCampaignRecipients(
+  campaignId: number,
+): Promise<CampaignBackfillEnqueueResponse> {
+  return apiFetch<CampaignBackfillEnqueueResponse>(
+    `/api/brevo/campaigns/${campaignId}/backfill-recipients`,
+    { method: "POST" },
+  );
+}
+
+export async function backfillMissingBrevoCampaigns(
+  accountId: string,
+): Promise<CampaignBackfillEnqueueResponse> {
+  const qs = new URLSearchParams({ account_id: accountId }).toString();
+  return apiFetch<CampaignBackfillEnqueueResponse>(
+    `/api/brevo/campaigns/backfill-missing-recipients?${qs}`,
+    { method: "POST" },
+  );
+}
+
 export async function getBrevoCampaignTimeline(
   id: string,
 ): Promise<BrevoCampaignTimeline> {

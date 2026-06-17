@@ -22,6 +22,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.integrations.brevo.client import BrevoClient
+from app.integrations.brevo.historical_backfill import SENT_STATUSES
 from app.models.brevo import BrevoCampaignCache
 from app.models.crm import ExternalSystem, SyncLog
 from app.models.integration_settings import IntegrationAccount
@@ -223,9 +224,89 @@ async def ensure_campaign_html(
 # ---------------------------------------------------------------------------
 
 
+def find_sent_campaigns_without_events(
+    session: Session, *, account_id: str, max_campaigns: int = 100
+) -> list[int]:
+    """Devuelve los `brevo_campaign_id` de campañas en estado sent/
+    archive cuya tabla `activity_events` está vacía. Útil para tirar
+    backfill sólo del hueco histórico (campañas enviadas ANTES del
+    webhook que no quedaron capturadas).
+
+    Se queda en `max_campaigns` para no ahogar el worker en una sola
+    pasada cuando el hueco es grande.
+    """
+    from app.models.crm import ActivityEvent  # noqa: PLC0415
+
+    cached = list(
+        session.scalars(
+            select(BrevoCampaignCache)
+            .where(BrevoCampaignCache.brevo_account_id == account_id)
+            .where(BrevoCampaignCache.status.in_(SENT_STATUSES))
+            .order_by(BrevoCampaignCache.sent_at.desc())
+            .limit(max_campaigns)
+        )
+    )
+    if not cached:
+        return []
+    candidate_ids = [c.brevo_campaign_id for c in cached]
+    rows_with_events = set(
+        session.scalars(
+            select(ActivityEvent.campaign_brevo_id)
+            .where(ActivityEvent.campaign_brevo_id.in_(candidate_ids))
+            .distinct()
+        )
+    )
+    return [cid for cid in candidate_ids if cid not in rows_with_events]
+
+
+def _auto_enqueue_backfill_for_gaps(
+    session: Session, *, account_id: str
+) -> int:
+    """Tras refrescar el cache, busca campañas sent sin events y encola
+    un job de backfill para cubrirlas. Devuelve cuántas se metieron en
+    la cola (0 si no hay huecos).
+
+    Idempotente — el handler de historical_backfill ya salta campañas
+    que ya tienen events (resultado `skipped`), así que un re-enqueue
+    accidental no duplica trabajo.
+    """
+    from app.models.crm import SyncTrigger  # noqa: PLC0415
+    from app.workers.jobs import enqueue_sync_job  # noqa: PLC0415
+
+    gap_ids = find_sent_campaigns_without_events(
+        session, account_id=account_id, max_campaigns=50
+    )
+    if not gap_ids:
+        return 0
+    try:
+        enqueue_sync_job(
+            session,
+            system=ExternalSystem.BREVO,
+            account_id=account_id,
+            operation="historical_backfill",
+            triggered_by=SyncTrigger.CRON,
+            payload={"campaign_brevo_ids": gap_ids},
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "brevo.auto_backfill.enqueue_failed account_id=%s err=%s",
+            account_id,
+            exc,
+        )
+        return 0
+    return len(gap_ids)
+
+
 def refresh_brevo_campaigns(session: Session, sync_log: SyncLog) -> SyncOutcome:
     """Worker handler: refresh the campaign cache of every enabled
-    Brevo account, then re-arm the 15-minute heartbeat."""
+    Brevo account, then re-arm the 15-minute heartbeat.
+
+    Sprint Brevo Backfill (post #54-56): tras el refresh, busca
+    campañas sent SIN events en `activity_events` y encola
+    automáticamente un `brevo:historical_backfill` con esa lista. Así
+    las campañas enviadas antes del webhook se rellenan sin que el
+    operador tenga que pulsar nada.
+    """
     _ = sync_log
     import asyncio  # noqa: PLC0415
 
@@ -239,6 +320,7 @@ def refresh_brevo_campaigns(session: Session, sync_log: SyncLog) -> SyncOutcome:
     )
     refreshed = 0
     failed = 0
+    backfilled_auto = 0
     errors: list[str] = []
     for account in accounts:
         try:
@@ -249,11 +331,21 @@ def refresh_brevo_campaigns(session: Session, sync_log: SyncLog) -> SyncOutcome:
         except Exception as exc:  # noqa: BLE001 - account-level isolation
             failed += 1
             errors.append(f"{account.account_id}: {exc}")
+            continue
+        try:
+            backfilled_auto += _auto_enqueue_backfill_for_gaps(
+                session, account_id=account.account_id
+            )
+        except Exception as exc:  # noqa: BLE001
+            errors.append(
+                f"{account.account_id} auto-backfill: {exc}"
+            )
 
     schedule_campaign_refresh()
     return SyncOutcome(
         records_processed=refreshed,
         records_failed=failed,
+        metadata={"auto_backfilled_campaigns": backfilled_auto},
         error_summary="\n".join(errors) if errors else None,
     )
 

@@ -1,11 +1,14 @@
 "use client";
 
-import { Plus, RefreshCw } from "lucide-react";
+import { Plus, RefreshCw, Sparkles } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { ErrorState } from "../../components/ErrorState";
 import { PageHeader } from "../../components/PageHeader";
+import { getCurrentUser } from "../../lib/api";
 import {
+  backfillMissingBrevoCampaigns,
   CAMPAIGN_STATUS_LABEL as STATUS_LABEL,
   campaignRates,
   campaignStatusClass,
@@ -24,6 +27,16 @@ export default function MarketingCampaignsPage() {
   const [refreshing, setRefreshing] = useState(false);
   const [statusFilter, setStatusFilter] = useState("");
   const [query, setQuery] = useState("");
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [backfillBusy, setBackfillBusy] = useState(false);
+  const [confirmBackfillAll, setConfirmBackfillAll] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    getCurrentUser()
+      .then((u) => setIsAdmin(u?.role === "admin"))
+      .catch(() => undefined);
+  }, []);
 
   const load = useCallback(async (account: string, refresh = false) => {
     try {
@@ -91,6 +104,20 @@ export default function MarketingCampaignsPage() {
         description="Campañas de Brevo gestionadas desde el CRM: crea, programa, envía y mide sin salir de aquí."
         actions={
           <>
+            {isAdmin ? (
+              <button
+                type="button"
+                className="button secondary small"
+                disabled={backfillBusy || !accountId}
+                onClick={() => setConfirmBackfillAll(true)}
+                title="Encola backfill de campañas sent sin events en BD"
+              >
+                <Sparkles size={12} aria-hidden />{" "}
+                {backfillBusy
+                  ? "Encolando…"
+                  : "Sincronizar todas sin destinatarios"}
+              </button>
+            ) : null}
             <button
               type="button"
               className="button secondary small"
@@ -112,6 +139,7 @@ export default function MarketingCampaignsPage() {
         }
       />
 
+      {message ? <div className="success-state">{message}</div> : null}
       {error ? <ErrorState title="Error" message={error} /> : null}
 
       <div className="marketing-filters">
@@ -187,6 +215,47 @@ export default function MarketingCampaignsPage() {
           </table>
         </div>
       )}
+      <ConfirmDialog
+        open={confirmBackfillAll}
+        title="Sincronizar campañas sin destinatarios"
+        message={
+          "Vamos a buscar campañas enviadas que no tengan eventos en la BD " +
+          "(huecos del backfill histórico o campañas previas al webhook) y " +
+          "encolar un único job RQ para procesarlas en serial. Puede tardar " +
+          "varias horas si el hueco es grande."
+        }
+        confirmLabel="Encolar"
+        onConfirm={async () => {
+          setConfirmBackfillAll(false);
+          if (!accountId) return;
+          setBackfillBusy(true);
+          setError(null);
+          setMessage(null);
+          try {
+            const enq = await backfillMissingBrevoCampaigns(accountId);
+            if (enq.status === "skipped") {
+              setMessage(
+                "No hay campañas pendientes. Todas las sent tienen events en BD.",
+              );
+            } else {
+              setMessage(
+                `Backfill encolado para ${enq.campaigns_to_process ?? 0} ` +
+                  `campañas (sync_log_id=${enq.sync_log_id}).`,
+              );
+            }
+          } catch (err) {
+            setError(
+              extractErrorMessage(
+                err,
+                "No se pudo encolar el backfill global.",
+              ),
+            );
+          } finally {
+            setBackfillBusy(false);
+          }
+        }}
+        onCancel={() => setConfirmBackfillAll(false)}
+      />
     </main>
   );
 }

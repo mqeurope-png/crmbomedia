@@ -803,6 +803,103 @@ def trigger_historical_backfill(
     return {"sync_log_id": sync_log_id, "job_id": job_id}
 
 
+@router.post("/campaigns/{campaign_id}/backfill-recipients")
+def backfill_campaign_recipients(
+    campaign_id: int,
+    request: Request,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_manager),
+) -> dict[str, Any]:
+    """Encola un backfill SOLO de los recipients de esta campaña.
+
+    Reusa el job `brevo:historical_backfill` con
+    `payload={"campaign_brevo_ids": [campaign_id]}` — el handler tira
+    de la lista filtrada en vez de iterar todo el cache. Sirve para:
+
+    - El botón "Sincronizar destinatarios" de la ficha de campaña.
+    - Cubrir campañas enviadas antes del webhook que el backfill
+      histórico global todavía no tocó.
+
+    Manager+. Devuelve `{sync_log_id, job_id, status: "pending"}`.
+    """
+    from app.models.brevo import BrevoCampaignCache  # noqa: PLC0415
+
+    cached = session.scalar(
+        select(BrevoCampaignCache).where(
+            BrevoCampaignCache.brevo_campaign_id == campaign_id
+        )
+    )
+    if cached is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Campaña no encontrada en cache local.",
+        )
+    sync_log_id, job_id = enqueue_sync_job(
+        session,
+        system="brevo",
+        account_id=cached.brevo_account_id,
+        operation="historical_backfill",
+        triggered_by="manual",
+        triggered_by_user_id=current_user.id,
+        payload={"campaign_brevo_ids": [campaign_id]},
+        request=request,
+    )
+    session.commit()
+    return {
+        "sync_log_id": sync_log_id,
+        "job_id": job_id,
+        "status": "pending",
+    }
+
+
+@router.post("/campaigns/backfill-missing-recipients")
+def backfill_missing_campaign_recipients(
+    request: Request,
+    account_id: str = Query(...),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_admin),
+) -> dict[str, Any]:
+    """Pre-check: encuentra campañas sent/archive SIN events. Si las
+    hay, encola un solo `brevo:historical_backfill` con esa lista.
+
+    Admin-only — operación masiva que dispara N exports en serial. El
+    handler propio salta campañas ya pobladas, pero el coste contra
+    Brevo es alto.
+    """
+    from app.integrations.brevo.campaigns import (  # noqa: PLC0415
+        find_sent_campaigns_without_events,
+    )
+
+    _require_brevo_account(session, account_id)
+    gap_ids = find_sent_campaigns_without_events(
+        session, account_id=account_id, max_campaigns=200
+    )
+    if not gap_ids:
+        return {
+            "sync_log_id": None,
+            "job_id": None,
+            "status": "skipped",
+            "campaigns_to_process": 0,
+        }
+    sync_log_id, job_id = enqueue_sync_job(
+        session,
+        system="brevo",
+        account_id=account_id,
+        operation="historical_backfill",
+        triggered_by="manual",
+        triggered_by_user_id=current_user.id,
+        payload={"campaign_brevo_ids": gap_ids},
+        request=request,
+    )
+    session.commit()
+    return {
+        "sync_log_id": sync_log_id,
+        "job_id": job_id,
+        "status": "pending",
+        "campaigns_to_process": len(gap_ids),
+    }
+
+
 @router.get("/historical-backfill/status")
 def historical_backfill_status(
     account_id: str = Query(...),
