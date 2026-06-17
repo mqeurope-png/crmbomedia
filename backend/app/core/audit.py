@@ -117,6 +117,13 @@ class Action:
     # any field of the contact beyond what's needed to identify the row.
     INTEGRATION_QUOTA_DELETED = "integration.quota_deleted"
 
+    # Sprint Backup. Disparo manual desde /admin/backups + borrado
+    # explícito de un backup. El éxito/fallo del job en sí no emite
+    # audit (vive en la propia row de `backups`); estos eventos
+    # cubren la acción humana.
+    BACKUP_TRIGGERED = "backup.triggered"
+    BACKUP_DELETED = "backup.deleted"
+
     # On-demand external-data refresh (Sprint A PR-8). One row per
     # operator-triggered fetch of notes/tasks/events for a contact,
     # plus per-system success / rate-limit / auth-error breakdowns.
