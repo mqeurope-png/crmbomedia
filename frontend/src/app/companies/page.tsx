@@ -168,6 +168,11 @@ export default function CompaniesListPage() {
             const view = viewList.find((v) => v.id === urlState.viewId);
             if (view) {
               applyView(view);
+              // PR-E4b: rules dirty encima de la vista — sobrescriben el
+              // baseline después del applyView.
+              if (urlState.rules) {
+                setRules(urlState.rules);
+              }
               if (urlState.q) {
                 setQ(urlState.q);
                 setSearchInput(urlState.q);
@@ -215,12 +220,27 @@ export default function CompaniesListPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // PR-E4b: ver explicación en /contacts. Si el operador encadena
+  // reglas extra encima de una vista, hay que serializarlas o el
+  // browser back las pierde.
+  const viewBaselineRules = useMemo(() => {
+    if (!activeView) return null;
+    const filters = activeView.filters as Record<string, unknown> | undefined;
+    return (filters?.rules_json as Record<string, unknown> | undefined) ?? {};
+  }, [activeView]);
+  const rulesAreDirty = useMemo(() => {
+    if (!activeView) return false;
+    return (
+      JSON.stringify(rules ?? {}) !== JSON.stringify(viewBaselineRules ?? {})
+    );
+  }, [activeView, rules, viewBaselineRules]);
+
   // URL sync
   useEffect(() => {
     if (firstLoadRef.current) return;
     const params = serializeUrlState({
       viewId: activeView?.id ?? null,
-      rules: activeView ? null : rules,
+      rules: !activeView || rulesAreDirty ? rules : null,
       q,
       sortBy: sort?.field ?? "name",
       sortDir: sort?.direction ?? "asc",
@@ -231,7 +251,7 @@ export default function CompaniesListPage() {
     router.replace(next, { scroll: false });
     writeStoredView(params);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeView, rules, q, sort, visibleColumns, offset]);
+  }, [activeView, rules, rulesAreDirty, q, sort, visibleColumns, offset]);
 
   // Debounce búsqueda libre → q
   useEffect(() => {
