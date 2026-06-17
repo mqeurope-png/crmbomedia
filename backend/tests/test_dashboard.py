@@ -166,3 +166,215 @@ def test_leads_stats_tolerates_naive_created_at(
     )
     assert response.status_code == 200, response.text
     assert response.json()["totals"]["leads_current"] >= 1
+
+
+# ---------------------------------------------------------------------------
+# PR-E3 — upcoming-tasks / priority-leads / user-campaign-stats /
+# recent-interactions
+# ---------------------------------------------------------------------------
+
+
+def _user_id(session_factory: sessionmaker, role: UserRole) -> str:
+    with session_factory() as session:
+        return session.scalar(select(User.id).where(User.role == role))
+
+
+def test_upcoming_tasks_only_future_open(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    from app.models.crm import Task, TaskStatus
+
+    uid = _user_id(session_factory, UserRole.USER)
+    now = datetime.now(UTC)
+    with session_factory() as session:
+        session.add_all(
+            [
+                Task(
+                    title="Futura",
+                    assigned_user_id=uid,
+                    created_by_user_id=uid,
+                    status=TaskStatus.PENDING,
+                    due_at=now + timedelta(days=2),
+                ),
+                Task(
+                    title="Vencida",
+                    assigned_user_id=uid,
+                    created_by_user_id=uid,
+                    status=TaskStatus.PENDING,
+                    due_at=now - timedelta(days=2),
+                ),
+                Task(
+                    title="Completada futura",
+                    assigned_user_id=uid,
+                    created_by_user_id=uid,
+                    status=TaskStatus.DONE,
+                    due_at=now + timedelta(days=1),
+                ),
+            ]
+        )
+        session.commit()
+    resp = client.get(
+        "/api/dashboard/upcoming-tasks", headers=auth_headers(client, "user")
+    )
+    assert resp.status_code == 200
+    titles = [t["title"] for t in resp.json()]
+    assert titles == ["Futura"]
+
+
+def test_priority_leads_tags_reason(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    uid = _user_id(session_factory, UserRole.USER)
+    now = datetime.now(UTC)
+    with session_factory() as session:
+        c = Contact(
+            first_name="Reciente",
+            email="rec@example.com",
+            is_active=True,
+            created_at=now - timedelta(days=1),
+        )
+        session.add(c)
+        session.flush()
+        assignments_repo.add_assignment(
+            session,
+            contact_id=c.id,
+            user_id=uid,
+            is_primary=True,
+            assigned_by_user_id=uid,
+        )
+        session.commit()
+    resp = client.get(
+        "/api/dashboard/priority-leads?period=7d",
+        headers=auth_headers(client, "user"),
+    )
+    assert resp.status_code == 200
+    rows = resp.json()
+    assert len(rows) == 1
+    assert rows[0]["email"] == "rec@example.com"
+    assert rows[0]["reason"] in {"recent", "assigned", "active"}
+
+
+def test_user_campaign_stats_counts_primary_contacts(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    """Métrica PR-E3: por user primary, cuántos contactos abrieron/
+    clickearon campañas enviadas en ventana. Verifica el shape +
+    que cuenta los contactos primary del user."""
+    import app.models.brevo  # noqa: F401
+    from app.models.brevo import BrevoCampaignCache
+    from app.models.crm import ActivityEvent
+
+    uid = _user_id(session_factory, UserRole.USER)
+    now = datetime.now(UTC)
+    with session_factory() as session:
+        session.add(
+            BrevoCampaignCache(
+                brevo_account_id="main",
+                brevo_campaign_id=7,
+                name="C7",
+                status="sent",
+                type="classic",
+                sent_at=now - timedelta(days=2),
+                cached_at=now,
+            )
+        )
+        c = Contact(first_name="Lead", email="lead@example.com", is_active=True)
+        session.add(c)
+        session.flush()
+        assignments_repo.add_assignment(
+            session,
+            contact_id=c.id,
+            user_id=uid,
+            is_primary=True,
+            assigned_by_user_id=uid,
+        )
+        for et in ("email.delivered", "email.opened", "email.clicked"):
+            session.add(
+                ActivityEvent(
+                    contact_id=c.id,
+                    system="brevo",
+                    account_id="main",
+                    event_type=et,
+                    external_id=f"{c.id}:{et}:7",
+                    campaign_brevo_id=7,
+                    occurred_at=now - timedelta(days=1),
+                )
+            )
+        session.commit()
+    resp = client.get(
+        "/api/dashboard/user-campaign-stats?period=30d",
+        headers=auth_headers(client, "user"),
+    )
+    assert resp.status_code == 200
+    rows = resp.json()
+    mine = [r for r in rows if r["user_id"] == uid]
+    assert len(mine) == 1
+    assert mine[0]["received"] == 1
+    assert mine[0]["opened"] == 1
+    assert mine[0]["clicked"] == 1
+    assert mine[0]["open_rate"] == 100.0
+    assert mine[0]["click_rate"] == 100.0
+
+
+def test_user_campaign_stats_period_excludes_old(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    import app.models.brevo  # noqa: F401
+    from app.models.brevo import BrevoCampaignCache
+    from app.models.crm import ActivityEvent
+
+    uid = _user_id(session_factory, UserRole.USER)
+    now = datetime.now(UTC)
+    with session_factory() as session:
+        session.add(
+            BrevoCampaignCache(
+                brevo_account_id="main",
+                brevo_campaign_id=9,
+                name="Vieja",
+                status="sent",
+                type="classic",
+                sent_at=now - timedelta(days=40),
+                cached_at=now,
+            )
+        )
+        c = Contact(first_name="L", email="l@example.com", is_active=True)
+        session.add(c)
+        session.flush()
+        assignments_repo.add_assignment(
+            session,
+            contact_id=c.id,
+            user_id=uid,
+            is_primary=True,
+            assigned_by_user_id=uid,
+        )
+        session.add(
+            ActivityEvent(
+                contact_id=c.id,
+                system="brevo",
+                account_id="main",
+                event_type="email.opened",
+                external_id=f"{c.id}:opened:9",
+                campaign_brevo_id=9,
+                occurred_at=now - timedelta(days=39),
+            )
+        )
+        session.commit()
+    # period=30d → campaña enviada hace 40d queda fuera.
+    resp = client.get(
+        "/api/dashboard/user-campaign-stats?period=30d",
+        headers=auth_headers(client, "user"),
+    )
+    assert resp.status_code == 200
+    assert [r for r in resp.json() if r["user_id"] == uid] == []
+
+
+def test_recent_interactions_custom_requires_dates(
+    client: TestClient,
+) -> None:
+    # custom sin start/end → cae a ventana default (no 500).
+    resp = client.get(
+        "/api/dashboard/recent-interactions?period=custom",
+        headers=auth_headers(client, "user"),
+    )
+    assert resp.status_code == 200
+    assert isinstance(resp.json(), list)

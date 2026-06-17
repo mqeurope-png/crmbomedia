@@ -116,9 +116,11 @@ export type UserCampaignStat = {
   user_id: string;
   full_name: string;
   email: string;
-  leads: number;
-  clicks: number;
-  conversion_pct: number;
+  received: number;
+  opened: number;
+  clicked: number;
+  open_rate: number;
+  click_rate: number;
 };
 
 export type RecentInteraction = {
@@ -133,35 +135,54 @@ export type RecentInteraction = {
   campaign_brevo_id: number | null;
 };
 
-export type DashboardPeriod = "7d" | "14d" | "30d";
+// PR-E3: la escala de períodos crece a 3d/7d/15d/30d + custom. "14d"
+// se conserva por compat con llamadas previas (el backend lo acepta).
+export type DashboardPeriod = "3d" | "7d" | "14d" | "15d" | "30d" | "custom";
+
+export type DashboardWindow = {
+  period: DashboardPeriod;
+  /** ISO datetimes — solo cuando period === "custom". */
+  start?: string | null;
+  end?: string | null;
+};
+
+function windowParams(w: DashboardWindow): string {
+  const p = new URLSearchParams({ period: w.period });
+  if (w.period === "custom") {
+    if (w.start) p.set("start", w.start);
+    if (w.end) p.set("end", w.end);
+  }
+  return p.toString();
+}
 
 export async function getDashboardUpcomingTasks(limit = 8): Promise<Task[]> {
   return apiFetch<Task[]>(`/api/dashboard/upcoming-tasks?limit=${limit}`);
 }
 
 export async function getDashboardPriorityLeads(
-  period: DashboardPeriod = "14d",
+  window: DashboardWindow = { period: "7d" },
   limit = 10,
 ): Promise<PriorityLead[]> {
   return apiFetch<PriorityLead[]>(
-    `/api/dashboard/priority-leads?period=${period}&limit=${limit}`,
+    `/api/dashboard/priority-leads?${windowParams(window)}&limit=${limit}`,
   );
 }
 
 export async function getDashboardUserCampaignStats(
-  period: DashboardPeriod = "30d",
+  window: DashboardWindow = { period: "30d" },
   limit = 5,
 ): Promise<UserCampaignStat[]> {
   return apiFetch<UserCampaignStat[]>(
-    `/api/dashboard/user-campaign-stats?period=${period}&limit=${limit}`,
+    `/api/dashboard/user-campaign-stats?${windowParams(window)}&limit=${limit}`,
   );
 }
 
 export async function getDashboardRecentInteractions(
   scope: "mine" | "team" = "mine",
+  window: DashboardWindow = { period: "7d" },
   limit = 20,
 ): Promise<RecentInteraction[]> {
   return apiFetch<RecentInteraction[]>(
-    `/api/dashboard/recent-interactions?scope=${scope}&limit=${limit}`,
+    `/api/dashboard/recent-interactions?scope=${scope}&${windowParams(window)}&limit=${limit}`,
   );
 }

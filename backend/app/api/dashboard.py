@@ -234,8 +234,10 @@ def upcoming_tasks(
 
 
 _PERIOD_TO_DAYS: dict[str, int] = {
+    "3d": 3,
     "7d": 7,
     "14d": 14,
+    "15d": 15,
     "30d": 30,
 }
 
@@ -244,9 +246,40 @@ def _period_days(period: str | None, default: int = 14) -> int:
     return _PERIOD_TO_DAYS.get(period or "", default)
 
 
+def _resolve_period_window(
+    period: str,
+    start: datetime | None,
+    end: datetime | None,
+    default_days: int,
+) -> tuple[datetime, datetime]:
+    """Resuelve `(since, until)` para queries del dashboard.
+
+    - `period="custom"` exige `start` + `end` no nulos; si no, sale a
+      la ventana default.
+    - Resto: `since = now - days(period)`, `until = now`. `end` y
+      `start` se ignoran.
+    """
+    now = datetime.now(UTC)
+    if period == "custom" and start and end:
+        # Aseguramos UTC para comparar con columnas timezone=True.
+        if start.tzinfo is None:
+            start = start.replace(tzinfo=UTC)
+        if end.tzinfo is None:
+            end = end.replace(tzinfo=UTC)
+        if end < start:
+            start, end = end, start
+        return start, end
+    days = _period_days(period, default=default_days)
+    return now - timedelta(days=days), now
+
+
 @router.get("/priority-leads")
 def priority_leads(
-    period: str = Query(default="14d", regex="^(7d|14d|30d)$"),
+    period: str = Query(
+        default="7d", regex="^(3d|7d|14d|15d|30d|custom)$"
+    ),
+    start: datetime | None = Query(default=None),
+    end: datetime | None = Query(default=None),
     limit: int = Query(default=10, ge=1, le=50),
     session: Session = Depends(get_session),
     current_user: User = Depends(require_viewer),
@@ -264,12 +297,14 @@ def priority_leads(
     tag `reason ∈ {recent, assigned, active}` que la UI usa para el
     chip.
     """
-    days = _period_days(period)
-    since = datetime.now(UTC) - timedelta(days=days)
+    since, until = _resolve_period_window(period, start, end, default_days=7)
 
     # Subqueries de candidatos por motivo. Cada una sólo devuelve
     # `(contact_id, signal_at)` — luego mezclamos en Python para
-    # ordenar por la más reciente entre las 3 señales.
+    # ordenar por la más reciente entre las 3 señales. Acotamos por
+    # `<= until` además de `>= since` para que el modo `custom` (rango
+    # histórico) no arrastre señales fuera de ventana; en los presets
+    # `until = now` y la cota superior es no-op.
     recent_created = (
         select(
             Contact.id.label("contact_id"),
@@ -283,6 +318,7 @@ def priority_leads(
             ContactAssignment.user_id == current_user.id,
             Contact.is_active.is_(True),
             Contact.created_at >= since,
+            Contact.created_at <= until,
         )
     )
     recent_assigned = (
@@ -292,6 +328,7 @@ def priority_leads(
         ).where(
             ContactAssignment.user_id == current_user.id,
             ContactAssignment.assigned_at >= since,
+            ContactAssignment.assigned_at <= until,
         )
     )
     recent_activity = (
@@ -306,6 +343,7 @@ def priority_leads(
         .where(
             ContactAssignment.user_id == current_user.id,
             ActivityEvent.occurred_at >= since,
+            ActivityEvent.occurred_at <= until,
         )
         .group_by(ActivityEvent.contact_id)
     )
@@ -365,57 +403,79 @@ def priority_leads(
 
 @router.get("/user-campaign-stats")
 def user_campaign_stats(
-    period: str = Query(default="30d", regex="^(7d|14d|30d)$"),
+    period: str = Query(
+        default="30d", regex="^(3d|7d|14d|15d|30d|custom)$"
+    ),
+    start: datetime | None = Query(default=None),
+    end: datetime | None = Query(default=None),
     limit: int = Query(default=5, ge=1, le=20),
     session: Session = Depends(get_session),
     current_user: User = Depends(require_viewer),
 ) -> list[dict[str, Any]]:
-    """Ranking de usuarios por leads conseguidos en campañas Brevo
-    durante el `period`. PR-E2.
+    """Ranking de usuarios por interacción de SUS contactos primary
+    asignados con campañas Brevo enviadas en el `period`.
 
-    "Lead conseguido" = contacto **asignado** al user que abrió o
-    clickó al menos una campaña en el período. Devolvemos el top N
-    users con `{user_id, full_name, email, leads, conversion_pct}`,
-    donde `conversion_pct = (leads que clickaron / leads que
-    abrieron) * 100`.
+    Cambio de métrica en PR-E3 (la versión PR-E2 contaba leads
+    "engaged" sin filtrar primary y sin filtrar campañas enviadas en
+    el rango). Bart aclaró:
 
-    Cualquier usuario puede llamar al endpoint — los datos son
-    agregados por user. Útil tanto para el operador (ver su posición)
-    como para el manager (cuadro de mandos).
+    - Por cada user del equipo: cuántos de sus contactos primary
+      `is_primary=True AND user_id=X` recibieron / abrieron /
+      clickearon campañas enviadas dentro del período.
+    - "Período" se refiere a `BrevoCampaignCache.sent_at`, no al
+      `occurred_at` del event — así un open tardío de hoy de una
+      campaña enviada hace 60 días no entra si miras "últimos 7d".
+
+    Devuelve `{user_id, full_name, email, received, opened, clicked,
+    open_rate, click_rate}` ordenado por clicks desc, opens desc.
     """
-    _ = current_user
-    days = _period_days(period, default=30)
-    since = datetime.now(UTC) - timedelta(days=days)
+    from app.models.brevo import BrevoCampaignCache  # noqa: PLC0415
 
-    # 1 row por (user, contact, event_type) — luego agregamos.
-    base = (
-        select(
-            ContactAssignment.user_id,
-            ContactAssignment.contact_id,
-            ActivityEvent.event_type,
-        )
-        .join(
-            ActivityEvent,
-            ActivityEvent.contact_id == ContactAssignment.contact_id,
-        )
-        .where(
-            ActivityEvent.campaign_brevo_id.isnot(None),
-            ActivityEvent.occurred_at >= since,
+    _ = current_user
+    since, until = _resolve_period_window(period, start, end, default_days=30)
+
+    rows = list(
+        session.execute(
+            select(
+                ContactAssignment.user_id,
+                ContactAssignment.contact_id,
+                ActivityEvent.event_type,
+            )
+            .join(
+                ActivityEvent,
+                ActivityEvent.contact_id == ContactAssignment.contact_id,
+            )
+            .join(
+                BrevoCampaignCache,
+                BrevoCampaignCache.brevo_campaign_id
+                == ActivityEvent.campaign_brevo_id,
+            )
+            .where(
+                ContactAssignment.is_primary.is_(True),
+                ActivityEvent.campaign_brevo_id.isnot(None),
+                BrevoCampaignCache.sent_at.isnot(None),
+                BrevoCampaignCache.sent_at >= since,
+                BrevoCampaignCache.sent_at <= until,
+            )
         )
     )
-    rows = list(session.execute(base))
 
     per_user: dict[str, dict[str, set[str]]] = {}
     for user_id, contact_id, event_type in rows:
         slot = per_user.setdefault(
-            user_id, {"opened": set(), "clicked": set()}
+            user_id,
+            {"delivered": set(), "opened": set(), "clicked": set()},
         )
         et = (event_type or "").lower()
         if "click" in et:
             slot["clicked"].add(contact_id)
-            slot["opened"].add(contact_id)  # click implica open
+            slot["opened"].add(contact_id)
+            slot["delivered"].add(contact_id)
         elif "open" in et:
             slot["opened"].add(contact_id)
+            slot["delivered"].add(contact_id)
+        elif "deliver" in et:
+            slot["delivered"].add(contact_id)
 
     if not per_user:
         return []
@@ -431,27 +491,35 @@ def user_campaign_stats(
         user = users_lookup.get(uid)
         if user is None:
             continue
-        leads = len(slots["opened"])
-        clicks = len(slots["clicked"])
+        received = len(slots["delivered"])
+        opened = len(slots["opened"])
+        clicked = len(slots["clicked"])
         out.append(
             {
                 "user_id": uid,
                 "full_name": user.full_name,
                 "email": user.email,
-                "leads": leads,
-                "clicks": clicks,
-                "conversion_pct": round((clicks / leads) * 100, 1)
-                if leads
+                "received": received,
+                "opened": opened,
+                "clicked": clicked,
+                "open_rate": round((opened / received) * 100, 1)
+                if received
+                else 0.0,
+                "click_rate": round((clicked / received) * 100, 1)
+                if received
                 else 0.0,
             }
         )
-    out.sort(key=lambda x: x["leads"], reverse=True)
+    out.sort(key=lambda x: (x["clicked"], x["opened"]), reverse=True)
     return out[:limit]
 
 
 @router.get("/recent-interactions")
 def recent_interactions(
     scope: Literal["mine", "team"] = Query(default="mine"),
+    period: str = Query(default="7d", regex="^(3d|7d|14d|15d|30d|custom)$"),
+    start: datetime | None = Query(default=None),
+    end: datetime | None = Query(default=None),
     limit: int = Query(default=20, ge=1, le=50),
     session: Session = Depends(get_session),
     current_user: User = Depends(require_viewer),
@@ -462,11 +530,16 @@ def recent_interactions(
     Mezcla `activity_events` de tipos {email, call, note, task} en
     una sola línea de tiempo ordenada desc por `occurred_at`. La
     forma del row es paralela a `recent-email-activity` para reciclar
-    el render del widget.
+    el render del widget. PR-E3 añade ventana temporal seleccionable.
     """
+    since, until = _resolve_period_window(period, start, end, default_days=7)
     stmt = (
         select(ActivityEvent, Contact)
         .join(Contact, Contact.id == ActivityEvent.contact_id)
+        .where(
+            ActivityEvent.occurred_at >= since,
+            ActivityEvent.occurred_at <= until,
+        )
         .order_by(ActivityEvent.occurred_at.desc())
         .limit(limit)
     )

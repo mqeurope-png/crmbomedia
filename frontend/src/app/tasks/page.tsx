@@ -25,6 +25,7 @@ import {
   type TaskBuckets,
 } from "../lib/tasksApi";
 import { getCurrentUser, getUsers, type User } from "../lib/api";
+import { usePersistentState } from "../lib/usePersistentState";
 
 function formatDateTime(value: string | null | undefined): string {
   if (!value) return "—";
@@ -63,12 +64,22 @@ export default function TasksPage() {
   // "Mostrar completadas" toggle. Off by default so done tasks don't
   // clutter the urgency buckets. When on, an extra "Completadas"
   // section appears at the bottom with the last 50 done tasks.
-  const [showCompleted, setShowCompleted] = useState(false);
-  const [mode, setMode] = useState<"list" | "calendar">("list");
+  // PR-E3 (B): persistido por pantalla en localStorage.
+  const [showCompleted, setShowCompleted] = usePersistentState<boolean>(
+    "crmbomedia_view_state:tasks:showCompleted",
+    false,
+  );
+  const [mode, setMode] = usePersistentState<"list" | "calendar">(
+    "crmbomedia_view_state:tasks:mode",
+    "list",
+  );
   // QoL sprint — toggle "Mías ↔ Todo el equipo" (manager+). Default
   // `mine`; al cambiar a `team` aparece dropdown opcional para filtrar
-  // a un comercial concreto.
-  const [scope, setScope] = useState<"mine" | "team">("mine");
+  // a un comercial concreto. PR-E3 (B): persistido.
+  const [scope, setScope] = usePersistentState<"mine" | "team">(
+    "crmbomedia_view_state:tasks:scope",
+    "mine",
+  );
   const [teamUserId, setTeamUserId] = useState<string>("");
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [teamUsers, setTeamUsers] = useState<User[]>([]);

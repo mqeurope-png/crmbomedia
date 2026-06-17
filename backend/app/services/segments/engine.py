@@ -246,6 +246,11 @@ def _compile_leaf(
     # insensitive (vía func.lower).
     if spec.relation == "notes.body":
         return _compile_notes_content_leaf(comparator, value)
+    # PR-E3 (Deuda #8) — interacción con campañas Brevo. EXISTS /
+    # NOT EXISTS sobre activity_events filtrado por campaña + acción
+    # + ventana temporal (sent_at de la campaña).
+    if spec.relation == "brevo_campaign_interaction":
+        return _compile_brevo_campaign_interaction_leaf(value)
 
     column = spec.column
     if column is None and "concat" in spec.extras:
@@ -468,6 +473,96 @@ def _compile_notes_content_leaf(
         select(Note.contact_id).where(
             func.lower(Note.body).like(pattern)
         )
+    )
+
+
+def _compile_brevo_campaign_interaction_leaf(
+    value: Any,
+) -> ColumnElement[bool]:
+    """PR-E3 (Deuda #8) — compila el composite `brevo_campaign_
+    interaction`. `value` ya viene validado y normalizado por
+    `_validate_brevo_interaction`:
+
+        {campaigns: [int], action, period, start?, end?}
+
+    Casos:
+      - received/opened/clicked/bounced/unsubscribed → EXISTS de un
+        event_type concreto sobre las campañas seleccionadas.
+      - not_opened → recibió (delivered) PERO NOT EXISTS opened.
+      - not_clicked → abrió (opened) PERO NOT EXISTS clicked.
+
+    La ventana temporal acota por `BrevoCampaignCache.sent_at` (no por
+    el `occurred_at` del event) — coherente con el resto del sprint.
+    """
+    from app.models.brevo import BrevoCampaignCache  # noqa: PLC0415
+    from app.models.crm import ActivityEvent  # noqa: PLC0415
+    from app.services.segments.fields import (  # noqa: PLC0415
+        BREVO_INTERACTION_ACTIONS,
+        BREVO_INTERACTION_PERIODS,
+    )
+
+    if not isinstance(value, dict):
+        raise SegmentRuleError(
+            "brevo_campaign_interaction requiere un objeto composite"
+        )
+    campaigns: list[int] = value["campaigns"]
+    action: str = value["action"]
+    period: str = value.get("period", "all")
+
+    # Ventana sobre sent_at.
+    sent_clauses: list[Any] = []
+    if period == "custom":
+        start = value.get("start")
+        end = value.get("end")
+        if start is not None:
+            if start.tzinfo is None:
+                start = start.replace(tzinfo=UTC)
+            sent_clauses.append(BrevoCampaignCache.sent_at >= start)
+        if end is not None:
+            if end.tzinfo is None:
+                end = end.replace(tzinfo=UTC)
+            sent_clauses.append(BrevoCampaignCache.sent_at <= end)
+    else:
+        days = BREVO_INTERACTION_PERIODS.get(period)
+        if days is not None:
+            boundary = _now() - timedelta(days=days)
+            sent_clauses.append(BrevoCampaignCache.sent_at >= boundary)
+
+    def _exists_for(event_types: tuple[str, ...]):
+        """EXISTS de un activity_event de los `event_types` dados,
+        de las campañas seleccionadas, dentro de la ventana sent_at."""
+        sub = (
+            select(ActivityEvent.id)
+            .where(
+                ActivityEvent.contact_id == Contact.id,
+                ActivityEvent.campaign_brevo_id.in_(campaigns),
+                ActivityEvent.event_type.in_(event_types),
+            )
+        )
+        if sent_clauses:
+            sub = sub.join(
+                BrevoCampaignCache,
+                BrevoCampaignCache.brevo_campaign_id
+                == ActivityEvent.campaign_brevo_id,
+            ).where(*sent_clauses)
+        return exists(sub)
+
+    if action in {"received", "opened", "clicked", "bounced", "unsubscribed"}:
+        return _exists_for(BREVO_INTERACTION_ACTIONS[action])
+    if action == "not_opened":
+        # Recibió la campaña pero no consta apertura.
+        return and_(
+            _exists_for(("email.delivered",)),
+            not_(_exists_for(("email.opened",))),
+        )
+    if action == "not_clicked":
+        # Abrió pero no clickó.
+        return and_(
+            _exists_for(("email.opened",)),
+            not_(_exists_for(("email.clicked",))),
+        )
+    raise SegmentRuleError(
+        f"Acción de campaña no soportada: {action!r}"
     )
 
 

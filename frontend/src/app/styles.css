@@ -7654,6 +7654,130 @@ tr.is-inactive {
 }
 
 /* ------------------------------------------------------------------ */
+/* PR-E3 — dashboard "cabe en una pantalla" + period selector + scroll */
+/* ------------------------------------------------------------------ */
+
+/* Contenedor scrollable interno de cada widget. El header
+   (.section-title) queda sticky y el cuerpo scrollea. */
+.widget-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* Header en columna cuando lleva varios controles (scope + período). */
+.section-title-stack {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+.widget-header-controls {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+/* Period selector custom popover. */
+.period-selector { position: relative; display: inline-flex; }
+.period-selector-custom {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 20;
+  background: var(--color-bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-card-hover);
+  padding: 12px;
+  display: flex;
+  gap: 10px;
+}
+.period-selector-custom label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--color-gray);
+  text-transform: none;
+}
+.period-selector-custom input { padding: 6px 8px; font-size: 0.8rem; }
+
+/* Editor composite del field brevo_campaign_interaction (/contacts). */
+.brevo-interaction-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 280px;
+}
+.brevo-interaction-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.brevo-interaction-row-stack {
+  flex-direction: column;
+  align-items: stretch;
+}
+.brevo-interaction-label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-gray);
+}
+.brevo-interaction-campaigns {
+  max-height: 180px;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 8px;
+}
+
+/* Modo "cabe en pantalla": solo en desktop ancho (grid 4×2 real).
+   Por debajo de 1281px el grid pasa a 2 cols (4 filas) y dejamos
+   scroll de página normal — forzar fit ahí amontonaría el contenido. */
+@media (min-width: 1281px) {
+  .dashboard-page.dashboard-page {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .dashboard-page .dashboard-header,
+  .dashboard-page .dashboard-kpis {
+    flex-shrink: 0;
+  }
+  .dashboard-widgets-grid {
+    flex: 1 1 auto;
+    min-height: 0;
+    grid-template-rows: repeat(2, minmax(0, 1fr));
+  }
+  .dashboard-widgets-grid > .card,
+  .dashboard-widgets-grid > .widget {
+    /* Anula el suelo de 420px de PR-E2 en favor del reparto por filas
+       del viewport. Cada card scrollea su propio contenido. */
+    min-height: 0;
+    max-height: 100%;
+    overflow: hidden;
+  }
+  /* Para widgets que NO envuelven su cuerpo en .widget-scroll, el
+     propio card scrollea (header incluido). Los que sí lo envuelven
+     dejan el header sticky. */
+  .dashboard-widgets-grid > .card:not(:has(.widget-scroll)),
+  .dashboard-widgets-grid > .widget:not(:has(.widget-scroll)) {
+    overflow-y: auto;
+  }
+  .dashboard-widgets-grid > .card > .section-title {
+    position: sticky;
+    top: 0;
+    background: var(--color-bg);
+    z-index: 2;
+  }
+}
+
+/* ------------------------------------------------------------------ */
 /* PR-B Rebranding — pre-login splash (/welcome)                      */
 /* ------------------------------------------------------------------ */
 .welcome-page {
