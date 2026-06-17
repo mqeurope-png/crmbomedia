@@ -6851,12 +6851,25 @@ tr.is-inactive {
 
 .contact-detail-grid-v2 {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 320px;
-  gap: 14px;
+  /* Spec PR-Da: main ~70% (≈900px en desktop) / sidebar ~30% (~360px)
+     con gap 24px. minmax(0,1fr) en el main evita que el contenido
+     largo del timeline reviente la columna. */
+  grid-template-columns: minmax(0, 1fr) 360px;
+  gap: 24px;
   align-items: start;
+  margin-top: 0;
 }
 
-.contact-detail-sidebar-v2 { display: flex; flex-direction: column; gap: 14px; }
+.contact-detail-sidebar-v2 {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  /* Sticky scroll — el sidebar acompaña al usuario mientras navega
+     la lista vertical de cards del main. Top alineado al topbar
+     (h ≈ 56px) + un poco de aire. */
+  position: sticky;
+  top: 72px;
+}
 
 .contact-detail-sidebar-v2 > * {
   background: var(--color-bg);
@@ -6892,6 +6905,23 @@ tr.is-inactive {
 
 .contact-sidebar-info > section:last-child,
 .contact-sidebar-info > .contact-card:last-child { border-bottom: 0; }
+
+/* h4 dentro del sidebar v2 mantiene el tipo uppercase pequeño del
+   legacy (era `.contact-detail-sidebar h4`). Sin esto los headers
+   "Empresa", "Notas", "Comerciales asignados" salen con el size por
+   defecto del browser. */
+.contact-detail-sidebar-v2 h4 {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--color-gray);
+  margin: 0 0 8px;
+}
+
+.contact-detail-sidebar-v2 .contact-card {
+  padding: 16px;
+}
 
 .contact-detail-v2 .contact-detail-main {
   background: var(--color-bg);

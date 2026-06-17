@@ -241,8 +241,8 @@ export default function ContactDetailPage() {
         </ul>
       ) : null}
 
-      <div className="contact-detail-grid contact-detail-grid-v2">
-        <section className="contact-detail-main">
+      <div className="contact-detail-grid-v2">
+        <section className="contact-detail-main contact-detail-main-v2">
           <nav className="contact-detail-tabs" aria-label="Pestañas">
             {TABS.map((t) => {
               const Icon = t.icon;
@@ -291,7 +291,7 @@ export default function ContactDetailPage() {
           </div>
         </section>
 
-        <aside className="contact-detail-sidebar contact-detail-sidebar-v2">
+        <aside className="contact-detail-sidebar-v2">
           <div
             id="sidebar-info"
             className="contact-card contact-sidebar-card contact-sidebar-info"
