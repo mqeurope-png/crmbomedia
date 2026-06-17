@@ -128,45 +128,52 @@ ls -l /opt/crmbo/.env.production
 
 ---
 
-## 5. Instalar el cron + script
+## 5. Preparar paths en el VPS
 
-Copia el script al VPS (asumiendo que el repo está clonado en
-`/opt/crmbo`):
+Cron de Linux **ya NO** es necesario (Sprint Backup-Hardening). El
+scheduler vive dentro del API + worker como un job RQ self-rescheduling
+cada 72 h, así que basta con tener los paths preparados:
 
 ```bash
-sudo cp /opt/crmbo/scripts/backup-crmbo.sh /opt/crmbo/scripts/
-sudo chmod +x /opt/crmbo/scripts/backup-crmbo.sh
 sudo mkdir -p /var/backups/crmbo
 sudo chmod 700 /var/backups/crmbo
+# Opcional: log file para que el script bash deje rastro cuando
+# corre desde el worker. La API también loggea via Sentry / journald
+# del propio contenedor.
 sudo touch /var/log/crmbo-backup.log
 sudo chmod 640 /var/log/crmbo-backup.log
 ```
 
-Edita el crontab del usuario root (el cron necesita acceso a docker
-y a `/opt/crmbo/.env.production`):
+El script `scripts/backup-crmbo.sh` viaja **dentro de la imagen Docker**
+del worker (lo aporta el `COPY scripts ./scripts` del Dockerfile), pero
+`docker-compose.prod.yml` lo bind-monta también desde
+`/opt/crmbo/scripts/` para que editarlo en VPS no requiera rebuild de
+la imagen. Si el clone del repo vive en otra ruta, ajusta el `volumes:`
+del servicio `worker`.
+
+### Verifica el scheduler arrancando
+
+Tras `docker compose up -d --force-recreate api worker`, comprueba en
+los logs del api que el scheduler armó el siguiente tick:
 
 ```bash
-sudo crontab -e
+docker compose logs api | grep "backups.scheduler armed"
+# backups.scheduler armed next_run_in=259200s
 ```
 
-Añade la línea:
+`259200s` = 72 h. Para tests, puedes overridear el intervalo:
 
-```cron
-# Sprint Backup. Cada 72 h a las 03:00 UTC. La CLI de Python
-# inserta la row en la tabla `backups` y luego ejecuta el bash.
-0 3 */3 * * cd /opt/crmbo/backend && /opt/crmbo/.venv/bin/python -m app.backups.cli >> /var/log/crmbo-backup.log 2>&1
+```bash
+# En .env.production:
+BACKUP_INTERVAL_HOURS=1
 ```
 
-> Si la app NO está en `/opt/crmbo` o el venv vive en otro path,
-> ajusta las rutas. Si NO usas venv y la instalación de Python es
-> global, sustituye `/opt/crmbo/.venv/bin/python` por `python3`.
->
-> Alternativa: si Bart prefiere que el script bash maneje la BD
-> directamente (sin pasar por la CLI Python), puede invocar el bash
-> a pelo (`0 3 */3 * * /opt/crmbo/scripts/backup-crmbo.sh >> ...`)
-> — pero entonces NO habrá row en la tabla `backups` para los
-> ejecutados por cron, solo para los manuales. El doc recomienda la
-> CLI Python para que el histórico esté completo.
+Reinicia api + worker → el siguiente backup automático cae 1 h
+después y aparece en `/admin/backups` con `triggered_by='cron'`.
+
+> Si Bart prefiere mantener el cron Linux como redundancia, NO lo
+> haga: corrían dos backups simultáneos (RQ + cron) y el primero
+> bloqueaba al segundo con un 409. Pick uno; recomendamos el job RQ.
 
 ---
 

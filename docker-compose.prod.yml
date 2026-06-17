@@ -68,6 +68,11 @@ services:
       # named volumes live under /var/lib/docker/volumes/ and were
       # invisible from nginx's perspective.
       - /opt/crmbo/uploads/email-templates:/opt/crmbo/uploads/email-templates
+      # Sprint Backup-Hardening. `/admin/backups/{id}/download` lee
+      # el archivo cifrado producido por el worker. Sin este bind, el
+      # FileResponse del api 404 — el worker crea el binario en su
+      # propio FS porque ambos contenedores ven el host.
+      - /var/backups/crmbo:/var/backups/crmbo
     depends_on:
       db:
         condition: service_healthy
@@ -125,6 +130,23 @@ services:
       - gmail:renew_watches
       - emails:snooze_sweep
       - email_templates:import_gmail
+      # Sprint Backup. Cola virtual para el job manual + scheduled
+      # cada 72 h. `backups:create` cubre los dos caminos.
+      - backups:create
+    volumes:
+      # Sprint Backup-Hardening. El worker ejecuta
+      # `scripts/backup-crmbo.sh` via subprocess: necesita el script
+      # legible (la imagen ya lo lleva via `COPY scripts ./scripts`,
+      # pero exponerlo desde el host hace que actualizaciones del
+      # script no requieran rebuild de la imagen).
+      - /opt/crmbo/scripts:/scripts:ro
+      # Destino del archivo cifrado. Compartido con el api para que
+      # el endpoint /download lo encuentre.
+      - /var/backups/crmbo:/var/backups/crmbo
+      # El script lee MYSQL_ROOT_PASSWORD y
+      # BACKUP_ENCRYPTION_PASSPHRASE del .env.production. Read-only
+      # — el worker NUNCA debe modificarlo.
+      - /opt/crmbo/.env.production:/opt/crmbo/.env.production:ro
     depends_on:
       api:
         condition: service_healthy

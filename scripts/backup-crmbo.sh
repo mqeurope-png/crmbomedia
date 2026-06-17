@@ -19,7 +19,14 @@
 #   BACKUP_RETAIN                    Default: 3 (rotación FIFO)
 #   BACKUP_ENCRYPTION_PASSPHRASE     Required (≥ 32 chars random).
 #   ENV_FILE                         Default: /opt/crmbo/.env.production
-#   COMPOSE_FILE                     Default: docker-compose.prod.yml
+#   COMPOSE_FILE                     Default: docker-compose.prod.yml.
+#                                    Compose lo trata nativamente como
+#                                    lista separada por `:` o `,`, así
+#                                    que para overlays Plesk usa
+#                                    `docker-compose.prod.yml:docker-
+#                                    compose.plesk.yml`. Como respetamos
+#                                    la env nativa de Compose, NO
+#                                    pasamos `-f` explícito.
 #   COMPOSE_DIR                      Default: dirname(ENV_FILE)
 #   RCLONE_REMOTE                    Default: drive:CRMBO_Backups
 #                                    (vacío = saltar push a Drive)
@@ -85,12 +92,23 @@ GPG_FILE="$TAR_FILE.gpg"
 FINAL_FILE="$BACKUP_DIR/$(basename "$GPG_FILE")"
 
 # 1. mysqldump --all-databases --routines --triggers --single-transaction.
+# `--skip-ssl`: MySQL 8 sirve un cert self-signed por defecto y el
+# cliente MariaDB del worker (default-mysql-client de Debian) no lo
+# acepta. La sintaxis `--ssl-mode=DISABLED` es MySQL-only y no la
+# entiende; `--skip-ssl` la entienden ambos. No degrada seguridad
+# porque la conexión worker→db viaja por la red interna de Docker
+# (loopback efectivo dentro del host).
 log "1/8 mysqldump → $DB_DUMP"
+# Exportamos COMPOSE_FILE para que `docker compose` lo lea
+# nativamente (soporta lista `file1:file2` para overlays Plesk +
+# prod). No usamos `-f` explícito porque solo acepta UN argumento.
+export COMPOSE_FILE
 if [ "$USE_DOCKER" = "1" ]; then
-  (cd "$COMPOSE_DIR" && docker compose -f "$COMPOSE_FILE" exec -T db \
+  (cd "$COMPOSE_DIR" && docker compose exec -T db \
     mysqldump \
       --user=root \
       --password="$MYSQL_ROOT_PASSWORD" \
+      --skip-ssl \
       --all-databases \
       --routines \
       --triggers \
@@ -103,6 +121,7 @@ else
     --host="${MYSQL_HOST:-127.0.0.1}" \
     --user=root \
     --password="$MYSQL_ROOT_PASSWORD" \
+    --skip-ssl \
     --all-databases \
     --routines \
     --triggers \

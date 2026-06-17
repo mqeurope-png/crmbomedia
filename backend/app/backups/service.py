@@ -22,11 +22,12 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from rq import Queue
 from sqlalchemy.orm import Session
 
 from app.db.session import get_engine
 from app.models.crm import Backup, BackupStatus, BackupTrigger
-from app.workers.queues import queue_for
+from app.workers.queues import queue_for, queue_name, redis_connection
 
 logger = logging.getLogger(__name__)
 
@@ -215,11 +216,119 @@ def enqueue_manual_backup(
     return backup.id, job.id
 
 
+# ---------------------------------------------------------------------------
+# Scheduled job — Sprint Backup-Hardening
+#
+# El cron de Linux (`/etc/crontab`) requería instalar entries a mano y NO
+# pasaba por la app: los backups generados quedaban como filas huérfanas
+# en disco sin row en BD. Reemplazamos con un job RQ self-rescheduling
+# (mismo patrón que `brevo.scheduler` — heartbeat con SETNX guard) para
+# que los backups automáticos sí entren a la tabla y aparezcan en
+# `/admin/backups`.
+# ---------------------------------------------------------------------------
+
+DEFAULT_BACKUP_INTERVAL_HOURS = 72
+_SCHEDULER_LOCK_KEY = "backups:scheduler:lock"
+
+
+def _interval_hours() -> int:
+    """Override por env var para tests / staging. 72 h en producción."""
+    raw = os.environ.get("BACKUP_INTERVAL_HOURS", "")
+    try:
+        value = int(raw) if raw else DEFAULT_BACKUP_INTERVAL_HOURS
+    except ValueError:
+        value = DEFAULT_BACKUP_INTERVAL_HOURS
+    return max(1, value)
+
+
+def scheduled_backup_runner() -> None:
+    """Job RQ ejecutado por el scheduler cada `BACKUP_INTERVAL_HOURS`.
+
+    Crea su propia row `triggered_by='cron'` (sin user_id), invoca
+    `run_backup` síncronamente, y re-arma el siguiente tick. NO usa
+    `enqueue_manual_backup` para mantener la triggered_by limpia
+    (auditoría) y permitir backups automáticos aunque NO haya admin
+    autenticado.
+    """
+    from datetime import datetime as _dt  # noqa: PLC0415
+
+    session = Session(get_engine())
+    try:
+        backup = create_backup_row(
+            session, triggered_by=BackupTrigger.CRON, user_id=None
+        )
+        session.commit()
+        backup_id = backup.id
+    finally:
+        session.close()
+
+    logger.info(
+        "backups.scheduled run starting id=%s ts=%s",
+        backup_id,
+        _dt.now(UTC).isoformat(),
+    )
+    try:
+        run_backup(backup_id)
+    finally:
+        # Re-arm pase lo que pase. Si la run falló, el siguiente tick
+        # debe seguir intentándolo dentro de 72 h en lugar de detener
+        # la cadena.
+        try:
+            schedule_periodic_backup()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("backups.scheduler re-arm failed: %s", exc)
+
+
+def schedule_periodic_backup() -> None:
+    """Arma el siguiente tick del scheduler. Idempotente vía SETNX:
+    si dos procesos API arrancan simultáneamente, solo uno gana el
+    lock y encola; el otro no-op.
+
+    Llamado:
+    - Al arrancar la API (`arm_periodic_jobs()` en `main.py`).
+    - Al final de cada `scheduled_backup_runner` para re-armar.
+    """
+    from datetime import timedelta as _td  # noqa: PLC0415
+
+    try:
+        conn = redis_connection()
+        interval = _td(hours=_interval_hours())
+        # TTL más corto que el interval para que un restart que
+        # perdió el SETNX re-arme dentro de un tick.
+        ttl = max(60, int(interval.total_seconds()) - 30)
+        if not conn.set(_SCHEDULER_LOCK_KEY, "1", nx=True, ex=ttl):
+            logger.debug("backups.scheduler already armed; skipping")
+            return
+        try:
+            queue = Queue(
+                queue_name("backups", "create"), connection=conn
+            )
+            queue.enqueue_in(
+                interval,
+                scheduled_backup_runner,
+                job_timeout=35 * 60,
+            )
+            logger.info(
+                "backups.scheduler armed next_run_in=%.0fs",
+                interval.total_seconds(),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("backups.scheduler enqueue failed: %s", exc)
+            conn.delete(_SCHEDULER_LOCK_KEY)
+    except Exception as exc:  # noqa: BLE001
+        # Redis caído al arranque NO debe tirar abajo la API. El
+        # siguiente reinicio re-intenta el arm.
+        logger.warning("backups.scheduler redis unreachable: %s", exc)
+
+
 __all__ = [
     "BACKUP_SCRIPT_ENV",
+    "DEFAULT_BACKUP_INTERVAL_HOURS",
     "DEFAULT_PROD_SCRIPT",
     "DEFAULT_REPO_SCRIPT",
     "create_backup_row",
     "enqueue_manual_backup",
     "run_backup",
+    "schedule_periodic_backup",
+    "scheduled_backup_runner",
 ]

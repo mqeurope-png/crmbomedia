@@ -373,3 +373,143 @@ def test_delete_backup_removes_row_and_file(
     assert not blob_path.exists()
     with session_factory() as session:
         assert session.get(Backup, "del") is None
+
+
+# ---------------------------------------------------------------------------
+# Sprint Backup-Hardening
+# ---------------------------------------------------------------------------
+
+
+def test_download_sets_no_store_cache_headers(
+    stack: tuple[TestClient, sessionmaker], tmp_path: Path
+) -> None:
+    """Sin Cache-Control: no-store el navegador cachea agresivamente
+    el 200 OK y reutiliza el binario para un download distinto del
+    siguiente backup."""
+    client, session_factory = stack
+    headers = auth_headers(client, "admin")
+    blob_path = tmp_path / "backup_cache.tar.gz.gpg"
+    blob_path.write_bytes(b"abcd")
+    with session_factory() as session:
+        session.add(
+            Backup(
+                id="cache",
+                filename="backup_cache.tar.gz.gpg",
+                filepath=str(blob_path),
+                size_bytes=4,
+                status=BackupStatus.SUCCESS.value,
+                triggered_by=BackupTrigger.MANUAL.value,
+                started_at=datetime.now(UTC),
+                finished_at=datetime.now(UTC),
+            )
+        )
+        session.commit()
+    response = client.get("/api/admin/backups/cache/download", headers=headers)
+    assert response.status_code == 200
+    assert "no-store" in response.headers["cache-control"]
+    assert response.headers.get("pragma") == "no-cache"
+
+
+def test_download_410_also_no_store(
+    stack: tuple[TestClient, sessionmaker],
+) -> None:
+    """El 410 (archivo rotado) también debe llevar Cache-Control:
+    no-store. Pre-fix: el browser cacheaba el 410 minutos y servía la
+    misma respuesta incluso cuando el backup volvía a existir."""
+    client, session_factory = stack
+    headers = auth_headers(client, "admin")
+    with session_factory() as session:
+        session.add(
+            Backup(
+                id="rotated2",
+                filename="backup_rot2.tar.gz.gpg",
+                filepath="/nope/backup_rot2.tar.gz.gpg",
+                size_bytes=10,
+                status=BackupStatus.SUCCESS.value,
+                triggered_by=BackupTrigger.CRON.value,
+                started_at=datetime.now(UTC),
+                finished_at=datetime.now(UTC),
+            )
+        )
+        session.commit()
+    response = client.get(
+        "/api/admin/backups/rotated2/download", headers=headers
+    )
+    assert response.status_code == 410
+    assert "no-store" in response.headers["cache-control"]
+
+
+def test_schedule_periodic_backup_enqueues_with_setnx(
+    stack: tuple[TestClient, sessionmaker],
+) -> None:
+    """Verifica el SETNX guard. La 1ª llamada arma; la 2ª no-op porque
+    el lock ya existe."""
+    _client, _ = stack
+    from app.backups import service as backup_service  # noqa: PLC0415
+
+    fake_conn = MagicMock()
+    fake_conn.set.side_effect = [True, False]
+    fake_queue = MagicMock()
+    with patch(
+        "app.backups.service.redis_connection", return_value=fake_conn
+    ), patch("app.backups.service.Queue", return_value=fake_queue):
+        backup_service.schedule_periodic_backup()
+        backup_service.schedule_periodic_backup()
+
+    assert fake_conn.set.call_count == 2
+    # Solo el primer call llega a `enqueue_in` (SETNX devolvió True).
+    assert fake_queue.enqueue_in.call_count == 1
+
+
+def test_scheduled_backup_runner_records_cron_row(
+    stack: tuple[TestClient, sessionmaker], tmp_path: Path
+) -> None:
+    """El runner del scheduler inserta una row con triggered_by=cron
+    y user_id=None. Re-arma el siguiente tick al final."""
+    _client, session_factory = stack
+
+    fake_stdout = (
+        "STATS|status=success|filename=backup_cron.tar.gz.gpg"
+        "|filepath=/var/backups/crmbo/backup_cron.tar.gz.gpg"
+        "|size_bytes=1024|drive_url=\n"
+    )
+    mock_result = MagicMock(returncode=0, stdout=fake_stdout, stderr="")
+    fake_script = tmp_path / "fake.sh"
+    fake_script.write_text("#!/bin/sh\necho fake\n")
+
+    from app.backups import service as backup_service  # noqa: PLC0415
+
+    with patch(
+        "app.backups.service._resolve_script_path", return_value=fake_script
+    ), patch(
+        "app.backups.service.subprocess.run", return_value=mock_result
+    ), patch(
+        "app.backups.service.schedule_periodic_backup"
+    ) as mock_rearm:
+        backup_service.scheduled_backup_runner()
+
+    # El re-arm se llama (independientemente del éxito o fallo del run).
+    assert mock_rearm.call_count == 1
+
+    # La row quedó persistida con triggered_by=cron y user_id=None.
+    with session_factory() as session:
+        rows = session.query(Backup).all()
+        cron_rows = [r for r in rows if r.triggered_by == BackupTrigger.CRON.value]
+        assert len(cron_rows) == 1
+        assert cron_rows[0].created_by_user_id is None
+        assert cron_rows[0].status == BackupStatus.SUCCESS.value
+
+
+def test_scheduler_redis_outage_does_not_raise(
+    stack: tuple[TestClient, sessionmaker],
+) -> None:
+    """Si Redis está caído al boot del API, el arm no debe tirar la
+    excepción para arriba (la app tiene que seguir levantando)."""
+    _client, _ = stack
+    from app.backups import service as backup_service  # noqa: PLC0415
+
+    with patch(
+        "app.backups.service.redis_connection",
+        side_effect=OSError("Connection refused"),
+    ):
+        backup_service.schedule_periodic_backup()  # no raises
