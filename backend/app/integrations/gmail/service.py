@@ -6,6 +6,7 @@ caller decides when to commit.
 """
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import logging
 import re
@@ -26,6 +27,7 @@ from app.models.crm import (
     EmailMessage,
     EmailThread,
     GmailPubsubWatch,
+    SyncLog,
 )
 
 logger = logging.getLogger(__name__)
@@ -246,12 +248,70 @@ def _swap_crm_urls_to_cid(
     return new_html, parts
 
 
+# Timeout por request a la Gmail API. La librería googleapiclient
+# usa httplib2 por debajo, que NO trae timeout por defecto — un
+# `drafts.get` que se cuelga en el socket bloquea el worker
+# indefinidamente. Lo envolvemos en un thread y abortamos con
+# `Future.result(timeout=…)` para garantizar progreso.
+_GMAIL_REQUEST_TIMEOUT_S = 30.0
+_GMAIL_REQUEST_RETRIES = 2
+
+
+class GmailRequestTimeout(RuntimeError):
+    """`drafts.get` (u otro request Gmail) no completó dentro del
+    timeout tras N reintentos."""
+
+
+def _gmail_call_with_timeout(
+    fn,
+    *args,
+    timeout_s: float = _GMAIL_REQUEST_TIMEOUT_S,
+    retries: int = _GMAIL_REQUEST_RETRIES,
+    **kwargs,
+):
+    """Corre `fn(*args, **kwargs)` en un thread con timeout duro.
+
+    Si vence el timeout reintenta hasta `retries` veces. Si ninguna
+    intentona termina dentro del timeout, levanta
+    `GmailRequestTimeout`. Cualquier otra excepción del callee se
+    propaga sin reintento (los retries son sólo para colgues de red).
+
+    El thread del intento expirado se cierra con `cancel_futures=True`
+    pero httplib2 está en un syscall bloqueante — el hilo queda como
+    daemon hasta que el SO desaloje el socket. Para un import one-shot
+    es asumible.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(retries + 1):
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        try:
+            future = executor.submit(fn, *args, **kwargs)
+            try:
+                return future.result(timeout=timeout_s)
+            except concurrent.futures.TimeoutError as exc:
+                last_exc = exc
+                logger.warning(
+                    "gmail.timeout fn=%s attempt=%d/%d timeout_s=%.1f",
+                    getattr(fn, "__name__", repr(fn)),
+                    attempt + 1,
+                    retries + 1,
+                    timeout_s,
+                )
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
+    raise GmailRequestTimeout(
+        f"Gmail request timed out after {retries + 1} attempts "
+        f"({timeout_s:.0f}s each)"
+    ) from last_exc
+
+
 def import_gmail_templates_with_tpl_prefix(
     session: Session,
     *,
     user_id: str,
     created_by_user_id: str,
     delete_after: bool = False,
+    sync_log: SyncLog | None = None,
 ) -> dict[str, Any]:
     """One-shot import de drafts Gmail con subject `[TPL] …` a la
     tabla `email_templates` (Sprint Email v2.2). Pensado para correr
@@ -264,6 +324,12 @@ def import_gmail_templates_with_tpl_prefix(
     `delete_after=True` borra el draft Gmail tras un INSERT exitoso
     — útil para hacer la limpieza desde la misma llamada en vez de
     a mano.
+
+    `sync_log` (opcional): cuando el caller es el worker, se pasa la
+    fila SyncLog para que el loop pueda hacer commit por draft +
+    refrescar `records_processed/skipped/failed`. El commit por
+    draft también actualiza `updated_at` → la UI puede usar ese
+    campo como heartbeat para detectar zombies (> 10 min sin tocar).
 
     Devuelve `{imported, skipped, errors, deleted, total_drafts_
     scanned, tpl_drafts_found}`.
@@ -298,6 +364,12 @@ def import_gmail_templates_with_tpl_prefix(
         session.flush()
     folder_id = folder.id
 
+    # Commit del folder + estado inicial antes del loop. Si una
+    # iteración revienta el rollback resetea sólo el trabajo del
+    # draft fallido, no la folder.
+    if sync_log is not None:
+        session.commit()
+
     # Set de names ya existentes en esta folder para idempotencia O(1).
     existing_names = {
         row.name
@@ -306,7 +378,12 @@ def import_gmail_templates_with_tpl_prefix(
         )
     }
 
-    all_draft_ids = client.list_all_drafts()
+    try:
+        all_draft_ids = _gmail_call_with_timeout(client.list_all_drafts)
+    except GmailRequestTimeout as exc:
+        logger.error("gmail.import.list_all_drafts timeout: %s", exc)
+        raise
+
     counters = {
         "imported": 0,
         "skipped": 0,
@@ -317,118 +394,172 @@ def import_gmail_templates_with_tpl_prefix(
     }
 
     for draft_id in all_draft_ids:
-        # Paso 1: metadata para inspeccionar Subject. Saltamos los que
-        # no tengan prefijo [TPL] para no bajar el raw inútilmente.
+        # Cada draft tiene su propio try/except. Una excepción aquí
+        # (timeout de red, MIME inválido, fallo de DB en este insert)
+        # se contiene al draft: rollback de SU transacción, log,
+        # contador de errores, sigue con el siguiente. Imprescindible
+        # para evitar zombies — antes un cuelgue en `drafts.get` paraba
+        # el worker entero sin liberar el SyncLog.
         try:
-            meta = client.get_draft_metadata(draft_id)
+            try:
+                meta = _gmail_call_with_timeout(
+                    client.get_draft_metadata, draft_id
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "gmail.import.meta failed draft_id=%s err=%s",
+                    draft_id,
+                    exc,
+                )
+                counters["errors"] += 1
+                _refresh_sync_log_counters(session, sync_log, counters)
+                continue
+            meta_msg = meta.get("message", {})
+            headers = (meta_msg.get("payload") or {}).get("headers") or []
+            subject = _extract_subject_from_headers(headers)
+            if not subject.startswith("[TPL] "):
+                continue
+            counters["tpl_drafts_found"] += 1
+            name = subject[len("[TPL] ") :].strip()
+            if not name:
+                counters["skipped"] += 1
+                _refresh_sync_log_counters(session, sync_log, counters)
+                continue
+            if name in existing_names:
+                counters["skipped"] += 1
+                _refresh_sync_log_counters(session, sync_log, counters)
+                continue
+
+            try:
+                full = _gmail_call_with_timeout(
+                    client.get_draft_template, draft_id
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "gmail.import.get failed draft_id=%s err=%s",
+                    draft_id,
+                    exc,
+                )
+                counters["errors"] += 1
+                _refresh_sync_log_counters(session, sync_log, counters)
+                continue
+            raw_b64 = (full.get("message") or {}).get("raw")
+            body_html = ""
+            attachments_map: dict[str, tuple[str, str | None, bytes]] = {}
+            if raw_b64:
+                try:
+                    raw_bytes = base64.urlsafe_b64decode(
+                        raw_b64.encode("ascii")
+                    )
+                    parsed = message_from_bytes(
+                        raw_bytes, policy=_default_policy
+                    )
+                    html_part = parsed.get_body(preferencelist=("html",))
+                    plain_part = parsed.get_body(preferencelist=("plain",))
+                    if html_part is not None:
+                        body_html = html_part.get_content() or ""
+                    elif plain_part is not None:
+                        text = plain_part.get_content() or ""
+                        body_html = "<p>" + text.replace("\n", "<br>") + "</p>"
+                    attachments_map = _extract_cid_attachments(parsed)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "gmail.import.parse failed draft_id=%s err=%s",
+                        draft_id,
+                        exc,
+                    )
+            if not body_html.strip():
+                counters["errors"] += 1
+                _refresh_sync_log_counters(session, sync_log, counters)
+                continue
+
+            template_id = str(uuid4())
+            body_html, referenced_cids = _rewrite_cid_to_crm_urls(
+                body_html, attachments_map, template_id
+            )
+
+            template = EmailTemplate(
+                id=template_id,
+                name=name,
+                subject=name,
+                body_html=body_html,
+                folder_id=folder_id,
+                is_global=True,
+                owner_user_id=created_by_user_id,
+            )
+            session.add(template)
+            now = datetime.now(UTC)
+            for cid in referenced_cids:
+                content_type, filename, data = attachments_map[cid]
+                session.add(
+                    EmailTemplateAttachment(
+                        template_id=template_id,
+                        original_cid=cid,
+                        filename=filename,
+                        content_type=content_type,
+                        data=data,
+                        created_at=now,
+                    )
+                )
+            session.flush()
+            existing_names.add(name)
+            counters["imported"] += 1
+
+            if delete_after:
+                try:
+                    _gmail_call_with_timeout(client.delete_draft, draft_id)
+                    counters["deleted"] += 1
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "gmail.import.delete failed draft_id=%s err=%s",
+                        draft_id,
+                        exc,
+                    )
+
+            # Commit por draft → persiste trabajo parcial y refresca
+            # `sync_log.updated_at` (heartbeat). Si el worker muere en
+            # el draft siguiente, los anteriores se quedan en BD y la
+            # idempotencia los salta en el re-run.
+            _refresh_sync_log_counters(session, sync_log, counters)
+            if sync_log is not None:
+                session.commit()
         except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "gmail.import.meta failed draft_id=%s err=%s",
+            # Cualquier excepción no esperada (DB lock, OOM parcial,
+            # decode error fuera del bloque interno) se contiene al
+            # draft: rollback, contador, sigue.
+            session.rollback()
+            logger.exception(
+                "gmail.import.draft_failed draft_id=%s err=%s",
                 draft_id,
                 exc,
             )
             counters["errors"] += 1
-            continue
-        meta_msg = meta.get("message", {})
-        headers = (meta_msg.get("payload") or {}).get("headers") or []
-        subject = _extract_subject_from_headers(headers)
-        if not subject.startswith("[TPL] "):
-            continue
-        counters["tpl_drafts_found"] += 1
-        name = subject[len("[TPL] ") :].strip()
-        if not name:
-            counters["skipped"] += 1
-            continue
-        if name in existing_names:
-            counters["skipped"] += 1
-            continue
-
-        # Paso 2: full raw para extraer body_html.
-        try:
-            full = client.get_draft_template(draft_id)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "gmail.import.get failed draft_id=%s err=%s",
-                draft_id,
-                exc,
-            )
-            counters["errors"] += 1
-            continue
-        raw_b64 = (full.get("message") or {}).get("raw")
-        body_html = ""
-        attachments_map: dict[str, tuple[str, str | None, bytes]] = {}
-        if raw_b64:
-            try:
-                raw_bytes = base64.urlsafe_b64decode(raw_b64.encode("ascii"))
-                parsed = message_from_bytes(raw_bytes, policy=_default_policy)
-                html_part = parsed.get_body(preferencelist=("html",))
-                plain_part = parsed.get_body(preferencelist=("plain",))
-                if html_part is not None:
-                    body_html = html_part.get_content() or ""
-                elif plain_part is not None:
-                    text = plain_part.get_content() or ""
-                    body_html = "<p>" + text.replace("\n", "<br>") + "</p>"
-                attachments_map = _extract_cid_attachments(parsed)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "gmail.import.parse failed draft_id=%s err=%s",
-                    draft_id,
-                    exc,
-                )
-        if not body_html.strip():
-            counters["errors"] += 1
-            continue
-
-        # Generamos `template.id` con antelación para que las URLs
-        # de los attachments inline del HTML puedan apuntar al endpoint
-        # del CRM antes del flush.
-        template_id = str(uuid4())
-        body_html, referenced_cids = _rewrite_cid_to_crm_urls(
-            body_html, attachments_map, template_id
-        )
-
-        template = EmailTemplate(
-            id=template_id,
-            name=name,
-            subject=name,  # útil como subject default al elegir el template
-            body_html=body_html,
-            folder_id=folder_id,
-            is_global=True,
-            owner_user_id=created_by_user_id,
-        )
-        session.add(template)
-        # Solo persistimos los attachments que el HTML referencia. Los
-        # parts huérfanos del MIME (Gmail a veces deja attachments sin
-        # uso) no merecen ocupar BLOB.
-        now = datetime.now(UTC)
-        for cid in referenced_cids:
-            content_type, filename, data = attachments_map[cid]
-            session.add(
-                EmailTemplateAttachment(
-                    template_id=template_id,
-                    original_cid=cid,
-                    filename=filename,
-                    content_type=content_type,
-                    data=data,
-                    created_at=now,
-                )
-            )
-        session.flush()
-        existing_names.add(name)
-        counters["imported"] += 1
-
-        if delete_after:
-            try:
-                client.delete_draft(draft_id)
-                counters["deleted"] += 1
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "gmail.import.delete failed draft_id=%s err=%s",
-                    draft_id,
-                    exc,
-                )
+            _refresh_sync_log_counters(session, sync_log, counters)
+            if sync_log is not None:
+                # Re-attach + commit del contador failed. La sesión
+                # tras un rollback queda limpia pero sync_log podría
+                # estar detached: merge para asegurar.
+                sync_log = session.merge(sync_log)
+                _refresh_sync_log_counters(session, sync_log, counters)
+                session.commit()
 
     return counters
+
+
+def _refresh_sync_log_counters(
+    session: Session,
+    sync_log: SyncLog | None,
+    counters: dict[str, int],
+) -> None:
+    """Volca los counters al SyncLog si está conectado. El commit
+    posterior actualiza `updated_at` (heartbeat). No-op si no se pasó
+    sync_log (caller síncrono de tests sin async)."""
+    if sync_log is None:
+        return
+    sync_log.records_processed = counters["imported"]
+    sync_log.records_skipped = counters["skipped"]
+    sync_log.records_failed = counters["errors"]
+    session.flush()
 
 
 def list_gmail_templates(

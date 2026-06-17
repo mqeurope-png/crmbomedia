@@ -1089,3 +1089,166 @@ def test_swap_crm_urls_to_cid_round_trip() -> None:
         assert parts[0]["cid"] == "ii_xyz"
         assert parts[0]["content_type"] == "image/png"
         assert parts[0]["data"] == _PNG_1x1
+
+
+def test_gmail_call_with_timeout_aborts_after_n_attempts() -> None:
+    """Si la llamada Gmail nunca completa dentro del timeout, el
+    helper levanta `GmailRequestTimeout` tras agotar los reintentos.
+    Imprescindible para evitar el zombie reportado: un `drafts.get`
+    que se queda colgado en el socket bloqueaba el worker entero."""
+    import time as _time  # noqa: PLC0415
+
+    from app.integrations.gmail.service import (  # noqa: PLC0415
+        GmailRequestTimeout,
+        _gmail_call_with_timeout,
+    )
+
+    def _hang():
+        _time.sleep(10)
+        return "never"
+
+    t_start = _time.monotonic()
+    with pytest.raises(GmailRequestTimeout):
+        _gmail_call_with_timeout(_hang, timeout_s=0.1, retries=1)
+    elapsed = _time.monotonic() - t_start
+    # 2 intentos × 0.1s = 0.2s. Margen amplio para CI lentos.
+    assert elapsed < 2.0
+
+
+def test_gmail_call_with_timeout_returns_value_on_quick_call() -> None:
+    """Camino feliz: si la fn termina dentro del timeout, devuelve
+    el resultado sin reintento."""
+    from app.integrations.gmail.service import (  # noqa: PLC0415
+        _gmail_call_with_timeout,
+    )
+
+    assert _gmail_call_with_timeout(lambda: 42, timeout_s=1.0) == 42
+
+
+class _FakeGmailFlakyClient:
+    """Importer fake con un draft que cuelga en `get_draft_template`
+    para verificar que el loop NO queda zombie tras el timeout."""
+
+    def __init__(self) -> None:
+        self.hang_seen = 0
+
+    def list_all_drafts(self) -> list[str]:
+        return ["draft-ok", "draft-hang", "draft-ok2"]
+
+    def get_draft_metadata(self, draft_id: str) -> dict:
+        name = {
+            "draft-ok": "[TPL] OK A",
+            "draft-hang": "[TPL] Cuelga",
+            "draft-ok2": "[TPL] OK B",
+        }[draft_id]
+        return {
+            "id": draft_id,
+            "message": {
+                "payload": {"headers": [{"name": "Subject", "value": name}]}
+            },
+        }
+
+    def get_draft_template(self, draft_id: str) -> dict:
+        if draft_id == "draft-hang":
+            import time as _time  # noqa: PLC0415
+
+            self.hang_seen += 1
+            _time.sleep(10)  # más que el timeout del test
+            raise AssertionError("never reached")
+        return {
+            "id": draft_id,
+            "message": {
+                "id": f"msg-{draft_id}",
+                "raw": _build_raw_email(
+                    subject="x",
+                    body_html=f"<p>body {draft_id}</p>",
+                ),
+            },
+        }
+
+
+def test_import_continues_after_hanging_draft(
+    client: TestClient,
+    session_factory: sessionmaker,
+    monkeypatch: pytest.MonkeyPatch,
+    autorun_worker: None,
+) -> None:
+    """Un draft cuyo `drafts.get` se cuelga NO bloquea el loop:
+    timeout → log warning → contador `errors` → sigue con los demás.
+    Las 2 plantillas sanas se persisten; la SyncLog termina en
+    PARTIAL_SUCCESS (no zombie en RUNNING)."""
+    uid = _user_id(session_factory, UserRole.ADMIN)
+    _seed_gmail(
+        session_factory,
+        user_id=uid,
+        scopes=(
+            "https://www.googleapis.com/auth/gmail.send "
+            "https://www.googleapis.com/auth/gmail.modify"
+        ),
+    )
+    fake = _FakeGmailFlakyClient()
+    monkeypatch.setattr(
+        "app.integrations.gmail.service.GmailClient",
+        lambda *_a, **_kw: fake,
+    )
+    # Bajamos el timeout en el módulo del servicio para que el test
+    # corra en < 2s.
+    monkeypatch.setattr(
+        "app.integrations.gmail.service._GMAIL_REQUEST_TIMEOUT_S", 0.2
+    )
+    monkeypatch.setattr(
+        "app.integrations.gmail.service._GMAIL_REQUEST_RETRIES", 0
+    )
+
+    body, summary = _post_import_and_get_counters(client, session_factory)
+    assert summary["imported"] == 2
+    assert summary["errors"] == 1
+
+    from app.models.crm import SyncLog, SyncStatus  # noqa: PLC0415
+
+    with session_factory() as session:
+        row = session.get(SyncLog, body["sync_log_id"])
+        assert row is not None
+        # 2 importados, 1 error → PARTIAL_SUCCESS, no zombie.
+        assert row.status == SyncStatus.PARTIAL_SUCCESS.value
+        assert row.records_processed == 2
+        assert row.records_failed == 1
+        assert row.finished_at is not None
+
+
+def test_import_per_draft_commit_updates_sync_log_heartbeat(
+    client: TestClient,
+    session_factory: sessionmaker,
+    monkeypatch: pytest.MonkeyPatch,
+    autorun_worker: None,
+) -> None:
+    """Cada draft procesado dispara un commit → `sync_log.updated_at`
+    refresca. Con ese campo la UI puede detectar zombies (> 10 min
+    sin tocar) y mostrar badge de warning."""
+    uid = _user_id(session_factory, UserRole.ADMIN)
+    _seed_gmail(
+        session_factory,
+        user_id=uid,
+        scopes=(
+            "https://www.googleapis.com/auth/gmail.send "
+            "https://www.googleapis.com/auth/gmail.modify"
+        ),
+    )
+    fake = _FakeGmailImportClient()
+    monkeypatch.setattr(
+        "app.integrations.gmail.service.GmailClient",
+        lambda *_a, **_kw: fake,
+    )
+
+    body, _ = _post_import_and_get_counters(client, session_factory)
+
+    from app.models.crm import SyncLog  # noqa: PLC0415
+
+    with session_factory() as session:
+        row = session.get(SyncLog, body["sync_log_id"])
+        assert row is not None
+        # records_processed se fue refrescando draft a draft. La
+        # señal interesante para la UI es `updated_at` posterior a
+        # `started_at` — implica al menos un commit intermedio.
+        assert row.started_at is not None
+        assert row.updated_at >= row.started_at

@@ -45,6 +45,7 @@ def run_import_gmail_templates(session: Session, sync_log: SyncLog) -> SyncOutco
         user_id=user_id,
         created_by_user_id=user_id,
         delete_after=delete_after,
+        sync_log=sync_log,
     )
 
     return SyncOutcome(
