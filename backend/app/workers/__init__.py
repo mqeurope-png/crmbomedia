@@ -20,6 +20,7 @@ RQ worker (both go through this module on startup).
 # in `OPERATIONS`; failing to import (e.g. missing optional dependency)
 # leaves the registry empty for that connector and the API surfaces a
 # clear 409 when the operator tries to trigger an unregistered op.
+from app.email_templates import jobs as _email_templates_jobs  # noqa: F401
 from app.integrations import agilecrm as _agilecrm  # noqa: F401
 from app.integrations import brevo as _brevo  # noqa: F401
 from app.workers.jobs import OPERATIONS, enqueue_sync_job, run_sync_job

@@ -82,6 +82,7 @@ services:
       - gmail:process_history
       - gmail:renew_watches
       - emails:snooze_sweep
+      - email_templates:import_gmail
     depends_on:
       db:
         condition: service_healthy
