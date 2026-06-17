@@ -1,12 +1,15 @@
 "use client";
 
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { getCurrentUser, type User } from "../lib/api";
+import { getCurrentUser, logout, type User } from "../lib/api";
+import { useIdleTimeout } from "../lib/useIdleTimeout";
 import { Sidebar } from "./Sidebar";
 import { TopBar } from "./TopBar";
 
 const ANONYMOUS_ROUTES = ["/login", "/password-reset", "/welcome"];
+// PR-F: 4h sin interacción → logout silencioso.
+const IDLE_TIMEOUT_MS = 4 * 60 * 60 * 1000;
 const FULL_BLEED_ROUTES: string[] = [];
 const SIDEBAR_STORAGE_KEY = "crmbo:sidebar:collapsed";
 
@@ -26,6 +29,7 @@ const SIDEBAR_STORAGE_KEY = "crmbo:sidebar:collapsed";
  */
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname() ?? "";
+  const router = useRouter();
   const isAnonymous = ANONYMOUS_ROUTES.some((path) =>
     pathname === path || pathname.startsWith(`${path}/`),
   );
@@ -34,6 +38,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [userLoaded, setUserLoaded] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
+
+  // PR-F: 4h idle → logout silencioso + redirect a /welcome. Solo en
+  // rutas autenticadas con usuario cargado para no disparar en /login.
+  useIdleTimeout(
+    IDLE_TIMEOUT_MS,
+    () => {
+      logout().finally(() => router.replace("/welcome"));
+    },
+    !isAnonymous && user !== null,
+  );
 
   // Restore the persisted collapse preference on first paint. Done in
   // useEffect (not useState init) so the SSR pass doesn't leak the

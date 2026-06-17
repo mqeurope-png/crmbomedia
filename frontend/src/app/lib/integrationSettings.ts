@@ -1,3 +1,4 @@
+import { getStoredToken } from "./api";
 import { extractErrorMessage, formatFastApiDetail } from "./errors";
 
 export type ExternalSystem = "agilecrm" | "brevo" | "freshdesk" | "factusol";
@@ -61,12 +62,6 @@ export type IntegrationAccountUpdatePayload = Partial<{
 export type IntegrationSetting = IntegrationAccount;
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
-const TOKEN_STORAGE_KEY = "crmbomedia_access_token";
-
-function getStoredToken(): string | null {
-  if (typeof window === "undefined") return null;
-  return window.localStorage.getItem(TOKEN_STORAGE_KEY);
-}
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const token = getStoredToken();
@@ -74,6 +69,7 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   try {
     response = await fetch(`${API_BASE_URL}${path}`, {
       ...init,
+      credentials: "include",
       headers: {
         "Content-Type": "application/json",
         ...(token ? { Authorization: `Bearer ${token}` } : {}),

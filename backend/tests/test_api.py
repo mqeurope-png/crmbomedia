@@ -1844,3 +1844,42 @@ def test_count_endpoints_require_viewer_or_above(client: TestClient):
         "/api/contacts/count", headers=auth_headers(client, "viewer")
     )
     assert viewer.status_code == 200
+
+
+def test_login_sets_session_cookie(client: TestClient):
+    """PR-F: el login responde con `Set-Cookie: bohub_token=...`
+    sin Max-Age para que el browser la borre al cerrar la ventana."""
+    response = client.post(
+        "/api/auth/login",
+        json={"email": "user@example.com", "password": "password123"},
+    )
+    assert response.status_code == 200
+    set_cookie = response.headers.get("set-cookie", "")
+    assert "bohub_token=" in set_cookie
+    # No persistencia entre sesiones del browser.
+    assert "Max-Age" not in set_cookie
+    assert "expires" not in set_cookie.lower()
+
+
+def test_login_2fa_prefase_no_cookie(client: TestClient):
+    """El pre-2FA token NO debe llegar como cookie — solo el JWT
+    final tras /auth/2fa/verify."""
+    response = client.post(
+        "/api/auth/login",
+        json={"email": "admin@example.com", "password": "password123"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["requires_2fa"] is True
+    set_cookie = response.headers.get("set-cookie", "")
+    assert "bohub_token" not in set_cookie
+
+
+def test_logout_clears_session_cookie(client: TestClient):
+    """POST /auth/logout responde 204 + Set-Cookie con Max-Age=0."""
+    response = client.post("/api/auth/logout")
+    assert response.status_code == 204
+    set_cookie = response.headers.get("set-cookie", "")
+    assert "bohub_token=" in set_cookie
+    # FastAPI delete_cookie suele emitir Max-Age=0 o expires en 1970.
+    assert "Max-Age=0" in set_cookie or "1970" in set_cookie
