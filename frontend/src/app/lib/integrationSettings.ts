@@ -276,24 +276,25 @@ export interface SyncAllAccountsResult {
   }[];
 }
 
-export interface GmailTemplatesImportSummary {
-  imported: number;
-  skipped: number;
-  errors: number;
-  deleted: number;
-  total_drafts_scanned: number;
-  tpl_drafts_found: number;
+// El endpoint pasó a ser async: encola un job en RQ y devuelve el
+// `sync_log_id` inmediatamente. La UI muestra un banner azul y deja
+// que el operador refresque cuando quiera.
+export interface GmailTemplatesImportEnqueueResponse {
+  sync_log_id: string;
+  job_id: string | null;
+  status: "pending" | "running" | "success" | "failed" | string;
 }
 
 export async function triggerGmailTemplatesImport(
   options: { deleteAfter?: boolean } = {},
-): Promise<GmailTemplatesImportSummary> {
-  // POST one-shot. `deleteAfter=true` borra cada draft Gmail tras
-  // un INSERT exitoso — útil para limpiar de raíz.
+): Promise<GmailTemplatesImportEnqueueResponse> {
+  // POST async. Devuelve 202 + sync_log_id en cuanto el job entra en
+  // la cola. El worker `email_templates:import_gmail` hace el trabajo
+  // real (1-3 min para 48 plantillas con attachments).
   const params = new URLSearchParams();
   if (options.deleteAfter) params.set("delete_after", "true");
   const qs = params.toString();
-  return apiFetch<GmailTemplatesImportSummary>(
+  return apiFetch<GmailTemplatesImportEnqueueResponse>(
     `/api/email-templates/import-gmail${qs ? `?${qs}` : ""}`,
     { method: "POST" },
   );

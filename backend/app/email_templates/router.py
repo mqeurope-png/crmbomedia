@@ -673,55 +673,54 @@ async def upload_email_asset(
     )
 
 
-# Helper proxy to keep the heavy `gmail.service` import out of the
-# router's top-of-module imports — only loaded when the import-gmail
-# endpoint is actually hit. The endpoint is admin-only and rare.
-def _gmail_service():
-    from app.integrations.gmail import service as _svc  # noqa: PLC0415
-    from app.integrations.gmail.service import (  # noqa: PLC0415
-        GmailNotConnectedError,
-        GmailScopeMissingError,
-    )
-
-    return _svc, GmailNotConnectedError, GmailScopeMissingError
-
-
-@router.post("/email-templates/import-gmail")
+@router.post(
+    "/email-templates/import-gmail",
+    status_code=status.HTTP_202_ACCEPTED,
+)
 def import_gmail_templates(
     delete_after: bool = False,
     session: Session = Depends(get_session),
     current_user: User = Depends(require_user),
 ):
-    """One-shot: importa drafts Gmail con prefijo `[TPL] ` a
-    `email_templates` bajo la folder global "Gmail (importadas)".
+    """Encola el import a la cola `email_templates:import_gmail`.
 
-    Idempotente: re-runs no duplican (skip por `(name, folder_id)`).
-    Si `delete_after=True`, borra cada draft Gmail tras un INSERT
-    exitoso.
+    El import síncrono tardaba 1-3 min para 48 plantillas (cuello de
+    botella en `drafts.get` × cada attachment) y Nginx cerraba a los
+    60 s con 504. Lo movemos al worker y devolvemos 202 + el
+    `sync_log_id` para que la UI redirija al panel de progreso.
 
-    Admin-only — comparte cuenta Gmail del CRM, los users normales
-    no tocan el buzón compartido.
+    Idempotente desde el handler — re-encolar el job en paralelo no
+    causa duplicados (skip por `(name, folder_id)` en el handler).
+
+    Admin-only — el job usa la cuenta Gmail del admin que dispara la
+    importación; los users normales no tocan el buzón compartido.
     """
     if current_user.role != UserRole.ADMIN:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Solo admin puede importar plantillas desde Gmail.",
         )
-    svc, GmailNotConnectedError, GmailScopeMissingError = _gmail_service()
-    try:
-        summary = svc.import_gmail_templates_with_tpl_prefix(
-            session,
-            user_id=current_user.id,
-            created_by_user_id=current_user.id,
-            delete_after=delete_after,
-        )
-    except GmailNotConnectedError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
-        ) from exc
-    except GmailScopeMissingError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)
-        ) from exc
-    session.commit()
-    return summary
+    from app.models.crm import ExternalSystem, SyncTrigger  # noqa: PLC0415
+    from app.workers.jobs import enqueue_sync_job  # noqa: PLC0415
+
+    sync_log_id, job_id = enqueue_sync_job(
+        session,
+        system=ExternalSystem.EMAIL_TEMPLATES,
+        # account_id no aplica — no hay integration_accounts para este
+        # canal. El handler sigue funcionando porque el column es
+        # nullable a nivel de DB; pasamos un sentinel para que el
+        # listado UI filtre limpio.
+        account_id="gmail_import",
+        operation="import_gmail",
+        triggered_by=SyncTrigger.MANUAL,
+        triggered_by_user_id=current_user.id,
+        payload={
+            "user_id": current_user.id,
+            "delete_after": delete_after,
+        },
+    )
+    return {
+        "sync_log_id": sync_log_id,
+        "job_id": job_id,
+        "status": "pending",
+    }

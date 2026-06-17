@@ -50,6 +50,12 @@ class ExternalSystem(StrEnum):
     BREVO = "brevo"
     FRESHDESK = "freshdesk"
     FACTUSOL = "factusol"
+    # No es un connector externo sino un canal interno para reusar la
+    # infra de sync_logs/RQ. El POST /api/email-templates/import-gmail
+    # encola sobre la cola `email_templates:import_gmail` para evitar
+    # el timeout de 60 s de Nginx; el handler tira de la cuenta Gmail
+    # del admin que dispara el job.
+    EMAIL_TEMPLATES = "email_templates"
 
 
 class UserRole(StrEnum):

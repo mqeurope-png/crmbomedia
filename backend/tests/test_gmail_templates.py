@@ -13,6 +13,7 @@ Google API. Confirms:
 from __future__ import annotations
 
 import base64
+import json
 from collections.abc import Generator
 from datetime import UTC, datetime, timedelta
 
@@ -60,6 +61,58 @@ def client(session_factory: sessionmaker) -> Generator[TestClient, None, None]:
     with TestClient(app) as test_client:
         yield test_client
     app.dependency_overrides.clear()
+
+
+@pytest.fixture()
+def autorun_worker(
+    session_factory: sessionmaker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Vuelve la enqueue de RQ síncrona: cuando el router llama a
+    `queue_for(...).enqueue(run_sync_job, **kw)` ejecutamos
+    `run_sync_job` inline contra la BD del test. Así los tests del
+    endpoint async pueden seguir afirmando sobre el resultado final
+    sin levantar Redis. Necesario tras pasar import-gmail a async."""
+    from types import SimpleNamespace  # noqa: PLC0415
+
+    engine = session_factory.kw["bind"]
+    monkeypatch.setattr("app.workers.jobs.get_engine", lambda: engine)
+
+    class _InlineQueue:
+        def enqueue(self, fn, **kwargs):
+            kwargs.pop("retry", None)
+            fn(**kwargs)
+            return SimpleNamespace(id="fake-job-id")
+
+    monkeypatch.setattr(
+        "app.workers.jobs.queue_for", lambda *_a, **_kw: _InlineQueue()
+    )
+
+
+def _post_import_and_get_counters(
+    client: TestClient,
+    session_factory: sessionmaker,
+    *,
+    delete_after: bool = False,
+) -> tuple[dict, dict]:
+    """POST al endpoint async + lee los counters del SyncLog que el
+    worker inline acaba de actualizar. Devuelve `(response_json,
+    sync_log_metadata)` para que cada test compruebe lo que necesita.
+    Requiere fixture `autorun_worker`."""
+    qs = "?delete_after=true" if delete_after else ""
+    resp = client.post(
+        f"/api/email-templates/import-gmail{qs}",
+        headers=auth_headers(client, "admin"),
+    )
+    assert resp.status_code == 202, resp.text
+    body = resp.json()
+
+    with session_factory() as session:
+        from app.models.crm import SyncLog as _SyncLog  # noqa: PLC0415
+
+        row = session.get(_SyncLog, body["sync_log_id"])
+        assert row is not None
+        metadata = json.loads(row.metadata_json or "{}")
+    return body, metadata
 
 
 def _user_id(factory: sessionmaker, role: UserRole) -> str:
@@ -457,6 +510,7 @@ def test_import_creates_email_templates_in_dedicated_folder(
     client: TestClient,
     session_factory: sessionmaker,
     monkeypatch: pytest.MonkeyPatch,
+    autorun_worker: None,
 ) -> None:
     uid = _user_id(session_factory, UserRole.ADMIN)
     _seed_gmail(
@@ -473,12 +527,9 @@ def test_import_creates_email_templates_in_dedicated_folder(
         lambda *_a, **_kw: fake,
     )
 
-    resp = client.post(
-        "/api/email-templates/import-gmail",
-        headers=auth_headers(client, "admin"),
-    )
-    assert resp.status_code == 200, resp.text
-    summary = resp.json()
+    body, summary = _post_import_and_get_counters(client, session_factory)
+    assert body["status"] == "pending"
+    assert body["sync_log_id"]
     assert summary["imported"] == 2
     assert summary["skipped"] == 0
     assert summary["errors"] == 0
@@ -521,6 +572,7 @@ def test_import_is_idempotent(
     client: TestClient,
     session_factory: sessionmaker,
     monkeypatch: pytest.MonkeyPatch,
+    autorun_worker: None,
 ) -> None:
     """Segundo run no duplica — counters reflejan skipped."""
     uid = _user_id(session_factory, UserRole.ADMIN)
@@ -538,16 +590,8 @@ def test_import_is_idempotent(
         lambda *_a, **_kw: fake,
     )
 
-    client.post(
-        "/api/email-templates/import-gmail",
-        headers=auth_headers(client, "admin"),
-    )
-    resp = client.post(
-        "/api/email-templates/import-gmail",
-        headers=auth_headers(client, "admin"),
-    )
-    assert resp.status_code == 200
-    summary = resp.json()
+    _post_import_and_get_counters(client, session_factory)
+    _, summary = _post_import_and_get_counters(client, session_factory)
     assert summary["imported"] == 0
     assert summary["skipped"] == 2
 
@@ -556,6 +600,7 @@ def test_import_delete_after_removes_drafts(
     client: TestClient,
     session_factory: sessionmaker,
     monkeypatch: pytest.MonkeyPatch,
+    autorun_worker: None,
 ) -> None:
     uid = _user_id(session_factory, UserRole.ADMIN)
     _seed_gmail(
@@ -572,12 +617,9 @@ def test_import_delete_after_removes_drafts(
         lambda *_a, **_kw: fake,
     )
 
-    resp = client.post(
-        "/api/email-templates/import-gmail?delete_after=true",
-        headers=auth_headers(client, "admin"),
+    _, summary = _post_import_and_get_counters(
+        client, session_factory, delete_after=True
     )
-    assert resp.status_code == 200
-    summary = resp.json()
     assert summary["imported"] == 2
     assert summary["deleted"] == 2
     assert sorted(fake.deleted) == ["draft-tpl-a", "draft-tpl-b"]
@@ -590,6 +632,97 @@ def test_import_requires_admin(client: TestClient) -> None:
             headers=auth_headers(client, role),
         )
         assert resp.status_code == 403, f"{role}: {resp.text}"
+
+
+def test_import_returns_202_with_sync_log_id_and_pending(
+    client: TestClient,
+    session_factory: sessionmaker,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """El endpoint async no espera al worker — devuelve 202 +
+    `{sync_log_id, job_id, status: pending}` inmediatamente. Sin
+    `autorun_worker` el SyncLog se queda en PENDING (Redis no se
+    invoca porque mockeamos `queue_for`)."""
+    from types import SimpleNamespace  # noqa: PLC0415
+
+    uid = _user_id(session_factory, UserRole.ADMIN)
+    _seed_gmail(
+        session_factory,
+        user_id=uid,
+        scopes=(
+            "https://www.googleapis.com/auth/gmail.send "
+            "https://www.googleapis.com/auth/gmail.modify"
+        ),
+    )
+
+    class _SilentQueue:
+        def enqueue(self, *_a, **_kw):
+            return SimpleNamespace(id="job-id-stub")
+
+    monkeypatch.setattr(
+        "app.workers.jobs.queue_for", lambda *_a, **_kw: _SilentQueue()
+    )
+
+    resp = client.post(
+        "/api/email-templates/import-gmail",
+        headers=auth_headers(client, "admin"),
+    )
+    assert resp.status_code == 202, resp.text
+    body = resp.json()
+    assert body["status"] == "pending"
+    assert body["sync_log_id"]
+    assert body["job_id"] == "job-id-stub"
+
+    from app.models.crm import (  # noqa: PLC0415
+        ExternalSystem,
+        SyncLog,
+        SyncStatus,
+    )
+
+    with session_factory() as session:
+        row = session.get(SyncLog, body["sync_log_id"])
+        assert row is not None
+        assert row.status == SyncStatus.PENDING.value
+        assert row.system == ExternalSystem.EMAIL_TEMPLATES
+        assert row.operation == "import_gmail"
+        assert row.job_id == "job-id-stub"
+
+
+def test_import_worker_marks_sync_log_success(
+    client: TestClient,
+    session_factory: sessionmaker,
+    monkeypatch: pytest.MonkeyPatch,
+    autorun_worker: None,
+) -> None:
+    """End-to-end: POST → worker inline corre el handler → SyncLog
+    queda en SUCCESS con los counters poblados."""
+    uid = _user_id(session_factory, UserRole.ADMIN)
+    _seed_gmail(
+        session_factory,
+        user_id=uid,
+        scopes=(
+            "https://www.googleapis.com/auth/gmail.send "
+            "https://www.googleapis.com/auth/gmail.modify"
+        ),
+    )
+    fake = _FakeGmailImportClient()
+    monkeypatch.setattr(
+        "app.integrations.gmail.service.GmailClient",
+        lambda *_a, **_kw: fake,
+    )
+
+    body, _ = _post_import_and_get_counters(client, session_factory)
+
+    from app.models.crm import SyncLog, SyncStatus  # noqa: PLC0415
+
+    with session_factory() as session:
+        row = session.get(SyncLog, body["sync_log_id"])
+        assert row is not None
+        assert row.status == SyncStatus.SUCCESS.value
+        assert row.records_processed == 2
+        assert row.records_skipped == 0
+        assert row.records_failed == 0
+        assert row.finished_at is not None
 
 
 # 1x1 transparent PNG bytes
@@ -642,6 +775,7 @@ def test_import_rewrites_cid_to_crm_attachment_urls(
     client: TestClient,
     session_factory: sessionmaker,
     monkeypatch: pytest.MonkeyPatch,
+    autorun_worker: None,
 ) -> None:
     """Tras migrar a `email_template_attachments` el body deja de
     llevar base64: los `<img src="cid:ii_*">` se reescriben a la URL
@@ -661,12 +795,7 @@ def test_import_rewrites_cid_to_crm_attachment_urls(
         _FakeGmailImportClientInline,
     )
 
-    resp = client.post(
-        "/api/email-templates/import-gmail",
-        headers=auth_headers(client, "admin"),
-    )
-    assert resp.status_code == 200, resp.text
-    summary = resp.json()
+    _, summary = _post_import_and_get_counters(client, session_factory)
     assert summary["imported"] == 1
 
     from sqlalchemy import select as _select  # noqa: PLC0415
@@ -703,6 +832,7 @@ def test_attachment_endpoint_serves_binary_with_cache_headers(
     client: TestClient,
     session_factory: sessionmaker,
     monkeypatch: pytest.MonkeyPatch,
+    autorun_worker: None,
 ) -> None:
     """El endpoint del CRM devuelve los bytes con el `Content-Type`
     original y `Cache-Control: immutable` para que el navegador no
@@ -720,10 +850,7 @@ def test_attachment_endpoint_serves_binary_with_cache_headers(
         "app.integrations.gmail.service.GmailClient",
         _FakeGmailImportClientInline,
     )
-    client.post(
-        "/api/email-templates/import-gmail",
-        headers=auth_headers(client, "admin"),
-    )
+    _post_import_and_get_counters(client, session_factory)
 
     from sqlalchemy import select as _select  # noqa: PLC0415
 
@@ -751,6 +878,7 @@ def test_attachment_endpoint_is_public(
     client: TestClient,
     session_factory: sessionmaker,
     monkeypatch: pytest.MonkeyPatch,
+    autorun_worker: None,
 ) -> None:
     """El endpoint NO usa `require_user` porque el browser carga las
     imágenes desde un `<img src=...>` sin el header `Authorization:
@@ -769,10 +897,7 @@ def test_attachment_endpoint_is_public(
         "app.integrations.gmail.service.GmailClient",
         _FakeGmailImportClientInline,
     )
-    client.post(
-        "/api/email-templates/import-gmail",
-        headers=auth_headers(client, "admin"),
-    )
+    _post_import_and_get_counters(client, session_factory)
 
     from sqlalchemy import select as _select  # noqa: PLC0415
 
@@ -797,6 +922,7 @@ def test_attachment_endpoint_404_for_unknown_cid(
     client: TestClient,
     session_factory: sessionmaker,
     monkeypatch: pytest.MonkeyPatch,
+    autorun_worker: None,
 ) -> None:
     uid = _user_id(session_factory, UserRole.ADMIN)
     _seed_gmail(
@@ -811,10 +937,7 @@ def test_attachment_endpoint_404_for_unknown_cid(
         "app.integrations.gmail.service.GmailClient",
         _FakeGmailImportClientInline,
     )
-    client.post(
-        "/api/email-templates/import-gmail",
-        headers=auth_headers(client, "admin"),
-    )
+    _post_import_and_get_counters(client, session_factory)
 
     from sqlalchemy import select as _select  # noqa: PLC0415
 

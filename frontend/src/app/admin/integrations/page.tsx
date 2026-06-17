@@ -62,33 +62,30 @@ export default function IntegrationAccountsPage() {
 
   async function onImportGmailTemplates() {
     const confirmMsg = deleteAfterImport
-      ? "Importa todos los drafts Gmail con prefijo `[TPL] ` a las plantillas CRM y BORRA cada draft de Gmail tras un insert exitoso. ¿Continuar?"
-      : "Importa todos los drafts Gmail con prefijo `[TPL] ` a las plantillas CRM. Los drafts Gmail NO se borran (limpia manualmente o relanza con la opción 'borrar tras importar'). ¿Continuar?";
+      ? "Importa todos los drafts Gmail con prefijo `[TPL] ` a las plantillas CRM y BORRA cada draft de Gmail tras un insert exitoso. El job corre en background — la página NO se queda esperando. ¿Continuar?"
+      : "Importa todos los drafts Gmail con prefijo `[TPL] ` a las plantillas CRM. Los drafts Gmail NO se borran (limpia manualmente o relanza con la opción 'borrar tras importar'). El job corre en background — la página NO se queda esperando. ¿Continuar?";
     if (!window.confirm(confirmMsg)) return;
     setImportingTpls(true);
     setError(null);
     setMessage(null);
     try {
-      const summary = await triggerGmailTemplatesImport({
+      // El endpoint async devuelve 202 + sync_log_id de inmediato.
+      // En 1-3 min el worker termina; el operador refresca cuando le
+      // apetezca o consulta el SyncLog directamente con el id.
+      const enq = await triggerGmailTemplatesImport({
         deleteAfter: deleteAfterImport,
       });
-      const parts = [
-        `Importadas: ${summary.imported}`,
-        `Saltadas (ya existían): ${summary.skipped}`,
-        `Errores: ${summary.errors}`,
-      ];
-      if (deleteAfterImport) parts.push(`Borradas de Gmail: ${summary.deleted}`);
-      parts.push(
-        `(${summary.tpl_drafts_found} drafts [TPL] de ${summary.total_drafts_scanned} totales escaneados)`,
+      setMessage(
+        `Import Gmail encolado (sync_log_id=${enq.sync_log_id}). ` +
+          "Tarda 1-3 min en background; recarga la lista de plantillas dentro de un rato para ver las nuevas.",
       );
-      setMessage(parts.join(" · "));
     } catch (err) {
       // Banner rojo prominente con detail del backend. Bart reportó
       // "silent fail" previo; ahora el detail se concatena con el
       // contexto para que el operador sepa qué acción falló.
       const detail = extractErrorMessage(
         err,
-        "No se pudo importar las plantillas de Gmail.",
+        "No se pudo encolar el import de plantillas de Gmail.",
       );
       setError(`Import Gmail falló: ${detail}`);
     } finally {
