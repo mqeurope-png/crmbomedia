@@ -2068,6 +2068,14 @@ def update_contact(
     # require_user y rechazamos a mano los campos manager-only.
     current_user: User = Depends(require_user),
 ) -> Contact:
+    from app.models.crm import (  # noqa: PLC0415
+        ContactPhone,
+        ContactTag,
+        EmailUnsubscribe,
+        Tag,
+    )
+    from app.repositories import assignments as _assignments  # noqa: PLC0415
+
     contact = crm_repository.get_contact(session, contact_id)
     if not contact:
         raise not_found("Contact")
@@ -2084,6 +2092,29 @@ def update_contact(
                 ),
             )
 
+    # PR-Editar-Completo. `unsubscribe_action='resubscribe'` solo
+    # admin. Lo evaluamos antes que el resto para devolver 403
+    # rápido en vez de aplicar cambios parciales.
+    unsubscribe_action = data.pop("unsubscribe_action", None)
+    if unsubscribe_action == "resubscribe" and current_user.role != UserRole.ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "Solo un admin puede reactivar envíos comerciales "
+                "(borrar la baja del contacto)."
+            ),
+        )
+
+    # PR-Editar-Completo. Phones reemplaza la lista completa de
+    # contact_phones. Los procesamos al final (tras flush de scalars)
+    # para que el contact existe y el cascade no rompa.
+    phones_payload = data.pop("phones", None)
+    # owner_id: pasa a primary en contact_assignments. None → quita
+    # el primary actual (todos los assignments quedan como
+    # secundarios o ninguno si no había nada).
+    owner_payload_set = "owner_id" in data
+    owner_value = data.pop("owner_id", None)
+
     if "email" in data and data["email"] is not None:
         email = str(data["email"]).lower()
         existing = crm_repository.get_contact_by_email(session, email)
@@ -2099,6 +2130,126 @@ def update_contact(
         data["custom_fields"] = json.dumps(data["custom_fields"])
     for field, value in data.items():
         setattr(contact, field, value)
+    session.flush()
+
+    changed_fields: list[str] = sorted(data.keys())
+
+    # Phones: replace strategy. Más simple y atómico que diff —
+    # ContactPhone.source se preserva como "manual" para los que
+    # vienen del modal. Los que tenían provenance Brevo/Agile y NO
+    # estaban en el payload se pierden, que es lo correcto: si el
+    # operador los quitó del modal, conscientemente los borra.
+    if phones_payload is not None:
+        # Soporta tanto list[Pydantic] como list[dict] (model_dump).
+        # Cuando el payload llega de la red Pydantic ya lo convirtió
+        # a dicts; los tests pueden pasar el modelo crudo.
+        normalised: list[dict[str, Any]] = []
+        for entry in phones_payload:
+            if isinstance(entry, dict):
+                normalised.append(entry)
+            else:
+                normalised.append(entry.model_dump())
+        # Borra las rows existentes.
+        session.execute(
+            ContactPhone.__table__.delete().where(  # type: ignore[attr-defined]
+                ContactPhone.contact_id == contact.id
+            )
+        )
+        session.flush()
+        # Garantiza UNA primary (la marcada como tal, o la primera si
+        # ninguna). Esto cubre el caso UX: el operador quitó el
+        # primary y olvidó marcar otro; mejor que dejar al contacto
+        # sin primary.
+        any_primary = any(p.get("is_primary") for p in normalised)
+        for idx, phone in enumerate(normalised):
+            is_primary = bool(phone.get("is_primary"))
+            if not any_primary and idx == 0:
+                is_primary = True
+                any_primary = True
+            session.add(
+                ContactPhone(
+                    contact_id=contact.id,
+                    label=(phone.get("label") or None),
+                    number=str(phone["number"]).strip(),
+                    is_primary=is_primary,
+                    source="manual",
+                )
+            )
+        # `contact.phone` legacy (single) refleja el primary number
+        # para que el resto del CRM siga funcionando. Si no hay
+        # phones, lo limpiamos.
+        if normalised:
+            primary_entry = next(
+                (p for p in normalised if p.get("is_primary")),
+                normalised[0],
+            )
+            contact.phone = str(primary_entry["number"]).strip()
+        else:
+            contact.phone = None
+        changed_fields.append("phones")
+
+    # owner_id → swap del primary en contact_assignments.
+    if owner_payload_set:
+        if owner_value:
+            # Asegúrate de que el user existe + activo.
+            target_user = session.get(User, owner_value)
+            if target_user is None:
+                raise not_found("User")
+            if not target_user.is_active:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="El usuario destino no está activo.",
+                )
+            _assignments.add_assignment(
+                session,
+                contact_id=contact.id,
+                user_id=owner_value,
+                is_primary=True,
+                assigned_by_user_id=current_user.id,
+                source="manual",
+            )
+        else:
+            # Limpia el primary sin asignar nuevo — todos los
+            # assignments quedan como secundarios o sin primary.
+            _assignments._demote_other_primaries(session, contact.id)  # noqa: SLF001
+            _assignments.recompute_primary_cache(session, contact.id)
+        changed_fields.append("owner_id")
+
+    # unsubscribe_action='resubscribe' → borra rows + tag.
+    if unsubscribe_action == "resubscribe":
+        unsub_rows = list(
+            session.scalars(
+                select(EmailUnsubscribe).where(
+                    EmailUnsubscribe.contact_id == contact.id
+                )
+            )
+        )
+        deleted_scopes = sorted({r.scope for r in unsub_rows})
+        for row in unsub_rows:
+            session.delete(row)
+        tag = session.scalar(select(Tag).where(Tag.name == "unsubscribed"))
+        if tag is not None:
+            session.execute(
+                ContactTag.__table__.delete().where(  # type: ignore[attr-defined]
+                    ContactTag.contact_id == contact.id,
+                    ContactTag.tag_id == tag.id,
+                )
+            )
+        record_event(
+            session,
+            action=Action.CONTACT_RESUBSCRIBED,
+            target_type="contact",
+            target_id=contact.id,
+            actor=current_user,
+            metadata={
+                "email": contact.email,
+                "scopes_cleared": deleted_scopes,
+                "via": "edit_modal",
+            },
+            request=request,
+        )
+        changed_fields.append("unsubscribe_action")
+
     # PR-Ficha-Fix. El modal "Editar completo" puede tocar 10+ campos
     # a la vez; el evento `contact.bulk_updated` los distingue del
     # PATCH single-field del inline edit. El audit del inline edit
@@ -2107,18 +2258,21 @@ def update_contact(
     bulk_threshold = 3
     action = (
         Action.CONTACT_BULK_UPDATED
-        if len(data) >= bulk_threshold
+        if len(changed_fields) >= bulk_threshold
         else Action.CONTACT_UPDATED
     )
-    record_event(
-        session,
-        action=action,
-        target_type="contact",
-        target_id=contact.id,
-        actor=current_user,
-        metadata={"email": contact.email, "changed_fields": sorted(data.keys())},
-        request=request,
-    )
+    # Si SOLO hizo resubscribe (sin otros cambios), saltamos el
+    # contact.updated/bulk genérico — el resubscribed ya quedó arriba.
+    if changed_fields and changed_fields != ["unsubscribe_action"]:
+        record_event(
+            session,
+            action=action,
+            target_type="contact",
+            target_id=contact.id,
+            actor=current_user,
+            metadata={"email": contact.email, "changed_fields": changed_fields},
+            request=request,
+        )
     session.commit()
     session.refresh(contact)
     return contact

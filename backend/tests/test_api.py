@@ -3,7 +3,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -1745,6 +1745,293 @@ def test_clear_unsubscribes_404_for_unknown_contact(client: TestClient):
         headers=auth_headers(client, "admin"),
     )
     assert response.status_code == 404
+
+
+# PR-Editar-Completo tests ------------------------------------------------
+
+
+def test_patch_phones_replaces_full_list(client: TestClient):
+    """`phones[]` reemplaza completamente la lista. Las rows
+    previas se borran, las nuevas se insertan, el `is_primary`
+    se respeta. `contact.phone` legacy refleja la primary."""
+    from app.db.session import get_session as gs
+    from app.models.crm import ContactPhone
+
+    contact = create_contact(client)
+    headers = auth_headers(client, "manager")
+    response = client.patch(
+        f"/api/contacts/{contact['id']}",
+        json={
+            "phones": [
+                {"number": "+34 600111222", "label": "movil", "is_primary": True},
+                {"number": "+34 911000000", "label": "fijo", "is_primary": False},
+            ]
+        },
+        headers=headers,
+    )
+    assert response.status_code == 200, response.text
+
+    factory = client.app.dependency_overrides[gs]
+    gen = factory()
+    session = next(gen)
+    try:
+        rows = list(
+            session.query(ContactPhone)
+            .filter(ContactPhone.contact_id == contact["id"])
+            .order_by(ContactPhone.is_primary.desc())
+            .all()
+        )
+        assert len(rows) == 2
+        assert rows[0].number == "+34 600111222"
+        assert rows[0].is_primary is True
+        assert rows[1].number == "+34 911000000"
+        assert rows[1].is_primary is False
+    finally:
+        gen.close()
+
+    # Re-PATCH borra todo y deja una sola.
+    response = client.patch(
+        f"/api/contacts/{contact['id']}",
+        json={
+            "phones": [
+                {"number": "+34 700000000", "label": "nuevo", "is_primary": True},
+            ]
+        },
+        headers=headers,
+    )
+    assert response.status_code == 200
+    gen2 = factory()
+    session2 = next(gen2)
+    try:
+        rows = list(
+            session2.query(ContactPhone).filter(
+                ContactPhone.contact_id == contact["id"]
+            )
+        )
+        assert len(rows) == 1
+        assert rows[0].number == "+34 700000000"
+    finally:
+        gen2.close()
+
+
+def test_patch_phones_auto_primary_when_none_marked(client: TestClient):
+    """Si el operador olvida marcar primary, el primer teléfono lo
+    es por defecto (UX: nunca dejar un contacto con teléfonos pero
+    sin primary, eso rompe el strip)."""
+    from app.db.session import get_session as gs
+    from app.models.crm import ContactPhone
+
+    contact = create_contact(client)
+    headers = auth_headers(client, "manager")
+    response = client.patch(
+        f"/api/contacts/{contact['id']}",
+        json={
+            "phones": [
+                {"number": "+34 6111", "label": None, "is_primary": False},
+                {"number": "+34 6222", "label": None, "is_primary": False},
+            ]
+        },
+        headers=headers,
+    )
+    assert response.status_code == 200
+
+    factory = client.app.dependency_overrides[gs]
+    gen = factory()
+    session = next(gen)
+    try:
+        primary = (
+            session.query(ContactPhone)
+            .filter(
+                ContactPhone.contact_id == contact["id"],
+                ContactPhone.is_primary.is_(True),
+            )
+            .one()
+        )
+        assert primary.number == "+34 6111"  # primero gana
+    finally:
+        gen.close()
+
+
+def test_patch_phones_empty_list_clears_all(client: TestClient):
+    from app.db.session import get_session as gs
+    from app.models.crm import ContactPhone
+
+    contact = create_contact(client)
+    headers = auth_headers(client, "manager")
+    # Pre-load uno.
+    client.patch(
+        f"/api/contacts/{contact['id']}",
+        json={"phones": [{"number": "+34 111", "is_primary": True}]},
+        headers=headers,
+    )
+    # Lista vacía borra todos.
+    response = client.patch(
+        f"/api/contacts/{contact['id']}",
+        json={"phones": []},
+        headers=headers,
+    )
+    assert response.status_code == 200
+
+    factory = client.app.dependency_overrides[gs]
+    gen = factory()
+    session = next(gen)
+    try:
+        rows = list(
+            session.query(ContactPhone).filter(
+                ContactPhone.contact_id == contact["id"]
+            )
+        )
+        assert rows == []
+    finally:
+        gen.close()
+
+
+def test_patch_owner_id_sets_primary_assignment(client: TestClient):
+    """`owner_id` en el PATCH crea/promociona el assignment primary.
+    `contact.owner_user_id` (cache) refleja al destino."""
+    from app.db.session import get_session as gs
+    from app.models.crm import Contact as _Contact
+    from app.models.crm import ContactAssignment, User, UserRole
+
+    contact = create_contact(client)
+    headers = auth_headers(client, "manager")
+
+    factory = client.app.dependency_overrides[gs]
+    gen = factory()
+    session = next(gen)
+    try:
+        target_user = session.scalar(
+            select(User).where(User.role == UserRole.USER)
+        )
+        target_user_id = target_user.id
+    finally:
+        gen.close()
+
+    response = client.patch(
+        f"/api/contacts/{contact['id']}",
+        json={"owner_id": target_user_id},
+        headers=headers,
+    )
+    assert response.status_code == 200
+
+    gen2 = factory()
+    session2 = next(gen2)
+    try:
+        c = session2.get(_Contact, contact["id"])
+        assert c.owner_user_id == target_user_id
+        primary = session2.scalar(
+            select(ContactAssignment).where(
+                ContactAssignment.contact_id == contact["id"],
+                ContactAssignment.is_primary.is_(True),
+            )
+        )
+        assert primary is not None
+        assert primary.user_id == target_user_id
+    finally:
+        gen2.close()
+
+
+def test_patch_owner_id_null_clears_primary(client: TestClient):
+    """`owner_id=null` quita el primary sin asignar nuevo."""
+    from app.db.session import get_session as gs
+    from app.models.crm import Contact as _Contact
+    from app.models.crm import ContactAssignment, User, UserRole
+
+    contact = create_contact(client)
+    headers = auth_headers(client, "manager")
+
+    factory = client.app.dependency_overrides[gs]
+    gen = factory()
+    session = next(gen)
+    try:
+        target_user_id = session.scalar(
+            select(User.id).where(User.role == UserRole.USER)
+        )
+    finally:
+        gen.close()
+
+    client.patch(
+        f"/api/contacts/{contact['id']}",
+        json={"owner_id": target_user_id},
+        headers=headers,
+    )
+    response = client.patch(
+        f"/api/contacts/{contact['id']}",
+        json={"owner_id": None},
+        headers=headers,
+    )
+    assert response.status_code == 200
+
+    gen2 = factory()
+    session2 = next(gen2)
+    try:
+        c = session2.get(_Contact, contact["id"])
+        assert c.owner_user_id is None
+        any_primary = session2.scalar(
+            select(ContactAssignment).where(
+                ContactAssignment.contact_id == contact["id"],
+                ContactAssignment.is_primary.is_(True),
+            )
+        )
+        assert any_primary is None
+    finally:
+        gen2.close()
+
+
+def test_patch_unsubscribe_action_resubscribe_requires_admin(client: TestClient):
+    contact = create_contact(client)
+    _seed_unsubscribe(client, contact["id"])
+    response = client.patch(
+        f"/api/contacts/{contact['id']}",
+        json={"unsubscribe_action": "resubscribe"},
+        headers=auth_headers(client, "user"),
+    )
+    assert response.status_code == 403
+    response = client.patch(
+        f"/api/contacts/{contact['id']}",
+        json={"unsubscribe_action": "resubscribe"},
+        headers=auth_headers(client, "manager"),
+    )
+    assert response.status_code == 403
+
+
+def test_patch_unsubscribe_action_resubscribe_admin_clears(client: TestClient):
+    """Admin con `unsubscribe_action=resubscribe` borra rows +
+    emite `contact.resubscribed`."""
+    from app.core.audit import Action
+    from app.db.session import get_session as gs
+    from app.models.crm import AuditLog, EmailUnsubscribe
+
+    contact = create_contact(client)
+    _seed_unsubscribe(client, contact["id"], scope="marketing")
+    response = client.patch(
+        f"/api/contacts/{contact['id']}",
+        json={
+            "unsubscribe_action": "resubscribe",
+            "first_name": "Re-subscribed",
+        },
+        headers=auth_headers(client, "admin"),
+    )
+    assert response.status_code == 200
+    factory = client.app.dependency_overrides[gs]
+    gen = factory()
+    session = next(gen)
+    try:
+        rows = list(
+            session.query(EmailUnsubscribe).filter(
+                EmailUnsubscribe.contact_id == contact["id"]
+            )
+        )
+        assert rows == []
+        actions = [
+            row.action
+            for row in session.query(AuditLog)
+            .filter(AuditLog.target_id == contact["id"])
+            .all()
+        ]
+        assert Action.CONTACT_RESUBSCRIBED in actions
+    finally:
+        gen.close()
 
 
 def test_user_can_create_note_and_task_for_contact(client: TestClient):

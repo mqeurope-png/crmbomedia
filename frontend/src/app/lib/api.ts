@@ -181,6 +181,11 @@ export type Contact = {
   address_region?: string | null;
   lead_score?: number | null;
   custom_fields?: Record<string, unknown> | null;
+  /** PR-Editar-Completo. Cache denormalizado del primary assignment
+   *  (`contact_assignments` con is_primary=true). El modal Editar lo
+   *  expone como selector "Propietario"; el backend reconcilia
+   *  contact_assignments en el mismo PATCH. */
+  owner_user_id?: string | null;
   notes?: Note[];
   tasks?: Task[];
   external_refs?: ExternalReference[];
@@ -785,14 +790,20 @@ export async function deactivateContact(id: string): Promise<Contact> {
   return apiFetch<Contact>(`/api/contacts/${id}/deactivate`, { method: "PATCH" });
 }
 
-export async function getCompanies(): Promise<Company[]> {
+export async function getCompanies(
+  options: { q?: string; limit?: number } = {},
+): Promise<{ items: Company[]; total: number }> {
   // Sprint Empresas — `/api/companies` now returns a paginated
-  // envelope; the legacy callers (contact-create dropdown) only
-  // need the items.
-  const page = await apiFetch<{ items: Company[]; total: number }>(
-    "/api/companies?limit=20",
+  // envelope. Pre PR-Editar-Completo este wrapper devolvía solo
+  // `items` para legacy callers (contact-create dropdown). Ahora
+  // expone el envelope completo y acepta `q` para el typeahead del
+  // selector empresa en el modal Editar.
+  const params = new URLSearchParams();
+  params.set("limit", String(options.limit ?? 20));
+  if (options.q && options.q.trim()) params.set("q", options.q.trim());
+  return apiFetch<{ items: Company[]; total: number }>(
+    `/api/companies?${params.toString()}`,
   );
-  return page.items;
 }
 
 export async function getCompaniesCount(): Promise<number> {

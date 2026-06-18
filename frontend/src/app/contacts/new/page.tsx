@@ -14,7 +14,7 @@ export default function NewContactPage() {
 
   useEffect(() => {
     getCompanies()
-      .then(setCompanies)
+      .then((page) => setCompanies(page.items))
       .catch((err) => setError(extractErrorMessage(err, "Comprueba el backend.")))
       .finally(() => setIsLoading(false));
   }, []);
