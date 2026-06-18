@@ -529,8 +529,8 @@ export function EmailComposerModal({
             <p className="muted small">
               Enviando desde:{" "}
               <strong>
-                {aliases[0].display_name
-                  ? `${aliases[0].display_name} <${aliases[0].send_as_email}>`
+                {aliases[0].resolved_display_name
+                  ? `${aliases[0].resolved_display_name} <${aliases[0].send_as_email}>`
                   : aliases[0].send_as_email}
               </strong>
             </p>
@@ -547,8 +547,8 @@ export function EmailComposerModal({
               >
                 {aliases.map((a) => (
                   <option key={a.send_as_email} value={a.send_as_email}>
-                    {a.display_name
-                      ? `${a.display_name} <${a.send_as_email}>`
+                    {a.resolved_display_name
+                      ? `${a.resolved_display_name} <${a.send_as_email}>`
                       : a.send_as_email}
                     {a.is_default ? " (por defecto)" : ""}
                   </option>

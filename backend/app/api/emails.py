@@ -165,13 +165,31 @@ def list_gmail_templates(
     return [GmailTemplate.model_validate(item).model_dump() for item in items]
 
 
+def _resolve_display_name(
+    override: str | None, gmail_display: str | None
+) -> str:
+    """PR-DisplayName-Remitente. Override > gmail > "". El override
+    se considera presente solo si NO es None y NO está vacío tras
+    strip — el clear desde la UI persiste None, no string vacío."""
+    if override:
+        cleaned = override.strip()
+        if cleaned:
+            return cleaned
+    return (gmail_display or "").strip()
+
+
 @router.get("/aliases", response_model=list[EmailAlias])
 def list_aliases(
     session: Session = Depends(get_session),
     current_user: User = Depends(require_user),
 ) -> list[EmailAlias]:
     """All verified "Send mail as" aliases from Gmail, enriched
-    with the current user's CRM preferences."""
+    with the current user's CRM preferences.
+
+    PR-DisplayName-Remitente: cada GET sincroniza el
+    `gmail_display_name` cacheado contra el `displayName` que devuelve
+    Gmail API. Esto deja el chip de /account siempre actualizado sin
+    requerir un botón "refresh" explícito."""
     try:
         items = gmail_service.list_aliases(session, current_user.id)
     except GmailNotConnectedError:
@@ -180,19 +198,50 @@ def list_aliases(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)
         ) from exc
-    prefs = _prefs_index(session, current_user.id)
-    return [
-        EmailAlias(
-            send_as_email=item["send_as_email"],
-            display_name=item["display_name"],
-            is_primary=item["is_primary"],
-            is_default=item["is_default"],
-            verification_status=item.get("verification_status"),
-            user_pref_allowed=prefs.get(item["send_as_email"], (False, False))[0],
-            user_pref_default=prefs.get(item["send_as_email"], (False, False))[1],
+    prefs_by_email = {
+        p.alias_email: p
+        for p in session.scalars(
+            select(UserEmailAliasPref).where(
+                UserEmailAliasPref.user_id == current_user.id
+            )
         )
-        for item in items
-    ]
+    }
+    # Sync gmail_display_name en las prefs existentes — el snapshot
+    # se actualiza con lo que Gmail diga hoy. Si el alias no tiene
+    # pref (no marcado), no creamos una row vacía solo para el cache;
+    # cuando el user lo marque la prox upsert lo sincronizará.
+    dirty = False
+    for item in items:
+        pref = prefs_by_email.get(item["send_as_email"])
+        if pref is None:
+            continue
+        new_gmail_name = item.get("display_name") or None
+        if pref.gmail_display_name != new_gmail_name:
+            pref.gmail_display_name = new_gmail_name
+            dirty = True
+    if dirty:
+        session.commit()
+
+    out: list[EmailAlias] = []
+    for item in items:
+        pref = prefs_by_email.get(item["send_as_email"])
+        gmail_name = item.get("display_name") or None
+        override = pref.display_name_override if pref else None
+        out.append(
+            EmailAlias(
+                send_as_email=item["send_as_email"],
+                display_name=item.get("display_name", ""),
+                is_primary=item["is_primary"],
+                is_default=item["is_default"],
+                verification_status=item.get("verification_status"),
+                user_pref_allowed=pref.is_allowed if pref else False,
+                user_pref_default=pref.is_default if pref else False,
+                gmail_display_name=gmail_name,
+                display_name_override=override,
+                resolved_display_name=_resolve_display_name(override, gmail_name),
+            )
+        )
+    return out
 
 
 @router.get("/my-aliases", response_model=list[MyAlias])
@@ -202,24 +251,39 @@ def my_aliases(
 ) -> list[MyAlias]:
     """Only the aliases the user marked as allowed, used by the
     composer dropdown. Cross-checked against the live Gmail list
-    so an alias removed from Gmail doesn't keep showing up."""
+    so an alias removed from Gmail doesn't keep showing up.
+
+    PR-DisplayName-Remitente: el `resolved_display_name` se calcula
+    como override > gmail_display_name > "" para que el composer
+    pueda renderizar "Nombre <email>" en el select de "De"."""
     try:
         items = gmail_service.list_aliases(session, current_user.id)
     except (GmailNotConnectedError, GmailScopeMissingError):
         return []
     available = {it["send_as_email"]: it for it in items}
-    prefs = _prefs_index(session, current_user.id)
+    prefs_rows = list(
+        session.scalars(
+            select(UserEmailAliasPref).where(
+                UserEmailAliasPref.user_id == current_user.id
+            )
+        )
+    )
     out: list[MyAlias] = []
-    for alias_email, (allowed, is_default) in prefs.items():
-        if not allowed:
+    for pref in prefs_rows:
+        if not pref.is_allowed:
             continue
-        if alias_email not in available:
+        if pref.alias_email not in available:
             continue
+        gmail_meta = available[pref.alias_email]
+        gmail_name = gmail_meta.get("display_name") or None
         out.append(
             MyAlias(
-                send_as_email=alias_email,
-                display_name=available[alias_email]["display_name"],
-                is_default=is_default,
+                send_as_email=pref.alias_email,
+                display_name=gmail_meta.get("display_name", ""),
+                is_default=pref.is_default,
+                resolved_display_name=_resolve_display_name(
+                    pref.display_name_override, gmail_name
+                ),
             )
         )
     out.sort(key=lambda a: (not a.is_default, a.send_as_email))
@@ -267,18 +331,31 @@ def upsert_alias_preferences(
             first_allowed = item.alias_email
         if item.is_default:
             incoming_default = item.alias_email
+        # PR-DisplayName-Remitente. None = no tocar el override
+        # actual; string = strip + NULL on empty (clear) o setear el
+        # valor. El handler nunca persiste "" como string.
+        override_set = (
+            "display_name_override" in item.model_fields_set
+        )
+        override_value: str | None = None
+        if override_set:
+            raw = (item.display_name_override or "").strip()
+            override_value = raw or None
         if row is None:
-            session.add(
-                UserEmailAliasPref(
-                    user_id=current_user.id,
-                    alias_email=item.alias_email,
-                    is_allowed=True,
-                    is_default=item.is_default,
-                )
+            row = UserEmailAliasPref(
+                user_id=current_user.id,
+                alias_email=item.alias_email,
+                is_allowed=True,
+                is_default=item.is_default,
             )
+            if override_set:
+                row.display_name_override = override_value
+            session.add(row)
         else:
             row.is_allowed = True
             row.is_default = item.is_default
+            if override_set:
+                row.display_name_override = override_value
     session.flush()
     # Normaliza: si hay allowed pero ningún default declarado, el
     # primero gana. Ya no es ambiguo cuál alias usa el composer.

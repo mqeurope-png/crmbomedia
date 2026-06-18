@@ -20,6 +20,7 @@ from email import encoders
 from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from email.utils import formataddr
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -426,8 +427,14 @@ def _build_mime(
         msg = body_root
 
     msg["Subject"] = subject or ""
-    sender = f"{from_name} <{from_alias}>" if from_name else from_alias
-    msg["From"] = sender
+    # PR-DisplayName-Remitente. `formataddr` aplica el encoding RFC
+    # 2047 si el `from_name` contiene caracteres no-ASCII (ej:
+    # "Bárbara Ñoño"). Sin esto el header llegaba como mojibake o
+    # rebotaba. Para ASCII puro el output es idéntico al manual
+    # ('"Scott, Artisjet Europe" <scott@x.eu>'). Cuando `from_name`
+    # es None/empty, formataddr devuelve solo "<email>" — fallback
+    # idéntico al pre-PR.
+    msg["From"] = formataddr((from_name or "", from_alias))
     msg["To"] = ", ".join(to)
     if cc:
         msg["Cc"] = ", ".join(cc)

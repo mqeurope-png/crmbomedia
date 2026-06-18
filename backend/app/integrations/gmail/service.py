@@ -723,7 +723,29 @@ def send_email(
     `in_reply_to_message_id` is OUR `EmailMessage.id`; when set we
     look up the upstream Gmail thread + headers so the recipient's
     client recognises the reply.
+
+    PR-DisplayName-Remitente. Si el caller NO mandó `from_name` (caso
+    común: `EmailComposerModal` que solo manda el email), resolvemos
+    el display name desde las prefs del user:
+        display_name_override > gmail_display_name > ""
+    Esto deja el header `From:` como
+    `"Scott, Artisjet Europe" <scott@x.eu>` por defecto en lugar de
+    quedarse en `<scott@x.eu>` (que algunos clientes muestran como
+    "scott" derivado del local-part).
     """
+    if not from_name:
+        from app.models.crm import UserEmailAliasPref  # noqa: PLC0415
+
+        pref = session.scalar(
+            select(UserEmailAliasPref).where(
+                UserEmailAliasPref.user_id == sender_user_id,
+                UserEmailAliasPref.alias_email == from_alias,
+            )
+        )
+        if pref is not None:
+            override = (pref.display_name_override or "").strip()
+            gmail_name = (pref.gmail_display_name or "").strip()
+            from_name = override or gmail_name or None
     client = _client_for(session, sender_user_id)
 
     in_reply_to_header: str | None = None

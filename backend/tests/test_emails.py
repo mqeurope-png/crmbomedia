@@ -793,6 +793,278 @@ def test_my_aliases_intersects_gmail_and_prefs(
     assert body[0]["is_default"] is True
 
 
+# PR-DisplayName-Remitente tests ----------------------------------------------
+
+
+def test_list_aliases_syncs_gmail_display_name(
+    client: TestClient,
+    session_factory: sessionmaker,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """GET /api/emails/aliases sincroniza el `gmail_display_name`
+    cacheado contra el `displayName` que Gmail devuelve hoy."""
+    from app.models.crm import UserEmailAliasPref  # noqa: PLC0415
+
+    with session_factory() as session:
+        uid = _user_id(session, UserRole.USER)
+    _seed_gmail_integration(session_factory, user_id=uid)
+
+    monkeypatch.setattr(
+        "app.api.emails.gmail_service.list_aliases",
+        lambda _s, _u: [
+            {
+                "send_as_email": "info@bomedia.net",
+                "display_name": "Bomedia Sales",
+                "is_primary": False,
+                "is_default": False,
+                "verification_status": "accepted",
+            },
+        ],
+    )
+
+    response = client.get(
+        "/api/emails/aliases", headers=auth_headers(client, "user")
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body[0]["gmail_display_name"] == "Bomedia Sales"
+    assert body[0]["resolved_display_name"] == "Bomedia Sales"
+
+    # Cache persistido.
+    with session_factory() as session:
+        pref = session.scalar(
+            select(UserEmailAliasPref).where(
+                UserEmailAliasPref.alias_email == "info@bomedia.net"
+            )
+        )
+        assert pref is not None
+        assert pref.gmail_display_name == "Bomedia Sales"
+
+
+def test_resolved_display_name_prefers_override(
+    client: TestClient,
+    session_factory: sessionmaker,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """display_name_override gana sobre gmail_display_name."""
+    with session_factory() as session:
+        uid = _user_id(session, UserRole.USER)
+    _seed_gmail_integration(session_factory, user_id=uid)
+
+    monkeypatch.setattr(
+        "app.api.emails.gmail_service.list_aliases",
+        lambda _s, _u: [
+            {
+                "send_as_email": "info@bomedia.net",
+                "display_name": "Gmail Name",
+                "is_primary": False,
+                "is_default": False,
+                "verification_status": "accepted",
+            },
+        ],
+    )
+    client.put(
+        "/api/emails/aliases/preferences",
+        json={
+            "preferences": [
+                {
+                    "alias_email": "info@bomedia.net",
+                    "is_allowed": True,
+                    "is_default": True,
+                    "display_name_override": "  Manual Override  ",
+                },
+            ]
+        },
+        headers=auth_headers(client, "user"),
+    )
+    response = client.get(
+        "/api/emails/aliases", headers=auth_headers(client, "user")
+    )
+    body = response.json()
+    assert body[0]["display_name_override"] == "Manual Override"
+    assert body[0]["resolved_display_name"] == "Manual Override"
+
+
+def test_clearing_override_falls_back_to_gmail_name(
+    client: TestClient,
+    session_factory: sessionmaker,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Empty string en `display_name_override` → NULL en BD →
+    `resolved_display_name` vuelve a usar el de Gmail."""
+    with session_factory() as session:
+        uid = _user_id(session, UserRole.USER)
+    _seed_gmail_integration(session_factory, user_id=uid)
+
+    monkeypatch.setattr(
+        "app.api.emails.gmail_service.list_aliases",
+        lambda _s, _u: [
+            {
+                "send_as_email": "info@bomedia.net",
+                "display_name": "Bomedia Default",
+                "is_primary": False,
+                "is_default": False,
+                "verification_status": "accepted",
+            },
+        ],
+    )
+    # Set override.
+    client.put(
+        "/api/emails/aliases/preferences",
+        json={
+            "preferences": [
+                {
+                    "alias_email": "info@bomedia.net",
+                    "is_allowed": True,
+                    "is_default": True,
+                    "display_name_override": "Custom",
+                },
+            ]
+        },
+        headers=auth_headers(client, "user"),
+    )
+    # Restaurar: empty string.
+    client.put(
+        "/api/emails/aliases/preferences",
+        json={
+            "preferences": [
+                {
+                    "alias_email": "info@bomedia.net",
+                    "is_allowed": True,
+                    "is_default": True,
+                    "display_name_override": "",
+                },
+            ]
+        },
+        headers=auth_headers(client, "user"),
+    )
+    response = client.get(
+        "/api/emails/aliases", headers=auth_headers(client, "user")
+    )
+    body = response.json()
+    assert body[0]["display_name_override"] is None
+    assert body[0]["resolved_display_name"] == "Bomedia Default"
+
+
+def test_send_email_uses_resolved_display_name_from_pref(
+    client: TestClient,
+    session_factory: sessionmaker,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cuando el composer NO manda from_name (caso común), el send
+    path resuelve el display name desde la pref del alias y lo mete
+    en el header `From:`."""
+    from email.utils import parseaddr
+
+    from app.models.crm import UserEmailAliasPref  # noqa: PLC0415
+
+    with session_factory() as session:
+        uid = _user_id(session, UserRole.USER)
+    _seed_gmail_integration(session_factory, user_id=uid)
+    # Pref con override.
+    with session_factory() as session:
+        pref = session.scalar(
+            select(UserEmailAliasPref).where(
+                UserEmailAliasPref.alias_email == "info@bomedia.net"
+            )
+        )
+        pref.display_name_override = "Bárbara Ñoño"  # non-ASCII para
+        # validar RFC 2047
+        session.commit()
+
+    sent: list[dict[str, Any]] = []
+
+    class _FakeClient:
+        def __init__(self, *_a: Any, **_k: Any) -> None:
+            pass
+
+        def send_message(self, **kwargs: Any) -> dict[str, Any]:
+            sent.append(kwargs)
+            return {"id": "gmail-msg-1", "threadId": "gmail-thr-1"}
+
+    monkeypatch.setattr(
+        "app.integrations.gmail.service.GmailClient", _FakeClient
+    )
+
+    response = client.post(
+        "/api/emails/send",
+        json={
+            "from_alias": "info@bomedia.net",
+            "to": ["client@example.com"],
+            "subject": "Hola",
+            "body_text": "test",
+        },
+        headers=auth_headers(client, "user"),
+    )
+    assert response.status_code == 201, response.text
+    # El servicio recibió from_name resuelto.
+    assert sent[0]["from_name"] == "Bárbara Ñoño"
+
+    # Y formataddr genera un header RFC 2047 que decodifica correcto.
+    from email.header import decode_header, make_header
+    from email.utils import formataddr
+
+    header = formataddr((sent[0]["from_name"], sent[0]["from_alias"]))
+    # Bárbara Ñoño tiene caracteres no-ASCII → formataddr emite la
+    # cadena codificada =?utf-8?b?...?=. parseaddr la devuelve sin
+    # decodificar; decode_header sí.
+    name, email_part = parseaddr(header)
+    decoded_name = str(make_header(decode_header(name)))
+    assert decoded_name == "Bárbara Ñoño"
+    assert email_part == "info@bomedia.net"
+
+
+def test_send_email_explicit_from_name_wins(
+    client: TestClient,
+    session_factory: sessionmaker,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Si el caller manda `from_name` explícito (API consumer / tests),
+    NO sobreescribimos con el de la pref — respetamos el override
+    explícito."""
+    from app.models.crm import UserEmailAliasPref  # noqa: PLC0415
+
+    with session_factory() as session:
+        uid = _user_id(session, UserRole.USER)
+    _seed_gmail_integration(session_factory, user_id=uid)
+    with session_factory() as session:
+        pref = session.scalar(
+            select(UserEmailAliasPref).where(
+                UserEmailAliasPref.alias_email == "info@bomedia.net"
+            )
+        )
+        pref.display_name_override = "Cached Name"
+        session.commit()
+
+    sent: list[dict[str, Any]] = []
+
+    class _FakeClient:
+        def __init__(self, *_a: Any, **_k: Any) -> None:
+            pass
+
+        def send_message(self, **kwargs: Any) -> dict[str, Any]:
+            sent.append(kwargs)
+            return {"id": "gmail-msg-1", "threadId": "gmail-thr-1"}
+
+    monkeypatch.setattr(
+        "app.integrations.gmail.service.GmailClient", _FakeClient
+    )
+
+    response = client.post(
+        "/api/emails/send",
+        json={
+            "from_alias": "info@bomedia.net",
+            "from_name": "Explicit Caller Name",
+            "to": ["client@example.com"],
+            "subject": "x",
+            "body_text": "x",
+        },
+        headers=auth_headers(client, "user"),
+    )
+    assert response.status_code == 201, response.text
+    assert sent[0]["from_name"] == "Explicit Caller Name"
+
+
 def test_send_with_unmarked_alias_returns_403(
     client: TestClient,
     session_factory: sessionmaker,

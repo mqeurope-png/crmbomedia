@@ -1675,6 +1675,16 @@ class UserEmailAliasPref(TimestampMixin, Base):
     is_default: Mapped[bool] = mapped_column(
         Boolean, default=False, nullable=False
     )
+    # PR-DisplayName-Remitente. Snapshot del `displayName` que Gmail
+    # tiene configurado en `users.settings.sendAs` para este alias.
+    # Se sincroniza en cada GET /api/emails/aliases (refresh-on-read).
+    # Source-of-truth secundario: si el user no overrideó, este es el
+    # nombre que aparece en el header `From:` del envío.
+    gmail_display_name: Mapped[str | None] = mapped_column(String(255))
+    # Override manual del user. Cuando no NULL ni vacío gana sobre
+    # `gmail_display_name`. Trim + NULL on empty al persistir; la UI
+    # /account expone un input "Restaurar" que vuelve a NULL.
+    display_name_override: Mapped[str | None] = mapped_column(String(255))
 
 
 class GdprRequestType(StrEnum):
