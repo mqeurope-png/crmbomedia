@@ -8,6 +8,7 @@
 import { CheckSquare, Mail, MessageCircle, Phone, StickyNote } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { formatRelative } from "../../lib/dates";
 import {
   getDashboardRecentInteractions,
   type DashboardWindow,
@@ -18,18 +19,10 @@ import { PeriodSelector } from "./PeriodSelector";
 
 type Scope = "mine" | "team";
 
-function relative(value: string): string {
-  const then = new Date(value).getTime();
-  if (Number.isNaN(then)) return "—";
-  const diff = Date.now() - then;
-  const min = Math.floor(diff / 60_000);
-  if (min < 1) return "ahora";
-  if (min < 60) return `hace ${min}m`;
-  const hr = Math.floor(min / 60);
-  if (hr < 24) return `hace ${hr}h`;
-  const day = Math.floor(hr / 24);
-  return `hace ${day}d`;
-}
+// PR-Timezone-Fix. Sustituye el `new Date(value)` directo por la util
+// que tolera ISO sin offset (compat con endpoints que aún no pasen
+// por el SQLAlchemy event listener de `app/models/crm.py`).
+const relative = (value: string) => formatRelative(value);
 
 function iconFor(eventType: string): React.ReactNode {
   const t = eventType.toLowerCase();

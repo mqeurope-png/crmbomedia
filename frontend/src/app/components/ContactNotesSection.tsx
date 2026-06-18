@@ -11,23 +11,13 @@ import {
   unpinContactNote,
   updateContactNote,
 } from "../lib/contactNotesApi";
+import { formatBackendDateTime } from "../lib/dates";
 import { extractErrorMessage } from "../lib/errors";
 
 type Props = { contactId: string };
 
-const formatDate = (iso: string) => {
-  try {
-    return new Date(iso).toLocaleString("es-ES", {
-      day: "2-digit",
-      month: "short",
-      year: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-  } catch {
-    return iso;
-  }
-};
+// PR-Timezone-Fix.
+const formatDate = (iso: string) => formatBackendDateTime(iso);
 
 const sourceLabel = (source: string) => {
   if (source === "manual") return "manual";

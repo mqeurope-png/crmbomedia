@@ -14,6 +14,7 @@ import {
   setIntegrationAccountApiKey,
   type IntegrationAccount,
 } from "../lib/integrationSettings";
+import { formatBackendDateTime } from "../lib/dates";
 import { BrevoAccountPanel } from "./BrevoAccountPanel";
 import { SyncPanel } from "./SyncPanel";
 
@@ -29,14 +30,11 @@ type Props = {
   isAdmin: boolean;
 };
 
-function formatDate(value?: string | null): string {
-  if (!value) return "";
-  try {
-    return new Date(value).toLocaleString();
-  } catch {
-    return value;
-  }
-}
+// PR-Timezone-Fix. La util `formatBackendDateTime` ya hace fallback
+// a "—" sobre null/undefined y aplica `parseBackendDate` para
+// timestamps que viajen sin offset.
+const formatDate = (value?: string | null) =>
+  value ? formatBackendDateTime(value) : "";
 
 /**
  * Collapsible card for one integration account. Collapsed view shows

@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { formatBackendDateTime, formatRelative } from "../lib/dates";
 import {
   defaultOperationFor,
   hasOperation,
@@ -48,21 +49,14 @@ function statusClass(status: string | SyncStatus): string {
   }
 }
 
+// PR-Timezone-Fix. Antes esta función hacía `new Date(value)` directo,
+// que en Madrid (UTC+2 verano) interpretaba el ISO sin offset del
+// backend como hora LOCAL — resultando en "hace 2 horas" para una
+// sync que acaba de terminar. Delegamos en `formatRelative` que pasa
+// por `parseBackendDate` (tolerante a ISO con o sin sufijo Z).
 function relativeTime(value: string | null): string {
   if (!value) return "";
-  try {
-    const dt = new Date(value);
-    const diffMs = Date.now() - dt.getTime();
-    if (diffMs < 60_000) return "hace unos segundos";
-    const minutes = Math.floor(diffMs / 60_000);
-    if (minutes < 60) return `hace ${minutes} min`;
-    const hours = Math.floor(minutes / 60);
-    if (hours < 24) return `hace ${hours} h`;
-    const days = Math.floor(hours / 24);
-    return `hace ${days} d`;
-  } catch {
-    return value;
-  }
+  return formatRelative(value);
 }
 
 type SyncPanelProps = {
@@ -229,7 +223,7 @@ export function SyncPanel({ system, accountId, account }: SyncPanelProps) {
             ) : null}
             {logs.map((row) => (
               <tr key={row.id}>
-                <td>{new Date(row.created_at).toLocaleString()}</td>
+                <td>{formatBackendDateTime(row.created_at)}</td>
                 <td>
                   <code>{row.operation ?? "—"}</code>
                 </td>

@@ -14,10 +14,11 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    event,
     func,
 )
 from sqlalchemy.dialects import mysql
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from sqlalchemy.orm import DeclarativeBase, Mapped, Mapper, mapped_column, relationship
 
 
 def enum_values(enum_cls: type[StrEnum]) -> list[str]:
@@ -26,6 +27,77 @@ def enum_values(enum_cls: type[StrEnum]) -> list[str]:
 
 class Base(DeclarativeBase):
     pass
+
+
+# PR-Timezone-Fix. SQLAlchemy declara `DateTime(timezone=True)` pero
+# en MySQL (y SQLite) la columna NO almacena tzinfo: el dialecto
+# convierte el `datetime` aware a UTC al escribir y devuelve un
+# `datetime` NAIVE al leer. Pydantic entonces serializa sin offset
+# (`2026-06-18T09:08:51`), y el navegador interpreta esa cadena como
+# hora LOCAL — bug reportado como "sync terminada AHORA muestra
+# 'hace 2 horas'" en Madrid verano (UTC+2).
+#
+# Solución única: un event listener `Mapper.load` que re-tagea cada
+# columna DateTime(timezone=True) con UTC al cargar la entidad.
+# Pydantic ve el datetime aware y serializa con `+00:00`; el frontend
+# lo parsea correctamente. Coste: una pasada O(n) por las columnas de
+# tipo DateTime de cada entidad recién cargada — despreciable.
+#
+# Cubre TODO lo cargado por SQLAlchemy ORM. Queries con `select(col)`
+# que devuelven tuplas crudas (no entidades) NO pasan por este hook;
+# si alguna ruta los usa para responder JSON, hay que arreglarlo a
+# nivel de schema. La mayoría del CRM usa ORM completo.
+def _utc_datetime_attrs(target: object) -> list[str]:
+    """Lista de nombres de columna con `DateTime(timezone=True)` para
+    una clase mapeada. Cacheado por clase via dict del module-level
+    (no usamos `@lru_cache` porque `type(target)` no es hashable en
+    todos los casos)."""
+    cls = type(target)
+    cached = _UTC_ATTR_CACHE.get(cls)
+    if cached is not None:
+        return cached
+    out: list[str] = []
+    for prop in cls.__mapper__.column_attrs:
+        column = prop.columns[0]
+        col_type = column.type
+        if isinstance(col_type, DateTime) and getattr(col_type, "timezone", False):
+            out.append(prop.key)
+    _UTC_ATTR_CACHE[cls] = out
+    return out
+
+
+_UTC_ATTR_CACHE: dict[type, list[str]] = {}
+
+
+def _ensure_utc(target: object, _ctx: object, *_args: object) -> None:
+    """Reasocia UTC a cada columna `DateTime(timezone=True)` recién
+    leída de la BD. Sin esta pasada, MySQL/SQLite devuelven naive y
+    Pydantic serializa sin offset, lo que el navegador interpreta
+    como hora local (bug 'sync hace 2 h')."""
+    for key in _utc_datetime_attrs(target):
+        value = target.__dict__.get(key)
+        if isinstance(value, datetime) and value.tzinfo is None:
+            target.__dict__[key] = value.replace(tzinfo=UTC)
+
+
+# `load` se dispara cuando una entidad se hidrata por primera vez
+# en la sesión; `refresh` cuando se re-lee tras expire/refresh. Hay
+# que enganchar ambos para cubrir `session.get()` después de un
+# `session.expire_all()`, que pasa por refresh. `refresh_flush` cubre
+# el caso de re-cargar tras un INSERT con server_default.
+event.listen(Mapper, "load", _ensure_utc)
+event.listen(Mapper, "refresh", _ensure_utc)
+event.listen(Mapper, "refresh_flush", _ensure_utc)
+
+
+# Adicional: cuando se hace `session.refresh(instance)` después de un
+# insert/update con default `datetime.now(UTC)`, SQLAlchemy reemite la
+# query y vuelve a entrar por el `load`. Pero cuando se accede al
+# atributo en memoria DESPUÉS del flush sin un refresh explícito,
+# SQLAlchemy puede devolver el valor original (aware). Sin embargo,
+# tras un refresh o tras un round-trip a la BD, vuelve naive. El hook
+# de arriba cubre el caso porque siempre que el ORM CARGA, este
+# listener corre.
 
 
 class TimestampMixin:

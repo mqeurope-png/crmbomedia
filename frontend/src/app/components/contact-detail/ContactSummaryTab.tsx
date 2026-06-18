@@ -22,6 +22,7 @@ import {
   StickyNote,
 } from "lucide-react";
 import type { ActivityEvent } from "../../lib/api";
+import { formatBackendDateTime, formatRelative } from "../../lib/dates";
 
 type Props = {
   events: ActivityEvent[];
@@ -92,35 +93,12 @@ function bucketFor(eventType: string): Bucket {
   );
 }
 
-function formatDateTime(value: string | null | undefined): string {
-  if (!value) return "—";
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleString("es-ES", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-}
-
-function relativeTime(value: string | null | undefined): string {
-  if (!value) return "—";
-  const then = new Date(value).getTime();
-  if (Number.isNaN(then)) return "—";
-  const diffSec = Math.floor((Date.now() - then) / 1000);
-  if (diffSec < 60) return "ahora";
-  const min = Math.floor(diffSec / 60);
-  if (min < 60) return `hace ${min}m`;
-  const hr = Math.floor(min / 60);
-  if (hr < 24) return `hace ${hr}h`;
-  const day = Math.floor(hr / 24);
-  if (day < 30) return `hace ${day}d`;
-  const mo = Math.floor(day / 30);
-  if (mo < 12) return `hace ${mo}mo`;
-  return `hace ${Math.floor(mo / 12)}y`;
-}
+// PR-Timezone-Fix. Delegamos en `lib/dates.ts` para que el parsing
+// trate timestamps sin offset como UTC en lugar de hora local.
+const formatDateTime = (value: string | null | undefined) =>
+  formatBackendDateTime(value);
+const relativeTime = (value: string | null | undefined) =>
+  value ? formatRelative(value) : "—";
 
 function countEvents(events: ActivityEvent[], types: string[]): number {
   return events.filter((e) => types.includes(e.event_type)).length;

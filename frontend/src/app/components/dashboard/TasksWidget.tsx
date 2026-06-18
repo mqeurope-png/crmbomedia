@@ -9,6 +9,7 @@
 import { CheckCircle2, Plus } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { parseBackendDate } from "../../lib/dates";
 import { extractErrorMessage } from "../../lib/errors";
 import {
   completeTask,
@@ -18,9 +19,12 @@ import {
 } from "../../lib/tasksApi";
 import { TaskModal } from "../TaskModal";
 
+// PR-Timezone-Fix. `parseBackendDate` para que ISO sin offset entre
+// como UTC en lugar de hora local. `toLocaleTimeString` luego lo
+// renderiza en la zona del navegador (lo correcto).
 function fmtTime(due: string | null): string {
   if (!due) return "Sin hora";
-  const d = new Date(due);
+  const d = parseBackendDate(due);
   if (Number.isNaN(d.getTime())) return "—";
   return d.toLocaleTimeString("es-ES", {
     hour: "2-digit",
@@ -30,7 +34,7 @@ function fmtTime(due: string | null): string {
 
 function fmtAyer(due: string | null): string {
   if (!due) return "—";
-  const d = new Date(due);
+  const d = parseBackendDate(due);
   const yesterday = new Date();
   yesterday.setDate(yesterday.getDate() - 1);
   const isYesterday = d.toDateString() === yesterday.toDateString();

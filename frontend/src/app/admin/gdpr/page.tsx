@@ -14,6 +14,7 @@ import {
   type GdprRequestStatus,
   type GdprRequestType,
 } from "../../lib/api";
+import { formatBackendDateTime } from "../../lib/dates";
 import { extractErrorMessage } from "../../lib/errors";
 
 const TYPES: GdprRequestType[] = [
@@ -206,7 +207,7 @@ export default function GdprPage() {
             <tbody>
               {requests.map((request) => (
                 <tr key={request.id}>
-                  <td>{new Date(request.requested_at).toLocaleString()}</td>
+                  <td>{formatBackendDateTime(request.requested_at)}</td>
                   <td>{request.subject_email}</td>
                   <td>{TYPE_LABEL[request.request_type]}</td>
                   <td>

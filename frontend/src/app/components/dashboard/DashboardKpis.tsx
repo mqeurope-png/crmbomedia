@@ -23,6 +23,7 @@ import {
   Users,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { parseBackendDate } from "../../lib/dates";
 import { getEmailStats } from "../../lib/emailTrackingApi";
 import {
   getDashboardGoogleEvents,
@@ -154,7 +155,7 @@ export function DashboardKpis({ range }: Props) {
         if (cancelled) return;
         const now = Date.now();
         const overdue = rows.filter(
-          (t) => t.due_at && new Date(t.due_at).getTime() < now,
+          (t) => t.due_at && parseBackendDate(t.due_at).getTime() < now,
         ).length;
         setState((s) => ({ ...s, tasksOverdue: overdue }));
       })

@@ -5,6 +5,7 @@ import {
   getContactActivityEvents,
   type ActivityEvent,
 } from "../lib/api";
+import { formatBackendDateTime, parseBackendDate } from "../lib/dates";
 
 const EMAIL_EVENT_META: Record<string, { icon: string; label: string }> = {
   "email.queued": { icon: "⏳", label: "En cola" },
@@ -34,8 +35,8 @@ export function ContactEmailActivity({ contactId }: { contactId: string }) {
             .filter((event) => event.event_type.startsWith("email."))
             .sort(
               (a, b) =>
-                new Date(b.occurred_at).getTime() -
-                new Date(a.occurred_at).getTime(),
+                parseBackendDate(b.occurred_at).getTime() -
+                parseBackendDate(a.occurred_at).getTime(),
             )
             .slice(0, 50),
         ),
@@ -80,7 +81,7 @@ export function ContactEmailActivity({ contactId }: { contactId: string }) {
                     <span className="muted small"> · {event.body}</span>
                   ) : null}
                   <span className="muted small email-activity-date">
-                    {new Date(event.occurred_at).toLocaleString("es-ES")}
+                    {formatBackendDateTime(event.occurred_at)}
                   </span>
                 </div>
               </li>

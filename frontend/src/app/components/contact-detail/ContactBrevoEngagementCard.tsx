@@ -10,6 +10,7 @@
 import { ArrowUpRight, MousePointerClick, Send, Sparkles } from "lucide-react";
 import { useEffect, useState } from "react";
 import { apiFetch } from "../../lib/api";
+import { formatBackendDateTime } from "../../lib/dates";
 
 type BrevoEngagementRecent = {
   brevo_campaign_id: number;
@@ -29,16 +30,12 @@ type BrevoEngagementSummary = {
 
 type Props = { contactId: string };
 
-function formatDate(value: string | null): string {
-  if (!value) return "—";
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleDateString("es-ES", {
+const formatDate = (value: string | null) =>
+  formatBackendDateTime(value, {
     day: "2-digit",
     month: "short",
     year: "numeric",
   });
-}
 
 function chipFor(
   status: BrevoEngagementRecent["status"],

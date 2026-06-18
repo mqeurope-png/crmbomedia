@@ -25,19 +25,16 @@ import {
   type TaskBuckets,
 } from "../lib/tasksApi";
 import { getCurrentUser, getUsers, type User } from "../lib/api";
+import { formatBackendDateTime } from "../lib/dates";
 import { usePersistentState } from "../lib/usePersistentState";
 
-function formatDateTime(value: string | null | undefined): string {
-  if (!value) return "—";
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return "—";
-  return parsed.toLocaleString("es-ES", {
+const formatDateTime = (value: string | null | undefined) =>
+  formatBackendDateTime(value, {
     day: "2-digit",
     month: "short",
     hour: "2-digit",
     minute: "2-digit",
   });
-}
 
 const BUCKET_LABELS: Array<[keyof Omit<TaskBuckets, "total_open">, string]> = [
   ["overdue", "Vencidas"],
