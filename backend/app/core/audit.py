@@ -64,6 +64,10 @@ class Action:
     # ya existentes que cuentan ediciones individuales.
     CONTACT_BULK_UPDATED = "contact.bulk_updated"
     CONTACT_DEACTIVATED = "contact.deactivated"
+    # PR-Contact-Unsubscribe-Admin. Admin reactiva un contacto que
+    # se había opt-eado out vía la página pública de unsubscribe.
+    # Metadata incluye los scopes borrados (marketing/all/etc.).
+    CONTACT_RESUBSCRIBED = "contact.resubscribed"
     # Sprint Reglas-Assign PR-B — multi-asignación de comerciales.
     CONTACT_ASSIGNMENT_ADDED = "contact.assignment_added"
     CONTACT_ASSIGNMENT_REMOVED = "contact.assignment_removed"

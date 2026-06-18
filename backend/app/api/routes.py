@@ -7,6 +7,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -2151,6 +2152,146 @@ def deactivate_contact(
     session.commit()
     session.refresh(contact)
     return contact
+
+
+# PR-Contact-Unsubscribe-Admin. Bart reportó 422 al enviar email:
+# "Este contacto se ha dado de baja". El backend tiene el modelo
+# EmailUnsubscribe + la guard en `_send_email_core`, pero no había
+# UI para que el admin gestionara el estado de baja desde la ficha
+# del contacto. Estos dos endpoints + un card en el sidebar
+# (frontend) cierran el loop.
+
+class UnsubscribeStatusItem(BaseModel):
+    """Una row de `email_unsubscribes` proyectada para el sidebar de
+    la ficha. NO incluimos `token` (lo usa la unsubscribe page
+    pública y no quiero filtrarlo en una respuesta admin)."""
+
+    id: str
+    scope: str
+    source: str
+    unsubscribed_at: datetime
+    message_id: str | None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class UnsubscribeStatusResponse(BaseModel):
+    """Devuelto por GET /api/contacts/{id}/unsubscribe-status.
+    `is_unsubscribed` es un flag computed (cualquier scope marketing/
+    all bloquea el send) para que el frontend pinte el badge sin
+    tener que re-evaluar la lógica de scope."""
+
+    is_unsubscribed: bool
+    rows: list[UnsubscribeStatusItem]
+
+
+@router.get(
+    "/contacts/{contact_id}/unsubscribe-status",
+    response_model=UnsubscribeStatusResponse,
+    responses=ERROR_RESPONSES,
+    tags=["crm"],
+)
+def get_contact_unsubscribe_status(
+    contact_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_user),
+) -> UnsubscribeStatusResponse:
+    """Devuelve las rows `email_unsubscribes` del contacto + flag
+    computed `is_unsubscribed`. require_user porque cualquiera que
+    abre la ficha debe ver el estado (es info diagnóstica del por
+    qué no puede enviar). El borrado sigue siendo admin-only."""
+    _ = current_user
+    from app.models.crm import EmailUnsubscribe  # noqa: PLC0415
+
+    contact = crm_repository.get_contact(session, contact_id)
+    if not contact:
+        raise not_found("Contact")
+    rows = list(
+        session.scalars(
+            select(EmailUnsubscribe)
+            .where(EmailUnsubscribe.contact_id == contact_id)
+            .order_by(EmailUnsubscribe.unsubscribed_at.desc())
+        )
+    )
+    is_unsubscribed = any(
+        row.scope in ("marketing", "all") for row in rows
+    )
+    return UnsubscribeStatusResponse(
+        is_unsubscribed=is_unsubscribed,
+        rows=[UnsubscribeStatusItem.model_validate(r) for r in rows],
+    )
+
+
+@router.delete(
+    "/contacts/{contact_id}/unsubscribes",
+    status_code=status.HTTP_204_NO_CONTENT,
+    responses=ERROR_RESPONSES,
+    tags=["crm"],
+)
+def clear_contact_unsubscribes(
+    contact_id: str,
+    request: Request,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_admin),
+) -> Response:
+    """Borra TODAS las rows `email_unsubscribes` del contacto. El
+    contacto vuelve a recibir envíos comerciales en el siguiente
+    POST /emails/send.
+
+    Admin-only: un user normal NO debería poder re-subscribir a un
+    contacto que opt-eó out conscientemente. Si Bart quiere que un
+    manager pueda hacerlo, lo discutimos — por ahora cierro al rol
+    más restrictivo.
+
+    También limpia el tag `unsubscribed` del contacto si lo tiene
+    (se añade automáticamente al opt-out vía
+    `_ensure_unsubscribed_tag`). Sin esto el tag queda colgando y la
+    UI sigue mostrando "contacto dado de baja" aunque el bloqueo de
+    send ya esté levantado.
+    """
+    from app.models.crm import (  # noqa: PLC0415
+        ContactTag,
+        EmailUnsubscribe,
+        Tag,
+    )
+
+    contact = crm_repository.get_contact(session, contact_id)
+    if not contact:
+        raise not_found("Contact")
+
+    rows = list(
+        session.scalars(
+            select(EmailUnsubscribe).where(
+                EmailUnsubscribe.contact_id == contact_id
+            )
+        )
+    )
+    deleted_scopes = sorted({r.scope for r in rows})
+    for row in rows:
+        session.delete(row)
+
+    # Limpia el tag "unsubscribed" (lo añadía `_ensure_unsubscribed_tag`
+    # del router de tracking). Si el tag no existe nada que limpiar.
+    tag = session.scalar(select(Tag).where(Tag.name == "unsubscribed"))
+    if tag is not None:
+        session.execute(
+            ContactTag.__table__.delete().where(  # type: ignore[attr-defined]
+                ContactTag.contact_id == contact_id,
+                ContactTag.tag_id == tag.id,
+            )
+        )
+
+    record_event(
+        session,
+        action=Action.CONTACT_RESUBSCRIBED,
+        target_type="contact",
+        target_id=contact.id,
+        actor=current_user,
+        metadata={"email": contact.email, "scopes_cleared": deleted_scopes},
+        request=request,
+    )
+    session.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get(

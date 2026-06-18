@@ -26,6 +26,7 @@ import { ContactSupportTab } from "../../components/contact-detail/ContactSuppor
 import { ContactTagsPreviewCard } from "../../components/contact-detail/ContactTagsPreviewCard";
 import { ContactTagsTab } from "../../components/contact-detail/ContactTagsTab";
 import { ContactTasksPendingCard } from "../../components/contact-detail/ContactTasksPendingCard";
+import { ContactUnsubscribeStatusCard } from "../../components/contact-detail/ContactUnsubscribeStatusCard";
 import { ContactEmailsSection } from "../../components/ContactEmailsSection";
 import { ContactAssignmentsSection } from "../../components/ContactAssignmentsSection";
 import { ContactNotesSection } from "../../components/ContactNotesSection";
@@ -444,6 +445,14 @@ export default function ContactDetailPage() {
         </section>
 
         <aside className="contact-detail-sidebar-v2">
+          {/* PR-Contact-Unsubscribe-Admin: card auto-oculto que solo
+              se pinta si el contacto está dado de baja. Bart pedía
+              poder gestionarlo desde la ficha cuando enviar daba 422
+              "Este contacto se ha dado de baja". */}
+          <ContactUnsubscribeStatusCard
+            contactId={contact.id}
+            refreshKey={emailsRefreshKey}
+          />
           <div
             id="sidebar-info"
             className="contact-card contact-sidebar-card contact-sidebar-info"

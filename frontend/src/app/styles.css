@@ -6970,6 +6970,48 @@ tr.is-inactive {
 
 .contact-sidebar-card-header h3 { margin: 0; font-size: 0.75rem; font-weight: 700; }
 
+/* PR-Contact-Unsubscribe-Admin — Card "Estado de envíos".
+ *
+ * Solo se renderiza cuando el contacto tiene rows en
+ * `email_unsubscribes`. Acento naranja sutil (consistente con
+ * `.badge.warn`) para que el operador lo note sin ser alarmista.
+ */
+.contact-unsubscribe-card {
+  border-color: color-mix(in srgb, #f59e0b 30%, transparent);
+}
+.contact-unsubscribe-card .contact-sidebar-card-header {
+  background: color-mix(in srgb, #f59e0b 8%, transparent);
+  color: #b45309;
+}
+.contact-unsubscribe-body {
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 13px;
+}
+.contact-unsubscribe-banner {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: #b45309;
+}
+.contact-unsubscribe-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid color-mix(in srgb, #f59e0b 30%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, #f59e0b 6%, transparent);
+}
+.contact-unsubscribe-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
 .contact-sidebar-info > .contact-card,
 .contact-sidebar-info > section {
   border: 0;

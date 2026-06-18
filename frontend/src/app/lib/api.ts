@@ -673,6 +673,40 @@ export async function updateContact(id: string, payload: Record<string, unknown>
   });
 }
 
+// PR-Contact-Unsubscribe-Admin --------------------------------------------
+
+export type ContactUnsubscribeItem = {
+  id: string;
+  scope: string;
+  source: string;
+  unsubscribed_at: string;
+  message_id: string | null;
+};
+
+export type ContactUnsubscribeStatus = {
+  is_unsubscribed: boolean;
+  rows: ContactUnsubscribeItem[];
+};
+
+export async function getContactUnsubscribeStatus(
+  contactId: string,
+): Promise<ContactUnsubscribeStatus> {
+  return apiFetch<ContactUnsubscribeStatus>(
+    `/api/contacts/${contactId}/unsubscribe-status`,
+  );
+}
+
+/** Admin-only. Borra TODAS las rows `email_unsubscribes` del contacto
+ *  y quita el tag `unsubscribed` si lo tenía. El contacto vuelve a
+ *  aceptar envíos comerciales. */
+export async function clearContactUnsubscribes(
+  contactId: string,
+): Promise<void> {
+  await apiFetch(`/api/contacts/${contactId}/unsubscribes`, {
+    method: "DELETE",
+  });
+}
+
 // Sprint Reglas-Assign PR-Ca hotfix. Antes el botón "Asignarme" del
 // dashboard hacía PATCH /api/contacts/{id} con owner_user_id — eso (1)
 // requería require_manager y rompía para users normales, y (2) tocaba
