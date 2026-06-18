@@ -407,6 +407,106 @@ def test_threads_list_scopes_to_current_user(
     assert admin_team.json()["total"] == 2
 
 
+def test_threads_filtered_by_contact_skip_user_scope(
+    client: TestClient,
+    session_factory: sessionmaker,
+) -> None:
+    """PR-Contact-Emails-Team. La pestaña Emails de la ficha contacto
+    es COLABORATIVA: muestra TODOS los threads del contacto sin
+    filtrar por quién los envió. Bug pre-fix: Bart abría la ficha de
+    un cliente que Manel había contactado, veía "sin emails" porque
+    el endpoint filtraba por `initiated_by_user_id == bart.id`.
+
+    Spec: cuando el filtro contact_id está presente, el scope=mine
+    default se SALTA. La bandeja general (`/emails` sin contact_id)
+    sigue siendo per-user."""
+    from app.models.crm import Contact  # noqa: PLC0415
+
+    with session_factory() as session:
+        # bart = el operador que abre la ficha (no es el sender);
+        # manel = el sender histórico que envió el email.
+        manel_id = _user_id(session, UserRole.ADMIN)
+        contact = Contact(
+            first_name="Salome",
+            email="sara_kali@hotmail.es",
+            commercial_status="new",
+            is_active=True,
+        )
+        session.add(contact)
+        session.flush()
+        contact_id = contact.id
+        # Thread enviado por Manel al contacto. Bart NO es el sender,
+        # pero al abrir la ficha del contacto debería verlo.
+        session.add(
+            EmailThread(
+                contact_id=contact_id,
+                initiated_by_user_id=manel_id,
+                gmail_thread_id="thr-manel-to-salome",
+                gmail_account_user_id=manel_id,
+                first_message_at=datetime.now(UTC),
+                last_message_at=datetime.now(UTC),
+                message_count=1,
+            )
+        )
+        # Thread huérfano (contact_id=None) enviado por Manel.
+        # NO debe aparecer en la ficha del contacto.
+        session.add(
+            EmailThread(
+                contact_id=None,
+                initiated_by_user_id=manel_id,
+                gmail_thread_id="thr-manel-other",
+                gmail_account_user_id=manel_id,
+                first_message_at=datetime.now(UTC),
+                last_message_at=datetime.now(UTC),
+                message_count=1,
+            )
+        )
+        session.commit()
+
+    # Bart abre la ficha del contacto → debe ver el thread de Manel.
+    response = client.get(
+        f"/api/emails/threads?contact_id={contact_id}",
+        headers=auth_headers(client, "user"),
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 1, body
+    assert body["items"][0]["gmail_thread_id"] == "thr-manel-to-salome"
+
+
+def test_bandeja_general_keeps_user_scope_default(
+    client: TestClient,
+    session_factory: sessionmaker,
+) -> None:
+    """El fix anterior NO debe regresar la bandeja general (`/emails`)
+    a mostrar emails ajenos. Sin contact_id, scope=mine sigue
+    filtrando por initiated_by_user_id == current_user.id."""
+    with session_factory() as session:
+        bart_id = _user_id(session, UserRole.USER)
+        manel_id = _user_id(session, UserRole.ADMIN)
+        for owner, label in ((bart_id, "bart-own"), (manel_id, "manel-own")):
+            session.add(
+                EmailThread(
+                    initiated_by_user_id=owner,
+                    gmail_thread_id=f"thr-{label}",
+                    gmail_account_user_id=owner,
+                    first_message_at=datetime.now(UTC),
+                    last_message_at=datetime.now(UTC),
+                    message_count=1,
+                )
+            )
+        session.commit()
+
+    response = client.get(
+        "/api/emails/threads",
+        headers=auth_headers(client, "user"),
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 1
+    assert body["items"][0]["gmail_thread_id"] == "thr-bart-own"
+
+
 def test_send_email_emits_activity_event_when_contact_id_set(
     client: TestClient,
     session_factory: sessionmaker,

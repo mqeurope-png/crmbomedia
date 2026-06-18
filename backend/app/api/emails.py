@@ -561,7 +561,18 @@ def list_threads(
                 EmailThread.initiated_by_user_id == team_user_id
             )
         # else: no filter → todos los threads del equipo.
-    else:  # scope == "mine" (default)
+    elif contact_id:
+        # PR-Contact-Emails-Team. Bart: la pestaña Emails de la ficha
+        # contacto es COLABORATIVA — cualquiera que vea la ficha debe
+        # ver el historial completo de comunicación con ese contacto,
+        # independiente de qué comercial envió cada mensaje. Si NO
+        # quitamos el filtro per-user, un comercial nuevo nunca verá
+        # los emails que mandó su predecesor al mismo cliente.
+        #
+        # La bandeja general /emails sigue siendo per-user
+        # (`scope=mine` sin contact_id → el filtro abajo se aplica).
+        pass
+    else:  # scope == "mine" (default), bandeja general
         stmt = stmt.where(
             EmailThread.initiated_by_user_id == current_user.id
         )
