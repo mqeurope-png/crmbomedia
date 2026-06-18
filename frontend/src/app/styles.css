@@ -7325,6 +7325,65 @@ tr.is-inactive {
 .contact-edit-confirm-overlay {
   z-index: 1050;
 }
+
+/* PR-Editar-Completo — Lista editable de teléfonos en el modal. */
+.contact-edit-phones {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.contact-edit-phone-row {
+  display: grid;
+  grid-template-columns: auto 1fr 130px auto;
+  gap: 6px;
+  align-items: center;
+}
+.contact-edit-phone-star {
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 4px;
+  color: var(--color-gray);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.contact-edit-phone-star.is-primary {
+  color: #f59e0b;
+}
+.contact-edit-phone-star:hover {
+  background: var(--color-bg-light);
+}
+.contact-edit-phone-number,
+.contact-edit-phone-label {
+  padding: 6px 8px;
+  border: 1px solid var(--color-border, #e5e7eb);
+  border-radius: 6px;
+  font-size: 13px;
+  min-width: 0;
+}
+
+/* PR-Editar-Completo — Sección "Estado de envíos" dentro del modal. */
+.contact-edit-unsub {
+  background: color-mix(in srgb, #f59e0b 6%, transparent);
+  border-color: color-mix(in srgb, #f59e0b 30%, transparent);
+}
+.contact-edit-resubscribe {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.contact-edit-resubscribe input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+}
+
 .contact-edit-confirm-dialog {
   max-width: 440px;
 }

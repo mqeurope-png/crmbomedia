@@ -1,7 +1,7 @@
 import json
 import logging
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 
@@ -287,6 +287,18 @@ class ContactCreate(BaseModel):
         return value.strip()
 
 
+class ContactPhonePayload(BaseModel):
+    """PR-Editar-Completo. Payload de un teléfono dentro del PATCH
+    masivo de la ficha. `id` opcional permite preservar la row
+    existente (tracking de provenance) si el operador solo cambió
+    `label`/`is_primary`; ausente → crea nueva."""
+
+    id: str | None = None
+    number: str = Field(min_length=1, max_length=80)
+    label: str | None = Field(default=None, max_length=80)
+    is_primary: bool = False
+
+
 class ContactUpdate(BaseModel):
     first_name: str | None = Field(default=None, min_length=1, max_length=120)
     last_name: str | None = Field(default=None, max_length=160)
@@ -318,6 +330,19 @@ class ContactUpdate(BaseModel):
     # demás propiedades migradas desde Agile.
     lead_score: int | None = None
     custom_fields: dict[str, Any] | str | None = None
+    # PR-Editar-Completo. Campos multi-tabla expuestos via el PATCH
+    # masivo para que el modal pueda guardar todo en una sola
+    # request:
+    # - `phones`: REEMPLAZA la lista completa de contact_phones.
+    #   Pasa `None` para no tocar; lista vacía para borrar todos.
+    # - `owner_id`: usuario que pasa a ser primary en
+    #   contact_assignments. `None` → quitar el primary actual sin
+    #   asignar nuevo.
+    # - `unsubscribe_action`: solo `"resubscribe"` admin-only.
+    #   Borra rows de email_unsubscribes + quita tag.
+    phones: list[ContactPhonePayload] | None = None
+    owner_id: str | None = None
+    unsubscribe_action: Literal["resubscribe"] | None = None
     @field_validator("first_name")
     @classmethod
     def strip_optional_first_name(cls, value: str | None) -> str | None:
