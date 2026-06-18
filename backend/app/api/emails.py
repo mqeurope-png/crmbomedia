@@ -1014,7 +1014,19 @@ def admin_all_threads(
 
 
 def _message_read(m: EmailMessage) -> EmailMessageRead:
-    return EmailMessageRead.model_validate(m)
+    # PR-Aperturas-Falsas. The DB row keeps the original body_html for
+    # audit; the wire response strips the CRM's own tracking pixel so
+    # rendering the preview in /emails (or the contact's emails tab)
+    # never fires the open endpoint and inflates the count. Third-party
+    # pixels (Mailchimp etc.) survive because the regex anchors on our
+    # own `/api/email-track/open/` path.
+    from app.email_tracking.services import (  # noqa: PLC0415
+        strip_tracking_pixel,
+    )
+
+    read = EmailMessageRead.model_validate(m)
+    read.body_html = strip_tracking_pixel(read.body_html)
+    return read
 
 
 def _user_own_emails(session: Session, user: User) -> set[str]:

@@ -23,6 +23,7 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+import os
 import re
 import secrets
 from datetime import UTC, datetime, timedelta
@@ -51,6 +52,24 @@ TRANSPARENT_GIF: bytes = (
 # When the same pixel / click fires this often within DEDUP_WINDOW we
 # treat the later hits as duplicates (preview-pane spam).
 DEDUP_WINDOW = timedelta(seconds=60)
+
+# PR-Aperturas-Falsas. Window after `EmailMessage.sent_at` during which
+# OPEN hits are discarded. Covers the Gmail-Sent prefetch the sender's
+# own client fires immediately after the message lands in their Sent
+# folder. Overridable via `EMAIL_OPEN_GRACE_PERIOD_SEC` so prod can tune
+# without a redeploy. Only applied to OPEN — CLICK / BOUNCE / UNSUB are
+# unaffected because their false-positive cost is high and a real click
+# never happens 30 seconds after sending.
+OPEN_TRACKING_GRACE_PERIOD_SEC = 30
+
+# CRM tracking pixel emitted by `inject_open_pixel`. Matches `<img>`
+# tags whose `src` points at our own `/api/email-track/open/{token}`
+# endpoint — third-party pixels (Mailchimp / Sendgrid / etc.) intentionally
+# do NOT match so quoted-reply HTML keeps rendering correctly.
+_TRACKING_PIXEL_RE = re.compile(
+    r"""<img[^>]*src=["'][^"']*?/api/email-track/open/[^"']*?["'][^>]*?/?>""",
+    re.IGNORECASE,
+)
 
 # Don't rewrite links to: mailto/tel/sms protocol, in-page anchors,
 # or the unsubscribe redirect itself (the caller passes its URL in via
@@ -165,6 +184,54 @@ def build_unsubscribe_block(
         "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
     }
     return html, headers, unsubscribe_url
+
+
+def _open_grace_period() -> timedelta:
+    """Read `EMAIL_OPEN_GRACE_PERIOD_SEC` at call time so an operator
+    flipping the env var doesn't need a worker restart. Falls back to
+    `OPEN_TRACKING_GRACE_PERIOD_SEC` on any parse error."""
+    raw = os.getenv("EMAIL_OPEN_GRACE_PERIOD_SEC")
+    if raw is not None:
+        try:
+            value = int(raw)
+        except ValueError:
+            value = -1
+        if value >= 0:
+            return timedelta(seconds=value)
+    return timedelta(seconds=OPEN_TRACKING_GRACE_PERIOD_SEC)
+
+
+def within_open_grace_period(
+    sent_at: datetime | None,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    """True when `now` is inside the post-send grace window — the
+    caller should swallow the pixel hit without writing an event row.
+
+    Returns False when `sent_at` is None (no anchor to compare against;
+    we'd rather count a real apertura than discard it because the row
+    isn't fully populated yet)."""
+    if sent_at is None:
+        return False
+    now = now or datetime.now(UTC)
+    if sent_at.tzinfo is None:
+        sent_at = sent_at.replace(tzinfo=UTC)
+    return (now - sent_at) < _open_grace_period()
+
+
+def strip_tracking_pixel(html: str | None) -> str | None:
+    """Remove every `<img>` whose `src` matches the CRM's own open
+    tracking endpoint so previewing a saved email in /emails never
+    inflates the count.
+
+    Idempotent. NULL / empty input returns input unchanged. Pixels
+    served by other systems (Mailchimp, Sendgrid, the recipient's own
+    tracker) are preserved by design — they let the operator see the
+    quoted reply chain the way the recipient sent it."""
+    if not html:
+        return html
+    return _TRACKING_PIXEL_RE.sub("", html)
 
 
 def dedupe_event(
