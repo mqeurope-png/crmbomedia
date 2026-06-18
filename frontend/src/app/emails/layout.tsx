@@ -1,7 +1,9 @@
 "use client";
 
+import { usePathname } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { EmailComposerModal } from "../components/EmailComposerModal";
+import { DraftListPanel } from "../components/email/DraftListPanel";
 import { EmailFiltersBar } from "../components/email/EmailFiltersBar";
 import { EmailFolderDialog } from "../components/email/EmailFolderDialog";
 import { EmailLabelDialog } from "../components/email/EmailLabelDialog";
@@ -26,6 +28,17 @@ export default function EmailsLayout({
 }: {
   children: React.ReactNode;
 }) {
+  const pathname = usePathname();
+  // Drafts shares the layout's middle column with the thread list;
+  // when the user lands on /emails/drafts we swap `EmailThreadList`
+  // for `DraftListPanel` so "Borradores" behaves the same way as
+  // "Estrellados" / "Archivados" (middle pane filters; right pane
+  // shows the selected item). /emails/drafts/* deeper routes (none
+  // today but room to grow) keep the panel mounted too.
+  const isDraftsRoute =
+    pathname === "/emails/drafts" ||
+    pathname.startsWith("/emails/drafts/");
+
   const [folders, setFolders] = useState<EmailFolder[]>([]);
   const [labels, setLabels] = useState<EmailLabel[]>([]);
   const [draftsCount, setDraftsCount] = useState(0);
@@ -90,12 +103,19 @@ export default function EmailsLayout({
         onChanged={refreshAll}
       />
       <div className="email-middle-column">
-        <EmailFiltersBar />
-        <EmailThreadList
-          folders={folders}
-          labels={labels}
-          refreshKey={refreshKey}
-        />
+        {isDraftsRoute ? null : <EmailFiltersBar />}
+        {isDraftsRoute ? (
+          <DraftListPanel
+            refreshKey={refreshKey}
+            onChanged={refreshAll}
+          />
+        ) : (
+          <EmailThreadList
+            folders={folders}
+            labels={labels}
+            refreshKey={refreshKey}
+          />
+        )}
       </div>
       <section className="email-thread-pane">{children}</section>
 

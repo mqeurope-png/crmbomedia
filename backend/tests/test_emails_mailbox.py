@@ -764,3 +764,124 @@ def test_thread_detail_surfaces_labels(
     body = res.json()
     assert [lbl["id"] for lbl in body["labels"]] == [label_id]
     assert body["state"] == "inbox"
+
+
+# ───────────────────────────────────────────────────────────────────
+# PR-Bugs-Borradores-Papelera — explicit Bandeja/Papelera isolation
+# ───────────────────────────────────────────────────────────────────
+
+
+def test_inbox_excludes_trashed_threads(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    """Regresión: una conversación con state=trashed nunca debe
+    asomar en la lista por defecto (Bandeja)."""
+    headers = auth_headers(client, "user")
+    with session_factory() as session:
+        uid = _user_id(session, UserRole.USER)
+        kept = _seed_thread(session, owner_id=uid, subject="Inbox")
+        trashed = _seed_thread(
+            session,
+            owner_id=uid,
+            subject="Trash",
+            state=EmailThreadState.TRASHED,
+        )
+
+    res = client.get(
+        "/api/emails/threads?state=inbox", headers=headers
+    )
+    assert res.status_code == 200
+    ids = {t["id"] for t in res.json()["items"]}
+    assert kept.id in ids
+    assert trashed.id not in ids
+
+
+def test_inbox_excludes_archived_threads(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    headers = auth_headers(client, "user")
+    with session_factory() as session:
+        uid = _user_id(session, UserRole.USER)
+        kept = _seed_thread(session, owner_id=uid, subject="Inbox")
+        archived = _seed_thread(
+            session,
+            owner_id=uid,
+            subject="Archived",
+            state=EmailThreadState.ARCHIVED,
+        )
+
+    res = client.get(
+        "/api/emails/threads?state=inbox", headers=headers
+    )
+    ids = {t["id"] for t in res.json()["items"]}
+    assert kept.id in ids
+    assert archived.id not in ids
+
+
+def test_trash_thread_removes_from_inbox_and_appears_in_trashed(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    """End-to-end: POST .../trash → subsequent /threads?state=inbox
+    omits the row, /threads?state=trashed includes it."""
+    headers = auth_headers(client, "user")
+    with session_factory() as session:
+        uid = _user_id(session, UserRole.USER)
+        thread = _seed_thread(session, owner_id=uid, subject="Scott")
+        tid = thread.id
+
+    # Visible in inbox up to this point.
+    res = client.get(
+        "/api/emails/threads?state=inbox", headers=headers
+    )
+    assert tid in {t["id"] for t in res.json()["items"]}
+
+    # Move it to the trash.
+    trash = client.post(
+        f"/api/emails/threads/{tid}/trash", headers=headers
+    )
+    assert trash.status_code == 200 and trash.json()["state"] == "trashed"
+
+    # Inbox no longer contains the row.
+    res = client.get(
+        "/api/emails/threads?state=inbox", headers=headers
+    )
+    assert tid not in {t["id"] for t in res.json()["items"]}
+
+    # The trash view does.
+    res = client.get(
+        "/api/emails/threads?state=trashed", headers=headers
+    )
+    assert tid in {t["id"] for t in res.json()["items"]}
+
+
+def test_bulk_trash_removes_threads_from_inbox(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    """Same flow but through the bulk endpoint the UI uses."""
+    headers = auth_headers(client, "user")
+    with session_factory() as session:
+        uid = _user_id(session, UserRole.USER)
+        a = _seed_thread(session, owner_id=uid, subject="A")
+        b = _seed_thread(session, owner_id=uid, subject="B")
+        kept = _seed_thread(session, owner_id=uid, subject="Keep")
+
+    res = client.post(
+        "/api/emails/threads-bulk/trash",
+        json={"thread_ids": [a.id, b.id]},
+        headers=headers,
+    )
+    assert res.status_code == 200 and res.json()["affected"] == 2
+
+    res = client.get(
+        "/api/emails/threads?state=inbox", headers=headers
+    )
+    inbox_ids = {t["id"] for t in res.json()["items"]}
+    assert kept.id in inbox_ids
+    assert a.id not in inbox_ids
+    assert b.id not in inbox_ids
+
+    res = client.get(
+        "/api/emails/threads?state=trashed", headers=headers
+    )
+    trash_ids = {t["id"] for t in res.json()["items"]}
+    assert trash_ids == {a.id, b.id}

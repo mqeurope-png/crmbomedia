@@ -5568,6 +5568,31 @@ a.origin-chip:hover { filter: brightness(0.97); }
   white-space: nowrap;
 }
 
+/* PR-Bugs-Borradores-Papelera. Drafts middle-pane shares the
+   `.email-list-pane` shell but has no star column, so the row drops
+   the empty 28px track. The link is a <button> so we strip the
+   default visual chrome to match the <a> in the threads list. */
+.email-list-pane .email-list-row:has(.email-list-draft-link) {
+  grid-template-columns: 28px 1fr;
+}
+.email-list-draft-link {
+  background: transparent;
+  border: 0;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+  width: 100%;
+}
+.email-list-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #1d2940;
+}
+
 /* Bulk-actions bar ------------------------------------------------- */
 .email-bulk-bar {
   display: flex;
