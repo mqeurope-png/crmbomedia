@@ -1477,6 +1477,148 @@ def test_update_and_deactivate_contact(client: TestClient):
     assert deactivated.json()["is_active"] is False
 
 
+# PR-Ficha-Fix tests ---------------------------------------------------------
+
+
+def test_user_role_can_patch_contact_inline_fields(client: TestClient):
+    """Bart's bug: user normal clica score → 5 → 'Not enough permissions'.
+    Causa: `require_manager` en el PATCH genérico. Tras el fix, user
+    debe poder editar nombre, score, etc."""
+    contact = create_contact(client)
+    headers = auth_headers(client, "user")
+    response = client.patch(
+        f"/api/contacts/{contact['id']}",
+        json={"first_name": "Ana", "lead_score": 5},
+        headers=headers,
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["first_name"] == "Ana"
+    assert body["lead_score"] == 5
+
+
+def test_lead_score_persists_through_patch(client: TestClient):
+    """Bart's bug #2: cambiar score a 2 dejaba el campo en 0. Causa:
+    `lead_score` faltaba en `ContactUpdate` y el schema lo descartaba
+    silenciosamente (Pydantic ignora keys no declaradas en
+    `exclude_unset` mode). Con el campo añadido al schema, el round-
+    trip respeta el valor."""
+    contact = create_contact(client)
+    headers = auth_headers(client, "manager")
+    response = client.patch(
+        f"/api/contacts/{contact['id']}",
+        json={"lead_score": 2},
+        headers=headers,
+    )
+    assert response.status_code == 200
+    assert response.json()["lead_score"] == 2
+    # GET confirma persistencia
+    fetched = client.get(f"/api/contacts/{contact['id']}", headers=headers).json()
+    assert fetched["lead_score"] == 2
+
+
+def test_user_role_blocked_from_manager_only_patch_fields(client: TestClient):
+    """`is_active` y `company_id` siguen siendo manager+ aun por el
+    handler PATCH genérico. user normal recibe 403 si intenta
+    flipear `is_active`."""
+    contact = create_contact(client)
+    headers = auth_headers(client, "user")
+    response = client.patch(
+        f"/api/contacts/{contact['id']}",
+        json={"is_active": False},
+        headers=headers,
+    )
+    assert response.status_code == 403
+
+
+def test_bulk_update_emits_bulk_audit_action(client: TestClient):
+    """PATCH con 3+ campos emite `contact.bulk_updated` (no
+    `contact.updated`). Permite a dashboards y rules distinguir el
+    flujo modal del flujo inline-edit single-field."""
+    from app.core.audit import Action
+    from app.db.session import get_session as gs
+    from app.models.crm import AuditLog
+
+    contact = create_contact(client)
+    headers = auth_headers(client, "manager")
+    response = client.patch(
+        f"/api/contacts/{contact['id']}",
+        json={
+            "first_name": "Ana",
+            "last_name": "Pérez",
+            "job_title": "CTO",
+            "lead_score": 7,
+        },
+        headers=headers,
+    )
+    assert response.status_code == 200
+
+    factory = client.app.dependency_overrides[gs]
+    gen = factory()
+    session = next(gen)
+    try:
+        actions = [
+            row.action
+            for row in session.query(AuditLog)
+            .filter(AuditLog.target_id == contact["id"])
+            .all()
+        ]
+        assert Action.CONTACT_BULK_UPDATED in actions
+    finally:
+        gen.close()
+
+
+def test_inline_single_field_keeps_legacy_audit_action(client: TestClient):
+    """Un PATCH de 1 campo (inline edit) emite `contact.updated`, no
+    `contact.bulk_updated`. Threshold: 3 campos."""
+    from app.core.audit import Action
+    from app.db.session import get_session as gs
+    from app.models.crm import AuditLog
+
+    contact = create_contact(client)
+    headers = auth_headers(client, "user")
+    response = client.patch(
+        f"/api/contacts/{contact['id']}",
+        json={"lead_score": 3},
+        headers=headers,
+    )
+    assert response.status_code == 200
+
+    factory = client.app.dependency_overrides[gs]
+    gen = factory()
+    session = next(gen)
+    try:
+        actions = [
+            row.action
+            for row in session.query(AuditLog)
+            .filter(AuditLog.target_id == contact["id"])
+            .all()
+        ]
+        assert Action.CONTACT_UPDATED in actions
+        assert Action.CONTACT_BULK_UPDATED not in actions
+    finally:
+        gen.close()
+
+
+def test_patch_custom_fields_dict_serializes_to_json(client: TestClient):
+    """El modal Editar manda `custom_fields` como dict; el handler lo
+    serializa a JSON antes de pegarlo en la columna Text. GET lo
+    devuelve parseado."""
+    contact = create_contact(client)
+    headers = auth_headers(client, "manager")
+    response = client.patch(
+        f"/api/contacts/{contact['id']}",
+        json={"custom_fields": {"GRADO_DE_INTERES": "alto", "FUENTE": "web"}},
+        headers=headers,
+    )
+    assert response.status_code == 200, response.text
+    fetched = client.get(f"/api/contacts/{contact['id']}", headers=headers).json()
+    assert fetched["custom_fields"] == {
+        "GRADO_DE_INTERES": "alto",
+        "FUENTE": "web",
+    }
+
+
 def test_user_can_create_note_and_task_for_contact(client: TestClient):
     # Sprint Empresas — sub-PR 4: `/api/contacts/{id}/notes` now
     # writes the new `contact_notes` row (content/pinned/source).

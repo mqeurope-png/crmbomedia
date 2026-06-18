@@ -62,9 +62,10 @@ from app.models.crm import (
     ExternalSystem,
     Pipeline,
     PipelineStage,
-    TaskStatus,
     Segment,
+    TaskStatus,
     User,
+    UserRole,
 )
 from app.models.integration_settings import IntegrationAccount
 from app.repositories import contact_views as contact_views_repository
@@ -2040,6 +2041,14 @@ def get_contact_brevo_engagement(
     }
 
 
+# PR-Ficha-Fix. `is_active` se desactiva vía el endpoint dedicado
+# `/contacts/{id}/deactivate` (require_manager). Bloqueamos su llegada
+# vía el PATCH genérico para que un `user` no pueda colarlo. Mismo
+# spirit para `company_id`: re-empresar un contacto altera reporting
+# y asignaciones — manager+ exclusivo.
+_MANAGER_ONLY_PATCH_FIELDS = frozenset({"is_active", "company_id"})
+
+
 @router.patch(
     "/contacts/{contact_id}",
     response_model=ContactRead,
@@ -2051,12 +2060,29 @@ def update_contact(
     payload: ContactUpdate,
     request: Request,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_manager),
+    # PR-Ficha-Fix. Bart: cualquier user normal debe poder editar los
+    # campos del strip (nombre, puesto, email, teléfono, score, estado
+    # ciclo, etiquetas). Antes el handler exigía manager+ y los inline
+    # edits fallaban con 403 "Not enough permissions". Bajamos a
+    # require_user y rechazamos a mano los campos manager-only.
+    current_user: User = Depends(require_user),
 ) -> Contact:
     contact = crm_repository.get_contact(session, contact_id)
     if not contact:
         raise not_found("Contact")
     data = payload.model_dump(exclude_unset=True)
+
+    if current_user.role not in (UserRole.ADMIN, UserRole.MANAGER):
+        blocked = _MANAGER_ONLY_PATCH_FIELDS & data.keys()
+        if blocked:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    "Estos campos solo los puede modificar un manager+: "
+                    + ", ".join(sorted(blocked))
+                ),
+            )
+
     if "email" in data and data["email"] is not None:
         email = str(data["email"]).lower()
         existing = crm_repository.get_contact_by_email(session, email)
@@ -2065,11 +2091,27 @@ def update_contact(
         data["email"] = email
     if data.get("company_id") and not crm_repository.get_company(session, data["company_id"]):
         raise not_found("Company")
+    # `custom_fields` viene como dict en el modal "Editar"; lo
+    # serializamos a JSON antes de pegárselo a la columna Text. Si el
+    # caller manda un string ya hecho (legacy), lo respetamos.
+    if "custom_fields" in data and isinstance(data["custom_fields"], dict):
+        data["custom_fields"] = json.dumps(data["custom_fields"])
     for field, value in data.items():
         setattr(contact, field, value)
+    # PR-Ficha-Fix. El modal "Editar completo" puede tocar 10+ campos
+    # a la vez; el evento `contact.bulk_updated` los distingue del
+    # PATCH single-field del inline edit. El audit del inline edit
+    # sigue siendo `contact.updated` para no romper dashboards
+    # existentes.
+    bulk_threshold = 3
+    action = (
+        Action.CONTACT_BULK_UPDATED
+        if len(data) >= bulk_threshold
+        else Action.CONTACT_UPDATED
+    )
     record_event(
         session,
-        action=Action.CONTACT_UPDATED,
+        action=action,
         target_type="contact",
         target_id=contact.id,
         actor=current_user,

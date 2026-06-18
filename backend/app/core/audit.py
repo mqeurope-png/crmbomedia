@@ -58,6 +58,11 @@ class Action:
     COMPANY_BULK_ACTION = "company.bulk_action"
     CONTACT_CREATED = "contact.created"
     CONTACT_UPDATED = "contact.updated"
+    # PR-Ficha-Fix. PATCH masivo desde el modal "Editar completo"
+    # (3+ campos en una sola request). El inline edit single-field
+    # del strip sigue siendo CONTACT_UPDATED para no romper dashboards
+    # ya existentes que cuentan ediciones individuales.
+    CONTACT_BULK_UPDATED = "contact.bulk_updated"
     CONTACT_DEACTIVATED = "contact.deactivated"
     # Sprint Reglas-Assign PR-B — multi-asignación de comerciales.
     CONTACT_ASSIGNMENT_ADDED = "contact.assignment_added"

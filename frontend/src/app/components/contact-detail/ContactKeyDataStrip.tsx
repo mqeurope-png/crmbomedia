@@ -217,7 +217,10 @@ export function ContactKeyDataStrip({
         <span className="contact-strip-value">
           {/* Bart: editable por cualquier user — click → input numérico
               save-on-blur. Sin validación de rango (mantenemos el
-              lead_score libre como el modelo backend). */}
+              lead_score libre como el modelo backend).
+              PR-Ficha-Fix: forzamos width=80px y spin buttons via la
+              clase compartida `lead-score-input` (también la usa el
+              modal Editar). */}
           <InlineEdit
             kind="number"
             value={contact.lead_score ?? null}
@@ -231,6 +234,7 @@ export function ContactKeyDataStrip({
               )
             }
             onSave={(next) => onPatch({ lead_score: next })}
+            inputStyle={{ width: 80 }}
           />
         </span>
       </div>

@@ -37,6 +37,7 @@ import { PageHeader } from "../../components/PageHeader";
 import { RefreshExternalDataButton } from "../../components/RefreshExternalDataButton";
 import { TaskModal } from "../../components/TaskModal";
 import { getCompany } from "../../lib/companiesApi";
+import { ContactEditForm } from "./ContactEditForm";
 import {
   getMessageEvents,
   type EmailEvent,
@@ -101,6 +102,10 @@ export default function ContactDetailPage() {
   const [showComposer, setShowComposer] = useState(false);
   const [showTaskModal, setShowTaskModal] = useState(false);
   const [overflowOpen, setOverflowOpen] = useState(false);
+  // PR-Ficha-Fix. Modal "Editar contacto" completo. El botón ✎ del
+  // header lo abre; cerrar (Cancel/X) limpia; Save → confirma →
+  // PATCH → refresh.
+  const [editOpen, setEditOpen] = useState(false);
   const [primaryAssignment, setPrimaryAssignment] =
     useState<ContactAssignment | null>(null);
   const [companyName, setCompanyName] = useState<string | null>(null);
@@ -279,12 +284,7 @@ export default function ContactDetailPage() {
         onSendEmail={() => setShowComposer(true)}
         onCreateTask={() => setShowTaskModal(true)}
         onLogCall={() => setShowTaskModal(true)}
-        onEdit={() => {
-          // Scrolla al card de info, donde el operador puede editar los
-          // campos inline. Sin modal de edición global todavía.
-          const target = document.getElementById("sidebar-info");
-          target?.scrollIntoView({ behavior: "smooth", block: "start" });
-        }}
+        onEdit={() => setEditOpen(true)}
         onOpenOverflow={() => setOverflowOpen((v) => !v)}
         overflowOpen={overflowOpen}
         overflowChildren={
@@ -461,6 +461,12 @@ export default function ContactDetailPage() {
           }}
         />
       ) : null}
+      <ContactEditForm
+        contact={contact}
+        open={editOpen}
+        onClose={() => setEditOpen(false)}
+        onPatch={handlePatch}
+      />
     </main>
   );
 }
