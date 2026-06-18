@@ -6865,7 +6865,11 @@ tr.is-inactive {
   border-radius: 16px;
   padding: 16px 20px;
   display: grid;
-  grid-template-columns: repeat(8, minmax(0, 1fr));
+  /* PR-Ficha-Cleanup: 7 cells (Etiquetas se movió a su pestaña). El
+   * primer track es más ancho (2fr) para que la cell Email no se
+   * vea forzada a truncar emails largos tipo
+   * `ramon.maceira@macdianer-industria.com`. */
+  grid-template-columns: minmax(0, 2fr) repeat(6, minmax(0, 1fr));
   gap: 18px;
   margin-bottom: 14px;
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
@@ -7105,18 +7109,31 @@ tr.is-inactive {
 /* PR-Ficha-Cleanup — Email cell del strip sin mailto.
  *
  * El email se renderiza como texto plano (NO `<a mailto:>`) más un
- * botón Copiar. `break-all` evita overflow horizontal en emails
- * largos tipo `nombre.apellido.muylargo@dominio.industrial.com`.
+ * botón Copiar. La cell ocupa 2 tracks del grid (ver
+ * `.contact-strip` arriba) y el valor permite wrap multilínea —
+ * el padre `.contact-strip-value` tenía `white-space: nowrap +
+ * overflow: hidden + text-overflow: ellipsis`, lo overrideamos
+ * aquí para que un email largo se envuelva en lugar de cortarse
+ * con "...". `break-all` rompe a nivel de carácter porque los
+ * emails no tienen espacios para que el navegador encuentre punto
+ * de corte natural.
  */
+.contact-strip-cell-email .contact-strip-value {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+}
 .contact-strip-email {
   display: inline-flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 6px;
   max-width: 100%;
 }
 .contact-strip-email-text {
   word-break: break-all;
   overflow-wrap: anywhere;
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 /* PR-Ficha-Cleanup — Pestaña Tags + card preview.
