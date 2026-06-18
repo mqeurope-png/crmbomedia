@@ -20,15 +20,24 @@ function formatDateTime(value: string): string {
 }
 
 /** "Emails" tab inside the contact detail. Lists threads where the
- *  contact participates and offers a CTA to open the composer. */
+ *  contact participates and offers a CTA to open the composer.
+ *
+ *  PR-Ficha-Cleanup: nuevo prop `refreshKey`. El bug reportado por
+ *  Bart: si el operador estaba ya en la pestaña Emails y enviaba
+ *  un correo desde el header, la tab no refetcheaba porque el dep
+ *  `[contactId]` no cambiaba (el id sigue siendo el mismo). El
+ *  parent ahora bumpea `refreshKey` tras `onSent` para forzar el
+ *  refetch. */
 export function ContactEmailsSection({
   contactId,
   contactEmail,
   onCompose,
+  refreshKey = 0,
 }: {
   contactId: string;
   contactEmail?: string | null;
   onCompose: () => void;
+  refreshKey?: number;
 }) {
   const [threads, setThreads] = useState<EmailThread[]>([]);
   const [loading, setLoading] = useState(true);
@@ -36,13 +45,14 @@ export function ContactEmailsSection({
   void contactEmail;
 
   useEffect(() => {
+    setLoading(true);
     listEmailThreads(contactId)
       .then((page) => setThreads(page.items))
       .catch((err) =>
         setError(extractErrorMessage(err, "No se pudieron cargar los hilos.")),
       )
       .finally(() => setLoading(false));
-  }, [contactId]);
+  }, [contactId, refreshKey]);
 
   return (
     <div>
