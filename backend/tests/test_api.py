@@ -1619,6 +1619,134 @@ def test_patch_custom_fields_dict_serializes_to_json(client: TestClient):
     }
 
 
+# PR-Contact-Unsubscribe-Admin tests --------------------------------------
+
+
+def _seed_unsubscribe(
+    client: TestClient,
+    contact_id: str,
+    *,
+    scope: str = "marketing",
+    source: str = "one-click",
+) -> str:
+    """Inserta una row email_unsubscribes para el contacto."""
+    import uuid as _uuid
+    from datetime import UTC, datetime
+
+    from app.db.session import get_session as gs
+    from app.models.crm import EmailUnsubscribe
+
+    factory = client.app.dependency_overrides[gs]
+    gen = factory()
+    session = next(gen)
+    try:
+        row_id = str(_uuid.uuid4())
+        session.add(
+            EmailUnsubscribe(
+                id=row_id,
+                contact_id=contact_id,
+                scope=scope,
+                source=source,
+                token=str(_uuid.uuid4()),
+                unsubscribed_at=datetime.now(UTC),
+            )
+        )
+        session.commit()
+        return row_id
+    finally:
+        gen.close()
+
+
+def test_unsubscribe_status_returns_rows_for_contact(client: TestClient):
+    contact = create_contact(client)
+    _seed_unsubscribe(client, contact["id"])
+    headers = auth_headers(client, "user")
+    response = client.get(
+        f"/api/contacts/{contact['id']}/unsubscribe-status", headers=headers
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["is_unsubscribed"] is True
+    assert len(body["rows"]) == 1
+    assert body["rows"][0]["scope"] == "marketing"
+    assert "token" not in body["rows"][0]  # NO leak del token público
+
+
+def test_unsubscribe_status_empty_when_no_rows(client: TestClient):
+    contact = create_contact(client)
+    headers = auth_headers(client, "user")
+    response = client.get(
+        f"/api/contacts/{contact['id']}/unsubscribe-status", headers=headers
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["is_unsubscribed"] is False
+    assert body["rows"] == []
+
+
+def test_clear_unsubscribes_requires_admin(client: TestClient):
+    contact = create_contact(client)
+    _seed_unsubscribe(client, contact["id"])
+    response = client.delete(
+        f"/api/contacts/{contact['id']}/unsubscribes",
+        headers=auth_headers(client, "user"),
+    )
+    assert response.status_code == 403
+    response = client.delete(
+        f"/api/contacts/{contact['id']}/unsubscribes",
+        headers=auth_headers(client, "manager"),
+    )
+    assert response.status_code == 403
+
+
+def test_clear_unsubscribes_admin_succeeds(client: TestClient):
+    """Admin borra TODAS las rows. El contacto vuelve a aceptar
+    envíos comerciales: el GET de status devuelve `is_unsubscribed=
+    False` tras el DELETE."""
+    from app.core.audit import Action
+    from app.db.session import get_session as gs
+    from app.models.crm import AuditLog
+
+    contact = create_contact(client)
+    _seed_unsubscribe(client, contact["id"], scope="marketing")
+    _seed_unsubscribe(client, contact["id"], scope="all")
+    headers = auth_headers(client, "admin")
+    response = client.delete(
+        f"/api/contacts/{contact['id']}/unsubscribes", headers=headers
+    )
+    assert response.status_code == 204
+    # Estado tras el clear.
+    status_resp = client.get(
+        f"/api/contacts/{contact['id']}/unsubscribe-status", headers=headers
+    )
+    body = status_resp.json()
+    assert body["is_unsubscribed"] is False
+    assert body["rows"] == []
+
+    # Audit log emitido con los scopes borrados.
+    factory = client.app.dependency_overrides[gs]
+    gen = factory()
+    session = next(gen)
+    try:
+        actions = [
+            row.action
+            for row in session.query(AuditLog)
+            .filter(AuditLog.target_id == contact["id"])
+            .all()
+        ]
+        assert Action.CONTACT_RESUBSCRIBED in actions
+    finally:
+        gen.close()
+
+
+def test_clear_unsubscribes_404_for_unknown_contact(client: TestClient):
+    response = client.delete(
+        "/api/contacts/nope-id/unsubscribes",
+        headers=auth_headers(client, "admin"),
+    )
+    assert response.status_code == 404
+
+
 def test_user_can_create_note_and_task_for_contact(client: TestClient):
     # Sprint Empresas — sub-PR 4: `/api/contacts/{id}/notes` now
     # writes the new `contact_notes` row (content/pinned/source).
