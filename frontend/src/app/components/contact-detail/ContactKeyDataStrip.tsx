@@ -98,7 +98,7 @@ export function ContactKeyDataStrip({
 
   return (
     <section className="contact-strip" aria-label="Datos clave">
-      <div className="contact-strip-cell">
+      <div className="contact-strip-cell contact-strip-cell-email">
         <span className="contact-strip-label">Email</span>
         {/* PR-Ficha-Cleanup: NO más mailto. El click en el email no
             debe abrir el cliente del SO (Bart's spec); solo el botón
