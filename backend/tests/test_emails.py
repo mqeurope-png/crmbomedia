@@ -622,6 +622,102 @@ def test_put_preferences_rejects_two_defaults(client: TestClient) -> None:
     assert any("Solo un alias" in str(item) for item in detail)
 
 
+def test_put_preferences_normalises_zero_default_to_first_allowed(
+    client: TestClient,
+    session_factory: sessionmaker,
+) -> None:
+    """PR-Aliases-UX. Si el operador manda allowed sin default
+    explícito, el handler elige el primer marcado como default.
+    Garantía: el composer siempre tiene un default determinista."""
+    from app.models.crm import UserEmailAliasPref  # noqa: PLC0415
+
+    response = client.put(
+        "/api/emails/aliases/preferences",
+        json={
+            "preferences": [
+                {
+                    "alias_email": "info@bomedia.net",
+                    "is_allowed": True,
+                    "is_default": False,
+                },
+                {
+                    "alias_email": "ventas@bomedia.net",
+                    "is_allowed": True,
+                    "is_default": False,
+                },
+            ]
+        },
+        headers=auth_headers(client, "user"),
+    )
+    assert response.status_code == 200, response.text
+    with session_factory() as session:
+        rows = list(
+            session.scalars(
+                select(UserEmailAliasPref).order_by(
+                    UserEmailAliasPref.alias_email
+                )
+            )
+        )
+        defaults = [r.alias_email for r in rows if r.is_default]
+        assert defaults == ["info@bomedia.net"]
+
+
+def test_put_preferences_disallow_default_reassigns(
+    client: TestClient,
+    session_factory: sessionmaker,
+) -> None:
+    """PR-Aliases-UX. Si el operador desmarca el default actual y
+    deja otros allowed, el handler reasigna el default al primer
+    superviviente. Sin esto el user quedaría sin default y el
+    composer no sabría cuál pre-seleccionar."""
+    from app.models.crm import UserEmailAliasPref  # noqa: PLC0415
+
+    # Seed con default = info.
+    client.put(
+        "/api/emails/aliases/preferences",
+        json={
+            "preferences": [
+                {
+                    "alias_email": "info@bomedia.net",
+                    "is_allowed": True,
+                    "is_default": True,
+                },
+                {
+                    "alias_email": "ventas@bomedia.net",
+                    "is_allowed": True,
+                    "is_default": False,
+                },
+            ]
+        },
+        headers=auth_headers(client, "user"),
+    )
+    # Desmarca info (el default actual). ventas pasa a ser default.
+    response = client.put(
+        "/api/emails/aliases/preferences",
+        json={
+            "preferences": [
+                {
+                    "alias_email": "info@bomedia.net",
+                    "is_allowed": False,
+                    "is_default": False,
+                },
+                {
+                    "alias_email": "ventas@bomedia.net",
+                    "is_allowed": True,
+                    "is_default": False,
+                },
+            ]
+        },
+        headers=auth_headers(client, "user"),
+    )
+    assert response.status_code == 200, response.text
+    with session_factory() as session:
+        rows = list(session.scalars(select(UserEmailAliasPref)))
+        assert len(rows) == 1
+        assert rows[0].alias_email == "ventas@bomedia.net"
+        assert rows[0].is_default is True
+
+
 def test_put_preferences_disallow_removes_row(
     client: TestClient,
     session_factory: sessionmaker,

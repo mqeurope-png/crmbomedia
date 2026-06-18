@@ -4361,6 +4361,183 @@ a.origin-chip:hover { filter: brightness(0.97); }
 }
 .form-success.small { font-size: 12px; padding: 6px 8px; }
 
+/* PR-Aliases-UX — Selector multi de aliases con dropdown + chips. */
+.alias-multiselect {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 8px 0;
+}
+.alias-multiselect-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: white;
+  cursor: pointer;
+  font-size: 13px;
+  text-align: left;
+  width: 100%;
+}
+.alias-multiselect-trigger:hover { background: var(--color-bg-light); }
+.alias-multiselect.is-open .alias-multiselect-trigger {
+  border-color: var(--color-primary);
+}
+.alias-multiselect-summary { flex: 1; }
+.alias-multiselect-empty {
+  margin: 0;
+  padding: 8px 12px;
+  font-size: 12px;
+}
+
+.alias-multiselect-chips {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.alias-multiselect-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--color-bg-light, #f8fafc);
+  font-size: 12px;
+}
+.alias-multiselect-chip.is-default {
+  border-color: #f59e0b;
+  background: color-mix(in srgb, #f59e0b 10%, transparent);
+}
+.alias-multiselect-chip-star {
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  color: #9ca3af;
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+}
+.alias-multiselect-chip.is-default .alias-multiselect-chip-star {
+  color: #f59e0b;
+}
+.alias-multiselect-chip-label { display: inline-flex; gap: 4px; align-items: center; }
+.alias-default-badge { font-size: 10px; }
+.alias-multiselect-chip-remove {
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  color: #9ca3af;
+  border-radius: 50%;
+  padding: 2px;
+  display: inline-flex;
+  align-items: center;
+}
+.alias-multiselect-chip-remove:hover {
+  background: #fee2e2;
+  color: #dc2626;
+}
+
+.alias-multiselect-panel {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  background: white;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.12);
+  z-index: 30;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 70vh;
+}
+.alias-multiselect-panel-header {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.alias-multiselect-search {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 8px;
+  color: #6b7280;
+}
+.alias-multiselect-search input {
+  flex: 1;
+  border: 0;
+  outline: 0;
+  font-size: 13px;
+  min-width: 0;
+}
+.alias-multiselect-counter { margin: 0; }
+.alias-multiselect-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  max-height: 320px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.alias-multiselect-list-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 4px 8px;
+  border-bottom: 1px solid #f1f3f9;
+  font-size: 13px;
+}
+.alias-multiselect-list-row:last-child { border-bottom: none; }
+.alias-multiselect-list-row.is-allowed { background: color-mix(in srgb, var(--color-primary) 6%, transparent); }
+.alias-multiselect-list-check {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  cursor: pointer;
+  flex: 1;
+  min-width: 0;
+}
+.alias-multiselect-list-meta {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.alias-multiselect-list-star {
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  color: #9ca3af;
+  display: inline-flex;
+  align-items: center;
+  padding: 4px;
+  border-radius: 4px;
+}
+.alias-multiselect-list-star:hover { background: var(--color-bg-light); }
+.alias-multiselect-list-star.is-default { color: #f59e0b; }
+.alias-multiselect-empty-search { padding: 12px; text-align: center; }
+.alias-multiselect-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 /* OriginChips with creation/update dates in contact detail */
 .origin-ref-list {
   list-style: none;

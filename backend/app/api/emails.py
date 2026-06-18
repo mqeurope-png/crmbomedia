@@ -240,6 +240,12 @@ def upsert_alias_preferences(
     - `is_allowed=false` deletes the row (keep the table clean).
     - Setting `is_default=true` on one row demotes the other
       defaults to false inside the same transaction.
+
+    PR-Aliases-UX. Si el payload trae allowed aliases pero NINGUNO
+    con `is_default`, el handler normaliza eligiendo el primero
+    visible (orden de envío) como default. Garantía: con N≥1 allowed,
+    siempre hay exactamente 1 default. Sin allowed, no hay default.
+    Esto deja el GET subsiguiente determinista para el composer.
     """
     existing = {
         p.alias_email: p
@@ -250,12 +256,15 @@ def upsert_alias_preferences(
         )
     }
     incoming_default: str | None = None
+    first_allowed: str | None = None
     for item in payload.preferences:
         row = existing.get(item.alias_email)
         if not item.is_allowed:
             if row is not None:
                 session.delete(row)
             continue
+        if first_allowed is None:
+            first_allowed = item.alias_email
         if item.is_default:
             incoming_default = item.alias_email
         if row is None:
@@ -271,6 +280,18 @@ def upsert_alias_preferences(
             row.is_allowed = True
             row.is_default = item.is_default
     session.flush()
+    # Normaliza: si hay allowed pero ningún default declarado, el
+    # primero gana. Ya no es ambiguo cuál alias usa el composer.
+    if incoming_default is None and first_allowed is not None:
+        incoming_default = first_allowed
+        session.execute(
+            UserEmailAliasPref.__table__.update()  # type: ignore[attr-defined]
+            .where(
+                UserEmailAliasPref.user_id == current_user.id,
+                UserEmailAliasPref.alias_email == first_allowed,
+            )
+            .values(is_default=True)
+        )
     if incoming_default is not None:
         session.execute(
             UserEmailAliasPref.__table__.update()  # type: ignore[attr-defined]
