@@ -1,6 +1,6 @@
 "use client";
 
-import { AlertTriangle, CheckCircle2, Mail, Plug, RefreshCw } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Mail, Plug } from "lucide-react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
@@ -18,6 +18,7 @@ import {
   type EmailAlias,
 } from "../lib/emailsApi";
 import { extractErrorMessage } from "../lib/errors";
+import { GmailAliasMultiSelect } from "./GmailAliasMultiSelect";
 
 /** Google Calendar block inside /account.
  *
@@ -258,9 +259,13 @@ export function GoogleCalendarSection() {
               Sin aliases &quot;Send mail as&quot; configurados en tu Gmail.
             </p>
           ) : (
-            <GmailAliasPreferencesEditor
+            <GmailAliasMultiSelect
               aliases={aliases}
-              onSaved={(next) => setAliases(next)}
+              onSave={async (prefs) => {
+                const next = await putEmailAliasPreferences(prefs);
+                setAliases(next);
+                return next;
+              }}
               onRefresh={reloadAliases}
               refreshing={aliasesLoading}
             />
@@ -291,168 +296,3 @@ export function GoogleCalendarSection() {
   );
 }
 
-function GmailAliasPreferencesEditor({
-  aliases,
-  onSaved,
-  onRefresh,
-  refreshing,
-}: {
-  aliases: EmailAlias[];
-  onSaved: (next: EmailAlias[]) => void;
-  onRefresh: () => void;
-  refreshing: boolean;
-}) {
-  // Local mirror of the alias list so the checkboxes can toggle
-  // before the user clicks "Guardar". We seed it from the server
-  // payload and re-seed when the parent reloads.
-  const [draft, setDraft] = useState<EmailAlias[]>(aliases);
-  const [search, setSearch] = useState("");
-  const [onlyAllowed, setOnlyAllowed] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [message, setMessage] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    setDraft(aliases);
-  }, [aliases]);
-
-  const visible = draft.filter((a) => {
-    if (onlyAllowed && !a.user_pref_allowed) return false;
-    if (!search.trim()) return true;
-    const haystack = `${a.display_name} ${a.send_as_email}`.toLowerCase();
-    return haystack.includes(search.trim().toLowerCase());
-  });
-
-  function toggleAllowed(email: string) {
-    setDraft((prev) =>
-      prev.map((a) =>
-        a.send_as_email === email
-          ? {
-              ...a,
-              user_pref_allowed: !a.user_pref_allowed,
-              user_pref_default: a.user_pref_allowed
-                ? false
-                : a.user_pref_default,
-            }
-          : a,
-      ),
-    );
-  }
-
-  function pickDefault(email: string) {
-    setDraft((prev) =>
-      prev.map((a) => ({
-        ...a,
-        user_pref_default: a.send_as_email === email,
-        user_pref_allowed:
-          a.send_as_email === email ? true : a.user_pref_allowed,
-      })),
-    );
-  }
-
-  async function handleSave() {
-    setSaving(true);
-    setError(null);
-    setMessage(null);
-    try {
-      const next = await putEmailAliasPreferences(
-        draft.map((a) => ({
-          alias_email: a.send_as_email,
-          is_allowed: a.user_pref_allowed,
-          is_default: a.user_pref_default,
-        })),
-      );
-      onSaved(next);
-      setMessage("Preferencias guardadas.");
-    } catch (err) {
-      setError(
-        extractErrorMessage(err, "No se pudieron guardar las preferencias."),
-      );
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  const allowedCount = draft.filter((a) => a.user_pref_allowed).length;
-
-  return (
-    <>
-      <p className="muted small">
-        <CheckCircle2 size={11} aria-hidden /> Autorizado · {draft.length}{" "}
-        alias en Gmail · {allowedCount} marcado{allowedCount === 1 ? "" : "s"}
-      </p>
-      <div className="alias-toolbar">
-        <input
-          type="search"
-          placeholder="Buscar alias…"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          className="search-input small"
-        />
-        <label className="pill-toggle-label">
-          <input
-            type="checkbox"
-            checked={onlyAllowed}
-            onChange={(e) => setOnlyAllowed(e.target.checked)}
-          />
-          Solo marcados
-        </label>
-        <button
-          type="button"
-          className="button small secondary"
-          onClick={onRefresh}
-          disabled={refreshing}
-          title="Recargar lista desde Gmail"
-        >
-          <RefreshCw size={11} aria-hidden />
-        </button>
-      </div>
-      {error ? <p className="form-error">{error}</p> : null}
-      {message ? <p className="form-success small">{message}</p> : null}
-      <ul className="alias-prefs-list">
-        {visible.map((a) => (
-          <li key={a.send_as_email} className="alias-pref-row">
-            <input
-              type="checkbox"
-              checked={a.user_pref_allowed}
-              onChange={() => toggleAllowed(a.send_as_email)}
-              aria-label={`Usar ${a.send_as_email}`}
-            />
-            <input
-              type="radio"
-              name="alias-default"
-              checked={a.user_pref_default}
-              onChange={() => pickDefault(a.send_as_email)}
-              disabled={!a.user_pref_allowed}
-              aria-label={`Marcar ${a.send_as_email} como predeterminado`}
-            />
-            <span className="alias-pref-meta">
-              {a.display_name ? <strong>{a.display_name}</strong> : null}{" "}
-              <span className="muted small">&lt;{a.send_as_email}&gt;</span>
-              {a.is_primary ? (
-                <span className="badge muted"> primario</span>
-              ) : null}
-              {a.verification_status &&
-              a.verification_status !== "accepted" ? (
-                <span className="badge bad" title="Pendiente de verificar en Gmail">
-                  no verificado
-                </span>
-              ) : null}
-            </span>
-          </li>
-        ))}
-        {visible.length === 0 ? (
-          <li className="muted small">Ningún alias coincide con el filtro.</li>
-        ) : null}
-      </ul>
-      <button
-        type="button"
-        className="button small"
-        onClick={handleSave}
-        disabled={saving}
-      >
-        {saving ? "Guardando…" : "Guardar preferencias"}
-      </button>
-    </>
-  );
-}
