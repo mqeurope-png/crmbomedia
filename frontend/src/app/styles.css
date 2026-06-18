@@ -7080,6 +7080,102 @@ tr.is-inactive {
   height: 16px;
 }
 
+/* PR-Ficha-Fix — Lead score input.
+ *
+ * Bart: el inline edit del score salía estirando todo el ancho de la
+ * celda y sin flechitas. Cap a 80 px y forzamos los spin buttons
+ * webkit / firefox para que el operador pueda hacer ↑/↓ con el ratón.
+ * No hay `max` — el score es libre por decisión de producto.
+ */
+.inline-edit-editing input[type="number"],
+.lead-score-input {
+  width: 80px;
+  appearance: auto;
+  -moz-appearance: number-input;
+}
+.lead-score-input::-webkit-inner-spin-button,
+.lead-score-input::-webkit-outer-spin-button,
+.inline-edit-editing input[type="number"]::-webkit-inner-spin-button,
+.inline-edit-editing input[type="number"]::-webkit-outer-spin-button {
+  appearance: inner-spin-button;
+  -webkit-appearance: inner-spin-button;
+  opacity: 1;
+}
+
+/* PR-Ficha-Fix — Modal "Editar contacto".
+ *
+ * 2 columnas en desktop (>=900 px), 1 columna en mobile. Cada
+ * fieldset es una sección con su legend; la sección "custom_fields"
+ * usa la fila completa porque suele tener N campos heterogéneos.
+ */
+.contact-edit-modal {
+  max-width: 880px;
+  width: 100%;
+}
+.contact-edit-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 14px;
+}
+@media (min-width: 900px) {
+  .contact-edit-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+  .contact-edit-section-wide,
+  .contact-edit-footer,
+  .contact-edit-error {
+    grid-column: 1 / -1;
+  }
+}
+.contact-edit-section {
+  border: 1px solid var(--color-border, #e5e7eb);
+  border-radius: 8px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.contact-edit-section legend {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--color-text-muted, #6b7280);
+  padding: 0 4px;
+}
+.contact-edit-section label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+}
+.contact-edit-section label > span {
+  color: var(--color-text-muted, #6b7280);
+}
+.contact-edit-section input,
+.contact-edit-section select {
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--color-border, #e5e7eb);
+  font-size: 14px;
+}
+.contact-edit-error {
+  margin: 0;
+}
+.contact-edit-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 6px;
+}
+/* El sub-modal de confirmación se renderiza sobre el modal de
+ * edición; ambos comparten `.modal-overlay` pero el segundo va con
+ * un z-index mayor para no quedar tapado. */
+.contact-edit-confirm-overlay {
+  z-index: 1050;
+}
+.contact-edit-confirm-dialog {
+  max-width: 440px;
+}
+
 .contact-summary-wrapper { display: flex; flex-direction: column; gap: 14px; }
 .contact-summary-extra { margin-top: 0; }
 

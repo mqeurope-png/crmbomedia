@@ -310,6 +310,14 @@ class ContactUpdate(BaseModel):
     address_region: str | None = Field(default=None, max_length=120)
     address_country: str | None = Field(default=None, max_length=120)
     address_country_name: str | None = Field(default=None, max_length=255)
+    # PR-Ficha-Fix. Faltaban en el `ContactUpdate` original: el strip
+    # del inline edit mandaba `lead_score` en el PATCH y FastAPI lo
+    # rechazaba con 422 (campo no permitido) — Bart veía el valor
+    # volver a 0 tras cambiarlo. `custom_fields` lo añadimos también
+    # para que el modal Editar pueda persistir el GRADO_DE_INTERES y
+    # demás propiedades migradas desde Agile.
+    lead_score: int | None = None
+    custom_fields: dict[str, Any] | str | None = None
     @field_validator("first_name")
     @classmethod
     def strip_optional_first_name(cls, value: str | None) -> str | None:
