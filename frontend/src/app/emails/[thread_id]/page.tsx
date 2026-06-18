@@ -41,6 +41,7 @@ import {
   type EmailEvent,
 } from "../../lib/emailTrackingApi";
 import { formatBackendDateTime } from "../../lib/dates";
+import { stripTrackingPixel } from "../../lib/emailPreview";
 import { extractErrorMessage } from "../../lib/errors";
 
 const formatDateTime = (value: string | null) =>
@@ -374,7 +375,7 @@ export default function EmailThreadPage() {
                 title={`Mensaje ${m.id}`}
                 className="email-html-preview"
                 sandbox=""
-                srcDoc={m.body_html}
+                srcDoc={stripTrackingPixel(m.body_html) ?? ""}
               />
             ) : (
               <pre className="email-body-text">

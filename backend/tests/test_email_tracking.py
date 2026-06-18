@@ -129,14 +129,110 @@ def test_b64url_round_trip_with_special_chars() -> None:
 
 
 # ───────────────────────────────────────────────────────────────────
+# PR-Aperturas-Falsas — grace window + preview pixel stripping
+# ───────────────────────────────────────────────────────────────────
+
+
+def test_within_open_grace_period_returns_true_for_recent_send() -> None:
+    from datetime import timedelta as _td
+
+    sent_at = datetime.now(UTC) - _td(seconds=5)
+    assert tracking_services.within_open_grace_period(sent_at) is True
+
+
+def test_within_open_grace_period_returns_false_after_window() -> None:
+    from datetime import timedelta as _td
+
+    sent_at = datetime.now(UTC) - _td(seconds=60)
+    assert tracking_services.within_open_grace_period(sent_at) is False
+
+
+def test_within_open_grace_period_returns_false_for_none() -> None:
+    # `sent_at=None` means the message isn't fully sent yet (or the
+    # legacy row is missing it) — better to count the open than to
+    # drop a legit signal.
+    assert tracking_services.within_open_grace_period(None) is False
+
+
+def test_within_open_grace_period_honours_env_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from datetime import timedelta as _td
+
+    monkeypatch.setenv("EMAIL_OPEN_GRACE_PERIOD_SEC", "120")
+    sent_at = datetime.now(UTC) - _td(seconds=90)
+    assert tracking_services.within_open_grace_period(sent_at) is True
+
+
+def test_strip_tracking_pixel_removes_crm_pixel() -> None:
+    html = (
+        "<p>Hola</p>"
+        '<img src="https://crm.example/api/email-track/open/tok123" '
+        'width="1" height="1" alt="" '
+        'style="display:none;max-height:0;overflow:hidden" />'
+    )
+    out = tracking_services.strip_tracking_pixel(html)
+    assert out == "<p>Hola</p>"
+
+
+def test_strip_tracking_pixel_removes_multiple_pixels() -> None:
+    html = (
+        '<img src="https://crm.example/api/email-track/open/a" />'
+        "<p>X</p>"
+        '<img src="https://crm.example/api/email-track/open/b" />'
+        "<p>Y</p>"
+        '<img src="https://crm.example/api/email-track/open/c" />'
+    )
+    out = tracking_services.strip_tracking_pixel(html)
+    assert "/email-track/open/" not in (out or "")
+    assert "<p>X</p>" in (out or "")
+    assert "<p>Y</p>" in (out or "")
+
+
+def test_strip_tracking_pixel_preserves_third_party_pixels() -> None:
+    html = (
+        "<p>Newsletter</p>"
+        '<img src="https://track.mailchimp.com/o/abc123/open" '
+        'width="1" height="1" />'
+        '<img src="https://crm.example/api/email-track/open/own" />'
+    )
+    out = tracking_services.strip_tracking_pixel(html) or ""
+    # The CRM's own pixel is gone.
+    assert "/api/email-track/open/" not in out
+    # The mailchimp pixel survives because it's not our path.
+    assert "track.mailchimp.com" in out
+
+
+def test_strip_tracking_pixel_preserves_html_without_pixel() -> None:
+    html = '<p>Hola <a href="https://example.com">aquí</a></p>'
+    assert tracking_services.strip_tracking_pixel(html) == html
+
+
+def test_strip_tracking_pixel_returns_none_for_none() -> None:
+    assert tracking_services.strip_tracking_pixel(None) is None
+    assert tracking_services.strip_tracking_pixel("") == ""
+
+
+# ───────────────────────────────────────────────────────────────────
 # Open + click endpoints
 # ───────────────────────────────────────────────────────────────────
 
 
 def _create_message_with_token(
-    session_factory: sessionmaker, token: str
+    session_factory: sessionmaker,
+    token: str,
+    *,
+    sent_at: datetime | None = None,
 ) -> str:
-    """Returns the new message id."""
+    """Returns the new message id.
+
+    `sent_at` defaults to 5 minutes ago so the open-tracking grace
+    window (PR-Aperturas-Falsas) doesn't swallow the hit in tests
+    that don't care about it. Pass a custom value to exercise the
+    grace logic explicitly."""
+    from datetime import timedelta as _td
+
+    sent_at = sent_at or (datetime.now(UTC) - _td(minutes=5))
     with session_factory() as session:
         thread = EmailThread(
             initiated_by_user_id="user-x",
@@ -156,7 +252,7 @@ def _create_message_with_token(
             direction=EmailDirection.OUTBOUND,
             from_email="user@example.com",
             to_emails_json='["lead@example.com"]',
-            sent_at=datetime.now(UTC),
+            sent_at=sent_at,
         )
         session.add(message)
         session.flush()
@@ -215,6 +311,137 @@ def test_open_endpoint_pixel_for_unknown_token(client: TestClient) -> None:
     response = client.get("/api/email-track/open/nope")
     assert response.status_code == 200
     assert response.content.startswith(b"GIF89a")
+
+
+def test_open_within_grace_period_discarded(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    """PR-Aperturas-Falsas. Pixel fires 10s after send (Gmail Sent
+    prefetch) → endpoint returns the pixel but writes NO event row."""
+    from datetime import timedelta as _td
+
+    msg_id = _create_message_with_token(
+        session_factory,
+        "grace-tok",
+        sent_at=datetime.now(UTC) - _td(seconds=10),
+    )
+    response = client.get("/api/email-track/open/grace-tok")
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/gif"
+    assert response.content.startswith(b"GIF89a")
+    with session_factory() as session:
+        events = list(
+            session.scalars(
+                select(EmailMessageEvent).where(
+                    EmailMessageEvent.message_id == msg_id
+                )
+            )
+        )
+        assert events == []
+
+
+def test_open_after_grace_period_registered(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    """A hit one second past the grace window is a legitimate open."""
+    from datetime import timedelta as _td
+
+    msg_id = _create_message_with_token(
+        session_factory,
+        "after-tok",
+        sent_at=datetime.now(UTC) - _td(seconds=31),
+    )
+    response = client.get("/api/email-track/open/after-tok")
+    assert response.status_code == 200
+    with session_factory() as session:
+        events = list(
+            session.scalars(
+                select(EmailMessageEvent).where(
+                    EmailMessageEvent.message_id == msg_id
+                )
+            )
+        )
+        assert len(events) == 1
+        assert events[0].event_type == EmailEventType.OPEN
+
+
+def test_open_no_sent_at_registered(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    """Defensive: a row with `sent_at=None` still records opens. We'd
+    rather count a real apertura than drop a legit hit because the
+    scheduled-send sweep hasn't filled the timestamp yet."""
+    with session_factory() as session:
+        thread = EmailThread(
+            initiated_by_user_id="user-x",
+            gmail_thread_id="thr-noseat",
+            gmail_account_user_id="user-x",
+            first_message_at=datetime.now(UTC),
+            last_message_at=datetime.now(UTC),
+            message_count=1,
+            subject="x",
+        )
+        session.add(thread)
+        session.flush()
+        message = EmailMessage(
+            thread_id=thread.id,
+            gmail_message_id="gmsg-noseat",
+            gmail_account_user_id="user-x",
+            direction=EmailDirection.OUTBOUND,
+            from_email="user@example.com",
+            to_emails_json='["lead@example.com"]',
+            sent_at=None,
+        )
+        session.add(message)
+        session.flush()
+        session.add(
+            EmailMessageToken(token="noseat-tok", message_id=message.id)
+        )
+        session.commit()
+        msg_id = message.id
+
+    response = client.get("/api/email-track/open/noseat-tok")
+    assert response.status_code == 200
+    with session_factory() as session:
+        events = list(
+            session.scalars(
+                select(EmailMessageEvent).where(
+                    EmailMessageEvent.message_id == msg_id
+                )
+            )
+        )
+        assert len(events) == 1
+
+
+def test_grace_period_only_applies_to_open(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    """A click 5s after send is registered normally — only opens are
+    swallowed by the grace window. A real prefetch never clicks."""
+    from datetime import timedelta as _td
+
+    msg_id = _create_message_with_token(
+        session_factory,
+        "click-grace",
+        sent_at=datetime.now(UTC) - _td(seconds=5),
+    )
+    destination = "https://example.com/landing"
+    d = tracking_services.b64url_encode(destination)
+    response = client.get(
+        f"/api/email-track/click/click-grace?d={d}",
+        follow_redirects=False,
+    )
+    assert response.status_code == 302
+    with session_factory() as session:
+        events = list(
+            session.scalars(
+                select(EmailMessageEvent).where(
+                    EmailMessageEvent.message_id == msg_id,
+                    EmailMessageEvent.event_type == EmailEventType.CLICK,
+                )
+            )
+        )
+        assert len(events) == 1
 
 
 def test_click_endpoint_records_and_redirects(
@@ -985,6 +1212,71 @@ def test_message_events_endpoint_403s_for_other_user(
         headers=auth_headers(client, "manager"),
     )
     assert response.status_code == 200
+
+
+def test_thread_detail_strips_tracking_pixel_from_body_html(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    """PR-Aperturas-Falsas. GET /api/emails/threads/{id} returns
+    `body_html` with the CRM's own tracking pixel removed so the
+    iframe-preview in /emails doesn't fire the open endpoint when
+    the operator scrolls past their own sent message."""
+    _seed_gmail_for_user(session_factory)
+    with session_factory() as session:
+        user_id = session.scalar(
+            select(User.id).where(User.role == UserRole.USER)
+        )
+        thread = EmailThread(
+            initiated_by_user_id=user_id,
+            gmail_thread_id="strip-thr",
+            gmail_account_user_id=user_id,
+            first_message_at=datetime.now(UTC),
+            last_message_at=datetime.now(UTC),
+            message_count=1,
+            subject="Hola",
+        )
+        session.add(thread)
+        session.flush()
+        body_html_with_pixel = (
+            "<p>Buenos días, Bart aquí.</p>"
+            '<img src="https://crm.example/api/email-track/open/sneak1" '
+            'width="1" height="1" alt="" '
+            'style="display:none;max-height:0;overflow:hidden" />'
+            '<img src="https://track.mailchimp.com/o/x/keep" '
+            'width="1" height="1" />'
+        )
+        msg = EmailMessage(
+            thread_id=thread.id,
+            gmail_message_id="strip-msg",
+            gmail_account_user_id=user_id,
+            direction=EmailDirection.OUTBOUND,
+            from_email="info@bomedia.net",
+            to_emails_json='["lead@example.com"]',
+            subject="Hola",
+            body_html=body_html_with_pixel,
+            sent_at=datetime.now(UTC),
+            created_by_user_id=user_id,
+        )
+        session.add(msg)
+        session.commit()
+        thread_id = thread.id
+        msg_id = msg.id
+
+    response = client.get(
+        f"/api/emails/threads/{thread_id}",
+        headers=auth_headers(client, "user"),
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    [serialised] = body["messages"]
+    assert "/api/email-track/open/" not in serialised["body_html"]
+    # Third-party pixels survive.
+    assert "track.mailchimp.com" in serialised["body_html"]
+    # The DB row is untouched — audit copy keeps the original.
+    with session_factory() as session:
+        stored = session.get(EmailMessage, msg_id)
+        assert stored is not None
+        assert "/api/email-track/open/" in (stored.body_html or "")
 
 
 def test_email_stats_endpoint_returns_counts(

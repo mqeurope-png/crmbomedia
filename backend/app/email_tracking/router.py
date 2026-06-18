@@ -48,6 +48,7 @@ from .services import (
     lookup_message_by_token,
     lookup_unsubscribe_by_token,
     record_event,
+    within_open_grace_period,
 )
 
 router = APIRouter(prefix="/api", tags=["email-tracking"])
@@ -126,6 +127,14 @@ def track_open(
     # broken-image icons in the recipient's inbox.
     if message is None:
         log.info("email-track: unknown open token %s", token)
+        return _pixel_response()
+
+    # PR-Aperturas-Falsas. Gmail (and other webmail clients) prefetch
+    # the pixel from the sender's own Sent folder seconds after the
+    # message lands. Drop those by ignoring opens inside the post-send
+    # grace window. CLICK still goes through — a legitimate click that
+    # quick is far less likely than a Gmail-Sent prefetch.
+    if within_open_grace_period(message.sent_at):
         return _pixel_response()
 
     ip = _client_ip(request)
