@@ -8,13 +8,15 @@
  *  is interpreted by browsers as LOCAL time, so a UTC value
  *  shipped this way ends up displayed 1-2 hours off depending on
  *  the operator's timezone — exactly the "Programado para 02:43
- *  shows as 00:43 in Madrid" bug reported on v2.4e.
+ *  shows as 00:43 in Madrid" bug reported on v2.4e, and the
+ *  "sync que termina AHORA muestra 'hace 2 horas'" del PR-Timezone-
+ *  Fix.
  *
- *  We can't reliably fix the backend serialization without a
- *  schema-wide change; appending `Z` here treats every naive
- *  string as UTC, which matches what the backend actually
- *  stores. Strings that already carry `Z` or a `±HH:MM` offset
- *  are returned untouched.
+ *  El backend ahora reattacha UTC vía SQLAlchemy event listener
+ *  (`_ensure_utc` en `app/models/crm.py`), así que los timestamps
+ *  nuevos deberían llegar con offset. Mantenemos esta función
+ *  defensiva por si algún endpoint legacy escapa al hook (consultas
+ *  con `select(col)` que devuelven tuplas crudas, p. ej.).
  */
 const HAS_TZ_RE = /[Zz]|[+-]\d{2}:?\d{2}$/;
 
@@ -35,6 +37,51 @@ export function formatBackendDateTime(
 ): string {
   if (!iso) return "—";
   return parseBackendDate(iso).toLocaleString("es-ES", options);
+}
+
+/** Render "hace X" / "in X" relative to now. Tolerant input — null /
+ *  undefined / empty string → "—". Future timestamps (clock skew or
+ *  scheduled events) render as "en X". Buckets:
+ *
+ *  - < 10 s          : "ahora mismo"
+ *  - < 60 s          : "hace 30 s"
+ *  - < 60 min        : "hace 5 min"
+ *  - < 24 h          : "hace 3 h"
+ *  - < 30 d          : "hace 4 d"
+ *  - >= 30 d         : fallback a `formatBackendDateTime`.
+ *
+ *  Pre-PR-Timezone-Fix, varios widgets ("Sincronización Agile", "Email
+ *  Activity", "Tareas Próximas") computaban relative time con
+ *  `new Date(iso)` directo. Cuando el backend mandaba el ISO sin tz,
+ *  el navegador en Madrid (UTC+2) restaba 2 h al diff → "hace 2 h"
+ *  recién terminada la sync. Centralizar el parsing aquí asegura que
+ *  cualquier futuro widget hereda el fix sin tener que recordar el
+ *  hack del sufijo `Z`. */
+export function formatRelative(
+  iso: string | null | undefined,
+  now: Date = new Date(),
+): string {
+  if (!iso) return "—";
+  const target = parseBackendDate(iso);
+  const diffMs = now.getTime() - target.getTime();
+  const absMs = Math.abs(diffMs);
+  const future = diffMs < 0;
+  const prefix = future ? "en " : "hace ";
+
+  if (absMs < 10_000) return "ahora mismo";
+  const seconds = Math.floor(absMs / 1000);
+  if (seconds < 60) return `${prefix}${seconds} s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${prefix}${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${prefix}${hours} h`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${prefix}${days} d`;
+  return formatBackendDateTime(iso, {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  });
 }
 
 /** Convert a backend ISO datetime to the value expected by

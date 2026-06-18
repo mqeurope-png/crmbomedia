@@ -19,6 +19,7 @@ import {
   unstarThread,
 } from "../../lib/emailsApi";
 import { getCurrentUser, getUsers, type User } from "../../lib/api";
+import { parseBackendDate } from "../../lib/dates";
 import { extractErrorMessage } from "../../lib/errors";
 import { EmailEventBadges } from "./EmailEventBadges";
 import { EmailBulkActionsBar } from "./EmailBulkActionsBar";
@@ -31,8 +32,13 @@ type Props = {
   refreshKey: number;
 };
 
+// Smart date Gmail-style: hora si es hoy, día/mes si este año, fecha
+// completa si no. NO confundir con la `formatRelative` de
+// `lib/dates.ts` que es "hace X". Aquí solo necesitamos el parse
+// UTC-safe (PR-Timezone-Fix) para que el "toDateString()" compare
+// los días correctos en la zona del navegador.
 function formatRelative(value: string): string {
-  const d = new Date(value);
+  const d = parseBackendDate(value);
   const now = new Date();
   if (d.toDateString() === now.toDateString()) {
     return d.toLocaleTimeString("es-ES", {

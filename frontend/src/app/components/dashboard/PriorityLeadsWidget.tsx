@@ -13,6 +13,7 @@ import {
   type DashboardWindow,
   type PriorityLead,
 } from "../../lib/dashboardApi";
+import { parseBackendDate } from "../../lib/dates";
 import { usePersistentState } from "../../lib/usePersistentState";
 import { PeriodSelector } from "./PeriodSelector";
 
@@ -22,15 +23,19 @@ const REASON_LABEL: Record<string, { label: string; tone: string }> = {
   active: { label: "Activo", tone: "is-warning" },
 };
 
+// PR-Timezone-Fix. Esta función tiene granularidad de día — "hoy",
+// "ayer", "hace Nd" — no de horas, así que un offset de 2 h no debería
+// notarse en pantalla. Aún así migrar el parsing por coherencia y para
+// que el `toLocaleDateString` final use la fecha local correcta.
 function relative(value: string): string {
-  const then = new Date(value).getTime();
-  if (Number.isNaN(then)) return "—";
-  const diff = Date.now() - then;
+  const target = parseBackendDate(value);
+  if (Number.isNaN(target.getTime())) return "—";
+  const diff = Date.now() - target.getTime();
   const day = Math.floor(diff / 86_400_000);
   if (day === 0) return "hoy";
   if (day === 1) return "ayer";
   if (day < 30) return `hace ${day}d`;
-  return new Date(value).toLocaleDateString("es-ES", {
+  return target.toLocaleDateString("es-ES", {
     day: "2-digit",
     month: "short",
   });

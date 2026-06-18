@@ -10,6 +10,7 @@
 import { Copy, Phone as PhoneIcon, Plus, X } from "lucide-react";
 import { useState } from "react";
 import type { Contact, Tag } from "../../lib/api";
+import { formatBackendDateTime } from "../../lib/dates";
 import { TagPicker } from "../TagPicker";
 import { InlineEdit } from "./InlineEdit";
 
@@ -29,18 +30,14 @@ type Props = {
   onRemoveTag?: (tagId: string) => Promise<void>;
 };
 
-function formatDate(value?: string | null): string {
-  if (!value) return "—";
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleString("es-ES", {
+const formatDate = (value?: string | null) =>
+  formatBackendDateTime(value, {
     day: "2-digit",
     month: "short",
     year: "numeric",
     hour: "2-digit",
     minute: "2-digit",
   });
-}
 
 const STATUS_LABEL: Record<string, string> = {
   new: "Lead nuevo",

@@ -10,6 +10,7 @@ import {
   type AuditLog,
   type AuditLogFilters,
 } from "../../lib/api";
+import { formatBackendDateTime } from "../../lib/dates";
 import { extractErrorMessage } from "../../lib/errors";
 
 const PAGE_SIZE = 50;
@@ -228,7 +229,7 @@ export default function AuditLogsPage() {
               <tbody>
                 {logs.map((log) => (
                   <tr key={log.id}>
-                    <td>{new Date(log.created_at).toLocaleString()}</td>
+                    <td>{formatBackendDateTime(log.created_at)}</td>
                     <td><code>{log.action}</code></td>
                     <td>{log.actor_email ?? log.actor_user_id ?? "—"}</td>
                     <td>

@@ -11,6 +11,7 @@
  */
 import { ArrowUpRight, CheckSquare } from "lucide-react";
 import { useEffect, useState } from "react";
+import { parseBackendDate } from "../../lib/dates";
 import { listContactTasks, type Task } from "../../lib/tasksApi";
 
 type Props = {
@@ -31,7 +32,9 @@ function startOfDay(d: Date): Date {
 
 function classifyBucket(task: Task, today: Date): "overdue" | "today" | "tomorrow" | null {
   if (!task.due_at) return null;
-  const due = new Date(task.due_at);
+  // PR-Timezone-Fix. `parseBackendDate` para que ISO sin offset
+  // entre como UTC.
+  const due = parseBackendDate(task.due_at);
   if (Number.isNaN(due.getTime())) return null;
   const dueDay = startOfDay(due);
   const todayDay = startOfDay(today);
@@ -44,7 +47,7 @@ function classifyBucket(task: Task, today: Date): "overdue" | "today" | "tomorro
 }
 
 function formatTime(value: string): string {
-  const d = new Date(value);
+  const d = parseBackendDate(value);
   if (Number.isNaN(d.getTime())) return "—";
   return d.toLocaleTimeString("es-ES", {
     hour: "2-digit",

@@ -3,6 +3,7 @@
 import { Mail, Plus } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { formatBackendDateTime } from "../lib/dates";
 import {
   listEmailThreads,
   type EmailThread,
@@ -10,7 +11,7 @@ import {
 import { extractErrorMessage } from "../lib/errors";
 
 function formatDateTime(value: string): string {
-  return new Date(value).toLocaleString("es-ES", {
+  return formatBackendDateTime(value, {
     day: "2-digit",
     month: "short",
     hour: "2-digit",

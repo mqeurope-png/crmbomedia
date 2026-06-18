@@ -3,29 +3,17 @@
 import { ArrowDownLeft, ArrowUpRight, Mail } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { formatRelative } from "../../lib/dates";
 import {
   getEmailActivity,
   type EmailActivityItem,
 } from "../../lib/emailsApi";
 import { extractErrorMessage } from "../../lib/errors";
 
-function relativeTime(value: string): string {
-  const target = new Date(value).getTime();
-  const now = Date.now();
-  const diffMs = now - target;
-  if (diffMs < 0) return new Date(value).toLocaleString("es-ES");
-  const minutes = Math.floor(diffMs / 60_000);
-  if (minutes < 1) return "hace segundos";
-  if (minutes < 60) return `hace ${minutes} min`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `hace ${hours}h`;
-  const days = Math.floor(hours / 24);
-  if (days < 7) return `hace ${days}d`;
-  return new Date(value).toLocaleDateString("es-ES", {
-    day: "2-digit",
-    month: "short",
-  });
-}
+// PR-Timezone-Fix. La función local hacía `new Date(value)` directo;
+// con ISO sin offset (caso real) el browser lo interpretaba como
+// hora local y restaba 2 h del diff. Ahora delegamos en la util.
+const relativeTime = (value: string) => formatRelative(value);
 
 export function EmailActivityWidget() {
   const [scope, setScope] = useState<"mine" | "all">("all");

@@ -8,13 +8,15 @@
 import { CalendarClock } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { formatBackendDateTime } from "../../lib/dates";
 import { getDashboardUpcomingTasks } from "../../lib/dashboardApi";
 import type { Task } from "../../lib/tasksApi";
 
+// PR-Timezone-Fix. `due_at` viene del backend; pasaba por `new Date()`
+// directo y se desplazaba 1-2 h en Madrid. La util centraliza el
+// fallback Z y el formateo locale.
 function formatWhen(due: string): string {
-  const d = new Date(due);
-  if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleString("es-ES", {
+  return formatBackendDateTime(due, {
     day: "2-digit",
     month: "short",
     hour: "2-digit",

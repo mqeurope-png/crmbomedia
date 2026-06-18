@@ -11,6 +11,7 @@ import {
   type SyncLogEntry,
   type SyncStatus,
 } from "../../../../../lib/integrationSettings";
+import { formatBackendDateTime } from "../../../../../lib/dates";
 import { extractErrorMessage } from "../../../../../lib/errors";
 
 const PAGE_SIZE = 50;
@@ -191,7 +192,7 @@ export default function SyncHistoryPage() {
               ) : null}
               {logs.map((row) => (
                 <tr key={row.id}>
-                  <td>{new Date(row.created_at).toLocaleString()}</td>
+                  <td>{formatBackendDateTime(row.created_at)}</td>
                   <td>
                     <code>{row.operation ?? "—"}</code>
                   </td>
@@ -249,9 +250,9 @@ export default function SyncHistoryPage() {
               <code>{detail.operation ?? "—"}</code>
             </dd>
             <dt>Started</dt>
-            <dd>{detail.started_at ? new Date(detail.started_at).toLocaleString() : "—"}</dd>
+            <dd>{formatBackendDateTime(detail.started_at)}</dd>
             <dt>Finished</dt>
-            <dd>{detail.finished_at ? new Date(detail.finished_at).toLocaleString() : "—"}</dd>
+            <dd>{formatBackendDateTime(detail.finished_at)}</dd>
             <dt>Trigger</dt>
             <dd>{detail.triggered_by ?? "—"}</dd>
             <dt>Job ID</dt>

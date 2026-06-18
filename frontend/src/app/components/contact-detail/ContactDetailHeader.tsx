@@ -16,6 +16,7 @@
  */
 import { Mail, MoreVertical, Pencil, Phone, Plus } from "lucide-react";
 import type { Contact, User } from "../../lib/api";
+import { formatBackendDateTime } from "../../lib/dates";
 import { InlineEdit } from "./InlineEdit";
 
 type Action = {
@@ -67,16 +68,12 @@ function initials(first: string, last?: string | null): string {
   return (f + l).toUpperCase() || "?";
 }
 
-function formatDate(value?: string | null): string {
-  if (!value) return "—";
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleDateString("es-ES", {
+const formatDate = (value?: string | null) =>
+  formatBackendDateTime(value, {
     day: "2-digit",
     month: "short",
     year: "numeric",
   });
-}
 
 export function ContactDetailHeader({
   contact,

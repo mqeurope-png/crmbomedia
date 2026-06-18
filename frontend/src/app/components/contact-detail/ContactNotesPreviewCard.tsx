@@ -7,24 +7,15 @@
 import { ArrowUpRight, StickyNote } from "lucide-react";
 import { useEffect, useState } from "react";
 import { listContactNotes, type ContactNote } from "../../lib/contactNotesApi";
+import { formatRelative, parseBackendDate } from "../../lib/dates";
 
 type Props = {
   contactId: string;
   onSeeAll?: () => void;
 };
 
-function relative(value: string): string {
-  const then = new Date(value).getTime();
-  if (Number.isNaN(then)) return "—";
-  const diff = Date.now() - then;
-  const min = Math.floor(diff / 60000);
-  if (min < 1) return "ahora";
-  if (min < 60) return `hace ${min}min`;
-  const hr = Math.floor(min / 60);
-  if (hr < 24) return `hace ${hr}h`;
-  const day = Math.floor(hr / 24);
-  return `hace ${day}d`;
-}
+// PR-Timezone-Fix. Delegado en la util compartida.
+const relative = (value: string) => formatRelative(value);
 
 function preview(content: string): string {
   const flat = content.replace(/\s+/g, " ").trim();
@@ -46,7 +37,8 @@ export function ContactNotesPreviewCard({ contactId, onSeeAll }: Props) {
         // unificación 0049.
         const sorted = [...rows].sort(
           (a, b) =>
-            new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+            parseBackendDate(b.created_at).getTime() -
+            parseBackendDate(a.created_at).getTime(),
         );
         setNotes(sorted.slice(0, 3));
       })
