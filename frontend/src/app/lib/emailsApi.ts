@@ -8,18 +8,30 @@ export type EmailAlias = {
   verification_status: string | null;
   user_pref_allowed: boolean;
   user_pref_default: boolean;
+  /** PR-DisplayName-Remitente. */
+  gmail_display_name: string | null;
+  display_name_override: string | null;
+  /** override > gmail > "". El chip lo pinta tal cual; el composer
+   *  lo manda como `from_name` al backend al enviar. */
+  resolved_display_name: string;
 };
 
 export type MyAlias = {
   send_as_email: string;
   display_name: string;
   is_default: boolean;
+  /** PR-DisplayName-Remitente. */
+  resolved_display_name: string;
 };
 
 export type AliasPreferenceItem = {
   alias_email: string;
   is_allowed: boolean;
   is_default: boolean;
+  /** PR-DisplayName-Remitente. `null` = no tocar el override actual,
+   *  `""` = limpiar (vuelve a usar gmail_display_name), str = setear.
+   *  El backend hace strip + null-on-empty. */
+  display_name_override?: string | null;
 };
 
 export async function getMyEmailAliases(): Promise<MyAlias[]> {

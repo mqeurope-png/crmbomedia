@@ -22,7 +22,9 @@ import {
   Check,
   ChevronDown,
   ChevronUp,
+  Pencil,
   RefreshCw,
+  RotateCcw,
   Search,
   Star,
   X,
@@ -49,6 +51,13 @@ type Pref = {
   email: string;
   allowed: boolean;
   isDefault: boolean;
+  /** Sentinela "no tocar"; el handler solo manda `display_name_
+   *  override` cuando este flag es true, evitando overwrites
+   *  accidentales. */
+  overrideDirty: boolean;
+  /** Valor a persistir si `overrideDirty=true`. `""` → backend
+   *  limpia (NULL), str → setea, dejado para distinguir. */
+  overrideValue: string;
 };
 
 function aliasesToPrefs(aliases: EmailAlias[]): Pref[] {
@@ -56,6 +65,8 @@ function aliasesToPrefs(aliases: EmailAlias[]): Pref[] {
     email: a.send_as_email,
     allowed: a.user_pref_allowed,
     isDefault: a.user_pref_default,
+    overrideDirty: false,
+    overrideValue: a.display_name_override ?? "",
   }));
 }
 
@@ -141,11 +152,21 @@ export function GmailAliasMultiSelect({
       setError(null);
       try {
         const updated = await onSave(
-          normalised.map((p) => ({
-            alias_email: p.email,
-            is_allowed: p.allowed,
-            is_default: p.isDefault,
-          })),
+          normalised.map((p) => {
+            const payload: AliasPreferenceItem = {
+              alias_email: p.email,
+              is_allowed: p.allowed,
+              is_default: p.isDefault,
+            };
+            if (p.overrideDirty) {
+              // PR-DisplayName-Remitente. Solo mandamos el campo
+              // cuando el user lo tocó (pencil → guardar / restaurar).
+              // Sin esto el resto de mutaciones (toggle allowed,
+              // pickDefault) sobrescribirían el override con "".
+              payload.display_name_override = p.overrideValue;
+            }
+            return payload;
+          }),
         );
         setPrefs(ensureSingleDefault(aliasesToPrefs(updated)));
         setMessage("Preferencias guardadas.");
@@ -212,6 +233,55 @@ export function GmailAliasMultiSelect({
     toggleAllowed(email);
   }
 
+  // PR-DisplayName-Remitente. Inline edit del display name por chip.
+  // `editingEmail` controla qué chip está en modo edición; el draft
+  // vive en estado local hasta que el user pulsa Guardar.
+  const [editingEmail, setEditingEmail] = useState<string | null>(null);
+  const [draftName, setDraftName] = useState("");
+
+  function startEditName(email: string): void {
+    const meta = aliasByEmail.get(email);
+    const initial =
+      meta?.display_name_override ?? meta?.gmail_display_name ?? "";
+    setDraftName(initial);
+    setEditingEmail(email);
+  }
+
+  function saveName(email: string): void {
+    setEditingEmail(null);
+    setPrefs((prev) => {
+      const next = prev.map((p) =>
+        p.email === email
+          ? {
+              ...p,
+              overrideDirty: true,
+              overrideValue: draftName.trim(),
+            }
+          : p,
+      );
+      dispatchSave(ensureSingleDefault(next));
+      return next;
+    });
+  }
+
+  function restoreName(email: string): void {
+    setEditingEmail(null);
+    setPrefs((prev) => {
+      const next = prev.map((p) =>
+        p.email === email
+          ? { ...p, overrideDirty: true, overrideValue: "" }
+          : p,
+      );
+      dispatchSave(ensureSingleDefault(next));
+      return next;
+    });
+  }
+
+  function cancelEditName(): void {
+    setEditingEmail(null);
+    setDraftName("");
+  }
+
   // Render del card cerrado: chips + botón abrir.
   return (
     <div
@@ -250,13 +320,21 @@ export function GmailAliasMultiSelect({
         <ul className="alias-multiselect-chips">
           {allowedPrefs.map((p) => {
             const meta = aliasByEmail.get(p.email);
-            const label = meta?.display_name || p.email;
+            // PR-DisplayName-Remitente. El chip muestra el resolved
+            // display name (override > gmail > email). Si nada está
+            // configurado, fallback al email.
+            const resolved =
+              meta?.resolved_display_name ||
+              meta?.display_name ||
+              p.email;
+            const gmailName = meta?.gmail_display_name ?? null;
+            const isEditing = editingEmail === p.email;
             return (
               <li
                 key={p.email}
                 className={`alias-multiselect-chip${
                   p.isDefault ? " is-default" : ""
-                }`}
+                }${isEditing ? " is-editing" : ""}`}
               >
                 <button
                   type="button"
@@ -280,7 +358,27 @@ export function GmailAliasMultiSelect({
                   />
                 </button>
                 <span className="alias-multiselect-chip-label">
-                  <strong>{label}</strong>{" "}
+                  {isEditing ? (
+                    <input
+                      type="text"
+                      className="alias-chip-name-input"
+                      value={draftName}
+                      autoFocus
+                      maxLength={255}
+                      onChange={(e) => setDraftName(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          saveName(p.email);
+                        } else if (e.key === "Escape") {
+                          cancelEditName();
+                        }
+                      }}
+                      placeholder="Display name"
+                    />
+                  ) : (
+                    <strong>{resolved}</strong>
+                  )}{" "}
                   <span className="muted small">&lt;{p.email}&gt;</span>
                   {p.isDefault ? (
                     <span className="badge ok small alias-default-badge">
@@ -288,15 +386,64 @@ export function GmailAliasMultiSelect({
                     </span>
                   ) : null}
                 </span>
-                <button
-                  type="button"
-                  className="alias-multiselect-chip-remove"
-                  onClick={() => removeChip(p.email)}
-                  title="Quitar de los activos"
-                  aria-label={`Quitar ${p.email} de los aliases activos`}
-                >
-                  <X size={10} aria-hidden />
-                </button>
+                {isEditing ? (
+                  <>
+                    <button
+                      type="button"
+                      className="icon-button"
+                      onClick={() => saveName(p.email)}
+                      title="Guardar"
+                      aria-label="Guardar display name"
+                    >
+                      <Check size={11} aria-hidden />
+                    </button>
+                    {gmailName ? (
+                      <button
+                        type="button"
+                        className="icon-button"
+                        onClick={() => restoreName(p.email)}
+                        title={`Restaurar el de Gmail: ${gmailName}`}
+                        aria-label="Restaurar nombre de Gmail"
+                      >
+                        <RotateCcw size={11} aria-hidden />
+                      </button>
+                    ) : null}
+                    <button
+                      type="button"
+                      className="icon-button"
+                      onClick={cancelEditName}
+                      title="Cancelar"
+                      aria-label="Cancelar edición"
+                    >
+                      <X size={11} aria-hidden />
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      className="alias-multiselect-chip-edit"
+                      onClick={() => startEditName(p.email)}
+                      title={
+                        meta?.display_name_override
+                          ? `Editar (override actual). Gmail: ${gmailName ?? "—"}`
+                          : "Editar display name (override)"
+                      }
+                      aria-label={`Editar display name de ${p.email}`}
+                    >
+                      <Pencil size={10} aria-hidden />
+                    </button>
+                    <button
+                      type="button"
+                      className="alias-multiselect-chip-remove"
+                      onClick={() => removeChip(p.email)}
+                      title="Quitar de los activos"
+                      aria-label={`Quitar ${p.email} de los aliases activos`}
+                    >
+                      <X size={10} aria-hidden />
+                    </button>
+                  </>
+                )}
               </li>
             );
           })}

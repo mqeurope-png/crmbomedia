@@ -269,6 +269,15 @@ class EmailAlias(BaseModel):
     lives in `is_primary`. Pre-Fase 2 callers that don't know about
     prefs see `user_pref_*` mirror the legacy flags so they keep
     working unchanged.
+
+    PR-DisplayName-Remitente:
+    - `gmail_display_name`: lo que Gmail Send-As tiene configurado
+      (sincronizado al GET).
+    - `display_name_override`: override del user persistido en
+      `user_email_alias_prefs`.
+    - `resolved_display_name`: efectivo (`override or gmail or ""`).
+      Es el que la UI muestra en chips y el composer pone en el
+      header `From:` al enviar.
     """
 
     send_as_email: str
@@ -278,21 +287,33 @@ class EmailAlias(BaseModel):
     verification_status: str | None = None
     user_pref_allowed: bool = False
     user_pref_default: bool = False
+    gmail_display_name: str | None = None
+    display_name_override: str | None = None
+    resolved_display_name: str = ""
 
 
 class MyAlias(BaseModel):
     """Trimmed alias shape used by the composer dropdown — only the
-    fields the modal actually renders."""
+    fields the modal actually renders.
+
+    PR-DisplayName-Remitente: `resolved_display_name` es el que el
+    composer pinta en el `<select>` y manda como `from_name` al
+    handler de send (ver `EmailComposerModal.handleSubmit`)."""
 
     send_as_email: str
     display_name: str
     is_default: bool
+    resolved_display_name: str = ""
 
 
 class AliasPreferenceItem(BaseModel):
     alias_email: str = Field(min_length=1, max_length=255)
     is_allowed: bool = True
     is_default: bool = False
+    # PR-DisplayName-Remitente. None = no tocar el override actual,
+    # "" = limpiar (vuelve a usar `gmail_display_name`), str = setear.
+    # El handler hace strip + null-on-empty.
+    display_name_override: str | None = Field(default=None, max_length=255)
 
 
 class AliasPreferencesPayload(BaseModel):
