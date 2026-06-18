@@ -9,6 +9,7 @@ import {
   Mail,
   Sparkles,
   StickyNote,
+  Tag as TagIcon,
 } from "lucide-react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
@@ -20,8 +21,10 @@ import { ContactDetailHeader } from "../../components/contact-detail/ContactDeta
 import { ContactKeyDataStrip } from "../../components/contact-detail/ContactKeyDataStrip";
 import { ContactBrevoEngagementCard } from "../../components/contact-detail/ContactBrevoEngagementCard";
 import { ContactNotesPreviewCard } from "../../components/contact-detail/ContactNotesPreviewCard";
-import { ContactSummaryTab } from "../../components/contact-detail/ContactSummaryTab";
+import { ContactSummaryTab, ContactSummaryPlaceholderCards } from "../../components/contact-detail/ContactSummaryTab";
 import { ContactSupportTab } from "../../components/contact-detail/ContactSupportTab";
+import { ContactTagsPreviewCard } from "../../components/contact-detail/ContactTagsPreviewCard";
+import { ContactTagsTab } from "../../components/contact-detail/ContactTagsTab";
 import { ContactTasksPendingCard } from "../../components/contact-detail/ContactTasksPendingCard";
 import { ContactEmailsSection } from "../../components/ContactEmailsSection";
 import { ContactAssignmentsSection } from "../../components/ContactAssignmentsSection";
@@ -75,6 +78,7 @@ type Tab =
   | "emails"
   | "tasks"
   | "notes"
+  | "tags"
   | "opportunities"
   | "support";
 
@@ -82,12 +86,17 @@ type Tab =
 // PR-D. Posición entre Tareas y Oportunidades — el `tasks` flow + el
 // `notes` flow comparten sidebar y resultaba intuitivo en la ficha
 // vieja.
+//
+// PR-Ficha-Cleanup: nueva pestaña "Tags" entre Notas y Oportunidades.
+// La cell del strip estaba abarrotada (max 3 chips + "+N"), y los
+// comerciales necesitan ver/editar la lista completa con autocomplete.
 const TABS: Array<{ id: Tab; label: string; icon: React.ElementType }> = [
   { id: "summary", label: "Resumen", icon: Sparkles },
   { id: "activity", label: "Actividad", icon: ActivityIcon },
   { id: "emails", label: "Emails", icon: Mail },
   { id: "tasks", label: "Tareas", icon: CheckSquare },
   { id: "notes", label: "Notas", icon: StickyNote },
+  { id: "tags", label: "Tags", icon: TagIcon },
   { id: "opportunities", label: "Oportunidades", icon: Layers },
   { id: "support", label: "Soporte", icon: LifeBuoy },
 ];
@@ -106,6 +115,11 @@ export default function ContactDetailPage() {
   // header lo abre; cerrar (Cancel/X) limpia; Save → confirma →
   // PATCH → refresh.
   const [editOpen, setEditOpen] = useState(false);
+  // PR-Ficha-Cleanup. Contador que la pestaña Emails usa como dep
+  // del useEffect. Tras enviar desde el header / la propia tab,
+  // bumpeamos para forzar el refetch — fix del bug "email no
+  // aparece en pestaña Emails de la ficha tras enviarlo".
+  const [emailsRefreshKey, setEmailsRefreshKey] = useState(0);
   const [primaryAssignment, setPrimaryAssignment] =
     useState<ContactAssignment | null>(null);
   const [companyName, setCompanyName] = useState<string | null>(null);
@@ -259,7 +273,8 @@ export default function ContactDetailPage() {
     contact.updated_at_external ??
     contact.updated_at ??
     null;
-  const origin = contact.origin ?? null;
+  // PR-Ficha-Cleanup: el strip ya no recibe `origin` como prop —
+  // resuelve el label desde `external_references_summary` internamente.
   const tags = contact.tag_objects ?? [];
 
   return (
@@ -311,21 +326,15 @@ export default function ContactDetailPage() {
         }
       />
 
+      {/* PR-Ficha-Cleanup: el strip ya no recibe tags ni handlers de
+          add/remove — los movimos a la pestaña Tags. Los callbacks
+          siguen colgando del page state porque la pestaña Tags los
+          usa via prop drilling. */}
       <ContactKeyDataStrip
         contact={contact}
         companyName={companyName}
-        tags={tags}
-        origin={origin}
         lastActivityAt={lastActivityAt}
         onPatch={handlePatch}
-        onAddTag={async (choice) => {
-          await addTagToContact(contact.id, choice);
-          await loadContact();
-        }}
-        onRemoveTag={async (tagId) => {
-          await removeTagFromContact(contact.id, tagId);
-          await loadContact();
-        }}
       />
 
       {refreshWarnings.length > 0 ? (
@@ -359,13 +368,23 @@ export default function ContactDetailPage() {
           <div className="contact-detail-tab-body">
             {activeTab === "summary" ? (
               <div className="contact-summary-wrapper">
+                {/* PR-Ficha-Cleanup: `ContactSummaryTab` ahora renderiza
+                    solo "Actividad reciente" + "Engagement por email" —
+                    Oportunidades + Incidencias se movieron al final
+                    porque eran placeholder que ocupaban posición prime. */}
                 <ContactSummaryTab
                   events={contact.activity_events ?? []}
                   onSeeAllActivity={() => setActiveTab("activity")}
                 />
-                {/* Extras PR-Db: Tareas pendientes + Notas recientes en
-                    el grid del Resumen. Se sitúan tras los 4 cards
-                    originales — el grid del padre los acomoda en filas. */}
+                {/* PR-Ficha-Cleanup: nuevo orden del extras grid:
+                      Tareas pendientes →
+                      Notas recientes →
+                      Engagement Brevo →
+                      Tags (nuevo) →
+                      Oportunidades vinculadas (placeholder) →
+                      Incidencias recientes (placeholder)
+                    Los dos placeholder van al final para no quitar
+                    espacio a los cards con datos reales. */}
                 <div className="contact-summary contact-summary-extra">
                   <ContactTasksPendingCard
                     contactId={contact.id}
@@ -376,6 +395,11 @@ export default function ContactDetailPage() {
                     onSeeAll={() => setActiveTab("notes")}
                   />
                   <ContactBrevoEngagementCard contactId={contact.id} />
+                  <ContactTagsPreviewCard
+                    tags={tags}
+                    onSeeAll={() => setActiveTab("tags")}
+                  />
+                  <ContactSummaryPlaceholderCards />
                 </div>
               </div>
             ) : null}
@@ -391,6 +415,19 @@ export default function ContactDetailPage() {
             {activeTab === "notes" ? (
               <ContactNotesSection contactId={contact.id} />
             ) : null}
+            {activeTab === "tags" ? (
+              <ContactTagsTab
+                tags={tags}
+                onAddTag={async (choice) => {
+                  await addTagToContact(contact.id, choice);
+                  await loadContact();
+                }}
+                onRemoveTag={async (tagId) => {
+                  await removeTagFromContact(contact.id, tagId);
+                  await loadContact();
+                }}
+              />
+            ) : null}
             {activeTab === "opportunities" ? (
               <ContactPipelinesSection contactId={contact.id} />
             ) : null}
@@ -399,6 +436,7 @@ export default function ContactDetailPage() {
                 contactId={contact.id}
                 contactEmail={contact.email}
                 onCompose={() => setShowComposer(true)}
+                refreshKey={emailsRefreshKey}
               />
             ) : null}
             {activeTab === "support" ? <ContactSupportTab /> : null}
@@ -446,6 +484,11 @@ export default function ContactDetailPage() {
           onSent={async () => {
             setShowComposer(false);
             await loadContact();
+            // PR-Ficha-Cleanup: si el operador ya estaba en la
+            // pestaña Emails, `setActiveTab` es no-op y el useEffect
+            // del listado no se refiraba. El bump del refreshKey
+            // garantiza el refetch en todos los casos.
+            setEmailsRefreshKey((k) => k + 1);
             setActiveTab("emails");
           }}
         />

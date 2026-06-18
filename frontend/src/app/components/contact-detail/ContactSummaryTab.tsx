@@ -190,6 +190,20 @@ export function ContactSummaryTab({ events, onSeeAllActivity }: Props) {
         </div>
       </article>
 
+      {/* PR-Ficha-Cleanup: Oportunidades vinculadas + Incidencias se
+          mueven a un componente independiente que el page renderiza al
+          FINAL del grid, después de los cards con datos reales. */}
+    </div>
+  );
+}
+
+/** PR-Ficha-Cleanup. Cards placeholder que vivían inline en la pestaña
+ *  Resumen. Bart pidió moverlas al final del grid porque ocupaban
+ *  posición prime sin aportar datos. La página las monta tras los
+ *  cards "Tags", "Notas recientes", etc. */
+export function ContactSummaryPlaceholderCards() {
+  return (
+    <>
       <article className="card contact-summary-card">
         <header className="contact-summary-card-header">
           <h3>Oportunidades vinculadas</h3>
@@ -209,6 +223,6 @@ export function ContactSummaryTab({ events, onSeeAllActivity }: Props) {
           en desarrollo).
         </p>
       </article>
-    </div>
+    </>
   );
 }

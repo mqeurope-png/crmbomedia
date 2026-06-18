@@ -7102,6 +7102,100 @@ tr.is-inactive {
   opacity: 1;
 }
 
+/* PR-Ficha-Cleanup — Email cell del strip sin mailto.
+ *
+ * El email se renderiza como texto plano (NO `<a mailto:>`) más un
+ * botón Copiar. `break-all` evita overflow horizontal en emails
+ * largos tipo `nombre.apellido.muylargo@dominio.industrial.com`.
+ */
+.contact-strip-email {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+}
+.contact-strip-email-text {
+  word-break: break-all;
+  overflow-wrap: anywhere;
+}
+
+/* PR-Ficha-Cleanup — Pestaña Tags + card preview.
+ *
+ * La pestaña usa una `flex-wrap` para que los chips se rompan en
+ * múltiples filas. El card preview limita a 8 chips + "+N".
+ */
+.contact-tags-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.contact-tags-tab-header h2 {
+  margin: 0 0 4px;
+  font-size: 18px;
+}
+.contact-tags-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.contact-tags-list-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: color-mix(
+    in srgb,
+    var(--tag-color, var(--color-primary)) 12%,
+    transparent
+  );
+  border: 1px solid
+    color-mix(in srgb, var(--tag-color, var(--color-primary)) 35%, transparent);
+  color: var(--color-text, #1d2940);
+  font-size: 13px;
+}
+.contact-tags-list-name { font-weight: 500; }
+.contact-tags-list-remove {
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: inherit;
+  padding: 2px;
+  border-radius: 50%;
+}
+.contact-tags-list-remove:hover {
+  background: color-mix(
+    in srgb,
+    var(--tag-color, var(--color-primary)) 25%,
+    transparent
+  );
+}
+.contact-tags-add {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+.contact-tags-add-label {
+  font-size: 12px;
+  color: var(--color-text-muted, #6b7280);
+}
+
+.contact-tags-preview-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
 /* PR-Ficha-Fix — Modal "Editar contacto".
  *
  * 2 columnas en desktop (>=900 px), 1 columna en mobile. Cada

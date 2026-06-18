@@ -128,24 +128,41 @@ export function OriginChips({
   );
 }
 
-/** Compact origin chips for the contacts list — just the system
- * label per origin, no ids or links (the row stays scannable). */
+/** Compact origin chips for the contacts list — un chip por par
+ *  `(system, account_id)`.
+ *
+ *  PR-Ficha-Cleanup: pre-cleanup deduplicábamos por system y un
+ *  contacto en `artisjet-europe` + `mbolasers` se leía como un solo
+ *  "AgileCRM". Pero el filtro de /contacts SÍ permite seleccionar
+ *  cuenta concreta, así que la lista necesita reflejarlo.
+ *  Ahora: un chip "AgileCRM · artisjet-europe" por cada par. Si la
+ *  cuenta está vacía (caso `manual`), solo el system label. */
 export function OriginChipsSummary({
   summary,
 }: {
   summary: ExternalReferenceSummary[] | undefined;
 }) {
   if (!summary || !summary.length) return <>—</>;
-  // One chip per distinct system; a contact in two AgileCRM accounts
-  // still reads as a single "AgileCRM" origin in the list.
-  const systems = Array.from(new Set(summary.map((r) => r.system)));
+  // Dedupea por par completo. Map preserva el orden de inserción.
+  const seen = new Set<string>();
+  const pairs: Array<{ system: string; account_id: string }> = [];
+  for (const ref of summary) {
+    const key = `${ref.system}|${ref.account_id}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    pairs.push({ system: ref.system, account_id: ref.account_id });
+  }
   return (
     <ul className="tag-chip-list tag-chip-list--dense origin-chip-list">
-      {systems.map((system) => (
-        <li key={system}>
-          <Chip system={system} label={systemLabel(system)} size="dense" />
-        </li>
-      ))}
+      {pairs.map(({ system, account_id }) => {
+        const label = systemLabel(system);
+        const full = account_id ? `${label} · ${account_id}` : label;
+        return (
+          <li key={`${system}|${account_id}`}>
+            <Chip system={system} label={full} size="dense" />
+          </li>
+        );
+      })}
     </ul>
   );
 }
