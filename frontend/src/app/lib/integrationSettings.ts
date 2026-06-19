@@ -25,8 +25,28 @@ export type IntegrationAccount = {
   has_api_key: boolean;
   api_key_set_at?: string | null;
   api_key_last_used_at?: string | null;
+  /** Sprint Webhooks Agile Real-Time. Server-side computed flag —
+   *  the secret itself never crosses the wire. */
+  has_webhook_secret?: boolean;
+  webhook_last_received_at?: string | null;
   created_at: string;
   updated_at: string;
+};
+
+export type WebhookSecretResponse = {
+  url: string;
+  secret: string;
+};
+
+export type WebhookStats = {
+  received_total: number;
+  received_today: number;
+  received_last_24h: number;
+  processed_last_24h: number;
+  success_rate_last_24h: number | null;
+  last_received_at: string | null;
+  has_secret: boolean;
+  enabled: boolean;
 };
 
 export type IntegrationAccountCreatePayload = {
@@ -173,6 +193,47 @@ export async function deleteIntegrationAccountApiKey(
   return apiFetch<IntegrationAccount>(
     `/api/integration-accounts/${system}/${accountId}/api-key`,
     { method: "DELETE" },
+  );
+}
+
+// --- Sprint Webhooks Agile Real-Time ----------------------------------------
+
+export async function generateIntegrationAccountWebhookSecret(
+  system: ExternalSystem,
+  accountId: string,
+): Promise<WebhookSecretResponse> {
+  return apiFetch<WebhookSecretResponse>(
+    `/api/integration-accounts/${system}/${accountId}/webhook-secret/generate`,
+    { method: "POST" },
+  );
+}
+
+export async function regenerateIntegrationAccountWebhookSecret(
+  system: ExternalSystem,
+  accountId: string,
+): Promise<WebhookSecretResponse> {
+  return apiFetch<WebhookSecretResponse>(
+    `/api/integration-accounts/${system}/${accountId}/webhook-secret/regenerate`,
+    { method: "POST" },
+  );
+}
+
+export async function deleteIntegrationAccountWebhookSecret(
+  system: ExternalSystem,
+  accountId: string,
+): Promise<{ status: string }> {
+  return apiFetch<{ status: string }>(
+    `/api/integration-accounts/${system}/${accountId}/webhook-secret`,
+    { method: "DELETE" },
+  );
+}
+
+export async function getIntegrationAccountWebhookStats(
+  system: ExternalSystem,
+  accountId: string,
+): Promise<WebhookStats> {
+  return apiFetch<WebhookStats>(
+    `/api/integration-accounts/${system}/${accountId}/webhook-stats`,
   );
 }
 

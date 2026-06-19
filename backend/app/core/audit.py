@@ -121,6 +121,14 @@ class Action:
     INTEGRATION_SYNC_SKIPPED = "integration.sync_skipped"
     INTEGRATION_SYNC_FAILED = "integration.sync_failed"
     INTEGRATION_WEBHOOK_RECEIVED = "integration.webhook_received"
+    # Sprint Webhooks Agile Real-Time. Distinct events for the
+    # worker-side outcomes so the audit log doesn't collapse intake
+    # noise with actual processing wins/losses.
+    INTEGRATION_WEBHOOK_PROCESSED = "integration.webhook_processed"
+    INTEGRATION_WEBHOOK_FAILED = "integration.webhook_failed"
+    INTEGRATION_WEBHOOK_SKIPPED = "integration.webhook_skipped"
+    INTEGRATION_WEBHOOK_SECRET_GENERATED = "integration.webhook_secret_generated"
+    INTEGRATION_WEBHOOK_SECRET_REGENERATED = "integration.webhook_secret_regenerated"
     # Per-record cleanups (e.g. AgileCRM quota purge). Metadata includes
     # the remote external_id + the account that owned it; never includes
     # any field of the contact beyond what's needed to identify the row.

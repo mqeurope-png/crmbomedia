@@ -15,6 +15,7 @@ import {
   type IntegrationAccount,
 } from "../lib/integrationSettings";
 import { formatBackendDateTime } from "../lib/dates";
+import { AgileWebhookPanel } from "./AgileWebhookPanel";
 import { BrevoAccountPanel } from "./BrevoAccountPanel";
 import { SyncPanel } from "./SyncPanel";
 
@@ -216,6 +217,16 @@ export function IntegrationAccountCard({
             <BrevoAccountPanel
               accountId={account.account_id}
               isAdmin={isAdmin}
+            />
+          ) : null}
+
+          {account.system === "agilecrm" ? (
+            <AgileWebhookPanel
+              account={account}
+              isAdmin={isAdmin}
+              onReload={onReload}
+              onError={onError}
+              onSuccess={onSuccess}
             />
           ) : null}
 
