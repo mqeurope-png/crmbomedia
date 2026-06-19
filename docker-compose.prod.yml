@@ -113,7 +113,6 @@ services:
       - redis://redis:6379/0
       - agilecrm:sync_contacts
       - agilecrm:purge_quota
-      - agilecrm:webhook
       - brevo:sync_contacts
       - brevo:push_target
       - brevo:auto_sync_check

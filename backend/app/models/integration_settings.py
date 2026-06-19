@@ -98,16 +98,6 @@ class IntegrationAccount(TimestampMixin, Base):
     )
     sync_priority: Mapped[int] = mapped_column(Integer, default=100, nullable=False)
 
-    # Sprint Webhooks Agile Real-Time. Per-account shared secret carried
-    # as a `?token=` query param on the webhook URL. AgileCRM webhooks
-    # don't sign the body, so this is the cheapest reasonably-private
-    # auth: rotated on demand from the admin UI, never sent to logs.
-    # NULL = real-time intake disabled; the periodic sync still runs.
-    webhook_secret: Mapped[str | None] = mapped_column(String(64))
-    webhook_last_received_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True)
-    )
-
 
 # Backwards-compatible alias for any caller still importing the old name.
 # All first-party code now imports `IntegrationAccount` directly.
