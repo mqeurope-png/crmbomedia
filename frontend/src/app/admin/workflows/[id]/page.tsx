@@ -958,6 +958,7 @@ function StepConfigPanel({
         <SendEmailConfig
           cfg={cfg}
           setField={setField}
+          setConfig={onChange}
           templates={node.data.templateLookup}
           variables={catalog.variables}
         />
@@ -1330,11 +1331,13 @@ function StepConfigPanel({
 function SendEmailConfig({
   cfg,
   setField,
+  setConfig,
   templates,
   variables,
 }: {
   cfg: Record<string, unknown>;
   setField: (key: string, value: unknown) => void;
+  setConfig: (next: Record<string, unknown>) => void;
   templates?: Record<string, string>;
   variables: string[];
 }) {
@@ -1363,17 +1366,31 @@ function SendEmailConfig({
       )
     : tplEntries;
 
+  // PR-Fix-Radio-Contenido-Personalizado. Regresión introducida en
+  // PR #210: al añadir el `setField("subject_override", undefined)`
+  // tercero a la rama "custom", el handler quedaba con 3 llamadas
+  // consecutivas a `setField`. Cada `setField` parte del mismo `cfg`
+  // capturado por closure, así que la última pisa a las anteriores
+  // y `mode` se quedaba en "template". Lo arreglamos haciendo una
+  // sola llamada atómica a `setConfig`.
   const switchTo = (next: "template" | "custom") => {
-    setField("mode", next);
     if (next === "template") {
-      setField("body_html", "");
-      setField("subject", "");
+      setConfig({
+        ...cfg,
+        mode: next,
+        body_html: "",
+        subject: "",
+      });
     } else {
-      setField("template_id", undefined);
-      // PR-Fixes-Pase-5 Bug 4: subject_override solo aplica en modo
-      // plantilla. Si el operador pasa a contenido custom, lo
-      // limpiamos para no arrastrar texto que ya no se usaría.
-      setField("subject_override", undefined);
+      setConfig({
+        ...cfg,
+        mode: next,
+        template_id: undefined,
+        // subject_override solo aplica en modo plantilla — al pasar
+        // a contenido personalizado lo limpiamos para no arrastrar
+        // texto que ya no se usaría.
+        subject_override: undefined,
+      });
     }
   };
 
