@@ -265,12 +265,15 @@ def test_evaluate_condition_unknown_field_returns_false_with_warning(
         "comparator": "eq",
         "value": "x",
     }
+    # Asserts dentro del with — fuera, los records del caplog se
+    # limpian con configs de pytest restrictivos (caso CI py3.12).
     with caplog.at_level(logging.WARNING, logger="app.workflows.conditions"):
         assert evaluate(tree, ctx) is False
-    assert any(
-        "unknown field" in r.getMessage() and "field_inventado" in r.getMessage()
-        for r in caplog.records
-    )
+        assert any(
+            "unknown field" in r.getMessage()
+            and "field_inventado" in r.getMessage()
+            for r in caplog.records
+        )
 
 
 # ---------------------------------------------------------------------
