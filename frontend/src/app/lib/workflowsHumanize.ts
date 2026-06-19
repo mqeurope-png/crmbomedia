@@ -285,6 +285,35 @@ function _getDeepValue(
   return cur;
 }
 
+/** PR-Fixes-Pase-3 Bug 4. Mensaje humano por id de campo faltante.
+ *  Si una entrada no está aquí, devolvemos el id literal — al menos
+ *  el operador ve algo nombrado. */
+const HUMAN_MISSING_MESSAGES: Record<string, string> = {
+  template_id_or_inline:
+    "Elige una plantilla del CRM o escribe el contenido a mano",
+  subject: "Falta el asunto del email",
+  body_html: "Falta el cuerpo del email",
+  duration_minutes: "Falta indicar la duración",
+  event_type: "Elige qué evento esperar",
+  timeout_minutes: "Falta indicar el timeout",
+  "condition.field": "Falta seleccionar el campo a evaluar",
+  "condition.op": "Falta seleccionar el operador",
+  field: "Falta seleccionar el campo",
+  cases: "Añade al menos un valor de caso",
+  tag: "Falta seleccionar el tag",
+  status: "Falta seleccionar el estado",
+  value: "Falta el nuevo valor",
+  delta: "Indica cuántos puntos sumar o restar (positivo o negativo)",
+  user_id: "Falta seleccionar el usuario propietario",
+  title: "Falta el título de la tarea",
+  pipeline_id: "Falta seleccionar el pipeline",
+  stage_id: "Falta seleccionar el stage destino",
+};
+
+export function humanizeValidationMessages(missing: string[]): string[] {
+  return missing.map((m) => HUMAN_MISSING_MESSAGES[m] ?? `Falta: ${m}`);
+}
+
 export function validateStepConfig(step: StepLike): StepValidationResult {
   const cfg = step.config ?? {};
   // PR-Fixes #8: action_send_email es válido si tiene template_id O

@@ -1218,6 +1218,51 @@ def deactivate_company(
     return company
 
 
+@router.get("/contacts/custom-field-keys")
+def list_contact_custom_field_keys(
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_user),
+) -> list[dict[str, str]]:
+    """PR-Fixes-Pase-3 Bug 6. Devuelve la unión de claves vistas en
+    `contacts.custom_fields` con un tipo inferido del primer valor
+    no-null (`text`/`number`/`date`/`boolean`). El editor de workflows
+    lo usa para poblar el dropdown del paso "Modificar campo" sin
+    obligar al operador a memorizar nombres internos."""
+    _ = current_user
+
+    rows = list(session.scalars(select(Contact.custom_fields)))
+    keys: dict[str, str] = {}
+    for raw in rows:
+        if not raw:
+            continue
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(parsed, dict):
+            continue
+        for k, v in parsed.items():
+            if not isinstance(k, str) or not k.strip():
+                continue
+            if k in keys:
+                continue
+            keys[k] = _infer_field_type(v)
+    return [{"key": k, "type": t} for k, t in sorted(keys.items())]
+
+
+def _infer_field_type(value: object) -> str:
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, (int, float)):
+        return "number"
+    if isinstance(value, str):
+        # Heurística mínima: ISO 8601 (YYYY-MM-DD) → date.
+        if len(value) >= 10 and value[4] == "-" and value[7] == "-":
+            return "date"
+        return "text"
+    return "text"
+
+
 @router.post(
     "/contacts",
     response_model=ContactRead,
