@@ -30,15 +30,11 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    # Mirror of 0057's downgrade — same drop order, same names.
-    op.drop_index(
-        "ix_webhook_events_contact_id", table_name="webhook_events"
-    )
-    op.drop_index("ix_webhook_events_status", table_name="webhook_events")
-    op.drop_index(
-        "ix_webhook_events_system_account_received",
-        table_name="webhook_events",
-    )
+    # NOTE: MySQL rejects `DROP INDEX` on a column carrying a foreign
+    # key constraint (the FK itself depends on the index). Drop the
+    # table outright instead — MySQL + SQLite both clear the
+    # associated indexes / FK as part of `DROP TABLE`. This is the
+    # subtle reason 0057's downgrade can't be reused literally.
     op.drop_table("webhook_events")
     op.drop_index(
         "ix_integration_accounts_webhook_secret",
