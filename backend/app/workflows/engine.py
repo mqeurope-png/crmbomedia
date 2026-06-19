@@ -309,6 +309,41 @@ def advance_run(session: Session, run_id: str, *, max_steps: int = 30) -> None:
             )
             return
 
+        # PR-Fix-Engine-Trigger-Step. El step `trigger` es el nodo raíz
+        # del grafo: representa el EVENTO que dispara el workflow, NO
+        # una acción ejecutable. Lo tratamos como anchor — avanzamos
+        # directo al sucesor por su única salida `default` sin invocar
+        # ningún handler. Esto es robusto incluso si el registro del
+        # handler `trigger` fallase (caso histórico: el worker RQ no
+        # importaba `app.workflows.steps` y `_STEP_HANDLERS` quedaba
+        # vacío, así que el primer `advance_run` con el trigger marcaba
+        # FAILED con "unknown step type: trigger").
+        if step.type == "trigger":
+            next_id = next_step_for_edge(
+                session, from_step_id=step.id, branch_label="default"
+            )
+            _record_history(
+                session, run, step, status="ok",
+                result={"anchor": True},
+            )
+            if next_id is None:
+                # Workflow con solo el trigger sin sucesor — completado
+                # inmediatamente. El validador del activate ya lo
+                # rechaza, pero por defensividad.
+                log.info(
+                    "workflows.engine workflow_empty run=%s", run.id
+                )
+                _finalize(
+                    session, run, WorkflowRunState.COMPLETED,
+                    exit_kind=WorkflowExitKind.NATURAL,
+                    error="workflow_empty",
+                )
+                return
+            run.current_step_id = next_id
+            session.flush()
+            steps_executed += 1
+            continue
+
         # Email cap defer: el handler send_email puede devolver
         # `status="deferred"` con `wake_at = mañana 00:01`. Lo
         # respetamos sin avanzar.

@@ -1276,6 +1276,15 @@ def _validate_workflow_structure(
         )
     for s in steps:
         branches = edges_by_from.get(s.id, set())
+        # PR-Fix-Engine-Trigger-Step. El trigger (nodo raíz) debe tener
+        # al menos una flecha saliente. Sin ella el workflow es
+        # degenerado: el motor lo completaría inmediatamente sin
+        # ejecutar nada.
+        if s.type == "trigger" and not branches:
+            errors.append(
+                "El nodo raíz no tiene siguiente paso conectado — el "
+                "workflow no haría nada al dispararse."
+            )
         if s.type == "condition":
             for label in ("true", "false"):
                 if label not in branches:
