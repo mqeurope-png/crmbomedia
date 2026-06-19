@@ -38,11 +38,12 @@ def upgrade() -> None:
             server_default="draft",
         ),
         sa.Column("trigger_type", sa.String(length=80), nullable=False),
+        # MySQL no admite DEFAULT en columnas TEXT/BLOB/JSON (error 1101).
+        # Las columnas JSON-en-TEXT son NOT NULL pero el caller rellena
+        # `'{}'` / `'[]'` en code (engine + API). SQLite tolera el INSERT
+        # con valor explícito desde ambos lados.
         sa.Column(
-            "trigger_config_json",
-            sa.Text(),
-            nullable=False,
-            server_default="{}",
+            "trigger_config_json", sa.Text(), nullable=False
         ),
         sa.Column(
             "allow_reentry",
@@ -51,10 +52,7 @@ def upgrade() -> None:
             server_default=sa.text("0"),
         ),
         sa.Column(
-            "cancellation_events_json",
-            sa.Text(),
-            nullable=False,
-            server_default='["contact.unsubscribed"]',
+            "cancellation_events_json", sa.Text(), nullable=False
         ),
         sa.Column(
             "total_entered",
@@ -111,9 +109,7 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.Column("type", sa.String(length=80), nullable=False),
-        sa.Column(
-            "config_json", sa.Text(), nullable=False, server_default="{}"
-        ),
+        sa.Column("config_json", sa.Text(), nullable=False),
         sa.Column(
             "position_x", sa.Float(), nullable=False, server_default="0"
         ),
@@ -209,18 +205,8 @@ def upgrade() -> None:
         sa.Column(
             "active_dedup_key", sa.String(length=80), nullable=False
         ),
-        sa.Column(
-            "split_buckets_json",
-            sa.Text(),
-            nullable=False,
-            server_default="{}",
-        ),
-        sa.Column(
-            "trigger_payload_json",
-            sa.Text(),
-            nullable=False,
-            server_default="{}",
-        ),
+        sa.Column("split_buckets_json", sa.Text(), nullable=False),
+        sa.Column("trigger_payload_json", sa.Text(), nullable=False),
         sa.Column(
             "started_at", sa.DateTime(timezone=True), nullable=False
         ),
