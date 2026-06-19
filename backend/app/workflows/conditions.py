@@ -15,7 +15,9 @@ Operadores soportados por tipo de campo:
 - Número / fecha: `gt`, `lt`, `gte`, `lte`, `between`.
 - String / texto: `contains`, `not_contains`, `starts_with`,
   `ends_with`.
-- Lista (tags, segmentos): `contains`, `not_contains`, `in`, `not_in`.
+- Lista (tags, segmentos): `contains`, `not_contains`, `in`, `not_in`,
+  `contains_any`, `contains_all`, `contains_none`.
+- Fecha: `before`, `after`, `in_last_n_days`, `in_next_n_days`.
 
 Los campos accesibles vienen del whitelist de `_FIELD_RESOLVERS` —
 declarado en código, no en config. Un workflow nunca puede leer
@@ -26,6 +28,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -57,6 +60,13 @@ def _contact_tags(ctx: EvalContext) -> list[str]:
     return [t.strip() for t in raw.split(",") if t.strip()] if raw else []
 
 
+def _contact_full_name(ctx: EvalContext) -> str:
+    """`first_name + " " + last_name` (con strip + sin dobles espacios)."""
+    first = (ctx.contact.first_name or "").strip()
+    last = (ctx.contact.last_name or "").strip()
+    return " ".join(part for part in (first, last) if part)
+
+
 def _trigger_field(name: str) -> Callable[[EvalContext], Any]:
     def resolver(ctx: EvalContext) -> Any:
         return (ctx.trigger_payload or {}).get(name)
@@ -64,30 +74,110 @@ def _trigger_field(name: str) -> Callable[[EvalContext], Any]:
     return resolver
 
 
-_FIELD_RESOLVERS: dict[str, Callable[[EvalContext], Any]] = {
-    # Datos básicos del contacto
-    "contact.first_name": _contact_field("first_name"),
-    "contact.last_name": _contact_field("last_name"),
-    "contact.email": _contact_field("email"),
-    "contact.phone": _contact_field("phone"),
-    "contact.origin": _contact_field("origin"),
-    "contact.lifecycle_status": _contact_field("commercial_status"),
-    "contact.lead_score": _contact_field("lead_score"),
-    "contact.owner_user_id": _contact_field("owner_user_id"),
-    "contact.is_active": _contact_field("is_active"),
-    "contact.tags": _contact_tags,
-    "contact.marketing_consent": _contact_field("marketing_consent"),
-    "contact.address_country": _contact_field("address_country"),
-    "contact.job_title": _contact_field("job_title"),
-    "contact.created_at": _contact_field("created_at"),
-    "contact.updated_at": _contact_field("updated_at"),
-    # Payload del trigger
-    "trigger.field": _trigger_field("field"),
-    "trigger.value": _trigger_field("value"),
-    "trigger.old_value": _trigger_field("old_value"),
-    "trigger.new_value": _trigger_field("new_value"),
-    "trigger.event_type": _trigger_field("event_type"),
+# PR-Fix-Evaluator-Campos-Nativos. La whitelist del evaluador refleja
+# las columnas del Contact que el FilterBuilder de `/contactos` ya
+# expone (ver `app.services.segments.fields.FIELD_SPECS`). El editor
+# de workflows usa el MISMO `EntityFilterBuilder`, así que las claves
+# del árbol guardado vienen sin prefijo `contact.` — para evitar romper
+# workflows existentes mantenemos AMBAS formas (`first_name` y
+# `contact.first_name`) apuntando al mismo resolver.
+_NATIVE_CONTACT_RESOLVERS: dict[str, Callable[[EvalContext], Any]] = {
+    "first_name": _contact_field("first_name"),
+    "last_name": _contact_field("last_name"),
+    "name": _contact_full_name,
+    "full_name": _contact_full_name,
+    "email": _contact_field("email"),
+    "phone": _contact_field("phone"),
+    "origin": _contact_field("origin"),
+    "origin_system": _contact_field("origin"),
+    "origin_account_id": _contact_field("origin_account_id"),
+    "lifecycle_status": _contact_field("commercial_status"),
+    "commercial_status": _contact_field("commercial_status"),
+    "lead_score": _contact_field("lead_score"),
+    "owner_user_id": _contact_field("owner_user_id"),
+    "is_active": _contact_field("is_active"),
+    "is_email_valid": _contact_field("is_email_valid"),
+    "marketing_consent": _contact_field("marketing_consent"),
+    "tags": _contact_tags,
+    "company_id": _contact_field("company_id"),
+    "job_title": _contact_field("job_title"),
+    "linkedin_url": _contact_field("linkedin_url"),
+    "personal_website": _contact_field("personal_website"),
+    "website_url": _contact_field("personal_website"),
+    "address_line": _contact_field("address_line"),
+    "address_street": _contact_field("address_line"),
+    "address_city": _contact_field("address_city"),
+    "address_state": _contact_field("address_state"),
+    "address_region": _contact_field("address_region"),
+    "address_postal_code": _contact_field("address_postal_code"),
+    "address_zip": _contact_field("address_postal_code"),
+    "address_country": _contact_field("address_country"),
+    "address_country_name": _contact_field("address_country_name"),
+    "created_at": _contact_field("created_at"),
+    "updated_at": _contact_field("updated_at"),
 }
+
+
+def _build_field_resolvers() -> dict[str, Callable[[EvalContext], Any]]:
+    """Compone la whitelist final: cada key nativa accesible como bare
+    (`first_name`) y con prefijo legacy (`contact.first_name`)."""
+    out: dict[str, Callable[[EvalContext], Any]] = {}
+    for key, resolver in _NATIVE_CONTACT_RESOLVERS.items():
+        out[key] = resolver
+        out[f"contact.{key}"] = resolver
+    out.update(
+        {
+            "trigger.field": _trigger_field("field"),
+            "trigger.value": _trigger_field("value"),
+            "trigger.old_value": _trigger_field("old_value"),
+            "trigger.new_value": _trigger_field("new_value"),
+            "trigger.event_type": _trigger_field("event_type"),
+        }
+    )
+    return out
+
+
+_FIELD_RESOLVERS: dict[str, Callable[[EvalContext], Any]] = (
+    _build_field_resolvers()
+)
+
+
+def _resolve_custom_field(ctx: EvalContext, key: str) -> Any:
+    """PR-Fix-Evaluator-Campos-Nativos. Lee una clave del JSON
+    `contact.custom_fields` por nombre. Acepta el slug crudo (e.g.
+    `INTERES`, `sector_empresa`) o la forma `custom_fields.X` que
+    también podría emitir el FilterBuilder."""
+    raw = ctx.contact.custom_fields
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    return parsed.get(key)
+
+
+def _resolve_field(field: str, ctx: EvalContext) -> tuple[bool, Any]:
+    """Resuelve el valor de un campo. Devuelve `(resolved, value)`.
+    `resolved=False` significa "campo desconocido, log warning".
+
+    Soporta:
+      - Whitelist nativa (`first_name`, `email`, `tags`, …) en ambas
+        formas: bare y con prefijo `contact.`.
+      - Custom fields dinámicos: `custom_fields.X` o `cf.X` → lee
+        del JSON de `contact.custom_fields`.
+    """
+    resolver = _FIELD_RESOLVERS.get(field)
+    if resolver is not None:
+        return (True, resolver(ctx))
+    for prefix in ("custom_fields.", "cf.", "contact.custom_fields."):
+        if field.startswith(prefix):
+            key = field[len(prefix):]
+            if key:
+                return (True, _resolve_custom_field(ctx, key))
+    return (False, None)
 
 
 class EvalContext:
@@ -113,11 +203,15 @@ class EvalContext:
 
 _LOGICAL = frozenset({"AND", "OR", "NOT"})
 
-# PR-Fixes-Pase-2 Bug B. Mapeo del vocabulario segments → workflow.
+# PR-Fixes-Pase-2 Bug B + PR-Fix-Evaluator-Campos-Nativos. Mapeo del
+# vocabulario segments → workflow. Ambos comparten muchos operadores
+# tal cual (gt/lt/contains/etc.); solo mapeamos los que difieren.
 _SEGMENT_OP_MAP = {
     "neq": "ne",
     "is_null": "empty",
     "is_not_null": "not_empty",
+    "is_empty": "empty",
+    "is_not_empty": "not_empty",
     "doesNotContain": "not_contains",
     "beginsWith": "starts_with",
     "endsWith": "ends_with",
@@ -144,12 +238,15 @@ def _normalize_leaf_op(value: Any) -> str:
 MAX_DEPTH = 10
 
 
+_NUMERIC_FIELDS = frozenset({"lead_score", "contact.lead_score"})
+
+
 def _coerce_value(field: str, value: Any) -> Any:
-    """`{{ contact.lead_score > "50" }}` se acepta — cuando viene de UI
-    los valores son strings. Coerce a int/float si el campo lo es."""
+    """`{{ lead_score > "50" }}` se acepta — cuando viene de UI los
+    valores son strings. Coerce a int si el campo lo es."""
     if value is None or not isinstance(value, str):
         return value
-    if field in {"contact.lead_score"}:
+    if field in _NUMERIC_FIELDS:
         try:
             return int(value)
         except (TypeError, ValueError):
@@ -228,9 +325,75 @@ def _compare(actual: Any, op: str, expected: Any) -> bool:
         return actual in expected
     if op == "not_in":
         return not _compare(actual, "in", expected)
+    if op == "in_list":
+        return _compare(actual, "in", expected)
+
+    # PR-Fix-Evaluator-Campos-Nativos. Operadores que el FilterBuilder
+    # de `/contactos` emite sobre tag-multi y que el evaluador todavía
+    # no soportaba.
+    if op in {"contains_any", "contains_all", "contains_none"}:
+        if not isinstance(expected, (list, tuple, set)):
+            expected = [expected]
+        if not isinstance(actual, (list, tuple, set)):
+            actual = [actual] if actual is not None else []
+        actual_set = {str(a).lower() for a in actual}
+        expected_set = {str(e).lower() for e in expected if e}
+        if op == "contains_any":
+            return bool(actual_set & expected_set)
+        if op == "contains_all":
+            return expected_set.issubset(actual_set)
+        return not (actual_set & expected_set)  # contains_none
+
+    # Operadores de fecha.
+    if op in {"before", "after"}:
+        actual_dt = _coerce_datetime(actual)
+        expected_dt = _coerce_datetime(expected)
+        if actual_dt is None or expected_dt is None:
+            return False
+        return (
+            actual_dt < expected_dt if op == "before" else actual_dt > expected_dt
+        )
+    if op in {"in_last_n_days", "in_next_n_days"}:
+        actual_dt = _coerce_datetime(actual)
+        try:
+            n = int(expected)
+        except (TypeError, ValueError):
+            return False
+        if actual_dt is None or n < 0:
+            return False
+        now = datetime.now(UTC)
+        if op == "in_last_n_days":
+            window_start = now - timedelta(days=n)
+            return window_start <= actual_dt <= now
+        window_end = now + timedelta(days=n)
+        return now <= actual_dt <= window_end
 
     log.warning("workflows.condition unknown op: %s", op)
     return False
+
+
+def _coerce_datetime(value: Any) -> datetime | None:
+    """Acepta datetime ORM directo, ISO 8601 string, o None. Devuelve
+    siempre TZ-aware en UTC para que las comparaciones sean válidas."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=UTC)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            # `fromisoformat` 3.11+ acepta el sufijo "Z".
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            # Date-only string `2026-06-19`.
+            try:
+                parsed = datetime.strptime(text, "%Y-%m-%d")
+            except ValueError:
+                return None
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+    return None
 
 
 def evaluate(
@@ -279,11 +442,10 @@ def evaluate(
     field = tree.get("field")
     if not field:
         return False
-    resolver = _FIELD_RESOLVERS.get(field)
-    if resolver is None:
+    resolved, actual = _resolve_field(field, ctx)
+    if not resolved:
         log.warning("workflows.condition unknown field: %s", field)
         return False
-    actual = resolver(ctx)
     raw_value = tree.get("value")
     expected = _coerce_value(field, raw_value)
     # `op` puede ser workflow legacy o segments. Para hojas viene en
@@ -325,11 +487,21 @@ def validate_tree(
             errors.extend(validate_tree(child, depth=depth + 1))
         return errors
     field = tree.get("field")
-    if field and field not in _FIELD_RESOLVERS:
+    if field and not _is_known_field(field):
         errors.append(f"unknown field: {field}")
     if not op:
         errors.append(f"leaf without op (field={field})")
     return errors
+
+
+def _is_known_field(field: str) -> bool:
+    """Espejo de la lógica del evaluador para `validate_tree`."""
+    if field in _FIELD_RESOLVERS:
+        return True
+    for prefix in ("custom_fields.", "cf.", "contact.custom_fields."):
+        if field.startswith(prefix) and len(field) > len(prefix):
+            return True
+    return False
 
 
 def available_fields() -> list[str]:
