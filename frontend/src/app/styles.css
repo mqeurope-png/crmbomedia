@@ -9025,3 +9025,13 @@ tr.is-inactive {
   font-size: 12px;
 }
 .workflow-radio input { margin-right: 4px; }
+
+/* PR-Fixes-Pase-2 — section headers in step config */
+.workflow-section-h {
+  font-size: 13px;
+  font-weight: 600;
+  margin: 12px 0 6px;
+  color: #1d2940;
+  border-top: 1px solid #e5e7eb;
+  padding-top: 10px;
+}

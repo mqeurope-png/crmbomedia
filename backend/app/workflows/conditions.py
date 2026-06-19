@@ -113,6 +113,34 @@ class EvalContext:
 
 _LOGICAL = frozenset({"AND", "OR", "NOT"})
 
+# PR-Fixes-Pase-2 Bug B. Mapeo del vocabulario segments → workflow.
+_SEGMENT_OP_MAP = {
+    "neq": "ne",
+    "is_null": "empty",
+    "is_not_null": "not_empty",
+    "doesNotContain": "not_contains",
+    "beginsWith": "starts_with",
+    "endsWith": "ends_with",
+}
+
+
+def _normalize_logical(value: Any) -> str | None:
+    """`{operator: "and"}` (segments) → `"AND"` (workflow)."""
+    if isinstance(value, str):
+        up = value.upper()
+        if up in _LOGICAL:
+            return up
+    return None
+
+
+def _normalize_leaf_op(value: Any) -> str:
+    """Mapea operadores del vocabulario segments al workflow. Para
+    operadores ya válidos en workflow, los devuelve tal cual."""
+    if not isinstance(value, str):
+        return ""
+    return _SEGMENT_OP_MAP.get(value, value)
+
+
 MAX_DEPTH = 10
 
 
@@ -212,14 +240,27 @@ def evaluate(
     depth: int = 0,
 ) -> bool:
     """Evalúa el árbol contra el contexto. Árbol vacío / None → True
-    (sin restricciones)."""
+    (sin restricciones).
+
+    PR-Fixes-Pase-2 Bug B. Acepta DOS formatos para compatibilidad
+    con la integración del filtro de Contactos (`EntityFilterBuilder`):
+
+    1. Formato workflow legacy: `{op: AND|OR|NOT, children}` o
+       `{field, op, value}` para hojas.
+    2. Formato segments: `{operator: and|or|not, children}` o
+       `{type: "rule", field, comparator, value}` para hojas.
+
+    Las hojas del formato segments se mapean al vocabulario de
+    operadores del evaluador (`is_null` → `empty`, `neq` → `ne`, etc.).
+    """
     if tree is None or not tree:
         return True
     if depth > MAX_DEPTH:
         log.warning("workflows.condition max depth exceeded")
         return False
 
-    op = tree.get("op")
+    # Normaliza el operador lógico (acepta op y operator).
+    op = tree.get("op") or _normalize_logical(tree.get("operator"))
     if op in _LOGICAL:
         children = tree.get("children") or []
         if not children:
@@ -233,7 +274,8 @@ def evaluate(
                 evaluate(c, ctx, depth=depth + 1) for c in children
             )
 
-    # Hoja: leaf comparison.
+    # Hoja: leaf comparison. Aceptamos también el shape segments
+    # `{type: "rule", field, comparator, value}`.
     field = tree.get("field")
     if not field:
         return False
@@ -244,7 +286,10 @@ def evaluate(
     actual = resolver(ctx)
     raw_value = tree.get("value")
     expected = _coerce_value(field, raw_value)
-    return _compare(actual, str(op), expected)
+    # `op` puede ser workflow legacy o segments. Para hojas viene en
+    # `tree.get("op")` (workflow) o `tree.get("comparator")` (segments).
+    leaf_op = tree.get("op") or tree.get("comparator")
+    return _compare(actual, _normalize_leaf_op(leaf_op), expected)
 
 
 def parse_tree(raw: str | None) -> dict[str, Any]:

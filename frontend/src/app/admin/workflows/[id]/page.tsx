@@ -34,6 +34,9 @@ import {
   useState,
 } from "react";
 import { PageHeader } from "../../../components/PageHeader";
+import { PipelineStageSelector } from "../../../components/workflows/PipelineStageSelector";
+import { TagPicker, TriggerConfigPanel } from "../../../components/workflows/TriggerConfigPanel";
+import { WorkflowConditionBuilder } from "../../../components/workflows/WorkflowConditionBuilder";
 import { WorkflowDryRunModal } from "../../../components/workflows/WorkflowDryRunModal";
 import { WorkflowNarrativeSummary } from "../../../components/workflows/WorkflowNarrativeSummary";
 import { extractErrorMessage } from "../../../lib/errors";
@@ -170,6 +173,13 @@ export default function WorkflowEditorPage() {
   const [templateLookup, setTemplateLookup] = useState<Record<string, string>>(
     {},
   );
+  // PR-Fixes-Pase-2 Bug E. La sub-config del trigger vive en
+  // `workflow.trigger_config_json` (no en `WorkflowStep.config_json`).
+  // El editor mantiene su propia copia editable y la sincroniza al
+  // guardar.
+  const [triggerConfig, setTriggerConfig] = useState<Record<string, unknown>>(
+    {},
+  );
 
   const load = useCallback(async () => {
     setError(null);
@@ -190,6 +200,7 @@ export default function WorkflowEditorPage() {
       setWorkflow(w);
       setCatalog(c);
       setTemplateLookup(tplLookup);
+      setTriggerConfig(w.trigger_config ?? {});
       setNodes(
         w.steps.map((s) => ({
           id: s.id,
@@ -359,6 +370,7 @@ export default function WorkflowEditorPage() {
       const updated = await updateWorkflow(workflowId, {
         steps: stepsPayload,
         edges: edgesPayload,
+        trigger_config: triggerConfig,
       });
       setWorkflow(updated);
       await load();
@@ -609,6 +621,9 @@ export default function WorkflowEditorPage() {
             <StepConfigPanel
               node={selectedNode}
               catalog={catalog}
+              triggerConfig={triggerConfig}
+              onTriggerConfigChange={setTriggerConfig}
+              triggerType={workflow.trigger_type}
               onChange={updateSelectedConfig}
               onDelete={() => {
                 setNodes((nds) => nds.filter((n) => n.id !== selectedNode.id));
@@ -678,6 +693,9 @@ function categoryLabel(c: string): string {
 type StepConfigPanelProps = {
   node: WorkflowFlowNode;
   catalog: WorkflowCatalog;
+  triggerConfig: Record<string, unknown>;
+  onTriggerConfigChange: (next: Record<string, unknown>) => void;
+  triggerType: string;
   onChange: (next: Record<string, unknown>) => void;
   onDelete: () => void;
 };
@@ -685,6 +703,9 @@ type StepConfigPanelProps = {
 function StepConfigPanel({
   node,
   catalog,
+  triggerConfig,
+  onTriggerConfigChange,
+  triggerType,
   onChange,
   onDelete,
 }: StepConfigPanelProps) {
@@ -710,6 +731,31 @@ function StepConfigPanel({
       <p className="muted small">
         <code>{node.data.stepType}</code>
       </p>
+
+      {/* PR-Fixes-Pase-2 Bug E: trigger node muestra sub-config +
+          filtro adicional usando el FilterBuilder de Contactos. */}
+      {node.data.stepType === "trigger" ? (
+        <>
+          <h4 className="workflow-section-h">Configuración del trigger</h4>
+          <TriggerConfigPanel
+            triggerType={triggerType}
+            config={triggerConfig}
+            onChange={onTriggerConfigChange}
+          />
+          <h4 className="workflow-section-h">Filtro adicional (opcional)</h4>
+          <p className="muted small">
+            Solo dispara cuando el contacto cumple estas condiciones.
+          </p>
+          <WorkflowConditionBuilder
+            condition={
+              (triggerConfig.filter as Record<string, unknown>) ?? {}
+            }
+            onChange={(next) =>
+              onTriggerConfigChange({ ...triggerConfig, filter: next })
+            }
+          />
+        </>
+      ) : null}
 
       {node.data.stepType === "wait_time" ? (
         <label>
@@ -739,11 +785,9 @@ function StepConfigPanel({
       node.data.stepType === "action_remove_tag" ? (
         <label>
           Tag
-          <input
-            type="text"
+          <TagPicker
             value={(cfg.tag as string) ?? ""}
-            onChange={(e) => setField("tag", e.target.value)}
-            placeholder="ej. fespa-onboarding"
+            onChange={(next) => setField("tag", next)}
           />
         </label>
       ) : null}
@@ -861,21 +905,23 @@ function StepConfigPanel({
         </>
       ) : null}
 
-      {/* Panel para action_move_opportunity_stage */}
+      {/* Panel para action_move_opportunity_stage. PR-Fixes-Pase-2
+          Bug C: selector visual de Pipeline + Stage (NO input ID). */}
       {node.data.stepType === "action_move_opportunity_stage" ? (
-        <label>
-          ID del stage destino
-          <input
-            type="text"
-            value={(cfg.stage_id as string) ?? ""}
-            onChange={(e) => setField("stage_id", e.target.value)}
-            placeholder="UUID del stage del pipeline"
+        <>
+          <PipelineStageSelector
+            pipelineId={cfg.pipeline_id as string | undefined}
+            stageId={cfg.stage_id as string | undefined}
+            onChange={(pid, sid) => {
+              setField("pipeline_id", pid);
+              setField("stage_id", sid);
+            }}
           />
-          <span className="muted small">
-            Cópialo desde la configuración del pipeline. La oportunidad
-            del contacto se mueve al stage indicado.
-          </span>
-        </label>
+          <p className="muted small">
+            El contacto debe tener una oportunidad activa en este
+            pipeline para que la acción funcione.
+          </p>
+        </>
       ) : null}
 
       {/* Panel para action_assign_owner */}
@@ -1022,11 +1068,8 @@ function StepConfigPanel({
       ) : null}
 
       {node.data.stepType === "condition" ? (
-        <ConditionBuilder
-          fields={catalog.fields}
-          condition={
-            (cfg.condition as Record<string, unknown> | undefined) ?? {}
-          }
+        <WorkflowConditionBuilder
+          condition={(cfg.condition as Record<string, unknown> | undefined) ?? {}}
           onChange={(next) => setField("condition", next)}
         />
       ) : null}
@@ -1105,7 +1148,22 @@ function SendEmailConfig({
   variables: string[];
 }) {
   const tplId = cfg.template_id as string | undefined;
-  const mode = tplId ? "template" : (cfg.body_html ? "custom" : "template");
+  // PR-Fixes-Pase-2 Bug A. La versión previa derivaba `mode` de
+  // (template_id ? template : (body_html ? custom : template)). Ese
+  // toggle quedaba muerto: al pasar a "custom" se eliminaba
+  // template_id y body_html seguía vacío → la siguiente renderización
+  // volvía a "template" y el radio "Contenido personalizado" no
+  // se podía mantener marcado.
+  //
+  // Persistimos el modo explícitamente en `cfg.mode` para que el
+  // toggle responda al click. Si la fila legacy no tiene `mode`,
+  // lo derivamos del template_id (compat para drafts viejos).
+  const persistedMode = cfg.mode as "template" | "custom" | undefined;
+  const mode: "template" | "custom" = persistedMode
+    ? persistedMode
+    : tplId
+      ? "template"
+      : "template";
   const [filter, setFilter] = useState("");
   const tplEntries = templates ? Object.entries(templates) : [];
   const filtered = filter
@@ -1115,15 +1173,11 @@ function SendEmailConfig({
     : tplEntries;
 
   const switchTo = (next: "template" | "custom") => {
+    setField("mode", next);
     if (next === "template") {
-      // Limpiamos subject/body_html para que la validación de
-      // required_fields no se confunda — el motor preferirá
-      // template_id cuando esté seteado.
       setField("body_html", "");
       setField("subject", "");
     } else {
-      // Quitamos template_id para que no quede colgado al cambiar a
-      // contenido inline.
       setField("template_id", undefined);
     }
   };
@@ -1241,72 +1295,6 @@ function VariablesHelp({ variables }: { variables: string[] }) {
   );
 }
 
-type ConditionBuilderProps = {
-  fields: string[];
-  condition: Record<string, unknown>;
-  onChange: (next: Record<string, unknown>) => void;
-};
-
-function ConditionBuilder({
-  fields,
-  condition,
-  onChange,
-}: ConditionBuilderProps) {
-  // Minimal: una sola hoja por ahora. Para AND/OR + N hojas el
-  // siguiente sprint lo ampliará si Bart lo pide.
-  return (
-    <div className="workflow-condition-builder">
-      <label>
-        Campo
-        <select
-          value={(condition.field as string) ?? fields[0]}
-          onChange={(e) => onChange({ ...condition, field: e.target.value })}
-        >
-          {fields.map((f) => (
-            <option key={f} value={f}>
-              {f}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label>
-        Operador
-        <select
-          value={(condition.op as string) ?? "eq"}
-          onChange={(e) => onChange({ ...condition, op: e.target.value })}
-        >
-          {[
-            "eq",
-            "ne",
-            "gt",
-            "gte",
-            "lt",
-            "lte",
-            "contains",
-            "not_contains",
-            "starts_with",
-            "ends_with",
-            "empty",
-            "not_empty",
-          ].map((o) => (
-            <option key={o} value={o}>
-              {o}
-            </option>
-          ))}
-        </select>
-      </label>
-      {!["empty", "not_empty"].includes(
-        (condition.op as string) ?? "eq",
-      ) ? (
-        <label>
-          Valor
-          <input
-            type="text"
-            value={(condition.value as string) ?? ""}
-            onChange={(e) => onChange({ ...condition, value: e.target.value })}
-          />
-        </label>
-      ) : null}
-    </div>
-  );
-}
+// PR-Fixes-Pase-2 Bug B: el `ConditionBuilder` legacy fue reemplazado
+// por `WorkflowConditionBuilder` (envuelve EntityFilterBuilder con el
+// schema de Contactos). Eliminado para no confundir.
