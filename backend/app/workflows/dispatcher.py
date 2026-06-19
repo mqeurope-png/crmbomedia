@@ -332,5 +332,8 @@ TRIGGER_CATALOG: list[dict[str, Any]] = [
     {"type": "opportunity.won", "label": "Oportunidad ganada"},
     {"type": "opportunity.lost", "label": "Oportunidad perdida"},
     {"type": "contact.date_field", "label": "Fecha del contacto (cumpleaños, aniversario...)"},
-    {"type": "cron.recurring", "label": "Recurrente (preset)"},
+    # PR-Fixes-Pase-2 Bug D: el dropdown frontend leía este label
+    # literalmente. "Recurrente (preset)" no es jerga que un comercial
+    # entienda; "Horario fijo" sí.
+    {"type": "cron.recurring", "label": "Horario fijo"},
 ]

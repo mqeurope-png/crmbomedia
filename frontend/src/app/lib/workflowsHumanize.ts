@@ -183,9 +183,9 @@ export function humanizeStepLabel(
     case "action_move_opportunity_stage": {
       const sid = cfg.stage_id as string | undefined;
       const name = sid ? lookups.pipelineStages?.[sid] : undefined;
-      return name
-        ? `Mover oportunidad a "${name}"`
-        : "Mover oportunidad de stage";
+      if (name) return `Mover oportunidad a "${name}"`;
+      if (sid) return `Mover oportunidad a stage ${sid.slice(0, 8)}…`;
+      return "Mover oportunidad de stage";
     }
     case "action_notify_owner":
       return "Notificar al propietario";
@@ -257,7 +257,9 @@ const REQUIRED_FIELDS: Record<string, string[]> = {
   action_assign_owner: ["user_id"],
   action_create_task: ["title"],
   action_send_email: ["subject", "body_html"],
-  action_move_opportunity_stage: ["stage_id"],
+  // PR-Fixes-Pase-2 Bug C: pasamos a pedir pipeline_id Y stage_id —
+  // el dropdown cascade los rellena juntos.
+  action_move_opportunity_stage: ["pipeline_id", "stage_id"],
   action_notify_owner: [],
   action_notify_manager: [],
   action_push_to_brevo: [],
