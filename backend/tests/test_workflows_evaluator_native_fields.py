@@ -256,40 +256,29 @@ def test_evaluate_condition_created_at_before_specific_date() -> None:
 
 
 def test_evaluate_condition_unknown_field_returns_false_with_warning() -> None:
-    # Captura directa por handler — más fiable que caplog (que mostró
-    # comportamiento distinto entre py3.11 local y py3.12 CI). Forzamos
-    # nivel DEBUG en el logger y en el handler para que ninguna config
-    # global de pytest pueda filtrar el warning antes de llegar aquí.
-    records: list[str] = []
+    # `caplog` y handlers tradicionales mostraron comportamiento
+    # inconsistente entre py3.11 local y py3.12 CI (probablemente la
+    # config de logging.disabled de algún módulo en startup). Lo
+    # blindamos mockeando directamente `log.warning` en el módulo del
+    # evaluador — verifica que se invocó con los argumentos esperados.
+    from unittest.mock import patch  # noqa: PLC0415
 
-    class CaptureHandler(logging.Handler):
-        def emit(self, record: logging.LogRecord) -> None:
-            records.append(record.getMessage())
-
-    logger = logging.getLogger("app.workflows.conditions")
-    handler = CaptureHandler(level=logging.DEBUG)
-    prev_level = logger.level
-    prev_propagate = logger.propagate
-    logger.setLevel(logging.DEBUG)
-    logger.propagate = False  # garantía: no filtra por el root logger
-    logger.addHandler(handler)
-    try:
-        ctx = _ctx()
-        tree = {
-            "type": "rule",
-            "field": "field_inventado",
-            "comparator": "eq",
-            "value": "x",
-        }
+    ctx = _ctx()
+    tree = {
+        "type": "rule",
+        "field": "field_inventado",
+        "comparator": "eq",
+        "value": "x",
+    }
+    with patch("app.workflows.conditions.log") as mock_log:
         assert evaluate(tree, ctx) is False
-    finally:
-        logger.removeHandler(handler)
-        logger.setLevel(prev_level)
-        logger.propagate = prev_propagate
+        warn_calls = mock_log.warning.call_args_list
 
     assert any(
-        "unknown field" in m and "field_inventado" in m for m in records
-    ), f"expected warning not captured; got: {records}"
+        "unknown field" in (call.args[0] if call.args else "")
+        and "field_inventado" in str(call.args)
+        for call in warn_calls
+    ), f"expected warning not emitted; got calls: {warn_calls}"
 
 
 # ---------------------------------------------------------------------
