@@ -41,6 +41,16 @@ from sqlalchemy.orm import Session
 from app.models.crm import Contact
 from app.models.workflows import Workflow, WorkflowStatus
 from app.workflows import conditions
+
+# PR-Fix-Engine-Trigger-Step. Import side-effect: el decorador
+# `@register_step` de `app.workflows.steps` rellena el `_STEP_HANDLERS`
+# del motor. La API process lo importa en `app/main.py`, pero el RQ
+# worker entra por `app.workflows.dispatcher._process_event_job` y
+# necesita asegurarse de que los handlers están registrados al
+# resolverse este módulo. Sin esto, el primer `advance_run` que
+# alcance un step type cualquiera (empezando por `trigger`) loguea
+# "unknown step type" y marca el run en FAILED.
+from app.workflows import steps as _wf_steps  # noqa: F401
 from app.workflows.engine import (
     cancel_for_contact,
     find_matching_event_waits,
