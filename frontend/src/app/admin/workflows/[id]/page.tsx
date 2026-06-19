@@ -50,6 +50,7 @@ import {
   type WorkflowEdgeWrite,
   type WorkflowStepWrite,
 } from "../../../lib/workflowsApi";
+import { listEmailTemplates } from "../../../lib/emailTemplatesApi";
 import {
   humanizeStepLabel,
   stepIcon,
@@ -58,19 +59,24 @@ import {
 } from "../../../lib/workflowsHumanize";
 
 type StepNodeData = {
-  label: string;
   stepType: string;
   config: Record<string, unknown>;
   isEntry: boolean;
   displayName?: string | null;
+  triggerType?: string;
+  templateLookup?: Record<string, string>;
   [key: string]: unknown;
 };
 
 type WorkflowFlowNode = Node<StepNodeData, "workflowStep">;
 
-/** Renderer del nodo en el canvas. Calcula label humano + icono +
- *  summary contextual + validación visual usando los helpers de
- *  `lib/workflowsHumanize`. */
+/** Renderer del nodo en el canvas. Recalcula label humano + summary +
+ *  validación en cada render para que cambios de config en el side
+ *  panel se reflejen inmediatamente.
+ *
+ *  PR-Fixes: el label ya no se cachea en `data.label` porque eso
+ *  causaba que el trigger node mostrara "Inicio del workflow"
+ *  ignorando el `triggerType`. */
 function StepNode({
   data,
   selected,
@@ -80,15 +86,17 @@ function StepNode({
   selected?: boolean;
   id: string;
 }) {
-  const summary = stepSummary({
+  const stepLike = {
     type: data.stepType,
     config: data.config,
     display_name: data.displayName,
+  };
+  const label = humanizeStepLabel(stepLike, {
+    triggerType: data.triggerType,
+    templates: data.templateLookup,
   });
-  const validation = validateStepConfig({
-    type: data.stepType,
-    config: data.config,
-  });
+  const summary = stepSummary(stepLike);
+  const validation = validateStepConfig(stepLike);
   return (
     <div
       className={[
@@ -104,7 +112,7 @@ function StepNode({
         <span className="workflow-node-icon" aria-hidden>
           {stepIcon(data.stepType)}
         </span>
-        <div className="workflow-node-title">{data.label}</div>
+        <div className="workflow-node-title">{label}</div>
         {!validation.valid ? (
           <span
             className="workflow-node-warning"
@@ -124,6 +132,27 @@ function StepNode({
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const nodeTypes = { workflowStep: StepNode as any };
 
+/** PR-Fixes #4: triggers que NO admiten retroactivo. Mantener
+ *  sincronizado con el backend `cost_estimate`. */
+const EVENT_TRIGGERS = new Set([
+  "contact.created",
+  "contact.updated",
+  "contact.lifecycle_changed",
+  "contact.unsubscribed",
+  "email.crm.opened",
+  "email.crm.clicked",
+  "email.crm.replied",
+  "email.brevo.opened",
+  "email.brevo.clicked",
+  "task.created",
+  "task.completed",
+  "task.overdue",
+  "opportunity.created",
+  "opportunity.stage_changed",
+  "opportunity.won",
+  "opportunity.lost",
+]);
+
 export default function WorkflowEditorPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
@@ -138,29 +167,41 @@ export default function WorkflowEditorPage() {
   const [estimate, setEstimate] = useState<WorkflowCostEstimate | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
   const [dryRunOpen, setDryRunOpen] = useState(false);
+  const [templateLookup, setTemplateLookup] = useState<Record<string, string>>(
+    {},
+  );
 
   const load = useCallback(async () => {
     setError(null);
     try {
       const w = await getWorkflow(workflowId);
       const c = await getWorkflowCatalog();
+      // PR-Fixes #8: cargamos el catálogo de plantillas email para que
+      // el step `action_send_email` pueda elegir una y resolver el
+      // nombre humano en el label del nodo.
+      let templates: Awaited<ReturnType<typeof listEmailTemplates>> = [];
+      try {
+        templates = await listEmailTemplates();
+      } catch {
+        templates = [];
+      }
+      const tplLookup: Record<string, string> = {};
+      for (const t of templates) tplLookup[t.id] = t.name;
       setWorkflow(w);
       setCatalog(c);
+      setTemplateLookup(tplLookup);
       setNodes(
         w.steps.map((s) => ({
           id: s.id,
           type: "workflowStep",
           position: { x: s.position_x, y: s.position_y },
           data: {
-            label: humanizeStepLabel({
-              type: s.type,
-              config: s.config,
-              display_name: s.display_name,
-            }),
             stepType: s.type,
             config: s.config,
             isEntry: s.is_entry,
             displayName: s.display_name ?? null,
+            triggerType: w.trigger_type,
+            templateLookup: tplLookup,
           },
         })),
       );
@@ -198,7 +239,8 @@ export default function WorkflowEditorPage() {
     [setEdges],
   );
 
-  const addStep = (stepType: string, label: string) => {
+  const addStep = (stepType: string, _label: string) => {
+    void _label;
     const id = `step-${Date.now()}`;
     const lastNode = nodes[nodes.length - 1];
     const x = lastNode ? lastNode.position.x : 200;
@@ -210,11 +252,12 @@ export default function WorkflowEditorPage() {
         type: "workflowStep",
         position: { x, y },
         data: {
-          label: humanizeStepLabel({ type: stepType, config: {} }) || label,
           stepType,
           config: {},
           isEntry: false,
           displayName: null,
+          triggerType: workflow?.trigger_type,
+          templateLookup,
         },
       },
     ]);
@@ -242,12 +285,6 @@ export default function WorkflowEditorPage() {
                 data: {
                   ...n.data,
                   displayName: trimmed || null,
-                  label: trimmed
-                    ? trimmed
-                    : humanizeStepLabel({
-                        type: n.data.stepType,
-                        config: n.data.config,
-                      }),
                 },
               }
             : n,
@@ -368,12 +405,11 @@ export default function WorkflowEditorPage() {
         return;
       }
     }
-    if (
-      !confirm(
-        `Vas a activar este workflow. Aproximadamente ${estimate.matching_contacts_now} contactos cumplirían el trigger ahora mismo. Solo se procesarán contactos que cumplan a partir de ahora. ¿Confirmar?`,
-      )
-    )
-      return;
+    const isEvent = EVENT_TRIGGERS.has(workflow?.trigger_type ?? "");
+    const confirmMsg = isEvent
+      ? `Vas a activar este workflow. Como el trigger es un evento (${workflow?.trigger_type}), solo se procesarán contactos cuando ocurra en el futuro. Estimación: ${estimate.estimated_runs_30d} runs en 30d. ¿Confirmar?`
+      : `Vas a activar este workflow. Aproximadamente ${estimate.matching_contacts_now} contactos cumplen el criterio ahora. Solo se procesarán los que cumplan a partir de ahora. ¿Confirmar?`;
+    if (!confirm(confirmMsg)) return;
     setBusy(true);
     try {
       await activateWorkflow(workflowId, true);
@@ -468,7 +504,8 @@ export default function WorkflowEditorPage() {
           </h3>
           <ul>
             <li>
-              Contactos que cumplen ahora: <strong>{estimate.matching_contacts_now}</strong>
+              Contactos que cumplen ahora:{" "}
+              <strong>{estimate.matching_contacts_now}</strong>
             </li>
             <li>Runs estimados 30d: {estimate.estimated_runs_30d}</li>
             <li>Emails estimados 30d: {estimate.estimated_emails_30d}</li>
@@ -479,6 +516,17 @@ export default function WorkflowEditorPage() {
               </li>
             ) : null}
           </ul>
+          {/* PR-Fixes #4. Explicación contextual del 0 cuando el
+              trigger es de evento puntual — no es un bug, es lo
+              correcto: el workflow solo aplica a futuros. */}
+          {EVENT_TRIGGERS.has(workflow.trigger_type) ? (
+            <p className="muted small">
+              Este trigger dispara cuando ocurre el evento. La cifra
+              «cumplen ahora» es 0 porque solo se aplica a futuros.
+              «Runs estimados 30d» proyecta basándose en el histórico
+              de los últimos 30 días.
+            </p>
+          ) : null}
         </div>
       ) : null}
 
@@ -542,6 +590,12 @@ export default function WorkflowEditorPage() {
               }
               nodeTypes={nodeTypes}
               fitView
+              /* PR-Fixes #5: borrar flechas. React Flow llama a
+                 `onEdgesChange` con el delete event cuando el edge
+                 está seleccionado y el user pulsa Delete/Backspace. */
+              deleteKeyCode={["Backspace", "Delete"]}
+              edgesFocusable
+              elementsSelectable
             >
               <Background />
               <Controls />
@@ -577,6 +631,7 @@ export default function WorkflowEditorPage() {
 
       <WorkflowNarrativeSummary
         triggerType={workflow.trigger_type}
+        templates={templateLookup}
         steps={nodes.map((n) => ({
           id: n.id,
           type: n.data.stepType,
@@ -638,9 +693,20 @@ function StepConfigPanel({
     onChange({ ...cfg, [key]: value });
   };
 
+  const panelLabel = humanizeStepLabel(
+    {
+      type: node.data.stepType,
+      config: node.data.config,
+      display_name: node.data.displayName,
+    },
+    {
+      triggerType: node.data.triggerType,
+      templates: node.data.templateLookup,
+    },
+  );
   return (
     <div className="workflow-step-config">
-      <h3>{node.data.label}</h3>
+      <h3>{panelLabel}</h3>
       <p className="muted small">
         <code>{node.data.stepType}</code>
       </p>
@@ -661,36 +727,12 @@ function StepConfigPanel({
       ) : null}
 
       {node.data.stepType === "action_send_email" ? (
-        <>
-          <label>
-            Asunto
-            <input
-              type="text"
-              value={(cfg.subject as string) ?? ""}
-              onChange={(e) => setField("subject", e.target.value)}
-              placeholder="Hola {{ contact.first_name }}"
-            />
-          </label>
-          <label>
-            Cuerpo HTML
-            <textarea
-              rows={6}
-              value={(cfg.body_html as string) ?? ""}
-              onChange={(e) => setField("body_html", e.target.value)}
-              placeholder="<p>Hola {{ contact.first_name }}, ...</p>"
-            />
-          </label>
-          <label>
-            From alias
-            <input
-              type="email"
-              value={(cfg.from_alias as string) ?? ""}
-              onChange={(e) => setField("from_alias", e.target.value)}
-              placeholder="info@bomedia.net"
-            />
-          </label>
-          <VariablesHelp variables={catalog.variables} />
-        </>
+        <SendEmailConfig
+          cfg={cfg}
+          setField={setField}
+          templates={node.data.templateLookup}
+          variables={catalog.variables}
+        />
       ) : null}
 
       {node.data.stepType === "action_add_tag" ||
@@ -783,6 +825,202 @@ function StepConfigPanel({
         </>
       ) : null}
 
+      {/* PR-Fixes #3: panel del "Modificar campo" — antes faltaba. */}
+      {node.data.stepType === "action_set_custom_field" ? (
+        <>
+          <label>
+            Campo a modificar
+            <input
+              type="text"
+              value={(cfg.field as string) ?? ""}
+              onChange={(e) => setField("field", e.target.value)}
+              placeholder="ej. sector, segmento, nivel_engagement"
+            />
+            <span className="muted small">
+              Nombre del custom field tal y como aparece en la ficha del
+              contacto.
+            </span>
+          </label>
+          <label>
+            Nuevo valor
+            <input
+              type="text"
+              value={
+                cfg.value === undefined || cfg.value === null
+                  ? ""
+                  : String(cfg.value)
+              }
+              onChange={(e) => setField("value", e.target.value)}
+              placeholder="ej. fespa-2026"
+            />
+            <span className="muted small">
+              Acepta variables como{" "}
+              <code>{`{{ contact.first_name }}`}</code>.
+            </span>
+          </label>
+        </>
+      ) : null}
+
+      {/* Panel para action_move_opportunity_stage */}
+      {node.data.stepType === "action_move_opportunity_stage" ? (
+        <label>
+          ID del stage destino
+          <input
+            type="text"
+            value={(cfg.stage_id as string) ?? ""}
+            onChange={(e) => setField("stage_id", e.target.value)}
+            placeholder="UUID del stage del pipeline"
+          />
+          <span className="muted small">
+            Cópialo desde la configuración del pipeline. La oportunidad
+            del contacto se mueve al stage indicado.
+          </span>
+        </label>
+      ) : null}
+
+      {/* Panel para action_assign_owner */}
+      {node.data.stepType === "action_assign_owner" ? (
+        <label>
+          ID del usuario propietario
+          <input
+            type="text"
+            value={(cfg.user_id as string) ?? ""}
+            onChange={(e) => setField("user_id", e.target.value)}
+            placeholder="UUID del user activo"
+          />
+          <span className="muted small">
+            Cambia el owner del contacto al user indicado. Cópialo de
+            <code> /admin/users</code>.
+          </span>
+        </label>
+      ) : null}
+
+      {/* Panel para action_notify_owner / action_notify_manager */}
+      {node.data.stepType === "action_notify_owner" ||
+      node.data.stepType === "action_notify_manager" ? (
+        <>
+          <label>
+            Mensaje
+            <textarea
+              rows={3}
+              value={(cfg.message as string) ?? ""}
+              onChange={(e) => setField("message", e.target.value)}
+              placeholder="Lead frío reactivado: {{ contact.first_name }}"
+            />
+            <span className="muted small">
+              Soporta variables{" "}
+              <code>{`{{ contact.first_name }}`}</code>. Se entrega como
+              notificación in-app.
+            </span>
+          </label>
+          <VariablesHelp variables={catalog.variables} />
+        </>
+      ) : null}
+
+      {/* Panel para action_push_to_brevo / action_force_agilecrm_resync */}
+      {node.data.stepType === "action_push_to_brevo" ||
+      node.data.stepType === "action_force_agilecrm_resync" ? (
+        <p className="muted small">
+          Este paso no necesita configuración adicional. Se ejecuta
+          automáticamente sobre el contacto del workflow.
+        </p>
+      ) : null}
+
+      {/* Panel para exit_* */}
+      {node.data.stepType.startsWith("exit_") ? (
+        <p className="muted small">
+          El workflow terminará con estado{" "}
+          <code>{node.data.stepType.replace("exit_", "")}</code>. No
+          requiere configuración.
+        </p>
+      ) : null}
+
+      {/* Panel para switch */}
+      {node.data.stepType === "switch" ? (
+        <>
+          <label>
+            Campo a evaluar
+            <select
+              value={(cfg.field as string) ?? catalog.fields[0]}
+              onChange={(e) => setField("field", e.target.value)}
+            >
+              {catalog.fields.map((f) => (
+                <option key={f} value={f}>
+                  {f}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Valores (uno por línea — cada uno genera una rama)
+            <textarea
+              rows={3}
+              value={
+                Array.isArray(cfg.cases) ? (cfg.cases as string[]).join("\n") : ""
+              }
+              onChange={(e) =>
+                setField(
+                  "cases",
+                  e.target.value
+                    .split("\n")
+                    .map((v) => v.trim())
+                    .filter(Boolean),
+                )
+              }
+              placeholder={"new\nqualified\ncustomer"}
+            />
+          </label>
+        </>
+      ) : null}
+
+      {/* Panel para wait_until */}
+      {node.data.stepType === "wait_until" ? (
+        <>
+          <label>
+            Fecha absoluta (ISO 8601)
+            <input
+              type="datetime-local"
+              value={(cfg.absolute_at as string) ?? ""}
+              onChange={(e) => setField("absolute_at", e.target.value)}
+            />
+          </label>
+          <p className="muted small">
+            O usa una fecha relativa al contacto (avanzado):
+          </p>
+          <label>
+            Campo de fecha
+            <select
+              value={(cfg.field as string) ?? "contact.created_at"}
+              onChange={(e) => setField("field", e.target.value)}
+            >
+              <option value="contact.created_at">contact.created_at</option>
+            </select>
+          </label>
+          <label>
+            Días de offset
+            <input
+              type="number"
+              value={(cfg.offset_days as number) ?? 0}
+              onChange={(e) =>
+                setField("offset_days", Number(e.target.value))
+              }
+            />
+          </label>
+          <label>
+            Hora local
+            <input
+              type="number"
+              min={0}
+              max={23}
+              value={(cfg.hour_local as number) ?? 9}
+              onChange={(e) =>
+                setField("hour_local", Number(e.target.value))
+              }
+            />
+          </label>
+        </>
+      ) : null}
+
       {node.data.stepType === "condition" ? (
         <ConditionBuilder
           fields={catalog.fields}
@@ -840,6 +1078,151 @@ function StepConfigPanel({
         <Trash2 size={11} aria-hidden /> Borrar paso
       </button>
     </div>
+  );
+}
+
+/**
+ * PR-Fixes Improvement #8: configuración del paso "Enviar email" con
+ * dos modos (radio):
+ *
+ *  - "Usar plantilla del CRM" (default): dropdown con todas las
+ *    plantillas + búsqueda. Persiste `template_id`; el motor resuelve
+ *    al ejecutar (las ediciones de la plantilla se reflejan
+ *    automáticamente).
+ *  - "Contenido personalizado": campos subject + body_html como
+ *    antes. Útil para mensajes ad-hoc que no merecen ser plantilla
+ *    reutilizable.
+ */
+function SendEmailConfig({
+  cfg,
+  setField,
+  templates,
+  variables,
+}: {
+  cfg: Record<string, unknown>;
+  setField: (key: string, value: unknown) => void;
+  templates?: Record<string, string>;
+  variables: string[];
+}) {
+  const tplId = cfg.template_id as string | undefined;
+  const mode = tplId ? "template" : (cfg.body_html ? "custom" : "template");
+  const [filter, setFilter] = useState("");
+  const tplEntries = templates ? Object.entries(templates) : [];
+  const filtered = filter
+    ? tplEntries.filter(([, name]) =>
+        name.toLowerCase().includes(filter.toLowerCase()),
+      )
+    : tplEntries;
+
+  const switchTo = (next: "template" | "custom") => {
+    if (next === "template") {
+      // Limpiamos subject/body_html para que la validación de
+      // required_fields no se confunda — el motor preferirá
+      // template_id cuando esté seteado.
+      setField("body_html", "");
+      setField("subject", "");
+    } else {
+      // Quitamos template_id para que no quede colgado al cambiar a
+      // contenido inline.
+      setField("template_id", undefined);
+    }
+  };
+
+  return (
+    <>
+      <fieldset className="workflow-radio-group">
+        <legend className="muted small">Origen del contenido</legend>
+        <label className="workflow-radio">
+          <input
+            type="radio"
+            name="email-mode"
+            checked={mode === "template"}
+            onChange={() => switchTo("template")}
+          />
+          Plantilla del CRM
+        </label>
+        <label className="workflow-radio">
+          <input
+            type="radio"
+            name="email-mode"
+            checked={mode === "custom"}
+            onChange={() => switchTo("custom")}
+          />
+          Contenido personalizado
+        </label>
+      </fieldset>
+
+      {mode === "template" ? (
+        <>
+          <label>
+            Buscar plantilla
+            <input
+              type="search"
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+              placeholder="Empieza a escribir el nombre..."
+            />
+          </label>
+          <label>
+            Plantilla
+            <select
+              value={tplId ?? ""}
+              onChange={(e) => setField("template_id", e.target.value || undefined)}
+            >
+              <option value="">— Selecciona una —</option>
+              {filtered.map(([id, name]) => (
+                <option key={id} value={id}>
+                  {name}
+                </option>
+              ))}
+            </select>
+            {tplId && templates?.[tplId] ? (
+              <span className="muted small">
+                Plantilla seleccionada: «{templates[tplId]}». Las
+                ediciones futuras de esta plantilla se reflejan al
+                siguiente envío.
+              </span>
+            ) : (
+              <span className="muted small">
+                Sin plantilla seleccionada. El paso no enviará nada.
+              </span>
+            )}
+          </label>
+        </>
+      ) : (
+        <>
+          <label>
+            Asunto
+            <input
+              type="text"
+              value={(cfg.subject as string) ?? ""}
+              onChange={(e) => setField("subject", e.target.value)}
+              placeholder="Hola {{ contact.first_name }}"
+            />
+          </label>
+          <label>
+            Cuerpo HTML
+            <textarea
+              rows={6}
+              value={(cfg.body_html as string) ?? ""}
+              onChange={(e) => setField("body_html", e.target.value)}
+              placeholder="<p>Hola {{ contact.first_name }}, ...</p>"
+            />
+          </label>
+        </>
+      )}
+
+      <label>
+        From alias
+        <input
+          type="email"
+          value={(cfg.from_alias as string) ?? ""}
+          onChange={(e) => setField("from_alias", e.target.value)}
+          placeholder="info@bomedia.net"
+        />
+      </label>
+      <VariablesHelp variables={variables} />
+    </>
   );
 }
 

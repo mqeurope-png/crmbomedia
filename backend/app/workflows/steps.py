@@ -479,6 +479,26 @@ def _step_send_email(session, run, step, contact) -> StepResult:
             error="email_cap_reached",
         )
 
+    # PR-Fixes #8. Si el step usa `template_id`, resolvemos la
+    # plantilla actual y rellenamos subject/body desde ahí. Las
+    # ediciones de la plantilla quedan reflejadas automáticamente
+    # porque leemos siempre fresco. Si la plantilla se ha borrado
+    # del CRM, marcamos skipped — no es razón para fallar el run.
+    raw_subject = cfg.get("subject") or ""
+    raw_body = cfg.get("body_html") or ""
+    template_id = cfg.get("template_id")
+    if template_id:
+        from app.email_templates.models import EmailTemplate  # noqa: PLC0415
+
+        template = session.get(EmailTemplate, template_id)
+        if template is None:
+            return StepResult(
+                status="skipped",
+                error=f"template_not_found:{template_id}",
+            )
+        raw_subject = template.subject or ""
+        raw_body = template.body_html or ""
+
     # Render template.
     ctx_vars = variables.build_context(
         session=session,
@@ -486,12 +506,12 @@ def _step_send_email(session, run, step, contact) -> StepResult:
         trigger_payload=_trigger_payload(run),
     )
     subject = variables.render(
-        cfg.get("subject") or "",
+        raw_subject,
         ctx_vars,
         is_html=False,
     )[:500]
     body_html = variables.render(
-        cfg.get("body_html") or "",
+        raw_body,
         ctx_vars,
         is_html=True,
     )

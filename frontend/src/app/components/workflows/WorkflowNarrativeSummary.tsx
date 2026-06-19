@@ -12,6 +12,7 @@ type Props = {
   triggerType: string;
   steps: NarrativeNode[];
   edges: NarrativeEdge[];
+  templates?: Record<string, string>;
 };
 
 /** Resumen narrado del workflow, pegado al pie del editor. Se
@@ -20,12 +21,15 @@ export function WorkflowNarrativeSummary({
   triggerType,
   steps,
   edges,
+  templates,
 }: Props) {
   const narrative = useMemo(() => {
     const entry = steps.find((s) => s.type === "trigger") ?? steps[0];
     if (!entry) return "";
-    return buildNarrativeSummary(triggerType, steps, edges, entry.id);
-  }, [triggerType, steps, edges]);
+    return buildNarrativeSummary(triggerType, steps, edges, entry.id, {
+      templates,
+    });
+  }, [triggerType, steps, edges, templates]);
 
   if (!narrative) return null;
   return (
