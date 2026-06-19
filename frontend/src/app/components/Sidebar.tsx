@@ -11,6 +11,7 @@ import {
   Plug,
   Settings,
   Shuffle,
+  Sliders,
   CheckSquare,
   Tag,
   Target,
@@ -143,6 +144,15 @@ const NAV_ITEMS: ReadonlyArray<Item> = [
     label: "Workflows",
     icon: Workflow,
     allowedRoles: ["admin", "manager"],
+  },
+  // PR-Fixes-Pase-4 Bug 6. Custom fields manuales — admins-only;
+  // popula el dropdown del editor de workflows sin esperar a que
+  // ningún contacto use el field.
+  {
+    href: "/admin/custom-fields",
+    label: "Custom fields",
+    icon: Sliders,
+    allowedRoles: ["admin"],
   },
   // Sprint Backup. Inserción admin-only justo antes de Ajustes para
   // agrupar el surface "infra" del CRM (Usuarios → Reglas → Backups

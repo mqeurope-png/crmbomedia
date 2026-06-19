@@ -16,6 +16,18 @@ export type StepLike = {
   display_name?: string | null;
 };
 
+/** PR-Fixes-Pase-4 Bug 2. Lee tags del config aceptando el nuevo
+ *  `cfg.tags = [...]` y la forma legacy `cfg.tag = "name"`. */
+function _readTagNames(cfg: Record<string, unknown>): string[] {
+  const list = cfg.tags;
+  if (Array.isArray(list)) {
+    return list.map((t) => String(t ?? "").trim()).filter(Boolean);
+  }
+  const single = cfg.tag;
+  if (typeof single === "string" && single.trim()) return [single.trim()];
+  return [];
+}
+
 /** Minutes → cadena legible en español. */
 export function humanizeDuration(minutes: number | undefined | null): string {
   if (!minutes || minutes <= 0) return "0 min";
@@ -142,10 +154,18 @@ export function humanizeStepLabel(
       return "Si...";
     case "switch":
       return "Según...";
-    case "action_add_tag":
-      return `Añadir tag: ${(cfg.tag as string) || "?"}`;
-    case "action_remove_tag":
-      return `Quitar tag: ${(cfg.tag as string) || "?"}`;
+    case "action_add_tag": {
+      const names = _readTagNames(cfg);
+      if (names.length === 0) return "Añadir tag";
+      if (names.length === 1) return `Añadir tag: ${names[0]}`;
+      return `Añadir ${names.length} tags: ${names.join(", ").slice(0, 60)}`;
+    }
+    case "action_remove_tag": {
+      const names = _readTagNames(cfg);
+      if (names.length === 0) return "Quitar tag";
+      if (names.length === 1) return `Quitar tag: ${names[0]}`;
+      return `Quitar ${names.length} tags: ${names.join(", ").slice(0, 60)}`;
+    }
     case "action_change_lifecycle_status":
       return `Cambiar estado a: ${(cfg.status as string) || "?"}`;
     case "action_set_custom_field": {
@@ -208,23 +228,52 @@ export function humanizeStepLabel(
 
 /**
  * Resumen una línea bajo el label (opcional, contextual).
+ *
+ * PR-Fixes-Pase-4 Bug 4. Cuando el step está inválido devolvemos el
+ * primer error específico (ya humanizado) en vez del placeholder
+ * "(condición incompleta)". El StepNode renderiza este texto y el
+ * tooltip del ⚠️ lista TODOS los errores.
  */
 export function stepSummary(step: StepLike): string {
   const cfg = step.config ?? {};
   if (step.type === "condition") {
+    const validation = validateStepConfig(step);
+    if (!validation.valid) {
+      const msgs = humanizeValidationMessages(validation.missing);
+      return msgs[0] ?? "(condición incompleta)";
+    }
+    // Caso completo: resumen humano del primer rule del árbol IR.
     const c = cfg.condition as Record<string, unknown> | undefined;
-    if (!c) return "(sin condición configurada)";
-    const f = c.field as string | undefined;
-    const o = c.op as string | undefined;
-    const v = c.value;
-    if (!f || !o) return "(condición incompleta)";
-    if (o === "empty") return `${f} está vacío`;
-    if (o === "not_empty") return `${f} no está vacío`;
-    return `${f} ${o} ${v}`;
+    if (!c) return "";
+    return _summarizeConditionTree(c) || "(condición configurada)";
   }
   if (step.type === "wait_for_event") {
     const timeout = cfg.timeout_minutes as number | undefined;
     return timeout ? `Timeout: ${humanizeDuration(timeout)}` : "";
+  }
+  return "";
+}
+
+function _summarizeConditionTree(
+  tree: Record<string, unknown>,
+): string {
+  if (tree.operator) {
+    const children = (tree.children as Record<string, unknown>[]) ?? [];
+    if (children.length === 0) return "";
+    const op = String(tree.operator).toLowerCase();
+    if (children.length === 1) return _summarizeConditionTree(children[0]);
+    return (
+      `${_summarizeConditionTree(children[0])} (${op} ${children.length - 1} más)`
+    );
+  }
+  if (tree.type === "rule") {
+    const f = (tree.field as string) || "?";
+    const c = (tree.comparator as string) || "?";
+    const v = tree.value;
+    if (FILTER_NO_VALUE_COMPARATORS.has(c)) {
+      return `${f} ${c}`;
+    }
+    return `${f} ${c} ${String(v ?? "").slice(0, 30)}`;
   }
   return "";
 }
@@ -246,8 +295,10 @@ const REQUIRED_FIELDS: Record<string, string[]> = {
   wait_for_event: ["event_type", "timeout_minutes"],
   condition: ["condition.field", "condition.op"],
   switch: ["field", "cases"],
-  action_add_tag: ["tag"],
-  action_remove_tag: ["tag"],
+  // PR-Fixes-Pase-4 Bug 2: la validación per-step de tags vive en
+  // `validateStepConfig` (acepta `tags[]` y legacy `tag`).
+  action_add_tag: [],
+  action_remove_tag: [],
   action_change_lifecycle_status: ["status"],
   // PR-Fixes #3: el step "Modificar campo" requiere AMBOS `field` y
   // `value` — sin valor el efecto sería NULL, que el operador no
@@ -285,12 +336,12 @@ function _getDeepValue(
   return cur;
 }
 
-/** PR-Fixes-Pase-3 Bug 4. Mensaje humano por id de campo faltante.
- *  Si una entrada no está aquí, devolvemos el id literal — al menos
- *  el operador ve algo nombrado. */
+/** PR-Fixes-Pase-3 Bug 4 + Pase-4 Bug 4. Mensaje humano por id de
+ *  campo faltante. Si una entrada no está aquí, devolvemos el id
+ *  literal — al menos el operador ve algo nombrado. */
 const HUMAN_MISSING_MESSAGES: Record<string, string> = {
   template_id_or_inline:
-    "Elige una plantilla del CRM o escribe el contenido a mano",
+    "Falta seleccionar plantilla o escribir contenido",
   subject: "Falta el asunto del email",
   body_html: "Falta el cuerpo del email",
   duration_minutes: "Falta indicar la duración",
@@ -298,9 +349,10 @@ const HUMAN_MISSING_MESSAGES: Record<string, string> = {
   timeout_minutes: "Falta indicar el timeout",
   "condition.field": "Falta seleccionar el campo a evaluar",
   "condition.op": "Falta seleccionar el operador",
-  field: "Falta seleccionar el campo",
+  "condition.rules_empty": "La condición no tiene reglas",
+  field: "Falta seleccionar el campo a modificar",
   cases: "Añade al menos un valor de caso",
-  tag: "Falta seleccionar el tag",
+  tag: "Falta seleccionar al menos 1 tag",
   status: "Falta seleccionar el estado",
   value: "Falta el nuevo valor",
   delta: "Indica cuántos puntos sumar o restar (positivo o negativo)",
@@ -308,10 +360,88 @@ const HUMAN_MISSING_MESSAGES: Record<string, string> = {
   title: "Falta el título de la tarea",
   pipeline_id: "Falta seleccionar el pipeline",
   stage_id: "Falta seleccionar el stage destino",
+  from_alias_display_name:
+    "Falta elegir el display name del alias del propietario",
 };
 
+/** PR-Fixes-Pase-4 Bug 4. Comparators del FilterBuilder que NO
+ *  requieren valor — set membership (existe / no existe / vacío).
+ *  Espejo de `NO_VALUE_COMPARATORS` en `segmentTranslator.ts`. */
+const FILTER_NO_VALUE_COMPARATORS = new Set([
+  "is_null",
+  "is_not_null",
+  "is_empty",
+  "is_not_empty",
+]);
+
+/** Traduce los ids de error con sufijo (`condition.rule[2].value`,
+ *  `condition.rule[0].field`) a mensajes con número de regla 1-based,
+ *  que es lo que el operador ve en la UI. Otros ids pasan por la
+ *  tabla literal. */
 export function humanizeValidationMessages(missing: string[]): string[] {
-  return missing.map((m) => HUMAN_MISSING_MESSAGES[m] ?? `Falta: ${m}`);
+  return missing.map((m) => {
+    const ruleMatch = m.match(/^condition\.rule\[(\d+)\]\.(field|value)$/);
+    if (ruleMatch) {
+      const idx = parseInt(ruleMatch[1], 10) + 1;
+      const part = ruleMatch[2];
+      if (part === "field") {
+        return `Falta el campo en la regla ${idx}`;
+      }
+      return `Falta el valor en la regla ${idx}`;
+    }
+    return HUMAN_MISSING_MESSAGES[m] ?? `Falta: ${m}`;
+  });
+}
+
+/** PR-Fixes-Pase-4 Bug 4. Recorre el árbol IR del FilterBuilder y
+ *  reporta IDs específicos de cada regla incompleta. El árbol tiene
+ *  forma `{operator: AND|OR|NOT, children: [...]}` para grupos y
+ *  `{type: "rule", field, comparator, value}` para hojas. Devuelve
+ *  un array de ids tipo `condition.rule[N].value` que la UI traduce
+ *  a "Falta el valor en la regla N+1".
+ */
+function _validateConditionTree(
+  tree: Record<string, unknown> | undefined,
+  counter: { idx: number },
+): string[] {
+  if (!tree || typeof tree !== "object") return [];
+  if (tree.operator) {
+    const children = (tree.children as Record<string, unknown>[]) ?? [];
+    if (children.length === 0) {
+      return ["condition.rules_empty"];
+    }
+    const errors: string[] = [];
+    for (const child of children) {
+      errors.push(..._validateConditionTree(child, counter));
+    }
+    return errors;
+  }
+  if (tree.type === "rule") {
+    const idx = counter.idx;
+    counter.idx += 1;
+    const errors: string[] = [];
+    const field = tree.field as string | undefined;
+    const comparator = tree.comparator as string | undefined;
+    if (!field || !field.trim()) {
+      errors.push(`condition.rule[${idx}].field`);
+    }
+    if (
+      comparator &&
+      !FILTER_NO_VALUE_COMPARATORS.has(comparator)
+    ) {
+      const value = tree.value;
+      const isEmpty =
+        value === undefined ||
+        value === null ||
+        value === "" ||
+        (Array.isArray(value) && value.length === 0);
+      if (isEmpty) {
+        errors.push(`condition.rule[${idx}].value`);
+      }
+    }
+    return errors;
+  }
+  return [];
 }
 
 export function validateStepConfig(step: StepLike): StepValidationResult {
@@ -330,7 +460,34 @@ export function validateStepConfig(step: StepLike): StepValidationResult {
       if (!body?.trim()) missing.push("body_html");
       if (missing.length > 0) missing.unshift("template_id_or_inline");
     }
+    // PR-Fixes-Pase-4 Bug 8: mode "owner_specific" requiere haber
+    // elegido un display_name del owner.
+    const aliasMode = cfg.from_alias_mode as string | undefined;
+    if (aliasMode === "owner_specific") {
+      const dn = cfg.from_alias_display_name as string | undefined;
+      if (!dn || !dn.trim()) missing.push("from_alias_display_name");
+    }
     return { valid: missing.length === 0, missing };
+  }
+  // PR-Fixes-Pase-4 Bug 2: tags multi-select. Inválido si lista vacía
+  // (aceptamos también el legacy `cfg.tag`).
+  if (step.type === "action_add_tag" || step.type === "action_remove_tag") {
+    const names = _readTagNames(cfg);
+    if (names.length === 0) {
+      return { valid: false, missing: ["tag"] };
+    }
+    return { valid: true, missing: [] };
+  }
+  // PR-Fixes-Pase-4 Bug 4: el step `condition` con FilterBuilder
+  // necesita inspección profunda — REQUIRED_FIELDS solo mira el
+  // top-level que no aplica al árbol IR.
+  if (step.type === "condition") {
+    const tree = cfg.condition as Record<string, unknown> | undefined;
+    if (!tree || Object.keys(tree).length === 0) {
+      return { valid: false, missing: ["condition.rules_empty"] };
+    }
+    const errors = _validateConditionTree(tree, { idx: 0 });
+    return { valid: errors.length === 0, missing: errors };
   }
   const required = REQUIRED_FIELDS[step.type] ?? [];
   const missing: string[] = [];

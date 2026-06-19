@@ -3,7 +3,14 @@
 import { useEffect, useState } from "react";
 import { apiFetch } from "../../lib/api";
 
-type CustomFieldKey = { key: string; type: string };
+type CustomFieldKey = {
+  key: string;
+  type: string;
+  /** PR-Fixes-Pase-4 Bug 6. "manual" | "agilecrm" | "inferred" | … */
+  source?: string;
+  /** Etiqueta humana opcional — definida en admin para campos manuales. */
+  label?: string;
+};
 
 type Props = {
   value: string;
@@ -99,7 +106,11 @@ export function CustomFieldSelector({ value, valueValue, onChange }: Props) {
               <option value="">— Selecciona —</option>
               {keys.map((k) => (
                 <option key={k.key} value={k.key}>
-                  {k.key} ({_typeLabel(k.type)})
+                  {/* PR-Fixes-Pase-4 Bug 6. Mostramos origen entre
+                      paréntesis ("texto · manual", "texto · de
+                      AgileCRM") para que el operador sepa de dónde
+                      sale cada field. */}
+                  {k.key} ({_typeLabel(k.type)} · {_sourceLabel(k.source)})
                 </option>
               ))}
             </select>
@@ -164,4 +175,17 @@ function _typeLabel(type: string): string {
     date: "fecha",
     boolean: "sí/no",
   }[type] ?? type;
+}
+
+function _sourceLabel(source: string | undefined): string {
+  switch ((source ?? "").toLowerCase()) {
+    case "manual":
+      return "manual";
+    case "agilecrm":
+      return "de AgileCRM";
+    case "inferred":
+      return "de AgileCRM";
+    default:
+      return source || "otro";
+  }
 }

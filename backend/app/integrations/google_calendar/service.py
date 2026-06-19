@@ -221,10 +221,17 @@ def set_calendar(
 # ---------------------------------------------------------------------------
 
 
-def sync_task_to_calendar(session: Session, task: Task) -> Task:
+def sync_task_to_calendar(
+    session: Session, task: Task, *, all_day: bool = False
+) -> Task:
     """Mirror a task as a Google Calendar event in the assignee's
     selected calendar. No-op (logged) when the assignee isn't
-    connected, has no calendar picked, or the API call fails."""
+    connected, has no calendar picked, or the API call fails.
+
+    `all_day=True` produces an all-day event using the date of
+    `task.due_at` in the calendar's timezone — used by the workflow
+    `action_create_task` step when no specific time is chosen.
+    """
     integration = get_integration(session, task.assigned_user_id)
     if integration is None or integration.selected_calendar_id is None:
         logger.info(
@@ -232,7 +239,7 @@ def sync_task_to_calendar(session: Session, task: Task) -> Task:
             task.id,
         )
         return task
-    body = _event_body_for_task(task)
+    body = _event_body_for_task(task, all_day=all_day)
     try:
         event = GoogleCalendarClient(session, integration).create_event(
             integration.selected_calendar_id, body
@@ -335,7 +342,9 @@ def _event_summary(task: Task) -> str:
     return base
 
 
-def _event_body_for_task(task: Task) -> dict[str, object]:
+def _event_body_for_task(
+    task: Task, *, all_day: bool = False
+) -> dict[str, object]:
     """Build the Google Calendar event payload from a Task.
 
     Layout: title in `summary`, deep link back to the CRM appended to
@@ -343,6 +352,10 @@ def _event_body_for_task(task: Task) -> dict[str, object]:
     30-minute slot — tasks have no end time today). When the task is
     done the title is prefixed with `✓ ` so completion is visible in
     the calendar without extra columns.
+
+    `all_day=True` ignores the time-of-day in `due_at` and emits a
+    `date` range — used by the workflow create-task step when no
+    explicit hour is given.
     """
     settings = get_settings()
     tz = settings.google_calendar_timezone
@@ -355,11 +368,27 @@ def _event_body_for_task(task: Task) -> dict[str, object]:
             "summary": summary,
             "description": _build_description(task),
             "start": {"date": today.isoformat()},
-            "end": {"date": today.isoformat()},
+            "end": {"date": (today + timedelta(days=1)).isoformat()},
         }
     start = task.due_at
     if start.tzinfo is None:
         start = start.replace(tzinfo=UTC)
+    if all_day:
+        # Google's all-day events use a half-open [start_date, end_date)
+        # range. Resolve to the calendar's configured TZ so the date
+        # the operator picked maps to the date shown in Google.
+        try:
+            from zoneinfo import ZoneInfo  # noqa: PLC0415
+
+            local_date = start.astimezone(ZoneInfo(tz)).date()
+        except Exception:  # noqa: BLE001 — fallback to UTC date
+            local_date = start.date()
+        return {
+            "summary": summary,
+            "description": _build_description(task),
+            "start": {"date": local_date.isoformat()},
+            "end": {"date": (local_date + timedelta(days=1)).isoformat()},
+        }
     duration = timedelta(minutes=settings.google_calendar_default_event_minutes)
     end = start + duration
     body: dict[str, object] = {

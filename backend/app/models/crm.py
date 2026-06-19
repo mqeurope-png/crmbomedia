@@ -1750,6 +1750,41 @@ class GdprRequest(TimestampMixin, Base):
     evidence_path: Mapped[str | None] = mapped_column(String(512))
 
 
+class CustomFieldDefinition(TimestampMixin, Base):
+    """PR-Fixes-Pase-4 Bug 6. Catálogo explícito de custom fields
+    nativos del CRM. Hasta el PR #208 el dropdown del editor de
+    workflows solo veía los fields realmente poblados en
+    `contacts.custom_fields` (todos importados de AgileCRM en prod).
+    Con esta tabla los admins crean fields manualmente desde
+    `/admin/custom-fields` y aparecen en los dropdowns aunque no haya
+    ningún contacto que los use todavía.
+
+    El union endpoint `/api/contacts/custom-field-keys` lee de aquí +
+    inspecciona `contacts.custom_fields` y reporta origen.
+    """
+
+    __tablename__ = "custom_field_definitions"
+    __table_args__ = (
+        UniqueConstraint("key", name="uq_custom_field_definitions_key"),
+    )
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid4())
+    )
+    key: Mapped[str] = mapped_column(String(120), nullable=False)
+    label: Mapped[str | None] = mapped_column(String(200))
+    # text | number | date | boolean
+    field_type: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="text"
+    )
+    # `manual` | `agilecrm` | `inferred` | …
+    source: Mapped[str] = mapped_column(
+        String(40), nullable=False, default="manual"
+    )
+    description: Mapped[str | None] = mapped_column(Text)
+    created_by_user_id: Mapped[str | None] = mapped_column(String(36))
+
+
 class AuditLog(TimestampMixin, Base):
     __tablename__ = "audit_logs"
 

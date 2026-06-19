@@ -230,12 +230,23 @@ def _step_switch(session, run, step, contact) -> StepResult:
 # ---------------------------------------------------------------------
 
 
+def _step_tag_names(cfg: dict[str, Any]) -> list[str]:
+    """PR-Fixes-Pase-4 Bug 2. Multi-tag para add/remove. Acepta el
+    nuevo `cfg.tags = [...]` (lista) y mantiene compat con drafts
+    viejos que usaban `cfg.tag = "name"` (string)."""
+    raw = cfg.get("tags")
+    if isinstance(raw, list):
+        return [str(t).strip() for t in raw if str(t).strip()]
+    single = (cfg.get("tag") or "").strip()
+    return [single] if single else []
+
+
 @register_step("action_add_tag")
 def _step_add_tag(session, run, step, contact) -> StepResult:
-    _ = run
+    _ = session, run
     cfg = _config(step)
-    tag_name = (cfg.get("tag") or "").strip()
-    if not tag_name:
+    tags_to_add = _step_tag_names(cfg)
+    if not tags_to_add:
         return StepResult(status="skipped", error="empty_tag")
     # `Contact.tags` es CSV — el campo legacy. Lo respetamos para no
     # divergir del resto del CRM (la M:N tabla `contact_tags` también
@@ -243,25 +254,30 @@ def _step_add_tag(session, run, step, contact) -> StepResult:
     current = [
         t.strip() for t in (contact.tags or "").split(",") if t.strip()
     ]
-    if tag_name.lower() not in {t.lower() for t in current}:
-        current.append(tag_name)
-        contact.tags = ",".join(current)
-    return StepResult(result={"added_tag": tag_name})
+    existing_lower = {t.lower() for t in current}
+    added: list[str] = []
+    for tag_name in tags_to_add:
+        if tag_name.lower() not in existing_lower:
+            current.append(tag_name)
+            existing_lower.add(tag_name.lower())
+            added.append(tag_name)
+    contact.tags = ",".join(current)
+    return StepResult(result={"added_tags": added})
 
 
 @register_step("action_remove_tag")
 def _step_remove_tag(session, run, step, contact) -> StepResult:
     _ = session, run
     cfg = _config(step)
-    tag_name = (cfg.get("tag") or "").strip().lower()
-    if not tag_name:
+    tags_to_remove = {t.lower() for t in _step_tag_names(cfg)}
+    if not tags_to_remove:
         return StepResult(status="skipped", error="empty_tag")
     current = [
         t.strip() for t in (contact.tags or "").split(",") if t.strip()
     ]
-    new = [t for t in current if t.lower() != tag_name]
+    new = [t for t in current if t.lower() not in tags_to_remove]
     contact.tags = ",".join(new)
-    return StepResult(result={"removed_tag": tag_name})
+    return StepResult(result={"removed_tags": sorted(tags_to_remove)})
 
 
 @register_step("action_change_lifecycle_status")
@@ -352,7 +368,24 @@ def _step_create_task(session, run, step, contact) -> StepResult:
     except ValueError:
         priority = TaskPriority.MEDIUM
     due_days = int(cfg.get("due_in_days") or 1)
-    due_at = datetime.now(UTC) + timedelta(days=due_days)
+    # PR-Fixes-Pase-4 Bug 7. Hora local opcional (HH:MM) que el
+    # operador puede meter en el panel; si no la da, all-day en el
+    # calendar y un timestamp neutro a las 09:00 UTC para la columna
+    # `due_at` (el rango natural de "vencimiento día N").
+    event_time_hhmm = (cfg.get("event_time_hhmm") or "").strip()
+    base_dt = datetime.now(UTC) + timedelta(days=due_days)
+    sync_calendar = bool(cfg.get("sync_with_google_calendar"))
+    all_day = sync_calendar and not event_time_hhmm
+    if event_time_hhmm:
+        try:
+            hh, mm = event_time_hhmm.split(":")
+            due_at = base_dt.replace(
+                hour=int(hh), minute=int(mm), second=0, microsecond=0
+            )
+        except (ValueError, IndexError):
+            due_at = base_dt
+    else:
+        due_at = base_dt
 
     assignee_id = (
         cfg.get("assign_to_user_id") or contact.owner_user_id
@@ -373,6 +406,15 @@ def _step_create_task(session, run, step, contact) -> StepResult:
     )
     session.add(task)
     session.flush()
+    # PR-Fixes-Pase-4 Bug 7. Sync best-effort con Google Calendar del
+    # assignee. La función ya se traga errores y no-ops cuando el
+    # usuario no está conectado — el workflow no se rompe.
+    if sync_calendar:
+        from app.integrations.google_calendar import service as gcal_service  # noqa: PLC0415
+
+        gcal_service.sync_task_to_calendar(
+            session, task, all_day=all_day
+        )
     return StepResult(
         result={"task_id": task.id, "title": title, "due_at": due_at.isoformat()}
     )
@@ -412,6 +454,88 @@ def _step_move_opportunity_stage(
 
 
 EMAIL_DAILY_CAP = 400  # margen sobre Gmail 500/día
+
+
+def _resolve_workflow_from_alias(
+    *,
+    session,
+    owner_id: str,
+    mode: str,
+    fixed_alias: str | None,
+    wanted_display_name: str | None,
+) -> tuple[str | None, str | None]:
+    """PR-Fixes-Pase-4 Bug 8.
+
+    Devuelve `(alias_email, warning)` para los tres modos del paso
+    `action_send_email`. `alias_email = None` significa que no se
+    puede resolver y el step debe fallar.
+
+    - "fixed": usa el `from_alias` literal del config, sin validar
+      contra las prefs del owner (compat con drafts viejos).
+    - "owner_default": busca la pref `is_default=True` del owner.
+    - "owner_specific": busca la pref del owner con el
+      `display_name` deseado. Si no existe, fallback al
+      predeterminado del owner + warning.
+    """
+    from app.models.crm import UserEmailAliasPref  # noqa: PLC0415
+
+    if mode == "fixed":
+        return (fixed_alias or "", None)
+
+    owner_prefs = list(
+        session.scalars(
+            select(UserEmailAliasPref).where(
+                UserEmailAliasPref.user_id == owner_id,
+                UserEmailAliasPref.is_allowed.is_(True),
+            )
+        )
+    )
+    if not owner_prefs:
+        return (None, None)
+
+    default_pref = next((p for p in owner_prefs if p.is_default), None)
+
+    if mode == "owner_default":
+        if default_pref is None:
+            # El owner tiene aliases marcados pero ninguno como ★.
+            # Fallback al primero por orden alfabético — no rompemos
+            # el send pero avisamos.
+            owner_prefs.sort(key=lambda p: p.alias_email)
+            return (
+                owner_prefs[0].alias_email,
+                f"owner_no_default_alias user_id={owner_id}",
+            )
+        return (default_pref.alias_email, None)
+
+    if mode == "owner_specific":
+        wanted = (wanted_display_name or "").strip()
+        if wanted:
+            for pref in owner_prefs:
+                override = (pref.display_name_override or "").strip()
+                gmail_name = (pref.gmail_display_name or "").strip()
+                resolved = override or gmail_name or ""
+                if resolved == wanted:
+                    return (pref.alias_email, None)
+        # No match — fallback al predeterminado del owner.
+        if default_pref is not None:
+            return (
+                default_pref.alias_email,
+                (
+                    f"owner_alias_display_name_missing "
+                    f"user_id={owner_id} wanted={wanted!r}"
+                ),
+            )
+        owner_prefs.sort(key=lambda p: p.alias_email)
+        return (
+            owner_prefs[0].alias_email,
+            (
+                f"owner_alias_display_name_missing "
+                f"and no_default user_id={owner_id} wanted={wanted!r}"
+            ),
+        )
+
+    # Modo desconocido — comportarse como "fixed" sin sorprender.
+    return (fixed_alias or "", None)
 
 
 def _emails_sent_today_by_user(session, user_id: str) -> int:
@@ -515,7 +639,43 @@ def _step_send_email(session, run, step, contact) -> StepResult:
         ctx_vars,
         is_html=True,
     )
-    from_alias = cfg.get("from_alias")
+    # PR-Fixes-Pase-4 Bug 8. Resolución del alias del remitente:
+    # tres modos.
+    #
+    #   - "fixed":          legacy — `from_alias` literal del config.
+    #   - "owner_default":  el alias marcado ★ por el owner del
+    #                       contacto en `/account`. Default para
+    #                       steps nuevos.
+    #   - "owner_specific": el alias del owner cuyo display_name
+    #                       coincide con el `from_alias_display_name`
+    #                       que el operador eligió al diseñar el
+    #                       workflow. Si el owner ya no tiene ese
+    #                       display_name, fallback al predeterminado
+    #                       + log warning.
+    #
+    # Drafts viejos sin `from_alias_mode` siguen interpretándose
+    # como "fixed" para no romper comportamiento existente.
+    alias_mode = (cfg.get("from_alias_mode") or "fixed").lower()
+    from_alias_resolved, alias_warning = _resolve_workflow_from_alias(
+        session=session,
+        owner_id=owner_id,
+        mode=alias_mode,
+        fixed_alias=cfg.get("from_alias"),
+        wanted_display_name=cfg.get("from_alias_display_name"),
+    )
+    if from_alias_resolved is None:
+        owner_user = session.get(User, owner_id)
+        owner_label = owner_user.email if owner_user else owner_id
+        return StepResult(
+            status="failed",
+            error=(
+                f"El propietario {owner_label} no tiene aliases "
+                f"configurados en /account"
+            )[:500],
+        )
+    if alias_warning:
+        log.warning("workflows alias_warning %s", alias_warning)
+    from_alias = from_alias_resolved
     from_name = cfg.get("from_name")
 
     # Delega en gmail_service.send_email. Si falla (Gmail no
