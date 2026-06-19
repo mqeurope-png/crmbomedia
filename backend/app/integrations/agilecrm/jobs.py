@@ -259,6 +259,21 @@ def _upsert_contact_for_payload(
         session, contact, trigger="agile:create"
     )
     session.flush()
+    # Sprint Workflows Bloque 1 — hook explícito al motor de workflows.
+    # Bart decidió hooks explícitos (no SQLAlchemy listeners); el sync
+    # Agile crea contactos vía esta función, así que llamamos aquí.
+    from app.workflows.dispatcher import dispatch_event  # noqa: PLC0415
+
+    dispatch_event(
+        session,
+        "contact.created",
+        contact.id,
+        {
+            "source": "agilecrm",
+            "account_id": account_id,
+            "external_id": external_id,
+        },
+    )
     return ("created", False, contact.id, external_id)
 
 

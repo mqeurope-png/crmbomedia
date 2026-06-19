@@ -1278,6 +1278,19 @@ def create_contact(
     )
     session.commit()
     session.refresh(contact)
+
+    # Sprint Workflows Bloque 1 — hook explícito post-commit. Encolamos
+    # a RQ para no bloquear el response; en tests / Redis caído cae a
+    # processing inline. Decisión arquitectónica: hook explícito y NO
+    # listener SQLAlchemy para que bulk imports no disparen workflows.
+    from app.workflows.dispatcher import dispatch_event  # noqa: PLC0415
+
+    dispatch_event(
+        session,
+        "contact.created",
+        contact.id,
+        {"source": "manual", "actor_id": current_user.id},
+    )
     return contact
 
 

@@ -133,6 +133,15 @@ services:
       # Sprint Backup. Cola virtual para el job manual + scheduled
       # cada 72 h. `backups:create` cubre los dos caminos.
       - backups:create
+      # Sprint Workflows Bloque 1. Tres colas:
+      # - `workflows:dispatch` — eventos entrantes (contact.created,
+      #   email.opened, etc.) que evalúan workflows matching.
+      # - `workflows:execute` — runs ya iniciados que avanzan step a step.
+      # - `workflows:scheduler` — heartbeat periódico (cada 30 s)
+      #   que despierta waits + cron workflows.
+      - workflows:dispatch
+      - workflows:execute
+      - workflows:scheduler
     volumes:
       # Sprint Backup-Hardening. El worker ejecuta
       # `scripts/backup-crmbo.sh` via subprocess: necesita el script

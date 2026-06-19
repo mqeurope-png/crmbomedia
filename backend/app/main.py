@@ -22,6 +22,7 @@ from app.api.entity_views import router as entity_views_router
 from app.api.google_integrations import router as google_router
 from app.api.routes import router
 from app.api.tasks import router as tasks_router
+from app.api.workflows import router as workflows_router
 from app.core.config import get_settings
 from app.core.observability import setup_sentry
 from app.email_signatures.router import router as email_signatures_router
@@ -92,6 +93,12 @@ app.include_router(email_templates_router)
 app.include_router(email_signatures_router)
 app.include_router(email_tracking_router)
 app.include_router(admin_backups_router)
+# Sprint Workflows Bloque 1 — motor de automatización.
+# `app.workflows.steps` se importa por side-effect: el decorador
+# `@register_step` rellena el registry sin necesidad de wiring extra.
+from app.workflows import steps as _wf_steps  # noqa: F401,E402,PLC0415
+
+app.include_router(workflows_router)
 
 # Sprint Email v2.2 — serve email-template assets (Tiptap inline
 # uploads). In production nginx aliases `/assets/email-templates/`
@@ -166,6 +173,21 @@ async def _arm_email_scheduled_sweep() -> None:
         logging.getLogger(__name__).warning(
             "email.scheduled_send_sweep arm failed at startup",
             exc_info=True,
+        )
+
+
+@app.on_event("startup")
+async def _arm_workflows_scheduler() -> None:
+    """Sprint Workflows Bloque 1 — heartbeat del motor de workflows."""
+    try:
+        from app.workflows.scheduler import arm  # noqa: PLC0415
+
+        arm()
+    except Exception:  # noqa: BLE001
+        import logging  # noqa: PLC0415
+
+        logging.getLogger(__name__).warning(
+            "workflows.scheduler arm failed at startup", exc_info=True
         )
 
 
