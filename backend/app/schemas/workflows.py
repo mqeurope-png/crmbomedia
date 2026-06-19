@@ -28,6 +28,9 @@ class WorkflowStepWrite(BaseModel):
     position_x: float = 0.0
     position_y: float = 0.0
     is_entry: bool = False
+    # Sprint UX. Nombre custom asignado por el operador via
+    # doble-click sobre el nodo. None → el frontend lo calcula.
+    display_name: str | None = Field(default=None, max_length=120)
 
 
 class WorkflowEdgeWrite(BaseModel):
@@ -43,6 +46,7 @@ class WorkflowStepRead(BaseModel):
     position_x: float
     position_y: float
     is_entry: bool
+    display_name: str | None = None
 
 
 class WorkflowEdgeRead(BaseModel):
@@ -97,6 +101,7 @@ class WorkflowRead(BaseModel):
     total_cancelled: int
     total_failed: int
     created_by_user_id: str | None
+    definition_hash: str | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -106,6 +111,48 @@ class WorkflowRead(BaseModel):
 class WorkflowDetail(WorkflowRead):
     steps: list[WorkflowStepRead] = Field(default_factory=list)
     edges: list[WorkflowEdgeRead] = Field(default_factory=list)
+    # Sprint UX. Otros workflows con hash exacto o similar — el
+    # frontend muestra el modal de duplicado si no es vacío.
+    duplicate_warnings: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class WorkflowDuplicateMatch(BaseModel):
+    workflow_id: str
+    workflow_name: str
+    kind: str  # "exact" | "similar"
+    created_by_user_id: str | None
+    created_at: datetime
+
+
+class WorkflowTemplate(BaseModel):
+    id: str
+    name: str
+    description: str
+    trigger_type: str
+    steps_count: int
+
+
+class WorkflowDryRunRequest(BaseModel):
+    contact_id: str
+
+
+class WorkflowDryRunStep(BaseModel):
+    step_id: str
+    step_type: str
+    display_name: str | None
+    label: str
+    description: str
+    branch_taken: str | None = None
+    config_summary: dict[str, Any] = Field(default_factory=dict)
+
+
+class WorkflowDryRunResponse(BaseModel):
+    workflow_id: str
+    contact_id: str
+    contact_email: str | None
+    steps: list[WorkflowDryRunStep]
+    truncated: bool
+    error: str | None = None
 
 
 # ---------------------------------------------------------------------

@@ -16,6 +16,7 @@ import {
   Target,
   Users,
   UserCog,
+  Workflow,
   type LucideIcon,
 } from "lucide-react";
 import Link from "next/link";
@@ -132,6 +133,15 @@ const NAV_ITEMS: ReadonlyArray<Item> = [
     href: "/admin/assignment-rules",
     label: "Reglas de asignación",
     icon: Shuffle,
+    allowedRoles: ["admin", "manager"],
+  },
+  // Sprint Workflows Bloque 1. Mismo público que reglas de asignación
+  // — admin + manager pueden crear y editar; users comerciales NO ven
+  // la entrada (la lógica de visibilidad usa `allowedRoles`).
+  {
+    href: "/admin/workflows",
+    label: "Workflows",
+    icon: Workflow,
     allowedRoles: ["admin", "manager"],
   },
   // Sprint Backup. Inserción admin-only justo antes de Ajustes para

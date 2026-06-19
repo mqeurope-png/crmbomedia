@@ -18,6 +18,15 @@ export type WorkflowStepRead = {
   position_x: number;
   position_y: number;
   is_entry: boolean;
+  display_name?: string | null;
+};
+
+export type DuplicateWarning = {
+  workflow_id: string;
+  workflow_name: string;
+  kind: "exact" | "similar";
+  created_by_user_id: string | null;
+  created_at: string;
 };
 
 export type WorkflowEdgeRead = {
@@ -49,6 +58,35 @@ export type WorkflowRead = {
 export type WorkflowDetail = WorkflowRead & {
   steps: WorkflowStepRead[];
   edges: WorkflowEdgeRead[];
+  duplicate_warnings: DuplicateWarning[];
+  definition_hash?: string | null;
+};
+
+export type WorkflowTemplate = {
+  id: string;
+  name: string;
+  description: string;
+  trigger_type: string;
+  steps_count: number;
+};
+
+export type WorkflowDryRunStepResult = {
+  step_id: string;
+  step_type: string;
+  display_name?: string | null;
+  label: string;
+  description: string;
+  branch_taken?: string | null;
+  config_summary: Record<string, unknown>;
+};
+
+export type WorkflowDryRunResponse = {
+  workflow_id: string;
+  contact_id: string;
+  contact_email?: string | null;
+  steps: WorkflowDryRunStepResult[];
+  truncated: boolean;
+  error?: string | null;
 };
 
 export type WorkflowRunRead = {
@@ -101,6 +139,7 @@ export type WorkflowStepWrite = {
   position_x: number;
   position_y: number;
   is_entry: boolean;
+  display_name?: string | null;
 };
 
 export type WorkflowEdgeWrite = {
@@ -225,6 +264,37 @@ export async function addContactToWorkflow(
 ): Promise<{ run_id: string }> {
   return apiFetch<{ run_id: string }>(
     `/api/workflows/${workflowId}/add-contact/${contactId}`,
+    { method: "POST" },
+  );
+}
+
+// --- Sprint UX-Workflows-Editor ---
+
+export async function duplicateWorkflow(id: string): Promise<WorkflowDetail> {
+  return apiFetch<WorkflowDetail>(`/api/workflows/${id}/duplicate`, {
+    method: "POST",
+  });
+}
+
+export async function dryRunWorkflow(
+  id: string,
+  contactId: string,
+): Promise<WorkflowDryRunResponse> {
+  return apiFetch<WorkflowDryRunResponse>(`/api/workflows/${id}/dry-run`, {
+    method: "POST",
+    body: JSON.stringify({ contact_id: contactId }),
+  });
+}
+
+export async function listWorkflowTemplates(): Promise<WorkflowTemplate[]> {
+  return apiFetch<WorkflowTemplate[]>("/api/workflows/_templates");
+}
+
+export async function createWorkflowFromTemplate(
+  templateId: string,
+): Promise<WorkflowDetail> {
+  return apiFetch<WorkflowDetail>(
+    `/api/workflows/_templates/${templateId}/use`,
     { method: "POST" },
   );
 }

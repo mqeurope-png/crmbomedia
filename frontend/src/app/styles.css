@@ -8910,3 +8910,98 @@ tr.is-inactive {
   padding: 6px 8px;
   text-align: left;
 }
+
+/* Sprint UX-Workflows-Editor ---------------------------------------- */
+.workflow-node-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.workflow-node-icon { font-size: 14px; }
+.workflow-node-warning {
+  display: inline-flex;
+  color: #b54708;
+  margin-left: auto;
+}
+.workflow-node.is-invalid {
+  border-color: #fca5a5;
+  box-shadow: 0 0 0 1px #fca5a533;
+}
+.workflow-editor-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  margin-bottom: 10px;
+}
+.workflow-editor-search input {
+  flex: 1;
+  border: 0;
+  outline: 0;
+  font-size: 12px;
+  font-family: inherit;
+}
+.workflow-narrative {
+  margin-top: 12px;
+  padding: 10px 14px;
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+}
+.workflow-narrative h3 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  margin: 0 0 6px;
+}
+.workflow-narrative-text {
+  font-family: inherit;
+  white-space: pre-wrap;
+  font-size: 12px;
+  color: #1d2940;
+  margin: 0;
+  line-height: 1.5;
+}
+.workflow-template-gallery {
+  list-style: none;
+  padding: 0;
+  margin: 12px 0;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+}
+.workflow-template-gallery li {
+  padding: 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: #fff;
+}
+.workflow-dryrun-modal {
+  max-width: 640px;
+  width: 100%;
+  max-height: 80vh;
+  overflow-y: auto;
+}
+.workflow-dryrun-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.workflow-dryrun-timeline ol {
+  list-style: decimal;
+  padding-left: 20px;
+  margin: 12px 0;
+}
+.workflow-dryrun-timeline li {
+  margin-bottom: 10px;
+  padding: 6px 0;
+  border-bottom: 1px dashed #e5e7eb;
+}
