@@ -673,8 +673,10 @@ def test_api_cost_estimate(
     )
     assert res.status_code == 200
     body = res.json()
-    # 1 contacto matchea el filter.
-    assert body["matching_contacts_now"] == 1
+    # PR-Fixes #4. `contact.created` es un trigger de evento puntual:
+    # `matching_contacts_now` siempre 0 — el workflow solo se aplica
+    # a futuros, no a contactos ya existentes que cumplían el filtro.
+    assert body["matching_contacts_now"] == 0
 
 
 # ---------------------------------------------------------------------

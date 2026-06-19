@@ -56,7 +56,10 @@ const TRIGGER_LABELS: Record<string, string> = {
   "opportunity.stage_changed": "Oportunidad cambia de stage",
   "opportunity.won": "Oportunidad ganada",
   "opportunity.lost": "Oportunidad perdida",
-  "cron.recurring": "Tarea programada recurrente",
+  // PR-Fixes #9: "Recurrente (preset)" era técnico. Le llamamos
+  // "Horario fijo" en la UI del selector y en cualquier label
+  // posterior.
+  "cron.recurring": "Horario fijo",
 };
 
 const STEP_ICONS: Record<string, string> = {
@@ -93,14 +96,39 @@ export function humanizeTrigger(triggerType: string): string {
 }
 
 /**
+ * Look-ups que el editor cachea al cargar (templates de email,
+ * stages de pipeline, tags, custom fields). Pasados al humanizer
+ * para que el label resuelva ids a nombres legibles.
+ */
+export type LookupCaches = {
+  templates?: Record<string, string>;
+  pipelineStages?: Record<string, string>;
+  users?: Record<string, string>;
+  triggerType?: string;
+};
+
+/**
  * Devuelve el label corto que va en el header del nodo. Usa display_name
  * si el operador lo asignó, si no calcula uno legible.
+ *
+ * PR-Fixes-Workflows-Editor:
+ * - Bug 1: el nodo `trigger` ya no muestra "Inicio del workflow"; usa
+ *   `lookups.triggerType` para reflejar el tipo elegido por el operador.
+ * - Bug 2: las acciones con id (template, stage, tag, user) ahora
+ *   resuelven el nombre humano si el caller pasa los `lookups`. Sin
+ *   caches caen al placeholder previo.
  */
-export function humanizeStepLabel(step: StepLike): string {
+export function humanizeStepLabel(
+  step: StepLike,
+  lookups: LookupCaches = {},
+): string {
   if (step.display_name && step.display_name.trim()) return step.display_name;
   const cfg = step.config ?? {};
   switch (step.type) {
     case "trigger":
+      if (lookups.triggerType) {
+        return humanizeTrigger(lookups.triggerType);
+      }
       return "Inicio del workflow";
     case "wait_time":
       return `Esperar ${humanizeDuration(cfg.duration_minutes as number)}`;
@@ -120,32 +148,51 @@ export function humanizeStepLabel(step: StepLike): string {
       return `Quitar tag: ${(cfg.tag as string) || "?"}`;
     case "action_change_lifecycle_status":
       return `Cambiar estado a: ${(cfg.status as string) || "?"}`;
-    case "action_set_custom_field":
-      return `Modificar ${(cfg.field as string) || "campo"}`;
+    case "action_set_custom_field": {
+      const field = (cfg.field as string) || "campo";
+      const value = cfg.value;
+      if (value === undefined || value === "" || value === null) {
+        return `Modificar campo "${field}"`;
+      }
+      return `Modificar campo "${field}" = ${String(value).slice(0, 30)}`;
+    }
     case "action_change_lead_score": {
       const d = (cfg.delta as number) ?? 0;
       return d >= 0
         ? `Sumar ${d} puntos lead score`
         : `Restar ${Math.abs(d)} puntos lead score`;
     }
-    case "action_assign_owner":
-      return "Asignar propietario";
+    case "action_assign_owner": {
+      const uid = cfg.user_id as string | undefined;
+      const name = uid ? lookups.users?.[uid] : undefined;
+      return name ? `Asignar a: ${name}` : "Asignar propietario";
+    }
     case "action_create_task":
       return `Crear tarea: ${
         ((cfg.title as string) || "").slice(0, 40) || "(sin título)"
       }`;
-    case "action_send_email":
+    case "action_send_email": {
+      const tid = cfg.template_id as string | undefined;
+      if (tid && lookups.templates?.[tid]) {
+        return `Enviar email: ${lookups.templates[tid]}`;
+      }
       return `Enviar email: ${
         ((cfg.subject as string) || "").slice(0, 40) || "(sin asunto)"
       }`;
-    case "action_move_opportunity_stage":
-      return "Mover oportunidad de stage";
+    }
+    case "action_move_opportunity_stage": {
+      const sid = cfg.stage_id as string | undefined;
+      const name = sid ? lookups.pipelineStages?.[sid] : undefined;
+      return name
+        ? `Mover oportunidad a "${name}"`
+        : "Mover oportunidad de stage";
+    }
     case "action_notify_owner":
       return "Notificar al propietario";
     case "action_notify_manager":
       return "Notificar al manager";
     case "action_push_to_brevo":
-      return "Push contacto a Brevo";
+      return "Sincronizar con Brevo";
     case "action_force_agilecrm_resync":
       return "Forzar resync AgileCRM";
     case "exit_natural":
@@ -202,7 +249,10 @@ const REQUIRED_FIELDS: Record<string, string[]> = {
   action_add_tag: ["tag"],
   action_remove_tag: ["tag"],
   action_change_lifecycle_status: ["status"],
-  action_set_custom_field: ["field"],
+  // PR-Fixes #3: el step "Modificar campo" requiere AMBOS `field` y
+  // `value` — sin valor el efecto sería NULL, que el operador no
+  // suele querer expresar implícitamente.
+  action_set_custom_field: ["field", "value"],
   action_change_lead_score: ["delta"],
   action_assign_owner: ["user_id"],
   action_create_task: ["title"],
@@ -234,8 +284,24 @@ function _getDeepValue(
 }
 
 export function validateStepConfig(step: StepLike): StepValidationResult {
-  const required = REQUIRED_FIELDS[step.type] ?? [];
   const cfg = step.config ?? {};
+  // PR-Fixes #8: action_send_email es válido si tiene template_id O
+  // si tiene subject+body_html. La validación genérica de
+  // REQUIRED_FIELDS no expresa el OR — lo hacemos a mano aquí.
+  if (step.type === "action_send_email") {
+    const missing: string[] = [];
+    const tpl = cfg.template_id;
+    const hasTpl = typeof tpl === "string" && tpl.trim();
+    const subject = cfg.subject as string | undefined;
+    const body = cfg.body_html as string | undefined;
+    if (!hasTpl) {
+      if (!subject?.trim()) missing.push("subject");
+      if (!body?.trim()) missing.push("body_html");
+      if (missing.length > 0) missing.unshift("template_id_or_inline");
+    }
+    return { valid: missing.length === 0, missing };
+  }
+  const required = REQUIRED_FIELDS[step.type] ?? [];
   const missing: string[] = [];
   for (const field of required) {
     const value = _getDeepValue(cfg, field);
@@ -272,12 +338,16 @@ export type NarrativeEdge = {
  * Walk del grafo desde el entry step. Concatena descripciones con
  * conectores ("Cuando...", "entonces", "esperar", "si", "después",
  * "finalmente"). Ramas se identan con "─".
+ *
+ * `lookups` se pasa a `humanizeStepLabel` para resolver ids a nombres
+ * (template, stage, user) cuando el caller los tiene cacheados.
  */
 export function buildNarrativeSummary(
   triggerType: string,
   steps: NarrativeNode[],
   edges: NarrativeEdge[],
   entryId: string,
+  lookups: LookupCaches = {},
 ): string {
   const byId = new Map(steps.map((s) => [s.id, s]));
   const outgoing = (sid: string) =>
@@ -295,11 +365,14 @@ export function buildNarrativeSummary(
     const step = byId.get(stepId);
     if (!step) return;
     const indent = "  ".repeat(depth);
-    const label = humanizeStepLabel({
-      type: step.type,
-      config: step.config,
-      display_name: step.display_name,
-    });
+    const label = humanizeStepLabel(
+      {
+        type: step.type,
+        config: step.config,
+        display_name: step.display_name,
+      },
+      { ...lookups, triggerType },
+    );
     if (step.type === "trigger") {
       // Ya se mencionó arriba; saltamos al siguiente.
     } else {

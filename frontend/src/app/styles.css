@@ -9005,3 +9005,23 @@ tr.is-inactive {
   padding: 6px 0;
   border-bottom: 1px dashed #e5e7eb;
 }
+
+/* PR-Fixes-Workflows-Editor — radio del modo email --------------- */
+.workflow-radio-group {
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin: 8px 0;
+  display: flex;
+  gap: 16px;
+}
+.workflow-radio-group legend {
+  font-weight: 600;
+}
+.workflow-radio {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+}
+.workflow-radio input { margin-right: 4px; }

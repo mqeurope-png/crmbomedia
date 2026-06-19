@@ -1027,11 +1027,19 @@ def cost_estimate(
 
     errors = _validate_workflow_structure(session, workflow)
 
-    # Estimación naive: para triggers tipo `cron.recurring` o sin
-    # filtros, contar todos los contactos activos. Para triggers de
-    # evento (contact.created, etc.) no podemos saber a priori cuántos
-    # vendrán — devolvemos un placeholder.
-    triggers_event_based = {
+    # PR-Fixes #4. Bart: el estimador devolvía "20003 contactos" para
+    # `contact.created` y eso es engañoso — ese trigger solo dispara
+    # sobre CREACIONES futuras, no sobre los contactos que ya existen.
+    # Distinguimos dos familias:
+    #
+    # - **Evento puntual**: contact.created/updated, email.*, task.*,
+    #   opportunity.*. `matching_contacts_now = 0` porque no aplica
+    #   retroactivo. La estimación 30d se basa en histórico de runs
+    #   del workflow + heurística suave.
+    # - **Estado actual**: contact.date_field (cumpleaños hoy),
+    #   engagement.brevo.composed (N aperturas en X días), cron
+    #   (universo de contactos activos). Aquí sí cuenta contactos.
+    EVENT_TRIGGERS = {
         "contact.created",
         "contact.updated",
         "contact.lifecycle_changed",
@@ -1041,7 +1049,6 @@ def cost_estimate(
         "email.crm.replied",
         "email.brevo.opened",
         "email.brevo.clicked",
-        "engagement.brevo.composed",
         "task.created",
         "task.completed",
         "task.overdue",
@@ -1049,21 +1056,28 @@ def cost_estimate(
         "opportunity.stage_changed",
         "opportunity.won",
         "opportunity.lost",
-        "contact.date_field",
     }
-    matching = 0
-    if workflow.trigger_type in triggers_event_based:
-        # Solo podemos estimar el universo afectado si hay filter sobre
-        # campos del contacto.
-        try:
-            trigger_cfg = json.loads(workflow.trigger_config_json or "{}")
-        except (TypeError, ValueError):
-            trigger_cfg = {}
-        if trigger_cfg.get("filter"):
-            # Iteramos contactos activos y evaluamos in-memory — ok
-            # para volumen Bomedia (~10k contactos/cuenta).
-            from app.workflows.conditions import EvalContext, evaluate  # noqa: PLC0415
+    STATE_TRIGGERS = {
+        "contact.date_field",
+        "engagement.brevo.composed",
+        "cron.recurring",
+    }
 
+    try:
+        trigger_cfg = json.loads(workflow.trigger_config_json or "{}")
+    except (TypeError, ValueError):
+        trigger_cfg = {}
+
+    matching = 0
+    if workflow.trigger_type in STATE_TRIGGERS:
+        from sqlalchemy import func as _func  # noqa: PLC0415
+
+        from app.workflows.conditions import (  # noqa: PLC0415
+            EvalContext,
+            evaluate,
+        )
+
+        if trigger_cfg.get("filter"):
             contacts = list(
                 session.scalars(
                     select(Contact).where(Contact.is_active.is_(True))
@@ -1076,24 +1090,17 @@ def cost_estimate(
         else:
             matching = int(
                 session.scalar(
-                    select(__import__("sqlalchemy").func.count(Contact.id)).where(
+                    select(_func.count(Contact.id)).where(
                         Contact.is_active.is_(True)
                     )
                 )
                 or 0
             )
-    else:
-        # cron.recurring → cuenta contactos activos.
-        matching = int(
-            session.scalar(
-                select(__import__("sqlalchemy").func.count(Contact.id)).where(
-                    Contact.is_active.is_(True)
-                )
-            )
-            or 0
-        )
 
-    # Heurística para 30d.
+    # Heurística para 30d. Para event-based, miramos cuántos runs ha
+    # tenido este workflow históricamente y proyectamos. Si es nuevo
+    # (sin histórico), devolvemos 0 — el operador sabrá que la
+    # estimación no es fiable hasta que active.
     steps = list(
         session.scalars(
             select(WorkflowStep).where(WorkflowStep.workflow_id == workflow_id)
@@ -1102,10 +1109,33 @@ def cost_estimate(
     n_send_email = sum(1 for s in steps if s.type == "action_send_email")
     n_tasks = sum(1 for s in steps if s.type == "action_create_task")
 
-    # Asumimos 1 run por contacto matchando. Para cron.recurring,
-    # multiplicar por 30 (1/día). Para event-based, asumimos que la
-    # mitad cumplirá en los próximos 30 días.
-    runs_30d = matching * 30 if workflow.trigger_type == "cron.recurring" else matching // 2
+    if workflow.trigger_type == "cron.recurring":
+        # Asumimos 1 ejecución por contacto y por día — N=30.
+        runs_30d = matching * 30
+    elif workflow.trigger_type in STATE_TRIGGERS:
+        # Asumimos que los que cumplen hoy se repartirán a lo largo
+        # del mes (cumpleaños → 12 al mes / 365 al año).
+        runs_30d = matching
+    elif workflow.trigger_type in EVENT_TRIGGERS:
+        # Histórico: cuántos runs hubo en los últimos 30 días → es
+        # también la proyección para los próximos 30. Si es la primera
+        # vez que se activa el workflow, runs_30d = 0.
+        from datetime import UTC, datetime, timedelta  # noqa: PLC0415
+
+        from app.models.workflows import WorkflowRun  # noqa: PLC0415
+
+        cutoff = datetime.now(UTC) - timedelta(days=30)
+        runs_30d = int(
+            session.scalar(
+                select(__import__("sqlalchemy").func.count(WorkflowRun.id)).where(
+                    WorkflowRun.workflow_id == workflow_id,
+                    WorkflowRun.started_at >= cutoff,
+                )
+            )
+            or 0
+        )
+    else:
+        runs_30d = 0
 
     return WorkflowCostEstimate(
         matching_contacts_now=matching,
