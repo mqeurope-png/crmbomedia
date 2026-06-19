@@ -8791,12 +8791,45 @@ tr.is-inactive {
   flex-direction: column;
   height: calc(100vh - 64px);
 }
+/* PR-Fixes-Pase-4 Bug 3: 5 columnas — panel + handle + canvas +
+   handle + panel. El `gridTemplateColumns` inline lo regenera con los
+   widths actuales en cada render del editor. Mantenemos un default
+   aquí para SSR / fallback. */
 .workflow-editor-layout {
   display: grid;
-  grid-template-columns: 220px 1fr 320px;
-  gap: 12px;
+  grid-template-columns: 220px 6px 1fr 6px 320px;
+  gap: 6px;
   flex: 1;
   min-height: 0;
+}
+.workflow-editor-resize-handle {
+  background: transparent;
+  cursor: col-resize;
+  position: relative;
+  user-select: none;
+  border-radius: 3px;
+  transition: background 0.15s;
+}
+.workflow-editor-resize-handle::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 2px;
+  height: 36px;
+  background: #d1d5db;
+  border-radius: 2px;
+}
+.workflow-editor-resize-handle:hover {
+  background: rgba(59, 130, 246, 0.08);
+}
+.workflow-editor-resize-handle:hover::after {
+  background: #3b82f6;
+}
+.workflow-editor-resize-handle:focus-visible {
+  outline: 2px solid #3b82f6;
+  outline-offset: -1px;
 }
 .workflow-editor-toolbar {
   background: #fbfcfd;
@@ -8881,6 +8914,137 @@ tr.is-inactive {
   color: #6b7280;
   margin-top: 2px;
   font-family: ui-monospace, monospace;
+}
+/* PR-Fixes-Pase-4 Bug 4: mensaje de error específico bajo el label en
+   color rojo para que el operador lo distinga del summary normal. */
+.workflow-node-summary.is-error {
+  color: #b91c1c;
+  font-family: inherit;
+}
+/* PR-Fixes-Pase-4 Bug 2: WorkflowTagsPicker (multi-select con chips). */
+.workflow-tags-picker {
+  position: relative;
+  display: block;
+}
+.workflow-tags-picker-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 6px 10px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  background: #fff;
+  font-size: 12px;
+  cursor: pointer;
+  text-align: left;
+}
+.workflow-tags-picker-trigger:hover { background: #f9fafb; }
+.workflow-tags-picker-panel {
+  position: absolute;
+  z-index: 50;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  background: #fff;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+  max-height: 320px;
+  display: flex;
+  flex-direction: column;
+}
+.workflow-tags-picker-search {
+  padding: 8px;
+  border-bottom: 1px solid #e5e7eb;
+}
+.workflow-tags-picker-search input {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+  font-size: 12px;
+}
+.workflow-tags-picker-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px 0;
+  overflow-y: auto;
+  flex: 1;
+}
+.workflow-tags-picker-list li { padding: 0; }
+.workflow-tags-picker-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  cursor: pointer;
+  font-size: 12px;
+  margin: 0;
+}
+.workflow-tags-picker-row:hover { background: #f3f4f6; }
+.workflow-tags-picker-row input[type="checkbox"] {
+  margin: 0;
+  width: auto;
+}
+.workflow-tags-picker-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+}
+.workflow-tags-picker-create {
+  display: block;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  background: #f0f9ff;
+  color: #1d4ed8;
+  cursor: pointer;
+  text-align: left;
+  font-size: 12px;
+}
+.workflow-tags-picker-create:hover { background: #dbeafe; }
+.workflow-tags-picker-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 8px;
+}
+.workflow-tags-picker-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 6px 3px 8px;
+  background: #e0e7ff;
+  color: #312e81;
+  border-radius: 12px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.workflow-tags-picker-chip button {
+  background: transparent;
+  border: none;
+  color: #312e81;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 2px;
+}
+.workflow-tags-picker-chip button:hover { color: #b91c1c; }
+
+/* PR-Fixes-Pase-4 Bug 7: checkbox del panel "Crear tarea". */
+.workflow-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+.workflow-checkbox input[type="checkbox"] {
+  width: auto;
+  margin: 0;
 }
 .workflow-variables-help {
   font-size: 11px;

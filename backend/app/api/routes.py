@@ -59,6 +59,7 @@ from app.models.crm import (
     ContactPipelineStage,
     ContactTag,
     ContactView,
+    CustomFieldDefinition,
     ExternalReference,
     ExternalSystem,
     Pipeline,
@@ -1223,15 +1224,30 @@ def list_contact_custom_field_keys(
     session: Session = Depends(get_session),
     current_user: User = Depends(require_user),
 ) -> list[dict[str, str]]:
-    """PR-Fixes-Pase-3 Bug 6. Devuelve la unión de claves vistas en
-    `contacts.custom_fields` con un tipo inferido del primer valor
-    no-null (`text`/`number`/`date`/`boolean`). El editor de workflows
-    lo usa para poblar el dropdown del paso "Modificar campo" sin
-    obligar al operador a memorizar nombres internos."""
+    """PR-Fixes-Pase-3 Bug 6 + Pase-4 Bug 6. Devuelve la unión de
+    claves del catálogo `custom_field_definitions` (creadas
+    manualmente desde admin u otros integradores) y las que el
+    inspector encuentra en `contacts.custom_fields` (típicamente
+    importadas de AgileCRM). Cada entrada lleva `source` para que el
+    dropdown del editor anote el origen al usuario.
+
+    Tipo inferido (`text`/`number`/`date`/`boolean`):
+        - Definiciones manuales: `field_type` de la fila.
+        - Inferido del primer valor no-null encontrado en contactos."""
     _ = current_user
 
+    # 1) Definiciones explícitas — tienen prioridad sobre lo inferido.
+    keys: dict[str, dict[str, str]] = {}
+    for definition in session.scalars(select(CustomFieldDefinition)):
+        keys[definition.key] = {
+            "key": definition.key,
+            "type": definition.field_type or "text",
+            "source": definition.source or "manual",
+            "label": definition.label or definition.key,
+        }
+
+    # 2) Lo que veamos en los contactos, sin pisar definiciones.
     rows = list(session.scalars(select(Contact.custom_fields)))
-    keys: dict[str, str] = {}
     for raw in rows:
         if not raw:
             continue
@@ -1246,8 +1262,13 @@ def list_contact_custom_field_keys(
                 continue
             if k in keys:
                 continue
-            keys[k] = _infer_field_type(v)
-    return [{"key": k, "type": t} for k, t in sorted(keys.items())]
+            keys[k] = {
+                "key": k,
+                "type": _infer_field_type(v),
+                "source": "inferred",
+                "label": k,
+            }
+    return [keys[k] for k in sorted(keys)]
 
 
 def _infer_field_type(value: object) -> str:
@@ -1261,6 +1282,123 @@ def _infer_field_type(value: object) -> str:
             return "date"
         return "text"
     return "text"
+
+
+# ---------------------------------------------------------------------
+# PR-Fixes-Pase-4 Bug 6 — admin CRUD para definiciones de custom fields
+# ---------------------------------------------------------------------
+
+
+_ALLOWED_CUSTOM_FIELD_TYPES = {"text", "number", "date", "boolean"}
+
+
+@router.get("/admin/custom-fields", tags=["admin"])
+def list_custom_field_definitions(
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_admin),
+) -> list[dict[str, str | None]]:
+    """Lista las definiciones manuales (las inferidas no viven aquí).
+    Solo admins porque crear/borrar es admin-only y mantener la lista
+    centralizada simplifica permisos."""
+    _ = current_user
+    rows = list(
+        session.scalars(
+            select(CustomFieldDefinition).order_by(
+                CustomFieldDefinition.key
+            )
+        )
+    )
+    return [
+        {
+            "id": d.id,
+            "key": d.key,
+            "label": d.label,
+            "type": d.field_type,
+            "source": d.source,
+            "description": d.description,
+        }
+        for d in rows
+    ]
+
+
+@router.post(
+    "/admin/custom-fields",
+    status_code=status.HTTP_201_CREATED,
+    tags=["admin"],
+)
+def create_custom_field_definition(
+    payload: dict[str, str],
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_admin),
+) -> dict[str, str | None]:
+    key = (payload.get("key") or "").strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="key is required")
+    if len(key) > 120:
+        raise HTTPException(status_code=400, detail="key too long")
+    field_type = (payload.get("type") or "text").lower()
+    if field_type not in _ALLOWED_CUSTOM_FIELD_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"type must be one of {sorted(_ALLOWED_CUSTOM_FIELD_TYPES)}"
+            ),
+        )
+    label = (payload.get("label") or "").strip() or None
+    description = (payload.get("description") or "").strip() or None
+    existing = session.scalar(
+        select(CustomFieldDefinition).where(
+            CustomFieldDefinition.key == key
+        )
+    )
+    if existing is not None:
+        raise HTTPException(
+            status_code=409, detail=f"custom field '{key}' already exists"
+        )
+    definition = CustomFieldDefinition(
+        key=key,
+        label=label,
+        field_type=field_type,
+        source="manual",
+        description=description,
+        created_by_user_id=current_user.id,
+    )
+    session.add(definition)
+    session.commit()
+    session.refresh(definition)
+    return {
+        "id": definition.id,
+        "key": definition.key,
+        "label": definition.label,
+        "type": definition.field_type,
+        "source": definition.source,
+        "description": definition.description,
+    }
+
+
+@router.delete(
+    "/admin/custom-fields/{key}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    tags=["admin"],
+)
+def delete_custom_field_definition(
+    key: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_admin),
+) -> Response:
+    _ = current_user
+    definition = session.scalar(
+        select(CustomFieldDefinition).where(
+            CustomFieldDefinition.key == key
+        )
+    )
+    if definition is None:
+        raise HTTPException(
+            status_code=404, detail=f"custom field '{key}' not found"
+        )
+    session.delete(definition)
+    session.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post(

@@ -36,11 +36,13 @@ import {
 import { PageHeader } from "../../../components/PageHeader";
 import { CustomFieldSelector } from "../../../components/workflows/CustomFieldSelector";
 import { PipelineStageSelector } from "../../../components/workflows/PipelineStageSelector";
-import { TagPicker, TriggerConfigPanel } from "../../../components/workflows/TriggerConfigPanel";
+import { TriggerConfigPanel } from "../../../components/workflows/TriggerConfigPanel";
+import { WorkflowTagsPicker } from "../../../components/workflows/WorkflowTagsPicker";
 import { WorkflowConditionBuilder } from "../../../components/workflows/WorkflowConditionBuilder";
 import { WorkflowDryRunModal } from "../../../components/workflows/WorkflowDryRunModal";
 import { WorkflowNarrativeSummary } from "../../../components/workflows/WorkflowNarrativeSummary";
 import { extractErrorMessage } from "../../../lib/errors";
+import { useResizablePanel } from "../../../lib/useResizablePanel";
 import {
   activateWorkflow,
   getWorkflow,
@@ -55,6 +57,7 @@ import {
   type WorkflowStepWrite,
 } from "../../../lib/workflowsApi";
 import { listEmailTemplates } from "../../../lib/emailTemplatesApi";
+import { getMyEmailAliases, type MyAlias } from "../../../lib/emailsApi";
 import {
   humanizeStepLabel,
   humanizeValidationMessages,
@@ -143,8 +146,16 @@ function StepNode({
     triggerType: data.triggerType,
     templates: data.templateLookup,
   });
-  const summary = stepSummary(stepLike);
   const validation = validateStepConfig(stepLike);
+  // PR-Fixes-Pase-4 Bug 4. Si el step está inválido, mostramos el
+  // primer error humanizado bajo el label (en lugar del summary
+  // genérico). Tooltip del ⚠️ concentra todos los errores.
+  const humanErrors = !validation.valid
+    ? humanizeValidationMessages(validation.missing)
+    : [];
+  const summary = validation.valid
+    ? stepSummary(stepLike)
+    : humanErrors[0] ?? "";
   const handles = outgoingHandles(data.stepType, data.config);
   // Distribución horizontal de los handles en el borde inferior: si hay
   // N handles, los espaciamos uniformemente.
@@ -168,16 +179,22 @@ function StepNode({
         {!validation.valid ? (
           <span
             className="workflow-node-warning"
-            title={humanizeValidationMessages(validation.missing).join(
-              " · ",
-            )}
+            title={humanErrors.join(" · ")}
             aria-label="Configuración incompleta"
           >
             <AlertTriangle size={11} aria-hidden />
           </span>
         ) : null}
       </div>
-      {summary ? <div className="workflow-node-summary">{summary}</div> : null}
+      {summary ? (
+        <div
+          className={`workflow-node-summary${
+            !validation.valid ? " is-error" : ""
+          }`}
+        >
+          {summary}
+        </div>
+      ) : null}
       {handles.map((h, idx) => {
         const offset =
           handles.length === 1
@@ -263,6 +280,19 @@ export default function WorkflowEditorPage() {
   const [triggerConfig, setTriggerConfig] = useState<Record<string, unknown>>(
     {},
   );
+
+  // PR-Fixes-Pase-4 Bug 3. Resizable side panels (defaults match
+  // pre-resize widths so existing users see no jump on first load).
+  const leftPanel = useResizablePanel({
+    storageKey: "workflows_editor_left_panel_width",
+    defaultWidth: 220,
+    side: "right",
+  });
+  const rightPanel = useResizablePanel({
+    storageKey: "workflows_editor_right_panel_width",
+    defaultWidth: 320,
+    side: "left",
+  });
 
   const load = useCallback(async () => {
     setError(null);
@@ -357,6 +387,14 @@ export default function WorkflowEditorPage() {
     const lastNode = nodes[nodes.length - 1];
     const x = lastNode ? lastNode.position.x : 200;
     const y = lastNode ? lastNode.position.y + 120 : 200;
+    // PR-Fixes-Pase-4 Bug 8: nuevos steps `action_send_email` arrancan
+    // con `from_alias_mode = "owner_default"` para que en el caso
+    // típico (varios comerciales con su propio alias ★) el motor
+    // resuelva al envío sin que el creador tenga que pensar nada.
+    const initialConfig: Record<string, unknown> =
+      stepType === "action_send_email"
+        ? { from_alias_mode: "owner_default" }
+        : {};
     setNodes((nds) => [
       ...nds,
       {
@@ -365,7 +403,7 @@ export default function WorkflowEditorPage() {
         position: { x, y },
         data: {
           stepType,
-          config: {},
+          config: initialConfig,
           isEntry: false,
           displayName: null,
           triggerType: workflow?.trigger_type,
@@ -650,8 +688,16 @@ export default function WorkflowEditorPage() {
         </div>
       ) : null}
 
-      <div className="workflow-editor-layout">
-        <aside className="workflow-editor-toolbar">
+      <div
+        className="workflow-editor-layout"
+        style={{
+          gridTemplateColumns: `${leftPanel.width}px 6px 1fr 6px ${rightPanel.width}px`,
+        }}
+      >
+        <aside
+          className="workflow-editor-toolbar"
+          style={{ width: leftPanel.width }}
+        >
           <h3>Añadir paso</h3>
           <div className="workflow-editor-search">
             <Search size={11} aria-hidden />
@@ -693,6 +739,12 @@ export default function WorkflowEditorPage() {
           ) : null}
         </aside>
 
+        <div
+          className="workflow-editor-resize-handle"
+          aria-label="Redimensionar panel izquierdo"
+          {...leftPanel.handleProps}
+        />
+
         <div className="workflow-editor-canvas">
           <ReactFlowProvider>
             <ReactFlow
@@ -724,7 +776,16 @@ export default function WorkflowEditorPage() {
           </ReactFlowProvider>
         </div>
 
-        <aside className="workflow-editor-side">
+        <div
+          className="workflow-editor-resize-handle"
+          aria-label="Redimensionar panel derecho"
+          {...rightPanel.handleProps}
+        />
+
+        <aside
+          className="workflow-editor-side"
+          style={{ width: rightPanel.width }}
+        >
           {selectedNode ? (
             <StepConfigPanel
               node={selectedNode}
@@ -776,6 +837,18 @@ export default function WorkflowEditorPage() {
       ) : null}
     </div>
   );
+}
+
+/** PR-Fixes-Pase-4 Bug 2. Lee tags del config aceptando ambos
+ *  formatos: nuevo `cfg.tags = [...]` y legacy `cfg.tag = "name"`. */
+function normalizeTagsConfig(cfg: Record<string, unknown>): string[] {
+  const list = cfg.tags;
+  if (Array.isArray(list)) {
+    return list.map((t) => String(t ?? "").trim()).filter(Boolean);
+  }
+  const single = cfg.tag;
+  if (typeof single === "string" && single.trim()) return [single.trim()];
+  return [];
 }
 
 function categoryLabel(c: string): string {
@@ -892,10 +965,19 @@ function StepConfigPanel({
       {node.data.stepType === "action_add_tag" ||
       node.data.stepType === "action_remove_tag" ? (
         <label>
-          Tag
-          <TagPicker
-            value={(cfg.tag as string) ?? ""}
-            onChange={(next) => setField("tag", next)}
+          Tags
+          {/* PR-Fixes-Pase-4 Bug 2. Multi-select con buscador y chips
+              visibles. El estado se persiste en `cfg.tags = [...]`
+              (legacy `cfg.tag` se traga al primer save). */}
+          <WorkflowTagsPicker
+            value={normalizeTagsConfig(cfg)}
+            onChange={(next) => {
+              const updated = { ...cfg, tags: next };
+              // Limpia el campo legacy si todavía está presente para
+              // que la siguiente render no lo arrastre.
+              if ("tag" in updated) delete updated.tag;
+              onChange(updated);
+            }}
           />
         </label>
       ) : null}
@@ -974,6 +1056,35 @@ function StepConfigPanel({
               <option value="urgent">urgent</option>
             </select>
           </label>
+          {/* PR-Fixes-Pase-4 Bug 7. Sync con Google Calendar del owner
+              del contacto. Best-effort: si el owner no tiene Calendar
+              conectado el workflow sigue, solo se omite el evento. */}
+          <label className="workflow-checkbox">
+            <input
+              type="checkbox"
+              checked={Boolean(cfg.sync_with_google_calendar)}
+              onChange={(e) =>
+                setField("sync_with_google_calendar", e.target.checked)
+              }
+            />
+            Sincronizar con Google Calendar del propietario
+          </label>
+          {cfg.sync_with_google_calendar ? (
+            <label>
+              Hora del evento (HH:MM, opcional)
+              <input
+                type="time"
+                value={(cfg.event_time_hhmm as string) ?? ""}
+                onChange={(e) =>
+                  setField("event_time_hhmm", e.target.value)
+                }
+                placeholder="09:30"
+              />
+              <span className="muted small">
+                Si lo dejas vacío, el evento es de día completo.
+              </span>
+            </label>
+          ) : null}
         </>
       ) : null}
 
@@ -1362,16 +1473,165 @@ function SendEmailConfig({
         </>
       )}
 
-      <label>
-        From alias
-        <input
-          type="email"
-          value={(cfg.from_alias as string) ?? ""}
-          onChange={(e) => setField("from_alias", e.target.value)}
-          placeholder="info@bomedia.net"
-        />
-      </label>
+      <FromAliasConfig cfg={cfg} setField={setField} />
       <VariablesHelp variables={variables} />
+    </>
+  );
+}
+
+/**
+ * PR-Fixes-Pase-4 Bug 8. Selector del modo del From alias con 3
+ * opciones:
+ *
+ *  - "owner_default" (default): el alias ★ del owner del contacto
+ *    (resuelto en runtime).
+ *  - "owner_specific": el operador elige UN display_name de su propia
+ *    lista de aliases — en runtime el motor busca ese mismo
+ *    display_name en los aliases del owner.
+ *  - "fixed": email literal escrito a mano (legacy).
+ *
+ * Drafts viejos sin `from_alias_mode` se interpretan como "fixed"
+ * para no romper comportamiento existente.
+ */
+function FromAliasConfig({
+  cfg,
+  setField,
+}: {
+  cfg: Record<string, unknown>;
+  setField: (key: string, value: unknown) => void;
+}) {
+  const mode = ((cfg.from_alias_mode as string) || "fixed").toLowerCase() as
+    | "fixed"
+    | "owner_default"
+    | "owner_specific";
+  const [aliases, setAliases] = useState<MyAlias[]>([]);
+  const [loadingAliases, setLoadingAliases] = useState(false);
+
+  useEffect(() => {
+    if (mode !== "owner_specific") return;
+    let cancelled = false;
+    setLoadingAliases(true);
+    getMyEmailAliases()
+      .then((rows) => {
+        if (!cancelled) setAliases(rows);
+      })
+      .catch(() => {
+        if (!cancelled) setAliases([]);
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingAliases(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [mode]);
+
+  const switchTo = (next: "fixed" | "owner_default" | "owner_specific") => {
+    setField("from_alias_mode", next);
+  };
+
+  return (
+    <>
+      <fieldset className="workflow-radio-group">
+        <legend className="muted small">From alias</legend>
+        <label className="workflow-radio">
+          <input
+            type="radio"
+            name="from-alias-mode"
+            checked={mode === "fixed"}
+            onChange={() => switchTo("fixed")}
+          />
+          Alias fijo
+        </label>
+        <label className="workflow-radio">
+          <input
+            type="radio"
+            name="from-alias-mode"
+            checked={mode === "owner_default"}
+            onChange={() => switchTo("owner_default")}
+          />
+          Alias predeterminado del propietario
+        </label>
+        <label className="workflow-radio">
+          <input
+            type="radio"
+            name="from-alias-mode"
+            checked={mode === "owner_specific"}
+            onChange={() => switchTo("owner_specific")}
+          />
+          Alias específico del propietario
+        </label>
+      </fieldset>
+
+      {mode === "fixed" ? (
+        <>
+          <label>
+            Email del alias
+            <input
+              type="email"
+              value={(cfg.from_alias as string) ?? ""}
+              onChange={(e) => setField("from_alias", e.target.value)}
+              placeholder="info@bomedia.net"
+            />
+          </label>
+          <label>
+            Display name (opcional)
+            <input
+              type="text"
+              value={(cfg.from_name as string) ?? ""}
+              onChange={(e) => setField("from_name", e.target.value)}
+              placeholder="Bart"
+            />
+          </label>
+        </>
+      ) : null}
+
+      {mode === "owner_default" ? (
+        <p className="muted small">
+          El motor usará el alias marcado con ★ del propietario del
+          contacto al ejecutar el step. Cada propietario configura el
+          suyo en <code>/account</code>.
+        </p>
+      ) : null}
+
+      {mode === "owner_specific" ? (
+        <>
+          <label>
+            Display name del alias
+            {loadingAliases ? (
+              <p className="muted small">Cargando aliases…</p>
+            ) : aliases.length === 0 ? (
+              <p className="form-error small">
+                No tienes aliases marcados como visibles en{" "}
+                <code>/account</code>. El motor no podrá resolver el
+                envío.
+              </p>
+            ) : (
+              <select
+                value={(cfg.from_alias_display_name as string) ?? ""}
+                onChange={(e) =>
+                  setField("from_alias_display_name", e.target.value)
+                }
+              >
+                <option value="">— Selecciona —</option>
+                {aliases.map((a) => (
+                  <option
+                    key={a.send_as_email}
+                    value={a.resolved_display_name}
+                  >
+                    {a.resolved_display_name || a.send_as_email}
+                  </option>
+                ))}
+              </select>
+            )}
+          </label>
+          <p className="muted small">
+            El motor buscará en runtime el alias del propietario del
+            contacto cuyo display name coincida. Si el propietario ya
+            no tiene ese display name, se usará su alias predeterminado.
+          </p>
+        </>
+      ) : null}
     </>
   );
 }
