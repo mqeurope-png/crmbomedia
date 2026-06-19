@@ -129,6 +129,11 @@ class Workflow(TimestampMixin, Base):
     created_by_user_id: Mapped[str | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL")
     )
+    # Sprint UX-Workflows-Editor. SHA-256 truncado de la definición
+    # estructural (trigger_type + trigger_config + steps + edges) usado
+    # para detectar duplicados exactos al guardar. NULL hasta que se
+    # llame `recompute_definition_hash` en el save.
+    definition_hash: Mapped[str | None] = mapped_column(String(64))
 
 
 class WorkflowStep(TimestampMixin, Base):
@@ -156,6 +161,10 @@ class WorkflowStep(TimestampMixin, Base):
     # El nodo raíz que un dispatcher conecta cuando el trigger matchea.
     # Exactamente uno por workflow tiene is_entry=True.
     is_entry: Mapped[bool] = mapped_column(default=False, nullable=False)
+    # Sprint UX-Workflows-Editor. Nombre custom asignado por el
+    # operador via doble-click en el canvas. NULL → el frontend
+    # calcula el label con `humanizeStepConfig()`.
+    display_name: Mapped[str | None] = mapped_column(String(120))
 
 
 class WorkflowEdge(TimestampMixin, Base):

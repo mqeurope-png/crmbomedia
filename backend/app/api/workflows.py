@@ -57,12 +57,16 @@ from app.schemas.workflows import (
     WorkflowCostEstimate,
     WorkflowCreate,
     WorkflowDetail,
+    WorkflowDryRunRequest,
+    WorkflowDryRunResponse,
+    WorkflowDryRunStep,
     WorkflowEdgeRead,
     WorkflowRead,
     WorkflowRunDetail,
     WorkflowRunHistoryRead,
     WorkflowRunRead,
     WorkflowStepRead,
+    WorkflowTemplate,
     WorkflowUpdate,
 )
 from app.workflows import conditions, variables
@@ -103,6 +107,7 @@ def _workflow_to_read(workflow: Workflow) -> WorkflowRead:
         total_cancelled=workflow.total_cancelled,
         total_failed=workflow.total_failed,
         created_by_user_id=workflow.created_by_user_id,
+        definition_hash=workflow.definition_hash,
         created_at=workflow.created_at,
         updated_at=workflow.updated_at,
     )
@@ -126,6 +131,7 @@ def _workflow_to_detail(
             )
         )
     )
+    warnings = _duplicate_warnings(session, workflow, steps, edges)
     return WorkflowDetail(
         **base.model_dump(),
         steps=[
@@ -136,6 +142,7 @@ def _workflow_to_detail(
                 position_x=s.position_x,
                 position_y=s.position_y,
                 is_entry=s.is_entry,
+                display_name=s.display_name,
             )
             for s in steps
         ],
@@ -148,7 +155,96 @@ def _workflow_to_detail(
             )
             for e in edges
         ],
+        duplicate_warnings=warnings,
     )
+
+
+def _duplicate_warnings(
+    session: Session,
+    workflow: Workflow,
+    steps: list,
+    edges: list,
+) -> list[dict[str, Any]]:
+    """Devuelve advertencias de duplicado para workflows en draft/active
+    distintos de éste. `kind="exact"` si comparten hash exacto;
+    `kind="similar"` si comparten hash de topología (mismo skeleton).
+    """
+    from app.workflows.hashing import (  # noqa: PLC0415
+        compute_exact_hash,
+        compute_similarity_hash,
+    )
+
+    if not steps:
+        return []
+    exact = compute_exact_hash(workflow, steps, edges)
+    similar = compute_similarity_hash(workflow, steps, edges)
+    out: list[dict[str, Any]] = []
+    # Exacta — mismas configs y topología.
+    rows = list(
+        session.scalars(
+            select(Workflow).where(
+                Workflow.id != workflow.id,
+                Workflow.definition_hash == exact,
+                Workflow.status.in_(
+                    [WorkflowStatus.DRAFT, WorkflowStatus.ACTIVE]
+                ),
+            )
+        )
+    )
+    for other in rows:
+        out.append(
+            {
+                "workflow_id": other.id,
+                "workflow_name": other.name,
+                "kind": "exact",
+                "created_by_user_id": other.created_by_user_id,
+                "created_at": other.created_at.isoformat(),
+            }
+        )
+
+    # Similar — mismo skeleton pero distintas configs. Esta detección
+    # es O(N) sobre los workflows del mismo trigger_type — barata a
+    # volumen Bomedia.
+    other_workflows = list(
+        session.scalars(
+            select(Workflow).where(
+                Workflow.id != workflow.id,
+                Workflow.trigger_type == workflow.trigger_type,
+                Workflow.status.in_(
+                    [WorkflowStatus.DRAFT, WorkflowStatus.ACTIVE]
+                ),
+            )
+        )
+    )
+    already_flagged = {o["workflow_id"] for o in out}
+    for other in other_workflows:
+        if other.id in already_flagged:
+            continue
+        other_steps = list(
+            session.scalars(
+                select(WorkflowStep).where(
+                    WorkflowStep.workflow_id == other.id
+                )
+            )
+        )
+        other_edges = list(
+            session.scalars(
+                select(WorkflowEdge).where(
+                    WorkflowEdge.workflow_id == other.id
+                )
+            )
+        )
+        if compute_similarity_hash(other, other_steps, other_edges) == similar:
+            out.append(
+                {
+                    "workflow_id": other.id,
+                    "workflow_name": other.name,
+                    "kind": "similar",
+                    "created_by_user_id": other.created_by_user_id,
+                    "created_at": other.created_at.isoformat(),
+                }
+            )
+    return out
 
 
 def _safe_json(raw: str | None) -> dict[str, Any]:
@@ -373,6 +469,96 @@ def cancel_run_route(
     return {"status": "cancelling"}
 
 
+# Sprint UX. Las rutas `_templates` se declaran AQUÍ — antes de
+# `/{workflow_id}` — porque FastAPI resuelve por orden de declaración
+# y `/{workflow_id}` capturaría "_templates" como un id de workflow si
+# las dejáramos abajo (test_list_templates_returns_3_seed → 404).
+@router.get("/_templates", response_model=list[WorkflowTemplate])
+def list_templates_route(
+    current_user: User = Depends(require_user),
+) -> list[WorkflowTemplate]:
+    _ = current_user
+    from app.workflows.templates import list_templates  # noqa: PLC0415
+
+    return [WorkflowTemplate(**t) for t in list_templates()]
+
+
+@router.post(
+    "/_templates/{template_id}/use",
+    response_model=WorkflowDetail,
+    status_code=201,
+)
+def use_template_route(
+    template_id: str,
+    request: Request,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_manager),
+) -> WorkflowDetail:
+    """Clona la plantilla a una nueva fila draft."""
+    from app.workflows.templates import get_template  # noqa: PLC0415
+
+    template = get_template(template_id)
+    if template is None:
+        raise not_found("Template")
+
+    new_workflow = Workflow(
+        name=f"{template['name']} (copia)",
+        description=template.get("description"),
+        trigger_type=template["trigger_type"],
+        trigger_config_json=json.dumps(template.get("trigger_config") or {}),
+        allow_reentry=False,
+        cancellation_events_json='["contact.unsubscribed"]',
+        status=WorkflowStatus.DRAFT,
+        created_by_user_id=current_user.id,
+    )
+    session.add(new_workflow)
+    session.flush()
+
+    id_map: dict[str, str] = {}
+    for s in template["steps"]:
+        new_id = str(uuid4())
+        id_map[s["client_id"]] = new_id
+        session.add(
+            WorkflowStep(
+                id=new_id,
+                workflow_id=new_workflow.id,
+                type=s["type"],
+                config_json=json.dumps(s.get("config") or {}, default=str),
+                position_x=s.get("position_x", 0.0),
+                position_y=s.get("position_y", 0.0),
+                is_entry=s.get("is_entry", False),
+            )
+        )
+    session.flush()
+    for e in template["edges"]:
+        from_db = id_map.get(e["from_client_id"])
+        to_db = id_map.get(e["to_client_id"])
+        if not from_db or not to_db:
+            continue
+        session.add(
+            WorkflowEdge(
+                workflow_id=new_workflow.id,
+                from_step_id=from_db,
+                to_step_id=to_db,
+                branch_label=e.get("branch_label") or "default",
+            )
+        )
+    session.flush()
+    _recompute_definition_hash(session, new_workflow)
+    record_event(
+        session,
+        action="workflow.created_from_template",
+        target_type="workflow",
+        target_id=new_workflow.id,
+        actor=current_user,
+        metadata={"template_id": template_id},
+        request=request,
+    )
+    session.commit()
+    session.refresh(new_workflow)
+    return _workflow_to_detail(session, new_workflow)
+
+
 @router.get("/{workflow_id}", response_model=WorkflowDetail)
 def get_workflow(
     workflow_id: str,
@@ -488,6 +674,7 @@ def _replace_steps_and_edges(
                 position_x=step.position_x,
                 position_y=step.position_y,
                 is_entry=step.is_entry,
+                display_name=getattr(step, "display_name", None),
             )
         )
     if not entry_seen and steps:
@@ -515,6 +702,27 @@ def _replace_steps_and_edges(
             )
         )
     session.flush()
+    # Sprint UX. Recalculamos hash en cada save estructural para
+    # detección de duplicados barata.
+    _recompute_definition_hash(session, workflow)
+
+
+def _recompute_definition_hash(session: Session, workflow: Workflow) -> None:
+    """Llamado tras cada cambio estructural (PUT, duplicate,
+    from-template). Lee steps + edges frescos de BD."""
+    from app.workflows.hashing import compute_exact_hash  # noqa: PLC0415
+
+    steps = list(
+        session.scalars(
+            select(WorkflowStep).where(WorkflowStep.workflow_id == workflow.id)
+        )
+    )
+    edges = list(
+        session.scalars(
+            select(WorkflowEdge).where(WorkflowEdge.workflow_id == workflow.id)
+        )
+    )
+    workflow.definition_hash = compute_exact_hash(workflow, steps, edges)
 
 
 @router.post("/{workflow_id}/activate", response_model=WorkflowDetail)
@@ -533,6 +741,40 @@ def activate_workflow(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={"errors": errors},
+        )
+    # Sprint UX. Aseguramos hash actualizado y rechazamos duplicados
+    # exactos antes de activar. El operador puede confirmar
+    # "similares" desde el modal frontend.
+    steps = list(
+        session.scalars(
+            select(WorkflowStep).where(
+                WorkflowStep.workflow_id == workflow.id
+            )
+        )
+    )
+    edges = list(
+        session.scalars(
+            select(WorkflowEdge).where(
+                WorkflowEdge.workflow_id == workflow.id
+            )
+        )
+    )
+    _recompute_definition_hash(session, workflow)
+    warnings = _duplicate_warnings(session, workflow, steps, edges)
+    exact_dupes = [w for w in warnings if w["kind"] == "exact"]
+    if exact_dupes:
+        other = exact_dupes[0]
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error": "duplicate_exact",
+                "message": (
+                    f"Este workflow es idéntico al workflow "
+                    f"'{other['workflow_name']}'. No se puede crear "
+                    "duplicado exacto."
+                ),
+                "duplicate_of": other,
+            },
         )
     workflow.status = WorkflowStatus.ACTIVE
     record_event(
@@ -638,6 +880,133 @@ def delete_workflow(
     )
     session.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# ---------------------------------------------------------------------
+# Sprint UX — duplicate, dry-run, templates
+# ---------------------------------------------------------------------
+
+
+@router.post("/{workflow_id}/duplicate", response_model=WorkflowDetail, status_code=201)
+def duplicate_workflow_route(
+    workflow_id: str,
+    request: Request,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_manager),
+) -> WorkflowDetail:
+    """Clona name + trigger + todos los steps + edges a una nueva fila
+    en estado DRAFT. El operador edita la copia desde el editor."""
+    original = session.get(Workflow, workflow_id)
+    if original is None:
+        raise not_found("Workflow")
+
+    new_workflow = Workflow(
+        name=f"{original.name} (copia)",
+        description=original.description,
+        trigger_type=original.trigger_type,
+        trigger_config_json=original.trigger_config_json or "{}",
+        allow_reentry=original.allow_reentry,
+        cancellation_events_json=(
+            original.cancellation_events_json or '["contact.unsubscribed"]'
+        ),
+        status=WorkflowStatus.DRAFT,
+        created_by_user_id=current_user.id,
+    )
+    session.add(new_workflow)
+    session.flush()
+
+    # Clone steps + edges manteniendo topología.
+    original_steps = list(
+        session.scalars(
+            select(WorkflowStep).where(
+                WorkflowStep.workflow_id == workflow_id
+            )
+        )
+    )
+    original_edges = list(
+        session.scalars(
+            select(WorkflowEdge).where(
+                WorkflowEdge.workflow_id == workflow_id
+            )
+        )
+    )
+    id_map: dict[str, str] = {}
+    for step in original_steps:
+        new_id = str(uuid4())
+        id_map[step.id] = new_id
+        session.add(
+            WorkflowStep(
+                id=new_id,
+                workflow_id=new_workflow.id,
+                type=step.type,
+                config_json=step.config_json or "{}",
+                position_x=step.position_x,
+                position_y=step.position_y,
+                is_entry=step.is_entry,
+                display_name=step.display_name,
+            )
+        )
+    session.flush()
+    for edge in original_edges:
+        from_db = id_map.get(edge.from_step_id)
+        to_db = id_map.get(edge.to_step_id)
+        if not from_db or not to_db:
+            continue
+        session.add(
+            WorkflowEdge(
+                workflow_id=new_workflow.id,
+                from_step_id=from_db,
+                to_step_id=to_db,
+                branch_label=edge.branch_label or "default",
+            )
+        )
+    session.flush()
+    _recompute_definition_hash(session, new_workflow)
+    record_event(
+        session,
+        action="workflow.duplicated",
+        target_type="workflow",
+        target_id=new_workflow.id,
+        actor=current_user,
+        metadata={"source_workflow_id": original.id},
+        request=request,
+    )
+    session.commit()
+    session.refresh(new_workflow)
+    return _workflow_to_detail(session, new_workflow)
+
+
+@router.post("/{workflow_id}/dry-run", response_model=WorkflowDryRunResponse)
+def dry_run_route(
+    workflow_id: str,
+    payload: WorkflowDryRunRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_manager),
+) -> WorkflowDryRunResponse:
+    """Simula el workflow contra `contact_id` sin commitear nada."""
+    _ = current_user
+    from app.workflows.dry_run import simulate_workflow  # noqa: PLC0415
+
+    result = simulate_workflow(session, workflow_id, payload.contact_id)
+    return WorkflowDryRunResponse(
+        workflow_id=result.workflow_id,
+        contact_id=result.contact_id,
+        contact_email=result.contact_email,
+        steps=[
+            WorkflowDryRunStep(
+                step_id=s.step_id,
+                step_type=s.step_type,
+                display_name=s.display_name,
+                label=s.label,
+                description=s.description,
+                branch_taken=s.branch_taken,
+                config_summary=s.config_summary,
+            )
+            for s in result.steps
+        ],
+        truncated=result.truncated,
+        error=result.error,
+    )
 
 
 # ---------------------------------------------------------------------

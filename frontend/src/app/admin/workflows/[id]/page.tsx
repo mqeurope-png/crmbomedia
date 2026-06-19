@@ -16,11 +16,14 @@ import {
   useNodesState,
 } from "@xyflow/react";
 import {
+  AlertTriangle,
   Calculator,
   CirclePlay,
+  FlaskConical,
   Pause,
   Plus,
   Save,
+  Search,
   Trash2,
 } from "lucide-react";
 import { useParams, useRouter } from "next/navigation";
@@ -31,6 +34,8 @@ import {
   useState,
 } from "react";
 import { PageHeader } from "../../../components/PageHeader";
+import { WorkflowDryRunModal } from "../../../components/workflows/WorkflowDryRunModal";
+import { WorkflowNarrativeSummary } from "../../../components/workflows/WorkflowNarrativeSummary";
 import { extractErrorMessage } from "../../../lib/errors";
 import {
   activateWorkflow,
@@ -45,51 +50,71 @@ import {
   type WorkflowEdgeWrite,
   type WorkflowStepWrite,
 } from "../../../lib/workflowsApi";
+import {
+  humanizeStepLabel,
+  stepIcon,
+  stepSummary,
+  validateStepConfig,
+} from "../../../lib/workflowsHumanize";
 
 type StepNodeData = {
   label: string;
   stepType: string;
   config: Record<string, unknown>;
   isEntry: boolean;
+  displayName?: string | null;
   [key: string]: unknown;
 };
 
 type WorkflowFlowNode = Node<StepNodeData, "workflowStep">;
 
-// React Flow node renderer — minimal but legible.
+/** Renderer del nodo en el canvas. Calcula label humano + icono +
+ *  summary contextual + validación visual usando los helpers de
+ *  `lib/workflowsHumanize`. */
 function StepNode({
   data,
   selected,
+  id,
 }: {
   data: StepNodeData;
   selected?: boolean;
+  id: string;
 }) {
-  const summary = (() => {
-    if (data.stepType === "wait_time") {
-      const m = (data.config?.duration_minutes as number | undefined) ?? 0;
-      return `${m} min`;
-    }
-    if (data.stepType === "action_send_email") {
-      const subj = (data.config?.subject as string | undefined) ?? "";
-      return subj.slice(0, 40);
-    }
-    if (data.stepType === "action_add_tag") {
-      return `+${(data.config?.tag as string) ?? ""}`;
-    }
-    if (data.stepType === "condition") {
-      const c = data.config?.condition as Record<string, unknown> | undefined;
-      const f = (c?.field as string) ?? "";
-      const o = (c?.op as string) ?? "";
-      return `${f} ${o}`;
-    }
-    return "";
-  })();
+  const summary = stepSummary({
+    type: data.stepType,
+    config: data.config,
+    display_name: data.displayName,
+  });
+  const validation = validateStepConfig({
+    type: data.stepType,
+    config: data.config,
+  });
   return (
     <div
-      className={`workflow-node ${selected ? "is-selected" : ""} ${data.isEntry ? "is-entry" : ""}`}
+      className={[
+        "workflow-node",
+        selected ? "is-selected" : "",
+        data.isEntry ? "is-entry" : "",
+        !validation.valid ? "is-invalid" : "",
+      ].join(" ")}
+      data-node-id={id}
     >
       <Handle type="target" position={Position.Top} />
-      <div className="workflow-node-title">{data.label}</div>
+      <div className="workflow-node-row">
+        <span className="workflow-node-icon" aria-hidden>
+          {stepIcon(data.stepType)}
+        </span>
+        <div className="workflow-node-title">{data.label}</div>
+        {!validation.valid ? (
+          <span
+            className="workflow-node-warning"
+            title={`Falta configurar: ${validation.missing.join(", ")}`}
+            aria-label="Configuración incompleta"
+          >
+            <AlertTriangle size={11} aria-hidden />
+          </span>
+        ) : null}
+      </div>
       {summary ? <div className="workflow-node-summary">{summary}</div> : null}
       <Handle type="source" position={Position.Bottom} />
     </div>
@@ -111,6 +136,8 @@ export default function WorkflowEditorPage() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [estimate, setEstimate] = useState<WorkflowCostEstimate | null>(null);
+  const [searchTerm, setSearchTerm] = useState("");
+  const [dryRunOpen, setDryRunOpen] = useState(false);
 
   const load = useCallback(async () => {
     setError(null);
@@ -125,11 +152,15 @@ export default function WorkflowEditorPage() {
           type: "workflowStep",
           position: { x: s.position_x, y: s.position_y },
           data: {
-            label:
-              c.steps.find((x) => x.type === s.type)?.label ?? s.type,
+            label: humanizeStepLabel({
+              type: s.type,
+              config: s.config,
+              display_name: s.display_name,
+            }),
             stepType: s.type,
             config: s.config,
             isEntry: s.is_entry,
+            displayName: s.display_name ?? null,
           },
         })),
       );
@@ -179,14 +210,79 @@ export default function WorkflowEditorPage() {
         type: "workflowStep",
         position: { x, y },
         data: {
-          label,
+          label: humanizeStepLabel({ type: stepType, config: {} }) || label,
           stepType,
           config: {},
           isEntry: false,
+          displayName: null,
         },
       },
     ]);
   };
+
+  /** Doble click sobre un nodo abre prompt para renombrar. Guarda
+   *  `displayName` en data — se persiste al pulsar Guardar. */
+  const onNodeDoubleClick = useCallback(
+    (
+      _e: React.MouseEvent,
+      node: { id: string; data: StepNodeData },
+    ) => {
+      const current = node.data.displayName ?? "";
+      const next = window.prompt(
+        "Renombrar este paso (deja vacío para usar el nombre por defecto):",
+        current,
+      );
+      if (next === null) return;
+      const trimmed = next.trim();
+      setNodes((nds) =>
+        nds.map((n) =>
+          n.id === node.id
+            ? {
+                ...n,
+                data: {
+                  ...n.data,
+                  displayName: trimmed || null,
+                  label: trimmed
+                    ? trimmed
+                    : humanizeStepLabel({
+                        type: n.data.stepType,
+                        config: n.data.config,
+                      }),
+                },
+              }
+            : n,
+        ),
+      );
+    },
+    [setNodes],
+  );
+
+  /** Filtro de búsqueda en panel "Añadir paso". Match case-insensitive
+   *  sobre label + tipo. */
+  const filteredSteps = useMemo(() => {
+    if (!catalog) return [];
+    const term = searchTerm.trim().toLowerCase();
+    if (!term) return catalog.steps;
+    return catalog.steps.filter(
+      (s) =>
+        s.label.toLowerCase().includes(term) ||
+        s.type.toLowerCase().includes(term),
+    );
+  }, [catalog, searchTerm]);
+
+  /** Validación global. Activate se deshabilita si hay ≥1 nodo
+   *  inválido. */
+  const invalidNodes = useMemo(
+    () =>
+      nodes.filter(
+        (n) =>
+          !validateStepConfig({
+            type: n.data.stepType,
+            config: n.data.config,
+          }).valid,
+      ),
+    [nodes],
+  );
 
   const selectedNode = useMemo(
     () => nodes.find((n) => n.id === selectedNodeId) ?? null,
@@ -216,6 +312,7 @@ export default function WorkflowEditorPage() {
         position_x: n.position.x,
         position_y: n.position.y,
         is_entry: n.data.isEntry || idx === 0,
+        display_name: n.data.displayName ?? null,
       }));
       const edgesPayload: WorkflowEdgeWrite[] = edges.map((e) => ({
         from_client_id: e.source,
@@ -251,6 +348,25 @@ export default function WorkflowEditorPage() {
     if (estimate.validation_errors.length > 0) {
       setError(`Errores: ${estimate.validation_errors.join(" · ")}`);
       return;
+    }
+    if (invalidNodes.length > 0) {
+      setError(
+        `Hay ${invalidNodes.length} paso${invalidNodes.length === 1 ? "" : "s"} con configuración incompleta. Revisa los nodos en rojo.`,
+      );
+      return;
+    }
+    // Aviso por "similar" — exact ya lo rechaza el backend.
+    const similar = workflow?.duplicate_warnings?.filter(
+      (w) => w.kind === "similar",
+    );
+    if (similar && similar.length > 0) {
+      if (
+        !confirm(
+          `Este workflow se parece a "${similar[0].workflow_name}". ¿Crear de todas formas?`,
+        )
+      ) {
+        return;
+      }
     }
     if (
       !confirm(
@@ -295,12 +411,27 @@ export default function WorkflowEditorPage() {
             >
               <Calculator size={12} aria-hidden /> Estimar
             </button>
+            {workflow.status === "draft" ? (
+              <button
+                type="button"
+                className="button secondary"
+                onClick={() => setDryRunOpen(true)}
+                disabled={busy}
+              >
+                <FlaskConical size={12} aria-hidden /> Probar
+              </button>
+            ) : null}
             {workflow.status !== "active" ? (
               <button
                 type="button"
                 className="button"
                 onClick={onActivate}
-                disabled={busy}
+                disabled={busy || invalidNodes.length > 0}
+                title={
+                  invalidNodes.length > 0
+                    ? `Hay ${invalidNodes.length} paso${invalidNodes.length === 1 ? "" : "s"} con configuración incompleta`
+                    : ""
+                }
               >
                 <CirclePlay size={12} aria-hidden /> Activar
               </button>
@@ -354,8 +485,18 @@ export default function WorkflowEditorPage() {
       <div className="workflow-editor-layout">
         <aside className="workflow-editor-toolbar">
           <h3>Añadir paso</h3>
+          <div className="workflow-editor-search">
+            <Search size={11} aria-hidden />
+            <input
+              type="search"
+              placeholder="Buscar paso..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              aria-label="Buscar paso por nombre o tipo"
+            />
+          </div>
           {Object.entries(
-            catalog.steps.reduce(
+            filteredSteps.reduce(
               (acc, s) => {
                 if (s.type === "trigger") return acc;
                 (acc[s.category] = acc[s.category] || []).push(s);
@@ -373,11 +514,15 @@ export default function WorkflowEditorPage() {
                   className="workflow-editor-toolbar-item"
                   onClick={() => addStep(s.type, s.label)}
                 >
+                  <span aria-hidden>{stepIcon(s.type)}</span>{" "}
                   <Plus size={10} aria-hidden /> {s.label}
                 </button>
               ))}
             </div>
           ))}
+          {filteredSteps.length === 0 ? (
+            <p className="muted small">Sin resultados.</p>
+          ) : null}
         </aside>
 
         <div className="workflow-editor-canvas">
@@ -389,6 +534,12 @@ export default function WorkflowEditorPage() {
               onEdgesChange={onEdgesChange}
               onConnect={onConnect}
               onNodeClick={(_e, node) => setSelectedNodeId(node.id)}
+              onNodeDoubleClick={(e, node) =>
+                onNodeDoubleClick(
+                  e,
+                  node as unknown as { id: string; data: StepNodeData },
+                )
+              }
               nodeTypes={nodeTypes}
               fitView
             >
@@ -423,6 +574,28 @@ export default function WorkflowEditorPage() {
           )}
         </aside>
       </div>
+
+      <WorkflowNarrativeSummary
+        triggerType={workflow.trigger_type}
+        steps={nodes.map((n) => ({
+          id: n.id,
+          type: n.data.stepType,
+          config: n.data.config,
+          display_name: n.data.displayName ?? null,
+        }))}
+        edges={edges.map((e) => ({
+          from_step_id: e.source,
+          to_step_id: e.target,
+          branch_label: (e.label as string) ?? "default",
+        }))}
+      />
+
+      {dryRunOpen ? (
+        <WorkflowDryRunModal
+          workflowId={workflowId}
+          onClose={() => setDryRunOpen(false)}
+        />
+      ) : null}
     </div>
   );
 }

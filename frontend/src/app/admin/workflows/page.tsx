@@ -4,6 +4,8 @@ import {
   Archive,
   CirclePause,
   CirclePlay,
+  Copy,
+  LayoutTemplate,
   Plus,
   Trash2,
   Workflow as WorkflowIcon,
@@ -15,13 +17,18 @@ import {
   archiveWorkflow,
   createWorkflow,
   deleteWorkflow,
+  duplicateWorkflow,
   getWorkflowCatalog,
+  listWorkflowTemplates,
   listWorkflows,
   pauseWorkflow,
+  createWorkflowFromTemplate,
   type WorkflowCatalog,
   type WorkflowRead,
+  type WorkflowTemplate,
 } from "../../lib/workflowsApi";
 import { extractErrorMessage } from "../../lib/errors";
+import { humanizeTrigger } from "../../lib/workflowsHumanize";
 
 /** Lista global de workflows (`/admin/workflows`).
  *
@@ -31,9 +38,11 @@ import { extractErrorMessage } from "../../lib/errors";
 export default function WorkflowsListPage() {
   const [items, setItems] = useState<WorkflowRead[]>([]);
   const [catalog, setCatalog] = useState<WorkflowCatalog | null>(null);
+  const [templates, setTemplates] = useState<WorkflowTemplate[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const [templatesOpen, setTemplatesOpen] = useState(false);
   const [draftName, setDraftName] = useState("");
   const [draftTrigger, setDraftTrigger] = useState("contact.created");
 
@@ -43,6 +52,7 @@ export default function WorkflowsListPage() {
     try {
       setItems(await listWorkflows());
       setCatalog(await getWorkflowCatalog());
+      setTemplates(await listWorkflowTemplates());
     } catch (err) {
       setError(extractErrorMessage(err, "No se pudieron cargar los workflows."));
     } finally {
@@ -84,17 +94,76 @@ export default function WorkflowsListPage() {
         title="Workflows"
         description={`${counters.active} activos · ${counters.draft} borradores · ${Math.max(counters.runs, 0)} contactos en ejecución`}
         actions={
-          <button
-            type="button"
-            className="button"
-            onClick={() => setCreating(true)}
-          >
-            <Plus size={14} aria-hidden /> Nuevo workflow
-          </button>
+          <>
+            <button
+              type="button"
+              className="button secondary"
+              onClick={() => setTemplatesOpen(true)}
+            >
+              <LayoutTemplate size={14} aria-hidden /> Desde plantilla
+            </button>
+            <button
+              type="button"
+              className="button"
+              onClick={() => setCreating(true)}
+            >
+              <Plus size={14} aria-hidden /> Nuevo workflow
+            </button>
+          </>
         }
       />
 
       {error ? <p className="form-error">{error}</p> : null}
+
+      {templatesOpen ? (
+        <div className="form-card">
+          <h3>
+            <LayoutTemplate size={14} aria-hidden /> Plantillas
+          </h3>
+          <p className="muted small">
+            Arranca con un workflow preconfigurado. Lo puedes editar
+            todo antes de activarlo.
+          </p>
+          <ul className="workflow-template-gallery">
+            {templates.map((t) => (
+              <li key={t.id}>
+                <strong>{t.name}</strong>
+                <p className="muted small">{t.description}</p>
+                <p className="muted small">
+                  Trigger: <code>{humanizeTrigger(t.trigger_type)}</code> · {t.steps_count} pasos
+                </p>
+                <button
+                  type="button"
+                  className="button"
+                  onClick={async () => {
+                    try {
+                      const created = await createWorkflowFromTemplate(t.id);
+                      setTemplatesOpen(false);
+                      window.location.href = `/admin/workflows/${created.id}`;
+                    } catch (err) {
+                      setError(
+                        extractErrorMessage(
+                          err,
+                          "No se pudo crear desde plantilla.",
+                        ),
+                      );
+                    }
+                  }}
+                >
+                  Usar plantilla
+                </button>
+              </li>
+            ))}
+          </ul>
+          <button
+            type="button"
+            className="button secondary"
+            onClick={() => setTemplatesOpen(false)}
+          >
+            Cerrar
+          </button>
+        </div>
+      ) : null}
 
       {creating ? (
         <div className="form-card">
@@ -165,7 +234,8 @@ export default function WorkflowsListPage() {
                     <Link href={`/admin/workflows/${w.id}`}>{w.name}</Link>
                   </td>
                   <td>
-                    <code className="small">{w.trigger_type}</code>
+                    {humanizeTrigger(w.trigger_type)}
+                    <span className="muted small"> · <code>{w.trigger_type}</code></span>
                   </td>
                   <td>
                     <span className={`badge ${statusClass(w.status)}`}>
@@ -195,6 +265,22 @@ export default function WorkflowsListPage() {
                         <CirclePlay size={11} aria-hidden /> Editar
                       </Link>
                     ) : null}
+                    <button
+                      type="button"
+                      className="button secondary small"
+                      onClick={async () => {
+                        try {
+                          const dup = await duplicateWorkflow(w.id);
+                          window.location.href = `/admin/workflows/${dup.id}`;
+                        } catch (err) {
+                          setError(
+                            extractErrorMessage(err, "No se pudo duplicar."),
+                          );
+                        }
+                      }}
+                    >
+                      <Copy size={11} aria-hidden /> Duplicar
+                    </button>
                     {w.status !== "archived" ? (
                       <button
                         type="button"
