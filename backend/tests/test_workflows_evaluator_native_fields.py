@@ -256,9 +256,10 @@ def test_evaluate_condition_created_at_before_specific_date() -> None:
 
 
 def test_evaluate_condition_unknown_field_returns_false_with_warning() -> None:
-    # `caplog` de pytest se mostró frágil entre py3.11 (local) y py3.12
-    # (CI): los records desaparecían fuera del with. Más fiable enganchar
-    # un handler temporal a logger conocido y comprobar el buffer.
+    # Captura directa por handler — más fiable que caplog (que mostró
+    # comportamiento distinto entre py3.11 local y py3.12 CI). Forzamos
+    # nivel DEBUG en el logger y en el handler para que ninguna config
+    # global de pytest pueda filtrar el warning antes de llegar aquí.
     records: list[str] = []
 
     class CaptureHandler(logging.Handler):
@@ -266,7 +267,11 @@ def test_evaluate_condition_unknown_field_returns_false_with_warning() -> None:
             records.append(record.getMessage())
 
     logger = logging.getLogger("app.workflows.conditions")
-    handler = CaptureHandler()
+    handler = CaptureHandler(level=logging.DEBUG)
+    prev_level = logger.level
+    prev_propagate = logger.propagate
+    logger.setLevel(logging.DEBUG)
+    logger.propagate = False  # garantía: no filtra por el root logger
     logger.addHandler(handler)
     try:
         ctx = _ctx()
@@ -279,6 +284,8 @@ def test_evaluate_condition_unknown_field_returns_false_with_warning() -> None:
         assert evaluate(tree, ctx) is False
     finally:
         logger.removeHandler(handler)
+        logger.setLevel(prev_level)
+        logger.propagate = prev_propagate
 
     assert any(
         "unknown field" in m and "field_inventado" in m for m in records
