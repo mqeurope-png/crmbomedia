@@ -35,6 +35,7 @@ import {
 } from "react";
 import { PageHeader } from "../../../components/PageHeader";
 import { CustomFieldSelector } from "../../../components/workflows/CustomFieldSelector";
+import { DueDatePicker } from "../../../components/workflows/DueDatePicker";
 import { PipelineStageSelector } from "../../../components/workflows/PipelineStageSelector";
 import { TriggerConfigPanel } from "../../../components/workflows/TriggerConfigPanel";
 import { WorkflowTagsPicker } from "../../../components/workflows/WorkflowTagsPicker";
@@ -1035,15 +1036,11 @@ function StepConfigPanel({
               onChange={(e) => setField("description", e.target.value)}
             />
           </label>
-          <label>
-            Vencimiento (días desde ahora)
-            <input
-              type="number"
-              min={0}
-              value={(cfg.due_in_days as number) ?? 1}
-              onChange={(e) => setField("due_in_days", Number(e.target.value))}
-            />
-          </label>
+          {/* PR-Fixes-Pase-5 Bug 3. Vencimiento flexible: relativo
+              desde ahora (cantidad + unidad + hora opcional) o
+              próximo día de la semana + hora opcional. Sustituye al
+              input simple "días desde ahora" del PR #209. */}
+          <DueDatePicker cfg={cfg} setField={setField} />
           <label>
             Prioridad
             <select
@@ -1058,7 +1055,10 @@ function StepConfigPanel({
           </label>
           {/* PR-Fixes-Pase-4 Bug 7. Sync con Google Calendar del owner
               del contacto. Best-effort: si el owner no tiene Calendar
-              conectado el workflow sigue, solo se omite el evento. */}
+              conectado el workflow sigue, solo se omite el evento.
+              La hora del evento se integra en el DueDatePicker
+              (duration_hhmm / weekday_hhmm) — un solo sitio donde
+              elegirla. */}
           <label className="workflow-checkbox">
             <input
               type="checkbox"
@@ -1069,22 +1069,6 @@ function StepConfigPanel({
             />
             Sincronizar con Google Calendar del propietario
           </label>
-          {cfg.sync_with_google_calendar ? (
-            <label>
-              Hora del evento (HH:MM, opcional)
-              <input
-                type="time"
-                value={(cfg.event_time_hhmm as string) ?? ""}
-                onChange={(e) =>
-                  setField("event_time_hhmm", e.target.value)
-                }
-                placeholder="09:30"
-              />
-              <span className="muted small">
-                Si lo dejas vacío, el evento es de día completo.
-              </span>
-            </label>
-          ) : null}
         </>
       ) : null}
 
@@ -1386,6 +1370,10 @@ function SendEmailConfig({
       setField("subject", "");
     } else {
       setField("template_id", undefined);
+      // PR-Fixes-Pase-5 Bug 4: subject_override solo aplica en modo
+      // plantilla. Si el operador pasa a contenido custom, lo
+      // limpiamos para no arrastrar texto que ya no se usaría.
+      setField("subject_override", undefined);
     }
   };
 
@@ -1449,6 +1437,27 @@ function SendEmailConfig({
               </span>
             )}
           </label>
+          {/* PR-Fixes-Pase-5 Bug 4. Asunto personalizado opcional:
+              si está vacío se usa el de la plantilla; si tiene texto
+              sobreescribe SOLO el asunto, no el cuerpo. Útil para
+              reusar la misma plantilla en varios workflows. */}
+          {tplId ? (
+            <label>
+              Asunto personalizado (opcional)
+              <input
+                type="text"
+                value={(cfg.subject_override as string) ?? ""}
+                onChange={(e) =>
+                  setField("subject_override", e.target.value)
+                }
+                placeholder="ej. Recordatorio FESPA {{ contact.first_name }}"
+              />
+              <span className="muted small">
+                Déjalo vacío para usar el asunto de la plantilla. Si lo
+                rellenas, sobreescribe solo el asunto, no el cuerpo.
+              </span>
+            </label>
+          ) : null}
         </>
       ) : (
         <>

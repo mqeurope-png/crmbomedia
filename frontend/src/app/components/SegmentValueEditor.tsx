@@ -29,7 +29,7 @@ import {
 } from "../lib/companiesApi";
 import type { DashboardWindow } from "../lib/dashboardApi";
 import { PeriodSelector } from "./dashboard/PeriodSelector";
-import { TagMultiSelectFilter } from "./TagMultiSelectFilter";
+import { WorkflowTagsPicker } from "./workflows/WorkflowTagsPicker";
 
 /**
  * Human-readable labels for the `origin_system` enum. The backend
@@ -482,13 +482,16 @@ function TagsEditor({
     if (!Array.isArray(value)) return [] as string[];
     return value.filter((item) => typeof item === "string") as string[];
   }, [value]);
-  // Reuses the same dropdown-with-search component the contacts list
-  // uses; with 30+ tags an inline checkbox wall was unreadable.
+  // PR-Fixes-Pase-5 Bug 2. Misma UX (chips + buscador + multi-select)
+  // que en el panel "Añadir tag" del editor de workflows. El
+  // FilterBuilder almacena tag IDs, así que pasamos mode="ids" —
+  // los chips muestran el NAME resuelto del catálogo. No hay creación
+  // inline porque un filtro no debe mutar el catálogo de tags.
   return (
-    <TagMultiSelectFilter
-      selectedIds={selected}
+    <WorkflowTagsPicker
+      value={selected}
       onChange={onChange}
-      placeholder="Buscar tag…"
+      mode="ids"
     />
   );
 }

@@ -294,22 +294,104 @@ def _step_change_lifecycle_status(
     return StepResult(result={"old": old, "new": new})
 
 
+# PR-Fixes-Pase-5 Bug 1. Whitelist de campos nativos del Contact
+# que el paso "Modificar campo" puede setear directamente (en lugar
+# de meterlos en el JSON custom_fields). Mapping a (attr, type_hint).
+# Mantén sincronizado con `ContactUpdate` schema — solo exponemos
+# campos que el operador puede modificar legítimamente desde un
+# workflow. Campos como `id`, `is_email_valid` o relaciones
+# complejas se gestionan vía otros steps específicos.
+_CONTACT_NATIVE_FIELDS: dict[str, str] = {
+    "first_name": "text",
+    "last_name": "text",
+    "email": "text",
+    "phone": "text",
+    "job_title": "text",
+    "origin": "text",
+    "linkedin_url": "url",
+    "personal_website": "url",
+    "address_line": "text",
+    "address_city": "text",
+    "address_state": "text",
+    "address_postal_code": "text",
+    "address_region": "text",
+    "address_country": "text",
+    "address_country_name": "text",
+    "commercial_status": "enum",
+    "lead_score": "number",
+    "owner_user_id": "user_ref",
+    "company_id": "company_ref",
+}
+
+# Campos requeridos del Contact — si el operador intenta dejarlos
+# vacíos el step queda en error explícito en lugar de pisar el
+# valor existente con NULL silenciosamente.
+_CONTACT_REQUIRED_NATIVE_FIELDS = frozenset({"first_name"})
+
+
+def _coerce_native_field_value(field: str, value: Any) -> Any:
+    """Convierte el `value` del config (siempre llega como string del
+    frontend) al tipo Python que el Contact espera para ese campo
+    nativo. Para campos numéricos vacíos devuelve None (clear)."""
+    type_hint = _CONTACT_NATIVE_FIELDS.get(field, "text")
+    if value is None:
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        if type_hint == "number":
+            try:
+                return int(text)
+            except ValueError:
+                try:
+                    return float(text)
+                except ValueError:
+                    return None
+        return text
+    return value
+
+
 @register_step("action_set_custom_field")
 def _step_set_custom_field(session, run, step, contact) -> StepResult:
     _ = session, run
     cfg = _config(step)
     field = (cfg.get("field") or "").strip()
-    value = cfg.get("value")
+    raw_value = cfg.get("value")
     if not field:
         return StepResult(status="skipped", error="empty_field")
+
+    # PR-Fixes-Pase-5 Bug 1. Si el campo es nativo del Contact lo
+    # seteamos como atributo en lugar de mezclarlo con el JSON de
+    # custom fields. El bool `is_native` también puede llegar
+    # explícito del frontend, pero la whitelist manda.
+    is_native = field in _CONTACT_NATIVE_FIELDS
+    if is_native:
+        coerced = _coerce_native_field_value(field, raw_value)
+        if (
+            coerced is None
+            and field in _CONTACT_REQUIRED_NATIVE_FIELDS
+        ):
+            return StepResult(
+                status="failed",
+                error=(
+                    f"required_field_empty:{field}"
+                ),
+            )
+        old = getattr(contact, field, None)
+        setattr(contact, field, coerced)
+        return StepResult(
+            result={"field": field, "old": old, "new": coerced, "native": True}
+        )
+
     raw = {}
     try:
         raw = json.loads(contact.custom_fields or "{}") or {}
     except (TypeError, ValueError):
         raw = {}
-    raw[field] = value
+    raw[field] = raw_value
     contact.custom_fields = json.dumps(raw, default=str)
-    return StepResult(result={"field": field, "value": value})
+    return StepResult(result={"field": field, "value": raw_value})
 
 
 @register_step("action_change_lead_score")
@@ -344,6 +426,127 @@ def _step_assign_owner(session, run, step, contact) -> StepResult:
 # ---------------------------------------------------------------------
 
 
+_DUE_UNIT_TO_RELATIVEDELTA = {
+    "minutes": ("minutes",),
+    "hours": ("hours",),
+    "days": ("days",),
+    "weeks": ("weeks",),
+    "months": ("months",),
+}
+
+
+def _parse_hhmm(raw: str | None) -> tuple[int, int] | None:
+    """`"09:30"` → `(9, 30)`. Devuelve None si falta o malformado."""
+    text = (raw or "").strip()
+    if not text:
+        return None
+    try:
+        hh, mm = text.split(":", 1)
+        h = int(hh)
+        m = int(mm)
+    except (ValueError, AttributeError):
+        return None
+    if not (0 <= h <= 23) or not (0 <= m <= 59):
+        return None
+    return (h, m)
+
+
+def _resolve_workflow_task_due_at(
+    cfg: dict[str, Any], *, now: datetime | None = None
+) -> tuple[datetime, bool]:
+    """PR-Fixes-Pase-5 Bug 3.
+
+    Devuelve `(due_at, all_day_hint)` según el modo de vencimiento
+    del config. `all_day_hint=True` indica que el operador NO eligió
+    hora concreta, así que un sync con calendar debe ir all-day.
+
+    Modos:
+      - `due_mode == "relative"` (default): ahora + `duration_amount`
+        unidades de `duration_unit`. Si hay `duration_hhmm`, se
+        sobreescribe la hora del día calculada.
+      - `due_mode == "weekday"`: próximo día de la semana
+        (`target_weekday` 0=lunes…6=domingo). Si `weekday_hhmm`
+        elige una hora futura del mismo día, mantenemos hoy; si la
+        hora ya pasó, +7 días.
+      - Legacy: si no hay `due_mode` pero hay `due_in_days`, fallback
+        al comportamiento del PR #209 (now + days + `event_time_hhmm`).
+    """
+    from dateutil.relativedelta import relativedelta  # noqa: PLC0415
+
+    if now is None:
+        now = datetime.now(UTC)
+    mode = (cfg.get("due_mode") or "").lower()
+
+    if mode == "weekday":
+        target_weekday_raw = cfg.get("target_weekday")
+        try:
+            target_weekday = int(target_weekday_raw)
+        except (TypeError, ValueError):
+            target_weekday = 0  # lunes por defecto
+        target_weekday = max(0, min(6, target_weekday))
+        hhmm = _parse_hhmm(cfg.get("weekday_hhmm") or cfg.get("event_time_hhmm"))
+        days_ahead = (target_weekday - now.weekday()) % 7
+        candidate = (now + timedelta(days=days_ahead)).replace(
+            second=0, microsecond=0
+        )
+        if hhmm is not None:
+            candidate = candidate.replace(hour=hhmm[0], minute=hhmm[1])
+            # Pidió "hoy" pero la hora ya pasó → siguiente semana.
+            if days_ahead == 0 and candidate <= now:
+                candidate += timedelta(days=7)
+        elif days_ahead == 0:
+            # "Próximo lunes" un lunes sin hora → la semana que viene,
+            # no hoy (que ya está empezado).
+            candidate += timedelta(days=7)
+        return (candidate, hhmm is None)
+
+    if mode == "relative" or not mode:
+        # Legacy: si no hay `due_mode` ni `duration_amount` pero sí
+        # `due_in_days`, respeta drafts viejos del PR #209.
+        if not mode and "due_in_days" in cfg and "duration_amount" not in cfg:
+            due_days = int(cfg.get("due_in_days") or 1)
+            hhmm = _parse_hhmm(cfg.get("event_time_hhmm"))
+            candidate = now + timedelta(days=due_days)
+            if hhmm is not None:
+                candidate = candidate.replace(
+                    hour=hhmm[0],
+                    minute=hhmm[1],
+                    second=0,
+                    microsecond=0,
+                )
+            return (candidate, hhmm is None)
+
+        amount_raw = cfg.get("duration_amount", 1)
+        try:
+            amount = int(amount_raw)
+        except (TypeError, ValueError):
+            amount = 1
+        if amount < 0:
+            amount = 0
+        unit = (cfg.get("duration_unit") or "days").lower()
+        kwargs = {}
+        if unit in _DUE_UNIT_TO_RELATIVEDELTA:
+            key = _DUE_UNIT_TO_RELATIVEDELTA[unit][0]
+            kwargs[key] = amount
+        else:
+            kwargs["days"] = amount
+        candidate = now + relativedelta(**kwargs)
+        hhmm = _parse_hhmm(
+            cfg.get("duration_hhmm") or cfg.get("event_time_hhmm")
+        )
+        if hhmm is not None:
+            candidate = candidate.replace(
+                hour=hhmm[0],
+                minute=hhmm[1],
+                second=0,
+                microsecond=0,
+            )
+        return (candidate, hhmm is None)
+
+    # Modo desconocido — fallback a 1 día.
+    return (now + timedelta(days=1), True)
+
+
 @register_step("action_create_task")
 def _step_create_task(session, run, step, contact) -> StepResult:
     cfg = _config(step)
@@ -367,25 +570,23 @@ def _step_create_task(session, run, step, contact) -> StepResult:
         priority = TaskPriority(priority_raw)
     except ValueError:
         priority = TaskPriority.MEDIUM
-    due_days = int(cfg.get("due_in_days") or 1)
-    # PR-Fixes-Pase-4 Bug 7. Hora local opcional (HH:MM) que el
-    # operador puede meter en el panel; si no la da, all-day en el
-    # calendar y un timestamp neutro a las 09:00 UTC para la columna
-    # `due_at` (el rango natural de "vencimiento día N").
-    event_time_hhmm = (cfg.get("event_time_hhmm") or "").strip()
-    base_dt = datetime.now(UTC) + timedelta(days=due_days)
+    # PR-Fixes-Pase-5 Bug 3. El vencimiento de la tarea soporta dos
+    # modos del operador:
+    #
+    #   - "relative":  cantidad + unidad (minutes/hours/days/weeks/
+    #                  months) + hora opcional → ahora + N unidades
+    #                  (.replace hora si la dan).
+    #   - "weekday":   próximo día de la semana + hora opcional →
+    #                  ahora + delta hasta el siguiente weekday
+    #                  (mismo día si la hora es futura, +7 días si
+    #                  ya pasó).
+    #
+    # Drafts viejos sin `due_mode` siguen leyendo `due_in_days` para
+    # compat (campos del panel anterior). `event_time_hhmm` legacy
+    # se considera fallback de la hora.
+    due_at, all_day_hint = _resolve_workflow_task_due_at(cfg)
     sync_calendar = bool(cfg.get("sync_with_google_calendar"))
-    all_day = sync_calendar and not event_time_hhmm
-    if event_time_hhmm:
-        try:
-            hh, mm = event_time_hhmm.split(":")
-            due_at = base_dt.replace(
-                hour=int(hh), minute=int(mm), second=0, microsecond=0
-            )
-        except (ValueError, IndexError):
-            due_at = base_dt
-    else:
-        due_at = base_dt
+    all_day = sync_calendar and all_day_hint
 
     assignee_id = (
         cfg.get("assign_to_user_id") or contact.owner_user_id
@@ -608,6 +809,12 @@ def _step_send_email(session, run, step, contact) -> StepResult:
     # ediciones de la plantilla quedan reflejadas automáticamente
     # porque leemos siempre fresco. Si la plantilla se ha borrado
     # del CRM, marcamos skipped — no es razón para fallar el run.
+    #
+    # PR-Fixes-Pase-5 Bug 4. Si el operador rellena `subject_override`
+    # en modo plantilla, ese asunto pisa al de la plantilla — el
+    # cuerpo sigue siendo el de la plantilla. Útil para reusar una
+    # misma plantilla con asuntos contextualizados ("Recordatorio
+    # FESPA", "Recordatorio MBO") sin duplicarla.
     raw_subject = cfg.get("subject") or ""
     raw_body = cfg.get("body_html") or ""
     template_id = cfg.get("template_id")
@@ -622,6 +829,9 @@ def _step_send_email(session, run, step, contact) -> StepResult:
             )
         raw_subject = template.subject or ""
         raw_body = template.body_html or ""
+        subject_override = (cfg.get("subject_override") or "").strip()
+        if subject_override:
+            raw_subject = subject_override
 
     # Render template.
     ctx_vars = variables.build_context(
