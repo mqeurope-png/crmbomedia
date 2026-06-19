@@ -123,13 +123,6 @@ class IntegrationAccountRead(BaseModel):
     api_key_set_at: datetime | None = None
     api_key_last_used_at: datetime | None = None
     api_key_encrypted: str | None = Field(default=None, exclude=True, repr=False)
-    # Sprint Webhooks Agile Real-Time. The plaintext secret is NEVER
-    # shipped over the wire — only `has_webhook_secret` and the last
-    # received timestamp surface to the UI. The operator must call
-    # `/webhook-secret/generate` (or /regenerate) to retrieve a new
-    # one; we don't re-emit existing secrets through the read path.
-    webhook_secret: str | None = Field(default=None, exclude=True, repr=False)
-    webhook_last_received_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -139,11 +132,6 @@ class IntegrationAccountRead(BaseModel):
     @property
     def has_api_key(self) -> bool:
         return self.api_key_encrypted is not None and self.api_key_encrypted != ""
-
-    @computed_field  # type: ignore[prop-decorator]
-    @property
-    def has_webhook_secret(self) -> bool:
-        return self.webhook_secret is not None and self.webhook_secret != ""
 
 
 # Backwards-compatible aliases. New code should use the *Account* names.

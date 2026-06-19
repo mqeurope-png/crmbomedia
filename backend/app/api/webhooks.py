@@ -12,25 +12,15 @@ import json
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
-
-from datetime import UTC, datetime
 
 from app.core.audit import Action, record_event
 from app.core.errors import not_found
 from app.db.session import get_session
-from app.integrations.agilecrm.webhook_intake import (
-    agilecrm_account_for_webhook,
-    enqueue_agilecrm_webhook_job,
-    sniff_event_type,
-    verify_webhook_token,
-    webhook_rate_limit_exceeded,
-)
 from app.models.crm import ExternalSystem, SyncLog, SyncStatus, SyncTrigger
 from app.models.integration_settings import IntegrationAccount
-from app.models.webhook_events import WebhookEvent, WebhookEventStatus
 from app.repositories.integration_settings import get_integration_account
 
 logger = logging.getLogger(__name__)
@@ -195,136 +185,6 @@ def _enqueue_brevo_events(events: list[dict[str, Any]], account_id: str) -> None
             len(events),
         )
         process_brevo_webhook_batch(events, account_id)
-
-
-# Hard cap on AgileCRM payload persistence. AgileCRM payloads are
-# usually 2-4 KB; the cap is conservative so a misbehaving sender can't
-# blow up the `webhook_events` table.
-_AGILECRM_MAX_PAYLOAD_BYTES = 64 * 1024
-
-
-def _client_ip(request: Request) -> str | None:
-    """Leftmost X-Forwarded-For (nginx in front of api), else the
-    direct peer. The leftmost address is the only one the original
-    client controls; anything appended is proxy chain."""
-    fwd = request.headers.get("x-forwarded-for")
-    if fwd:
-        first = fwd.split(",")[0].strip()
-        if first:
-            return first[:45]
-    if request.client and request.client.host:
-        return request.client.host[:45]
-    return None
-
-
-@router.post(
-    "/agilecrm/{account_id}/incoming",
-    status_code=status.HTTP_202_ACCEPTED,
-)
-async def receive_agilecrm_webhook(
-    account_id: str,
-    request: Request,
-    response: Response,
-    token: str = "",
-    session: Session = Depends(get_session),
-) -> dict[str, Any]:
-    """AgileCRM real-time intake.
-
-    Verifies the per-account `?token=` shared secret, persists the
-    delivery to `webhook_events`, and hands off to RQ. AgileCRM
-    retries non-2xx aggressively, so anything recoverable (unknown
-    account, account disabled, no secret configured) answers 200
-    with `status=skipped` instead of an error.
-
-    `token` is mandatory but it's a query param (AgileCRM webhooks
-    don't expose header config), so the unknown-account skip path
-    runs regardless of token to keep noise low.
-    """
-    source_ip = _client_ip(request)
-    if webhook_rate_limit_exceeded(ip=source_ip):
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="Rate limit exceeded",
-        )
-
-    account = agilecrm_account_for_webhook(session, account_id)
-    if account is None:
-        # 200 not 404 so AgileCRM doesn't keep retrying. We still
-        # log the rejection for visibility.
-        logger.info(
-            "agilecrm.webhook unknown/disabled/no-secret account=%s",
-            account_id,
-        )
-        response.status_code = status.HTTP_200_OK
-        return {"status": "skipped", "reason": "account_unavailable"}
-
-    if not verify_webhook_token(account, token):
-        logger.warning(
-            "agilecrm.webhook bad token account=%s ip=%s",
-            account_id,
-            source_ip,
-        )
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid webhook token",
-        )
-
-    raw_body = await request.body()
-    payload_snippet = raw_body[:_AGILECRM_MAX_PAYLOAD_BYTES]
-    try:
-        parsed: Any = (
-            json.loads(payload_snippet.decode("utf-8"))
-            if payload_snippet
-            else None
-        )
-    except (UnicodeDecodeError, ValueError):
-        parsed = None
-
-    # Stamp the row eagerly. Worker re-derives the canonical event
-    # type from the body before processing so this is just a hint
-    # for the admin filter dropdown.
-    event_type_hint = sniff_event_type(parsed) or "unknown"
-
-    payload_text = (
-        json.dumps(parsed, default=str)
-        if parsed is not None
-        else payload_snippet.decode("utf-8", errors="replace")
-    )
-
-    now = datetime.now(UTC)
-    webhook_event = WebhookEvent(
-        system=ExternalSystem.AGILECRM.value,
-        account_id=account.account_id,
-        event_type=event_type_hint,
-        payload_json=payload_text,
-        status=WebhookEventStatus.RECEIVED,
-        received_at=now,
-        source_ip=source_ip,
-    )
-    session.add(webhook_event)
-    account.webhook_last_received_at = now
-    session.flush()
-    record_event(
-        session,
-        action=Action.INTEGRATION_WEBHOOK_RECEIVED,
-        target_type="webhook_event",
-        target_id=webhook_event.id,
-        metadata={
-            "system": "agilecrm",
-            "account_id": account.account_id,
-            "event_type": event_type_hint,
-            "payload_size_bytes": len(raw_body),
-        },
-        request=request,
-    )
-    session.commit()
-
-    enqueue_agilecrm_webhook_job(webhook_event.id)
-    return {
-        "status": "queued",
-        "webhook_event_id": webhook_event.id,
-        "event_type": event_type_hint,
-    }
 
 
 @router.post(

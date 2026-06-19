@@ -4,7 +4,14 @@ Sprint Reglas-Assign — PR-Db. Espejo del scheduler Brevo
 (`app/integrations/brevo/scheduler.py`). Un solo heartbeat:
 
 - `agilecrm:periodic_read` — encola `sync_contacts` para cada cuenta
-  AgileCRM habilitada cada `AGILECRM_SYNC_INTERVAL_HOURS` (default 12).
+  AgileCRM habilitada cada `AGILECRM_SYNC_INTERVAL_HOURS` (default 1).
+
+PR-Revert-Webhooks-Agile bajó el default de 12 h a 1 h: el plan
+Enterprise que necesitaría Agile para webhooks salientes no se compró,
+así que la frescura del polling es la única palanca. Si el operador
+necesita afinar más fino (p.ej. 15 min mientras valida algo) puede
+definir `AGILECRM_SYNC_INTERVAL_MINUTES` y ese override toma
+precedencia sobre `_HOURS`.
 
 El scheduler se auto-reschedule en cada tick. `arm_periodic_jobs()`
 se llama desde `app.main` startup y es idempotente vía SETNX en Redis
@@ -12,8 +19,6 @@ para que múltiples API processes no se pisen. Cuentas `enabled=False`
 quedan automáticamente saltadas porque `_load_account` levanta
 `IntegrationSkipped` (PR-Da hotfix), así que un eventual disable no
 genera ruido en el log de sync.
-
-Webhooks real-time queda como DEUDA #5 — sprint propio.
 """
 from __future__ import annotations
 
@@ -32,7 +37,16 @@ from app.workers.queues import queue_name, redis_connection
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_READ_INTERVAL_HOURS = 12
+# PR-Revert-Webhooks-Agile. Bart escogió polling agresivo en lugar de
+# pagar el plan Enterprise de Agile. 1 h × 9 cuentas × 24 ticks/día =
+# 216 syncs/día — bien dentro de la cuota Agile habitual de 10 k
+# llamadas/día por cuenta.
+DEFAULT_READ_INTERVAL_HOURS = 1
+
+# Floor que aplicamos siempre. Tantos triggers en menos de 30 s
+# desbordarían cuota Agile y machacarían el log; el SETNX TTL más
+# abajo asume que el interval es estrictamente positivo.
+MIN_INTERVAL_SECONDS = 30
 
 READ_LOCK_KEY = "agilecrm:periodic_read:heartbeat"
 
@@ -46,6 +60,31 @@ def _interval_hours(env_var: str, default: int) -> int:
         return value if value > 0 else default
     except ValueError:
         return default
+
+
+def _resolve_interval() -> timedelta:
+    """Pick the scheduler interval.
+
+    Precedence: `AGILECRM_SYNC_INTERVAL_MINUTES` (granularity for
+    debugging / tighter polling) → `AGILECRM_SYNC_INTERVAL_HOURS`
+    → `DEFAULT_READ_INTERVAL_HOURS`. The minutes override exists so
+    Bart can dial polling down without touching the code or shipping
+    a non-integer hours value."""
+    raw_min = os.environ.get("AGILECRM_SYNC_INTERVAL_MINUTES")
+    if raw_min:
+        try:
+            minutes = int(raw_min)
+            if minutes > 0:
+                return max(
+                    timedelta(minutes=minutes),
+                    timedelta(seconds=MIN_INTERVAL_SECONDS),
+                )
+        except ValueError:
+            pass
+    hours = _interval_hours(
+        "AGILECRM_SYNC_INTERVAL_HOURS", DEFAULT_READ_INTERVAL_HOURS
+    )
+    return timedelta(hours=hours)
 
 
 def _enabled_agile_accounts(session: Session) -> list[IntegrationAccount]:
@@ -89,14 +128,12 @@ def periodic_read_check(session: Session, sync_log: SyncLog) -> SyncOutcome:
 
 
 def schedule_periodic_read() -> None:
-    hours = _interval_hours(
-        "AGILECRM_SYNC_INTERVAL_HOURS", DEFAULT_READ_INTERVAL_HOURS
-    )
+    interval = _resolve_interval()
     _arm(
         lock=READ_LOCK_KEY,
         queue=queue_name("agilecrm", "periodic_read"),
         job=_periodic_read_runner,
-        interval=timedelta(hours=hours),
+        interval=interval,
     )
 
 
@@ -117,9 +154,11 @@ def _arm(
     # dentro del próximo tick.
     try:
         conn = redis_connection()
-        if not conn.set(
-            lock, "1", nx=True, ex=int(interval.total_seconds()) - 30
-        ):
+        # Para intervals cortos (15 min, 30 min) el -30 s margen
+        # podría dejar el lock TTL en 0 → set NX falla en todos los
+        # arms; clamp a un mínimo positivo para no degradar el SETNX.
+        lock_ttl = max(int(interval.total_seconds()) - 30, 30)
+        if not conn.set(lock, "1", nx=True, ex=lock_ttl):
             return
         try:
             from rq import Queue  # noqa: PLC0415
