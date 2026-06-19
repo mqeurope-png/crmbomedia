@@ -41,15 +41,19 @@ export function TriggerConfigPanel({
   onChange,
 }: Props) {
   const set = (key: string, value: unknown) => {
+    setMany({ [key]: value });
+  };
+  /** PR-Fixes-Pase-3 Bug 5: actualizar varios keys de golpe sin
+   *  capturar el `config` viejo por closure (la versión single-key
+   *  ejecutada N veces machacaba las anteriores). */
+  const setMany = (updates: Record<string, unknown>) => {
     const next = { ...config };
-    if (
-      value === undefined ||
-      value === null ||
-      value === ""
-    ) {
-      delete next[key];
-    } else {
-      next[key] = value;
+    for (const [key, value] of Object.entries(updates)) {
+      if (value === undefined || value === null || value === "") {
+        delete next[key];
+      } else {
+        next[key] = value;
+      }
     }
     onChange(next);
   };
@@ -79,6 +83,7 @@ export function TriggerConfigPanel({
       <OpportunitySubConfig
         config={config}
         set={set}
+        setMany={setMany}
         wantsStage={triggerType === "opportunity.stage_changed"}
         wantsValue={triggerType === "opportunity.won"}
       />
@@ -322,11 +327,13 @@ function CrmEmailSubConfig({
 function OpportunitySubConfig({
   config,
   set,
+  setMany,
   wantsStage,
   wantsValue,
 }: {
   config: Record<string, unknown>;
   set: (k: string, v: unknown) => void;
+  setMany: (updates: Record<string, unknown>) => void;
   wantsStage: boolean;
   wantsValue: boolean;
 }) {
@@ -335,10 +342,13 @@ function OpportunitySubConfig({
       <PipelineStageSelector
         pipelineId={config.pipeline_id as string | undefined}
         stageId={wantsStage ? (config.stage_id as string | undefined) : undefined}
-        onChange={(pid, sid) => {
-          set("pipeline_id", pid);
-          if (wantsStage) set("stage_id", sid);
-        }}
+        onChange={(pid, sid) =>
+          setMany(
+            wantsStage
+              ? { pipeline_id: pid, stage_id: sid }
+              : { pipeline_id: pid },
+          )
+        }
         allowEmpty
         pipelineLabel="Pipeline (opcional)"
         stageLabel={wantsStage ? "Stage destino" : "Stage (opcional)"}

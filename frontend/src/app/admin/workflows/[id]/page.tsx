@@ -34,6 +34,7 @@ import {
   useState,
 } from "react";
 import { PageHeader } from "../../../components/PageHeader";
+import { CustomFieldSelector } from "../../../components/workflows/CustomFieldSelector";
 import { PipelineStageSelector } from "../../../components/workflows/PipelineStageSelector";
 import { TagPicker, TriggerConfigPanel } from "../../../components/workflows/TriggerConfigPanel";
 import { WorkflowConditionBuilder } from "../../../components/workflows/WorkflowConditionBuilder";
@@ -56,6 +57,7 @@ import {
 import { listEmailTemplates } from "../../../lib/emailTemplatesApi";
 import {
   humanizeStepLabel,
+  humanizeValidationMessages,
   stepIcon,
   stepSummary,
   validateStepConfig,
@@ -73,13 +75,56 @@ type StepNodeData = {
 
 type WorkflowFlowNode = Node<StepNodeData, "workflowStep">;
 
+/** PR-Fixes-Pase-3 Bug 1. Computa los IDs y labels de los handles de
+ *  salida según el tipo + config del step. Cuando el step tiene
+ *  múltiples ramas (condition / switch / wait_for_event) devolvemos
+ *  varios; en otro caso, un único `"default"`. El `branch_label` de
+ *  la edge es siempre el `id` del handle origen.
+ */
+function outgoingHandles(stepType: string, config: Record<string, unknown>): {
+  id: string;
+  label: string;
+  variant: "default" | "yes" | "no";
+}[] {
+  if (stepType === "condition") {
+    return [
+      { id: "true", label: "Sí", variant: "yes" },
+      { id: "false", label: "No", variant: "no" },
+    ];
+  }
+  if (stepType === "wait_for_event") {
+    return [
+      { id: "matched", label: "Ocurrió", variant: "yes" },
+      { id: "timeout", label: "Timeout", variant: "no" },
+    ];
+  }
+  if (stepType === "switch") {
+    const cases = (config.cases as string[] | undefined) ?? [];
+    const out = cases.map((c, idx) => ({
+      id: `case_${idx}`,
+      label: c || `Caso ${idx + 1}`,
+      variant: "default" as const,
+    }));
+    out.push({ id: "default", label: "Otros", variant: "default" });
+    return out;
+  }
+  if (stepType.startsWith("exit_")) {
+    return [];
+  }
+  return [{ id: "default", label: "", variant: "default" }];
+}
+
 /** Renderer del nodo en el canvas. Recalcula label humano + summary +
  *  validación en cada render para que cambios de config en el side
  *  panel se reflejen inmediatamente.
  *
  *  PR-Fixes: el label ya no se cachea en `data.label` porque eso
  *  causaba que el trigger node mostrara "Inicio del workflow"
- *  ignorando el `triggerType`. */
+ *  ignorando el `triggerType`.
+ *
+ *  PR-Fixes-Pase-3 Bug 1: handles separados por rama para condition /
+ *  switch / wait_for_event. Cada handle muestra su etiqueta debajo.
+ */
 function StepNode({
   data,
   selected,
@@ -100,6 +145,9 @@ function StepNode({
   });
   const summary = stepSummary(stepLike);
   const validation = validateStepConfig(stepLike);
+  const handles = outgoingHandles(data.stepType, data.config);
+  // Distribución horizontal de los handles en el borde inferior: si hay
+  // N handles, los espaciamos uniformemente.
   return (
     <div
       className={[
@@ -107,6 +155,7 @@ function StepNode({
         selected ? "is-selected" : "",
         data.isEntry ? "is-entry" : "",
         !validation.valid ? "is-invalid" : "",
+        handles.length > 1 ? "is-multi-out" : "",
       ].join(" ")}
       data-node-id={id}
     >
@@ -119,7 +168,9 @@ function StepNode({
         {!validation.valid ? (
           <span
             className="workflow-node-warning"
-            title={`Falta configurar: ${validation.missing.join(", ")}`}
+            title={humanizeValidationMessages(validation.missing).join(
+              " · ",
+            )}
             aria-label="Configuración incompleta"
           >
             <AlertTriangle size={11} aria-hidden />
@@ -127,7 +178,39 @@ function StepNode({
         ) : null}
       </div>
       {summary ? <div className="workflow-node-summary">{summary}</div> : null}
-      <Handle type="source" position={Position.Bottom} />
+      {handles.map((h, idx) => {
+        const offset =
+          handles.length === 1
+            ? 50
+            : ((idx + 1) / (handles.length + 1)) * 100;
+        return (
+          <Handle
+            key={h.id}
+            id={h.id}
+            type="source"
+            position={Position.Bottom}
+            className={`workflow-handle-${h.variant}`}
+            style={{ left: `${offset}%` }}
+          />
+        );
+      })}
+      {handles.length > 1 ? (
+        <div className="workflow-node-handle-labels">
+          {handles.map((h, idx) => {
+            const offset =
+              ((idx + 1) / (handles.length + 1)) * 100;
+            return (
+              <span
+                key={h.id}
+                className={`workflow-handle-label workflow-handle-label-${h.variant}`}
+                style={{ left: `${offset}%` }}
+              >
+                {h.label}
+              </span>
+            );
+          })}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -221,7 +304,13 @@ export default function WorkflowEditorPage() {
           id: e.id,
           source: e.from_step_id,
           target: e.to_step_id,
+          // PR-Fixes-Pase-3 Bug 1: persistimos el branch_label COMO
+          // sourceHandle para que React Flow ancle la flecha al
+          // handle correcto en el render. La etiqueta visible se
+          // sigue mostrando como `label` cuando no es default.
+          sourceHandle: e.branch_label || "default",
           label: e.branch_label !== "default" ? e.branch_label : undefined,
+          data: { branchLabel: e.branch_label || "default" },
         })),
       );
     } catch (err) {
@@ -233,15 +322,27 @@ export default function WorkflowEditorPage() {
     void load();
   }, [load]);
 
+  /** PR-Fixes-Pase-3 Bug 1: cada conexión persiste el `sourceHandle`
+   *  como `data.branchLabel` en la edge. Eso es lo que el backend
+   *  recibe como `branch_label`, y el engine usa para decidir qué
+   *  rama tomar en `condition` / `switch` / `wait_for_event`. */
   const onConnect = useCallback(
-    (connection: { source: string | null; target: string | null }) => {
+    (connection: {
+      source: string | null;
+      target: string | null;
+      sourceHandle?: string | null;
+    }) => {
       if (!connection.source || !connection.target) return;
+      const branch = connection.sourceHandle || "default";
       setEdges((eds) =>
         addEdge(
           {
-            id: `e-${connection.source}-${connection.target}`,
+            id: `e-${connection.source}-${connection.target}-${branch}`,
             source: connection.source!,
             target: connection.target!,
+            sourceHandle: connection.sourceHandle ?? undefined,
+            label: branch !== "default" ? branch : undefined,
+            data: { branchLabel: branch },
           },
           eds,
         ),
@@ -365,7 +466,14 @@ export default function WorkflowEditorPage() {
       const edgesPayload: WorkflowEdgeWrite[] = edges.map((e) => ({
         from_client_id: e.source,
         to_client_id: e.target,
-        branch_label: (e.label as string) || "default",
+        // PR-Fixes-Pase-3 Bug 1: el branch_label real vive en el
+        // sourceHandle / data.branchLabel; `label` es solo el texto
+        // visible y no siempre está poblado.
+        branch_label:
+          ((e.data as { branchLabel?: string } | undefined)?.branchLabel) ||
+          e.sourceHandle ||
+          (e.label as string) ||
+          "default",
       }));
       const updated = await updateWorkflow(workflowId, {
         steps: stepsPayload,
@@ -869,52 +977,40 @@ function StepConfigPanel({
         </>
       ) : null}
 
-      {/* PR-Fixes #3: panel del "Modificar campo" — antes faltaba. */}
+      {/* PR-Fixes-Pase-3 Bug 6: dropdown de custom fields (no input
+          texto). */}
       {node.data.stepType === "action_set_custom_field" ? (
-        <>
-          <label>
-            Campo a modificar
-            <input
-              type="text"
-              value={(cfg.field as string) ?? ""}
-              onChange={(e) => setField("field", e.target.value)}
-              placeholder="ej. sector, segmento, nivel_engagement"
-            />
-            <span className="muted small">
-              Nombre del custom field tal y como aparece en la ficha del
-              contacto.
-            </span>
-          </label>
-          <label>
-            Nuevo valor
-            <input
-              type="text"
-              value={
-                cfg.value === undefined || cfg.value === null
-                  ? ""
-                  : String(cfg.value)
-              }
-              onChange={(e) => setField("value", e.target.value)}
-              placeholder="ej. fespa-2026"
-            />
-            <span className="muted small">
-              Acepta variables como{" "}
-              <code>{`{{ contact.first_name }}`}</code>.
-            </span>
-          </label>
-        </>
+        <CustomFieldSelector
+          value={(cfg.field as string) ?? ""}
+          valueValue={
+            cfg.value === undefined || cfg.value === null
+              ? ""
+              : String(cfg.value)
+          }
+          onChange={(next) =>
+            onChange({
+              ...cfg,
+              field: next.field,
+              value: next.value,
+              field_type: next.type,
+            })
+          }
+        />
       ) : null}
 
-      {/* Panel para action_move_opportunity_stage. PR-Fixes-Pase-2
-          Bug C: selector visual de Pipeline + Stage (NO input ID). */}
+      {/* Panel para action_move_opportunity_stage.
+          PR-Fixes-Pase-3 Bug 5: la versión previa llamaba a
+          `setField` dos veces seguidas; cada una capturaba `cfg` por
+          closure → la segunda machacaba la primera y el pipeline se
+          perdía al pestañear. Ahora actualizamos ambos en una sola
+          llamada a `onChange`. */}
       {node.data.stepType === "action_move_opportunity_stage" ? (
         <>
           <PipelineStageSelector
             pipelineId={cfg.pipeline_id as string | undefined}
             stageId={cfg.stage_id as string | undefined}
             onChange={(pid, sid) => {
-              setField("pipeline_id", pid);
-              setField("stage_id", sid);
+              onChange({ ...cfg, pipeline_id: pid, stage_id: sid });
             }}
           />
           <p className="muted small">

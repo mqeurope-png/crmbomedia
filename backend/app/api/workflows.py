@@ -1259,4 +1259,49 @@ def _validate_workflow_structure(
             errors.extend(
                 conditions.validate_tree(tree) or []
             )
+
+    # PR-Fixes-Pase-3 Bug 1+4: nodos con múltiples ramas deben tener
+    # TODAS las salidas conectadas para que el motor sepa qué hacer.
+    # Para condition: debe haber al menos una edge con branch_label
+    # ∈ {"true","false"}. Mismo principio para wait_for_event y switch.
+    edges = list(
+        session.scalars(
+            select(WorkflowEdge).where(WorkflowEdge.workflow_id == workflow.id)
+        )
+    )
+    edges_by_from: dict[str, set[str]] = {}
+    for e in edges:
+        edges_by_from.setdefault(e.from_step_id, set()).add(
+            e.branch_label or "default"
+        )
+    for s in steps:
+        branches = edges_by_from.get(s.id, set())
+        if s.type == "condition":
+            for label in ("true", "false"):
+                if label not in branches:
+                    pretty = "Sí" if label == "true" else "No"
+                    errors.append(
+                        f"El nodo Condición tiene la rama «{pretty}» sin conectar."
+                    )
+        elif s.type == "wait_for_event":
+            for label in ("matched", "timeout"):
+                if label not in branches:
+                    pretty = (
+                        "Ocurrió" if label == "matched" else "Timeout"
+                    )
+                    errors.append(
+                        f"El nodo Esperar evento tiene la rama «{pretty}» sin conectar."
+                    )
+        elif s.type == "switch":
+            cfg = _safe_json(s.config_json)
+            cases = cfg.get("cases") or []
+            for i in range(len(cases)):
+                if f"case_{i}" not in branches:
+                    errors.append(
+                        f"El nodo Switch tiene el caso «{cases[i]}» sin conectar."
+                    )
+            if "default" not in branches:
+                errors.append(
+                    "El nodo Switch tiene la rama «Otros» sin conectar."
+                )
     return errors

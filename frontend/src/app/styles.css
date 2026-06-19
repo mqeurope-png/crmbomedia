@@ -9035,3 +9035,36 @@ tr.is-inactive {
   border-top: 1px solid #e5e7eb;
   padding-top: 10px;
 }
+
+/* PR-Fixes-Pase-3 — handles separados en condition/switch/wait_for_event */
+.workflow-node {
+  position: relative;
+  padding-bottom: 20px;
+}
+.workflow-node.is-multi-out {
+  padding-bottom: 32px;
+}
+.workflow-handle-yes { background: #16a34a !important; border-color: #15803d !important; }
+.workflow-handle-no { background: #dc2626 !important; border-color: #b91c1c !important; }
+.workflow-handle-default { background: #6366f1 !important; border-color: #4f46e5 !important; }
+.workflow-node-handle-labels {
+  position: absolute;
+  bottom: 4px;
+  left: 0;
+  right: 0;
+  height: 14px;
+  pointer-events: none;
+}
+.workflow-handle-label {
+  position: absolute;
+  transform: translateX(-50%);
+  font-size: 10px;
+  font-weight: 600;
+  color: #475569;
+  background: #f1f5f9;
+  padding: 1px 5px;
+  border-radius: 3px;
+  white-space: nowrap;
+}
+.workflow-handle-label-yes { background: #dcfce7; color: #166534; }
+.workflow-handle-label-no { background: #fee2e2; color: #991b1b; }
