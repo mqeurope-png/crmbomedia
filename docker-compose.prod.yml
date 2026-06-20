@@ -86,28 +86,29 @@ services:
       start_period: 30s
     logging: *default-logging
 
-  worker:
+  worker-sync:
     image: crmbomedia-api:latest
     restart: unless-stopped
     env_file: .env.production
     environment:
       DATABASE_URL: mysql+pymysql://${MYSQL_USER}:${MYSQL_PASSWORD}@db:3306/${MYSQL_DATABASE}
       REDIS_URL: redis://redis:6379/0
-    # Listens on every `{system}:{operation}` queue the connectors
-    # define. Listing them explicitly (instead of `*`) makes it easy
-    # to throttle one system independently with a second worker
-    # container later on.
-    # RQ default serializer (pickle) is fine because the worker shares
-    # its Docker image with the api service, so producer and consumer
-    # speak the same Python. `rq worker` defaults to INFO logging so
-    # we don't pass --logging_level explicitly — the flag name changed
-    # between rq minor versions (--logging-level vs --logging_level)
-    # and silently omitting it keeps us version-agnostic.
+    # PR-Fix-Worker-Dedicado-Workflows. Worker A: SOLO queues de sync
+    # externo + housekeeping. La queue `workflows:dispatch` se mudó al
+    # worker-workflows para no quedarse en posición 22 de 24 esperando
+    # eternamente — RQ procesa queues en orden de la lista, y las
+    # syncs de Agile/Brevo nunca dejan idle al worker durante mucho
+    # rato.
+    #
+    # RQ default serializer (pickle) es fine porque el worker comparte
+    # imagen Docker con el api service, productor y consumidor hablan
+    # el mismo Python.
     command:
       - rq
       - worker
-      # --with-scheduler powers Brevo's self-rescheduling heartbeats
-      # (auto-sync targets + campaign cache refresh) via enqueue_in.
+      # --with-scheduler aplica para los heartbeats self-rescheduling
+      # de Brevo (auto-sync targets + campaign cache refresh) y
+      # Agile (periodic_read) via enqueue_in.
       - --with-scheduler
       - --url
       - redis://redis:6379/0
@@ -139,15 +140,6 @@ services:
       # Sprint Backup. Cola virtual para el job manual + scheduled
       # cada 72 h. `backups:create` cubre los dos caminos.
       - backups:create
-      # Sprint Workflows Bloque 1. Tres colas:
-      # - `workflows:dispatch` — eventos entrantes (contact.created,
-      #   email.opened, etc.) que evalúan workflows matching.
-      # - `workflows:execute` — runs ya iniciados que avanzan step a step.
-      # - `workflows:scheduler` — heartbeat periódico (cada 30 s)
-      #   que despierta waits + cron workflows.
-      - workflows:dispatch
-      - workflows:execute
-      - workflows:scheduler
     volumes:
       # Sprint Backup-Hardening. El worker ejecuta
       # `scripts/backup-crmbo.sh` via subprocess: necesita el script
@@ -162,6 +154,49 @@ services:
       # BACKUP_ENCRYPTION_PASSPHRASE del .env.production. Read-only
       # — el worker NUNCA debe modificarlo.
       - /opt/crmbo/.env.production:/opt/crmbo/.env.production:ro
+    depends_on:
+      api:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    logging: *default-logging
+
+  worker-workflows:
+    image: crmbomedia-api:latest
+    restart: unless-stopped
+    env_file: .env.production
+    environment:
+      DATABASE_URL: mysql+pymysql://${MYSQL_USER}:${MYSQL_PASSWORD}@db:3306/${MYSQL_DATABASE}
+      REDIS_URL: redis://redis:6379/0
+    # PR-Fix-Worker-Dedicado-Workflows. Worker B dedicado al motor de
+    # workflows. Antes vivía en el mismo worker que las syncs y se
+    # quedaba en cola de 24 queues — los 9 syncs Agile + Brevo polling
+    # + gmail history + freshdesk + factusol + backups copaban al
+    # worker, así que `workflows:dispatch` (posición 22) nunca tenía
+    # CPU. En producción se acumularon 1380 jobs durante 6 horas; al
+    # arrancar el worker en burst envió emails inesperados.
+    #
+    # Separar en 2 procesos: este worker SOLO ve workflows. Los
+    # eventos `contact.created` dispatched desde un sync (vía
+    # `dispatch_event`) los procesa en milisegundos sin esperar a que
+    # el sync termine.
+    command:
+      - rq
+      - worker
+      # --with-scheduler powers `workflows:scheduler` (heartbeat
+      # periódico que despierta waits + cron workflows via enqueue_in).
+      - --with-scheduler
+      - --url
+      - redis://redis:6379/0
+      # Sprint Workflows Bloque 1. Tres colas:
+      # - `workflows:dispatch` — eventos entrantes (contact.created,
+      #   email.opened, etc.) que evalúan workflows matching.
+      # - `workflows:execute` — runs ya iniciados que avanzan step a step.
+      # - `workflows:scheduler` — heartbeat periódico (cada 30 s)
+      #   que despierta waits + cron workflows.
+      - workflows:dispatch
+      - workflows:execute
+      - workflows:scheduler
     depends_on:
       api:
         condition: service_healthy

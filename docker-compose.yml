@@ -50,12 +50,16 @@ services:
       redis:
         condition: service_healthy
 
-  worker:
+  worker-sync:
     build: ./backend
     env_file: .env
     environment:
       DATABASE_URL: mysql+pymysql://crm:crm@db:3306/crm
       REDIS_URL: redis://redis:6379/0
+    # PR-Fix-Worker-Dedicado-Workflows. Worker A en dev: queues de
+    # sync + housekeeping. Mismas que prod (excepto `backups:create`
+    # que en dev no se monta el script). Ver
+    # `docker-compose.prod.yml` para la justificación arquitectónica.
     command:
       - rq
       - worker
@@ -85,6 +89,33 @@ services:
       - gmail:renew_watches
       - emails:snooze_sweep
       - email_templates:import_gmail
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker-workflows:
+    build: ./backend
+    env_file: .env
+    environment:
+      DATABASE_URL: mysql+pymysql://crm:crm@db:3306/crm
+      REDIS_URL: redis://redis:6379/0
+    # PR-Fix-Worker-Dedicado-Workflows. Worker B en dev: motor de
+    # workflows. En dev este worker no existía antes — los eventos
+    # `contact.created` quedaban en Redis sin procesarse, y todos
+    # los tests de workflows usaban el fallback inline. Tenerlo
+    # arrancado en dev cubre el camino real (RQ enqueue + worker
+    # pop) y permite reproducir el bug que vimos en prod.
+    command:
+      - rq
+      - worker
+      - --with-scheduler
+      - --url
+      - redis://redis:6379/0
+      - workflows:dispatch
+      - workflows:execute
+      - workflows:scheduler
     depends_on:
       db:
         condition: service_healthy

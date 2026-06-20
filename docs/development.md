@@ -35,17 +35,32 @@ python -m pytest
 
 El backend usa MySQL 8 como base objetivo. Los tests usan SQLite en memoria porque los modelos actuales son compatibles y permite pruebas rápidas sin levantar servicios externos.
 
-## Worker de integraciones
+## Workers (RQ sobre Redis)
 
-El stack incluye un servicio `worker` (RQ sobre Redis) que ejecuta los jobs de los conectores externos. En `docker-compose.yml` y `docker-compose.prod.yml` el contenedor `worker` reutiliza la imagen `crmbomedia-api:latest`; basta con un `docker compose build` para que tanto `api` como `worker` arranquen con el código actualizado.
+El stack incluye **dos** servicios de worker que reutilizan la imagen `crmbomedia-api:latest`. Basta con un `docker compose build` para que `api`, `worker-sync` y `worker-workflows` arranquen con el código actualizado.
 
-Para depurar en local sin Docker (Redis local en `localhost:6379`):
+- **`worker-sync`** — sync externo + housekeeping. Escucha 21 queues: `agilecrm:*`, `brevo:*`, `freshdesk:*`, `factusol:*`, `gmail:*`, `emails:*`, `email_templates:*`, `backups:*`.
+- **`worker-workflows`** — motor de workflows. Escucha 3 queues: `workflows:dispatch`, `workflows:execute`, `workflows:scheduler`.
+
+**Por qué dos workers** (PR-Fix-Worker-Dedicado-Workflows). RQ procesa queues en el orden de la lista. Con un worker único listando 24 queues, `workflows:dispatch` (pos. 22) sufría starvation: las syncs Agile/Brevo nunca lo dejaban idle y los eventos `contact.created` se acumulaban en Redis sin procesarse. Se llegó a acumular ~1380 jobs durante 6 horas en producción. Separarlo en un proceso dedicado garantiza latencia <segundos para dispatchar workflows.
+
+**Redeploy selectivo**:
+
+- Cambios en motor / dispatcher / steps de workflows → `docker compose up -d --force-recreate worker-workflows`.
+- Cambios en mappers / scheduler de Agile/Brevo → `docker compose up -d --force-recreate worker-sync`.
+- Cambios en `app/models/` o `app/integrations/` compartidos → ambos.
+
+Para depurar en local sin Docker (Redis en `localhost:6379`):
 
 ```bash
 cd backend
 source .venv/bin/activate
 export REDIS_URL=redis://localhost:6379/0
+# Worker A (sync) — replica el `worker-sync` con un subset mínimo:
 rq worker --url $REDIS_URL agilecrm:sync_contacts brevo:push_contact
+# En otra terminal, Worker B (workflows):
+rq worker --url $REDIS_URL --with-scheduler \
+  workflows:dispatch workflows:execute workflows:scheduler
 ```
 
 Inspeccionar colas y jobs vivos:

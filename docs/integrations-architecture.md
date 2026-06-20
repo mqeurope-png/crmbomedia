@@ -38,10 +38,17 @@ Tres componentes:
    excepciones tipadas (`IntegrationAuthError`,
    `IntegrationRateLimitError`, `IntegrationClientError`,
    `IntegrationServerError`, `IntegrationNetworkError`).
-2. **Worker async** (`app/workers/`): RQ (Redis Queue) ejecutándose en
-   un contenedor Docker que comparte imagen con `api`. Una cola por
+2. **Workers async** (`app/workers/`): RQ (Redis Queue) en DOS
+   contenedores Docker que comparten imagen con `api`. Una cola por
    pareja `(system, operation)` para que un operador pueda pausar
    AgileCRM sin parar Brevo.
+   - `worker-sync` consume queues de sync + housekeeping (Agile,
+     Brevo, freshdesk, factusol, gmail, emails, backups…).
+   - `worker-workflows` consume `workflows:dispatch / execute /
+     scheduler`. Separar (PR-Fix-Worker-Dedicado-Workflows) evita
+     starvation: RQ procesa queues en orden de lista; con un único
+     worker, los dispatches de workflows se quedaban en posición 22
+     de 24 esperando a que las syncs terminaran.
 3. **`sync_logs`** como tabla de verdad: cada job (manual / cron /
    webhook) tiene una fila con el ciclo de vida completo (PENDING →
    RUNNING → SUCCESS / PARTIAL_SUCCESS / FAILED), contadores y un
@@ -106,9 +113,14 @@ Nombres de cola: `{system}:{operation}`. Ejemplos:
 - `freshdesk:sync_tickets`
 - `factusol:sync_invoices`
 
-Una sola lista de colas se declara en `docker-compose.prod.yml` (servicio
-`worker`). Para añadir una cola nueva, ampliar esa lista + redeploy del
-worker (`docker compose -f docker-compose.prod.yml up -d worker`).
+Las listas de colas viven en `docker-compose.prod.yml`:
+
+- Las queues de sync + housekeeping → servicio `worker-sync`.
+- Las queues `workflows:*` → servicio `worker-workflows`.
+
+Para añadir una cola nueva, ampliar la lista del worker correspondiente
+y redeploy del servicio (`docker compose -f docker-compose.prod.yml up
+-d --force-recreate worker-sync` o `worker-workflows`).
 
 ### Registrar un operation handler
 
@@ -693,9 +705,9 @@ Acepta `1` / `true` / `yes` / `on`. Cualquier otro valor (incluyendo
 ausente) lo deja apagado.
 
 Tras editarlo basta con reiniciar el contenedor `api` (para llamadas
-desde endpoints síncronos) y `worker` (para jobs de sync) — los logs
-se imprimen vía el logger estándar `logging`, así que se ven con
-`docker compose logs -f api worker`.
+desde endpoints síncronos) y `worker-sync` (para jobs de sync) — los
+logs se imprimen vía el logger estándar `logging`, así que se ven con
+`docker compose logs -f api worker-sync`.
 
 ### Qué se loggea
 
@@ -728,10 +740,11 @@ Apagarlo en cuanto el bug esté entendido.
 
 ## Health checks
 
-- El servicio `worker` no expone HTTP; `docker compose ps` muestra el
-  estado del contenedor RQ. `rq info --url redis://redis:6379/0` lista
-  las colas, workers activos y jobs encolados.
-- El servicio `api` mantiene `/api/health`. La salud del worker no
+- Los servicios `worker-sync` y `worker-workflows` no exponen HTTP;
+  `docker compose ps` muestra el estado de cada contenedor RQ.
+  `rq info --url redis://redis:6379/0` lista las colas, los dos
+  workers activos y los jobs encolados.
+- El servicio `api` mantiene `/api/health`. La salud de los workers no
   está expuesta como endpoint público para evitar information disclosure.
 
 ## Listado de cuentas para pickers (Sprint UX)

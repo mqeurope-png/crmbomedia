@@ -12,6 +12,11 @@ Estos tests pinean los dos invariantes:
      `agilecrm:periodic_read` (no otra cosa).
   2. La worker config del compose lista esa queue — si alguien la
      borra en una refactor futura, este test la atrapa.
+
+PR-Fix-Worker-Dedicado-Workflows: el servicio worker único se
+separó en `worker-sync` (sync + housekeeping) y `worker-workflows`.
+Estos tests buscan las queues a lo largo de los dos servicios:
+da igual cuál las escuche mientras alguien lo haga.
 """
 from __future__ import annotations
 
@@ -24,53 +29,83 @@ _AGILE_SCHEDULER_QUEUES_REQUIRED: tuple[str, ...] = (
     "agilecrm:sync_contacts",
 )
 
+#: Nombres de servicios que pueden ser workers RQ. La búsqueda recorre
+#: los servicios cuyo `command` empieza con `rq worker` y agrega todas
+#: las queues. Cubre tanto el split actual como una posible vuelta a
+#: un worker único sin tener que tocar este test.
+_WORKER_SERVICE_PREFIXES: tuple[str, ...] = ("worker",)
 
-def _worker_command_from_compose(compose_path: Path) -> list[str]:
+
+def _all_worker_queues_from_compose(compose_path: Path) -> list[str]:
+    """Devuelve la unión de queues escuchadas por TODOS los servicios
+    cuyo nombre empieza por `worker` y cuyo command empieza por
+    `rq worker`. Tolerante al split worker-sync / worker-workflows
+    introducido en PR-Fix-Worker-Dedicado-Workflows."""
     with open(compose_path) as f:
         compose = yaml.safe_load(f)
-    return compose["services"]["worker"]["command"]
+    queues: list[str] = []
+    for service_name, service in (compose.get("services") or {}).items():
+        if not any(
+            service_name == p or service_name.startswith(f"{p}-")
+            for p in _WORKER_SERVICE_PREFIXES
+        ):
+            continue
+        command = service.get("command") or []
+        if not (
+            isinstance(command, list)
+            and len(command) >= 2
+            and command[0] == "rq"
+            and command[1] == "worker"
+        ):
+            continue
+        queues.extend(command)
+    return queues
 
 
 def test_dev_compose_worker_listens_on_agilecrm_periodic_read() -> None:
     """`docker-compose.yml` debe listar `agilecrm:periodic_read` en
-    el comando del worker — antes faltaba y el scheduler dejaba
+    el comando de algún worker — antes faltaba y el scheduler dejaba
     jobs huérfanos en esa queue."""
     repo_root = Path(__file__).parent.parent.parent
-    command = _worker_command_from_compose(repo_root / "docker-compose.yml")
+    queues = _all_worker_queues_from_compose(repo_root / "docker-compose.yml")
     for queue in _AGILE_SCHEDULER_QUEUES_REQUIRED:
-        assert queue in command, (
-            f"Queue {queue!r} no está en docker-compose.yml worker.command — "
-            f"el scheduler encola heartbeats ahí pero el worker no los procesa."
+        assert queue in queues, (
+            f"Queue {queue!r} no está en ningún worker.* de "
+            f"docker-compose.yml — el scheduler encola heartbeats ahí "
+            f"pero ningún worker los procesa."
         )
 
 
 def test_prod_compose_worker_listens_on_agilecrm_periodic_read() -> None:
     """Mismo invariante en `docker-compose.prod.yml`."""
     repo_root = Path(__file__).parent.parent.parent
-    command = _worker_command_from_compose(
+    queues = _all_worker_queues_from_compose(
         repo_root / "docker-compose.prod.yml"
     )
     for queue in _AGILE_SCHEDULER_QUEUES_REQUIRED:
-        assert queue in command, (
-            f"Queue {queue!r} no está en docker-compose.prod.yml worker.command."
+        assert queue in queues, (
+            f"Queue {queue!r} no está en ningún worker.* de "
+            f"docker-compose.prod.yml."
         )
 
 
 def test_brevo_scheduler_queues_still_present_in_dev_compose() -> None:
     """No tocar Brevo: este PR sólo cierra el hueco de Agile."""
     repo_root = Path(__file__).parent.parent.parent
-    command = _worker_command_from_compose(repo_root / "docker-compose.yml")
+    queues = _all_worker_queues_from_compose(repo_root / "docker-compose.yml")
     for queue in ("brevo:periodic_read", "brevo:periodic_segments"):
-        assert queue in command
+        assert queue in queues
 
 
 def test_workflows_scheduler_queue_still_present_in_prod_compose() -> None:
-    """No tocar workflows: este PR sólo cierra el hueco de Agile."""
+    """PR-Fix-Worker-Dedicado-Workflows: workflows:scheduler vive en
+    `worker-workflows` ahora, pero el invariante "algún worker la
+    procesa" sigue siendo el contrato."""
     repo_root = Path(__file__).parent.parent.parent
-    command = _worker_command_from_compose(
+    queues = _all_worker_queues_from_compose(
         repo_root / "docker-compose.prod.yml"
     )
-    assert "workflows:scheduler" in command
+    assert "workflows:scheduler" in queues
 
 
 def test_scheduler_module_uses_agilecrm_periodic_read_queue_name() -> None:

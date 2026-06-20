@@ -365,7 +365,7 @@ cd /opt/crmbo
 git pull
 docker compose --env-file .env.production \
   -f docker-compose.prod.yml -f docker-compose.plesk.yml \
-  up -d --build --force-recreate api worker frontend
+  up -d --build --force-recreate api worker-sync worker-workflows frontend
 docker compose --env-file .env.production \
   -f docker-compose.prod.yml -f docker-compose.plesk.yml \
   exec api alembic upgrade head

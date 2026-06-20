@@ -98,7 +98,7 @@ concurrentes:
 
 ```bash
 cd /opt/crmbo
-docker compose -f docker-compose.prod.yml stop api worker
+docker compose -f docker-compose.prod.yml stop api worker-sync worker-workflows
 ```
 
 Conserva el dump actual (para volver atrás si el rollback sale mal):
@@ -121,7 +121,7 @@ docker compose -f docker-compose.prod.yml exec -T db \
 Levanta otra vez:
 
 ```bash
-docker compose -f docker-compose.prod.yml up -d api worker
+docker compose -f docker-compose.prod.yml up -d api worker-sync worker-workflows
 ```
 
 ### 4b. En VPS limpio (recuperación total)
