@@ -66,6 +66,8 @@ services:
       - redis://redis:6379/0
       - agilecrm:sync_contacts
       - agilecrm:purge_quota
+      # PR-Fix-Scheduler-Agile-Roto.
+      - agilecrm:periodic_read
       - brevo:sync_contacts
       - brevo:push_target
       - brevo:auto_sync_check
