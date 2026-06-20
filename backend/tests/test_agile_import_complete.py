@@ -316,11 +316,15 @@ def test_backfill_migration_logic_on_synthetic_data(tmp_path) -> None:
     # Ejecutar _backfill contra el engine.
     import importlib.util
 
-    spec = importlib.util.spec_from_file_location(
-        "_mig",
-        "/home/user/crmbomedia/backend/alembic/versions/"
-        "20260623_0063_agile_custom_field_migration.py",
+    from pathlib import Path
+
+    mig_path = (
+        Path(__file__).parent.parent
+        / "alembic"
+        / "versions"
+        / "20260623_0063_agile_custom_field_migration.py"
     )
+    spec = importlib.util.spec_from_file_location("_mig", str(mig_path))
     mig = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mig)
 
@@ -396,11 +400,15 @@ def test_backfill_migration_is_idempotent(tmp_path) -> None:
 
     import importlib.util
 
-    spec = importlib.util.spec_from_file_location(
-        "_mig",
-        "/home/user/crmbomedia/backend/alembic/versions/"
-        "20260623_0063_agile_custom_field_migration.py",
+    from pathlib import Path
+
+    mig_path = (
+        Path(__file__).parent.parent
+        / "alembic"
+        / "versions"
+        / "20260623_0063_agile_custom_field_migration.py"
     )
+    spec = importlib.util.spec_from_file_location("_mig", str(mig_path))
     mig = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mig)
 

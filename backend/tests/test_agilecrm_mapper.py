@@ -294,7 +294,10 @@ def test_custom_properties_collected_into_json_blob():
     )
     record, _ = map_agilecrm_contact_to_internal(payload)
     decoded = json.loads(record["custom_fields"])
-    assert decoded == {"HORARIO": "L-V 9-18"}
+    # PR-Import-Agile-Completo. La key se normaliza a `Horario`
+    # (canonical_keep_key) para unificar entre cuentas que envían
+    # `Horario` / `HORARIO` / `horario`.
+    assert decoded == {"Horario": "L-V 9-18"}
 
 
 def test_lead_score_picked_from_top_level_then_property():
