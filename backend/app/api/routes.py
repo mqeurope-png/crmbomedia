@@ -1427,6 +1427,16 @@ def create_contact(
 
     data = payload.model_dump()
     data["email"] = email
+    # PR-Fix-Creación-Manual-Contacto. El "Origen" de un contacto
+    # creado a mano se fija server-side a "Manual" y `origin_account_id`
+    # a NULL. El front ya no expone input libre, pero también lo
+    # forzamos aquí para que payloads legacy / clientes externos no
+    # inyecten valores arbitrarios ("Tel", "Web", etc.) que ensuciaban
+    # filtros y reportes. Las rutas de sync (Agile/Brevo) escriben
+    # directo al ORM, no a través de este endpoint, así que no las
+    # tocamos.
+    data["origin"] = "Manual"
+    data["origin_account_id"] = None
     contact = Contact(**data)
     session.add(contact)
     try:
@@ -1452,6 +1462,22 @@ def create_contact(
         actor=current_user,
         metadata={"email": contact.email},
         request=request,
+    )
+    # PR-Fix-Creación-Manual-Contacto. Auto-asignamos al creador como
+    # owner primary ANTES de que el motor de reglas evalúe. Reglas con
+    # `apply_to=unassigned_only` (default histórico) ya NO reasignan
+    # porque ven `has_assignments=True` — el creador queda como owner.
+    # Solo reglas con `override_existing=True` siguen pudiendo tomar
+    # la ownership (force-reassign explícito).
+    from app.repositories import assignments as assignments_repo  # noqa: PLC0415
+
+    assignments_repo.add_assignment(
+        session,
+        contact_id=contact.id,
+        user_id=current_user.id,
+        is_primary=True,
+        assigned_by_user_id=current_user.id,
+        source="manual_creator",
     )
     # Sprint Reglas-Assign PR-C — fire-on-create del motor de reglas.
     # Antes del commit: las assignments + audit rows entran en la misma
