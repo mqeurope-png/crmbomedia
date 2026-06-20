@@ -315,7 +315,6 @@ def test_backfill_migration_logic_on_synthetic_data(tmp_path) -> None:
 
     # Ejecutar _backfill contra el engine.
     import importlib.util
-
     from pathlib import Path
 
     mig_path = (
@@ -399,7 +398,6 @@ def test_backfill_migration_is_idempotent(tmp_path) -> None:
         )
 
     import importlib.util
-
     from pathlib import Path
 
     mig_path = (
