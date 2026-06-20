@@ -16,12 +16,15 @@ export function CreateContactForm({ companies }: Readonly<{ companies: Company[]
     setIsSubmitting(true);
 
     const form = new FormData(event.currentTarget);
+    // PR-Fix-Creación-Manual-Contacto. El campo "Origen" ya no se
+    // envía desde el formulario manual — el backend lo fija a
+    // "Manual" automáticamente. Mantenerlo aquí permitiría payloads
+    // legacy contradecir esa decisión.
     const payload = {
       first_name: form.get("first_name"),
       last_name: form.get("last_name") || null,
       email: form.get("email"),
       phone: form.get("phone") || null,
-      origin: form.get("origin") || null,
       marketing_consent: form.get("marketing_consent") || "unknown",
       company_id: form.get("company_id") || null,
     };
@@ -56,10 +59,17 @@ export function CreateContactForm({ companies }: Readonly<{ companies: Company[]
         Teléfono
         <input name="phone" maxLength={80} />
       </label>
-      <label>
-        Origen
-        <input name="origin" placeholder="agilecrm, web, referido..." maxLength={120} />
-      </label>
+      {/*
+        PR-Fix-Creación-Manual-Contacto. Se eliminó el input de
+        "Origen" — todo contacto creado desde aquí queda con
+        origin="Manual" automáticamente. Si el comercial quiere
+        documentar cómo llegó el lead (teléfono, evento…), debe
+        usar Notas o un custom field, no el campo Origen.
+      */}
+      <p className="form-note">
+        Origen: <strong>Manual</strong> · Se asigna automáticamente a ti como
+        responsable. Para anotar cómo llegó el lead usa el campo de notas.
+      </p>
       <label>
         Empresa
         <select name="company_id" defaultValue="">

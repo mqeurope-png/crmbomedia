@@ -615,6 +615,11 @@ def test_dry_run_endpoint_does_not_apply(
 def test_post_contacts_fires_rule(
     client: TestClient, session_factory: sessionmaker
 ) -> None:
+    # PR-Fix-Creación-Manual-Contacto. Tras el cambio, el creador queda
+    # como owner por defecto. Para que la rule SIGA tomando ownership
+    # como espera este test, la rule debe ser `override_existing=True`
+    # (opt-in explícito a force-reassign). Sin override la rule
+    # quedaría como secundario y el admin como primary.
     uid = _user_id(session_factory, UserRole.USER)
     create_rule = client.post(
         "/api/assignment-rules",
@@ -633,6 +638,7 @@ def test_post_contacts_fires_rule(
                 ],
             },
             "primary_user_id": uid,
+            "override_existing": True,
         },
     )
     assert create_rule.status_code == 201
@@ -651,22 +657,25 @@ def test_post_contacts_fires_rule(
     contact_id = create_contact.json()["id"]
 
     with session_factory() as session:
-        assignments = list(
-            session.scalars(
-                select(ContactAssignment).where(
-                    ContactAssignment.contact_id == contact_id
-                )
+        # La rule con override_existing=True demota al manual_creator
+        # y toma la primary. El primary final es el target de la rule.
+        primary = session.scalar(
+            select(ContactAssignment).where(
+                ContactAssignment.contact_id == contact_id,
+                ContactAssignment.is_primary.is_(True),
             )
         )
-        assert len(assignments) == 1
-        assert assignments[0].user_id == uid
-        assert assignments[0].source.startswith("rule:")
+        assert primary is not None
+        assert primary.user_id == uid
+        assert primary.source.startswith("rule:")
 
 
-def test_post_contacts_no_rule_no_assignment(
+def test_post_contacts_no_rule_only_creator_assignment(
     client: TestClient, session_factory: sessionmaker
 ) -> None:
-    """Contacto sin regla activa que matchee → 0 assignments. Sanity."""
+    """Contacto sin regla activa que matchee → 1 assignment con
+    `source='manual_creator'` (el del PR-Fix-Creación-Manual-Contacto),
+    cero filas derivadas de reglas."""
     create_contact = client.post(
         "/api/contacts",
         headers=auth_headers(client, "admin"),
@@ -678,14 +687,15 @@ def test_post_contacts_no_rule_no_assignment(
     assert create_contact.status_code in (200, 201)
     contact_id = create_contact.json()["id"]
     with session_factory() as session:
-        assert (
+        rows = list(
             session.scalars(
                 select(ContactAssignment).where(
                     ContactAssignment.contact_id == contact_id
                 )
-            ).first()
-            is None
+            )
         )
+        assert len(rows) == 1
+        assert rows[0].source == "manual_creator"
 
 
 # -- PR-E: preview endpoint + new apply_to options ------------------

@@ -98,6 +98,23 @@ function makePhoneKey(): string {
   return `phone-${Math.random().toString(36).slice(2, 10)}`;
 }
 
+// PR-Fix-Creación-Manual-Contacto. El campo Origen del contacto es
+// read-only en el modal Editar. Renderiza un texto humano:
+//   "Manual"                       — contacto creado a mano en el CRM
+//   "Importado de AgileCRM"        — sync desde Agile
+//   "Importado de Brevo"           — sync desde Brevo
+//   "Sin origen registrado"        — contactos viejos sin valor
+//   "{raw}"                        — fallback para valores legacy
+function formatOriginLabel(origin: string): string {
+  const raw = origin.trim();
+  if (!raw) return "Sin origen registrado";
+  if (raw === "Manual") return "Manual";
+  const lower = raw.toLowerCase();
+  if (lower.startsWith("agilecrm")) return "Importado de AgileCRM";
+  if (lower.startsWith("brevo")) return "Importado de Brevo";
+  return raw;
+}
+
 function draftFromContact(contact: Contact, phones: ContactPhone[]): DraftState {
   const customRaw =
     contact.custom_fields && typeof contact.custom_fields === "object"
@@ -145,12 +162,13 @@ function buildPayload(
   current: DraftState,
 ): Record<string, unknown> {
   const out: Record<string, unknown> = {};
+  // PR-Fix-Creación-Manual-Contacto. `origin` salió del diff
+  // editable — el campo es read-only en el form.
   const scalarKeys: ReadonlyArray<keyof DraftState> = [
     "first_name",
     "last_name",
     "email",
     "job_title",
-    "origin",
     "commercial_status",
     "linkedin_url",
     "personal_website",
@@ -569,12 +587,20 @@ export function ContactEditForm({ contact, open, onClose, onPatch }: Props) {
               </label>
               <label>
                 <span>Origen del lead</span>
+                {/*
+                  PR-Fix-Creación-Manual-Contacto. Origen ahora es
+                  read-only en el modal Editar: "Manual" para contactos
+                  creados desde el CRM, "Importado de {sistema}" para
+                  los que vienen de sync. Evita texto libre que
+                  ensuciaba filtros (variantes "Tel", "web", "WEB"…).
+                */}
                 <input
                   type="text"
-                  value={draft.origin}
-                  onChange={(e) => updateField("origin", e.target.value)}
-                  maxLength={120}
-                  placeholder="ej: Web form, Evento Barcelona…"
+                  value={formatOriginLabel(draft.origin)}
+                  readOnly
+                  className="readonly-field"
+                  aria-readonly="true"
+                  title="El origen se asigna automáticamente y no se puede editar"
                 />
               </label>
             </fieldset>

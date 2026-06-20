@@ -129,9 +129,15 @@ def _seed_rule(
 def test_manual_create_dispatches_rule_and_audits(
     client: TestClient, session_factory: sessionmaker
 ) -> None:
-    """POST /api/contacts con condiciones que matchean → contacto
-    queda asignado al primary del rule, owner_user_id cacheado, audit
-    `assignment_rule.applied` escrito."""
+    """POST /api/contacts con condiciones que matchean + rule con
+    `override_existing=True` → la rule toma la primary del manual_creator,
+    owner_user_id cacheado al target, audit `assignment_rule.applied`
+    escrito.
+
+    PR-Fix-Creación-Manual-Contacto: el creator queda primary por
+    defecto. Para que la rule SIGA tomando ownership como hacía pre-PR
+    es necesario `override_existing=True` (decisión deliberada: el
+    creator domina salvo opt-in explícito a force-reassign)."""
     target_uid = _user_id(session_factory, UserRole.USER)
     creator_uid = _user_id(session_factory, UserRole.ADMIN)
     with session_factory() as session:
@@ -151,6 +157,7 @@ def test_manual_create_dispatches_rule_and_audits(
             },
             primary_user_id=target_uid,
             creator_id=creator_uid,
+            override_existing=True,
         )
         session.commit()
         rule_id = rule.id
@@ -168,17 +175,18 @@ def test_manual_create_dispatches_rule_and_audits(
     contact_id = resp.json()["id"]
 
     with session_factory() as session:
-        rows = list(
-            session.scalars(
-                select(ContactAssignment).where(
-                    ContactAssignment.contact_id == contact_id
-                )
+        # El creator queda demoted (is_primary=False) — la rule promueve
+        # al target a primary. Hay 2 filas: manual_creator (admin,
+        # secundario) + rule:<id> (target, primary).
+        primary = session.scalar(
+            select(ContactAssignment).where(
+                ContactAssignment.contact_id == contact_id,
+                ContactAssignment.is_primary.is_(True),
             )
         )
-        assert len(rows) == 1
-        assert rows[0].user_id == target_uid
-        assert rows[0].is_primary is True
-        assert rows[0].source == f"rule:{rule_id}"
+        assert primary is not None
+        assert primary.user_id == target_uid
+        assert primary.source == f"rule:{rule_id}"
         assert session.get(Contact, contact_id).owner_user_id == target_uid
 
         # Audit: assignment_rule.applied con target_id=contact_id.
@@ -196,11 +204,13 @@ def test_manual_create_dispatches_rule_and_audits(
         assert meta["rule_name"] == "Catalan VIPs"
 
 
-def test_manual_create_no_rule_no_assignment(
+def test_manual_create_no_rule_only_creator_assignment(
     client: TestClient, session_factory: sessionmaker
 ) -> None:
-    """Sin reglas activas que matcheen → contacto queda sin asignar
-    (paridad con `unattended-leads` widget)."""
+    """Sin reglas activas que matcheen → contacto queda asignado al
+    creador como primary con `source='manual_creator'`. No hay filas
+    de reglas (la lista no está vacía precisamente por el PR-Fix-
+    Creación-Manual-Contacto)."""
     resp = client.post(
         "/api/contacts",
         headers=auth_headers(client, "admin"),
@@ -209,14 +219,16 @@ def test_manual_create_no_rule_no_assignment(
     assert resp.status_code in (200, 201)
     cid = resp.json()["id"]
     with session_factory() as session:
-        assert (
+        rows = list(
             session.scalars(
                 select(ContactAssignment).where(
                     ContactAssignment.contact_id == cid
                 )
-            ).first()
-            is None
+            )
         )
+        assert len(rows) == 1
+        assert rows[0].source == "manual_creator"
+        assert rows[0].is_primary is True
 
 
 # ===================================================================
