@@ -10,6 +10,7 @@ import {
   Sparkles,
   StickyNote,
   Tag as TagIcon,
+  Workflow as WorkflowIcon,
 } from "lucide-react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
@@ -24,6 +25,7 @@ import { ContactBrevoEngagementCard } from "../../components/contact-detail/Cont
 import { ContactNotesPreviewCard } from "../../components/contact-detail/ContactNotesPreviewCard";
 import { ContactSummaryTab, ContactSummaryPlaceholderCards } from "../../components/contact-detail/ContactSummaryTab";
 import { ContactSupportTab } from "../../components/contact-detail/ContactSupportTab";
+import { ContactWorkflowsTab } from "../../components/contact-detail/ContactWorkflowsTab";
 import { ContactTagsPreviewCard } from "../../components/contact-detail/ContactTagsPreviewCard";
 import { ContactTagsTab } from "../../components/contact-detail/ContactTagsTab";
 import { ContactTasksPendingCard } from "../../components/contact-detail/ContactTasksPendingCard";
@@ -85,6 +87,7 @@ type Tab =
   | "notes"
   | "tags"
   | "opportunities"
+  | "workflows"
   | "support";
 
 // Bart pidió re-añadir la pestaña "Notas" perdida en el rediseño
@@ -103,6 +106,10 @@ const TABS: Array<{ id: Tab; label: string; icon: React.ElementType }> = [
   { id: "notes", label: "Notas", icon: StickyNote },
   { id: "tags", label: "Tags", icon: TagIcon },
   { id: "opportunities", label: "Oportunidades", icon: Layers },
+  // PR-Fix-Pestaña-Workflows-Y-Humanizar #1. La pestaña existía como
+  // componente (ContactWorkflowsTab) desde el PR #209 pero nunca se
+  // añadió al array TABS → no aparecía en la ficha. Ahora visible.
+  { id: "workflows", label: "Workflows", icon: WorkflowIcon },
   { id: "support", label: "Soporte", icon: LifeBuoy },
 ];
 
@@ -488,6 +495,12 @@ export default function ContactDetailPage() {
                 contactEmail={contact.email}
                 onCompose={() => setShowComposer(true)}
                 refreshKey={emailsRefreshKey}
+              />
+            ) : null}
+            {activeTab === "workflows" ? (
+              <ContactWorkflowsTab
+                contactId={contact.id}
+                canManage={canHardDelete}
               />
             ) : null}
             {activeTab === "support" ? <ContactSupportTab /> : null}

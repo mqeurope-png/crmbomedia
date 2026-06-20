@@ -9284,3 +9284,71 @@ tr.is-inactive {
   z-index: 100;
 }
 
+
+/* PR-Fix-Pestaña-Workflows-Y-Humanizar #1: pestaña Workflows ficha. */
+.contact-workflows-tab { display: flex; flex-direction: column; gap: 18px; }
+.contact-workflows-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.contact-workflows-header h3 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 16px;
+  margin: 0;
+}
+.contact-workflows-empty {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 18px;
+  background: #f9fafb;
+  border-radius: 8px;
+}
+.contact-workflows-section h4 {
+  font-size: 13px;
+  margin: 0 0 6px;
+  color: #374151;
+}
+.workflow-runs-row.is-clickable { cursor: pointer; }
+.workflow-runs-row.is-clickable:hover { background: #f9fafb; }
+.workflow-runs-timeline-row td {
+  background: #f9fafb;
+  padding: 12px 18px;
+}
+.workflow-runs-timeline {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.workflow-runs-step {
+  display: grid;
+  grid-template-columns: 18px 1fr;
+  gap: 6px;
+  align-items: start;
+  font-size: 12px;
+  padding: 4px 8px;
+  border-left: 3px solid #d1d5db;
+  background: #fff;
+  border-radius: 4px;
+}
+.workflow-runs-step.is-ok { border-left-color: #10b981; }
+.workflow-runs-step.is-failed { border-left-color: #ef4444; }
+.workflow-runs-step.is-skipped { border-left-color: #f59e0b; }
+.workflow-runs-step.is-deferred { border-left-color: #3b82f6; }
+.workflow-runs-step-icon { color: #6b7280; padding-top: 1px; }
+.workflow-runs-step.is-ok .workflow-runs-step-icon { color: #10b981; }
+.workflow-runs-step.is-failed .workflow-runs-step-icon { color: #ef4444; }
+.workflow-runs-step.is-skipped .workflow-runs-step-icon { color: #f59e0b; }
+.workflow-runs-step-meta { flex: 1; }
+.workflow-runs-step-error {
+  grid-column: 2;
+  color: #b91c1c;
+  font-size: 11px;
+  margin-top: 2px;
+}
