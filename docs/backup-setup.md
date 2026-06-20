@@ -149,12 +149,12 @@ del worker (lo aporta el `COPY scripts ./scripts` del Dockerfile), pero
 `docker-compose.prod.yml` lo bind-monta también desde
 `/opt/crmbo/scripts/` para que editarlo en VPS no requiera rebuild de
 la imagen. Si el clone del repo vive en otra ruta, ajusta el `volumes:`
-del servicio `worker`.
+del servicio `worker-sync` (el que ejecuta `backups:create`).
 
 ### Verifica el scheduler arrancando
 
-Tras `docker compose up -d --force-recreate api worker`, comprueba en
-los logs del api que el scheduler armó el siguiente tick:
+Tras `docker compose up -d --force-recreate api worker-sync worker-workflows`,
+comprueba en los logs del api que el scheduler armó el siguiente tick:
 
 ```bash
 docker compose logs api | grep "backups.scheduler armed"
@@ -168,7 +168,7 @@ docker compose logs api | grep "backups.scheduler armed"
 BACKUP_INTERVAL_HOURS=1
 ```
 
-Reinicia api + worker → el siguiente backup automático cae 1 h
+Reinicia `api + worker-sync` → el siguiente backup automático cae 1 h
 después y aparece en `/admin/backups` con `triggered_by='cron'`.
 
 > Si Bart prefiere mantener el cron Linux como redundancia, NO lo
