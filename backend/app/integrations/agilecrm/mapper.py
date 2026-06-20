@@ -332,9 +332,17 @@ def _custom_properties(payload: dict[str, Any]) -> dict[str, Any]:
     on import — Agile installations carry the same housekeeping
     noise the Brevo accounts do (sib_contact_owner, ETIQUETA,
     secondary phones), and we don't want it leaking into the ficha.
+
+    PR-Import-Agile-Completo: ahora también filtramos los campos
+    `Productos`, `Producto`, `etiquetas`, `interests` — esos van por
+    la ruta de tags (ver `extract_taglike_to_tag_names`), no como
+    custom field. Y reconocemos `CONTACTO Persona` como kept
+    (key canónica unificada).
     """
-    from app.integrations.brevo.mapper import (  # noqa: PLC0415
-        CUSTOM_FIELDS_WHITELIST,
+    from app.integrations.agilecrm.custom_field_rules import (  # noqa: PLC0415
+        canonical_keep_key,
+        is_kept_custom_field,
+        is_taglike_custom_field,
     )
 
     properties = payload.get("properties") or []
@@ -352,9 +360,60 @@ def _custom_properties(payload: dict[str, Any]) -> dict[str, Any]:
         value = prop.get("value")
         if value is None:
             continue
-        if name.upper() not in CUSTOM_FIELDS_WHITELIST:
+        # Tag-like: omitidos aquí — los recogerá `extract_taglike_to_tag_names`.
+        if is_taglike_custom_field(name):
             continue
-        out[name] = value
+        if not is_kept_custom_field(name):
+            continue
+        # Normalizamos la key cuando aplica (CONTACTO Persona en
+        # cualquier variante → "CONTACTO Persona"). Si no hay
+        # canónico, preservamos el nombre original.
+        key = canonical_keep_key(name) or name
+        # Si ya hay un valor para esa key (e.g. mismo contacto en
+        # 2 cuentas con "Horario") → unimos con " · " para no
+        # perder información, dedup por igualdad case-insensitive.
+        if key in out and isinstance(out[key], str) and isinstance(value, str):
+            existing = out[key]
+            if value.strip().lower() != existing.strip().lower():
+                out[key] = f"{existing} · {value}"
+            # else: idéntico → ya está.
+        else:
+            out[key] = value
+    return out
+
+
+def extract_taglike_to_tag_names(payload: dict[str, Any]) -> list[str]:
+    """PR-Import-Agile-Completo. Recorre las custom properties de
+    Agile y para cada nombre tag-like (`Productos`, `Producto`,
+    `etiquetas`, `interests`) parsea el valor y devuelve los tokens
+    como tag names. El worker los añade al desired_set del
+    `_sync_tag_delta` igual que los tags nativos de Agile."""
+    from app.integrations.agilecrm.custom_field_rules import (  # noqa: PLC0415
+        is_taglike_custom_field,
+        split_taglike_value,
+    )
+
+    properties = payload.get("properties") or []
+    if not isinstance(properties, list):
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for prop in properties:
+        if not isinstance(prop, dict):
+            continue
+        if str(prop.get("type") or "").upper() != "CUSTOM":
+            continue
+        name = prop.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        if not is_taglike_custom_field(name):
+            continue
+        for token in split_taglike_value(prop.get("value")):
+            key = token.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(token)
     return out
 
 
@@ -494,7 +553,21 @@ def map_agilecrm_contact_to_internal(
     # NOT into the legacy `contacts.tags` CSV column (Sprint P.1
     # ampliado). `tag_names` is a magic key the worker strips before
     # `Contact(**record)` and feeds to the M:N delta helper.
-    record["tag_names"] = _tag_names(payload.get("tags"))
+    #
+    # PR-Import-Agile-Completo: además de los tags nativos de Agile
+    # incluimos los tokens parseados de las custom properties
+    # tag-like (Productos, Producto, etiquetas, interests). Dedup
+    # case-insensitive contra los nativos.
+    native_tags = _tag_names(payload.get("tags"))
+    taglike_tokens = extract_taglike_to_tag_names(payload)
+    merged: list[str] = list(native_tags)
+    existing_lower = {t.lower() for t in merged}
+    for token in taglike_tokens:
+        if token.lower() in existing_lower:
+            continue
+        existing_lower.add(token.lower())
+        merged.append(token)
+    record["tag_names"] = merged
     if company_name:
         # Hint stored under `account_label` of the external_reference
         # row downstream — the mapper just returns the name; the worker
