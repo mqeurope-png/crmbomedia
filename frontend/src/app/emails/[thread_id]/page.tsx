@@ -4,6 +4,7 @@ import {
   Archive,
   ArrowDownLeft,
   ArrowUpRight,
+  ChevronLeft,
   Folder as FolderIcon,
   MailWarning,
   Reply,
@@ -146,6 +147,12 @@ export default function EmailThreadPage() {
 
   return (
     <div className="email-thread-view">
+      {/* PR-Fix-Emails-Responsive-Mobile. Botón "Lista de hilos"
+          visible solo en mobile (CSS oculta en ≥768px). Vuelve al
+          listado correspondiente al folder/label activo. */}
+      <Link href="/emails" className="email-mobile-back">
+        <ChevronLeft size={16} aria-hidden /> Lista de hilos
+      </Link>
       <header className="email-thread-actions">
         <div className="email-thread-actions-title">
           <h2>{thread.subject || "(sin asunto)"}</h2>
