@@ -289,39 +289,58 @@ def test_sync_bulk_above_threshold_does_not_dispatch(factory: sessionmaker):
 # ---------------------------------------------------------------------
 
 
-def test_sync_dispatch_logs_visible_messages(
-    factory: sessionmaker, caplog: pytest.LogCaptureFixture
-):
+def test_sync_dispatch_logs_visible_messages(factory: sessionmaker):
     """Bart pasó 90 min sin saber si el sync había llegado al dispatch
     porque NO había una sola línea de log. Estos mensajes son la
-    diferencia entre debuggear con SQL y leer el log."""
+    diferencia entre debuggear con SQL y leer el log.
+
+    Mockamos el logger del módulo directamente — `caplog` de pytest
+    es flaky en CI py3.12 (captura vacía pese a configurar
+    `set_level`). El mock no depende de cómo pytest interactúa con
+    el handler raíz."""
     with factory() as session:
         _seed_workflow_matching_testt(session)
 
     fake = _FakeClient(
         [[_make_payload(contact_id=1, first_name="TESTT log", email="log@example.com")]]
     )
-    caplog.set_level("INFO", logger="app.integrations.agilecrm.jobs")
-    with factory() as session, _patch_client(fake), _patch_redis_unavailable():
+    with (
+        factory() as session,
+        _patch_client(fake),
+        _patch_redis_unavailable(),
+        patch("app.integrations.agilecrm.jobs.logger") as mock_logger,
+    ):
         sync_log = _new_sync_log(session)
         sync_agilecrm_contacts(session, sync_log)
 
-    messages = [record.getMessage() for record in caplog.records]
-    joined = "\n".join(messages)
+    # Renderizamos los format-strings tal como los emitiría el logger
+    # (printf-style %s) para poder hacer substring checks.
+    rendered: list[str] = []
+    for call in mock_logger.info.call_args_list:
+        args = call.args
+        if not args:
+            continue
+        template = str(args[0])
+        try:
+            rendered.append(template % args[1:])
+        except TypeError:
+            rendered.append(template)
+    joined = "\n".join(rendered)
+
     # Mensajes que deben estar SIEMPRE (independientemente de modo).
     assert "collected" in joined and "new_contacts" in joined, (
-        "falta la línea 'collected N new_contacts'"
+        f"falta la línea 'collected N new_contacts'; rendered={rendered!r}"
     )
     assert "bulk gate" in joined and "dispatch_mode=periodic" in joined, (
-        "falta la línea 'bulk gate dispatch_mode=periodic'"
+        f"falta 'bulk gate dispatch_mode=periodic'; rendered={rendered!r}"
     )
     # Mensaje por-contacto.
     assert "dispatching contact.created" in joined, (
-        "falta la línea 'dispatching contact.created event for contact_id=...'"
+        f"falta 'dispatching contact.created'; rendered={rendered!r}"
     )
     # Resumen final.
     assert "dispatched 1/1 contact.created" in joined, (
-        "falta la línea de resumen 'dispatched K/N contact.created'"
+        f"falta resumen 'dispatched K/N contact.created'; rendered={rendered!r}"
     )
 
 
