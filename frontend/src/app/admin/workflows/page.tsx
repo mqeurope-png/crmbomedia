@@ -244,7 +244,22 @@ export default function WorkflowsListPage() {
                   </td>
                   <td>{Math.max(inFlight, 0)}</td>
                   <td>{w.total_entered}</td>
-                  <td>{w.total_won}</td>
+                  <td>
+                    {w.total_won}
+                    {/* PR-Backlog-Consolidado A6. Badge amarillo cuando
+                        hay runs completados con steps saltados — la fila
+                        sigue contando como "Ganado" pero el operador ve
+                        que algo no fue limpio. */}
+                    {w.total_completed_with_skipped > 0 ? (
+                      <span
+                        className="badge warn"
+                        title={`${w.total_completed_with_skipped} run(s) completaron con pasos saltados — abre la ficha contacto afectada para ver detalles.`}
+                        style={{ marginLeft: 6 }}
+                      >
+                        ⚠ {w.total_completed_with_skipped}
+                      </span>
+                    ) : null}
+                  </td>
                   <td className="actions">
                     {w.status === "active" ? (
                       <button

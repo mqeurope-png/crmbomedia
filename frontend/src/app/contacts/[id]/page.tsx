@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ContactAddressSection } from "../../components/ContactAddressSection";
 import { ContactCompanySection } from "../../components/ContactCompanySection";
@@ -49,9 +50,12 @@ import {
 import {
   addTagToContact,
   deactivateContact,
+  deleteContactHard,
   getContact,
+  getCurrentUser,
   listContactAssignments,
   removeTagFromContact,
+  type User as CurrentUser,
   updateContact,
   type ActivityEvent,
   type Contact,
@@ -104,6 +108,7 @@ const TABS: Array<{ id: Tab; label: string; icon: React.ElementType }> = [
 
 export default function ContactDetailPage() {
   const params = useParams<{ id: string }>();
+  const router = useRouter();
   const [contact, setContact] = useState<Contact | null>(null);
   const [refreshWarnings, setRefreshWarnings] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -116,6 +121,18 @@ export default function ContactDetailPage() {
   // header lo abre; cerrar (Cancel/X) limpia; Save → confirma →
   // PATCH → refresh.
   const [editOpen, setEditOpen] = useState(false);
+  // PR-Backlog-Consolidado B1. Modal de confirmación para borrar
+  // contacto definitivamente — requiere teclear BORRAR.
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleteConfirmText, setDeleteConfirmText] = useState("");
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
+  useEffect(() => {
+    void getCurrentUser().then(setCurrentUser).catch(() => {});
+  }, []);
+  const canHardDelete =
+    currentUser?.role === "admin" || currentUser?.role === "manager";
   // PR-Ficha-Cleanup. Contador que la pestaña Emails usa como dep
   // del useEffect. Tras enviar desde el header / la propia tab,
   // bumpeamos para forzar el refetch — fix del bug "email no
@@ -232,6 +249,22 @@ export default function ContactDetailPage() {
     }
   }
 
+  async function handleHardDelete() {
+    if (!contact) return;
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      await deleteContactHard(contact.id);
+      router.push("/contacts");
+    } catch (err) {
+      setDeleteError(
+        extractErrorMessage(err, "No se pudo borrar el contacto."),
+      );
+    } finally {
+      setDeleting(false);
+    }
+  }
+
   if (isLoading) {
     return (
       <main className="shell">
@@ -323,6 +356,23 @@ export default function ContactDetailPage() {
             ) : (
               <span className="badge bad">Inactivo</span>
             )}
+            {/* PR-Backlog-Consolidado B1. Hard delete admin/manager-only.
+                El backend también lo gate por rol — esto solo evita
+                pintar el botón a quien no puede ejecutarlo. */}
+            {canHardDelete ? (
+              <button
+                type="button"
+                className="contact-header-overflow-item is-danger"
+                onClick={() => {
+                  setOverflowOpen(false);
+                  setDeleteOpen(true);
+                  setDeleteConfirmText("");
+                  setDeleteError(null);
+                }}
+              >
+                Borrar contacto (definitivo)
+              </button>
+            ) : null}
           </>
         }
       />
@@ -519,6 +569,65 @@ export default function ContactDetailPage() {
         onClose={() => setEditOpen(false)}
         onPatch={handlePatch}
       />
+
+      {/* PR-Backlog-Consolidado B1. Modal de confirmación doble. */}
+      {deleteOpen ? (
+        <div
+          className="modal-backdrop"
+          onClick={() => !deleting && setDeleteOpen(false)}
+        >
+          <div
+            className="modal-card contact-delete-modal"
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+          >
+            <h2>Borrar contacto definitivamente</h2>
+            <p>
+              Esta acción <strong>no se puede deshacer</strong>. Vas a
+              borrar definitivamente{" "}
+              <strong>
+                {contact.first_name} {contact.last_name ?? ""}
+              </strong>{" "}
+              junto con todas sus tareas, notas, asignaciones y oportunidades.
+              Los emails históricos se preservan con `contact_id = NULL` por
+              auditoría. Los workflow runs activos quedan cancelados.
+            </p>
+            <p className="muted small">
+              Escribe <code>BORRAR</code> para confirmar.
+            </p>
+            <input
+              type="text"
+              value={deleteConfirmText}
+              onChange={(e) => setDeleteConfirmText(e.target.value)}
+              placeholder="BORRAR"
+              autoFocus
+              disabled={deleting}
+            />
+            {deleteError ? (
+              <p className="form-error">{deleteError}</p>
+            ) : null}
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="button secondary"
+                onClick={() => setDeleteOpen(false)}
+                disabled={deleting}
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                className="button is-danger"
+                onClick={handleHardDelete}
+                disabled={deleteConfirmText !== "BORRAR" || deleting}
+              >
+                {deleting ? "Borrando…" : "Borrar definitivamente"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </main>
   );
 }

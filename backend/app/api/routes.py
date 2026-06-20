@@ -2504,6 +2504,133 @@ def deactivate_contact(
     return contact
 
 
+# ---------------------------------------------------------------------
+# PR-Backlog-Consolidado B1 — Hard delete del contacto.
+# ---------------------------------------------------------------------
+
+
+@router.delete(
+    "/contacts/{contact_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    responses=ERROR_RESPONSES,
+    tags=["crm"],
+)
+def delete_contact_hard(
+    contact_id: str,
+    request: Request,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_manager),
+) -> Response:
+    """Borra el contacto definitivamente: el row desaparece de la BD
+    junto con tasks/notes/assignments (cascade) y los workflow_runs
+    activos quedan cancelados. Los emails históricos quedan
+    preservados con `contact_id = NULL` por auditoría de la
+    conversación.
+
+    Restringido a admin/manager. Si el contacto tiene oportunidades
+    activas (stage no won/lost), devuelve 409 — el operador debe
+    cerrarlas antes."""
+    from app.models.crm import (  # noqa: PLC0415
+        EmailMessage,
+        PipelineStage,
+    )
+    from app.models.workflows import (  # noqa: PLC0415
+        WorkflowRun,
+        WorkflowRunState,
+    )
+
+    contact = session.get(Contact, contact_id)
+    if contact is None:
+        raise not_found("Contact")
+
+    # 1. Bloquea si hay oportunidad activa.
+    active_opps = list(
+        session.scalars(
+            select(ContactPipelineStage)
+            .join(
+                PipelineStage,
+                PipelineStage.id == ContactPipelineStage.stage_id,
+            )
+            .where(
+                ContactPipelineStage.contact_id == contact_id,
+                PipelineStage.is_won.is_(False),
+                PipelineStage.is_lost.is_(False),
+            )
+        )
+    )
+    if active_opps:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Este contacto tiene {len(active_opps)} oportunidad"
+                f"{'es' if len(active_opps) != 1 else ''} activa"
+                f"{'s' if len(active_opps) != 1 else ''}. Ciérralas "
+                f"(ganada/perdida) antes de borrar."
+            ),
+        )
+
+    # 2. Snapshot para el audit log.
+    snapshot = {
+        "email": contact.email,
+        "first_name": contact.first_name,
+        "last_name": contact.last_name,
+        "owner_user_id": contact.owner_user_id,
+        "lifecycle_status": contact.commercial_status,
+        "lead_score": contact.lead_score,
+        "created_at": (
+            contact.created_at.isoformat() if contact.created_at else None
+        ),
+    }
+
+    # 3. Cancela workflow runs activos.
+    active_runs = list(
+        session.scalars(
+            select(WorkflowRun).where(
+                WorkflowRun.contact_id == contact_id,
+                WorkflowRun.state.in_(
+                    [
+                        WorkflowRunState.RUNNING,
+                        WorkflowRunState.WAITING,
+                        WorkflowRunState.WAITING_FOR_EVENT,
+                    ]
+                ),
+            )
+        )
+    )
+    for run in active_runs:
+        run.state = WorkflowRunState.CANCELLED
+        run.completed_at = datetime.now(UTC)
+        run.error_summary = "contact_deleted"
+
+    # 4. Preserva email_messages con contact_id NULL.
+    session.execute(
+        EmailMessage.__table__.update()
+        .where(EmailMessage.contact_id == contact_id)
+        .values(contact_id=None)
+    )
+
+    # 5. Audit ANTES del delete — necesitamos el target_id resoluble.
+    record_event(
+        session,
+        action=Action.CONTACT_DELETED,
+        target_type="contact",
+        target_id=contact_id,
+        actor=current_user,
+        metadata={
+            "snapshot": snapshot,
+            "cancelled_runs": len(active_runs),
+        },
+        request=request,
+    )
+
+    # 6. Delete — cascade en tasks/notes/contact_assignments/
+    #    contact_phones/contact_pipeline_stages/email_unsubscribes
+    #    (definido en los FKs del modelo).
+    session.delete(contact)
+    session.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 # PR-Contact-Unsubscribe-Admin. Bart reportó 422 al enviar email:
 # "Este contacto se ha dado de baja". El backend tiene el modelo
 # EmailUnsubscribe + la guard en `_send_email_core`, pero no había

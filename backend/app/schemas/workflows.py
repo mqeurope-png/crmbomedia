@@ -100,6 +100,11 @@ class WorkflowRead(BaseModel):
     total_won: int
     total_cancelled: int
     total_failed: int
+    # PR-Backlog-Consolidado A6. Cuántos de los `total_completed`
+    # llegaron al final habiendo saltado >=1 step (contact_no_owner,
+    # template_not_found, email_cap_reached…). Computado on-read sobre
+    # `error_summary LIKE 'completed_with_skipped:%'`; sin migración.
+    total_completed_with_skipped: int = 0
     created_by_user_id: str | None
     definition_hash: str | None = None
     created_at: datetime

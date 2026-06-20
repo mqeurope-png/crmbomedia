@@ -39,6 +39,7 @@ import { DueDatePicker } from "../../../components/workflows/DueDatePicker";
 import { PipelineStageSelector } from "../../../components/workflows/PipelineStageSelector";
 import { TriggerConfigPanel } from "../../../components/workflows/TriggerConfigPanel";
 import { WorkflowTagsPicker } from "../../../components/workflows/WorkflowTagsPicker";
+import { WorkflowUserPicker } from "../../../components/workflows/WorkflowUserPicker";
 import { WorkflowConditionBuilder } from "../../../components/workflows/WorkflowConditionBuilder";
 import { WorkflowDryRunModal } from "../../../components/workflows/WorkflowDryRunModal";
 import { WorkflowNarrativeSummary } from "../../../components/workflows/WorkflowNarrativeSummary";
@@ -1116,19 +1117,20 @@ function StepConfigPanel({
         </>
       ) : null}
 
-      {/* Panel para action_assign_owner */}
+      {/* Panel para action_assign_owner.
+          PR-Backlog-Consolidado A2: dropdown de users activos en lugar
+          del input texto pidiendo "UUID del user activo" (imposible
+          de obtener desde /admin/users). */}
       {node.data.stepType === "action_assign_owner" ? (
         <label>
-          ID del usuario propietario
-          <input
-            type="text"
+          Usuario propietario
+          <WorkflowUserPicker
             value={(cfg.user_id as string) ?? ""}
-            onChange={(e) => setField("user_id", e.target.value)}
-            placeholder="UUID del user activo"
+            onChange={(next) => setField("user_id", next)}
           />
           <span className="muted small">
-            Cambia el owner del contacto al user indicado. Cópialo de
-            <code> /admin/users</code>.
+            El contacto pasará a tener este user como propietario
+            principal (primary en <code>contact_assignments</code>).
           </span>
         </label>
       ) : null}

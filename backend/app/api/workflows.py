@@ -89,7 +89,9 @@ router = APIRouter(prefix="/api/workflows", tags=["workflows"])
 # ---------------------------------------------------------------------
 
 
-def _workflow_to_read(workflow: Workflow) -> WorkflowRead:
+def _workflow_to_read(
+    workflow: Workflow, *, session: Session | None = None
+) -> WorkflowRead:
     return WorkflowRead(
         id=workflow.id,
         name=workflow.name,
@@ -106,6 +108,11 @@ def _workflow_to_read(workflow: Workflow) -> WorkflowRead:
         total_won=workflow.total_won,
         total_cancelled=workflow.total_cancelled,
         total_failed=workflow.total_failed,
+        total_completed_with_skipped=_count_completed_with_skipped(
+            session, workflow.id
+        )
+        if session is not None
+        else 0,
         created_by_user_id=workflow.created_by_user_id,
         definition_hash=workflow.definition_hash,
         created_at=workflow.created_at,
@@ -113,10 +120,31 @@ def _workflow_to_read(workflow: Workflow) -> WorkflowRead:
     )
 
 
+def _count_completed_with_skipped(
+    session: Session, workflow_id: str
+) -> int:
+    """PR-Backlog-Consolidado A6. Cuántos runs completados de este
+    workflow llegaron al final habiendo saltado >=1 step. Marcador
+    persistido por el motor en `WorkflowRun.error_summary` con prefijo
+    `completed_with_skipped:`."""
+    from sqlalchemy import func  # noqa: PLC0415
+
+    return int(
+        session.scalar(
+            select(func.count(WorkflowRun.id)).where(
+                WorkflowRun.workflow_id == workflow_id,
+                WorkflowRun.state == WorkflowRunState.COMPLETED,
+                WorkflowRun.error_summary.like("completed_with_skipped:%"),
+            )
+        )
+        or 0
+    )
+
+
 def _workflow_to_detail(
     session: Session, workflow: Workflow
 ) -> WorkflowDetail:
-    base = _workflow_to_read(workflow)
+    base = _workflow_to_read(workflow, session=session)
     steps = list(
         session.scalars(
             select(WorkflowStep).where(
@@ -310,7 +338,7 @@ def list_workflows(
     if status_filter is not None:
         stmt = stmt.where(Workflow.status == status_filter)
     rows = list(session.scalars(stmt))
-    return [_workflow_to_read(w) for w in rows]
+    return [_workflow_to_read(w, session=session) for w in rows]
 
 
 @router.post("", response_model=WorkflowDetail, status_code=201)
