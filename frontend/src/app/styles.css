@@ -6432,20 +6432,83 @@ a.origin-chip:hover { filter: brightness(0.97); }
   color: #0f172a;
 }
 
-/* Responsive collapse: narrow viewports drop the sidebar so the
- * list + pane keep room to breathe. v2.4b ships as desktop-first;
- * v2.4c can add a hamburger to bring the sidebar back. */
+/* PR-Fix-Emails-Responsive-Mobile.
+ *
+ * Botón "atrás" que muestra el title bar de la vista anterior en
+ * mobile (sidebar←list o list←thread). Solo visible <768px; CSS lo
+ * oculta en tablet/desktop porque ahí las 3 columnas conviven. */
+.email-mobile-back {
+  display: none;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 14px;
+  background: #f8fafc;
+  border: 0;
+  border-bottom: 1px solid #e2e8f0;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  color: #1d4ed8;
+  text-decoration: none;
+  cursor: pointer;
+  width: 100%;
+  text-align: left;
+}
+.email-mobile-back:hover { background: #eef2ff; }
+
+/* Responsive collapse:
+ *
+ * - Desktop (≥1025px): 3 columnas (sidebar + middle + thread pane).
+ * - Tablet (768-1024px): sidebar oculto, 2 columnas (middle + thread).
+ *   Comportamiento histórico v2.4b.
+ * - Mobile (<768px): state-driven 1 columna. La máquina de estados
+ *   `data-mobile-view` decide qué pane se ve:
+ *     · "folders" → sidebar (entrada inicial al /emails).
+ *     · "list"    → middle (lista de hilos / drafts).
+ *     · "thread"  → thread pane (detalle del hilo abierto). */
 @media (max-width: 1024px) {
   .email-mailbox {
     grid-template-columns: minmax(260px, 360px) minmax(0, 1fr);
   }
   .email-sidebar { display: none; }
 }
-@media (max-width: 720px) {
+@media (max-width: 767px) {
   .email-mailbox {
-    grid-template-columns: minmax(0, 1fr);
+    display: block;
+    grid-template-columns: none;
+    height: calc(100vh - var(--app-shell-header-height, 64px));
+    overflow: hidden;
+    position: relative;
   }
-  .email-list-pane { display: none; }
+  .email-mailbox > .email-sidebar,
+  .email-mailbox > .email-middle-column,
+  .email-mailbox > .email-thread-pane {
+    display: none;
+    position: absolute;
+    inset: 0;
+    overflow-y: auto;
+    width: 100%;
+    height: 100%;
+  }
+  /* Cada estado revela un pane concreto. */
+  .email-mailbox[data-mobile-view="folders"] > .email-sidebar {
+    display: block;
+  }
+  .email-mailbox[data-mobile-view="list"] > .email-middle-column {
+    display: flex;
+  }
+  .email-mailbox[data-mobile-view="thread"] > .email-thread-pane {
+    display: block;
+  }
+  /* Botón "atrás" visible en mobile (la regla por defecto lo oculta). */
+  .email-mailbox[data-mobile-view="list"] > .email-middle-column > .email-mobile-back,
+  .email-mailbox[data-mobile-view="thread"] > .email-thread-pane .email-mobile-back {
+    display: flex;
+  }
+  /* La lista interna no la ocultamos como en el rule antiguo de
+   * 720px — en móvil queremos que la lista se vea cuando es el
+   * pane activo. */
+  .email-list-pane { display: block; }
 }
 
 /* Sprint Filtros & Listas sub-PR-C — EntityTable + EntityFilterBuilder
