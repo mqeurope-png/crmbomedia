@@ -103,6 +103,10 @@ def periodic_read_check(session: Session, sync_log: SyncLog) -> SyncOutcome:
     habilitada, luego re-arma el próximo tick."""
     _ = sync_log
     accounts = _enabled_agile_accounts(session)
+    logger.info(
+        "agilecrm.periodic_read heartbeat firing for %d enabled account(s)",
+        len(accounts),
+    )
     enqueued = 0
     for account in accounts:
         try:
@@ -120,7 +124,17 @@ def periodic_read_check(session: Session, sync_log: SyncLog) -> SyncOutcome:
                 account.account_id,
                 exc,
             )
-    schedule_periodic_read()
+    # PR-Fix-Scheduler-Agile-Roto. Re-arm dentro de try/except: si
+    # Redis falla aquí, el resto del handler ya consiguió encolar los
+    # sync_contacts del tick actual (lo importante). El siguiente
+    # restart del API re-armará el heartbeat (`arm_periodic_jobs`).
+    try:
+        schedule_periodic_read()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "agilecrm.periodic_read re-arm failed: %s (will retry on next API restart)",
+            exc,
+        )
     return SyncOutcome(
         records_processed=enqueued,
         metadata={"checked": len(accounts)},
@@ -129,6 +143,15 @@ def periodic_read_check(session: Session, sync_log: SyncLog) -> SyncOutcome:
 
 def schedule_periodic_read() -> None:
     interval = _resolve_interval()
+    # PR-Fix-Scheduler-Agile-Roto. Logging visible para detectar a
+    # primer vistazo si el scheduler se está armando. Sin esto el
+    # silencio era ambiguo (¿la queue está vacía porque no toca o
+    # porque el heartbeat se perdió?).
+    logger.info(
+        "agilecrm.scheduler arming periodic_read every %s (next tick in %s s)",
+        interval,
+        int(interval.total_seconds()),
+    )
     _arm(
         lock=READ_LOCK_KEY,
         queue=queue_name("agilecrm", "periodic_read"),

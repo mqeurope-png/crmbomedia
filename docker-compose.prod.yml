@@ -113,6 +113,12 @@ services:
       - redis://redis:6379/0
       - agilecrm:sync_contacts
       - agilecrm:purge_quota
+      # PR-Fix-Scheduler-Agile-Roto. El scheduler de Agile encola su
+      # heartbeat self-rescheduling en `agilecrm:periodic_read`
+      # (igual que Brevo en `brevo:periodic_read`). Sin la queue en
+      # esta lista los jobs se quedaban eternamente sin procesar y
+      # el polling automático llevaba 2 días caído.
+      - agilecrm:periodic_read
       - brevo:sync_contacts
       - brevo:push_target
       - brevo:auto_sync_check
