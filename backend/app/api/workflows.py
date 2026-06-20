@@ -74,9 +74,6 @@ from app.workflows.dispatcher import TRIGGER_CATALOG
 from app.workflows.engine import (
     cancel_run as engine_cancel_run,
 )
-from app.workflows.engine import (
-    start_run,
-)
 from app.workflows.steps import STEP_CATALOG
 
 log = logging.getLogger(__name__)
@@ -1211,31 +1208,46 @@ def manual_add_contact(
     session: Session = Depends(get_session),
     current_user: User = Depends(require_manager),
 ) -> dict[str, str]:
-    """Entrada forzada desde la ficha contacto. Salta el cap de reentry."""
+    """PR-Fix-Añadir-Manual-Workflow. Entrada forzada desde la ficha
+    contacto. A diferencia del dispatch automático, aquí saltamos
+    EL TRIGGER y arrancamos directo en su sucesor — el motor del PR
+    #213 ya lo hacía como anchor del trigger, pero el lookup viejo
+    dependía de `is_entry=True` que no era robusto en algunos drafts.
+
+    Salta el cap de reentry porque el admin tomó la decisión expresa.
+    Si el workflow es degenerado (trigger sin sucesor), devolvemos
+    422 con mensaje específico — antes daba el genérico "no entry
+    step" que confundía al operador (sí había entry, era el trigger).
+    """
     workflow = session.get(Workflow, workflow_id)
     if workflow is None:
         raise not_found("Workflow")
-    if workflow.status != WorkflowStatus.ACTIVE:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="El workflow debe estar activo para añadir contactos.",
-        )
     contact = session.get(Contact, contact_id)
     if contact is None:
         raise not_found("Contact")
-    run = start_run(
-        session,
-        workflow,
-        contact,
-        trigger_payload={"event_type": "manual.added", "actor_id": current_user.id},
-        skip_dedup=True,
+
+    from app.workflows.engine import (  # noqa: PLC0415
+        ManualStartError,
+        advance_run,
+        start_manual_run,
     )
-    if run is None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="El workflow no pudo arrancar (revisa que tenga step de entrada).",
+
+    try:
+        run = start_manual_run(
+            session,
+            workflow,
+            contact,
+            actor_user_id=current_user.id,
         )
-    from app.workflows.engine import advance_run  # noqa: PLC0415
+    except ManualStartError as exc:
+        http_status = (
+            status.HTTP_422_UNPROCESSABLE_ENTITY
+            if exc.code == "workflow_empty"
+            else status.HTTP_400_BAD_REQUEST
+        )
+        raise HTTPException(
+            status_code=http_status, detail=exc.message
+        ) from exc
 
     advance_run(session, run.id)
     record_event(
@@ -1244,7 +1256,11 @@ def manual_add_contact(
         target_type="workflow_run",
         target_id=run.id,
         actor=current_user,
-        metadata={"workflow_id": workflow_id, "contact_id": contact_id},
+        metadata={
+            "workflow_id": workflow_id,
+            "contact_id": contact_id,
+            "manual_entry": True,
+        },
         request=request,
     )
     session.commit()

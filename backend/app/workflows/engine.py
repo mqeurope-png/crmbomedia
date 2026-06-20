@@ -121,6 +121,132 @@ def _entry_step(session: Session, workflow: Workflow) -> WorkflowStep | None:
     )
 
 
+def _trigger_step(session: Session, workflow: Workflow) -> WorkflowStep | None:
+    """PR-Fix-Añadir-Manual-Workflow. Localiza el nodo `trigger` del
+    workflow por tipo (no por `is_entry`). El editor garantiza que
+    haya exactamente uno; si por algún draft viejo hay >1, devolvemos
+    el primero por posición creada."""
+    return session.scalar(
+        select(WorkflowStep)
+        .where(
+            WorkflowStep.workflow_id == workflow.id,
+            WorkflowStep.type == "trigger",
+        )
+        .order_by(WorkflowStep.created_at.asc())
+        .limit(1)
+    )
+
+
+class ManualStartError(Exception):
+    """PR-Fix-Añadir-Manual-Workflow. Razón estructural por la que no
+    se pudo crear el run forzado. El endpoint la mapea a HTTPException
+    con mensaje legible distinto del genérico "no entry step"."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+def start_manual_run(
+    session: Session,
+    workflow: Workflow,
+    contact: Contact,
+    *,
+    actor_user_id: str | None = None,
+) -> WorkflowRun:
+    """PR-Fix-Añadir-Manual-Workflow.
+
+    Crea un workflow_run forzado por un admin/manager desde la ficha
+    del contacto, saltándose el trigger automático y los filtros. A
+    diferencia de `start_run` (que delega en `_entry_step` →
+    `is_entry=True`), aquí:
+
+      1. Buscamos el nodo `trigger` por tipo, no por flag — robusto
+         frente a workflows cuyo `is_entry` quedó mal por una edición
+         antigua.
+      2. Buscamos su sucesor por el handle `default`.
+      3. Si no hay sucesor, error explícito `workflow_empty` con
+         mensaje claro ("Este workflow está vacío, solo tiene el
+         trigger…").
+      4. Creamos el run con `current_step_id = sucesor.id` —
+         saltándonos el ciclo del trigger-anchor del PR #213. El
+         primer step ejecutable es el sucesor.
+
+    El audit del run (history row para el trigger) se añade con
+    `result.manual_entry=True` + `actor_user_id` para distinguirlo
+    del dispatch automático.
+    """
+    if workflow.status != WorkflowStatus.ACTIVE:
+        raise ManualStartError(
+            "workflow_not_active",
+            "El workflow debe estar activo para añadir contactos manualmente.",
+        )
+
+    trigger = _trigger_step(session, workflow)
+    if trigger is None:
+        raise ManualStartError(
+            "no_trigger_step",
+            "Este workflow no tiene nodo trigger. Edítalo antes de añadir contactos.",
+        )
+
+    successor_id = next_step_for_edge(
+        session, from_step_id=trigger.id, branch_label="default"
+    )
+    if successor_id is None:
+        raise ManualStartError(
+            "workflow_empty",
+            (
+                "Este workflow está vacío, solo tiene el trigger sin "
+                "siguiente paso. Configúralo antes de añadir contactos "
+                "manualmente."
+            ),
+        )
+
+    from uuid import uuid4  # noqa: PLC0415
+
+    run_id = str(uuid4())
+    # Dedup key único — la entrada forzada salta el cap de reentry
+    # (el admin tomó la decisión expresa de hacerlo).
+    dedup_key = f"{workflow.id}:{contact.id}:{run_id}"
+    now = datetime.now(UTC)
+    run = WorkflowRun(
+        id=run_id,
+        workflow_id=workflow.id,
+        contact_id=contact.id,
+        # Saltamos el trigger directamente — el primer step
+        # ejecutable es el sucesor.
+        current_step_id=successor_id,
+        state=WorkflowRunState.RUNNING,
+        active_dedup_key=dedup_key,
+        trigger_payload_json=json.dumps(
+            {
+                "event_type": "manual.added",
+                "actor_id": actor_user_id,
+                "manual_entry": True,
+            },
+            default=str,
+        ),
+        started_at=now,
+        wake_at=now,
+    )
+    session.add(run)
+    session.flush()
+
+    # Audit del trigger como step "saltado por entrada manual".
+    _record_history(
+        session,
+        run,
+        trigger,
+        status="ok",
+        result={"anchor": True, "manual_entry": True},
+    )
+
+    workflow.total_entered = (workflow.total_entered or 0) + 1
+    session.flush()
+    return run
+
+
 def next_step_for_edge(
     session: Session,
     *,
