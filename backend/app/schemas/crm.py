@@ -280,6 +280,9 @@ class ContactCreate(BaseModel):
     address_postal_code: str | None = Field(default=None, max_length=20)
     address_region: str | None = Field(default=None, max_length=120)
     lead_score: int | None = None
+    # PR-Consolidado — Star Rating. Field validation 0-5 (ver
+    # ContactUpdate). 0 / None ambos = sin valorar.
+    star_rating: int | None = Field(default=None, ge=0, le=5)
 
     @field_validator("first_name")
     @classmethod
@@ -329,6 +332,11 @@ class ContactUpdate(BaseModel):
     # para que el modal Editar pueda persistir el GRADO_DE_INTERES y
     # demás propiedades migradas desde Agile.
     lead_score: int | None = None
+    # PR-Consolidado — Star Rating. Réplica del Star Value de AgileCRM
+    # como campo independiente del lead_score. Validación: 0-5 o NULL;
+    # cualquier otro valor → 422. `0` y `None` son ambos "sin valorar"
+    # (semánticamente equivalentes; ver migration 0065).
+    star_rating: int | None = Field(default=None, ge=0, le=5)
     custom_fields: dict[str, Any] | str | None = None
     # PR-Editar-Completo. Campos multi-tabla expuestos via el PATCH
     # masivo para que el modal pueda guardar todo en una sola

@@ -73,7 +73,23 @@ def dispatch_event(
     payload: dict[str, Any] | None = None,
 ) -> None:
     """Encola la evaluación. Fire-and-forget. Si Redis cae, procesa
-    inline."""
+    inline.
+
+    PR-Consolidado — Fix dispatcher sync. Pasamos el callable
+    `_process_event_job` directo en vez del string
+    `"app.workflows.dispatcher._process_event_job"`. Con el string,
+    RQ resolvía el import en el worker; si el import fallaba
+    (Python path diferente entre API y worker, o un side-effect que
+    se rompió silenciosamente), el job quedaba en `FailedJobRegistry`
+    sin ejecutarse y NO se incrementaba `workflows.total_entered`.
+    Pasar el callable hace que RQ pickle la función directamente —
+    si el worker no puede deserializar es porque tiene código viejo,
+    error mucho más visible.
+
+    Loguear AMBOS extremos (encolado + fallback inline) para que el
+    operador pueda diferenciar "Redis caído" vs "Redis OK pero la
+    función nunca corre".
+    """
     payload = payload or {}
     try:
         from rq import Queue  # noqa: PLC0415
@@ -87,15 +103,25 @@ def dispatch_event(
             queue_name("workflows", "dispatch"),
             connection=redis_connection(),
         )
+        # Callable reference + INFO log: visibles en el log del API /
+        # worker que originó el dispatch.
         queue.enqueue(
-            "app.workflows.dispatcher._process_event_job",
+            _process_event_job,
             event_type,
             contact_id,
             payload,
         )
+        log.info(
+            "workflows.dispatch enqueued event_type=%s contact_id=%s",
+            event_type,
+            contact_id,
+        )
     except Exception:  # noqa: BLE001
         log.warning(
-            "workflows.dispatch enqueue failed; processing inline",
+            "workflows.dispatch enqueue failed; processing inline "
+            "event_type=%s contact_id=%s",
+            event_type,
+            contact_id,
             exc_info=True,
         )
         process_event_inline(

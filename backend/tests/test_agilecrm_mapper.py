@@ -304,11 +304,16 @@ def test_lead_score_picked_from_top_level_then_property():
     record, _ = map_agilecrm_contact_to_internal(_payload(lead_score=87))
     assert record["lead_score"] == 87
 
-    # Falls back to star_value when lead_score is missing.
-    record, _ = map_agilecrm_contact_to_internal(_payload(star_value="42"))
-    assert record["lead_score"] == 42
+    # PR-Consolidado — Star Rating. `star_value` salió del fallback de
+    # `lead_score` y ahora popula `Contact.star_rating` aparte. Sin
+    # `lead_score` y con sólo `star_value`, lead_score queda None y
+    # star_rating recibe el valor (clamp 1-5).
+    record, _ = map_agilecrm_contact_to_internal(_payload(star_value="4"))
+    assert record["lead_score"] is None
+    assert record["star_rating"] == 4
 
-    # And finally to the property bag.
+    # Property-bag fallback de `lead_score` sigue funcionando vía
+    # `score` (no `star_value`).
     record, _ = map_agilecrm_contact_to_internal(
         _payload(properties=[{"name": "score", "value": 13}])
     )

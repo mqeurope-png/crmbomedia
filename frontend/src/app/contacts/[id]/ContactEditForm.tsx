@@ -37,6 +37,7 @@ import {
   type ContactUnsubscribeStatus,
   type User,
 } from "../../lib/api";
+import { StarRating } from "../../components/StarRating";
 import {
   listContactPhones,
   type ContactPhone,
@@ -74,6 +75,8 @@ type DraftState = {
   owner_id: string | null;
   commercial_status: string;
   lead_score: string;
+  /** PR-Consolidado — Star Rating. 0 = sin valorar; 1-5 = estrellas. */
+  star_rating: number;
   linkedin_url: string;
   personal_website: string;
   address_line: string;
@@ -138,6 +141,11 @@ function draftFromContact(contact: Contact, phones: ContactPhone[]): DraftState 
       contact.lead_score === null || contact.lead_score === undefined
         ? ""
         : String(contact.lead_score),
+    // PR-Consolidado — Star Rating. 0 = sin valorar; 1-5 = estrellas.
+    star_rating:
+      typeof contact.star_rating === "number" && contact.star_rating >= 0
+        ? contact.star_rating
+        : 0,
     linkedin_url: contact.linkedin_url ?? "",
     personal_website: contact.personal_website ?? "",
     address_line: contact.address_line ?? "",
@@ -187,6 +195,11 @@ function buildPayload(
   if (initial.lead_score !== current.lead_score) {
     const raw = current.lead_score.trim();
     out.lead_score = raw === "" ? null : Number(raw);
+  }
+  // PR-Consolidado — Star Rating. Numérico; 0 se manda como null
+  // (semánticamente equivalentes "sin valorar").
+  if (initial.star_rating !== current.star_rating) {
+    out.star_rating = current.star_rating === 0 ? null : current.star_rating;
   }
   if (initial.company_id !== current.company_id) {
     out.company_id = current.company_id;
@@ -583,6 +596,21 @@ export function ContactEditForm({ contact, open, onClose, onPatch }: Props) {
                   step={1}
                   onChange={(e) => updateField("lead_score", e.target.value)}
                   placeholder="—"
+                />
+              </label>
+              {/*
+                PR-Consolidado — Star Rating. Réplica visual del Star
+                Value nativo de AgileCRM. Independiente del lead_score.
+                Click sobre estrella N → setea N; click sobre estrella
+                ya marcada → 0 (desmarca todas).
+              */}
+              <label>
+                <span>Estrellas</span>
+                <StarRating
+                  value={draft.star_rating}
+                  editable
+                  size="lg"
+                  onChange={(next) => updateField("star_rating", next)}
                 />
               </label>
               <label>

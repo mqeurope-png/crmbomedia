@@ -374,6 +374,21 @@ FIELD_SPECS: dict[str, FieldSpec] = {
         sortable=True,
         grouped_under="Comercial",
     ),
+    # PR-Consolidado — Star Rating. Campo independiente del
+    # `lead_score`: réplica del Star Value nativo de AgileCRM (1-5).
+    # Filtrable + sortable + columna toggleable en la lista. El
+    # `<EntityTable>` reusa el FieldDescriptor para renderizar tanto
+    # el header como las cells; el cell renderer override
+    # (`StarRating`) vive en el frontend.
+    "star_rating": FieldSpec(
+        key="star_rating",
+        label="Estrellas",
+        type="int",
+        comparators=_NUMERIC,
+        column=Contact.star_rating,
+        sortable=True,
+        grouped_under="Comercial",
+    ),
     # PR-Cc — Sprint Empresas trajo job_title, linkedin_url,
     # personal_website y la dirección granular (state/postal_code/
     # address_line/address_region). En PR-A solo registré city + country;

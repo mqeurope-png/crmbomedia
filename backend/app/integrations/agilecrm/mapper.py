@@ -418,17 +418,16 @@ def extract_taglike_to_tag_names(payload: dict[str, Any]) -> list[str]:
 
 
 def _lead_score(payload: dict[str, Any]) -> int | None:
-    """AgileCRM exposes the score at the top level as `lead_score` /
-    `star_value`. Some installations also bury it inside a property.
-    Try them in that order."""
-    for key in ("lead_score", "star_value"):
-        raw = payload.get(key)
-        if raw is None:
-            continue
+    """AgileCRM expone el score como `lead_score` top-level o
+    `lead_score`/`score` dentro de las properties. PR-Consolidado
+    sacó `star_value` de esta función — ahora vive en
+    `Contact.star_rating` aparte (ver `_star_rating`)."""
+    raw = payload.get("lead_score")
+    if raw is not None:
         try:
             return int(raw)
         except (TypeError, ValueError):
-            continue
+            pass
     props = _properties_index(payload)
     for key in ("lead_score", "score"):
         raw = props.get(key)
@@ -439,6 +438,29 @@ def _lead_score(payload: dict[str, Any]) -> int | None:
         except (TypeError, ValueError):
             continue
     return None
+
+
+def _star_rating(payload: dict[str, Any]) -> int | None:
+    """PR-Consolidado — Star Rating. AgileCRM mantiene el campo
+    nativo `star_value` (1-5). Lo mapeamos a `Contact.star_rating`
+    aparte del `lead_score` para que ambos sean editables/filtrables
+    de forma independiente.
+
+    `None` o `0` → NULL (equivalencia semántica "sin valorar"). Valores
+    fuera de 1-5 los ignoramos (defensa contra payloads malformados
+    de cuentas Agile históricas con custom widgets)."""
+    raw = payload.get("star_value")
+    if raw is None:
+        return None
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return None
+    if value <= 0:
+        return None
+    if value > 5:
+        return None
+    return value
 
 
 def _owner_snapshot(payload: dict[str, Any]) -> dict[str, str] | None:
@@ -497,6 +519,7 @@ def map_agilecrm_contact_to_internal(
     address_fields = _parse_address(props.get("address"))
     custom_fields = _custom_properties(payload)
     lead_score = _lead_score(payload)
+    star_rating = _star_rating(payload)
 
     # Sprint Empresas — sub-PR 2/4. Lift AgileCRM's professional
     # attributes off the flat properties index. The property names
@@ -547,6 +570,7 @@ def map_agilecrm_contact_to_internal(
         "linkedin_url": linkedin_url,
         "personal_website": personal_website,
         "lead_score": lead_score,
+        "star_rating": star_rating,
         "custom_fields": json.dumps(custom_fields, default=str) if custom_fields else None,
     }
     # The mapper writes tags into the M:N `tags` table via the job,

@@ -790,12 +790,37 @@ def sync_agilecrm_contacts(session: Session, sync_log: SyncLog) -> SyncOutcome:
     # inicial). Si está por debajo, lo tratamos como sync periódico y
     # dispatchamos cada nuevo contacto como `contact.created` para que
     # las reglas + workflows con ese trigger reaccionen.
+    # PR-Consolidado — Fix dispatcher sync. Logging visible en cada
+    # paso. Sin esto, el operador no puede distinguir "el sync no
+    # creó contactos" de "el sync los creó pero el dispatch silently
+    # falló". Bart tuvo que tirar de SQL durante 90 min porque NO
+    # había una sola línea en el log que dijera qué hizo el sync.
     is_bulk_import = len(new_contacts) > BULK_DISPATCH_THRESHOLD
     dispatched = 0
+    logger.info(
+        "agilecrm sync: collected %d new_contacts in this run for "
+        "account=%s",
+        len(new_contacts),
+        account_id,
+    )
+    logger.info(
+        "agilecrm sync: bulk gate dispatch_mode=%s because %d %s "
+        "threshold %d",
+        "bulk" if is_bulk_import else "periodic",
+        len(new_contacts),
+        ">" if is_bulk_import else "<=",
+        BULK_DISPATCH_THRESHOLD,
+    )
     if new_contacts and not is_bulk_import:
         from app.workflows.dispatcher import dispatch_event  # noqa: PLC0415
 
         for contact_id, ext_id in new_contacts:
+            logger.info(
+                "agilecrm sync: dispatching contact.created event for "
+                "contact_id=%s external_id=%s",
+                contact_id,
+                ext_id,
+            )
             try:
                 dispatch_event(
                     session,
@@ -820,13 +845,11 @@ def sync_agilecrm_contacts(session: Session, sync_log: SyncLog) -> SyncOutcome:
         # commit, but it also writes a `WorkflowDispatch` audit row
         # we want persisted.
         session.commit()
-    elif is_bulk_import:
         logger.info(
-            "agilecrm sync: bulk import detected (%d new contacts > "
-            "threshold %d); skipping workflow + rules dispatch for "
+            "agilecrm sync: dispatched %d/%d contact.created events for "
             "account=%s",
+            dispatched,
             len(new_contacts),
-            BULK_DISPATCH_THRESHOLD,
             account_id,
         )
 

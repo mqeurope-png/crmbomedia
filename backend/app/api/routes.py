@@ -1401,6 +1401,76 @@ def delete_custom_field_definition(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
+# ---------------------------------------------------------------------
+# PR-Consolidado — Fix dispatcher sync: backfill manual
+# ---------------------------------------------------------------------
+
+
+@router.post(
+    "/admin/workflows/replay-contact-created",
+    tags=["admin"],
+)
+def replay_contact_created_event(
+    payload: dict[str, Any],
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_admin),
+) -> dict[str, Any]:
+    """Backfill manual: re-dispatcha el evento `contact.created` para
+    una lista de contact_ids.
+
+    Pensado para reproducir manualmente los contactos que fueron
+    creados durante el bug del PR #221 (sync periódico Agile no
+    invocaba el dispatcher por el string-reference roto) sin
+    esperar al próximo sync. Body:
+
+        {"contact_ids": ["uuid1", "uuid2", ...]}
+
+    Por cada UUID hace `dispatch_event(session, "contact.created",
+    id, {"source": "manual_replay", ...})`. Idempotente sobre
+    `workflow_runs`: el motor ya tiene su propio dedup_key.
+
+    Admin-only. No silencia errores per-contact: si uno falla, los
+    siguientes siguen, pero el response incluye un `failures` list
+    con los IDs que petaron.
+    """
+    raw_ids = payload.get("contact_ids")
+    if not isinstance(raw_ids, list) or not raw_ids:
+        raise HTTPException(
+            status_code=400,
+            detail="`contact_ids` debe ser una lista no vacía de UUIDs",
+        )
+    ids: list[str] = [str(x) for x in raw_ids]
+
+    from app.workflows.dispatcher import dispatch_event  # noqa: PLC0415
+
+    dispatched: list[str] = []
+    failures: list[dict[str, str]] = []
+    for contact_id in ids:
+        contact = session.get(Contact, contact_id)
+        if contact is None:
+            failures.append({"contact_id": contact_id, "error": "not_found"})
+            continue
+        try:
+            dispatch_event(
+                session,
+                "contact.created",
+                contact_id,
+                {
+                    "source": "manual_replay",
+                    "actor_id": current_user.id,
+                },
+            )
+            dispatched.append(contact_id)
+        except Exception as exc:  # noqa: BLE001 — return per-contact status, never abort
+            failures.append({"contact_id": contact_id, "error": str(exc)})
+    session.commit()
+    return {
+        "dispatched": dispatched,
+        "failures": failures,
+        "total": len(ids),
+    }
+
+
 @router.post(
     "/contacts",
     response_model=ContactRead,
@@ -2350,11 +2420,36 @@ def update_contact(
     # caller manda un string ya hecho (legacy), lo respetamos.
     if "custom_fields" in data and isinstance(data["custom_fields"], dict):
         data["custom_fields"] = json.dumps(data["custom_fields"])
+    # PR-Consolidado — Star Rating. Capturamos el valor previo ANTES
+    # del setattr loop para emitir el audit `star_rating_changed` con
+    # metadata {old, new} cuando el campo cambia (no cuando se manda
+    # el mismo valor — eso ensuciaría el audit log).
+    star_rating_old: int | None = (
+        contact.star_rating if "star_rating" in data else None
+    )
+    star_rating_changed = (
+        "star_rating" in data and data["star_rating"] != contact.star_rating
+    )
     for field, value in data.items():
         setattr(contact, field, value)
     session.flush()
 
     changed_fields: list[str] = sorted(data.keys())
+
+    if star_rating_changed:
+        record_event(
+            session,
+            action=Action.CONTACT_STAR_RATING_CHANGED,
+            target_type="contact",
+            target_id=contact.id,
+            actor=current_user,
+            metadata={
+                "email": contact.email,
+                "old": star_rating_old,
+                "new": data["star_rating"],
+            },
+            request=request,
+        )
 
     # Phones: replace strategy. Más simple y atómico que diff —
     # ContactPhone.source se preserva como "manual" para los que

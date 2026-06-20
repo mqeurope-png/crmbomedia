@@ -180,6 +180,10 @@ export type Contact = {
   address_postal_code?: string | null;
   address_region?: string | null;
   lead_score?: number | null;
+  /** PR-Consolidado — Star Rating. Réplica del Star Value de
+   * AgileCRM (1-5). Independiente de lead_score. 0 o null = sin
+   * valorar. */
+  star_rating?: number | null;
   custom_fields?: Record<string, unknown> | null;
   /** PR-Editar-Completo. Cache denormalizado del primary assignment
    *  (`contact_assignments` con is_primary=true). El modal Editar lo
