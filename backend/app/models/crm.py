@@ -250,6 +250,12 @@ class Contact(TimestampMixin, Base):
     # AgileCRM lead score. Other systems push their own scoring under
     # the same column for consistency.
     lead_score: Mapped[int | None] = mapped_column(Integer)
+    # PR-Consolidado — Star Rating. Réplica del "Star Value" nativo de
+    # AgileCRM (1-5 estrellas). COMPLETAMENTE independiente de
+    # `lead_score`. NULL o 0 = sin valorar (el frontend usa 0 cuando
+    # el operador desmarca todas las estrellas con un click en la
+    # primera ya marcada).
+    star_rating: Mapped[int | None] = mapped_column(Integer)
     # When the operator last clicked "Actualizar desde AgileCRM" on
     # this contact's detail page. Drives the `external_data_freshness`
     # flag in the API response; null means "never refreshed

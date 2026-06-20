@@ -15,6 +15,7 @@
  * contacto — se edita inline por campo).
  */
 import { Mail, MoreVertical, Pencil, Phone, Plus } from "lucide-react";
+import { StarRating } from "../StarRating";
 import type { Contact, User } from "../../lib/api";
 import { formatBackendDateTime } from "../../lib/dates";
 import { InlineEdit } from "./InlineEdit";
@@ -210,6 +211,26 @@ export function ContactDetailHeader({
               </>
             ) : null}
           </p>
+          {/*
+            PR-Consolidado — Star Rating. Render siempre visible en
+            la cabecera del contacto, junto al estado/owner. Editable
+            en caliente: click → PATCH al endpoint inmediatamente.
+          */}
+          <div className="contact-header-star-rating">
+            <StarRating
+              value={
+                typeof contact.star_rating === "number"
+                  ? contact.star_rating
+                  : 0
+              }
+              editable
+              size="md"
+              ariaLabel="Valoración del contacto"
+              onChange={(next) =>
+                onPatch({ star_rating: next === 0 ? null : next })
+              }
+            />
+          </div>
         </div>
       </div>
       <div className="contact-header-actions">

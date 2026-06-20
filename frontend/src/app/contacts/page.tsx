@@ -59,6 +59,7 @@ import { ContactsBulkBar } from "../components/ContactsBulkBar";
 import { ErrorState } from "../components/ErrorState";
 import { OriginChipsSummary } from "../components/OriginChips";
 import { PageHeader } from "../components/PageHeader";
+import { StarRating } from "../components/StarRating";
 import { PushViewToBrevoModal } from "../components/PushViewToBrevoModal";
 import { EntityFilterBuilder } from "../components/entity/EntityFilterBuilder";
 import {
@@ -71,6 +72,7 @@ import {
   getUsers,
   pushViewToBrevoList,
   saveViewAsSegment,
+  updateContact,
   type User,
 } from "../lib/api";
 import { buildContactQuery } from "../lib/contactsRules";
@@ -640,6 +642,48 @@ export default function ContactsListPage() {
         return (
           <OriginChipsSummary
             summary={[{ system: origin, account_id: "" }]}
+          />
+        );
+      }
+      // PR-Consolidado — Star Rating. Click directo en la fila →
+      // PATCH al instante sin abrir ficha. Actualización optimista
+      // del state local (`setRows`) + reconciliación con la
+      // respuesta del backend; si el PATCH falla la fila vuelve al
+      // valor anterior y emerge un alert.
+      if (field.key === "star_rating") {
+        const current =
+          typeof row.star_rating === "number" ? row.star_rating : 0;
+        const rowId = String(row.id);
+        return (
+          <StarRating
+            value={current}
+            editable
+            size="sm"
+            onChange={(next) => {
+              setRows((prev) =>
+                prev.map((r) =>
+                  String(r.id) === rowId ? { ...r, star_rating: next } : r,
+                ),
+              );
+              updateContact(rowId, { star_rating: next || null }).catch(
+                (err) => {
+                  // Revierte optimismo + avisa.
+                  setRows((prev) =>
+                    prev.map((r) =>
+                      String(r.id) === rowId
+                        ? { ...r, star_rating: current }
+                        : r,
+                    ),
+                  );
+                  alert(
+                    extractErrorMessage(
+                      err,
+                      "No se pudo actualizar la valoración",
+                    ),
+                  );
+                },
+              );
+            }}
           />
         );
       }

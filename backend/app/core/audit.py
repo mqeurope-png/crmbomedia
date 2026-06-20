@@ -64,6 +64,10 @@ class Action:
     # ya existentes que cuentan ediciones individuales.
     CONTACT_BULK_UPDATED = "contact.bulk_updated"
     CONTACT_DEACTIVATED = "contact.deactivated"
+    # PR-Consolidado — Star Rating. Cambios en `contacts.star_rating`
+    # se auditan aparte para que el dashboard "Quién marca a quién con
+    # estrellas" pueda agregar sin filtrar otros campos.
+    CONTACT_STAR_RATING_CHANGED = "contact.star_rating_changed"
     # PR-Backlog-Consolidado B1. Hard delete del contacto: el row
     # desaparece de la BD junto con tasks/notes/assignments. El audit
     # log incluye un snapshot JSON de los datos clave (email, owner,

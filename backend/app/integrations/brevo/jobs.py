@@ -674,14 +674,33 @@ def sync_brevo_contacts(session: Session, sync_log: SyncLog) -> SyncOutcome:
     finally:
         _release_lock(lock_name)
 
-    # PR-Fix-Sync-Dispara-Reglas-Workflows. Mismo gate post-commit que
-    # AgileCRM. Si excede threshold = bulk import = workflows OFF.
+    # PR-Fix-Sync-Dispara-Reglas-Workflows + PR-Consolidado. Mismo gate
+    # post-commit que AgileCRM, con logging visible añadido para
+    # observabilidad (ver fix en agilecrm/jobs.py).
     is_bulk_import = len(new_contacts) > BULK_DISPATCH_THRESHOLD
     dispatched = 0
+    logger.info(
+        "brevo sync: collected %d new_contacts in this run for account=%s",
+        len(new_contacts),
+        account_id,
+    )
+    logger.info(
+        "brevo sync: bulk gate dispatch_mode=%s because %d %s threshold %d",
+        "bulk" if is_bulk_import else "periodic",
+        len(new_contacts),
+        ">" if is_bulk_import else "<=",
+        BULK_DISPATCH_THRESHOLD,
+    )
     if new_contacts and not is_bulk_import:
         from app.workflows.dispatcher import dispatch_event  # noqa: PLC0415
 
         for contact_id, ext_id in new_contacts:
+            logger.info(
+                "brevo sync: dispatching contact.created event for "
+                "contact_id=%s external_id=%s",
+                contact_id,
+                ext_id,
+            )
             try:
                 dispatch_event(
                     session,
@@ -703,13 +722,11 @@ def sync_brevo_contacts(session: Session, sync_log: SyncLog) -> SyncOutcome:
                     exc,
                 )
         session.commit()
-    elif is_bulk_import:
         logger.info(
-            "brevo sync: bulk import detected (%d new contacts > "
-            "threshold %d); skipping workflow + rules dispatch for "
+            "brevo sync: dispatched %d/%d contact.created events for "
             "account=%s",
+            dispatched,
             len(new_contacts),
-            BULK_DISPATCH_THRESHOLD,
             account_id,
         )
 
