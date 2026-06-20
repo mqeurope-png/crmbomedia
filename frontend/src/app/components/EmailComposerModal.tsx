@@ -239,6 +239,21 @@ export function EmailComposerModal({
     return () => window.clearTimeout(handle);
   }, []);
 
+  // PR-Fix-Modal-Nuevo-Email-Layout. Escape cierra como X. Lo
+  // registramos en document para capturarlo aunque el foco esté en
+  // un input / botón del composer. TinyMCE no consume Escape por
+  // defecto, así que llega hasta este listener.
+  useEffect(() => {
+    function handleKey(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        onClose();
+      }
+    }
+    document.addEventListener("keydown", handleKey);
+    return () => document.removeEventListener("keydown", handleKey);
+  }, [onClose]);
+
   useEffect(() => {
     getMyEmailAliases()
       .then((items) => {
@@ -515,6 +530,17 @@ export function EmailComposerModal({
             savedAt={draftSavedAt}
             hasDraft={draftId !== null}
           />
+          {/* PR-Fix-Modal-Nuevo-Email-Layout. Botón X visible para
+              cerrar el panel — antes solo se podía cancelar con el
+              botón "Cancelar" a pie del form. */}
+          <button
+            type="button"
+            className="composer-header-close"
+            aria-label="Cerrar"
+            onClick={onClose}
+          >
+            <X size={18} aria-hidden />
+          </button>
         </header>
         {error ? <p className="form-error">{error}</p> : null}
         {!loadingAliases && aliases.length === 0 ? (

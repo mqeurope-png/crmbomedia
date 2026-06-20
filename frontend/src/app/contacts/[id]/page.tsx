@@ -549,6 +549,17 @@ export default function ContactDetailPage() {
       </div>
 
       {showComposer ? (
+        // PR-Fix-Modal-Nuevo-Email-Layout. Wrap consistente con
+        // `emails/layout.tsx` y `emails/drafts/page.tsx`: el
+        // composer es un panel derecho fijo (45vw) sin oscurecer la
+        // ficha del contacto, no un overlay full-screen.
+        <div
+          className="email-compose-panel"
+          role="presentation"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) setShowComposer(false);
+          }}
+        >
         <EmailComposerModal
           contactId={contact.id}
           contactEmail={contact.email}
@@ -564,6 +575,7 @@ export default function ContactDetailPage() {
             setActiveTab("emails");
           }}
         />
+        </div>
       ) : null}
       {showTaskModal ? (
         <TaskModal

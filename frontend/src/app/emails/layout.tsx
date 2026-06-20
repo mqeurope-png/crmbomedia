@@ -120,13 +120,11 @@ export default function EmailsLayout({
       <section className="email-thread-pane">{children}</section>
 
       {composeOpen ? (
-        // The composer renders as plain inline content (`.modal-backdrop`
-        // isn't an overlay class — it was designed to live at the
-        // bottom of the thread page for replies). Wrap it in a fixed
-        // overlay here so a fresh "Redactar" from the sidebar shows
-        // centred and isn't squashed inside the grid's columns.
+        // PR-Fix-Modal-Nuevo-Email-Layout. Wrap como panel derecho
+        // fijo (45vw) — no oscurece la lista de hilos a la
+        // izquierda. Patrón estándar Gmail-style.
         <div
-          className="email-compose-overlay"
+          className="email-compose-panel"
           role="presentation"
           onMouseDown={(e) => {
             if (e.target === e.currentTarget) setComposeOpen(false);

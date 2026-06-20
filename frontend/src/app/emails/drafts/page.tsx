@@ -77,8 +77,10 @@ export default function DraftsPage() {
       {loading ? <p className="muted">Cargando borrador…</p> : null}
 
       {draft ? (
+        // PR-Fix-Modal-Nuevo-Email-Layout. Mismo panel derecho que
+        // el resto del CRM (emails layout, ficha de contacto).
         <div
-          className="email-compose-overlay"
+          className="email-compose-panel"
           role="presentation"
           onMouseDown={(e) => {
             if (e.target === e.currentTarget) clearSelection();
