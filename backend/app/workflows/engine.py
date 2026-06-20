@@ -567,7 +567,14 @@ def _finalize(
     run.wake_at = None
     run.active_dedup_key = _archived_dedup_key(run.id)
     if error:
-        run.error_summary = error[:1000]
+        # PR-Fix-Pestaña-Workflows-Y-Humanizar #2. Humanizamos también
+        # el error del run al finalizar (markers `completed_with_skipped:N`
+        # y `contact_deleted` siguen tal cual por prefijo — el frontend
+        # los detecta).
+        from app.workflows.error_humanizer import humanize_error_summary  # noqa: PLC0415
+
+        humanized = humanize_error_summary(error) or error
+        run.error_summary = humanized[:1000]
     # PR-Fix-Assign-Owner-Completo. Cuando el run termina en COMPLETED,
     # contamos cuántos steps quedaron `skipped` (típicamente:
     # `contact_no_owner`, `template_not_found`, `email_cap_reached`,
@@ -619,6 +626,13 @@ def _record_history(
     result: dict[str, Any] | None = None,
     error: str | None = None,
 ) -> None:
+    # PR-Fix-Pestaña-Workflows-Y-Humanizar #2. Humanizamos el código
+    # técnico al momento de escribir — así SQL/audit/UI leen el texto
+    # legible sin doble lookup. Los markers como
+    # `completed_with_skipped:N` se preservan por prefijo.
+    from app.workflows.error_humanizer import humanize_error_summary  # noqa: PLC0415
+
+    humanized = humanize_error_summary(error)
     row = WorkflowRunHistory(
         run_id=run.id,
         workflow_id=run.workflow_id,
@@ -627,7 +641,7 @@ def _record_history(
         step_type=step.type,
         status=status,
         result_json=json.dumps(result, default=str) if result else None,
-        error_summary=(error or None) and error[:500],
+        error_summary=(humanized or None) and humanized[:500],
         executed_at=datetime.now(UTC),
     )
     session.add(row)
