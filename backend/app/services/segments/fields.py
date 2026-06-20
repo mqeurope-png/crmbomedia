@@ -311,13 +311,19 @@ FIELD_SPECS: dict[str, FieldSpec] = {
         displayable=False,
     ),
     "origin_account_id": FieldSpec(
+        # PR-Fix-Sync-Dispara-Reglas-Workflows. La cuenta de origen
+        # ahora vive como columna denormalizada en
+        # `contacts.origin_account_id` con formato `{system}:{account}`
+        # (e.g. `"agilecrm:default"`). El antiguo `relation` JOIN a
+        # external_refs devolvía solo el account_id sin sistema, lo
+        # que rompía rules con `value="agilecrm:default"`.
         key="origin_account_id",
         label="Cuenta de origen",
         type="string",
         comparators=("eq", "neq", "in"),
-        relation="external_refs.account_id",
+        column=Contact.origin_account_id,
+        sortable=True,
         grouped_under="Origen",
-        source="related_table",
     ),
     "commercial_status": FieldSpec(
         key="commercial_status",
