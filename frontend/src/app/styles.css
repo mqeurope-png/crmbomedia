@@ -6332,7 +6332,13 @@ a.origin-chip:hover { filter: brightness(0.97); }
  * itself isn't a real modal — the `.modal-backdrop` class is just a
  * marker — so we wrap it in a fixed overlay only for this entry
  * point. Replies from the thread page still render inline at the
- * bottom of the conversation, which is what operators expect. */
+ * bottom of the conversation, which is what operators expect.
+ *
+ * El nombre `.email-compose-overlay` se ha reutilizado por otros
+ * componentes ajenos al composer (CompanyPickerModal, WorkflowDryRunModal,
+ * merge de empresas) como un atajo a "modal centrado con backdrop oscuro".
+ * Por eso NO mutamos esta clase y añadimos abajo `.email-compose-panel`
+ * para el patrón nuevo de panel derecho. */
 .email-compose-overlay {
   position: fixed;
   inset: 0;
@@ -6350,6 +6356,80 @@ a.origin-chip:hover { filter: brightness(0.97); }
   box-shadow: 0 12px 32px rgba(15, 23, 42, 0.25);
   padding: 24px;
   width: min(820px, 100%);
+}
+
+/* PR-Fix-Modal-Nuevo-Email-Layout — panel derecho estilo Gmail.
+ *
+ * El composer "Nuevo email" se renderizaba antes:
+ *   - Como overlay full con backdrop oscuro desde la ficha del
+ *     contacto → tapaba la ficha entera.
+ *   - Como modal centrado con backdrop oscuro desde `/emails` →
+ *     el composer iba a la izquierda visualmente y las stats /
+ *     placeholder quedaban a la derecha sin sentido.
+ *
+ * Ahora es un panel pegado a la derecha (45vw, clamp 420–720) sin
+ * oscurecer el contexto. El usuario sigue viendo la ficha o la
+ * lista de hilos a la izquierda mientras redacta. Mobile (<768)
+ * cae a full-screen para que sea usable. */
+.email-compose-panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: clamp(420px, 45vw, 720px);
+  background: transparent;
+  box-shadow: -8px 0 24px rgba(15, 23, 42, 0.18);
+  z-index: 100;
+  display: flex;
+  overflow: hidden;
+}
+.email-compose-panel > .modal-backdrop {
+  /* Override the generic `.modal-backdrop` fixed-inset overlay para
+   * que el composer ocupe el panel derecho completo y no flote
+   * centrado por encima. */
+  position: static;
+  inset: auto;
+  background: #ffffff;
+  width: 100%;
+  height: 100%;
+  border-radius: 0;
+  box-shadow: none;
+  padding: 24px;
+  overflow-y: auto;
+  display: block;
+  border-left: 1px solid #e2e8f0;
+}
+@media (max-width: 768px) {
+  .email-compose-panel {
+    width: 100%;
+    box-shadow: none;
+  }
+  .email-compose-panel > .modal-backdrop {
+    border-left: 0;
+  }
+}
+
+/* Botón X arriba a la derecha de la cabecera del composer. */
+.composer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.composer-header-close {
+  background: none;
+  border: 0;
+  padding: 6px;
+  border-radius: 6px;
+  cursor: pointer;
+  color: #475569;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.composer-header-close:hover {
+  background: #f1f5f9;
+  color: #0f172a;
 }
 
 /* Responsive collapse: narrow viewports drop the sidebar so the
