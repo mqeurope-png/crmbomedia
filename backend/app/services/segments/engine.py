@@ -936,6 +936,18 @@ def _resolve_attr(contact: Contact, spec: FieldSpec) -> Any:
             None,
         )
     if spec.relation == "external_refs.account_id":
+        # PR-Fix-Sync-Dispara-Reglas-Workflows. Preferimos la columna
+        # denormalizada `Contact.origin_account_id` (formato
+        # `{system}:{account_id}`, e.g. `"agilecrm:default"`) cuando
+        # está set: las rules de Bart tienen value="agilecrm:default"
+        # y antes este resolver devolvía solo "default" → False.
+        # Fallback al bare account_id para contactos legacy sin la
+        # columna poblada (la migración 0064 hace backfill, pero
+        # contactos creados pre-PR sin sync subsiguiente siguen sin
+        # ella hasta el próximo sync).
+        denormalized = getattr(contact, "origin_account_id", None)
+        if denormalized:
+            return denormalized
         return next(
             (ref.account_id for ref in contact.external_refs),
             None,

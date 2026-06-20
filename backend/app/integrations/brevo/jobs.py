@@ -60,6 +60,12 @@ MAX_CONTACTS_PER_SYNC = 50_000
 #: Redis lock TTL — generous enough for a full first sync; expires on
 #: its own so a crashed worker doesn't deadlock the account.
 SYNC_LOCK_TTL_SECONDS = 3600
+#: PR-Fix-Sync-Dispara-Reglas-Workflows. Mismo gate que AgileCRM: por
+#: encima de este número de contactos nuevos en un sync se considera
+#: bulk import y NO se dispatchan workflows. Mantiene la decisión de
+#: PR #204 (no spamear el motor con un seed inicial) pero permite que
+#: los sync periódicos con 1-50 nuevos sí disparen contact.created.
+BULK_DISPATCH_THRESHOLD = 50
 
 
 def _load_account(session: Session, account_id: str) -> IntegrationAccount:
@@ -344,6 +350,10 @@ def upsert_brevo_contact(
     )
     email = record.get("email")
     tag_names: list[str] = record.pop("tag_names", []) or []
+    # PR-Fix-Sync-Dispara-Reglas-Workflows. Denormalizamos la cuenta de
+    # origen como `brevo:{account_id}` para que rules + workflows
+    # filtren por cuenta sin JOIN a external_refs.
+    record["origin_account_id"] = f"brevo:{account_id}"
     # Sprint Empresas — resolve / create the company before we
     # apply the record so a new Contact picks up `company_id` on
     # the first INSERT.
@@ -602,6 +612,11 @@ def sync_brevo_contacts(session: Session, sync_log: SyncLog) -> SyncOutcome:
     failed = 0
     errors: list[str] = []
     phone_stats: dict[str, int] = {"secondary_phones_added": 0}
+    # PR-Fix-Sync-Dispara-Reglas-Workflows. Acumulamos los nuevos para
+    # disparar workflows DESPUÉS del commit (la antigua llamada inline
+    # se hacía pre-commit y el worker no veía el contacto). El gate
+    # bulk/periodic mira el total del run, no de cada página.
+    new_contacts: list[tuple[str, str]] = []
 
     async def _drive() -> None:
         nonlocal created, updated, skipped, failed
@@ -628,7 +643,7 @@ def sync_brevo_contacts(session: Session, sync_log: SyncLog) -> SyncOutcome:
                 for item in contacts:
                     total_seen += 1
                     try:
-                        action, _cid = upsert_brevo_contact(
+                        action, cid = upsert_brevo_contact(
                             session,
                             account_id=account_id,
                             payload=item,
@@ -637,6 +652,8 @@ def sync_brevo_contacts(session: Session, sync_log: SyncLog) -> SyncOutcome:
                         )
                         if action == "created":
                             created += 1
+                            ext_id = brevo_external_id(item) or ""
+                            new_contacts.append((cid, ext_id))
                         elif action == "updated":
                             updated += 1
                         else:
@@ -657,6 +674,45 @@ def sync_brevo_contacts(session: Session, sync_log: SyncLog) -> SyncOutcome:
     finally:
         _release_lock(lock_name)
 
+    # PR-Fix-Sync-Dispara-Reglas-Workflows. Mismo gate post-commit que
+    # AgileCRM. Si excede threshold = bulk import = workflows OFF.
+    is_bulk_import = len(new_contacts) > BULK_DISPATCH_THRESHOLD
+    dispatched = 0
+    if new_contacts and not is_bulk_import:
+        from app.workflows.dispatcher import dispatch_event  # noqa: PLC0415
+
+        for contact_id, ext_id in new_contacts:
+            try:
+                dispatch_event(
+                    session,
+                    "contact.created",
+                    contact_id,
+                    {
+                        "source": "brevo",
+                        "account_id": account_id,
+                        "external_id": ext_id,
+                    },
+                )
+                dispatched += 1
+            except Exception as exc:  # noqa: BLE001 - dispatch never aborts sync
+                logger.warning(
+                    "brevo sync: failed to dispatch contact.created for "
+                    "contact_id=%s ext_id=%s: %s",
+                    contact_id,
+                    ext_id,
+                    exc,
+                )
+        session.commit()
+    elif is_bulk_import:
+        logger.info(
+            "brevo sync: bulk import detected (%d new contacts > "
+            "threshold %d); skipping workflow + rules dispatch for "
+            "account=%s",
+            len(new_contacts),
+            BULK_DISPATCH_THRESHOLD,
+            account_id,
+        )
+
     return SyncOutcome(
         records_processed=created + updated,
         records_skipped=skipped,
@@ -669,6 +725,8 @@ def sync_brevo_contacts(session: Session, sync_log: SyncLog) -> SyncOutcome:
             "full_sync": full_sync,
             "modified_since": modified_since,
             "secondary_phones_added": phone_stats["secondary_phones_added"],
+            "workflows_dispatched": dispatched,
+            "workflows_dispatch_mode": "bulk" if is_bulk_import else "periodic",
         },
     )
 

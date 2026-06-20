@@ -67,6 +67,15 @@ MAX_PER_RECORD_ERRORS = 100
 #: is idempotent.
 MAX_CONTACTS_PER_SYNC = 50_000
 
+#: PR-Fix-Sync-Dispara-Reglas-Workflows. Threshold para diferenciar
+#: "sync periódico" (≤ N contactos nuevos) de "bulk import" (> N). El
+#: sync periódico DISPARA workflows + rules como cualquier creación
+#: manual. El bulk import los OMITE para no saturar el motor + email
+#: cuando un operador conecta una cuenta nueva con 700+ contactos.
+#: 50 cubre el caso real: un sync periódico cada 1h trae 1-5 nuevos;
+#: un seed inicial supera 50 trivialmente.
+BULK_DISPATCH_THRESHOLD = 50
+
 #: Cap on the number of in-flight sub-resource fetches per contact.
 #: AgileCRM's Free tier sits around 200 req/h — 2 concurrent fetches
 #: is more than enough to overlap network latency without giving the
@@ -146,6 +155,14 @@ def _upsert_contact_for_payload(
     from a different AgileCRM account. `contact_id` is the internal
     UUID, returned so the sub-sync helpers can attach notes/tasks/
     activities without having to re-query.
+
+    PR-Fix-Sync-Dispara-Reglas-Workflows. La función YA NO llama a
+    `dispatch_event` — antes lo hacía pre-commit y el worker
+    enqueado no veía el contacto recién insertado (no se había
+    commiteado todavía), así que el workflow nunca disparaba. El
+    caller (`sync_agilecrm_contacts`) recoge los `(contact_id,
+    external_id)` recién creados y dispatcha DESPUÉS del commit,
+    respetando además el threshold bulk vs periodic.
     """
     external_id = agilecrm_external_id(payload)
     if not external_id:
@@ -159,6 +176,10 @@ def _upsert_contact_for_payload(
     # Strip helper keys so they never land on the Contact ORM.
     record.pop("company_name", None)
     tag_names: list[str] = record.pop("tag_names", []) or []
+    # PR-Fix-Sync-Dispara-Reglas-Workflows. Origin denormalizado a
+    # `{system}:{account_id}` para que las rules + workflows
+    # filtren por cuenta sin JOIN a external_refs.
+    record["origin_account_id"] = f"agilecrm:{account_id}"
 
     # 1. Existing reference for THIS account → update.
     ref = session.scalar(
@@ -254,26 +275,16 @@ def _upsert_contact_for_payload(
         session, contact_id=contact.id, payload=payload
     )
     # Sprint Reglas-Assign PR-C — fresh-create trigger. Igual que
-    # Brevo: solo en esta rama (created), nunca en update.
+    # Brevo: solo en esta rama (created), nunca en update. Las rules
+    # evalúan en la misma sesión, así que el owner asignado entra al
+    # mismo COMMIT que el contacto y nunca pierde su rule por crash.
     assignment_rules_engine.evaluate_for_contact(
         session, contact, trigger="agile:create"
     )
     session.flush()
-    # Sprint Workflows Bloque 1 — hook explícito al motor de workflows.
-    # Bart decidió hooks explícitos (no SQLAlchemy listeners); el sync
-    # Agile crea contactos vía esta función, así que llamamos aquí.
-    from app.workflows.dispatcher import dispatch_event  # noqa: PLC0415
-
-    dispatch_event(
-        session,
-        "contact.created",
-        contact.id,
-        {
-            "source": "agilecrm",
-            "account_id": account_id,
-            "external_id": external_id,
-        },
-    )
+    # PR-Fix-Sync-Dispara-Reglas-Workflows. El `dispatch_event` salió
+    # de aquí — el caller lo invoca DESPUÉS del session.commit() y
+    # respetando el threshold bulk vs periodic.
     return ("created", False, contact.id, external_id)
 
 
@@ -714,6 +725,13 @@ def sync_agilecrm_contacts(session: Session, sync_log: SyncLog) -> SyncOutcome:
     skipped = 0
     failed = 0
     error_lines: list[str] = []
+    # PR-Fix-Sync-Dispara-Reglas-Workflows. Acumulamos los
+    # `(contact_id, external_id)` recién creados a lo largo del sync
+    # ENTERO (no por página) para que el threshold bulk-vs-periodic
+    # mire el total real del run. Sin esto, un bulk de 700 contactos
+    # paginado en chunks de 50 cumpliría el threshold en cada página
+    # y dispararía 700 workflows igual.
+    new_contacts: list[tuple[str, str]] = []
     inter_contact_sleep = _inter_contact_sleep_seconds()
 
     async def _drive() -> None:
@@ -726,13 +744,14 @@ def sync_agilecrm_contacts(session: Session, sync_log: SyncLog) -> SyncOutcome:
                     break
                 for payload in items:
                     try:
-                        action, was_consolidated, _internal_id, _ext_id = (
+                        action, was_consolidated, internal_id, ext_id = (
                             _upsert_contact_for_payload(
                                 session, account_id=account_id, payload=payload
                             )
                         )
                         if action == "created":
                             created += 1
+                            new_contacts.append((internal_id, ext_id))
                         elif action == "updated":
                             updated += 1
                             if was_consolidated:
@@ -764,6 +783,53 @@ def sync_agilecrm_contacts(session: Session, sync_log: SyncLog) -> SyncOutcome:
 
     asyncio.run(_drive())
 
+    # PR-Fix-Sync-Dispara-Reglas-Workflows. Dispatch DESPUÉS del último
+    # commit, una vez ya conocemos el total real del sync. Si excede el
+    # threshold lo marcamos como bulk import y los workflows quedan
+    # silenciados (Bart firmó esa decisión en PR #204 para el seed
+    # inicial). Si está por debajo, lo tratamos como sync periódico y
+    # dispatchamos cada nuevo contacto como `contact.created` para que
+    # las reglas + workflows con ese trigger reaccionen.
+    is_bulk_import = len(new_contacts) > BULK_DISPATCH_THRESHOLD
+    dispatched = 0
+    if new_contacts and not is_bulk_import:
+        from app.workflows.dispatcher import dispatch_event  # noqa: PLC0415
+
+        for contact_id, ext_id in new_contacts:
+            try:
+                dispatch_event(
+                    session,
+                    "contact.created",
+                    contact_id,
+                    {
+                        "source": "agilecrm",
+                        "account_id": account_id,
+                        "external_id": ext_id,
+                    },
+                )
+                dispatched += 1
+            except Exception as exc:  # noqa: BLE001 - dispatch failure never aborts sync
+                logger.warning(
+                    "agilecrm sync: failed to dispatch contact.created for "
+                    "contact_id=%s ext_id=%s: %s",
+                    contact_id,
+                    ext_id,
+                    exc,
+                )
+        # `dispatch_event` enqueues via RQ which doesn't need a
+        # commit, but it also writes a `WorkflowDispatch` audit row
+        # we want persisted.
+        session.commit()
+    elif is_bulk_import:
+        logger.info(
+            "agilecrm sync: bulk import detected (%d new contacts > "
+            "threshold %d); skipping workflow + rules dispatch for "
+            "account=%s",
+            len(new_contacts),
+            BULK_DISPATCH_THRESHOLD,
+            account_id,
+        )
+
     error_summary: str | None = None
     if error_lines:
         truncated = error_lines[:MAX_PER_RECORD_ERRORS]
@@ -781,6 +847,12 @@ def sync_agilecrm_contacts(session: Session, sync_log: SyncLog) -> SyncOutcome:
         "updated_existing": updated - consolidated,
         "consolidated_from_other_account": consolidated,
         "failed": failed,
+        # PR-Fix-Sync-Dispara-Reglas-Workflows. Observabilidad del
+        # nuevo gate. Mirar el dashboard SyncLog dice de un vistazo
+        # si este run pasó por el path "periodic" (workflows ON) o
+        # por el "bulk" (workflows OFF).
+        "workflows_dispatched": dispatched,
+        "workflows_dispatch_mode": "bulk" if is_bulk_import else "periodic",
         # Bulk sub-resource sync was retired in Sprint A PR-8 in favour
         # of the on-demand refresh endpoint. The keys are kept at zero
         # so dashboards / log parsers that grep for them continue to

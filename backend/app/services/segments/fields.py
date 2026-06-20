@@ -311,13 +311,28 @@ FIELD_SPECS: dict[str, FieldSpec] = {
         displayable=False,
     ),
     "origin_account_id": FieldSpec(
+        # PR-Fix-Sync-Dispara-Reglas-Workflows.
+        #
+        # SQL path (`build_filter`): mantenemos `relation =
+        # external_refs.account_id` para que el _compile_external_ref_leaf
+        # de PR-Da siga parseando compound keys `system:account_id` →
+        # tupla AND(system, account_id). Esa lógica ya tiene el filtro
+        # cross-system correcto + backward-compat para legacy bare
+        # values, y los tests `test_origin_account_filter` la cubren.
+        #
+        # In-memory path (`_resolve_attr` → `evaluate_contact_against_rules`):
+        # antes devolvía `ref.account_id` ("default") y comparaba con
+        # `"agilecrm:default"` → False, así que las rules de Bart
+        # nunca disparaban. El resolver ahora prefiere
+        # `Contact.origin_account_id` (formato `{system}:{account_id}`,
+        # poblado por sync + migración 0064) cuando está set.
         key="origin_account_id",
         label="Cuenta de origen",
         type="string",
         comparators=("eq", "neq", "in"),
         relation="external_refs.account_id",
-        grouped_under="Origen",
         source="related_table",
+        grouped_under="Origen",
     ),
     "commercial_status": FieldSpec(
         key="commercial_status",

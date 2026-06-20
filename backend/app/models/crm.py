@@ -199,6 +199,13 @@ class Contact(TimestampMixin, Base):
     email: Mapped[str | None] = mapped_column(String(255), unique=True, index=True)
     phone: Mapped[str | None] = mapped_column(String(80))
     origin: Mapped[str | None] = mapped_column(String(120))
+    # PR-Fix-Sync-Dispara-Reglas-Workflows. Denormaliza la cuenta de
+    # origen específica como `{system}:{account_id}` (e.g.
+    # `"agilecrm:default"`). Permite que reglas de asignación +
+    # workflows filtren por cuenta sin JOIN a external_refs.
+    origin_account_id: Mapped[str | None] = mapped_column(
+        String(120), index=True
+    )
     tags: Mapped[str] = mapped_column(String(500), default="", nullable=False)
     commercial_status: Mapped[str] = mapped_column(String(80), default="new", nullable=False)
     owner_user_id: Mapped[str | None] = mapped_column(String(36))
