@@ -266,7 +266,11 @@ class WorkflowRun(TimestampMixin, Base):
     # `f"{workflow_id}:{contact_id}"` (no permite reentry simultáneo).
     # Terminado: `f"archived:{run_id}"` (libera el slot).
     active_dedup_key: Mapped[str] = mapped_column(
-        String(80), nullable=False
+        # PR-Fix-Dedup-Key-Varchar. Antes VARCHAR(80) cubría
+        # `{workflow_id}:{contact_id}` (73 chars) pero no la variante
+        # con run_id `{workflow_id}:{contact_id}:{run_id}` (110 chars)
+        # que usa la entrada manual con skip_dedup. 120 deja margen.
+        String(120), nullable=False
     )
     # Estado de A/B splits + memoizaciones varias. Mapeado como
     # `{step_id: bucket}` para A/B.
