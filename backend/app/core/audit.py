@@ -64,6 +64,11 @@ class Action:
     # ya existentes que cuentan ediciones individuales.
     CONTACT_BULK_UPDATED = "contact.bulk_updated"
     CONTACT_DEACTIVATED = "contact.deactivated"
+    # PR-Backlog-Consolidado B1. Hard delete del contacto: el row
+    # desaparece de la BD junto con tasks/notes/assignments. El audit
+    # log incluye un snapshot JSON de los datos clave (email, owner,
+    # lifecycle_status, lead_score, created_at) por si hay disputa.
+    CONTACT_DELETED = "contact.deleted"
     # PR-Contact-Unsubscribe-Admin. Admin reactiva un contacto que
     # se había opt-eado out vía la página pública de unsubscribe.
     # Metadata incluye los scopes borrados (marketing/all/etc.).

@@ -50,6 +50,9 @@ export type WorkflowRead = {
   total_won: number;
   total_cancelled: number;
   total_failed: number;
+  /** PR-Backlog-Consolidado A6. Cuántos de los `total_completed`
+   *  llegaron al final habiendo saltado >=1 step. */
+  total_completed_with_skipped: number;
   created_by_user_id: string | null;
   created_at: string;
   updated_at: string;

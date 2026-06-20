@@ -79,6 +79,19 @@ export function ContactWorkflowsTab({ contactId, canManage }: Props) {
               {r.exit_kind ? (
                 <span className="muted small"> · {r.exit_kind}</span>
               ) : null}
+              {/* PR-Backlog-Consolidado A6/A8. Si el run completó pero
+                  algún step se saltó, badge amarillo + tooltip humano.
+                  La señal viene en `error_summary` con prefijo
+                  `completed_with_skipped:` (ver _finalize del motor). */}
+              {r.error_summary?.startsWith("completed_with_skipped:") ? (
+                <span
+                  className="badge warn"
+                  style={{ marginLeft: 6 }}
+                  title={humanizeRunErrorSummary(r.error_summary)}
+                >
+                  ⚠ con pasos saltados
+                </span>
+              ) : null}
             </td>
             <td>{formatBackendDateTime(r.started_at)}</td>
             <td>
@@ -114,6 +127,20 @@ export function ContactWorkflowsTab({ contactId, canManage }: Props) {
       </tbody>
     </table>
   );
+}
+
+/** PR-Backlog-Consolidado A8. Traduce los marcadores técnicos que el
+ *  motor escribe en `WorkflowRun.error_summary` / history a mensajes
+ *  legibles para el operador. Espejo de los strings que escribe
+ *  `_step_send_email` y `_finalize` en el backend. */
+function humanizeRunErrorSummary(raw: string | null | undefined): string {
+  if (!raw) return "";
+  const m = raw.match(/^completed_with_skipped:(\d+)/);
+  if (m) {
+    const n = parseInt(m[1], 10);
+    return `${n} paso${n === 1 ? "" : "s"} se saltaron por una condición no cumplida (contacto sin propietario, plantilla borrada, cap de envíos diarios alcanzado, etc.). El workflow llegó al final pero no fue limpio.`;
+  }
+  return raw;
 }
 
 function badgeClass(state: string): string {

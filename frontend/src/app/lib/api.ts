@@ -790,6 +790,13 @@ export async function deactivateContact(id: string): Promise<Contact> {
   return apiFetch<Contact>(`/api/contacts/${id}/deactivate`, { method: "PATCH" });
 }
 
+/** PR-Backlog-Consolidado B1. Hard delete del contacto. Requiere rol
+ *  admin o manager. Devuelve 204 sin body en éxito; 409 si hay
+ *  oportunidades activas. */
+export async function deleteContactHard(id: string): Promise<void> {
+  await apiFetch(`/api/contacts/${id}`, { method: "DELETE" });
+}
+
 export async function getCompanies(
   options: { q?: string; limit?: number } = {},
 ): Promise<{ items: Company[]; total: number }> {
