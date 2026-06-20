@@ -416,8 +416,25 @@ def _step_assign_owner(session, run, step, contact) -> StepResult:
     user = session.get(User, target_user_id)
     if user is None or not user.is_active:
         return StepResult(status="skipped", error="user_inactive_or_missing")
+    # PR-Fix-Assign-Owner-Completo. Antes solo escribíamos
+    # `contact.owner_user_id`, dejando `contact_assignments` huérfana.
+    # El frontend lee de esa tabla (cabecera, sidebar comerciales,
+    # modal Editar), así que la asignación parecía no funcionar pese a
+    # que el envío de email sí veía al owner. Replicamos lo que hace
+    # el PATCH /api/contacts/{id} manual: `add_assignment` con
+    # `is_primary=True` upserta la fila, demote del primary anterior
+    # si existía, y recalcula `contacts.owner_user_id` desde el cache.
+    from app.repositories import assignments as _assignments  # noqa: PLC0415
+
     old = contact.owner_user_id
-    contact.owner_user_id = target_user_id
+    _assignments.add_assignment(
+        session,
+        contact_id=contact.id,
+        user_id=target_user_id,
+        is_primary=True,
+        assigned_by_user_id=target_user_id,
+        source="workflow",
+    )
     return StepResult(result={"old": old, "new": target_user_id})
 
 

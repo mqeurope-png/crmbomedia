@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models.crm import Contact
@@ -568,6 +568,24 @@ def _finalize(
     run.active_dedup_key = _archived_dedup_key(run.id)
     if error:
         run.error_summary = error[:1000]
+    # PR-Fix-Assign-Owner-Completo. Cuando el run termina en COMPLETED,
+    # contamos cuántos steps quedaron `skipped` (típicamente:
+    # `contact_no_owner`, `template_not_found`, `email_cap_reached`,
+    # etc.). El frontend lo usa para distinguir runs "completed_clean"
+    # de "completed_with_skipped" — un workflow que aparenta "Ganado"
+    # mientras un paso crítico se saltó en silencio ya no es invisible.
+    if state == WorkflowRunState.COMPLETED and not error:
+        skipped_count = int(
+            session.scalar(
+                select(func.count(WorkflowRunHistory.id)).where(
+                    WorkflowRunHistory.run_id == run.id,
+                    WorkflowRunHistory.status == "skipped",
+                )
+            )
+            or 0
+        )
+        if skipped_count > 0:
+            run.error_summary = f"completed_with_skipped:{skipped_count}"
     workflow = session.get(Workflow, run.workflow_id)
     if workflow is not None:
         if state == WorkflowRunState.COMPLETED:
