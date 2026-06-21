@@ -675,6 +675,26 @@ export async function getContactActivityEvents(
   );
 }
 
+/**
+ * PR-Fix-Widget-Engagement-Email. Stats reales (no del prop
+ * `events` que se quedaba a 0 cuando las aperturas vivían en
+ * `email_message_events` y no en `activity_events`).
+ */
+export type EngagementStats = {
+  opens: number;
+  clicks: number;
+  replies: number;
+};
+
+export async function getContactEngagementStats(
+  id: string,
+  days = 30,
+): Promise<EngagementStats> {
+  return apiFetch<EngagementStats>(
+    `/api/contacts/${id}/engagement-stats?days=${days}`,
+  );
+}
+
 export async function updateContact(id: string, payload: Record<string, unknown>): Promise<Contact> {
   return apiFetch<Contact>(`/api/contacts/${id}`, {
     method: "PATCH",

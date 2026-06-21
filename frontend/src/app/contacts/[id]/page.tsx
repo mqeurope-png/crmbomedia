@@ -431,6 +431,7 @@ export default function ContactDetailPage() {
                     Oportunidades + Incidencias se movieron al final
                     porque eran placeholder que ocupaban posición prime. */}
                 <ContactSummaryTab
+                  contactId={contact.id}
                   events={contact.activity_events ?? []}
                   onSeeAllActivity={() => setActiveTab("activity")}
                 />

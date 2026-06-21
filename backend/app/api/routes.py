@@ -2210,6 +2210,81 @@ def list_contact_activity_events(
 
 
 @router.get(
+    "/contacts/{contact_id}/engagement-stats",
+    responses=ERROR_RESPONSES,
+    tags=["crm"],
+)
+def get_contact_engagement_stats(
+    contact_id: str,
+    days: int = Query(default=30, ge=1, le=365),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_viewer),
+) -> dict[str, int]:
+    """PR-Fix-Widget-Engagement-Email. Aperturas / clics / respuestas
+    de los emails enviados al contacto en los últimos `days` días.
+
+    Antes el widget contaba sobre `activity_events` (`EMAIL_OPENED`,
+    `EMAIL_CLICKED`, `email.reply_received`) pero el tracking real de
+    aperturas escribe a `email_message_events` (event_type='open' /
+    'click'), no a `activity_events`. El widget mostraba 0 aunque la
+    BD tuviera la apertura registrada.
+
+    Fix: leer directo de `email_message_events` igual que el
+    aggregator de la lista global `/emails` (ver
+    `_INBOX_EVENT_TYPES` en `api/emails.py:1113`). Las respuestas
+    cuentan como mensajes inbound (`email_messages.direction='inbound'`)
+    en el mismo contacto y ventana.
+
+    Idéntico para todos los users del CRM (no filtra por
+    `current_user.id`) — Bart validó con admin + otros users del
+    equipo y todos deben ver los mismos números.
+    """
+    _ = current_user
+    if not crm_repository.get_contact(session, contact_id):
+        raise not_found("Contact")
+
+    from datetime import UTC, datetime, timedelta  # noqa: PLC0415
+
+    from app.models.crm import (  # noqa: PLC0415
+        EmailDirection,
+        EmailEventType,
+        EmailMessage,
+        EmailMessageEvent,
+    )
+
+    cutoff = datetime.now(UTC) - timedelta(days=days)
+
+    def _count_event(event_type: EmailEventType) -> int:
+        stmt = (
+            select(func.count(EmailMessageEvent.id))
+            .join(
+                EmailMessage,
+                EmailMessage.id == EmailMessageEvent.message_id,
+            )
+            .where(EmailMessage.contact_id == contact_id)
+            .where(EmailMessageEvent.event_type == event_type)
+            .where(EmailMessageEvent.occurred_at >= cutoff)
+        )
+        return session.scalar(stmt) or 0
+
+    opens = _count_event(EmailEventType.OPEN)
+    clicks = _count_event(EmailEventType.CLICK)
+    # Replies = mensajes inbound del contacto. Cuenta `sent_at` (no
+    # `created_at`) para alinear con la ventana visible al usuario;
+    # los mensajes scheduled (sin sent_at) no son respuestas, así
+    # que el filtro is_not(None) los descarta naturalmente.
+    replies = session.scalar(
+        select(func.count(EmailMessage.id))
+        .where(EmailMessage.contact_id == contact_id)
+        .where(EmailMessage.direction == EmailDirection.INBOUND)
+        .where(EmailMessage.sent_at.is_not(None))
+        .where(EmailMessage.sent_at >= cutoff)
+    ) or 0
+
+    return {"opens": opens, "clicks": clicks, "replies": replies}
+
+
+@router.get(
     "/contacts/{contact_id}/brevo-engagement",
     responses=ERROR_RESPONSES,
     tags=["crm"],
