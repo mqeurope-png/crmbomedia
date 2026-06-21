@@ -26,16 +26,19 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
-# Permite ejecutar como módulo desde la raíz del repo.
+# Permite ejecutar como módulo desde la raíz del repo. Los imports de
+# `app.*` viven debajo del `sys.path.insert` por necesidad (el módulo
+# se ejecuta como script standalone, no como `python -m app...`); el
+# `# noqa: E402` confirma a ruff que el orden es deliberado.
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT / "backend") not in sys.path:
     sys.path.insert(0, str(ROOT / "backend"))
 
-from sqlalchemy import create_engine, delete
-from sqlalchemy.orm import Session
+from sqlalchemy import create_engine  # noqa: E402
+from sqlalchemy.orm import Session  # noqa: E402
 
-from app.core.security import hash_password
-from app.models.crm import (
+from app.core.security import hash_password  # noqa: E402
+from app.models.crm import (  # noqa: E402
     ActivityEvent,
     AssignmentRule,
     Base,
@@ -61,7 +64,7 @@ from app.models.crm import (
     User,
     UserRole,
 )
-from app.models.workflows import (
+from app.models.workflows import (  # noqa: E402
     Workflow,
     WorkflowRun,
     WorkflowRunState,
@@ -240,7 +243,9 @@ def seed_contacts(
             job_title=["Director Comercial", "Marketing Manager", "CEO",
                        "Compras", "IT Manager"][hash(email) % 5],
             custom_fields=json.dumps({
-                "zona_geografica": ["Cataluña", "Centro", "Levante", "Sur", "Norte"][hash(email) % 5],
+                "zona_geografica": [
+                    "Cataluña", "Centro", "Levante", "Sur", "Norte",
+                ][hash(email) % 5],
                 "interes_principal": ["Productos FESPA", "Newsletter mensual",
                                        "Servicios premium", "Recambios"][hash(email) % 4],
             }),
@@ -530,7 +535,7 @@ def seed_activity_events(
     session: Session, *, contacts: list[Contact], users: dict[str, User]
 ) -> None:
     """3-5 actividades por contacto para alimentar el timeline."""
-    user = users["comercial"]
+    _ = users  # signature compat — el seed no asigna actor aún
     for contact in contacts[:8]:
         for idx, (ev_type, days_ago, body) in enumerate([
             ("email.sent_from_crm", 1, f"Email enviado a {contact.email}"),
