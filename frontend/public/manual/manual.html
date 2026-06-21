@@ -1,0 +1,581 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=Public+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --blue:#2563EB; --sky:#0EA5E9; --teal:#14B8A6; --ink:#0F172A; --gray:#6B7280; --mist:#F1F5F9;
+  --line:#E3E8EF; --line2:#EEF2F7; --body:#36414f; --ink-soft:#1f2a3d;
+  --grad:linear-gradient(135deg,#2563EB 0%,#0EA5E9 55%,#14B8A6 100%);
+}
+*{box-sizing:border-box;}
+body{margin:0;background:#fff;font-family:'Public Sans',system-ui,sans-serif;color:var(--body);-webkit-font-smoothing:antialiased;}
+.doc{box-sizing:border-box;max-width:8.27in;margin:0 auto;background:inherit;padding:0 clamp(20px,5vw,0.78in) 88px;}
+.doc-frame{width:100%;border-collapse:collapse;}
+.doc-frame td{padding:0;}
+.running-hdr,.running-ftr,.hdr-space,.ftr-space{display:none;}
+
+h1,h2,h3,h4{font-family:'Outfit',sans-serif;color:var(--ink);text-wrap:balance;margin:0;line-height:1.15;}
+p,li{text-wrap:pretty;}
+.doc p{font-size:15px;line-height:1.66;margin:0 0 13px;}
+.doc a{color:var(--blue);text-decoration:none;border-bottom:1px solid rgba(37,99,235,.28);}
+strong{color:var(--ink-soft);font-weight:600;}
+code{font-family:'IBM Plex Mono',monospace;font-size:.84em;background:var(--mist);color:#1d4ed8;padding:1.5px 6px;border-radius:5px;border:1px solid #e6ecf5;}
+
+.cover{position:relative;overflow:hidden;padding:52px 4px 36px;margin-bottom:8px;}
+.cover-deco{position:absolute;top:-150px;right:-150px;width:420px;height:420px;opacity:.5;pointer-events:none;}
+.cover-deco2{position:absolute;bottom:6px;left:-160px;width:300px;height:300px;opacity:.3;pointer-events:none;}
+.cover-logo{display:block;width:226px;height:auto;margin:0 0 30px;position:relative;}
+.eyebrow{font-family:'Outfit',sans-serif;font-weight:700;font-size:12.5px;letter-spacing:.18em;text-transform:uppercase;
+  background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent;margin:0 0 14px;position:relative;}
+.cover h1{font-size:55px;font-weight:800;letter-spacing:-.02em;line-height:1.03;margin:0 0 20px;position:relative;}
+.cover h1 .g{background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent;}
+.cover-sub{font-size:18.5px;line-height:1.5;color:var(--gray);max-width:30em;margin:0 0 28px;position:relative;font-weight:400;}
+.cover-meta{display:flex;flex-wrap:wrap;gap:10px 12px;position:relative;margin-top:4px;}
+.metachip{display:inline-flex;align-items:center;gap:8px;font-size:13px;font-weight:500;color:var(--ink-soft);
+  background:#fff;border:1px solid var(--line);border-radius:999px;padding:7px 15px;}
+.metachip b{font-family:'IBM Plex Mono',monospace;font-weight:500;color:var(--blue);font-size:12.5px;}
+.metachip .dot{width:7px;height:7px;border-radius:50%;background:var(--teal);}
+.cover-rule{height:5px;border:0;border-radius:5px;background:var(--grad);width:118px;margin:30px 0 0;position:relative;}
+
+.toc{margin:30px 0 8px;}
+.toc-head{font-family:'Outfit',sans-serif;font-weight:700;font-size:13px;letter-spacing:.16em;text-transform:uppercase;color:var(--gray);margin:0 0 18px;}
+.toc-grid{display:grid;grid-template-columns:1fr 1fr;gap:2px 40px;}
+.toc-grid a{display:flex;align-items:baseline;gap:13px;padding:9px 4px;border-bottom:1px solid var(--line2);
+  font-family:'Outfit',sans-serif;font-weight:500;font-size:14.5px;color:var(--ink-soft);}
+.toc-grid a .n{font-family:'IBM Plex Mono',monospace;font-weight:500;font-size:12px;color:var(--blue);width:18px;flex:none;}
+.toc-grid a .t{flex:1;}
+
+.sec{margin:0;padding:6px 0 4px;position:relative;}
+.secdiv{display:flex;align-items:center;gap:16px;margin:50px 0 2px;}
+.secdiv .ln{flex:1;height:1px;background:linear-gradient(90deg,var(--line),rgba(227,232,239,0));}
+.secdiv .ln.r{background:linear-gradient(270deg,var(--line),rgba(227,232,239,0));}
+.secdiv .orb{flex:none;width:30px;height:30px;}
+.sec-head{display:flex;align-items:center;gap:16px;margin:18px 0 6px;padding-bottom:16px;border-bottom:2px solid var(--mist);}
+.sec-num{flex:none;width:46px;height:46px;border-radius:12px;background:var(--grad);color:#fff;display:flex;align-items:center;justify-content:center;
+  font-family:'Outfit',sans-serif;font-weight:700;font-size:20px;box-shadow:0 6px 16px rgba(37,99,235,.22);}
+.sec-head .htxt .k{display:block;font-family:'Outfit',sans-serif;font-weight:600;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--teal);margin-bottom:3px;}
+.sec-head h2{font-size:27px;font-weight:700;letter-spacing:-.015em;}
+.lead{font-size:16px !important;line-height:1.6 !important;color:var(--ink-soft);margin:18px 0 14px !important;}
+
+h3.sub{font-size:19px;font-weight:600;letter-spacing:-.01em;margin:28px 0 10px;display:flex;align-items:center;gap:10px;}
+h3.sub::before{content:"";width:9px;height:9px;border-radius:3px;background:var(--grad);flex:none;}
+h4.sub{font-size:15.5px;font-weight:600;color:var(--ink-soft);margin:20px 0 7px;}
+
+.doc ul,.doc ol{margin:0 0 14px;padding-left:0;list-style:none;}
+.doc ul>li{position:relative;padding-left:22px;font-size:15px;line-height:1.62;margin:0 0 7px;}
+.doc ul>li::before{content:"";position:absolute;left:2px;top:.62em;width:6px;height:6px;border-radius:50%;background:var(--sky);}
+.doc ol{counter-reset:ol;}
+.doc ol>li{position:relative;padding-left:32px;font-size:15px;line-height:1.62;margin:0 0 8px;counter-increment:ol;}
+.doc ol>li::before{content:counter(ol);position:absolute;left:0;top:.02em;width:21px;height:21px;border-radius:6px;background:var(--mist);
+  color:var(--blue);font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:500;display:flex;align-items:center;justify-content:center;}
+.doc li>ul{margin:7px 0 4px;}
+
+.fig{margin:20px 0 22px;}
+.shot{border:1px solid var(--line);border-radius:11px;overflow:hidden;box-shadow:0 10px 34px rgba(15,23,42,.10);background:#fff;}
+.bar{height:30px;background:var(--mist);border-bottom:1px solid var(--line);display:flex;align-items:center;gap:7px;padding:0 13px;}
+.bar i{width:9px;height:9px;border-radius:50%;display:block;}
+.bar i:nth-child(1){background:#f0a8a0;}.bar i:nth-child(2){background:#f3cf94;}.bar i:nth-child(3){background:#a7d8b0;}
+.bar .u{margin-left:10px;height:16px;flex:1;max-width:340px;background:#fff;border:1px solid var(--line);border-radius:5px;}
+.shot img{display:block;width:100%;height:auto;}
+.fig figcaption{margin-top:10px;font-size:12.5px;color:var(--gray);font-style:italic;border-left:2px solid var(--sky);padding-left:11px;}
+
+.note{background:#f6faff;border:1px solid #dceaff;border-left:3px solid var(--blue);border-radius:9px;padding:14px 18px;margin:16px 0 18px;}
+.note.warn{background:#fff8f4;border-color:#fbe1d3;border-left-color:#e8705a;}
+.note.tip{background:#f1fbf8;border-color:#cdeee6;border-left-color:var(--teal);}
+.note .nl{font-family:'Outfit',sans-serif;font-weight:700;font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--blue);margin:0 0 5px;display:block;}
+.note.warn .nl{color:#cf5a44;}.note.tip .nl{color:#0d9488;}
+.note p{font-size:14px !important;line-height:1.6 !important;margin:0 !important;}
+
+.pill{display:inline-flex;align-items:center;gap:6px;font-family:'Outfit',sans-serif;font-weight:600;font-size:12px;
+  padding:3px 11px;border-radius:999px;border:1px solid;}
+.pill.blue{color:#1d4ed8;background:#eef4ff;border-color:#d4e2ff;}
+.pill.teal{color:#0d8b7d;background:#e9fbf6;border-color:#c8efe6;}
+.pill.ink{color:#0f172a;background:#eef1f6;border-color:#dde3ec;}
+
+.tbl{width:100%;border-collapse:collapse;margin:16px 0 18px;font-size:14px;}
+.tbl th{font-family:'Outfit',sans-serif;font-weight:600;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--gray);
+  text-align:left;padding:10px 14px;background:var(--mist);border-bottom:2px solid var(--line);}
+.tbl td{padding:9px 14px;border-bottom:1px solid var(--line2);color:var(--ink-soft);vertical-align:top;}
+.tbl tr:last-child td{border-bottom:1px solid var(--line);}
+.tbl td:first-child{font-weight:600;color:var(--ink);}
+
+.faq{border:1px solid var(--line);border-radius:11px;padding:16px 19px;margin:0 0 12px;background:#fff;}
+.faq .q{font-family:'Outfit',sans-serif;font-weight:600;font-size:15.5px;color:var(--ink);display:flex;gap:11px;align-items:flex-start;margin:0 0 7px;}
+.faq .q .qm{flex:none;width:22px;height:22px;border-radius:7px;background:var(--grad);color:#fff;display:flex;align-items:center;justify-content:center;
+  font-size:13px;font-weight:700;margin-top:1px;}
+.faq p{font-size:14px !important;line-height:1.6 !important;margin:0 0 6px 33px !important;}
+.faq p:last-child{margin-bottom:0 !important;}
+
+.short{display:flex;gap:13px;align-items:flex-start;padding:12px 0;border-bottom:1px solid var(--line2);}
+.short .ic{flex:none;width:30px;height:30px;border-radius:8px;background:var(--mist);color:var(--blue);display:flex;align-items:center;justify-content:center;}
+.short .ic svg{width:16px;height:16px;}
+.short .sx{flex:1;}
+.short .sx b{font-family:'Outfit',sans-serif;font-weight:600;color:var(--ink);font-size:14.5px;}
+.short .sx span{display:block;font-size:13.5px;color:var(--body);margin-top:2px;}
+.kbd{font-family:'IBM Plex Mono',monospace;font-size:12px;background:#fff;border:1px solid var(--line);border-bottom-width:2px;border-radius:5px;padding:1px 6px;color:var(--ink-soft);}
+
+.endcard{margin:40px 0 0;border-radius:16px;background:var(--ink);color:#e8eef7;padding:30px 34px;position:relative;overflow:hidden;}
+.endcard h3{color:#fff;font-size:21px;font-weight:700;margin:0 0 8px;}
+.endcard p{color:#aeb9cc !important;font-size:14.5px !important;margin:0 !important;max-width:34em;}
+.endcard a{color:#7fb2ff;border-bottom-color:rgba(127,178,255,.4);}
+.endcard .ring{position:absolute;right:-60px;top:-60px;width:240px;height:240px;opacity:.5;}
+
+.progress{position:fixed;top:0;left:0;right:0;height:3px;background:transparent;z-index:50;}
+#progbar{height:100%;width:0;background:var(--grad);}
+.navfab{position:fixed;right:18px;bottom:18px;display:flex;flex-direction:column;gap:9px;z-index:60;}
+.navfab button{width:46px;height:46px;border-radius:13px;border:1px solid var(--line);background:#fff;color:var(--ink);
+  box-shadow:0 8px 22px rgba(15,23,42,.14);cursor:pointer;display:flex;align-items:center;justify-content:center;transition:background .15s,color .15s,transform .15s;}
+.navfab button:hover{background:var(--mist);color:var(--blue);transform:translateY(-1px);}
+.navfab button svg{width:19px;height:19px;}
+.navfab #nav-toc{background:var(--ink);color:#fff;border-color:var(--ink);box-shadow:0 8px 22px rgba(15,23,42,.28);}
+.navfab #nav-toc:hover{background:#1c2740;color:#fff;}
+.tocpanel{position:fixed;inset:0;background:rgba(15,23,42,.46);z-index:70;opacity:0;pointer-events:none;transition:opacity .22s;display:flex;justify-content:flex-end;}
+.tocpanel.open{opacity:1;pointer-events:auto;}
+.tocpanel-inner{width:330px;max-width:85vw;background:#fff;height:100%;overflow:auto;padding:28px 24px 40px;box-shadow:-14px 0 44px rgba(15,23,42,.22);transform:translateX(24px);transition:transform .26s cubic-bezier(.16,1,.3,1);}
+.tocpanel.open .tocpanel-inner{transform:none;}
+.tocpanel-inner h4{font-family:'Outfit',sans-serif;font-size:12px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:var(--gray);margin:0 0 4px;}
+.tocpanel-inner .brandrow{display:flex;align-items:center;gap:9px;margin:0 0 20px;padding-bottom:16px;border-bottom:2px solid var(--mist);}
+.tocpanel-inner .brandrow b{font-family:'Outfit',sans-serif;font-weight:800;font-size:17px;color:var(--ink);}
+.tocpanel-inner .brandrow b span{color:var(--gray);font-weight:600;font-size:12px;letter-spacing:.05em;}
+.tocpanel-inner a{display:flex;gap:12px;align-items:baseline;padding:11px 6px;border-bottom:1px solid var(--line2);
+  font-family:'Outfit',sans-serif;font-weight:500;font-size:14px;color:var(--ink-soft);text-decoration:none;border-left:0;}
+.tocpanel-inner a .n{font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--blue);width:20px;flex:none;}
+.tocpanel-inner a:hover{color:var(--blue);}
+@page{size:A4;margin:0;}
+@media print{
+  html{-webkit-print-color-adjust:exact;print-color-adjust:exact;}
+  html,body{margin:0;padding:0;}
+  .doc{max-width:none !important;margin:0 !important;padding:0 0.7in !important;box-shadow:none !important;border:none !important;}
+  #dc-root,.sc-host{height:auto !important;}
+  .hdr-space,.ftr-space{display:table-cell;height:0.7in !important;}
+  .running-hdr,.running-ftr{display:flex !important;justify-content:space-between;align-items:baseline;position:fixed !important;
+    left:0;right:0;margin:0 !important;font-family:'Outfit',sans-serif;font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;color:#9aa6b6;}
+  .running-hdr{top:0;padding:0.32in 0.7in 0 !important;}
+  .running-ftr{bottom:0;padding:0 0.7in 0.32in !important;}
+  .running-hdr b,.running-ftr b{color:var(--blue);font-weight:600;}
+  h1,h2,h3,h4{break-after:avoid;}
+  .fig,.shot,.note,.faq,.tbl,.endcard,tr,.toc-grid{break-inside:avoid;}
+  .sec{break-inside:auto;}
+  p,li{orphans:3;widows:3;}
+  .cover{break-after:page;}
+  .toc{break-after:page;}
+  .screen-only{display:none !important;}
+}
+</style>
+</helmet>
+<main class="doc">
+  <table class="doc-frame" role="presentation">
+    <thead><tr><td>
+      <div class="running-hdr"><span><b>BoHub</b> CRM</span><span>Manual de usuario</span></div>
+      <div class="hdr-space"></div>
+    </td></tr></thead>
+    <tfoot><tr><td>
+      <div class="ftr-space"></div>
+      <div class="running-ftr"><span>Bomedia · uso interno</span><span>soporte: eduard@bomedia.net</span></div>
+    </td></tr></tfoot>
+    <tbody><tr><td>
+
+    <!-- ============ COVER ============ -->
+    <section class="cover">
+      <svg class="cover-deco" viewBox="0 0 100 100" fill="none">
+        <defs><linearGradient id="cg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#2563EB"/><stop offset=".55" stop-color="#0EA5E9"/><stop offset="1" stop-color="#14B8A6"/></linearGradient></defs>
+        <circle cx="50" cy="50" r="38" stroke="url(#cg)" stroke-width="3"/>
+        <circle cx="50" cy="12" r="6" fill="#0F172A"/><circle cx="85" cy="62" r="6" fill="#14B8A6"/><circle cx="30" cy="82" r="6" fill="#2563EB"/>
+        <circle cx="50" cy="50" r="13" stroke="#0F172A" stroke-width="3"/><circle cx="50" cy="50" r="4.5" fill="#0F172A"/>
+      </svg>
+      <svg class="cover-deco2" viewBox="0 0 100 100" fill="none">
+        <circle cx="50" cy="50" r="40" stroke="url(#cg)" stroke-width="2.5"/>
+      </svg>
+      <img class="cover-logo" src="assets/logo-vertical.jpeg" alt="BoHub CRM">
+      <p class="eyebrow">Guía de equipo · Bomedia</p>
+      <h1>Manual de<br><span class="g">usuario</span></h1>
+      <p class="cover-sub">Todo lo que necesitas para dominar BoHub CRM: contactos, emails, pipelines, tareas y automatizaciones. Aprende a usarlo en una tarde.</p>
+      <div class="cover-meta">
+        <span class="metachip"><span class="dot"></span>Acceso&nbsp; <b>bo-crm.mbolasers.com</b></span>
+        <span class="metachip">Versión&nbsp; <b>v1.x</b></span>
+        <span class="metachip">Actualizado&nbsp; <b>21 jun 2026</b></span>
+      </div>
+      <hr class="cover-rule">
+    </section>
+
+    <!-- ============ TOC ============ -->
+    <nav class="toc">
+      <p class="toc-head">Contenido</p>
+      <div class="toc-grid">
+        <a href="#s1"><span class="n">01</span><span class="t">Bienvenido a BoHub CRM</span></a>
+        <a href="#s6"><span class="n">06</span><span class="t">Para managers</span></a>
+        <a href="#s2"><span class="n">02</span><span class="t">Primeros pasos</span></a>
+        <a href="#s7"><span class="n">07</span><span class="t">Para admins</span></a>
+        <a href="#s3"><span class="n">03</span><span class="t">Tu día a día como comercial</span></a>
+        <a href="#s8"><span class="n">08</span><span class="t">FAQ y troubleshooting</span></a>
+        <a href="#s4"><span class="n">04</span><span class="t">Workflows (automatización)</span></a>
+        <a href="#s9"><span class="n">09</span><span class="t">Atajos útiles</span></a>
+        <a href="#s5"><span class="n">05</span><span class="t">Marketing y campañas (Brevo)</span></a>
+        <a href="#s10"><span class="n">10</span><span class="t">Soporte interno</span></a>
+      </div>
+    </nav>
+
+    <!-- ============ 1 ============ -->
+    <section class="sec" id="s1">
+      <div class="sec-head"><div class="sec-num">1</div><div class="htxt"><span class="k">Introducción</span><h2>Bienvenido a BoHub CRM</h2></div></div>
+      <p class="lead">BoHub es el CRM interno de Bomedia. Centraliza contactos, conversaciones por email, oportunidades comerciales, tareas, automatizaciones y todo lo relacionado con el ciclo comercial.</p>
+      <p>Se integra con <strong>AgileCRM</strong> (importa contactos automáticamente), <strong>Brevo</strong> (campañas de email marketing), <strong>Gmail</strong> (envíos y bandeja), <strong>Google Calendar</strong> (sincroniza tareas) y <strong>FactuSOL / Freshdesk</strong> (en lectura).</p>
+      <h4 class="sub">Acceso y cuentas</h4>
+      <ul>
+        <li>Entra en <code>https://bo-crm.mbolasers.com</code>.</li>
+        <li>Tu admin te crea el usuario y te pasa el email + contraseña inicial. <strong>Cámbiala en cuanto entres por primera vez.</strong></li>
+      </ul>
+      <h4 class="sub">Roles del CRM</h4>
+      <table class="tbl">
+        <thead><tr><th style="width:160px">Rol</th><th>Qué puede hacer</th></tr></thead>
+        <tbody>
+          <tr><td><span class="pill blue">Comercial</span></td><td>El rol más común (user). Gestiona sus propios contactos, manda emails y completa tareas.</td></tr>
+          <tr><td><span class="pill teal">Manager</span></td><td>Comercial + puede ver y gestionar el trabajo de otros del equipo (cubrir vacaciones, supervisar).</td></tr>
+          <tr><td><span class="pill ink">Admin</span></td><td>Configuración completa del CRM: usuarios, integraciones, reglas y backups.</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <!-- ============ 2 ============ -->
+    <div class="secdiv"><span class="ln r"></span><svg class="orb" viewBox="0 0 100 100" fill="none"><circle cx="50" cy="50" r="38" stroke="url(#cg)" stroke-width="7"/><circle cx="50" cy="12" r="9" fill="#0F172A"/><circle cx="85" cy="62" r="9" fill="#14B8A6"/><circle cx="30" cy="82" r="9" fill="#2563EB"/><circle cx="50" cy="50" r="14" stroke="#0F172A" stroke-width="7"/><circle cx="50" cy="50" r="5" fill="#0F172A"/></svg><span class="ln"></span></div>
+    <section class="sec" id="s2">
+      <div class="sec-head"><div class="sec-num">2</div><div class="htxt"><span class="k">Onboarding</span><h2>Primeros pasos</h2></div></div>
+
+      <h3 class="sub">2.1 · Login</h3>
+      <p>Abre <code>https://bo-crm.mbolasers.com</code> → introduce email + contraseña → entra al <strong>Dashboard</strong>.</p>
+      <figure class="fig"><div class="shot"><div class="bar"><i></i><i></i><i></i><span class="u"></span></div><img src="assets/screenshots/01-login.png" alt="Pantalla de login"></div><figcaption>Pantalla de acceso a BoHub CRM.</figcaption></figure>
+
+      <h3 class="sub">2.2 · Configurar tu cuenta personal</h3>
+      <p>Click en tu avatar arriba a la derecha → <strong>Mi cuenta</strong> (o <code>/account</code>). Aquí configuras:</p>
+      <ul>
+        <li><strong>Tu perfil</strong>: nombre, email, contraseña.</li>
+        <li><strong>Google Calendar</strong>: conecta tu cuenta de Google para sincronizar tareas como eventos.</li>
+        <li><strong>Gmail (envío de emails)</strong>: conecta tu cuenta Gmail para enviar emails desde el CRM con tu propia dirección. Tras conectar, en el selector de aliases marca con ⭐ tu alias predeterminado y selecciona los demás aliases que quieras tener disponibles.</li>
+      </ul>
+      <figure class="fig"><div class="shot"><div class="bar"><i></i><i></i><i></i><span class="u"></span></div><img src="assets/screenshots/02-account.png" alt="Mi cuenta"></div><figcaption>«Mi cuenta»: contraseña, 2FA, firmas, Calendar y aliases de Gmail.</figcaption></figure>
+
+      <h3 class="sub">2.3 · Entender el sidebar lateral</h3>
+      <p>Las opciones del sidebar dependen de tu rol:</p>
+      <table class="tbl">
+        <thead><tr><th>Visible para todos</th><th>Admin / Manager</th><th>Solo Admin</th></tr></thead>
+        <tbody>
+          <tr><td>Dashboard, Contactos, Tareas, Emails, Empresas, Pipelines, Segmentos, Marketing, Tags</td><td>Workflows, Reglas de asignación, Custom fields</td><td>Integraciones, Usuarios, Backups, Ajustes</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <!-- ============ 3 ============ -->
+    <div class="secdiv"><span class="ln r"></span><svg class="orb" viewBox="0 0 100 100" fill="none"><circle cx="50" cy="50" r="38" stroke="url(#cg)" stroke-width="7"/><circle cx="50" cy="12" r="9" fill="#0F172A"/><circle cx="85" cy="62" r="9" fill="#14B8A6"/><circle cx="30" cy="82" r="9" fill="#2563EB"/><circle cx="50" cy="50" r="14" stroke="#0F172A" stroke-width="7"/><circle cx="50" cy="50" r="5" fill="#0F172A"/></svg><span class="ln"></span></div>
+    <section class="sec" id="s3">
+      <div class="sec-head"><div class="sec-num">3</div><div class="htxt"><span class="k">Operativa</span><h2>Tu día a día como comercial</h2></div></div>
+
+      <h3 class="sub">3.1 · Dashboard</h3>
+      <p>Al entrar ves tu pantalla principal. Muestra KPIs personalizados con periodo configurable (<strong>3d / 1sem / 15d / 30d / custom</strong>):</p>
+      <ul>
+        <li>Tus contactos nuevos en el periodo.</li>
+        <li>Tus tareas vencidas y para hoy.</li>
+        <li>Tus emails enviados / abiertos / clicados.</li>
+        <li>Tu pipeline de oportunidades.</li>
+      </ul>
+      <figure class="fig"><div class="shot"><div class="bar"><i></i><i></i><i></i><span class="u"></span></div><img src="assets/screenshots/03-dashboard.png" alt="Dashboard con KPIs"></div><figcaption>Dashboard con KPIs personales y periodo configurable.</figcaption></figure>
+
+      <h3 class="sub">3.2 · Contactos</h3>
+      <h4 class="sub">Listar contactos</h4>
+      <p>En <code>/contacts</code> ves la lista de contactos del CRM con buscador por nombre/email, filtros avanzados (tag, score, estado del ciclo, propietario, campañas Brevo…) y columnas personalizables.</p>
+      <figure class="fig"><div class="shot"><div class="bar"><i></i><i></i><i></i><span class="u"></span></div><img src="assets/screenshots/04-contactos-lista.png" alt="Lista de contactos"></div><figcaption>Lista de contactos con filtros AND/OR/NOT y columnas configurables.</figcaption></figure>
+
+      <h4 class="sub">Ver una ficha de contacto</h4>
+      <p>Click en cualquier contacto. La <strong>cabecera</strong> reúne nombre, email, teléfono, empresa, origen del lead, última actividad, lead score, estado del ciclo y estrellas (1–5). Debajo, las <strong>pestañas</strong>:</p>
+      <ul>
+        <li><strong>Resumen</strong>: actividad reciente, engagement de emails, tareas, notas, tags, oportunidades y engagement Brevo.</li>
+        <li><strong>Actividad</strong>: timeline completo de eventos.</li>
+        <li><strong>Emails</strong>: hilos de conversación con el contacto.</li>
+        <li><strong>Tareas, Notas, Tags, Oportunidades</strong>: gestión asociada al contacto.</li>
+        <li><strong>Workflows</strong>: workflows activos e históricos.</li>
+        <li><strong>Soporte</strong>: tickets (cuando la integración Freshdesk esté lista).</li>
+      </ul>
+      <p>La <strong>sidebar derecha</strong> muestra información profesional, dirección, empresa asignada y comerciales asignados (primary + secundarios).</p>
+      <figure class="fig"><div class="shot"><div class="bar"><i></i><i></i><i></i><span class="u"></span></div><img src="assets/screenshots/05-ficha-contacto.png" alt="Ficha de contacto"></div><figcaption>Ficha de contacto completa con pestañas y sidebar de información.</figcaption></figure>
+
+      <h4 class="sub">Crear contacto manualmente</h4>
+      <p>Click «Nuevo contacto» en <code>/contacts</code>. Nombre y email son obligatorios. El <strong>origen</strong> se rellena como «Manual» (no editable) y el <strong>propietario</strong> se asigna al user que lo crea.</p>
+      <figure class="fig"><div class="shot"><div class="bar"><i></i><i></i><i></i><span class="u"></span></div><img src="assets/screenshots/06-crear-contacto.png" alt="Crear contacto"></div><figcaption>Formulario de creación de contacto.</figcaption></figure>
+
+      <h4 class="sub">Editar contacto</h4>
+      <p>Botón <strong>Editar</strong> en la cabecera → modal con todos los campos: nombre, email, empresa, teléfonos (múltiples), propietario, custom fields, estrellas, lead score y dirección.</p>
+      <figure class="fig"><div class="shot"><div class="bar"><i></i><i></i><i></i><span class="u"></span></div><img src="assets/screenshots/07-editar-contacto.png" alt="Editar contacto"></div><figcaption>Modal de edición con todos los campos del contacto.</figcaption></figure>
+
+      <h4 class="sub">Borrar contacto (solo admin / manager)</h4>
+      <p>Botón <strong>⋮</strong> en cabecera → «Borrar contacto» → confirmación tecleando «BORRAR» → eliminación definitiva con cascade en tareas, notas y asignaciones. Los emails se preservan con <code>contact_id=NULL</code>.</p>
+      <figure class="fig"><div class="shot"><div class="bar"><i></i><i></i><i></i><span class="u"></span></div><img src="assets/screenshots/08-borrar-contacto-modal.png" alt="Confirmación borrar"></div><figcaption>Confirmación de borrado irreversible.</figcaption></figure>
+
+      <h3 class="sub">3.3 · Emails</h3>
+      <h4 class="sub">Enviar email</h4>
+      <p>Desde la ficha del contacto, botón <strong>«Enviar correo»</strong> → se abre un panel derecho con el composer. Opciones:</p>
+      <ul>
+        <li><strong>Modo plantilla</strong>: elige una plantilla del CRM; el asunto se rellena solo y puedes sobreescribirlo.</li>
+        <li><strong>Modo contenido personalizado</strong>: escribes asunto + cuerpo HTML libremente.</li>
+        <li><strong>From alias</strong>: alias fijo, alias predeterminado del propietario (recomendado, el ⭐) o un alias específico del propietario.</li>
+        <li><strong>Variables</strong>: <code>&lbrace;&lbrace;contact.first_name&rbrace;&rbrace;</code>, <code>&lbrace;&lbrace;contact.last_name&rbrace;&rbrace;</code>, <code>&lbrace;&lbrace;contact.email&rbrace;&rbrace;</code>… se rellenan al enviar.</li>
+        <li><strong>Firma, adjuntos, programar envío</strong> e <strong>incluir opción de baja</strong> (enlace de unsubscribe).</li>
+      </ul>
+      <figure class="fig"><div class="shot"><div class="bar"><i></i><i></i><i></i><span class="u"></span></div><img src="assets/screenshots/09-composer-email.png" alt="Composer de email"></div><figcaption>Composer de email como panel derecho sobre la ficha.</figcaption></figure>
+
+      <h4 class="sub">Bandeja de emails</h4>
+      <p>En <code>/emails</code>, vista de 3 columnas: carpetas (Bandeja, Estrellados, Archivados, Papelera, Spam, Programados, Borradores, Enviados, personalizadas) a la izquierda; lista de hilos con filtros en el centro; y el hilo seleccionado a la derecha. Filtro adicional <strong>Míos / Todo el equipo / Todos los comerciales</strong>. En móvil el layout pasa a stack vertical.</p>
+      <figure class="fig"><div class="shot"><div class="bar"><i></i><i></i><i></i><span class="u"></span></div><img src="assets/screenshots/10-bandeja-emails.png" alt="Bandeja de emails"></div><figcaption>Bandeja de emails de 3 columnas con tracking a 30 días.</figcaption></figure>
+
+      <h4 class="sub">Responder / reenviar y tracking</h4>
+      <p>Click un hilo → en el panel derecho tienes «Responder», «Responder a todos» y «Reenviar». Los emails enviados desde el CRM llevan tracking automático: <strong>apertura</strong> ✉️, <strong>clic</strong> 🔗 y <strong>respuesta</strong> 💬. Los contadores aparecen en cada email y en el widget «Engagement por email» de la ficha.</p>
+      <div class="note"><span class="nl">Nota</span><p>Hay una ventana de 30 segundos post-envío para evitar contar tu propio reflejo en la bandeja «Enviados» del remitente.</p></div>
+
+      <h3 class="sub">3.4 · Plantillas de email</h3>
+      <p>Las plantillas las gestiona el admin desde <code>/marketing</code>. Tú las usas al componer seleccionando «Modo plantilla». Para crear una rápida: en el composer escribe → «Guardar como plantilla» → nombre + folder → guarda.</p>
+      <figure class="fig"><div class="shot"><div class="bar"><i></i><i></i><i></i><span class="u"></span></div><img src="assets/screenshots/11-dropdown-plantillas.png" alt="Selector de plantillas"></div><figcaption>Selector de plantillas (CRM, Brevo, Composer, Recientes).</figcaption></figure>
+
+      <h3 class="sub">3.5 · Tareas</h3>
+      <h4 class="sub">Crear tarea desde la ficha</h4>
+      <p>Botón <strong>«Crear tarea»</strong> en cabecera → modal con título, descripción, vencimiento (relativo: «en 2 días a las 11:00»), prioridad (baja / media / alta) y la opción <strong>«Sincronizar con Google Calendar del propietario»</strong>, que crea el evento en Calendar.</p>
+      <figure class="fig"><div class="shot"><div class="bar"><i></i><i></i><i></i><span class="u"></span></div><img src="assets/screenshots/12-crear-tarea.png" alt="Crear tarea"></div><figcaption>Modal «Nueva tarea» con vencimiento, prioridad y sync con Calendar.</figcaption></figure>
+
+      <h4 class="sub">Ver tus tareas</h4>
+      <p>En <code>/tareas</code>, vista con tabs: <strong>Pendientes hoy</strong>, <strong>esta semana</strong>, <strong>Vencidas</strong> y <strong>Completadas</strong>. Click en una tarea para ver detalle, completarla, editarla o posponerla.</p>
+      <figure class="fig"><div class="shot"><div class="bar"><i></i><i></i><i></i><span class="u"></span></div><img src="assets/screenshots/13-lista-tareas.png" alt="Lista de tareas"></div><figcaption>Vista de tareas con tabs por estado.</figcaption></figure>
+
+      <h3 class="sub">3.6 · Notas</h3>
+      <p>Pestaña «Notas» en la ficha → «Nueva nota» → texto plano → guarda. Son privadas del equipo (no se envían al contacto). Útiles para apuntar info de una llamada o contexto de un cliente.</p>
+      <figure class="fig"><div class="shot"><div class="bar"><i></i><i></i><i></i><span class="u"></span></div><img src="assets/screenshots/14-notas-pestania.png" alt="Pestaña notas"></div><figcaption>Pestaña de notas internas en la ficha del contacto.</figcaption></figure>
+
+      <h3 class="sub">3.7 · Tags</h3>
+      <p>Pestaña «Tags» en la ficha → añadir/quitar tags. Son etiquetas reutilizables del CRM (FESPA, cliente-pro, interesado-demo…) que el admin gestiona desde <code>/tags</code>.</p>
+      <figure class="fig"><div class="shot"><div class="bar"><i></i><i></i><i></i><span class="u"></span></div><img src="assets/screenshots/15-editor-tags.png" alt="Editor de tags"></div><figcaption>Administración de tags de contactos.</figcaption></figure>
+
+      <h3 class="sub">3.8 · Oportunidades</h3>
+      <p>Pestaña «Oportunidades» → «Nueva oportunidad»: nombre, valor estimado, pipeline (ej. «Ventas B2B»), stage inicial (Nuevo, Calificado, Propuesta enviada, Ganada, Perdida) y producto asociado. Mueves la oportunidad de stage según avanza y marcas ganada/perdida con motivo al cerrar.</p>
+      <figure class="fig"><div class="shot"><div class="bar"><i></i><i></i><i></i><span class="u"></span></div><img src="assets/screenshots/16-ficha-oportunidad.png" alt="Ficha de oportunidad"></div><figcaption>Ficha de oportunidad con sus stages.</figcaption></figure>
+
+      <h3 class="sub">3.9 · Pipelines</h3>
+      <p>En <code>/pipelines</code>, vista kanban de todas las oportunidades por stage. Arrastra y suelta para mover entre columnas.</p>
+      <figure class="fig"><div class="shot"><div class="bar"><i></i><i></i><i></i><span class="u"></span></div><img src="assets/screenshots/17-pipeline-kanban.png" alt="Pipeline kanban"></div><figcaption>Pipeline «Ventas B2B» en vista kanban drag &amp; drop.</figcaption></figure>
+
+      <h3 class="sub">3.10 · Segmentos</h3>
+      <p>En <code>/segmentos</code>, grupos dinámicos de contactos que cumplen ciertos criterios (ej. «clientes que abrieron campaña X en 30 días»). Se actualizan solos al entrar/salir un contacto del criterio. Útiles para dirigir campañas Brevo o workflows.</p>
+      <figure class="fig"><div class="shot"><div class="bar"><i></i><i></i><i></i><span class="u"></span></div><img src="assets/screenshots/18-segmentos.png" alt="Lista de segmentos"></div><figcaption>Segmentos dinámicos de contactos.</figcaption></figure>
+    </section>
+
+    <!-- ============ 4 ============ -->
+    <div class="secdiv"><span class="ln r"></span><svg class="orb" viewBox="0 0 100 100" fill="none"><circle cx="50" cy="50" r="38" stroke="url(#cg)" stroke-width="7"/><circle cx="50" cy="12" r="9" fill="#0F172A"/><circle cx="85" cy="62" r="9" fill="#14B8A6"/><circle cx="30" cy="82" r="9" fill="#2563EB"/><circle cx="50" cy="50" r="14" stroke="#0F172A" stroke-width="7"/><circle cx="50" cy="50" r="5" fill="#0F172A"/></svg><span class="ln"></span></div>
+    <section class="sec" id="s4">
+      <div class="sec-head"><div class="sec-num">4</div><div class="htxt"><span class="k">Admin / Manager</span><h2>Workflows (automatización)</h2></div></div>
+      <p class="lead">Los workflows son recetas automáticas: «cuando pasa X → haz Y → espera Z → si abrió el email A, si no B».</p>
+
+      <h3 class="sub">4.1 · Lista de workflows</h3>
+      <p>En <code>/admin/workflows</code> ves todos los workflows con su trigger, estado (active / paused / draft) y contadores (en ejecución / total / ganados). Acciones por workflow: editar, duplicar, archivar, pausar/reanudar y borrar.</p>
+      <figure class="fig"><div class="shot"><div class="bar"><i></i><i></i><i></i><span class="u"></span></div><img src="assets/screenshots/19-workflows-lista.png" alt="Lista de workflows"></div><figcaption>Listado de workflows con estados y contadores.</figcaption></figure>
+
+      <h3 class="sub">4.2 · Crear desde cero o desde plantilla</h3>
+      <p>«Nuevo workflow» abre un editor canvas drag-drop: catálogo de pasos a la izquierda, canvas en el centro y configuración del paso a la derecha. «Desde plantilla» abre una galería con recetas predefinidas (Onboarding lead, Cumpleaños, Follow-up presupuesto) → «Usar plantilla» clona en draft para editar.</p>
+      <figure class="fig"><div class="shot"><div class="bar"><i></i><i></i><i></i><span class="u"></span></div><img src="assets/screenshots/20-plantillas-workflows.png" alt="Plantillas de workflow"></div><figcaption>Galería de plantillas de workflow.</figcaption></figure>
+
+      <h3 class="sub">4.3 · Construir un workflow</h3>
+      <ol>
+        <li><strong>Define el trigger</strong>: evento posible (Contacto creado, Email abierto, Tarea completada…) + sub-config.</li>
+        <li><strong>Filtro adicional</strong> (opcional): condiciones extra sobre el contacto con el FilterBuilder.</li>
+        <li><strong>Añade pasos</strong> arrastrando del panel izquierdo al canvas.</li>
+        <li><strong>Conéctalos</strong> arrastrando una flecha desde el handle inferior de un paso al siguiente.</li>
+        <li><strong>Condición if/else</strong>: 2 handles «Sí» (verde) y «No» (rojo), cada uno a su rama.</li>
+        <li><strong>Esperar evento</strong>: 2 handles «matched» / «timeout».</li>
+        <li><strong>Termina con un paso Salida</strong> (natural, ganada, perdida).</li>
+        <li><strong>«Probar»</strong> para simular sobre un contacto real sin ejecutar.</li>
+        <li><strong>«Estimar»</strong> para ver cuántos contactos cumplirían el criterio.</li>
+        <li><strong>«Activar»</strong> cuando todo esté validado.</li>
+      </ol>
+      <figure class="fig"><div class="shot"><div class="bar"><i></i><i></i><i></i><span class="u"></span></div><img src="assets/screenshots/21-editor-canvas.png" alt="Editor canvas"></div><figcaption>Editor canvas de un workflow con catálogo de pasos.</figcaption></figure>
+
+      <h3 class="sub">4.5 · Ver runs de un contacto</h3>
+      <p>Ficha del contacto → pestaña Workflows: workflows activos (running / waiting), histórico (completed / cancelled) y, al hacer click en un run, un timeline detallado con cada paso ejecutado y su status.</p>
+      <figure class="fig"><div class="shot"><div class="bar"><i></i><i></i><i></i><span class="u"></span></div><img src="assets/screenshots/22-workflows-ficha.png" alt="Workflows en la ficha"></div><figcaption>Pestaña Workflows en la ficha del contacto.</figcaption></figure>
+
+      <h3 class="sub">4.6 · Reglas de asignación</h3>
+      <p>En <code>/reglas-de-asignacion</code>, reglas más simples que los workflows: «cuando entra un contacto que cumple X → asígnalo al comercial Y». El motor ordena por prioridad y aplica la primera que matchee. Útiles para distribuir leads por origen, tag o condición.</p>
+      <figure class="fig"><div class="shot"><div class="bar"><i></i><i></i><i></i><span class="u"></span></div><img src="assets/screenshots/23-reglas-asignacion.png" alt="Reglas de asignación"></div><figcaption>Reglas de asignación con prioridad y stop_on_match.</figcaption></figure>
+    </section>
+
+    <!-- ============ 5 ============ -->
+    <div class="secdiv"><span class="ln r"></span><svg class="orb" viewBox="0 0 100 100" fill="none"><circle cx="50" cy="50" r="38" stroke="url(#cg)" stroke-width="7"/><circle cx="50" cy="12" r="9" fill="#0F172A"/><circle cx="85" cy="62" r="9" fill="#14B8A6"/><circle cx="30" cy="82" r="9" fill="#2563EB"/><circle cx="50" cy="50" r="14" stroke="#0F172A" stroke-width="7"/><circle cx="50" cy="50" r="5" fill="#0F172A"/></svg><span class="ln"></span></div>
+    <section class="sec" id="s5">
+      <div class="sec-head"><div class="sec-num">5</div><div class="htxt"><span class="k">Campañas</span><h2>Marketing y campañas (Brevo)</h2></div></div>
+      <p>En <code>/marketing</code>, la integración con Brevo gestiona listas de emails, campañas masivas, templates de Brevo y estadísticas (aperturas, clics, bounces, unsubscribes) por campaña. El CRM importa las campañas y eventos de Brevo periódicamente; cada apertura/clic se asocia automáticamente al contacto.</p>
+      <figure class="fig"><div class="shot"><div class="bar"><i></i><i></i><i></i><span class="u"></span></div><img src="assets/screenshots/24-marketing.png" alt="Dashboard marketing"></div><figcaption>Panel de marketing con integración Brevo.</figcaption></figure>
+    </section>
+
+    <!-- ============ 6 ============ -->
+    <div class="secdiv"><span class="ln r"></span><svg class="orb" viewBox="0 0 100 100" fill="none"><circle cx="50" cy="50" r="38" stroke="url(#cg)" stroke-width="7"/><circle cx="50" cy="12" r="9" fill="#0F172A"/><circle cx="85" cy="62" r="9" fill="#14B8A6"/><circle cx="30" cy="82" r="9" fill="#2563EB"/><circle cx="50" cy="50" r="14" stroke="#0F172A" stroke-width="7"/><circle cx="50" cy="50" r="5" fill="#0F172A"/></svg><span class="ln"></span></div>
+    <section class="sec" id="s6">
+      <div class="sec-head"><div class="sec-num">6</div><div class="htxt"><span class="k">Permisos</span><h2>Para managers</h2></div></div>
+      <p>Todo lo del rol comercial, más permisos adicionales:</p>
+      <ul>
+        <li>Ver los <strong>workflows que afectan a contactos de tu equipo</strong>.</li>
+        <li>Selector <strong>«Ver bandeja de [user]»</strong> en <code>/emails</code> para cubrir vacaciones.</li>
+        <li><strong>Asignar / reasignar contactos</strong> entre comerciales.</li>
+        <li>Ver <strong>tareas de cualquier user</strong> del equipo con filtro per-user.</li>
+        <li><strong>Editar reglas de asignación</strong> del equipo.</li>
+        <li><strong>Crear y editar workflows</strong> del equipo.</li>
+      </ul>
+    </section>
+
+    <!-- ============ 7 ============ -->
+    <div class="secdiv"><span class="ln r"></span><svg class="orb" viewBox="0 0 100 100" fill="none"><circle cx="50" cy="50" r="38" stroke="url(#cg)" stroke-width="7"/><circle cx="50" cy="12" r="9" fill="#0F172A"/><circle cx="85" cy="62" r="9" fill="#14B8A6"/><circle cx="30" cy="82" r="9" fill="#2563EB"/><circle cx="50" cy="50" r="14" stroke="#0F172A" stroke-width="7"/><circle cx="50" cy="50" r="5" fill="#0F172A"/></svg><span class="ln"></span></div>
+    <section class="sec" id="s7">
+      <div class="sec-head"><div class="sec-num">7</div><div class="htxt"><span class="k">Configuración global</span><h2>Para admins</h2></div></div>
+      <table class="tbl">
+        <thead><tr><th style="width:210px">Área</th><th>Qué se gestiona</th></tr></thead>
+        <tbody>
+          <tr><td>Usuarios <code>/admin/users</code></td><td>Crear, editar, desactivar usuarios. Asignar roles. Resetear contraseña.</td></tr>
+          <tr><td>Custom fields</td><td>Campos personalizados del contacto (texto, número, fecha, dropdown), filtrables en segmentos y workflows.</td></tr>
+          <tr><td>Reglas de asignación</td><td>Igual que managers + ver reglas de todos los equipos.</td></tr>
+          <tr><td>Workflows</td><td>Crear, editar y archivar todos los workflows del sistema.</td></tr>
+          <tr><td>Integraciones</td><td>AgileCRM (9 cuentas, sync 1h), Brevo (API key, campañas), FactuSOL y Freshdesk (lectura).</td></tr>
+          <tr><td>Backups</td><td>Backup automático cifrado cada 72h (configurable), descargable y restaurable.</td></tr>
+          <tr><td>Tags</td><td>Crear, renombrar y fusionar tags para mantener limpio el catálogo.</td></tr>
+          <tr><td>Ajustes generales</td><td>Nombre de empresa, branding, idioma por defecto, etc.</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <!-- ============ 8 ============ -->
+    <div class="secdiv"><span class="ln r"></span><svg class="orb" viewBox="0 0 100 100" fill="none"><circle cx="50" cy="50" r="38" stroke="url(#cg)" stroke-width="7"/><circle cx="50" cy="12" r="9" fill="#0F172A"/><circle cx="85" cy="62" r="9" fill="#14B8A6"/><circle cx="30" cy="82" r="9" fill="#2563EB"/><circle cx="50" cy="50" r="14" stroke="#0F172A" stroke-width="7"/><circle cx="50" cy="50" r="5" fill="#0F172A"/></svg><span class="ln"></span></div>
+    <section class="sec" id="s8">
+      <div class="sec-head"><div class="sec-num">8</div><div class="htxt"><span class="k">Ayuda</span><h2>FAQ y troubleshooting</h2></div></div>
+
+      <div class="faq"><div class="q"><span class="qm">?</span>He enviado un email pero el contador de aperturas se queda en 0</div><p>Hay una ventana de 30 segundos post-envío durante la cual no se cuentan aperturas (para no contar tu propio reflejo en Gmail «Enviados»). Espera 1–2 minutos y comprueba de nuevo. Si sigue en 0, el destinatario aún no ha abierto.</p></div>
+      <div class="faq"><div class="q"><span class="qm">?</span>No me deja enviar email: «No has marcado ningún alias en /account»</div><p>Ve a <code>/account</code> → sección Gmail → marca al menos un alias visible (estrella ⭐ en el predeterminado).</p></div>
+      <div class="faq"><div class="q"><span class="qm">?</span>El workflow no se ha disparado aunque el contacto cumple el filtro</div><p>Verifica que el workflow está en estado <strong>active</strong> (no paused ni draft). Si lo está, mira en <code>/admin/workflows</code> → fila del workflow → ¿subió el contador «EN EJECUCIÓN» o «TOTAL»?</p></div>
+      <div class="faq"><div class="q"><span class="qm">?</span>Quiero ver los emails que un compañero envió a mi contacto</div><p>En <code>/emails</code> cambia el filtro a «Todo el equipo» o «Todos los comerciales». O abre la ficha → pestaña Emails (siempre muestra todos los emails del equipo).</p></div>
+      <div class="faq"><div class="q"><span class="qm">?</span>Mi sesión de Gmail se ha desconectado</div><p>Ve a <code>/account</code> → Gmail → «Desconectar» → «Conectar» → escanea de nuevo. Tu admin debe tener publicada la app OAuth en producción para que el token dure ilimitado.</p></div>
+      <div class="faq"><div class="q"><span class="qm">?</span>He movido un contacto a Papelera por error</div><p>En <code>/contacts</code> usa el filtro «Archivados» → busca el contacto → botón «Restaurar».</p></div>
+      <div class="faq"><div class="q"><span class="qm">?</span>Quiero borrar definitivamente un contacto</div><p>Solo admin/manager. Botón ⋮ en la cabecera de la ficha → «Borrar contacto» → teclea «BORRAR» → confirma. Acción irreversible.</p></div>
+      <div class="faq"><div class="q"><span class="qm">?</span>El sync de Agile no trae mis contactos nuevos</div><p>El sync corre cada 1h. Si esperaste &gt;1h y aún no llega, contacta a tu admin para verificar el scheduler.</p></div>
+      <div class="faq"><div class="q"><span class="qm">?</span>¿Cómo veo si una integración está caída?</div><p>En <code>/admin/integrations</code> cada integración muestra status (verde/rojo) y la última sincronización exitosa.</p></div>
+    </section>
+
+    <!-- ============ 9 ============ -->
+    <div class="secdiv"><span class="ln r"></span><svg class="orb" viewBox="0 0 100 100" fill="none"><circle cx="50" cy="50" r="38" stroke="url(#cg)" stroke-width="7"/><circle cx="50" cy="12" r="9" fill="#0F172A"/><circle cx="85" cy="62" r="9" fill="#14B8A6"/><circle cx="30" cy="82" r="9" fill="#2563EB"/><circle cx="50" cy="50" r="14" stroke="#0F172A" stroke-width="7"/><circle cx="50" cy="50" r="5" fill="#0F172A"/></svg><span class="ln"></span></div>
+    <section class="sec" id="s9">
+      <div class="sec-head"><div class="sec-num">9</div><div class="htxt"><span class="k">Productividad</span><h2>Atajos útiles</h2></div></div>
+      <div class="short"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg></div><div class="sx"><b>Buscador global</b><span>Caja superior del sidebar → busca contactos por nombre o email.</span></div></div>
+      <div class="short"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 4v5h-5"/></svg></div><div class="sx"><b>Hard refresh</b><span>Si algo no se ve actualizado, pulsa <span class="kbd">Ctrl</span> + <span class="kbd">Shift</span> + <span class="kbd">R</span>.</span></div></div>
+      <div class="short"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4h18M6 8h12M9 12h6M11 16h2"/></svg></div><div class="sx"><b>Filtros guardados</b><span>En <code>/contacts</code>, configura un filtro complejo → guárdalo con nombre para reutilizarlo.</span></div></div>
+      <div class="short"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 10h18M8 5v14"/></svg></div><div class="sx"><b>Bulk edit</b><span>En <code>/contacts</code>, selecciona varios contactos → acciones masivas (cambiar tag, asignar owner, exportar CSV).</span></div></div>
+    </section>
+
+    <!-- ============ 10 ============ -->
+    <div class="secdiv"><span class="ln r"></span><svg class="orb" viewBox="0 0 100 100" fill="none"><circle cx="50" cy="50" r="38" stroke="url(#cg)" stroke-width="7"/><circle cx="50" cy="12" r="9" fill="#0F172A"/><circle cx="85" cy="62" r="9" fill="#14B8A6"/><circle cx="30" cy="82" r="9" fill="#2563EB"/><circle cx="50" cy="50" r="14" stroke="#0F172A" stroke-width="7"/><circle cx="50" cy="50" r="5" fill="#0F172A"/></svg><span class="ln"></span></div>
+    <section class="sec" id="s10">
+      <div class="sec-head"><div class="sec-num">10</div><div class="htxt"><span class="k">Contacto</span><h2>Soporte interno</h2></div></div>
+      <div class="endcard">
+        <svg class="ring" viewBox="0 0 100 100" fill="none">
+          <circle cx="50" cy="50" r="38" stroke="url(#cg)" stroke-width="3"/>
+          <circle cx="50" cy="12" r="6" fill="#7fb2ff"/><circle cx="85" cy="62" r="6" fill="#14B8A6"/><circle cx="30" cy="82" r="6" fill="#2563EB"/>
+          <circle cx="50" cy="50" r="13" stroke="#7fb2ff" stroke-width="3"/><circle cx="50" cy="50" r="4.5" fill="#7fb2ff"/>
+        </svg>
+        <h3>¿Un bug o necesitas algo del CRM?</h3>
+        <p>Escribe a tu admin en <a href="mailto:eduard@bomedia.net">eduard@bomedia.net</a>. Incluye, si puedes, una captura y los pasos para reproducir el problema.</p>
+      </div>
+      <p style="margin-top:24px;font-size:13px;color:var(--gray);text-align:center;">Última actualización: 21 jun 2026 · Versión del CRM en producción: v1.x</p>
+    </section>
+
+    </td></tr></tbody>
+  </table>
+</main>
+
+<div class="progress screen-only"><div id="progbar"></div></div>
+
+<div class="navfab screen-only">
+  <button id="nav-toc" title="Índice" aria-label="Abrir índice"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
+  <button id="nav-top" title="Volver al inicio" aria-label="Volver al inicio"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 11l-5-5-5 5"/><path d="M17 18l-5-5-5 5"/></svg></button>
+  <button id="nav-prev" title="Sección anterior" aria-label="Subir"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 15l6-6 6 6"/></svg></button>
+  <button id="nav-next" title="Sección siguiente" aria-label="Bajar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></button>
+</div>
+
+<div class="tocpanel screen-only" id="tocpanel">
+  <div class="tocpanel-inner">
+    <div class="brandrow">
+      <svg width="26" height="26" viewBox="0 0 100 100" fill="none"><circle cx="50" cy="50" r="38" stroke="url(#cg)" stroke-width="6"/><circle cx="50" cy="12" r="8" fill="#0F172A"/><circle cx="85" cy="62" r="8" fill="#14B8A6"/><circle cx="30" cy="82" r="8" fill="#2563EB"/><circle cx="50" cy="50" r="14" stroke="#0F172A" stroke-width="6"/><circle cx="50" cy="50" r="5" fill="#0F172A"/></svg>
+      <b>BoHub <span>CRM</span></b>
+    </div>
+    <h4>Índice</h4>
+    <a href="#s1"><span class="n">01</span>Bienvenido a BoHub CRM</a>
+    <a href="#s2"><span class="n">02</span>Primeros pasos</a>
+    <a href="#s3"><span class="n">03</span>Tu día a día como comercial</a>
+    <a href="#s4"><span class="n">04</span>Workflows (automatización)</a>
+    <a href="#s5"><span class="n">05</span>Marketing y campañas (Brevo)</a>
+    <a href="#s6"><span class="n">06</span>Para managers</a>
+    <a href="#s7"><span class="n">07</span>Para admins</a>
+    <a href="#s8"><span class="n">08</span>FAQ y troubleshooting</a>
+    <a href="#s9"><span class="n">09</span>Atajos útiles</a>
+    <a href="#s10"><span class="n">10</span>Soporte interno</a>
+  </div>
+</div>
+
+<template id="__bundler_thumbnail">
+  <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+    <rect width="100" height="100" rx="20" fill="#0F172A"/>
+    <g transform="translate(50 50)">
+      <circle r="26" fill="none" stroke="#2563EB" stroke-width="4"/>
+      <circle cx="0" cy="-26" r="5.5" fill="#fff"/><circle cx="24" cy="11" r="5.5" fill="#14B8A6"/><circle cx="-21" cy="16" r="5.5" fill="#0EA5E9"/>
+      <circle r="9.5" fill="none" stroke="#fff" stroke-width="4"/><circle r="3.5" fill="#fff"/>
+    </g>
+  </svg>
+</template>
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+class Component extends DCLogic {
+  componentDidMount(){
+    const items = () => [...document.querySelectorAll('.cover, nav.toc, section.sec')];
+    const scrollToEl = el => window.scrollTo({ top: el.getBoundingClientRect().top + window.scrollY - 14, behavior:'smooth' });
+    const curIndex = () => {
+      const pos = window.scrollY + 90; let i = 0;
+      items().forEach((el,k) => { if (el.getBoundingClientRect().top + window.scrollY <= pos) i = k; });
+      return i;
+    };
+    const prev = document.getElementById('nav-prev');
+    const next = document.getElementById('nav-next');
+    const tocBtn = document.getElementById('nav-toc');
+    const panel = document.getElementById('tocpanel');
+    if (prev) prev.onclick = () => { const a = items(); scrollToEl(a[Math.max(0, curIndex()-1)]); };
+    if (next) next.onclick = () => { const a = items(); scrollToEl(a[Math.min(a.length-1, curIndex()+1)]); };
+    if (tocBtn && panel) tocBtn.onclick = () => panel.classList.toggle('open');
+    const top = document.getElementById('nav-top');
+    if (top) top.onclick = () => window.scrollTo({ top:0, behavior:'smooth' });
+    if (panel) {
+      panel.addEventListener('click', e => { if (e.target === panel) panel.classList.remove('open'); });
+      panel.querySelectorAll('a[href^="#"]').forEach(a => a.addEventListener('click', e => {
+        e.preventDefault();
+        const t = document.querySelector(a.getAttribute('href'));
+        if (t) scrollToEl(t);
+        panel.classList.remove('open');
+      }));
+    }
+    const bar = document.getElementById('progbar');
+    const onScroll = () => { if (!bar) return; const h = document.documentElement.scrollHeight - window.innerHeight; bar.style.width = (h > 0 ? (window.scrollY / h * 100) : 0) + '%'; };
+    window.addEventListener('scroll', onScroll, { passive:true });
+    window.addEventListener('keydown', e => {
+      if (e.key === 'Escape' && panel) panel.classList.remove('open');
+    });
+    onScroll();
+  }
+}
+</script>
+</body>
+</html>
