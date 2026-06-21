@@ -5,8 +5,10 @@
  *
  *   - Actividad reciente: timeline último 5 con icono color por tipo.
  *   - Engagement por email (30 días): aperturas / clics / respuestas.
- *     Datos sacados de los `activity_events` del contacto en tipo
- *     `email.*`. Sin endpoint dedicado todavía, el card es híbrido.
+ *     PR-Fix-Widget-Engagement-Email: fuente de datos cambió de
+ *     `activity_events` (donde se quedaba en 0) a
+ *     `GET /api/contacts/{id}/engagement-stats`, que lee de
+ *     `email_message_events` igual que la lista global `/emails`.
  *   - Oportunidades vinculadas: mini-tabla. Placeholder hasta que
  *     ContactPipelinesSection se "headless-ifique".
  *   - Incidencias recientes: placeholder hasta integración Freshdesk.
@@ -21,10 +23,16 @@ import {
   Phone,
   StickyNote,
 } from "lucide-react";
-import type { ActivityEvent } from "../../lib/api";
+import { useEffect, useState } from "react";
+import {
+  getContactEngagementStats,
+  type ActivityEvent,
+  type EngagementStats,
+} from "../../lib/api";
 import { formatBackendDateTime, formatRelative } from "../../lib/dates";
 
 type Props = {
+  contactId: string;
   events: ActivityEvent[];
   onSeeAllActivity?: () => void;
 };
@@ -100,15 +108,36 @@ const formatDateTime = (value: string | null | undefined) =>
 const relativeTime = (value: string | null | undefined) =>
   value ? formatRelative(value) : "—";
 
-function countEvents(events: ActivityEvent[], types: string[]): number {
-  return events.filter((e) => types.includes(e.event_type)).length;
-}
-
-export function ContactSummaryTab({ events, onSeeAllActivity }: Props) {
+export function ContactSummaryTab({
+  contactId,
+  events,
+  onSeeAllActivity,
+}: Props) {
   const recent = events.slice(0, 5);
-  const opens = countEvents(events, ["EMAIL_OPENED"]);
-  const clicks = countEvents(events, ["EMAIL_CLICKED"]);
-  const replies = countEvents(events, ["email.reply_received"]);
+  // PR-Fix-Widget-Engagement-Email. Stats reales desde el endpoint
+  // que lee `email_message_events` (no del prop `events`, que cuenta
+  // sobre `activity_events` y siempre quedaba en 0 para emails con
+  // tracking de aperturas — caso confirmado por Bart con TESTT 2121).
+  const [stats, setStats] = useState<EngagementStats>({
+    opens: 0,
+    clicks: 0,
+    replies: 0,
+  });
+  useEffect(() => {
+    let cancelled = false;
+    getContactEngagementStats(contactId, 30)
+      .then((data) => {
+        if (!cancelled) setStats(data);
+      })
+      .catch(() => {
+        // Soft-fail: mantenemos los ceros y no rompemos la pestaña
+        // si el endpoint cae.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [contactId]);
+  const { opens, clicks, replies } = stats;
 
   return (
     <div className="contact-summary">
