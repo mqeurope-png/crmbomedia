@@ -2,6 +2,7 @@
 
 import {
   BarChart3,
+  BookOpen,
   Building2,
   ChevronsLeft,
   ChevronsRight,
@@ -112,6 +113,17 @@ const NAV_ITEMS: ReadonlyArray<Item> = [
     label: "Tags",
     icon: Tag,
     allowedRoles: ["admin", "manager", "user", "viewer"],
+  },
+  // PR-Manual-Tutorial-CRM. Manual de usuario embebido como iframe
+  // del HTML maquetado por Bart. Visible para todos los roles
+  // (incluido viewer) — no expone datos sensibles, solo documentación.
+  // Posición intencional: tras "Tags" y antes del bloque admin para
+  // que cualquier user lo encuentre cerca del final del menú.
+  {
+    href: "/tutorial",
+    label: "Tutorial",
+    icon: BookOpen,
+    public: true,
   },
   {
     href: "/admin/integrations",

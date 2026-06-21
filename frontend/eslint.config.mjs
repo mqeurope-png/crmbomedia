@@ -8,7 +8,11 @@ const compat = new FlatCompat({ baseDirectory: __dirname });
 
 const eslintConfig = [
   {
-    ignores: [".next/**"],
+    // PR-Manual-Tutorial-CRM: el bundle del manual (HTML + support.js)
+    // vive en `public/manual/` como contenido estático generado por
+    // Bart desde Claude Design. NO es código del CRM y no debe
+    // linterse — se sustituye en bloque cuando el manual se regenera.
+    ignores: [".next/**", "public/manual/**"],
   },
   ...compat.extends("next/core-web-vitals", "next/typescript"),
 ];
