@@ -12,9 +12,14 @@ import {
 } from "../lib/contactChannelsApi";
 import { extractErrorMessage } from "../lib/errors";
 
-type Props = { contactId: string };
+type Props = {
+  contactId: string;
+  // Bug 11: callback opcional para que el page se entere del cambio
+  // y rehydrate `primaryPhone` que pinta en la cabecera.
+  onChanged?: () => void;
+};
 
-export function ContactPhonesSection({ contactId }: Props) {
+export function ContactPhonesSection({ contactId, onChanged }: Props) {
   const [items, setItems] = useState<ContactPhone[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -25,12 +30,13 @@ export function ContactPhonesSection({ contactId }: Props) {
     setLoading(true);
     try {
       setItems(await listContactPhones(contactId));
+      onChanged?.();
     } catch (err) {
       setError(extractErrorMessage(err, "No se pudieron cargar los teléfonos."));
     } finally {
       setLoading(false);
     }
-  }, [contactId]);
+  }, [contactId, onChanged]);
 
   useEffect(() => {
     void load();

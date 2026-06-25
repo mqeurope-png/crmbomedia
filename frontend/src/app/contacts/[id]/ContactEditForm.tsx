@@ -28,6 +28,7 @@ import { Plus, Save, Star, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { resetContactManualEdits } from "../../lib/api";
 import { extractErrorMessage } from "../../lib/errors";
+import { getCompany } from "../../lib/companiesApi";
 import {
   getCompanies,
   getContactUnsubscribeStatus,
@@ -304,24 +305,25 @@ export function ContactEditForm({ contact, open, onClose, onPatch }: Props) {
     }
   }, [open, initial]);
 
-  // Lookup display name de la empresa al abrir el modal (si tiene).
-  // El endpoint /api/companies no admite by-id; hacemos una búsqueda
-  // amplia y filtramos. Si la empresa no cabe en los primeros 50,
-  // queda placeholder con el id (se ve raro pero no rompe).
+  // Bug 10 fix (Bart 2026-06-25): el modal mostraba el UUID en bruto
+  // como valor del campo Empresa. El método anterior buscaba en los
+  // primeros 50 resultados de /api/companies — si la empresa no
+  // estaba en esa página, dejaba el UUID puesto. Ahora usamos el
+  // endpoint by-id que ya consume el page.tsx para la cabecera; es
+  // O(1) y nunca falla por paginación.
   useEffect(() => {
     if (!open || !draft.company_id) return;
     if (draft.company_name) return;
-    getCompanies({ limit: 50 })
-      .then((page) => {
-        const hit = page.items.find((c) => c.id === draft.company_id);
-        if (hit) {
-          setDraft((prev) => ({
-            ...prev,
-            company_name: hit.name,
-          }));
-        }
+    let cancelled = false;
+    getCompany(draft.company_id)
+      .then((co) => {
+        if (cancelled) return;
+        setDraft((prev) => ({ ...prev, company_name: co.name }));
       })
       .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
   }, [open, draft.company_id, draft.company_name]);
 
   // Debounced typeahead empresa.
@@ -578,6 +580,23 @@ export function ContactEditForm({ contact, open, onClose, onPatch }: Props) {
                   }
                 >
                   <option value="">(Sin propietario)</option>
+                  {/* Bug 12 fix (Bart 2026-06-25): si `usersList` aún no
+                   * ha cargado (race async getUsers) el dropdown nativo
+                   * cae a la primera option = "(Sin propietario)" y
+                   * Bart veía al owner desasignado visualmente. Si el
+                   * value actual no está en la lista, render una option
+                   * placeholder con su id para que el select muestre la
+                   * selección correcta sin perder el valor; cuando
+                   * llegue `usersList` la option real lo sustituye. */}
+                  {draft.owner_id &&
+                  !usersList.some((u) => u.id === draft.owner_id) ? (
+                    <option key={draft.owner_id} value={draft.owner_id}>
+                      {/* `contact.owner_user_id` no expone full_name —
+                       * mostramos un placeholder corto hasta que se
+                       * resuelva la lista. */}
+                      Propietario actual…
+                    </option>
+                  ) : null}
                   {usersList.map((u) => (
                     <option key={u.id} value={u.id}>
                       {u.full_name || u.email}

@@ -19,6 +19,7 @@ import {
   getBrevoCampaign,
   getBrevoCampaignRecipients,
   getBrevoCampaignTimeline,
+  refreshBrevoCampaignStats,
   scheduleBrevoCampaign,
   sendBrevoCampaignNow,
   sendBrevoCampaignTest,
@@ -51,6 +52,9 @@ export default function CampaignDetailPage() {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [confirmBackfill, setConfirmBackfill] = useState(false);
   const [backfillBusy, setBackfillBusy] = useState(false);
+  // Bug 6: estado del botón "Sincronizar stats" — paralelo a
+  // backfill destinatarios.
+  const [refreshStatsBusy, setRefreshStatsBusy] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -229,6 +233,36 @@ export default function CampaignDetailPage() {
                 {backfillBusy ? "Encolando…" : "Sincronizar destinatarios"}
               </button>
             ) : null}
+            {/* Bug 6 fix (Bart 2026-06-25): para campañas recientes el
+             * TTL de 5min hacía que la cabecera quedara en 0 incluso
+             * tras recibir destinatarios via backfill. Botón paralelo
+             * que fuerza refresh inmediato sin chequeo de edad. */}
+            {isSent ? (
+              <button
+                type="button"
+                className="button secondary small"
+                disabled={refreshStatsBusy}
+                onClick={async () => {
+                  setRefreshStatsBusy(true);
+                  setMessage(null);
+                  try {
+                    const fresh = await refreshBrevoCampaignStats(campaign.id);
+                    setCampaign(fresh);
+                    setMessage("Stats actualizadas desde Brevo.");
+                  } catch (err) {
+                    setMessage(
+                      `No se pudieron refrescar las stats: ${
+                        err instanceof Error ? err.message : String(err)
+                      }`,
+                    );
+                  } finally {
+                    setRefreshStatsBusy(false);
+                  }
+                }}
+              >
+                {refreshStatsBusy ? "Refrescando…" : "Sincronizar stats"}
+              </button>
+            ) : null}
             <a
               href={`https://app.brevo.com/camp/show/${campaign.brevo_campaign_id}`}
               target="_blank"
@@ -244,39 +278,65 @@ export default function CampaignDetailPage() {
       {error ? <p className="danger-text">{error}</p> : null}
       {message ? <div className="success-state">{message}</div> : null}
 
+      {/* Bug 5 fix (Bart 2026-06-25): KPIs ahora son clicables y
+       * cambian la pestaña de "Destinatarios" abajo para mostrar la
+       * lista correspondiente. Pasar a una página /contacts filtrada
+       * con acciones masivas queda como follow-up (requiere fetch
+       * full IDs y encodearlos en URL state). Mientras, la
+       * navegación dentro del panel ya cubre el "ver quiénes". */}
       <section className="stats-grid" aria-label="Estadísticas">
         <article className="stat-card">
           <span>{stats.sent ?? "—"}</span>
           <p>Enviados</p>
         </article>
-        <article className="stat-card">
+        <button
+          type="button"
+          className="stat-card stat-card-link"
+          onClick={() => setRecipientTab("delivered")}
+        >
           <span>{stats.delivered ?? "—"}</span>
           <p>Entregados</p>
-        </article>
-        <article className="stat-card">
+        </button>
+        <button
+          type="button"
+          className="stat-card stat-card-link"
+          onClick={() => setRecipientTab("opened")}
+        >
           <span>
             {stats.uniqueViews ?? stats.viewed ?? "—"}
             {rates.openRate != null ? ` (${rates.openRate}%)` : ""}
           </span>
           <p>Abiertos (OR)</p>
-        </article>
-        <article className="stat-card">
+        </button>
+        <button
+          type="button"
+          className="stat-card stat-card-link"
+          onClick={() => setRecipientTab("clicked")}
+        >
           <span>
             {stats.uniqueClicks ?? stats.clickers ?? "—"}
             {rates.clickRate != null ? ` (${rates.clickRate}%)` : ""}
           </span>
           <p>Clicks (CTR)</p>
-        </article>
-        <article className="stat-card">
+        </button>
+        <button
+          type="button"
+          className="stat-card stat-card-link"
+          onClick={() => setRecipientTab("bounces")}
+        >
           <span>
             {(stats.hardBounces ?? 0) + (stats.softBounces ?? 0) || "—"}
           </span>
           <p>Rebotes</p>
-        </article>
-        <article className="stat-card">
+        </button>
+        <button
+          type="button"
+          className="stat-card stat-card-link"
+          onClick={() => setRecipientTab("unsubscribed")}
+        >
           <span>{stats.unsubscriptions ?? "—"}</span>
           <p>Bajas</p>
-        </article>
+        </button>
         <article className="stat-card">
           <span>{stats.complaints ?? "—"}</span>
           <p>Spam</p>

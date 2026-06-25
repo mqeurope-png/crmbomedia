@@ -68,6 +68,21 @@ export function PriorityLeadsWidget() {
     };
   }, [window_]);
 
+  // Bug 3 fix (Bart 2026-06-25): "Ver todos" abre /contacts con un
+  // preset que el contacts page reconoce y filtra por los mismos
+  // criterios del widget (assigned al user + signal en la ventana).
+  // Period se pasa en la URL para que el backend reuse exactamente
+  // la ventana del widget.
+  const seeAllHref = `/contacts?preset=priority_leads&period=${encodeURIComponent(
+    window_.period,
+  )}${
+    window_.period === "custom" && window_.start && window_.end
+      ? `&start=${encodeURIComponent(window_.start)}&end=${encodeURIComponent(
+          window_.end,
+        )}`
+      : ""
+  }`;
+
   return (
     <article className="card widget widget-priority-leads">
       <header className="section-title">
@@ -117,6 +132,13 @@ export function PriorityLeadsWidget() {
           </ul>
         )}
       </div>
+      {leads.length > 0 ? (
+        <footer className="widget-footer">
+          <Link href={seeAllHref} className="widget-see-all">
+            Ver todos →
+          </Link>
+        </footer>
+      ) : null}
     </article>
   );
 }
