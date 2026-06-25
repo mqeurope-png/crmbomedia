@@ -19,6 +19,7 @@ from app.api.emails_mailbox import router as emails_mailbox_router
 from app.api.emails_scheduled import router as emails_scheduled_router
 from app.api.entities import router as entities_router
 from app.api.entity_views import router as entity_views_router
+from app.api.gmail_backfill import router as gmail_backfill_router
 from app.api.google_integrations import router as google_router
 from app.api.routes import router
 from app.api.tasks import router as tasks_router
@@ -89,6 +90,10 @@ app.include_router(emails_mailbox_router)
 app.include_router(emails_scheduled_router)
 app.include_router(email_drafts_router)
 app.include_router(gmail_webhook_router)
+# Sprint-Backfill-Gmail. Endpoints admin para 3 años de Gmail
+# histórico — propio módulo porque el patrón estimate/execute/cancel
+# no encaja en `routes.py`.
+app.include_router(gmail_backfill_router)
 app.include_router(email_templates_router)
 app.include_router(email_signatures_router)
 app.include_router(email_tracking_router)

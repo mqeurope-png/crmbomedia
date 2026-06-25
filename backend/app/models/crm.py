@@ -1335,6 +1335,16 @@ class EmailMessage(TimestampMixin, Base):
         DateTime(timezone=True)
     )
     scheduled_status: Mapped[str | None] = mapped_column(String(16))
+    # Sprint-Backfill-Gmail. `imported_via` etiqueta el origen del row
+    # para que queries operativas distingan:
+    #   'historic_backfill' — pulled de Gmail por el backfill admin
+    #   'sent_from_crm'     — enviado desde la UI del CRM
+    #   'incoming_realtime' — llegado por webhook process_history
+    # NULL para legacy rows previos a este sprint.
+    imported_via: Mapped[str | None] = mapped_column(String(40), index=True)
+    imported_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
 
     thread: Mapped[EmailThread] = relationship(back_populates="messages")
 
@@ -1884,5 +1894,111 @@ class Backup(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_by_user_id: Mapped[str | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL")
+    )
+
+
+# ---------------------------------------------------------------------------
+# Sprint-Backfill-Gmail — historic backfill job + attachment storage
+# ---------------------------------------------------------------------------
+
+
+class GmailBackfillMode(StrEnum):
+    """`estimate` no escribe nada — solo cuenta emails y suma tamaños
+    de adjuntos para que el admin vea cuánto va a ocupar antes de
+    confirmar. `execute` corre el import real."""
+
+    ESTIMATE = "estimate"
+    EXECUTE = "execute"
+
+
+class GmailBackfillStatus(StrEnum):
+    """`cancelling` es un estado intermedio: el endpoint
+    `/cancel` lo set y el worker lo lee en cada iteración para
+    finalizar limpio. Evita la race de marcar `cancelled` mientras el
+    worker sigue procesando."""
+
+    QUEUED = "queued"
+    RUNNING = "running"
+    CANCELLING = "cancelling"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class GmailBackfillJob(TimestampMixin, Base):
+    """Estado y progreso de un job de backfill Gmail histórico.
+
+    Una fila por disparo del admin. La UI poll este row vía
+    `GET /api/admin/gmail/backfill/{id}` para pintar progress bar.
+
+    `result_json` queda libre para que el modo `estimate` guarde el
+    desglose `{per_user_breakdown, total_emails, ...}` y el modo
+    `execute` guarde estadísticas finales (emails importados, errores
+    por usuario, etc.)."""
+
+    __tablename__ = "gmail_backfill_jobs"
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid4())
+    )
+    mode: Mapped[str] = mapped_column(String(20), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, index=True,
+        default=GmailBackfillStatus.QUEUED.value,
+    )
+    initiated_by_user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("users.id"), nullable=True
+    )
+    config_json: Mapped[str | None] = mapped_column(Text)
+    result_json: Mapped[str | None] = mapped_column(Text)
+    total_estimated: Mapped[int | None] = mapped_column(Integer)
+    total_processed: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    total_imported: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    total_skipped: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    total_errors: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    error_summary: Mapped[str | None] = mapped_column(Text)
+
+
+class EmailMessageAttachment(Base):
+    """Adjunto descargado de Gmail por el backfill. El binario vive en
+    disco (volumen `crmbo_email_attachments` mountado en
+    `/var/lib/crmbo/attachments`) y esta fila guarda metadata + path
+    relativo. `gmail_attachment_id` se conserva para re-descargar si
+    se pierde el archivo (Gmail lo retiene mientras el mensaje exista).
+
+    `email_messages.attachments_json` sigue ahí como sumario inline
+    barato — esta tabla es para los binarios pesados."""
+
+    __tablename__ = "email_message_attachments"
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid4())
+    )
+    message_id: Mapped[str] = mapped_column(
+        ForeignKey("email_messages.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    mime_type: Mapped[str | None] = mapped_column(String(120))
+    size_bytes: Mapped[int | None] = mapped_column(BigInteger)
+    storage_path: Mapped[str | None] = mapped_column(String(500))
+    gmail_attachment_id: Mapped[str | None] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
     )
 

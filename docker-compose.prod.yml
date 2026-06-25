@@ -73,6 +73,10 @@ services:
       # FileResponse del api 404 — el worker crea el binario en su
       # propio FS porque ambos contenedores ven el host.
       - /var/backups/crmbo:/var/backups/crmbo
+      # Sprint-Backfill-Gmail. Adjuntos descargados por el backfill.
+      # Same volume mounted in worker-sync para que el api pueda servirlos
+      # via /api/email-messages/{id}/attachments/{id}/download.
+      - crmbo_email_attachments:/var/lib/crmbo/attachments
     depends_on:
       db:
         condition: service_healthy
@@ -136,6 +140,7 @@ services:
       - factusol:sync_invoices
       - gmail:process_history
       - gmail:renew_watches
+      - gmail:backfill_historic
       - emails:snooze_sweep
       - email_templates:import_gmail
       # Sprint Backup. Cola virtual para el job manual + scheduled
@@ -155,6 +160,9 @@ services:
       # BACKUP_ENCRYPTION_PASSPHRASE del .env.production. Read-only
       # — el worker NUNCA debe modificarlo.
       - /opt/crmbo/.env.production:/opt/crmbo/.env.production:ro
+      # Sprint-Backfill-Gmail. Adjuntos descargados por el job. Mismo
+      # volumen que api para que el download endpoint vea los ficheros.
+      - crmbo_email_attachments:/var/lib/crmbo/attachments
     depends_on:
       api:
         condition: service_healthy
@@ -258,3 +266,8 @@ volumes:
   mysql_data:
   redis_data:
   certbot_webroot:
+  # Sprint-Backfill-Gmail. Binarios de adjuntos descargados por el
+  # backfill, organizados por contact_id/message_id/filename. Backup
+  # 72h incluye este volumen via scripts/backup-crmbo.sh (montado en
+  # api + worker-sync; el tar entra al GPG).
+  crmbo_email_attachments:

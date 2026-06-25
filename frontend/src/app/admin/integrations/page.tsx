@@ -4,6 +4,7 @@ import { Download, Plus, RefreshCw } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
+import { GmailBackfillSection } from "../../components/GmailBackfillSection";
 import { ErrorState } from "../../components/ErrorState";
 import { IntegrationAccountCard } from "../../components/IntegrationAccountCard";
 import { IntegrationAccountModal } from "../../components/IntegrationAccountModal";
@@ -354,6 +355,18 @@ export default function IntegrationAccountsPage() {
               })
             )}
           </section>
+
+          {/* Sprint-Backfill-Gmail. Sección admin para tirar de Gmail
+              3 años de conversaciones entre alias de comerciales y
+              contactos del CRM. Vive aquí (no en su propia página)
+              porque conceptualmente es una operación sobre la
+              integración Gmail. */}
+          {isAdmin ? (
+            <GmailBackfillSection
+              onError={setError}
+              onMessage={setMessage}
+            />
+          ) : null}
         </>
       ) : null}
 
