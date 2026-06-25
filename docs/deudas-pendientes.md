@@ -43,3 +43,40 @@ al comercial correcto.
 endpoint público de submit + endpoint embed JS) + Frontend builder
 (admin) + frontend embed script (deploy a CDN o servir desde mismo
 CRM).
+
+## Real-time Gmail ↔ contactos CRM (sucesor del backfill histórico)
+
+**Estado**: pendiente diseño.
+
+**Origen**: Sprint-Backfill-Gmail cargó 3 años de conversaciones a
+demanda del admin. La pieza que falta es ingestar conversaciones
+NUEVAS en tiempo real cuando llega un email entre un alias de un
+comercial y un contacto YA existente en el CRM.
+
+**Diferencia con `gmail:process_history` actual**: el webhook existente
+solo procesa el INBOX del comercial cuando llega un email desde el
+exterior. Esta deuda extiende la cobertura a TODAS las conversaciones
+con contactos del CRM, en cualquier dirección, sin importar la
+carpeta Gmail.
+
+**Decisión congelada en el backfill** (Bart): NO auto-crear contactos
+nuevos si llega un email de un remitente no conocido. La conversación
+solo se importa cuando el otro extremo ya existe como contacto en el
+CRM.
+
+**Por definir antes de implementar**:
+
+- Gmail Push Notifications + Cloud Pub/Sub: hay setup parcial vía
+  `register_watch()` pero la integración fin-a-fin con un topic Pub/Sub
+  del proyecto Google Cloud no está cerrada en prod.
+- Filtro: pre-comprobar si from/to coincide con un contacto del CRM
+  antes de persistir; si no, ignorar el evento del history.
+- Coordinación con el `imported_via='incoming_realtime'` que el
+  backfill ya etiqueta como tipo separado en `email_messages`.
+- ¿Cómo lidiamos con conversaciones que el operador inicia DESPUÉS del
+  backfill pero ANTES de que el webhook esté armado? Periodic small
+  catch-up (últimas 24h cada N min) como red de seguridad.
+
+**Sprint estimado**: ~20-30 h. Backend (handler nuevo del Pub/Sub +
+filtro contacto-existente + reuso del `_persist_inbound` y
+`_persist_outbound` ya factorizados en `service.py`).

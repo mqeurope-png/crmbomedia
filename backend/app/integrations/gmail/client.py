@@ -298,6 +298,60 @@ class GmailClient:
         )
         return list(response.get("messages", []))
 
+    def list_messages(
+        self,
+        *,
+        query: str,
+        page_size: int = 100,
+        page_token: str | None = None,
+    ) -> dict[str, Any]:
+        """Sprint-Backfill-Gmail. Wraps `users.messages.list(q=...)`.
+
+        Devuelve `{messages: [{id, threadId}], nextPageToken?, resultSizeEstimate}`.
+        El caller pagina con `nextPageToken`. `query` usa la sintaxis
+        nativa de Gmail (eg `from:foo to:bar newer_than:36m`)."""
+        service = self._build_service()
+        kwargs: dict[str, Any] = {
+            "userId": "me",
+            "q": query,
+            "maxResults": page_size,
+        }
+        if page_token:
+            kwargs["pageToken"] = page_token
+        response = service.users().messages().list(**kwargs).execute()
+        return {
+            "messages": list(response.get("messages") or []),
+            "nextPageToken": response.get("nextPageToken"),
+            "resultSizeEstimate": int(response.get("resultSizeEstimate") or 0),
+        }
+
+    def get_message_metadata(self, message_id: str) -> dict[str, Any]:
+        """`format='metadata'` — devuelve headers + payload.parts pero
+        SIN body. Mismo coste que `get_message(full)` en quota units (5)
+        pero payload mucho más ligero. Lo usa el backfill en modo
+        `estimate` para sumar tamaños de adjuntos sin descargar binarios."""
+        service = self._build_service()
+        return (
+            service.users()
+            .messages()
+            .get(userId="me", id=message_id, format="metadata")
+            .execute()
+        )
+
+    def get_attachment(
+        self, *, message_id: str, attachment_id: str
+    ) -> dict[str, Any]:
+        """`users.messages.attachments.get` → `{data, size, attachmentId}`.
+        `data` es base64url. El caller decodifica y vuelca a disco."""
+        service = self._build_service()
+        return (
+            service.users()
+            .messages()
+            .attachments()
+            .get(userId="me", messageId=message_id, id=attachment_id)
+            .execute()
+        )
+
     def watch_mailbox(
         self,
         topic_name: str,

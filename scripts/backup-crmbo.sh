@@ -139,7 +139,20 @@ chmod 600 "$ENV_COPY"
 
 # 3. tar -czf.
 log "3/8 tar → $TAR_FILE"
-tar -czf "$TAR_FILE" -C "$WORK_DIR" db.sql env.production \
+# Sprint-Backfill-Gmail. Si el volumen de adjuntos existe (montado
+# como /var/lib/crmbo/attachments en el container que ejecuta este
+# script), se incluye en el tar para que el GPG lo cifre junto al
+# resto. Si no existe (entornos sin Gmail backfill o dev sin volumen),
+# saltarlo silenciosamente — no es fallo.
+TAR_INCLUDES=("db.sql" "env.production")
+ATTACHMENTS_DIR="/var/lib/crmbo/attachments"
+if [ -d "$ATTACHMENTS_DIR" ]; then
+  log "3a. attachments dir found → copying into staging"
+  cp -a "$ATTACHMENTS_DIR" "$WORK_DIR/email_attachments" || \
+    abort "copy attachments falló"
+  TAR_INCLUDES+=("email_attachments")
+fi
+tar -czf "$TAR_FILE" -C "$WORK_DIR" "${TAR_INCLUDES[@]}" \
   || abort "tar falló"
 
 # 4. gpg --symmetric --cipher-algo AES256.

@@ -166,6 +166,17 @@ class Action:
     BREVO_USER_LIST_MAPPING_UPDATED = "brevo.user_list_mapping.updated"
     BREVO_BACKFILL_TRIGGERED = "brevo.backfill.triggered"
 
+    # Sprint-Backfill-Gmail. Job admin que importa 3 años de Gmail
+    # histórico, asociado a cada contacto + comercial owner. Metadata
+    # típica `{job_id, mode, config}` + counts en _COMPLETED.
+    # _ATTACHMENT_DOWNLOADED es por click humano en la UI; metadata
+    # incluye `{attachment_id, filename, size, message_id, contact_id}`.
+    GMAIL_BACKFILL_ESTIMATED = "gmail.backfill.estimated"
+    GMAIL_BACKFILL_TRIGGERED = "gmail.backfill.triggered"
+    GMAIL_BACKFILL_CANCELLED = "gmail.backfill.cancelled"
+    GMAIL_BACKFILL_COMPLETED = "gmail.backfill.completed"
+    EMAIL_ATTACHMENT_DOWNLOADED = "email.attachment.downloaded"
+
     # Tags (Sprint P.1 ampliado).
     TAG_CREATED = "tag.created"
     TAG_UPDATED = "tag.updated"
