@@ -594,9 +594,17 @@ export async function pushViewToBrevoList(
 }
 
 export async function listTags(query?: string): Promise<TagListPage> {
+  // PR-Fix-Filtros-Lista-Cortada. Bart reportó que tags como
+  // `webformde` (W) no aparecían en los dropdowns porque el limit
+  // hardcoded a 200 + el order alfabético del backend truncaban la
+  // cola D-Z cuando había >200 tags. Tags por tenant son < pocos
+  // miles en la práctica; pedir 5000 cubre el 99% de casos en una
+  // sola request sin paginación. Si algún tenant supera ese número,
+  // el componente que llama puede pasar `query` para fetch
+  // server-side via `?q=`.
   const params = new URLSearchParams();
   if (query) params.set("q", query);
-  params.set("limit", "200");
+  params.set("limit", "5000");
   return apiFetch<TagListPage>(`/api/tags?${params.toString()}`);
 }
 
@@ -892,11 +900,18 @@ export async function getUsers(
   options: { q?: string; limit?: number; skip?: number } = {},
 ): Promise<User[]> {
   // PR-Cg: el UserPicker autocompleta server-side, así que el cliente
-  // manda `q`. Sin args, mantiene el shape original que usa el módulo
-  // admin (limit=100 por defecto).
+  // manda `q`. Sin args, debería devolver el listado completo del
+  // equipo para los pickers que muestran la lista cerrada (Workflow
+  // user picker, ContactsBulkBar owner picker, RuleEditor target).
+  //
+  // PR-Fix-Filtros-Lista-Cortada. El default era 100, lo subimos a
+  // 500 — el backend ya tiene `le=500` y el cap previo dejaba fuera
+  // a equipos con >100 users. Mismo razonamiento que listTags(): el
+  // dominio realista cabe en una request y autocomplete server-side
+  // queda como escape hatch para tenants gigantes.
   const params = new URLSearchParams();
   if (options.q) params.set("q", options.q);
-  params.set("limit", String(options.limit ?? 100));
+  params.set("limit", String(options.limit ?? 500));
   if (options.skip !== undefined) params.set("skip", String(options.skip));
   return apiFetch<User[]>(`/api/users?${params.toString()}`);
 }

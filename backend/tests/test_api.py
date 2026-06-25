@@ -132,6 +132,75 @@ def test_non_admin_cannot_manage_users(client: TestClient):
     assert created.status_code == 403
 
 
+# ---------------------------------------------------------------------
+# PR-Fix-Filtros-Lista-Cortada — regresión cap users
+# ---------------------------------------------------------------------
+
+
+def test_user_list_returns_more_than_50_when_requested(client: TestClient):
+    """El default histórico del endpoint era `limit=50` y los pickers
+    del frontend (WorkflowUserPicker, ContactsBulkBar) llamaban sin
+    args → veían solo 50 users. Tenants con equipos &gt;50 perdían
+    miembros en el dropdown. Tras el fix `getUsers()` envía
+    `limit=500` por defecto; aquí confirmamos que el backend acepta
+    ese cap y que devuelve la lista entera."""
+    admin_headers = auth_headers(client, "admin")
+    # Seed 60 users adicionales (el fixture seed_test_users crea 4
+    # base, total tras seed = 64).
+    for i in range(60):
+        resp = client.post(
+            "/api/users",
+            json={
+                "email": f"team-user-{i:02d}@example.com",
+                "full_name": f"Team User {i:02d}",
+                "password": f"TeamUserPass{i:02d}!",
+                "role": "user",
+            },
+            headers=admin_headers,
+        )
+        assert resp.status_code == 201, resp.text
+
+    # Sin `limit` el endpoint sigue devolviendo 50 (default histórico).
+    default_listed = client.get(
+        "/api/users", headers=admin_headers
+    )
+    assert default_listed.status_code == 200
+    assert len(default_listed.json()) == 50
+
+    # Con `limit=500` (el nuevo default del cliente) devuelve TODOS.
+    full_listed = client.get(
+        "/api/users?limit=500", headers=admin_headers
+    )
+    assert full_listed.status_code == 200
+    items = full_listed.json()
+    assert len(items) >= 60, (
+        f"Esperaba >=60 users con limit=500; vi {len(items)}"
+    )
+
+
+def test_user_list_q_filter_still_works(client: TestClient):
+    """Regresión del `?q=` server-side por si algún tenant grande
+    tira de autocomplete en lugar de la lista completa."""
+    admin_headers = auth_headers(client, "admin")
+    resp = client.post(
+        "/api/users",
+        json={
+            "email": "needle@example.com",
+            "full_name": "Aguja del Pajar",
+            "password": "NeedlePass123!",
+            "role": "user",
+        },
+        headers=admin_headers,
+    )
+    assert resp.status_code == 201
+    matched = client.get(
+        "/api/users?q=Aguja", headers=admin_headers
+    )
+    assert matched.status_code == 200
+    emails = {u["email"] for u in matched.json()}
+    assert "needle@example.com" in emails
+
+
 def test_list_users_supports_q_substring(client: TestClient):
     """PR-Cg: `/api/users?q=...` filtra por substring case-insensitive
     sobre email + full_name para el UserPicker."""

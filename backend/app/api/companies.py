@@ -76,7 +76,14 @@ def list_companies(
     country: str | None = Query(default=None),
     source: str | None = Query(default=None),
     has_contacts: bool | None = Query(default=None),
-    limit: int = Query(default=50, ge=1, le=200),
+    # PR-Fix-Filtros-Lista-Cortada. Cap subido de 200 a 5000 — pickers
+    # como CustomFieldSelector (workflow filter builder) hidrataban
+    # toda la lista de empresas para resolver el dropdown del field
+    # `company_ref` y se quedaban cortados en 200. Tenants con &gt;200
+    # empresas perdían el resto del alfabeto. Para listados con
+    # autocomplete (CompanyPickerModal) ya viene con `q`, así que el
+    # cap alto no añade coste — esos pasan `limit=10`.
+    limit: int = Query(default=50, ge=1, le=5000),
     offset: int = Query(default=0, ge=0),
     session: Session = Depends(get_session),
     current_user: User = Depends(require_viewer),
