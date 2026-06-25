@@ -3024,7 +3024,16 @@ def list_contact_tasks(
 def list_tags(
     q: str | None = Query(default=None, description="Búsqueda parcial sobre nombre"),
     skip: int = Query(default=0, ge=0),
-    limit: int = Query(default=50, ge=1, le=200),
+    # PR-Fix-Filtros-Lista-Cortada. El cap previo era `le=200` con
+    # default 50 — pickers que hidrataban todos los tags via
+    # `listTags(undefined)` (TagPicker / WorkflowTagsPicker / etc.)
+    # solo pedían 200 y el dropdown perdía la cola alfabética. Bart
+    # reportó que `webformde` (W) no aparecía. Para tags el dominio
+    # realista es < pocos miles por tenant, así que subimos el cap
+    # a 5000 — todos los pickers funcionan con UNA request sin
+    # paginar. Si algún tenant excede esa cifra, el frontend siempre
+    # puede recurrir a `?q=substring` (ya implementado).
+    limit: int = Query(default=5000, ge=1, le=5000),
     session: Session = Depends(get_session),
     current_user: User = Depends(require_viewer),
 ) -> TagListPage:

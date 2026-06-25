@@ -339,3 +339,89 @@ def test_tag_update_blocks_off_palette_color(client: TestClient):
         headers=auth_headers(client, "manager"),
     )
     assert response.status_code == 422
+
+
+# ---------------------------------------------------------------------
+# PR-Fix-Filtros-Lista-Cortada — regresión del cap 200 alfabético
+# ---------------------------------------------------------------------
+
+
+def test_tag_list_returns_more_than_200_when_present(client: TestClient):
+    """El bug que Bart reportó: tag `webformde` (W) no aparecía en el
+    dropdown porque el endpoint capaba a 200 ordenado alfabéticamente
+    y truncaba la cola D-Z. Sembrar 250 tags incluyendo nombres con
+    inicial W debe devolverlos TODOS en una sola request."""
+    headers = auth_headers(client, "manager")
+    # 250 tags alfabéticamente distribuidos para garantizar que pasamos
+    # el cap previo de 200. Mezcla nombres con inicial w/x/y/z al final
+    # para reproducir el caso real de Bart (tag `webformde` ahogada por
+    # el cap).
+    for i in range(250):
+        letter = chr(ord("a") + (i % 26))
+        suffix = f"{i:03d}"
+        resp = client.post(
+            "/api/tags",
+            json={"name": f"{letter}-tag-{suffix}", "color": "#ef4444"},
+            headers=headers,
+        )
+        assert resp.status_code == 201, (
+            f"seeding tag {letter}-tag-{suffix} falló: {resp.text}"
+        )
+    # Comprobamos que la lista devuelta cubre la cola alfabética
+    # (algo con prefijo 'w' o 'z') — eso prueba que el cap nuevo no
+    # trunca por el centro del alfabeto.
+    response = client.get("/api/tags", headers=auth_headers(client, "viewer"))
+    assert response.status_code == 200
+    body = response.json()
+    # El cap default antes era 50; tras el fix subimos a 5000. La
+    # primera request sin `?limit` debe contener al menos 200 items.
+    assert body["total"] >= 200, (
+        f"Esperaba >=200 tags sembrados; total={body['total']}"
+    )
+    names = {item["name"] for item in body["items"]}
+    # Al menos un tag con inicial w o z (la cola alfabética que el
+    # bug ocultaba).
+    tail = [n for n in names if n.startswith(("w-", "x-", "y-", "z-"))]
+    assert tail, (
+        "El dropdown debería incluir tags de la cola alfabética "
+        "(w/x/y/z) — si no, el cap sigue truncando."
+    )
+
+
+def test_tag_list_q_filter_still_works(client: TestClient):
+    """Regresión del filtro `?q=` server-side. Tras subir el cap, el
+    autocomplete del frontend debe seguir funcionando para tenants
+    grandes que pasen búsquedas en lugar de tirar de la lista
+    completa."""
+    headers = auth_headers(client, "manager")
+    for name in ["alpha", "beta", "webformde", "webform-prod", "gamma"]:
+        client.post(
+            "/api/tags",
+            json={"name": name, "color": "#ef4444"},
+            headers=headers,
+        )
+    response = client.get(
+        "/api/tags?q=webform", headers=auth_headers(client, "viewer")
+    )
+    assert response.status_code == 200
+    names = sorted(item["name"] for item in response.json()["items"])
+    assert names == ["webform-prod", "webformde"]
+
+
+def test_tag_list_respects_higher_limit_param(client: TestClient):
+    """Cliente puede pedir explícitamente `?limit=N` hasta el nuevo
+    cap (5000). Antes el máximo era 200."""
+    headers = auth_headers(client, "manager")
+    for i in range(300):
+        client.post(
+            "/api/tags",
+            json={"name": f"tag-{i:04d}", "color": "#ef4444"},
+            headers=headers,
+        )
+    response = client.get(
+        "/api/tags?limit=500", headers=auth_headers(client, "viewer")
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["limit"] == 500
+    assert len(body["items"]) >= 300

@@ -76,11 +76,14 @@ export function CustomFieldSelector({
       apiFetch<CustomFieldKey[]>("/api/contacts/custom-field-keys").catch(
         () => [] as CustomFieldKey[],
       ),
-      // Users + companies son baratos (≤500 cada uno) y los usamos
-      // para resolver los dropdowns de owner / empresa al elegir
-      // esos campos nativos.
+      // PR-Fix-Filtros-Lista-Cortada. Users + companies se cargan
+      // enteros para resolver los dropdowns de owner / empresa al
+      // elegir esos campos nativos. Subimos el cap de companies de
+      // 200 a 5000 (tags y users ya iban en 5000 / 500). El cap
+      // anterior dejaba fuera empresas con nombre alfabéticamente
+      // tardío en tenants medianos.
       getUsers().catch(() => [] as User[]),
-      listCompanies({ limit: 200 }).catch(() => ({ items: [] as Company[], total: 0 })),
+      listCompanies({ limit: 5000 }).catch(() => ({ items: [] as Company[], total: 0 })),
     ])
       .then(([keys, usersRes, companiesRes]) => {
         if (cancelled) return;
