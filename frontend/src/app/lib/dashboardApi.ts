@@ -102,6 +102,12 @@ export async function getDashboardRecentEmailActivity(
 }
 
 // PR-E2: nuevos endpoints del dashboard.
+export type PriorityLeadTag = {
+  id: string;
+  name: string;
+  color: string | null;
+};
+
 export type PriorityLead = {
   id: string;
   first_name: string;
@@ -110,6 +116,14 @@ export type PriorityLead = {
   phone: string | null;
   signal_at: string;
   reason: "recent" | "assigned" | "active" | string;
+  // PR-Leads-Prioritarios-Página-Dedicada. Campos extra para alimentar
+  // la tabla de `/dashboard/leads-prioritarios` sin N+1. Opcionales en
+  // el type por si algún consumidor pide al endpoint con un cliente
+  // antiguo — el preview del widget no los necesita.
+  lead_score?: number | null;
+  tags?: PriorityLeadTag[];
+  owner_user_id?: string | null;
+  owner_name?: string | null;
 };
 
 export type UserCampaignStat = {

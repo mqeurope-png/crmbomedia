@@ -390,11 +390,35 @@ def priority_leads(
         )
     }
 
+    # PR-Leads-Prioritarios-Página-Dedicada. Ampliamos campos para
+    # alimentar la página dedicada `/dashboard/leads-prioritarios` con
+    # la misma request — sin N+1. Tags via `tag_objects` (lazy load
+    # ya manejado por el ORM); owner via JOIN single-shot con users.
+    owner_ids = [
+        c.owner_user_id for c in contact_rows.values() if c.owner_user_id
+    ]
+    owner_names: dict[str, str] = {}
+    if owner_ids:
+        owner_names = dict(
+            session.execute(
+                select(User.id, User.full_name).where(User.id.in_(owner_ids))
+            ).all()
+        )
+
     out: list[dict[str, Any]] = []
     for cid, (signal_at, reason) in top_ids:
         c = contact_rows.get(cid)
         if c is None:
             continue
+        # tag_objects es lazy → cada acceso pega a la DB para este
+        # contacto. Para 200 contactos son 200 mini-queries. La página
+        # dedicada vive aceptablemente con esto (tabla de 200 filas
+        # cargada UNA vez); si crece, eagerload con selectinload en
+        # el `select(Contact)` de arriba.
+        tags = [
+            {"id": t.id, "name": t.name, "color": getattr(t, "color", None)}
+            for t in c.tag_objects
+        ]
         out.append(
             {
                 "id": c.id,
@@ -404,6 +428,13 @@ def priority_leads(
                 "phone": c.phone,
                 "signal_at": signal_at,
                 "reason": reason,
+                "lead_score": c.lead_score,
+                "tags": tags,
+                "owner_user_id": c.owner_user_id,
+                "owner_name": (
+                    owner_names.get(c.owner_user_id)
+                    if c.owner_user_id else None
+                ),
             }
         )
     return out
