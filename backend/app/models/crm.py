@@ -288,6 +288,17 @@ class Contact(TimestampMixin, Base):
     updated_at_external: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True)
     )
+    # Sprint-Push-CRM-Brevo. `brevo_contact_id` = el id que Brevo
+    # devuelve para el contacto cuando lo subimos (o lo encontramos
+    # existente). NULL = aún no se ha pusheado a Brevo desde el CRM.
+    # El periodic push runner filtra exactamente por
+    # `owner_user_id IS NOT NULL AND brevo_contact_id IS NULL` para
+    # detectar pendientes. `brevo_last_synced_at` es el timestamp del
+    # último push exitoso (audit + UI).
+    brevo_contact_id: Mapped[str | None] = mapped_column(String(64))
+    brevo_last_synced_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
 
     company: Mapped[Company | None] = relationship(back_populates="contacts")
     notes: Mapped[list["Note"]] = relationship(

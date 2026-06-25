@@ -155,6 +155,17 @@ class Action:
     CONTACT_CONSENT_CHANGED_BY_WEBHOOK = "contact.consent_changed_by_webhook"
     CONTACT_EMAIL_INVALIDATED_BY_WEBHOOK = "contact.email_invalidated_by_webhook"
 
+    # Sprint-Push-CRM-Brevo. Reverso del sync (CRM → Brevo).
+    # `pushed` se emite con metadata `{contact_id, list_id, action}` donde
+    # action ∈ {created, moved, added_to_list}.
+    # `removed` con `{contact_id, list_ids, reason}` donde
+    # reason ∈ {owner_removed, contact_deleted}.
+    BREVO_CONTACT_PUSHED = "brevo.contact.pushed"
+    BREVO_CONTACT_REMOVED = "brevo.contact.removed"
+    BREVO_CONTACT_PUSH_FAILED = "brevo.contact.push_failed"
+    BREVO_USER_LIST_MAPPING_UPDATED = "brevo.user_list_mapping.updated"
+    BREVO_BACKFILL_TRIGGERED = "brevo.backfill.triggered"
+
     # Tags (Sprint P.1 ampliado).
     TAG_CREATED = "tag.created"
     TAG_UPDATED = "tag.updated"

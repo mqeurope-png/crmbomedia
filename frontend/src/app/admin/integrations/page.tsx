@@ -1,6 +1,7 @@
 "use client";
 
 import { Download, Plus, RefreshCw } from "lucide-react";
+import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { ErrorState } from "../../components/ErrorState";
@@ -307,6 +308,23 @@ export default function IntegrationAccountsPage() {
               setExpandedKey(null);
             }}
           />
+
+          {activeSystem === "brevo" && isAdmin ? (
+            // Sprint-Push-CRM-Brevo. Link al panel de mappings owner ↔ lista
+            // Brevo. Vive en página aparte porque la tabla es grande y la
+            // página de cuentas ya tiene mucho contenido.
+            <div
+              className="info-banner"
+              style={{ margin: "0.5rem 0 1rem 0" }}
+            >
+              <strong>Push CRM → Brevo:</strong> los contactos del CRM con
+              owner asignado se suben a Brevo en la lista del owner.
+              {" "}
+              <Link href="/admin/integrations/brevo-mappings">
+                Configurar mapeo de listas →
+              </Link>
+            </div>
+          ) : null}
 
           <section className="integration-account-list">
             {activeAccounts.length === 0 ? (

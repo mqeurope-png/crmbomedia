@@ -61,7 +61,15 @@ def find(
 def recompute_primary_cache(session: Session, contact_id: str) -> None:
     """Sync `contacts.owner_user_id` to the current primary assignment
     (or NULL if none). Call inside the same transaction after any
-    mutation of the contact's assignment set."""
+    mutation of the contact's assignment set.
+
+    Sprint-Push-CRM-Brevo. Esta función es el chokepoint único de
+    cambios de owner — PATCH, reglas, workflows y bulk pasan por aquí.
+    Si el primary cambia, registramos un evento en `session.info`
+    para que después del commit el listener encole `brevo:push_contact`
+    o `brevo:remove_from_brevo`. Inline (pre-commit) sería una race:
+    el worker podría ver el contacto antes de que la mutación esté
+    persistida."""
     contact = session.get(Contact, contact_id)
     if contact is None:
         return
@@ -71,7 +79,16 @@ def recompute_primary_cache(session: Session, contact_id: str) -> None:
             ContactAssignment.is_primary.is_(True),
         )
     )
+    old_owner = contact.owner_user_id
     contact.owner_user_id = primary  # str | None
+    if old_owner != primary:
+        # Import diferido — el servicio importa este módulo para los
+        # tests, así que el ciclo se rompe con late binding.
+        from app.services import brevo_push  # noqa: PLC0415
+
+        brevo_push.record_owner_change(
+            session, contact_id, old_owner, primary
+        )
 
 
 def add_assignment(

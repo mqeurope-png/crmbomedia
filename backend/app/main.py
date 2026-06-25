@@ -137,6 +137,28 @@ async def _arm_brevo_periodics() -> None:
 
 
 @app.on_event("startup")
+async def _arm_brevo_push() -> None:
+    """Sprint-Push-CRM-Brevo. Arma el heartbeat de `periodic_push`
+    (detecta contactos con owner sin `brevo_contact_id` cada hora) y
+    monta el listener after_commit que encola jobs por cambio de
+    owner. Idempotente (SETNX + flag interno)."""
+    try:
+        # Side-effect: importar push_jobs registra
+        # OPERATIONS["brevo:periodic_push"] + reusa enqueue helpers.
+        from app.integrations.brevo import push_jobs  # noqa: PLC0415
+        from app.services import brevo_push  # noqa: PLC0415
+
+        brevo_push.install_listeners()
+        push_jobs.schedule_periodic_push()
+    except Exception:  # noqa: BLE001
+        import logging  # noqa: PLC0415
+
+        logging.getLogger(__name__).warning(
+            "brevo.push_periodic arm failed at startup", exc_info=True
+        )
+
+
+@app.on_event("startup")
 async def _arm_agilecrm_periodics() -> None:
     """Sprint Reglas-Assign PR-Db. Espejo del scheduler Brevo para
     AgileCRM. Mismo blindaje contra Redis outage al boot."""
