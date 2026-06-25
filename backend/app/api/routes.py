@@ -2505,20 +2505,56 @@ def update_contact(
     star_rating_changed = (
         "star_rating" in data and data["star_rating"] != contact.star_rating
     )
-    # PR-Fix-Sync-No-Sobreescribe-Cambios-CRM. Capturamos qué campos
-    # de Capa A cambian REALMENTE (no marcamos el array si el operador
-    # mandó el mismo valor que ya tenía: eso ensuciaría la protección y
-    # bloquearía syncs futuros sin razón).
+    # PR-Fix-Sync-No-Sobreescribe-Cambios-CRM +
+    # PR-Fix-Patch-No-Marca-Manual-Edits.
+    #
+    # Capturamos qué campos cambian REALMENTE (no marcamos si el
+    # valor coincide con el actual: ensuciaría la protección y
+    # bloquearía syncs futuros sin razón). Marca tanto Capa A como
+    # Capa B — para Capa B es solo trazabilidad / UI (el sync nunca
+    # toca Capa B aunque no esté en el array).
+    #
+    # Mappings especiales:
+    #  - `phones` (lista) → `phone` (string) cuando el primary cambia.
+    #    El bloque de phones más abajo actualiza `contact.phone` desde
+    #    `phones_payload`; aquí solo marcamos la intención.
+    #  - `owner_id` → `owner_user_id`. El bloque de owner más abajo
+    #    cambia `contact.owner_user_id`; aquí marcamos la intención.
     from app.services import contact_sync_protection as _sync_protection  # noqa: PLC0415
 
-    layer_a_changed_now: list[str] = []
+    fields_to_mark: list[str] = []
     for field, value in data.items():
-        if field in _sync_protection.LAYER_A_FIELDS:
+        if field in _sync_protection.MARKABLE_FIELDS:
             current = getattr(contact, field, None)
             if current != value:
-                layer_a_changed_now.append(field)
+                fields_to_mark.append(field)
         setattr(contact, field, value)
-    _sync_protection.mark_manually_edited(contact, layer_a_changed_now)
+    # phones array → marca el campo escalar `phone` si la firma
+    # cambió (el bloque inferior lo recalcula a partir del primary).
+    if phones_payload is not None:
+        try:
+            import json as _json  # noqa: PLC0415
+
+            new_sig = _json.dumps(
+                sorted(
+                    [
+                        (
+                            p.get("number") if isinstance(p, dict)
+                            else getattr(p, "number", "")
+                        )
+                        for p in phones_payload
+                    ]
+                )
+            )
+        except Exception:  # noqa: BLE001
+            new_sig = ""
+        if new_sig and "phone" not in fields_to_mark:
+            fields_to_mark.append("phone")
+    # owner_id (alias del cliente) → owner_user_id (columna real).
+    if owner_payload_set and owner_value != contact.owner_user_id:
+        if "owner_user_id" not in fields_to_mark:
+            fields_to_mark.append("owner_user_id")
+    _sync_protection.mark_manually_edited(contact, fields_to_mark)
     session.flush()
 
     changed_fields: list[str] = sorted(data.keys())

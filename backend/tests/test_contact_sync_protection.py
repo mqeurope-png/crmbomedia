@@ -531,16 +531,21 @@ def test_brevo_events_always_imported_regardless_of_manual_edits(
 
 
 def test_protection_helpers_are_idempotent(session_factory: sessionmaker):
-    """`mark_manually_edited` dedupe + filtra Capa B + ignora desconocidos."""
+    """`mark_manually_edited` dedupe + acepta Capa A y Capa B
+    (PR-Fix-Patch-No-Marca-Manual-Edits: Capa B se marca por
+    trazabilidad para que el banner la muestre, aunque su protección
+    en el sync sea incondicional). Ignora campos desconocidos."""
     with session_factory() as session:
         contact = Contact(first_name="X", email="x@x.com")
         session.add(contact)
         session.flush()
         protection.mark_manually_edited(contact, ["first_name", "phone"])
-        protection.mark_manually_edited(contact, ["phone", "lead_score", "unknown_field"])
-        # phone solo una vez; lead_score (Capa B) y unknown ignorados.
+        protection.mark_manually_edited(
+            contact, ["phone", "lead_score", "unknown_field"]
+        )
         marks = protection.get_manually_edited_fields(contact)
-        assert marks == ["first_name", "phone"]
+        # phone deduplicado; lead_score (Capa B) sí entra; unknown ignorado.
+        assert marks == ["first_name", "lead_score", "phone"]
 
 
 def test_is_field_protected_layer_b_always(session_factory: sessionmaker):
@@ -556,3 +561,154 @@ def test_is_field_protected_layer_b_always(session_factory: sessionmaker):
         # Tras marcar, sí.
         protection.mark_manually_edited(contact, ["phone"])
         assert protection.is_field_protected(contact, "phone")
+
+
+# ---------------------------------------------------------------------
+# PR-Fix-Patch-No-Marca-Manual-Edits — Capa B también se marca
+# ---------------------------------------------------------------------
+
+
+def test_patch_marks_layer_b_lead_score_for_traceability(
+    client: TestClient, session_factory: sessionmaker
+):
+    """Bart reportó (2026-06-25): edita lead_score en la UI →
+    el campo persiste pero `manually_edited_fields_json` sigue NULL.
+    Cambio de política: también marcamos Capa B aunque sea para
+    trazabilidad (el sync nunca tocó Capa B por diseño, pero el
+    banner del modal lo enseña como "editado manualmente")."""
+    contact_id = _create_contact_via_sync(session_factory)
+    response = client.patch(
+        f"/api/contacts/{contact_id}",
+        json={"lead_score": 73},
+        headers=auth_headers(client, "user"),
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["manually_edited_fields"] == ["lead_score"]
+
+
+def test_patch_marks_star_rating_too(
+    client: TestClient, session_factory: sessionmaker
+):
+    contact_id = _create_contact_via_sync(session_factory)
+    response = client.patch(
+        f"/api/contacts/{contact_id}",
+        json={"star_rating": 5},
+        headers=auth_headers(client, "user"),
+    )
+    assert response.status_code == 200
+    assert response.json()["manually_edited_fields"] == ["star_rating"]
+
+
+def test_patch_marks_owner_via_owner_id_alias(
+    client: TestClient, session_factory: sessionmaker
+):
+    """`owner_id` es el alias del cliente; en BD es
+    `owner_user_id`. El handler hace la traducción y marca el
+    campo canónico."""
+    contact_id = _create_contact_via_sync(session_factory)
+    with session_factory() as session:
+        manel_uid = session.scalar(
+            select(User.id).where(User.role == UserRole.USER)
+        )
+    response = client.patch(
+        f"/api/contacts/{contact_id}",
+        json={"owner_id": manel_uid},
+        headers=auth_headers(client, "user"),
+    )
+    assert response.status_code == 200
+    assert response.json()["manually_edited_fields"] == ["owner_user_id"]
+
+
+def test_patch_marks_phone_when_phones_array_changes(
+    client: TestClient, session_factory: sessionmaker
+):
+    """El modal manda `phones` (lista de objetos). El handler
+    actualiza `contact.phone` con el primary y marca `phone` como
+    editado manualmente — caso real de Bart cuando un comercial
+    actualiza el teléfono del cliente."""
+    contact_id = _create_contact_via_sync(session_factory)
+    response = client.patch(
+        f"/api/contacts/{contact_id}",
+        json={
+            "phones": [
+                {"number": "+34 611 222 333", "label": "Móvil", "is_primary": True}
+            ]
+        },
+        headers=auth_headers(client, "user"),
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert "phone" in body["manually_edited_fields"]
+
+
+def test_patch_multiple_fields_adds_all_to_set(
+    client: TestClient, session_factory: sessionmaker
+):
+    """PATCH con first_name + phone + lead_score en el mismo body
+    → los 3 quedan en el array (no se duplican, no se pierde
+    ninguno)."""
+    contact_id = _create_contact_via_sync(session_factory)
+    response = client.patch(
+        f"/api/contacts/{contact_id}",
+        json={
+            "first_name": "Editado",
+            "phones": [
+                {"number": "+34 600 000 001", "label": "Móvil", "is_primary": True}
+            ],
+            "lead_score": 80,
+        },
+        headers=auth_headers(client, "user"),
+    )
+    assert response.status_code == 200
+    marks = set(response.json()["manually_edited_fields"])
+    assert marks == {"first_name", "phone", "lead_score"}
+
+
+def test_patch_same_field_twice_doesnt_duplicate(
+    client: TestClient, session_factory: sessionmaker
+):
+    """Dos PATCHs consecutivos sobre el mismo campo NO duplican
+    la entrada en el array."""
+    contact_id = _create_contact_via_sync(session_factory)
+    client.patch(
+        f"/api/contacts/{contact_id}",
+        json={"first_name": "Cambio1"},
+        headers=auth_headers(client, "user"),
+    )
+    response = client.patch(
+        f"/api/contacts/{contact_id}",
+        json={"first_name": "Cambio2"},
+        headers=auth_headers(client, "user"),
+    )
+    assert response.status_code == 200
+    marks = response.json()["manually_edited_fields"]
+    assert marks == ["first_name"]
+    assert len(marks) == 1
+
+
+def test_reset_clears_specific_field_only(
+    client: TestClient, session_factory: sessionmaker
+):
+    """Reset selectivo de 1 campo entre varios marcados → el resto
+    sobrevive."""
+    contact_id = _create_contact_via_sync(session_factory)
+    # Marca first_name + phone + lead_score.
+    client.patch(
+        f"/api/contacts/{contact_id}",
+        json={
+            "first_name": "Mark1",
+            "phones": [
+                {"number": "+34 600 111 222", "label": "Móvil", "is_primary": True}
+            ],
+            "lead_score": 50,
+        },
+        headers=auth_headers(client, "user"),
+    )
+    response = client.post(
+        f"/api/contacts/{contact_id}/reset-manual-edits",
+        json={"fields": ["phone"]},
+        headers=auth_headers(client, "user"),
+    )
+    assert response.status_code == 200
+    marks = set(response.json()["manually_edited_fields"])
+    assert marks == {"first_name", "lead_score"}
