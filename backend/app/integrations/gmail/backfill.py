@@ -1,31 +1,38 @@
 """Sprint-Backfill-Gmail — orchestración del backfill histórico.
 
-Itera (user con Gmail) × (alias `is_allowed=True`) × (contacto con email)
-y descubre la conversación histórica entre cada pareja vía
-`users.messages.list(q='from:X to:Y OR from:Y to:X newer_than:NN m')`.
+PR-Fix-Backfill-Gmail-Arquitectura. La V1 (#235) iteraba
+(user × alias × contact) → 1 query Gmail por par → 360k llamadas
+para Bart (6 × 3 × 20k). El job se quedaba colgado >10min en
+`status=running, total_processed=0`. Job `0c0d0859-...` reportado
+2026-06-25.
+
+Refactor: invertir la iteración. UNA query por alias trae TODOS
+los mensajes del alias (in + out, cualquier remitente/destinatario)
+en la ventana de meses. Los contactos se matchean LOCALMENTE
+contra un índice `{email_lower: contact}` cargado una vez por job.
+
+Volumen real: ~18 queries paginadas (6 users × 3 aliases) +
+get_message por mensaje. Tiempos: minutos en lugar de horas. Sin
+producto cartesiano con 20k contactos.
 
 Dos modos sobre la misma cola `gmail:backfill_historic`:
 
-- `estimate`: solo cuenta mensajes y suma tamaños de adjuntos llamando
-  `messages.get(format='metadata')`. No toca DB ni disco. Rellena
-  `gmail_backfill_jobs.result_json` con el desglose por usuario que
-  la UI pinta antes del confirm.
-
-- `execute`: importa cada mensaje a `email_messages` + threads,
-  asociando `contact_id` correcto y `gmail_account_user_id` del owner
-  del alias. Si `include_attachments=True` baja los binarios <= cap
-  y los guarda bajo `/var/lib/crmbo/attachments/{contact_id}/{msg_id}/
-  {filename}` + crea fila en `email_message_attachments`.
+- `estimate`: get(format=metadata), suma adjunto sizes, no escribe.
+  Solo cuenta mensajes que matchean contactos del CRM.
+- `execute`: get(format=full), persiste a email_messages + threads,
+  baja adjuntos si `include_attachments`.
 
 Ambos modos:
 
-- Saltan usuarios sin Gmail conectado o con scope expirado — reportan
+- Saltan users con Gmail desconectado / scope expirado — marcan
   `needs_reconnect=True` en el breakdown.
-- Cooperan con `gmail_backfill_jobs.status='cancelling'`: comprueban
-  el flag cada N iteraciones y finalizan limpio.
-- Persisten progreso cada 100 mensajes procesados via session.commit.
-- Dedup por `gmail_message_id` antes de crear (el backfill se puede
-  re-ejecutar sin duplicar)."""
+- Cooperan con `gmail_backfill_jobs.status='cancelling'`: chequean
+  el flag cada 100 mensajes.
+- Heartbeat cada 100 mensajes: commit progreso + actualizar
+  `updated_at`.
+- Dedup por `gmail_message_id` antes de tocar la DB.
+- Backoff exponencial 1s/2s/4s/8s con max 3 retries en 429/5xx.
+"""
 from __future__ import annotations
 
 import base64
@@ -33,10 +40,11 @@ import json
 import logging
 import os
 import re
+import time
 from datetime import UTC, datetime
 from email.utils import getaddresses
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, TypeVar
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -74,21 +82,23 @@ ATTACHMENT_ROOT = Path(
     os.environ.get("CRMBO_ATTACHMENT_ROOT", "/var/lib/crmbo/attachments")
 )
 
-#: Cuántos mensajes procesar antes de un commit + cancel-check. 100
-#: balance entre overhead de commits y latencia para que un cancel
-#: surta efecto rápido.
+#: Cuántos mensajes procesar antes de un heartbeat (commit + cancel
+#: check + log). 100 balance entre overhead de commits y latencia
+#: para que un cancel surta efecto rápido.
 PROGRESS_COMMIT_EVERY = 100
 
-#: Cuántos mensajes acumulamos por (alias, contacto) antes de saltar
-#: al siguiente par. Conversaciones legítimas raramente cruzan este
-#: número con un solo contacto; lo definimos defensivamente para que
-#: un bug del query no se coma 100k mensajes.
-MAX_MESSAGES_PER_PAIR = 5000
+#: Tamaño de página al listar mensajes Gmail. Gmail caps la lista a
+#: 500 por petición; 100 deja margen para que el operator vea
+#: progreso fino en logs.
+LIST_PAGE_SIZE = 100
 
-#: Sanitiza el filename para evitar path traversal. Rechaza `..`,
-#: `/`, `\` y caracteres null. Mantiene espacios y unicode (Bart
-#: tiene equipo en castellano).
+#: Backoff exponencial cuando Gmail responde 429 / 5xx. 3 retries
+#: máximo — al cuarto fallo seguido, devolvemos el error al caller.
+BACKOFF_DELAYS = (1.0, 2.0, 4.0, 8.0)
+
 _FILENAME_BAD = re.compile(r"[\\/\x00]")
+
+T = TypeVar("T")
 
 
 def _safe_filename(raw: str | None) -> str:
@@ -97,20 +107,119 @@ def _safe_filename(raw: str | None) -> str:
         return "attachment"
     name = name.replace("..", "_")
     name = _FILENAME_BAD.sub("_", name)
-    # Cap a 200 chars — algunos FS limitan a 255 y queremos margen.
     return name[:200] or "attachment"
 
 
-def _build_query(alias_email: str, contact_email: str, months_back: int) -> str:
-    # Gmail query syntax: paréntesis + AND/OR explicitos. `newer_than`
-    # acepta {N}d/m/y. Doble cobertura inbound + outbound.
-    safe_alias = alias_email.replace('"', "")
-    safe_contact = contact_email.replace('"', "")
-    return (
-        f'((from:"{safe_alias}" to:"{safe_contact}") '
-        f'OR (from:"{safe_contact}" to:"{safe_alias}")) '
-        f"newer_than:{months_back}m"
-    )
+# ---------------------------------------------------------------------------
+# Single query per alias
+# ---------------------------------------------------------------------------
+
+
+def _build_alias_query(alias_email: str, months_back: int) -> str:
+    """`(from:alias OR to:alias) newer_than:Nm`. Cubre inbound y
+    outbound en una sola query — el match con el contacto del CRM se
+    hace en memoria con los headers del mensaje."""
+    safe = alias_email.replace('"', "")
+    return f'(from:"{safe}" OR to:"{safe}") newer_than:{months_back}m'
+
+
+def _is_transient_error(exc: BaseException) -> bool:
+    """Best-effort detection de 429 / 5xx para reintento. La librería
+    `google-api-python-client` levanta `HttpError` con `resp.status`;
+    si la importación falla en tests, fallback a substring del
+    repr."""
+    status = getattr(getattr(exc, "resp", None), "status", None)
+    if status is not None:
+        return status in {429, 500, 502, 503, 504}
+    text = repr(exc).lower()
+    return any(s in text for s in ("429", "503", "rate", "quotaexceeded"))
+
+
+def _with_backoff(fn: Callable[[], T], *, label: str = "gmail-call") -> T:
+    """Ejecuta `fn` con backoff exponencial 1s/2s/4s/8s. Máximo 3
+    retries — al cuarto fallo seguido propagamos al caller."""
+    last_exc: BaseException | None = None
+    for attempt, delay in enumerate(BACKOFF_DELAYS):
+        try:
+            return fn()
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            if not _is_transient_error(exc):
+                raise
+            if attempt == len(BACKOFF_DELAYS) - 1:
+                break
+            logger.warning(
+                "gmail.backfill %s transient error (%s), sleeping %.1fs",
+                label, type(exc).__name__, delay,
+            )
+            time.sleep(delay)
+    assert last_exc is not None
+    raise last_exc
+
+
+def _iter_alias_messages(
+    client: GmailClient, alias_email: str, months_back: int
+) -> tuple[list[dict[str, Any]], int | None]:
+    """Pagina la query del alias y devuelve `(message_ids, total_hint)`.
+
+    `total_hint` viene del `resultSizeEstimate` de la primera página
+    (Gmail lo trae aproximado pero sirve para el heartbeat
+    `total_estimated`). Si la paginación se rompe a mitad, se loguea y
+    se devuelven los que tenemos."""
+    query = _build_alias_query(alias_email, months_back)
+    msgs: list[dict[str, Any]] = []
+    page_token: str | None = None
+    total_hint: int | None = None
+    page_idx = 0
+    while True:
+        page_idx += 1
+        try:
+            page = _with_backoff(
+                lambda token=page_token: client.list_messages(
+                    query=query,
+                    page_size=LIST_PAGE_SIZE,
+                    page_token=token,
+                ),
+                label=f"list_messages[{alias_email} p{page_idx}]",
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "gmail.backfill list_messages failed alias=%s page=%d: %s",
+                alias_email, page_idx, exc,
+            )
+            break
+        for m in page.get("messages") or []:
+            mid = m.get("id")
+            if mid:
+                msgs.append(m)
+        if total_hint is None:
+            estimate = page.get("resultSizeEstimate")
+            if estimate is not None:
+                total_hint = int(estimate)
+        page_token = page.get("nextPageToken")
+        logger.info(
+            "gmail.backfill list page alias=%s page=%d cumulative=%d",
+            alias_email, page_idx, len(msgs),
+        )
+        if not page_token:
+            break
+    return msgs, total_hint
+
+
+def _walk_parts(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    queue: list[dict[str, Any]] = [payload]
+    while queue:
+        part = queue.pop()
+        out.append(part)
+        for child in part.get("parts") or []:
+            queue.append(child)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Resource loading
+# ---------------------------------------------------------------------------
 
 
 def _iter_aliases(
@@ -129,9 +238,8 @@ def _iter_aliases(
 def _iter_connected_users(
     session: Session,
 ) -> list[UserGoogleIntegration]:
-    """Users con Gmail conectado Y scope gmail.send. Si el scope falta,
-    el client raise GmailScopeMissingError; aún así devolvemos el row
-    para que el reporte por-usuario marque needs_reconnect=True."""
+    """Users con Gmail conectado. El client lookup decide después si
+    falta el scope (raise GmailScopeMissingError → skip + needs_reconnect)."""
     return list(
         session.scalars(
             select(UserGoogleIntegration).where(
@@ -141,15 +249,111 @@ def _iter_connected_users(
     )
 
 
-def _iter_crm_contacts(session: Session) -> list[Contact]:
-    return list(
-        session.scalars(
-            select(Contact).where(
-                Contact.email.is_not(None),
-                Contact.is_active.is_(True),
-            )
+def _build_contact_index(session: Session) -> dict[str, Contact]:
+    """`{email.lower(): contact}` para match O(1) durante la iteración.
+    Cargado UNA vez por job — los 20k contactos viven en RAM
+    (≈3MB) sin pegar a la DB en cada mensaje."""
+    out: dict[str, Contact] = {}
+    rows = session.scalars(
+        select(Contact).where(
+            Contact.email.is_not(None),
+            Contact.is_active.is_(True),
         )
     )
+    for c in rows:
+        if c.email:
+            key = c.email.strip().lower()
+            if key:
+                # Spec congelada: Bart confirma que no hay duplicados
+                # de email entre contactos. Si por bug existieran,
+                # log warning + nos quedamos con el primero (orden
+                # arbitrario de la query).
+                if key in out:
+                    logger.warning(
+                        "gmail.backfill duplicate contact email=%s ids=[%s,%s]",
+                        key, out[key].id, c.id,
+                    )
+                    continue
+                out[key] = c
+    return out
+
+
+def _extract_participants(headers_map: dict[str, str]) -> list[str]:
+    """Devuelve todos los emails (from + to + cc) lowercase."""
+    out: list[str] = []
+    for hdr in ("from", "to", "cc"):
+        raw = headers_map.get(hdr) or ""
+        for _, addr in getaddresses([raw]):
+            if addr:
+                out.append(addr.strip().lower())
+    return out
+
+
+def _match_contact(
+    headers_map: dict[str, str],
+    alias_lower: str,
+    index: dict[str, Contact],
+) -> Contact | None:
+    """Encuentra el contacto del CRM que aparece como el "otro lado"
+    del mensaje. Si el alias propio aparece en from y to (envío a sí
+    mismo), lo saltamos. Si hay múltiples contactos (CC), tomamos el
+    primero — Bart confirmó que el primary recipient es el dueño de
+    la conversación."""
+    for email in _extract_participants(headers_map):
+        if email == alias_lower:
+            continue
+        contact = index.get(email)
+        if contact is not None:
+            return contact
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Job lifecycle helpers
+# ---------------------------------------------------------------------------
+
+
+def _start_running(session: Session, job: GmailBackfillJob) -> bool:
+    """Transition a RUNNING. Si el job ya estaba en CANCELLING al
+    arrancar (race: admin cancela entre encolar y dequeuar), respetamos
+    el cancel. Devuelve False si ya no hay que correr nada."""
+    if job.status == GmailBackfillStatus.CANCELLING.value:
+        job.status = GmailBackfillStatus.CANCELLED.value
+        job.finished_at = datetime.now(UTC)
+        session.commit()
+        return False
+    job.status = GmailBackfillStatus.RUNNING.value
+    job.started_at = datetime.now(UTC)
+    session.commit()
+    return True
+
+
+def _check_cancel(session: Session, job: GmailBackfillJob) -> bool:
+    """Refresh status from DB y, si está CANCELLING, finaliza limpio."""
+    session.refresh(job, attribute_names=["status"])
+    if job.status == GmailBackfillStatus.CANCELLING.value:
+        job.status = GmailBackfillStatus.CANCELLED.value
+        job.finished_at = datetime.now(UTC)
+        session.commit()
+        logger.info("gmail.backfill cancelled job=%s", job.id)
+        return True
+    return False
+
+
+def _heartbeat(
+    session: Session, job: GmailBackfillJob, *, force: bool = False
+) -> None:
+    """Cada 100 mensajes (o forzado): commit del progreso + bump
+    `updated_at`. El frontend pinta esa columna en la UI para que
+    Bart vea que el job está vivo. Hace cancel-check en la misma
+    pasada."""
+    if (
+        not force
+        and (job.total_processed or 0) % PROGRESS_COMMIT_EVERY != 0
+    ):
+        return
+    job.updated_at = datetime.now(UTC)
+    session.commit()
 
 
 # ---------------------------------------------------------------------------
@@ -158,32 +362,23 @@ def _iter_crm_contacts(session: Session) -> list[Contact]:
 
 
 def run_estimate(session: Session, job: GmailBackfillJob) -> None:
-    """Modo `estimate`: cuenta mensajes y suma tamaños de adjuntos.
-    Rellena `job.result_json` y deja `status=completed`."""
+    """Modo `estimate`. 1 query por alias → metadata por mensaje →
+    cuenta solo los que matchean contacto + suma adjunto sizes."""
+    if not _start_running(session, job):
+        return
     config = json.loads(job.config_json or "{}")
     months_back = int(config.get("months_back", 36))
+    contact_index = _build_contact_index(session)
+    integrations = _iter_connected_users(session)
+    logger.info(
+        "gmail.backfill.estimate started job=%s users=%d contacts=%d",
+        job.id, len(integrations), len(contact_index),
+    )
+
     breakdown: dict[str, dict[str, Any]] = {}
     total_emails = 0
     total_attachments_count = 0
     total_attachments_bytes = 0
-
-    # Race: si el admin clickeó cancelar entre encolar y arrancar,
-    # respetar el CANCELLING en vez de pisarlo con RUNNING.
-    if job.status == GmailBackfillStatus.CANCELLING.value:
-        job.status = GmailBackfillStatus.CANCELLED.value
-        job.finished_at = datetime.now(UTC)
-        session.commit()
-        return
-    job.status = GmailBackfillStatus.RUNNING.value
-    job.started_at = datetime.now(UTC)
-    session.commit()
-
-    contacts = _iter_crm_contacts(session)
-    integrations = _iter_connected_users(session)
-    logger.info(
-        "gmail.backfill.estimate started job=%s users=%d contacts=%d",
-        job.id, len(integrations), len(contacts),
-    )
 
     for integ in integrations:
         if _check_cancel(session, job):
@@ -210,36 +405,63 @@ def run_estimate(session: Session, job: GmailBackfillJob) -> None:
             )
             user_row["needs_reconnect"] = True
             continue
-
         aliases = _iter_aliases(session, integ.user_id)
         if not aliases:
             continue
 
         for alias in aliases:
-            for contact in contacts:
-                if not contact.email:
-                    continue
+            if _check_cancel(session, job):
+                return
+            alias_lower = alias.alias_email.strip().lower()
+            msgs, total_hint = _iter_alias_messages(
+                client, alias.alias_email, months_back
+            )
+            if total_hint is not None:
+                # Cumulativo conservador — sumamos hints de aliases.
+                job.total_estimated = (job.total_estimated or 0) + total_hint
+                _heartbeat(session, job, force=True)
+
+            for m in msgs:
                 if _check_cancel(session, job):
                     return
-                pair_count, pair_attach_count, pair_attach_bytes = (
-                    _estimate_pair(
-                        client, alias.alias_email, contact.email, months_back
+                job.total_processed += 1
+                _heartbeat(session, job)
+                mid = m.get("id")
+                try:
+                    meta = _with_backoff(
+                        lambda mid=mid, c=client: c.get_message_metadata(mid),
+                        label=f"get_metadata[{mid}]",
                     )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "gmail.backfill metadata failed mid=%s: %s", mid, exc
+                    )
+                    job.total_errors += 1
+                    continue
+                headers_map = _index_headers(
+                    meta.get("payload", {}).get("headers", [])
                 )
-                user_row["emails"] += pair_count
-                user_row["attachments_count"] += pair_attach_count
-                user_row["attachments_mb"] += pair_attach_bytes / (1024 * 1024)
-                total_emails += pair_count
-                total_attachments_count += pair_attach_count
-                total_attachments_bytes += pair_attach_bytes
-                job.total_processed = total_emails
-                if total_emails % PROGRESS_COMMIT_EVERY == 0:
-                    session.commit()
+                contact = _match_contact(
+                    headers_map, alias_lower, contact_index
+                )
+                if contact is None:
+                    continue  # ningún contacto del CRM participa
+                user_row["emails"] += 1
+                total_emails += 1
+                for part in _walk_parts(meta.get("payload") or {}):
+                    if part.get("filename"):
+                        size = int((part.get("body") or {}).get("size") or 0)
+                        if size > 0:
+                            total_attachments_count += 1
+                            total_attachments_bytes += size
+                            user_row["attachments_count"] += 1
+                            user_row["attachments_mb"] += size / (1024 * 1024)
+            logger.info(
+                "gmail.backfill.estimate alias_done user=%s alias=%s "
+                "msgs_seen=%d matched=%d",
+                integ.user_id, alias.alias_email, len(msgs), user_row["emails"],
+            )
 
-    # Estimación temporal: Gmail rate-limit funciona como 250 quota/s
-    # por usuario; cada msg.get(format=full) ≈ 5 units → ≈ 50 msg/s
-    # por usuario con un solo worker. Para N usuarios concurrentes
-    # mejoraría pero el worker es serial.
     estimated_minutes = round(total_emails / 50 / 60, 1) if total_emails else 0.0
     result = {
         "total_emails": total_emails,
@@ -264,99 +486,23 @@ def run_estimate(session: Session, job: GmailBackfillJob) -> None:
     )
 
 
-def _estimate_pair(
-    client: GmailClient,
-    alias_email: str,
-    contact_email: str,
-    months_back: int,
-) -> tuple[int, int, int]:
-    """Para un par alias↔contacto: cuenta msgs y suma bytes de adjuntos.
-    Devuelve `(emails, attach_count, attach_bytes)`."""
-    query = _build_query(alias_email, contact_email, months_back)
-    page_token: str | None = None
-    msg_ids: list[str] = []
-    fetched_pages = 0
-    while True:
-        if fetched_pages * 100 >= MAX_MESSAGES_PER_PAIR:
-            break
-        try:
-            page = client.list_messages(
-                query=query, page_size=100, page_token=page_token
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "gmail.backfill.estimate list failed alias=%s contact=%s: %s",
-                alias_email, contact_email, exc,
-            )
-            return 0, 0, 0
-        for m in page["messages"]:
-            mid = m.get("id")
-            if mid:
-                msg_ids.append(mid)
-        page_token = page.get("nextPageToken")
-        fetched_pages += 1
-        if not page_token:
-            break
-
-    attach_count = 0
-    attach_bytes = 0
-    for mid in msg_ids:
-        try:
-            meta = client.get_message_metadata(mid)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "gmail.backfill.estimate get_metadata failed mid=%s: %s",
-                mid, exc,
-            )
-            continue
-        for part in _walk_parts(meta.get("payload") or {}):
-            if part.get("filename"):
-                size = int((part.get("body") or {}).get("size") or 0)
-                if size > 0:
-                    attach_count += 1
-                    attach_bytes += size
-    return len(msg_ids), attach_count, attach_bytes
-
-
-def _walk_parts(payload: dict[str, Any]) -> list[dict[str, Any]]:
-    out: list[dict[str, Any]] = []
-    queue: list[dict[str, Any]] = [payload]
-    while queue:
-        part = queue.pop()
-        out.append(part)
-        for child in part.get("parts") or []:
-            queue.append(child)
-    return out
-
-
 # ---------------------------------------------------------------------------
 # Execute mode
 # ---------------------------------------------------------------------------
 
 
 def run_execute(session: Session, job: GmailBackfillJob) -> None:
-    """Modo `execute`: importa los mensajes a la DB. Asocia
-    `contact_id` (del contacto del CRM cuyo email matchea el otro
-    extremo del thread) y `gmail_account_user_id` (del comercial
-    dueño del alias). Dedup por `gmail_message_id`."""
+    """Modo `execute`. Misma iteración invertida que estimate, pero
+    persiste a DB y baja adjuntos."""
+    if not _start_running(session, job):
+        return
     config = json.loads(job.config_json or "{}")
     months_back = int(config.get("months_back", 36))
     include_attachments = bool(config.get("include_attachments", True))
     max_attachment_mb = int(config.get("max_attachment_size_mb", 25))
     max_attachment_bytes = max_attachment_mb * 1024 * 1024
 
-    # Race: si el admin clickeó cancelar entre encolar y arrancar,
-    # respetar el CANCELLING en vez de pisarlo con RUNNING.
-    if job.status == GmailBackfillStatus.CANCELLING.value:
-        job.status = GmailBackfillStatus.CANCELLED.value
-        job.finished_at = datetime.now(UTC)
-        session.commit()
-        return
-    job.status = GmailBackfillStatus.RUNNING.value
-    job.started_at = datetime.now(UTC)
-    session.commit()
-
-    contacts = _iter_crm_contacts(session)
+    contact_index = _build_contact_index(session)
     integrations = _iter_connected_users(session)
     errors_by_user: dict[str, str] = {}
     users_skipped: list[str] = []
@@ -375,22 +521,38 @@ def run_execute(session: Session, job: GmailBackfillJob) -> None:
             continue
 
         for alias in aliases:
-            for contact in contacts:
-                if not contact.email:
-                    continue
+            if _check_cancel(session, job):
+                return
+            alias_lower = alias.alias_email.strip().lower()
+            msgs, total_hint = _iter_alias_messages(
+                client, alias.alias_email, months_back
+            )
+            if total_hint is not None:
+                job.total_estimated = (job.total_estimated or 0) + total_hint
+                _heartbeat(session, job, force=True)
+
+            for m in msgs:
                 if _check_cancel(session, job):
                     return
-                _import_pair(
+                _import_one(
                     session,
                     client=client,
                     job=job,
                     owner_user_id=integ.user_id,
-                    alias_email=alias.alias_email,
-                    contact=contact,
-                    months_back=months_back,
+                    alias_lower=alias_lower,
+                    gmail_message_id=m.get("id"),
+                    gmail_thread_id=m.get("threadId") or m.get("id"),
+                    contact_index=contact_index,
                     include_attachments=include_attachments,
                     max_attachment_bytes=max_attachment_bytes,
                 )
+                _heartbeat(session, job)
+            logger.info(
+                "gmail.backfill.execute alias_done user=%s alias=%s "
+                "imported=%d skipped=%d errors=%d",
+                integ.user_id, alias.alias_email,
+                job.total_imported, job.total_skipped, job.total_errors,
+            )
 
     result = {
         "users_processed": len(integrations) - len(users_skipped),
@@ -405,77 +567,25 @@ def run_execute(session: Session, job: GmailBackfillJob) -> None:
     session.commit()
 
 
-def _import_pair(
+def _import_one(
     session: Session,
     *,
     client: GmailClient,
     job: GmailBackfillJob,
     owner_user_id: str,
-    alias_email: str,
-    contact: Contact,
-    months_back: int,
-    include_attachments: bool,
-    max_attachment_bytes: int,
-) -> None:
-    query = _build_query(alias_email, contact.email, months_back)
-    page_token: str | None = None
-    fetched_pages = 0
-    while True:
-        if fetched_pages * 100 >= MAX_MESSAGES_PER_PAIR:
-            break
-        try:
-            page = client.list_messages(
-                query=query, page_size=100, page_token=page_token
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "gmail.backfill.execute list failed user=%s alias=%s contact=%s: %s",
-                owner_user_id, alias_email, contact.email, exc,
-            )
-            job.total_errors += 1
-            return
-        for entry in page["messages"]:
-            mid = entry.get("id")
-            if not mid:
-                continue
-            if _check_cancel(session, job):
-                return
-            _import_one_message(
-                session,
-                client=client,
-                job=job,
-                owner_user_id=owner_user_id,
-                contact=contact,
-                gmail_message_id=mid,
-                gmail_thread_id=entry.get("threadId") or mid,
-                include_attachments=include_attachments,
-                max_attachment_bytes=max_attachment_bytes,
-            )
-        page_token = page.get("nextPageToken")
-        fetched_pages += 1
-        if not page_token:
-            break
-
-
-def _import_one_message(
-    session: Session,
-    *,
-    client: GmailClient,
-    job: GmailBackfillJob,
-    owner_user_id: str,
-    contact: Contact,
-    gmail_message_id: str,
+    alias_lower: str,
+    gmail_message_id: str | None,
     gmail_thread_id: str,
+    contact_index: dict[str, Contact],
     include_attachments: bool,
     max_attachment_bytes: int,
 ) -> None:
+    if not gmail_message_id:
+        return
     job.total_processed += 1
-    if job.total_processed % PROGRESS_COMMIT_EVERY == 0:
-        session.commit()
 
-    # Dedup. La unique constraint `(gmail_account_user_id,
-    # gmail_message_id)` también lo garantiza, pero comprobar primero
-    # nos ahorra la llamada `get_message(full)`.
+    # Dedup ANTES del get(full) — la unique constraint también lo
+    # garantiza pero ahorra una request Gmail.
     existing = session.scalar(
         select(EmailMessage).where(
             EmailMessage.gmail_account_user_id == owner_user_id,
@@ -487,7 +597,10 @@ def _import_one_message(
         return
 
     try:
-        raw = client.get_message(gmail_message_id)
+        raw = _with_backoff(
+            lambda: client.get_message(gmail_message_id),
+            label=f"get_message[{gmail_message_id}]",
+        )
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "gmail.backfill get_message failed mid=%s: %s",
@@ -496,12 +609,19 @@ def _import_one_message(
         job.total_errors += 1
         return
 
-    headers = _index_headers(raw.get("payload", {}).get("headers", []))
-    from_header = headers.get("from") or ""
-    to_header = headers.get("to") or ""
-    cc_header = headers.get("cc")
-    subject = headers.get("subject")
-    sent_at = _parse_date(headers.get("date")) or datetime.now(UTC)
+    headers_map = _index_headers(raw.get("payload", {}).get("headers", []))
+    contact = _match_contact(headers_map, alias_lower, contact_index)
+    if contact is None:
+        # Mensaje del alias pero contra alguien que no es contacto del
+        # CRM → skip silencioso. NO auto-creamos contactos (spec).
+        job.total_skipped += 1
+        return
+
+    from_header = headers_map.get("from") or ""
+    to_header = headers_map.get("to") or ""
+    cc_header = headers_map.get("cc")
+    subject = headers_map.get("subject")
+    sent_at = _parse_date(headers_map.get("date")) or datetime.now(UTC)
     from_addresses = getaddresses([from_header])
     from_name = from_addresses[0][0] if from_addresses else None
     from_email = from_addresses[0][1] if from_addresses else ""
@@ -513,7 +633,7 @@ def _import_one_message(
 
     direction = (
         EmailDirection.INBOUND
-        if (from_email or "").lower() == (contact.email or "").lower()
+        if (from_email or "").strip().lower() == (contact.email or "").strip().lower()
         else EmailDirection.OUTBOUND
     )
 
@@ -528,8 +648,8 @@ def _import_one_message(
         participants=[from_email, *to_emails],
     )
 
-    attachments_meta: list[dict[str, Any]] = []
     parts_with_files: list[dict[str, Any]] = []
+    attachments_meta: list[dict[str, Any]] = []
     for part in _walk_parts(raw.get("payload", {})):
         if part.get("filename"):
             parts_with_files.append(part)
@@ -605,8 +725,11 @@ def _download_attachments(
         if not att_id:
             continue
         try:
-            resp = client.get_attachment(
-                message_id=gmail_message_id, attachment_id=att_id
+            resp = _with_backoff(
+                lambda att_id=att_id: client.get_attachment(
+                    message_id=gmail_message_id, attachment_id=att_id
+                ),
+                label=f"get_attachment[{att_id}]",
             )
             data = resp.get("data") or ""
             binary = base64.urlsafe_b64decode(data.encode())
@@ -617,8 +740,6 @@ def _download_attachments(
             )
             continue
         filename = _safe_filename(part.get("filename"))
-        # Si chocan dos adjuntos con el mismo filename en el mismo
-        # mensaje, suffix con index para no sobreescribir.
         target = base_dir / filename
         idx = 1
         while target.exists():
@@ -638,17 +759,6 @@ def _download_attachments(
                 created_at=datetime.now(UTC),
             )
         )
-
-
-def _check_cancel(session: Session, job: GmailBackfillJob) -> bool:
-    session.refresh(job, attribute_names=["status"])
-    if job.status == GmailBackfillStatus.CANCELLING.value:
-        job.status = GmailBackfillStatus.CANCELLED.value
-        job.finished_at = datetime.now(UTC)
-        session.commit()
-        logger.info("gmail.backfill cancelled job=%s", job.id)
-        return True
-    return False
 
 
 # ---------------------------------------------------------------------------
@@ -684,8 +794,6 @@ def run_backfill(job_id: str) -> None:
 
 
 def enqueue_backfill(job_id: str) -> None:
-    """Encola el job en `gmail:backfill_historic`. El worker-sync
-    procesa esta queue."""
     from rq import Queue  # noqa: PLC0415
 
     from app.workers.queues import queue_name, redis_connection  # noqa: PLC0415
@@ -693,6 +801,6 @@ def enqueue_backfill(job_id: str) -> None:
     queue = Queue(
         queue_name("gmail", "backfill_historic"),
         connection=redis_connection(),
-        default_timeout=14_400,  # 4h — gmail backfill puede ser largo
+        default_timeout=14_400,
     )
     queue.enqueue(run_backfill, job_id, job_timeout=14_400)

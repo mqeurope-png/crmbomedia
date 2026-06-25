@@ -233,6 +233,54 @@ def gmail_backfill_cancel(
     return _job_to_read(job)
 
 
+@router.post(
+    "/admin/gmail/backfill/{job_id}/force-fail",
+    response_model=BackfillJobRead,
+)
+def gmail_backfill_force_fail(
+    job_id: str,
+    request: Request,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_admin),
+) -> BackfillJobRead:
+    """PR-Fix-Backfill-Gmail-Arquitectura. Marca un job colgado como
+    `failed` con error_summary específico. Útil cuando el worker se
+    cae sin terminar la transición de estado (caso del job
+    `0c0d0859-...` reportado por Bart 2026-06-25) — limpia el row sin
+    SSH al SQL. No hace falta esperar a un timeout. El job ya en
+    estado terminal devuelve el row sin cambios (idempotente)."""
+    job = session.get(GmailBackfillJob, job_id)
+    if job is None:
+        raise not_found("Gmail backfill job")
+    if job.status in {
+        GmailBackfillStatus.COMPLETED.value,
+        GmailBackfillStatus.FAILED.value,
+        GmailBackfillStatus.CANCELLED.value,
+    }:
+        # Idempotente — el operador re-ejecuta sin penalty.
+        return _job_to_read(job)
+    previous_status = job.status
+    job.status = GmailBackfillStatus.FAILED.value
+    job.error_summary = (
+        f"Forced fail by admin (previous_status={previous_status})."
+    )
+    job.finished_at = datetime.now(UTC)
+    record_event(
+        session,
+        action=Action.GMAIL_BACKFILL_CANCELLED,
+        target_type="gmail_backfill_job",
+        target_id=job.id,
+        actor=current_user,
+        metadata={
+            "previous_status": previous_status,
+            "force_fail": True,
+        },
+        request=request,
+    )
+    session.commit()
+    return _job_to_read(job)
+
+
 # ---------------------------------------------------------------------------
 # Attachment download
 # ---------------------------------------------------------------------------
