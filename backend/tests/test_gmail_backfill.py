@@ -19,7 +19,7 @@ from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -147,12 +147,16 @@ class _FakeGmail:
     substrings."""
 
     def __init__(self) -> None:
-        # query_substring -> list of {id, threadId}
-        self.messages_by_query: dict[str, list[dict[str, Any]]] = {}
+        # alias_email_lower -> list of {id, threadId} (deduplicated
+        # by id at lookup time)
+        self.messages_by_alias: dict[str, list[dict[str, Any]]] = {}
         # message_id -> full message dict
         self.messages_full: dict[str, dict[str, Any]] = {}
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.fail_list_next = False
+        # How many of the next get_message_metadata calls should
+        # raise a transient 429-shaped exception (for backoff testing).
+        self.transient_failures = 0
 
     def add_conversation(
         self,
@@ -202,11 +206,15 @@ class _FakeGmail:
             },
         }
         self.messages_full[message_id] = msg
-        # Register under BOTH queries (alias→contact + contact→alias)
-        key = f"{alias}::{contact_email}"
-        self.messages_by_query.setdefault(key, []).append(
-            {"id": message_id, "threadId": thread_id}
-        )
+        # PR-Fix-Backfill-Gmail-Arquitectura. La V2 invierte la
+        # iteración: 1 query por alias trae TODOS los mensajes donde
+        # el alias aparece en From/To/Cc. Indexamos por alias-lower
+        # — `list_messages` resuelve por substring del alias en el
+        # query string.
+        for participant in (from_email, to_email):
+            self.messages_by_alias.setdefault(participant.lower(), []).append(
+                {"id": message_id, "threadId": thread_id}
+            )
 
     # GmailClient interface
     def list_messages(
@@ -216,21 +224,30 @@ class _FakeGmail:
         if self.fail_list_next:
             self.fail_list_next = False
             raise RuntimeError("Gmail 429 rate-limited")
-        # Match: find any key whose alias + contact appear in the
-        # query (which is the Gmail-syntax string we build).
+        # New shape: el query es `(from:alias OR to:alias) newer_than:Nm`.
+        # Devolvemos todos los mensajes del alias deduplicados.
+        seen: set[str] = set()
         out: list[dict[str, Any]] = []
-        for key, msgs in self.messages_by_query.items():
-            alias, contact = key.split("::", 1)
-            if alias in query and contact in query:
-                out.extend(msgs)
+        for alias, msgs in self.messages_by_alias.items():
+            if alias in query.lower():
+                for m in msgs:
+                    if m["id"] not in seen:
+                        seen.add(m["id"])
+                        out.append(m)
         return {"messages": out, "nextPageToken": None, "resultSizeEstimate": len(out)}
 
     def get_message(self, message_id: str) -> dict[str, Any]:
         self.calls.append(("get_message", {"id": message_id}))
+        if self.transient_failures > 0:
+            self.transient_failures -= 1
+            raise _Transient503("Gmail 503 backoff test")
         return self.messages_full[message_id]
 
     def get_message_metadata(self, message_id: str) -> dict[str, Any]:
         self.calls.append(("get_message_metadata", {"id": message_id}))
+        if self.transient_failures > 0:
+            self.transient_failures -= 1
+            raise _Transient503("Gmail 503 backoff test")
         return self.messages_full[message_id]
 
     def get_attachment(
@@ -258,6 +275,20 @@ class _FakeGmail:
 
 def _b64_encode(raw: bytes) -> str:
     return base64.urlsafe_b64encode(raw).decode()
+
+
+class _FakeResp:
+    def __init__(self, status: int) -> None:
+        self.status = status
+
+
+class _Transient503(RuntimeError):
+    """Mimics google-api-python-client `HttpError` con `resp.status`
+    para que `_is_transient_error` lo detecte como reintenable."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.resp = _FakeResp(503)
 
 
 @pytest.fixture()
@@ -641,3 +672,290 @@ def test_status_endpoint_returns_progress(
     assert body["id"] == job_id
     assert body["mode"] == "execute"
     assert body["status"] in {"queued", "running", "completed"}
+
+
+# ---------------------------------------------------------------------------
+# PR-Fix-Backfill-Gmail-Arquitectura — 1 query/alias, local match
+# ---------------------------------------------------------------------------
+
+
+def test_backfill_uses_single_query_per_alias_not_per_pair(
+    client, factory, fake_gmail, patched_client
+):
+    """La V2 hace 1 list_messages POR alias en lugar de 1 por par
+    alias×contact. Con 2 contactos y 1 alias, debe haber UNA sola
+    llamada list_messages, no dos."""
+    # Añadir 2 contactos: marny ya existe, + un segundo
+    with factory() as session:
+        admin_id = session.scalar(_user_id_by_role_query("admin"))
+        session.add(
+            Contact(
+                id="contact-pep",
+                first_name="Pep",
+                email="pep@cliente.com",
+                owner_user_id=admin_id,
+                is_active=True,
+            )
+        )
+        session.commit()
+
+    # Ningún mensaje. Solo nos interesa el shape de las llamadas.
+    r = client.post(
+        "/api/admin/gmail/backfill/estimate",
+        headers=auth_headers(client, "admin"),
+        json={"months_back": 36},
+    )
+    backfill_module.run_backfill(r.json()["id"])
+
+    list_calls = [c for c in fake_gmail.calls if c[0] == "list_messages"]
+    # 2 users con Gmail (admin + manager), 1 alias cada uno → 2
+    # list_messages totales. (NO 2 contactos × 2 alias × 2 users = 8.)
+    assert len(list_calls) == 2
+    queries = [c[1]["query"] for c in list_calls]
+    # La query debe contener `from:alias OR to:alias`, no `from:alias
+    # AND to:contact`.
+    assert all("OR" in q and "AND" not in q for q in queries)
+
+
+def test_backfill_matches_contacts_locally_from_message_headers(
+    client, factory, fake_gmail, patched_client
+):
+    """Un mensaje aparece en la query del alias; el matching contra
+    el contacto del CRM se hace LOCALMENTE leyendo From/To del
+    payload, no haciendo otra query a Gmail."""
+    fake_gmail.add_conversation(
+        alias="manel@bomedia.net",
+        contact_email="marny@cliente.com",
+        message_id="msg-local-match",
+        body_text="Hola Marny",
+    )
+    r = client.post(
+        "/api/admin/gmail/backfill/execute",
+        headers=auth_headers(client, "admin"),
+        json={"months_back": 36, "include_attachments": False, "max_attachment_size_mb": 25},
+    )
+    job_id = r.json()["id"]
+    backfill_module.run_backfill(job_id)
+
+    with factory() as session:
+        msg = session.scalar(
+            select(EmailMessage).where(EmailMessage.gmail_message_id == "msg-local-match")
+        )
+        assert msg is not None
+        assert msg.contact_id == "contact-marny"
+
+
+def test_backfill_skips_user_with_expired_oauth_continues_others(
+    client, factory, fake_gmail, patched_client
+):
+    """Si _client_for raisa para un user, el job sigue procesando
+    los demás users y reporta `needs_reconnect` en el breakdown."""
+    fake_gmail.add_conversation(
+        alias="manel@bomedia.net",
+        contact_email="marny@cliente.com",
+        message_id="msg-from-admin",
+    )
+    with factory() as session:
+        manager_id = session.scalar(_user_id_by_role_query("manager"))
+
+    def selective(session, user_id):  # noqa: ANN001
+        if user_id == manager_id:
+            raise GmailScopeMissingError("scope missing")
+        return fake_gmail
+
+    with patch.object(backfill_module, "_client_for", side_effect=selective):
+        r = client.post(
+            "/api/admin/gmail/backfill/estimate",
+            headers=auth_headers(client, "admin"),
+            json={"months_back": 36},
+        )
+        backfill_module.run_backfill(r.json()["id"])
+
+    with factory() as session:
+        from sqlalchemy import desc
+        job = session.scalars(
+            select(GmailBackfillJob).order_by(desc(GmailBackfillJob.created_at))
+        ).first()
+        result = json.loads(job.result_json)
+        per_user = {row["user_id"]: row for row in result["per_user_breakdown"]}
+        assert per_user[manager_id]["needs_reconnect"] is True
+        # admin sí procesó: matched 1 email (msg-from-admin con
+        # contact-marny)
+        admin_id = session.scalar(_user_id_by_role_query("admin"))
+        assert per_user[admin_id]["needs_reconnect"] is False
+        assert per_user[admin_id]["emails"] == 1
+
+
+def test_backfill_handles_gmail_rate_limit_with_backoff(
+    client, factory, fake_gmail, patched_client
+):
+    """Si get_message_metadata devuelve 503 las 2 primeras veces, el
+    handler reintenta con backoff y al 3º intento lo procesa OK. NO
+    cuenta como error en el job."""
+    fake_gmail.add_conversation(
+        alias="manel@bomedia.net",
+        contact_email="marny@cliente.com",
+        message_id="msg-rate-limited",
+    )
+    fake_gmail.transient_failures = 2  # falla 2 veces, luego OK
+
+    # Patchear time.sleep para no esperar 6s en el test.
+    with patch.object(backfill_module, "time") as fake_time:
+        fake_time.sleep = lambda _s: None
+        r = client.post(
+            "/api/admin/gmail/backfill/estimate",
+            headers=auth_headers(client, "admin"),
+            json={"months_back": 36},
+        )
+        backfill_module.run_backfill(r.json()["id"])
+
+    with factory() as session:
+        from sqlalchemy import desc
+        job = session.scalars(
+            select(GmailBackfillJob).order_by(desc(GmailBackfillJob.created_at))
+        ).first()
+        assert job.total_errors == 0  # el backoff lo recuperó
+        result = json.loads(job.result_json)
+        assert result["total_emails"] == 1
+
+
+def test_backfill_updates_heartbeat_every_100_messages(
+    client, factory, fake_gmail, patched_client
+):
+    """Heartbeat: cada PROGRESS_COMMIT_EVERY mensajes, `updated_at`
+    sube via commit. Con N mensajes <= 100, debe haber al menos 1
+    heartbeat (forzado al final del job, no en mitad)."""
+    # Mensajes ficticios — basta con 1 para verificar el bump.
+    fake_gmail.add_conversation(
+        alias="manel@bomedia.net",
+        contact_email="marny@cliente.com",
+        message_id="msg-hb-1",
+    )
+    r = client.post(
+        "/api/admin/gmail/backfill/execute",
+        headers=auth_headers(client, "admin"),
+        json={"months_back": 36, "include_attachments": False, "max_attachment_size_mb": 25},
+    )
+    job_id = r.json()["id"]
+    with factory() as session:
+        before = session.get(GmailBackfillJob, job_id).updated_at
+    backfill_module.run_backfill(job_id)
+    with factory() as session:
+        after = session.get(GmailBackfillJob, job_id).updated_at
+    assert after > before
+
+
+def test_backfill_respects_cancellation_signal(
+    client, factory, fake_gmail, patched_client
+):
+    """Pre-flag CANCELLING → el worker debe terminar limpio sin
+    procesar mensajes."""
+    fake_gmail.add_conversation(
+        alias="manel@bomedia.net",
+        contact_email="marny@cliente.com",
+        message_id="msg-pre-cancel",
+    )
+    r = client.post(
+        "/api/admin/gmail/backfill/execute",
+        headers=auth_headers(client, "admin"),
+        json={"months_back": 36, "include_attachments": False, "max_attachment_size_mb": 25},
+    )
+    job_id = r.json()["id"]
+    with factory() as session:
+        job = session.get(GmailBackfillJob, job_id)
+        job.status = GmailBackfillStatus.CANCELLING.value
+        session.commit()
+    backfill_module.run_backfill(job_id)
+    with factory() as session:
+        job = session.get(GmailBackfillJob, job_id)
+        assert job.status == GmailBackfillStatus.CANCELLED.value
+        # No persistió mensajes
+        n = session.scalar(
+            select(EmailMessage).where(
+                EmailMessage.gmail_message_id == "msg-pre-cancel"
+            )
+        )
+        assert n is None
+
+
+def test_backfill_excludes_messages_to_other_emails_not_in_crm(
+    client, factory, fake_gmail, patched_client
+):
+    """Mensaje de manel@ → unknown@otra-empresa.com: el alias
+    aparece en la query, pero ningún destinatario es contacto del
+    CRM. NO debe persistirse el mensaje."""
+    fake_gmail.add_conversation(
+        alias="manel@bomedia.net",
+        contact_email="unknown@otra-empresa.com",  # no es contacto del CRM
+        message_id="msg-irrelevant",
+    )
+    r = client.post(
+        "/api/admin/gmail/backfill/execute",
+        headers=auth_headers(client, "admin"),
+        json={"months_back": 36, "include_attachments": False, "max_attachment_size_mb": 25},
+    )
+    job_id = r.json()["id"]
+    backfill_module.run_backfill(job_id)
+
+    with factory() as session:
+        msg = session.scalar(
+            select(EmailMessage).where(EmailMessage.gmail_message_id == "msg-irrelevant")
+        )
+        assert msg is None
+        job = session.get(GmailBackfillJob, job_id)
+        assert job.total_processed == 1
+        assert job.total_skipped == 1  # contó como skip (no match)
+        assert job.total_imported == 0
+
+
+# ---------------------------------------------------------------------------
+# force-fail endpoint
+# ---------------------------------------------------------------------------
+
+
+def test_force_fail_marks_stuck_job_failed(client, factory, patched_client):
+    """Job atascado en `running` → POST /force-fail → status='failed'
+    + error_summary identifica el force_fail."""
+    r = client.post(
+        "/api/admin/gmail/backfill/estimate",
+        headers=auth_headers(client, "admin"),
+        json={"months_back": 36},
+    )
+    job_id = r.json()["id"]
+    # Forzar estado running atascado
+    with factory() as session:
+        job = session.get(GmailBackfillJob, job_id)
+        job.status = GmailBackfillStatus.RUNNING.value
+        session.commit()
+
+    response = client.post(
+        f"/api/admin/gmail/backfill/{job_id}/force-fail",
+        headers=auth_headers(client, "admin"),
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "failed"
+    assert "Forced fail" in (body["error_summary"] or "")
+
+
+def test_force_fail_is_idempotent_on_terminal_jobs(
+    client, factory, patched_client
+):
+    """Si el job ya está completed, force-fail devuelve el row sin
+    cambios (no 409)."""
+    r = client.post(
+        "/api/admin/gmail/backfill/estimate",
+        headers=auth_headers(client, "admin"),
+        json={"months_back": 36},
+    )
+    job_id = r.json()["id"]
+    with factory() as session:
+        job = session.get(GmailBackfillJob, job_id)
+        job.status = GmailBackfillStatus.COMPLETED.value
+        session.commit()
+    response = client.post(
+        f"/api/admin/gmail/backfill/{job_id}/force-fail",
+        headers=auth_headers(client, "admin"),
+    )
+    assert response.status_code == 200
+    assert response.json()["status"] == "completed"

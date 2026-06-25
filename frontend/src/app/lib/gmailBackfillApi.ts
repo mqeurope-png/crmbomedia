@@ -105,3 +105,14 @@ export async function cancelGmailBackfill(
     { method: "POST" },
   );
 }
+
+export async function forceFailGmailBackfill(
+  jobId: string,
+): Promise<GmailBackfillJobRead> {
+  // PR-Fix-Backfill-Gmail-Arquitectura. Para jobs colgados que no
+  // responden a cancel — marca el row failed sin esperar al worker.
+  return apiFetch<GmailBackfillJobRead>(
+    `/api/admin/gmail/backfill/${encodeURIComponent(jobId)}/force-fail`,
+    { method: "POST" },
+  );
+}
