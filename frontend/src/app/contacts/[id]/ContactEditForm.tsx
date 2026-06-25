@@ -51,6 +51,12 @@ type Props = {
   open: boolean;
   onClose: () => void;
   onPatch: (payload: Record<string, unknown>) => Promise<void>;
+  // PR-Fix-Regresiones-PR237 Bug 12. Fuente de verdad alternativa para
+  // el owner cuando `contact.owner_user_id` está desincronizado del
+  // estado real (legacy contacts sin recompute_primary_cache). El page
+  // pasa el `primaryAssignment` resuelto a `contact_assignments`.
+  fallbackOwnerUserId?: string | null;
+  fallbackOwnerLabel?: string | null;
 };
 
 type PhoneDraft = {
@@ -260,11 +266,29 @@ const FIELD_LABELS: Record<string, string> = {
   unsubscribe_action: "Reactivar envíos",
 };
 
-export function ContactEditForm({ contact, open, onClose, onPatch }: Props) {
+export function ContactEditForm({
+  contact,
+  open,
+  onClose,
+  onPatch,
+  fallbackOwnerUserId,
+  fallbackOwnerLabel,
+}: Props) {
   const [phones, setPhones] = useState<ContactPhone[]>([]);
   const initial = useMemo(
-    () => draftFromContact(contact, phones),
-    [contact, phones],
+    () => {
+      const base = draftFromContact(contact, phones);
+      // Bug 12 fix: si `contact.owner_user_id` está null pero el
+      // page resolvió un primaryAssignment, usamos ese id como
+      // valor inicial. La cabecera ya pinta el owner correcto desde
+      // primaryAssignment — el modal debe hacer lo mismo o si no
+      // un Guardar desasignaría sin querer (riesgo crítico Bart).
+      if (!base.owner_id && fallbackOwnerUserId) {
+        return { ...base, owner_id: fallbackOwnerUserId };
+      }
+      return base;
+    },
+    [contact, phones, fallbackOwnerUserId],
   );
   const [draft, setDraft] = useState<DraftState>(initial);
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -591,10 +615,12 @@ export function ContactEditForm({ contact, open, onClose, onPatch }: Props) {
                   {draft.owner_id &&
                   !usersList.some((u) => u.id === draft.owner_id) ? (
                     <option key={draft.owner_id} value={draft.owner_id}>
-                      {/* `contact.owner_user_id` no expone full_name —
-                       * mostramos un placeholder corto hasta que se
-                       * resuelva la lista. */}
-                      Propietario actual…
+                      {/* PR-Fix-Regresiones-PR237: usar el label real
+                       * cuando el page lo pasa (vía primaryAssignment).
+                       * Bart veía "Propietario actual…" placeholder
+                       * sin info útil — ahora muestra el nombre real
+                       * mientras `usersList` carga. */}
+                      {fallbackOwnerLabel ?? "Propietario actual…"}
                     </option>
                   ) : null}
                   {usersList.map((u) => (

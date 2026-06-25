@@ -26,21 +26,61 @@ export function ContactPhonesSection({ contactId, onChanged }: Props) {
   const [adding, setAdding] = useState(false);
   const [draft, setDraft] = useState({ label: "", number: "" });
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  // PR-Fix-Regresiones-PR237 — LOOP CRÍTICO en PR #237.
+  //
+  // El antiguo `load` llamaba a `onChanged?.()` en cada fetch (incluido
+  // el initial). Como el parent pasa `onChanged` como arrow inline
+  // (referencia nueva cada render), y `load` era `useCallback([contactId,
+  // onChanged])`, el flujo era:
+  //
+  //   useEffect → load() → onChanged() → parent re-render →
+  //   new onChanged ref → load rebuilt → useEffect re-runs → LOOP
+  //
+  // Fix:
+  // 1. `load` SOLO actualiza estado interno (`items`). NO llama a
+  //    `onChanged`.
+  // 2. Las mutaciones (add/edit/delete/setPrimary) llaman a `onChanged`
+  //    DESPUÉS del refetch local — ahí sí queremos avisar al parent
+  //    para que rehydrate la cabecera.
+  // 3. `useEffect` depende SOLO de `contactId`, no de `load` ni
+  //    `onChanged`. Una sola request al mount o al cambiar de contacto.
+  const reload = useCallback(async () => {
     try {
       setItems(await listContactPhones(contactId));
-      onChanged?.();
     } catch (err) {
       setError(extractErrorMessage(err, "No se pudieron cargar los teléfonos."));
-    } finally {
-      setLoading(false);
     }
-  }, [contactId, onChanged]);
+  }, [contactId]);
 
   useEffect(() => {
-    void load();
-  }, [load]);
+    let cancelled = false;
+    setLoading(true);
+    listContactPhones(contactId)
+      .then((rows) => {
+        if (!cancelled) setItems(rows);
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setError(
+            extractErrorMessage(err, "No se pudieron cargar los teléfonos."),
+          );
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [contactId]);
+
+  // Notify parent + reload after each mutation. Centralizado en una
+  // función para que cada handler (add/edit/delete/setPrimary) la
+  // llame en una línea sin riesgo de olvidar el `onChanged`.
+  const afterMutation = useCallback(async () => {
+    await reload();
+    onChanged?.();
+  }, [reload, onChanged]);
 
   const onAdd = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -52,7 +92,7 @@ export function ContactPhonesSection({ contactId, onChanged }: Props) {
       });
       setAdding(false);
       setDraft({ label: "", number: "" });
-      await load();
+      await afterMutation();
     } catch (err) {
       setError(extractErrorMessage(err, "No se pudo añadir."));
     }
@@ -61,7 +101,7 @@ export function ContactPhonesSection({ contactId, onChanged }: Props) {
   const onPrimary = async (id: string) => {
     try {
       await setPrimaryPhone(contactId, id);
-      await load();
+      await afterMutation();
     } catch (err) {
       setError(extractErrorMessage(err, "No se pudo marcar primario."));
     }
@@ -71,7 +111,7 @@ export function ContactPhonesSection({ contactId, onChanged }: Props) {
     if (!confirm("¿Borrar este teléfono?")) return;
     try {
       await deleteContactPhone(contactId, id);
-      await load();
+      await afterMutation();
     } catch (err) {
       setError(extractErrorMessage(err, "No se pudo borrar."));
     }
@@ -85,7 +125,7 @@ export function ContactPhonesSection({ contactId, onChanged }: Props) {
         is_primary: row.is_primary,
         source: row.source,
       });
-      await load();
+      await afterMutation();
     } catch (err) {
       setError(extractErrorMessage(err, "No se pudo guardar la etiqueta."));
     }

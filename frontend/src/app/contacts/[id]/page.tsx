@@ -182,6 +182,13 @@ export default function ContactDetailPage() {
   // `contact.phone`. Se re-ejecuta tras un PATCH del contacto vía
   // `refreshSignal` para reflejar add/remove desde el sidebar.
   const [phoneRefreshTick, setPhoneRefreshTick] = useState(0);
+  // PR-Fix-Regresiones-PR237: callback estable para que
+  // ContactPhonesSection no rebuild su `load` cada render. El loop
+  // crítico del PR #237 venía del binding inline `() => setX(...)`.
+  const bumpPhoneTick = useCallback(
+    () => setPhoneRefreshTick((n) => n + 1),
+    [],
+  );
   useEffect(() => {
     if (!contact?.id) {
       setPrimaryPhone(null);
@@ -563,7 +570,7 @@ export default function ContactDetailPage() {
             </header>
             <ContactPhonesSection
               contactId={contact.id}
-              onChanged={() => setPhoneRefreshTick((n) => n + 1)}
+              onChanged={bumpPhoneTick}
             />
             <ContactProfessionalSection
               contact={contact}
@@ -633,6 +640,16 @@ export default function ContactDetailPage() {
         open={editOpen}
         onClose={() => setEditOpen(false)}
         onPatch={handlePatch}
+        // PR-Fix-Regresiones-PR237 Bug 12. La cabecera lee el owner de
+        // `primaryAssignment` (fuente de verdad de `contact_assignments`).
+        // `contact.owner_user_id` es un cache desnormalizado que puede
+        // estar NULL para contactos legacy aunque sí haya un primary —
+        // por eso el modal mostraba "(Sin propietario)" mientras la
+        // cabecera mostraba el owner correcto. Pasamos primary explícito
+        // como fallback. Si NO hay primary, mantiene el valor del
+        // contact (puede ser null = realmente sin owner).
+        fallbackOwnerUserId={primaryAssignment?.user.id ?? null}
+        fallbackOwnerLabel={primaryAssignment?.user.full_name ?? null}
       />
 
       {/* PR-Backlog-Consolidado B1. Modal de confirmación doble. */}

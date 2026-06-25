@@ -1823,6 +1823,17 @@ td {
   gap: 12px;
 }
 
+/* PR-Fix-Regresiones-PR237 Bug 1. TaskModal usaba `.modal-form`
+ * directamente — Bart reportó "card sin márgenes ni padding interno,
+ * fea". `.modal-form` no tiene padding por diseño (otros consumers
+ * envuelven su contenido en grids con padding propio). Esta variante
+ * añade padding alineado con `.modal-header` para TaskModal y otros
+ * formularios simples sin grid wrapper. */
+.modal-form--padded {
+  gap: 14px;
+  padding: 18px 24px 22px;
+}
+
 .modal-form label {
   display: flex;
   flex-direction: column;
@@ -2361,6 +2372,20 @@ a.origin-chip:hover { filter: brightness(0.97); }
  * limpio de cualquier ancestor con overflow:hidden de las tarjetas
  * del Resumen. */
 .tag-picker { z-index: 5000; }
+
+/* PR-Fix-Regresiones-PR237 Bug 8. La V1 (PR #237) intentaba z-index
+ * pero un ancestor con overflow:hidden clipaba el dropdown — z-index
+ * NO afecta clipping. Fix correcto: portal a document.body con
+ * position:fixed. Esta variante anula `top/left/right` del CSS base
+ * (que era `position:absolute` relativo al wrapper) — el JS calcula
+ * la geometría exacta vs el input via getBoundingClientRect. */
+.tag-picker-list--portal {
+  /* `position`, `top`, `left`, `width`, `max-height`, `z-index` se
+   * setean inline desde React. CSS solo aporta el resto del look. */
+  top: auto;
+  left: auto;
+  right: auto;
+}
 
 .tag-picker-row,
 .tag-picker-empty {
