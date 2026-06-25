@@ -26,6 +26,7 @@
  */
 import { Plus, Save, Star, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { resetContactManualEdits } from "../../lib/api";
 import { extractErrorMessage } from "../../lib/errors";
 import {
   getCompanies,
@@ -479,6 +480,22 @@ export function ContactEditForm({ contact, open, onClose, onPatch }: Props) {
           </button>
         </div>
         <div className="modal-body">
+          {/*
+            PR-Fix-Sync-No-Sobreescribe-Cambios-CRM. Banner informativo
+            cuando hay campos protegidos del sync: lista los campos
+            marcados como editados manualmente y ofrece un botón para
+            "volver al valor de Agile/Brevo".
+          */}
+          <ManuallyEditedBanner
+            contactId={contact.id}
+            fields={contact.manually_edited_fields ?? []}
+            onCleared={(updatedContact) => {
+              // Si el wrapper externo nos pasa onClose, reusamos el
+              // mismo flujo del save: cerrar + dejar que el page
+              // recargue. Sin ese hook se mantiene el modal abierto.
+              if (updatedContact) onClose();
+            }}
+          />
           <form className="contact-edit-grid" onSubmit={handleSubmit}>
             <fieldset className="contact-edit-section">
               <legend>Datos básicos</legend>
@@ -912,6 +929,86 @@ export function ContactEditForm({ contact, open, onClose, onPatch }: Props) {
           </div>
         </div>
       ) : null}
+    </div>
+  );
+}
+
+/**
+ * PR-Fix-Sync-No-Sobreescribe-Cambios-CRM. Banner que se muestra en
+ * el modal Editar cuando el contacto tiene campos editados
+ * manualmente que el sync de Agile/Brevo no sobreescribe. Permite
+ * resetear todas las marcas con un click (próximo sync vuelve a
+ * pisar esos campos con los valores externos).
+ */
+function ManuallyEditedBanner({
+  contactId,
+  fields,
+  onCleared,
+}: Readonly<{
+  contactId: string;
+  fields: string[];
+  onCleared: (updated: unknown) => void;
+}>) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  if (!fields || fields.length === 0) return null;
+
+  // Labels humanos para los campos más comunes; los desconocidos se
+  // muestran como el name crudo (sin cosmética).
+  const HUMAN_LABEL: Record<string, string> = {
+    first_name: "Nombre",
+    last_name: "Apellidos",
+    email: "Email",
+    phone: "Teléfono",
+    job_title: "Puesto",
+    linkedin_url: "LinkedIn",
+    personal_website: "Web personal",
+    address_line: "Dirección",
+    address_city: "Ciudad",
+    address_state: "Provincia",
+    address_postal_code: "Código postal",
+    address_country: "País",
+    address_country_name: "País (nombre)",
+    address_region: "Región",
+    company_id: "Empresa",
+    custom_fields: "Campos personalizados",
+  };
+
+  async function handleReset() {
+    setBusy(true);
+    setError(null);
+    try {
+      const updated = await resetContactManualEdits(contactId);
+      onCleared(updated);
+    } catch (err) {
+      setError(extractErrorMessage(err, "No se pudo resetear las marcas"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="manual-edits-banner" role="status">
+      <strong>Editado manualmente · no se sobreescribe en sync</strong>
+      <p className="muted small">
+        Estos campos los modificaste tú desde el CRM y el sync de
+        Agile/Brevo los respeta:
+      </p>
+      <ul className="manual-edits-banner-fields">
+        {fields.map((f) => (
+          <li key={f}>{HUMAN_LABEL[f] ?? f}</li>
+        ))}
+      </ul>
+      <button
+        type="button"
+        className="button secondary small"
+        onClick={handleReset}
+        disabled={busy}
+        title="Vuelve a aceptar el valor externo en el próximo sync"
+      >
+        {busy ? "Reseteando…" : "Volver al valor de Agile/Brevo"}
+      </button>
+      {error ? <p className="form-error small">{error}</p> : null}
     </div>
   );
 }

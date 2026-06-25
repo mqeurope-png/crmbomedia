@@ -426,10 +426,14 @@ def test_sync_writes_tags_into_mn_table_not_csv(factory: sessionmaker):
         assert session.query(Contact).one().tags == ""
 
 
-def test_sync_removes_tag_dropped_from_payload(factory: sessionmaker):
-    """A second sync that drops a tag must clear the corresponding
-    contact_tag row — but only when its source matches THIS
-    AgileCRM account. Manual tags are sticky."""
+def test_sync_does_not_remove_tag_dropped_from_payload(factory: sessionmaker):
+    """PR-Fix-Sync-No-Sobreescribe-Cambios-CRM. Cambio de política:
+    el sync NUNCA quita tags. Si AgileCRM deja de traer una tag en
+    un payload posterior, la tag persiste en el CRM. La única forma
+    de quitar una tag es vía UI manual.
+
+    Antes del PR-Fix: "lead" se borraba cuando Agile lo dejaba de
+    traer. Tras el PR-Fix: "lead" sobrevive."""
     from app.models.crm import ContactTag, Tag
 
     first = _FakeClient(
@@ -466,9 +470,11 @@ def test_sync_removes_tag_dropped_from_payload(factory: sessionmaker):
         names = sorted(
             link.tag.name_normalized for link in contact.tag_assignments
         )
-        # "lead" gone (AgileCRM dropped it), "vip" stays (still in payload),
-        # "manual" stays (different source, never touched by sync).
-        assert names == ["manual", "vip"]
+        # "lead" sobrevive (sync ya no quita; operador es la única
+        # fuente para retirar tags).
+        # "vip" sigue (siempre en el payload).
+        # "manual" sigue (source distinto).
+        assert names == ["lead", "manual", "vip"]
 
 
 # ---------------------------------------------------------------------------
