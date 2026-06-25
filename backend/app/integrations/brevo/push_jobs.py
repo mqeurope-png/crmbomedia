@@ -420,3 +420,218 @@ def _periodic_push_runner() -> None:
 # Registro del operation handler para que `run_sync_job` lo encuentre
 # si alguien lo dispara desde /api/brevo/sync.
 OPERATIONS["brevo:periodic_push"] = periodic_push_check
+
+
+# ---------------------------------------------------------------------------
+# Bulk-fetch del inventario de emails Brevo (PR-Fix-Backfill-Brevo-Optimizado)
+# ---------------------------------------------------------------------------
+#
+# El backfill #233 hacía 20K `get_contact` (uno por contacto) para descubrir
+# que el ~95% ya estaba en Brevo. ~7h al rate-limit de Brevo (400 req/min)
+# por una tabla de hash que cabe en <2MB de RAM.
+#
+# Solución: paginar `/v3/contacts?limit=1000` UNA vez (≈50 reqs para
+# 50K contactos ≈ 8s real) → set en memoria con emails lowercase →
+# cache Redis 1h. El endpoint admin pre-filtra contra ese set y decide
+# si encolar push pesado (creación) o el handler ligero (solo
+# add_to_list, sin lookup previo).
+
+BULK_FETCH_PAGE_SIZE = 1000
+BULK_FETCH_CACHE_PREFIX = "brevo:backfill:emails:"
+BULK_FETCH_CACHE_TTL_SECONDS = 3600
+
+
+def _cache_key(account_id: str) -> str:
+    return f"{BULK_FETCH_CACHE_PREFIX}{account_id}"
+
+
+def _load_emails_from_cache(account_id: str) -> set[str] | None:
+    """Devuelve el set cacheado en Redis (TTL 1h) o None si no hay
+    cache o Redis está caído. Las claves se guardan en lowercase."""
+    try:
+        import json  # noqa: PLC0415
+
+        raw = redis_connection().get(_cache_key(account_id))
+        if not raw:
+            return None
+        data = json.loads(raw)
+        if not isinstance(data, list):
+            return None
+        return {str(e).strip().lower() for e in data if e}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("brevo.backfill cache read failed: %s", exc)
+        return None
+
+
+def _store_emails_in_cache(account_id: str, emails: set[str]) -> None:
+    try:
+        import json  # noqa: PLC0415
+
+        redis_connection().set(
+            _cache_key(account_id),
+            json.dumps(sorted(emails)),
+            ex=BULK_FETCH_CACHE_TTL_SECONDS,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("brevo.backfill cache write failed: %s", exc)
+
+
+def invalidate_emails_cache(account_id: str) -> None:
+    try:
+        redis_connection().delete(_cache_key(account_id))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("brevo.backfill cache delete failed: %s", exc)
+
+
+def fetch_brevo_emails(
+    session: Session, account_id: str, *, refresh: bool = False
+) -> set[str]:
+    """Bulk-fetch del inventario completo de emails Brevo. Cacheado
+    1h en Redis. Si `refresh=True`, ignora la cache y vuelve a leer.
+
+    Las llamadas a `list_contacts` paginadas raisean
+    `IntegrationError` propaga la excepción al caller (el endpoint
+    devuelve 502/500 con detail claro). Emails normalizados a lowercase."""
+    if not refresh:
+        cached = _load_emails_from_cache(account_id)
+        if cached is not None:
+            logger.info(
+                "brevo.backfill cache hit account=%s size=%d",
+                account_id, len(cached),
+            )
+            return cached
+
+    async def _drive() -> set[str]:
+        emails: set[str] = set()
+        async with BrevoClient(session, account_id) as client:
+            offset = 0
+            while True:
+                page = await client.list_contacts(
+                    limit=BULK_FETCH_PAGE_SIZE, offset=offset
+                )
+                rows = page.get("contacts") or []
+                if not rows:
+                    break
+                for row in rows:
+                    email = row.get("email")
+                    if email:
+                        emails.add(str(email).strip().lower())
+                offset += BULK_FETCH_PAGE_SIZE
+                if len(rows) < BULK_FETCH_PAGE_SIZE:
+                    break
+                # Logging para que el operador vea avance en worker
+                # cuando son cuentas grandes.
+                if offset % 5000 == 0:
+                    logger.info(
+                        "brevo.backfill bulk fetch progress=%d", offset
+                    )
+        return emails
+
+    emails = asyncio.run(_drive())
+    logger.info(
+        "brevo.backfill bulk fetch done account=%s size=%d",
+        account_id, len(emails),
+    )
+    _store_emails_in_cache(account_id, emails)
+    return emails
+
+
+# ---------------------------------------------------------------------------
+# Lightweight handler: add_contact_to_owner_list
+# ---------------------------------------------------------------------------
+#
+# Para los contactos que YA existen en Brevo (descubierto por el
+# pre-filtro del backfill), no hay que hacer create_contact ni
+# get_contact: solo añadirlos a la lista del owner. Reduce de 2 reqs
+# (get + add_to_list) a 1 sola y deja `push_contact_to_brevo`
+# reservado para creaciones reales y para cambios de owner en runtime.
+
+
+def enqueue_add_to_owner_list(*, contact_id: str) -> None:
+    try:
+        _enqueue(add_contact_to_owner_list, contact_id)
+        logger.info(
+            "brevo.add_to_owner_list enqueued contact_id=%s", contact_id
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "brevo.add_to_owner_list enqueue failed contact_id=%s: %s",
+            contact_id, exc,
+        )
+
+
+def add_contact_to_owner_list(contact_id: str) -> None:
+    """RQ entry point ligero. Solo añade el contacto a la lista de su
+    owner — asume que ya existe en Brevo. Si el owner cambió mientras
+    el job estaba en cola, usa el owner ACTUAL (`get_mapping` con el
+    valor leído ahora). Si `should_push` falla (sin owner / sin
+    email), skip silencioso."""
+    from app.db.session import get_engine  # noqa: PLC0415
+
+    with Session(get_engine()) as session:
+        try:
+            _add_one(session, contact_id)
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+
+
+def _add_one(session: Session, contact_id: str) -> None:
+    contact = session.get(Contact, contact_id)
+    if contact is None:
+        return
+    ok, skip_reason = _service.should_push(contact)
+    if not ok:
+        logger.info(
+            "brevo.add_to_owner_list skip contact_id=%s reason=%s",
+            contact_id, skip_reason,
+        )
+        return
+    mapping = _service.get_mapping(session, contact.owner_user_id)
+    if mapping is None:
+        return
+    account = _resolve_brevo_account(session)
+    if account is None:
+        return
+    list_id = int(mapping.brevo_list_id)
+    email = contact.email
+
+    async def _drive() -> None:
+        async with BrevoClient(session, account.account_id) as client:
+            await client.add_contacts_to_list(list_id, [email])
+
+    try:
+        asyncio.run(_drive())
+    except Exception as exc:  # noqa: BLE001
+        record_event(
+            session,
+            action=Action.BREVO_CONTACT_PUSH_FAILED,
+            target_type="contact",
+            target_id=contact_id,
+            metadata={
+                "error": str(exc),
+                "list_id": list_id,
+                "owner_user_id": contact.owner_user_id,
+                "mode": "add_to_owner_list",
+            },
+        )
+        session.commit()
+        raise
+
+    if not contact.brevo_contact_id:
+        contact.brevo_contact_id = "pre-existing"
+    contact.brevo_last_synced_at = datetime.now(UTC)
+    record_event(
+        session,
+        action=Action.BREVO_CONTACT_PUSHED,
+        target_type="contact",
+        target_id=contact_id,
+        metadata={
+            "list_id": list_id,
+            "action": "added_to_list",
+            "mode": "add_to_owner_list",
+            "owner_user_id": contact.owner_user_id,
+        },
+    )
+

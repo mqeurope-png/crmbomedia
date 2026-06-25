@@ -33,8 +33,17 @@ export interface BrevoUserListMappingItem {
 }
 
 export interface BrevoBackfillPushResponse {
-  queued_count: number;
+  // PR-Fix-Backfill-Brevo-Optimizado. La V2 del endpoint pre-filtra
+  // contra el inventario de emails de Brevo y reporta los buckets
+  // por separado, en vez de un único `queued_count`.
+  total_with_owner: number;
+  already_in_brevo_marked: number;
+  queued_for_creation: number;
+  queued_for_list_add_only: number;
   estimated_minutes: number;
+  dry_run: boolean;
+  cached_inventory: boolean;
+  brevo_inventory_size: number;
 }
 
 export async function getBrevoUserListMappings(): Promise<BrevoUserListMappingsRead> {
@@ -55,9 +64,15 @@ export async function putBrevoUserListMappings(
   );
 }
 
-export async function triggerBrevoBackfillPush(): Promise<BrevoBackfillPushResponse> {
-  return apiFetch<BrevoBackfillPushResponse>(
-    "/api/brevo/admin/backfill-push",
-    { method: "POST" },
-  );
+export async function triggerBrevoBackfillPush(
+  options: { dryRun?: boolean; refresh?: boolean } = {},
+): Promise<BrevoBackfillPushResponse> {
+  const params = new URLSearchParams();
+  if (options.dryRun) params.set("dry_run", "true");
+  if (options.refresh) params.set("refresh", "true");
+  const qs = params.toString();
+  const path = qs
+    ? `/api/brevo/admin/backfill-push?${qs}`
+    : "/api/brevo/admin/backfill-push";
+  return apiFetch<BrevoBackfillPushResponse>(path, { method: "POST" });
 }
