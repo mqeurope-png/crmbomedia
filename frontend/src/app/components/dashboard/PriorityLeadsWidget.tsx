@@ -68,20 +68,53 @@ export function PriorityLeadsWidget() {
     };
   }, [window_]);
 
-  // Bug 3 fix (Bart 2026-06-25): "Ver todos" abre /contacts con un
-  // preset que el contacts page reconoce y filtra por los mismos
-  // criterios del widget (assigned al user + signal en la ventana).
-  // Period se pasa en la URL para que el backend reuse exactamente
-  // la ventana del widget.
-  const seeAllHref = `/contacts?preset=priority_leads&period=${encodeURIComponent(
-    window_.period,
-  )}${
-    window_.period === "custom" && window_.start && window_.end
-      ? `&start=${encodeURIComponent(window_.start)}&end=${encodeURIComponent(
-          window_.end,
-        )}`
-      : ""
-  }`;
+  // PR-Fix-Regresiones-PR237 Bug 3. La V1 del PR #237 linkaba a
+  // `?preset=priority_leads` pero /contacts no reconocía ese preset
+  // → abría sin filtros. Fix: pre-fetch IDs del endpoint del widget
+  // y encodearlos como `rules` IN base64 — el mismo formato que ya
+  // usa /contacts cuando aplica filtros del builder.
+  //
+  // Resultado: /contacts muestra EXACTAMENTE los mismos contactos
+  // que el widget (no más, no menos), con todas las acciones masivas
+  // disponibles (Bart pidió "asignar owner, añadir tag, push Brevo,
+  // etc").
+  const [seeAllHref, setSeeAllHref] = useState<string>("/contacts");
+  useEffect(() => {
+    let cancelled = false;
+    // Pedimos hasta 500 (cap razonable para /contacts) — si hay más,
+    // Bart puede afinar con filtros adicionales encima.
+    getDashboardPriorityLeads(window_, 500)
+      .then((rows) => {
+        if (cancelled) return;
+        if (!rows.length) {
+          setSeeAllHref("/contacts");
+          return;
+        }
+        // Formato del rules tree del repo: ver
+        // `frontend/src/app/lib/entitySchema.ts` (RuleNode).
+        const rules = {
+          operator: "AND",
+          children: [
+            {
+              type: "rule",
+              field: "id",
+              comparator: "in",
+              value: rows.map((r) => r.id),
+            },
+          ],
+        };
+        const encoded = btoa(
+          encodeURIComponent(JSON.stringify(rules)),
+        );
+        setSeeAllHref(`/contacts?rules=${encoded}`);
+      })
+      .catch(() => {
+        if (!cancelled) setSeeAllHref("/contacts");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [window_]);
 
   return (
     <article className="card widget widget-priority-leads">

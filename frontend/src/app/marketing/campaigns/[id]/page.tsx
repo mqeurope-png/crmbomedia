@@ -248,7 +248,28 @@ export default function CampaignDetailPage() {
                   try {
                     const fresh = await refreshBrevoCampaignStats(campaign.id);
                     setCampaign(fresh);
-                    setMessage("Stats actualizadas desde Brevo.");
+                    // PR-Fix-Regresiones-PR237 Bug 6. El endpoint OK
+                    // no garantiza que Brevo tenga stats todavía —
+                    // típicamente devuelve todo 0 durante 1-2h tras
+                    // envío. Detectamos el caso "todo cero" y damos
+                    // feedback honesto al admin en lugar de fingir
+                    // éxito (que era lo que Bart veía: click sin
+                    // cambios).
+                    const freshStats =
+                      (fresh.stats as Record<string, number> | null) ?? {};
+                    const total = Object.values(freshStats).reduce(
+                      (acc, v) => acc + (Number(v) || 0),
+                      0,
+                    );
+                    if (total === 0) {
+                      setMessage(
+                        "Brevo aún no tiene stats disponibles para esta " +
+                          "campaña — son normales en envíos recientes " +
+                          "(<2 h). Vuelve a intentar más tarde.",
+                      );
+                    } else {
+                      setMessage("Stats actualizadas desde Brevo.");
+                    }
                   } catch (err) {
                     setMessage(
                       `No se pudieron refrescar las stats: ${

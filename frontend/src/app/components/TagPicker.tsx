@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { listTags, type TagDetail } from "../lib/api";
 
 type Props = {
@@ -22,6 +23,39 @@ export function TagPicker({ excludeTagIds, onPick }: Props) {
   const [open, setOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const wrapper = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  // PR-Fix-Regresiones-PR237 Bug 8. La V1 subió z-index a 5000 pero
+  // un ancestor del wrapper tenía `overflow:hidden` que clipaba el
+  // dropdown — z-index no afecta clipping. Fix correcto: portal a
+  // `document.body` con `position:fixed` y geometría calculada vs el
+  // input via `getBoundingClientRect`. El dropdown sale de cualquier
+  // contenedor con overflow:hidden y queda siempre visible.
+  //
+  // Si el input está en la mitad inferior del viewport, el dropdown
+  // abre hacia arriba para no salirse de pantalla.
+  const [pos, setPos] = useState<{
+    top: number;
+    left: number;
+    width: number;
+    openUpwards: boolean;
+  } | null>(null);
+
+  const recomputePos = useCallback(() => {
+    const input = inputRef.current;
+    if (!input) return;
+    const rect = input.getBoundingClientRect();
+    const viewportHeight = window.innerHeight;
+    const dropdownMaxHeight = 300;
+    const spaceBelow = viewportHeight - rect.bottom;
+    const openUpwards =
+      spaceBelow < dropdownMaxHeight && rect.top > spaceBelow;
+    setPos({
+      top: openUpwards ? rect.top - 4 : rect.bottom + 4,
+      left: rect.left,
+      width: rect.width,
+      openUpwards,
+    });
+  }, []);
 
   useEffect(() => {
     if (!open || allTags !== null) return;
@@ -32,11 +66,33 @@ export function TagPicker({ excludeTagIds, onPick }: Props) {
 
   useEffect(() => {
     function handleClick(event: MouseEvent) {
-      if (!wrapper.current?.contains(event.target as Node)) setOpen(false);
+      const target = event.target as Node;
+      // Clicks dentro del wrapper O del dropdown portal: no cerrar.
+      // El dropdown vive fuera del wrapper (portal), así que también
+      // miramos su data-attribute.
+      if (wrapper.current?.contains(target)) return;
+      const portalRoot = document.getElementById("tag-picker-portal");
+      if (portalRoot?.contains(target)) return;
+      setOpen(false);
     }
     document.addEventListener("mousedown", handleClick);
     return () => document.removeEventListener("mousedown", handleClick);
   }, []);
+
+  // Re-calcular posición al abrir y en cada scroll/resize mientras
+  // está abierto. Sin esto el dropdown se queda flotando en una
+  // posición vieja si el operador hace scroll de la página.
+  useEffect(() => {
+    if (!open) return;
+    recomputePos();
+    const handler = () => recomputePos();
+    window.addEventListener("scroll", handler, true);
+    window.addEventListener("resize", handler);
+    return () => {
+      window.removeEventListener("scroll", handler, true);
+      window.removeEventListener("resize", handler);
+    };
+  }, [open, recomputePos]);
 
   const excluded = useMemo(() => new Set(excludeTagIds ?? []), [excludeTagIds]);
   const trimmed = query.trim();
@@ -64,29 +120,20 @@ export function TagPicker({ excludeTagIds, onPick }: Props) {
     setOpen(false);
   }
 
-  return (
-    <div ref={wrapper} className="tag-picker">
-      <input
-        type="text"
-        placeholder="+ Añadir tag"
-        value={query}
-        onFocus={() => setOpen(true)}
-        onChange={(event) => {
-          setQuery(event.target.value);
-          setOpen(true);
-        }}
-        onKeyDown={(event) => {
-          if (event.key === "Enter") {
-            event.preventDefault();
-            if (exactMatch) handlePick(exactMatch);
-            else if (trimmed) handleCreate();
-          } else if (event.key === "Escape") {
-            setOpen(false);
-          }
-        }}
-      />
-      {open ? (
-        <ul className="tag-picker-list" role="listbox">
+  const dropdown = open && pos ? (
+    <ul
+      className="tag-picker-list tag-picker-list--portal"
+      role="listbox"
+      style={{
+        position: "fixed",
+        top: pos.openUpwards ? undefined : pos.top,
+        bottom: pos.openUpwards ? window.innerHeight - pos.top : undefined,
+        left: pos.left,
+        width: pos.width,
+        maxHeight: 300,
+        zIndex: 9999,
+      }}
+    >
           {error ? <li className="tag-picker-empty">{error}</li> : null}
           {!error && allTags === null ? (
             <li className="tag-picker-empty">Cargando…</li>
@@ -131,11 +178,40 @@ export function TagPicker({ excludeTagIds, onPick }: Props) {
               Crear tag nueva: <strong>&ldquo;{trimmed}&rdquo;</strong>
             </li>
           ) : null}
-          {!filtered.length && !trimmed && allTags !== null ? (
-            <li className="tag-picker-empty">No hay tags aún. Escribe para crear.</li>
-          ) : null}
-        </ul>
+      {!filtered.length && !trimmed && allTags !== null ? (
+        <li className="tag-picker-empty">No hay tags aún. Escribe para crear.</li>
       ) : null}
+    </ul>
+  ) : null;
+
+  return (
+    <div ref={wrapper} className="tag-picker">
+      <input
+        ref={inputRef}
+        type="text"
+        placeholder="+ Añadir tag"
+        value={query}
+        onFocus={() => setOpen(true)}
+        onChange={(event) => {
+          setQuery(event.target.value);
+          setOpen(true);
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            if (exactMatch) handlePick(exactMatch);
+            else if (trimmed) handleCreate();
+          } else if (event.key === "Escape") {
+            setOpen(false);
+          }
+        }}
+      />
+      {dropdown && typeof window !== "undefined"
+        ? createPortal(
+            <div id="tag-picker-portal">{dropdown}</div>,
+            document.body,
+          )
+        : null}
     </div>
   );
 }

@@ -147,16 +147,27 @@ export function TaskModal({
     // patrón que ContactEditForm) en lugar del antiguo `modal-backdrop`
     // + `modal` sin CSS — el inner `.modal` no tenía estilo y el
     // contenido se mezclaba con la página de fondo.
+    // PR-Fix-Regresiones-PR237 Bug 1. La V1 ya usaba `modal-overlay`
+    // + `modal-dialog` pero el `<header>` y `<form>` internos no
+    // tenían clases — el dialog quedaba sin padding ni separación
+    // entre secciones (Bart reportó "card sin márgenes ni padding
+    // interno, fea"). Aplicamos `modal-header` (padding + border-
+    // bottom) y `modal-form` (padding + gap entre fields) para
+    // alinearlo con el modal Editar contacto que sí está bien.
     <div className="modal-overlay" role="dialog" aria-modal="true">
       <div className="modal-dialog">
-        <header>
+        <header className="modal-header">
           <h2>{isEdit ? "Editar tarea" : "Nueva tarea"}</h2>
           {contactId && !isEdit ? (
             <p className="muted small">Vinculada al contacto actual.</p>
           ) : null}
         </header>
-        {error ? <p className="form-error">{error}</p> : null}
-        <form onSubmit={handleSubmit}>
+        {error ? (
+          <p className="form-error" style={{ margin: "12px 24px 0" }}>
+            {error}
+          </p>
+        ) : null}
+        <form onSubmit={handleSubmit} className="modal-form modal-form--padded">
           <label className="field">
             Título
             <input
