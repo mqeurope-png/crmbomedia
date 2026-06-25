@@ -237,6 +237,28 @@ FIELD_SPECS: dict[str, FieldSpec] = {
     # Sprint Filtros & Listas: owner exposed as column AND filter.
     # `is_null` == "Sin asignar"; populated en masse by the upcoming
     # Reglas-Assign sprint, NULL on every imported contact today.
+    # PR-Fix-Leads-Prioritarios-3a-Vez. Sin un campo `id` registrado,
+    # filtros sintéticos generados por widgets del dashboard (que
+    # pasan los UUIDs de los contactos del preview como filtro
+    # `id IN [...]`) caían con SegmentRuleError("Unknown field 'id'").
+    # Bart vio 3 ciclos del bug "Ver todos" porque el filtro nunca
+    # llegaba a la query. Comparadores limitados a `in`/`not_in`/`eq`/
+    # `neq` (no tiene sentido `contains` sobre UUIDs) y campo oculto
+    # del rule-builder UI por defecto (displayable=False + grouped
+    # under "Sistema" para que el operador no lo vea en el picker
+    # general, aunque sigue filterable para programmatic).
+    "id": FieldSpec(
+        key="id",
+        label="ID del contacto",
+        type="reference",
+        comparators=("eq", "neq", "in", "not_in"),
+        column=Contact.id,
+        sortable=False,
+        displayable=False,
+        filterable=True,
+        default_visible=False,
+        grouped_under="Sistema",
+    ),
     "owner_user_id": FieldSpec(
         key="owner_user_id",
         label="Propietario (legacy)",
