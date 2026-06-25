@@ -280,7 +280,15 @@ def priority_leads(
     ),
     start: datetime | None = Query(default=None),
     end: datetime | None = Query(default=None),
-    limit: int = Query(default=10, ge=1, le=50),
+    # PR-Fix-Leads-Prioritarios-4a-Vez. Cap antiguo era 50 — el
+    # widget del dashboard preview pide 10 y "Ver todos" pide el
+    # full set para construir el filtro URL de /contacts. Bart vio
+    # 4 ciclos del bug porque el frontend pedía limit=500, FastAPI
+    # 422-eaba por `le=50`, mi `.catch(() => [])` swallow-eaba el
+    # error y acababa pusheando `value: [""]` a la URL. Subimos
+    # a 200 — cap razonable que no rompe UX si un power user tiene
+    # muchos prioritarios.
+    limit: int = Query(default=10, ge=1, le=200),
     session: Session = Depends(get_session),
     current_user: User = Depends(require_viewer),
 ) -> list[dict[str, Any]]:

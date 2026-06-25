@@ -15,16 +15,24 @@
  * con `view_id` y sin `rules`. Race-condition documentada por Bart
  * con screenshot de la URL real.
  *
- * V3 (este fix): convertir el `<Link>` en `<button>` con
- * onClick async. Pase lo que pase, el navigate ocurre DESPUÉS de
- * que tenemos los IDs:
+ * V3 arregló la race condition + añadió campo `id` al engine.
+ * Pero introdujo otro bug: pedía `limit=500` al endpoint backend
+ * `GET /api/dashboard/priority-leads` que tenía `le=50`. FastAPI
+ * 422-eaba la request → mi `.catch(() => [])` la swallow-eaba →
+ * `ids = []` → fallback `buildRulesUrl([""])` con `value:[""]` →
+ * /contacts mostraba 20.228 contactos (rule vacío = sin filtro).
  *
- *   1. Si los IDs ya están cacheados en estado → push inmediato.
- *   2. Si la fetch sigue pending → await la promesa cacheada en
- *      `seeAllPromiseRef` (sin disparar otra) y push con su
- *      resultado.
- *   3. Si la fetch falló o devolvió 0 → navegar a `/contacts`
- *      vacío (degradado correcto, no rompe el flow).
+ * V4 (este fix):
+ *   1. Cap frontend a 50 (alineado con backend después de subirlo
+ *      a 200 en el mismo PR para futuro power-user margen).
+ *   2. ELIMINAMOS el fallback `[""]`. Si la fetch falla o devuelve
+ *      empty, mostramos error en UI Y NO navegamos. El operador
+ *      ve el problema en lugar de aterrizar en una lista
+ *      desfiltrada.
+ *   3. `.catch` log + setError en lugar de retornar `[]` silencioso.
+ *      Bart y futuros mantenedores verán el fail real, no la
+ *      consecuencia downstream.
+ *   4. El botón "Ver todos" se deshabilita si la fetch falló.
  *
  * El href nunca contiene `view_id`. Se usa `router.push()` con
  * rules en query string — el parser de /contacts ya entra por la
@@ -115,24 +123,49 @@ export function PriorityLeadsWidget() {
     };
   }, [window_]);
 
-  // V3: full-set IDs cacheados + ref a la promise para que el click
-  // pueda await si todavía está pending. Pedimos hasta 500 — cap
-  // razonable para /contacts; si hay más, Bart afina con filtros
-  // adicionales encima.
+  // V4: full-set IDs cacheados + ref a la promise para await en
+  // click si todavía está pending. Limit alineado al cap del
+  // endpoint backend (sube a 200 en este mismo PR; mantenemos 50
+  // por defecto que cubre los casos reales sin saturar el JSON
+  // de la URL).
+  const FULL_SET_LIMIT = 50;
   const [allIds, setAllIds] = useState<string[] | null>(null);
-  const seeAllPromiseRef = useRef<Promise<string[]> | null>(null);
+  const [seeAllError, setSeeAllError] = useState<string | null>(null);
+  const seeAllPromiseRef = useRef<Promise<string[] | null> | null>(null);
   const [navigating, setNavigating] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     setAllIds(null);
+    setSeeAllError(null);
     seeAllPromiseRef.current = null;
-    const promise = getDashboardPriorityLeads(window_, 500)
+    // V4 critical: la promesa puede devolver `null` cuando hay
+    // error — esto es lo que distingue "no hay leads" (array vacío
+    // válido) de "fetch falló" (null). El click handler lo lee y
+    // decide entre navegar, hacer nada, o mostrar error.
+    const promise = getDashboardPriorityLeads(window_, FULL_SET_LIMIT)
       .then((rows) => rows.map((r) => r.id))
-      .catch(() => [] as string[]);
+      .catch((err) => {
+        // V4: NO swallow silently. Log + surface al state.
+        // PR-Fix-Leads-Prioritarios-4a-Vez Bart: el bug del PR #239
+        // venía precisamente del `.catch(() => [])` swallow que
+        // ocultaba el 422 del backend (cap le=50, frontend pedía
+        // 500). Ahora vemos el error en consola Y en UI.
+        // eslint-disable-next-line no-console
+        console.error("priority-leads full set fetch failed:", err);
+        return null;
+      });
     seeAllPromiseRef.current = promise;
     promise.then((ids) => {
-      if (!cancelled) setAllIds(ids);
+      if (cancelled) return;
+      if (ids === null) {
+        setSeeAllError(
+          "No se pudo cargar la lista completa de leads prioritarios.",
+        );
+        setAllIds(null);
+      } else {
+        setAllIds(ids);
+      }
     });
     return () => {
       cancelled = true;
@@ -142,28 +175,52 @@ export function PriorityLeadsWidget() {
   async function onSeeAll(e: React.MouseEvent) {
     e.preventDefault();
     setNavigating(true);
+    setSeeAllError(null);
     try {
-      let ids: string[];
+      let ids: string[] | null;
       if (allIds != null) {
         ids = allIds;
       } else {
-        // Fetch todavía pending → esperar la promise CACHEADA
-        // (no disparar otra). Si nunca arrancó por algún bug,
-        // disparar fresco.
+        // Fetch todavía pending → await la promise cacheada
+        // (no disparar otra).
         ids =
           (await (seeAllPromiseRef.current ??
-            getDashboardPriorityLeads(window_, 500).then((rows) =>
+            getDashboardPriorityLeads(window_, FULL_SET_LIMIT).then((rows) =>
               rows.map((r) => r.id),
-            ))) ?? [];
+            ))) ?? null;
       }
-      if (!ids.length) {
-        // No hay leads prioritarios → llevamos a /contacts vacío
-        // con rules que matchean 0 (id IN [""]) para que la página
-        // muestre 0 resultados en lugar de la default view del user.
-        router.push(buildRulesUrl([""]));
+      // V4 critical: si la fetch falló (null) O devolvió empty,
+      // NO navegamos con un rule roto. Mostramos error y dejamos
+      // al operador en el dashboard. Esto evita aterrizar en
+      // /contacts con `value:[""]` o navegar a una vista default
+      // que no tiene nada que ver con prioritarios.
+      if (ids === null) {
+        setSeeAllError(
+          "No se pudo cargar la lista completa de leads prioritarios. Vuelve a intentar.",
+        );
         return;
       }
-      router.push(buildRulesUrl(ids));
+      if (!ids.length) {
+        // Caso legítimo "0 prioritarios". El widget no debería
+        // siquiera renderizar "Ver todos" en este caso (gate
+        // `leads.length > 0`), pero si llega aquí no rompemos:
+        // mensaje claro al operador.
+        setSeeAllError(
+          "No tienes leads prioritarios en este período — nada que ver.",
+        );
+        return;
+      }
+      // Validación defensiva: filtra ids vacíos / null por si la
+      // API algún día devuelve basura. Si todo es basura, falla
+      // loud.
+      const cleanIds = ids.filter((id) => typeof id === "string" && id.length > 0);
+      if (!cleanIds.length) {
+        setSeeAllError(
+          "La respuesta del servidor no traía IDs válidos. Recarga la página y vuelve a intentar.",
+        );
+        return;
+      }
+      router.push(buildRulesUrl(cleanIds));
     } finally {
       setNavigating(false);
     }
@@ -220,11 +277,22 @@ export function PriorityLeadsWidget() {
       </div>
       {leads.length > 0 ? (
         <footer className="widget-footer">
-          {/* PR-Fix-Leads-Prioritarios-3a-Vez. button + onClick
-           * async — el navigate ocurre DESPUÉS de que tenemos los
-           * IDs, así nunca llegamos a /contacts con URL vacía (que
-           * disparaba el localStorage fallback y la default view
-           * con view_id=cc9baa84...). */}
+          {/* V3: button + onClick async — el navigate ocurre DESPUÉS
+           * de que tenemos los IDs, así nunca llegamos a /contacts
+           * con URL vacía (que disparaba el localStorage fallback y
+           * la default view con view_id=cc9baa84...).
+           *
+           * V4: si seeAllError está set, mostramos el mensaje encima
+           * del botón en lugar de navegar silenciosamente a una URL
+           * con rule vacío. */}
+          {seeAllError ? (
+            <p
+              className="form-error"
+              style={{ marginBottom: 6, fontSize: 12 }}
+            >
+              {seeAllError}
+            </p>
+          ) : null}
           <button
             type="button"
             className="widget-see-all"

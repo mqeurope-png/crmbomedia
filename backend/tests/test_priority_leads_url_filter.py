@@ -140,6 +140,27 @@ def test_contacts_search_with_id_in_filter_returns_matching_contacts(
     assert returned_ids == set(target_ids)
 
 
+def test_priority_leads_endpoint_accepts_limit_up_to_200(client, factory):
+    """PR-Fix-Leads-Prioritarios-4a-Vez. El bug del PR #239 fue que el
+    backend tenía `le=50` y el frontend pedía 500 → 422 → swallow →
+    rule URL roto con `value:[""]`. Cap subido a 200 en este PR.
+
+    Defensa: limit=200 debe devolver 200 OK; limit=201 debe 422. Si
+    alguien sube el cap más arriba en el futuro, este test recordará
+    sincronizar con el frontend."""
+    response = client.get(
+        "/api/dashboard/priority-leads?limit=200",
+        headers=auth_headers(client, "admin"),
+    )
+    assert response.status_code == 200, response.text
+
+    response = client.get(
+        "/api/dashboard/priority-leads?limit=201",
+        headers=auth_headers(client, "admin"),
+    )
+    assert response.status_code == 422, response.text
+
+
 def test_contacts_search_with_unknown_field_returns_400(client, factory):
     """Defensa: una rule con field inexistente debe 400 (no error
     silencioso). El segundo PR no se enteró del fail porque no había
