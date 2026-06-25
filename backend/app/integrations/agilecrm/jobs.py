@@ -398,48 +398,31 @@ def _sync_tag_delta(
     account_id: str,
     desired_names: list[str],
 ) -> None:
-    """Reconcile the contact's AgileCRM-sourced tag assignments with
-    the desired set from this payload.
+    """PR-Fix-Sync-No-Sobreescribe-Cambios-CRM. Reconcilia los tags
+    del payload de AgileCRM en modo **MERGE-only**: el sync SOLO
+    añade tags nuevas. NUNCA quita tags, ni siquiera los que Agile
+    deje de traer en sucesivos payloads.
 
-    Crucially we only touch assignments whose `source` matches
-    `agilecrm:<this_account_id>` — tags added manually from the CRM
-    UI, or sourced from another AgileCRM account, or migrated from
-    the legacy CSV, stay untouched. So a manual unassign in the CRM
-    survives a sync, and a sync from account A never erases tags
-    attached by account B.
+    Justificación de Bart: si el comercial quitó una tag desde el
+    CRM, no debe volver a aparecer aunque Agile la siga teniendo
+    (operador = fuente de verdad). Y si Agile aparece un día sin
+    una tag que antes traía, no es señal de que el comercial quiera
+    quitársela al contacto — puede ser un blip de Agile, una
+    edición externa que no nos pertenece, etc.
+
+    Por simetría: tags `source='manual'` o
+    `source='migrated_from_csv'` siempre quedan intactos. Para
+    quitar una tag manualmente el operador usa el endpoint
+    `DELETE /api/contacts/{id}/tags/{tag_id}` desde la UI.
     """
     from app.models.crm import ContactTag, Tag
 
     source = f"agilecrm:{account_id}"
     desired_normalized: dict[str, str] = {name.lower(): name for name in desired_names}
 
-    existing_rows = list(
-        session.scalars(
-            select(ContactTag).where(
-                ContactTag.contact_id == contact_id,
-                ContactTag.source == source,
-            )
-        )
-    )
-    existing_tag_ids = {row.tag_id for row in existing_rows}
-    if existing_tag_ids:
-        existing_tags = list(
-            session.scalars(select(Tag).where(Tag.id.in_(existing_tag_ids)))
-        )
-    else:
-        existing_tags = []
-    existing_normalized_by_id = {
-        tag.id: tag.name_normalized for tag in existing_tags
-    }
-
-    # Remove tags that are no longer present in the AgileCRM payload.
-    for row in existing_rows:
-        normalized = existing_normalized_by_id.get(row.tag_id)
-        if normalized is None or normalized not in desired_normalized:
-            session.delete(row)
-
-    # Upsert the tags we want, then ensure the contact_tag row exists
-    # under our source. Idempotent if already linked.
+    # Upsert los tags del payload, asegurando que la fila
+    # `contact_tag` existe bajo nuestra source. Idempotente si ya
+    # está linkado.
     for normalized, original in desired_normalized.items():
         tag = session.scalar(select(Tag).where(Tag.name_normalized == normalized))
         if tag is None:
@@ -493,18 +476,44 @@ def _apply_update(
     *,
     allow_email_overwrite: bool = True,
 ) -> None:
-    # Fields several systems contribute to follow a merge policy rather
-    # than last-writer-wins: keep the first origin, oldest external
-    # creation, newest external update. Both helpers pop their keys so
-    # the generic loop below never overwrites them.
+    """PR-Fix-Sync-No-Sobreescribe-Cambios-CRM.
+
+    Antes el sync hacía last-writer-wins indiscriminado: cualquier
+    `record` del mapper se aplicaba `setattr`-ado al contacto. Si
+    el comercial editaba lead_score, owner o phone en el CRM, el
+    siguiente sync lo machacaba con el valor de AgileCRM en máximo
+    1h. Bart confirmó el bug 2026-06-21.
+
+    Ahora la actualización pasa por
+    `contact_sync_protection.apply_sync_update`:
+      - Campos de Capa B (owner_user_id, lead_score, star_rating,
+        commercial_status, marketing_consent, is_active,
+        is_email_valid, origin, origin_account_id) NUNCA se tocan
+        desde sync, independientemente del array de protección.
+      - Campos de Capa A se respetan si están en
+        `contact.manually_edited_fields_json` (el operador los
+        editó manualmente en el CRM).
+      - El resto se aplica con normalidad.
+
+    Las políticas `keep_first_origin` y `merge_external_dates` se
+    mantienen como antes para los campos que NO viven en la capa
+    de protección (created_at_external, updated_at_external, etc.)."""
+    from app.services import contact_sync_protection as _protection  # noqa: PLC0415
+
     keep_first_origin(contact, record)
     merge_external_dates(contact, record)
-    for key, value in record.items():
-        if value in (None, "") and key != "tags":
-            continue
-        if key == "email" and not allow_email_overwrite:
-            continue
-        setattr(contact, key, value)
+    # Filtra antes de pasar al wrapper: skip valores NULL/empty
+    # (preservaba el comportamiento histórico) y entradas que no
+    # son del modelo Contact (e.g. tag_names que el caller pop'ea
+    # más arriba).
+    cleaned = {
+        k: v
+        for k, v in record.items()
+        if not (v in (None, "") and k != "tags")
+    }
+    _protection.apply_sync_update(
+        contact, cleaned, allow_email_overwrite=allow_email_overwrite
+    )
 
 
 # ---------------------------------------------------------------------------

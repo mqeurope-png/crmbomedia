@@ -2172,6 +2172,42 @@ td {
 
 .muted.small { font-size: 12px; }
 
+/* PR-Fix-Sync-No-Sobreescribe-Cambios-CRM. Banner en el modal Editar
+ * que advierte al operador qué campos están bajo protección frente
+ * al sync. Tono amber-soft para no alarmar pero notar. */
+.manual-edits-banner {
+  background: #fffbeb;
+  border: 1px solid #fcd34d;
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin: 0 0 16px;
+  font-size: 13px;
+}
+.manual-edits-banner strong {
+  color: #92400e;
+  display: block;
+  margin-bottom: 4px;
+}
+.manual-edits-banner-fields {
+  list-style: none;
+  padding: 0;
+  margin: 6px 0 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+}
+.manual-edits-banner-fields li {
+  background: #fef3c7;
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-weight: 500;
+  color: #78350f;
+}
+.form-error.small {
+  margin: 6px 0 0;
+  font-size: 12px;
+}
+
 .freshness {
   display: flex;
   flex-direction: column;

@@ -184,6 +184,12 @@ export type Contact = {
    * AgileCRM (1-5). Independiente de lead_score. 0 o null = sin
    * valorar. */
   star_rating?: number | null;
+  /** PR-Fix-Sync-No-Sobreescribe-Cambios-CRM. Lista de campos de
+   * Capa A que el operador editó manualmente desde la UI y que el
+   * sync de Agile/Brevo respeta. Vacío = ningún campo protegido.
+   * El modal Editar pinta un badge "Editado manualmente · no se
+   * sobreescribe en sync" junto a cada campo presente aquí. */
+  manually_edited_fields?: string[];
   custom_fields?: Record<string, unknown> | null;
   /** PR-Editar-Completo. Cache denormalizado del primary assignment
    *  (`contact_assignments` con is_primary=true). El modal Editar lo
@@ -671,6 +677,24 @@ export async function getContactsCount(): Promise<number> {
 
 export async function getContact(id: string): Promise<Contact> {
   return apiFetch<Contact>(`/api/contacts/${id}`);
+}
+
+/**
+ * PR-Fix-Sync-No-Sobreescribe-Cambios-CRM. Permite "volver a aceptar
+ * el valor de Agile/Brevo" para uno o varios campos previamente
+ * editados manualmente. Sin `fields` o `[]` → vacía la lista entera.
+ */
+export async function resetContactManualEdits(
+  contactId: string,
+  fields?: string[],
+): Promise<Contact> {
+  return apiFetch<Contact>(
+    `/api/contacts/${contactId}/reset-manual-edits`,
+    {
+      method: "POST",
+      body: JSON.stringify({ fields: fields ?? [] }),
+    },
+  );
 }
 
 export async function getContactActivityEvents(

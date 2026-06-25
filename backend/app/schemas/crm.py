@@ -646,8 +646,35 @@ class ContactRead(ContactCreate):
     # ops can audit later — keeps the rest of the page rendering.
     email: str | None = None  # type: ignore[assignment]
     phone: str | None = None
+    # PR-Fix-Sync-No-Sobreescribe-Cambios-CRM. Lista de nombres de
+    # campos que el operador editó manualmente desde el CRM y que
+    # el sync de Agile/Brevo respeta (no sobreescribe). El frontend
+    # lo usa para pintar el badge "Editado manualmente · no se
+    # sobreescribe en sync" junto a cada campo del modal Editar.
+    # Vacío / NULL = ningún campo bajo protección. El alias
+    # `manually_edited_fields_json` recoge la columna TEXT JSON cruda
+    # del ORM; el validator de abajo la parsea a list[str].
+    manually_edited_fields: list[str] = Field(
+        default_factory=list,
+        validation_alias="manually_edited_fields_json",
+    )
 
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    @field_validator("manually_edited_fields", mode="before")
+    @classmethod
+    def coerce_manual_edits(cls, value: object, info: object) -> list[str]:  # noqa: ARG003
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return [str(v) for v in value]
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except (TypeError, ValueError):
+                return []
+            return [str(v) for v in parsed] if isinstance(parsed, list) else []
+        return []
 
     @field_validator("email", mode="before")
     @classmethod

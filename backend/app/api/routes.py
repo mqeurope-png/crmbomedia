@@ -2505,8 +2505,20 @@ def update_contact(
     star_rating_changed = (
         "star_rating" in data and data["star_rating"] != contact.star_rating
     )
+    # PR-Fix-Sync-No-Sobreescribe-Cambios-CRM. Capturamos qué campos
+    # de Capa A cambian REALMENTE (no marcamos el array si el operador
+    # mandó el mismo valor que ya tenía: eso ensuciaría la protección y
+    # bloquearía syncs futuros sin razón).
+    from app.services import contact_sync_protection as _sync_protection  # noqa: PLC0415
+
+    layer_a_changed_now: list[str] = []
     for field, value in data.items():
+        if field in _sync_protection.LAYER_A_FIELDS:
+            current = getattr(contact, field, None)
+            if current != value:
+                layer_a_changed_now.append(field)
         setattr(contact, field, value)
+    _sync_protection.mark_manually_edited(contact, layer_a_changed_now)
     session.flush()
 
     changed_fields: list[str] = sorted(data.keys())
@@ -2667,6 +2679,50 @@ def update_contact(
         )
     session.commit()
     session.refresh(contact)
+    return contact
+
+
+@router.post(
+    "/contacts/{contact_id}/reset-manual-edits",
+    response_model=ContactRead,
+    responses=ERROR_RESPONSES,
+    tags=["crm"],
+)
+def reset_manual_edits(
+    contact_id: str,
+    payload: dict[str, Any] | None = None,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_user),
+) -> Contact:
+    """PR-Fix-Sync-No-Sobreescribe-Cambios-CRM. Endpoint para
+    "volver a aceptar el valor de Agile/Brevo" en uno o varios
+    campos de Capa A previamente editados manualmente.
+
+    Body opcional:
+        {"fields": ["phone", "email"]}  # reset selectivo
+
+    Sin body o `fields=[]` → vacía toda la lista (el próximo sync
+    sobrescribirá cualquier campo de Capa A con la versión externa).
+
+    Permisos: cualquier user (no expone datos; solo cambia el flag
+    de protección de un contacto al que ya tiene acceso).
+    """
+    from app.services import contact_sync_protection as _sync_protection  # noqa: PLC0415
+
+    contact = crm_repository.get_contact(session, contact_id)
+    if not contact:
+        raise not_found("Contact")
+
+    fields: list[str] | None = None
+    if isinstance(payload, dict):
+        raw = payload.get("fields")
+        if isinstance(raw, list):
+            fields = [str(f) for f in raw]
+
+    _sync_protection.reset_manual_edits(contact, fields)
+    session.commit()
+    session.refresh(contact)
+    _ = current_user
     return contact
 
 

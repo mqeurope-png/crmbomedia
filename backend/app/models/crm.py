@@ -256,6 +256,14 @@ class Contact(TimestampMixin, Base):
     # el operador desmarca todas las estrellas con un click en la
     # primera ya marcada).
     star_rating: Mapped[int | None] = mapped_column(Integer)
+    # PR-Fix-Sync-No-Sobreescribe-Cambios-CRM. JSON array con los
+    # nombres de campos de Capa A que el operador editó manualmente
+    # desde la UI. El sync de Agile/Brevo lee este array antes de
+    # sobrescribir y respeta los marcados. NULL = ningún campo
+    # protegido (default histórico). Ver
+    # `app/services/contact_sync_protection.py` para la lista de
+    # Capa A/B y los helpers de mutación.
+    manually_edited_fields_json: Mapped[str | None] = mapped_column(Text)
     # When the operator last clicked "Actualizar desde AgileCRM" on
     # this contact's detail page. Drives the `external_data_freshness`
     # flag in the API response; null means "never refreshed

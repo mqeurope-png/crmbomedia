@@ -499,17 +499,23 @@ def _apply_update(
     *,
     allow_email_overwrite: bool = True,
 ) -> None:
-    # Shared merge policy across connectors: first origin wins, oldest
-    # external creation, newest external update. Both helpers pop their
-    # keys so the generic loop can't overwrite them.
+    """PR-Fix-Sync-No-Sobreescribe-Cambios-CRM. Mismo wrapper que en
+    `agilecrm.jobs._apply_update` — delega en
+    `contact_sync_protection.apply_sync_update` para respetar Capa B
+    (siempre) y campos de Capa A marcados como editados
+    manualmente."""
+    from app.services import contact_sync_protection as _protection  # noqa: PLC0415
+
     keep_first_origin(contact, record)
     merge_external_dates(contact, record)
-    for key, value in record.items():
-        if value in (None, "") and key != "tags":
-            continue
-        if key == "email" and not allow_email_overwrite:
-            continue
-        setattr(contact, key, value)
+    cleaned = {
+        k: v
+        for k, v in record.items()
+        if not (v in (None, "") and k != "tags")
+    }
+    _protection.apply_sync_update(
+        contact, cleaned, allow_email_overwrite=allow_email_overwrite
+    )
 
 
 def _sync_list_tag_delta(
@@ -519,31 +525,15 @@ def _sync_list_tag_delta(
     account_id: str,
     desired_names: list[str],
 ) -> None:
-    """Reconcile `brevo-list:*` auto-tags sourced from this account.
-    Mirrors the AgileCRM `_sync_tag_delta` semantics: only assignments
-    with `source == brevo:<account>` are touched, so manual tags and
-    other connectors' tags survive."""
+    """PR-Fix-Sync-No-Sobreescribe-Cambios-CRM. Reconcilia los
+    `brevo-list:*` tags del payload en modo **MERGE-only**: el sync
+    SOLO añade. NUNCA quita tags, ni siquiera los que Brevo deje de
+    traer. El operador es la fuente de verdad para
+    quitar tags (UI → `DELETE /api/contacts/{id}/tags/{tag_id}`).
+
+    Misma semántica que `agilecrm.jobs._sync_tag_delta` post-fix."""
     source = f"brevo:{account_id}"
     desired_normalized = {name.lower(): name for name in desired_names}
-
-    existing_rows = list(
-        session.scalars(
-            select(ContactTag).where(
-                ContactTag.contact_id == contact_id,
-                ContactTag.source == source,
-            )
-        )
-    )
-    existing_ids = {row.tag_id for row in existing_rows}
-    normalized_by_id = {
-        tag.id: tag.name_normalized
-        for tag in session.scalars(select(Tag).where(Tag.id.in_(existing_ids)))
-    } if existing_ids else {}
-
-    for row in existing_rows:
-        normalized = normalized_by_id.get(row.tag_id)
-        if normalized is None or normalized not in desired_normalized:
-            session.delete(row)
 
     for normalized, original in desired_normalized.items():
         tag = session.scalar(select(Tag).where(Tag.name_normalized == normalized))

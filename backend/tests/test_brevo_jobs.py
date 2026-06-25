@@ -202,7 +202,15 @@ def test_upsert_skips_contact_without_usable_email(session_factory, caplog):
         assert session.scalar(select(Contact)) is None
 
 
-def test_leaving_a_list_removes_the_auto_tag(session_factory):
+def test_leaving_a_list_keeps_the_auto_tag(session_factory):
+    """PR-Fix-Sync-No-Sobreescribe-Cambios-CRM. Cambio de política:
+    el sync NO quita auto-tags `brevo-list:*` cuando el contacto
+    abandona la lista en Brevo. La tag persiste — el operador es la
+    única fuente para retirar tags desde la UI manual.
+
+    Razón: si Brevo perdió temporalmente la lista (bug, importación
+    fallida, edición externa) NO debe propagarse al CRM como un
+    "el comercial no quiere esa tag"."""
     with session_factory() as session:
         upsert_brevo_contact(
             session,
@@ -220,7 +228,8 @@ def test_leaving_a_list_removes_the_auto_tag(session_factory):
             list_names={4: "Newsletter"},
         )
         session.commit()
-        assert session.scalar(select(ContactTag)) is None
+        # La tag SOBREVIVE (nueva política merge-only).
+        assert session.scalar(select(ContactTag)) is not None
 
 
 class _FakeBrevoClient:
