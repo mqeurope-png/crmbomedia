@@ -37,6 +37,7 @@ from app.models.brevo import (
 from app.models.crm import ExternalSystem, Segment, User
 from app.models.integration_settings import IntegrationAccount
 from app.schemas.brevo import (
+    BrevoBackfillPushResponse,
     BrevoCampaignCreate,
     BrevoCampaignRead,
     BrevoCampaignScheduleRequest,
@@ -57,6 +58,9 @@ from app.schemas.brevo import (
     BrevoTemplateCreate,
     BrevoTemplateRead,
     BrevoTemplateUpdate,
+    BrevoUserListMappingRow,
+    BrevoUserListMappingsRead,
+    BrevoUserListMappingsWrite,
 )
 from app.workers.jobs import enqueue_sync_job
 
@@ -1850,3 +1854,135 @@ def campaign_recipients_by_event(
         "limit": limit,
         "offset": offset,
     }
+
+
+# ---------------------------------------------------------------------------
+# Sprint-Push-CRM-Brevo — admin endpoints
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/admin/user-list-mappings",
+    response_model=BrevoUserListMappingsRead,
+)
+def admin_get_user_list_mappings(
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_admin),
+) -> BrevoUserListMappingsRead:
+    """Tabla owner ↔ lista Brevo. Devuelve TODOS los users activos del
+    CRM con su lista asignada (null si no tienen). El frontend pinta un
+    dropdown por user; "Sin asignar" cuando `brevo_list_id is None`."""
+    _ = current_user
+    from app.models.brevo import BrevoUserListMapping  # noqa: PLC0415
+    from app.models.crm import UserRole  # noqa: PLC0415
+
+    users = list(
+        session.scalars(
+            select(User)
+            .where(User.is_active.is_(True), User.role != UserRole.VIEWER)
+            .order_by(User.full_name.asc())
+        )
+    )
+    mappings = {
+        m.user_id: m
+        for m in session.scalars(select(BrevoUserListMapping))
+    }
+    rows: list[BrevoUserListMappingRow] = []
+    for u in users:
+        m = mappings.get(u.id)
+        rows.append(
+            BrevoUserListMappingRow(
+                user_id=u.id,
+                user_full_name=u.full_name or u.email,
+                user_email=u.email,
+                user_is_active=u.is_active,
+                brevo_list_id=m.brevo_list_id if m else None,
+                brevo_list_name=m.brevo_list_name if m else None,
+            )
+        )
+    return BrevoUserListMappingsRead(rows=rows)
+
+
+@router.put(
+    "/admin/user-list-mappings",
+    response_model=BrevoUserListMappingsRead,
+)
+def admin_put_user_list_mappings(
+    payload: BrevoUserListMappingsWrite,
+    request: Request,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_admin),
+) -> BrevoUserListMappingsRead:
+    """Aplica `payload.mappings` en bulk: upsert si `brevo_list_id` está
+    set, delete si es None. Idempotente. NO encola backfill — eso lo
+    decide el admin con el endpoint dedicado."""
+    from app.services import brevo_push as _service  # noqa: PLC0415
+
+    touched: list[str] = []
+    for item in payload.mappings:
+        if item.brevo_list_id is None:
+            if _service.delete_mapping(session, item.user_id):
+                touched.append(f"-{item.user_id}")
+        else:
+            _service.upsert_mapping(
+                session,
+                user_id=item.user_id,
+                brevo_list_id=item.brevo_list_id,
+                brevo_list_name=item.brevo_list_name,
+            )
+            touched.append(f"+{item.user_id}")
+
+    record_event(
+        session,
+        action=Action.BREVO_USER_LIST_MAPPING_UPDATED,
+        target_type="brevo_user_list_mapping",
+        target_id=None,
+        actor=current_user,
+        metadata={"count": len(touched), "diff": touched[:50]},
+        request=request,
+    )
+    session.commit()
+    return admin_get_user_list_mappings(session=session, current_user=current_user)
+
+
+@router.post(
+    "/admin/backfill-push",
+    response_model=BrevoBackfillPushResponse,
+)
+def admin_backfill_push(
+    request: Request,
+    chunk: int = Query(default=50, ge=1, le=200),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_admin),
+) -> BrevoBackfillPushResponse:
+    """Encola `brevo:push_contact` para TODOS los contactos con
+    `owner_user_id IS NOT NULL AND brevo_contact_id IS NULL`. Útil tras
+    el primer deploy para subir el universo histórico. Brevo rate-limita
+    a 400 req/min → estimamos 0.15s por push como mínimo."""
+    from app.integrations.brevo import push_jobs  # noqa: PLC0415
+    from app.services import brevo_push as _service  # noqa: PLC0415
+
+    ids = list(
+        session.scalars(_service.unsynced_contacts_query(session))
+    )
+    enqueued = 0
+    for cid in ids:
+        push_jobs.enqueue_push_contact(contact_id=cid)
+        enqueued += 1
+
+    record_event(
+        session,
+        action=Action.BREVO_BACKFILL_TRIGGERED,
+        target_type="brevo_backfill",
+        target_id=None,
+        actor=current_user,
+        metadata={"queued_count": enqueued, "chunk": chunk},
+        request=request,
+    )
+    session.commit()
+
+    # 400 req/min ≈ 6.67 req/s → 0.15 s/push.
+    estimated_minutes = round(enqueued * 0.15 / 60, 1)
+    return BrevoBackfillPushResponse(
+        queued_count=enqueued, estimated_minutes=estimated_minutes
+    )

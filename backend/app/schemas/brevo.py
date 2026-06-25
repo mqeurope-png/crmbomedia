@@ -310,3 +310,40 @@ class BrevoWebhookStatsRead(BaseModel):
 
     total: int
     by_type: dict[str, int]
+
+
+# ---------------------------------------------------------------------------
+# Push CRM → Brevo (Sprint-Push-CRM-Brevo)
+# ---------------------------------------------------------------------------
+
+
+class BrevoUserListMappingRow(BaseModel):
+    """Una fila de la tabla `Mapping listas Brevo por comercial`. Incluye
+    los datos del user para que el frontend no haga JOIN. `brevo_list_id`
+    null = user todavía sin mapping (dropdown muestra "Sin asignar")."""
+
+    user_id: str
+    user_full_name: str
+    user_email: str
+    user_is_active: bool
+    brevo_list_id: int | None = None
+    brevo_list_name: str | None = None
+
+
+class BrevoUserListMappingsRead(BaseModel):
+    rows: list[BrevoUserListMappingRow]
+
+
+class BrevoUserListMappingItem(BaseModel):
+    user_id: str
+    brevo_list_id: int | None = None
+    brevo_list_name: str | None = None
+
+
+class BrevoUserListMappingsWrite(BaseModel):
+    mappings: list[BrevoUserListMappingItem]
+
+
+class BrevoBackfillPushResponse(BaseModel):
+    queued_count: int
+    estimated_minutes: float

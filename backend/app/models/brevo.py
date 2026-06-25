@@ -235,3 +235,38 @@ class BrevoCampaignCache(TimestampMixin, Base):
     @property
     def recipient_list_ids(self) -> str | None:
         return self.recipient_list_ids_json
+
+
+class BrevoUserListMapping(Base):
+    """Sprint-Push-CRM-Brevo. Pivote owner CRM → lista Brevo.
+
+    Cada user del CRM se mapea a UNA lista de Brevo. Cuando un contacto
+    tiene `owner_user_id = X`, el job `brevo:push_contact` lo sube/mueve
+    a la lista de X. Si X cambia, se mueve. Si X se quita, se desuscribe
+    de la lista mapeada (pero NO se borra de Brevo — preserva histórico
+    de campañas).
+
+    PK por `user_id`: un user = una lista. Si Bart pidiera un día N→M
+    se replantea, hoy va 1→1.
+
+    No guarda `brevo_account_id` por ahora. La instalación productiva
+    tiene una sola cuenta Brevo activa; cuando haya más, el handler de
+    push resuelve la cuenta del momento (primera live) y se documenta
+    como limitación conocida — no bloqueamos este sprint por ello.
+    """
+
+    __tablename__ = "brevo_user_list_mappings"
+
+    user_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    brevo_list_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    brevo_list_name: Mapped[str | None] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
