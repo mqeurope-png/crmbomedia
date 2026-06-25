@@ -34,7 +34,7 @@ from app.models.brevo import (
     SyncDirection,
     TargetRunStatus,
 )
-from app.models.crm import ExternalSystem, Segment, User
+from app.models.crm import Contact, ExternalSystem, Segment, User
 from app.models.integration_settings import IntegrationAccount
 from app.schemas.brevo import (
     BrevoBackfillPushResponse,
@@ -1951,38 +1951,129 @@ def admin_put_user_list_mappings(
 )
 def admin_backfill_push(
     request: Request,
-    chunk: int = Query(default=50, ge=1, le=200),
+    dry_run: bool = Query(default=False),
+    refresh: bool = Query(default=False),
     session: Session = Depends(get_session),
     current_user: User = Depends(require_admin),
 ) -> BrevoBackfillPushResponse:
-    """Encola `brevo:push_contact` para TODOS los contactos con
-    `owner_user_id IS NOT NULL AND brevo_contact_id IS NULL`. Útil tras
-    el primer deploy para subir el universo histórico. Brevo rate-limita
-    a 400 req/min → estimamos 0.15s por push como mínimo."""
+    """PR-Fix-Backfill-Brevo-Optimizado.
+
+    Pre-filtra los pendientes contra el inventario de emails de Brevo
+    (bulk fetch + cache Redis 1h) antes de encolar. Bart vio 20K
+    contactos pendientes, ~95% ya estaban en Brevo: el flujo anterior
+    los descubría de uno en uno (~7h). Ahora el endpoint:
+
+    1. Bulk-fetch del set de emails Brevo (1 vez, ~8s para 50K).
+    2. Pre-filtra:
+       - emails YA en Brevo → marca `brevo_contact_id = "pre-existing"`
+         + encola `brevo:add_to_owner_list` (handler ligero, 1 req).
+       - emails NO en Brevo → encola `brevo:push_contact` (crea).
+    3. Devuelve buckets para la UI.
+
+    `dry_run=true` → solo cuenta y reporta, no toca DB ni encola.
+    `refresh=true` → ignora la cache Redis y vuelve a bulk-fetch.
+
+    Si el bulk fetch falla (Brevo down, auth), devuelve 502 con
+    detail — no modifica DB ni encola nada."""
     from app.integrations.brevo import push_jobs  # noqa: PLC0415
-    from app.services import brevo_push as _service  # noqa: PLC0415
 
-    ids = list(
-        session.scalars(_service.unsynced_contacts_query(session))
+    account = push_jobs._resolve_brevo_account(session)
+    if account is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "No hay cuenta Brevo habilitada en modo LIVE. Configura "
+                "una en /admin/integrations antes de lanzar el backfill."
+            ),
+        )
+
+    # Detecta si el set venía cacheado ANTES de llamar a fetch (que
+    # puede repoblar la cache). Si `refresh=True`, ni siquiera leemos
+    # la cache — bajamos a fetch fresh directo.
+    if refresh:
+        inventory_was_cached = False
+    else:
+        cached_pre_fetch = push_jobs._load_emails_from_cache(account.account_id)
+        inventory_was_cached = cached_pre_fetch is not None
+
+    try:
+        brevo_emails = push_jobs.fetch_brevo_emails(
+            session, account.account_id, refresh=refresh
+        )
+    except IntegrationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=(
+                f"Fallo al leer el inventario de Brevo: {exc.message}. "
+                "Reintenta cuando se recupere la API."
+            ),
+        ) from exc
+
+    # Iterar pendientes con email normalizado en lowercase para
+    # comparar contra el set Brevo (también lowercase).
+    pending_rows = list(
+        session.execute(
+            select(Contact.id, Contact.email).where(
+                Contact.owner_user_id.is_not(None),
+                Contact.brevo_contact_id.is_(None),
+                Contact.email.is_not(None),
+                Contact.is_active.is_(True),
+            )
+        )
     )
-    enqueued = 0
-    for cid in ids:
-        push_jobs.enqueue_push_contact(contact_id=cid)
-        enqueued += 1
+    pre_existing: list[str] = []
+    brand_new: list[str] = []
+    for cid, email in pending_rows:
+        if (email or "").strip().lower() in brevo_emails:
+            pre_existing.append(cid)
+        else:
+            brand_new.append(cid)
 
-    record_event(
-        session,
-        action=Action.BREVO_BACKFILL_TRIGGERED,
-        target_type="brevo_backfill",
-        target_id=None,
-        actor=current_user,
-        metadata={"queued_count": enqueued, "chunk": chunk},
-        request=request,
+    if not dry_run:
+        # Mark pre-existing inline + persiste antes de encolar para
+        # que un crash del enqueue no deje el counter inflado pero
+        # los contactos sin marcar.
+        if pre_existing:
+            session.execute(
+                Contact.__table__.update()
+                .where(Contact.id.in_(pre_existing))
+                .values(brevo_contact_id="pre-existing")
+            )
+        record_event(
+            session,
+            action=Action.BREVO_BACKFILL_TRIGGERED,
+            target_type="brevo_backfill",
+            target_id=None,
+            actor=current_user,
+            metadata={
+                "total_with_owner": len(pending_rows),
+                "pre_existing": len(pre_existing),
+                "brand_new": len(brand_new),
+                "brevo_inventory_size": len(brevo_emails),
+                "cached_inventory": inventory_was_cached,
+            },
+            request=request,
+        )
+        session.commit()
+        # Enqueue tras commit para que el worker no procese sobre
+        # estado no persistido.
+        for cid in pre_existing:
+            push_jobs.enqueue_add_to_owner_list(contact_id=cid)
+        for cid in brand_new:
+            push_jobs.enqueue_push_contact(contact_id=cid)
+
+    # Tiempo estimado: add_to_list ≈ 0.15s; push (get+create+add)
+    # ≈ 0.45s. Con concurrencia 1 worker.
+    estimated_minutes = round(
+        (len(pre_existing) * 0.15 + len(brand_new) * 0.45) / 60, 1
     )
-    session.commit()
-
-    # 400 req/min ≈ 6.67 req/s → 0.15 s/push.
-    estimated_minutes = round(enqueued * 0.15 / 60, 1)
     return BrevoBackfillPushResponse(
-        queued_count=enqueued, estimated_minutes=estimated_minutes
+        total_with_owner=len(pending_rows),
+        already_in_brevo_marked=len(pre_existing) if not dry_run else 0,
+        queued_for_creation=len(brand_new),
+        queued_for_list_add_only=len(pre_existing),
+        estimated_minutes=estimated_minutes,
+        dry_run=dry_run,
+        cached_inventory=inventory_was_cached,
+        brevo_inventory_size=len(brevo_emails),
     )

@@ -203,6 +203,16 @@ class _FakeBrevo:
                         rec["listIds"].remove(list_id)
                 return {}
 
+            async def list_contacts(
+                self, *, limit: int = 50, offset: int = 0,
+                modified_since: str | None = None,
+            ):
+                _ = modified_since
+                outer._record("list_contacts", limit, offset)
+                items = sorted(outer.contacts.values(), key=lambda r: r["email"])
+                page = items[offset:offset + limit]
+                return {"contacts": page, "count": len(items)}
+
         return _Ctx
 
 
@@ -520,14 +530,17 @@ def test_put_user_list_mappings_persists_and_deletes(client, factory):
         assert _service.get_mapping(session, manager_id) is None
 
 
-def test_backfill_endpoint_queues_all_unsynced(client, factory, patched_push):
+def test_backfill_endpoint_queues_brand_new_contacts(
+    client, factory, fake_brevo, patched_push
+):
+    """Sin emails en Brevo → todos los pendientes son brand-new →
+    `push_contact_to_brevo` (no `add_to_owner_list`)."""
     enqueued = patched_push
     with factory() as session:
         users = _user_ids(session)
         _seed_mapping(
             session, user_id=users["admin"], list_id=1, list_name="A"
         )
-        # 3 pendientes + 1 ya pusheado
         for i in range(3):
             _seed_contact(
                 session, owner_user_id=users["admin"], email=f"b{i}@x.com"
@@ -546,8 +559,285 @@ def test_backfill_endpoint_queues_all_unsynced(client, factory, patched_push):
         headers=auth_headers(client, "admin"),
     )
     assert response.status_code == 200, response.text
-    assert response.json()["queued_count"] == 3
+    body = response.json()
+    assert body["total_with_owner"] == 3
+    assert body["queued_for_creation"] == 3
+    assert body["already_in_brevo_marked"] == 0
+    assert body["queued_for_list_add_only"] == 0
     assert sum(1 for n, _ in enqueued if n == "push_contact_to_brevo") == 3
+    assert not any(n == "add_contact_to_owner_list" for n, _ in enqueued)
+
+
+# ---------------------------------------------------------------------------
+# PR-Fix-Backfill-Brevo-Optimizado — pre-filtering tests
+# ---------------------------------------------------------------------------
+
+
+def test_backfill_pre_filters_emails_already_in_brevo(
+    client, factory, fake_brevo, patched_push
+):
+    """2 contactos cuyo email ya está en Brevo + 1 brand-new → buckets
+    correctos en el reporte."""
+    fake_brevo.seed_remote("alice@x.com", list_ids=[])
+    fake_brevo.seed_remote("bob@x.com", list_ids=[55])
+    enqueued = patched_push
+    with factory() as session:
+        users = _user_ids(session)
+        _seed_mapping(
+            session, user_id=users["admin"], list_id=1, list_name="A"
+        )
+        _seed_contact(session, owner_user_id=users["admin"], email="alice@x.com")
+        _seed_contact(session, owner_user_id=users["admin"], email="bob@x.com")
+        _seed_contact(session, owner_user_id=users["admin"], email="new@x.com")
+        session.commit()
+
+    enqueued.clear()
+    response = client.post(
+        "/api/brevo/admin/backfill-push",
+        headers=auth_headers(client, "admin"),
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["total_with_owner"] == 3
+    assert body["already_in_brevo_marked"] == 2
+    assert body["queued_for_creation"] == 1
+    assert body["queued_for_list_add_only"] == 2
+    assert body["brevo_inventory_size"] == 2
+
+
+def test_backfill_marks_pre_existing_as_synced_without_api_call(
+    client, factory, fake_brevo, patched_push
+):
+    """Los pre-existing reciben `brevo_contact_id = "pre-existing"` en la
+    misma transacción del endpoint. NO se llama a `get_contact` ni
+    `create_contact` para ellos durante el endpoint (la cola se procesa
+    aparte)."""
+    fake_brevo.seed_remote("alice@x.com", list_ids=[])
+    with factory() as session:
+        users = _user_ids(session)
+        _seed_mapping(
+            session, user_id=users["admin"], list_id=1, list_name="A"
+        )
+        c = _seed_contact(
+            session, owner_user_id=users["admin"], email="alice@x.com"
+        )
+        session.commit()
+        cid = c.id
+
+    fake_brevo.calls.clear()
+    response = client.post(
+        "/api/brevo/admin/backfill-push",
+        headers=auth_headers(client, "admin"),
+    )
+    assert response.status_code == 200, response.text
+
+    # Durante el endpoint solo hay list_contacts (bulk fetch). No
+    # get_contact ni create_contact.
+    assert any(c[0] == "list_contacts" for c in fake_brevo.calls)
+    assert not any(c[0] == "get_contact" for c in fake_brevo.calls)
+    assert not any(c[0] == "create_contact" for c in fake_brevo.calls)
+
+    with factory() as session:
+        assert session.get(Contact, cid).brevo_contact_id == "pre-existing"
+
+
+def test_backfill_queues_only_new_contacts_for_creation(
+    client, factory, fake_brevo, patched_push
+):
+    """Los pre-existing van a `add_to_owner_list`, los brand-new van a
+    `push_contact_to_brevo`. Sin solapamiento."""
+    fake_brevo.seed_remote("known@x.com", list_ids=[])
+    enqueued = patched_push
+    with factory() as session:
+        users = _user_ids(session)
+        _seed_mapping(
+            session, user_id=users["admin"], list_id=1, list_name="A"
+        )
+        _seed_contact(session, owner_user_id=users["admin"], email="known@x.com")
+        _seed_contact(session, owner_user_id=users["admin"], email="fresh@x.com")
+        session.commit()
+
+    enqueued.clear()
+    client.post(
+        "/api/brevo/admin/backfill-push",
+        headers=auth_headers(client, "admin"),
+    )
+    pushes = [n for n, _ in enqueued if n == "push_contact_to_brevo"]
+    adds = [n for n, _ in enqueued if n == "add_contact_to_owner_list"]
+    assert len(pushes) == 1  # fresh@
+    assert len(adds) == 1  # known@
+
+
+def test_backfill_handles_email_case_insensitive(
+    client, factory, fake_brevo, patched_push
+):
+    """Brevo devuelve `Alice@X.COM`, CRM tiene `alice@x.com` — el
+    pre-filtro debe matchearlos."""
+    fake_brevo.seed_remote("Alice@X.COM", list_ids=[])
+    with factory() as session:
+        users = _user_ids(session)
+        _seed_mapping(
+            session, user_id=users["admin"], list_id=1, list_name="A"
+        )
+        _seed_contact(session, owner_user_id=users["admin"], email="alice@x.com")
+        session.commit()
+
+    response = client.post(
+        "/api/brevo/admin/backfill-push",
+        headers=auth_headers(client, "admin"),
+    )
+    body = response.json()
+    assert body["already_in_brevo_marked"] == 1
+    assert body["queued_for_creation"] == 0
+
+
+def test_backfill_aborts_on_brevo_api_failure_during_bulk_fetch(
+    client, factory, patched_push
+):
+    """Si `fetch_brevo_emails` raisea IntegrationError, devolvemos
+    502 y NO marcamos ni encolamos nada."""
+    from app.integrations.errors import IntegrationServerError
+
+    def boom(session, account_id, *, refresh=False):
+        raise IntegrationServerError(
+            "500 Internal", system="brevo", account_id="main", status_code=500
+        )
+
+    with factory() as session:
+        users = _user_ids(session)
+        _seed_mapping(
+            session, user_id=users["admin"], list_id=1, list_name="A"
+        )
+        c = _seed_contact(
+            session, owner_user_id=users["admin"], email="x@x.com"
+        )
+        cid = c.id
+        session.commit()
+
+    with patch.object(push_jobs, "fetch_brevo_emails", side_effect=boom):
+        response = client.post(
+            "/api/brevo/admin/backfill-push",
+            headers=auth_headers(client, "admin"),
+        )
+    assert response.status_code == 502
+    assert "Brevo" in response.json()["detail"]
+
+    with factory() as session:
+        # Contacto SIGUE sin marcar
+        assert session.get(Contact, cid).brevo_contact_id is None
+
+
+def test_backfill_dry_run_reports_without_marking_or_enqueuing(
+    client, factory, fake_brevo, patched_push
+):
+    """`?dry_run=true` solo cuenta; no toca DB ni cola."""
+    fake_brevo.seed_remote("known@x.com", list_ids=[])
+    enqueued = patched_push
+    with factory() as session:
+        users = _user_ids(session)
+        _seed_mapping(
+            session, user_id=users["admin"], list_id=1, list_name="A"
+        )
+        c = _seed_contact(
+            session, owner_user_id=users["admin"], email="known@x.com"
+        )
+        cid = c.id
+        _seed_contact(session, owner_user_id=users["admin"], email="new@x.com")
+        session.commit()
+
+    enqueued.clear()
+    response = client.post(
+        "/api/brevo/admin/backfill-push?dry_run=true",
+        headers=auth_headers(client, "admin"),
+    )
+    body = response.json()
+    assert body["dry_run"] is True
+    assert body["total_with_owner"] == 2
+    assert body["queued_for_creation"] == 1
+    assert body["queued_for_list_add_only"] == 1
+    # En dry_run, already_in_brevo_marked refleja "lo que se marcaría"
+    # = 0 porque no se marcó. queued_for_list_add_only = 1 = preview.
+    assert body["already_in_brevo_marked"] == 0
+    # Nada encolado:
+    assert enqueued == []
+    # DB intacta:
+    with factory() as session:
+        assert session.get(Contact, cid).brevo_contact_id is None
+
+
+def test_backfill_uses_redis_cache_within_1h(
+    client, factory, fake_brevo, patched_push
+):
+    """Segunda llamada al endpoint NO repite el bulk fetch si el set
+    ya está cacheado. Mockeamos la cache de Redis a través del helper
+    `_load_emails_from_cache`."""
+    fake_brevo.seed_remote("a@x.com", list_ids=[])
+    enqueued = patched_push
+    with factory() as session:
+        users = _user_ids(session)
+        _seed_mapping(
+            session, user_id=users["admin"], list_id=1, list_name="A"
+        )
+        _seed_contact(session, owner_user_id=users["admin"], email="a@x.com")
+        session.commit()
+
+    enqueued.clear()
+    # 1ª llamada: cache miss → bulk fetch.
+    with patch.object(
+        push_jobs, "_load_emails_from_cache", return_value=None
+    ) as miss, patch.object(push_jobs, "_store_emails_in_cache"):
+        r1 = client.post(
+            "/api/brevo/admin/backfill-push?dry_run=true",
+            headers=auth_headers(client, "admin"),
+        )
+        assert r1.status_code == 200
+        assert r1.json()["cached_inventory"] is False
+        assert miss.called
+
+    # 2ª llamada: cache hit (mock devuelve el set).
+    with patch.object(
+        push_jobs, "_load_emails_from_cache", return_value={"a@x.com"}
+    ):
+        r2 = client.post(
+            "/api/brevo/admin/backfill-push?dry_run=true",
+            headers=auth_headers(client, "admin"),
+        )
+        assert r2.status_code == 200
+        assert r2.json()["cached_inventory"] is True
+
+
+def test_backfill_refresh_param_bypasses_cache(
+    client, factory, fake_brevo, patched_push
+):
+    """`?refresh=true` ignora la cache aunque exista."""
+    fake_brevo.seed_remote("a@x.com", list_ids=[])
+    with factory() as session:
+        users = _user_ids(session)
+        _seed_mapping(
+            session, user_id=users["admin"], list_id=1, list_name="A"
+        )
+        _seed_contact(session, owner_user_id=users["admin"], email="a@x.com")
+        session.commit()
+
+    with patch.object(
+        push_jobs, "_load_emails_from_cache", return_value={"stale@x.com"}
+    ) as cache_read, patch.object(push_jobs, "_store_emails_in_cache"):
+        r = client.post(
+            "/api/brevo/admin/backfill-push?dry_run=true&refresh=true",
+            headers=auth_headers(client, "admin"),
+        )
+        # cache no se leyó (refresh=True salta la lectura)
+        assert not cache_read.called
+        body = r.json()
+        # Inventory size del FETCH FRESH (1 = a@x.com en fake), NO
+        # del valor stale (que sería 1 también pero por otro email
+        # que no matchea el CRM).
+        assert body["brevo_inventory_size"] == 1
+        # `a@x.com` está pendiente y matchea con el fetch fresco → 1
+        # marked, 0 brand-new.
+        assert body["already_in_brevo_marked"] == 0  # dry_run
+        assert body["queued_for_list_add_only"] == 1
+        assert body["queued_for_creation"] == 0
 
 
 # ---------------------------------------------------------------------------

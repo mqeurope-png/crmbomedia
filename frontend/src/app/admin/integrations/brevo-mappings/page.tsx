@@ -20,6 +20,7 @@ import {
   getBrevoUserListMappings,
   putBrevoUserListMappings,
   triggerBrevoBackfillPush,
+  type BrevoBackfillPushResponse,
   type BrevoUserListMappingRow,
 } from "../../../lib/brevoPushApi";
 import { extractErrorMessage } from "../../../lib/errors";
@@ -40,6 +41,13 @@ export default function BrevoMappingsPage() {
   const [saving, setSaving] = useState(false);
   const [refreshingLists, setRefreshingLists] = useState(false);
   const [backfilling, setBackfilling] = useState(false);
+  // PR-Fix-Backfill-Brevo-Optimizado. Modal de 2 pasos:
+  //   1. preview = "scanning" + bulk fetch + counts
+  //   2. confirm = execute
+  const [backfillPreview, setBackfillPreview] = useState<
+    BrevoBackfillPushResponse | null
+  >(null);
+  const [scanning, setScanning] = useState(false);
 
   const isAdmin = user?.role === "admin";
 
@@ -133,28 +141,55 @@ export default function BrevoMappingsPage() {
     }
   }
 
-  async function onBackfill() {
-    if (
-      !window.confirm(
-        "Encola push a Brevo para TODOS los contactos del CRM con owner asignado que aún no estén sincronizados. El job corre en background — la página NO se queda esperando. ¿Continuar?",
-      )
-    ) {
-      return;
+  // PR-Fix-Backfill-Brevo-Optimizado. Paso 1: dry_run para escanear
+  // el inventario Brevo + contar buckets. El admin ve el reporte ANTES
+  // de confirmar para evitar encolar 20K jobs por error.
+  async function onBackfillScan(opts: { refresh?: boolean } = {}) {
+    setScanning(true);
+    setError(null);
+    setMessage(null);
+    setBackfillPreview(null);
+    try {
+      const res = await triggerBrevoBackfillPush({
+        dryRun: true,
+        refresh: opts.refresh,
+      });
+      setBackfillPreview(res);
+    } catch (err) {
+      setError(
+        extractErrorMessage(
+          err,
+          "No se pudo escanear el inventario Brevo. Reintenta cuando responda.",
+        ),
+      );
+    } finally {
+      setScanning(false);
     }
+  }
+
+  // Paso 2: execute. Encola y marca pre-existing.
+  async function onBackfillConfirm() {
     setBackfilling(true);
     setError(null);
     setMessage(null);
     try {
       const res = await triggerBrevoBackfillPush();
+      setBackfillPreview(null);
       setMessage(
-        `Backfill encolado: ${res.queued_count} contactos en cola. ` +
-          `Tiempo estimado ~${res.estimated_minutes} min (límite Brevo 400 req/min).`,
+        `Backfill encolado: ${res.queued_for_creation} contactos a crear + ` +
+          `${res.queued_for_list_add_only} ya en Brevo (solo add to list). ` +
+          `Tiempo estimado ~${res.estimated_minutes} min. ` +
+          `${res.already_in_brevo_marked} marcados como pre-existing.`,
       );
     } catch (err) {
       setError(extractErrorMessage(err, "No se pudo encolar el backfill."));
     } finally {
       setBackfilling(false);
     }
+  }
+
+  function onBackfillCancel() {
+    setBackfillPreview(null);
   }
 
   const accountOptions = useMemo(
@@ -224,11 +259,14 @@ export default function BrevoMappingsPage() {
             <button
               type="button"
               className="button small secondary"
-              onClick={onBackfill}
-              disabled={backfilling}
-              title="Encola un push a Brevo para todos los contactos con owner asignado que aún no están sincronizados"
+              onClick={() => onBackfillScan()}
+              disabled={scanning || backfilling}
+              title="Escanea el inventario Brevo y muestra cuántos contactos se van a crear vs cuántos ya existen, ANTES de confirmar el encolado"
             >
-              <Play size={12} aria-hidden /> {backfilling ? "Encolando…" : "Backfill manual"}
+              <Play size={12} aria-hidden />{" "}
+              {scanning
+                ? "Escaneando inventario Brevo…"
+                : "Backfill optimizado"}
             </button>
           </div>
         }
@@ -243,6 +281,73 @@ export default function BrevoMappingsPage() {
       {isLoading ? <p className="muted">Cargando mapeos…</p> : null}
       {error ? <ErrorState title="Error" message={error} /> : null}
       {message ? <div className="success-state">{message}</div> : null}
+
+      {backfillPreview ? (
+        <div
+          className="info-banner"
+          style={{
+            margin: "1rem 0",
+            padding: "1rem",
+            border: "1px solid #ccc",
+            borderRadius: 8,
+          }}
+        >
+          <h3 style={{ marginTop: 0 }}>
+            Reporte de pre-escaneo (Brevo {backfillPreview.cached_inventory ? "cache" : "fresh"})
+          </h3>
+          <ul style={{ lineHeight: 1.7 }}>
+            <li>
+              <strong>{backfillPreview.total_with_owner.toLocaleString()}</strong>{" "}
+              contactos del CRM con owner pendientes de sincronizar.
+            </li>
+            <li>
+              Inventario Brevo:{" "}
+              <strong>{backfillPreview.brevo_inventory_size.toLocaleString()}</strong>{" "}
+              emails ({backfillPreview.cached_inventory ? "leído de cache, <1h" : "bulk fetch fresh"}).
+            </li>
+            <li>
+              <strong>{backfillPreview.queued_for_creation.toLocaleString()}</strong>{" "}
+              se van a crear en Brevo (no existen todavía).
+            </li>
+            <li>
+              <strong>{backfillPreview.queued_for_list_add_only.toLocaleString()}</strong>{" "}
+              ya están en Brevo — se marcarán como pre-existing y solo se
+              añadirán a la lista del owner (job ligero, 1 req cada uno).
+            </li>
+            <li>
+              Tiempo estimado: ~<strong>{backfillPreview.estimated_minutes}</strong>{" "}
+              min (Brevo rate-limit 400 req/min).
+            </li>
+          </ul>
+          <div style={{ display: "flex", gap: ".5rem", marginTop: "1rem" }}>
+            <button
+              type="button"
+              className="button small"
+              onClick={onBackfillConfirm}
+              disabled={backfilling}
+            >
+              {backfilling ? "Encolando…" : "Confirmar y encolar"}
+            </button>
+            <button
+              type="button"
+              className="button small secondary"
+              onClick={() => onBackfillScan({ refresh: true })}
+              disabled={scanning || backfilling}
+              title="Ignora la cache de Redis y re-lee el inventario Brevo de cero"
+            >
+              {scanning ? "Re-escaneando…" : "Re-escanear (refresh)"}
+            </button>
+            <button
+              type="button"
+              className="button small secondary"
+              onClick={onBackfillCancel}
+              disabled={backfilling}
+            >
+              Cancelar
+            </button>
+          </div>
+        </div>
+      ) : null}
 
       {!isLoading ? (
         <section>

@@ -345,5 +345,29 @@ class BrevoUserListMappingsWrite(BaseModel):
 
 
 class BrevoBackfillPushResponse(BaseModel):
-    queued_count: int
+    """PR-Fix-Backfill-Brevo-Optimizado. El backfill pre-filtra con
+    el inventario de emails de Brevo y reporta los buckets:
+
+    - `already_in_brevo_marked`: contactos cuyo email ya estaba en
+      Brevo. Se les puso `brevo_contact_id = "pre-existing"` en la
+      misma transacción del endpoint (sin llamada a Brevo). El
+      handler ligero `add_contact_to_owner_list` se encarga del
+      add_to_list.
+    - `queued_for_creation`: contactos brand-new para Brevo. Encolados
+      con `push_contact` (crea + añade a lista).
+    - `queued_for_list_add_only`: subconjunto de
+      `already_in_brevo_marked` que SI encoló para add_to_list (todos,
+      siempre que tengan owner+mapping válidos).
+    - `dry_run`: cuando es True, NO se persistió `brevo_contact_id`
+      ni se encoló nada. Solo retorna los counters para la UI.
+    - `cached_inventory`: True si el set de emails Brevo vino de
+      Redis (TTL 1h). False = se hizo bulk fetch fresh."""
+
+    total_with_owner: int
+    already_in_brevo_marked: int
+    queued_for_creation: int
+    queued_for_list_add_only: int
     estimated_minutes: float
+    dry_run: bool = False
+    cached_inventory: bool = False
+    brevo_inventory_size: int = 0
