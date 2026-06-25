@@ -84,6 +84,12 @@ LAYER_B_FIELDS: frozenset[str] = frozenset({
     "origin_account_id",
 })
 
+#: Set completo de campos que el banner del modal Editar puede
+#: rastrear. Incluye Capa A (donde la marca DESHABILITA el sync) y
+#: Capa B (donde la marca es solo trazabilidad — el sync nunca toca
+#: Capa B por diseño). El banner muestra los dos tipos.
+MARKABLE_FIELDS: frozenset[str] = LAYER_A_FIELDS | LAYER_B_FIELDS
+
 
 def _load(contact: Contact) -> list[str]:
     raw = contact.manually_edited_fields_json
@@ -111,17 +117,20 @@ def get_manually_edited_fields(contact: Contact) -> list[str]:
 
 
 def mark_manually_edited(contact: Contact, field_names: list[str]) -> None:
-    """Añade los `field_names` (solo los de Capa A) al array de
-    protección del contacto. Idempotente sobre repeticiones —
-    deduplica.
+    """Añade los `field_names` al array de protección del contacto.
+    Idempotente — deduplica. Filtra a `MARKABLE_FIELDS` (Capa A +
+    Capa B); ignora typos / campos desconocidos.
 
-    Campos de Capa B se ignoran porque su protección es incondicional;
-    marcarlos sería ruido.
-    Campos desconocidos también se ignoran para no ensuciar el array
-    con typos."""
+    PR-Fix-Patch-No-Marca-Manual-Edits: ahora también marca campos
+    de Capa B (lead_score, star_rating, owner, etc.). Bart pidió
+    trazabilidad — el banner del modal debe mostrar TODO campo
+    editado manualmente aunque su protección sea incondicional. El
+    sync sigue tratando Capa B como siempre protegida sin importar
+    el array, así que marcarlos no cambia el comportamiento, solo
+    el badge."""
     if not field_names:
         return
-    relevant = [f for f in field_names if f in LAYER_A_FIELDS]
+    relevant = [f for f in field_names if f in MARKABLE_FIELDS]
     if not relevant:
         return
     existing = _load(contact)
