@@ -526,6 +526,18 @@ export async function backfillBrevoCampaignRecipients(
   );
 }
 
+// Bug 6: force-refresh de las stats de UNA campaña (cabecera de
+// /marketing/campañas/{id}). `campaignId` aquí es el CRM cache id
+// (UUID), NO el brevo_campaign_id numérico.
+export async function refreshBrevoCampaignStats(
+  campaignId: string,
+): Promise<BrevoCampaign> {
+  return apiFetch<BrevoCampaign>(
+    `/api/brevo/campaigns/${campaignId}/refresh-stats`,
+    { method: "POST" },
+  );
+}
+
 export async function backfillMissingBrevoCampaigns(
   accountId: string,
 ): Promise<CampaignBackfillEnqueueResponse> {

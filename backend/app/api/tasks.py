@@ -26,6 +26,7 @@ import logging
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.audit import Action, record_event
@@ -55,8 +56,16 @@ logger = logging.getLogger(__name__)
 
 
 def _require_mutator(task: Task, current_user: User) -> None:
-    """The creator, the current assignee, or an admin/manager can
-    mutate. Everyone else is locked out."""
+    """Bug 2 fix (Bart 2026-06-25). Tareas importadas de AgileCRM o
+    Brevo se quedan asignadas al "system user" (primer admin) — un
+    comercial owner del contacto no podía editarlas (cambiar fecha,
+    marcar completada) porque no coincidía ni con assigned_user_id
+    ni con created_by_user_id. Spec congelada: cualquier user con
+    acceso al contacto puede mutar la tarea, venga de donde venga.
+
+    Sigue locked out el usuario que no tiene relación ni con la
+    tarea ni con el contacto al que pertenece — protección anti-
+    cross-account."""
     if current_user.role in {UserRole.ADMIN, UserRole.MANAGER}:
         return
     if (
@@ -64,6 +73,24 @@ def _require_mutator(task: Task, current_user: User) -> None:
         or current_user.id == task.created_by_user_id
     ):
         return
+    # NEW: el owner del contacto al que pertenece la tarea también
+    # puede mutarla. Cubre las tareas importadas de Agile/Brevo que
+    # quedan assigned al system user pero pertenecen a un contacto
+    # cuyo comercial debe poder editar.
+    if task.contact_id:
+        from sqlalchemy.orm.session import object_session  # noqa: PLC0415
+
+        from app.models.crm import Contact  # noqa: PLC0415
+
+        sess = object_session(task)
+        if sess is not None:
+            owner_id = sess.scalar(
+                select(Contact.owner_user_id).where(
+                    Contact.id == task.contact_id
+                )
+            )
+            if owner_id and owner_id == current_user.id:
+                return
     raise HTTPException(
         status_code=status.HTTP_403_FORBIDDEN,
         detail="No tienes permiso para modificar esta tarea.",

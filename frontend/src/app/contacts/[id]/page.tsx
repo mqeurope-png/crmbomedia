@@ -148,6 +148,10 @@ export default function ContactDetailPage() {
   const [primaryAssignment, setPrimaryAssignment] =
     useState<ContactAssignment | null>(null);
   const [companyName, setCompanyName] = useState<string | null>(null);
+  // Bug 11 fix: el strip cabecera ahora lee el teléfono primario de
+  // `contact_phones` (tabla nueva) en lugar de `contact.phone` (legacy)
+  // para que add/edit desde el sidebar se reflejen al instante.
+  const [primaryPhone, setPrimaryPhone] = useState<string | null>(null);
   const autoRefreshed = useRef(false);
 
   const loadContact = useCallback(async () => {
@@ -172,6 +176,37 @@ export default function ContactDetailPage() {
   useEffect(() => {
     reloadPrimary();
   }, [reloadPrimary]);
+
+  // Bug 11: cargar teléfonos para alimentar la cabecera con el
+  // primario (o el primero por position) en vez del legacy
+  // `contact.phone`. Se re-ejecuta tras un PATCH del contacto vía
+  // `refreshSignal` para reflejar add/remove desde el sidebar.
+  const [phoneRefreshTick, setPhoneRefreshTick] = useState(0);
+  useEffect(() => {
+    if (!contact?.id) {
+      setPrimaryPhone(null);
+      return;
+    }
+    let cancelled = false;
+    import("../../lib/contactChannelsApi")
+      .then((mod) => mod.listContactPhones(contact.id))
+      .then((rows) => {
+        if (cancelled) return;
+        if (!rows.length) {
+          // Fallback al legacy si no hay filas (contacto sin migrar).
+          setPrimaryPhone(contact.phone ?? null);
+          return;
+        }
+        const primary = rows.find((p) => p.is_primary) ?? rows[0];
+        setPrimaryPhone(primary?.number ?? null);
+      })
+      .catch(() => {
+        if (!cancelled) setPrimaryPhone(contact.phone ?? null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [contact?.id, contact?.phone, phoneRefreshTick]);
 
   useEffect(() => {
     if (!contact?.company_id) {
@@ -392,6 +427,7 @@ export default function ContactDetailPage() {
         contact={contact}
         companyName={companyName}
         lastActivityAt={lastActivityAt}
+        primaryPhone={primaryPhone}
         onPatch={handlePatch}
       />
 
@@ -525,7 +561,10 @@ export default function ContactDetailPage() {
               <Briefcase size={14} aria-hidden />
               <h3>Información de contacto</h3>
             </header>
-            <ContactPhonesSection contactId={contact.id} />
+            <ContactPhonesSection
+              contactId={contact.id}
+              onChanged={() => setPhoneRefreshTick((n) => n + 1)}
+            />
             <ContactProfessionalSection
               contact={contact}
               onSaved={loadContact}

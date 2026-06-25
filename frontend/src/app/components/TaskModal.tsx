@@ -143,8 +143,12 @@ export function TaskModal({
   }
 
   return (
-    <div className="modal-backdrop" role="dialog" aria-modal="true">
-      <div className="modal">
+    // Bug 1 fix: wrap en `modal-overlay` + `modal-dialog` (mismo
+    // patrón que ContactEditForm) en lugar del antiguo `modal-backdrop`
+    // + `modal` sin CSS — el inner `.modal` no tenía estilo y el
+    // contenido se mezclaba con la página de fondo.
+    <div className="modal-overlay" role="dialog" aria-modal="true">
+      <div className="modal-dialog">
         <header>
           <h2>{isEdit ? "Editar tarea" : "Nueva tarea"}</h2>
           {contactId && !isEdit ? (

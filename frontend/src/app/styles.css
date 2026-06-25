@@ -1358,6 +1358,25 @@ h1 {
   font-weight: 800;
 }
 
+/* Bug 5: KPIs clicables → reset del estilo button para que parezca
+ * idéntico a `.stat-card` + cursor pointer + hover sutil. */
+.stat-card-link {
+  appearance: none;
+  font-family: inherit;
+  text-align: left;
+  color: inherit;
+  cursor: pointer;
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+.stat-card-link:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.08);
+}
+.stat-card-link:focus-visible {
+  outline: 2px solid var(--color-accent, #2563eb);
+  outline-offset: 2px;
+}
+
 .stat-card p,
 .card p,
 .panel li,
@@ -2330,8 +2349,18 @@ a.origin-chip:hover { filter: brightness(0.97); }
   padding: 4px 0;
   max-height: 240px;
   overflow-y: auto;
-  z-index: 10;
+  /* Bug 8 (Bart 2026-06-25): z-index 10 quedaba debajo de la sidebar
+   * card que tiene su propio stacking context, y el dropdown se
+   * cortaba bajo el input. 5000 lo pone por encima de sidebars,
+   * cards y otros wrappers sin chocar con modals (que usan ≥10000). */
+  z-index: 5000;
 }
+
+/* Bug 8: el contenedor del picker abre su propio stacking context
+ * con z-index alto cuando está visible para que el dropdown salga
+ * limpio de cualquier ancestor con overflow:hidden de las tarjetas
+ * del Resumen. */
+.tag-picker { z-index: 5000; }
 
 .tag-picker-row,
 .tag-picker-empty {

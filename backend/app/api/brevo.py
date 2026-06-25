@@ -1349,6 +1349,38 @@ def get_campaign(
 
 
 @router.post(
+    "/campaigns/{campaign_id}/refresh-stats",
+    response_model=BrevoCampaignRead,
+)
+def refresh_campaign_stats(
+    campaign_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_manager),
+) -> BrevoCampaignRead:
+    """Bug 6 fix (Bart 2026-06-25). Hace un refresh inmediato de las
+    stats de UNA campaña — Brevo a veces tarda en poblar los counters
+    tras un envío reciente y el TTL de 5min hacía que la cabecera
+    quedara en 0 hasta el siguiente fetch. Este endpoint fuerza el
+    pull sin importar la edad del cache. Sin filtro por `sent_at`
+    para evitar tener que matar el ciclo manualmente."""
+    _ = current_user
+    row = session.get(BrevoCampaignCache, campaign_id)
+    if row is None:
+        raise not_found("Brevo campaign")
+    try:
+        asyncio.run(campaigns_service.refresh_campaign_row(session, row))
+    except IntegrationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Fallo refrescando stats de Brevo: {exc.message}",
+        ) from exc
+    session.commit()
+    read = BrevoCampaignRead.model_validate(row)
+    read.html_content = row.html_content_cached
+    return read
+
+
+@router.post(
     "/campaigns",
     response_model=BrevoCampaignRead,
     status_code=status.HTTP_201_CREATED,
