@@ -4,10 +4,38 @@
  * "👥 Leads prioritarios" — PR-E2, selector temporal ampliado en
  * PR-E3 ([3d][1sem][15d][30d][Custom]) + persistencia localStorage.
  * Lista contactos asignados al user con razón recent/assigned/active.
+ *
+ * PR-Fix-Leads-Prioritarios-3a-Vez. La V1 (#237) hizo
+ * `?preset=priority_leads`; /contacts no reconocía el preset → vacío.
+ * La V2 (#238) pre-fetcheaba IDs async y montaba `?rules=base64` —
+ * pero el href arrancaba en `/contacts` plano y Bart, al clickar
+ * antes del resolve del fetch, navegaba a /contacts SIN query →
+ * /contacts hidrataba el `view_state` de localStorage (su última
+ * vista guardada, `view_id=cc9baa84...`) y la URL final resultaba
+ * con `view_id` y sin `rules`. Race-condition documentada por Bart
+ * con screenshot de la URL real.
+ *
+ * V3 (este fix): convertir el `<Link>` en `<button>` con
+ * onClick async. Pase lo que pase, el navigate ocurre DESPUÉS de
+ * que tenemos los IDs:
+ *
+ *   1. Si los IDs ya están cacheados en estado → push inmediato.
+ *   2. Si la fetch sigue pending → await la promesa cacheada en
+ *      `seeAllPromiseRef` (sin disparar otra) y push con su
+ *      resultado.
+ *   3. Si la fetch falló o devolvió 0 → navegar a `/contacts`
+ *      vacío (degradado correcto, no rompe el flow).
+ *
+ * El href nunca contiene `view_id`. Se usa `router.push()` con
+ * rules en query string — el parser de /contacts ya entra por la
+ * rama `if (urlState.rules)` (línea 254 de contacts/page.tsx) y
+ * descarta la default view. Verificado leyendo readUrlState +
+ * el effect que re-serializa la URL en /contacts.
  */
 import { Users } from "lucide-react";
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import { useEffect, useRef, useState } from "react";
 import {
   getDashboardPriorityLeads,
   type DashboardWindow,
@@ -41,7 +69,26 @@ function relative(value: string): string {
   });
 }
 
+function buildRulesUrl(ids: string[]): string {
+  // Formato del rules tree del repo: ver
+  // `frontend/src/app/lib/entitySchema.ts` (RuleNode).
+  const rules = {
+    operator: "AND",
+    children: [
+      {
+        type: "rule",
+        field: "id",
+        comparator: "in",
+        value: ids,
+      },
+    ],
+  };
+  const encoded = btoa(encodeURIComponent(JSON.stringify(rules)));
+  return `/contacts?rules=${encoded}`;
+}
+
 export function PriorityLeadsWidget() {
+  const router = useRouter();
   const [window_, setWindow] = usePersistentState<DashboardWindow>(
     "crmbomedia_dash:priority_leads:period",
     { period: "7d" },
@@ -68,53 +115,59 @@ export function PriorityLeadsWidget() {
     };
   }, [window_]);
 
-  // PR-Fix-Regresiones-PR237 Bug 3. La V1 del PR #237 linkaba a
-  // `?preset=priority_leads` pero /contacts no reconocía ese preset
-  // → abría sin filtros. Fix: pre-fetch IDs del endpoint del widget
-  // y encodearlos como `rules` IN base64 — el mismo formato que ya
-  // usa /contacts cuando aplica filtros del builder.
-  //
-  // Resultado: /contacts muestra EXACTAMENTE los mismos contactos
-  // que el widget (no más, no menos), con todas las acciones masivas
-  // disponibles (Bart pidió "asignar owner, añadir tag, push Brevo,
-  // etc").
-  const [seeAllHref, setSeeAllHref] = useState<string>("/contacts");
+  // V3: full-set IDs cacheados + ref a la promise para que el click
+  // pueda await si todavía está pending. Pedimos hasta 500 — cap
+  // razonable para /contacts; si hay más, Bart afina con filtros
+  // adicionales encima.
+  const [allIds, setAllIds] = useState<string[] | null>(null);
+  const seeAllPromiseRef = useRef<Promise<string[]> | null>(null);
+  const [navigating, setNavigating] = useState(false);
+
   useEffect(() => {
     let cancelled = false;
-    // Pedimos hasta 500 (cap razonable para /contacts) — si hay más,
-    // Bart puede afinar con filtros adicionales encima.
-    getDashboardPriorityLeads(window_, 500)
-      .then((rows) => {
-        if (cancelled) return;
-        if (!rows.length) {
-          setSeeAllHref("/contacts");
-          return;
-        }
-        // Formato del rules tree del repo: ver
-        // `frontend/src/app/lib/entitySchema.ts` (RuleNode).
-        const rules = {
-          operator: "AND",
-          children: [
-            {
-              type: "rule",
-              field: "id",
-              comparator: "in",
-              value: rows.map((r) => r.id),
-            },
-          ],
-        };
-        const encoded = btoa(
-          encodeURIComponent(JSON.stringify(rules)),
-        );
-        setSeeAllHref(`/contacts?rules=${encoded}`);
-      })
-      .catch(() => {
-        if (!cancelled) setSeeAllHref("/contacts");
-      });
+    setAllIds(null);
+    seeAllPromiseRef.current = null;
+    const promise = getDashboardPriorityLeads(window_, 500)
+      .then((rows) => rows.map((r) => r.id))
+      .catch(() => [] as string[]);
+    seeAllPromiseRef.current = promise;
+    promise.then((ids) => {
+      if (!cancelled) setAllIds(ids);
+    });
     return () => {
       cancelled = true;
     };
   }, [window_]);
+
+  async function onSeeAll(e: React.MouseEvent) {
+    e.preventDefault();
+    setNavigating(true);
+    try {
+      let ids: string[];
+      if (allIds != null) {
+        ids = allIds;
+      } else {
+        // Fetch todavía pending → esperar la promise CACHEADA
+        // (no disparar otra). Si nunca arrancó por algún bug,
+        // disparar fresco.
+        ids =
+          (await (seeAllPromiseRef.current ??
+            getDashboardPriorityLeads(window_, 500).then((rows) =>
+              rows.map((r) => r.id),
+            ))) ?? [];
+      }
+      if (!ids.length) {
+        // No hay leads prioritarios → llevamos a /contacts vacío
+        // con rules que matchean 0 (id IN [""]) para que la página
+        // muestre 0 resultados en lugar de la default view del user.
+        router.push(buildRulesUrl([""]));
+        return;
+      }
+      router.push(buildRulesUrl(ids));
+    } finally {
+      setNavigating(false);
+    }
+  }
 
   return (
     <article className="card widget widget-priority-leads">
@@ -167,9 +220,20 @@ export function PriorityLeadsWidget() {
       </div>
       {leads.length > 0 ? (
         <footer className="widget-footer">
-          <Link href={seeAllHref} className="widget-see-all">
-            Ver todos →
-          </Link>
+          {/* PR-Fix-Leads-Prioritarios-3a-Vez. button + onClick
+           * async — el navigate ocurre DESPUÉS de que tenemos los
+           * IDs, así nunca llegamos a /contacts con URL vacía (que
+           * disparaba el localStorage fallback y la default view
+           * con view_id=cc9baa84...). */}
+          <button
+            type="button"
+            className="widget-see-all"
+            onClick={onSeeAll}
+            disabled={navigating}
+            aria-busy={navigating}
+          >
+            {navigating ? "Cargando…" : "Ver todos →"}
+          </button>
         </footer>
       ) : null}
     </article>
