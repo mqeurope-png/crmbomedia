@@ -440,6 +440,68 @@ def priority_leads(
     return out
 
 
+def _build_kpi_contact_rows(
+    session: Session,
+    contact_signals: list[tuple[str, datetime | None]],
+) -> list[dict[str, Any]]:
+    """PR-Bugs-4-5amp-7-9. Shared shaping for KPI-driven contact lists.
+
+    Mirrors `priority_leads`'s output so the dedicated KPI pages
+    (`/dashboard/mis-stats/{kpi}`, `/marketing/campaigns/{id}/{kpi}`)
+    can reuse the same client + table component. The `signal_at` is
+    KPI-specific (e.g. last `email.opened` event for the opened KPI),
+    `reason` is null since there's no recent/assigned/active
+    classification.
+    """
+    contact_ids = [cid for cid, _ in contact_signals]
+    if not contact_ids:
+        return []
+    contact_rows = {
+        c.id: c
+        for c in session.scalars(
+            select(Contact).where(Contact.id.in_(contact_ids))
+        )
+    }
+    owner_ids = [
+        c.owner_user_id for c in contact_rows.values() if c.owner_user_id
+    ]
+    owner_names: dict[str, str] = {}
+    if owner_ids:
+        owner_names = dict(
+            session.execute(
+                select(User.id, User.full_name).where(User.id.in_(owner_ids))
+            ).all()
+        )
+    out: list[dict[str, Any]] = []
+    for cid, signal_at in contact_signals:
+        c = contact_rows.get(cid)
+        if c is None:
+            continue
+        tags = [
+            {"id": t.id, "name": t.name, "color": getattr(t, "color", None)}
+            for t in c.tag_objects
+        ]
+        out.append(
+            {
+                "id": c.id,
+                "first_name": c.first_name,
+                "last_name": c.last_name,
+                "email": c.email,
+                "phone": c.phone,
+                "signal_at": signal_at,
+                "reason": None,
+                "lead_score": c.lead_score,
+                "tags": tags,
+                "owner_user_id": c.owner_user_id,
+                "owner_name": (
+                    owner_names.get(c.owner_user_id)
+                    if c.owner_user_id else None
+                ),
+            }
+        )
+    return out
+
+
 @router.get("/my-campaign-stats")
 def my_campaign_stats(
     period: str = Query(
@@ -515,6 +577,105 @@ def my_campaign_stats(
         # CTR clásico: clicks / opens. Si no hay opens, 0.
         "click_rate": round((clicks / opens) * 100, 1) if opens else 0.0,
     }
+
+
+_MY_CAMPAIGN_KPIS = {"received", "opened", "clicked"}
+
+
+@router.get("/my-campaign-contacts/{kpi}")
+def my_campaign_contacts(
+    kpi: str,
+    period: str = Query(
+        default="30d", regex="^(3d|7d|14d|15d|30d|custom)$"
+    ),
+    start: datetime | None = Query(default=None),
+    end: datetime | None = Query(default=None),
+    limit: int = Query(default=200, ge=1, le=200),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_viewer),
+) -> list[dict[str, Any]]:
+    """PR-Bugs-4-5amp-7-9. List of contacts (primary-assigned to the
+    current user) that match the requested KPI within `period`.
+
+    `kpi`:
+      - "received" — contacts whose primary-assigned events include a
+        delivery / open / click on a Brevo campaign in window.
+      - "opened" — subset who opened (uniqueOpens semantics).
+      - "clicked" — subset who clicked.
+
+    Mirrors `priority_leads`' response shape so the dedicated page
+    `/dashboard/mis-stats/{kpi}` reuses the same client + table.
+    """
+    if kpi not in _MY_CAMPAIGN_KPIS:
+        from fastapi import HTTPException, status  # noqa: PLC0415
+
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"kpi debe ser uno de {sorted(_MY_CAMPAIGN_KPIS)}",
+        )
+    from app.models.brevo import BrevoCampaignCache  # noqa: PLC0415
+
+    since, until = _resolve_period_window(period, start, end, default_days=30)
+
+    rows = list(
+        session.execute(
+            select(
+                ContactAssignment.contact_id,
+                ActivityEvent.event_type,
+                ActivityEvent.occurred_at,
+            )
+            .join(
+                ActivityEvent,
+                ActivityEvent.contact_id == ContactAssignment.contact_id,
+            )
+            .join(
+                BrevoCampaignCache,
+                BrevoCampaignCache.brevo_campaign_id
+                == ActivityEvent.campaign_brevo_id,
+            )
+            .where(
+                ContactAssignment.user_id == current_user.id,
+                ContactAssignment.is_primary.is_(True),
+                ActivityEvent.campaign_brevo_id.isnot(None),
+                BrevoCampaignCache.sent_at.isnot(None),
+                BrevoCampaignCache.sent_at >= since,
+                BrevoCampaignCache.sent_at <= until,
+            )
+        )
+    )
+
+    matching: dict[str, datetime] = {}
+    for contact_id, event_type, occurred_at in rows:
+        et = (event_type or "").lower()
+        # `received` is "anyone who shows up at all" — open/click imply
+        # delivery in Brevo's model; explicit deliver events are kept
+        # too for inbound flows that surface them.
+        if kpi == "received":
+            keep = (
+                "deliver" in et
+                or "open" in et
+                or "click" in et
+            )
+        elif kpi == "opened":
+            # uniqueOpens semantics: anyone who opened or clicked.
+            keep = "open" in et or "click" in et
+        else:  # clicked
+            keep = "click" in et
+        if not keep:
+            continue
+        if occurred_at is None:
+            continue
+        prev = matching.get(contact_id)
+        if prev is None or occurred_at > prev:
+            matching[contact_id] = occurred_at
+
+    if not matching:
+        return []
+
+    top_ids = sorted(
+        matching.items(), key=lambda x: x[1], reverse=True
+    )[:limit]
+    return _build_kpi_contact_rows(session, top_ids)
 
 
 @router.get("/user-campaign-stats")

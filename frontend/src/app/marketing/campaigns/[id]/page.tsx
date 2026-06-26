@@ -293,63 +293,114 @@ export default function CampaignDetailPage() {
        * con acciones masivas queda como follow-up (requiere fetch
        * full IDs y encodearlos en URL state). Mientras, la
        * navegación dentro del panel ya cubre el "ver quiénes". */}
+      {/* PR-Bugs-4-5amp-7-9. Cada KPI tiene 2 caminos:
+       *   - Click en el NÚMERO/título → página dedicada con la lista
+       *     completa (`/marketing/campaigns/{id}/{kpi}`, hasta 200).
+       *   - Click en "Ver" pequeño → pestaña Destinatarios interna
+       *     (uso rápido, hasta 50 con paginación). */}
       <section className="stats-grid" aria-label="Estadísticas">
-        <article className="stat-card">
+        <Link
+          href={`/marketing/campaigns/${campaign.id}/sent`}
+          className="stat-card stat-card-link"
+        >
           <span>{stats.sent ?? "—"}</span>
           <p>Enviados</p>
-        </article>
-        <button
-          type="button"
+        </Link>
+        <div className="stat-card stat-card-stack">
+          <Link
+            href={`/marketing/campaigns/${campaign.id}/delivered`}
+            className="stat-card-link-inner"
+          >
+            <span>{stats.delivered ?? "—"}</span>
+            <p>Entregados</p>
+          </Link>
+          <button
+            type="button"
+            className="stat-card-quick"
+            onClick={() => setRecipientTab("delivered")}
+          >
+            Ver
+          </button>
+        </div>
+        <div className="stat-card stat-card-stack">
+          <Link
+            href={`/marketing/campaigns/${campaign.id}/opened`}
+            className="stat-card-link-inner"
+          >
+            <span>
+              {stats.uniqueViews ?? stats.viewed ?? "—"}
+              {rates.openRate != null ? ` (${rates.openRate}%)` : ""}
+            </span>
+            <p>Abiertos (OR)</p>
+          </Link>
+          <button
+            type="button"
+            className="stat-card-quick"
+            onClick={() => setRecipientTab("opened")}
+          >
+            Ver
+          </button>
+        </div>
+        <div className="stat-card stat-card-stack">
+          <Link
+            href={`/marketing/campaigns/${campaign.id}/clicked`}
+            className="stat-card-link-inner"
+          >
+            <span>
+              {stats.uniqueClicks ?? stats.clickers ?? "—"}
+              {rates.clickRate != null ? ` (${rates.clickRate}%)` : ""}
+            </span>
+            <p>Clicks (CTR)</p>
+          </Link>
+          <button
+            type="button"
+            className="stat-card-quick"
+            onClick={() => setRecipientTab("clicked")}
+          >
+            Ver
+          </button>
+        </div>
+        <div className="stat-card stat-card-stack">
+          <Link
+            href={`/marketing/campaigns/${campaign.id}/bounces`}
+            className="stat-card-link-inner"
+          >
+            <span>
+              {(stats.hardBounces ?? 0) + (stats.softBounces ?? 0) || "—"}
+            </span>
+            <p>Rebotes</p>
+          </Link>
+          <button
+            type="button"
+            className="stat-card-quick"
+            onClick={() => setRecipientTab("bounces")}
+          >
+            Ver
+          </button>
+        </div>
+        <div className="stat-card stat-card-stack">
+          <Link
+            href={`/marketing/campaigns/${campaign.id}/unsubscribed`}
+            className="stat-card-link-inner"
+          >
+            <span>{stats.unsubscriptions ?? "—"}</span>
+            <p>Bajas</p>
+          </Link>
+          <button
+            type="button"
+            className="stat-card-quick"
+            onClick={() => setRecipientTab("unsubscribed")}
+          >
+            Ver
+          </button>
+        </div>
+        <Link
+          href={`/marketing/campaigns/${campaign.id}/complained`}
           className="stat-card stat-card-link"
-          onClick={() => setRecipientTab("delivered")}
         >
-          <span>{stats.delivered ?? "—"}</span>
-          <p>Entregados</p>
-        </button>
-        <button
-          type="button"
-          className="stat-card stat-card-link"
-          onClick={() => setRecipientTab("opened")}
-        >
-          <span>
-            {stats.uniqueViews ?? stats.viewed ?? "—"}
-            {rates.openRate != null ? ` (${rates.openRate}%)` : ""}
-          </span>
-          <p>Abiertos (OR)</p>
-        </button>
-        <button
-          type="button"
-          className="stat-card stat-card-link"
-          onClick={() => setRecipientTab("clicked")}
-        >
-          <span>
-            {stats.uniqueClicks ?? stats.clickers ?? "—"}
-            {rates.clickRate != null ? ` (${rates.clickRate}%)` : ""}
-          </span>
-          <p>Clicks (CTR)</p>
-        </button>
-        <button
-          type="button"
-          className="stat-card stat-card-link"
-          onClick={() => setRecipientTab("bounces")}
-        >
-          <span>
-            {(stats.hardBounces ?? 0) + (stats.softBounces ?? 0) || "—"}
-          </span>
-          <p>Rebotes</p>
-        </button>
-        <button
-          type="button"
-          className="stat-card stat-card-link"
-          onClick={() => setRecipientTab("unsubscribed")}
-        >
-          <span>{stats.unsubscriptions ?? "—"}</span>
-          <p>Bajas</p>
-        </button>
-        <article className="stat-card">
           <span>{stats.complaints ?? "—"}</span>
           <p>Spam</p>
-        </article>
+        </Link>
       </section>
 
       <section className="panel">

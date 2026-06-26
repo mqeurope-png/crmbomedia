@@ -3,9 +3,25 @@
 /**
  * Card de Resumen ficha contacto — "Notas recientes" con 3 notas
  * más recientes + link "Ver todas" → tab Notas. PR-Db.
+ *
+ * PR-Bugs-4-5amp-7-9 — auditoría bug 9. Este componente YA dispara
+ * su propio fetch al mount (`useEffect` con `listContactNotes`). El
+ * mismo patrón está en ContactTasksPendingCard, ContactBrevoEngagement
+ * Card, ContactUnsubscribeStatusCard y en el sub-card de Engagement de
+ * ContactSummaryTab. Las únicas excepciones son las cards Actividad y
+ * Tags, que vienen del `contact` que el padre ya ha cargado para
+ * pintar la cabecera (evitando un round-trip redundante). Por eso
+ * todos los widgets del Resumen son auto-suficientes desde el primer
+ * mount.
+ *
+ * El bug reportado por Bart ("Notas recientes vacío al primer mount,
+ * sí carga tras visitar la pestaña Notas") no se reproduce con este
+ * código. Mantenemos el botón "Reintentar" como escape hatch por si
+ * un fallo transitorio (401 durante refresh de token, race con la
+ * cookie de sesión, etc.) deja el primer fetch en empty/error.
  */
 import { ArrowUpRight, StickyNote } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { listContactNotes, type ContactNote } from "../../lib/contactNotesApi";
 import { formatRelative, parseBackendDate } from "../../lib/dates";
 
@@ -26,9 +42,16 @@ export function ContactNotesPreviewCard({ contactId, onSeeAll }: Props) {
   const [notes, setNotes] = useState<ContactNote[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
+
+  const reload = useCallback(() => {
+    setReloadKey((k) => k + 1);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
+    setLoading(true);
+    setError(null);
     listContactNotes(contactId)
       .then((rows) => {
         if (cancelled) return;
@@ -51,7 +74,7 @@ export function ContactNotesPreviewCard({ contactId, onSeeAll }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [contactId]);
+  }, [contactId, reloadKey]);
 
   return (
     <article className="card contact-summary-card">
@@ -59,6 +82,21 @@ export function ContactNotesPreviewCard({ contactId, onSeeAll }: Props) {
         <h3>
           <StickyNote size={14} aria-hidden /> Notas recientes
         </h3>
+        {/* PR-Bugs-4-5amp-7-9. Escape hatch para el "Sin notas todavía"
+         * que Bart reportó al primer mount. Si un fallo transitorio
+         * de auth dejó la lista vacía, este botón fuerza un re-fetch
+         * sin tener que ir y volver de la pestaña Notas. */}
+        {!loading && !error ? (
+          <button
+            type="button"
+            className="contact-summary-link contact-summary-link-icon"
+            onClick={reload}
+            title="Recargar"
+            aria-label="Recargar notas"
+          >
+            ⟳
+          </button>
+        ) : null}
       </header>
       {loading ? (
         <p className="muted small">Cargando…</p>

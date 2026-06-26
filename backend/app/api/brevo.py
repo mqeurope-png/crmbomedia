@@ -1975,6 +1975,84 @@ def campaign_recipients_by_event(
 
 
 # ---------------------------------------------------------------------------
+# PR-Bugs-4-5amp-7-9. Dedicated KPI contact lists for `/marketing/
+# campaigns/{id}/{kpi}` pages. Same data source as
+# `/campaigns/{id}/recipients/{event_type}` (activity_events fed by
+# the Brevo webhook) but returns a contact-shaped payload aligned
+# with `priority_leads` so the page can reuse the table component.
+# ---------------------------------------------------------------------------
+
+
+_CAMPAIGN_KPI_TO_EVENTS: dict[str, tuple[str, ...]] = {
+    # Brevo's `sent` event isn't always surfaced via webhook — every
+    # contact that DELIVERED was first sent, so the "Enviados" KPI
+    # falls back to anyone with delivered/open/click.
+    "sent": ("email.sent", "email.delivered", "email.opened", "email.clicked"),
+    "delivered": ("email.delivered", "email.opened", "email.clicked"),
+    "opened": ("email.opened", "email.clicked"),
+    "clicked": ("email.clicked",),
+    "bounces": ("email.bounced_hard", "email.bounced_soft"),
+    "unsubscribed": ("email.unsubscribed",),
+    "complained": ("email.complained",),  # Brevo "spam" reports
+}
+
+
+@router.get("/campaigns/{campaign_id}/contacts/{kpi}")
+def campaign_contacts_by_kpi(
+    campaign_id: str,
+    kpi: str,
+    limit: int = Query(default=200, ge=1, le=200),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_user),
+) -> list[dict[str, Any]]:
+    """List of CRM contacts for one KPI of one campaign — dedicated
+    page `/marketing/campaigns/{id}/{kpi}`. Returns PriorityLead-shape
+    rows (id, first/last name, email, signal_at, tags, lead_score,
+    owner) so the existing leads-prioritarios table can be reused.
+
+    Does NOT replace `/campaigns/{id}/recipients/{event_type}` — that
+    endpoint stays for the "Destinatarios" tab's event-shaped rows.
+    """
+    _ = current_user
+    if kpi not in _CAMPAIGN_KPI_TO_EVENTS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"kpi debe ser uno de {sorted(_CAMPAIGN_KPI_TO_EVENTS)}",
+        )
+    row = _get_campaign_or_404(session, campaign_id)
+    types = _CAMPAIGN_KPI_TO_EVENTS[kpi]
+    from app.api.dashboard import _build_kpi_contact_rows  # noqa: PLC0415
+    from app.models.crm import ActivityEvent  # noqa: PLC0415
+
+    backfill_prefix = f"backfill:{row.brevo_campaign_id}:%"
+    rows = list(
+        session.execute(
+            select(
+                ActivityEvent.contact_id,
+                func.max(ActivityEvent.occurred_at).label("signal_at"),
+            )
+            .where(
+                ActivityEvent.system == "brevo",
+                ActivityEvent.account_id == row.brevo_account_id,
+                ActivityEvent.event_type.in_(types),
+                or_(
+                    ActivityEvent.campaign_brevo_id == row.brevo_campaign_id,
+                    and_(
+                        ActivityEvent.campaign_brevo_id.is_(None),
+                        ActivityEvent.external_id.like(backfill_prefix),
+                    ),
+                ),
+            )
+            .group_by(ActivityEvent.contact_id)
+            .order_by(func.max(ActivityEvent.occurred_at).desc())
+            .limit(limit)
+        )
+    )
+    contact_signals = [(cid, signal_at) for cid, signal_at in rows]
+    return _build_kpi_contact_rows(session, contact_signals)
+
+
+# ---------------------------------------------------------------------------
 # Sprint-Push-CRM-Brevo — admin endpoints
 # ---------------------------------------------------------------------------
 

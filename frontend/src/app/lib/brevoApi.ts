@@ -566,6 +566,28 @@ export async function backfillMissingBrevoCampaigns(
   );
 }
 
+// PR-Bugs-4-5amp-7-9. Lista de contactos por KPI de una campaña,
+// pensada para la página dedicada `/marketing/campaigns/{id}/{kpi}`.
+// Devuelve PriorityLead-shape para reusar `ContactKpiTable`.
+export type CampaignKpi =
+  | "sent"
+  | "delivered"
+  | "opened"
+  | "clicked"
+  | "bounces"
+  | "unsubscribed"
+  | "complained";
+
+export async function getBrevoCampaignContactsByKpi(
+  campaignId: string,
+  kpi: CampaignKpi,
+  limit = 200,
+): Promise<import("./dashboardApi").PriorityLead[]> {
+  return apiFetch<import("./dashboardApi").PriorityLead[]>(
+    `/api/brevo/campaigns/${campaignId}/contacts/${kpi}?limit=${limit}`,
+  );
+}
+
 export async function getBrevoCampaignTimeline(
   id: string,
 ): Promise<BrevoCampaignTimeline> {
