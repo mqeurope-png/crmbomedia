@@ -153,14 +153,34 @@ def get_status(
             id=integration.selected_calendar_id,
             summary=integration.selected_calendar_summary,
         )
+    # PR-OAuth-Permisos-Admin Items 9 + 12. Estado + caducidad para el
+    # banner. token_expiring_soon solo aplica a integraciones activas.
+    from datetime import UTC, datetime, timedelta  # noqa: PLC0415
+
+    integ_status = getattr(integration, "status", "active")
+    expiring_soon = False
+    if integ_status == "active" and integration.token_expires_at is not None:
+        now = datetime.now(UTC)
+        expiring_soon = (
+            now <= integration.token_expires_at <= now + timedelta(hours=48)
+        )
+    # Si la integración no está activa, la UI debe ofrecer reconectar —
+    # `connected=False` para reutilizar el CTA de conexión, pero
+    # exponemos `status` para el banner específico.
     return GoogleCalendarStatus(
         configured=settings.google_calendar_configured,
-        connected=True,
+        connected=integ_status == "active",
         google_email=integration.google_email,
         selected_calendar=selected,
-        requires_calendar_selection=integration.selected_calendar_id is None,
+        requires_calendar_selection=(
+            integ_status == "active"
+            and integration.selected_calendar_id is None
+        ),
         connected_at=integration.connected_at,
         last_sync_at=integration.last_sync_at,
+        status=integ_status,
+        token_expires_at=integration.token_expires_at,
+        token_expiring_soon=expiring_soon,
     )
 
 
@@ -273,10 +293,12 @@ def list_calendars(
     try:
         calendars = GoogleCalendarClient(session, integration).list_calendars()
     except GoogleAuthExpiredError as exc:
-        # The refresh token is no longer valid (user revoked from
-        # Google's side). Drop the row so the next /status call
-        # surfaces "Conectar cuenta Google" again.
-        session.delete(integration)
+        # PR-OAuth-Permisos-Admin Item 12. Antes BORRABA la fila (se
+        # perdía la config + sin audit). Ahora la marca needs_reconnect
+        # y la conserva — el banner UI + el digest admin la surfacean.
+        google_service.mark_needs_reconnect(
+            session, user_id=current_user.id, error="invalid_grant"
+        )
         session.commit()
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -310,7 +332,10 @@ def select_calendar(
             status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
         ) from exc
     except GoogleAuthExpiredError as exc:
-        session.delete(integration if "integration" in locals() else None)
+        # PR-OAuth-Permisos-Admin Item 12. Marcar en vez de borrar.
+        google_service.mark_needs_reconnect(
+            session, user_id=current_user.id, error="invalid_grant"
+        )
         session.commit()
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

@@ -49,6 +49,20 @@ class EmailService(ABC):
     @abstractmethod
     def send_password_reset(self, *, to_email: str, to_name: str, token: str) -> None: ...
 
+    # PR-OAuth-Permisos-Admin Item 9. Envío genérico para avisos
+    # transaccionales (caducidad token Gmail, digest admin). Plantillas
+    # inline — no requiere ficheros Jinja nuevos.
+    @abstractmethod
+    def send_notification(
+        self,
+        *,
+        to_email: str,
+        to_name: str,
+        subject: str,
+        text_body: str,
+        html_body: str | None = None,
+    ) -> None: ...
+
 
 def _render_password_reset(
     *,
@@ -115,6 +129,28 @@ class ConsoleEmailService(EmailService):
             first_line,
         )
 
+    def send_notification(
+        self,
+        *,
+        to_email: str,
+        to_name: str,
+        subject: str,
+        text_body: str,
+        html_body: str | None = None,
+    ) -> None:
+        captured = CapturedEmail(
+            to_email=to_email,
+            to_name=to_name,
+            subject=subject,
+            text_body=text_body,
+            html_body=html_body or f"<pre>{text_body}</pre>",
+        )
+        self.sent.append(captured)
+        logger.info(
+            "[email console] to=%s subject=%s (notification)",
+            to_email, subject,
+        )
+
 
 @dataclass
 class SMTPEmailService(EmailService):
@@ -156,6 +192,25 @@ class SMTPEmailService(EmailService):
         )
         # Sync handlers bridge to the async aiosmtplib API via a fresh event
         # loop. Password reset is rare so the cost of asyncio.run is fine.
+        asyncio.run(self._send(msg))
+
+    def send_notification(
+        self,
+        *,
+        to_email: str,
+        to_name: str,
+        subject: str,
+        text_body: str,
+        html_body: str | None = None,
+    ) -> None:
+        msg = _build_message(
+            sender=self.sender,
+            sender_name=self.sender_name,
+            to_email=to_email,
+            subject=subject,
+            text_body=text_body,
+            html_body=html_body or f"<pre>{text_body}</pre>",
+        )
         asyncio.run(self._send(msg))
 
     async def _send(self, msg: EmailMessage) -> None:

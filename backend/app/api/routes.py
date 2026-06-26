@@ -4147,6 +4147,7 @@ def _pipeline_to_read(
     pipeline: Pipeline,
     *,
     current_user: User | None = None,
+    owner_email: str | None = None,
 ) -> PipelineRead:
     return PipelineRead(
         id=pipeline.id,
@@ -4157,6 +4158,8 @@ def _pipeline_to_read(
         is_shared=pipeline.is_shared,
         # PR-Workflows-Pipelines-Per-User. NULL = global.
         owner_user_id=pipeline.owner_user_id,
+        # PR-OAuth-Permisos-Admin Item 10.
+        owner_email=owner_email,
         is_mine=(
             current_user is not None
             and pipeline.owner_user_id is not None
@@ -4193,7 +4196,25 @@ def list_pipelines(
             None if is_admin(current_user) else current_user.id
         ),
     )
-    return [_pipeline_to_read(session, row, current_user=current_user) for row in rows]
+    # PR-OAuth-Permisos-Admin Item 10. Mapa owner_user_id → email.
+    owner_ids = {r.owner_user_id for r in rows if r.owner_user_id}
+    email_by_id: dict[str, str] = {}
+    if owner_ids:
+        email_by_id = {
+            uid: email
+            for uid, email in session.execute(
+                select(User.id, User.email).where(User.id.in_(owner_ids))
+            )
+        }
+    return [
+        _pipeline_to_read(
+            session,
+            row,
+            current_user=current_user,
+            owner_email=email_by_id.get(row.owner_user_id or ""),
+        )
+        for row in rows
+    ]
 
 
 @router.get(

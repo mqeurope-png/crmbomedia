@@ -122,6 +122,11 @@ export default function WorkflowsListPage() {
   // Admin owner de un global → cae en "Mis" porque is_mine=true.
   const mineItems = items.filter((w) => w.is_mine);
   const teamItems = items.filter((w) => !w.is_mine && w.is_global);
+  // PR-OAuth-Permisos-Admin Item 10. Tercera sección solo para admin:
+  // workflows privados de OTROS users (no míos, no globales).
+  const othersItems = items.filter(
+    (w) => !w.is_mine && !w.is_global && !!w.owner_user_id,
+  );
 
   return (
     <div className="page">
@@ -284,6 +289,20 @@ export default function WorkflowsListPage() {
             onError={setError}
             onToggleGlobal={handleToggleGlobal}
           />
+          {/* PR-OAuth-Permisos-Admin Item 10. Solo admin: privados de
+              otros users, con badge "De [owner]". */}
+          {isAdmin && othersItems.length > 0 ? (
+            <WorkflowGroup
+              title="De otros users"
+              emptyHint=""
+              items={othersItems}
+              isAdmin={isAdmin}
+              onReload={load}
+              onError={setError}
+              onToggleGlobal={handleToggleGlobal}
+              showOwner
+            />
+          ) : null}
         </>
       )}
     </div>
@@ -298,6 +317,7 @@ function WorkflowGroup({
   onReload,
   onError,
   onToggleGlobal,
+  showOwner = false,
 }: {
   title: string;
   emptyHint: string;
@@ -306,6 +326,7 @@ function WorkflowGroup({
   onReload: () => Promise<void>;
   onError: (msg: string) => void;
   onToggleGlobal: (w: WorkflowRead) => Promise<void>;
+  showOwner?: boolean;
 }) {
   return (
     <section className="resource-group">
@@ -340,6 +361,11 @@ function WorkflowGroup({
                       isMine={!!w.is_mine}
                       isGlobal={!!w.is_global}
                     />
+                    {showOwner && w.owner_email ? (
+                      <span className="rv-badge rv-badge-sm rv-badge-owner">
+                        De {w.owner_email}
+                      </span>
+                    ) : null}
                   </td>
                   <td>
                     {humanizeTrigger(w.trigger_type)}

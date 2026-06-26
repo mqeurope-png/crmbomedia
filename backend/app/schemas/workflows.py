@@ -119,6 +119,9 @@ class WorkflowRead(BaseModel):
     # `owner_user_id IS NULL` ↔ `is_global=True`. `is_mine` se
     # computa contra el current_user en el serializador.
     owner_user_id: str | None = None
+    # PR-OAuth-Permisos-Admin Item 10. Email del owner (solo se rellena
+    # en el listado para que el admin agrupe los privados de otros).
+    owner_email: str | None = None
     is_mine: bool = False
     is_global: bool = False
     definition_hash: str | None = None

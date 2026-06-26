@@ -91,6 +91,7 @@ def _workflow_to_read(
     *,
     session: Session | None = None,
     current_user: User | None = None,
+    owner_email: str | None = None,
 ) -> WorkflowRead:
     return WorkflowRead(
         id=workflow.id,
@@ -116,6 +117,9 @@ def _workflow_to_read(
         created_by_user_id=workflow.created_by_user_id,
         # PR-Workflows-Pipelines-Per-User.
         owner_user_id=workflow.owner_user_id,
+        # PR-OAuth-Permisos-Admin Item 10. Email del owner para que el
+        # admin agrupe los privados de otros users en "De otros users".
+        owner_email=owner_email,
         is_mine=(
             current_user is not None
             and workflow.owner_user_id == current_user.id
@@ -360,8 +364,24 @@ def list_workflows(
     if status_filter is not None:
         stmt = stmt.where(Workflow.status == status_filter)
     rows = list(session.scalars(stmt))
+    # PR-OAuth-Permisos-Admin Item 10. Mapa owner_user_id → email para
+    # que el admin vea de quién es cada workflow privado. Una sola query.
+    owner_ids = {w.owner_user_id for w in rows if w.owner_user_id}
+    email_by_id: dict[str, str] = {}
+    if owner_ids:
+        email_by_id = {
+            uid: email
+            for uid, email in session.execute(
+                select(User.id, User.email).where(User.id.in_(owner_ids))
+            )
+        }
     return [
-        _workflow_to_read(w, session=session, current_user=current_user)
+        _workflow_to_read(
+            w,
+            session=session,
+            current_user=current_user,
+            owner_email=email_by_id.get(w.owner_user_id or ""),
+        )
         for w in rows
     ]
 

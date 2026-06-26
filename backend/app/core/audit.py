@@ -231,6 +231,15 @@ class Action:
     GMAIL_WATCH_REGISTERED = "gmail.watch_registered"
     GMAIL_WATCH_RENEWED = "gmail.watch_renewed"
 
+    # PR-OAuth-Permisos-Admin (items 9, 12, 13). Ciclo de vida OAuth.
+    GMAIL_REFRESH_FAILED_PERMANENT = "gmail.refresh_failed_permanent"
+    GMAIL_DISCONNECTED_BY_USER = "gmail.disconnected_by_user"
+    GMAIL_RECONNECTED = "gmail.reconnected"
+    GMAIL_CONNECTED = "gmail.connected"
+    GMAIL_TOKEN_EXPIRY_WARNING_SENT = "gmail.token_expiry_warning_sent"
+    GMAIL_ALIASES_SYNCED = "gmail.aliases_synced"
+    GMAIL_ADMIN_DIGEST_SENT = "gmail.admin_digest_sent"
+
     # Mailbox redesign (Sprint Email v2.4).
     EMAIL_FOLDER_CREATED = "email.folder_created"
     EMAIL_FOLDER_UPDATED = "email.folder_updated"

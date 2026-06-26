@@ -95,6 +95,11 @@ export default function PipelinesAdminPage() {
   // PR-Frontend-Workflows-Pipelines-Templates. Agrupación Mis / Equipo.
   const minePipelines = pipelines.filter((p) => p.is_mine);
   const teamPipelines = pipelines.filter((p) => !p.is_mine && p.is_global);
+  // PR-OAuth-Permisos-Admin Item 10. Solo admin: pipelines privados de
+  // otros users.
+  const othersPipelines = pipelines.filter(
+    (p) => !p.is_mine && !p.is_global && !!p.owner_user_id,
+  );
 
   return (
     <main className="shell shell-wide">
@@ -152,6 +157,20 @@ export default function PipelinesAdminPage() {
               onArchive={handleArchive}
               onToggleGlobal={handleToggleGlobal}
             />
+            {/* PR-OAuth-Permisos-Admin Item 10. Solo admin: privados de
+                otros users, con badge "De [owner]". */}
+            {isAdmin && othersPipelines.length > 0 ? (
+              <PipelineGroup
+                title="De otros users"
+                emptyHint=""
+                items={othersPipelines}
+                isAdmin={isAdmin}
+                onDuplicate={handleDuplicate}
+                onArchive={handleArchive}
+                onToggleGlobal={handleToggleGlobal}
+                showOwner
+              />
+            ) : null}
           </>
         )}
       </section>
@@ -185,6 +204,7 @@ function PipelineGroup({
   onDuplicate,
   onArchive,
   onToggleGlobal,
+  showOwner = false,
 }: {
   title: string;
   emptyHint: string;
@@ -193,6 +213,7 @@ function PipelineGroup({
   onDuplicate: (p: Pipeline) => void;
   onArchive: (p: Pipeline) => void;
   onToggleGlobal: (p: Pipeline) => void;
+  showOwner?: boolean;
 }) {
   return (
     <div className="resource-group">
@@ -233,6 +254,11 @@ function PipelineGroup({
                       isMine={!!pipeline.is_mine}
                       isGlobal={!!pipeline.is_global}
                     />
+                    {showOwner && pipeline.owner_email ? (
+                      <span className="rv-badge rv-badge-sm rv-badge-owner">
+                        De {pipeline.owner_email}
+                      </span>
+                    ) : null}
                     {pipeline.description ? (
                       <div className="muted small">{pipeline.description}</div>
                     ) : null}

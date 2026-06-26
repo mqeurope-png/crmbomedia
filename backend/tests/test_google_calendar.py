@@ -354,16 +354,17 @@ def test_select_calendar_rejects_id_not_in_user_account(
 # ---------------------------------------------------------------------------
 
 
-def test_disconnect_removes_row(
+def test_disconnect_marks_row_disconnected_by_user(
     client: TestClient,
     session_factory: sessionmaker,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # PR-OAuth-Permisos-Admin Item 12. Desconectar ya NO borra la fila:
+    # la marca status='disconnected_by_user' + vacía tokens + conserva
+    # la fila para histórico + audit.
     with session_factory() as session:
         uid = _user_id(session, UserRole.USER)
     _seed_integration(session_factory, user_id=uid)
-    # Stub the best-effort revoke call so we don't hit
-    # oauth2.googleapis.com from the test runner.
     monkeypatch.setattr(
         "app.integrations.google_calendar.service._revoke_tokens",
         lambda _integration: None,
@@ -375,7 +376,11 @@ def test_disconnect_removes_row(
     )
     assert response.status_code == 200
     with session_factory() as session:
-        assert session.scalar(select(UserGoogleIntegration)) is None
+        row = session.scalar(select(UserGoogleIntegration))
+        assert row is not None  # conservada
+        assert row.status == "disconnected_by_user"
+        assert row.access_token_encrypted == ""
+        assert row.disconnect_audit_id is not None
 
 
 # ---------------------------------------------------------------------------

@@ -146,6 +146,12 @@ services:
       # cada job tiene timeout de 300s y va al final de las colas Gmail
       # para no retrasar el sync incremental ni el process_history.
       - gmail:backfill_per_contact
+      # PR-OAuth-Permisos-Admin Items 9 + 13. Crons del ciclo de vida
+      # OAuth: aviso de caducidad de token (horario), digest admin
+      # (diario), sync de Send-As aliases (diario).
+      - gmail:token_expiry_check
+      - gmail:admin_digest
+      - gmail:sync_aliases
       - emails:snooze_sweep
       - email_templates:import_gmail
       # Sprint Backup. Cola virtual para el job manual + scheduled
