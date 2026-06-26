@@ -95,23 +95,16 @@ export function CreatePipelineWizard({
     setSubmitting(true);
     setError(null);
     try {
-      // /api/pipelines/from-template no acepta is_global por ahora;
-      // si admin lo quiere global aplicamos un PATCH tras crearlo.
+      // PR-Hotfix-Pipelines-Use-Template. El endpoint ahora acepta
+      // is_global directamente; antes había un PATCH tras crear que
+      // dependía de roles admin/manager — un comercial recibía 403 al
+      // hacer POST inicial. Ya es accesible para cualquier rol.
       const created = await createPipelineFromTemplate({
         template_id: pickedTemplate.id,
         name: templateName.trim() || undefined,
+        ...visibilityField,
       });
-      let final = created;
-      if (isAdmin && draftIsGlobal && !created.is_global) {
-        try {
-          const { updatePipeline } = await import("../lib/api");
-          final = await updatePipeline(created.id, { is_global: true });
-        } catch {
-          // Si el toggle falla dejamos el pipeline privado y el admin
-          // puede convertirlo desde la lista. El recurso ya existe.
-        }
-      }
-      onCreated(final);
+      onCreated(created);
       reset();
     } catch (err) {
       setError(extractErrorMessage(err, "No se pudo crear el pipeline."));

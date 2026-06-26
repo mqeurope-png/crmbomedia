@@ -539,3 +539,88 @@ def test_pipeline_duplicate_by_non_admin(client: TestClient):
     body = copy.json()
     assert body.get("owner_user_id") is not None
     assert body.get("is_mine") is True
+
+
+# ---------------------------------------------------------------------------
+# PR-Hotfix-Pipelines-Use-Template — comercial usa plantilla de pipeline
+# ---------------------------------------------------------------------------
+
+
+def _first_template_id(client: TestClient, role: str = "user") -> str:
+    response = client.get(
+        "/api/pipeline-templates", headers=auth_headers(client, role)
+    )
+    assert response.status_code == 200, response.text
+    templates = response.json()
+    assert len(templates) > 0, "Sin plantillas hardcoded — test inválido."
+    return templates[0]["id"]
+
+
+def test_pipeline_use_template_allows_commercial_creates_private(
+    client: TestClient,
+):
+    """PR-Hotfix-Pipelines-Use-Template. Comercial usa plantilla → el
+    pipeline se crea privado (owner_user_id=current_user). Antes el
+    endpoint era manager-only y devolvía 403."""
+    tid = _first_template_id(client, role="user")
+    response = client.post(
+        "/api/pipelines/from-template",
+        json={"template_id": tid},
+        headers=auth_headers(client, "user"),
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["owner_user_id"] is not None
+    assert body["is_mine"] is True
+    assert body["is_global"] is False
+
+
+def test_pipeline_use_template_admin_with_is_global_creates_global(
+    client: TestClient,
+):
+    """Admin puede mandar is_global=True desde el wizard y el pipeline
+    queda global del equipo (owner_user_id=NULL)."""
+    tid = _first_template_id(client, role="admin")
+    response = client.post(
+        "/api/pipelines/from-template",
+        json={"template_id": tid, "is_global": True},
+        headers=auth_headers(client, "admin"),
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["owner_user_id"] is None
+    assert body["is_global"] is True
+
+
+def test_pipeline_use_template_non_admin_with_is_global_forbidden(
+    client: TestClient,
+):
+    """Comercial que manda is_global=True → 403 (consistente con el
+    POST /api/pipelines normal)."""
+    tid = _first_template_id(client, role="user")
+    response = client.post(
+        "/api/pipelines/from-template",
+        json={"template_id": tid, "is_global": True},
+        headers=auth_headers(client, "user"),
+    )
+    assert response.status_code == 403
+
+
+def test_pipeline_duplicate_allows_commercial_creates_private(
+    client: TestClient,
+):
+    """Comercial duplica un pipeline del equipo (regresión guard de #252,
+    re-verificado aquí porque comparte la misma promesa que el use
+    template fix)."""
+    src = _create_pipeline(
+        client, role="admin", name="Equipo", is_global=True
+    )
+    copy = client.post(
+        f"/api/pipelines/{src['id']}/duplicate",
+        json={"include_contacts": False},
+        headers=auth_headers(client, "user"),
+    )
+    assert copy.status_code == 201, copy.text
+    body = copy.json()
+    assert body["owner_user_id"] is not None
+    assert body["is_mine"] is True

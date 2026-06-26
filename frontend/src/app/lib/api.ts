@@ -1500,6 +1500,10 @@ export async function listPipelineTemplates(): Promise<PipelineTemplate[]> {
 export async function createPipelineFromTemplate(payload: {
   template_id: string;
   name?: string;
+  /** PR-Hotfix-Pipelines-Use-Template. Solo admin: marca el pipeline
+   *  recién creado como global. Backend devuelve 403 a no-admin si
+   *  lo envían. */
+  is_global?: boolean;
 }): Promise<Pipeline> {
   return apiFetch<Pipeline>("/api/pipelines/from-template", {
     method: "POST",

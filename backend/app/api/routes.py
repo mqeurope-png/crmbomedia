@@ -4939,8 +4939,21 @@ def create_pipeline_from_template(
     payload: PipelineFromTemplateRequest,
     request: Request,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_manager),
+    current_user: User = Depends(require_viewer),
 ) -> PipelineRead:
+    # PR-Hotfix-Pipelines-Use-Template. Cualquier user puede crear
+    # pipeline desde plantilla — la copia se crea privada del creador.
+    # Solo admin puede pedir is_global (mismo patrón que POST normal).
+    from app.services.ownership import can_user_toggle_global  # noqa: PLC0415
+
+    if payload.is_global and not can_user_toggle_global(current_user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "Solo admin puede crear pipelines del equipo. "
+                "Crea uno privado; un admin puede compartirlo después."
+            ),
+        )
     template_payload = pipeline_templates_service.build_pipeline_payload(
         payload.template_id, name=payload.name
     )
@@ -4948,7 +4961,7 @@ def create_pipeline_from_template(
         raise not_found("Pipeline template")
     pipeline = pipelines_repository.create_pipeline(
         session,
-        owner_user_id=current_user.id,
+        owner_user_id=None if payload.is_global else current_user.id,
         name=template_payload["name"],
         description=template_payload.get("description"),
         color=template_payload.get("color"),
@@ -4966,6 +4979,7 @@ def create_pipeline_from_template(
             "stage_count": len(template_payload["stages"]),
             "source": "template",
             "template_id": payload.template_id,
+            "is_global": payload.is_global,
         },
         request=request,
     )
