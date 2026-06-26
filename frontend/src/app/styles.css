@@ -9909,6 +9909,38 @@ tr.is-inactive {
   color: #f59e0b;
 }
 
+/* PR-Hotfix-Pipelines-Use-Template. Toolbar sticky de Save/Cancel en
+ * /pipelines/[id]/edit-stages. Aparece solo cuando hay cambios sin
+ * guardar — el punto naranja sigue el patrón del indicador "dirty"
+ * que ya usamos en otras formas. */
+.edit-stages-savebar {
+  position: sticky;
+  top: 12px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  margin-bottom: 12px;
+  background: #fffbeb;
+  border: 1px solid #fcd34d;
+  border-radius: 8px;
+  font-size: 13px;
+  color: #92400e;
+}
+
+.edit-stages-dirty-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #f59e0b;
+}
+
+.stage-editor-row.is-new {
+  background: linear-gradient(0deg, rgba(59, 130, 246, 0.05), rgba(59, 130, 246, 0.05));
+}
+
 /* Selector "Carpeta" en el modal Cargar plantilla → pestaña CRM. */
 .tp-folder-filter {
   display: flex;

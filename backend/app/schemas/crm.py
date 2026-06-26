@@ -1491,6 +1491,11 @@ class PipelineTemplate(BaseModel):
 class PipelineFromTemplateRequest(BaseModel):
     template_id: str = Field(min_length=1, max_length=64)
     name: str | None = Field(default=None, min_length=1, max_length=100)
+    # PR-Hotfix-Pipelines-Use-Template. Mirror del flag de
+    # PipelineCreate: admin puede crear desde plantilla un pipeline
+    # global del equipo marcando este flag; comerciales obtienen un
+    # pipeline privado (owner_user_id=current_user.id) por default.
+    is_global: bool = False
 
 
 class PipelineGenerateAIRequest(BaseModel):
