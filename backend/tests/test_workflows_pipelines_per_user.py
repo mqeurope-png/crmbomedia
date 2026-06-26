@@ -355,3 +355,187 @@ def test_email_template_folders_includes_is_default_for_me(
     by_id = {node["id"]: node for node in tree}
     assert by_id[f1["id"]]["is_default_for_me"] is False
     assert by_id[f2["id"]]["is_default_for_me"] is True
+
+
+# ---------------------------------------------------------------------------
+# PR-Hotfix-Workflows-Pipelines-Permisos — Bug B + auditoría
+# ---------------------------------------------------------------------------
+
+
+def test_pipeline_stages_owner_can_edit(client: TestClient):
+    """Owner del pipeline puede CRUD de etapas. Antes era admin/manager
+    only y bloqueaba a comerciales con su propio pipeline."""
+    pipeline = _create_pipeline(client, role="user", name="Mio user")
+    headers = auth_headers(client, "user")
+
+    # Crear etapa.
+    create = client.post(
+        f"/api/pipelines/{pipeline['id']}/stages",
+        json={"name": "Lead", "position": 1},
+        headers=headers,
+    )
+    assert create.status_code == 201, create.text
+    stage_id = create.json()["id"]
+
+    # Editar etapa.
+    patch = client.patch(
+        f"/api/pipeline-stages/{stage_id}",
+        json={"name": "Cualificado"},
+        headers=headers,
+    )
+    assert patch.status_code == 200, patch.text
+
+    # Reorder.
+    fresh = client.get(
+        f"/api/pipelines/{pipeline['id']}", headers=headers
+    ).json()
+    ids = [s["id"] for s in fresh["stages"]]
+    reorder = client.post(
+        f"/api/pipelines/{pipeline['id']}/stages/reorder",
+        json={"stage_ids": list(reversed(ids))},
+        headers=headers,
+    )
+    assert reorder.status_code == 200, reorder.text
+
+    # Borrar (con move_to_stage_id por si tuviera contactos).
+    delete = client.delete(
+        f"/api/pipeline-stages/{stage_id}",
+        headers=headers,
+    )
+    assert delete.status_code == 200, delete.text
+
+
+def test_pipeline_stages_other_user_cannot_edit(client: TestClient):
+    """Un comercial NO puede tocar las etapas del pipeline de otro
+    comercial."""
+    pipeline = _create_pipeline(client, role="user", name="Mio user")
+    other_headers = auth_headers(client, "manager")
+    create = client.post(
+        f"/api/pipelines/{pipeline['id']}/stages",
+        json={"name": "Lead"},
+        headers=other_headers,
+    )
+    assert create.status_code in (403, 404), create.text
+
+
+def test_pipeline_stages_admin_can_edit_any(client: TestClient):
+    """Admin puede CRUD de etapas en cualquier pipeline (propio, global,
+    de otro user)."""
+    pipeline = _create_pipeline(client, role="user", name="De otro user")
+    admin_headers = auth_headers(client, "admin")
+    create = client.post(
+        f"/api/pipelines/{pipeline['id']}/stages",
+        json={"name": "Lead"},
+        headers=admin_headers,
+    )
+    assert create.status_code == 201, create.text
+
+
+def test_pipeline_stages_global_only_admin_can_edit(client: TestClient):
+    """En un pipeline global (del equipo), solo admin puede tocar
+    etapas — un comercial recibe 403 aunque lo VEA."""
+    global_p = _create_pipeline(
+        client, role="admin", name="Equipo", is_global=True
+    )
+    # Comercial lo VE (es global).
+    listed = client.get(
+        "/api/pipelines", headers=auth_headers(client, "user")
+    ).json()
+    assert any(p["id"] == global_p["id"] for p in listed)
+    # Pero no puede tocar las etapas.
+    forbidden = client.post(
+        f"/api/pipelines/{global_p['id']}/stages",
+        json={"name": "Lead"},
+        headers=auth_headers(client, "user"),
+    )
+    assert forbidden.status_code == 403
+    # Admin sí.
+    ok = client.post(
+        f"/api/pipelines/{global_p['id']}/stages",
+        json={"name": "Lead"},
+        headers=auth_headers(client, "admin"),
+    )
+    assert ok.status_code == 201
+
+
+def test_workflow_owner_can_activate_pause_archive(client: TestClient):
+    """Owner de un workflow privado puede pausar/archivar — antes admin
+    only y bloqueaba al comercial que creó su propio flujo."""
+    w = _create_workflow(client, role="user", name="Mio user")
+    headers = auth_headers(client, "user")
+    # Pause OK (mantiene draft → paused).
+    pause = client.post(
+        f"/api/workflows/{w['id']}/pause", headers=headers
+    )
+    assert pause.status_code == 200, pause.text
+    # Archive OK.
+    archive = client.post(
+        f"/api/workflows/{w['id']}/archive", headers=headers
+    )
+    assert archive.status_code == 200, archive.text
+
+
+def test_workflow_other_user_cannot_pause(client: TestClient):
+    w = _create_workflow(client, role="user", name="Mio user")
+    forbidden = client.post(
+        f"/api/workflows/{w['id']}/pause",
+        headers=auth_headers(client, "manager"),
+    )
+    # Otro user no puede ver/editar → 404 o 403.
+    assert forbidden.status_code in (403, 404)
+
+
+def test_workflow_use_template_assigns_owner_user_id(client: TestClient):
+    """Crear desde plantilla debe asignar owner_user_id=current_user
+    (no NULL/global), incluso para no-admin."""
+    # Listar plantillas disponibles.
+    templates = client.get(
+        "/api/workflows/_templates",
+        headers=auth_headers(client, "user"),
+    ).json()
+    if not templates:
+        pytest.skip("Sin plantillas built-in disponibles para el test.")
+    tid = templates[0]["id"]
+    created = client.post(
+        f"/api/workflows/_templates/{tid}/use",
+        headers=auth_headers(client, "user"),
+    )
+    assert created.status_code == 201, created.text
+    body = created.json()
+    # Comercial → owner_user_id debe ser != None (privado, no global).
+    assert body.get("owner_user_id") is not None
+    assert body.get("is_mine") is True
+    assert body.get("is_global") is False
+
+
+def test_workflow_duplicate_assigns_owner_user_id(client: TestClient):
+    """Duplicar un workflow global como comercial → la copia debe
+    quedar privada del que duplica, no global."""
+    src = _create_workflow(
+        client, role="admin", name="Equipo", is_global=True
+    )
+    copy = client.post(
+        f"/api/workflows/{src['id']}/duplicate",
+        headers=auth_headers(client, "user"),
+    )
+    assert copy.status_code == 201, copy.text
+    body = copy.json()
+    assert body.get("owner_user_id") is not None
+    assert body.get("is_mine") is True
+
+
+def test_pipeline_duplicate_by_non_admin(client: TestClient):
+    """Comercial puede duplicar un pipeline del equipo — la copia se
+    crea como suya (privada). Antes era manager-only."""
+    src = _create_pipeline(
+        client, role="admin", name="Equipo", is_global=True
+    )
+    copy = client.post(
+        f"/api/pipelines/{src['id']}/duplicate",
+        json={"include_contacts": False},
+        headers=auth_headers(client, "user"),
+    )
+    assert copy.status_code == 201, copy.text
+    body = copy.json()
+    assert body.get("owner_user_id") is not None
+    assert body.get("is_mine") is True

@@ -590,7 +590,11 @@ def test_api_create_workflow(client: TestClient) -> None:
     assert body["steps"][0]["is_entry"] is True
 
 
-def test_api_activate_requires_admin(client: TestClient) -> None:
+def test_api_activate_other_users_workflow_forbidden(client: TestClient) -> None:
+    """PR-Hotfix-Workflows-Pipelines-Permisos. Activar es owner+admin
+    (antes admin-only — bloqueaba al comercial que creaba su propio
+    workflow). El 403 ahora se gatilla cuando OTRO user intenta
+    activar un workflow privado ajeno."""
     headers_mgr = auth_headers(client, "manager")
     res = client.post(
         "/api/workflows",
@@ -598,11 +602,11 @@ def test_api_activate_requires_admin(client: TestClient) -> None:
         headers=headers_mgr,
     )
     wf_id = res.json()["id"]
-    # Manager NO puede activar.
+    # Otro user no-admin no puede activar el workflow privado del manager.
     res = client.post(
         f"/api/workflows/{wf_id}/activate",
         json={"acknowledged_estimate": True},
-        headers=headers_mgr,
+        headers=auth_headers(client, "user"),
     )
     assert res.status_code == 403
 

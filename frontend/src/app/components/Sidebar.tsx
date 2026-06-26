@@ -148,14 +148,17 @@ const NAV_ITEMS: ReadonlyArray<Item> = [
     icon: Shuffle,
     allowedRoles: ["admin", "manager"],
   },
-  // Sprint Workflows Bloque 1. Mismo público que reglas de asignación
-  // — admin + manager pueden crear y editar; users comerciales NO ven
-  // la entrada (la lógica de visibilidad usa `allowedRoles`).
+  // PR-Hotfix-Workflows-Pipelines-Permisos. Post #250 los workflows son
+  // per-user: cada user comercial puede tener los suyos + ver los del
+  // equipo (globales). El menú debe ser visible para todos los roles
+  // — el backend ya filtra la lista correctamente. Antes estaba
+  // restringido a admin+manager (sprint workflows bloque 1) cuando los
+  // workflows eran solo "del equipo".
   {
     href: "/admin/workflows",
     label: "Workflows",
     icon: Workflow,
-    allowedRoles: ["admin", "manager"],
+    allowedRoles: ["admin", "manager", "user", "viewer"],
   },
   // PR-Fixes-Pase-4 Bug 6. Custom fields manuales — admins-only;
   // popula el dropdown del editor de workflows sin esperar a que

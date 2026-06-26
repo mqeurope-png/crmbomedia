@@ -86,10 +86,12 @@ def test_add_stage_inserts_and_shifts_positions(client: TestClient):
     """Inserting a stage at position 1 must shift everything below by
     one — the contiguous-0..N-1 invariant survives every mutation."""
     pipeline = _create_pipeline(client, stages=["A", "B", "C"])
+    # PR-Hotfix-Workflows-Pipelines-Permisos. Post-#250 editar etapas de
+    # un pipeline GLOBAL (creado vía _create_pipeline) requiere admin.
     response = client.post(
         f"/api/pipelines/{pipeline['id']}/stages",
         json={"name": "Nueva", "position": 1},
-        headers=auth_headers(client, "manager"),
+        headers=auth_headers(client, "admin"),
     )
     assert response.status_code == 201
     refreshed = client.get(
@@ -106,7 +108,7 @@ def test_reorder_stages_requires_full_set(client: TestClient):
     short = client.post(
         f"/api/pipelines/{pipeline['id']}/stages/reorder",
         json={"stage_ids": [pipeline["stages"][0]["id"], pipeline["stages"][1]["id"]]},
-        headers=auth_headers(client, "manager"),
+        headers=auth_headers(client, "admin"),
     )
     assert short.status_code == 400
 
@@ -117,7 +119,7 @@ def test_reorder_stages_permutation_applies(client: TestClient):
     reordered = client.post(
         f"/api/pipelines/{pipeline['id']}/stages/reorder",
         json={"stage_ids": [ids[2], ids[0], ids[1]]},
-        headers=auth_headers(client, "manager"),
+        headers=auth_headers(client, "admin"),
     )
     assert reordered.status_code == 200
     refreshed = client.get(
@@ -243,13 +245,13 @@ def test_delete_stage_with_contacts_requires_move_target(client: TestClient):
     stage_id = pipeline["stages"][0]["id"]
     blocked = client.delete(
         f"/api/pipeline-stages/{stage_id}",
-        headers=auth_headers(client, "manager"),
+        headers=auth_headers(client, "admin"),
     )
     assert blocked.status_code == 400
 
     ok = client.delete(
         f"/api/pipeline-stages/{stage_id}?move_to_stage_id={pipeline['stages'][1]['id']}",
-        headers=auth_headers(client, "manager"),
+        headers=auth_headers(client, "admin"),
     )
     assert ok.status_code == 200
     refreshed = client.get(
@@ -468,7 +470,7 @@ def test_stalled_contacts_endpoint_returns_overdue_rows(client: TestClient):
     patch = client.patch(
         f"/api/pipeline-stages/{stage_id}",
         json={"target_days": 1},
-        headers=auth_headers(client, "manager"),
+        headers=auth_headers(client, "admin"),
     )
     assert patch.status_code == 200
 

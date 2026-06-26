@@ -450,10 +450,14 @@ def test_manual_add_endpoint_workflow_empty_returns_422(
     assert "vacío" in res.json()["detail"].lower()
 
 
-def test_manual_add_endpoint_forbidden_for_user_role(
+def test_manual_add_endpoint_forbidden_for_other_users_private_workflow(
     client: TestClient, session_factory: sessionmaker
 ) -> None:
-    """Rol `user` no puede usar el endpoint — solo admin/manager."""
+    """PR-Hotfix-Workflows-Pipelines-Permisos. Antes el endpoint era
+    manager-only — bloqueaba a un comercial añadiendo contactos a
+    SU workflow privado, regresión del per-user. Ahora cualquier user
+    con see-rights puede; el 403/404 aplica cuando intentas usar un
+    workflow privado de OTRO user."""
     with session_factory() as session:
         admin = session.scalar(
             select(User).where(User.email == "admin@example.com")
@@ -463,6 +467,9 @@ def test_manual_add_endpoint_forbidden_for_user_role(
         )
         session.add(contact)
         wf = _make_workflow_with_email(session, admin.id)
+        # Marca el workflow como PRIVADO del admin — el rol `user`
+        # no debe verlo.
+        wf.owner_user_id = admin.id
         session.commit()
         cid = contact.id
         wid = wf.id
@@ -471,7 +478,8 @@ def test_manual_add_endpoint_forbidden_for_user_role(
         f"/api/workflows/{wid}/add-contact/{cid}",
         headers=auth_headers(client, "user"),
     )
-    assert res.status_code == 403
+    # No lo ve → 404 (consistente con can_user_see_resource).
+    assert res.status_code == 404
 
 
 def test_manual_add_endpoint_works_even_if_is_entry_flag_wrong(
