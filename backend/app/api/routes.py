@@ -3120,6 +3120,19 @@ def list_contact_tasks(
 # ---------------------------------------------------------------------------
 
 
+def _default_tag_color(name: str) -> str:
+    """PR-TagPicker-Ficha-Contacto Feature B. Color determinista del
+    palette para tags creadas al vuelo desde la ficha de contacto. El
+    hash del nombre normalizado reparte tags por todo el palette de
+    forma estable (la misma tag siempre cae en el mismo color) sin
+    repetir siempre el primero. El user puede cambiarlo luego en /tags."""
+    from app.schemas.crm import TAG_COLOR_PALETTE  # noqa: PLC0415
+
+    key = (name or "").strip().lower()
+    digest = sum(ord(ch) for ch in key)
+    return TAG_COLOR_PALETTE[digest % len(TAG_COLOR_PALETTE)]
+
+
 @router.get(
     "/tags",
     response_model=TagListPage,
@@ -3346,7 +3359,12 @@ def add_tag_to_contact(
     payload: ContactTagAssignRequest,
     request: Request,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_manager),
+    # PR-TagPicker-Ficha-Contacto Bug A. Bajado de require_manager a
+    # require_user: cualquier comercial debe poder etiquetar SUS
+    # contactos desde la ficha (igual que añade notas o tareas). Antes
+    # el 403 se tragaba silenciosamente en el front y "no pasaba nada"
+    # al hacer click en una tag del dropdown.
+    current_user: User = Depends(require_user),
 ) -> TagRead:
     contact = crm_repository.get_contact(session, contact_id)
     if not contact:
@@ -3356,10 +3374,15 @@ def add_tag_to_contact(
         if not tag:
             raise not_found("Tag")
     elif payload.tag_name:
+        # PR-TagPicker-Ficha-Contacto Feature B. Crear-al-vuelo: si el
+        # comercial escribe un nombre nuevo y no manda color, le
+        # asignamos un color del palette determinista por nombre, para
+        # que la tag salga coloreada también en /tags (no NULL/gris).
+        new_color = payload.color or _default_tag_color(payload.tag_name)
         tag, _ = crm_repository.upsert_tag(
             session,
             name=payload.tag_name,
-            color=payload.color,
+            color=new_color,
             created_by_user_id=current_user.id,
         )
     else:
@@ -3399,7 +3422,9 @@ def remove_tag_from_contact(
     tag_id: str,
     request: Request,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_manager),
+    # PR-TagPicker-Ficha-Contacto Bug A. Simétrico al add: comercial
+    # puede quitar tags de sus contactos desde la ficha.
+    current_user: User = Depends(require_user),
 ) -> MessageRead:
     if not crm_repository.get_contact(session, contact_id):
         raise not_found("Contact")

@@ -10,7 +10,7 @@ import {
   Kanban,
   Mail,
   Plug,
-  Settings,
+  ScrollText,
   Shuffle,
   Sliders,
   CheckSquare,
@@ -179,9 +179,13 @@ const NAV_ITEMS: ReadonlyArray<Item> = [
     allowedRoles: ["admin"],
   },
   {
+    // PR-TagPicker-Ficha-Contacto Feature C. Renombrado de "Ajustes" a
+    // "Auditoría" — la página `/admin/audit` es el log de actividad de
+    // users (login con IP, mutaciones, exports), no una pantalla de
+    // settings. El label antiguo confundía.
     href: "/admin/audit",
-    label: "Ajustes",
-    icon: Settings,
+    label: "Auditoría",
+    icon: ScrollText,
     allowedRoles: ["admin"],
   },
 ];

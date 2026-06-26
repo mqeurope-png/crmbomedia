@@ -521,12 +521,28 @@ export default function ContactDetailPage() {
               <ContactTagsTab
                 tags={tags}
                 onAddTag={async (choice) => {
-                  await addTagToContact(contact.id, choice);
-                  await loadContact();
+                  // PR-TagPicker-Ficha-Contacto. Antes los errores del
+                  // POST (p.ej. un 403 histórico) se tragaban en
+                  // silencio y "no pasaba nada". Ahora se propagan al
+                  // toast de la ficha.
+                  try {
+                    await addTagToContact(contact.id, choice);
+                    await loadContact();
+                  } catch (err) {
+                    setError(
+                      extractErrorMessage(err, "No se pudo añadir la tag."),
+                    );
+                  }
                 }}
                 onRemoveTag={async (tagId) => {
-                  await removeTagFromContact(contact.id, tagId);
-                  await loadContact();
+                  try {
+                    await removeTagFromContact(contact.id, tagId);
+                    await loadContact();
+                  } catch (err) {
+                    setError(
+                      extractErrorMessage(err, "No se pudo quitar la tag."),
+                    );
+                  }
                 }}
               />
             ) : null}
