@@ -367,3 +367,155 @@ def test_sync_stats_endpoint_uses_brevo_campaign_id_not_internal_id(
     call_args = fake_client.get_email_campaign.await_args
     assert call_args.args == (46,)
     assert campaign_id not in (str(a) for a in call_args.args)
+
+
+# ---------------------------------------------------------------------------
+# 6. PR-Fix-Sincronizar-Stats-3a-Vez. Pin the `?statistics=globalStats`
+#    query param at the HTTP layer — the hypothesis dominante de Bart
+#    en la 3ª tentativa. Sin este param Brevo devuelve stats=0.
+# ---------------------------------------------------------------------------
+
+
+def test_get_email_campaign_passes_statistics_query_param() -> None:
+    """White-box: `BrevoClient.get_email_campaign` must pass
+    `?statistics=globalStats` to the underlying HTTP client. The 3rd
+    iteration of the bug traced "stats stuck at 0" to this missing
+    param — without it Brevo returns the campaign with an empty
+    statistics block."""
+    from app.integrations.brevo.client import BrevoClient
+    from app.integrations.http_client import IntegrationResponse
+
+    # Build a BrevoClient instance bypassing __init__'s session/account
+    # lookup (we only exercise the method, not the request pipeline).
+    bc = BrevoClient.__new__(BrevoClient)
+    fake_response = IntegrationResponse(
+        status_code=200,
+        json={"id": 46, "statistics": {}},
+        text="{}",
+        headers={},
+        raw=None,
+    )
+    captured: dict = {}
+
+    async def fake_get(url, params=None, **kwargs):
+        captured["url"] = url
+        captured["params"] = params
+        return fake_response
+
+    bc.get = fake_get  # type: ignore[method-assign]
+
+    import asyncio
+
+    asyncio.run(bc.get_email_campaign(46))
+
+    assert captured["url"] == "/emailCampaigns/46"
+    assert captured["params"] == {"statistics": "globalStats"}
+
+
+# ---------------------------------------------------------------------------
+# 7. PR-Fix-Sincronizar-Stats-3a-Vez. El paquete `app` configura
+#    `logging.basicConfig` para que `logger.info` de `app.*` salga a
+#    stdout incluso bajo uvicorn / rq worker (que por defecto dejan el
+#    root logger sin handler). Sin esto, PR #242 quedaba inservible —
+#    el log que añadía nunca aparecía en `docker compose logs`.
+# ---------------------------------------------------------------------------
+
+
+def test_app_package_configures_root_logger() -> None:
+    """Importar `app` debe garantizar que el namespace `app.*`
+    propaga al menos INFO. Defensa contra la regresión "PR #242
+    ship-it-but-no-logs" que Bart sufrió: bajo uvicorn/rq el root
+    logger arranca vacío y `logger.info` cae al vacío.
+
+    Bajo pytest (donde el root logger ya tiene handler de caplog)
+    `basicConfig` se salta para no romper caplog, pero el nivel del
+    namespace `app` SIEMPRE se fija — eso garantiza que el handler
+    de pytest los recoja en tests y que en prod la línea llegue a
+    stdout."""
+    import logging
+
+    import app  # noqa: F401 — import triggers configuration.
+
+    app_logger = logging.getLogger("app")
+    assert app_logger.getEffectiveLevel() <= logging.INFO, (
+        "`app` logger must let INFO through (effective level "
+        f"= {app_logger.getEffectiveLevel()})"
+    )
+
+    # And under production conditions (no pre-existing handler), the
+    # root logger MUST also be configured. Simulate by clearing root
+    # handlers and re-running the package init logic.
+    root = logging.getLogger()
+    saved_handlers = list(root.handlers)
+    saved_level = root.level
+    try:
+        root.handlers.clear()
+        # Re-execute the basicConfig branch under "no handler" cond.
+        import importlib
+        importlib.reload(app)
+        assert root.handlers, (
+            "without a pre-existing handler, package init must "
+            "install one via basicConfig (uvicorn/rq prod path)"
+        )
+    finally:
+        # Restore pytest's caplog-friendly handler list.
+        root.handlers.clear()
+        root.handlers.extend(saved_handlers)
+        root.setLevel(saved_level)
+
+
+# ---------------------------------------------------------------------------
+# 8. PR-Fix-Sincronizar-Stats-3a-Vez. El handler loggea DOS líneas
+#    INFO por refresh: la payload cruda + el bloque extraído. Eso
+#    permite diagnosticar el gap "Brevo dashboard tiene X, CRM
+#    persiste 0" sin tener que reproducir el bug.
+# ---------------------------------------------------------------------------
+
+
+def test_refresh_logs_both_raw_payload_and_extracted_stats(
+    client: TestClient,
+    factory: sessionmaker,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    campaign_id = _seed_campaign(factory)
+    brevo_payload = {
+        "id": 46,
+        "statistics": {
+            "globalStats": {
+                "sent": 100,
+                "delivered": 90,
+                "uniqueViews": 33,
+                "uniqueClicks": 1,
+            }
+        },
+    }
+    fake_client = AsyncMock()
+    fake_client.__aenter__.return_value = fake_client
+    fake_client.__aexit__.return_value = None
+    fake_client.get_email_campaign = AsyncMock(return_value=brevo_payload)
+
+    with caplog.at_level(
+        logging.INFO, logger="app.integrations.brevo.campaigns"
+    ), patch(
+        "app.integrations.brevo.campaigns.BrevoClient",
+        return_value=fake_client,
+    ):
+        response = client.post(
+            f"/api/brevo/campaigns/{campaign_id}/refresh-stats",
+            headers=auth_headers(client, "admin"),
+        )
+    assert response.status_code == 200, response.text
+
+    messages = [
+        r.getMessage()
+        for r in caplog.records
+        if r.name == "app.integrations.brevo.campaigns"
+    ]
+    # Raw payload line carries `payload=` with the statistics JSON.
+    payload_lines = [m for m in messages if "payload=" in m]
+    # Extracted line carries `extracted_stats=` with the parsed dict.
+    extracted_lines = [m for m in messages if "extracted_stats=" in m]
+    assert payload_lines, "raw Brevo payload INFO line missing"
+    assert extracted_lines, "extracted stats INFO line missing"
+    assert "delivered" in extracted_lines[0]
+    assert "90" in extracted_lines[0]

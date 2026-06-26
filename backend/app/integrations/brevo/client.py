@@ -350,10 +350,19 @@ class BrevoClient(IntegrationHTTPClient):
         status: str | None = None,
         limit: int = DEFAULT_PAGE_SIZE,
         offset: int = 0,
+        statistics: str | None = "globalStats",
     ) -> dict[str, Any]:
         params: dict[str, Any] = {"limit": limit, "offset": offset}
         if status:
             params["status"] = status
+        # PR-Fix-Sincronizar-Stats-3a-Vez. Without `?statistics=`, Brevo
+        # returns the campaign list but every row's `statistics` block
+        # is initialised to all-zero. The 3rd iteration of the
+        # Sincronizar-Stats bug traced the persistent zeros back to
+        # this missing param. Default to globalStats so the cache
+        # refresh + the heartbeat sync both pick up the real counters.
+        if statistics:
+            params["statistics"] = statistics
         response = await self.get("/emailCampaigns", params=params)
         body = response.json or {}
         return {
@@ -361,8 +370,21 @@ class BrevoClient(IntegrationHTTPClient):
             "count": int(body.get("count") or 0),
         }
 
-    async def get_email_campaign(self, campaign_id: int) -> dict[str, Any]:
-        response = await self.get(f"/emailCampaigns/{campaign_id}")
+    async def get_email_campaign(
+        self, campaign_id: int, *, statistics: str | None = "globalStats"
+    ) -> dict[str, Any]:
+        """`GET /v3/emailCampaigns/{id}` — defaults to fetching the
+        aggregated globalStats block so the response actually contains
+        the counters. Without this param Brevo returns the campaign
+        metadata + an all-zero `statistics.globalStats`, which the
+        cache parser then persists verbatim.
+        """
+        params: dict[str, Any] = {}
+        if statistics:
+            params["statistics"] = statistics
+        response = await self.get(
+            f"/emailCampaigns/{campaign_id}", params=params or None
+        )
         return response.json or {}
 
     async def create_email_campaign(self, payload: dict[str, Any]) -> dict[str, Any]:

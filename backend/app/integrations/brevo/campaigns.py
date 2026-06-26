@@ -227,6 +227,17 @@ async def refresh_campaign_row(
     async with BrevoClient(session, row.brevo_account_id) as client:
         payload = await client.get_email_campaign(row.brevo_campaign_id)
     _log_brevo_campaign_payload(row.brevo_campaign_id, payload)
+    extracted = _extract_stats(payload)
+    # PR-Fix-Sincronizar-Stats-3a-Vez. Loggea el bloque finalmente
+    # extraído, alineado con el raw payload de la línea anterior. Si
+    # los dos no coinciden (raw tiene 90 pero `extracted=0`), el bug
+    # vive en `_extract_stats`. Si los dos son 0 y Brevo dashboard
+    # tiene datos, el bug vive en el query param o en la API.
+    logger.info(
+        "brevo.refresh_stats campaign_id=%s extracted_stats=%s",
+        row.brevo_campaign_id,
+        json.dumps(extracted, default=str),
+    )
     upsert_campaign_row(
         session, account_id=row.brevo_account_id, payload=payload
     )
