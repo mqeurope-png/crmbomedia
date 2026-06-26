@@ -81,6 +81,12 @@ export function EmailThreadList({ folders, labels, refreshKey }: Props) {
 
   const [threads, setThreads] = useState<EmailThread[]>([]);
   const [loading, setLoading] = useState(true);
+  // PR-Fix-Backfill-Gmail-Tras-Validación bug 8. Paginación de la
+  // bandeja: cargamos en páginas de 50, sin total porque el endpoint
+  // no devuelve count global. `hasMore` se infiere de "esta página
+  // devolvió la página entera", `loadingMore` es para el botón.
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [searchInput, setSearchInput] = useState(params.get("q") ?? "");
   const [debounced, setDebounced] = useState(params.get("q") ?? "");
@@ -185,6 +191,8 @@ export function EmailThreadList({ folders, labels, refreshKey }: Props) {
   const labelId = params.get("label_id");
   const starred = params.get("starred") === "true" ? true : undefined;
 
+  const PAGE_SIZE = 50;
+
   const fetchThreads = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -197,8 +205,11 @@ export function EmailThreadList({ folders, labels, refreshKey }: Props) {
         scope: urlScope,
         team_user_id:
           urlScope === "team" && urlTeamUserId ? urlTeamUserId : undefined,
+        limit: PAGE_SIZE,
+        offset: 0,
       });
       setThreads(page.items);
+      setHasMore(page.items.length >= PAGE_SIZE);
       // Drop any selection that no longer exists in the new page
       // (e.g. after archiving the previously-selected rows).
       setSelected((prev) => {
@@ -212,6 +223,47 @@ export function EmailThreadList({ folders, labels, refreshKey }: Props) {
       setLoading(false);
     }
   }, [debounced, state, folderId, labelId, starred, urlScope, urlTeamUserId]);
+
+  const fetchMoreThreads = useCallback(async () => {
+    if (loadingMore || !hasMore) return;
+    setLoadingMore(true);
+    try {
+      const page = await listEmailThreads(undefined, debounced || undefined, {
+        state,
+        folder_id: folderId ?? undefined,
+        label_id: labelId ?? undefined,
+        starred,
+        scope: urlScope,
+        team_user_id:
+          urlScope === "team" && urlTeamUserId ? urlTeamUserId : undefined,
+        limit: PAGE_SIZE,
+        offset: threads.length,
+      });
+      // Defensa contra duplicados si el backend reordena: filtramos
+      // por id antes de concatenar.
+      const seen = new Set(threads.map((t) => t.id));
+      const fresh = page.items.filter((t) => !seen.has(t.id));
+      setThreads((prev) => [...prev, ...fresh]);
+      setHasMore(page.items.length >= PAGE_SIZE);
+    } catch (err) {
+      setError(
+        extractErrorMessage(err, "No se pudieron cargar más hilos."),
+      );
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [
+    loadingMore,
+    hasMore,
+    threads,
+    debounced,
+    state,
+    folderId,
+    labelId,
+    starred,
+    urlScope,
+    urlTeamUserId,
+  ]);
 
   useEffect(() => {
     fetchThreads();
@@ -476,6 +528,32 @@ export function EmailThreadList({ folders, labels, refreshKey }: Props) {
               </li>
             );
           })}
+          {/* PR-Fix-Backfill-Gmail-Tras-Validación bug 8. Botón
+           * "Cargar más" al final del listado. Sin esto Brice tenía
+           * 965 emails en BD y solo veía los 20 más recientes. La
+           * UI no asume scroll infinito automático para mantener
+           * control explícito del usuario (evita prefetch agresivo
+           * en backfills muy grandes). */}
+          {hasMore ? (
+            <li className="email-list-loadmore">
+              <button
+                type="button"
+                className="button small secondary"
+                onClick={() => void fetchMoreThreads()}
+                disabled={loadingMore}
+              >
+                {loadingMore
+                  ? "Cargando…"
+                  : "Cargar más antiguos"}
+              </button>
+            </li>
+          ) : threads.length > PAGE_SIZE ? (
+            <li className="email-list-loadmore">
+              <span className="muted small">
+                Has llegado al final ({threads.length} hilos).
+              </span>
+            </li>
+          ) : null}
         </ul>
       )}
     </div>

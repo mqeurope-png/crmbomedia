@@ -225,6 +225,33 @@ def _walk_parts(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
+def _is_attachment_part(part: dict[str, Any]) -> bool:
+    """PR-Fix-Backfill-Gmail-Tras-Validación bug 3. Clasificación
+    única usada por `run_estimate` Y `run_execute` para decidir si
+    una parte de Gmail cuenta como adjunto.
+
+    Decisión (opción A del spec): **inline images cuentan**. Ocupan
+    espacio real en BD/disco (firmas corporativas con logo embebido
+    pueden ser cientos de KB) y el operador debe verlas reflejadas
+    en el estimate para no llevarse sorpresas al ejecutar.
+
+    Criterio: la parte cuenta como adjunto si tiene un
+    `body.attachmentId` no-vacío Y un tamaño > 0. Esto incluye
+    tanto attachments tradicionales (Content-Disposition:
+    attachment con filename explícito) como inline images
+    referenciadas por `Content-ID` desde el HTML del cuerpo. Sin
+    `attachmentId` la parte es body text/html y no se descarga.
+    """
+    body = part.get("body") or {}
+    if not body.get("attachmentId"):
+        return False
+    try:
+        size = int(body.get("size") or 0)
+    except (TypeError, ValueError):
+        size = 0
+    return size > 0
+
+
 # ---------------------------------------------------------------------------
 # Resource loading
 # ---------------------------------------------------------------------------
@@ -272,11 +299,49 @@ def _iter_aliases(
     )
     if default_alias is not None:
         return [default_alias]
-    # Fallback — usuario sin default explícito. Sintetizamos un
-    # alias en memoria con el email principal del User.
+    # PR-Fix-Backfill-Gmail-Tras-Validación bug 6. Bart reportó que él
+    # y Eduard no aparecían en el desglose del estimate aunque tienen
+    # Gmail conectado y aliases marcados como `is_allowed=True`.
+    # Causa: ningún alias suyo tenía `is_default=True` (la flag se
+    # sincroniza solo cuando el operador visita GET /api/emails/
+    # aliases tras el sprint de display name), así que el fallback
+    # caía al `user.email` del CRM — que para admins suele ser
+    # `mqeurope@gmail.com` o un email administrativo SIN historial
+    # Gmail real. Resultado: query Gmail con 0 matches.
+    #
+    # Fix: si hay aliases `is_allowed=True` pero ninguno `is_default`,
+    # usamos el PRIMERO (orden por `alias_email` para determinismo).
+    # Sigue siendo más estrecho que `all_visible` (1 alias en vez de
+    # N) pero captura el caso real de un user que tiene `bart@
+    # bomedia.net` flaggeado allowed sin haber tocado el default.
+    first_allowed = session.scalar(
+        select(UserEmailAliasPref)
+        .where(
+            UserEmailAliasPref.user_id == user_id,
+            UserEmailAliasPref.is_allowed.is_(True),
+        )
+        .order_by(UserEmailAliasPref.alias_email.asc())
+        .limit(1)
+    )
+    if first_allowed is not None:
+        logger.info(
+            "gmail.backfill aliases_scope=primary_only user=%s no "
+            "is_default — falling back to first is_allowed alias=%s",
+            user_id, first_allowed.alias_email,
+        )
+        return [first_allowed]
+    # Fallback final — sin aliases registrados. Sintetizamos uno con
+    # `user.email` para que al menos intentemos algo (poco
+    # probabilidad de match si el operador no usa este email en
+    # Gmail, pero el log de abajo lo deja claro).
     user = session.get(User, user_id)
     if user is None or not user.email:
         return []
+    logger.warning(
+        "gmail.backfill aliases_scope=primary_only user=%s has zero "
+        "UserEmailAliasPref rows — falling back to user.email=%s",
+        user_id, user.email,
+    )
     synth = UserEmailAliasPref(
         user_id=user_id,
         alias_email=user.email,
@@ -495,10 +560,20 @@ def run_estimate(session: Session, job: GmailBackfillJob) -> None:
             msgs, total_hint = _iter_alias_messages(
                 client, alias.alias_email, months_back
             )
-            if total_hint is not None:
-                # Cumulativo conservador — sumamos hints de aliases.
-                job.total_estimated = (job.total_estimated or 0) + total_hint
-                _heartbeat(session, job, force=True)
+            # PR-Fix-Backfill-Gmail-Tras-Validación bug 4. `resultSize
+            # Estimate` de Gmail es notoriamente impreciso (puede
+            # quedarse en 200 cuando la query trae miles). Usamos el
+            # conteo real de mensajes paginados — `len(msgs)` ya
+            # tiene el total exacto del alias tras consumir todas las
+            # páginas.
+            job.total_estimated = (job.total_estimated or 0) + len(msgs)
+            if total_hint is not None and total_hint != len(msgs):
+                logger.info(
+                    "gmail.backfill resultSizeEstimate hint=%d vs "
+                    "actual=%d alias=%s",
+                    total_hint, len(msgs), alias.alias_email,
+                )
+            _heartbeat(session, job, force=True)
 
             alias_matched_at_start = user_row["emails"]
             for m in msgs:
@@ -540,14 +615,21 @@ def run_estimate(session: Session, job: GmailBackfillJob) -> None:
                     continue  # ningún contacto del CRM participa
                 user_row["emails"] += 1
                 total_emails += 1
+                # PR-Fix-Backfill-Gmail-Tras-Validación bug 3.
+                # `_is_attachment_part` es el MISMO criterio que usa
+                # `_import_one` en execute — antes la versión
+                # estimate filtraba por `part.get("filename")` y se
+                # saltaba las inline images, mientras execute usaba
+                # `body.attachmentId` y SÍ las guardaba. Resultado:
+                # estimate decía "0 adjuntos" pero execute creaba
+                # filas en email_message_attachments. Ahora coinciden.
                 for part in _walk_parts(meta.get("payload") or {}):
-                    if part.get("filename"):
+                    if _is_attachment_part(part):
                         size = int((part.get("body") or {}).get("size") or 0)
-                        if size > 0:
-                            total_attachments_count += 1
-                            total_attachments_bytes += size
-                            user_row["attachments_count"] += 1
-                            user_row["attachments_mb"] += size / (1024 * 1024)
+                        total_attachments_count += 1
+                        total_attachments_bytes += size
+                        user_row["attachments_count"] += 1
+                        user_row["attachments_mb"] += size / (1024 * 1024)
             logger.info(
                 "gmail.backfill.estimate alias_done user=%s alias=%s "
                 "msgs_seen=%d matched=%d",
@@ -815,52 +897,82 @@ def _import_one(
     parts_with_files: list[dict[str, Any]] = []
     attachments_meta: list[dict[str, Any]] = []
     for part in _walk_parts(raw.get("payload", {})):
-        if part.get("filename"):
+        if _is_attachment_part(part):
             parts_with_files.append(part)
             attachments_meta.append(
                 {
-                    "filename": part.get("filename"),
+                    "filename": part.get("filename") or "",
                     "mime_type": part.get("mimeType"),
                     "size": int((part.get("body") or {}).get("size") or 0),
                 }
             )
 
-    message = EmailMessage(
-        thread_id=thread.id,
-        gmail_message_id=gmail_message_id,
-        gmail_account_user_id=owner_user_id,
-        direction=direction,
-        from_email=from_email,
-        from_name=from_name,
-        to_emails_json=json.dumps(to_emails),
-        cc_emails_json=json.dumps(cc_emails) if cc_emails else None,
-        subject=subject,
-        body_html=body_html,
-        body_text=body_text,
-        snippet=raw.get("snippet"),
-        sent_at=sent_at,
-        contact_id=contact.id,
-        imported_via="historic_backfill",
-        imported_at=datetime.now(UTC),
-        attachments_json=json.dumps(attachments_meta) if attachments_meta else None,
-    )
-    session.add(message)
-    thread.last_message_at = max(thread.last_message_at, sent_at)
-    thread.message_count = (thread.message_count or 0) + 1
-    session.flush()
-
-    if include_attachments and parts_with_files:
-        _download_attachments(
-            session,
-            client=client,
-            message=message,
-            parts=parts_with_files,
-            contact_id=contact.id,
+    # PR-Fix-Backfill-Gmail-Tras-Validación bug 2. La persistencia del
+    # mensaje + adjuntos se aísla en SAVEPOINT + try/except: un solo
+    # email que pete (body 200KB que excede LONGTEXT pre-migración,
+    # attachment con caracteres raros en el filename, conexión DB
+    # transient) NO debe tirar abajo el job entero ni revertir los
+    # mensajes que ya estaban flusheados pero no commit-eados.
+    # `begin_nested()` emite un SAVEPOINT — `rollback()` solo borra
+    # los inserts de ESTE mensaje, no los anteriores.
+    savepoint = session.begin_nested()
+    try:
+        message = EmailMessage(
+            thread_id=thread.id,
             gmail_message_id=gmail_message_id,
-            max_attachment_bytes=max_attachment_bytes,
+            gmail_account_user_id=owner_user_id,
+            direction=direction,
+            from_email=from_email,
+            from_name=from_name,
+            to_emails_json=json.dumps(to_emails),
+            cc_emails_json=json.dumps(cc_emails) if cc_emails else None,
+            subject=subject,
+            body_html=body_html,
+            body_text=body_text,
+            snippet=raw.get("snippet"),
+            sent_at=sent_at,
+            contact_id=contact.id,
+            imported_via="historic_backfill",
+            imported_at=datetime.now(UTC),
+            attachments_json=(
+                json.dumps(attachments_meta) if attachments_meta else None
+            ),
         )
+        session.add(message)
+        thread.last_message_at = max(thread.last_message_at, sent_at)
+        thread.message_count = (thread.message_count or 0) + 1
+        session.flush()
 
-    job.total_imported += 1
+        if include_attachments and parts_with_files:
+            _download_attachments(
+                session,
+                client=client,
+                message=message,
+                parts=parts_with_files,
+                contact_id=contact.id,
+                gmail_message_id=gmail_message_id,
+                max_attachment_bytes=max_attachment_bytes,
+            )
+
+        savepoint.commit()
+        job.total_imported += 1
+    except Exception as exc:  # noqa: BLE001
+        # Rollback del SAVEPOINT — los mensajes anteriores en la
+        # misma transacción siguen vivos. Sin esto un row corrupto
+        # (body con UTF inválido, tamaño de columna, etc.) revertía
+        # también los mensajes que SÍ se habían persistido en el
+        # mismo batch.
+        savepoint.rollback()
+        logger.warning(
+            "gmail.backfill _import_one failed mid=%s contact_id=%s "
+            "owner=%s err=%s: %s",
+            gmail_message_id,
+            contact.id,
+            owner_user_id,
+            type(exc).__name__,
+            exc,
+        )
+        job.total_errors += 1
 
 
 def _download_attachments(
@@ -930,14 +1042,46 @@ def _download_attachments(
 # ---------------------------------------------------------------------------
 
 
+#: Estados terminales del job. Si al recoger el job de la queue está
+#: en uno de estos, el handler se salta el procesamiento — protege
+#: contra duplicados en cola RQ tras retries/clics duplicados o jobs
+#: cancelados manualmente vía SQL/UI (caso real 2026-06-26 reportado
+#: por Bart: job `ce82696c…` con status=cancelled procesado 50 min
+#: por el worker después).
+_TERMINAL_STATUSES = frozenset(
+    {
+        GmailBackfillStatus.CANCELLED.value,
+        GmailBackfillStatus.FAILED.value,
+        GmailBackfillStatus.COMPLETED.value,
+    }
+)
+
+
 def run_backfill(job_id: str) -> None:
-    """RQ entry. Abre sesión, lee el row, dispatcha por modo."""
+    """RQ entry. Abre sesión, lee el row, dispatcha por modo.
+
+    Robustez:
+    - Si el job no existe (row borrado) → log warning + return.
+    - Si el job ya está en estado terminal → log info + return sin
+      tocar nada (protección bug 7 PR-Tras-Validación).
+    - Cualquier excepción no manejada en estimate/execute → status=
+      FAILED + error_summary con tipo + mensaje (no queda colgado en
+      running, bug 2 PR-Tras-Validación).
+    """
+    import traceback  # noqa: PLC0415
+
     from app.db.session import get_engine  # noqa: PLC0415
 
     with Session(get_engine()) as session:
         job = session.get(GmailBackfillJob, job_id)
         if job is None:
             logger.warning("gmail.backfill job not found id=%s", job_id)
+            return
+        if job.status in _TERMINAL_STATUSES:
+            logger.info(
+                "gmail.backfill skip already-finalized job=%s status=%s",
+                job_id, job.status,
+            )
             return
         try:
             if job.mode == GmailBackfillMode.ESTIMATE.value:
@@ -951,10 +1095,33 @@ def run_backfill(job_id: str) -> None:
                 session.commit()
         except Exception as exc:  # noqa: BLE001
             logger.exception("gmail.backfill crashed job=%s", job_id)
-            job.status = GmailBackfillStatus.FAILED.value
-            job.error_summary = str(exc)[:2000]
-            job.finished_at = datetime.now(UTC)
-            session.commit()
+            # Mantener el row con el typename + mensaje + tail del
+            # traceback — el operador puede correlacionar con los logs
+            # del worker sin re-ejecutar.
+            tb_tail = "\n".join(
+                traceback.format_exception(type(exc), exc, exc.__traceback__)[-3:]
+            )
+            error_summary = (
+                f"{type(exc).__name__}: {exc}\n\n--- traceback ---\n{tb_tail}"
+            )
+            try:
+                session.rollback()
+                job = session.get(GmailBackfillJob, job_id)
+                if job is not None and job.status not in _TERMINAL_STATUSES:
+                    job.status = GmailBackfillStatus.FAILED.value
+                    job.error_summary = error_summary[:2000]
+                    job.finished_at = datetime.now(UTC)
+                    session.commit()
+            except Exception:  # noqa: BLE001
+                # No queremos enmascarar la excepción original — si la
+                # transacción de rescate falla, hay un problema más
+                # serio (conexión DB caída) y un re-raise rebotaría el
+                # job a RQ. Loggear y devolver — el job queda en
+                # running pero el operador ya ve el error en el log.
+                logger.exception(
+                    "gmail.backfill failed to persist FAILED status job=%s",
+                    job_id,
+                )
 
 
 def enqueue_backfill(job_id: str) -> None:
