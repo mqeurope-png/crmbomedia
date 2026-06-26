@@ -22,6 +22,7 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import FileResponse
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.audit import Action, record_event
@@ -113,7 +114,10 @@ def gmail_backfill_estimate(
     job = _create_job(
         session,
         mode=GmailBackfillMode.ESTIMATE,
-        config={"months_back": payload.months_back},
+        config={
+            "months_back": payload.months_back,
+            "aliases_scope": payload.aliases_scope,
+        },
         user=current_user,
     )
     record_event(
@@ -122,7 +126,10 @@ def gmail_backfill_estimate(
         target_type="gmail_backfill_job",
         target_id=job.id,
         actor=current_user,
-        metadata={"months_back": payload.months_back},
+        metadata={
+            "months_back": payload.months_back,
+            "aliases_scope": payload.aliases_scope,
+        },
         request=request,
     )
     session.commit()
@@ -154,6 +161,7 @@ def gmail_backfill_execute(
             "months_back": payload.months_back,
             "include_attachments": payload.include_attachments,
             "max_attachment_size_mb": payload.max_attachment_size_mb,
+            "aliases_scope": payload.aliases_scope,
         },
         user=current_user,
     )
@@ -167,6 +175,7 @@ def gmail_backfill_execute(
             "months_back": payload.months_back,
             "include_attachments": payload.include_attachments,
             "max_attachment_size_mb": payload.max_attachment_size_mb,
+            "aliases_scope": payload.aliases_scope,
         },
         request=request,
     )
@@ -192,6 +201,38 @@ def gmail_backfill_status(
     if job is None:
         raise not_found("Gmail backfill job")
     return _job_to_read(job)
+
+
+@router.get(
+    "/admin/gmail/backfill",
+    response_model=list[BackfillJobRead],
+)
+def gmail_backfill_list(
+    limit: int = 10,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_admin),
+) -> list[BackfillJobRead]:
+    """PR-Fix-Backfill-Gmail-Cero-Importados. Listado de los N jobs
+    más recientes, ordenados por `created_at desc`. **Sin filtro por
+    `initiated_by_user_id`** — admin debe poder ver y resumir polling
+    de un job iniciado por otro user (caso real de Bart 2026-06-25:
+    arrancó estimate, hizo logout/login, la UI no mostraba el job en
+    marcha aunque seguía vivo via shell).
+
+    El frontend hidrata su estado al montar la sección con los jobs
+    `running` o `queued` para resumir el polling sin requerir el
+    UUID original.
+    """
+    _ = current_user
+    limit = max(1, min(int(limit), 50))
+    rows = list(
+        session.scalars(
+            select(GmailBackfillJob)
+            .order_by(GmailBackfillJob.created_at.desc())
+            .limit(limit)
+        )
+    )
+    return [_job_to_read(j) for j in rows]
 
 
 @router.post(

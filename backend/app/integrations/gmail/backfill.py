@@ -87,6 +87,14 @@ ATTACHMENT_ROOT = Path(
 #: para que un cancel surta efecto rápido.
 PROGRESS_COMMIT_EVERY = 100
 
+#: PR-Fix-Backfill-Gmail-Cero-Importados. Si en modo `execute` se
+#: procesan ≥ este número de mensajes sin importar NI saltar
+#: ninguno, el matching está roto. Marcar el job FAILED en vez de
+#: completarlo silenciosamente — el segundo escenario de Bart
+#: (job 3f20f554) corrió 2h "completado" con 0 imports y consumió
+#: cuota Gmail sin avisar.
+ZERO_IMPORTS_TRIPWIRE = 1000
+
 #: Tamaño de página al listar mensajes Gmail. Gmail caps la lista a
 #: 500 por petición; 100 deja margen para que el operator vea
 #: progreso fino en logs.
@@ -222,17 +230,60 @@ def _walk_parts(payload: dict[str, Any]) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
+#: PR-Fix-Backfill-Gmail-Cero-Importados. Modos del nuevo parámetro
+#: `aliases_scope` para acotar volumen y rate-limit risk.
+ALIASES_SCOPE_PRIMARY = "primary_only"
+ALIASES_SCOPE_ALL_VISIBLE = "all_visible"
+DEFAULT_ALIASES_SCOPE = ALIASES_SCOPE_PRIMARY
+
+
 def _iter_aliases(
-    session: Session, user_id: str
+    session: Session,
+    user_id: str,
+    *,
+    scope: str = DEFAULT_ALIASES_SCOPE,
 ) -> list[UserEmailAliasPref]:
-    return list(
-        session.scalars(
-            select(UserEmailAliasPref).where(
-                UserEmailAliasPref.user_id == user_id,
-                UserEmailAliasPref.is_allowed.is_(True),
+    """Aliases de un user, filtrados por el scope solicitado.
+
+    - `primary_only` (default): solo el alias marcado como
+      `is_default=True`. Si no hay default explícito, fallback al
+      email primario del User (`users.email`) — devolvemos un
+      `UserEmailAliasPref` sintético en memoria para no requerir
+      una fila pre-existente.
+    - `all_visible`: todos los aliases con `is_allowed=True` (el
+      comportamiento histórico del backfill).
+    """
+    if scope == ALIASES_SCOPE_ALL_VISIBLE:
+        return list(
+            session.scalars(
+                select(UserEmailAliasPref).where(
+                    UserEmailAliasPref.user_id == user_id,
+                    UserEmailAliasPref.is_allowed.is_(True),
+                )
             )
         )
+    # primary_only
+    default_alias = session.scalar(
+        select(UserEmailAliasPref).where(
+            UserEmailAliasPref.user_id == user_id,
+            UserEmailAliasPref.is_allowed.is_(True),
+            UserEmailAliasPref.is_default.is_(True),
+        )
     )
+    if default_alias is not None:
+        return [default_alias]
+    # Fallback — usuario sin default explícito. Sintetizamos un
+    # alias en memoria con el email principal del User.
+    user = session.get(User, user_id)
+    if user is None or not user.email:
+        return []
+    synth = UserEmailAliasPref(
+        user_id=user_id,
+        alias_email=user.email,
+        is_allowed=True,
+        is_default=True,
+    )
+    return [synth]
 
 
 def _iter_connected_users(
@@ -363,16 +414,40 @@ def _heartbeat(
 
 def run_estimate(session: Session, job: GmailBackfillJob) -> None:
     """Modo `estimate`. 1 query por alias → metadata por mensaje →
-    cuenta solo los que matchean contacto + suma adjunto sizes."""
+    cuenta solo los que matchean contacto + suma adjunto sizes.
+
+    NOTA al lector que esté diagnosticando "imported=0 en BD":
+    estimate NUNCA escribe a `email_messages` ni incrementa
+    `total_imported`. Esos counters se mueven solo en `run_execute`.
+    Si un job en estado COMPLETED tiene `mode='estimate'` + counters
+    a 0, eso es esperado — el desglose útil vive en `result_json`.
+    """
     if not _start_running(session, job):
         return
     config = json.loads(job.config_json or "{}")
     months_back = int(config.get("months_back", 36))
+    aliases_scope = str(config.get("aliases_scope", DEFAULT_ALIASES_SCOPE))
     contact_index = _build_contact_index(session)
     integrations = _iter_connected_users(session)
+    if not contact_index:
+        logger.warning(
+            "gmail.backfill.estimate ABORT job=%s contact_index_empty",
+            job.id,
+        )
+        job.status = GmailBackfillStatus.FAILED.value
+        job.error_summary = (
+            "Sin contactos con email en el CRM — el matching no puede "
+            "operar contra cero filas. Revisa que la tabla `contacts` "
+            "tenga al menos una fila con `email IS NOT NULL`."
+        )
+        job.finished_at = datetime.now(UTC)
+        session.commit()
+        return
     logger.info(
-        "gmail.backfill.estimate started job=%s users=%d contacts=%d",
+        "gmail.backfill.estimate started job=%s mode=estimate "
+        "users=%d contacts=%d aliases_scope=%s months_back=%d",
         job.id, len(integrations), len(contact_index),
+        aliases_scope, months_back,
     )
 
     breakdown: dict[str, dict[str, Any]] = {}
@@ -405,7 +480,11 @@ def run_estimate(session: Session, job: GmailBackfillJob) -> None:
             )
             user_row["needs_reconnect"] = True
             continue
-        aliases = _iter_aliases(session, integ.user_id)
+        aliases = _iter_aliases(session, integ.user_id, scope=aliases_scope)
+        logger.info(
+            "gmail.backfill.estimate user=%s email=%s aliases_in_scope=%d",
+            integ.user_id, user.email, len(aliases),
+        )
         if not aliases:
             continue
 
@@ -421,11 +500,24 @@ def run_estimate(session: Session, job: GmailBackfillJob) -> None:
                 job.total_estimated = (job.total_estimated or 0) + total_hint
                 _heartbeat(session, job, force=True)
 
+            alias_matched_at_start = user_row["emails"]
             for m in msgs:
                 if _check_cancel(session, job):
                     return
                 job.total_processed += 1
                 _heartbeat(session, job)
+                # PR-Fix-Backfill-Gmail-Cero-Importados. Log explícito
+                # cada 100 mensajes — el _heartbeat solo conmuta el
+                # commit, no emite log visible. Sin esto Bart se
+                # quedaba 2h sin saber si el job estaba vivo.
+                if job.total_processed % PROGRESS_COMMIT_EVERY == 0:
+                    logger.info(
+                        "gmail.backfill.estimate progress alias=%s "
+                        "processed=%d matched_this_alias=%d",
+                        alias.alias_email,
+                        job.total_processed,
+                        user_row["emails"] - alias_matched_at_start,
+                    )
                 mid = m.get("id")
                 try:
                     meta = _with_backoff(
@@ -501,9 +593,30 @@ def run_execute(session: Session, job: GmailBackfillJob) -> None:
     include_attachments = bool(config.get("include_attachments", True))
     max_attachment_mb = int(config.get("max_attachment_size_mb", 25))
     max_attachment_bytes = max_attachment_mb * 1024 * 1024
+    aliases_scope = str(config.get("aliases_scope", DEFAULT_ALIASES_SCOPE))
 
     contact_index = _build_contact_index(session)
     integrations = _iter_connected_users(session)
+    if not contact_index:
+        logger.warning(
+            "gmail.backfill.execute ABORT job=%s contact_index_empty",
+            job.id,
+        )
+        job.status = GmailBackfillStatus.FAILED.value
+        job.error_summary = (
+            "Sin contactos con email en el CRM — el matching no puede "
+            "operar contra cero filas."
+        )
+        job.finished_at = datetime.now(UTC)
+        session.commit()
+        return
+    logger.info(
+        "gmail.backfill.execute started job=%s mode=execute "
+        "users=%d contacts=%d aliases_scope=%s months_back=%d "
+        "include_attachments=%s",
+        job.id, len(integrations), len(contact_index),
+        aliases_scope, months_back, include_attachments,
+    )
     errors_by_user: dict[str, str] = {}
     users_skipped: list[str] = []
 
@@ -516,7 +629,11 @@ def run_execute(session: Session, job: GmailBackfillJob) -> None:
             errors_by_user[integ.user_id] = str(exc)
             users_skipped.append(integ.user_id)
             continue
-        aliases = _iter_aliases(session, integ.user_id)
+        aliases = _iter_aliases(session, integ.user_id, scope=aliases_scope)
+        logger.info(
+            "gmail.backfill.execute user=%s aliases_in_scope=%d",
+            integ.user_id, len(aliases),
+        )
         if not aliases:
             continue
 
@@ -531,6 +648,8 @@ def run_execute(session: Session, job: GmailBackfillJob) -> None:
                 job.total_estimated = (job.total_estimated or 0) + total_hint
                 _heartbeat(session, job, force=True)
 
+            imported_at_start = job.total_imported
+            skipped_at_start = job.total_skipped
             for m in msgs:
                 if _check_cancel(session, job):
                     return
@@ -547,12 +666,56 @@ def run_execute(session: Session, job: GmailBackfillJob) -> None:
                     max_attachment_bytes=max_attachment_bytes,
                 )
                 _heartbeat(session, job)
+                # PR-Fix-Backfill-Gmail-Cero-Importados. Log visible
+                # cada 100 mensajes — el operador ve motion en
+                # `docker compose logs worker-sync` sin esperar al
+                # alias_done final.
+                if job.total_processed % PROGRESS_COMMIT_EVERY == 0:
+                    logger.info(
+                        "gmail.backfill.execute progress alias=%s "
+                        "processed=%d imported=%d skipped=%d errors=%d",
+                        alias.alias_email,
+                        job.total_processed,
+                        job.total_imported,
+                        job.total_skipped,
+                        job.total_errors,
+                    )
             logger.info(
                 "gmail.backfill.execute alias_done user=%s alias=%s "
-                "imported=%d skipped=%d errors=%d",
-                integ.user_id, alias.alias_email,
+                "msgs_seen=%d imported_now=%d skipped_now=%d "
+                "imported_total=%d skipped_total=%d errors_total=%d",
+                integ.user_id, alias.alias_email, len(msgs),
+                job.total_imported - imported_at_start,
+                job.total_skipped - skipped_at_start,
                 job.total_imported, job.total_skipped, job.total_errors,
             )
+
+    # PR-Fix-Backfill-Gmail-Cero-Importados. Tripwire: si procesamos
+    # ≥1000 mensajes y NI uno importó NI uno saltó, el matching está
+    # roto (case-sensitive, parse incorrecto, index vacío, etc.).
+    # Mejor un FAILED ruidoso que un COMPLETED engañoso que Bart
+    # tarda 2h en descubrir.
+    if (
+        job.total_processed >= ZERO_IMPORTS_TRIPWIRE
+        and job.total_imported == 0
+        and job.total_skipped == 0
+    ):
+        logger.warning(
+            "gmail.backfill.execute tripwire job=%s processed=%d "
+            "imported=0 skipped=0 — matching likely broken",
+            job.id, job.total_processed,
+        )
+        job.status = GmailBackfillStatus.FAILED.value
+        job.error_summary = (
+            f"Procesados {job.total_processed} mensajes sin importar "
+            "ni saltar ninguno. El matching contact↔message está "
+            "roto: posible bug en `_match_contact` (case, parse de "
+            "headers, índice vacío). Revisa logs INFO de "
+            "`gmail.backfill.execute progress` para confirmar."
+        )
+        job.finished_at = datetime.now(UTC)
+        session.commit()
+        return
 
     result = {
         "users_processed": len(integrations) - len(users_skipped),
@@ -560,6 +723,7 @@ def run_execute(session: Session, job: GmailBackfillJob) -> None:
         "errors_by_user": errors_by_user,
         "months_back": months_back,
         "include_attachments": include_attachments,
+        "aliases_scope": aliases_scope,
     }
     job.result_json = json.dumps(result)
     job.status = GmailBackfillStatus.COMPLETED.value

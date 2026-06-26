@@ -2,8 +2,13 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+# PR-Fix-Backfill-Gmail-Cero-Importados. Nuevo parámetro `aliases_scope`
+# para acotar volumen y riesgo de rate-limit en el primer intento real.
+AliasesScope = Literal["primary_only", "all_visible"]
 
 
 class BackfillExecuteRequest(BaseModel):
@@ -14,10 +19,12 @@ class BackfillExecuteRequest(BaseModel):
     months_back: int = Field(default=36, ge=1, le=120)
     include_attachments: bool = True
     max_attachment_size_mb: int = Field(default=25, ge=0, le=200)
+    aliases_scope: AliasesScope = "primary_only"
 
 
 class BackfillEstimateRequest(BaseModel):
     months_back: int = Field(default=36, ge=1, le=120)
+    aliases_scope: AliasesScope = "primary_only"
 
 
 class BackfillPerUserBreakdown(BaseModel):
