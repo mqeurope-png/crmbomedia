@@ -40,6 +40,8 @@ from .schemas import (
     BrevoTemplateHtmlResponse,
     ComposerSourcePickerItem,
     ComposerSourceResponse,
+    DefaultTemplateFolderRequest,
+    DefaultTemplateFolderResponse,
     FolderRead,
     FolderShareWrite,
     FolderTreeNode,
@@ -492,11 +494,25 @@ def record_template_use(
 # ───────────────────────────────────────────────────────────────────
 
 
+def _default_template_folder_id(session: Session, user_id: str) -> str | None:
+    """PR-Workflows-Pipelines-Per-User mini-fix. Devuelve el folder_id
+    marcado como predeterminado del user para el modal Nuevo email."""
+    from app.models.crm import UserTemplateFolderPref  # noqa: PLC0415
+
+    return session.scalar(
+        select(UserTemplateFolderPref.folder_id).where(
+            UserTemplateFolderPref.user_id == user_id,
+        )
+    )
+
+
 def _build_tree_nodes(
     session: Session,
     parent_id: str | None,
     depth: int,
     user: User,
+    *,
+    default_folder_id: str | None = None,
 ) -> list[FolderTreeNode]:
     """Recursively build the folder tree from a starting parent.
 
@@ -509,7 +525,13 @@ def _build_tree_nodes(
     nodes: list[FolderTreeNode] = []
     for folder in descendants(session, parent_id):
         children = (
-            _build_tree_nodes(session, folder.id, depth + 1, user)
+            _build_tree_nodes(
+                session,
+                folder.id,
+                depth + 1,
+                user,
+                default_folder_id=default_folder_id,
+            )
             if depth + 1 < MAX_FOLDER_DEPTH
             else []
         )
@@ -543,6 +565,10 @@ def _build_tree_nodes(
                 sort_order=folder.sort_order,
                 children=children,
                 template_count=template_count,
+                is_default_for_me=(
+                    default_folder_id is not None
+                    and folder.id == default_folder_id
+                ),
             )
         )
     return nodes
@@ -559,7 +585,73 @@ def list_folder_tree(
     user solo recibe nodos que puede ver (private suyo, team del
     equipo, shared invitado). El frontend agrupa por icono según
     `visibility`."""
-    return _build_tree_nodes(session, None, 0, current_user)
+    default_folder_id = _default_template_folder_id(session, current_user.id)
+    return _build_tree_nodes(
+        session,
+        None,
+        0,
+        current_user,
+        default_folder_id=default_folder_id,
+    )
+
+
+# PR-Workflows-Pipelines-Per-User mini-fix. Endpoints para marcar la
+# carpeta predeterminada del current_user al cargar plantillas en el
+# modal Nuevo email.
+@router.put(
+    "/users/me/default-template-folder",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def set_default_template_folder(
+    payload: DefaultTemplateFolderRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_user),
+) -> Response:
+    from app.models.crm import UserTemplateFolderPref  # noqa: PLC0415
+
+    if payload.folder_id is not None:
+        folder = session.get(EmailTemplateFolder, payload.folder_id)
+        if folder is None or not _can_view_folder(
+            session, folder, current_user
+        ):
+            raise not_found("EmailTemplateFolder")
+        existing = session.scalar(
+            select(UserTemplateFolderPref).where(
+                UserTemplateFolderPref.user_id == current_user.id
+            )
+        )
+        if existing is None:
+            session.add(
+                UserTemplateFolderPref(
+                    user_id=current_user.id,
+                    folder_id=payload.folder_id,
+                )
+            )
+        else:
+            existing.folder_id = payload.folder_id
+    else:
+        # Clear — borra la fila si existe (idempotente).
+        existing = session.scalar(
+            select(UserTemplateFolderPref).where(
+                UserTemplateFolderPref.user_id == current_user.id
+            )
+        )
+        if existing is not None:
+            session.delete(existing)
+    session.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get(
+    "/users/me/default-template-folder",
+    response_model=DefaultTemplateFolderResponse,
+)
+def get_default_template_folder(
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_user),
+) -> DefaultTemplateFolderResponse:
+    folder_id = _default_template_folder_id(session, current_user.id)
+    return DefaultTemplateFolderResponse(folder_id=folder_id)
 
 
 @router.post(

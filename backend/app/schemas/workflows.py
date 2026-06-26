@@ -70,6 +70,10 @@ class WorkflowCreate(BaseModel):
     cancellation_events: list[str] = Field(
         default_factory=lambda: ["contact.unsubscribed"]
     )
+    # PR-Workflows-Pipelines-Per-User. Si True + current_user es
+    # admin, el workflow se crea como global (owner_user_id=NULL,
+    # visible para todos). Default False = privado del creador.
+    is_global: bool = False
 
 
 class WorkflowUpdate(BaseModel):
@@ -84,6 +88,11 @@ class WorkflowUpdate(BaseModel):
     cancellation_events: list[str] | None = None
     steps: list[WorkflowStepWrite] | None = None
     edges: list[WorkflowEdgeWrite] | None = None
+    # PR-Workflows-Pipelines-Per-User. Toggle del flag global —
+    # solo admin puede flipearlo. Si current_user no es admin, el
+    # endpoint devuelve 403 cuando este campo no coincide con el
+    # estado actual.
+    is_global: bool | None = None
 
 
 class WorkflowRead(BaseModel):
@@ -106,6 +115,12 @@ class WorkflowRead(BaseModel):
     # `error_summary LIKE 'completed_with_skipped:%'`; sin migración.
     total_completed_with_skipped: int = 0
     created_by_user_id: str | None
+    # PR-Workflows-Pipelines-Per-User. Privacidad per-user.
+    # `owner_user_id IS NULL` ↔ `is_global=True`. `is_mine` se
+    # computa contra el current_user en el serializador.
+    owner_user_id: str | None = None
+    is_mine: bool = False
+    is_global: bool = False
     definition_hash: str | None = None
     created_at: datetime
     updated_at: datetime

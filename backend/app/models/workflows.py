@@ -129,6 +129,14 @@ class Workflow(TimestampMixin, Base):
     created_by_user_id: Mapped[str | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL")
     )
+    # PR-Workflows-Pipelines-Per-User. Owner privado. NULL = workflow
+    # global del equipo (visible para todos). Cualquier user puede
+    # crear sus propios privados; solo admin puede marcar como
+    # global (set NULL) o quitar el flag global (set a un user id).
+    owner_user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"),
+        index=True,
+    )
     # Sprint UX-Workflows-Editor. SHA-256 truncado de la definición
     # estructural (trigger_type + trigger_config + steps + edges) usado
     # para detectar duplicados exactos al guardar. NULL hasta que se

@@ -38,9 +38,15 @@ def client() -> Generator[TestClient, None, None]:
 
 
 def _create_pipeline(client: TestClient, stages: list[str] | None = None) -> dict:
+    # PR-Workflows-Pipelines-Per-User. Tests existentes asumían
+    # acceso transversal por role. Se mantiene esa premisa creando
+    # el pipeline como GLOBAL (admin con is_global=True), así
+    # viewer/manager también lo ven. Los tests del nuevo
+    # comportamiento de privacidad usan POST manualmente.
     payload = {
         "name": "Pipeline Ventas",
         "description": "Pipeline de prueba",
+        "is_global": True,
         "stages": [
             {"name": stage_name, "position": index}
             for index, stage_name in enumerate(
@@ -49,7 +55,7 @@ def _create_pipeline(client: TestClient, stages: list[str] | None = None) -> dic
         ],
     }
     response = client.post(
-        "/api/pipelines", json=payload, headers=auth_headers(client, "manager")
+        "/api/pipelines", json=payload, headers=auth_headers(client, "admin")
     )
     assert response.status_code == 201, response.text
     return response.json()
@@ -334,9 +340,11 @@ def test_pipeline_report_computes_basic_metrics(client: TestClient):
 
 def test_soft_delete_pipeline_hides_from_default_list(client: TestClient):
     pipeline = _create_pipeline(client)
+    # PR-Workflows-Pipelines-Per-User. El pipeline es global (creado
+    # por admin con is_global=True). Solo admin/owner puede borrarlo.
     deleted = client.delete(
         f"/api/pipelines/{pipeline['id']}",
-        headers=auth_headers(client, "manager"),
+        headers=auth_headers(client, "admin"),
     )
     assert deleted.status_code == 200
     rows = client.get(

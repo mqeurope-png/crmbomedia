@@ -62,6 +62,20 @@ class FolderTreeNode(BaseModel):
     sort_order: int
     children: list[FolderTreeNode] = Field(default_factory=list)
     template_count: int = 0
+    # PR-Workflows-Pipelines-Per-User mini-fix. Carpeta marcada como
+    # predeterminada del current_user para el modal Nuevo email.
+    # Una sola por user (UNIQUE en la tabla).
+    is_default_for_me: bool = False
+
+
+class DefaultTemplateFolderRequest(BaseModel):
+    """Body de PUT /api/users/me/default-template-folder."""
+
+    folder_id: str | None = None  # None = clear
+
+
+class DefaultTemplateFolderResponse(BaseModel):
+    folder_id: str | None
 
 
 class TemplateRead(BaseModel):

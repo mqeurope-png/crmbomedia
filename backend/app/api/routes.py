@@ -4105,7 +4105,10 @@ def push_view_to_brevo_list(
 
 
 def _pipeline_to_read(
-    session: Session, pipeline: Pipeline
+    session: Session,
+    pipeline: Pipeline,
+    *,
+    current_user: User | None = None,
 ) -> PipelineRead:
     return PipelineRead(
         id=pipeline.id,
@@ -4114,7 +4117,14 @@ def _pipeline_to_read(
         color=pipeline.color,
         is_active=pipeline.is_active,
         is_shared=pipeline.is_shared,
+        # PR-Workflows-Pipelines-Per-User. NULL = global.
         owner_user_id=pipeline.owner_user_id,
+        is_mine=(
+            current_user is not None
+            and pipeline.owner_user_id is not None
+            and pipeline.owner_user_id == current_user.id
+        ),
+        is_global=pipeline.owner_user_id is None,
         stages=[
             PipelineStageRead.model_validate(stage)
             for stage in sorted(pipeline.stages, key=lambda s: s.position)
@@ -4136,11 +4146,16 @@ def list_pipelines(
     session: Session = Depends(get_session),
     current_user: User = Depends(require_viewer),
 ) -> list[PipelineRead]:
-    _ = current_user
+    from app.services.ownership import is_admin  # noqa: PLC0415
+
     rows = pipelines_repository.list_pipelines(
-        session, include_inactive=include_inactive
+        session,
+        include_inactive=include_inactive,
+        visible_to_user_id=(
+            None if is_admin(current_user) else current_user.id
+        ),
     )
-    return [_pipeline_to_read(session, row) for row in rows]
+    return [_pipeline_to_read(session, row, current_user=current_user) for row in rows]
 
 
 @router.get(
@@ -4154,11 +4169,12 @@ def read_pipeline(
     session: Session = Depends(get_session),
     current_user: User = Depends(require_viewer),
 ) -> PipelineRead:
-    _ = current_user
+    from app.services.ownership import can_user_see_resource  # noqa: PLC0415
+
     pipeline = pipelines_repository.get_pipeline(session, pipeline_id)
-    if not pipeline:
+    if not pipeline or not can_user_see_resource(current_user, pipeline):
         raise not_found("Pipeline")
-    return _pipeline_to_read(session, pipeline)
+    return _pipeline_to_read(session, pipeline, current_user=current_user)
 
 
 @router.post(
@@ -4172,11 +4188,23 @@ def create_pipeline(
     payload: PipelineCreate,
     request: Request,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_manager),
+    current_user: User = Depends(require_viewer),
 ) -> PipelineRead:
+    # PR-Workflows-Pipelines-Per-User. Cualquier user puede crear
+    # pipelines. is_global=True solo admin.
+    from app.services.ownership import can_user_toggle_global  # noqa: PLC0415
+
+    if payload.is_global and not can_user_toggle_global(current_user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "Solo admin puede crear pipelines del equipo. "
+                "Crea uno privado; un admin puede compartirlo después."
+            ),
+        )
     pipeline = pipelines_repository.create_pipeline(
         session,
-        owner_user_id=current_user.id,
+        owner_user_id=None if payload.is_global else current_user.id,
         name=payload.name,
         description=payload.description,
         color=payload.color,
@@ -4189,12 +4217,16 @@ def create_pipeline(
         target_type="pipeline",
         target_id=pipeline.id,
         actor=current_user,
-        metadata={"name": pipeline.name, "stage_count": len(payload.stages)},
+        metadata={
+            "name": pipeline.name,
+            "stage_count": len(payload.stages),
+            "is_global": payload.is_global,
+        },
         request=request,
     )
     session.commit()
     session.refresh(pipeline)
-    return _pipeline_to_read(session, pipeline)
+    return _pipeline_to_read(session, pipeline, current_user=current_user)
 
 
 @router.patch(
@@ -4208,12 +4240,54 @@ def update_pipeline(
     payload: PipelineUpdate,
     request: Request,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_manager),
+    current_user: User = Depends(require_viewer),
 ) -> PipelineRead:
+    from app.services.ownership import (  # noqa: PLC0415
+        can_user_edit_resource,
+        can_user_toggle_global,
+    )
+
     pipeline = pipelines_repository.get_pipeline(session, pipeline_id)
     if not pipeline:
         raise not_found("Pipeline")
+    if not can_user_edit_resource(current_user, pipeline):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No tienes permiso para editar este pipeline.",
+        )
     changes = payload.model_dump(exclude_unset=True)
+    # PR-Workflows-Pipelines-Per-User. is_global solo admin.
+    is_global_new = changes.pop("is_global", None)
+    if is_global_new is not None:
+        current_is_global = pipeline.owner_user_id is None
+        if is_global_new != current_is_global:
+            if not can_user_toggle_global(current_user):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=(
+                        "Solo admin puede compartir o privar pipelines."
+                    ),
+                )
+            previous_owner = pipeline.owner_user_id
+            pipeline.owner_user_id = (
+                None if is_global_new else current_user.id
+            )
+            record_event(
+                session,
+                action=(
+                    "pipeline.made_global"
+                    if is_global_new
+                    else "pipeline.made_private"
+                ),
+                target_type="pipeline",
+                target_id=pipeline.id,
+                actor=current_user,
+                metadata={
+                    "previous_owner_user_id": previous_owner,
+                    "new_owner_user_id": pipeline.owner_user_id,
+                },
+                request=request,
+            )
     pipelines_repository.update_pipeline(session, pipeline=pipeline, **changes)
     record_event(
         session,
@@ -4226,7 +4300,7 @@ def update_pipeline(
     )
     session.commit()
     session.refresh(pipeline)
-    return _pipeline_to_read(session, pipeline)
+    return _pipeline_to_read(session, pipeline, current_user=current_user)
 
 
 @router.delete(
@@ -4239,9 +4313,16 @@ def delete_pipeline(
     pipeline_id: str,
     request: Request,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_manager),
+    current_user: User = Depends(require_viewer),
 ) -> MessageRead:
+    from app.services.ownership import can_user_edit_resource  # noqa: PLC0415
+
     pipeline = pipelines_repository.get_pipeline(session, pipeline_id)
+    if pipeline is not None and not can_user_edit_resource(current_user, pipeline):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No tienes permiso para borrar este pipeline.",
+        )
     if not pipeline:
         raise not_found("Pipeline")
     pipelines_repository.soft_delete_pipeline(session, pipeline)
@@ -4297,7 +4378,7 @@ def duplicate_pipeline(
     )
     session.commit()
     session.refresh(duplicate)
-    return _pipeline_to_read(session, duplicate)
+    return _pipeline_to_read(session, duplicate, current_user=current_user)
 
 
 # ----- Stages -----
@@ -4708,7 +4789,7 @@ def list_pipeline_contacts(
             )
         )
     return PipelineContactsResponse(
-        pipeline=_pipeline_to_read(session, pipeline),
+        pipeline=_pipeline_to_read(session, pipeline, current_user=current_user),
         stages=stage_groups,
     )
 
@@ -4831,7 +4912,7 @@ def create_pipeline_from_template(
     )
     session.commit()
     session.refresh(pipeline)
-    return _pipeline_to_read(session, pipeline)
+    return _pipeline_to_read(session, pipeline, current_user=current_user)
 
 
 @router.post(

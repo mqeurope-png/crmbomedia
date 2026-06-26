@@ -1278,6 +1278,10 @@ class PipelineCreate(BaseModel):
     description: str | None = Field(default=None, max_length=2000)
     color: str | None = Field(default=None, max_length=7)
     is_shared: bool = True
+    # PR-Workflows-Pipelines-Per-User. Si True + current_user es
+    # admin → pipeline global (owner_user_id=NULL). Default False
+    # = privado del creador.
+    is_global: bool = False
     stages: list[PipelineStageCreate] = Field(default_factory=list)
 
     @field_validator("name")
@@ -1297,6 +1301,8 @@ class PipelineUpdate(BaseModel):
     color: str | None = Field(default=None, max_length=7)
     is_shared: bool | None = None
     is_active: bool | None = None
+    # PR-Workflows-Pipelines-Per-User. Solo admin puede flipear.
+    is_global: bool | None = None
 
     @field_validator("color", mode="before")
     @classmethod
@@ -1311,7 +1317,10 @@ class PipelineRead(BaseModel):
     color: str | None = None
     is_active: bool
     is_shared: bool
-    owner_user_id: str
+    # PR-Workflows-Pipelines-Per-User. NULL = global del equipo.
+    owner_user_id: str | None = None
+    is_mine: bool = False
+    is_global: bool = False
     stages: list[PipelineStageRead] = Field(default_factory=list)
     contact_count: int = 0
     created_at: datetime
