@@ -1,18 +1,24 @@
-"""PR-Fix-Leads-Prioritarios-3a-Vez — end-to-end test del flujo:
+"""PR-Fix-Leads-Prioritarios-3a-Vez + 4a-Vez — defensa para el
+campo `id` del engine de segments + el cap del endpoint
+`/api/dashboard/priority-leads`.
 
-  Dashboard widget pre-fetcha IDs → encodea rules `id IN [...]` →
-  /contacts page parsea → POST /api/contacts/search con rules_json →
-  resultado = los mismos contactos del widget.
+NOTA HISTÓRICA (PR-Leads-Prioritarios-Página-Dedicada): el widget
+"Leads prioritarios" YA NO usa el path URL `/contacts?rules=...`
+para el "Ver todos". Tras 4 PRs intentando reusar el engine de
+filtros de /contacts, Bart decidió simplificar: ahora "Ver todos"
+navega a una página dedicada `/dashboard/leads-prioritarios` con
+tabla autocontenida.
 
-El primer ciclo (PR #237) no cubrió este flow porque no había tests.
-El segundo (PR #238) usaba `field: "id"` sin verificar que la
-segments engine lo aceptara — el field `id` no estaba registrado y
-la query 400-eaba silenciosamente. Este test prueba:
+Pero los tests de este archivo siguen siendo VALIOSOS como defensa
+para los siguientes consumidores:
 
-  1. `field: "id"` está registrado en la segments engine.
-  2. `comparator: "in"` está permitido para `id`.
-  3. El POST a /api/contacts/search con el árbol de rules devuelve
-     EXACTAMENTE los contactos cuyo id está en la lista.
+  1. El campo `id` del engine de segments queda en el registro
+     como recurso genérico para futuros filtros programáticos.
+     Cualquier widget o feature que en el futuro quiera filtrar
+     /contacts por una lista de UUIDs lo tiene disponible — sin
+     duplicar la búsqueda backend para cada caso.
+  2. El cap del endpoint priority-leads (limit hasta 200) se
+     verifica aquí. La página dedicada lo consume con limit=200.
 """
 from __future__ import annotations
 
@@ -90,6 +96,7 @@ def test_contacts_search_with_id_in_filter_returns_matching_contacts(
         admin = session.scalar(
             select(User).where(User.role == UserRole.ADMIN)
         )
+        admin_id = admin.id
         for label in ("a", "b", "c"):
             cid = str(uuid4())
             session.add(
@@ -97,7 +104,7 @@ def test_contacts_search_with_id_in_filter_returns_matching_contacts(
                     id=cid,
                     first_name=label.upper(),
                     email=f"{label}@x.com",
-                    owner_user_id=admin.id,
+                    owner_user_id=admin_id,
                     is_active=True,
                 )
             )
@@ -109,7 +116,7 @@ def test_contacts_search_with_id_in_filter_returns_matching_contacts(
                 id=ignored_id,
                 first_name="Z",
                 email="z@x.com",
-                owner_user_id=admin.id,
+                owner_user_id=admin_id,
                 is_active=True,
             )
         )
@@ -159,6 +166,91 @@ def test_priority_leads_endpoint_accepts_limit_up_to_200(client, factory):
         headers=auth_headers(client, "admin"),
     )
     assert response.status_code == 422, response.text
+
+
+def test_priority_leads_endpoint_returns_extended_shape(client, factory):
+    """PR-Leads-Prioritarios-Página-Dedicada. La página dedicada de
+    `/dashboard/leads-prioritarios` consume el mismo endpoint que el
+    widget pero necesita campos extra: lead_score, tags, owner_name.
+    Verifica que el shape incluye esas keys (aunque sean null/[]) y
+    que el JOIN con users para el owner_name funciona."""
+    from datetime import UTC, datetime, timedelta
+
+    from sqlalchemy import select
+
+    from app.models.crm import (
+        Contact,
+        ContactAssignment,
+        ContactTag,
+        Tag,
+        User,
+    )
+
+    admin_id: str
+    admin_full_name: str
+    with factory() as session:
+        admin = session.scalar(
+            select(User).where(User.role == UserRole.ADMIN)
+        )
+        admin_id = admin.id
+        admin_full_name = admin.full_name
+        # Contacto con todos los campos extra poblados.
+        cid = str(uuid4())
+        now = datetime.now(UTC)
+        contact = Contact(
+            id=cid,
+            first_name="Hot",
+            last_name="Lead",
+            email="hot@x.com",
+            owner_user_id=admin_id,
+            lead_score=85,
+            is_active=True,
+        )
+        session.add(contact)
+        session.flush()
+        # Recién asignado al admin → entra en el bucket de
+        # `recent_assigned`.
+        session.add(
+            ContactAssignment(
+                contact_id=cid,
+                user_id=admin_id,
+                is_primary=True,
+                assigned_at=now - timedelta(hours=1),
+                source="manual",
+            )
+        )
+        # Tag.
+        tag = Tag(
+            id=str(uuid4()),
+            name="VIP",
+            name_normalized="vip",
+            color="#ff0000",
+        )
+        session.add(tag)
+        session.flush()
+        session.add(
+            ContactTag(
+                contact_id=cid,
+                tag_id=tag.id,
+                assigned_at=now,
+            )
+        )
+        session.commit()
+
+    response = client.get(
+        "/api/dashboard/priority-leads?period=7d&limit=10",
+        headers=auth_headers(client, "admin"),
+    )
+    assert response.status_code == 200, response.text
+    rows = response.json()
+    target = next((r for r in rows if r["id"] == cid), None)
+    assert target is not None
+    # Shape extendido — los campos extra del PR-Página-Dedicada.
+    assert target["lead_score"] == 85
+    assert target["owner_user_id"] == admin_id
+    assert target["owner_name"] == admin_full_name
+    tag_names = {t["name"] for t in target.get("tags", [])}
+    assert "VIP" in tag_names
 
 
 def test_contacts_search_with_unknown_field_returns_400(client, factory):
