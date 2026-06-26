@@ -52,7 +52,12 @@ class EmailService(ABC):
     # PR-OAuth-Permisos-Admin Item 9. Envío genérico para avisos
     # transaccionales (caducidad token Gmail, digest admin). Plantillas
     # inline — no requiere ficheros Jinja nuevos.
-    @abstractmethod
+    #
+    # NO es `@abstractmethod`: las dos implementaciones reales (Console /
+    # SMTP) lo overridean, pero dejarlo concreto con un default no-op
+    # evita romper subclases mock pre-existentes que solo implementan
+    # `send_password_reset`. El default loguea para que un envío real
+    # sin override no pase desapercibido.
     def send_notification(
         self,
         *,
@@ -61,7 +66,12 @@ class EmailService(ABC):
         subject: str,
         text_body: str,
         html_body: str | None = None,
-    ) -> None: ...
+    ) -> None:
+        logger.warning(
+            "EmailService.send_notification sin implementar en %s — "
+            "email a %s (%s) descartado",
+            type(self).__name__, to_email, subject,
+        )
 
 
 def _render_password_reset(
