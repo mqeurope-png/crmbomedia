@@ -386,6 +386,25 @@ export async function logout(): Promise<void> {
     // sin red — seguimos limpiando local.
   }
   clearStoredToken();
+  // PR-Workflows-Pipelines-Per-User mini-fix. Borra las preferencias
+  // de UI per-user almacenadas en localStorage para que la próxima
+  // sesión arranque con los valores predeterminados (carpeta ★).
+  // Sin esto, el filtro de carpeta del modal "Cargar plantilla" se
+  // quedaría pegado en el último valor manual elegido.
+  try {
+    if (typeof window !== "undefined") {
+      const keys: string[] = [];
+      for (let i = 0; i < window.localStorage.length; i++) {
+        const k = window.localStorage.key(i);
+        if (k && k.startsWith("email_template_last_folder_")) {
+          keys.push(k);
+        }
+      }
+      keys.forEach((k) => window.localStorage.removeItem(k));
+    }
+  } catch {
+    /* ignore quota / private-mode errors */
+  }
 }
 
 export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
@@ -1161,7 +1180,14 @@ export type Pipeline = {
   color?: string | null;
   is_active: boolean;
   is_shared: boolean;
-  owner_user_id: string;
+  /** PR-Frontend-Workflows-Pipelines-Templates. NULL = global del
+   *  equipo. Pre-#250 las respuestas traían un string siempre; ahora
+   *  el backend devuelve null para los pipelines globales. */
+  owner_user_id: string | null;
+  /** Backend computa contra current_user. Opcionales para tolerar
+   *  respuestas pre-#250 durante el rolling deploy. */
+  is_mine?: boolean;
+  is_global?: boolean;
   stages: PipelineStage[];
   contact_count: number;
   created_at: string;
@@ -1232,6 +1258,10 @@ export async function createPipeline(payload: {
   description?: string | null;
   color?: string | null;
   is_shared?: boolean;
+  /** PR-Frontend-Workflows-Pipelines-Templates. Solo admin: marca el
+   *  pipeline como global (owner_user_id=NULL). Backend ignora el
+   *  campo silenciosamente si current_user no es admin. */
+  is_global?: boolean;
   stages?: Array<{
     name: string;
     description?: string | null;
@@ -1256,6 +1286,9 @@ export async function updatePipeline(
     color: string | null;
     is_shared: boolean;
     is_active: boolean;
+    /** PR-Frontend-Workflows-Pipelines-Templates. Solo admin. Backend
+     *  responde 403 a otros roles. */
+    is_global: boolean;
   }>,
 ): Promise<Pipeline> {
   return apiFetch<Pipeline>(`/api/pipelines/${id}`, {

@@ -9816,3 +9816,118 @@ tr.is-inactive {
     display: none;
   }
 }
+
+/* PR-Frontend-Workflows-Pipelines-Templates. Badges Mío / Equipo
+ * compartidos por workflows y pipelines. Color paletas suaves para
+ * que no compitan con los status badges existentes. */
+.rv-badges {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.rv-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+.rv-badge-sm {
+  padding: 1px 6px;
+  font-size: 10px;
+}
+
+.rv-badge-mine {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+.rv-badge-team {
+  background: #dcfce7;
+  color: #15803d;
+}
+
+/* Sección agrupadora "Mis workflows" / "Workflows del equipo" en /workflows
+ * y "Mis pipelines" / "Pipelines del equipo" en /pipelines. La cabecera
+ * pisa la fila siguiente para que se lea como heading sin perder densidad. */
+.resource-group {
+  margin-top: 24px;
+}
+
+.resource-group-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--line, #e5e7eb);
+}
+
+.resource-group-header h3 {
+  font-size: 14px;
+  font-weight: 600;
+  margin: 0;
+  color: var(--text, #1f2937);
+}
+
+.resource-group-header .resource-group-count {
+  color: var(--muted, #6b7280);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.resource-group-empty {
+  color: var(--muted, #6b7280);
+  font-size: 13px;
+  margin: 4px 0 0;
+  font-style: italic;
+}
+
+/* Estrella de carpeta predeterminada en /plantillas. Color amarillo
+ * tenue para señalar el toggle sin gritar. */
+.et-folder-default-star {
+  display: inline-flex;
+  align-items: center;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  color: var(--muted, #9ca3af);
+  margin-left: 6px;
+}
+
+.et-folder-default-star:hover {
+  color: #f59e0b;
+}
+
+.et-folder-default-star.is-default {
+  color: #f59e0b;
+}
+
+/* Selector "Carpeta" en el modal Cargar plantilla → pestaña CRM. */
+.tp-folder-filter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+
+.tp-folder-filter label {
+  color: var(--muted, #6b7280);
+  white-space: nowrap;
+}
+
+.tp-folder-filter select {
+  flex: 1;
+  padding: 4px 8px;
+  border: 1px solid var(--line, #e5e7eb);
+  border-radius: 6px;
+  font-size: 13px;
+  background: white;
+}

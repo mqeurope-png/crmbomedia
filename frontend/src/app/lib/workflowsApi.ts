@@ -54,6 +54,14 @@ export type WorkflowRead = {
    *  llegaron al final habiendo saltado >=1 step. */
   total_completed_with_skipped: number;
   created_by_user_id: string | null;
+  /** PR-Frontend-Workflows-Pipelines-Templates. NULL = global del
+   *  equipo (visible para todos). Si != NULL, solo el owner + admin
+   *  lo ven. `is_mine` y `is_global` los computa el backend contra
+   *  el current_user. Mantengo opcional para tolerar respuestas pre-#250
+   *  durante el rolling deploy. */
+  owner_user_id?: string | null;
+  is_mine?: boolean;
+  is_global?: boolean;
   created_at: string;
   updated_at: string;
 };
@@ -160,6 +168,10 @@ export type WorkflowUpdate = {
   cancellation_events?: string[];
   steps?: WorkflowStepWrite[];
   edges?: WorkflowEdgeWrite[];
+  /** PR-Frontend-Workflows-Pipelines-Templates. Solo admin puede
+   *  flipearlo; el backend responde 403 a managers/users si lo
+   *  intentan. */
+  is_global?: boolean;
 };
 
 export async function listWorkflows(
@@ -180,6 +192,10 @@ export async function createWorkflow(payload: {
   trigger_config?: Record<string, unknown>;
   allow_reentry?: boolean;
   cancellation_events?: string[];
+  /** PR-Frontend-Workflows-Pipelines-Templates. Solo admin: marca el
+   *  workflow recién creado como global (owner_user_id=NULL). El
+   *  backend ignora el campo si current_user no es admin. */
+  is_global?: boolean;
 }): Promise<WorkflowDetail> {
   return apiFetch<WorkflowDetail>("/api/workflows", {
     method: "POST",
