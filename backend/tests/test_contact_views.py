@@ -102,9 +102,14 @@ def test_patch_view_blocked_for_non_owner(client: TestClient):
 
 
 def test_setting_default_demotes_previous_default(client: TestClient):
+    """PR-Backlog-3-5-7 item 5: ahora `is_default_for_me` es la
+    fuente de verdad per-user. UNIQUE en `user_default_view_prefs`
+    garantiza una sola fila por user+entity, así que marcar B como
+    predeterminada implícitamente demote A para ese mismo user. El
+    flag legacy `is_default` ya no se demote (queda como histórico
+    del owner) — el frontend nuevo lee `is_default_for_me`."""
     a = _create_view(client, role="manager", name="A", is_default=True)
     b = _create_view(client, role="manager", name="B")
-    # Promote B → A must drop its is_default.
     response = client.post(
         f"/api/contact-views/{b['id']}/set-default",
         headers=auth_headers(client, "manager"),
@@ -114,8 +119,101 @@ def test_setting_default_demotes_previous_default(client: TestClient):
         "/api/contact-views", headers=auth_headers(client, "manager")
     ).json()
     by_id = {v["id"]: v for v in listed}
-    assert by_id[a["id"]]["is_default"] is False
-    assert by_id[b["id"]]["is_default"] is True
+    # Per-user default: solo B lo es para este user.
+    assert by_id[a["id"]]["is_default_for_me"] is False
+    assert by_id[b["id"]]["is_default_for_me"] is True
+
+
+def test_non_owner_can_mark_shared_view_as_their_default(
+    client: TestClient,
+):
+    """PR-Backlog-3-5-7 item 5. Bug raíz: cuando un user accede a
+    una vista compartida por otro user, antes NO podía marcarla
+    como SU predeterminada. Ahora el endpoint set-default permite
+    a cualquier user que pueda leer la vista marcarla como su
+    predeterminada per-user. La preferencia se guarda en
+    `user_default_view_prefs` sin afectar al owner ni a otros
+    users que vean la misma vista."""
+    # User A (admin) crea y comparte una vista.
+    shared = _create_view(
+        client, role="admin", name="Recientes despues 1 mayo",
+        is_shared=True,
+    )
+    # User B (manager) la marca como SU predeterminada.
+    response = client.post(
+        f"/api/contact-views/{shared['id']}/set-default",
+        headers=auth_headers(client, "manager"),
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["is_default_for_me"] is True
+    # El owner (admin) NO comparte el flag — su propia lista la sigue
+    # viendo sin la marca de default.
+    admin_list = client.get(
+        "/api/contact-views", headers=auth_headers(client, "admin")
+    ).json()
+    admin_view = next(v for v in admin_list if v["id"] == shared["id"])
+    assert admin_view["is_default_for_me"] is False
+
+
+def test_default_is_per_user_not_shared_between_users(
+    client: TestClient,
+):
+    """Dos managers ven la MISMA vista compartida. Cada uno puede
+    tener su propia (o ninguna) preferencia de default."""
+    shared = _create_view(
+        client, role="admin", name="Compartida", is_shared=True
+    )
+    # Manager (rol "manager" en el seed) la marca como predeterminada.
+    response = client.post(
+        f"/api/contact-views/{shared['id']}/set-default",
+        headers=auth_headers(client, "manager"),
+    )
+    assert response.status_code == 200
+    # Otro user (rol "user") la VE pero no la ha marcado — debe
+    # aparecer `is_default_for_me=False` para él.
+    user_list = client.get(
+        "/api/contact-views", headers=auth_headers(client, "user")
+    ).json()
+    if user_list:
+        shared_for_user = next(
+            (v for v in user_list if v["id"] == shared["id"]), None
+        )
+        if shared_for_user is not None:
+            assert shared_for_user["is_default_for_me"] is False
+
+
+def test_clear_default_endpoint_removes_the_per_user_pref(
+    client: TestClient,
+):
+    """`DELETE /api/contact-views/set-default/{entity_type}` borra
+    la preferencia del current_user. Idempotente — funciona aunque
+    no haya default previo."""
+    shared = _create_view(
+        client, role="admin", name="C", is_shared=True
+    )
+    # Set default.
+    client.post(
+        f"/api/contact-views/{shared['id']}/set-default",
+        headers=auth_headers(client, "manager"),
+    )
+    # Clear.
+    response = client.delete(
+        "/api/contact-views/set-default/contact",
+        headers=auth_headers(client, "manager"),
+    )
+    assert response.status_code == 200
+    listed = client.get(
+        "/api/contact-views", headers=auth_headers(client, "manager")
+    ).json()
+    by_id = {v["id"]: v for v in listed}
+    assert by_id[shared["id"]]["is_default_for_me"] is False
+    # Idempotente — segunda llamada también 200.
+    response2 = client.delete(
+        "/api/contact-views/set-default/contact",
+        headers=auth_headers(client, "manager"),
+    )
+    assert response2.status_code == 200
 
 
 def test_duplicate_creates_owned_copy(client: TestClient):

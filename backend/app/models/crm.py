@@ -583,6 +583,51 @@ class ContactView(TimestampMixin, Base):
     sort_json: Mapped[str | None] = mapped_column(Text)
 
 
+class UserDefaultViewPref(TimestampMixin, Base):
+    """PR-Backlog-3-5-7 (item 5). Vista predeterminada per-user por
+    entidad.
+
+    Antes, `contact_views.is_default` era global de la vista (cualquier
+    user que abriera la vista veía el mismo flag). Eso impedía a un
+    user B marcar como SU default una vista que A había creado y
+    compartido — solo el owner podía tocar `is_default`.
+
+    Esta tabla almacena la preferencia per-user: cada user puede tener
+    AT MOST UNA vista predeterminada por `entity_type`
+    (`contact`, `company`, `email_thread`, etc.), independientemente
+    del owner de la vista. Marcar como default es un UPSERT por
+    (user_id, entity_type); desmarcar es DELETE.
+
+    El flag legacy `contact_views.is_default` se mantiene para no
+    romper queries existentes, pero el frontend usa preferentemente
+    `is_default_for_me` (derivado de esta tabla).
+    """
+
+    __tablename__ = "user_default_view_prefs"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "entity_type",
+            name="uq_user_default_view_prefs_user_entity",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid4())
+    )
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    entity_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    view_id: Mapped[str] = mapped_column(
+        ForeignKey("contact_views.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+
 class Pipeline(TimestampMixin, Base):
     """A named sequence of stages a contact moves through. A tenant
     can run several pipelines side by side (Ventas, Reactivación,

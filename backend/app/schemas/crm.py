@@ -589,6 +589,11 @@ class ContactViewRead(BaseModel):
     is_owner: bool = False
     is_shared: bool
     is_default: bool
+    # PR-Backlog-3-5-7 item 5. Default per-user — True si la vista
+    # está marcada como predeterminada del `current_user` en la
+    # tabla `user_default_view_prefs`. El frontend usa este flag para
+    # mostrar el indicador, NO `is_default` (que es el del owner).
+    is_default_for_me: bool = False
     filters: ContactViewFilters
     columns: ContactViewColumns
     sort: ContactViewSort
@@ -596,6 +601,14 @@ class ContactViewRead(BaseModel):
     updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class SetDefaultViewRequest(BaseModel):
+    """Body de PUT /api/users/me/default-view."""
+
+    entity_type: str = Field(min_length=1, max_length=40)
+    # None = clear (no default para esa entity).
+    view_id: str | None = None
 
 
 class ContactViewDuplicateRequest(BaseModel):

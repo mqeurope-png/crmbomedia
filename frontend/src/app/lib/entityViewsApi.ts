@@ -26,6 +26,11 @@ export type EntityView = {
   is_owner: boolean;
   is_shared: boolean;
   is_default: boolean;
+  // PR-Backlog-3-5-7 item 5. Default per-user — backend lo computa
+  // join-eando con `user_default_view_prefs(current_user, entity)`.
+  // El UI usa este flag para el indicador ★, NO `is_default` (que
+  // es del owner). Opcional para tolerancia con APIs antiguas.
+  is_default_for_me?: boolean;
   filters: EntityViewFilters;
   columns: EntityViewColumns;
   sort: EntityViewSort;
@@ -97,3 +102,11 @@ export const setDefaultEntityView = (
   apiFetch<EntityView>(`${base(entity)}/${viewId}/set-default`, {
     method: "POST",
   });
+
+// PR-Backlog-3-5-7 item 5. Limpiar la preferencia de default per-user
+// para una entidad. Idempotente (200 también si no había default).
+export const clearDefaultEntityView = (entity: EntityKey | string) =>
+  apiFetch<{ message: string }>(
+    `${base(entity)}/set-default/${entity}`,
+    { method: "DELETE" },
+  );

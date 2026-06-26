@@ -9781,3 +9781,38 @@ tr.is-inactive {
   padding: 12px 8px 18px;
   list-style: none;
 }
+
+/* PR-Backlog-3-5-7 item 7. Handle de redimensionado entre paneles.
+ * 4 px de ancho real, +2 px de hit-area via padding visual gracias
+ * a `cursor: col-resize`. Línea sutil para que se vea sin distraer. */
+.resizable-handle {
+  width: 4px;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  cursor: col-resize;
+  position: relative;
+  transition: background 0.15s ease;
+}
+.resizable-handle:hover,
+.resizable-handle:focus-visible,
+.resizable-handle.is-dragging {
+  background: var(--color-primary, #2563eb);
+  opacity: 0.4;
+}
+.resizable-handle:focus-visible {
+  outline: 2px solid var(--color-primary, #2563eb);
+  outline-offset: 0;
+}
+
+/* Mobile (<768px): la state-machine 1-col del email-mailbox oculta
+ * columnas — los handles también se ocultan. Recupera el grid
+ * estándar. */
+@media (max-width: 767px) {
+  .email-mailbox-resizable {
+    grid-template-columns: 1fr !important;
+  }
+  .email-mailbox-resizable .resizable-handle {
+    display: none;
+  }
+}

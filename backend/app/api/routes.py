@@ -3482,7 +3482,27 @@ def bulk_contact_tag(
 # ---------------------------------------------------------------------------
 
 
-def _view_to_read(view, *, current_user: User) -> ContactViewRead:
+def _user_default_view_id(
+    session: Session, user_id: str, entity_type: str
+) -> str | None:
+    """PR-Backlog-3-5-7 item 5. Devuelve el view_id que el user tiene
+    marcado como predeterminado para `entity_type`, o None."""
+    from app.models.crm import UserDefaultViewPref  # noqa: PLC0415
+
+    return session.scalar(
+        select(UserDefaultViewPref.view_id).where(
+            UserDefaultViewPref.user_id == user_id,
+            UserDefaultViewPref.entity_type == entity_type,
+        )
+    )
+
+
+def _view_to_read(
+    view,
+    *,
+    current_user: User,
+    default_view_id: str | None = None,
+) -> ContactViewRead:
     filters, columns, sort = contact_views_repository.view_to_dicts(view)
     return ContactViewRead(
         id=view.id,
@@ -3492,6 +3512,9 @@ def _view_to_read(view, *, current_user: User) -> ContactViewRead:
         is_owner=view.owner_user_id == current_user.id,
         is_shared=view.is_shared,
         is_default=view.is_default,
+        is_default_for_me=(
+            default_view_id is not None and default_view_id == view.id
+        ),
         filters=ContactViewFilters(**filters) if filters else ContactViewFilters(),
         columns=columns or {"visible": [], "order": [], "widths": {}},  # type: ignore[arg-type]
         sort=sort or {"sort_by": "created_at", "sort_dir": "desc"},  # type: ignore[arg-type]
@@ -3513,7 +3536,15 @@ def list_contact_views(
     rows = contact_views_repository.list_views_for_user(
         session, user_id=current_user.id
     )
-    return [_view_to_read(row, current_user=current_user) for row in rows]
+    default_view_id = _user_default_view_id(
+        session, current_user.id, "contact"
+    )
+    return [
+        _view_to_read(
+            row, current_user=current_user, default_view_id=default_view_id
+        )
+        for row in rows
+    ]
 
 
 @router.get(
@@ -3532,7 +3563,12 @@ def read_contact_view(
         raise not_found("Contact view")
     if view.owner_user_id != current_user.id and not view.is_shared:
         raise not_found("Contact view")
-    return _view_to_read(view, current_user=current_user)
+    default_view_id = _user_default_view_id(
+        session, current_user.id, "contact"
+    )
+    return _view_to_read(
+        view, current_user=current_user, default_view_id=default_view_id
+    )
 
 
 @router.post(
@@ -3618,7 +3654,12 @@ def update_contact_view(
     )
     session.commit()
     session.refresh(view)
-    return _view_to_read(view, current_user=current_user)
+    default_view_id = _user_default_view_id(
+        session, current_user.id, view.entity_type or "contact"
+    )
+    return _view_to_read(
+        view, current_user=current_user, default_view_id=default_view_id
+    )
 
 
 @router.delete(
@@ -3705,26 +3746,92 @@ def set_default_contact_view(
     session: Session = Depends(get_session),
     current_user: User = Depends(require_viewer),
 ) -> ContactViewRead:
+    """PR-Backlog-3-5-7 item 5. Marca la vista como predeterminada
+    del CURRENT_USER (no del owner). Cualquier user que pueda leer la
+    vista puede marcarla como su predeterminada — antes solo el owner
+    podía (limitación que impedía marcar vistas compartidas).
+
+    Persistencia: upsert en `user_default_view_prefs`. El flag legacy
+    `contact_views.is_default` queda intacto (lo mantiene la PATCH
+    del owner para retro-compat).
+    """
+    from app.models.crm import UserDefaultViewPref  # noqa: PLC0415
+
     view = contact_views_repository.get_view(session, view_id)
     if not view:
         raise not_found("Contact view")
-    if view.owner_user_id != current_user.id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not owner")
-    contact_views_repository.update_view(
-        session, view=view, is_default=True
+    if view.owner_user_id != current_user.id and not view.is_shared:
+        raise not_found("Contact view")
+
+    entity_type = view.entity_type or "contact"
+    existing = session.scalar(
+        select(UserDefaultViewPref).where(
+            UserDefaultViewPref.user_id == current_user.id,
+            UserDefaultViewPref.entity_type == entity_type,
+        )
     )
+    if existing is None:
+        session.add(
+            UserDefaultViewPref(
+                user_id=current_user.id,
+                entity_type=entity_type,
+                view_id=view.id,
+            )
+        )
+    else:
+        existing.view_id = view.id
     record_event(
         session,
         action=Action.CONTACT_VIEW_DEFAULT_SET,
         target_type="contact_view",
         target_id=view.id,
         actor=current_user,
-        metadata={"name": view.name},
+        metadata={"name": view.name, "entity_type": entity_type},
         request=request,
     )
     session.commit()
     session.refresh(view)
-    return _view_to_read(view, current_user=current_user)
+    return _view_to_read(
+        view, current_user=current_user, default_view_id=view.id
+    )
+
+
+@router.delete(
+    "/contact-views/set-default/{entity_type}",
+    response_model=MessageRead,
+    responses=ERROR_RESPONSES,
+    tags=["crm"],
+)
+def clear_default_contact_view(
+    entity_type: str,
+    request: Request,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_viewer),
+) -> MessageRead:
+    """PR-Backlog-3-5-7 item 5. Quita la marca de predeterminada del
+    `current_user` para esa entidad. Idempotente — si no había
+    default, devuelve 200 igual."""
+    from app.models.crm import UserDefaultViewPref  # noqa: PLC0415
+
+    existing = session.scalar(
+        select(UserDefaultViewPref).where(
+            UserDefaultViewPref.user_id == current_user.id,
+            UserDefaultViewPref.entity_type == entity_type,
+        )
+    )
+    if existing is not None:
+        session.delete(existing)
+        record_event(
+            session,
+            action=Action.CONTACT_VIEW_DEFAULT_SET,
+            target_type="contact_view",
+            target_id=existing.view_id,
+            actor=current_user,
+            metadata={"cleared": True, "entity_type": entity_type},
+            request=request,
+        )
+        session.commit()
+    return MessageRead(message="Default view cleared")
 
 
 # ---------------------------------------------------------------------------
