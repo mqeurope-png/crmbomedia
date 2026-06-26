@@ -526,13 +526,31 @@ export async function backfillBrevoCampaignRecipients(
   );
 }
 
+// PR-Fix-Sincronizar-Stats-Brevo. La respuesta ahora envuelve el
+// campaign + sync_status estructurado: `kind` distingue "ok" /
+// "recent" (sent_at <2h) / "empty" (>=2h con todo en 0) / "error"
+// (reservado — los errores reales viajan como HTTP 502). El
+// frontend renderiza el toast a partir de `sync_status.message`
+// sin volver a inferir nada de `stats`.
+export type BrevoStatsRefreshStatus = {
+  kind: "ok" | "recent" | "empty" | "error";
+  message: string;
+  brevo_returned_zero: boolean;
+  seconds_since_sent: number | null;
+};
+
+export type BrevoStatsRefreshResponse = {
+  campaign: BrevoCampaign;
+  sync_status: BrevoStatsRefreshStatus;
+};
+
 // Bug 6: force-refresh de las stats de UNA campaña (cabecera de
 // /marketing/campañas/{id}). `campaignId` aquí es el CRM cache id
 // (UUID), NO el brevo_campaign_id numérico.
 export async function refreshBrevoCampaignStats(
   campaignId: string,
-): Promise<BrevoCampaign> {
-  return apiFetch<BrevoCampaign>(
+): Promise<BrevoStatsRefreshResponse> {
+  return apiFetch<BrevoStatsRefreshResponse>(
     `/api/brevo/campaigns/${campaignId}/refresh-stats`,
     { method: "POST" },
   );

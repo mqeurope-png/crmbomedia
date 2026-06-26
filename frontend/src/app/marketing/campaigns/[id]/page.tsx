@@ -245,33 +245,21 @@ export default function CampaignDetailPage() {
                 onClick={async () => {
                   setRefreshStatsBusy(true);
                   setMessage(null);
+                  setError(null);
                   try {
-                    const fresh = await refreshBrevoCampaignStats(campaign.id);
+                    // PR-Fix-Sincronizar-Stats-Brevo. El backend ya
+                    // clasifica el resultado (ok/recent/empty) leyendo
+                    // sent_at + stats reales. El frontend solo pinta
+                    // el message — sin volver a heurizar nada del
+                    // stats body (era el PR #238 origen del bug:
+                    // mentía cuando Brevo SÍ tenía datos pero el
+                    // parser nuestro los servía a 0).
+                    const { campaign: fresh, sync_status } =
+                      await refreshBrevoCampaignStats(campaign.id);
                     setCampaign(fresh);
-                    // PR-Fix-Regresiones-PR237 Bug 6. El endpoint OK
-                    // no garantiza que Brevo tenga stats todavía —
-                    // típicamente devuelve todo 0 durante 1-2h tras
-                    // envío. Detectamos el caso "todo cero" y damos
-                    // feedback honesto al admin en lugar de fingir
-                    // éxito (que era lo que Bart veía: click sin
-                    // cambios).
-                    const freshStats =
-                      (fresh.stats as Record<string, number> | null) ?? {};
-                    const total = Object.values(freshStats).reduce(
-                      (acc, v) => acc + (Number(v) || 0),
-                      0,
-                    );
-                    if (total === 0) {
-                      setMessage(
-                        "Brevo aún no tiene stats disponibles para esta " +
-                          "campaña — son normales en envíos recientes " +
-                          "(<2 h). Vuelve a intentar más tarde.",
-                      );
-                    } else {
-                      setMessage("Stats actualizadas desde Brevo.");
-                    }
+                    setMessage(sync_status.message);
                   } catch (err) {
-                    setMessage(
+                    setError(
                       `No se pudieron refrescar las stats: ${
                         err instanceof Error ? err.message : String(err)
                       }`,

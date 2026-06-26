@@ -51,6 +51,8 @@ from app.schemas.brevo import (
     BrevoListUpdate,
     BrevoSenderRead,
     BrevoSendTestRequest,
+    BrevoStatsRefreshResponse,
+    BrevoStatsRefreshStatus,
     BrevoSyncTargetCreate,
     BrevoSyncTargetRead,
     BrevoSyncTargetUpdate,
@@ -1348,21 +1350,95 @@ def get_campaign(
     return read
 
 
+RECENT_CAMPAIGN_SECONDS = 7200  # 2 h — Brevo's stats pipeline catch-up window.
+
+
+def _classify_stats_outcome(
+    row: BrevoCampaignCache,
+) -> BrevoStatsRefreshStatus:
+    """PR-Fix-Sincronizar-Stats-Brevo. Honest classification of the
+    sync outcome, replacing the PR #238 heuristic that conflated
+    "stats are zero" with "campaign is recent" (and lied to the user
+    even when the campaign was 24 h old).
+
+    The branching is intentionally explicit so the test matrix can
+    pin each path."""
+    try:
+        stats = json.loads(row.stats_json) if row.stats_json else {}
+    except (ValueError, TypeError):
+        stats = {}
+    total = 0
+    for value in stats.values() if isinstance(stats, dict) else ():
+        if isinstance(value, (int, float)):
+            total += int(value)
+    brevo_returned_zero = total == 0
+
+    seconds_since_sent: int | None = None
+    if row.sent_at is not None:
+        sent_at = row.sent_at
+        if sent_at.tzinfo is None:
+            sent_at = sent_at.replace(tzinfo=UTC)
+        seconds_since_sent = int(
+            (datetime.now(UTC) - sent_at).total_seconds()
+        )
+
+    if not brevo_returned_zero:
+        return BrevoStatsRefreshStatus(
+            kind="ok",
+            message="Stats actualizadas desde Brevo.",
+            brevo_returned_zero=False,
+            seconds_since_sent=seconds_since_sent,
+        )
+    if (
+        seconds_since_sent is not None
+        and seconds_since_sent < RECENT_CAMPAIGN_SECONDS
+    ):
+        return BrevoStatsRefreshStatus(
+            kind="recent",
+            message=(
+                "Brevo aún no tiene stats disponibles para esta campaña — "
+                "son normales en envíos recientes (<2 h). Vuelve a intentar "
+                "más tarde."
+            ),
+            brevo_returned_zero=True,
+            seconds_since_sent=seconds_since_sent,
+        )
+    return BrevoStatsRefreshStatus(
+        kind="empty",
+        message=(
+            "Brevo devolvió cero envíos/aperturas/clics. Si esperabas "
+            "valores distintos, revisa la campaña en Brevo directamente."
+        ),
+        brevo_returned_zero=True,
+        seconds_since_sent=seconds_since_sent,
+    )
+
+
 @router.post(
     "/campaigns/{campaign_id}/refresh-stats",
-    response_model=BrevoCampaignRead,
+    response_model=BrevoStatsRefreshResponse,
 )
 def refresh_campaign_stats(
     campaign_id: str,
     session: Session = Depends(get_session),
     current_user: User = Depends(require_manager),
-) -> BrevoCampaignRead:
-    """Bug 6 fix (Bart 2026-06-25). Hace un refresh inmediato de las
-    stats de UNA campaña — Brevo a veces tarda en poblar los counters
-    tras un envío reciente y el TTL de 5min hacía que la cabecera
-    quedara en 0 hasta el siguiente fetch. Este endpoint fuerza el
-    pull sin importar la edad del cache. Sin filtro por `sent_at`
-    para evitar tener que matar el ciclo manualmente."""
+) -> BrevoStatsRefreshResponse:
+    """Force-refresh the stats of a single campaign and report the
+    outcome honestly to the UI.
+
+    History: PR #238 added a polite "Brevo no tiene stats todavía"
+    toast that fired on `delivered=0`, even for campaigns sent 24 h
+    earlier where Brevo's dashboard clearly showed real numbers. The
+    heuristic conflated parse-failure with "too recent" and hid the
+    real bug. This endpoint now:
+
+    1. Logs the raw Brevo response (in `refresh_campaign_row`) so the
+       gap between Brevo's dashboard and the CRM can be diagnosed
+       offline.
+    2. Returns a structured `sync_status` so the frontend can render
+       an honest toast based on `sent_at` rather than guessing from
+       a zero stat.
+    """
     _ = current_user
     row = session.get(BrevoCampaignCache, campaign_id)
     if row is None:
@@ -1370,14 +1446,24 @@ def refresh_campaign_stats(
     try:
         asyncio.run(campaigns_service.refresh_campaign_row(session, row))
     except IntegrationError as exc:
+        # Surface the real Brevo status + message instead of a
+        # generic "no disponibles" toast. The operator can correlate
+        # the status code with Brevo's docs.
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Fallo refrescando stats de Brevo: {exc.message}",
+            detail=(
+                f"Brevo {exc.status_code or '?'} al refrescar stats: "
+                f"{exc.message}"
+            ),
         ) from exc
     session.commit()
+    session.refresh(row)
     read = BrevoCampaignRead.model_validate(row)
     read.html_content = row.html_content_cached
-    return read
+    return BrevoStatsRefreshResponse(
+        campaign=read,
+        sync_status=_classify_stats_outcome(row),
+    )
 
 
 @router.post(

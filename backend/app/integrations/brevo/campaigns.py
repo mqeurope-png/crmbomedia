@@ -190,11 +190,43 @@ async def refresh_campaigns_cache(session: Session, account_id: str) -> int:
     return touched
 
 
+def _log_brevo_campaign_payload(
+    brevo_campaign_id: int, payload: dict[str, Any]
+) -> None:
+    """PR-Fix-Sincronizar-Stats-Brevo. INFO-level dump of the raw Brevo
+    response so future "stats=0 but Brevo dashboard shows real numbers"
+    cases can be diagnosed without reproducing.
+
+    `htmlContent` is stripped (often many KB and not relevant for
+    stats); everything else fits in the log line and reveals which
+    `statistics.*` path Brevo actually populated for this campaign.
+    """
+    safe = {k: v for k, v in payload.items() if k != "htmlContent"}
+    if payload.get("htmlContent"):
+        safe["_htmlContent_chars"] = len(payload["htmlContent"])
+    try:
+        body = json.dumps(safe, default=str)
+    except (TypeError, ValueError):
+        logger.info(
+            "brevo.refresh_stats campaign_id=%s payload_keys=%s "
+            "(unserialisable)",
+            brevo_campaign_id,
+            list(safe.keys()),
+        )
+        return
+    logger.info(
+        "brevo.refresh_stats campaign_id=%s payload=%s",
+        brevo_campaign_id,
+        body[:4096],
+    )
+
+
 async def refresh_campaign_row(
     session: Session, row: BrevoCampaignCache
 ) -> BrevoCampaignCache:
     async with BrevoClient(session, row.brevo_account_id) as client:
         payload = await client.get_email_campaign(row.brevo_campaign_id)
+    _log_brevo_campaign_payload(row.brevo_campaign_id, payload)
     upsert_campaign_row(
         session, account_id=row.brevo_account_id, payload=payload
     )

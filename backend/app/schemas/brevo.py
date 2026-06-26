@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -303,6 +303,31 @@ class BrevoCampaignRead(BaseModel):
 
 class BrevoCampaignScheduleRequest(BaseModel):
     scheduled_at: datetime
+
+
+class BrevoStatsRefreshStatus(BaseModel):
+    """Outcome of the "Sincronizar stats" button surfaced to the UI.
+
+    `kind`:
+      - "ok"     → Brevo returned non-zero stats; cache updated.
+      - "recent" → Brevo returned all-zero stats AND the campaign was
+                   sent <2 h ago — Brevo's pipeline often hasn't
+                   aggregated yet.
+      - "empty"  → Brevo returned all-zero stats AND ≥2 h since send
+                   (or send-time unknown). Honest warning, no excuse.
+      - "error"  → Reserved; the endpoint actually surfaces network /
+                   HTTP failures as HTTP 502 today, not in the body.
+    """
+
+    kind: Literal["ok", "recent", "empty", "error"]
+    message: str
+    brevo_returned_zero: bool
+    seconds_since_sent: int | None = None
+
+
+class BrevoStatsRefreshResponse(BaseModel):
+    campaign: BrevoCampaignRead
+    sync_status: BrevoStatsRefreshStatus
 
 
 class BrevoWebhookStatsRead(BaseModel):
