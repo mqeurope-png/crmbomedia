@@ -38,7 +38,7 @@ from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
 from app.core.audit import record_event
-from app.core.auth import require_admin, require_manager, require_user
+from app.core.auth import require_user
 from app.core.errors import not_found
 from app.db.session import get_session
 from app.models.crm import Contact, User, UserRole
