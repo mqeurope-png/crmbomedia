@@ -403,106 +403,207 @@ export default function CampaignDetailPage() {
         </Link>
       </section>
 
-      <section className="panel">
-        <h3>Contenido</h3>
-        {campaign.html_content ? (
-          <HtmlPreview html={campaign.html_content} />
-        ) : (
-          <p className="muted">
-            Brevo no ha devuelto el HTML para esta campaña aún. Vuelve a
-            cargar en unos segundos o abre la campaña en Brevo para
-            editar el contenido.
-          </p>
-        )}
-      </section>
+      {/* PR-Bugs-4-5amp-7-9 PR-B (bug 7). Layout dashboard-style:
+          2 filas de 2 cajas (Detalles + Audiencia, Cronología + Vista
+          previa) con tamaños no-uniformes + secciones condicionales
+          full-width abajo. Cada caja con scroll interno cuando el
+          contenido excede la altura. Mobile: todo apila vertical. */}
+      <section
+        className="campaign-detail-grid"
+        aria-label="Detalle de la campaña"
+      >
+        <article className="card campaign-detail-card">
+          <header className="section-title">
+            <h2>Detalles del envío</h2>
+          </header>
+          <dl className="campaign-detail-list">
+            <div>
+              <dt>Asunto</dt>
+              <dd>{campaign.subject ?? "—"}</dd>
+            </div>
+            <div>
+              <dt>Remitente</dt>
+              <dd>
+                {campaign.sender_name ?? "—"}
+                {campaign.sender_email ? (
+                  <span className="muted small"> · {campaign.sender_email}</span>
+                ) : null}
+              </dd>
+            </div>
+            <div>
+              <dt>Responder a</dt>
+              <dd>{campaign.reply_to ?? "—"}</dd>
+            </div>
+            <div>
+              <dt>Tipo</dt>
+              <dd className="muted small">{campaign.type ?? "—"}</dd>
+            </div>
+            <div>
+              <dt>Fecha de envío</dt>
+              <dd>
+                {campaign.sent_at
+                  ? new Date(campaign.sent_at).toLocaleString("es-ES")
+                  : campaign.scheduled_at
+                    ? `Programada — ${new Date(campaign.scheduled_at).toLocaleString("es-ES")}`
+                    : "—"}
+              </dd>
+            </div>
+            <div>
+              <dt>Última sincronización</dt>
+              <dd className="muted small">
+                {new Date(campaign.cached_at).toLocaleString("es-ES")}
+              </dd>
+            </div>
+          </dl>
+        </article>
 
-      {isSent || timeline?.timeline.length ? (
-        <section className="panel">
-          <h3>Aperturas y clicks por día</h3>
-          {timeline && timeline.timeline.length > 0 ? (
-            <CampaignTimelineChart points={timeline.timeline} />
-          ) : (
-            <p className="muted">
-              Aún no hay eventos de webhook para esta campaña. Configura el
-              webhook de Brevo en /admin/integrations para alimentar este
-              gráfico.
-            </p>
-          )}
-        </section>
-      ) : null}
+        <article className="card campaign-detail-card">
+          <header className="section-title">
+            <h2>Audiencia</h2>
+          </header>
+          <dl className="campaign-detail-list">
+            <div>
+              <dt>Listas Brevo</dt>
+              <dd>
+                {campaign.recipient_list_ids?.length
+                  ? campaign.recipient_list_ids.join(", ")
+                  : "—"}
+              </dd>
+            </div>
+            <div>
+              <dt>Total destinatarios estimado</dt>
+              <dd>
+                {stats.sent ??
+                  stats.delivered ??
+                  (campaign.recipient_list_ids?.length ? "—" : 0)}
+              </dd>
+            </div>
+            <div>
+              <dt>Plantilla origen</dt>
+              <dd>
+                {campaign.template_id_used != null
+                  ? `#${campaign.template_id_used}`
+                  : "—"}
+              </dd>
+            </div>
+            <div>
+              <dt>Cuenta Brevo</dt>
+              <dd className="muted small">{campaign.brevo_account_id}</dd>
+            </div>
+          </dl>
+        </article>
 
-      {timeline && timeline.top_clicks.length > 0 ? (
-        <section className="panel">
-          <h3>URLs más clickeadas</h3>
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>URL</th>
-                <th>Clicks</th>
-              </tr>
-            </thead>
-            <tbody>
-              {timeline.top_clicks.map((row) => (
-                <tr key={row.url}>
-                  <td className="muted small">{row.url}</td>
-                  <td>{row.count}</td>
-                </tr>
+        <article className="card campaign-detail-card campaign-detail-card-scroll">
+          <header className="section-title">
+            <h2>Aperturas y clicks por día</h2>
+          </header>
+          <div className="card-scroll-body">
+            {timeline && timeline.timeline.length > 0 ? (
+              <CampaignTimelineChart points={timeline.timeline} />
+            ) : (
+              <p className="muted small">
+                Aún no hay eventos de webhook para esta campaña.{" "}
+                {!isSent
+                  ? "Solo se rellena tras el envío."
+                  : "Configura el webhook de Brevo en /admin/integrations."}
+              </p>
+            )}
+            {timeline && timeline.top_clicks.length > 0 ? (
+              <>
+                <h3 className="card-subhead">URLs más clickeadas</h3>
+                <table className="data-table data-table-compact">
+                  <thead>
+                    <tr>
+                      <th>URL</th>
+                      <th>Clicks</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {timeline.top_clicks.map((row) => (
+                      <tr key={row.url}>
+                        <td className="muted small">{row.url}</td>
+                        <td>{row.count}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </>
+            ) : null}
+          </div>
+        </article>
+
+        <article className="card campaign-detail-card campaign-detail-card-scroll campaign-detail-card-wide">
+          <header className="section-title">
+            <h2>Vista previa del contenido</h2>
+          </header>
+          <div className="card-scroll-body card-scroll-body-preview">
+            {campaign.html_content ? (
+              <HtmlPreview html={campaign.html_content} />
+            ) : (
+              <p className="muted small">
+                Brevo no ha devuelto el HTML para esta campaña aún. Vuelve a
+                cargar en unos segundos o abre la campaña en Brevo para
+                editar el contenido.
+              </p>
+            )}
+          </div>
+        </article>
+
+        <article className="card campaign-detail-card campaign-detail-card-scroll campaign-detail-card-full">
+          <header className="section-title">
+            <h2>Destinatarios por evento</h2>
+            <div className="tab-bar tab-bar-compact">
+              {RECIPIENT_TABS.map((tab) => (
+                <button
+                  key={tab.key}
+                  type="button"
+                  className={`tab${recipientTab === tab.key ? " is-active" : ""}`}
+                  onClick={() => setRecipientTab(tab.key)}
+                >
+                  {tab.label}
+                </button>
               ))}
-            </tbody>
-          </table>
-        </section>
-      ) : null}
-
-      <section className="panel">
-        <h3>Destinatarios por evento</h3>
-        <div className="tab-bar">
-          {RECIPIENT_TABS.map((tab) => (
-            <button
-              key={tab.key}
-              type="button"
-              className={`tab${recipientTab === tab.key ? " is-active" : ""}`}
-              onClick={() => setRecipientTab(tab.key)}
-            >
-              {tab.label}
-            </button>
-          ))}
-        </div>
-        {recipients === null ? (
-          <p className="muted">Cargando…</p>
-        ) : recipients.items.length === 0 ? (
-          <p className="muted">
-            Sin eventos de este tipo todavía (se alimentan por webhook).
-          </p>
-        ) : (
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>Contacto</th>
-                <th>Email</th>
-                <th>Cuándo</th>
-                <th>Detalle</th>
-              </tr>
-            </thead>
-            <tbody>
-              {recipients.items.map((item, index) => (
-                <tr key={`${item.contact_id}-${index}`}>
-                  <td>
-                    <Link href={`/contacts/${item.contact_id}`}>
-                      {[item.first_name, item.last_name]
-                        .filter(Boolean)
-                        .join(" ") || "(Sin nombre)"}
-                    </Link>
-                  </td>
-                  <td className="muted small">{item.email ?? "—"}</td>
-                  <td className="muted small">
-                    {new Date(item.occurred_at).toLocaleString("es-ES")}
-                  </td>
-                  <td className="muted small">{item.detail ?? ""}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
+            </div>
+          </header>
+          <div className="card-scroll-body">
+            {recipients === null ? (
+              <p className="muted">Cargando…</p>
+            ) : recipients.items.length === 0 ? (
+              <p className="muted small">
+                Sin eventos de este tipo todavía (se alimentan por webhook).
+              </p>
+            ) : (
+              <table className="data-table data-table-compact">
+                <thead>
+                  <tr>
+                    <th>Contacto</th>
+                    <th>Email</th>
+                    <th>Cuándo</th>
+                    <th>Detalle</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {recipients.items.map((item, index) => (
+                    <tr key={`${item.contact_id}-${index}`}>
+                      <td>
+                        <Link href={`/contacts/${item.contact_id}`}>
+                          {[item.first_name, item.last_name]
+                            .filter(Boolean)
+                            .join(" ") || "(Sin nombre)"}
+                        </Link>
+                      </td>
+                      <td className="muted small">{item.email ?? "—"}</td>
+                      <td className="muted small">
+                        {new Date(item.occurred_at).toLocaleString("es-ES")}
+                      </td>
+                      <td className="muted small">{item.detail ?? ""}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </article>
       </section>
 
       <ConfirmDialog
