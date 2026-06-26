@@ -329,3 +329,50 @@ def test_assignment_rule_matches_origin_with_account_id(factory):
             ],
         }
         assert evaluate_contact_against_rules(contact, tree_negative) is False
+
+
+# ---------------------------------------------------------------------
+# PR-Auto-Backfill-Gmail-Por-Contacto — auto-trigger en sync
+# ---------------------------------------------------------------------
+
+
+def test_sync_agilecrm_periodic_triggers_per_contact_backfill(factory):
+    """Sync periódico (≤ threshold) encola un mini-backfill Gmail por
+    cada contacto nuevo."""
+    fake = _FakeClient(
+        [
+            [
+                _make_payload(contact_id=1, email="ana@example.com"),
+                _make_payload(contact_id=2, email="bob@example.com"),
+            ]
+        ]
+    )
+    with factory() as session, _patch_client(fake), patch(
+        "app.workflows.dispatcher.dispatch_event"
+    ), patch(
+        "app.integrations.gmail.backfill.enqueue_backfill_per_contact"
+    ) as mock_backfill:
+        sync_log = _new_sync_log(session)
+        sync_agilecrm_contacts(session, sync_log)
+
+    assert mock_backfill.call_count == 2
+
+
+def test_sync_agilecrm_bulk_does_not_trigger_per_contact_auto(factory):
+    """Sync bulk (> threshold) NO dispara mini-backfill automático — eso
+    lo gestiona el banner admin para no saturar la cola."""
+    count = BULK_DISPATCH_THRESHOLD + 5
+    page = [
+        _make_payload(contact_id=i, email=f"user{i}@example.com")
+        for i in range(1, count + 1)
+    ]
+    fake = _FakeClient([page])
+    with factory() as session, _patch_client(fake), patch(
+        "app.workflows.dispatcher.dispatch_event"
+    ), patch(
+        "app.integrations.gmail.backfill.enqueue_backfill_per_contact"
+    ) as mock_backfill:
+        sync_log = _new_sync_log(session)
+        sync_agilecrm_contacts(session, sync_log)
+
+    assert mock_backfill.call_count == 0

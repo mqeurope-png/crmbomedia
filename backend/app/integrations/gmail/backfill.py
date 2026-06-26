@@ -817,7 +817,7 @@ def _import_one(
     session: Session,
     *,
     client: GmailClient,
-    job: GmailBackfillJob,
+    job: Any,
     owner_user_id: str,
     alias_lower: str,
     gmail_message_id: str | None,
@@ -825,6 +825,7 @@ def _import_one(
     contact_index: dict[str, Contact],
     include_attachments: bool,
     max_attachment_bytes: int,
+    imported_via: str = "historic_backfill",
 ) -> None:
     if not gmail_message_id:
         return
@@ -932,7 +933,7 @@ def _import_one(
             snippet=raw.get("snippet"),
             sent_at=sent_at,
             contact_id=contact.id,
-            imported_via="historic_backfill",
+            imported_via=imported_via,
             imported_at=datetime.now(UTC),
             attachments_json=(
                 json.dumps(attachments_meta) if attachments_meta else None
@@ -1135,3 +1136,223 @@ def enqueue_backfill(job_id: str) -> None:
         default_timeout=14_400,
     )
     queue.enqueue(run_backfill, job_id, job_timeout=14_400)
+
+
+# ---------------------------------------------------------------------------
+# PR-Auto-Backfill-Gmail-Por-Contacto — mini-backfill por contacto
+# ---------------------------------------------------------------------------
+
+#: Etiqueta `imported_via` para los rows traídos por el backfill
+#: per-contact. Distinta de 'historic_backfill' (admin masivo) para que
+#: las queries operativas distingan el origen.
+IMPORTED_VIA_PER_CONTACT = "per_contact_backfill"
+
+#: Ventana por defecto (meses) para el mini-backfill per-contact. La
+#: spec lo fija en 12 — un año de histórico cubre el caso "lead que ya
+#: hablé con él hace meses" sin disparar volúmenes de años.
+DEFAULT_PER_CONTACT_MONTHS = 12
+
+#: Tope blando de mensajes por contacto. Un solo contacto no debería
+#: traer miles de mensajes; si los trae cortamos para respetar el
+#: presupuesto de ~30s/contacto de la spec y no acaparar cuota Gmail.
+PER_CONTACT_MAX_MESSAGES = 500
+
+
+class _PerContactCounter:
+    """Contador en memoria con la misma interfaz que `GmailBackfillJob`
+    consume `_import_one` (total_processed / imported / skipped /
+    errors). Evitamos crear una fila `gmail_backfill_jobs` por contacto
+    — el mini-backfill es fire-and-forget, su resultado vive en logs."""
+
+    def __init__(self) -> None:
+        self.total_processed = 0
+        self.total_imported = 0
+        self.total_skipped = 0
+        self.total_errors = 0
+
+
+def _build_per_contact_query(
+    contact_email: str, alias_email: str, months_back: int
+) -> str:
+    """`(from:contact to:alias) OR (from:alias to:contact) newer_than:Nm`.
+
+    Más estrecha que la query del backfill masivo (que trae TODO el
+    alias): aquí solo queremos la conversación entre ESTE contacto y el
+    alias del user, en ambas direcciones."""
+    c = contact_email.replace('"', "")
+    a = alias_email.replace('"', "")
+    return (
+        f'(from:"{c}" to:"{a}") OR (from:"{a}" to:"{c}") '
+        f"newer_than:{months_back}m"
+    )
+
+
+def run_backfill_per_contact(
+    contact_id: str,
+    months_back: int = DEFAULT_PER_CONTACT_MONTHS,
+    triggered_by_user_id: str | None = None,
+) -> None:
+    """Mini-backfill del histórico Gmail de UN contacto.
+
+    Reusa la infraestructura del backfill masivo (`_iter_aliases`,
+    `_client_for`, `_import_one`) pero acota la búsqueda a la
+    conversación contacto↔alias. Fire-and-forget: sin fila de job, el
+    resumen vive en logs (`gmail.per_contact_backfill.*`).
+
+    Edge cases (spec):
+    - Contacto borrado mientras el job estaba en cola → log + return.
+    - Contacto sin email → warning + return.
+    - OAuth expirado de un user → skip ese user, sigue con los demás.
+    - gmail_message_id duplicado → skip (dedup en `_import_one`).
+    """
+    from app.db.session import get_engine  # noqa: PLC0415
+
+    start = time.monotonic()
+    with Session(get_engine()) as session:
+        contact = session.get(Contact, contact_id)
+        if contact is None:
+            logger.info(
+                "gmail.per_contact_backfill skip contact_id=%s — borrado "
+                "antes de ejecutar el job",
+                contact_id,
+            )
+            return
+        contact_email = (contact.email or "").strip()
+        if not contact_email:
+            logger.warning(
+                "gmail.per_contact_backfill skip contact_id=%s — sin email",
+                contact_id,
+            )
+            return
+        contact_email_lower = contact_email.lower()
+
+        logger.info(
+            "gmail.per_contact_backfill.start contact_id=%s email=%s "
+            "months_back=%d triggered_by=%s",
+            contact_id, contact_email_lower, months_back, triggered_by_user_id,
+        )
+
+        # Índice de un solo contacto — `_import_one` solo matcheará este
+        # contacto, nunca otro que aparezca en CC de un thread.
+        single_index: dict[str, Contact] = {contact_email_lower: contact}
+        counter = _PerContactCounter()
+        integrations = _iter_connected_users(session)
+
+        for integ in integrations:
+            try:
+                client = _client_for(session, integ.user_id)
+            except (GmailNotConnectedError, GmailScopeMissingError) as exc:
+                logger.info(
+                    "gmail.per_contact_backfill skip_user contact_id=%s "
+                    "user=%s reason=%s",
+                    contact_id, integ.user_id, type(exc).__name__,
+                )
+                continue
+            aliases = _iter_aliases(session, integ.user_id)
+            for alias in aliases:
+                alias_lower = alias.alias_email.strip().lower()
+                if alias_lower == contact_email_lower:
+                    continue
+                query = _build_per_contact_query(
+                    contact_email, alias.alias_email, months_back
+                )
+                try:
+                    page = _with_backoff(
+                        lambda q=query, c=client: c.list_messages(
+                            query=q, page_size=LIST_PAGE_SIZE
+                        ),
+                        label=f"per_contact_list[{integ.user_id}]",
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "gmail.per_contact_backfill list failed contact_id=%s "
+                        "user=%s: %s",
+                        contact_id, integ.user_id, exc,
+                    )
+                    continue
+                msgs = list(page.get("messages") or [])
+                page_token = page.get("nextPageToken")
+                # Paginar el resto de páginas hasta el tope blando.
+                while page_token and len(msgs) < PER_CONTACT_MAX_MESSAGES:
+                    try:
+                        page = _with_backoff(
+                            lambda t=page_token, q=query, c=client: c.list_messages(
+                                query=q, page_size=LIST_PAGE_SIZE, page_token=t
+                            ),
+                            label=f"per_contact_list[{integ.user_id}]",
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "gmail.per_contact_backfill page failed "
+                            "contact_id=%s user=%s: %s",
+                            contact_id, integ.user_id, exc,
+                        )
+                        break
+                    msgs.extend(page.get("messages") or [])
+                    page_token = page.get("nextPageToken")
+
+                matched_before = counter.total_imported
+                for m in msgs[:PER_CONTACT_MAX_MESSAGES]:
+                    _import_one(
+                        session,
+                        client=client,
+                        job=counter,
+                        owner_user_id=integ.user_id,
+                        alias_lower=alias_lower,
+                        gmail_message_id=m.get("id"),
+                        gmail_thread_id=m.get("threadId") or m.get("id"),
+                        contact_index=single_index,
+                        include_attachments=False,
+                        max_attachment_bytes=0,
+                        imported_via=IMPORTED_VIA_PER_CONTACT,
+                    )
+                session.commit()
+                logger.info(
+                    "gmail.per_contact_backfill.alias_processed "
+                    "contact_id=%s user=%s alias=%s seen=%d matched=%d",
+                    contact_id, integ.user_id, alias.alias_email,
+                    len(msgs), counter.total_imported - matched_before,
+                )
+
+        duration = time.monotonic() - start
+        logger.info(
+            "gmail.per_contact_backfill.completed contact_id=%s "
+            "total_imported=%d skipped=%d errors=%d duration=%.1fs",
+            contact_id, counter.total_imported, counter.total_skipped,
+            counter.total_errors, duration,
+        )
+
+
+def enqueue_backfill_per_contact(
+    contact_id: str,
+    months_back: int = DEFAULT_PER_CONTACT_MONTHS,
+    triggered_by_user_id: str | None = None,
+) -> None:
+    """Encola el mini-backfill en la cola `gmail:backfill_per_contact`.
+
+    Best-effort: si Redis no está disponible (tests / dev sin worker),
+    NO ejecutamos inline — el per-contact no es crítico para la
+    creación del contacto y un fallo de Redis no debe tirar el POST
+    /contacts. Loggea y devuelve."""
+    from rq import Queue  # noqa: PLC0415
+
+    from app.workers.queues import queue_name, redis_connection  # noqa: PLC0415
+
+    try:
+        queue = Queue(
+            queue_name("gmail", "backfill_per_contact"),
+            connection=redis_connection(),
+            default_timeout=300,
+        )
+        queue.enqueue(
+            run_backfill_per_contact,
+            contact_id,
+            months_back,
+            triggered_by_user_id,
+            job_timeout=300,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "gmail.per_contact_backfill enqueue failed contact_id=%s: %s",
+            contact_id, exc,
+        )

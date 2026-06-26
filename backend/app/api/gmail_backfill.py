@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import FileResponse
@@ -47,6 +47,10 @@ from app.schemas.gmail_backfill import (
     BackfillEstimateRequest,
     BackfillExecuteRequest,
     BackfillJobRead,
+    PerContactBatchRequest,
+    PerContactBatchResponse,
+    PerContactCandidatesResponse,
+    PerContactRequest,
 )
 
 logger = logging.getLogger(__name__)
@@ -320,6 +324,141 @@ def gmail_backfill_force_fail(
     )
     session.commit()
     return _job_to_read(job)
+
+
+# ---------------------------------------------------------------------------
+# PR-Auto-Backfill-Gmail-Por-Contacto — batch + individual + candidates
+# ---------------------------------------------------------------------------
+
+
+def _candidate_contact_ids(
+    session: Session, *, since: datetime
+) -> list[str]:
+    """Contactos con email, creados a partir de `since`, que NO tienen
+    ningún `email_messages` con `imported_via='per_contact_backfill'`.
+
+    Es la lista que el banner ofrece importar tras un sync masivo."""
+    from app.integrations.gmail.backfill import (  # noqa: PLC0415
+        IMPORTED_VIA_PER_CONTACT,
+    )
+
+    already = select(EmailMessage.contact_id).where(
+        EmailMessage.imported_via == IMPORTED_VIA_PER_CONTACT,
+        EmailMessage.contact_id.is_not(None),
+    )
+    rows = session.scalars(
+        select(Contact.id)
+        .where(
+            Contact.email.is_not(None),
+            Contact.is_active.is_(True),
+            Contact.created_at >= since,
+            Contact.id.not_in(already),
+        )
+        .order_by(Contact.created_at.desc())
+    )
+    return list(rows)
+
+
+@router.get(
+    "/admin/gmail/backfill-per-contact/candidates",
+    response_model=PerContactCandidatesResponse,
+)
+def gmail_per_contact_candidates(
+    hours: int = 24,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_admin),
+) -> PerContactCandidatesResponse:
+    """Banner admin: contactos recientes sin histórico Gmail importado.
+    `hours` controla la ventana (default 24h tras el último sync)."""
+    _ = current_user
+    hours = max(1, min(int(hours), 24 * 30))
+    since = datetime.now(UTC) - timedelta(hours=hours)
+    ids = _candidate_contact_ids(session, since=since)
+    return PerContactCandidatesResponse(count=len(ids), contact_ids=ids)
+
+
+@router.post(
+    "/admin/gmail/backfill-per-contact-batch",
+    response_model=PerContactBatchResponse,
+)
+def gmail_per_contact_batch(
+    payload: PerContactBatchRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_admin),
+) -> PerContactBatchResponse:
+    """Encola `gmail:backfill_per_contact` para cada contact_id. Body:
+    `contact_ids` explícito o `since_created_at` para coger todos los
+    candidatos desde esa fecha."""
+    from app.integrations.gmail.backfill import (  # noqa: PLC0415
+        enqueue_backfill_per_contact,
+    )
+
+    if payload.contact_ids:
+        # Filtramos a los que existen + tienen email, para no encolar
+        # jobs que harán return inmediato.
+        contact_ids = list(
+            session.scalars(
+                select(Contact.id).where(
+                    Contact.id.in_(payload.contact_ids),
+                    Contact.email.is_not(None),
+                )
+            )
+        )
+    elif payload.since_created_at is not None:
+        contact_ids = _candidate_contact_ids(
+            session, since=payload.since_created_at
+        )
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Indica contact_ids o since_created_at.",
+        )
+
+    for cid in contact_ids:
+        enqueue_backfill_per_contact(
+            cid,
+            months_back=payload.months_back,
+            triggered_by_user_id=current_user.id,
+        )
+    logger.info(
+        "gmail.per_contact_backfill batch queued=%d by=%s",
+        len(contact_ids), current_user.id,
+    )
+    return PerContactBatchResponse(queued=len(contact_ids))
+
+
+@router.post(
+    "/contacts/{contact_id}/gmail-backfill",
+    response_model=PerContactBatchResponse,
+)
+def gmail_per_contact_single(
+    contact_id: str,
+    payload: PerContactRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_user),
+) -> PerContactBatchResponse:
+    """Acción de la ficha de contacto: "Importar histórico de Gmail".
+    Visible para todos los users. Encola el mini-backfill de ESE
+    contacto."""
+    from app.integrations.gmail.backfill import (  # noqa: PLC0415
+        enqueue_backfill_per_contact,
+    )
+
+    contact = session.get(Contact, contact_id)
+    if contact is None:
+        raise not_found("Contact")
+    if not contact.email:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="El contacto no tiene email — no se puede buscar histórico.",
+        )
+    enqueue_backfill_per_contact(
+        contact_id,
+        months_back=payload.months_back,
+        triggered_by_user_id=current_user.id,
+    )
+    return PerContactBatchResponse(queued=1)
 
 
 # ---------------------------------------------------------------------------
