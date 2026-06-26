@@ -433,6 +433,7 @@ def test_app_package_configures_root_logger() -> None:
     de pytest los recoja en tests y que en prod la línea llegue a
     stdout."""
     import logging
+
     import app  # noqa: F401 — import triggers configuration.
 
     app_logger = logging.getLogger("app")
