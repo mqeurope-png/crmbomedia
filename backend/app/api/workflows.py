@@ -38,7 +38,7 @@ from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
 from app.core.audit import record_event
-from app.core.auth import require_admin, require_manager, require_user
+from app.core.auth import require_user
 from app.core.errors import not_found
 from app.db.session import get_session
 from app.models.crm import Contact, User, UserRole
@@ -560,9 +560,15 @@ def use_template_route(
     template_id: str,
     request: Request,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_manager),
+    current_user: User = Depends(require_user),
 ) -> WorkflowDetail:
-    """Clona la plantilla a una nueva fila draft."""
+    """Clona la plantilla a una nueva fila draft.
+
+    PR-Hotfix-Workflows-Pipelines-Permisos. Cualquier user puede crear
+    workflows desde plantilla. La copia se crea privada del creador
+    (owner_user_id=current_user) — antes quedaba con owner_user_id=NULL
+    (global) lo que era una regresión post-#250.
+    """
     from app.workflows.templates import get_template  # noqa: PLC0415
 
     template = get_template(template_id)
@@ -578,6 +584,7 @@ def use_template_route(
         cancellation_events_json='["contact.unsubscribed"]',
         status=WorkflowStatus.DRAFT,
         created_by_user_id=current_user.id,
+        owner_user_id=current_user.id,
     )
     session.add(new_workflow)
     session.flush()
@@ -624,7 +631,7 @@ def use_template_route(
     )
     session.commit()
     session.refresh(new_workflow)
-    return _workflow_to_detail(session, new_workflow)
+    return _workflow_to_detail(session, new_workflow, current_user=current_user)
 
 
 @router.get("/{workflow_id}", response_model=WorkflowDetail)
@@ -846,11 +853,25 @@ def activate_workflow(
     payload: WorkflowActivateRequest,
     request: Request,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_admin),
+    current_user: User = Depends(require_user),
 ) -> WorkflowDetail:
+    # PR-Hotfix-Workflows-Pipelines-Permisos. Owner activa el suyo;
+    # admin activa cualquiera. Antes admin-only — bloqueaba a los
+    # comerciales que crearon su propio workflow privado tras #250.
+    from app.services.ownership import can_user_edit_resource  # noqa: PLC0415
+
     workflow = session.get(Workflow, workflow_id)
     if workflow is None:
         raise not_found("Workflow")
+    if not can_user_edit_resource(current_user, workflow):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "Solo admin puede activar workflows del equipo."
+                if workflow.owner_user_id is None
+                else "No tienes permiso para activar este workflow."
+            ),
+        )
     errors = _validate_workflow_structure(session, workflow)
     if errors:
         raise HTTPException(
@@ -911,11 +932,23 @@ def pause_workflow(
     workflow_id: str,
     request: Request,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_manager),
+    current_user: User = Depends(require_user),
 ) -> WorkflowDetail:
+    # PR-Hotfix-Workflows-Pipelines-Permisos. Owner+admin.
+    from app.services.ownership import can_user_edit_resource  # noqa: PLC0415
+
     workflow = session.get(Workflow, workflow_id)
     if workflow is None:
         raise not_found("Workflow")
+    if not can_user_edit_resource(current_user, workflow):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "Solo admin puede pausar workflows del equipo."
+                if workflow.owner_user_id is None
+                else "No tienes permiso para pausar este workflow."
+            ),
+        )
     workflow.status = WorkflowStatus.PAUSED
     record_event(
         session,
@@ -936,11 +969,23 @@ def archive_workflow(
     workflow_id: str,
     request: Request,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_admin),
+    current_user: User = Depends(require_user),
 ) -> WorkflowDetail:
+    # PR-Hotfix-Workflows-Pipelines-Permisos. Owner+admin.
+    from app.services.ownership import can_user_edit_resource  # noqa: PLC0415
+
     workflow = session.get(Workflow, workflow_id)
     if workflow is None:
         raise not_found("Workflow")
+    if not can_user_edit_resource(current_user, workflow):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "Solo admin puede archivar workflows del equipo."
+                if workflow.owner_user_id is None
+                else "No tienes permiso para archivar este workflow."
+            ),
+        )
     workflow.status = WorkflowStatus.ARCHIVED
     record_event(
         session,
@@ -1014,12 +1059,19 @@ def duplicate_workflow_route(
     workflow_id: str,
     request: Request,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_manager),
+    current_user: User = Depends(require_user),
 ) -> WorkflowDetail:
     """Clona name + trigger + todos los steps + edges a una nueva fila
-    en estado DRAFT. El operador edita la copia desde el editor."""
+    en estado DRAFT. El operador edita la copia desde el editor.
+
+    PR-Hotfix-Workflows-Pipelines-Permisos. Cualquier user con
+    see-rights puede duplicar; la copia se crea privada del creador
+    (antes quedaba con owner_user_id=NULL, regresión post-#250).
+    """
+    from app.services.ownership import can_user_see_resource  # noqa: PLC0415
+
     original = session.get(Workflow, workflow_id)
-    if original is None:
+    if original is None or not can_user_see_resource(current_user, original):
         raise not_found("Workflow")
 
     new_workflow = Workflow(
@@ -1033,6 +1085,7 @@ def duplicate_workflow_route(
         ),
         status=WorkflowStatus.DRAFT,
         created_by_user_id=current_user.id,
+        owner_user_id=current_user.id,
     )
     session.add(new_workflow)
     session.flush()
@@ -1095,7 +1148,7 @@ def duplicate_workflow_route(
     )
     session.commit()
     session.refresh(new_workflow)
-    return _workflow_to_detail(session, new_workflow)
+    return _workflow_to_detail(session, new_workflow, current_user=current_user)
 
 
 @router.post("/{workflow_id}/dry-run", response_model=WorkflowDryRunResponse)
@@ -1103,12 +1156,19 @@ def dry_run_route(
     workflow_id: str,
     payload: WorkflowDryRunRequest,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_manager),
+    current_user: User = Depends(require_user),
 ) -> WorkflowDryRunResponse:
-    """Simula el workflow contra `contact_id` sin commitear nada."""
-    _ = current_user
+    """Simula el workflow contra `contact_id` sin commitear nada.
+
+    PR-Hotfix-Workflows-Pipelines-Permisos. Read-only — see-rights
+    suficiente. Antes manager-only.
+    """
+    from app.services.ownership import can_user_see_resource  # noqa: PLC0415
     from app.workflows.dry_run import simulate_workflow  # noqa: PLC0415
 
+    workflow = session.get(Workflow, workflow_id)
+    if workflow is None or not can_user_see_resource(current_user, workflow):
+        raise not_found("Workflow")
     result = simulate_workflow(session, workflow_id, payload.contact_id)
     return WorkflowDryRunResponse(
         workflow_id=result.workflow_id,
@@ -1140,11 +1200,13 @@ def dry_run_route(
 def cost_estimate(
     workflow_id: str,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_manager),
+    current_user: User = Depends(require_user),
 ) -> WorkflowCostEstimate:
-    _ = current_user
+    # PR-Hotfix-Workflows-Pipelines-Permisos. Read-only → see-rights.
+    from app.services.ownership import can_user_see_resource  # noqa: PLC0415
+
     workflow = session.get(Workflow, workflow_id)
-    if workflow is None:
+    if workflow is None or not can_user_see_resource(current_user, workflow):
         raise not_found("Workflow")
 
     errors = _validate_workflow_structure(session, workflow)
@@ -1303,7 +1365,7 @@ def manual_add_contact(
     contact_id: str,
     request: Request,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_manager),
+    current_user: User = Depends(require_user),
 ) -> dict[str, str]:
     """PR-Fix-Añadir-Manual-Workflow. Entrada forzada desde la ficha
     contacto. A diferencia del dispatch automático, aquí saltamos
@@ -1316,8 +1378,13 @@ def manual_add_contact(
     422 con mensaje específico — antes daba el genérico "no entry
     step" que confundía al operador (sí había entry, era el trigger).
     """
+    # PR-Hotfix-Workflows-Pipelines-Permisos. Cualquier user con
+    # see-rights al workflow puede añadir su contacto (mismas reglas
+    # que /add-to-pipeline). Antes manager-only.
+    from app.services.ownership import can_user_see_resource  # noqa: PLC0415
+
     workflow = session.get(Workflow, workflow_id)
-    if workflow is None:
+    if workflow is None or not can_user_see_resource(current_user, workflow):
         raise not_found("Workflow")
     contact = session.get(Contact, contact_id)
     if contact is None:

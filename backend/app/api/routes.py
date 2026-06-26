@@ -4351,10 +4351,15 @@ def duplicate_pipeline(
     payload: PipelineDuplicateRequest,
     request: Request,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_manager),
+    current_user: User = Depends(require_viewer),
 ) -> PipelineRead:
+    # PR-Hotfix-Workflows-Pipelines-Permisos. Cualquier user con
+    # see-rights puede duplicar; la copia se crea owned por
+    # current_user (privada). Antes era admin/manager only.
+    from app.services.ownership import can_user_see_resource  # noqa: PLC0415
+
     source = pipelines_repository.get_pipeline(session, pipeline_id)
-    if not source:
+    if not source or not can_user_see_resource(current_user, source):
         raise not_found("Pipeline")
     duplicate = pipelines_repository.duplicate_pipeline(
         session,
@@ -4396,11 +4401,25 @@ def create_pipeline_stage(
     payload: PipelineStageCreate,
     request: Request,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_manager),
+    current_user: User = Depends(require_viewer),
 ) -> PipelineStage:
+    # PR-Hotfix-Workflows-Pipelines-Permisos. Owner del pipeline puede
+    # gestionar sus stages; admin puede en cualquiera. Antes requería
+    # manager → comerciales no podían añadir etapas a SUS pipelines.
+    from app.services.ownership import can_user_edit_resource  # noqa: PLC0415
+
     pipeline = pipelines_repository.get_pipeline(session, pipeline_id)
     if not pipeline:
         raise not_found("Pipeline")
+    if not can_user_edit_resource(current_user, pipeline):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "Solo admin puede editar etapas de pipelines del equipo."
+                if pipeline.owner_user_id is None
+                else "No tienes permiso para editar este pipeline."
+            ),
+        )
     stage = pipelines_repository.add_stage(
         session,
         pipeline=pipeline,
@@ -4441,11 +4460,25 @@ def update_pipeline_stage(
     payload: PipelineStageUpdate,
     request: Request,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_manager),
+    current_user: User = Depends(require_viewer),
 ) -> PipelineStage:
+    # PR-Hotfix-Workflows-Pipelines-Permisos. Owner del pipeline padre
+    # puede editar sus etapas; admin en cualquiera.
+    from app.services.ownership import can_user_edit_resource  # noqa: PLC0415
+
     stage = session.get(PipelineStage, stage_id)
     if not stage:
         raise not_found("Pipeline stage")
+    pipeline = pipelines_repository.get_pipeline(session, stage.pipeline_id)
+    if not pipeline or not can_user_edit_resource(current_user, pipeline):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "Solo admin puede editar etapas de pipelines del equipo."
+                if pipeline is not None and pipeline.owner_user_id is None
+                else "No tienes permiso para editar este pipeline."
+            ),
+        )
     changes = payload.model_dump(exclude_unset=True)
     pipelines_repository.update_stage(session, stage=stage, **changes)
     record_event(
@@ -4476,11 +4509,25 @@ def delete_pipeline_stage(
     request: Request,
     move_to_stage_id: str | None = Query(default=None),
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_manager),
+    current_user: User = Depends(require_viewer),
 ) -> MessageRead:
+    # PR-Hotfix-Workflows-Pipelines-Permisos. Owner del pipeline padre
+    # puede borrar sus etapas; admin en cualquiera.
+    from app.services.ownership import can_user_edit_resource  # noqa: PLC0415
+
     stage = session.get(PipelineStage, stage_id)
     if not stage:
         raise not_found("Pipeline stage")
+    pipeline = pipelines_repository.get_pipeline(session, stage.pipeline_id)
+    if not pipeline or not can_user_edit_resource(current_user, pipeline):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "Solo admin puede borrar etapas de pipelines del equipo."
+                if pipeline is not None and pipeline.owner_user_id is None
+                else "No tienes permiso para editar este pipeline."
+            ),
+        )
     pipeline_id = stage.pipeline_id
     stage_name = stage.name
     try:
@@ -4521,11 +4568,23 @@ def reorder_pipeline_stages(
     payload: PipelineStageReorderRequest,
     request: Request,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_manager),
+    current_user: User = Depends(require_viewer),
 ) -> list[PipelineStage]:
+    # PR-Hotfix-Workflows-Pipelines-Permisos. Owner+admin reordenan.
+    from app.services.ownership import can_user_edit_resource  # noqa: PLC0415
+
     pipeline = pipelines_repository.get_pipeline(session, pipeline_id)
     if not pipeline:
         raise not_found("Pipeline")
+    if not can_user_edit_resource(current_user, pipeline):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "Solo admin puede reordenar etapas de pipelines del equipo."
+                if pipeline.owner_user_id is None
+                else "No tienes permiso para editar este pipeline."
+            ),
+        )
     try:
         ordered = pipelines_repository.reorder_stages(
             session, pipeline=pipeline, stage_ids=payload.stage_ids
