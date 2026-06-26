@@ -14,6 +14,7 @@ import {
   Sparkles,
   Trophy,
 } from "lucide-react";
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import {
   getDashboardMyCampaignStats,
@@ -65,20 +66,40 @@ export function UserCampaignStatsWidget() {
           <p className="muted small">Cargando…</p>
         ) : (
           <ul className="email-stats-grid">
+            {/* PR-Bugs-4-5amp-7-9. Las 3 cajas con KPI clicable
+             * (recibieron/abrieron/clickearon) son Links a la página
+             * dedicada `/dashboard/mis-stats/{kpi}` con la ventana
+             * actual del widget propagada por query param. Las cajas
+             * OR/CTR no llevan a una lista — son derivadas. */}
             <li className="email-stats-cell email-stats-sent">
-              <Send size={14} aria-hidden />
-              <span className="email-stats-val">{stats.received}</span>
-              <span className="muted small">recibieron</span>
+              <Link
+                href={`/dashboard/mis-stats/received?window=${encodeURIComponent(window_.period)}`}
+                className="email-stats-link"
+              >
+                <Send size={14} aria-hidden />
+                <span className="email-stats-val">{stats.received}</span>
+                <span className="muted small">recibieron</span>
+              </Link>
             </li>
             <li className="email-stats-cell email-stats-open">
-              <Sparkles size={14} aria-hidden />
-              <span className="email-stats-val">{stats.opened}</span>
-              <span className="muted small">abrieron</span>
+              <Link
+                href={`/dashboard/mis-stats/opened?window=${encodeURIComponent(window_.period)}`}
+                className="email-stats-link"
+              >
+                <Sparkles size={14} aria-hidden />
+                <span className="email-stats-val">{stats.opened}</span>
+                <span className="muted small">abrieron</span>
+              </Link>
             </li>
             <li className="email-stats-cell email-stats-click">
-              <MousePointerClick size={14} aria-hidden />
-              <span className="email-stats-val">{stats.clicked}</span>
-              <span className="muted small">clickearon</span>
+              <Link
+                href={`/dashboard/mis-stats/clicked?window=${encodeURIComponent(window_.period)}`}
+                className="email-stats-link"
+              >
+                <MousePointerClick size={14} aria-hidden />
+                <span className="email-stats-val">{stats.clicked}</span>
+                <span className="muted small">clickearon</span>
+              </Link>
             </li>
             <li className="email-stats-cell email-stats-or">
               <span className="email-stats-val">{stats.open_rate}%</span>

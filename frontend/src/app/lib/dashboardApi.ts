@@ -182,6 +182,21 @@ export async function getDashboardPriorityLeads(
   );
 }
 
+// PR-Bugs-4-5amp-7-9. KPI-driven contact lists for the dedicated
+// pages `/dashboard/mis-stats/{kpi}`. Returns `PriorityLead`-shape
+// rows so the same `ContactKpiTable` component renders them.
+export type MyCampaignKpi = "received" | "opened" | "clicked";
+
+export async function getDashboardMyCampaignContacts(
+  kpi: MyCampaignKpi,
+  window: DashboardWindow = { period: "30d" },
+  limit = 200,
+): Promise<PriorityLead[]> {
+  return apiFetch<PriorityLead[]>(
+    `/api/dashboard/my-campaign-contacts/${kpi}?${windowParams(window)}&limit=${limit}`,
+  );
+}
+
 export type MyCampaignStats = {
   received: number;
   opened: number;
