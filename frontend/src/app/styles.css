@@ -9622,3 +9622,153 @@ tr.is-inactive {
   font-size: 11px;
   margin-top: 2px;
 }
+
+/* ------------------------------------------------------------------ */
+/* PR-Bugs-4-5amp-7-9 PR-B (bug 7). Detalle de campaña — layout       */
+/* dashboard-style. La cabecera + KPI grid arriba siguen siendo las   */
+/* existentes; lo nuevo es la grid de cajas debajo:                   */
+/*   row 1: Detalles del envío + Audiencia (1fr 1fr).                 */
+/*   row 2: Cronología/clicks + Vista previa HTML (1fr 2fr).          */
+/*   row 3: Destinatarios por evento (full-width).                    */
+/* Mobile (<720px): todo apila vertical.                              */
+/* ------------------------------------------------------------------ */
+
+.campaign-detail-grid {
+  margin-top: 18px;
+  display: grid;
+  grid-template-columns: 1fr 2fr;
+  gap: 14px;
+}
+
+/* Caja base — hereda border/radius/padding del .card global pero
+   suaviza para que encaje en el grid. */
+.campaign-detail-card {
+  min-width: 0;
+  padding: 18px;
+  border-radius: 16px;
+  display: flex;
+  flex-direction: column;
+}
+
+.campaign-detail-card .section-title {
+  margin: 0 0 12px;
+}
+.campaign-detail-card .section-title h2 {
+  margin: 0;
+  font-size: 0.85rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-gray, #475569);
+}
+
+/* Las dos primeras cajas son las "estrechas" (Detalles + Audiencia)
+   y deben caber lado a lado en el primer row. Forzamos cada una a su
+   columna explícitamente para evitar que la grid las recombine
+   cuando hay 3 hijos. */
+.campaign-detail-card:nth-child(1) { grid-column: 1 / span 1; }
+.campaign-detail-card:nth-child(2) { grid-column: 2 / span 1; }
+
+/* Row 2: Cronología (1fr) + Vista previa (2fr). */
+.campaign-detail-card:nth-child(3) { grid-column: 1 / span 1; min-height: 320px; }
+.campaign-detail-card-wide { grid-column: 2 / span 1; min-height: 480px; }
+
+/* Row 3: Destinatarios full width. */
+.campaign-detail-card-full {
+  grid-column: 1 / -1;
+  min-height: 360px;
+}
+
+/* Cuerpo scrollable interno — el header del card queda fijo y el
+   contenido scrollea cuando excede el alto. Mismo patrón que
+   .widget-scroll del dashboard. */
+.campaign-detail-card-scroll .card-scroll-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.card-scroll-body-preview {
+  /* La preview HTML viene en iframe — un overflow auto extra ayuda
+     a contener iframes que se autoexpanden por contenido. */
+  background: var(--color-bg-light, #f8fafc);
+  border-radius: 12px;
+  padding: 8px;
+}
+
+/* Listado clave/valor compacto para los dos primeros cards. */
+.campaign-detail-list {
+  margin: 0;
+  display: grid;
+  gap: 10px;
+}
+.campaign-detail-list > div {
+  display: grid;
+  grid-template-columns: 140px 1fr;
+  gap: 8px;
+  align-items: baseline;
+}
+.campaign-detail-list dt {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-gray, #475569);
+  font-weight: 600;
+  margin: 0;
+}
+.campaign-detail-list dd {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--color-dark, #0f172a);
+}
+
+.card-subhead {
+  margin: 14px 0 8px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-gray, #475569);
+}
+
+.tab-bar-compact {
+  margin-left: auto;
+  gap: 4px;
+}
+.tab-bar-compact .tab {
+  font-size: 0.72rem;
+  padding: 4px 8px;
+}
+
+.data-table-compact {
+  font-size: 0.85rem;
+}
+.data-table-compact th { padding: 6px 8px; }
+.data-table-compact td { padding: 6px 8px; }
+
+@media (max-width: 1100px) {
+  .campaign-detail-grid {
+    grid-template-columns: 1fr;
+  }
+  .campaign-detail-card:nth-child(1),
+  .campaign-detail-card:nth-child(2),
+  .campaign-detail-card:nth-child(3),
+  .campaign-detail-card-wide,
+  .campaign-detail-card-full {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 720px) {
+  .campaign-detail-list > div {
+    grid-template-columns: 1fr;
+  }
+  .campaign-detail-list dt {
+    margin-bottom: 2px;
+  }
+  .campaign-detail-card .section-title {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .tab-bar-compact { margin-left: 0; }
+}
