@@ -1309,8 +1309,17 @@ class EmailMessage(TimestampMixin, Base):
     cc_emails_json: Mapped[str | None] = mapped_column(Text)
     bcc_emails_json: Mapped[str | None] = mapped_column(Text)
     subject: Mapped[str | None] = mapped_column(String(500))
-    body_html: Mapped[str | None] = mapped_column(Text)
-    body_text: Mapped[str | None] = mapped_column(Text)
+    # PR-Fix-Backfill-Gmail-Tras-Validación. LONGTEXT en MySQL para
+    # absorber emails con firma corporativa (logo inline base64) +
+    # thread acumulado, que superaban el límite TEXT (~65 KB) y
+    # disparaban DataError 1406 en producción. SQLite trata
+    # variant.mysql como no-op y sigue siendo TEXT.
+    body_html: Mapped[str | None] = mapped_column(
+        Text().with_variant(mysql.LONGTEXT, "mysql")
+    )
+    body_text: Mapped[str | None] = mapped_column(
+        Text().with_variant(mysql.LONGTEXT, "mysql")
+    )
     snippet: Mapped[str | None] = mapped_column(String(255))
     attachments_json: Mapped[str | None] = mapped_column(Text)
     # Nullable as of v2.4e for the same reason as `gmail_message_id`:
@@ -1511,8 +1520,15 @@ class EmailDraft(TimestampMixin, Base):
     from_alias: Mapped[str | None] = mapped_column(String(255))
     from_name: Mapped[str | None] = mapped_column(String(255))
     subject: Mapped[str | None] = mapped_column(String(500))
-    body_html: Mapped[str | None] = mapped_column(Text)
-    body_text: Mapped[str | None] = mapped_column(Text)
+    # Mismo LONGTEXT que email_messages — los drafts pueden tener el
+    # mismo problema de límite TEXT cuando incorporan firmas con
+    # imágenes inline.
+    body_html: Mapped[str | None] = mapped_column(
+        Text().with_variant(mysql.LONGTEXT, "mysql")
+    )
+    body_text: Mapped[str | None] = mapped_column(
+        Text().with_variant(mysql.LONGTEXT, "mysql")
+    )
     to_emails_json: Mapped[str | None] = mapped_column(Text)
     cc_emails_json: Mapped[str | None] = mapped_column(Text)
     bcc_emails_json: Mapped[str | None] = mapped_column(Text)
@@ -1997,7 +2013,10 @@ class EmailMessageAttachment(Base):
     mime_type: Mapped[str | None] = mapped_column(String(120))
     size_bytes: Mapped[int | None] = mapped_column(BigInteger)
     storage_path: Mapped[str | None] = mapped_column(String(500))
-    gmail_attachment_id: Mapped[str | None] = mapped_column(String(255))
+    # PR-Fix-Backfill-Gmail-Tras-Validación. Gmail attachment IDs son
+    # base64 de ~350-450 chars. El String(255) truncaba en INSERT con
+    # DataError 1406 — confirmado por Bart 2026-06-26.
+    gmail_attachment_id: Mapped[str | None] = mapped_column(String(512))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )

@@ -115,6 +115,19 @@ export function GmailBackfillSection({ onError, onMessage }: Props) {
   }, [pollUntilDone]);
 
   async function onEstimate() {
+    // PR-Fix-Backfill-Gmail-Tras-Validación bug 5. Dedup: si ya hay
+    // un estimate `queued`/`running`/`cancelling`, reusamos ese row
+    // en vez de crear uno nuevo. Antes el operador podía pulsar
+    // "Estimar espacio" dos veces y se encolaban DOS estimates
+    // simultáneos — el más reciente queued tapaba al que estaba
+    // running.
+    if (estimateJob && ACTIVE_STATUSES.has(estimateJob.status)) {
+      onMessage(
+        "Ya hay una estimación en curso, espera a que termine.",
+      );
+      await pollUntilDone(estimateJob.id, setEstimateJob);
+      return;
+    }
     setBusy(true);
     onError(null);
     onMessage(null);
@@ -130,6 +143,17 @@ export function GmailBackfillSection({ onError, onMessage }: Props) {
   }
 
   async function onExecute() {
+    // Mismo dedup que onEstimate — si ya hay un execute activo,
+    // reusamos. No queremos dos backfills procesando en paralelo
+    // (duplicarían inserts en email_messages y consumirían cuota
+    // Gmail por nada).
+    if (executeJob && ACTIVE_STATUSES.has(executeJob.status)) {
+      onMessage(
+        "Ya hay un backfill en curso, espera a que termine o cancélalo antes de lanzar otro.",
+      );
+      await pollUntilDone(executeJob.id, setExecuteJob);
+      return;
+    }
     setBusy(true);
     onError(null);
     onMessage(null);

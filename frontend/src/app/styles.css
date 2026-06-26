@@ -9772,3 +9772,12 @@ tr.is-inactive {
   }
   .tab-bar-compact { margin-left: 0; }
 }
+
+/* PR-Fix-Backfill-Gmail-Tras-Validación bug 8. "Cargar más antiguos"
+ * al final del listado /emails. Centrado y separado del último row. */
+.email-list-loadmore {
+  display: flex;
+  justify-content: center;
+  padding: 12px 8px 18px;
+  list-style: none;
+}

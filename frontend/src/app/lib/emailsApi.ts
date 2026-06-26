@@ -153,6 +153,13 @@ export type EmailThreadListFilters = {
   // QoL sprint — toggle "Mías ↔ Todo el equipo" en /emails.
   scope?: "mine" | "team";
   team_user_id?: string;
+  // PR-Fix-Backfill-Gmail-Tras-Validación bug 8. Paginación cliente
+  // del listado de threads. Backend acepta `limit` hasta 100 y
+  // `offset` arbitrario. Antes la UI nunca los pasaba y se quedaba
+  // con los 20 default → tras el backfill Brice tenía 965 emails en
+  // BD y solo se le mostraban los 20 más recientes.
+  limit?: number;
+  offset?: number;
 };
 
 export type EmailThreadDetail = EmailThread & {
@@ -232,6 +239,10 @@ export async function listEmailThreads(
   if (filters?.include_snoozed) params.set("include_snoozed", "true");
   if (filters?.scope) params.set("scope", filters.scope);
   if (filters?.team_user_id) params.set("team_user_id", filters.team_user_id);
+  if (filters?.limit !== undefined) params.set("limit", String(filters.limit));
+  if (filters?.offset !== undefined) {
+    params.set("offset", String(filters.offset));
+  }
   const qs = params.toString();
   return apiFetch<EmailThreadList>(`/api/emails/threads${qs ? `?${qs}` : ""}`);
 }

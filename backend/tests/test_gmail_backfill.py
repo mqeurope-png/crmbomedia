@@ -1242,3 +1242,270 @@ def test_backfill_list_returns_jobs_regardless_of_initiator(
     # Y los rows traen mode + status para que el frontend filtre el
     # activo correctamente.
     assert all("mode" in j and "status" in j for j in body)
+
+
+# ---------------------------------------------------------------------------
+# PR-Fix-Backfill-Gmail-Tras-Validación — nuevos tests
+# ---------------------------------------------------------------------------
+
+
+def test_is_attachment_part_includes_inline_with_attachment_id():
+    """Bug 3. La clasificación única `_is_attachment_part` cuenta
+    inline images (con attachmentId + size>0), no solo Content-
+    Disposition=attachment. Pin para que estimate y execute lleguen
+    al mismo número."""
+    from app.integrations.gmail.backfill import _is_attachment_part
+
+    inline_image = {
+        "mimeType": "image/png",
+        "body": {"attachmentId": "att-inline-logo", "size": 12345},
+    }
+    classic = {
+        "filename": "report.pdf",
+        "mimeType": "application/pdf",
+        "body": {"attachmentId": "att-pdf", "size": 200000},
+    }
+    body_text = {
+        "mimeType": "text/plain",
+        "body": {"data": "aGVsbG8="},  # no attachmentId
+    }
+    zero_size = {
+        "filename": "ghost.bin",
+        "body": {"attachmentId": "x", "size": 0},
+    }
+    assert _is_attachment_part(inline_image) is True
+    assert _is_attachment_part(classic) is True
+    assert _is_attachment_part(body_text) is False
+    assert _is_attachment_part(zero_size) is False
+
+
+def test_run_backfill_skips_already_finalized_job(
+    client, factory, fake_gmail, patched_client
+):
+    """Bug 7. Si el job en BD ya está cancelled/failed/completed al
+    momento del pickup RQ, el handler NO debe procesarlo (caso real
+    de Bart 2026-06-26: ce82696c fue cancelado manualmente vía SQL
+    pero el worker lo recogió horas después y lo procesó 50 min)."""
+    r = client.post(
+        "/api/admin/gmail/backfill/estimate",
+        headers=auth_headers(client, "admin"),
+        json={"months_back": 36},
+    )
+    job_id = r.json()["id"]
+    with factory() as session:
+        job = session.get(GmailBackfillJob, job_id)
+        job.status = GmailBackfillStatus.CANCELLED.value
+        session.commit()
+
+    # Run handler — debe ser no-op.
+    backfill_module.run_backfill(job_id)
+
+    with factory() as session:
+        job = session.get(GmailBackfillJob, job_id)
+        # Status NO cambia, NO se han creado messages.
+        assert job.status == GmailBackfillStatus.CANCELLED.value
+        # Counters NO se han movido.
+        assert job.total_processed == 0
+
+
+def test_run_execute_marks_job_failed_on_unhandled_exception(
+    client, factory, fake_gmail, patched_client, monkeypatch
+):
+    """Bug 2. Si una excepción no manejada escapa del handler, el job
+    debe terminar `failed` con error_summary informativo, no quedar
+    colgado en `running`."""
+
+    def explode(*_args, **_kwargs):
+        raise RuntimeError("simulated catastrophic failure")
+
+    # Romper `_build_contact_index` para que estalle al inicio.
+    monkeypatch.setattr(
+        backfill_module, "_build_contact_index", explode
+    )
+
+    r = client.post(
+        "/api/admin/gmail/backfill/execute",
+        headers=auth_headers(client, "admin"),
+        json={
+            "months_back": 36,
+            "include_attachments": False,
+            "max_attachment_size_mb": 25,
+            "aliases_scope": "all_visible",
+        },
+    )
+    job_id = r.json()["id"]
+    backfill_module.run_backfill(job_id)
+    with factory() as session:
+        job = session.get(GmailBackfillJob, job_id)
+        assert job.status == GmailBackfillStatus.FAILED.value
+        assert job.error_summary is not None
+        assert "RuntimeError" in job.error_summary
+        assert "simulated catastrophic failure" in job.error_summary
+        assert job.finished_at is not None
+
+
+def test_run_execute_continues_on_per_message_error(
+    client, factory, fake_gmail, patched_client, monkeypatch
+):
+    """Bug 2. Si un mensaje individual peta al insertar (body
+    demasiado grande, etc.), el handler salta ese y sigue con los
+    siguientes. NO aborta el job entero."""
+    fake_gmail.add_conversation(
+        alias="manel@bomedia.net",
+        contact_email="marny@cliente.com",
+        message_id="msg-ok-1",
+        body_text="Body OK",
+    )
+    fake_gmail.add_conversation(
+        alias="manel@bomedia.net",
+        contact_email="marny@cliente.com",
+        message_id="msg-bad",
+        body_text="Body bad",
+    )
+    fake_gmail.add_conversation(
+        alias="manel@bomedia.net",
+        contact_email="marny@cliente.com",
+        message_id="msg-ok-2",
+        body_text="Body OK 2",
+    )
+
+    real_flush = backfill_module.Session.flush
+
+    def faulty_flush(self, *args, **kwargs):
+        # Mira si hay un EmailMessage pendiente con el gmail id del
+        # mensaje malo. Si sí, simula DataError.
+        for obj in list(self.new):
+            if (
+                hasattr(obj, "gmail_message_id")
+                and obj.gmail_message_id == "msg-bad"
+            ):
+                raise RuntimeError(
+                    "simulated DataError(1406) body_html too long"
+                )
+        return real_flush(self, *args, **kwargs)
+
+    monkeypatch.setattr(backfill_module.Session, "flush", faulty_flush)
+
+    r = client.post(
+        "/api/admin/gmail/backfill/execute",
+        headers=auth_headers(client, "admin"),
+        json={
+            "months_back": 36,
+            "include_attachments": False,
+            "max_attachment_size_mb": 25,
+            "aliases_scope": "all_visible",
+        },
+    )
+    job_id = r.json()["id"]
+    backfill_module.run_backfill(job_id)
+
+    with factory() as session:
+        from sqlalchemy import select  # noqa: PLC0415
+
+        from app.models.crm import EmailMessage  # noqa: PLC0415
+
+        job = session.get(GmailBackfillJob, job_id)
+        assert job.status == GmailBackfillStatus.COMPLETED.value, (
+            f"status={job.status}, error_summary={job.error_summary}"
+        )
+        assert job.total_errors == 1
+        assert job.total_imported == 2  # los dos OK
+        ids = {
+            m.gmail_message_id
+            for m in session.scalars(select(EmailMessage))
+        }
+        assert ids == {"msg-ok-1", "msg-ok-2"}
+
+
+def test_estimate_and_execute_count_attachments_consistently(
+    client, factory, fake_gmail, patched_client
+):
+    """Bug 3. Estimate y execute deben usar la MISMA clasificación de
+    adjuntos (`_is_attachment_part`). Antes estimate filtraba por
+    filename y se saltaba inline images mientras execute las
+    guardaba. Resultado: estimate decía 0 adjuntos pero execute
+    creaba filas."""
+    fake_gmail.add_conversation(
+        alias="manel@bomedia.net",
+        contact_email="marny@cliente.com",
+        message_id="msg-inline",
+        body_text="Email con logo inline",
+        attachments=[("logo.png", b"BINARY", "image/png")],
+    )
+
+    # Run estimate
+    r_est = client.post(
+        "/api/admin/gmail/backfill/estimate",
+        headers=auth_headers(client, "admin"),
+        json={"months_back": 36, "aliases_scope": "all_visible"},
+    )
+    est_id = r_est.json()["id"]
+    backfill_module.run_backfill(est_id)
+
+    with factory() as session:
+        est_job = session.get(GmailBackfillJob, est_id)
+        est_result = json.loads(est_job.result_json)
+        est_attachments = est_result["total_attachments_count"]
+
+    # Run execute over the SAME mock data — debe reportar el mismo
+    # número de attachments en `email_message_attachments`.
+    r_exec = client.post(
+        "/api/admin/gmail/backfill/execute",
+        headers=auth_headers(client, "admin"),
+        json={
+            "months_back": 36,
+            "include_attachments": True,
+            "max_attachment_size_mb": 25,
+            "aliases_scope": "all_visible",
+        },
+    )
+    exec_id = r_exec.json()["id"]
+    backfill_module.run_backfill(exec_id)
+
+    with factory() as session:
+        from sqlalchemy import select  # noqa: PLC0415
+
+        from app.models.crm import EmailMessageAttachment  # noqa: PLC0415
+
+        execute_attachments = len(
+            list(session.scalars(select(EmailMessageAttachment)))
+        )
+
+    assert est_attachments == execute_attachments, (
+        f"mismatch — estimate={est_attachments} execute={execute_attachments}"
+    )
+    assert est_attachments >= 1  # el logo inline cuenta
+
+
+def test_total_estimated_uses_actual_count_not_resultsizeestimate(
+    client, factory, fake_gmail, patched_client
+):
+    """Bug 4. `total_estimated` ahora refleja el conteo paginado real,
+    no `resultSizeEstimate` (que Gmail devuelve aproximado y a veces
+    se queda muy bajo). Bart vio total_estimated=201 mientras
+    total_processed>1000."""
+    for i in range(15):
+        fake_gmail.add_conversation(
+            alias="manel@bomedia.net",
+            contact_email="marny@cliente.com",
+            message_id=f"msg-est-{i}",
+            body_text=f"Body {i}",
+        )
+
+    r = client.post(
+        "/api/admin/gmail/backfill/estimate",
+        headers=auth_headers(client, "admin"),
+        json={"months_back": 36, "aliases_scope": "all_visible"},
+    )
+    job_id = r.json()["id"]
+    backfill_module.run_backfill(job_id)
+
+    with factory() as session:
+        job = session.get(GmailBackfillJob, job_id)
+        # 15 mensajes inyectados + 2 users (admin/manager) cada uno
+        # con su alias all_visible — al menos el admin ve los 15.
+        assert job.total_estimated is not None
+        assert job.total_estimated >= 15, (
+            f"total_estimated={job.total_estimated} < 15 — debería "
+            "reflejar el conteo paginado real, no el hint de Gmail"
+        )
