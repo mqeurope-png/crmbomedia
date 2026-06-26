@@ -127,6 +127,93 @@ def test_assign_tag_is_idempotent(client: TestClient):
     assert sum(1 for t in detail["tag_objects"] if t["id"] == tag["id"]) == 1
 
 
+# ---------------------------------------------------------------------------
+# PR-TagPicker-Ficha-Contacto — Bug A (comercial puede etiquetar) + B
+# ---------------------------------------------------------------------------
+
+
+def test_contact_tag_assign_existing_by_user_role_returns_201(
+    client: TestClient,
+):
+    """Bug A. Un comercial (rol `user`) puede asignar una tag existente
+    a un contacto desde la ficha. Antes el endpoint era require_manager
+    y devolvía 403, que el front se tragaba en silencio."""
+    tag = _create_tag(client, name="comercial-vip")
+    contact = _create_contact(client)
+    response = client.post(
+        f"/api/contacts/{contact['id']}/tags",
+        json={"tag_id": tag["id"]},
+        headers=auth_headers(client, "user"),
+    )
+    assert response.status_code == 201, response.text
+    detail = client.get(
+        f"/api/contacts/{contact['id']}", headers=auth_headers(client, "viewer")
+    ).json()
+    assert any(t["id"] == tag["id"] for t in detail["tag_objects"])
+
+
+def test_contact_tag_remove_by_user_role_allowed(client: TestClient):
+    """Bug A simétrico. El comercial también puede quitar tags."""
+    tag = _create_tag(client, name="quitarme")
+    contact = _create_contact(client)
+    client.post(
+        f"/api/contacts/{contact['id']}/tags",
+        json={"tag_id": tag["id"]},
+        headers=auth_headers(client, "user"),
+    )
+    removed = client.delete(
+        f"/api/contacts/{contact['id']}/tags/{tag['id']}",
+        headers=auth_headers(client, "user"),
+    )
+    assert removed.status_code == 200, removed.text
+
+
+def test_contact_tag_create_new_at_vuelo_gets_default_palette_color(
+    client: TestClient,
+):
+    """Feature B. Crear tag al vuelo (tag_name sin color) → la tag se
+    crea con un color del palette (no NULL/gris), visible también en
+    /tags."""
+    from app.schemas.crm import TAG_COLOR_PALETTE
+
+    contact = _create_contact(client)
+    response = client.post(
+        f"/api/contacts/{contact['id']}/tags",
+        json={"tag_name": "GranLeadFrance"},
+        headers=auth_headers(client, "user"),
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["color"] is not None
+    assert body["color"].lower() in {c.lower() for c in TAG_COLOR_PALETTE}
+    # Visible en /tags con su color.
+    listed = client.get(
+        "/api/tags", headers=auth_headers(client, "viewer")
+    ).json()
+    match = next(t for t in listed["items"] if t["name"] == "GranLeadFrance")
+    assert match["color"] is not None
+
+
+def test_contact_tag_create_new_existing_name_does_not_duplicate(
+    client: TestClient,
+):
+    """Feature B. Si el nombre ya existe (case-insensitive), se asigna
+    la existente sin crear duplicado."""
+    existing = _create_tag(client, name="Repetida", color="#3b82f6")
+    contact = _create_contact(client)
+    response = client.post(
+        f"/api/contacts/{contact['id']}/tags",
+        json={"tag_name": "repetida"},
+        headers=auth_headers(client, "user"),
+    )
+    assert response.status_code == 201, response.text
+    assert response.json()["id"] == existing["id"]
+    listed = client.get(
+        "/api/tags", headers=auth_headers(client, "viewer")
+    ).json()
+    assert sum(1 for t in listed["items"] if t["name"].lower() == "repetida") == 1
+
+
 def test_remove_tag_returns_message_when_not_attached(client: TestClient):
     tag = _create_tag(client, name="vip")
     contact = _create_contact(client)

@@ -108,6 +108,13 @@ def get_contact(session: Session, contact_id: str) -> Contact | None:
             selectinload(Contact.notes),
             selectinload(Contact.tasks),
             selectinload(Contact.external_refs),
+            # PR-TagPicker-Ficha-Contacto. Eager-load tags → su relación
+            # encadenada para que `tag_objects` no dispare lazy loads al
+            # serializar la respuesta (y para que el refetch tras añadir
+            # una tag la incluya de forma fiable).
+            selectinload(Contact.tag_assignments).selectinload(
+                ContactTag.tag
+            ),
         )
         .where(Contact.id == contact_id)
     )
