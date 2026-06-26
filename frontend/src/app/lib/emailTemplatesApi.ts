@@ -53,6 +53,10 @@ export type EmailTemplateFolderNode = {
   sort_order: number;
   children: EmailTemplateFolderNode[];
   template_count: number;
+  /** PR-Workflows-Pipelines-Per-User mini-fix. Carpeta marcada como
+   *  predeterminada del current_user para el modal Nuevo email. Una
+   *  sola por user. Opcional para tolerar respuestas pre-#250. */
+  is_default_for_me?: boolean;
 };
 
 export type EmailTemplateWrite = {
@@ -253,4 +257,25 @@ export async function getBrevoTemplateHtml(
   return apiFetch<BrevoTemplateHtml>(
     `/api/emails/brevo-templates/${brevoTemplateId}/html`,
   );
+}
+
+/** PR-Workflows-Pipelines-Per-User mini-fix. Carpeta predeterminada
+ *  per-user del modal Nuevo email → Cargar plantilla. */
+export type DefaultTemplateFolderResponse = {
+  folder_id: string | null;
+};
+
+export async function getDefaultTemplateFolder(): Promise<DefaultTemplateFolderResponse> {
+  return apiFetch<DefaultTemplateFolderResponse>(
+    "/api/users/me/default-template-folder",
+  );
+}
+
+export async function setDefaultTemplateFolder(
+  folderId: string | null,
+): Promise<void> {
+  await apiFetch("/api/users/me/default-template-folder", {
+    method: "PUT",
+    body: JSON.stringify({ folder_id: folderId }),
+  });
 }

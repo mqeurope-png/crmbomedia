@@ -6,6 +6,7 @@ import { useCallback, useEffect, useState } from "react";
 import { ErrorState } from "../../components/ErrorState";
 import { PageHeader } from "../../components/PageHeader";
 import { PipelineKanban } from "../../components/PipelineKanban";
+import { ResourceVisibilityBadge } from "../../components/ResourceVisibilityBadge";
 import {
   listPipelineContacts,
   type PipelineContactsResponse,
@@ -94,6 +95,15 @@ export default function PipelineDetailPage() {
           </>
         }
       />
+
+      {/* PR-Frontend-Workflows-Pipelines-Templates. Badge debajo del
+          header — el `PageHeader` solo acepta texto en `eyebrow`. */}
+      <div style={{ marginTop: -8, marginBottom: 12 }}>
+        <ResourceVisibilityBadge
+          isMine={!!pipeline.is_mine}
+          isGlobal={!!pipeline.is_global}
+        />
+      </div>
 
       {error ? <ErrorState title="Error" message={error} /> : null}
 

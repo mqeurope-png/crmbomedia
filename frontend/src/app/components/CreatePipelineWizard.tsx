@@ -17,6 +17,9 @@ type Props = {
   /** When false, the AI option stays hidden (no `ANTHROPIC_API_KEY`
    *  configured on the backend). */
   aiAvailable: boolean;
+  /** PR-Frontend-Workflows-Pipelines-Templates. Solo admin ve el
+   *  checkbox "Compartir con el equipo" — y arranca MARCADO. */
+  isAdmin?: boolean;
   onCreated: (pipeline: Pipeline) => void;
   onClose: () => void;
 };
@@ -26,6 +29,7 @@ type Mode = "menu" | "scratch" | "template" | "ai" | "preview";
 export function CreatePipelineWizard({
   open,
   aiAvailable,
+  isAdmin = false,
   onCreated,
   onClose,
 }: Props) {
@@ -41,6 +45,11 @@ export function CreatePipelineWizard({
   const [proposal, setProposal] = useState<PipelineProposal | null>(null);
   const [proposalName, setProposalName] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  // PR-Frontend-Workflows-Pipelines-Templates. Default MARCADO para admin
+  // — mantiene el comportamiento histórico de "admin crea pipelines
+  // compartidos por defecto". Aplica a las 3 ramas (scratch / template /
+  // AI proposal) que terminan creando un pipeline.
+  const [draftIsGlobal, setDraftIsGlobal] = useState(true);
 
   if (!open) return null;
 
@@ -53,7 +62,12 @@ export function CreatePipelineWizard({
     setTemplateName("");
     setProposal(null);
     setProposalName("");
+    setDraftIsGlobal(true);
   }
+
+  // Solo se manda is_global cuando current_user es admin — el backend
+  // lo ignora silenciosamente para los demás roles.
+  const visibilityField = isAdmin ? { is_global: draftIsGlobal } : {};
 
   async function handleScratchSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -65,6 +79,7 @@ export function CreatePipelineWizard({
         name: scratchName.trim(),
         description: scratchDescription || null,
         stages: [],
+        ...visibilityField,
       });
       onCreated(created);
       reset();
@@ -80,11 +95,23 @@ export function CreatePipelineWizard({
     setSubmitting(true);
     setError(null);
     try {
+      // /api/pipelines/from-template no acepta is_global por ahora;
+      // si admin lo quiere global aplicamos un PATCH tras crearlo.
       const created = await createPipelineFromTemplate({
         template_id: pickedTemplate.id,
         name: templateName.trim() || undefined,
       });
-      onCreated(created);
+      let final = created;
+      if (isAdmin && draftIsGlobal && !created.is_global) {
+        try {
+          const { updatePipeline } = await import("../lib/api");
+          final = await updatePipeline(created.id, { is_global: true });
+        } catch {
+          // Si el toggle falla dejamos el pipeline privado y el admin
+          // puede convertirlo desde la lista. El recurso ya existe.
+        }
+      }
+      onCreated(final);
       reset();
     } catch (err) {
       setError(extractErrorMessage(err, "No se pudo crear el pipeline."));
@@ -106,6 +133,7 @@ export function CreatePipelineWizard({
           ...stage,
           position: index,
         })),
+        ...visibilityField,
       });
       onCreated(created);
       reset();
@@ -228,6 +256,11 @@ export function CreatePipelineWizard({
                 onChange={(event) => setScratchDescription(event.target.value)}
               />
             </label>
+            <VisibilityCheckbox
+              isAdmin={isAdmin}
+              checked={draftIsGlobal}
+              onChange={setDraftIsGlobal}
+            />
             <p className="muted small">
               Pipeline sin etapas. Añádelas desde el editor después de crearlo.
             </p>
@@ -288,6 +321,11 @@ export function CreatePipelineWizard({
                     </li>
                   ))}
                 </ol>
+                <VisibilityCheckbox
+                  isAdmin={isAdmin}
+                  checked={draftIsGlobal}
+                  onChange={setDraftIsGlobal}
+                />
                 <div className="form-actions">
                   <button
                     type="button"
@@ -353,6 +391,11 @@ export function CreatePipelineWizard({
                 </li>
               ))}
             </ol>
+            <VisibilityCheckbox
+              isAdmin={isAdmin}
+              checked={draftIsGlobal}
+              onChange={setDraftIsGlobal}
+            />
             <div className="form-actions">
               <button
                 type="button"
@@ -379,5 +422,35 @@ export function CreatePipelineWizard({
         ) : null}
       </div>
     </div>
+  );
+}
+
+/** PR-Frontend-Workflows-Pipelines-Templates. Solo visible para admin —
+ *  los demás roles no ven nada, el pipeline se crea privado del creador
+ *  por defecto y el backend ignora el campo si lo mandan. */
+function VisibilityCheckbox({
+  isAdmin,
+  checked,
+  onChange,
+}: {
+  isAdmin: boolean;
+  checked: boolean;
+  onChange: (value: boolean) => void;
+}) {
+  if (!isAdmin) return null;
+  return (
+    <label className="checkbox">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(event) => onChange(event.target.checked)}
+      />
+      <span>
+        Compartir con el equipo
+        <span className="muted small" style={{ marginLeft: 6 }}>
+          Todos los users verán el pipeline y podrán mover sus contactos.
+        </span>
+      </span>
+    </label>
   );
 }

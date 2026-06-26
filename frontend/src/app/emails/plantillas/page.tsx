@@ -11,6 +11,7 @@ import {
   Plus,
   Search,
   Share2,
+  Star,
   Trash2,
   Users,
 } from "lucide-react";
@@ -40,6 +41,7 @@ import {
   getEmailTemplate,
   listEmailTemplates,
   listEmailTemplateFolders,
+  setDefaultTemplateFolder,
   updateEmailTemplate,
   type EmailTemplate,
   type EmailTemplateFolderNode,
@@ -108,6 +110,7 @@ type FolderTreeProps = {
   nodes: EmailTemplateFolderNode[];
   selected: string;
   onSelect: (key: string) => void;
+  onToggleDefault: (node: EmailTemplateFolderNode) => void;
   depth?: number;
 };
 
@@ -115,6 +118,7 @@ function FolderTree({
   nodes,
   selected,
   onSelect,
+  onToggleDefault,
   depth = 0,
 }: FolderTreeProps) {
   const [open, setOpen] = useState<Record<string, boolean>>({});
@@ -124,6 +128,7 @@ function FolderTree({
         const isOpen = open[node.id] ?? depth < 1;
         const hasChildren = node.children.length > 0;
         const isSelected = selected === node.id;
+        const isDefault = !!node.is_default_for_me;
         return (
           <li key={node.id} className="et-tree-item">
             <div
@@ -158,12 +163,43 @@ function FolderTree({
                 <VisibilityIcon visibility={node.visibility} />
                 <span className="et-tree-count">{node.template_count}</span>
               </button>
+              {/* PR-Workflows-Pipelines-Per-User mini-fix. Toggle de
+                  carpeta predeterminada per-user (★). Solo UNA por
+                  user — al marcar otra, el backend desmarca la previa. */}
+              <button
+                type="button"
+                className={`et-folder-default-star${
+                  isDefault ? " is-default" : ""
+                }`}
+                title={
+                  isDefault
+                    ? "Quitar como carpeta predeterminada"
+                    : "Marcar como carpeta predeterminada al cargar plantilla"
+                }
+                aria-label={
+                  isDefault
+                    ? "Quitar como carpeta predeterminada"
+                    : "Marcar como carpeta predeterminada"
+                }
+                aria-pressed={isDefault}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onToggleDefault(node);
+                }}
+              >
+                <Star
+                  size={13}
+                  aria-hidden
+                  fill={isDefault ? "currentColor" : "none"}
+                />
+              </button>
             </div>
             {hasChildren && isOpen ? (
               <FolderTree
                 nodes={node.children}
                 selected={selected}
                 onSelect={onSelect}
+                onToggleDefault={onToggleDefault}
                 depth={depth + 1}
               />
             ) : null}
@@ -388,6 +424,24 @@ export default function PlantillasPage() {
     }
   }
 
+  // PR-Workflows-Pipelines-Per-User mini-fix. Marcar / desmarcar la
+  // carpeta predeterminada del current_user. Una sola por user — al
+  // marcar otra, el backend desmarca la previa automáticamente.
+  async function handleToggleDefault(node: EmailTemplateFolderNode) {
+    const willMark = !node.is_default_for_me;
+    try {
+      await setDefaultTemplateFolder(willMark ? node.id : null);
+      await refreshFolders();
+    } catch (err) {
+      setError(
+        extractErrorMessage(
+          err,
+          "No se pudo actualizar la carpeta predeterminada.",
+        ),
+      );
+    }
+  }
+
   async function handleDeleteFolder(folderId: string) {
     const node = flatFolders.find((f) => f.id === folderId);
     if (!node) return;
@@ -480,6 +534,7 @@ export default function PlantillasPage() {
             nodes={folders}
             selected={selectedFolder}
             onSelect={setSelectedFolder}
+            onToggleDefault={handleToggleDefault}
           />
           {selectedFolderNode ? (
             <div className="et-sidebar-actions">
