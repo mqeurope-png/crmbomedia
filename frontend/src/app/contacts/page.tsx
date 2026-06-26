@@ -88,6 +88,7 @@ import {
   type FieldDescriptor,
 } from "../lib/entitySchema";
 import {
+  clearDefaultEntityView,
   createEntityView,
   deleteEntityView,
   duplicateEntityView,
@@ -531,9 +532,14 @@ export default function ContactsListPage() {
   }
 
   async function handleSetDefault(view: EntityView) {
+    // PR-Backlog-3-5-7 item 5. Toggle de la preferencia per-user.
+    // Si ya es mi predeterminada → DELETE clear; si no → POST
+    // set-default. Backend persiste en `user_default_view_prefs`
+    // (no toca el flag legacy del owner).
+    const isMyDefault = view.is_default_for_me ?? view.is_default;
     try {
-      if (view.is_default) {
-        await updateEntityView("contact", view.id, { is_default: false });
+      if (isMyDefault) {
+        await clearDefaultEntityView("contact");
       } else {
         await setDefaultEntityView("contact", view.id);
       }

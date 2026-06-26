@@ -56,6 +56,7 @@ import {
   deleteEntityView,
   duplicateEntityView,
   listEntityViews,
+  clearDefaultEntityView,
   setDefaultEntityView,
   updateEntityView,
   type EntityView,
@@ -400,9 +401,12 @@ export default function CompaniesListPage() {
   }
 
   async function handleSetDefault(view: EntityView) {
+    // PR-Backlog-3-5-7 item 5. Toggle per-user — DELETE clear o
+    // POST set-default según el estado actual de mi preferencia.
+    const isMyDefault = view.is_default_for_me ?? view.is_default;
     try {
-      if (view.is_default) {
-        await updateEntityView("company", view.id, { is_default: false });
+      if (isMyDefault) {
+        await clearDefaultEntityView("company");
       } else {
         await setDefaultEntityView("company", view.id);
       }

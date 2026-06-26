@@ -63,6 +63,11 @@ export function EntityViewsTabs({
       </button>
       {views.map((view) => {
         const isActive = view.id === activeId;
+        // PR-Backlog-3-5-7 item 5. ★ refleja la preferencia per-user
+        // (`is_default_for_me`), no el flag global del owner. Para
+        // APIs antiguas que no devuelven el campo, caemos al legacy.
+        const isDefaultForMe =
+          view.is_default_for_me ?? view.is_default;
         return (
           <span
             key={view.id}
@@ -74,7 +79,7 @@ export function EntityViewsTabs({
               onClick={() => onSelect(view)}
             >
               {view.name}
-              {view.is_default ? " ★" : ""}
+              {isDefaultForMe ? " ★" : ""}
               {isActive && isDirty ? " ·" : ""}
               {!view.is_owner && view.is_shared ? (
                 <span className="muted small entity-views-tab-shared">
@@ -82,11 +87,12 @@ export function EntityViewsTabs({
                 </span>
               ) : null}
             </button>
-            {view.is_owner ? (
-              <CogwheelButton
-                onOpen={(element) => setMenuAnchor({ view, element })}
-              />
-            ) : null}
+            {/* Cualquier user con visibilidad puede marcar como su
+             * default (bug del backlog item 5). El menú decide qué
+             * opciones mostrar según ownership. */}
+            <CogwheelButton
+              onOpen={(element) => setMenuAnchor({ view, element })}
+            />
           </span>
         );
       })}
@@ -195,6 +201,10 @@ function PortalledMenu({
         role="menu"
         style={{ position: "fixed", top: coords.top, right: coords.right }}
       >
+        {/* PR-Backlog-3-5-7 item 5. "Marcar como predeterminada"
+         * disponible para CUALQUIER user que pueda ver la vista
+         * (propia o compartida). El indicador refleja la
+         * preferencia per-user. */}
         <li>
           <button
             type="button"
@@ -203,22 +213,27 @@ function PortalledMenu({
               onClose();
             }}
           >
-            {view.is_default
-              ? "Quitar de por defecto"
+            {(view.is_default_for_me ?? view.is_default)
+              ? "Quitar de mi predeterminada"
               : "Marcar como predeterminada"}
           </button>
         </li>
-        <li>
-          <button
-            type="button"
-            onClick={() => {
-              onEdit(view);
-              onClose();
-            }}
-          >
-            Renombrar / compartir
-          </button>
-        </li>
+        {/* Edit/Duplicate/Delete siguen siendo owner-only: el
+         * non-owner ve solo la opción de marcar predeterminada y
+         * duplicar (crea una copia propia que sí puede editar). */}
+        {view.is_owner ? (
+          <li>
+            <button
+              type="button"
+              onClick={() => {
+                onEdit(view);
+                onClose();
+              }}
+            >
+              Renombrar / compartir
+            </button>
+          </li>
+        ) : null}
         <li>
           <button
             type="button"
@@ -230,18 +245,20 @@ function PortalledMenu({
             Duplicar
           </button>
         </li>
-        <li>
-          <button
-            type="button"
-            className="danger"
-            onClick={() => {
-              onDelete(view);
-              onClose();
-            }}
-          >
-            Borrar vista
-          </button>
-        </li>
+        {view.is_owner ? (
+          <li>
+            <button
+              type="button"
+              className="danger"
+              onClick={() => {
+                onDelete(view);
+                onClose();
+              }}
+            >
+              Borrar vista
+            </button>
+          </li>
+        ) : null}
       </ul>
     </>,
     document.body,

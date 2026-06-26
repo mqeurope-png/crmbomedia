@@ -287,7 +287,11 @@ def create_template(
     if payload.is_global and current_user.role != UserRole.ADMIN:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Solo un admin puede marcar una plantilla como global.",
+            detail=(
+                "Solo admin puede compartir plantillas con el equipo. "
+                "Crea la plantilla sin marcarla como global; un admin "
+                "podrá compartirla después."
+            ),
         )
     if payload.folder_id is not None:
         folder = session.get(EmailTemplateFolder, payload.folder_id)
@@ -386,17 +390,37 @@ def update_template(
     template = session.get(EmailTemplate, template_id)
     if template is None:
         raise not_found("EmailTemplate")
+    # PR-Backlog-3-5-7. Distinguimos "editar plantilla global del
+    # equipo" (siempre 403 para non-admin) vs "editar plantilla
+    # propia que casualmente está marcada como global" (OK si el
+    # flag no cambia).
+    is_team_global_other = (
+        template.is_global
+        and template.owner_user_id != current_user.id
+    )
     if not _can_edit_template(session, template, current_user):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=(
-                "No tienes permiso para editar esta plantilla."
+                "No puedes editar plantillas globales del equipo. "
+                "Pide a un admin que la edite o duplícala en una "
+                "carpeta propia para personalizarla."
+                if is_team_global_other
+                else "No tienes permiso para editar esta plantilla."
             ),
         )
-    if payload.is_global and current_user.role != UserRole.ADMIN:
+    # Solo bloqueamos el CAMBIO del flag is_global. Reenviar el
+    # estado actual sin tocarlo (caso típico: el frontend manda el
+    # objeto entero al guardar) NO debe disparar 403. Solo el
+    # admin puede FLIPEAR el flag.
+    is_global_changed = bool(payload.is_global) != bool(template.is_global)
+    if is_global_changed and current_user.role != UserRole.ADMIN:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Solo un admin puede cambiar el flag is_global.",
+            detail=(
+                "Solo admin puede compartir plantillas con el equipo "
+                "o quitar el flag global."
+            ),
         )
     if payload.folder_id is not None:
         folder = session.get(EmailTemplateFolder, payload.folder_id)

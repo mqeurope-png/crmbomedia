@@ -4,6 +4,10 @@ import { ChevronLeft } from "lucide-react";
 import { usePathname, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { EmailComposerModal } from "../components/EmailComposerModal";
+import {
+  ResizableHandle,
+  usePanelWidth,
+} from "../components/ResizableHandle";
 import { DraftListPanel } from "../components/email/DraftListPanel";
 import { EmailFiltersBar } from "../components/email/EmailFiltersBar";
 import { EmailFolderDialog } from "../components/email/EmailFolderDialog";
@@ -135,8 +139,35 @@ export default function EmailsLayout({
 
   const effectiveMobileView = isThreadRoute ? "thread" : mobileView;
 
+  // PR-Backlog-3-5-7 item 7. Paneles redimensionables. El operador
+  // puede arrastrar los separadores para ajustar el ancho de la
+  // sidebar y de la columna middle (lista de hilos). El ancho del
+  // pane derecho (detalle del thread) se calcula con `1fr`. La
+  // preferencia se persiste per-user en localStorage. En mobile
+  // (<768px) los handles quedan ocultos via CSS y el layout vuelve
+  // a su comportamiento de state-machine 1-col.
+  const sidebar = usePanelWidth({
+    key: "crmbomedia_ui:emails:sidebar_width",
+    defaultPx: 240,
+    minPx: 180,
+    maxPx: 400,
+  });
+  const middle = usePanelWidth({
+    key: "crmbomedia_ui:emails:middle_width",
+    defaultPx: 380,
+    minPx: 280,
+    maxPx: 600,
+  });
+
   return (
-    <main className="email-mailbox" data-mobile-view={effectiveMobileView}>
+    <main
+      className="email-mailbox email-mailbox-resizable"
+      data-mobile-view={effectiveMobileView}
+      style={{
+        gridTemplateColumns:
+          `${sidebar.width}px auto ${middle.width}px auto minmax(0, 1fr)`,
+      }}
+    >
       <EmailSidebar
         folders={folders}
         labels={labels}
@@ -145,6 +176,11 @@ export default function EmailsLayout({
         onEditFolder={(target) => setFolderEdit({ open: true, target })}
         onEditLabel={(target) => setLabelEdit({ open: true, target })}
         onChanged={refreshAll}
+      />
+      <ResizableHandle
+        onMouseDown={sidebar.startDrag}
+        isDragging={sidebar.isDragging}
+        ariaLabel="Redimensionar sidebar"
       />
       <div className="email-middle-column">
         {/* PR-Fix-Emails-Responsive-Mobile. Botón "Carpetas" visible
@@ -172,6 +208,11 @@ export default function EmailsLayout({
           />
         )}
       </div>
+      <ResizableHandle
+        onMouseDown={middle.startDrag}
+        isDragging={middle.isDragging}
+        ariaLabel="Redimensionar lista de hilos"
+      />
       <section className="email-thread-pane">{children}</section>
 
       {composeOpen ? (

@@ -184,6 +184,157 @@ def test_non_owner_cannot_edit(client: TestClient) -> None:
     assert update.status_code == 403
 
 
+# ---------------------------------------------------------------------------
+# PR-Backlog-3-5-7 item 3. Bug operacional: el non-admin owner no
+# podía editar su plantilla propia si el flag `is_global=True` venía
+# en el payload (frontend reenvía el estado actual sin tocarlo). El
+# 403 fire-aba aunque no se estuviera CAMBIANDO el flag.
+# ---------------------------------------------------------------------------
+
+
+def _bootstrap_global_template_as_admin(client: TestClient) -> str:
+    admin_headers = auth_headers(client, role="admin")
+    created = client.post(
+        "/api/email-templates",
+        json={
+            "name": "Bienvenida equipo",
+            "body_html": "<p>Hola {nombre}</p>",
+            "is_global": True,
+        },
+        headers=admin_headers,
+    )
+    assert created.status_code == 201, created.text
+    return created.json()["id"]
+
+
+def test_owner_can_edit_own_template_with_is_global_unchanged(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    """Bug raíz: payload con `is_global=True` reflejado del estado
+    no debe disparar 403 si el owner no está cambiando el flag."""
+    template_id = _bootstrap_global_template_as_admin(client)
+    with session_factory() as session:
+        from sqlalchemy import select  # noqa: PLC0415
+
+        from app.models.crm import User, UserRole  # noqa: PLC0415
+        user_id = session.scalar(
+            select(User.id).where(User.role == UserRole.USER)
+        )
+        template = session.get(EmailTemplate, template_id)
+        template.owner_user_id = user_id
+        session.commit()
+
+    user_headers = auth_headers(client, role="user")
+    response = client.put(
+        f"/api/email-templates/{template_id}",
+        json={
+            "name": "Bienvenida equipo (renamed)",
+            "body_html": "<p>Hola {nombre}!</p>",
+            "is_global": True,
+        },
+        headers=user_headers,
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["name"] == "Bienvenida equipo (renamed)"
+
+
+def test_non_admin_cannot_flip_is_global_on(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    user_headers = auth_headers(client, role="user")
+    created = client.post(
+        "/api/email-templates",
+        json={"name": "Mía", "body_html": "<p>private</p>"},
+        headers=user_headers,
+    ).json()
+    response = client.put(
+        f"/api/email-templates/{created['id']}",
+        json={
+            "name": "Mía",
+            "body_html": "<p>private</p>",
+            "is_global": True,
+        },
+        headers=user_headers,
+    )
+    assert response.status_code == 403
+    assert "compartir" in response.json()["detail"].lower()
+
+
+def test_non_admin_cannot_flip_is_global_off(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    template_id = _bootstrap_global_template_as_admin(client)
+    with session_factory() as session:
+        from sqlalchemy import select  # noqa: PLC0415
+
+        from app.models.crm import User, UserRole  # noqa: PLC0415
+        user_id = session.scalar(
+            select(User.id).where(User.role == UserRole.USER)
+        )
+        template = session.get(EmailTemplate, template_id)
+        template.owner_user_id = user_id
+        session.commit()
+    user_headers = auth_headers(client, role="user")
+    response = client.put(
+        f"/api/email-templates/{template_id}",
+        json={
+            "name": "Bienvenida equipo",
+            "body_html": "<p>Hola {nombre}</p>",
+            "is_global": False,
+        },
+        headers=user_headers,
+    )
+    assert response.status_code == 403
+
+
+def test_non_admin_cannot_edit_team_global_owned_by_other(
+    client: TestClient,
+) -> None:
+    template_id = _bootstrap_global_template_as_admin(client)
+    manager_headers = auth_headers(client, role="manager")
+    response = client.put(
+        f"/api/email-templates/{template_id}",
+        json={"name": "Hijack", "body_html": "<p>hijack</p>"},
+        headers=manager_headers,
+    )
+    assert response.status_code == 403
+    assert "globales del equipo" in response.json()["detail"].lower()
+
+
+def test_admin_can_edit_any_template_and_flip_is_global(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    user_headers = auth_headers(client, role="user")
+    created = client.post(
+        "/api/email-templates",
+        json={"name": "Privada", "body_html": "<p>private</p>"},
+        headers=user_headers,
+    ).json()
+    admin_headers = auth_headers(client, role="admin")
+    response = client.put(
+        f"/api/email-templates/{created['id']}",
+        json={
+            "name": "Privada",
+            "body_html": "<p>private</p>",
+            "is_global": True,
+        },
+        headers=admin_headers,
+    )
+    assert response.status_code == 200
+    assert response.json()["is_global"] is True
+    response = client.put(
+        f"/api/email-templates/{created['id']}",
+        json={
+            "name": "Privada",
+            "body_html": "<p>private</p>",
+            "is_global": False,
+        },
+        headers=admin_headers,
+    )
+    assert response.status_code == 200
+    assert response.json()["is_global"] is False
+
+
 def test_use_increments_usage_count(
     client: TestClient, session_factory: sessionmaker
 ) -> None:
