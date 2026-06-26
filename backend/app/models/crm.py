@@ -628,6 +628,42 @@ class UserDefaultViewPref(TimestampMixin, Base):
     )
 
 
+class UserTemplateFolderPref(TimestampMixin, Base):
+    """PR-Workflows-Pipelines-Per-User mini-fix. Carpeta de plantillas
+    predeterminada per-user para el modal "Nuevo email > Cargar
+    plantilla > CRM". UNIQUE(user_id) — solo una carpeta default por
+    user. Cuando el operador abre el modal, la lista se filtra
+    automáticamente a esta carpeta; el operador puede cambiar el
+    selector puntualmente, pero la próxima vez vuelve aquí.
+
+    Tabla separada de `user_default_view_prefs` para no añadir un
+    `entity_type` a una pref que solo aplica a este dominio — mantiene
+    cada preferencia con su responsabilidad.
+    """
+
+    __tablename__ = "user_template_folder_prefs"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", name="uq_user_template_folder_prefs_user"
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid4())
+    )
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    folder_id: Mapped[str] = mapped_column(
+        ForeignKey(
+            "email_template_folders.id", ondelete="CASCADE"
+        ),
+        nullable=False,
+    )
+
+
 class Pipeline(TimestampMixin, Base):
     """A named sequence of stages a contact moves through. A tenant
     can run several pipelines side by side (Ventas, Reactivación,
@@ -645,8 +681,16 @@ class Pipeline(TimestampMixin, Base):
     description: Mapped[str | None] = mapped_column(Text)
     color: Mapped[str | None] = mapped_column(String(7))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    owner_user_id: Mapped[str] = mapped_column(
-        ForeignKey("users.id"), nullable=False
+    # PR-Workflows-Pipelines-Per-User. Antes esta columna era NOT
+    # NULL y marcaba al creador (sin implicar privacidad). Ahora
+    # NULL = pipeline global del equipo (visible para todos); un
+    # UUID = privado del owner. La migración 20260626_0072 hace
+    # ALTER + reset a NULL para que los pipelines existentes
+    # queden globales. `is_shared` queda en la tabla como legacy
+    # pero no se usa para el filtro de visibilidad.
+    owner_user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"),
+        index=True,
     )
     is_shared: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 

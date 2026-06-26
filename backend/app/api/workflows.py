@@ -87,7 +87,10 @@ router = APIRouter(prefix="/api/workflows", tags=["workflows"])
 
 
 def _workflow_to_read(
-    workflow: Workflow, *, session: Session | None = None
+    workflow: Workflow,
+    *,
+    session: Session | None = None,
+    current_user: User | None = None,
 ) -> WorkflowRead:
     return WorkflowRead(
         id=workflow.id,
@@ -111,6 +114,13 @@ def _workflow_to_read(
         if session is not None
         else 0,
         created_by_user_id=workflow.created_by_user_id,
+        # PR-Workflows-Pipelines-Per-User.
+        owner_user_id=workflow.owner_user_id,
+        is_mine=(
+            current_user is not None
+            and workflow.owner_user_id == current_user.id
+        ),
+        is_global=workflow.owner_user_id is None,
         definition_hash=workflow.definition_hash,
         created_at=workflow.created_at,
         updated_at=workflow.updated_at,
@@ -139,9 +149,14 @@ def _count_completed_with_skipped(
 
 
 def _workflow_to_detail(
-    session: Session, workflow: Workflow
+    session: Session,
+    workflow: Workflow,
+    *,
+    current_user: User | None = None,
 ) -> WorkflowDetail:
-    base = _workflow_to_read(workflow, session=session)
+    base = _workflow_to_read(
+        workflow, session=session, current_user=current_user
+    )
     steps = list(
         session.scalars(
             select(WorkflowStep).where(
@@ -330,12 +345,25 @@ def list_workflows(
     session: Session = Depends(get_session),
     current_user: User = Depends(require_user),
 ) -> list[WorkflowRead]:
-    _ = current_user
+    # PR-Workflows-Pipelines-Per-User. Devuelve workflows del
+    # current_user (privados) + los globales del equipo
+    # (owner_user_id IS NULL). Admin ve TODO porque su set incluye
+    # los privados de otros, así que añadimos la rama de admin.
+    from app.services.ownership import is_admin  # noqa: PLC0415
+
     stmt = select(Workflow).order_by(desc(Workflow.updated_at))
+    if not is_admin(current_user):
+        stmt = stmt.where(
+            (Workflow.owner_user_id == current_user.id)
+            | (Workflow.owner_user_id.is_(None))
+        )
     if status_filter is not None:
         stmt = stmt.where(Workflow.status == status_filter)
     rows = list(session.scalars(stmt))
-    return [_workflow_to_read(w, session=session) for w in rows]
+    return [
+        _workflow_to_read(w, session=session, current_user=current_user)
+        for w in rows
+    ]
 
 
 @router.post("", response_model=WorkflowDetail, status_code=201)
@@ -343,8 +371,22 @@ def create_workflow(
     payload: WorkflowCreate,
     request: Request,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_manager),
+    current_user: User = Depends(require_user),
 ) -> WorkflowDetail:
+    # PR-Workflows-Pipelines-Per-User. Cualquier user puede crear
+    # workflows. Default: privado (owner_user_id=current_user). Si
+    # el payload pide is_global=True, solo admin lo permite.
+    from app.services.ownership import can_user_toggle_global  # noqa: PLC0415
+
+    if payload.is_global and not can_user_toggle_global(current_user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "Solo admin puede crear workflows del equipo. "
+                "Crea uno privado; un admin puede compartirlo después."
+            ),
+        )
+    owner_user_id = None if payload.is_global else current_user.id
     workflow = Workflow(
         name=payload.name,
         description=payload.description,
@@ -354,6 +396,7 @@ def create_workflow(
         cancellation_events_json=json.dumps(payload.cancellation_events or [], default=str),
         status=WorkflowStatus.DRAFT,
         created_by_user_id=current_user.id,
+        owner_user_id=owner_user_id,
     )
     session.add(workflow)
     session.flush()
@@ -381,7 +424,7 @@ def create_workflow(
     )
     session.commit()
     session.refresh(workflow)
-    return _workflow_to_detail(session, workflow)
+    return _workflow_to_detail(session, workflow, current_user=current_user)
 
 
 @router.get("/_catalog", response_model=WorkflowCatalogResponse)
@@ -590,11 +633,12 @@ def get_workflow(
     session: Session = Depends(get_session),
     current_user: User = Depends(require_user),
 ) -> WorkflowDetail:
-    _ = current_user
+    from app.services.ownership import can_user_see_resource  # noqa: PLC0415
+
     workflow = session.get(Workflow, workflow_id)
-    if workflow is None:
+    if workflow is None or not can_user_see_resource(current_user, workflow):
         raise not_found("Workflow")
-    return _workflow_to_detail(session, workflow)
+    return _workflow_to_detail(session, workflow, current_user=current_user)
 
 
 @router.put("/{workflow_id}", response_model=WorkflowDetail)
@@ -603,11 +647,57 @@ def update_workflow(
     payload: WorkflowUpdate,
     request: Request,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_manager),
+    current_user: User = Depends(require_user),
 ) -> WorkflowDetail:
+    from app.services.ownership import (  # noqa: PLC0415
+        can_user_edit_resource,
+        can_user_toggle_global,
+    )
+
     workflow = session.get(Workflow, workflow_id)
     if workflow is None:
         raise not_found("Workflow")
+    if not can_user_edit_resource(current_user, workflow):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "No tienes permiso para editar este workflow."
+                if workflow.owner_user_id is not None
+                else "No puedes editar workflows del equipo. "
+                "Pide a un admin que los edite o duplícalos."
+            ),
+        )
+    # PR-Workflows-Pipelines-Per-User. Toggle is_global solo admin.
+    if payload.is_global is not None:
+        current_is_global = workflow.owner_user_id is None
+        if payload.is_global != current_is_global:
+            if not can_user_toggle_global(current_user):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=(
+                        "Solo admin puede compartir o privar workflows."
+                    ),
+                )
+            previous_owner = workflow.owner_user_id
+            workflow.owner_user_id = (
+                None if payload.is_global else current_user.id
+            )
+            record_event(
+                session,
+                action=(
+                    "workflow.made_global"
+                    if payload.is_global
+                    else "workflow.made_private"
+                ),
+                target_type="workflow",
+                target_id=workflow.id,
+                actor=current_user,
+                metadata={
+                    "previous_owner_user_id": previous_owner,
+                    "new_owner_user_id": workflow.owner_user_id,
+                },
+                request=request,
+            )
 
     # Cambios estructurales (steps / edges) requieren DRAFT o PAUSED.
     structural = payload.steps is not None or payload.edges is not None
@@ -657,7 +747,7 @@ def update_workflow(
     )
     session.commit()
     session.refresh(workflow)
-    return _workflow_to_detail(session, workflow)
+    return _workflow_to_detail(session, workflow, current_user=current_user)
 
 
 def _replace_steps_and_edges(
@@ -813,7 +903,7 @@ def activate_workflow(
     )
     session.commit()
     session.refresh(workflow)
-    return _workflow_to_detail(session, workflow)
+    return _workflow_to_detail(session, workflow, current_user=current_user)
 
 
 @router.post("/{workflow_id}/pause", response_model=WorkflowDetail)
@@ -838,7 +928,7 @@ def pause_workflow(
     )
     session.commit()
     session.refresh(workflow)
-    return _workflow_to_detail(session, workflow)
+    return _workflow_to_detail(session, workflow, current_user=current_user)
 
 
 @router.post("/{workflow_id}/archive", response_model=WorkflowDetail)
@@ -863,7 +953,7 @@ def archive_workflow(
     )
     session.commit()
     session.refresh(workflow)
-    return _workflow_to_detail(session, workflow)
+    return _workflow_to_detail(session, workflow, current_user=current_user)
 
 
 @router.delete("/{workflow_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -871,11 +961,18 @@ def delete_workflow(
     workflow_id: str,
     request: Request,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_admin),
+    current_user: User = Depends(require_user),
 ) -> Response:
+    from app.services.ownership import can_user_edit_resource  # noqa: PLC0415
+
     workflow = session.get(Workflow, workflow_id)
     if workflow is None:
         raise not_found("Workflow")
+    if not can_user_edit_resource(current_user, workflow):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No tienes permiso para borrar este workflow.",
+        )
     # Cancel runs activos + delete cascade vía FK.
     active_runs = list(
         session.scalars(

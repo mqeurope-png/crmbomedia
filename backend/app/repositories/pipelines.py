@@ -35,13 +35,24 @@ def _ensure_tz(value: datetime) -> datetime:
 
 
 def list_pipelines(
-    session: Session, *, include_inactive: bool = False
+    session: Session,
+    *,
+    include_inactive: bool = False,
+    visible_to_user_id: str | None = None,
 ) -> list[Pipeline]:
+    """PR-Workflows-Pipelines-Per-User. Si `visible_to_user_id` se
+    pasa, filtra a pipelines del user + globales del equipo
+    (`owner_user_id IS NULL`). Sin filtro devuelve TODO — admin."""
     statement = select(Pipeline).options(
         selectinload(Pipeline.stages)
     ).order_by(Pipeline.name)
     if not include_inactive:
         statement = statement.where(Pipeline.is_active.is_(True))
+    if visible_to_user_id is not None:
+        statement = statement.where(
+            (Pipeline.owner_user_id == visible_to_user_id)
+            | (Pipeline.owner_user_id.is_(None))
+        )
     return list(session.scalars(statement))
 
 
