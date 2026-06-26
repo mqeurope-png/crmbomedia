@@ -1,6 +1,6 @@
 "use client";
 
-import { Mail, Plus } from "lucide-react";
+import { History, Mail, Plus } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { formatBackendDateTime } from "../lib/dates";
@@ -8,6 +8,7 @@ import {
   listEmailThreads,
   type EmailThread,
 } from "../lib/emailsApi";
+import { queuePerContactBackfill } from "../lib/gmailBackfillApi";
 import { extractErrorMessage } from "../lib/errors";
 
 function formatDateTime(value: string): string {
@@ -42,7 +43,10 @@ export function ContactEmailsSection({
   const [threads, setThreads] = useState<EmailThread[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  void contactEmail;
+  // PR-Auto-Backfill-Gmail-Por-Contacto. Estado del botón "Importar
+  // histórico de Gmail".
+  const [importing, setImporting] = useState(false);
+  const [importNotice, setImportNotice] = useState<string | null>(null);
 
   useEffect(() => {
     setLoading(true);
@@ -54,16 +58,53 @@ export function ContactEmailsSection({
       .finally(() => setLoading(false));
   }, [contactId, refreshKey]);
 
+  async function handleImportHistory() {
+    if (importing) return;
+    setImporting(true);
+    setImportNotice(null);
+    try {
+      await queuePerContactBackfill(contactId, 12);
+      setImportNotice(
+        "Importando histórico de Gmail. Refresca la ficha en 1-2 min.",
+      );
+    } catch (err) {
+      setError(
+        extractErrorMessage(err, "No se pudo importar el histórico."),
+      );
+    } finally {
+      setImporting(false);
+    }
+  }
+
   return (
     <div>
       <div className="section-title">
         <h3>
           <Mail size={12} aria-hidden /> Emails
         </h3>
-        <button type="button" className="button small" onClick={onCompose}>
-          <Plus size={11} aria-hidden /> Nuevo
-        </button>
+        <div style={{ display: "flex", gap: 6 }}>
+          {contactEmail ? (
+            <button
+              type="button"
+              className="button secondary small"
+              onClick={handleImportHistory}
+              disabled={importing}
+              title="Buscar e importar conversaciones históricas de Gmail con este contacto (últimos 12 meses)"
+            >
+              <History size={11} aria-hidden />{" "}
+              {importing ? "Importando…" : "Importar histórico Gmail"}
+            </button>
+          ) : null}
+          <button type="button" className="button small" onClick={onCompose}>
+            <Plus size={11} aria-hidden /> Nuevo
+          </button>
+        </div>
       </div>
+      {importNotice ? (
+        <p className="muted small" style={{ color: "#15803d" }}>
+          {importNotice}
+        </p>
+      ) : null}
       {error ? <p className="form-error">{error}</p> : null}
       {loading ? (
         <p className="muted small">Cargando…</p>

@@ -141,6 +141,11 @@ services:
       - gmail:process_history
       - gmail:renew_watches
       - gmail:backfill_historic
+      # PR-Auto-Backfill-Gmail-Por-Contacto. Mini-backfill del histórico
+      # Gmail de un contacto recién creado. Se procesa de uno en uno;
+      # cada job tiene timeout de 300s y va al final de las colas Gmail
+      # para no retrasar el sync incremental ni el process_history.
+      - gmail:backfill_per_contact
       - emails:snooze_sweep
       - email_templates:import_gmail
       # Sprint Backup. Cola virtual para el job manual + scheduled

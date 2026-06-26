@@ -1570,6 +1570,19 @@ def create_contact(
         contact.id,
         {"source": "manual", "actor_id": current_user.id},
     )
+
+    # PR-Auto-Backfill-Gmail-Por-Contacto. Creación individual → mini-
+    # backfill automático del histórico Gmail del contacto. Solo si
+    # tiene email. Best-effort: enqueue_backfill_per_contact se traga
+    # fallos de Redis para no romper el POST.
+    if contact.email:
+        from app.integrations.gmail.backfill import (  # noqa: PLC0415
+            enqueue_backfill_per_contact,
+        )
+
+        enqueue_backfill_per_contact(
+            contact.id, triggered_by_user_id=current_user.id
+        )
     return contact
 
 

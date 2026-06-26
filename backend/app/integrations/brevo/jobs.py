@@ -720,6 +720,23 @@ def sync_brevo_contacts(session: Session, sync_log: SyncLog) -> SyncOutcome:
             account_id,
         )
 
+    # PR-Auto-Backfill-Gmail-Por-Contacto. Sync periódico (no bulk) →
+    # mini-backfill automático del histórico Gmail por cada contacto
+    # nuevo. En bulk NO se dispara — el admin lo lanza desde el banner.
+    if new_contacts and not is_bulk_import:
+        from app.integrations.gmail.backfill import (  # noqa: PLC0415
+            enqueue_backfill_per_contact,
+        )
+
+        for contact_id, _ext_id in new_contacts:
+            enqueue_backfill_per_contact(contact_id)
+        logger.info(
+            "brevo sync: enqueued %d per-contact Gmail backfills for "
+            "account=%s",
+            len(new_contacts),
+            account_id,
+        )
+
     return SyncOutcome(
         records_processed=created + updated,
         records_skipped=skipped,

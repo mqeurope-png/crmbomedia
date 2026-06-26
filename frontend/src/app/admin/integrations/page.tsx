@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { GmailBackfillSection } from "../../components/GmailBackfillSection";
+import { PerContactBackfillBanner } from "../../components/PerContactBackfillBanner";
 import { ErrorState } from "../../components/ErrorState";
 import { IntegrationAccountCard } from "../../components/IntegrationAccountCard";
 import { IntegrationAccountModal } from "../../components/IntegrationAccountModal";
@@ -301,6 +302,10 @@ export default function IntegrationAccountsPage() {
 
       {!isLoading ? (
         <>
+          {/* PR-Auto-Backfill-Gmail-Por-Contacto. Banner que aparece tras
+              un sync masivo con contactos nuevos sin histórico Gmail. */}
+          {isAdmin ? <PerContactBackfillBanner onError={setError} /> : null}
+
           <IntegrationSystemTabs
             tabs={tabs}
             active={activeSystem}

@@ -9909,6 +9909,27 @@ tr.is-inactive {
   color: #f59e0b;
 }
 
+/* PR-Auto-Backfill-Gmail-Por-Contacto. Banner admin tras sync masivo
+ * + estado "importando". */
+.pcb-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  margin-bottom: 14px;
+  background: #fffbeb;
+  border: 1px solid #fcd34d;
+  border-radius: 8px;
+  font-size: 13px;
+  color: #92400e;
+}
+
+.pcb-banner-progress {
+  background: #eff6ff;
+  border-color: #bfdbfe;
+  color: #1e40af;
+}
+
 /* PR-Hotfix-Pipelines-Use-Template. Toolbar sticky de Save/Cancel en
  * /pipelines/[id]/edit-stages. Aparece solo cuando hay cambios sin
  * guardar — el punto naranja sigue el patrón del indicador "dirty"

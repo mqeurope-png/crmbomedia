@@ -93,6 +93,7 @@ services:
       - gmail:process_history
       - gmail:renew_watches
       - gmail:backfill_historic
+      - gmail:backfill_per_contact
       - emails:snooze_sweep
       - email_templates:import_gmail
     volumes:

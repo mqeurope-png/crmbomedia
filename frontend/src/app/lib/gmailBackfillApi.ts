@@ -139,3 +139,52 @@ export async function forceFailGmailBackfill(
     { method: "POST" },
   );
 }
+
+// PR-Auto-Backfill-Gmail-Por-Contacto -------------------------------------
+
+export interface PerContactCandidates {
+  count: number;
+  contact_ids: string[];
+}
+
+/** Banner admin: contactos recientes (últimas `hours` horas) sin
+ *  histórico Gmail per-contact importado. */
+export async function getPerContactCandidates(
+  hours = 24,
+): Promise<PerContactCandidates> {
+  return apiFetch<PerContactCandidates>(
+    `/api/admin/gmail/backfill-per-contact/candidates?hours=${hours}`,
+  );
+}
+
+/** Encola mini-backfill para una lista de contactos (banner admin). */
+export async function queuePerContactBatch(
+  contactIds: string[],
+  monthsBack = 12,
+): Promise<{ queued: number }> {
+  return apiFetch<{ queued: number }>(
+    "/api/admin/gmail/backfill-per-contact-batch",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        contact_ids: contactIds,
+        months_back: monthsBack,
+      }),
+    },
+  );
+}
+
+/** Acción de ficha de contacto: importar histórico Gmail de ESE
+ *  contacto. Visible para todos los users. */
+export async function queuePerContactBackfill(
+  contactId: string,
+  monthsBack = 12,
+): Promise<{ queued: number }> {
+  return apiFetch<{ queued: number }>(
+    `/api/contacts/${encodeURIComponent(contactId)}/gmail-backfill`,
+    {
+      method: "POST",
+      body: JSON.stringify({ months_back: monthsBack }),
+    },
+  );
+}

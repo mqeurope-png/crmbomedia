@@ -27,6 +27,42 @@ class BackfillEstimateRequest(BaseModel):
     aliases_scope: AliasesScope = "primary_only"
 
 
+# PR-Auto-Backfill-Gmail-Por-Contacto -----------------------------------
+
+
+class PerContactBatchRequest(BaseModel):
+    """Body de `POST /api/admin/gmail/backfill-per-contact-batch`.
+
+    O bien `contact_ids` explícito, o bien `since_created_at` para
+    procesar todos los contactos creados a partir de esa fecha sin
+    histórico per-contact importado. Si se pasan ambos, manda
+    `contact_ids`."""
+
+    contact_ids: list[str] = Field(default_factory=list)
+    since_created_at: datetime | None = None
+    months_back: int = Field(default=12, ge=1, le=120)
+
+
+class PerContactBatchResponse(BaseModel):
+    queued: int
+
+
+class PerContactCandidatesResponse(BaseModel):
+    """Contactos candidatos para mini-backfill: con email, creados en
+    las últimas `hours` horas, sin ningún `email_messages` con
+    `imported_via='per_contact_backfill'`. Alimenta el banner admin."""
+
+    count: int
+    contact_ids: list[str]
+
+
+class PerContactRequest(BaseModel):
+    """Body opcional de `POST /api/contacts/{id}/gmail-backfill` — solo
+    `months_back`. El contact_id viene del path."""
+
+    months_back: int = Field(default=12, ge=1, le=120)
+
+
 class BackfillPerUserBreakdown(BaseModel):
     """Una fila del desglose. Se rellena al final del modo `estimate`
     para que la UI muestre la tabla por comercial."""

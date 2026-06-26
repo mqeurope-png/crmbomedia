@@ -1509,3 +1509,293 @@ def test_total_estimated_uses_actual_count_not_resultsizeestimate(
             f"total_estimated={job.total_estimated} < 15 — debería "
             "reflejar el conteo paginado real, no el hint de Gmail"
         )
+
+
+# ---------------------------------------------------------------------------
+# PR-Auto-Backfill-Gmail-Por-Contacto — mini-backfill por contacto
+# ---------------------------------------------------------------------------
+
+
+def _only_admin_integrations(factory: sessionmaker):
+    """Patch helper: limita `_iter_connected_users` al admin para que el
+    FakeGmail (que no modela buzones separados y over-matchea por
+    substring del email del contacto) no importe el mismo mensaje bajo
+    varios users. En producción cada query corre contra el buzón real
+    del user, así que esto refleja el caso "solo el admin habló con el
+    contacto"."""
+    with factory() as session:
+        admin_id = session.scalar(_user_id_by_role_query("admin"))
+
+    original = backfill_module._iter_connected_users
+
+    def _filtered(session):  # noqa: ANN001
+        return [i for i in original(session) if i.user_id == admin_id]
+
+    return patch.object(
+        backfill_module, "_iter_connected_users", side_effect=_filtered
+    ), admin_id
+
+
+def test_per_contact_backfill_imports_matching_emails(
+    client, factory, fake_gmail, patched_client
+):
+    fake_gmail.add_conversation(
+        alias="manel@bomedia.net",
+        contact_email="marny@cliente.com",
+        message_id="pc-msg-1",
+        subject="Histórico",
+        body_text="Hablamos hace meses",
+    )
+    only_admin, admin_id = _only_admin_integrations(factory)
+    with only_admin:
+        backfill_module.run_backfill_per_contact("contact-marny")
+
+    with factory() as session:
+        msg = session.scalar(
+            select(EmailMessage).where(
+                EmailMessage.gmail_message_id == "pc-msg-1",
+                EmailMessage.gmail_account_user_id == admin_id,
+            )
+        )
+        assert msg is not None
+        assert msg.imported_via == "per_contact_backfill"
+        assert msg.contact_id == "contact-marny"
+
+
+def test_per_contact_backfill_skips_contact_without_email(
+    client, factory, fake_gmail, patched_client
+):
+    with factory() as session:
+        session.add(
+            Contact(
+                id="contact-noemail",
+                first_name="SinEmail",
+                email=None,
+                is_active=True,
+            )
+        )
+        session.commit()
+    only_admin, _ = _only_admin_integrations(factory)
+    with only_admin:
+        # No debe lanzar — return temprano con warning.
+        backfill_module.run_backfill_per_contact("contact-noemail")
+
+    with factory() as session:
+        from sqlalchemy import func
+
+        n = session.scalar(
+            select(func.count()).select_from(EmailMessage)
+        )
+        assert n == 0
+
+
+def test_per_contact_backfill_dedups_existing_messages_by_gmail_id(
+    client, factory, fake_gmail, patched_client
+):
+    fake_gmail.add_conversation(
+        alias="manel@bomedia.net",
+        contact_email="marny@cliente.com",
+        message_id="pc-dup-1",
+        body_text="Ya importado",
+    )
+    only_admin, admin_id = _only_admin_integrations(factory)
+    # Pre-insertar el mensaje como si ya existiera (e.g. sync incremental).
+    with factory() as session:
+        thread_id = str(uuid4())
+        from app.models.crm import EmailThread
+
+        session.add(
+            EmailThread(
+                id=thread_id,
+                gmail_account_user_id=admin_id,
+                initiated_by_user_id=admin_id,
+                gmail_thread_id="pc-dup-1",
+                contact_id="contact-marny",
+                subject="Ya importado",
+                first_message_at=datetime.now(UTC),
+                last_message_at=datetime.now(UTC),
+                message_count=1,
+            )
+        )
+        from app.models.crm import EmailDirection
+
+        session.add(
+            EmailMessage(
+                thread_id=thread_id,
+                gmail_message_id="pc-dup-1",
+                gmail_account_user_id=admin_id,
+                direction=EmailDirection.INBOUND,
+                from_email="manel@bomedia.net",
+                to_emails_json="[]",
+                contact_id="contact-marny",
+                imported_via="incoming_realtime",
+                sent_at=datetime.now(UTC),
+            )
+        )
+        session.commit()
+
+    with only_admin:
+        backfill_module.run_backfill_per_contact("contact-marny")
+
+    with factory() as session:
+        from sqlalchemy import func
+
+        n = session.scalar(
+            select(func.count())
+            .select_from(EmailMessage)
+            .where(
+                EmailMessage.gmail_message_id == "pc-dup-1",
+                EmailMessage.gmail_account_user_id == admin_id,
+            )
+        )
+        assert n == 1  # no se duplicó
+
+
+def test_per_contact_backfill_continues_on_oauth_expired_for_one_user(
+    client, factory, fake_gmail, patched_client
+):
+    fake_gmail.add_conversation(
+        alias="manel@bomedia.net",
+        contact_email="marny@cliente.com",
+        message_id="pc-oauth-1",
+        body_text="ok",
+    )
+    with factory() as session:
+        manager_id = session.scalar(_user_id_by_role_query("manager"))
+
+    def selective(session, user_id):  # noqa: ANN001
+        if user_id == manager_id:
+            raise GmailScopeMissingError("scope expirado")
+        return fake_gmail
+
+    with patch.object(backfill_module, "_client_for", side_effect=selective):
+        # No debe lanzar — el manager se salta, el admin importa.
+        backfill_module.run_backfill_per_contact("contact-marny")
+
+    with factory() as session:
+        msg = session.scalar(
+            select(EmailMessage).where(
+                EmailMessage.gmail_message_id == "pc-oauth-1"
+            )
+        )
+        assert msg is not None
+
+
+def test_per_contact_backfill_returns_early_for_deleted_contact(
+    client, factory, fake_gmail, patched_client
+):
+    # contact_id inexistente → log + return sin lanzar.
+    only_admin, _ = _only_admin_integrations(factory)
+    with only_admin:
+        backfill_module.run_backfill_per_contact("contact-does-not-exist")
+    with factory() as session:
+        from sqlalchemy import func
+
+        n = session.scalar(select(func.count()).select_from(EmailMessage))
+        assert n == 0
+
+
+def test_contact_create_triggers_per_contact_backfill_when_email_present(
+    client, factory, patched_client
+):
+    calls: list[tuple] = []
+
+    def _spy(contact_id, **kwargs):  # noqa: ANN001
+        calls.append((contact_id, kwargs))
+
+    with patch(
+        "app.integrations.gmail.backfill.enqueue_backfill_per_contact",
+        side_effect=_spy,
+    ):
+        r = client.post(
+            "/api/contacts",
+            headers=auth_headers(client, "manager"),
+            json={
+                "first_name": "Nuevo",
+                "email": "nuevo@lead.com",
+                "marketing_consent": "unknown",
+            },
+        )
+    assert r.status_code == 201, r.text
+    assert len(calls) == 1
+    assert calls[0][0] == r.json()["id"]
+
+
+def test_admin_batch_endpoint_queues_jobs_for_each_contact_id(
+    client, factory, patched_client
+):
+    with factory() as session:
+        admin_id = session.scalar(_user_id_by_role_query("admin"))
+        session.add_all(
+            [
+                Contact(
+                    id="batch-a",
+                    first_name="A",
+                    email="a@x.com",
+                    owner_user_id=admin_id,
+                    is_active=True,
+                ),
+                Contact(
+                    id="batch-b",
+                    first_name="B",
+                    email="b@x.com",
+                    owner_user_id=admin_id,
+                    is_active=True,
+                ),
+            ]
+        )
+        session.commit()
+
+    calls: list[str] = []
+
+    def _spy(contact_id, **kwargs):  # noqa: ANN001
+        calls.append(contact_id)
+
+    with patch(
+        "app.integrations.gmail.backfill.enqueue_backfill_per_contact",
+        side_effect=_spy,
+    ):
+        r = client.post(
+            "/api/admin/gmail/backfill-per-contact-batch",
+            headers=auth_headers(client, "admin"),
+            json={"contact_ids": ["batch-a", "batch-b"], "months_back": 12},
+        )
+    assert r.status_code == 200, r.text
+    assert r.json()["queued"] == 2
+    assert set(calls) == {"batch-a", "batch-b"}
+
+
+def test_per_contact_single_endpoint_visible_for_any_user(
+    client, factory, patched_client
+):
+    calls: list[str] = []
+
+    def _spy(contact_id, **kwargs):  # noqa: ANN001
+        calls.append(contact_id)
+
+    with patch(
+        "app.integrations.gmail.backfill.enqueue_backfill_per_contact",
+        side_effect=_spy,
+    ):
+        r = client.post(
+            "/api/contacts/contact-marny/gmail-backfill",
+            headers=auth_headers(client, "user"),
+            json={"months_back": 12},
+        )
+    assert r.status_code == 200, r.text
+    assert r.json()["queued"] == 1
+    assert calls == ["contact-marny"]
+
+
+def test_per_contact_candidates_endpoint_lists_recent_without_history(
+    client, factory, patched_client
+):
+    # contact-marny existe (sin per_contact_backfill) → candidato.
+    r = client.get(
+        "/api/admin/gmail/backfill-per-contact/candidates?hours=24",
+        headers=auth_headers(client, "admin"),
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "contact-marny" in body["contact_ids"]
+    assert body["count"] >= 1
