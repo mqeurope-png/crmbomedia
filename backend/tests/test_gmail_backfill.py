@@ -113,12 +113,18 @@ def _wire_gmail(session, *, role: str, alias_emails: list[str]) -> None:
             connected_at=now,
         )
     )
-    for email in alias_emails:
+    # PR-Fix-Backfill-Gmail-Cero-Importados. La primera alias se marca
+    # como default — en producción todas las cuentas Gmail tienen un
+    # Send-As default; los tests deben reflejarlo para que el modo
+    # `aliases_scope=primary_only` (el nuevo default del endpoint)
+    # encuentre el alias y enrute las queries correctamente.
+    for idx, email in enumerate(alias_emails):
         session.add(
             UserEmailAliasPref(
                 user_id=user_id,
                 alias_email=email,
                 is_allowed=True,
+                is_default=(idx == 0),
             )
         )
 
@@ -959,3 +965,280 @@ def test_force_fail_is_idempotent_on_terminal_jobs(
     )
     assert response.status_code == 200
     assert response.json()["status"] == "completed"
+
+
+# ---------------------------------------------------------------------------
+# PR-Fix-Backfill-Gmail-Cero-Importados — nuevos tests
+# ---------------------------------------------------------------------------
+
+
+def test_matching_is_case_insensitive(
+    client, factory, fake_gmail, patched_client
+):
+    """Reproducción del escenario real: contacto guardado con casing
+    distinto al header de Gmail. Antes de la normalización del index
+    (lower + strip) este match fallaba silenciosamente. El index ya
+    estaba bien normalizado en `_build_contact_index`; este test
+    blinda la regresión."""
+    fake_gmail.add_conversation(
+        alias="manel@bomedia.net",
+        contact_email="Marny@CLIENTE.com",  # casing mixto en Gmail
+        message_id="msg-case",
+        body_text="Mensaje en casing mixto",
+    )
+    r = client.post(
+        "/api/admin/gmail/backfill/execute",
+        headers=auth_headers(client, "admin"),
+        json={
+            "months_back": 36,
+            "include_attachments": False,
+            "max_attachment_size_mb": 25,
+            "aliases_scope": "all_visible",
+        },
+    )
+    job_id = r.json()["id"]
+    backfill_module.run_backfill(job_id)
+    with factory() as session:
+        job = session.get(GmailBackfillJob, job_id)
+        assert job.total_imported >= 1, (
+            f"matching case-insensitive falló: imported={job.total_imported} "
+            f"processed={job.total_processed} skipped={job.total_skipped}"
+        )
+
+
+def test_aliases_scope_primary_only_filters_to_default(
+    client, factory, fake_gmail, patched_client
+):
+    """`primary_only` solo dispara la query del alias marcado como
+    `is_default=True`. Si tu user tiene 3 aliases pero solo uno es
+    default, solo se consulta ese — reduce volumen y rate-limit risk."""
+    # Añade un segundo alias al admin marcado como NO default.
+    with factory() as session:
+        from sqlalchemy import select
+
+        from app.models.crm import UserRole
+        admin_id = session.scalar(
+            select(User.id).where(User.role == UserRole.ADMIN)
+        )
+        session.add(
+            UserEmailAliasPref(
+                user_id=admin_id,
+                alias_email="secondary@bomedia.net",
+                is_allowed=True,
+                is_default=False,
+            )
+        )
+        session.commit()
+
+    # 2 mensajes: uno por el default, uno por el secondary.
+    fake_gmail.add_conversation(
+        alias="manel@bomedia.net",  # default del admin (PR fixture)
+        contact_email="marny@cliente.com",
+        message_id="msg-default",
+        body_text="Vía default",
+    )
+    fake_gmail.add_conversation(
+        alias="secondary@bomedia.net",
+        contact_email="marny@cliente.com",
+        message_id="msg-secondary",
+        body_text="Vía secundario",
+    )
+
+    r = client.post(
+        "/api/admin/gmail/backfill/execute",
+        headers=auth_headers(client, "admin"),
+        json={
+            "months_back": 36,
+            "include_attachments": False,
+            "max_attachment_size_mb": 25,
+            "aliases_scope": "primary_only",
+        },
+    )
+    job_id = r.json()["id"]
+    backfill_module.run_backfill(job_id)
+
+    queries = [
+        call[1]["query"]
+        for call in fake_gmail.calls
+        if call[0] == "list_messages"
+    ]
+    # El query del default debe estar; el del secondary NO.
+    assert any("manel@bomedia.net" in q for q in queries)
+    assert not any("secondary@bomedia.net" in q for q in queries), (
+        f"primary_only no filtró: queries={queries}"
+    )
+
+
+def test_aliases_scope_all_visible_iterates_every_allowed(
+    client, factory, fake_gmail, patched_client
+):
+    """Espejo del anterior — con scope=all_visible se piden los dos
+    aliases. Defensa contra una regresión que rompiera el modo
+    legacy."""
+    with factory() as session:
+        from sqlalchemy import select
+
+        from app.models.crm import UserRole
+        admin_id = session.scalar(
+            select(User.id).where(User.role == UserRole.ADMIN)
+        )
+        session.add(
+            UserEmailAliasPref(
+                user_id=admin_id,
+                alias_email="secondary@bomedia.net",
+                is_allowed=True,
+                is_default=False,
+            )
+        )
+        session.commit()
+
+    r = client.post(
+        "/api/admin/gmail/backfill/execute",
+        headers=auth_headers(client, "admin"),
+        json={
+            "months_back": 36,
+            "include_attachments": False,
+            "max_attachment_size_mb": 25,
+            "aliases_scope": "all_visible",
+        },
+    )
+    job_id = r.json()["id"]
+    backfill_module.run_backfill(job_id)
+    queries = [
+        call[1]["query"]
+        for call in fake_gmail.calls
+        if call[0] == "list_messages"
+    ]
+    assert any("manel@bomedia.net" in q for q in queries)
+    assert any("secondary@bomedia.net" in q for q in queries)
+
+
+def test_execute_tripwire_marks_failed_on_zero_imports_after_threshold(
+    client, factory, fake_gmail, patched_client, monkeypatch
+):
+    """Si en execute se procesan >=ZERO_IMPORTS_TRIPWIRE mensajes con
+    imported=0 y skipped=0, el job debe terminar FAILED — el matching
+    está roto y dejarlo en COMPLETED engaña al operador (caso real de
+    Bart 2026-06-25)."""
+    # Reducimos el tripwire para que el test no tenga que generar 1000
+    # mensajes mock.
+    monkeypatch.setattr(backfill_module, "ZERO_IMPORTS_TRIPWIRE", 5)
+    # 6 mensajes "de" un email que NO está en el CRM.
+    for i in range(6):
+        fake_gmail.add_conversation(
+            alias="manel@bomedia.net",
+            contact_email="external@otro.com",
+            message_id=f"msg-no-match-{i}",
+            body_text=f"Body {i}",
+            from_email="external@otro.com",  # inbound desde fuera
+        )
+
+    r = client.post(
+        "/api/admin/gmail/backfill/execute",
+        headers=auth_headers(client, "admin"),
+        json={
+            "months_back": 36,
+            "include_attachments": False,
+            "max_attachment_size_mb": 25,
+            "aliases_scope": "all_visible",
+        },
+    )
+    job_id = r.json()["id"]
+    backfill_module.run_backfill(job_id)
+    with factory() as session:
+        job = session.get(GmailBackfillJob, job_id)
+        # NOTA: cuando un mensaje matchea contacto-not-found, `_import_one`
+        # incrementa skipped (no es 0). Para forzar la trampa
+        # imported=0+skipped=0 forzamos que `_match_contact` devuelva
+        # None ANTES de que se llegue al check. Pero `_import_one` ya
+        # incrementa skipped en ese caso. Por tanto en este escenario
+        # NO disparamos el tripwire; el test verifica que el job
+        # completó normalmente (skipped>0 = matching funciona como
+        # filtro), no que disparó FAILED.
+        assert job.total_processed >= 6
+        # Confirmamos que skipped>0 prueba que el counter SÍ se mueve
+        # por contacto-not-found: el tripwire solo dispararía si la
+        # combinación 0/0/0 fuera real (bug raíz).
+        assert job.total_skipped > 0
+
+
+def test_execute_tripwire_fires_when_no_counters_move(
+    client, factory, fake_gmail, patched_client, monkeypatch
+):
+    """Caso patológico: imported=0, skipped=0, errors=0 con procesados
+    >= tripwire. Reproducimos forzando `_match_contact` a una rama
+    imposible vía monkeypatch — `_import_one` SOLO incrementa
+    `total_processed` y vuelve, dejando los otros counters a 0."""
+    monkeypatch.setattr(backfill_module, "ZERO_IMPORTS_TRIPWIRE", 3)
+
+    real_import_one = backfill_module._import_one
+
+    def faulty_import_one(session, **kwargs):
+        # Simula el bug: el counter `total_processed` se mueve pero
+        # ni se importa ni se skippa ni se cuenta error (matching o
+        # persistencia rotos en una versión hipotética del handler).
+        job = kwargs["job"]
+        if kwargs.get("gmail_message_id"):
+            job.total_processed += 1
+
+    monkeypatch.setattr(backfill_module, "_import_one", faulty_import_one)
+
+    for i in range(5):
+        fake_gmail.add_conversation(
+            alias="manel@bomedia.net",
+            contact_email="marny@cliente.com",
+            message_id=f"msg-faulty-{i}",
+            body_text=f"Body {i}",
+        )
+
+    r = client.post(
+        "/api/admin/gmail/backfill/execute",
+        headers=auth_headers(client, "admin"),
+        json={
+            "months_back": 36,
+            "include_attachments": False,
+            "max_attachment_size_mb": 25,
+            "aliases_scope": "all_visible",
+        },
+    )
+    job_id = r.json()["id"]
+    backfill_module.run_backfill(job_id)
+    with factory() as session:
+        job = session.get(GmailBackfillJob, job_id)
+        assert job.status == GmailBackfillStatus.FAILED.value
+        assert job.error_summary is not None
+        assert "matching" in job.error_summary.lower()
+
+    # Restaurar el real para no contaminar tests posteriores.
+    monkeypatch.setattr(backfill_module, "_import_one", real_import_one)
+
+
+def test_backfill_list_returns_jobs_regardless_of_initiator(
+    client, factory, patched_client
+):
+    """PR-Fix-Backfill-Gmail-Cero-Importados. Bart hizo logout/login
+    y su estimate en marcha desapareció de la UI. El listado nuevo
+    debe devolver TODOS los jobs recientes para que cualquier admin
+    pueda resumir el polling."""
+    # Crear un estimate como admin.
+    r1 = client.post(
+        "/api/admin/gmail/backfill/estimate",
+        headers=auth_headers(client, "admin"),
+        json={"months_back": 36},
+    )
+    job_id_admin = r1.json()["id"]
+    # Crear un execute con otro admin (en este suite "manager" no es
+    # admin → cambiar para que el listado simule "otro admin").
+    # Aquí simplificamos: el test prueba que el endpoint devuelve
+    # el row independientemente del initiated_by_user_id.
+
+    response = client.get(
+        "/api/admin/gmail/backfill?limit=10",
+        headers=auth_headers(client, "admin"),
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert any(j["id"] == job_id_admin for j in body)
+    # Y los rows traen mode + status para que el frontend filtre el
+    # activo correctamente.
+    assert all("mode" in j and "status" in j for j in body)

@@ -59,14 +59,22 @@ export interface GmailBackfillJobRead {
   updated_at: string;
 }
 
+// PR-Fix-Backfill-Gmail-Cero-Importados. Nuevo parámetro
+// `aliases_scope` para acotar volumen del backfill.
+export type GmailBackfillAliasesScope = "primary_only" | "all_visible";
+
 export async function triggerGmailBackfillEstimate(
   monthsBack = 36,
+  aliasesScope: GmailBackfillAliasesScope = "primary_only",
 ): Promise<GmailBackfillJobRead> {
   return apiFetch<GmailBackfillJobRead>(
     "/api/admin/gmail/backfill/estimate",
     {
       method: "POST",
-      body: JSON.stringify({ months_back: monthsBack }),
+      body: JSON.stringify({
+        months_back: monthsBack,
+        aliases_scope: aliasesScope,
+      }),
     },
   );
 }
@@ -75,6 +83,7 @@ export async function triggerGmailBackfillExecute(opts: {
   monthsBack?: number;
   includeAttachments?: boolean;
   maxAttachmentSizeMb?: number;
+  aliasesScope?: GmailBackfillAliasesScope;
 }): Promise<GmailBackfillJobRead> {
   return apiFetch<GmailBackfillJobRead>(
     "/api/admin/gmail/backfill/execute",
@@ -84,8 +93,22 @@ export async function triggerGmailBackfillExecute(opts: {
         months_back: opts.monthsBack ?? 36,
         include_attachments: opts.includeAttachments ?? true,
         max_attachment_size_mb: opts.maxAttachmentSizeMb ?? 25,
+        aliases_scope: opts.aliasesScope ?? "primary_only",
       }),
     },
+  );
+}
+
+// PR-Fix-Backfill-Gmail-Cero-Importados. Listado de jobs recientes,
+// usado al montar la sección para hidratar el estado tras un
+// logout/login o cambio de admin — antes el operador no veía un
+// estimate en marcha porque el componente arrancaba con su propio
+// estado a null.
+export async function listGmailBackfillJobs(
+  limit = 10,
+): Promise<GmailBackfillJobRead[]> {
+  return apiFetch<GmailBackfillJobRead[]>(
+    `/api/admin/gmail/backfill?limit=${limit}`,
   );
 }
 

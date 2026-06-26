@@ -18,8 +18,10 @@ import { extractErrorMessage } from "../lib/errors";
 import {
   cancelGmailBackfill,
   getGmailBackfillStatus,
+  listGmailBackfillJobs,
   triggerGmailBackfillEstimate,
   triggerGmailBackfillExecute,
+  type GmailBackfillAliasesScope,
   type GmailBackfillEstimateResult,
   type GmailBackfillJobRead,
 } from "../lib/gmailBackfillApi";
@@ -31,6 +33,8 @@ type Props = {
 
 const POLL_MS = 5000;
 
+const ACTIVE_STATUSES = new Set(["queued", "running", "cancelling"]);
+
 export function GmailBackfillSection({ onError, onMessage }: Props) {
   const [estimateJob, setEstimateJob] = useState<GmailBackfillJobRead | null>(null);
   const [executeJob, setExecuteJob] = useState<GmailBackfillJobRead | null>(null);
@@ -38,6 +42,8 @@ export function GmailBackfillSection({ onError, onMessage }: Props) {
   const [monthsBack, setMonthsBack] = useState(36);
   const [includeAttachments, setIncludeAttachments] = useState(true);
   const [maxAttachmentMb, setMaxAttachmentMb] = useState(25);
+  const [aliasesScope, setAliasesScope] =
+    useState<GmailBackfillAliasesScope>("primary_only");
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const stopPolling = useCallback(() => {
@@ -56,9 +62,7 @@ export function GmailBackfillSection({ onError, onMessage }: Props) {
         try {
           const j = await getGmailBackfillStatus(jobId);
           setter(j);
-          const active =
-            j.status === "queued" || j.status === "running" || j.status === "cancelling";
-          if (active) {
+          if (ACTIVE_STATUSES.has(j.status)) {
             timer.current = setTimeout(tick, POLL_MS);
           }
         } catch (err) {
@@ -72,12 +76,50 @@ export function GmailBackfillSection({ onError, onMessage }: Props) {
     [onError, stopPolling],
   );
 
+  // PR-Fix-Backfill-Gmail-Cero-Importados. Hidratación al montar: si
+  // existe un estimate o execute en marcha (cualquier admin), lo
+  // adoptamos y resumimos el polling. Antes el operador no veía un
+  // estimate iniciado en otra sesión y arrancaba uno nuevo encima.
+  useEffect(() => {
+    let cancelled = false;
+    listGmailBackfillJobs(10)
+      .then((jobs) => {
+        if (cancelled) return;
+        const activeEstimate = jobs.find(
+          (j) => j.mode === "estimate" && ACTIVE_STATUSES.has(j.status),
+        );
+        const lastEstimate =
+          activeEstimate ?? jobs.find((j) => j.mode === "estimate");
+        const activeExecute = jobs.find(
+          (j) => j.mode === "execute" && ACTIVE_STATUSES.has(j.status),
+        );
+        const lastExecute =
+          activeExecute ?? jobs.find((j) => j.mode === "execute");
+        if (lastEstimate) setEstimateJob(lastEstimate);
+        if (lastExecute) setExecuteJob(lastExecute);
+        if (activeEstimate) {
+          void pollUntilDone(activeEstimate.id, setEstimateJob);
+        }
+        if (activeExecute) {
+          void pollUntilDone(activeExecute.id, setExecuteJob);
+        }
+      })
+      .catch(() => {
+        // Soft-fail — al montar no queremos romper la página por
+        // un fallo del listado. El operador puede lanzar un estimate
+        // nuevo y la UI seguirá funcionando.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [pollUntilDone]);
+
   async function onEstimate() {
     setBusy(true);
     onError(null);
     onMessage(null);
     try {
-      const job = await triggerGmailBackfillEstimate(monthsBack);
+      const job = await triggerGmailBackfillEstimate(monthsBack, aliasesScope);
       setEstimateJob(job);
       await pollUntilDone(job.id, setEstimateJob);
     } catch (err) {
@@ -96,6 +138,7 @@ export function GmailBackfillSection({ onError, onMessage }: Props) {
         monthsBack,
         includeAttachments,
         maxAttachmentSizeMb: maxAttachmentMb,
+        aliasesScope,
       });
       setExecuteJob(job);
       onMessage(
@@ -187,6 +230,51 @@ export function GmailBackfillSection({ onError, onMessage }: Props) {
           />
         </label>
       </div>
+
+      {/* PR-Fix-Backfill-Gmail-Cero-Importados. Acotar el alcance de
+       * aliases reduce el volumen del primer backfill real y baja el
+       * riesgo de pegarse contra el rate limit de Gmail. Default
+       * `primary_only` para que el operador no se sorprenda. */}
+      <fieldset
+        style={{
+          border: "1px solid #ccc",
+          borderRadius: 6,
+          padding: ".5rem .75rem",
+          marginBottom: "1rem",
+        }}
+      >
+        <legend style={{ padding: "0 .5rem", fontWeight: 600 }}>
+          Alcance de aliases
+        </legend>
+        <label style={{ display: "block", marginBottom: ".25rem" }}>
+          <input
+            type="radio"
+            name="aliases_scope"
+            value="primary_only"
+            checked={aliasesScope === "primary_only"}
+            disabled={busy || executeActive}
+            onChange={() => setAliasesScope("primary_only")}
+          />{" "}
+          Solo alias principal (recomendado, más rápido)
+        </label>
+        <label style={{ display: "block" }}>
+          <input
+            type="radio"
+            name="aliases_scope"
+            value="all_visible"
+            checked={aliasesScope === "all_visible"}
+            disabled={busy || executeActive}
+            onChange={() => setAliasesScope("all_visible")}
+          />{" "}
+          Todos los aliases visibles
+        </label>
+        <p className="muted small" style={{ marginTop: ".5rem", marginBottom: 0 }}>
+          &quot;Solo alias principal&quot; importa conversaciones del email
+          principal del comercial. Si tus comerciales reciben respuestas en
+          aliases secundarios (ej. por marca), elige &quot;Todos los aliases
+          visibles&quot; para no perder esas conversaciones.
+        </p>
+      </fieldset>
 
       <div style={{ display: "flex", gap: ".5rem", flexWrap: "wrap" }}>
         <button
