@@ -52,10 +52,17 @@ def _uid(session: Session, role: UserRole) -> str:
 def _seed_integration(
     session: Session, user_id: str, *, status: str = "active",
     expires_in_hours: int = 1,
+    refresh_expires_in_hours: int | None = None,
 ) -> OrgGoogleIntegration:
     """PR-OAuth-Google-Unificado. Crea/actualiza la integración ORG
     singleton (id='singleton'). `user_id` se guarda como
-    connected_by_user_id. Idempotente."""
+    connected_by_user_id. Idempotente.
+
+    `expires_in_hours` es la caducidad del ACCESS token. La del REFRESH
+    token (la que dispara los avisos, Bug 14) por defecto sigue a la del
+    access para no romper tests antiguos, pero se puede fijar aparte con
+    `refresh_expires_in_hours`."""
+    now = datetime.now(UTC)
     integ = session.get(OrgGoogleIntegration, ORG_GOOGLE_SINGLETON_ID)
     if integ is None:
         integ = OrgGoogleIntegration(id=ORG_GOOGLE_SINGLETON_ID)
@@ -63,9 +70,11 @@ def _seed_integration(
     integ.google_email = "mqeurope@gmail.com"
     integ.access_token_encrypted = encrypt("access")
     integ.refresh_token_encrypted = encrypt("refresh")
-    integ.token_expires_at = datetime.now(UTC) + timedelta(hours=expires_in_hours)
+    integ.token_expires_at = now + timedelta(hours=expires_in_hours)
+    rh = expires_in_hours if refresh_expires_in_hours is None else refresh_expires_in_hours
+    integ.refresh_token_expires_at = now + timedelta(hours=rh)
     integ.scopes = "https://www.googleapis.com/auth/gmail.send"
-    integ.connected_at = datetime.now(UTC)
+    integ.connected_at = now
     integ.connected_by_user_id = user_id
     integ.status = status
     session.commit()
@@ -304,3 +313,183 @@ def test_admin_daily_digest_emails_admins(factory):
         sent = oauth_lifecycle.admin_daily_digest(session)
         assert sent >= 1
     assert len(email_svc.sent) >= 1  # type: ignore[attr-defined]
+
+
+# ---------------------------------------------------------------------------
+# Bug 14 — banner/crons usan la caducidad del REFRESH token, no del access
+# ---------------------------------------------------------------------------
+
+
+def test_token_expiry_check_uses_refresh_not_access_token(factory):
+    from app.integrations.gmail import oauth_lifecycle
+
+    with factory() as session:
+        uid = _uid(session, UserRole.USER)
+        # Access token caduca en 1h (dentro de 48h) pero el refresh token
+        # está a 30 días → NO debe avisar (el access se refresca solo).
+        _seed_integration(
+            session, uid, expires_in_hours=1, refresh_expires_in_hours=24 * 30
+        )
+        assert oauth_lifecycle.token_expiry_check(session) == 0
+
+        # Ahora el refresh token sí está a <48h → debe avisar.
+        _seed_integration(
+            session, uid, expires_in_hours=1, refresh_expires_in_hours=24
+        )
+        assert oauth_lifecycle.token_expiry_check(session) == 1
+
+
+def test_admin_digest_uses_refresh_not_access_token(factory):
+    from app.integrations.gmail import oauth_lifecycle
+
+    with factory() as session:
+        uid = _uid(session, UserRole.USER)
+        # Access en 1h, refresh en 30 días, status active → conexión sana,
+        # el digest no debe enviar nada.
+        _seed_integration(
+            session, uid, expires_in_hours=1, refresh_expires_in_hours=24 * 30
+        )
+        assert oauth_lifecycle.admin_daily_digest(session) == 0
+
+        # Refresh a <48h → el digest sí avisa.
+        _seed_integration(
+            session, uid, expires_in_hours=1, refresh_expires_in_hours=24
+        )
+        assert oauth_lifecycle.admin_daily_digest(session) >= 1
+
+
+def test_gmail_app_verified_true_disables_refresh_token_expiry(factory, monkeypatch):
+    from app.core import config as config_module
+    from app.integrations.gmail import oauth_lifecycle
+
+    config_module.get_settings.cache_clear()
+    monkeypatch.setenv("GMAIL_APP_VERIFIED", "true")
+    config_module.get_settings.cache_clear()
+    try:
+        with factory() as session:
+            uid = _uid(session, UserRole.USER)
+            # Aunque el refresh esté a <48h, con la app verificada no hay
+            # caducidad real → ni el cron de aviso ni el digest actúan.
+            _seed_integration(session, uid, refresh_expires_in_hours=24)
+            assert oauth_lifecycle.token_expiry_check(session) == 0
+            assert oauth_lifecycle.admin_daily_digest(session) == 0
+    finally:
+        config_module.get_settings.cache_clear()
+
+
+# ---------------------------------------------------------------------------
+# Bug 15 — sync de aliases respeta las preferencias previas del user
+# ---------------------------------------------------------------------------
+
+
+def test_sync_aliases_preserves_is_allowed_for_existing_rows(factory):
+    from app.integrations.gmail.aliases import sync_send_as_aliases
+
+    with factory() as session:
+        uid = _uid(session, UserRole.USER)
+        _seed_integration(session, uid)
+        session.add_all([
+            UserEmailAliasPref(
+                user_id=uid, alias_email="keep@bomedia.net",
+                is_allowed=True, is_default=False,
+            ),
+            UserEmailAliasPref(
+                user_id=uid, alias_email="hidden@bomedia.net",
+                is_allowed=False, is_default=False,
+            ),
+        ])
+        session.commit()
+
+        # Gmail trae los mismos aliases (la cuenta org tiene 50+, aquí 2).
+        fake = _FakeGmailClient([
+            {"send_as_email": "keep@bomedia.net", "display_name": "Keep",
+             "is_default": False},
+            {"send_as_email": "hidden@bomedia.net", "display_name": "Hidden",
+             "is_default": False},
+        ])
+        with patch(
+            "app.integrations.gmail.service._client_for", return_value=fake
+        ):
+            sync_send_as_aliases(session, user_id=uid)
+        session.commit()
+        rows = {
+            r.alias_email: r
+            for r in session.scalars(
+                select(UserEmailAliasPref).where(
+                    UserEmailAliasPref.user_id == uid
+                )
+            )
+        }
+        # El sync NO debe pisar la preferencia del user.
+        assert rows["keep@bomedia.net"].is_allowed is True
+        assert rows["hidden@bomedia.net"].is_allowed is False
+
+
+def test_sync_aliases_creates_new_aliases_as_hidden_except_self_email(factory):
+    from app.integrations.gmail.aliases import sync_send_as_aliases
+
+    with factory() as session:
+        uid = _uid(session, UserRole.USER)
+        user = session.get(User, uid)
+        _seed_integration(session, uid)
+        # Primer sync: la tabla está vacía para este user.
+        fake = _FakeGmailClient([
+            {"send_as_email": user.email, "display_name": "Yo",
+             "is_default": False},
+            {"send_as_email": "brand1@bomedia.net", "display_name": "Brand1",
+             "is_default": False},
+            {"send_as_email": "brand2@bomedia.net", "display_name": "Brand2",
+             "is_default": False},
+        ])
+        with patch(
+            "app.integrations.gmail.service._client_for", return_value=fake
+        ):
+            count = sync_send_as_aliases(session, user_id=uid)
+        session.commit()
+        assert count == 3
+        rows = {
+            r.alias_email: r
+            for r in session.scalars(
+                select(UserEmailAliasPref).where(
+                    UserEmailAliasPref.user_id == uid
+                )
+            )
+        }
+        # Solo el alias propio del user nace visible; el resto, oculto.
+        assert rows[user.email].is_allowed is True
+        assert rows["brand1@bomedia.net"].is_allowed is False
+        assert rows["brand2@bomedia.net"].is_allowed is False
+
+
+def test_sync_aliases_updates_display_name(factory):
+    from app.integrations.gmail.aliases import sync_send_as_aliases
+
+    with factory() as session:
+        uid = _uid(session, UserRole.USER)
+        _seed_integration(session, uid)
+        session.add(
+            UserEmailAliasPref(
+                user_id=uid, alias_email="x@bomedia.net",
+                is_allowed=True, is_default=False,
+                gmail_display_name="Nombre Viejo",
+            )
+        )
+        session.commit()
+
+        fake = _FakeGmailClient([
+            {"send_as_email": "x@bomedia.net", "display_name": "Nombre Nuevo",
+             "is_default": False},
+        ])
+        with patch(
+            "app.integrations.gmail.service._client_for", return_value=fake
+        ):
+            sync_send_as_aliases(session, user_id=uid)
+        session.commit()
+        row = session.scalar(
+            select(UserEmailAliasPref).where(
+                UserEmailAliasPref.user_id == uid,
+                UserEmailAliasPref.alias_email == "x@bomedia.net",
+            )
+        )
+        assert row.gmail_display_name == "Nombre Nuevo"
+        assert row.is_allowed is True  # preservado

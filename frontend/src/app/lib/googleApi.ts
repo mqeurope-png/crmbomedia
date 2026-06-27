@@ -20,8 +20,15 @@ export type GoogleStatus = {
   /** PR-OAuth-Permisos-Admin Items 9 + 12. Para el banner:
    *  'active' | 'needs_reconnect' | 'disconnected_by_user'. */
   status?: string | null;
+  /** Caducidad del ACCESS token (1h, se refresca solo). Informativo. */
   token_expires_at?: string | null;
   token_expiring_soon?: boolean;
+  /** PR-Hotfix-OAuth-Banner Bug 14. Caducidad del REFRESH token (7 días
+   *  en apps no verificadas) — la que el user debe vigilar. null = sin
+   *  caducidad (app verificada). El banner amarillo usa
+   *  `refresh_token_expiring_soon`, NO `token_expiring_soon`. */
+  refresh_token_expires_at?: string | null;
+  refresh_token_expiring_soon?: boolean;
 };
 
 export type GoogleCalendarItem = {

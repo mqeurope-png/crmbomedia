@@ -1308,6 +1308,14 @@ class OrgGoogleIntegration(TimestampMixin, Base):
     token_expires_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
+    # PR-Hotfix-OAuth-Banner. Caducidad del REFRESH token (la que importa
+    # al user): mientras la app OAuth no esté verificada, Google caduca el
+    # refresh_token a 7 días. `token_expires_at` arriba es el ACCESS token
+    # (1h, se refresca solo) — informativo, no actionable. NULL cuando la
+    # app está verificada (refresh sin caducidad).
+    refresh_token_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
     scopes: Mapped[str] = mapped_column(Text, nullable=False)
     connected_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False

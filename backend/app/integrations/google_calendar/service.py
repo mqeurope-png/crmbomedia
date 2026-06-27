@@ -44,6 +44,11 @@ logger = logging.getLogger(__name__)
 OAUTH_STATE_KEY_PREFIX = "google_oauth:state:"
 OAUTH_STATE_TTL_SECONDS = 600
 
+# PR-Hotfix-OAuth-Banner Bug 14. Google caduca los refresh tokens de apps
+# OAuth en modo "testing" (no verificadas) a los 7 días. Ese es el plazo
+# real de reconexión que el user debe vigilar.
+REFRESH_TOKEN_TTL_DAYS = 7
+
 
 def issue_oauth_state(user_id: str) -> str:
     """Create a CSRF-safe random state and bind it to `user_id` in
@@ -110,6 +115,15 @@ def connect_org(
     result = exchange_code_for_tokens(code=code, state=state)
     integration = get_org_integration(session)
     now = datetime.now(UTC)
+    # PR-Hotfix-OAuth-Banner Bug 14. Una conexión/reconexión emite un
+    # refresh_token nuevo. Mientras la app OAuth no esté verificada, Google
+    # lo caduca a 7 días → ese es el plazo de reconexión que el user debe
+    # vigilar. Si la app está verificada, el refresh no caduca (NULL).
+    refresh_expires_at = (
+        None
+        if get_settings().gmail_app_verified
+        else now + timedelta(days=REFRESH_TOKEN_TTL_DAYS)
+    )
     previous_scopes: set[str] = set()
     was_reconnect = (
         integration is not None
@@ -122,6 +136,7 @@ def connect_org(
             access_token_encrypted=encrypt(result.access_token),
             refresh_token_encrypted=encrypt(result.refresh_token),
             token_expires_at=result.expires_at,
+            refresh_token_expires_at=refresh_expires_at,
             scopes=" ".join(result.scopes),
             connected_at=now,
             connected_by_user_id=connected_by_user_id,
@@ -135,6 +150,7 @@ def connect_org(
         integration.access_token_encrypted = encrypt(result.access_token)
         integration.refresh_token_encrypted = encrypt(result.refresh_token)
         integration.token_expires_at = result.expires_at
+        integration.refresh_token_expires_at = refresh_expires_at
         integration.scopes = " ".join(merged_scopes)
         integration.connected_at = now
         integration.connected_by_user_id = connected_by_user_id

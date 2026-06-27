@@ -975,11 +975,17 @@ class GoogleCalendarStatus(BaseModel):
     last_sync_at: datetime | None = None
     # PR-OAuth-Permisos-Admin Items 9 + 12. Para el banner UI:
     #   status: 'active' | 'needs_reconnect' | 'disconnected_by_user'
-    #   token_expires_at: para avisar de caducidad <48h
-    #   token_expiring_soon: True si caduca en <48h (y status=active)
+    #   token_expires_at: caducidad del ACCESS token (1h, informativo).
+    #   token_expiring_soon: True si el ACCESS token caduca en <48h.
+    # PR-Hotfix-OAuth-Banner Bug 14. La caducidad que importa al user es la
+    # del REFRESH token (7 días en apps no verificadas). NULL = sin
+    # caducidad (app verificada). El banner amarillo se decide con
+    # `refresh_token_expiring_soon`, NO con `token_expiring_soon`.
     status: str | None = None
     token_expires_at: datetime | None = None
     token_expiring_soon: bool = False
+    refresh_token_expires_at: datetime | None = None
+    refresh_token_expiring_soon: bool = False
 
 
 class GoogleCalendarSelectPayload(BaseModel):
