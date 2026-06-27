@@ -52,6 +52,15 @@ def _client_for(session: Session, user_id: str) -> GmailClient:
     integration = google_service.get_integration(session, user_id)
     if integration is None:
         raise GmailNotConnectedError("Gmail no está conectado para este usuario.")
+    # PR-OAuth-Permisos-Admin Item 12. Una integración marcada
+    # needs_reconnect / disconnected_by_user NO debe usarse: sus tokens
+    # están caducados o vaciados. La tratamos como "no conectada" para
+    # que sync/backfill la skipeen con su manejo habitual.
+    if getattr(integration, "status", "active") != "active":
+        raise GmailNotConnectedError(
+            f"Gmail status={integration.status} para el usuario — "
+            "requiere reconexión."
+        )
     if not _has_gmail_send(integration.scopes or ""):
         raise GmailScopeMissingError(
             "Falta el permiso gmail.send. Vuelve a autorizar Google en /account."
@@ -944,6 +953,14 @@ def process_history(
         history = client.list_history(watch.history_id)
     except GoogleAuthExpiredError:
         logger.warning("gmail.process_history.auth_expired user_id=%s", user_id)
+        # PR-OAuth-Permisos-Admin Item 12. Marcar needs_reconnect para
+        # que el banner + digest avisen al user; antes solo se logueaba.
+        from app.integrations.google_calendar.service import (  # noqa: PLC0415
+            mark_needs_reconnect,
+        )
+
+        mark_needs_reconnect(session, user_id=user_id, error="invalid_grant")
+        session.commit()
         return 0
 
     crm_thread_ids = {

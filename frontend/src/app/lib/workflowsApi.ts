@@ -60,6 +60,9 @@ export type WorkflowRead = {
    *  el current_user. Mantengo opcional para tolerar respuestas pre-#250
    *  durante el rolling deploy. */
   owner_user_id?: string | null;
+  /** PR-OAuth-Permisos-Admin Item 10. Email del owner — solo presente
+   *  en el listado, para que el admin agrupe los privados de otros. */
+  owner_email?: string | null;
   is_mine?: boolean;
   is_global?: boolean;
   created_at: string;

@@ -219,6 +219,24 @@ async def _arm_workflows_scheduler() -> None:
 
 
 @app.on_event("startup")
+async def _arm_gmail_oauth_lifecycle() -> None:
+    """PR-OAuth-Permisos-Admin Items 9 + 13. Arma los crons de aviso de
+    caducidad de token Gmail, digest admin y sync de aliases Send-As."""
+    try:
+        from app.integrations.gmail.oauth_lifecycle import (  # noqa: PLC0415
+            arm_all,
+        )
+
+        arm_all()
+    except Exception:  # noqa: BLE001
+        import logging  # noqa: PLC0415
+
+        logging.getLogger(__name__).warning(
+            "gmail.oauth_lifecycle arm failed at startup", exc_info=True
+        )
+
+
+@app.on_event("startup")
 async def _arm_periodic_backup() -> None:
     """Sprint Backup-Hardening. Reemplaza el cron de Linux con un job
     RQ self-rescheduling cada 72 h. Las ejecuciones disparadas por el

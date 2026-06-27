@@ -92,6 +92,13 @@ class Settings(BaseSettings):
     gmail_pubsub_subscription: str | None = None
     gmail_pubsub_verification_token: str | None = None
 
+    # PR-OAuth-Permisos-Admin Item 9. Mientras la app OAuth no esté
+    # verificada por Google, los refresh tokens caducan a 7 días y hay
+    # que avisar a los users. Cuando se verifique oficialmente, poner
+    # GMAIL_APP_VERIFIED=true → el cron de aviso de caducidad sale early
+    # (tokens ilimitados, no hace falta avisar).
+    gmail_app_verified: bool = False
+
     # Sprint Email v2.2b — Supabase backing composer.bomedia.net. When
     # unset, the "Composer" tab in the template picker shows a clear
     # "not configured" notice instead of breaking the picker. Both keys

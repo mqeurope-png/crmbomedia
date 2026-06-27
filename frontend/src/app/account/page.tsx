@@ -11,6 +11,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { PageHeader } from "../components/PageHeader";
 import { GoogleCalendarSection } from "../components/GoogleCalendarSection";
+import { GoogleConnectionBanner } from "../components/GoogleConnectionBanner";
 import { getCurrentUser, type User } from "../lib/api";
 import {
   getMyPreferences,
@@ -78,6 +79,9 @@ export default function AccountPage() {
         eyebrow="Cuenta"
         description={user ? user.email : undefined}
       />
+
+      {/* PR-OAuth-Permisos-Admin Items 9 + 12. Banner de estado Gmail. */}
+      <GoogleConnectionBanner />
 
       <section className="account-grid">
         <article className="card">

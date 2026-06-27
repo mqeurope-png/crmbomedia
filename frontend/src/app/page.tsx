@@ -4,6 +4,7 @@ import { Calendar, Mail, Plus } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
+import { GoogleConnectionBanner } from "./components/GoogleConnectionBanner";
 import { DashboardKpis, type DashboardRange } from "./components/dashboard/DashboardKpis";
 import { EmailActivityWidget } from "./components/dashboard/EmailActivityWidget";
 import { EmailTrackingStatsWidget } from "./components/dashboard/EmailTrackingStatsWidget";
@@ -86,6 +87,8 @@ export default function Home() {
 
   return (
     <main className="shell shell-wide dashboard-page">
+      {/* PR-OAuth-Permisos-Admin Items 9 + 12. Banner de estado Gmail. */}
+      <GoogleConnectionBanner />
       <header className="dashboard-header">
         <div className="dashboard-header-greeting">
           <h1>

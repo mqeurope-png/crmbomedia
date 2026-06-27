@@ -973,6 +973,13 @@ class GoogleCalendarStatus(BaseModel):
     requires_calendar_selection: bool = False
     connected_at: datetime | None = None
     last_sync_at: datetime | None = None
+    # PR-OAuth-Permisos-Admin Items 9 + 12. Para el banner UI:
+    #   status: 'active' | 'needs_reconnect' | 'disconnected_by_user'
+    #   token_expires_at: para avisar de caducidad <48h
+    #   token_expiring_soon: True si caduca en <48h (y status=active)
+    status: str | None = None
+    token_expires_at: datetime | None = None
+    token_expiring_soon: bool = False
 
 
 class GoogleCalendarSelectPayload(BaseModel):
@@ -1319,6 +1326,8 @@ class PipelineRead(BaseModel):
     is_shared: bool
     # PR-Workflows-Pipelines-Per-User. NULL = global del equipo.
     owner_user_id: str | None = None
+    # PR-OAuth-Permisos-Admin Item 10. Email del owner para "De otros".
+    owner_email: str | None = None
     is_mine: bool = False
     is_global: bool = False
     stages: list[PipelineStageRead] = Field(default_factory=list)

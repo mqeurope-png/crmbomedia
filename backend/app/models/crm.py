@@ -1242,6 +1242,33 @@ class UserGoogleIntegration(TimestampMixin, Base):
         DateTime(timezone=True), nullable=False
     )
     last_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # PR-OAuth-Permisos-Admin Item 12. Antes una fila con refresh fallido
+    # se BORRABA (perdiendo toda la config + sin audit). Ahora se marca
+    # con un estado y se conserva. Valores:
+    #   'active'               — token válido, sync operativo
+    #   'needs_reconnect'      — refresh_failed permanente (invalid_grant),
+    #                            el user debe re-autorizar
+    #   'disconnected_by_user' — el user pulsó "Desconectar Google"
+    status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="active", server_default="active"
+    )
+    last_refresh_error: Mapped[str | None] = mapped_column(String(255))
+    last_refresh_error_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    # Audit row que registró la transición a needs_reconnect /
+    # disconnected_by_user, para trazabilidad desde la fila.
+    disconnect_audit_id: Mapped[str | None] = mapped_column(String(36))
+
+
+class GoogleIntegrationStatus(StrEnum):
+    """PR-OAuth-Permisos-Admin Item 12. Estados de
+    `user_google_integrations.status`. VARCHAR(32) plano (no ENUM
+    nativo) para que ALTERs en MySQL sigan siendo baratos."""
+
+    ACTIVE = "active"
+    NEEDS_RECONNECT = "needs_reconnect"
+    DISCONNECTED_BY_USER = "disconnected_by_user"
 
 
 class EmailDirection(StrEnum):

@@ -97,6 +97,13 @@ def connect_user(
     integration = get_integration(session, user_id)
     now = datetime.now(UTC)
     previous_scopes: set[str] = set()
+    # PR-OAuth-Permisos-Admin Item 12. ¿Es una reconexión (la fila ya
+    # existía en needs_reconnect / disconnected_by_user)? Lo usamos para
+    # el audit log `gmail.reconnected` vs `gmail.connected`.
+    was_reconnect = (
+        integration is not None
+        and getattr(integration, "status", "active") != "active"
+    )
     if integration is None:
         integration = UserGoogleIntegration(
             user_id=user_id,
@@ -106,6 +113,7 @@ def connect_user(
             token_expires_at=result.expires_at,
             scopes=" ".join(result.scopes),
             connected_at=now,
+            status="active",
         )
         session.add(integration)
     else:
@@ -118,11 +126,59 @@ def connect_user(
         integration.token_expires_at = result.expires_at
         integration.scopes = " ".join(merged_scopes)
         integration.connected_at = now
+        # PR-OAuth-Permisos-Admin Item 12. Reconexión → vuelve a activo,
+        # limpia el último error de refresh.
+        integration.status = "active"
+        integration.last_refresh_error = None
+        integration.last_refresh_error_at = None
         if account_changed:
             # New Google account → old calendar id is meaningless.
             integration.selected_calendar_id = None
             integration.selected_calendar_summary = None
     session.flush()
+
+    # PR-OAuth-Permisos-Admin Item 12. Audit log de la (re)conexión.
+    from app.core.audit import Action, record_event  # noqa: PLC0415
+
+    record_event(
+        session,
+        action=Action.GMAIL_RECONNECTED if was_reconnect else Action.GMAIL_CONNECTED,
+        target_type="user_google_integration",
+        target_id=integration.id,
+        actor_email=integration.google_email,
+        metadata={
+            "user_id": user_id,
+            "google_email": integration.google_email,
+            "reconnect": was_reconnect,
+        },
+    )
+
+    # PR-OAuth-Permisos-Admin Item 13. Sincronizar los Send-As aliases
+    # desde Gmail al (re)conectar — refleja el ★ default real para que
+    # el handler del backfill no skipee al user. Best-effort: un fallo
+    # NO debe abortar el OAuth.
+    if any("gmail" in s for s in result.scopes):
+        try:
+            from app.integrations.gmail.aliases import (  # noqa: PLC0415
+                sync_send_as_aliases,
+            )
+
+            synced = sync_send_as_aliases(session, user_id=user_id)
+            record_event(
+                session,
+                action=Action.GMAIL_ALIASES_SYNCED,
+                target_type="user_google_integration",
+                target_id=integration.id,
+                actor_email=integration.google_email,
+                metadata={"user_id": user_id, "synced_count": synced},
+            )
+            logger.info(
+                "gmail.aliases_synced user_id=%s count=%d", user_id, synced
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "gmail.aliases_sync_failed user_id=%s", user_id, exc_info=True
+            )
 
     # Auto-register the Gmail Push Notifications watch the first
     # time the user grants gmail.modify. Before this fix, replies
@@ -153,15 +209,82 @@ def connect_user(
 
 
 def disconnect_user(session: Session, *, user_id: str) -> bool:
-    """Revoke the OAuth grant on Google's side (best effort) and drop
-    the row. Returns True when a row was actually removed."""
+    """PR-OAuth-Permisos-Admin Item 12. El user pulsa "Desconectar
+    Google". Antes BORRABA la fila (perdiendo histórico + config). Ahora
+    revoca el grant en Google (best effort), pone a NULL los tokens por
+    privacidad, y MARCA `status='disconnected_by_user'` conservando la
+    fila para histórico + audit. Returns True si había integración."""
     integration = get_integration(session, user_id)
     if integration is None:
         return False
     _revoke_tokens(integration)
-    session.delete(integration)
+
+    from app.core.audit import Action, record_event  # noqa: PLC0415
+
+    audit = record_event(
+        session,
+        action=Action.GMAIL_DISCONNECTED_BY_USER,
+        target_type="user_google_integration",
+        target_id=integration.id,
+        actor_email=integration.google_email,
+        metadata={"user_id": user_id, "google_email": integration.google_email},
+    )
+    session.flush()  # para tener audit.id
+
+    integration.status = "disconnected_by_user"
+    # Tokens a NULL por privacidad — la fila sigue para histórico, pero
+    # ya no guardamos credenciales de una integración desconectada.
+    integration.access_token_encrypted = ""
+    integration.refresh_token_encrypted = ""
+    integration.disconnect_audit_id = audit.id
     session.flush()
     return True
+
+
+def mark_needs_reconnect(
+    session: Session, *, user_id: str, error: str
+) -> UserGoogleIntegration | None:
+    """PR-OAuth-Permisos-Admin Item 12. Llamado cuando un refresh falla
+    de forma permanente (invalid_grant). En lugar de borrar la fila la
+    marca `needs_reconnect` + registra el error + audit log. Devuelve la
+    fila (o None si no existía). Idempotente: si ya está en
+    needs_reconnect no duplica el audit."""
+    integration = get_integration(session, user_id)
+    if integration is None:
+        return None
+    if integration.status == "needs_reconnect":
+        # Ya marcada — solo refrescamos el timestamp del último error.
+        integration.last_refresh_error = error[:255]
+        integration.last_refresh_error_at = datetime.now(UTC)
+        session.flush()
+        return integration
+
+    from app.core.audit import Action, record_event  # noqa: PLC0415
+
+    audit = record_event(
+        session,
+        action=Action.GMAIL_REFRESH_FAILED_PERMANENT,
+        target_type="user_google_integration",
+        target_id=integration.id,
+        actor_email=integration.google_email,
+        metadata={
+            "user_id": user_id,
+            "google_email": integration.google_email,
+            "error": error,
+        },
+    )
+    session.flush()
+    integration.status = "needs_reconnect"
+    integration.last_refresh_error = error[:255]
+    integration.last_refresh_error_at = datetime.now(UTC)
+    integration.disconnect_audit_id = audit.id
+    session.flush()
+    logger.warning(
+        "gmail.refresh_failed_permanent user_id=%s error=%s — marcado "
+        "needs_reconnect (NO borrado)",
+        user_id, error,
+    )
+    return integration
 
 
 def _revoke_tokens(integration: UserGoogleIntegration) -> None:
@@ -250,7 +373,10 @@ def sync_task_to_calendar(
             task.id,
             integration.user_id,
         )
-        session.delete(integration)
+        # PR-OAuth-Permisos-Admin Item 12. Marcar, no borrar.
+        mark_needs_reconnect(
+            session, user_id=integration.user_id, error="invalid_grant"
+        )
         return task
     except Exception:  # noqa: BLE001
         logger.warning(
@@ -285,7 +411,9 @@ def update_task_event(session: Session, task: Task) -> Task:
         logger.warning(
             "google_calendar.update_auth_expired task_id=%s", task.id
         )
-        session.delete(integration)
+        mark_needs_reconnect(
+            session, user_id=integration.user_id, error="invalid_grant"
+        )
         return task
     except Exception:  # noqa: BLE001
         logger.warning(
@@ -315,7 +443,9 @@ def delete_task_event(session: Session, task: Task) -> None:
         logger.warning(
             "google_calendar.delete_auth_expired task_id=%s", task.id
         )
-        session.delete(integration)
+        mark_needs_reconnect(
+            session, user_id=integration.user_id, error="invalid_grant"
+        )
     except Exception:  # noqa: BLE001
         logger.warning(
             "google_calendar.delete_failed task_id=%s",

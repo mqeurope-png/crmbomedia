@@ -17,6 +17,11 @@ export type GoogleStatus = {
   requires_calendar_selection: boolean;
   connected_at: string | null;
   last_sync_at: string | null;
+  /** PR-OAuth-Permisos-Admin Items 9 + 12. Para el banner:
+   *  'active' | 'needs_reconnect' | 'disconnected_by_user'. */
+  status?: string | null;
+  token_expires_at?: string | null;
+  token_expiring_soon?: boolean;
 };
 
 export type GoogleCalendarItem = {

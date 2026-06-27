@@ -9933,6 +9933,36 @@ tr.is-inactive {
   font-style: italic;
 }
 
+/* PR-OAuth-Permisos-Admin Item 10. Badge "De [owner]" en la sección
+ * admin de workflows/pipelines de otros users. */
+.rv-badge-owner {
+  background: #ede9fe;
+  color: #6d28d9;
+}
+
+/* PR-OAuth-Permisos-Admin Items 9 + 12. Banner de estado Gmail. */
+.google-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  margin-bottom: 14px;
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+.google-banner-warn {
+  background: #fffbeb;
+  border: 1px solid #fcd34d;
+  color: #92400e;
+}
+
+.google-banner-danger {
+  background: #fef2f2;
+  border: 1px solid #fca5a5;
+  color: #991b1b;
+}
+
 /* Estrella de carpeta predeterminada en /plantillas. Color amarillo
  * tenue para señalar el toggle sin gritar. */
 .et-folder-default-star {

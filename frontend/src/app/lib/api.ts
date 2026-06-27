@@ -1184,6 +1184,9 @@ export type Pipeline = {
    *  equipo. Pre-#250 las respuestas traían un string siempre; ahora
    *  el backend devuelve null para los pipelines globales. */
   owner_user_id: string | null;
+  /** PR-OAuth-Permisos-Admin Item 10. Email del owner — solo en el
+   *  listado, para la sección admin "De otros users". */
+  owner_email?: string | null;
   /** Backend computa contra current_user. Opcionales para tolerar
    *  respuestas pre-#250 durante el rolling deploy. */
   is_mine?: boolean;

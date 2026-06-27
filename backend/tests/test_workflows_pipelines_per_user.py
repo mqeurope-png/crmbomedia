@@ -90,6 +90,31 @@ def test_workflows_list_returns_own_plus_global(client: TestClient):
             assert w["is_global"] is True
 
 
+def test_workflows_admin_sees_others_with_owner_email(client: TestClient):
+    """PR-OAuth-Permisos-Admin Item 10. El admin ve los workflows
+    privados de otros users, con owner_email para agruparlos en
+    'De otros users'."""
+    mgr = _create_workflow(client, role="manager", name="Privado de Manager")
+    listed = client.get(
+        "/api/workflows", headers=auth_headers(client, "admin")
+    ).json()
+    found = next(w for w in listed if w["id"] == mgr["id"])
+    assert found["is_mine"] is False
+    assert found["is_global"] is False
+    assert found["owner_email"]  # email del manager presente
+
+
+def test_pipelines_admin_sees_others_with_owner_email(client: TestClient):
+    mgr = _create_pipeline(client, role="manager", name="Privado Manager")
+    listed = client.get(
+        "/api/pipelines", headers=auth_headers(client, "admin")
+    ).json()
+    found = next(p for p in listed if p["id"] == mgr["id"])
+    assert found["is_mine"] is False
+    assert found["is_global"] is False
+    assert found["owner_email"]
+
+
 def test_workflows_create_defaults_to_owner_current_user(client: TestClient):
     """POST sin is_global → owner_user_id = current_user."""
     w = _create_workflow(client, role="user", name="Privado")

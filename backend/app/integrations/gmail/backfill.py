@@ -314,27 +314,40 @@ def _iter_aliases(
     # Sigue siendo más estrecho que `all_visible` (1 alias en vez de
     # N) pero captura el caso real de un user que tiene `bart@
     # bomedia.net` flaggeado allowed sin haber tocado el default.
-    first_allowed = session.scalar(
-        select(UserEmailAliasPref)
-        .where(
-            UserEmailAliasPref.user_id == user_id,
-            UserEmailAliasPref.is_allowed.is_(True),
+    #
+    # PR-OAuth-Permisos-Admin Item 13. Preferimos el alias visible cuyo
+    # email coincida con `users.email` — suele ser el buzón real del
+    # comercial. Solo si no existe caemos al primer is_allowed por orden
+    # alfabético.
+    user = session.get(User, user_id)
+    allowed = list(
+        session.scalars(
+            select(UserEmailAliasPref)
+            .where(
+                UserEmailAliasPref.user_id == user_id,
+                UserEmailAliasPref.is_allowed.is_(True),
+            )
+            .order_by(UserEmailAliasPref.alias_email.asc())
         )
-        .order_by(UserEmailAliasPref.alias_email.asc())
-        .limit(1)
     )
-    if first_allowed is not None:
+    if allowed:
+        chosen = allowed[0]
+        if user is not None and user.email:
+            user_email_lower = user.email.strip().lower()
+            for a in allowed:
+                if a.alias_email.strip().lower() == user_email_lower:
+                    chosen = a
+                    break
         logger.info(
             "gmail.backfill aliases_scope=primary_only user=%s no "
-            "is_default — falling back to first is_allowed alias=%s",
-            user_id, first_allowed.alias_email,
+            "is_default — using fallback alias=%s",
+            user_id, chosen.alias_email,
         )
-        return [first_allowed]
+        return [chosen]
     # Fallback final — sin aliases registrados. Sintetizamos uno con
     # `user.email` para que al menos intentemos algo (poco
     # probabilidad de match si el operador no usa este email en
-    # Gmail, pero el log de abajo lo deja claro).
-    user = session.get(User, user_id)
+    # Gmail, pero el log de abajo lo deja claro). `user` ya cargado arriba.
     if user is None or not user.email:
         return []
     logger.warning(
@@ -354,15 +367,30 @@ def _iter_aliases(
 def _iter_connected_users(
     session: Session,
 ) -> list[UserGoogleIntegration]:
-    """Users con Gmail conectado. El client lookup decide después si
-    falta el scope (raise GmailScopeMissingError → skip + needs_reconnect)."""
-    return list(
+    """Users con Gmail conectado y ACTIVO. El client lookup decide
+    después si falta el scope (raise GmailScopeMissingError → skip).
+
+    PR-OAuth-Permisos-Admin Item 12. Filtramos `status='active'` para
+    skipear integraciones marcadas needs_reconnect / disconnected_by_user
+    — sus tokens están caducados/vaciados. Log visible por user skipeado."""
+    rows = list(
         session.scalars(
             select(UserGoogleIntegration).where(
                 UserGoogleIntegration.scopes.is_not(None),
             )
         )
     )
+    active: list[UserGoogleIntegration] = []
+    for integ in rows:
+        if getattr(integ, "status", "active") != "active":
+            logger.info(
+                "gmail.handler: SKIP user=%s reason=status_not_active "
+                "status=%s",
+                integ.user_id, integ.status,
+            )
+            continue
+        active.append(integ)
+    return active
 
 
 def _build_contact_index(session: Session) -> dict[str, Contact]:
