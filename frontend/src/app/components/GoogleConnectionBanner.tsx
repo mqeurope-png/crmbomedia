@@ -1,25 +1,36 @@
 "use client";
 
 import { AlertTriangle } from "lucide-react";
+import Link from "next/link";
 import { useEffect, useState } from "react";
-import { getGoogleStatus, startGoogleConnect } from "../lib/googleApi";
+import { getCurrentUser } from "../lib/api";
+import { getGoogleStatus } from "../lib/googleApi";
 
-/** PR-OAuth-Permisos-Admin Items 9 + 12. Banner persistente del estado
- *  de la conexión Gmail del current_user. Se monta en /dashboard y
- *  /account.
+/** PR-OAuth-Google-Unificado. Banner persistente del estado de la
+ *  conexión Google ORG (compartida por todo el equipo). Se monta en
+ *  /dashboard y /account.
  *
- *  - status=needs_reconnect → banner rojo "Gmail desconectado".
+ *  - status=needs_reconnect → banner rojo "Google desconectado".
  *  - token_expiring_soon (<48h) → banner amarillo "caduca pronto".
  *  - resto → no pinta nada.
  *
- *  El botón "Reconectar ahora" lanza el flow OAuth; tras volver, el
- *  status se relee y el banner desaparece. */
+ *  El ciclo de vida de la conexión es admin-only: a los admins les
+ *  ofrecemos el botón "Reconectar" (lleva a /admin/integrations); al
+ *  resto del equipo, un aviso para que avisen al admin. */
 export function GoogleConnectionBanner() {
   const [variant, setVariant] = useState<"none" | "warn" | "danger">("none");
   const [expiresAt, setExpiresAt] = useState<string | null>(null);
+  const [isAdmin, setIsAdmin] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
+    getCurrentUser()
+      .then((u) => {
+        if (!cancelled) setIsAdmin(u.role === "admin");
+      })
+      .catch(() => {
+        if (!cancelled) setIsAdmin(false);
+      });
     getGoogleStatus()
       .then((s) => {
         if (cancelled) return;
@@ -56,19 +67,17 @@ export function GoogleConnectionBanner() {
       <AlertTriangle size={16} aria-hidden />
       <span>
         {variant === "danger"
-          ? "Tu Gmail está desconectado. El sync de emails está detenido."
-          : `Tu conexión Gmail caduca el ${expiresLabel ?? "pronto"}. Reconecta para no perder el sync.`}
+          ? "La conexión Google del equipo está caída. El sync de emails y calendario está detenido."
+          : `La conexión Google del equipo caduca el ${expiresLabel ?? "pronto"}. Reconecta para no perder el sync.`}
       </span>
       <div style={{ flex: 1 }} />
-      <button
-        type="button"
-        className="button small"
-        onClick={() => {
-          void startGoogleConnect();
-        }}
-      >
-        Reconectar ahora
-      </button>
+      {isAdmin ? (
+        <Link className="button small" href="/admin/integrations">
+          Reconectar ahora
+        </Link>
+      ) : (
+        <span className="small muted">Avisa a un administrador.</span>
+      )}
     </div>
   );
 }

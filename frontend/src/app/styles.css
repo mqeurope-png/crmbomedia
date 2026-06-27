@@ -9963,6 +9963,41 @@ tr.is-inactive {
   color: #991b1b;
 }
 
+/* PR-OAuth-Google-Unificado. Bloque admin de la conexión Google org en
+ * /admin/integrations. Reutiliza el patrón .card; el grid de metadatos
+ * presenta cuenta/estado/fechas de un vistazo. */
+.org-google-card {
+  margin: 0.5rem 0 1.25rem 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.org-google-meta {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px 18px;
+  margin: 4px 0;
+}
+
+.org-google-meta > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.org-google-meta dt {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--muted);
+}
+
+.org-google-meta dd {
+  margin: 0;
+  font-size: 13px;
+}
+
 /* Estrella de carpeta predeterminada en /plantillas. Color amarillo
  * tenue para señalar el toggle sin gritar. */
 .et-folder-default-star {

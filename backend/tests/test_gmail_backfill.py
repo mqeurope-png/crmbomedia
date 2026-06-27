@@ -40,7 +40,6 @@ from app.models.crm import (
     GmailBackfillStatus,
     User,
     UserEmailAliasPref,
-    UserGoogleIntegration,
 )
 from tests._test_helpers import auth_headers, seed_test_users
 
@@ -73,6 +72,10 @@ def factory(attachment_root) -> Generator[sessionmaker, None, None]:
     sf = sessionmaker(bind=engine, autoflush=False, autocommit=False)
     with sf() as seed:
         seed_test_users(seed)
+        # PR-OAuth-Google-Unificado. UNA conexión org compartida + aliases
+        # per-user. El backfill usa el client org e itera los aliases de
+        # cada user del CRM.
+        _wire_org_gmail(seed)
         _wire_gmail(seed, role="admin", alias_emails=["manel@bomedia.net"])
         _wire_gmail(seed, role="manager", alias_emails=["bart@bomedia.net"])
         # 1 contacto con email para backfill
@@ -99,20 +102,29 @@ def _user_id_by_role_query(role: str):
     return select(User.id).where(User.role == UserRole(role)).limit(1)
 
 
-def _wire_gmail(session, *, role: str, alias_emails: list[str]) -> None:
-    user_id = session.scalar(_user_id_by_role_query(role))
-    now = datetime.now(UTC)
+def _wire_org_gmail(session) -> None:
+    """PR-OAuth-Google-Unificado. La cuenta Google org única que todos
+    los users comparten."""
+    from app.models.crm import ORG_GOOGLE_SINGLETON_ID, OrgGoogleIntegration
+
+    admin_id = session.scalar(_user_id_by_role_query("admin"))
     session.add(
-        UserGoogleIntegration(
-            user_id=user_id,
-            google_email=alias_emails[0],
+        OrgGoogleIntegration(
+            id=ORG_GOOGLE_SINGLETON_ID,
+            google_email="mqeurope@gmail.com",
             access_token_encrypted=crypto.encrypt("fake-access"),
             refresh_token_encrypted=crypto.encrypt("fake-refresh"),
             scopes="https://www.googleapis.com/auth/gmail.send",
             token_expires_at=datetime(2099, 1, 1, tzinfo=UTC),
-            connected_at=now,
+            connected_at=datetime.now(UTC),
+            connected_by_user_id=admin_id,
+            status="active",
         )
     )
+
+
+def _wire_gmail(session, *, role: str, alias_emails: list[str]) -> None:
+    user_id = session.scalar(_user_id_by_role_query(role))
     # PR-Fix-Backfill-Gmail-Cero-Importados. La primera alias se marca
     # como default — en producción todas las cuentas Gmail tienen un
     # Send-As default; los tests deben reflejarlo para que el modo
@@ -714,9 +726,12 @@ def test_backfill_uses_single_query_per_alias_not_per_pair(
     backfill_module.run_backfill(r.json()["id"])
 
     list_calls = [c for c in fake_gmail.calls if c[0] == "list_messages"]
-    # 2 users con Gmail (admin + manager), 1 alias cada uno → 2
-    # list_messages totales. (NO 2 contactos × 2 alias × 2 users = 8.)
-    assert len(list_calls) == 2
+    # PR-OAuth-Google-Unificado. El backfill itera los 4 users activos
+    # del CRM (seed_test_users crea admin/manager/user/viewer) con el
+    # client org compartido — 1 alias cada uno → 4 list_messages.
+    # Lo importante: NO hay explosión por par (sería 4 users × 2
+    # contactos = 8). 4 < 8 confirma que NO se itera por contacto.
+    assert len(list_calls) == 4
     queries = [c[1]["query"] for c in list_calls]
     # La query debe contener `from:alias OR to:alias`, no `from:alias
     # AND to:contact`.

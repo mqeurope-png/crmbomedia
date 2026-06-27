@@ -18,7 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db.session import get_engine
-from app.models.crm import GmailPubsubWatch, UserGoogleIntegration
+from app.models.crm import GmailPubsubWatch
 
 logger = logging.getLogger(__name__)
 
@@ -70,39 +70,33 @@ def enqueue_renew_all_watches() -> None:
 
 
 def renew_all_watches_job() -> int:
-    """Renew every user's Gmail watch. Returns the count of
-    successful renewals. Continues past individual failures."""
-    from app.integrations.gmail import service as gmail_service  # noqa: PLC0415
+    """PR-OAuth-Google-Unificado. Renueva el watch de la cuenta org
+    ÚNICA. Devuelve 1 si se renovó, 0 si no hay integración org activa.
 
-    renewed = 0
+    Antes iteraba 6 integraciones per-user; ahora hay 1 cuenta Gmail
+    compartida → 1 watch atribuido al user que conectó."""
+    from app.integrations.gmail import service as gmail_service  # noqa: PLC0415
+    from app.integrations.google_calendar.service import (  # noqa: PLC0415
+        get_org_integration,
+    )
+
     with Session(get_engine()) as session:
-        # Iterate every user with Gmail credentials. We don't filter
-        # on the watch table because users may have never registered
-        # one (first-time renewal).
-        users_with_google = list(
-            session.scalars(
-                select(UserGoogleIntegration).where(
-                    UserGoogleIntegration.scopes.like(
-                        "%https://www.googleapis.com/auth/gmail.send%"
-                    )
-                )
+        org = get_org_integration(session)
+        if org is None or org.status != "active" or not org.connected_by_user_id:
+            logger.info(
+                "gmail.renew skip — org integration not active/connected"
             )
-        )
-        for integration in users_with_google:
-            try:
-                gmail_service.register_watch(
-                    session, user_id=integration.user_id
-                )
-                session.commit()
-                renewed += 1
-            except Exception:  # noqa: BLE001
-                session.rollback()
-                logger.warning(
-                    "gmail.renew_failed user_id=%s",
-                    integration.user_id,
-                    exc_info=True,
-                )
-    return renewed
+            return 0
+        try:
+            gmail_service.register_watch(
+                session, user_id=org.connected_by_user_id
+            )
+            session.commit()
+            return 1
+        except Exception:  # noqa: BLE001
+            session.rollback()
+            logger.warning("gmail.renew_failed org watch", exc_info=True)
+            return 0
 
 
 def watches_expiring_soon(session: Session, *, days: int = 1) -> list[GmailPubsubWatch]:

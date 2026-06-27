@@ -15,7 +15,7 @@ from __future__ import annotations
 import base64
 import json
 from collections.abc import Generator
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 import pytest
 from fastapi.testclient import TestClient
@@ -23,16 +23,18 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app.core.crypto import encrypt
 from app.db.session import get_session
 from app.main import app
 from app.models.crm import (
     Base,
     User,
-    UserGoogleIntegration,
     UserRole,
 )
-from tests._test_helpers import auth_headers, seed_test_users
+from tests._test_helpers import (
+    auth_headers,
+    seed_org_google_integration,
+    seed_test_users,
+)
 
 
 @pytest.fixture()
@@ -121,17 +123,11 @@ def _user_id(factory: sessionmaker, role: UserRole) -> str:
 
 
 def _seed_gmail(factory: sessionmaker, *, user_id: str, scopes: str) -> None:
+    # PR-OAuth-Google-Unificado. Cuenta Google org compartida; el import
+    # de plantillas usa los tokens org vía get_org_integration.
     with factory() as session:
-        session.add(
-            UserGoogleIntegration(
-                user_id=user_id,
-                google_email="bart@bomedia.net",
-                access_token_encrypted=encrypt("access"),
-                refresh_token_encrypted=encrypt("refresh"),
-                token_expires_at=datetime.now(UTC) + timedelta(hours=1),
-                scopes=scopes,
-                connected_at=datetime.now(UTC),
-            )
+        seed_org_google_integration(
+            session, connected_by_user_id=user_id, scopes=scopes
         )
         session.commit()
 

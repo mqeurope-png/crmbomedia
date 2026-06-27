@@ -19,11 +19,12 @@ import app.main  # noqa: F401  — fuerza el registro de TODOS los modelos
 from app.core.crypto import encrypt
 from app.integrations.google_calendar import service as google_service
 from app.models.crm import (
+    ORG_GOOGLE_SINGLETON_ID,
     AuditLog,
     Base,
+    OrgGoogleIntegration,
     User,
     UserEmailAliasPref,
-    UserGoogleIntegration,
     UserRole,
 )
 from tests._test_helpers import seed_test_users
@@ -51,18 +52,22 @@ def _uid(session: Session, role: UserRole) -> str:
 def _seed_integration(
     session: Session, user_id: str, *, status: str = "active",
     expires_in_hours: int = 1,
-) -> UserGoogleIntegration:
-    integ = UserGoogleIntegration(
-        user_id=user_id,
-        google_email="bart@bomedia.net",
-        access_token_encrypted=encrypt("access"),
-        refresh_token_encrypted=encrypt("refresh"),
-        token_expires_at=datetime.now(UTC) + timedelta(hours=expires_in_hours),
-        scopes="https://www.googleapis.com/auth/gmail.send",
-        connected_at=datetime.now(UTC),
-        status=status,
-    )
-    session.add(integ)
+) -> OrgGoogleIntegration:
+    """PR-OAuth-Google-Unificado. Crea/actualiza la integración ORG
+    singleton (id='singleton'). `user_id` se guarda como
+    connected_by_user_id. Idempotente."""
+    integ = session.get(OrgGoogleIntegration, ORG_GOOGLE_SINGLETON_ID)
+    if integ is None:
+        integ = OrgGoogleIntegration(id=ORG_GOOGLE_SINGLETON_ID)
+        session.add(integ)
+    integ.google_email = "mqeurope@gmail.com"
+    integ.access_token_encrypted = encrypt("access")
+    integ.refresh_token_encrypted = encrypt("refresh")
+    integ.token_expires_at = datetime.now(UTC) + timedelta(hours=expires_in_hours)
+    integ.scopes = "https://www.googleapis.com/auth/gmail.send"
+    integ.connected_at = datetime.now(UTC)
+    integ.connected_by_user_id = user_id
+    integ.status = status
     session.commit()
     session.refresh(integ)
     return integ
@@ -85,7 +90,7 @@ def test_mark_needs_reconnect_marks_and_audits(factory):
         assert result.status == "needs_reconnect"
         assert result.last_refresh_error == "invalid_grant"
         # Fila conservada (no borrada).
-        assert session.scalar(select(UserGoogleIntegration)) is not None
+        assert session.scalar(select(OrgGoogleIntegration)) is not None
         audit = session.scalar(
             select(AuditLog).where(
                 AuditLog.action == "gmail.refresh_failed_permanent"
@@ -124,18 +129,30 @@ def test_client_for_rejects_non_active_status(factory):
             _client_for(session, uid)
 
 
-def test_backfill_iter_connected_users_skips_non_active(factory):
+def test_backfill_iter_connected_users_uses_org_status(factory):
+    """PR-OAuth-Google-Unificado. La conexión es org-wide: si la cuenta
+    org está activa, el backfill recorre TODOS los users del CRM; si la
+    cuenta está needs_reconnect, no recorre ninguno."""
     from app.integrations.gmail import backfill as backfill_module
 
+    # Org activa → todos los users del CRM están "conectados".
     with factory() as session:
-        active_uid = _uid(session, UserRole.USER)
-        broken_uid = _uid(session, UserRole.MANAGER)
-        _seed_integration(session, active_uid, status="active")
-        _seed_integration(session, broken_uid, status="needs_reconnect")
+        admin_uid = _uid(session, UserRole.ADMIN)
+        _seed_integration(session, admin_uid, status="active")
         users = backfill_module._iter_connected_users(session)
         ids = {u.user_id for u in users}
-        assert active_uid in ids
-        assert broken_uid not in ids
+        all_active = set(
+            session.scalars(select(User.id).where(User.is_active.is_(True)))
+        )
+        assert ids == all_active
+        assert len(ids) >= 2  # admin + manager + user + viewer
+
+    # Org needs_reconnect → ningún user procesable.
+    with factory() as session:
+        admin_uid = _uid(session, UserRole.ADMIN)
+        _seed_integration(session, admin_uid, status="needs_reconnect")
+        users = backfill_module._iter_connected_users(session)
+        assert users == []
 
 
 # ---------------------------------------------------------------------------

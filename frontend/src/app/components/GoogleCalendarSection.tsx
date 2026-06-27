@@ -1,14 +1,13 @@
 "use client";
 
-import { AlertTriangle, CheckCircle2, Mail, Plug } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Mail } from "lucide-react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
+import { getCurrentUser } from "../lib/api";
 import {
-  disconnectGoogle,
   getGoogleScopesStatus,
   getGoogleStatus,
-  startGoogleConnect,
   type GoogleScopesStatus,
   type GoogleStatus,
 } from "../lib/googleApi";
@@ -22,20 +21,22 @@ import { GmailAliasMultiSelect } from "./GmailAliasMultiSelect";
 
 /** Google Calendar block inside /account.
  *
- * Three visible states:
- *   - admin hasn't configured GOOGLE_OAUTH_* → just shows a hint.
- *   - user not connected → CTA to start the OAuth flow.
- *   - user connected → either prompts for calendar selection or
- *     shows the chosen calendar + change/disconnect controls.
+ * PR-OAuth-Google-Unificado. La CONEXIÓN es org-wide y la gestiona el
+ * admin en /admin/integrations. Aquí cada usuario gestiona solo lo
+ * suyo:
+ *   - admin no configuró GOOGLE_OAUTH_* → hint.
+ *   - org no conectada → aviso (admin: enlace a /admin/integrations).
+ *   - org conectada → elige calendario (per-user) + configura aliases
+ *     Send-As (per-user). El conectar/desconectar ya NO vive aquí.
  */
 export function GoogleCalendarSection() {
   const searchParams = useSearchParams();
   const [status, setStatus] = useState<GoogleStatus | null>(null);
   const [scopes, setScopes] = useState<GoogleScopesStatus | null>(null);
+  const [isAdmin, setIsAdmin] = useState(false);
   const [aliases, setAliases] = useState<EmailAlias[] | null>(null);
   const [aliasesLoading, setAliasesLoading] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showGmailToast, setShowGmailToast] = useState(false);
 
@@ -74,6 +75,12 @@ export function GoogleCalendarSection() {
   }, []);
 
   useEffect(() => {
+    getCurrentUser()
+      .then((u) => setIsAdmin(u.role === "admin"))
+      .catch(() => setIsAdmin(false));
+  }, []);
+
+  useEffect(() => {
     reload().finally(() => setLoading(false));
   }, [reload]);
 
@@ -85,37 +92,6 @@ export function GoogleCalendarSection() {
       reloadAliases();
     }
   }, [scopes, aliases, reloadAliases]);
-
-  async function handleConnect() {
-    setBusy(true);
-    setError(null);
-    try {
-      await startGoogleConnect();
-    } catch (err) {
-      setError(extractErrorMessage(err, "No se pudo iniciar la conexión."));
-      setBusy(false);
-    }
-  }
-
-  async function handleDisconnect() {
-    if (
-      !window.confirm(
-        "¿Desconectar Google Calendar? Las tareas ya sincronizadas seguirán existiendo pero no se actualizarán más.",
-      )
-    ) {
-      return;
-    }
-    setBusy(true);
-    setError(null);
-    try {
-      await disconnectGoogle();
-      await reload();
-    } catch (err) {
-      setError(extractErrorMessage(err, "No se pudo desconectar."));
-    } finally {
-      setBusy(false);
-    }
-  }
 
   if (loading) return <p className="muted small">Cargando…</p>;
   if (!status) return null;
@@ -150,27 +126,28 @@ export function GoogleCalendarSection() {
     );
   }
 
+  // PR-OAuth-Google-Unificado. La conexión es org-wide; si no está
+  // activa, el usuario no puede conectarla — es tarea del admin.
   if (!status.connected) {
     return (
       <>
         <p className="muted small">
-          Conecta tu cuenta de Google para sincronizar tus tareas con tu
-          calendario.
+          La cuenta de Google de la organización no está conectada, así que la
+          sincronización de tareas y emails está detenida.
         </p>
-        <button
-          className="button small"
-          type="button"
-          onClick={handleConnect}
-          disabled={busy}
-        >
-          <Plug size={11} aria-hidden /> Conectar cuenta Google
-        </button>
+        {isAdmin ? (
+          <Link className="button small" href="/admin/integrations">
+            Gestionar conexión Google (admin)
+          </Link>
+        ) : (
+          <p className="muted small">
+            Avisa a un administrador para que conecte (o reconecte) la cuenta
+            Google del equipo.
+          </p>
+        )}
       </>
     );
   }
-
-  const needsGmailReauth =
-    scopes !== null && (!scopes.gmail_send || !scopes.gmail_modify);
 
   const gmailReady = !!scopes?.gmail_send && !!scopes?.gmail_modify;
   const needsSettingsScope = !!scopes?.gmail_send && !scopes?.gmail_settings;
@@ -184,79 +161,48 @@ export function GoogleCalendarSection() {
         </p>
       ) : null}
       <p className="muted small">
-        Cuenta: <strong>{status.google_email}</strong>
+        Cuenta del equipo: <strong>{status.google_email}</strong>
       </p>
-      {needsGmailReauth ? (
-        <div className="form-warning">
-          <span>
-            Necesitamos permisos adicionales para enviar emails desde el CRM.
-          </span>
-          <button
-            type="button"
-            className="button small"
-            onClick={handleConnect}
-            disabled={busy}
-          >
-            Autorizar Gmail
-          </button>
-        </div>
-      ) : null}
       {status.requires_calendar_selection ? (
         <>
           <p className="form-warning">
-            <AlertTriangle size={11} aria-hidden /> Falta elegir calendario
-            donde sincronizar.
+            <AlertTriangle size={11} aria-hidden /> Falta elegir el calendario
+            donde sincronizar tus tareas.
           </p>
           <div className="actions">
             <Link className="button small" href="/account/google-setup">
               Elegir calendario
             </Link>
-            <button
-              className="button small danger"
-              type="button"
-              onClick={handleDisconnect}
-              disabled={busy}
-            >
-              Desconectar
-            </button>
           </div>
         </>
       ) : (
-        <>
-          <p className="muted small">
-            <CheckCircle2 size={11} aria-hidden /> Calendario:{" "}
-            <strong>{status.selected_calendar?.summary ?? "—"}</strong>{" "}
-            <Link className="small muted" href="/account/google-setup">
-              Cambiar
-            </Link>
-          </p>
-        </>
+        <p className="muted small">
+          <CheckCircle2 size={11} aria-hidden /> Tu calendario:{" "}
+          <strong>{status.selected_calendar?.summary ?? "—"}</strong>{" "}
+          <Link className="small muted" href="/account/google-setup">
+            Cambiar
+          </Link>
+        </p>
       )}
 
       <h4 className="google-subheading">
-        <Mail size={11} aria-hidden /> Gmail (envío de emails)
+        <Mail size={11} aria-hidden /> Gmail (alias de envío)
       </h4>
       {gmailReady ? (
         <>
           {needsSettingsScope ? (
             <p className="form-warning small">
-              Para ver tus aliases necesitamos un permiso adicional.{" "}
-              <button
-                type="button"
-                className="link-button"
-                onClick={handleConnect}
-                disabled={busy}
-              >
-                Reautorizar
-              </button>
-              .
+              Para ver tus aliases hace falta un permiso adicional de Gmail que
+              solo puede conceder el administrador al reconectar la cuenta del
+              equipo.
             </p>
           ) : null}
           {aliasesLoading || aliases === null ? (
             <p className="muted small">Cargando aliases…</p>
           ) : aliases.length === 0 ? (
             <p className="muted small">
-              Sin aliases &quot;Send mail as&quot; configurados en tu Gmail.
+              Sin aliases &quot;Send mail as&quot; configurados en la cuenta del
+              equipo.
             </p>
           ) : (
             <GmailAliasMultiSelect
@@ -272,27 +218,18 @@ export function GoogleCalendarSection() {
           )}
         </>
       ) : (
-        <button
-          type="button"
-          className="button small"
-          onClick={handleConnect}
-          disabled={busy}
-        >
-          <Plug size={11} aria-hidden /> Autorizar envío de emails
-        </button>
+        <p className="muted small">
+          El envío de emails desde el CRM aún no está autorizado para la cuenta
+          del equipo.{" "}
+          {isAdmin ? (
+            <Link href="/admin/integrations">
+              Autorízalo desde la configuración de integraciones.
+            </Link>
+          ) : (
+            "Avisa a un administrador para que lo autorice."
+          )}
+        </p>
       )}
-
-      <div className="actions">
-        <button
-          className="button small danger"
-          type="button"
-          onClick={handleDisconnect}
-          disabled={busy}
-        >
-          Desconectar Google
-        </button>
-      </div>
     </>
   );
 }
-

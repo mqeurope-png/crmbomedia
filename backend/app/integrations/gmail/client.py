@@ -99,7 +99,8 @@ class GmailClient:
             credentials.refresh(Request())
         except RefreshError as exc:
             logger.warning(
-                "gmail.refresh_failed user_id=%s", self._integration.user_id
+                "gmail.refresh_failed integration_id=%s",
+                getattr(self._integration, "id", "?"),
             )
             raise GoogleAuthExpiredError(
                 "Refresh token rejected by Google"

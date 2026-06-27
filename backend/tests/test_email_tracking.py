@@ -729,35 +729,23 @@ def test_is_ndr_detects_mailer_daemon_and_header() -> None:
 
 
 def _seed_gmail_for_user(session_factory: sessionmaker) -> str:
-    """Mirrors `_seed_gmail_integration` in test_emails.py without
-    importing it (we need just enough to make /api/emails/send work)."""
-    from datetime import timedelta
-
-    from app.core.crypto import encrypt
-    from app.models.crm import (
-        User,
-        UserEmailAliasPref,
-        UserGoogleIntegration,
-    )
+    """PR-OAuth-Google-Unificado. Cuenta Google org compartida + alias
+    default per-user, lo justo para que /api/emails/send funcione."""
+    from app.models.crm import User, UserEmailAliasPref
+    from tests._test_helpers import seed_org_google_integration
 
     with session_factory() as session:
         user_id = session.scalar(
             select(User.id).where(User.role == UserRole.USER)
         )
-        session.add(
-            UserGoogleIntegration(
-                user_id=user_id,
-                google_email="bart@bomedia.net",
-                access_token_encrypted=encrypt("access"),
-                refresh_token_encrypted=encrypt("refresh"),
-                token_expires_at=datetime.now(UTC) + timedelta(hours=1),
-                scopes=(
-                    "https://www.googleapis.com/auth/calendar.events "
-                    "https://www.googleapis.com/auth/gmail.send "
-                    "https://www.googleapis.com/auth/gmail.modify"
-                ),
-                connected_at=datetime.now(UTC),
-            )
+        seed_org_google_integration(
+            session,
+            connected_by_user_id=user_id,
+            scopes=(
+                "https://www.googleapis.com/auth/calendar.events "
+                "https://www.googleapis.com/auth/gmail.send "
+                "https://www.googleapis.com/auth/gmail.modify"
+            ),
         )
         session.add(
             UserEmailAliasPref(

@@ -69,7 +69,6 @@ from app.models.crm import (
     GmailBackfillStatus,
     User,
     UserEmailAliasPref,
-    UserGoogleIntegration,
 )
 
 logger = logging.getLogger(__name__)
@@ -364,33 +363,44 @@ def _iter_aliases(
     return [synth]
 
 
-def _iter_connected_users(
-    session: Session,
-) -> list[UserGoogleIntegration]:
-    """Users con Gmail conectado y ACTIVO. El client lookup decide
-    después si falta el scope (raise GmailScopeMissingError → skip).
+class _UserRef:
+    """PR-OAuth-Google-Unificado. Adaptador mínimo: el backfill iteraba
+    integraciones per-user; ahora hay UNA cuenta org compartida, así que
+    iteramos los USERS del CRM (cada uno con sus aliases) y el client es
+    siempre el org. Solo necesita `.user_id` para que el loop existente
+    (que llama `_client_for(session, integ.user_id)` + `_iter_aliases`)
+    siga funcionando sin tocar `run_execute` / `run_estimate`."""
 
-    PR-OAuth-Permisos-Admin Item 12. Filtramos `status='active'` para
-    skipear integraciones marcadas needs_reconnect / disconnected_by_user
-    — sus tokens están caducados/vaciados. Log visible por user skipeado."""
-    rows = list(
+    __slots__ = ("user_id",)
+
+    def __init__(self, user_id: str) -> None:
+        self.user_id = user_id
+
+
+def _iter_connected_users(session: Session) -> list[_UserRef]:
+    """PR-OAuth-Google-Unificado. Devuelve los users del CRM a procesar.
+
+    Gateado por la integración ORG: si no está conectada / no activa →
+    lista vacía (todos skipean). Si activa → todos los users activos del
+    CRM, para iterar sus aliases Send-As (per-user) con el client org."""
+    from app.integrations.google_calendar.service import (  # noqa: PLC0415
+        get_org_integration,
+    )
+
+    org = get_org_integration(session)
+    if org is None or getattr(org, "status", "active") != "active":
+        logger.info(
+            "gmail.handler: SKIP all — org integration not active "
+            "(status=%s)",
+            getattr(org, "status", "none"),
+        )
+        return []
+    user_ids = list(
         session.scalars(
-            select(UserGoogleIntegration).where(
-                UserGoogleIntegration.scopes.is_not(None),
-            )
+            select(User.id).where(User.is_active.is_(True))
         )
     )
-    active: list[UserGoogleIntegration] = []
-    for integ in rows:
-        if getattr(integ, "status", "active") != "active":
-            logger.info(
-                "gmail.handler: SKIP user=%s reason=status_not_active "
-                "status=%s",
-                integ.user_id, integ.status,
-            )
-            continue
-        active.append(integ)
-    return active
+    return [_UserRef(uid) for uid in user_ids]
 
 
 def _build_contact_index(session: Session) -> dict[str, Contact]:

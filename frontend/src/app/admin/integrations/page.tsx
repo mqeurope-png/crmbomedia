@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { GmailBackfillSection } from "../../components/GmailBackfillSection";
+import { OrgGoogleIntegrationSection } from "../../components/OrgGoogleIntegrationSection";
 import { PerContactBackfillBanner } from "../../components/PerContactBackfillBanner";
 import { ErrorState } from "../../components/ErrorState";
 import { IntegrationAccountCard } from "../../components/IntegrationAccountCard";
@@ -302,6 +303,17 @@ export default function IntegrationAccountsPage() {
 
       {!isLoading ? (
         <>
+          {/* PR-OAuth-Google-Unificado. Bloque admin de la conexión Google
+              org-wide (una cuenta compartida). El ciclo de vida
+              conectar/desconectar vive aquí; el calendario y los aliases
+              siguen siendo per-user en /account. */}
+          {isAdmin ? (
+            <OrgGoogleIntegrationSection
+              onError={setError}
+              onMessage={setMessage}
+            />
+          ) : null}
+
           {/* PR-Auto-Backfill-Gmail-Por-Contacto. Banner que aparece tras
               un sync masivo con contactos nuevos sin histórico Gmail. */}
           {isAdmin ? <PerContactBackfillBanner onError={setError} /> : null}

@@ -1263,12 +1263,82 @@ class UserGoogleIntegration(TimestampMixin, Base):
 
 class GoogleIntegrationStatus(StrEnum):
     """PR-OAuth-Permisos-Admin Item 12. Estados de
-    `user_google_integrations.status`. VARCHAR(32) plano (no ENUM
-    nativo) para que ALTERs en MySQL sigan siendo baratos."""
+    `user_google_integrations.status` / `org_google_integration.status`.
+    VARCHAR(32) plano (no ENUM nativo) para que ALTERs en MySQL sigan
+    siendo baratos."""
 
     ACTIVE = "active"
     NEEDS_RECONNECT = "needs_reconnect"
     DISCONNECTED_BY_USER = "disconnected_by_user"
+
+
+#: PR-OAuth-Google-Unificado. Id fijo de la fila singleton de
+#: `org_google_integration` — toda la organización comparte UNA conexión
+#: Google (mqeurope@gmail.com) con aliases Send-As per-user.
+ORG_GOOGLE_SINGLETON_ID = "singleton"
+
+
+class OrgGoogleIntegration(TimestampMixin, Base):
+    """PR-OAuth-Google-Unificado. Conexión Google ÚNICA org-wide.
+
+    Reemplaza el modelo per-user (`user_google_integrations`): en
+    Bomedia los 6 users comparten la misma cuenta Google con aliases
+    distintos, así que mantener 6 OAuth flows + 6 reconnects cada 7 días
+    era inviable. Ahora hay 1 fila (id=`singleton`), gestionada solo por
+    el admin desde /admin/integrations.
+
+    Mismas columnas de token que `UserGoogleIntegration` a propósito:
+    los clients (`GmailClient`, `GoogleCalendarClient`) hacen duck-typing
+    sobre `access_token_encrypted` / `refresh_token_encrypted` /
+    `token_expires_at` / `scopes`, así que aceptan esta fila sin cambios.
+
+    La selección de calendario es per-user (`user_calendar_prefs`), no
+    aquí — cada comercial elige su propio calendario aunque los tokens
+    sean compartidos.
+    """
+
+    __tablename__ = "org_google_integration"
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: ORG_GOOGLE_SINGLETON_ID
+    )
+    google_email: Mapped[str] = mapped_column(String(255), nullable=False)
+    access_token_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
+    refresh_token_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
+    token_expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    scopes: Mapped[str] = mapped_column(Text, nullable=False)
+    connected_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    connected_by_user_id: Mapped[str | None] = mapped_column(String(36))
+    last_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="active", server_default="active"
+    )
+    last_refresh_error: Mapped[str | None] = mapped_column(String(255))
+    last_refresh_error_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    disconnect_audit_id: Mapped[str | None] = mapped_column(String(36))
+
+
+class UserCalendarPref(TimestampMixin, Base):
+    """PR-OAuth-Google-Unificado. Calendario seleccionado per-user.
+
+    Aunque los tokens Google sean org-wide, cada user elige SU calendario
+    para el sync de tareas. Antes vivía en
+    `user_google_integrations.selected_calendar_id`; se migra aquí."""
+
+    __tablename__ = "user_calendar_prefs"
+
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    selected_calendar_id: Mapped[str | None] = mapped_column(String(255))
+    selected_calendar_summary: Mapped[str | None] = mapped_column(String(255))
 
 
 class EmailDirection(StrEnum):
