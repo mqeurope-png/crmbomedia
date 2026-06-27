@@ -86,17 +86,24 @@ def token_expiry_check(session: Session) -> int:
     dedup_since = now - timedelta(hours=WARNING_DEDUP_HOURS)
 
     org = get_org_integration(session)
+    # PR-Hotfix-OAuth-Banner Bug 14. El aviso se dispara por la caducidad
+    # del REFRESH token (7 días), NO del access token (1h, se refresca
+    # solo). NULL = app verificada → sin caducidad → no avisar.
+    refresh_exp = getattr(org, "refresh_token_expires_at", None) if org else None
+    if refresh_exp is not None and refresh_exp.tzinfo is None:
+        refresh_exp = refresh_exp.replace(tzinfo=UTC)
     if (
         org is None
         or org.status != "active"
-        or org.token_expires_at < now
-        or org.token_expires_at > horizon
+        or refresh_exp is None
+        or refresh_exp < now
+        or refresh_exp > horizon
     ):
         return 0
     if _recent_warning_exists(session, org.id, dedup_since):
         return 0
 
-    expires_local = org.token_expires_at.strftime("%d/%m/%Y %H:%M")
+    expires_local = refresh_exp.strftime("%d/%m/%Y %H:%M")
     from app.services.email import get_email_service  # noqa: PLC0415
 
     sent = 0
@@ -160,8 +167,19 @@ def admin_daily_digest(session: Session) -> int:
         logger.info("gmail.admin_digest skip — sin conexión org")
         return 0
 
+    # PR-Hotfix-OAuth-Banner Bug 14. El digest avisa por la caducidad del
+    # REFRESH token (7 días), no del access token (1h). NULL = sin
+    # caducidad (app verificada) → no avisar por caducidad.
+    refresh_exp = getattr(org, "refresh_token_expires_at", None)
+    if refresh_exp is not None and refresh_exp.tzinfo is None:
+        refresh_exp = refresh_exp.replace(tzinfo=UTC)
+    # Con la app verificada el refresh no caduca → no avisamos por
+    # caducidad (el needs_reconnect de abajo sí sigue avisando).
     expiring_soon = (
-        org.status == "active" and now <= org.token_expires_at <= horizon
+        not settings.gmail_app_verified
+        and org.status == "active"
+        and refresh_exp is not None
+        and now <= refresh_exp <= horizon
     )
     needs_reconnect = org.status == "needs_reconnect"
     if not expiring_soon and not needs_reconnect:
@@ -176,8 +194,11 @@ def admin_daily_digest(session: Session) -> int:
             body.append(f"Último error: {org.last_refresh_error}")
         body.append("El sync de emails de TODO el equipo está detenido.")
     elif expiring_soon:
-        expires_local = org.token_expires_at.strftime("%d/%m/%Y %H:%M")
-        body.append(f"Estado: activa, pero el token caduca el {expires_local}.")
+        expires_local = refresh_exp.strftime("%d/%m/%Y %H:%M")
+        body.append(
+            f"Estado: activa, pero la reconexión Google es necesaria antes "
+            f"del {expires_local}."
+        )
     body.append(
         f"\nReconecta en "
         f"{settings.frontend_base_url.rstrip('/')}/admin/integrations"

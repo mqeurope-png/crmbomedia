@@ -9998,6 +9998,16 @@ tr.is-inactive {
   font-size: 13px;
 }
 
+/* PR-Hotfix-OAuth-Banner Bug 14. La fecha de reconexión (refresh token)
+ * es la actionable — destacada vs el resto de metadatos. */
+.org-google-meta .org-google-reconnect dt {
+  color: var(--brand);
+}
+
+.org-google-meta .org-google-reconnect dd {
+  font-size: 15px;
+}
+
 /* Estrella de carpeta predeterminada en /plantillas. Color amarillo
  * tenue para señalar el toggle sin gritar. */
 .et-folder-default-star {

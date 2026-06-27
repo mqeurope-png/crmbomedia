@@ -36,9 +36,12 @@ export function GoogleConnectionBanner() {
         if (cancelled) return;
         if (s.status === "needs_reconnect") {
           setVariant("danger");
-        } else if (s.connected && s.token_expiring_soon) {
+        } else if (s.connected && s.refresh_token_expiring_soon) {
+          // PR-Hotfix-OAuth-Banner Bug 14. El aviso amarillo solo aplica a
+          // la caducidad del REFRESH token (reconexión real). El access
+          // token (token_expiring_soon) se refresca solo — no avisamos.
           setVariant("warn");
-          setExpiresAt(s.token_expires_at ?? null);
+          setExpiresAt(s.refresh_token_expires_at ?? null);
         } else {
           setVariant("none");
         }

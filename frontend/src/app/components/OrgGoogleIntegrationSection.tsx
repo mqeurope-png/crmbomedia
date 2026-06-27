@@ -203,11 +203,25 @@ export function OrgGoogleIntegrationSection({
               <dt>Último sync</dt>
               <dd>{fmt(status.last_sync_at)}</dd>
             </div>
-            <div>
-              <dt>Token caduca</dt>
-              <dd>{fmt(status.token_expires_at)}</dd>
+            {/* PR-Hotfix-OAuth-Banner Bug 14. La fecha que importa al admin
+                es la del REFRESH token (reconexión), no la del access token
+                (1h, se refresca solo). */}
+            <div className="org-google-reconnect">
+              <dt>Reconexión requerida antes de</dt>
+              <dd>
+                <strong>
+                  {status.refresh_token_expires_at
+                    ? fmt(status.refresh_token_expires_at)
+                    : "Sin caducidad (app verificada)"}
+                </strong>
+              </dd>
             </div>
           </dl>
+          {/* Informativo, no actionable: el access token se renueva solo. */}
+          <p className="muted small">
+            Sesión Google actual: caduca {fmt(status.token_expires_at)} (se
+            renueva automáticamente, no requiere acción).
+          </p>
 
           {needsReconnect ? (
             <p className="form-error">
@@ -215,10 +229,10 @@ export function OrgGoogleIntegrationSection({
               sync de emails y calendario de todo el equipo está detenido.
               Reconecta para reanudarlo.
             </p>
-          ) : isActive && status.token_expiring_soon ? (
+          ) : isActive && status.refresh_token_expiring_soon ? (
             <p className="form-warning">
-              <AlertTriangle size={11} aria-hidden /> El token caduca pronto.
-              Reconecta para no perder el sync.
+              <AlertTriangle size={11} aria-hidden /> La reconexión de Google
+              vence pronto. Reconecta para no perder el sync del equipo.
             </p>
           ) : null}
 

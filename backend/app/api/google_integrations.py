@@ -162,12 +162,23 @@ def get_status(
     from datetime import UTC, datetime, timedelta  # noqa: PLC0415
 
     integ_status = getattr(integration, "status", "active")
+    now = datetime.now(UTC)
     expiring_soon = False
     if integ_status == "active" and integration.token_expires_at is not None:
-        now = datetime.now(UTC)
-        expiring_soon = (
-            now <= integration.token_expires_at <= now + timedelta(hours=48)
-        )
+        exp = integration.token_expires_at
+        if exp.tzinfo is None:
+            exp = exp.replace(tzinfo=UTC)
+        expiring_soon = now <= exp <= now + timedelta(hours=48)
+    # PR-Hotfix-OAuth-Banner Bug 14. El banner amarillo SOLO debe activarse
+    # por la caducidad del refresh_token (7 días), no por el access_token
+    # (1h, se refresca solo). NULL = sin caducidad (app verificada) → nunca
+    # expiring_soon.
+    refresh_expiring_soon = False
+    refresh_exp = getattr(integration, "refresh_token_expires_at", None)
+    if integ_status == "active" and refresh_exp is not None:
+        if refresh_exp.tzinfo is None:
+            refresh_exp = refresh_exp.replace(tzinfo=UTC)
+        refresh_expiring_soon = now <= refresh_exp <= now + timedelta(hours=48)
     # Si la integración no está activa, la UI debe ofrecer reconectar —
     # `connected=False` para reutilizar el CTA de conexión, pero
     # exponemos `status` para el banner específico.
@@ -184,6 +195,8 @@ def get_status(
         status=integ_status,
         token_expires_at=integration.token_expires_at,
         token_expiring_soon=expiring_soon,
+        refresh_token_expires_at=refresh_exp,
+        refresh_token_expiring_soon=refresh_expiring_soon,
     )
 
 

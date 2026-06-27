@@ -132,6 +132,7 @@ def _seed_integration(
                 access_token_encrypted=encrypt("access-token-plain"),
                 refresh_token_encrypted=encrypt("refresh-token-plain"),
                 token_expires_at=datetime.now(UTC) + timedelta(hours=1),
+                refresh_token_expires_at=datetime.now(UTC) + timedelta(days=7),
                 scopes=(
                     "https://www.googleapis.com/auth/calendar.readonly "
                     "https://www.googleapis.com/auth/calendar.events"
@@ -192,6 +193,28 @@ def test_status_when_connected_with_calendar(
     assert body["google_email"] == "bart@bomedia.net"
     assert body["selected_calendar"]["id"] == "cal-123"
     assert body["requires_calendar_selection"] is False
+
+
+def test_org_status_endpoint_returns_refresh_token_expires_at(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    # PR-Hotfix-OAuth-Banner Bug 14. El status expone la caducidad del
+    # refresh token (7 días por delante en el seed) separada del access
+    # token (1h). El banner amarillo NO debe activarse: refresh lejos.
+    with session_factory() as session:
+        uid = _user_id(session, UserRole.USER)
+    _seed_integration(session_factory, user_id=uid)
+
+    response = client.get(
+        "/api/integrations/google/status", headers=auth_headers(client, "user")
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["refresh_token_expires_at"] is not None
+    assert body["refresh_token_expiring_soon"] is False
+    # El access token caduca en 1h, pero eso es informativo — no dispara
+    # el banner de reconexión.
+    assert body["token_expires_at"] is not None
 
 
 def test_authorize_returns_consent_url(

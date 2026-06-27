@@ -19,14 +19,29 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.crm import UserEmailAliasPref
+from app.models.crm import User, UserEmailAliasPref
 
 logger = logging.getLogger(__name__)
 
 
 def sync_send_as_aliases(session: Session, *, user_id: str) -> int:
-    """Lee los Send-As aliases de Gmail y refleja `is_default`/`is_allowed`
-    en `user_email_alias_prefs`. Devuelve cuántos aliases se procesaron.
+    """Refleja los Send-As aliases de Gmail en `user_email_alias_prefs`
+    RESPETANDO las preferencias previas del user. Devuelve cuántos aliases
+    se procesaron.
+
+    PR-Hotfix-OAuth-Banner Bug 15. La cuenta Google es org-wide y compartida:
+    Gmail devuelve los 50+ aliases de la cuenta para CADA user. Antes este
+    sync marcaba TODOS `is_allowed=1` por user, desbordando de 1-4 a 50+ y
+    pisando lo que cada user había elegido. Ahora:
+      - Fila existente: NO se toca `is_allowed` (preferencia del user). Se
+        actualiza `gmail_display_name`; `is_default` solo si el user no
+        tiene ya un default propio.
+      - Fila nueva: `is_allowed=0` (oculta), salvo que el alias sea el
+        email propio del user (`users.email`) → `is_allowed=1`.
+      - Primer sync del user (tabla vacía) + alias propio marcado default
+        en Gmail → se siembra como `is_default=1`.
+      - Alias que ya no existe en Gmail: la fila se conserva pero
+        `is_allowed=0` (no se borra).
 
     No commitea — el caller maneja la transacción. Best-effort a nivel
     de caller: si Gmail no está conectado / falta scope, levanta la
@@ -44,48 +59,57 @@ def sync_send_as_aliases(session: Session, *, user_id: str) -> int:
             )
         )
     }
+    first_sync = len(existing) == 0
+    user = session.get(User, user_id)
+    user_email = (user.email or "").strip().lower() if user else ""
+    # ¿El user ya eligió un default propio? Si sí, NO lo sobreescribimos.
+    assigned_default = any(r.is_default for r in existing.values())
 
-    default_email: str | None = None
     now = datetime.now(UTC)
     processed = 0
+    gmail_keys: set[str] = set()
     for alias in gmail_aliases:
         email = (alias.get("send_as_email") or "").strip()
         if not email:
             continue
         key = email.lower()
-        is_default = bool(alias.get("is_default"))
-        # `list_send_as_aliases` ya filtra a verificados, así que todo lo
-        # que llega aquí es is_allowed=1.
-        is_allowed = True
+        gmail_keys.add(key)
+        is_default_gmail = bool(alias.get("is_default"))
         display = alias.get("display_name") or None
-        if is_default:
-            default_email = key
+        is_self = key == user_email
         row = existing.get(key)
-        if row is None:
+        if row is not None:
+            # Fila existente → respetar `is_allowed` (preferencia del user).
+            if display:
+                row.gmail_display_name = display
+            if not assigned_default and is_default_gmail:
+                row.is_default = True
+                assigned_default = True
+            row.updated_at = now
+        else:
+            # Alias nuevo → oculto, salvo el alias propio del user.
+            new_default = (
+                first_sync and is_self and is_default_gmail and not assigned_default
+            )
+            if new_default:
+                assigned_default = True
             session.add(
                 UserEmailAliasPref(
                     user_id=user_id,
                     alias_email=email,
-                    is_allowed=is_allowed,
-                    is_default=is_default,
+                    is_allowed=is_self,
+                    is_default=new_default,
                     gmail_display_name=display,
                 )
             )
-        else:
-            row.is_allowed = is_allowed
-            row.is_default = is_default
-            if display:
-                row.gmail_display_name = display
-            row.updated_at = now
         processed += 1
 
-    # Garantizar UN solo default: si Gmail marcó uno, ponemos is_default=0
-    # en todos los demás aliases del user.
-    if default_email is not None:
-        for key, row in existing.items():
-            if key != default_email and row.is_default:
-                row.is_default = False
-                row.updated_at = now
+    # Aliases que ya no existen en Gmail: conservar la fila para histórico
+    # pero marcarla no-usable (is_allowed=0). NO se borra.
+    for key, row in existing.items():
+        if key not in gmail_keys and row.is_allowed:
+            row.is_allowed = False
+            row.updated_at = now
 
     session.flush()
     return processed
