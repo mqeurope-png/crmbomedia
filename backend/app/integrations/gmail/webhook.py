@@ -18,12 +18,10 @@ import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.db.session import get_session
-from app.models.crm import UserGoogleIntegration
 
 logger = logging.getLogger(__name__)
 
@@ -121,39 +119,34 @@ async def gmail_webhook(
             detail="Missing emailAddress / historyId in Pub/Sub payload.",
         )
 
-    # Fan out: one push from Gmail/Pub/Sub maps to ONE Google
-    # account, but two CRM users may share that account (one user
-    # connected the same Gmail under different CRM roles, e.g. an
-    # admin profile + a sales profile). Each user has its own
-    # `email_threads`/`email_messages` rows, so we must enqueue
-    # one history-process job per matching integration.
-    integrations = (
-        session.scalars(
-            select(UserGoogleIntegration).where(
-                UserGoogleIntegration.google_email == email_address
-            )
-        )
-    ).all()
-    if not integrations:
-        # Not one of our users — drop silently with 200 so Google
-        # doesn't retry forever.
+    # PR-OAuth-Google-Unificado. Antes había 6 integraciones per-user
+    # con el MISMO google_email → 6 jobs (6 copias del mismo email). Ahora
+    # hay UNA integración org compartida → UN job, atribuido al user que
+    # conectó (`connected_by_user_id`). Los threads/messages quedan bajo
+    # ese gmail_account_user_id.
+    from app.integrations.google_calendar.service import (  # noqa: PLC0415
+        get_org_integration,
+    )
+
+    org = get_org_integration(session)
+    if (
+        org is None
+        or org.status != "active"
+        or org.google_email != email_address
+        or not org.connected_by_user_id
+    ):
         logger.info(
-            "gmail.webhook.unknown_address address=%s", email_address
+            "gmail.webhook.no_active_org address=%s", email_address
         )
         return {"status": "ignored"}
 
-    # Enqueue the heavy lift. The job is idempotent: if it runs
-    # twice for the same history range, dedupe is enforced by the
-    # `(gmail_account_user_id, gmail_message_id)` unique key.
     from app.integrations.gmail.jobs import enqueue_process_history  # noqa: PLC0415
 
-    for integration in integrations:
-        enqueue_process_history(
-            user_id=integration.user_id, new_history_id=history_id
-        )
-    logger.info(
-        "gmail.webhook.enqueued address=%s users=%d",
-        email_address,
-        len(integrations),
+    enqueue_process_history(
+        user_id=org.connected_by_user_id, new_history_id=history_id
     )
-    return {"status": "enqueued", "users": len(integrations)}
+    logger.info(
+        "gmail.webhook.enqueued address=%s org_user=%s",
+        email_address, org.connected_by_user_id,
+    )
+    return {"status": "enqueued", "users": 1}

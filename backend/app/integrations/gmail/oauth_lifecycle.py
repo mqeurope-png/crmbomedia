@@ -27,7 +27,8 @@ from sqlalchemy.orm import Session
 
 from app.core.audit import Action, record_event
 from app.core.config import get_settings
-from app.models.crm import AuditLog, User, UserGoogleIntegration, UserRole
+from app.integrations.google_calendar.service import get_org_integration
+from app.models.crm import AuditLog, User, UserRole
 from app.workers.queues import queue_name, redis_connection
 
 logger = logging.getLogger(__name__)
@@ -58,9 +59,21 @@ def _recent_warning_exists(
     return row is not None
 
 
+def _admin_recipients(session: Session) -> list[User]:
+    return list(
+        session.scalars(
+            select(User).where(
+                User.role == UserRole.ADMIN, User.is_active.is_(True)
+            )
+        )
+    )
+
+
 def token_expiry_check(session: Session) -> int:
-    """Avisa a users con token a <48h. Devuelve cuántos avisos se
-    enviaron. Si `GMAIL_APP_VERIFIED=true` sale early (0)."""
+    """PR-OAuth-Google-Unificado. La conexión Google es org-wide y la
+    gestiona el admin, así que el aviso de caducidad (<48h) va a los
+    ADMINS. Devuelve cuántos emails se enviaron. `GMAIL_APP_VERIFIED=true`
+    → sale early (0)."""
     settings = get_settings()
     if settings.gmail_app_verified:
         logger.info(
@@ -72,62 +85,59 @@ def token_expiry_check(session: Session) -> int:
     horizon = now + timedelta(hours=EXPIRY_WARNING_WINDOW_HOURS)
     dedup_since = now - timedelta(hours=WARNING_DEDUP_HOURS)
 
-    integrations = list(
-        session.scalars(
-            select(UserGoogleIntegration).where(
-                UserGoogleIntegration.status == "active",
-                UserGoogleIntegration.token_expires_at >= now,
-                UserGoogleIntegration.token_expires_at <= horizon,
-            )
-        )
-    )
-    sent = 0
+    org = get_org_integration(session)
+    if (
+        org is None
+        or org.status != "active"
+        or org.token_expires_at < now
+        or org.token_expires_at > horizon
+    ):
+        return 0
+    if _recent_warning_exists(session, org.id, dedup_since):
+        return 0
+
+    expires_local = org.token_expires_at.strftime("%d/%m/%Y %H:%M")
     from app.services.email import get_email_service  # noqa: PLC0415
 
-    for integ in integrations:
-        if _recent_warning_exists(session, integ.id, dedup_since):
+    sent = 0
+    for admin in _admin_recipients(session):
+        if not admin.email:
             continue
-        user = session.get(User, integ.user_id)
-        if user is None or not user.email:
-            continue
-        expires_local = integ.token_expires_at.strftime("%d/%m/%Y %H:%M")
         try:
             get_email_service().send_notification(
-                to_email=user.email,
-                to_name=user.full_name or "",
-                subject="Tu conexión Gmail en BoHub CRM caduca pronto",
+                to_email=admin.email,
+                to_name=admin.full_name or "",
+                subject="La conexión Google de BoHub CRM caduca pronto",
                 text_body=(
-                    f"Hola {user.full_name or ''},\n\n"
-                    f"Tu conexión de Gmail en BoHub CRM caduca el "
-                    f"{expires_local}. Reconecta para no perder el sync de "
-                    f"emails.\n\n"
-                    f"Entra en {settings.frontend_base_url.rstrip('/')}/account "
-                    f"y pulsa \"Reconectar Google\".\n"
+                    f"Hola {admin.full_name or ''},\n\n"
+                    f"La conexión Google de la organización ({org.google_email}) "
+                    f"caduca el {expires_local}. Reconecta para no perder el "
+                    f"sync de emails de todo el equipo.\n\n"
+                    f"Entra en "
+                    f"{settings.frontend_base_url.rstrip('/')}/admin/integrations"
+                    f" y pulsa \"Reconectar Google\".\n"
                 ),
             )
+            sent += 1
         except Exception:  # noqa: BLE001
             logger.warning(
-                "gmail.token_expiry_check email failed user_id=%s",
-                integ.user_id, exc_info=True,
+                "gmail.token_expiry_check email failed admin=%s",
+                admin.id, exc_info=True,
             )
-            continue
+    if sent:
         record_event(
             session,
             action=Action.GMAIL_TOKEN_EXPIRY_WARNING_SENT,
-            target_type="user_google_integration",
-            target_id=integ.id,
-            actor_email=integ.google_email,
+            target_type="org_google_integration",
+            target_id=org.id,
+            actor_email=org.google_email,
             metadata={
-                "user_id": integ.user_id,
-                "token_expires_at": integ.token_expires_at.isoformat(),
+                "token_expires_at": org.token_expires_at.isoformat(),
+                "admins_notified": sent,
             },
         )
         session.commit()
-        sent += 1
-    logger.info(
-        "gmail.token_expiry_check done candidates=%d warnings_sent=%d",
-        len(integrations), sent,
-    )
+    logger.info("gmail.token_expiry_check done warnings_sent=%d", sent)
     return sent
 
 
@@ -137,78 +147,54 @@ def token_expiry_check(session: Session) -> int:
 
 
 def admin_daily_digest(session: Session) -> int:
-    """Email a cada admin con el resumen de integraciones problemáticas.
-    Devuelve cuántos emails se enviaron (uno por admin)."""
+    """PR-OAuth-Google-Unificado. Email diario a cada admin con el
+    estado de la ÚNICA conexión Google org. Devuelve cuántos emails se
+    enviaron. Si la conexión está sana (active, no caduca <48h) no
+    envía nada."""
     settings = get_settings()
     now = datetime.now(UTC)
     horizon = now + timedelta(hours=EXPIRY_WARNING_WINDOW_HOURS)
-    recent = now - timedelta(hours=24)
 
-    expiring = list(
-        session.scalars(
-            select(UserGoogleIntegration).where(
-                UserGoogleIntegration.status == "active",
-                UserGoogleIntegration.token_expires_at >= now,
-                UserGoogleIntegration.token_expires_at <= horizon,
-            )
-        )
-    )
-    disconnected = list(
-        session.scalars(
-            select(UserGoogleIntegration).where(
-                UserGoogleIntegration.status == "needs_reconnect",
-            )
-        )
-    )
-    recent_fail = [
-        i for i in disconnected
-        if i.last_refresh_error_at is not None
-        and i.last_refresh_error_at >= recent
-    ]
-    if not expiring and not disconnected:
-        logger.info("gmail.admin_digest skip — nada que reportar")
+    org = get_org_integration(session)
+    if org is None:
+        logger.info("gmail.admin_digest skip — sin conexión org")
         return 0
 
-    def _line(i: UserGoogleIntegration) -> str:
-        u = session.get(User, i.user_id)
-        who = (u.full_name or u.email) if u else i.user_id
-        return f"  - {who} ({i.google_email})"
+    expiring_soon = (
+        org.status == "active" and now <= org.token_expires_at <= horizon
+    )
+    needs_reconnect = org.status == "needs_reconnect"
+    if not expiring_soon and not needs_reconnect:
+        logger.info("gmail.admin_digest skip — conexión org sana")
+        return 0
 
-    body = ["Resumen diario de conexiones Gmail — BoHub CRM\n"]
-    if expiring:
-        body.append(f"Tokens próximos a caducar (<48h): {len(expiring)}")
-        body.extend(_line(i) for i in expiring)
-        body.append("")
-    if disconnected:
-        body.append(f"Users desconectados (needs_reconnect): {len(disconnected)}")
-        body.extend(_line(i) for i in disconnected)
-        body.append("")
-    if recent_fail:
-        body.append(f"Refresh fallido en las últimas 24h: {len(recent_fail)}")
+    body = ["Estado de la conexión Google de la organización — BoHub CRM\n"]
+    body.append(f"Cuenta: {org.google_email}")
+    if needs_reconnect:
+        body.append("Estado: ⚠ DESCONECTADA (needs_reconnect).")
+        if org.last_refresh_error:
+            body.append(f"Último error: {org.last_refresh_error}")
+        body.append("El sync de emails de TODO el equipo está detenido.")
+    elif expiring_soon:
+        expires_local = org.token_expires_at.strftime("%d/%m/%Y %H:%M")
+        body.append(f"Estado: activa, pero el token caduca el {expires_local}.")
     body.append(
-        f"\nGestiona los users en "
-        f"{settings.frontend_base_url.rstrip('/')}/admin/users"
+        f"\nReconecta en "
+        f"{settings.frontend_base_url.rstrip('/')}/admin/integrations"
     )
     text_body = "\n".join(body)
 
-    admins = list(
-        session.scalars(
-            select(User).where(
-                User.role == UserRole.ADMIN, User.is_active.is_(True)
-            )
-        )
-    )
     from app.services.email import get_email_service  # noqa: PLC0415
 
     sent = 0
-    for admin in admins:
+    for admin in _admin_recipients(session):
         if not admin.email:
             continue
         try:
             get_email_service().send_notification(
                 to_email=admin.email,
                 to_name=admin.full_name or "",
-                subject="BoHub CRM — resumen diario de conexiones Gmail",
+                subject="BoHub CRM — estado de la conexión Google",
                 text_body=text_body,
             )
             sent += 1
@@ -221,11 +207,12 @@ def admin_daily_digest(session: Session) -> int:
         record_event(
             session,
             action=Action.GMAIL_ADMIN_DIGEST_SENT,
-            target_type="system",
+            target_type="org_google_integration",
+            target_id=org.id,
             metadata={
                 "admins_notified": sent,
-                "expiring": len(expiring),
-                "needs_reconnect": len(disconnected),
+                "expiring_soon": expiring_soon,
+                "needs_reconnect": needs_reconnect,
             },
         )
         session.commit()

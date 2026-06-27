@@ -92,40 +92,42 @@ def sync_send_as_aliases(session: Session, *, user_id: str) -> int:
 
 
 def sync_all_active_users(session: Session) -> int:
-    """Cron `gmail:sync_aliases`. Recorre los users con integración
-    Gmail activa y sincroniza sus aliases. Devuelve cuántos users se
-    procesaron con éxito. Un fallo en un user (scope, token) NO aborta
-    el resto."""
+    """PR-OAuth-Google-Unificado. Cron `gmail:sync_aliases`. Gateado por
+    la integración ORG: si está activa, recorre TODOS los users del CRM
+    y sincroniza sus aliases Send-As (per-user, leídos de la cuenta
+    compartida). Devuelve cuántos users se procesaron con éxito. Un fallo
+    en un user (scope, token) NO aborta el resto."""
     from app.core.audit import Action, record_event  # noqa: PLC0415
-    from app.models.crm import UserGoogleIntegration  # noqa: PLC0415
+    from app.integrations.google_calendar.service import (  # noqa: PLC0415
+        get_org_integration,
+    )
+    from app.models.crm import User  # noqa: PLC0415
 
-    integrations = list(
-        session.scalars(
-            select(UserGoogleIntegration).where(
-                UserGoogleIntegration.status == "active",
-            )
-        )
+    org = get_org_integration(session)
+    if org is None or org.status != "active":
+        logger.info("gmail.sync_aliases skip — org integration not active")
+        return 0
+
+    user_ids = list(
+        session.scalars(select(User.id).where(User.is_active.is_(True)))
     )
     ok = 0
-    for integ in integrations:
+    for uid in user_ids:
         try:
-            count = sync_send_as_aliases(session, user_id=integ.user_id)
+            count = sync_send_as_aliases(session, user_id=uid)
             record_event(
                 session,
                 action=Action.GMAIL_ALIASES_SYNCED,
-                target_type="user_google_integration",
-                target_id=integ.id,
-                metadata={"user_id": integ.user_id, "synced_count": count},
+                target_type="user",
+                target_id=uid,
+                metadata={"user_id": uid, "synced_count": count},
             )
             session.commit()
             ok += 1
         except Exception:  # noqa: BLE001
             session.rollback()
             logger.warning(
-                "gmail.sync_aliases failed user_id=%s", integ.user_id,
-                exc_info=True,
+                "gmail.sync_aliases failed user_id=%s", uid, exc_info=True,
             )
-    logger.info(
-        "gmail.sync_aliases done users_ok=%d/%d", ok, len(integrations)
-    )
+    logger.info("gmail.sync_aliases done users_ok=%d/%d", ok, len(user_ids))
     return ok

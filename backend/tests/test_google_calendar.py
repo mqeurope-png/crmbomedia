@@ -28,7 +28,6 @@ from app.models.crm import (
     Base,
     Task,
     User,
-    UserGoogleIntegration,
     UserRole,
 )
 from tests._test_helpers import auth_headers, seed_test_users
@@ -113,27 +112,43 @@ def _seed_integration(
     calendar_id: str | None = "cal-123",
     calendar_summary: str | None = "CRMBO Tareas",
 ) -> str:
-    """Insert a `user_google_integrations` row directly and return its id."""
+    """PR-OAuth-Google-Unificado. Crea la integración ORG singleton (si
+    no existe) + el calendario per-user. Idempotente para que varios
+    tests/users la llamen sin colisionar en el PK singleton. Devuelve el
+    id de la integración org."""
     from app.core.crypto import encrypt  # noqa: PLC0415
+    from app.models.crm import (  # noqa: PLC0415
+        ORG_GOOGLE_SINGLETON_ID,
+        OrgGoogleIntegration,
+        UserCalendarPref,
+    )
 
     with session_factory() as session:
-        integration = UserGoogleIntegration(
-            user_id=user_id,
-            google_email=google_email,
-            access_token_encrypted=encrypt("access-token-plain"),
-            refresh_token_encrypted=encrypt("refresh-token-plain"),
-            token_expires_at=datetime.now(UTC) + timedelta(hours=1),
-            selected_calendar_id=calendar_id,
-            selected_calendar_summary=calendar_summary,
-            scopes=(
-                "https://www.googleapis.com/auth/calendar.readonly "
-                "https://www.googleapis.com/auth/calendar.events"
-            ),
-            connected_at=datetime.now(UTC),
-        )
-        session.add(integration)
+        integration = session.get(OrgGoogleIntegration, ORG_GOOGLE_SINGLETON_ID)
+        if integration is None:
+            integration = OrgGoogleIntegration(
+                id=ORG_GOOGLE_SINGLETON_ID,
+                google_email=google_email,
+                access_token_encrypted=encrypt("access-token-plain"),
+                refresh_token_encrypted=encrypt("refresh-token-plain"),
+                token_expires_at=datetime.now(UTC) + timedelta(hours=1),
+                scopes=(
+                    "https://www.googleapis.com/auth/calendar.readonly "
+                    "https://www.googleapis.com/auth/calendar.events"
+                ),
+                connected_at=datetime.now(UTC),
+                connected_by_user_id=user_id,
+                status="active",
+            )
+            session.add(integration)
+        if calendar_id is not None:
+            pref = session.get(UserCalendarPref, user_id)
+            if pref is None:
+                pref = UserCalendarPref(user_id=user_id)
+                session.add(pref)
+            pref.selected_calendar_id = calendar_id
+            pref.selected_calendar_summary = calendar_summary
         session.commit()
-        session.refresh(integration)
         return integration.id
 
 
@@ -182,6 +197,8 @@ def test_status_when_connected_with_calendar(
 def test_authorize_returns_consent_url(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # PR-OAuth-Google-Unificado. /authorize es admin-only: solo el admin
+    # conecta la cuenta Google org-wide.
     monkeypatch.setattr(
         "app.integrations.google_calendar.oauth.get_authorize_url",
         lambda state: f"https://accounts.google.com/o/oauth2/auth?state={state}",
@@ -192,11 +209,21 @@ def test_authorize_returns_consent_url(
     )
     response = client.get(
         "/api/integrations/google/authorize",
-        headers=auth_headers(client, "user"),
+        headers=auth_headers(client, "admin"),
     )
     assert response.status_code == 200
     body = response.json()
     assert body["url"].startswith("https://accounts.google.com/o/oauth2/auth?state=")
+
+
+def test_authorize_forbidden_for_non_admin(client: TestClient) -> None:
+    # PR-OAuth-Google-Unificado. Un comercial no puede iniciar la
+    # conexión org-wide.
+    response = client.get(
+        "/api/integrations/google/authorize",
+        headers=auth_headers(client, "user"),
+    )
+    assert response.status_code == 403
 
 
 # ---------------------------------------------------------------------------
@@ -209,15 +236,15 @@ def test_callback_exchanges_code_and_persists_row(
     session_factory: sessionmaker,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Bind a state to the `user` role first by hitting /authorize. The
-    # state ends up in our fake Redis.
+    # PR-OAuth-Google-Unificado. Bind a state to the `admin` role first
+    # by hitting /authorize (admin-only). The state ends up in fake Redis.
     monkeypatch.setattr(
         "app.api.google_integrations.get_authorize_url",
         lambda state: f"https://accounts.google.com/o/oauth2/auth?state={state}",
     )
     auth_resp = client.get(
         "/api/integrations/google/authorize",
-        headers=auth_headers(client, "user"),
+        headers=auth_headers(client, "admin"),
     )
     state = auth_resp.json()["url"].rsplit("=", 1)[1]
 
@@ -225,7 +252,7 @@ def test_callback_exchanges_code_and_persists_row(
     def fake_exchange(*, code: str, state: str) -> OAuthExchangeResult:
         _ = (code, state)
         return OAuthExchangeResult(
-            google_email="bart@bomedia.net",
+            google_email="mqeurope@gmail.com",
             access_token="new-access",
             refresh_token="new-refresh",
             expires_at=datetime.now(UTC) + timedelta(hours=1),
@@ -242,16 +269,25 @@ def test_callback_exchanges_code_and_persists_row(
         params={"code": "auth-code-from-google", "state": state},
         follow_redirects=False,
     )
-    # The backend redirects to /account/google-setup.
+    # The backend redirects the admin back to /admin/integrations.
     assert response.status_code == 302
-    assert "/account/google-setup" in response.headers["location"]
+    assert "/admin/integrations?google_connected=1" in response.headers["location"]
+
+    from app.models.crm import (  # noqa: PLC0415
+        ORG_GOOGLE_SINGLETON_ID,
+        OrgGoogleIntegration,
+    )
 
     with session_factory() as session:
-        integration = session.scalar(select(UserGoogleIntegration))
+        integration = session.get(OrgGoogleIntegration, ORG_GOOGLE_SINGLETON_ID)
         assert integration is not None
-        assert integration.google_email == "bart@bomedia.net"
+        assert integration.google_email == "mqeurope@gmail.com"
+        assert integration.status == "active"
         assert decrypt(integration.access_token_encrypted) == "new-access"
         assert decrypt(integration.refresh_token_encrypted) == "new-refresh"
+        # connected_by_user_id apunta al admin que inició el flujo.
+        admin_id = _user_id(session, UserRole.ADMIN)
+        assert integration.connected_by_user_id == admin_id
 
 
 def test_callback_rejects_replayed_or_invalid_state(client: TestClient) -> None:
@@ -359,11 +395,11 @@ def test_disconnect_marks_row_disconnected_by_user(
     session_factory: sessionmaker,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # PR-OAuth-Permisos-Admin Item 12. Desconectar ya NO borra la fila:
-    # la marca status='disconnected_by_user' + vacía tokens + conserva
-    # la fila para histórico + audit.
+    # PR-OAuth-Google-Unificado Item 12. Desconectar la cuenta org ya NO
+    # borra la fila: la marca status='disconnected_by_user' + vacía tokens
+    # + conserva la fila para histórico + audit. Solo el admin desconecta.
     with session_factory() as session:
-        uid = _user_id(session, UserRole.USER)
+        uid = _user_id(session, UserRole.ADMIN)
     _seed_integration(session_factory, user_id=uid)
     monkeypatch.setattr(
         "app.integrations.google_calendar.service._revoke_tokens",
@@ -372,15 +408,37 @@ def test_disconnect_marks_row_disconnected_by_user(
 
     response = client.delete(
         "/api/integrations/google/disconnect",
-        headers=auth_headers(client, "user"),
+        headers=auth_headers(client, "admin"),
     )
     assert response.status_code == 200
+
+    from app.models.crm import (  # noqa: PLC0415
+        ORG_GOOGLE_SINGLETON_ID,
+        OrgGoogleIntegration,
+    )
+
     with session_factory() as session:
-        row = session.scalar(select(UserGoogleIntegration))
+        row = session.get(OrgGoogleIntegration, ORG_GOOGLE_SINGLETON_ID)
         assert row is not None  # conservada
         assert row.status == "disconnected_by_user"
         assert row.access_token_encrypted == ""
         assert row.disconnect_audit_id is not None
+
+
+def test_disconnect_forbidden_for_non_admin(
+    client: TestClient,
+    session_factory: sessionmaker,
+) -> None:
+    # PR-OAuth-Google-Unificado. Un comercial no puede desconectar la
+    # cuenta Google org-wide.
+    with session_factory() as session:
+        uid = _user_id(session, UserRole.ADMIN)
+    _seed_integration(session_factory, user_id=uid)
+    response = client.delete(
+        "/api/integrations/google/disconnect",
+        headers=auth_headers(client, "user"),
+    )
+    assert response.status_code == 403
 
 
 # ---------------------------------------------------------------------------
@@ -779,20 +837,20 @@ def test_reopen_task_reverts_event_title(
     assert titles[-1] == "Seguimiento"
 
 
-def test_scope_expansion_keeps_selected_calendar(
+def test_scope_expansion_merges_scopes_and_keeps_per_user_calendar(
     client: TestClient,
     session_factory: sessionmaker,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Bug fix — Sprint Email v1 follow-up.
+    """PR-OAuth-Google-Unificado.
 
-    When the user re-authorises to add Gmail scopes, the existing
-    `selected_calendar_id` must stay put. The previous
-    implementation reset it on every re-auth, forcing the operator
-    through the setup screen again."""
+    Cuando el admin re-autoriza la cuenta org para añadir scopes de
+    Gmail, los scopes se MEZCLAN (no se reemplazan) y la selección de
+    calendario per-user (en `user_calendar_prefs`) queda intacta — vive
+    en otra tabla que `connect_org` nunca toca."""
     with session_factory() as session:
-        uid = _user_id(session, UserRole.USER)
-    _seed_integration(session_factory, user_id=uid)  # calendar already selected
+        admin_id = _user_id(session, UserRole.ADMIN)
+    _seed_integration(session_factory, user_id=admin_id)  # calendar per-user
 
     monkeypatch.setattr(
         "app.api.google_integrations.get_authorize_url",
@@ -800,20 +858,18 @@ def test_scope_expansion_keeps_selected_calendar(
     )
     auth_resp = client.get(
         "/api/integrations/google/authorize",
-        headers=auth_headers(client, "user"),
+        headers=auth_headers(client, "admin"),
     )
     state = auth_resp.json()["url"].rsplit("=", 1)[1]
 
     def fake_exchange(*, code: str, state: str) -> OAuthExchangeResult:
         _ = (code, state)
         return OAuthExchangeResult(
-            google_email="bart@bomedia.net",  # SAME email
+            google_email="mqeurope@gmail.com",  # SAME org email
             access_token="new-access",
             refresh_token="new-refresh",
             expires_at=datetime.now(UTC) + timedelta(hours=1),
             scopes=[
-                "https://www.googleapis.com/auth/calendar.readonly",
-                "https://www.googleapis.com/auth/calendar.events",
                 "https://www.googleapis.com/auth/gmail.send",
                 "https://www.googleapis.com/auth/gmail.modify",
             ],
@@ -827,73 +883,26 @@ def test_scope_expansion_keeps_selected_calendar(
         follow_redirects=False,
     )
     assert response.status_code == 302
-    # Existing selection means the callback skips the setup screen.
-    assert "/account/google-setup" not in response.headers["location"]
-    assert "gmail_connected=1" in response.headers["location"]
+    assert "/admin/integrations?google_connected=1" in response.headers["location"]
+
+    from app.models.crm import (  # noqa: PLC0415
+        ORG_GOOGLE_SINGLETON_ID,
+        OrgGoogleIntegration,
+        UserCalendarPref,
+    )
 
     with session_factory() as session:
-        integration = session.scalar(select(UserGoogleIntegration))
+        integration = session.get(OrgGoogleIntegration, ORG_GOOGLE_SINGLETON_ID)
         assert integration is not None
-        assert integration.selected_calendar_id == "cal-123"
-        assert integration.selected_calendar_summary == "CRMBO Tareas"
         # Scopes are merged, not replaced.
         scopes = set(integration.scopes.split())
         assert "https://www.googleapis.com/auth/gmail.send" in scopes
         assert "https://www.googleapis.com/auth/calendar.events" in scopes
-
-
-def test_account_change_clears_calendar(
-    client: TestClient,
-    session_factory: sessionmaker,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """If the user re-authorises with a different Google account,
-    drop the calendar selection — the id won't belong to the new
-    account."""
-    with session_factory() as session:
-        uid = _user_id(session, UserRole.USER)
-    _seed_integration(
-        session_factory,
-        user_id=uid,
-        google_email="bart@bomedia.net",
-        calendar_id="cal-old",
-        calendar_summary="Old",
-    )
-
-    monkeypatch.setattr(
-        "app.api.google_integrations.get_authorize_url",
-        lambda state: f"https://accounts.google.com/o/oauth2/auth?state={state}",
-    )
-    auth_resp = client.get(
-        "/api/integrations/google/authorize",
-        headers=auth_headers(client, "user"),
-    )
-    state = auth_resp.json()["url"].rsplit("=", 1)[1]
-
-    def fake_exchange(*, code: str, state: str) -> OAuthExchangeResult:
-        _ = (code, state)
-        return OAuthExchangeResult(
-            google_email="other@bomedia.net",  # DIFFERENT email
-            access_token="x",
-            refresh_token="x",
-            expires_at=datetime.now(UTC) + timedelta(hours=1),
-            scopes=["https://www.googleapis.com/auth/calendar.events"],
-        )
-
-    monkeypatch.setattr(google_service, "exchange_code_for_tokens", fake_exchange)
-
-    response = client.get(
-        "/api/integrations/google/callback",
-        params={"code": "x", "state": state},
-        follow_redirects=False,
-    )
-    assert response.status_code == 302
-    # Calendar got wiped → redirect goes back through setup.
-    assert "/account/google-setup" in response.headers["location"]
-    with session_factory() as session:
-        integration = session.scalar(select(UserGoogleIntegration))
-        assert integration is not None
-        assert integration.selected_calendar_id is None
+        # Per-user calendar selection survives the re-auth untouched.
+        pref = session.get(UserCalendarPref, admin_id)
+        assert pref is not None
+        assert pref.selected_calendar_id == "cal-123"
+        assert pref.selected_calendar_summary == "CRMBO Tareas"
 
 
 # ---------------------------------------------------------------------------
@@ -906,9 +915,9 @@ def test_callback_auto_registers_gmail_watch_when_modify_granted(
     session_factory: sessionmaker,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """First-time grant of `gmail.modify` should call
-    `register_watch` automatically. Before this fix the watch had
-    to be created via a manual shell command."""
+    """PR-OAuth-Google-Unificado. First-time grant of `gmail.modify`
+    registers ONE watch for the org account, attributed to the admin
+    that connected (`connected_by_user_id`)."""
     calls: list[str] = []
     monkeypatch.setattr(
         "app.integrations.gmail.service.register_watch",
@@ -920,14 +929,14 @@ def test_callback_auto_registers_gmail_watch_when_modify_granted(
     )
     auth_resp = client.get(
         "/api/integrations/google/authorize",
-        headers=auth_headers(client, "user"),
+        headers=auth_headers(client, "admin"),
     )
     state = auth_resp.json()["url"].rsplit("=", 1)[1]
 
     def fake_exchange(*, code: str, state: str) -> OAuthExchangeResult:
         _ = (code, state)
         return OAuthExchangeResult(
-            google_email="bart@bomedia.net",
+            google_email="mqeurope@gmail.com",
             access_token="t",
             refresh_token="r",
             expires_at=datetime.now(UTC) + timedelta(hours=1),
@@ -947,8 +956,8 @@ def test_callback_auto_registers_gmail_watch_when_modify_granted(
     )
     assert response.status_code == 302
     with session_factory() as session:
-        user_id = _user_id(session, UserRole.USER)
-    assert calls == [user_id]
+        admin_id = _user_id(session, UserRole.ADMIN)
+    assert calls == [admin_id]
 
 
 def test_callback_does_not_re_register_watch_on_subsequent_auth(
@@ -956,17 +965,21 @@ def test_callback_does_not_re_register_watch_on_subsequent_auth(
     session_factory: sessionmaker,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """If the user already had gmail.modify granted, re-authorising
-    should not trigger another watch registration — the existing
-    watch keeps its history_id."""
+    """PR-OAuth-Google-Unificado. If the org account already had
+    gmail.modify granted, re-authorising should not trigger another
+    watch registration — the existing watch keeps its history_id."""
     from app.core.crypto import encrypt  # noqa: PLC0415
+    from app.models.crm import (  # noqa: PLC0415
+        ORG_GOOGLE_SINGLETON_ID,
+        OrgGoogleIntegration,
+    )
 
     with session_factory() as session:
-        uid = _user_id(session, UserRole.USER)
+        admin_id = _user_id(session, UserRole.ADMIN)
         session.add(
-            UserGoogleIntegration(
-                user_id=uid,
-                google_email="bart@bomedia.net",
+            OrgGoogleIntegration(
+                id=ORG_GOOGLE_SINGLETON_ID,
+                google_email="mqeurope@gmail.com",
                 access_token_encrypted=encrypt("a"),
                 refresh_token_encrypted=encrypt("r"),
                 token_expires_at=datetime.now(UTC) + timedelta(hours=1),
@@ -976,8 +989,8 @@ def test_callback_does_not_re_register_watch_on_subsequent_auth(
                     "https://www.googleapis.com/auth/gmail.send"
                 ),
                 connected_at=datetime.now(UTC),
-                selected_calendar_id="cal-A",
-                selected_calendar_summary="A",
+                connected_by_user_id=admin_id,
+                status="active",
             )
         )
         session.commit()
@@ -993,14 +1006,14 @@ def test_callback_does_not_re_register_watch_on_subsequent_auth(
     )
     auth_resp = client.get(
         "/api/integrations/google/authorize",
-        headers=auth_headers(client, "user"),
+        headers=auth_headers(client, "admin"),
     )
     state = auth_resp.json()["url"].rsplit("=", 1)[1]
 
     def fake_exchange(*, code: str, state: str) -> OAuthExchangeResult:
         _ = (code, state)
         return OAuthExchangeResult(
-            google_email="bart@bomedia.net",
+            google_email="mqeurope@gmail.com",
             access_token="new",
             refresh_token="new",
             expires_at=datetime.now(UTC) + timedelta(hours=1),
@@ -1042,14 +1055,14 @@ def test_callback_swallows_watch_register_failure(
     )
     auth_resp = client.get(
         "/api/integrations/google/authorize",
-        headers=auth_headers(client, "user"),
+        headers=auth_headers(client, "admin"),
     )
     state = auth_resp.json()["url"].rsplit("=", 1)[1]
 
     def fake_exchange(*, code: str, state: str) -> OAuthExchangeResult:
         _ = (code, state)
         return OAuthExchangeResult(
-            google_email="bart@bomedia.net",
+            google_email="mqeurope@gmail.com",
             access_token="t",
             refresh_token="r",
             expires_at=datetime.now(UTC) + timedelta(hours=1),
@@ -1070,32 +1083,27 @@ def test_callback_swallows_watch_register_failure(
     assert response.status_code == 302
 
 
-def test_two_users_can_connect_same_google_email_independently(
+def test_org_integration_is_a_singleton(
     client: TestClient, session_factory: sessionmaker
 ) -> None:
-    """Bug 4 follow-up: two CRM users connecting the same Google
-    account get independent integration rows. We deliberately do
-    NOT add a UNIQUE on google_email — each user owns their own
-    tokens and watch."""
-    from app.core.crypto import encrypt  # noqa: PLC0415
+    """PR-OAuth-Google-Unificado. La conexión Google es ÚNICA org-wide:
+    una sola fila con PK fija 'singleton'. Reconectar reutiliza la misma
+    fila — nunca hay dos. Cada user mantiene su propio calendario y sus
+    Send-As aliases, pero comparten tokens."""
+    from app.models.crm import (  # noqa: PLC0415
+        ORG_GOOGLE_SINGLETON_ID,
+        OrgGoogleIntegration,
+    )
 
-    now = datetime.now(UTC)
     with session_factory() as session:
         admin_id = _user_id(session, UserRole.ADMIN)
         user_id = _user_id(session, UserRole.USER)
-        for uid in (admin_id, user_id):
-            session.add(
-                UserGoogleIntegration(
-                    user_id=uid,
-                    google_email="shared@bomedia.net",
-                    access_token_encrypted=encrypt("a"),
-                    refresh_token_encrypted=encrypt("r"),
-                    token_expires_at=now + timedelta(hours=1),
-                    scopes="https://www.googleapis.com/auth/calendar.events",
-                    connected_at=now,
-                )
-            )
-        session.commit()
-        rows = list(session.scalars(select(UserGoogleIntegration)))
-    assert len(rows) == 2
-    assert {r.user_id for r in rows} == {admin_id, user_id}
+    # Dos users distintos "conectan" (idempotente) → misma fila singleton.
+    first_id = _seed_integration(session_factory, user_id=admin_id)
+    second_id = _seed_integration(session_factory, user_id=user_id)
+    assert first_id == second_id == ORG_GOOGLE_SINGLETON_ID
+
+    with session_factory() as session:
+        rows = list(session.scalars(select(OrgGoogleIntegration)))
+    assert len(rows) == 1
+    assert rows[0].id == ORG_GOOGLE_SINGLETON_ID

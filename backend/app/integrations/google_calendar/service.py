@@ -17,7 +17,6 @@ import logging
 import secrets
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
@@ -30,7 +29,13 @@ from app.integrations.google_calendar.oauth import (
     GOOGLE_OAUTH_SCOPES,
     exchange_code_for_tokens,
 )
-from app.models.crm import Task, UserGoogleIntegration
+from app.models.crm import (
+    ORG_GOOGLE_SINGLETON_ID,
+    OrgGoogleIntegration,
+    Task,
+    UserCalendarPref,
+    UserGoogleIntegration,  # noqa: F401  — referenciado en migración/tests
+)
 
 logger = logging.getLogger(__name__)
 
@@ -68,56 +73,62 @@ def consume_oauth_state(state: str) -> str | None:
     return user_id.decode() if isinstance(user_id, bytes) else str(user_id)
 
 
-def get_integration(session: Session, user_id: str) -> UserGoogleIntegration | None:
-    return session.scalar(
-        select(UserGoogleIntegration).where(
-            UserGoogleIntegration.user_id == user_id
-        )
-    )
+def get_org_integration(session: Session) -> OrgGoogleIntegration | None:
+    """PR-OAuth-Google-Unificado. La conexión Google ÚNICA org-wide."""
+    return session.get(OrgGoogleIntegration, ORG_GOOGLE_SINGLETON_ID)
 
 
-def connect_user(
-    session: Session, *, user_id: str, code: str, state: str
-) -> UserGoogleIntegration:
-    """Complete the OAuth flow: exchange the code, persist (or
-    refresh) the row, return it.
+def get_integration(
+    session: Session, user_id: str | None = None
+) -> OrgGoogleIntegration | None:
+    """PR-OAuth-Google-Unificado. Shim de compatibilidad: TODOS los
+    consumidores de tokens (gmail/calendar clients, sync, backfill) usan
+    ahora la integración org-wide. `user_id` se ignora — se mantiene en
+    la firma para no romper los ~20 call-sites existentes. La selección
+    de calendario per-user vive en `user_calendar_prefs` (ver
+    `get_calendar_pref`)."""
+    _ = user_id
+    return get_org_integration(session)
 
-    Scope-expansion flow: when an existing user re-authorises (e.g.
-    to add Gmail to a Calendar-only integration), we merge the
-    scopes and KEEP the previously-selected calendar — the old
-    `selected_calendar_id` belongs to the same Google account so
-    resetting it would force the operator to re-pick on every
-    incremental authorisation.
 
-    The calendar selection IS dropped when the connected Google
-    email changes (the user authorised with a different account),
-    since calendar ids aren't portable across accounts.
-    """
+def get_calendar_pref(
+    session: Session, user_id: str
+) -> UserCalendarPref | None:
+    return session.get(UserCalendarPref, user_id)
+
+
+def connect_org(
+    session: Session, *, connected_by_user_id: str | None, code: str, state: str
+) -> OrgGoogleIntegration:
+    """PR-OAuth-Google-Unificado. Completa el OAuth flow y persiste la
+    fila org única. Reemplaza el per-user `connect_user`.
+
+    Reconexión: si la fila ya existía en needs_reconnect /
+    disconnected_by_user → vuelve a `active` y limpia el último error.
+    Sincroniza los Send-As aliases de TODOS los users (cada uno con su
+    config) y registra el watch una sola vez."""
     result = exchange_code_for_tokens(code=code, state=state)
-    integration = get_integration(session, user_id)
+    integration = get_org_integration(session)
     now = datetime.now(UTC)
     previous_scopes: set[str] = set()
-    # PR-OAuth-Permisos-Admin Item 12. ¿Es una reconexión (la fila ya
-    # existía en needs_reconnect / disconnected_by_user)? Lo usamos para
-    # el audit log `gmail.reconnected` vs `gmail.connected`.
     was_reconnect = (
         integration is not None
         and getattr(integration, "status", "active") != "active"
     )
     if integration is None:
-        integration = UserGoogleIntegration(
-            user_id=user_id,
+        integration = OrgGoogleIntegration(
+            id=ORG_GOOGLE_SINGLETON_ID,
             google_email=result.google_email,
             access_token_encrypted=encrypt(result.access_token),
             refresh_token_encrypted=encrypt(result.refresh_token),
             token_expires_at=result.expires_at,
             scopes=" ".join(result.scopes),
             connected_at=now,
+            connected_by_user_id=connected_by_user_id,
             status="active",
         )
         session.add(integration)
     else:
-        account_changed = integration.google_email != result.google_email
         previous_scopes = set((integration.scopes or "").split())
         merged_scopes = sorted(previous_scopes | set(result.scopes))
         integration.google_email = result.google_email
@@ -126,95 +137,86 @@ def connect_user(
         integration.token_expires_at = result.expires_at
         integration.scopes = " ".join(merged_scopes)
         integration.connected_at = now
-        # PR-OAuth-Permisos-Admin Item 12. Reconexión → vuelve a activo,
-        # limpia el último error de refresh.
+        integration.connected_by_user_id = connected_by_user_id
         integration.status = "active"
         integration.last_refresh_error = None
         integration.last_refresh_error_at = None
-        if account_changed:
-            # New Google account → old calendar id is meaningless.
-            integration.selected_calendar_id = None
-            integration.selected_calendar_summary = None
     session.flush()
 
-    # PR-OAuth-Permisos-Admin Item 12. Audit log de la (re)conexión.
     from app.core.audit import Action, record_event  # noqa: PLC0415
 
     record_event(
         session,
         action=Action.GMAIL_RECONNECTED if was_reconnect else Action.GMAIL_CONNECTED,
-        target_type="user_google_integration",
+        target_type="org_google_integration",
         target_id=integration.id,
         actor_email=integration.google_email,
         metadata={
-            "user_id": user_id,
+            "connected_by_user_id": connected_by_user_id,
             "google_email": integration.google_email,
             "reconnect": was_reconnect,
         },
     )
+    # PR-OAuth-Google-Unificado. Hacer DURABLE la conexión org antes de los
+    # side-effects best-effort. `sync_all_active_users` hace commit/rollback
+    # per-user: si la sincronización de aliases de un user falla, su
+    # `session.rollback()` NO debe deshacer la conexión recién persistida
+    # (tokens/scopes/status). Con el commit aquí, esos rollbacks solo
+    # descartan los cambios pendientes de ese user.
+    session.commit()
 
-    # PR-OAuth-Permisos-Admin Item 13. Sincronizar los Send-As aliases
-    # desde Gmail al (re)conectar — refleja el ★ default real para que
-    # el handler del backfill no skipee al user. Best-effort: un fallo
-    # NO debe abortar el OAuth.
+    # PR-OAuth-Google-Unificado. Sincronizar Send-As aliases de TODOS los
+    # users del CRM (cada uno tiene su propia config en
+    # user_email_alias_prefs). Best-effort.
     if any("gmail" in s for s in result.scopes):
         try:
             from app.integrations.gmail.aliases import (  # noqa: PLC0415
-                sync_send_as_aliases,
+                sync_all_active_users,
             )
 
-            synced = sync_send_as_aliases(session, user_id=user_id)
-            record_event(
-                session,
-                action=Action.GMAIL_ALIASES_SYNCED,
-                target_type="user_google_integration",
-                target_id=integration.id,
-                actor_email=integration.google_email,
-                metadata={"user_id": user_id, "synced_count": synced},
-            )
-            logger.info(
-                "gmail.aliases_synced user_id=%s count=%d", user_id, synced
-            )
+            synced = sync_all_active_users(session)
+            logger.info("gmail.aliases_synced_all users=%d", synced)
         except Exception:  # noqa: BLE001
-            logger.warning(
-                "gmail.aliases_sync_failed user_id=%s", user_id, exc_info=True
-            )
+            session.rollback()
+            logger.warning("gmail.aliases_sync_failed", exc_info=True)
 
-    # Auto-register the Gmail Push Notifications watch the first
-    # time the user grants gmail.modify. Before this fix, replies
-    # never reached the CRM because the watch was only created via
-    # a manual `register_watch` call.
+    # Registrar el watch UNA vez para la cuenta org (atribuido al user
+    # que conecta). Solo si se concede gmail.modify por primera vez.
     gmail_modify = "https://www.googleapis.com/auth/gmail.modify"
     new_scopes = set(result.scopes)
-    if gmail_modify in new_scopes and gmail_modify not in previous_scopes:
+    if (
+        gmail_modify in new_scopes
+        and gmail_modify not in previous_scopes
+        and connected_by_user_id is not None
+    ):
         try:
             from app.integrations.gmail.service import (  # noqa: PLC0415
                 register_watch,
             )
 
-            register_watch(session, user_id=user_id)
+            register_watch(session, user_id=connected_by_user_id)
+            session.commit()
             logger.info(
-                "gmail.watch.auto_registered user_id=%s", user_id
+                "gmail.watch.auto_registered org by user_id=%s",
+                connected_by_user_id,
             )
         except Exception:  # noqa: BLE001
-            # Watch failure must NOT abort the OAuth flow — the
-            # user can retry from /account if needed. Log + carry on.
+            session.rollback()
             logger.warning(
                 "gmail.watch.auto_register_failed user_id=%s",
-                user_id,
-                exc_info=True,
+                connected_by_user_id, exc_info=True,
             )
 
     return integration
 
 
-def disconnect_user(session: Session, *, user_id: str) -> bool:
-    """PR-OAuth-Permisos-Admin Item 12. El user pulsa "Desconectar
-    Google". Antes BORRABA la fila (perdiendo histórico + config). Ahora
-    revoca el grant en Google (best effort), pone a NULL los tokens por
-    privacidad, y MARCA `status='disconnected_by_user'` conservando la
-    fila para histórico + audit. Returns True si había integración."""
-    integration = get_integration(session, user_id)
+def disconnect_org(
+    session: Session, *, actor_user_id: str | None = None
+) -> bool:
+    """PR-OAuth-Google-Unificado. El admin desconecta la cuenta Google
+    org. Revoca el grant (best effort), vacía tokens, marca
+    `status='disconnected_by_user'`. Conserva la fila para histórico."""
+    integration = get_org_integration(session)
     if integration is None:
         return False
     _revoke_tokens(integration)
@@ -224,16 +226,16 @@ def disconnect_user(session: Session, *, user_id: str) -> bool:
     audit = record_event(
         session,
         action=Action.GMAIL_DISCONNECTED_BY_USER,
-        target_type="user_google_integration",
+        target_type="org_google_integration",
         target_id=integration.id,
         actor_email=integration.google_email,
-        metadata={"user_id": user_id, "google_email": integration.google_email},
+        metadata={
+            "actor_user_id": actor_user_id,
+            "google_email": integration.google_email,
+        },
     )
-    session.flush()  # para tener audit.id
-
+    session.flush()
     integration.status = "disconnected_by_user"
-    # Tokens a NULL por privacidad — la fila sigue para histórico, pero
-    # ya no guardamos credenciales de una integración desconectada.
     integration.access_token_encrypted = ""
     integration.refresh_token_encrypted = ""
     integration.disconnect_audit_id = audit.id
@@ -242,18 +244,16 @@ def disconnect_user(session: Session, *, user_id: str) -> bool:
 
 
 def mark_needs_reconnect(
-    session: Session, *, user_id: str, error: str
-) -> UserGoogleIntegration | None:
-    """PR-OAuth-Permisos-Admin Item 12. Llamado cuando un refresh falla
-    de forma permanente (invalid_grant). En lugar de borrar la fila la
-    marca `needs_reconnect` + registra el error + audit log. Devuelve la
-    fila (o None si no existía). Idempotente: si ya está en
-    needs_reconnect no duplica el audit."""
-    integration = get_integration(session, user_id)
+    session: Session, *, user_id: str | None = None, error: str
+) -> OrgGoogleIntegration | None:
+    """PR-OAuth-Google-Unificado. Refresh permanente fallido → marca la
+    fila org `needs_reconnect` (no borra). `user_id` se ignora (compat).
+    Idempotente."""
+    _ = user_id
+    integration = get_org_integration(session)
     if integration is None:
         return None
     if integration.status == "needs_reconnect":
-        # Ya marcada — solo refrescamos el timestamp del último error.
         integration.last_refresh_error = error[:255]
         integration.last_refresh_error_at = datetime.now(UTC)
         session.flush()
@@ -264,14 +264,10 @@ def mark_needs_reconnect(
     audit = record_event(
         session,
         action=Action.GMAIL_REFRESH_FAILED_PERMANENT,
-        target_type="user_google_integration",
+        target_type="org_google_integration",
         target_id=integration.id,
         actor_email=integration.google_email,
-        metadata={
-            "user_id": user_id,
-            "google_email": integration.google_email,
-            "error": error,
-        },
+        metadata={"google_email": integration.google_email, "error": error},
     )
     session.flush()
     integration.status = "needs_reconnect"
@@ -280,16 +276,16 @@ def mark_needs_reconnect(
     integration.disconnect_audit_id = audit.id
     session.flush()
     logger.warning(
-        "gmail.refresh_failed_permanent user_id=%s error=%s — marcado "
-        "needs_reconnect (NO borrado)",
-        user_id, error,
+        "gmail.org_refresh_failed error=%s — marcado needs_reconnect "
+        "(NO borrado)",
+        error,
     )
     return integration
 
 
-def _revoke_tokens(integration: UserGoogleIntegration) -> None:
+def _revoke_tokens(integration: OrgGoogleIntegration) -> None:
     """Best-effort POST to Google's revoke endpoint. Failures are
-    logged but never propagated — the local row goes away regardless."""
+    logged but never propagated."""
     import httpx  # noqa: PLC0415
 
     from app.core.crypto import decrypt as _decrypt  # noqa: PLC0415
@@ -306,9 +302,7 @@ def _revoke_tokens(integration: UserGoogleIntegration) -> None:
             timeout=10.0,
         )
     except Exception:  # noqa: BLE001
-        logger.info(
-            "google_calendar.revoke_failed user_id=%s", integration.user_id
-        )
+        logger.info("google.revoke_failed org")
 
 
 def set_calendar(
@@ -316,16 +310,13 @@ def set_calendar(
     *,
     user_id: str,
     calendar_id: str,
-) -> UserGoogleIntegration:
-    """Persist the calendar the user picked in the setup screen.
-
-    Validates that the id is one of the user's actual calendars (so
-    arbitrary strings can't end up in the DB) and stores the summary
-    so we can show it without an extra API call on every page load.
-    """
-    integration = get_integration(session, user_id)
-    if integration is None:
-        raise GoogleNotConnectedError("Google Calendar no está conectado.")
+) -> UserCalendarPref:
+    """PR-OAuth-Google-Unificado. Persiste el calendario que el user
+    eligió en `user_calendar_prefs` (per-user), validándolo contra los
+    calendarios de la cuenta org compartida."""
+    integration = get_org_integration(session)
+    if integration is None or integration.status != "active":
+        raise GoogleNotConnectedError("Google no está conectado.")
     client = GoogleCalendarClient(session, integration)
     calendars = client.list_calendars()
     match = next((c for c in calendars if c["id"] == calendar_id), None)
@@ -333,10 +324,14 @@ def set_calendar(
         raise InvalidCalendarError(
             f"El calendario {calendar_id!r} no pertenece a la cuenta conectada."
         )
-    integration.selected_calendar_id = match["id"]
-    integration.selected_calendar_summary = match["summary"]
+    pref = get_calendar_pref(session, user_id)
+    if pref is None:
+        pref = UserCalendarPref(user_id=user_id)
+        session.add(pref)
+    pref.selected_calendar_id = match["id"]
+    pref.selected_calendar_summary = match["summary"]
     session.flush()
-    return integration
+    return pref
 
 
 # ---------------------------------------------------------------------------
@@ -355,8 +350,15 @@ def sync_task_to_calendar(
     `task.due_at` in the calendar's timezone — used by the workflow
     `action_create_task` step when no specific time is chosen.
     """
-    integration = get_integration(session, task.assigned_user_id)
-    if integration is None or integration.selected_calendar_id is None:
+    # PR-OAuth-Google-Unificado. Tokens org-wide, calendario per-user.
+    integration = get_org_integration(session)
+    pref = get_calendar_pref(session, task.assigned_user_id)
+    if (
+        integration is None
+        or integration.status != "active"
+        or pref is None
+        or pref.selected_calendar_id is None
+    ):
         logger.info(
             "google_calendar.sync_skip task_id=%s reason=not_configured",
             task.id,
@@ -365,18 +367,13 @@ def sync_task_to_calendar(
     body = _event_body_for_task(task, all_day=all_day)
     try:
         event = GoogleCalendarClient(session, integration).create_event(
-            integration.selected_calendar_id, body
+            pref.selected_calendar_id, body
         )
     except GoogleAuthExpiredError:
         logger.warning(
-            "google_calendar.sync_auth_expired task_id=%s user_id=%s",
-            task.id,
-            integration.user_id,
+            "google_calendar.sync_auth_expired task_id=%s", task.id
         )
-        # PR-OAuth-Permisos-Admin Item 12. Marcar, no borrar.
-        mark_needs_reconnect(
-            session, user_id=integration.user_id, error="invalid_grant"
-        )
+        mark_needs_reconnect(session, error="invalid_grant")
         return task
     except Exception:  # noqa: BLE001
         logger.warning(
@@ -386,7 +383,7 @@ def sync_task_to_calendar(
         )
         return task
     task.google_event_id = event.get("id")
-    task.google_calendar_id = integration.selected_calendar_id
+    task.google_calendar_id = pref.selected_calendar_id
     integration.last_sync_at = datetime.now(UTC)
     session.flush()
     return task
@@ -398,8 +395,8 @@ def update_task_event(session: Session, task: Task) -> Task:
     no-op."""
     if not task.google_event_id or not task.google_calendar_id:
         return task
-    integration = get_integration(session, task.assigned_user_id)
-    if integration is None:
+    integration = get_org_integration(session)
+    if integration is None or integration.status != "active":
         return task
     try:
         GoogleCalendarClient(session, integration).update_event(
@@ -411,9 +408,7 @@ def update_task_event(session: Session, task: Task) -> Task:
         logger.warning(
             "google_calendar.update_auth_expired task_id=%s", task.id
         )
-        mark_needs_reconnect(
-            session, user_id=integration.user_id, error="invalid_grant"
-        )
+        mark_needs_reconnect(session, error="invalid_grant")
         return task
     except Exception:  # noqa: BLE001
         logger.warning(
@@ -432,8 +427,8 @@ def delete_task_event(session: Session, task: Task) -> None:
     the local delete must succeed regardless."""
     if not task.google_event_id or not task.google_calendar_id:
         return
-    integration = get_integration(session, task.assigned_user_id)
-    if integration is None:
+    integration = get_org_integration(session)
+    if integration is None or integration.status != "active":
         return
     try:
         GoogleCalendarClient(session, integration).delete_event(
@@ -443,9 +438,7 @@ def delete_task_event(session: Session, task: Task) -> None:
         logger.warning(
             "google_calendar.delete_auth_expired task_id=%s", task.id
         )
-        mark_needs_reconnect(
-            session, user_id=integration.user_id, error="invalid_grant"
-        )
+        mark_needs_reconnect(session, error="invalid_grant")
     except Exception:  # noqa: BLE001
         logger.warning(
             "google_calendar.delete_failed task_id=%s",
@@ -567,12 +560,15 @@ __all__ = [
     "GOOGLE_OAUTH_SCOPES",
     "GoogleNotConnectedError",
     "InvalidCalendarError",
-    "connect_user",
+    "connect_org",
     "consume_oauth_state",
     "delete_task_event",
-    "disconnect_user",
+    "disconnect_org",
+    "get_calendar_pref",
     "get_integration",
+    "get_org_integration",
     "issue_oauth_state",
+    "mark_needs_reconnect",
     "set_calendar",
     "sync_task_to_calendar",
     "update_task_event",

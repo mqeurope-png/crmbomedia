@@ -6,7 +6,6 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { PageHeader } from "../../components/PageHeader";
 import {
-  disconnectGoogle,
   getGoogleStatus,
   listGoogleCalendars,
   selectGoogleCalendar,
@@ -77,22 +76,11 @@ export default function GoogleSetupPage() {
     }
   }
 
-  async function handleCancel() {
-    if (
-      !window.confirm(
-        "¿Cancelar y desconectar la cuenta de Google? Tendrás que volver a autorizar para sincronizar.",
-      )
-    ) {
-      return;
-    }
-    setSubmitting(true);
-    try {
-      await disconnectGoogle();
-      router.push("/account");
-    } catch (err) {
-      setError(extractErrorMessage(err, "No se pudo desconectar."));
-      setSubmitting(false);
-    }
+  // PR-OAuth-Google-Unificado. Esta pantalla solo elige el calendario
+  // per-user; la conexión Google es org-wide y solo la desconecta el
+  // admin. Cancelar = volver sin tocar la selección.
+  function handleCancel() {
+    router.push("/account");
   }
 
   return (
@@ -113,8 +101,9 @@ export default function GoogleSetupPage() {
         <div className="error-state">{error}</div>
       ) : status && !status.connected ? (
         <div className="error-state">
-          La cuenta no está conectada. Vuelve a <Link href="/account">/account</Link>{" "}
-          e inicia la conexión.
+          La cuenta Google del equipo no está conectada. Avisa a un
+          administrador para que la conecte; después podrás elegir tu
+          calendario aquí. Vuelve a <Link href="/account">/account</Link>.
         </div>
       ) : (
         <article className="form-card">
@@ -170,7 +159,7 @@ export default function GoogleSetupPage() {
                 onClick={handleCancel}
                 disabled={submitting}
               >
-                Cancelar y desconectar
+                Cancelar
               </button>
             </div>
           </form>

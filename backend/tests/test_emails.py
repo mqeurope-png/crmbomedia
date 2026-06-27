@@ -33,7 +33,6 @@ from app.models.crm import (
     EmailMessage,
     EmailThread,
     User,
-    UserGoogleIntegration,
     UserRole,
 )
 from tests._test_helpers import auth_headers, seed_test_users
@@ -75,29 +74,41 @@ def _seed_gmail_integration(
     *,
     user_id: str,
     allowed_aliases: tuple[str, ...] = ("info@bomedia.net",),
+    google_email: str = "bart@bomedia.net",
+    scopes: str = (
+        "https://www.googleapis.com/auth/calendar.events "
+        "https://www.googleapis.com/auth/gmail.send "
+        "https://www.googleapis.com/auth/gmail.modify"
+    ),
 ) -> None:
-    """Seed the Gmail integration row + one alias preference per
-    `allowed_aliases`. The first alias becomes the default. Tests
-    that want to exercise the "alias not in prefs" path should pass
-    `allowed_aliases=()`."""
-    from app.models.crm import UserEmailAliasPref  # noqa: PLC0415
+    """PR-OAuth-Google-Unificado. Seed the ORG Google integration
+    singleton (tokens compartidos por todo el equipo) + one alias
+    preference per `allowed_aliases` for `user_id`. The first alias
+    becomes the default. Tests that want the "alias not in prefs"
+    path should pass `allowed_aliases=()`.
+
+    `connected_by_user_id` apunta a `user_id` para que el webhook /
+    process_history queden atribuidos a ese user. Idempotente en el PK
+    singleton."""
+    from app.models.crm import (  # noqa: PLC0415
+        ORG_GOOGLE_SINGLETON_ID,
+        OrgGoogleIntegration,
+        UserEmailAliasPref,
+    )
 
     with session_factory() as session:
-        session.add(
-            UserGoogleIntegration(
-                user_id=user_id,
-                google_email="bart@bomedia.net",
-                access_token_encrypted=encrypt("access"),
-                refresh_token_encrypted=encrypt("refresh"),
-                token_expires_at=datetime.now(UTC) + timedelta(hours=1),
-                scopes=(
-                    "https://www.googleapis.com/auth/calendar.events "
-                    "https://www.googleapis.com/auth/gmail.send "
-                    "https://www.googleapis.com/auth/gmail.modify"
-                ),
-                connected_at=datetime.now(UTC),
-            )
-        )
+        integ = session.get(OrgGoogleIntegration, ORG_GOOGLE_SINGLETON_ID)
+        if integ is None:
+            integ = OrgGoogleIntegration(id=ORG_GOOGLE_SINGLETON_ID)
+            session.add(integ)
+        integ.google_email = google_email
+        integ.access_token_encrypted = encrypt("access")
+        integ.refresh_token_encrypted = encrypt("refresh")
+        integ.token_expires_at = datetime.now(UTC) + timedelta(hours=1)
+        integ.scopes = scopes
+        integ.connected_at = datetime.now(UTC)
+        integ.connected_by_user_id = user_id
+        integ.status = "active"
         for idx, alias in enumerate(allowed_aliases):
             session.add(
                 UserEmailAliasPref(
@@ -167,18 +178,13 @@ def test_send_email_without_gmail_scope_returns_403(
     500."""
     with session_factory() as session:
         uid = _user_id(session, UserRole.USER)
-        session.add(
-            UserGoogleIntegration(
-                user_id=uid,
-                google_email="bart@bomedia.net",
-                access_token_encrypted=encrypt("access"),
-                refresh_token_encrypted=encrypt("refresh"),
-                token_expires_at=datetime.now(UTC) + timedelta(hours=1),
-                scopes="https://www.googleapis.com/auth/calendar.events",
-                connected_at=datetime.now(UTC),
-            )
-        )
-        session.commit()
+    # PR-OAuth-Google-Unificado. La cuenta org está conectada pero solo
+    # con scope de calendar (sin gmail.send) → 403 scope-missing.
+    _seed_gmail_integration(
+        session_factory,
+        user_id=uid,
+        scopes="https://www.googleapis.com/auth/calendar.events",
+    )
     response = client.post(
         "/api/emails/send",
         json={
@@ -1109,34 +1115,27 @@ def test_send_with_unmarked_alias_returns_403(
 # ---------------------------------------------------------------------------
 
 
-def test_webhook_enqueues_one_job_per_matching_integration(
+def test_webhook_enqueues_single_org_job(
     client: TestClient,
     session_factory: sessionmaker,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Two CRM users sharing the same `google_email` must both get
-    a process_history job — otherwise replies for the user not
-    chosen by `session.scalar()` would be silently dropped."""
-    now = datetime.now(UTC)
+    """PR-OAuth-Google-Unificado. La conexión Google es org-wide: por
+    mucho que haya N users en el CRM, el webhook encola UN solo
+    process_history, atribuido a `org.connected_by_user_id`. Antes el
+    fan-out per-user duplicaba el mismo email N veces."""
     with session_factory() as session:
         admin_id = _user_id(session, UserRole.ADMIN)
-        user_id = _user_id(session, UserRole.USER)
-        for uid in (admin_id, user_id):
-            session.add(
-                UserGoogleIntegration(
-                    user_id=uid,
-                    google_email="shared@bomedia.net",
-                    access_token_encrypted=encrypt("a"),
-                    refresh_token_encrypted=encrypt("r"),
-                    token_expires_at=now + timedelta(hours=1),
-                    scopes=(
-                        "https://www.googleapis.com/auth/gmail.send "
-                        "https://www.googleapis.com/auth/gmail.modify"
-                    ),
-                    connected_at=now,
-                )
-            )
-        session.commit()
+    # La cuenta org la conectó el admin → connected_by_user_id=admin_id.
+    _seed_gmail_integration(
+        session_factory,
+        user_id=admin_id,
+        google_email="shared@bomedia.net",
+        scopes=(
+            "https://www.googleapis.com/auth/gmail.send "
+            "https://www.googleapis.com/auth/gmail.modify"
+        ),
+    )
 
     enqueued: list[tuple[str, int]] = []
     monkeypatch.setattr(
@@ -1164,9 +1163,8 @@ def test_webhook_enqueues_one_job_per_matching_integration(
     }
     response = client.post("/api/webhooks/gmail", json=payload)
     assert response.status_code == 200
-    assert response.json() == {"status": "enqueued", "users": 2}
-    assert sorted(uid for uid, _ in enqueued) == sorted([admin_id, user_id])
-    assert all(hid == 777 for _, hid in enqueued)
+    assert response.json() == {"status": "enqueued", "users": 1}
+    assert enqueued == [(admin_id, 777)]
 
 
 def test_webhook_returns_ignored_when_no_integration_matches(

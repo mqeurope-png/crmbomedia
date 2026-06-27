@@ -28,7 +28,6 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app.core.crypto import encrypt
 from app.db.session import get_session
 from app.email_scheduled_sweep import scheduled_send_sweep
 from app.main import app
@@ -40,10 +39,13 @@ from app.models.crm import (
     EmailThread,
     User,
     UserEmailAliasPref,
-    UserGoogleIntegration,
     UserRole,
 )
-from tests._test_helpers import auth_headers, seed_test_users
+from tests._test_helpers import (
+    auth_headers,
+    seed_org_google_integration,
+    seed_test_users,
+)
 
 PARENT_GMAIL_ID = "gmail-msg-parent"
 PARENT_RFC_MID = "<CABc123abc@mail.gmail.com>"
@@ -88,21 +90,10 @@ def _user_id(session: Session, role: UserRole) -> str:
 
 
 def _seed_gmail(factory: sessionmaker, *, user_id: str) -> None:
+    # PR-OAuth-Google-Unificado. Cuenta Google org compartida + alias
+    # default per-user de `user_id`.
     with factory() as session:
-        session.add(
-            UserGoogleIntegration(
-                user_id=user_id,
-                google_email="bart@bomedia.net",
-                access_token_encrypted=encrypt("access"),
-                refresh_token_encrypted=encrypt("refresh"),
-                token_expires_at=datetime.now(UTC) + timedelta(hours=1),
-                scopes=(
-                    "https://www.googleapis.com/auth/gmail.send "
-                    "https://www.googleapis.com/auth/gmail.modify"
-                ),
-                connected_at=datetime.now(UTC),
-            )
-        )
+        seed_org_google_integration(session, connected_by_user_id=user_id)
         session.add(
             UserEmailAliasPref(
                 user_id=user_id,

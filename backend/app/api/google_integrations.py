@@ -29,7 +29,7 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
 from app.core.audit import Action, record_event
-from app.core.auth import require_viewer
+from app.core.auth import require_admin, require_viewer
 from app.core.config import get_settings
 from app.db.session import get_session
 from app.integrations.google_calendar import service as google_service
@@ -139,19 +139,23 @@ def get_status(
     session: Session = Depends(get_session),
     current_user: User = Depends(require_viewer),
 ) -> GoogleCalendarStatus:
-    """Lightweight probe used by the UI to pick the right CTA."""
+    """Lightweight probe used by the UI to pick the right CTA.
+
+    PR-OAuth-Google-Unificado. La conexión es org-wide; el calendario
+    seleccionado es per-user (`user_calendar_prefs`)."""
     settings = get_settings()
-    integration = google_service.get_integration(session, current_user.id)
+    integration = google_service.get_org_integration(session)
     if integration is None:
         return GoogleCalendarStatus(
             configured=settings.google_calendar_configured,
             connected=False,
         )
+    pref = google_service.get_calendar_pref(session, current_user.id)
     selected: GoogleCalendarSelection | None = None
-    if integration.selected_calendar_id:
+    if pref is not None and pref.selected_calendar_id:
         selected = GoogleCalendarSelection(
-            id=integration.selected_calendar_id,
-            summary=integration.selected_calendar_summary,
+            id=pref.selected_calendar_id,
+            summary=pref.selected_calendar_summary,
         )
     # PR-OAuth-Permisos-Admin Items 9 + 12. Estado + caducidad para el
     # banner. token_expiring_soon solo aplica a integraciones activas.
@@ -173,8 +177,7 @@ def get_status(
         google_email=integration.google_email,
         selected_calendar=selected,
         requires_calendar_selection=(
-            integ_status == "active"
-            and integration.selected_calendar_id is None
+            integ_status == "active" and selected is None
         ),
         connected_at=integration.connected_at,
         last_sync_at=integration.last_sync_at,
@@ -186,15 +189,10 @@ def get_status(
 
 @router.get("/authorize")
 def authorize(
-    current_user: User = Depends(require_viewer),
+    current_user: User = Depends(require_admin),
 ) -> dict[str, str]:
-    """Hand the consent URL back to the SPA.
-
-    A 302 would be slicker but the auth token lives in localStorage,
-    not in a cookie, so the browser can't include it on a top-level
-    navigation — the SPA does `window.location.href = response.url`
-    after the fetch returns instead.
-    """
+    """PR-OAuth-Google-Unificado. Solo el admin conecta la cuenta Google
+    org-wide. Devuelve la URL de consentimiento; el SPA navega a ella."""
     _require_configured()
     state = google_service.issue_oauth_state(current_user.id)
     url = get_authorize_url(state)
@@ -247,32 +245,23 @@ def callback(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Usuario no encontrado.",
         )
-    integration = google_service.connect_user(
-        session, user_id=user_id, code=code, state=state
+    integration = google_service.connect_org(
+        session, connected_by_user_id=user_id, code=code, state=state
     )
     record_event(
         session,
         action=Action.GOOGLE_CALENDAR_CONNECTED,
-        target_type="user_google_integration",
+        target_type="org_google_integration",
         target_id=integration.id,
         actor=user,
         metadata={"google_email": integration.google_email},
         request=request,
     )
     session.commit()
-    # Scope-expansion vs first-time setup: if the user already
-    # picked a calendar (Fase 2 done), skip the setup screen —
-    # otherwise they'd be asked to re-pick on every incremental
-    # authorisation. The setup screen is only useful when the
-    # integration is brand new or the calendar selection was
-    # cleared (account change).
-    if integration.selected_calendar_id:
-        return RedirectResponse(
-            url=f"{frontend_base}/account?gmail_connected=1",
-            status_code=status.HTTP_302_FOUND,
-        )
+    # PR-OAuth-Google-Unificado. Tras conectar la cuenta org, el admin
+    # vuelve a /admin/integrations. Cada user elige su calendario aparte.
     return RedirectResponse(
-        url=f"{frontend_base}/account/google-setup",
+        url=f"{frontend_base}/admin/integrations?google_connected=1",
         status_code=status.HTTP_302_FOUND,
     )
 
@@ -282,27 +271,24 @@ def list_calendars(
     session: Session = Depends(get_session),
     current_user: User = Depends(require_viewer),
 ) -> list[GoogleCalendarItem]:
-    """Fetch the user's calendar list from Google."""
+    """PR-OAuth-Google-Unificado. Lista los calendarios de la cuenta org
+    para que cada user elija el suyo."""
     _require_configured()
-    integration = google_service.get_integration(session, current_user.id)
-    if integration is None:
+    _ = current_user
+    integration = google_service.get_org_integration(session)
+    if integration is None or integration.status != "active":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Google Calendar no está conectado.",
+            detail="Google no está conectado.",
         )
     try:
         calendars = GoogleCalendarClient(session, integration).list_calendars()
     except GoogleAuthExpiredError as exc:
-        # PR-OAuth-Permisos-Admin Item 12. Antes BORRABA la fila (se
-        # perdía la config + sin audit). Ahora la marca needs_reconnect
-        # y la conserva — el banner UI + el digest admin la surfacean.
-        google_service.mark_needs_reconnect(
-            session, user_id=current_user.id, error="invalid_grant"
-        )
+        google_service.mark_needs_reconnect(session, error="invalid_grant")
         session.commit()
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Tu cuenta Google ha revocado el acceso. Vuelve a conectar.",
+            detail="La cuenta Google ha revocado el acceso. Avisa al admin.",
         ) from exc
     session.commit()
     return [GoogleCalendarItem(**item) for item in calendars]
@@ -315,10 +301,11 @@ def select_calendar(
     session: Session = Depends(get_session),
     current_user: User = Depends(require_viewer),
 ) -> GoogleCalendarStatus:
-    """Persist the user's calendar choice."""
+    """PR-OAuth-Google-Unificado. Persiste el calendario que el user
+    eligió (per-user) validándolo contra la cuenta org."""
     _require_configured()
     try:
-        integration = google_service.set_calendar(
+        pref = google_service.set_calendar(
             session,
             user_id=current_user.id,
             calendar_id=payload.calendar_id,
@@ -332,24 +319,22 @@ def select_calendar(
             status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
         ) from exc
     except GoogleAuthExpiredError as exc:
-        # PR-OAuth-Permisos-Admin Item 12. Marcar en vez de borrar.
-        google_service.mark_needs_reconnect(
-            session, user_id=current_user.id, error="invalid_grant"
-        )
+        google_service.mark_needs_reconnect(session, error="invalid_grant")
         session.commit()
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Tu cuenta Google ha revocado el acceso. Vuelve a conectar.",
+            detail="La cuenta Google ha revocado el acceso. Avisa al admin.",
         ) from exc
+    integration = google_service.get_org_integration(session)
     record_event(
         session,
         action=Action.GOOGLE_CALENDAR_SELECTED,
-        target_type="user_google_integration",
-        target_id=integration.id,
+        target_type="user_calendar_pref",
+        target_id=current_user.id,
         actor=current_user,
         metadata={
-            "calendar_id": integration.selected_calendar_id,
-            "calendar_summary": integration.selected_calendar_summary,
+            "calendar_id": pref.selected_calendar_id,
+            "calendar_summary": pref.selected_calendar_summary,
         },
         request=request,
     )
@@ -357,14 +342,15 @@ def select_calendar(
     return GoogleCalendarStatus(
         configured=True,
         connected=True,
-        google_email=integration.google_email,
+        google_email=integration.google_email if integration else None,
         selected_calendar=GoogleCalendarSelection(
-            id=integration.selected_calendar_id or "",
-            summary=integration.selected_calendar_summary,
+            id=pref.selected_calendar_id or "",
+            summary=pref.selected_calendar_summary,
         ),
         requires_calendar_selection=False,
-        connected_at=integration.connected_at,
-        last_sync_at=integration.last_sync_at,
+        connected_at=integration.connected_at if integration else None,
+        last_sync_at=integration.last_sync_at if integration else None,
+        status=integration.status if integration else None,
     )
 
 
@@ -372,15 +358,18 @@ def select_calendar(
 def disconnect(
     request: Request,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_viewer),
+    current_user: User = Depends(require_admin),
 ) -> dict[str, str]:
-    """Drop the row + revoke on Google's side."""
-    removed = google_service.disconnect_user(session, user_id=current_user.id)
+    """PR-OAuth-Google-Unificado. Solo el admin desconecta la cuenta
+    Google org. Marca la fila disconnected_by_user (no borra)."""
+    removed = google_service.disconnect_org(
+        session, actor_user_id=current_user.id
+    )
     if removed:
         record_event(
             session,
             action=Action.GOOGLE_CALENDAR_DISCONNECTED,
-            target_type="user_google_integration",
+            target_type="org_google_integration",
             actor=current_user,
             request=request,
         )

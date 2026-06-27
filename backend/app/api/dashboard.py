@@ -80,8 +80,15 @@ def google_calendar_events(
     which CTA to show based on the first two flags — no calendar
     call is attempted when either is False.
     """
-    integration = google_service.get_integration(session, current_user.id)
-    if integration is None or integration.selected_calendar_id is None:
+    # PR-OAuth-Google-Unificado. Tokens org-wide, calendario per-user.
+    integration = google_service.get_org_integration(session)
+    pref = google_service.get_calendar_pref(session, current_user.id)
+    if (
+        integration is None
+        or integration.status != "active"
+        or pref is None
+        or pref.selected_calendar_id is None
+    ):
         return {
             "connected": False,
             "events": [],
@@ -95,7 +102,7 @@ def google_calendar_events(
         response = (
             service.events()
             .list(
-                calendarId=integration.selected_calendar_id,
+                calendarId=pref.selected_calendar_id,
                 timeMin=now.isoformat(),
                 timeMax=horizon.isoformat(),
                 maxResults=limit,
@@ -105,7 +112,9 @@ def google_calendar_events(
             .execute()
         )
     except GoogleAuthExpiredError:
-        session.delete(integration)
+        # PR-OAuth-Google-Unificado. Antes BORRABA la integración — el
+        # path roto que mencionaba el spec. Ahora marca needs_reconnect.
+        google_service.mark_needs_reconnect(session, error="invalid_grant")
         session.commit()
         return {
             "connected": False,
@@ -116,7 +125,7 @@ def google_calendar_events(
         return {
             "connected": True,
             "events": [],
-            "calendar_summary": integration.selected_calendar_summary,
+            "calendar_summary": pref.selected_calendar_summary,
         }
     events: list[dict[str, Any]] = []
     for item in response.get("items", []):
@@ -137,7 +146,7 @@ def google_calendar_events(
     return {
         "connected": True,
         "events": events,
-        "calendar_summary": integration.selected_calendar_summary,
+        "calendar_summary": pref.selected_calendar_summary,
     }
 
 

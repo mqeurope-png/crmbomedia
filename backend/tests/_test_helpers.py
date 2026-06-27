@@ -8,7 +8,7 @@ seed + login dance here and import from each test file.
 """
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pyotp
 from fastapi.testclient import TestClient
@@ -17,6 +17,49 @@ from sqlalchemy.orm import Session
 from app.core.crypto import encrypt
 from app.core.security import hash_password
 from app.models.crm import User, UserRole
+
+# PR-OAuth-Google-Unificado. Scopes por defecto de la cuenta Google org en
+# tests: envío + modify (lo que el handler de emails comprueba).
+_DEFAULT_ORG_SCOPES = (
+    "https://www.googleapis.com/auth/gmail.send "
+    "https://www.googleapis.com/auth/gmail.modify"
+)
+
+
+def seed_org_google_integration(
+    session: Session,
+    *,
+    connected_by_user_id: str | None = None,
+    google_email: str = "bart@bomedia.net",
+    scopes: str = _DEFAULT_ORG_SCOPES,
+    status: str = "active",
+) -> None:
+    """PR-OAuth-Google-Unificado. Upsert idempotente de la integración
+    Google ORG singleton (id='singleton'). Reemplaza el patrón viejo de
+    crear una `UserGoogleIntegration` per-user: ahora los tokens son
+    compartidos y los handlers los leen vía `get_org_integration`.
+
+    `connected_by_user_id` queda como el user al que el webhook /
+    process_history atribuyen el trabajo. No commitea — el caller maneja
+    la transacción."""
+    from app.models.crm import (  # noqa: PLC0415
+        ORG_GOOGLE_SINGLETON_ID,
+        OrgGoogleIntegration,
+    )
+
+    integ = session.get(OrgGoogleIntegration, ORG_GOOGLE_SINGLETON_ID)
+    if integ is None:
+        integ = OrgGoogleIntegration(id=ORG_GOOGLE_SINGLETON_ID)
+        session.add(integ)
+    integ.google_email = google_email
+    integ.access_token_encrypted = encrypt("access")
+    integ.refresh_token_encrypted = encrypt("refresh")
+    integ.token_expires_at = datetime.now(UTC) + timedelta(hours=1)
+    integ.scopes = scopes
+    integ.connected_at = datetime.now(UTC)
+    integ.connected_by_user_id = connected_by_user_id
+    integ.status = status
+    session.flush()
 
 # A stable base32 secret shared by every admin seeded in the suite. Tests
 # that need a fresh secret (the 2FA-specific suite) create their own users.
