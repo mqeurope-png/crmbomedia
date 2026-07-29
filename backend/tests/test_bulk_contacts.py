@@ -14,10 +14,22 @@ from app.main import app
 from app.models.crm import (
     Base,
     Contact,
+    ContactPipelineStage,
     ContactTag,
+    Pipeline,
+    PipelineStage,
+    Segment,
     Tag,
+    Task,
     User,
     UserRole,
+)
+from app.models.workflows import (
+    Workflow,
+    WorkflowEdge,
+    WorkflowRun,
+    WorkflowStatus,
+    WorkflowStep,
 )
 from tests._test_helpers import auth_headers, seed_test_users
 
@@ -278,3 +290,286 @@ def test_bulk_assign_owner_handles_more_than_1000(
             )
         )
         assert assigned == 1500
+
+
+# ---------------------------------------------------------------------------
+# PR-Hotfix-Notas-Workflows Item C — nuevas acciones bulk
+# ---------------------------------------------------------------------------
+
+
+def _admin_id(session_factory: sessionmaker) -> str:
+    with session_factory() as s:
+        return s.scalar(select(User.id).where(User.role == UserRole.ADMIN))
+
+
+def test_bulk_add_tag_create_on_the_fly(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    contact_ids = _all_contact_ids(session_factory)
+    resp = client.post(
+        "/api/contacts/bulk-action",
+        json={
+            "contact_ids": contact_ids,
+            "action": "add_tag",
+            "payload": {"tag_name": "Nueva Al Vuelo"},
+        },
+        headers=auth_headers(client, "user"),
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["affected_count"] == len(contact_ids)
+    with session_factory() as s:
+        tag = s.scalar(select(Tag).where(Tag.name_normalized == "nueva al vuelo"))
+        assert tag is not None
+        assert tag.color  # color determinista asignado
+        links = s.scalar(
+            select(func.count(ContactTag.tag_id)).where(ContactTag.tag_id == tag.id)
+        )
+        assert links == len(contact_ids)
+
+
+def test_bulk_add_to_pipeline_creates_stage_rows(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    contact_ids = _all_contact_ids(session_factory)
+    with session_factory() as s:
+        pipeline = Pipeline(name="Ventas")
+        s.add(pipeline)
+        s.flush()
+        stage = PipelineStage(pipeline_id=pipeline.id, name="Nuevo", position=0)
+        s.add(stage)
+        s.commit()
+        pipeline_id = pipeline.id
+    resp = client.post(
+        "/api/contacts/bulk-action",
+        json={
+            "contact_ids": contact_ids,
+            "action": "add_to_pipeline",
+            "payload": {"pipeline_id": pipeline_id},
+        },
+        headers=auth_headers(client, "user"),
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["affected_count"] == len(contact_ids)
+    with session_factory() as s:
+        n = s.scalar(
+            select(func.count(ContactPipelineStage.id)).where(
+                ContactPipelineStage.pipeline_id == pipeline_id
+            )
+        )
+        assert n == len(contact_ids)
+
+
+def test_bulk_add_to_pipeline_bad_pipeline_400(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    contact_ids = _all_contact_ids(session_factory)
+    resp = client.post(
+        "/api/contacts/bulk-action",
+        json={
+            "contact_ids": contact_ids,
+            "action": "add_to_pipeline",
+            "payload": {"pipeline_id": "does-not-exist"},
+        },
+        headers=auth_headers(client, "user"),
+    )
+    assert resp.status_code == 400
+
+
+def test_bulk_create_task_one_per_contact(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    contact_ids = _all_contact_ids(session_factory)
+    resp = client.post(
+        "/api/contacts/bulk-action",
+        json={
+            "contact_ids": contact_ids,
+            "action": "create_task",
+            "payload": {"title": "Llamar", "priority": "high"},
+        },
+        headers=auth_headers(client, "user"),
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["affected_count"] == len(contact_ids)
+    with session_factory() as s:
+        tasks = list(s.scalars(select(Task).where(Task.title == "Llamar")))
+        assert len(tasks) == len(contact_ids)
+        assert {t.contact_id for t in tasks} == set(contact_ids)
+
+
+def test_bulk_create_task_requires_title(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    contact_ids = _all_contact_ids(session_factory)
+    resp = client.post(
+        "/api/contacts/bulk-action",
+        json={
+            "contact_ids": contact_ids,
+            "action": "create_task",
+            "payload": {},
+        },
+        headers=auth_headers(client, "user"),
+    )
+    assert resp.status_code == 400
+
+
+def test_bulk_change_lifecycle_sets_commercial_status(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    contact_ids = _all_contact_ids(session_factory)
+    resp = client.post(
+        "/api/contacts/bulk-action",
+        json={
+            "contact_ids": contact_ids,
+            "action": "change_lifecycle",
+            "payload": {"lifecycle_status": "customer"},
+        },
+        headers=auth_headers(client, "user"),
+    )
+    assert resp.status_code == 200, resp.text
+    with session_factory() as s:
+        statuses = {
+            c.commercial_status
+            for c in s.scalars(select(Contact).where(Contact.id.in_(contact_ids)))
+        }
+        assert statuses == {"customer"}
+
+
+def test_bulk_add_to_segment_static(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    contact_ids = _all_contact_ids(session_factory)
+    admin_id = _admin_id(session_factory)
+    with session_factory() as s:
+        seg = Segment(
+            name="Estático", owner_user_id=admin_id, is_dynamic=False,
+        )
+        s.add(seg)
+        s.commit()
+        seg_id = seg.id
+    resp = client.post(
+        "/api/contacts/bulk-action",
+        json={
+            "contact_ids": contact_ids,
+            "action": "add_to_segment",
+            "payload": {"segment_id": seg_id},
+        },
+        headers=auth_headers(client, "user"),
+    )
+    assert resp.status_code == 200, resp.text
+    from app.repositories import segments as segments_repository
+
+    with session_factory() as s:
+        seg = s.get(Segment, seg_id)
+        assert set(segments_repository.decode_static_ids(seg)) == set(contact_ids)
+
+
+def test_bulk_add_to_segment_dynamic_rejected(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    contact_ids = _all_contact_ids(session_factory)
+    admin_id = _admin_id(session_factory)
+    with session_factory() as s:
+        seg = Segment(
+            name="Dinámico", owner_user_id=admin_id, is_dynamic=True,
+        )
+        s.add(seg)
+        s.commit()
+        seg_id = seg.id
+    resp = client.post(
+        "/api/contacts/bulk-action",
+        json={
+            "contact_ids": contact_ids,
+            "action": "add_to_segment",
+            "payload": {"segment_id": seg_id},
+        },
+        headers=auth_headers(client, "user"),
+    )
+    assert resp.status_code == 400
+
+
+def test_bulk_add_to_workflow_enrolls_contacts(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    contact_ids = _all_contact_ids(session_factory)
+    admin_id = _admin_id(session_factory)
+    with session_factory() as s:
+        wf = Workflow(
+            name="Enroll",
+            trigger_type="contact.created",
+            status=WorkflowStatus.ACTIVE,
+            created_by_user_id=admin_id,
+            trigger_config_json="{}",
+        )
+        s.add(wf)
+        s.flush()
+        trig = WorkflowStep(
+            workflow_id=wf.id, type="trigger", config_json="{}",
+            position_x=0, position_y=0, is_entry=True,
+        )
+        exit_step = WorkflowStep(
+            workflow_id=wf.id, type="exit_won", config_json="{}",
+            position_x=0, position_y=150, is_entry=False,
+        )
+        s.add_all([trig, exit_step])
+        s.flush()
+        s.add(
+            WorkflowEdge(
+                workflow_id=wf.id, from_step_id=trig.id,
+                to_step_id=exit_step.id, branch_label="default",
+            )
+        )
+        s.commit()
+        wf_id = wf.id
+    resp = client.post(
+        "/api/contacts/bulk-action",
+        json={
+            "contact_ids": contact_ids,
+            "action": "add_to_workflow",
+            "payload": {"workflow_id": wf_id},
+        },
+        headers=auth_headers(client, "admin"),
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["affected_count"] == len(contact_ids)
+    with session_factory() as s:
+        runs = s.scalar(
+            select(func.count(WorkflowRun.id)).where(WorkflowRun.workflow_id == wf_id)
+        )
+        assert runs == len(contact_ids)
+
+
+def test_bulk_export_csv_admin_only(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    contact_ids = _all_contact_ids(session_factory)
+    # Comercial: prohibido.
+    forbidden = client.post(
+        "/api/contacts/bulk-export-csv",
+        json={"contact_ids": contact_ids},
+        headers=auth_headers(client, "user"),
+    )
+    assert forbidden.status_code == 403
+    # Admin: OK, devuelve CSV.
+    ok = client.post(
+        "/api/contacts/bulk-export-csv",
+        json={"contact_ids": contact_ids},
+        headers=auth_headers(client, "admin"),
+    )
+    assert ok.status_code == 200
+    assert ok.headers["content-type"].startswith("text/csv")
+    assert "first_name" in ok.text
+
+
+def test_bulk_nonexistent_ids_400(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    resp = client.post(
+        "/api/contacts/bulk-action",
+        json={
+            "contact_ids": ["nope-1", "nope-2"],
+            "action": "create_task",
+            "payload": {"title": "x"},
+        },
+        headers=auth_headers(client, "user"),
+    )
+    assert resp.status_code == 400

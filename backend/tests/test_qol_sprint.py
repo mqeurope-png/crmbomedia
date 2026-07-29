@@ -144,9 +144,12 @@ def test_notes_content_is_empty_matches_contacts_without_notes(
 # === Issue 3: bulk-export-csv role + content =========================
 
 
-def test_bulk_export_csv_works_for_manager(
+def test_bulk_export_csv_admin_only(
     client: TestClient, session_factory: sessionmaker
 ) -> None:
+    # PR-Hotfix-Notas-Workflows Item C. El export CSV pasa a admin-only
+    # (antes manager+): la exportación masiva de datos de contactos se
+    # restringe a admin. Un manager ahora recibe 403.
     with session_factory() as session:
         c = Contact(
             first_name="Export",
@@ -158,9 +161,16 @@ def test_bulk_export_csv_works_for_manager(
         session.commit()
         cid = c.id
 
-    resp = client.post(
+    manager = client.post(
         "/api/contacts/bulk-export-csv",
         headers=auth_headers(client, "manager"),
+        json={"contact_ids": [cid]},
+    )
+    assert manager.status_code == 403
+
+    resp = client.post(
+        "/api/contacts/bulk-export-csv",
+        headers=auth_headers(client, "admin"),
         json={"contact_ids": [cid]},
     )
     assert resp.status_code == 200, resp.text

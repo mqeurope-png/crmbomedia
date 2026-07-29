@@ -54,6 +54,19 @@ EVENT_TYPE_MAP = {
     "request": "email.queued",
 }
 
+#: PR-Hotfix-Notas-Workflows Item B. `activity_events.event_type` (arriba)
+#: y el `trigger_type` que esperan los workflows viven en namespaces
+#: distintos A PROPÓSITO: el almacén usa `email.opened`, pero el trigger de
+#: workflow es `email.brevo.opened`. Este mapa traduce del event_type
+#: interno al trigger de workflow para poder despachar. Los tipos sin
+#: entrada (sent/delivered/bounce/queued) no tienen trigger asociado.
+WORKFLOW_TRIGGER_MAP = {
+    "email.opened": "email.brevo.opened",
+    "email.clicked": "email.brevo.clicked",
+    "email.unsubscribed": "contact.unsubscribed",
+    "email.spam_complaint": "contact.unsubscribed",
+}
+
 DEDUPE_TTL_DAYS = 30
 
 
@@ -208,6 +221,40 @@ def process_brevo_webhook_event(
         _invalidate_email(session, contact, account_id, raw_name)
 
     session.flush()
+
+    # PR-Hotfix-Notas-Workflows Item B. Tras persistir el evento, disparar
+    # los workflows cuyos triggers reaccionan a eventos Brevo. Antes el
+    # webhook NUNCA llamaba al dispatcher, así que triggers como
+    # `email.brevo.opened` quedaban muertos. Best-effort: un fallo aquí no
+    # debe tumbar la ingesta del webhook.
+    trigger_type = WORKFLOW_TRIGGER_MAP.get(event_type)
+    if trigger_type is not None:
+        try:
+            from app.workflows.dispatcher import (  # noqa: PLC0415
+                dispatch_event,
+                evaluate_brevo_engagement,
+            )
+
+            dispatch_event(
+                session,
+                trigger_type,
+                contact.id,
+                {
+                    "source": f"brevo:{account_id}",
+                    "campaign_brevo_id": _campaign_brevo_id(event),
+                    "brevo_event": raw_name,
+                },
+            )
+            # El trigger compuesto `engagement.brevo.composed` cuenta
+            # aperturas/clicks acumulados — evaluarlo tras cada open/click.
+            if event_type in ("email.opened", "email.clicked"):
+                evaluate_brevo_engagement(session, contact.id)
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "brevo.webhook workflow dispatch failed contact=%s event=%s",
+                contact.id, event_type, exc_info=True,
+            )
+
     return "processed"
 
 

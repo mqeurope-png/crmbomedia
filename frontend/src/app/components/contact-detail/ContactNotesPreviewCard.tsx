@@ -14,11 +14,15 @@
  * todos los widgets del Resumen son auto-suficientes desde el primer
  * mount.
  *
- * El bug reportado por Bart ("Notas recientes vacío al primer mount,
- * sí carga tras visitar la pestaña Notas") no se reproduce con este
- * código. Mantenemos el botón "Reintentar" como escape hatch por si
- * un fallo transitorio (401 durante refresh de token, race con la
- * cookie de sesión, etc.) deja el primer fetch en empty/error.
+ * Bug (Bart): "Notas recientes vacío al primer mount, sí carga tras
+ * visitar la pestaña Notas". El backend es determinista (devuelve
+ * siempre TODAS las notas del contacto, sin filtro per-user ni sync
+ * perezoso al leer), así que un [] en el primer fetch solo puede ser un
+ * race transitorio (lag de lectura / import en vuelo) que se corrige al
+ * remontar. Fix: un ÚNICO reintento silencioso cuando el primer fetch
+ * resuelve vacío — inofensivo para contactos realmente sin notas (una
+ * request extra) y suficiente para el caso de Bart. El botón "⟳" queda
+ * como escape hatch manual.
  */
 import { ArrowUpRight, StickyNote } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
@@ -50,29 +54,46 @@ export function ContactNotesPreviewCard({ contactId, onSeeAll }: Props) {
 
   useEffect(() => {
     let cancelled = false;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    // Un único reintento automático por carga si el primer fetch llega
+    // vacío (ver cabecera). Local al effect → se reinicia en cada
+    // contactId / reload manual.
+    let retried = false;
     setLoading(true);
     setError(null);
-    listContactNotes(contactId)
-      .then((rows) => {
-        if (cancelled) return;
-        // Ordenamos por created_at desc para mostrar las 3 más recientes;
-        // el endpoint puede devolverlas en cualquier orden tras la
-        // unificación 0049.
-        const sorted = [...rows].sort(
-          (a, b) =>
-            parseBackendDate(b.created_at).getTime() -
-            parseBackendDate(a.created_at).getTime(),
-        );
-        setNotes(sorted.slice(0, 3));
-      })
-      .catch(() => {
-        if (!cancelled) setError("No se pudieron cargar las notas.");
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
+
+    const run = () => {
+      listContactNotes(contactId)
+        .then((rows) => {
+          if (cancelled) return;
+          if (rows.length === 0 && !retried) {
+            retried = true;
+            retryTimer = setTimeout(run, 700);
+            return; // mantenemos "Cargando…" durante el reintento
+          }
+          // Ordenamos por created_at desc para mostrar las 3 más
+          // recientes; el endpoint puede devolverlas en cualquier orden
+          // tras la unificación 0049.
+          const sorted = [...rows].sort(
+            (a, b) =>
+              parseBackendDate(b.created_at).getTime() -
+              parseBackendDate(a.created_at).getTime(),
+          );
+          setNotes(sorted.slice(0, 3));
+          setLoading(false);
+        })
+        .catch(() => {
+          if (!cancelled) {
+            setError("No se pudieron cargar las notas.");
+            setLoading(false);
+          }
+        });
+    };
+    run();
+
     return () => {
       cancelled = true;
+      if (retryTimer) clearTimeout(retryTimer);
     };
   }, [contactId, reloadKey]);
 

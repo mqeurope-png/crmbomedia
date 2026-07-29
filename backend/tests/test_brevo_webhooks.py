@@ -309,3 +309,82 @@ def test_route_rejects_non_json(client: TestClient, monkeypatch):
         headers={"content-type": "text/plain"},
     )
     assert response.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# PR-Hotfix-Notas-Workflows Item B — el webhook Brevo DISPARA workflows
+# ---------------------------------------------------------------------------
+
+
+def test_opened_event_dispatches_brevo_workflow_trigger(session_factory):
+    """El bug: el webhook nunca llamaba al dispatcher, así que los
+    triggers `email.brevo.opened` quedaban muertos. Además el nombre del
+    trigger (`email.brevo.opened`) difiere del event_type de almacén
+    (`email.opened`) a propósito."""
+    with session_factory() as session:
+        with (
+            patch(
+                "app.workflows.dispatcher.dispatch_event"
+            ) as mock_dispatch,
+            patch(
+                "app.workflows.dispatcher.evaluate_brevo_engagement"
+            ) as mock_eval,
+        ):
+            status = process_brevo_webhook_event(
+                session, _event("opened"), account_id="main"
+            )
+            session.commit()
+    assert status == "processed"
+    assert mock_dispatch.call_count == 1
+    # dispatch_event(session, "email.brevo.opened", contact_id, {...})
+    args = mock_dispatch.call_args.args
+    assert args[1] == "email.brevo.opened"
+    # El engagement compuesto se re-evalúa tras cada apertura.
+    mock_eval.assert_called_once()
+
+
+def test_clicked_event_dispatches_brevo_clicked_trigger(session_factory):
+    with session_factory() as session:
+        with (
+            patch(
+                "app.workflows.dispatcher.dispatch_event"
+            ) as mock_dispatch,
+            patch("app.workflows.dispatcher.evaluate_brevo_engagement"),
+        ):
+            process_brevo_webhook_event(
+                session, _event("click"), account_id="main"
+            )
+            session.commit()
+    assert mock_dispatch.call_args.args[1] == "email.brevo.clicked"
+
+
+def test_unsubscribe_event_dispatches_contact_unsubscribed(session_factory):
+    with session_factory() as session:
+        with (
+            patch(
+                "app.workflows.dispatcher.dispatch_event"
+            ) as mock_dispatch,
+            patch(
+                "app.workflows.dispatcher.evaluate_brevo_engagement"
+            ) as mock_eval,
+        ):
+            process_brevo_webhook_event(
+                session, _event("unsubscribe"), account_id="main"
+            )
+            session.commit()
+    assert mock_dispatch.call_args.args[1] == "contact.unsubscribed"
+    # unsubscribe no es open/click → no re-evalúa engagement.
+    mock_eval.assert_not_called()
+
+
+def test_delivered_event_does_not_dispatch(session_factory):
+    """Eventos sin trigger asociado (delivered/sent/bounce) no despachan."""
+    with session_factory() as session:
+        with patch(
+            "app.workflows.dispatcher.dispatch_event"
+        ) as mock_dispatch:
+            process_brevo_webhook_event(
+                session, _event("delivered"), account_id="main"
+            )
+            session.commit()
+    mock_dispatch.assert_not_called()

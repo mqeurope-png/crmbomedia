@@ -205,6 +205,15 @@ def process_event_inline(
             )
         )
     )
+    # PR-Hotfix-Notas-Workflows Item B. Log de diagnóstico: cuántos
+    # workflows activos matchean este event_type. Útil para depurar
+    # futuros "el trigger no dispara" (0 matched → nombre/estado mal).
+    log.info(
+        "workflows.dispatch event_type=%s contact_id=%s matched_workflows=%d",
+        event_type,
+        contact_id,
+        len(workflows),
+    )
     for workflow in workflows:
         try:
             trigger_cfg = json.loads(workflow.trigger_config_json or "{}")
