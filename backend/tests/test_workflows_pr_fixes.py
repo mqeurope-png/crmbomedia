@@ -398,10 +398,12 @@ def test_workflow_default_workflow_status() -> None:
 
 
 def _seed_brevo_events(
-    session_factory: sessionmaker, spec: list[tuple[str, int]]
+    session_factory: sessionmaker, spec: list[tuple]
 ) -> None:
     """Siembra un contacto + activity_events. `spec` = [(event_type,
-    días_atrás), ...] con los NOMBRES ALMACENADOS (email.opened, etc.)."""
+    días_atrás[, campaign_brevo_id[, body]]), ...] con los NOMBRES
+    ALMACENADOS (email.opened, etc.). `body` = URL clicada (así la
+    persiste el webhook Brevo para los clicks)."""
     from app.models.crm import ActivityEvent  # noqa: PLC0415
 
     now = datetime.now(UTC)
@@ -409,7 +411,10 @@ def _seed_brevo_events(
         contact = Contact(first_name="Ana", email="ana@ex.com", tags="")
         session.add(contact)
         session.flush()
-        for idx, (event_type, days_ago) in enumerate(spec):
+        for idx, entry in enumerate(spec):
+            event_type, days_ago = entry[0], entry[1]
+            campaign = entry[2] if len(entry) > 2 else None
+            body = entry[3] if len(entry) > 3 else None
             session.add(
                 ActivityEvent(
                     contact_id=contact.id,
@@ -417,6 +422,8 @@ def _seed_brevo_events(
                     account_id="main",
                     external_id=f"evt-{idx}",
                     event_type=event_type,
+                    campaign_brevo_id=campaign,
+                    body=body,
                     occurred_at=now - timedelta(days=days_ago),
                 )
             )
@@ -478,3 +485,162 @@ def test_estimator_counts_events_from_activity_events_correctly(
         )
         assert res.status_code == 200, res.text
         assert res.json()["estimated_runs_30d"] == expected, trigger_type
+
+
+# ---------------------------------------------------------------------
+# PR-Hotfix-Estimator-Filtro-Campaña — el estimator respeta el filtro
+# "Campaña específica" (y "Link específico" en clicked) del trigger
+# ---------------------------------------------------------------------
+
+_CAMPAIGN_SPEC = [
+    ("email.opened", 1, 48),
+    ("email.opened", 2, 48),
+    ("email.opened", 3, 99),
+    ("email.opened", 4, 99),
+    ("email.opened", 5, None),  # transaccional, sin campaña
+]
+
+
+def test_estimator_applies_campaign_filter_when_set(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    """El wizard guarda trigger_config.campaign_id como STRING (value
+    del <select>); la columna campaign_brevo_id es Integer. Con filtro
+    seteado, solo cuentan los eventos de ESA campaña."""
+    _seed_brevo_events(session_factory, _CAMPAIGN_SPEC)
+    wf_id = _create_workflow(
+        client,
+        trigger_type="email.brevo.opened",
+        trigger_config={"account_id": "main", "campaign_id": "48"},
+    )
+    res = client.post(
+        f"/api/workflows/{wf_id}/cost-estimate",
+        headers=auth_headers(client, "admin"),
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["estimated_runs_30d"] == 2
+
+
+def test_estimator_ignores_campaign_filter_when_not_set(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    _seed_brevo_events(session_factory, _CAMPAIGN_SPEC)
+    wf_id = _create_workflow(
+        client,
+        trigger_type="email.brevo.opened",
+        trigger_config={"account_id": "main"},
+    )
+    res = client.post(
+        f"/api/workflows/{wf_id}/cost-estimate",
+        headers=auth_headers(client, "admin"),
+    )
+    assert res.status_code == 200
+    assert res.json()["estimated_runs_30d"] == 5
+
+
+def test_estimator_counts_globally_when_campaign_is_any(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    """"— Cualquier campaña —" persiste como campaign_id ausente/vacío
+    → count global (defensivo con string vacío)."""
+    _seed_brevo_events(session_factory, _CAMPAIGN_SPEC)
+    wf_id = _create_workflow(
+        client,
+        trigger_type="email.brevo.opened",
+        trigger_config={"account_id": "main", "campaign_id": ""},
+    )
+    res = client.post(
+        f"/api/workflows/{wf_id}/cost-estimate",
+        headers=auth_headers(client, "admin"),
+    )
+    assert res.status_code == 200
+    assert res.json()["estimated_runs_30d"] == 5
+
+
+def test_estimator_clicked_applies_link_and_campaign_filter(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    """Bonus: el trigger clicked soporta "Link específico" (link_url).
+    El webhook persiste la URL clicada en activity_events.body → match
+    exacto, combinable con el filtro de campaña."""
+    _seed_brevo_events(
+        session_factory,
+        [
+            ("email.clicked", 1, 48, "https://a.example/landing"),
+            ("email.clicked", 2, 48, "https://b.example/otro"),
+            ("email.clicked", 3, 99, "https://a.example/landing"),
+        ],
+    )
+    # Solo link → 2 clicks de esa URL (campañas 48 + 99).
+    wf_link = _create_workflow(
+        client,
+        name="est-link",
+        trigger_type="email.brevo.clicked",
+        trigger_config={
+            "account_id": "main",
+            "link_url": "https://a.example/landing",
+        },
+    )
+    res = client.post(
+        f"/api/workflows/{wf_link}/cost-estimate",
+        headers=auth_headers(client, "admin"),
+    )
+    assert res.status_code == 200
+    assert res.json()["estimated_runs_30d"] == 2
+    # Link + campaña 48 → 1.
+    wf_both = _create_workflow(
+        client,
+        name="est-link-camp",
+        trigger_type="email.brevo.clicked",
+        trigger_config={
+            "account_id": "main",
+            "campaign_id": "48",
+            "link_url": "https://a.example/landing",
+        },
+    )
+    res = client.post(
+        f"/api/workflows/{wf_both}/cost-estimate",
+        headers=auth_headers(client, "admin"),
+    )
+    assert res.status_code == 200
+    assert res.json()["estimated_runs_30d"] == 1
+
+
+def test_estimator_corrupt_campaign_filter_falls_back_to_global(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    """Un campaign_id no numérico (corrupto / API directa) no debe ni
+    romper ni devolver 0 silencioso: se ignora el filtro → count global.
+    Pin del try/except de la coerción int."""
+    _seed_brevo_events(session_factory, _CAMPAIGN_SPEC)
+    wf_id = _create_workflow(
+        client,
+        trigger_type="email.brevo.opened",
+        trigger_config={"account_id": "main", "campaign_id": "abc"},
+    )
+    res = client.post(
+        f"/api/workflows/{wf_id}/cost-estimate",
+        headers=auth_headers(client, "admin"),
+    )
+    assert res.status_code == 200
+    assert res.json()["estimated_runs_30d"] == 5
+
+
+def test_estimator_link_filter_ignored_for_opened_trigger(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    """`link_url` solo aplica al trigger clicked. En opened (eventos con
+    body NULL) debe ignorarse — pin del gate por trigger_type: sin él,
+    body == link filtraría TODO a 0."""
+    _seed_brevo_events(session_factory, _CAMPAIGN_SPEC)
+    wf_id = _create_workflow(
+        client,
+        trigger_type="email.brevo.opened",
+        trigger_config={"account_id": "main", "link_url": "https://x.example"},
+    )
+    res = client.post(
+        f"/api/workflows/{wf_id}/cost-estimate",
+        headers=auth_headers(client, "admin"),
+    )
+    assert res.status_code == 200
+    assert res.json()["estimated_runs_30d"] == 5
