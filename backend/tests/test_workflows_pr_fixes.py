@@ -390,3 +390,91 @@ def test_workflow_default_workflow_status() -> None:
     """Smoke: el enum WorkflowStatus tiene los valores esperados."""
     assert WorkflowStatus.DRAFT.value == "draft"
     assert WorkflowStatus.ACTIVE.value == "active"
+
+
+# ---------------------------------------------------------------------
+# PR-Hotfix-Notas-Widget Item B — estimator para triggers Brevo
+# ---------------------------------------------------------------------
+
+
+def _seed_brevo_events(
+    session_factory: sessionmaker, spec: list[tuple[str, int]]
+) -> None:
+    """Siembra un contacto + activity_events. `spec` = [(event_type,
+    días_atrás), ...] con los NOMBRES ALMACENADOS (email.opened, etc.)."""
+    from app.models.crm import ActivityEvent  # noqa: PLC0415
+
+    now = datetime.now(UTC)
+    with session_factory() as session:
+        contact = Contact(first_name="Ana", email="ana@ex.com", tags="")
+        session.add(contact)
+        session.flush()
+        for idx, (event_type, days_ago) in enumerate(spec):
+            session.add(
+                ActivityEvent(
+                    contact_id=contact.id,
+                    system="brevo",
+                    account_id="main",
+                    external_id=f"evt-{idx}",
+                    event_type=event_type,
+                    occurred_at=now - timedelta(days=days_ago),
+                )
+            )
+        session.commit()
+
+
+def test_estimator_maps_email_brevo_opened_trigger_to_stored_event_type(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    """El trigger se llama `email.brevo.opened` pero los eventos se
+    almacenan como `email.opened` en activity_events. Antes el match
+    fallaba y el estimator devolvía 0 runs aunque hubiera aperturas."""
+    _seed_brevo_events(
+        session_factory,
+        [("email.opened", 1), ("email.opened", 5), ("email.opened", 10)],
+    )
+    wf_id = _create_workflow(client, trigger_type="email.brevo.opened")
+    res = client.post(
+        f"/api/workflows/{wf_id}/cost-estimate",
+        headers=auth_headers(client, "admin"),
+    )
+    assert res.status_code == 200
+    body = res.json()
+    # Evento discreto → no cuenta contactos retroactivos…
+    assert body["matching_contacts_now"] == 0
+    # …pero SÍ proyecta desde el histórico real de aperturas.
+    assert body["estimated_runs_30d"] == 3
+
+
+def test_estimator_counts_events_from_activity_events_correctly(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    """Ventana de 30 días respetada + cada trigger cuenta SOLO sus
+    event_types almacenados (unsubscribe suma spam_complaint, igual que
+    el dispatcher)."""
+    _seed_brevo_events(
+        session_factory,
+        [
+            ("email.opened", 2),
+            ("email.opened", 45),  # fuera de ventana → no cuenta
+            ("email.clicked", 3),
+            ("email.clicked", 4),
+            ("email.unsubscribed", 6),
+            ("email.spam_complaint", 7),
+        ],
+    )
+    cases = {
+        "email.brevo.opened": 1,
+        "email.brevo.clicked": 2,
+        "contact.unsubscribed": 2,  # unsubscribed + spam_complaint
+    }
+    for trigger_type, expected in cases.items():
+        wf_id = _create_workflow(
+            client, name=f"est-{trigger_type}", trigger_type=trigger_type
+        )
+        res = client.post(
+            f"/api/workflows/{wf_id}/cost-estimate",
+            headers=auth_headers(client, "admin"),
+        )
+        assert res.status_code == 200, res.text
+        assert res.json()["estimated_runs_30d"] == expected, trigger_type
