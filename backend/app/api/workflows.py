@@ -1360,12 +1360,37 @@ def cost_estimate(
         if stored_types:
             from app.models.crm import ActivityEvent  # noqa: PLC0415
 
+            clauses = [
+                ActivityEvent.event_type.in_(stored_types),
+                ActivityEvent.occurred_at >= cutoff,
+            ]
+            # PR-Hotfix-Estimator-Filtro-Campaña. El wizard guarda el
+            # filtro "Campaña específica" en trigger_config.campaign_id
+            # como STRING (value del <select>); la columna
+            # `activity_events.campaign_brevo_id` es Integer → coerción
+            # explícita. Sin filtro (— Cualquier campaña — / vacío) se
+            # mantiene el count global.
+            raw_campaign = trigger_cfg.get("campaign_id")
+            if raw_campaign not in (None, ""):
+                try:
+                    clauses.append(
+                        ActivityEvent.campaign_brevo_id == int(raw_campaign)
+                    )
+                except (TypeError, ValueError):
+                    pass  # valor corrupto → no filtrar (count global)
+            # Bonus: filtro "Link específico" del trigger clicked. El
+            # webhook Brevo persiste la URL clicada en
+            # `activity_events.body` (webhooks.py) → match exacto.
+            link_url = trigger_cfg.get("link_url")
+            if (
+                workflow.trigger_type == "email.brevo.clicked"
+                and link_url not in (None, "")
+            ):
+                clauses.append(ActivityEvent.body == str(link_url))
+
             events_30d = int(
                 session.scalar(
-                    select(_sfunc.count(ActivityEvent.id)).where(
-                        ActivityEvent.event_type.in_(stored_types),
-                        ActivityEvent.occurred_at >= cutoff,
-                    )
+                    select(_sfunc.count(ActivityEvent.id)).where(*clauses)
                 )
                 or 0
             )
