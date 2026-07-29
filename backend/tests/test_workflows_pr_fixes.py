@@ -604,3 +604,43 @@ def test_estimator_clicked_applies_link_and_campaign_filter(
     )
     assert res.status_code == 200
     assert res.json()["estimated_runs_30d"] == 1
+
+
+def test_estimator_corrupt_campaign_filter_falls_back_to_global(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    """Un campaign_id no numérico (corrupto / API directa) no debe ni
+    romper ni devolver 0 silencioso: se ignora el filtro → count global.
+    Pin del try/except de la coerción int."""
+    _seed_brevo_events(session_factory, _CAMPAIGN_SPEC)
+    wf_id = _create_workflow(
+        client,
+        trigger_type="email.brevo.opened",
+        trigger_config={"account_id": "main", "campaign_id": "abc"},
+    )
+    res = client.post(
+        f"/api/workflows/{wf_id}/cost-estimate",
+        headers=auth_headers(client, "admin"),
+    )
+    assert res.status_code == 200
+    assert res.json()["estimated_runs_30d"] == 5
+
+
+def test_estimator_link_filter_ignored_for_opened_trigger(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    """`link_url` solo aplica al trigger clicked. En opened (eventos con
+    body NULL) debe ignorarse — pin del gate por trigger_type: sin él,
+    body == link filtraría TODO a 0."""
+    _seed_brevo_events(session_factory, _CAMPAIGN_SPEC)
+    wf_id = _create_workflow(
+        client,
+        trigger_type="email.brevo.opened",
+        trigger_config={"account_id": "main", "link_url": "https://x.example"},
+    )
+    res = client.post(
+        f"/api/workflows/{wf_id}/cost-estimate",
+        headers=auth_headers(client, "admin"),
+    )
+    assert res.status_code == 200
+    assert res.json()["estimated_runs_30d"] == 5
