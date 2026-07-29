@@ -153,6 +153,17 @@ export default function ContactDetailPage() {
   // para que add/edit desde el sidebar se reflejen al instante.
   const [primaryPhone, setPrimaryPhone] = useState<string | null>(null);
   const autoRefreshed = useRef(false);
+  // PR-Hotfix-Notas-Widget. Las notas/tareas de AgileCRM se importan
+  // ON-DEMAND al abrir la ficha (auto-refresh de abajo) — al primer
+  // mount la BD puede no tenerlas todavía. Este tick sube cuando un
+  // refresh externo termina, para que los widgets self-fetch del
+  // Resumen (Notas recientes) re-fetcheen y vean las filas recién
+  // importadas — igual que la pestaña Notas, que siempre se abre
+  // DESPUÉS del refresh y por eso nunca falló. `externalRefreshing`
+  // mantiene el "Cargando…" del widget mientras el refresh está en
+  // vuelo, en vez de un "Sin notas todavía" transitorio y engañoso.
+  const [externalRefreshTick, setExternalRefreshTick] = useState(0);
+  const [externalRefreshing, setExternalRefreshing] = useState(false);
 
   const loadContact = useCallback(async () => {
     const fresh = await getContact(params.id);
@@ -261,6 +272,11 @@ export default function ContactDetailPage() {
   const handleRefreshDone = useCallback(
     (result: ExternalRefreshResult) => {
       setRefreshWarnings(result.warnings);
+      // El refresh ya commiteó las notas/tareas importadas — avisar a
+      // los widgets self-fetch para que re-fetcheen (y soltar el estado
+      // "refrescando" que mantenía su spinner).
+      setExternalRefreshing(false);
+      setExternalRefreshTick((n) => n + 1);
       loadContact().catch((err) =>
         setError(extractErrorMessage(err, "Comprueba el backend.")),
       );
@@ -272,10 +288,11 @@ export default function ContactDetailPage() {
     if (!contact || autoRefreshed.current) return;
     if (contact.external_data_freshness !== "outdated") return;
     autoRefreshed.current = true;
+    setExternalRefreshing(true);
     import("../../lib/api").then(({ refreshContactExternalData }) => {
       refreshContactExternalData(contact.id)
         .then(handleRefreshDone)
-        .catch(() => undefined);
+        .catch(() => setExternalRefreshing(false));
     });
   }, [contact, handleRefreshDone]);
 
@@ -494,6 +511,8 @@ export default function ContactDetailPage() {
                   />
                   <ContactNotesPreviewCard
                     contactId={contact.id}
+                    refreshKey={externalRefreshTick}
+                    refreshing={externalRefreshing}
                     onSeeAll={() => setActiveTab("notes")}
                   />
                   <ContactBrevoEngagementCard contactId={contact.id} />

@@ -1326,18 +1326,50 @@ def cost_estimate(
         # vez que se activa el workflow, runs_30d = 0.
         from datetime import UTC, datetime, timedelta  # noqa: PLC0415
 
+        from sqlalchemy import func as _sfunc  # noqa: PLC0415
+
         from app.models.workflows import WorkflowRun  # noqa: PLC0415
 
         cutoff = datetime.now(UTC) - timedelta(days=30)
         runs_30d = int(
             session.scalar(
-                select(__import__("sqlalchemy").func.count(WorkflowRun.id)).where(
+                select(_sfunc.count(WorkflowRun.id)).where(
                     WorkflowRun.workflow_id == workflow_id,
                     WorkflowRun.started_at >= cutoff,
                 )
             )
             or 0
         )
+        # PR-Hotfix-Notas-Widget Item B. Para los triggers alimentados por
+        # el webhook Brevo, el histórico de runs es 0 en workflows nuevos
+        # (y era 0 SIEMPRE antes del fix del dispatcher en el PR #259) —
+        # pero el stream real de eventos sí existe en `activity_events`.
+        # El nombre del trigger (`email.brevo.opened`) difiere del
+        # event_type almacenado (`email.opened`); reutilizamos el MISMO
+        # mapa que usa el dispatcher del webhook (invirtiéndolo) para que
+        # no puedan divergir. Estimamos con el máximo de ambas señales.
+        from app.integrations.brevo.webhooks import (  # noqa: PLC0415
+            WORKFLOW_TRIGGER_MAP,
+        )
+
+        stored_types = [
+            stored
+            for stored, trigger in WORKFLOW_TRIGGER_MAP.items()
+            if trigger == workflow.trigger_type
+        ]
+        if stored_types:
+            from app.models.crm import ActivityEvent  # noqa: PLC0415
+
+            events_30d = int(
+                session.scalar(
+                    select(_sfunc.count(ActivityEvent.id)).where(
+                        ActivityEvent.event_type.in_(stored_types),
+                        ActivityEvent.occurred_at >= cutoff,
+                    )
+                )
+                or 0
+            )
+            runs_30d = max(runs_30d, events_30d)
     else:
         runs_30d = 0
 
