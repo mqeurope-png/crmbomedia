@@ -7983,6 +7983,21 @@ tr.is-inactive {
   background: var(--color-bg-light);
 }
 
+/* PR-Hotfix-Notas-Widget-Importadas. Badge de origen (AgileCRM / Brevo)
+ * junto al autor externo de una nota importada. */
+.note-origin-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 8px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 16px;
+  background: var(--line, #e4e7ec);
+  color: var(--ink, #344054);
+  vertical-align: middle;
+}
+
 .contact-notes-preview-text {
   margin: 0 0 4px;
   font-size: 0.88rem;

@@ -42,6 +42,20 @@ function preview(content: string): string {
   return flat.length > 140 ? `${flat.slice(0, 140)}…` : flat;
 }
 
+// PR-Hotfix-Notas-Widget-Importadas. Fecha efectiva de la nota: para las
+// importadas, `external_created_at` es la fecha REAL (p.ej. 2020); el
+// `created_at` es solo el instante de importación (reciente y engañoso).
+function effectiveDate(n: ContactNote): string {
+  return n.external_created_at ?? n.created_at;
+}
+
+// Etiqueta legible del sistema de origen para el badge.
+function originLabel(system: string | null): string {
+  if (!system) return "";
+  const map: Record<string, string> = { agilecrm: "AgileCRM", brevo: "Brevo" };
+  return map[system.toLowerCase()] ?? system;
+}
+
 export function ContactNotesPreviewCard({ contactId, onSeeAll }: Props) {
   const [notes, setNotes] = useState<ContactNote[]>([]);
   const [loading, setLoading] = useState(true);
@@ -71,13 +85,15 @@ export function ContactNotesPreviewCard({ contactId, onSeeAll }: Props) {
             retryTimer = setTimeout(run, 700);
             return; // mantenemos "Cargando…" durante el reintento
           }
-          // Ordenamos por created_at desc para mostrar las 3 más
-          // recientes; el endpoint puede devolverlas en cualquier orden
-          // tras la unificación 0049.
+          // Ordenamos por la fecha EFECTIVA desc (external_created_at si
+          // existe, sino created_at) para mostrar las 3 más recientes; el
+          // endpoint puede devolverlas en cualquier orden tras la
+          // unificación 0049. Sin esto, las notas importadas (con fecha
+          // real antigua pero created_at reciente) se colaban al principio.
           const sorted = [...rows].sort(
             (a, b) =>
-              parseBackendDate(b.created_at).getTime() -
-              parseBackendDate(a.created_at).getTime(),
+              parseBackendDate(effectiveDate(b)).getTime() -
+              parseBackendDate(effectiveDate(a)).getTime(),
           );
           setNotes(sorted.slice(0, 3));
           setLoading(false);
@@ -131,7 +147,20 @@ export function ContactNotesPreviewCard({ contactId, onSeeAll }: Props) {
             <li key={n.id} className="contact-notes-preview-item">
               <p className="contact-notes-preview-text">{preview(n.content)}</p>
               <p className="muted small">
-                {relative(n.created_at)}
+                {/* PR-Hotfix-Notas-Widget-Importadas. Autor con fallback:
+                    nota importada → nombre externo + badge de origen. */}
+                {n.external_author_name ? (
+                  <>
+                    <span>{n.external_author_name}</span>
+                    {n.external_system ? (
+                      <span className="note-origin-badge">
+                        {originLabel(n.external_system)}
+                      </span>
+                    ) : null}
+                    {" · "}
+                  </>
+                ) : null}
+                {relative(effectiveDate(n))}
                 {n.pinned ? " · 📌 pinned" : ""}
               </p>
             </li>

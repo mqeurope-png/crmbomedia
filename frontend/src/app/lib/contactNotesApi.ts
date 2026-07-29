@@ -12,6 +12,9 @@ export type ContactNote = {
    *  manuales o de Note1..Note10 custom-properties. */
   external_author_name: string | null;
   external_author_email: string | null;
+  /** Sistema de origen de una nota importada ('agilecrm' / 'brevo' / …).
+   *  NULL en notas creadas dentro del CRM. */
+  external_system: string | null;
   external_created_at: string | null;
   created_at: string;
   updated_at: string;

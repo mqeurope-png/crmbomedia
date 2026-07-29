@@ -411,3 +411,91 @@ def test_list_notes_orders_mixed_null_and_non_null_external_dates(
     assert bodies[0] == "Agile nueva"
     assert bodies[1] == "Agile vieja"
     assert bodies[2] == "Manual reciente"
+
+
+# -- PR-Hotfix-Notas-Widget-Importadas: el widget del Resumen usa este
+#    mismo endpoint; debe incluir TODAS las notas (también las importadas
+#    con author_user_id=NULL, que antes un filtro dejaba invisibles). ----
+
+
+def test_notes_endpoint_includes_imported_notes(client, db) -> None:
+    from datetime import UTC, datetime
+
+    cid = _seed_contact(db.factory)
+    with db.factory() as s:
+        s.add(
+            Note(
+                body="form note - precios y disponibilidad",
+                contact_id=cid,
+                author_user_id=None,
+                created_by_user_id=None,
+                external_system="agilecrm",
+                external_author_email="info@artisjet-spain.es",
+                external_author_name="Artisjet Spain",
+                external_created_at=datetime(2020, 8, 27, 9, 29, 56, tzinfo=UTC),
+            )
+        )
+        s.commit()
+    resp = client.get(
+        f"/api/contacts/{cid}/notes", headers=auth_headers(client, "admin")
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert len(body) == 1
+    note = body[0]
+    # La nota importada (author_user_id NULL) sale + expone su origen para
+    # que el widget pinte autor externo + badge.
+    assert note["external_author_name"] == "Artisjet Spain"
+    assert note["external_system"] == "agilecrm"
+    assert note["external_created_at"] is not None
+
+
+def test_notes_endpoint_includes_crm_created_notes(client, db) -> None:
+    """Regresión: las notas creadas dentro del CRM (author no NULL) siguen
+    saliendo — que exponer las importadas no rompa el caso normal."""
+    cid = _seed_contact(db.factory)
+    created = client.post(
+        f"/api/contacts/{cid}/notes",
+        headers=auth_headers(client, "admin"),
+        json={"content": "Nota interna del comercial"},
+    )
+    assert created.status_code in (200, 201), created.text
+    resp = client.get(
+        f"/api/contacts/{cid}/notes", headers=auth_headers(client, "admin")
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body) == 1
+    assert body[0]["content"] == "Nota interna del comercial"
+    assert body[0]["created_by_user_id"] is not None
+    # Nota CRM → sin origen externo.
+    assert body[0]["external_system"] is None
+
+
+def test_notes_endpoint_mixes_imported_and_crm_notes(client, db) -> None:
+    from datetime import UTC, datetime
+
+    cid = _seed_contact(db.factory)
+    with db.factory() as s:
+        s.add(
+            Note(
+                body="imported",
+                contact_id=cid,
+                author_user_id=None,
+                external_system="brevo",
+                external_author_name="Brevo Bot",
+                external_created_at=datetime(2019, 1, 1, tzinfo=UTC),
+            )
+        )
+        s.commit()
+    client.post(
+        f"/api/contacts/{cid}/notes",
+        headers=auth_headers(client, "admin"),
+        json={"content": "crm note"},
+    )
+    resp = client.get(
+        f"/api/contacts/{cid}/notes", headers=auth_headers(client, "admin")
+    )
+    assert resp.status_code == 200
+    bodies = {n["content"] for n in resp.json()}
+    assert bodies == {"imported", "crm note"}

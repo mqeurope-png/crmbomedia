@@ -60,6 +60,7 @@ def _serialise(row: Note) -> ContactNoteRead:
         created_by_user_id=row.created_by_user_id,
         external_author_name=row.external_author_name,
         external_author_email=row.external_author_email,
+        external_system=row.external_system,
         external_created_at=row.external_created_at,
         created_at=row.created_at,
         updated_at=row.updated_at,
