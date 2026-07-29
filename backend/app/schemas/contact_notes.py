@@ -27,6 +27,11 @@ class ContactNoteRead(BaseModel):
     created_by_user_id: str | None
     external_author_name: str | None = None
     external_author_email: str | None = None
+    # PR-Hotfix-Notas-Widget-Importadas. Sistema de origen de una nota
+    # importada ('agilecrm' / 'brevo' / …). NULL en notas creadas dentro
+    # del CRM. El widget del Resumen lo usa para pintar el badge de
+    # procedencia junto al autor externo.
+    external_system: str | None = None
     external_created_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
