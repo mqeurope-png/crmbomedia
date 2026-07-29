@@ -9,7 +9,14 @@ import { apiFetch, getStoredToken } from "./api";
 export type BulkAction =
   | "assign_owner"
   | "change_status"
-  | "deactivate";
+  | "change_lifecycle"
+  | "deactivate"
+  | "add_tag"
+  | "remove_tag"
+  | "add_to_pipeline"
+  | "add_to_workflow"
+  | "add_to_segment"
+  | "create_task";
 
 export type BulkResult = {
   action: BulkAction;

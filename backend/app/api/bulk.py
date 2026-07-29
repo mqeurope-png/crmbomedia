@@ -17,6 +17,7 @@ the UI sends those flows to the existing
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
@@ -25,16 +26,24 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.audit import Action, record_event
-from app.core.auth import require_admin, require_manager, require_user
+from app.core.auth import require_admin, require_user
 from app.db.session import get_session
 from app.models.crm import (
     Contact,
     ContactTag,
+    Pipeline,
+    Segment,
     Tag,
+    TaskPriority,
+    TaskStatus,
     User,
     UserRole,
 )
 from app.repositories import assignments as assignments_repo
+from app.repositories import crm as crm_repository
+from app.repositories import pipelines as pipelines_repository
+from app.repositories import segments as segments_repository
+from app.repositories import tasks as tasks_repository
 
 router = APIRouter(prefix="/api/contacts", tags=["contacts"])
 logger = logging.getLogger(__name__)
@@ -44,8 +53,24 @@ BulkAction = Literal[
     "add_tag",
     "remove_tag",
     "change_status",
+    "change_lifecycle",
     "deactivate",
+    "add_to_pipeline",
+    "add_to_workflow",
+    "add_to_segment",
+    "create_task",
 ]
+
+# PR-Hotfix-Notas-Workflows Item C. Acción bulk → Action del audit. Una
+# sola fila por bulk (ver `bulk_action`). Las acciones sin entrada usan
+# CONTACT_UPDATED; add_to_workflow usa el literal que ya usa el enroll
+# individual (no hay constante en el enum).
+_AUDIT_ACTION: dict[str, Action] = {
+    "add_tag": Action.CONTACT_TAGS_BULK_ACTION,
+    "remove_tag": Action.CONTACT_TAGS_BULK_ACTION,
+    "add_to_pipeline": Action.CONTACT_PIPELINE_STAGE_ADDED,
+    "create_task": Action.TASK_CREATED,
+}
 
 # Sprint Reglas-Assign PR-D: subido de 1000 a 50000. El cap antiguo
 # bloqueaba la reasignación de carteras grandes ("asignar todos los
@@ -98,7 +123,7 @@ def bulk_action(
         )
         if not contacts:
             continue
-        affected_total += _dispatch(session, body, contacts)
+        affected_total += _dispatch(session, body, contacts, current_user)
         touched_ids.extend(c.id for c in contacts)
         session.commit()
 
@@ -110,11 +135,14 @@ def bulk_action(
     # Una única audit row para el bulk completo — describe el alcance
     # total, no cada chunk. `contact_ids` capado a 50 para que el JSON
     # no se infle en payloads grandes.
+    audit_action: Action | str = _AUDIT_ACTION.get(
+        body.action, Action.CONTACT_UPDATED
+    )
+    if body.action == "add_to_workflow":
+        audit_action = "workflow.contact_added_manually"
     record_event(
         session,
-        action=Action.CONTACT_TAGS_BULK_ACTION
-        if body.action in ("add_tag", "remove_tag")
-        else Action.CONTACT_UPDATED,
+        action=audit_action,
         target_type="contact",
         actor=current_user,
         metadata={
@@ -150,7 +178,10 @@ def _check_role_for(action: BulkAction, user: User) -> None:
 
 
 def _dispatch(
-    session: Session, body: BulkActionPayload, contacts: list[Contact]
+    session: Session,
+    body: BulkActionPayload,
+    contacts: list[Contact],
+    current_user: User,
 ) -> int:
     """Apply the action; return the number of rows actually touched."""
     if body.action == "assign_owner":
@@ -186,7 +217,7 @@ def _dispatch(
             n += 1
         return n
     if body.action == "add_tag":
-        tag = _require_tag(session, body.payload.get("tag_id"))
+        tag = _resolve_tag_for_add(session, body.payload, current_user)
         n = 0
         existing = {
             (a.contact_id, a.tag_id)
@@ -216,12 +247,17 @@ def _dispatch(
         for a in assignments:
             session.delete(a)
         return len(assignments)
-    if body.action == "change_status":
-        new_status = body.payload.get("new_status")
+    if body.action in ("change_status", "change_lifecycle"):
+        # PR-Hotfix-Notas-Workflows Item C. "estado del ciclo"
+        # (lifecycle_status) === `commercial_status` en este modelo. Se
+        # acepta tanto `new_status` (legacy) como `lifecycle_status`.
+        new_status = body.payload.get("new_status") or body.payload.get(
+            "lifecycle_status"
+        )
         if not new_status:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Falta `new_status` en payload.",
+                detail="Falta `new_status`/`lifecycle_status` en payload.",
             )
         n = 0
         for c in contacts:
@@ -236,10 +272,236 @@ def _dispatch(
                 c.is_active = False
                 n += 1
         return n
+    if body.action == "add_to_pipeline":
+        return _dispatch_add_to_pipeline(session, body, contacts, current_user)
+    if body.action == "add_to_workflow":
+        return _dispatch_add_to_workflow(session, body, contacts, current_user)
+    if body.action == "add_to_segment":
+        return _dispatch_add_to_segment(session, body, contacts)
+    if body.action == "create_task":
+        return _dispatch_create_task(session, body, contacts, current_user)
     raise HTTPException(
         status_code=status.HTTP_400_BAD_REQUEST,
         detail=f"Acción bulk desconocida: {body.action!r}",
     )
+
+
+def _dispatch_add_to_pipeline(
+    session: Session,
+    body: BulkActionPayload,
+    contacts: list[Contact],
+    current_user: User,
+) -> int:
+    pipeline_id = body.payload.get("pipeline_id")
+    if not pipeline_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Falta `pipeline_id` en payload.",
+        )
+    pipeline = session.get(Pipeline, pipeline_id)
+    if pipeline is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="El pipeline indicado no existe.",
+        )
+    stage_id = body.payload.get("stage_id")
+    n = 0
+    for c in contacts:
+        try:
+            pipelines_repository.add_contact_to_pipeline(
+                session,
+                contact=c,
+                pipeline=pipeline,
+                stage_id=stage_id,
+                note=None,
+                moved_by_user_id=current_user.id,
+            )
+            n += 1
+        except ValueError as exc:
+            # Stage inválido / pipeline sin stages: aplica a TODA la
+            # selección (mismo pipeline/stage), así que 400 de golpe.
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+            ) from exc
+    return n
+
+
+def _dispatch_add_to_workflow(
+    session: Session,
+    body: BulkActionPayload,
+    contacts: list[Contact],
+    current_user: User,
+) -> int:
+    from app.models.workflows import Workflow  # noqa: PLC0415
+    from app.services.ownership import can_user_see_resource  # noqa: PLC0415
+    from app.workflows.engine import (  # noqa: PLC0415
+        ManualStartError,
+        advance_run,
+        start_manual_run,
+    )
+
+    workflow_id = body.payload.get("workflow_id")
+    if not workflow_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Falta `workflow_id` en payload.",
+        )
+    workflow = session.get(Workflow, workflow_id)
+    if workflow is None or not can_user_see_resource(current_user, workflow):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="El workflow indicado no existe o no es visible.",
+        )
+    n = 0
+    for c in contacts:
+        try:
+            run = start_manual_run(
+                session, workflow, c, actor_user_id=current_user.id
+            )
+        except ManualStartError as exc:
+            # Workflow degenerado (sin sucesor del trigger): falla igual
+            # para todos → 422 de golpe.
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=exc.message,
+            ) from exc
+        advance_run(session, run.id)
+        n += 1
+    return n
+
+
+def _dispatch_add_to_segment(
+    session: Session, body: BulkActionPayload, contacts: list[Contact]
+) -> int:
+    segment_id = body.payload.get("segment_id")
+    if not segment_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Falta `segment_id` en payload.",
+        )
+    segment = session.get(Segment, segment_id)
+    if segment is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="El segmento indicado no existe.",
+        )
+    if segment.is_dynamic:
+        # Un segmento dinámico define su pertenencia por reglas — no se
+        # pueden añadir contactos a mano.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No se puede añadir manualmente a un segmento dinámico.",
+        )
+    current = segments_repository.decode_static_ids(segment)
+    current_set = set(current)
+    added = [c.id for c in contacts if c.id not in current_set]
+    if added:
+        segments_repository.update_segment(
+            session,
+            segment=segment,
+            static_contact_ids=current + added,
+        )
+    return len(added)
+
+
+def _dispatch_create_task(
+    session: Session,
+    body: BulkActionPayload,
+    contacts: list[Contact],
+    current_user: User,
+) -> int:
+    title = (body.payload.get("title") or "").strip()
+    if not title:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Falta `title` en payload.",
+        )
+    description = body.payload.get("description") or None
+    due_at = _parse_due_at(body.payload.get("due_at"))
+    priority = _coerce_task_priority(body.payload.get("priority"))
+    assigned_user_id = body.payload.get("assigned_user_id") or current_user.id
+    assignee = session.get(User, assigned_user_id)
+    if assignee is None or not assignee.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="El usuario asignado no existe o está inactivo.",
+        )
+    # PR-Hotfix-Notas-Workflows Item C. Una tarea POR contacto (réplica),
+    # cada una vinculada a su contacto.
+    n = 0
+    for c in contacts:
+        tasks_repository.create_task(
+            session,
+            title=title,
+            description=description,
+            due_at=due_at,
+            status=TaskStatus.PENDING,
+            priority=priority,
+            assigned_user_id=assigned_user_id,
+            contact_id=c.id,
+            company_id=None,
+            pipeline_stage_id=None,
+            created_by_user_id=current_user.id,
+            reminder_minutes_before=None,
+        )
+        n += 1
+    return n
+
+
+def _parse_due_at(raw: Any) -> datetime | None:
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="`due_at` no es una fecha ISO válida.",
+        ) from None
+
+
+def _coerce_task_priority(raw: Any) -> TaskPriority:
+    if not raw:
+        return TaskPriority.MEDIUM
+    try:
+        return TaskPriority(str(raw).lower())
+    except ValueError:
+        return TaskPriority.MEDIUM
+
+
+def _resolve_tag_for_add(
+    session: Session, payload: dict[str, Any], current_user: User
+) -> Tag:
+    """add_tag admite `tag_id` (existente) o `tag_name` (crear al vuelo,
+    reusando la lógica del TagPicker: color determinista si no se pasa)."""
+    tag_id = payload.get("tag_id")
+    if tag_id:
+        return _require_tag(session, tag_id)
+    tag_name = (payload.get("tag_name") or "").strip()
+    if not tag_name:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Falta `tag_id` o `tag_name` en payload.",
+        )
+    color = payload.get("color") or _default_tag_color(tag_name)
+    tag, _created = crm_repository.upsert_tag(
+        session,
+        name=tag_name,
+        color=color,
+        created_by_user_id=current_user.id,
+    )
+    return tag
+
+
+def _default_tag_color(name: str) -> str:
+    """Paleta determinista por hash del nombre normalizado — mismo
+    criterio que `routes._default_tag_color`, así un tag creado al vuelo
+    desde el bulk cae en el mismo color que si se creara desde la ficha."""
+    from app.schemas.crm import TAG_COLOR_PALETTE  # noqa: PLC0415
+
+    key = (name or "").strip().lower()
+    digest = sum(ord(ch) for ch in key)
+    return TAG_COLOR_PALETTE[digest % len(TAG_COLOR_PALETTE)]
 
 
 def _require_tag(session: Session, tag_id: str | None) -> Tag:
@@ -292,11 +554,14 @@ def bulk_export_csv(
     body: BulkExportPayload,
     request: Request,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_manager),
+    current_user: User = Depends(require_admin),
 ) -> Response:
     """Devuelve un text/csv con las columnas básicas del contacto. La
-    UI lo dispara desde la bulk-bar (acción 'Exportar CSV'). Limitado
-    al mismo cap que el resto del bulk (50000)."""
+    UI lo dispara desde la bulk-bar (acción 'Exportar CSV').
+
+    PR-Hotfix-Notas-Workflows Item C. Export ahora es admin-only (antes
+    manager+): la exportación masiva de datos de contactos se restringe
+    a admin. El resto de acciones bulk siguen abiertas a comerciales."""
     contacts = list(
         session.scalars(
             select(Contact).where(Contact.id.in_(body.contact_ids))
@@ -339,8 +604,3 @@ def bulk_export_csv(
             "Content-Disposition": "attachment; filename=contacts.csv",
         },
     )
-
-
-# Imports kept for explicit role-gate references upstream.
-_ = require_admin
-_ = require_manager

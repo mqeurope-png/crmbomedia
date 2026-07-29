@@ -4146,6 +4146,20 @@ a.origin-chip:hover { filter: brightness(0.97); }
   gap: 6px;
 }
 .bulk-bar .form-error { flex: 1 1 100%; margin: 0; }
+/* PR-Hotfix-Notas-Workflows Item C. Mini-form de "Crear tarea" en la
+ * barra de acciones masivas. */
+.bulk-bar-task-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.bulk-bar-task-form input {
+  padding: 6px 8px;
+  border: 1px solid var(--line, #d0d5dd);
+  border-radius: 6px;
+  font-size: 13px;
+}
 
 /* "Asignados a mí" pill group in the contacts toolbar */
 .assigned-toggle {
