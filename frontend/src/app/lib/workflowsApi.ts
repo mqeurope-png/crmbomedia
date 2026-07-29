@@ -132,7 +132,13 @@ export type WorkflowRunDetail = WorkflowRunRead & {
 };
 
 export type WorkflowCatalog = {
-  triggers: { type: string; label: string }[];
+  triggers: {
+    type: string;
+    label: string;
+    kind?: string;
+    available?: boolean;
+    unavailable_reason?: string | null;
+  }[];
   steps: { type: string; category: string; label: string }[];
   fields: string[];
   variables: string[];
@@ -140,9 +146,10 @@ export type WorkflowCatalog = {
 
 export type WorkflowCostEstimate = {
   matching_contacts_now: number;
-  estimated_runs_30d: number;
-  estimated_emails_30d: number;
-  estimated_tasks_30d: number;
+  /** Sprint Workflows: null = sin estimador para este trigger ("—"). */
+  estimated_runs_30d: number | null;
+  estimated_emails_30d: number | null;
+  estimated_tasks_30d: number | null;
   validation_errors: string[];
 };
 

@@ -46,6 +46,15 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
+def _aware(value):
+    """Sprint Workflows E1. MySQL no persiste tz: un `wake_at` releido
+    vuelve naive y compararlo con now(UTC) lanzaba TypeError (tragado
+    por-run en el scheduler) -> ningun wait se reanudaba en prod."""
+    if value is not None and value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value
+
+
 # ---------------------------------------------------------------------
 # Step result contract
 # ---------------------------------------------------------------------
@@ -353,14 +362,15 @@ def start_run(
         started_at=now,
         wake_at=now,
     )
-    session.add(run)
-    # Capturamos ids antes del flush porque tras una rollback (camino
-    # del dedup-block) acceder a `workflow.id` reabriría la conexión
-    # con el objeto expirado y volvería a fallar.
     workflow_id_str = workflow.id
     contact_id_str = contact.id
+    # Sprint Workflows E7. SAVEPOINT: antes un dedup-block hacia
+    # session.rollback() COMPLETO, borrando las cancelaciones del mismo
+    # evento y los runs previos del mismo tick cron.
     try:
-        session.flush()
+        with session.begin_nested():
+            session.add(run)
+            session.flush()
     except Exception as exc:  # noqa: BLE001 - unique constraint
         log.info(
             "workflows.engine dedup blocked workflow=%s contact=%s: %s",
@@ -368,10 +378,28 @@ def start_run(
             contact_id_str,
             exc,
         )
-        session.rollback()
         return None
 
     workflow.total_entered = (workflow.total_entered or 0) + 1
+    # Sprint Workflows. El dispatch/arranque de runs por fin deja rastro
+    # en audit_logs (antes: cero record_event en todo app/workflows/).
+    try:
+        from app.core.audit import Action, record_event  # noqa: PLC0415
+
+        record_event(
+            session,
+            action=Action.WORKFLOW_RUN_STARTED,
+            target_type="workflow_run",
+            target_id=run.id,
+            metadata={
+                "workflow_id": workflow_id_str,
+                "workflow_name": workflow.name,
+                "contact_id": contact_id_str,
+                "event_type": (trigger_payload or {}).get("event_type"),
+            },
+        )
+    except Exception:  # noqa: BLE001 - audit nunca bloquea el run
+        log.warning("workflows.audit run_started failed", exc_info=True)
     session.flush()
     return run
 
@@ -404,7 +432,7 @@ def advance_run(session: Session, run_id: str, *, max_steps: int = 30) -> None:
         if (
             run.state == WorkflowRunState.WAITING
             and run.wake_at
-            and run.wake_at > datetime.now(UTC)
+            and _aware(run.wake_at) > datetime.now(UTC)
         ):
             return
 
@@ -524,6 +552,19 @@ def advance_run(session: Session, run_id: str, *, max_steps: int = 30) -> None:
             result=result.result,
             error=result.error,
         )
+
+        # Sprint Workflows E3. Un step que devuelve status="failed"
+        # ahora FALLA el run (antes seguia por la rama default y el run
+        # terminaba COMPLETED sin error_summary ni total_failed).
+        if result.status == "failed":
+            _finalize(
+                session,
+                run,
+                WorkflowRunState.FAILED,
+                exit_kind=None,
+                error_summary=(result.error or "step_failed")[:500],
+            )
+            return
 
         # Deferred = no avanzamos. El siguiente despertador del
         # scheduler reintentará el mismo step.

@@ -98,18 +98,46 @@ def run_tick(session: Session, *, limit: int = DEFAULT_BATCH_LIMIT) -> dict[str,
                 "workflows.scheduler timeout failed wait=%s", wait.id
             )
 
-    # 3. Workflows con trigger `cron.recurring` cuyo próximo tick venció.
-    cron_started = _evaluate_cron_workflows(session, now)
+    # 2.5 Sprint Workflows E4 (parcial): runs atascados en CANCELLING -
+    # cancel_run los marcaba y nada volvia a tocarlos, reteniendo el
+    # dedup key para siempre.
+    cancelling = list(
+        session.scalars(
+            select(WorkflowRun)
+            .where(WorkflowRun.state == WorkflowRunState.CANCELLING)
+            .limit(limit)
+        )
+    )
+    for run in cancelling:
+        try:
+            advance_run(session, run.id)  # el guard CANCELLING finaliza
+        except Exception:  # noqa: BLE001
+            log.exception("workflows.scheduler cancelling failed run=%s", run.id)
+
+    # 3. Workflows con trigger `cron.recurring` cuyo proximo tick vencio.
+    try:
+        cron_started = _evaluate_cron_workflows(session, now)
+    except Exception:  # noqa: BLE001 - E8: no matar la cadena del tick
+        log.exception("workflows.scheduler cron phase failed")
+        session.rollback()
+        cron_started = 0
+
+    # 4. Sprint Workflows - trigger contact.matches_conditions:
+    # transicion no-cumple -> cumple via diff de membresia.
+    try:
+        matches_started = _evaluate_matches_conditions(session, now)
+    except Exception:  # noqa: BLE001
+        log.exception("workflows.scheduler matches_conditions phase failed")
+        session.rollback()
+        matches_started = 0
 
     session.commit()
-
-    # Re-arma el próximo tick (self-rescheduling).
-    schedule_tick()
 
     return {
         "runs_resumed": resumed,
         "event_waits_timed_out": timed,
         "cron_started": cron_started,
+        "matches_started": matches_started,
     }
 
 
@@ -161,32 +189,176 @@ def _evaluate_cron_workflows(session: Session, now: datetime) -> int:
             continue
         # Por defecto el cron aplica a TODOS los contactos activos.
         # El filter del cfg lo restringe.
+        # Sprint Workflows. Dedup de slot: el tick corre cada 30s y la
+        # ventana `minute < 1` dura 60s -> sin esto cada slot disparaba
+        # DOS veces. SETNX por (workflow, slot); Redis caido -> se
+        # permite (best-effort, igual que antes).
+        if not _claim_cron_slot(workflow.id, preset, now):
+            continue
         from app.workflows.conditions import EvalContext, evaluate  # noqa: PLC0415
 
-        contacts = list(
-            session.scalars(
-                select(Contact)
-                .where(Contact.is_active.is_(True))
-                .limit(200)
+        # Iteracion COMPLETA por chunks (antes `.limit(200)` sin orden
+        # truncaba el universo: contactos 201+ jamas entraban). Cap
+        # explicito por workflow/tick con log - nada de silencios.
+        per_tick_cap = 1000
+        last_id = ""
+        while started < per_tick_cap:
+            chunk = list(
+                session.scalars(
+                    select(Contact)
+                    .where(Contact.is_active.is_(True), Contact.id > last_id)
+                    .order_by(Contact.id)
+                    .limit(200)
+                )
+            )
+            if not chunk:
+                break
+            for contact in chunk:
+                last_id = contact.id
+                ctx = EvalContext(
+                    session=session,
+                    contact=contact,
+                    trigger_payload={
+                        "event_type": "cron.recurring", "preset": preset,
+                    },
+                )
+                if cfg.get("filter") and not evaluate(cfg.get("filter"), ctx):
+                    continue
+                run = start_run(
+                    session,
+                    workflow,
+                    contact,
+                    trigger_payload={
+                        "event_type": "cron.recurring", "preset": preset,
+                    },
+                )
+                if run:
+                    advance_run(session, run.id)
+                    started += 1
+                if started >= per_tick_cap:
+                    log.warning(
+                        "workflows.cron cap %d alcanzado workflow=%s - "
+                        "resto pospuesto", per_tick_cap, workflow.id,
+                    )
+                    break
+    return started
+
+
+_CRON_SLOT_FMT = {
+    "hourly": "%Y%m%d%H",
+    "daily": "%Y%m%d",
+    "weekly_monday": "%G-W%V",
+    "weekly_friday": "%G-W%V",
+    "monthly_first_day": "%Y%m",
+}
+
+
+def _claim_cron_slot(workflow_id: str, preset: str, now: datetime) -> bool:
+    try:
+        from app.workers.queues import redis_connection  # noqa: PLC0415
+
+        slot = now.strftime(_CRON_SLOT_FMT.get(preset, "%Y%m%d%H%M"))
+        key = f"workflows:cron:{workflow_id}:{preset}:{slot}"
+        return bool(
+            redis_connection().set(key, "1", nx=True, ex=8 * 24 * 3600)
+        )
+    except Exception:  # noqa: BLE001 - Redis caido: comportamiento previo
+        return True
+
+
+def _evaluate_matches_conditions(session: Session, now: datetime) -> int:
+    """Sprint Workflows - trigger custom `contact.matches_conditions`.
+
+    Backbone de correccion por poll (30s): compila el filter del trigger
+    a SQL (motor de segmentos), diffea contra la tabla de membresia y
+    dispara SOLO en la transicion no-cumple -> cumple. La activacion del
+    workflow siembra la baseline (ver /activate), asi que los contactos
+    que ya cumplian al activar NO disparan. Re-entrada: si
+    `allow_reentry`, la fila se borra al salir -> volver a cumplir
+    re-dispara; si no, la fila persiste -> 1 disparo por contacto para
+    siempre. Patron clonado de BrevoTargetMembership
+    (sync_targets.py:104-204)."""
+    from app.models.workflows import (  # noqa: PLC0415
+        WorkflowTriggerMembership,
+    )
+    from app.services.segments.engine import (  # noqa: PLC0415
+        SegmentRuleError,
+        build_filter,
+    )
+    from app.workflows.dispatcher import (  # noqa: PLC0415
+        _workflow_scopes_contact,
+    )
+
+    started = 0
+    workflows = list(
+        session.scalars(
+            select(Workflow).where(
+                Workflow.trigger_type == "contact.matches_conditions",
+                Workflow.status == WorkflowStatus.ACTIVE,
             )
         )
-        for contact in contacts:
-            ctx = EvalContext(
-                session=session,
-                contact=contact,
-                trigger_payload={"event_type": "cron.recurring", "preset": preset},
+    )
+    for workflow in workflows:
+        try:
+            cfg = json.loads(workflow.trigger_config_json or "{}")
+        except (TypeError, ValueError):
+            cfg = {}
+        tree = cfg.get("filter") or {}
+        try:
+            clause = build_filter(tree)
+        except SegmentRuleError:
+            log.warning(
+                "workflows.matches_conditions filtro invalido workflow=%s",
+                workflow.id,
             )
-            if cfg.get("filter") and not evaluate(cfg.get("filter"), ctx):
+            continue
+        current_ids = set(
+            session.scalars(
+                select(Contact.id).where(Contact.is_active.is_(True), clause)
+            )
+        )
+        rows = {
+            m.contact_id: m
+            for m in session.scalars(
+                select(WorkflowTriggerMembership).where(
+                    WorkflowTriggerMembership.workflow_id == workflow.id
+                )
+            )
+        }
+        entered = current_ids - rows.keys()
+        departed = set(rows) - current_ids
+        for contact_id in sorted(entered):
+            contact = session.get(Contact, contact_id)
+            if contact is None:
+                continue
+            session.add(
+                WorkflowTriggerMembership(
+                    workflow_id=workflow.id,
+                    contact_id=contact_id,
+                    first_matched_at=now,
+                    last_seen_at=now,
+                )
+            )
+            if not _workflow_scopes_contact(session, workflow, contact):
                 continue
             run = start_run(
                 session,
                 workflow,
                 contact,
-                trigger_payload={"event_type": "cron.recurring", "preset": preset},
+                trigger_payload={
+                    "event_type": "contact.matches_conditions",
+                },
             )
             if run:
                 advance_run(session, run.id)
                 started += 1
+        for contact_id in departed:
+            if workflow.allow_reentry:
+                session.delete(rows[contact_id])
+            else:
+                rows[contact_id].last_seen_at = now
+        for contact_id in current_ids & rows.keys():
+            rows[contact_id].last_seen_at = now
     return started
 
 
@@ -224,13 +396,18 @@ def schedule_tick() -> None:
 
 
 def _tick_runner() -> None:
-    from app.db.session import get_engine  # noqa: PLC0415
+    """RQ entry point. Sprint Workflows E8: el re-arm vive en un
+    `finally` - antes una excepcion en el tick mataba la cadena
+    self-rescheduling hasta el siguiente reinicio del API."""
+    try:
+        from app.db.session import get_engine  # noqa: PLC0415
 
-    with Session(get_engine()) as session:
-        try:
+        with Session(get_engine()) as session:
             run_tick(session)
-        except Exception:  # noqa: BLE001
-            log.exception("workflows.scheduler tick crashed")
+    except Exception:  # noqa: BLE001
+        log.exception("workflows.scheduler tick failed")
+    finally:
+        schedule_tick()
 
 
 def arm() -> None:

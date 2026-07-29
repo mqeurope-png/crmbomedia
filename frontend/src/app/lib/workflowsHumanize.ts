@@ -50,6 +50,8 @@ export function humanizeDuration(minutes: number | undefined | null): string {
 }
 
 const TRIGGER_LABELS: Record<string, string> = {
+  "contact.matches_conditions":
+    "Contacto pasa a cumplir condiciones",
   "contact.created": "Contacto creado",
   "contact.updated": "Contacto actualizado",
   "contact.lifecycle_changed": "Cambio de estado del ciclo",

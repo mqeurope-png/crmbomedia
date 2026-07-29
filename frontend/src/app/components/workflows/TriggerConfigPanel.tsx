@@ -10,7 +10,6 @@ import {
   type BrevoCampaign,
 } from "../../lib/brevoApi";
 import { getUsers, listTags, type Tag, type User } from "../../lib/api";
-import { listEmailTemplates } from "../../lib/emailTemplatesApi";
 import { PipelineStageSelector } from "./PipelineStageSelector";
 
 type Props = {
@@ -102,6 +101,16 @@ export function TriggerConfigPanel({
     return <LifecycleSubConfig config={config} set={set} />;
   }
 
+  if (triggerType === "contact.matches_conditions") {
+    return (
+      <p className="muted small">
+        Dispara cuando un contacto <strong>pasa a cumplir</strong> las
+        condiciones del «Filtro adicional» de abajo (evaluado cada ~30s).
+        Los contactos que ya cumplen al activar no disparan — solo las
+        transiciones futuras.
+      </p>
+    );
+  }
   if (triggerType === "engagement.brevo.composed") {
     return <EngagementSubConfig config={config} set={set} />;
   }
@@ -252,18 +261,9 @@ function CrmEmailSubConfig({
   set: (k: string, v: unknown) => void;
   clicked: boolean;
 }) {
-  const [templates, setTemplates] = useState<{ id: string; name: string }[]>(
-    [],
-  );
   const [users, setUsers] = useState<User[]>([]);
   useEffect(() => {
     let cancelled = false;
-    listEmailTemplates()
-      .then((rows) => {
-        if (!cancelled)
-          setTemplates(rows.map((t) => ({ id: t.id, name: t.name })));
-      })
-      .catch(() => undefined);
     getUsers({ limit: 100 })
       .then((rows) => {
         if (!cancelled) setUsers(rows.filter((u) => u.is_active));
@@ -275,20 +275,9 @@ function CrmEmailSubConfig({
   }, []);
   return (
     <>
-      <label>
-        Plantilla específica (opcional)
-        <select
-          value={(config.template_id as string) ?? ""}
-          onChange={(e) => set("template_id", e.target.value || undefined)}
-        >
-          <option value="">— Cualquier plantilla —</option>
-          {templates.map((t) => (
-            <option key={t.id} value={t.id}>
-              {t.name}
-            </option>
-          ))}
-        </select>
-      </label>
+      {/* Sprint Workflows: el filtro de plantilla se retiró — no hay
+          columna de respaldo (template_id no se persiste en el tracking)
+          y prometía un filtro que el runtime nunca aplicó. */}
       <label>
         Owner del email (opcional)
         <select

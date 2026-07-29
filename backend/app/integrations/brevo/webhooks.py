@@ -243,6 +243,7 @@ def process_brevo_webhook_event(
                     "source": f"brevo:{account_id}",
                     "campaign_brevo_id": _campaign_brevo_id(event),
                     "brevo_event": raw_name,
+                    "link": str(url) if url else None,
                 },
             )
             # El trigger compuesto `engagement.brevo.composed` cuenta

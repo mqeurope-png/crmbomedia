@@ -152,6 +152,11 @@ def track_open(
             user_agent=request.headers.get("user-agent"),
         )
         session.commit()
+        # Sprint Workflows. Productor de `email.crm.opened` — el
+        # tracking escribía email_message_events y nunca avisaba al bus.
+        _dispatch_crm_email_event(
+            session, "email.crm.opened", message, url=None
+        )
     return _pixel_response()
 
 
@@ -190,6 +195,10 @@ def track_click(
                 metadata={"url": destination},
             )
             session.commit()
+            # Sprint Workflows. Productor de `email.crm.clicked`.
+            _dispatch_crm_email_event(
+                session, "email.crm.clicked", message, url=destination
+            )
     return RedirectResponse(
         url=destination, status_code=status.HTTP_302_FOUND
     )
@@ -349,6 +358,21 @@ def unsubscribe_submit(
         metadata={"contact_id": contact_id},
     )
     session.commit()
+    # Sprint Workflows. El unsubscribe del PROPIO CRM ahora despacha
+    # `contact.unsubscribed` — antes solo el webhook Brevo lo hacía, así
+    # que este camino ni disparaba workflows ni cancelaba runs (es el
+    # cancellation event por defecto de todos los workflows).
+    try:
+        from app.workflows.dispatcher import dispatch_event  # noqa: PLC0415
+
+        dispatch_event(
+            session,
+            "contact.unsubscribed",
+            contact_id,
+            {"source": "crm", "scope": "marketing"},
+        )
+    except Exception:  # noqa: BLE001 — nunca romper la baja del contacto
+        log.warning("email_tracking.unsubscribe dispatch failed", exc_info=True)
     if is_one_click:
         return Response(status_code=status.HTTP_200_OK)
     return _render_page(
@@ -551,3 +575,28 @@ def email_stats(
         unsubscribed=session.scalar(unsub_stmt) or 0,
         days=days,
     )
+
+
+def _dispatch_crm_email_event(session, event_type, message, *, url):
+    """Sprint Workflows. Despacha el evento de tracking al bus de
+    workflows. Best-effort: el pixel/redirect jamás debe romperse por
+    esto. El contacto sale del thread del mensaje."""
+    try:
+        contact_id = getattr(getattr(message, "thread", None), "contact_id", None)
+        if not contact_id:
+            return
+        from app.workflows.dispatcher import dispatch_event  # noqa: PLC0415
+
+        payload = {
+            "source": "crm_tracking",
+            "message_id": message.id,
+            "owner_user_id": message.gmail_account_user_id,
+        }
+        if url:
+            payload["url"] = url
+        dispatch_event(session, event_type, contact_id, payload)
+    except Exception:  # noqa: BLE001
+        log.warning(
+            "email_tracking.workflow_dispatch failed type=%s", event_type,
+            exc_info=True,
+        )

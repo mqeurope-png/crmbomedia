@@ -385,3 +385,41 @@ class WorkflowEventWait(TimestampMixin, Base):
     timeout_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
+
+
+class WorkflowTriggerMembership(Base):
+    """Sprint Workflows - estado de membresia del trigger
+    `contact.matches_conditions`. Una fila = "este contacto cumple (o
+    cumplio) las condiciones del workflow". El scheduler diffea el set
+    actual contra estas filas y dispara SOLO en la transicion
+    no-cumple -> cumple. Con allow_reentry la fila se borra al salir
+    (re-entrar re-dispara); sin reentry persiste (1 disparo maximo).
+    Patron clonado de BrevoTargetMembership."""
+
+    __tablename__ = "workflow_trigger_memberships"
+    __table_args__ = (
+        UniqueConstraint(
+            "workflow_id", "contact_id",
+            name="uq_workflow_trigger_membership",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid4())
+    )
+    workflow_id: Mapped[str] = mapped_column(
+        ForeignKey("workflows.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    contact_id: Mapped[str] = mapped_column(
+        ForeignKey("contacts.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    first_matched_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )

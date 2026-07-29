@@ -567,7 +567,7 @@ export default function WorkflowEditorPage() {
     }
     const isEvent = EVENT_TRIGGERS.has(workflow?.trigger_type ?? "");
     const confirmMsg = isEvent
-      ? `Vas a activar este workflow. Como el trigger es un evento (${workflow?.trigger_type}), solo se procesarán contactos cuando ocurra en el futuro. Estimación: ${estimate.estimated_runs_30d} runs en 30d. ¿Confirmar?`
+      ? `Vas a activar este workflow. Como el trigger es un evento (${workflow?.trigger_type}), solo se procesarán contactos cuando ocurra en el futuro. Estimación: ${estimate.estimated_runs_30d ?? "sin datos"} runs en 30d. ¿Confirmar?`
       : `Vas a activar este workflow. Aproximadamente ${estimate.matching_contacts_now} contactos cumplen el criterio ahora. Solo se procesarán los que cumplan a partir de ahora. ¿Confirmar?`;
     if (!confirm(confirmMsg)) return;
     setBusy(true);
@@ -667,9 +667,11 @@ export default function WorkflowEditorPage() {
               Contactos que cumplen ahora:{" "}
               <strong>{estimate.matching_contacts_now}</strong>
             </li>
-            <li>Runs estimados 30d: {estimate.estimated_runs_30d}</li>
-            <li>Emails estimados 30d: {estimate.estimated_emails_30d}</li>
-            <li>Tareas estimadas 30d: {estimate.estimated_tasks_30d}</li>
+            <li title={estimate.estimated_runs_30d === null ? "Estimador no disponible para este tipo de trigger" : undefined}>
+              Runs estimados 30d: {estimate.estimated_runs_30d ?? "—"}
+            </li>
+            <li>Emails estimados 30d: {estimate.estimated_emails_30d ?? "—"}</li>
+            <li>Tareas estimadas 30d: {estimate.estimated_tasks_30d ?? "—"}</li>
             {estimate.validation_errors.length > 0 ? (
               <li className="form-error">
                 Errores estructurales: {estimate.validation_errors.join(" · ")}

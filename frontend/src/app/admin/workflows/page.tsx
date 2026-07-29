@@ -224,8 +224,14 @@ export default function WorkflowsListPage() {
               onChange={(e) => setDraftTrigger(e.target.value)}
             >
               {catalog?.triggers.map((t) => (
-                <option key={t.type} value={t.type}>
+                <option
+                  key={t.type}
+                  value={t.type}
+                  disabled={t.available === false}
+                  title={t.unavailable_reason ?? undefined}
+                >
                   {t.label}
+                  {t.available === false ? " (no disponible)" : ""}
                 </option>
               ))}
             </select>

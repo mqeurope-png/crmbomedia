@@ -93,6 +93,8 @@ class Action:
     # acabó asignado al user X" desde el audit log.
     ASSIGNMENT_RULE_APPLIED = "assignment_rule.applied"
     NOTE_CREATED = "note.created"
+    # Sprint Workflows - runtime por fin auditado.
+    WORKFLOW_RUN_STARTED = "workflow.run_started"
     TASK_CREATED = "task.created"
     TASK_UPDATED = "task.updated"
     TASK_COMPLETED = "task.completed"

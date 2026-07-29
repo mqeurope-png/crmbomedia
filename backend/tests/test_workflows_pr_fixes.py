@@ -108,7 +108,23 @@ def test_estimator_returns_count_for_state_triggers(
             )
         session.commit()
 
-    wf_id = _create_workflow(client, trigger_type="contact.date_field")
+    # Sprint Workflows: `contact.date_field` pasa a NO DISPONIBLE (sin
+    # evaluador ni columnas) -> matching 0 + estimado None ("---"). El
+    # trigger de estado que SI cuenta contactos es el nuevo
+    # `contact.matches_conditions` (count por SQL del motor de segmentos).
+    wf_dead = _create_workflow(client, trigger_type="contact.date_field")
+    res = client.post(
+        f"/api/workflows/{wf_dead}/cost-estimate",
+        headers=auth_headers(client, "admin"),
+    )
+    assert res.status_code == 200
+    body = res.json()
+    assert body["matching_contacts_now"] == 0
+    assert body["estimated_runs_30d"] is None
+
+    wf_id = _create_workflow(
+        client, trigger_type="contact.matches_conditions", trigger_config={}
+    )
     res = client.post(
         f"/api/workflows/{wf_id}/cost-estimate",
         headers=auth_headers(client, "admin"),
@@ -162,7 +178,10 @@ def test_estimator_event_trigger_projects_from_history(
     )
     body = res.json()
     assert body["matching_contacts_now"] == 0
-    assert body["estimated_runs_30d"] == 4
+    # Sprint Workflows: para contact.created la fuente REAL
+    # (contacts.created_at, 1 contacto creado en la ventana) manda sobre
+    # el historico de runs - se elimino el max() que enmascaraba filtros.
+    assert body["estimated_runs_30d"] == 1
 
 
 # ---------------------------------------------------------------------
