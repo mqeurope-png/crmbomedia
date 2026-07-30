@@ -119,6 +119,15 @@ class Settings(BaseSettings):
     email_assets_public_base: str = ""
     email_assets_max_bytes: int = 5 * 1024 * 1024
 
+    # Sprint Web-Forms — reCAPTCHA v3 invisible para los formularios web
+    # públicos. Sin ambas claves el anti-spam de recaptcha se salta (queda
+    # honeypot + rate limit); el `site_key` es público (va en el widget),
+    # el `secret` solo se usa server-side en la verificación con Google.
+    recaptcha_site_key: str | None = None
+    recaptcha_secret: str | None = None
+    # Score mínimo aceptado (v3 devuelve 0.0-1.0). Por debajo → spam.
+    recaptcha_min_score: float = 0.5
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
     @field_validator("integration_secrets_key")
@@ -148,6 +157,10 @@ class Settings(BaseSettings):
     @property
     def supabase_composer_configured(self) -> bool:
         return bool(self.supabase_composer_url and self.supabase_composer_key)
+
+    @property
+    def recaptcha_configured(self) -> bool:
+        return bool(self.recaptcha_site_key and self.recaptcha_secret)
 
     @property
     def google_calendar_configured(self) -> bool:
