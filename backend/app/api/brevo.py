@@ -64,6 +64,10 @@ from app.schemas.brevo import (
     BrevoUserListMappingsRead,
     BrevoUserListMappingsWrite,
 )
+from app.services.ownership import (
+    partition_contacts_by_ownership,
+    user_processes_all_contacts,
+)
 from app.workers.jobs import enqueue_sync_job
 
 logger = logging.getLogger(__name__)
@@ -560,6 +564,21 @@ def _resolve_mutation_emails(
     return list(out.keys()), unknown_contacts, contacts_without_email
 
 
+def _filter_mutation_by_ownership(
+    session: Session, payload: BrevoListContactsMutation, user: User
+) -> int:
+    """PR-Bulk-Comerciales. Un comercial solo empuja/quita de listas Brevo
+    SUS contactos: filtra `payload.contact_ids` a los propios y devuelve
+    cuántos ajenos se descartaron. admin/manager procesan todo."""
+    if user_processes_all_contacts(user) or not payload.contact_ids:
+        return 0
+    owned_ids, foreign_ids = partition_contacts_by_ownership(
+        session, payload.contact_ids, user
+    )
+    payload.contact_ids = owned_ids
+    return len(foreign_ids)
+
+
 @router.post(
     "/lists/{list_id}/contacts/add",
     response_model=BrevoListContactsMutationResult,
@@ -569,17 +588,21 @@ def add_contacts_to_brevo_list(
     payload: BrevoListContactsMutation,
     account_id: str = Query(...),
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_manager),
+    current_user: User = Depends(require_user),
 ) -> BrevoListContactsMutationResult:
-    _ = current_user
     _require_brevo_account(session, account_id)
+    requested = len(payload.emails or []) + len(payload.contact_ids or [])
+    skipped_foreign = _filter_mutation_by_ownership(
+        session, payload, current_user
+    )
     emails, unknown, no_email = _resolve_mutation_emails(session, payload)
     if not emails:
         return BrevoListContactsMutationResult(
-            requested=len(payload.emails or []) + len(payload.contact_ids or []),
+            requested=requested,
             sent=0,
             skipped_unknown_contact=unknown,
             skipped_missing_email=no_email,
+            skipped_foreign=skipped_foreign,
         )
 
     async def _run() -> None:
@@ -596,10 +619,11 @@ def add_contacts_to_brevo_list(
             status_code=status.HTTP_502_BAD_GATEWAY, detail=exc.message
         ) from exc
     return BrevoListContactsMutationResult(
-        requested=len(payload.emails or []) + len(payload.contact_ids or []),
+        requested=requested,
         sent=len(emails),
         skipped_unknown_contact=unknown,
         skipped_missing_email=no_email,
+        skipped_foreign=skipped_foreign,
     )
 
 
@@ -612,17 +636,21 @@ def remove_contacts_from_brevo_list(
     payload: BrevoListContactsMutation,
     account_id: str = Query(...),
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_manager),
+    current_user: User = Depends(require_user),
 ) -> BrevoListContactsMutationResult:
-    _ = current_user
     _require_brevo_account(session, account_id)
+    requested = len(payload.emails or []) + len(payload.contact_ids or [])
+    skipped_foreign = _filter_mutation_by_ownership(
+        session, payload, current_user
+    )
     emails, unknown, no_email = _resolve_mutation_emails(session, payload)
     if not emails:
         return BrevoListContactsMutationResult(
-            requested=len(payload.emails or []) + len(payload.contact_ids or []),
+            requested=requested,
             sent=0,
             skipped_unknown_contact=unknown,
             skipped_missing_email=no_email,
+            skipped_foreign=skipped_foreign,
         )
 
     async def _run() -> None:
@@ -638,10 +666,11 @@ def remove_contacts_from_brevo_list(
             status_code=status.HTTP_502_BAD_GATEWAY, detail=exc.message
         ) from exc
     return BrevoListContactsMutationResult(
-        requested=len(payload.emails or []) + len(payload.contact_ids or []),
+        requested=requested,
         sent=len(emails),
         skipped_unknown_contact=unknown,
         skipped_missing_email=no_email,
+        skipped_foreign=skipped_foreign,
     )
 
 

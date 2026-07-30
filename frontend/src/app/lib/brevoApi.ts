@@ -126,6 +126,8 @@ export type BrevoListContactsMutationResult = {
   sent: number;
   skipped_unknown_contact: number;
   skipped_missing_email: number;
+  /** PR-Bulk-Comerciales. Contactos ajenos descartados (comercial). */
+  skipped_foreign?: number;
 };
 
 export type BrevoSender = {
