@@ -104,6 +104,11 @@ app.include_router(admin_backups_router)
 from app.workflows import steps as _wf_steps  # noqa: F401,E402,PLC0415
 
 app.include_router(workflows_router)
+from app.api.call_logs import router as call_logs_router  # noqa: E402
+from app.api.contact_timeline import router as timeline_router  # noqa: E402
+
+app.include_router(call_logs_router)
+app.include_router(timeline_router)
 
 # Sprint Email v2.2 — serve email-template assets (Tiptap inline
 # uploads). In production nginx aliases `/assets/email-templates/`

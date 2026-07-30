@@ -101,6 +101,15 @@ export function TriggerConfigPanel({
     return <LifecycleSubConfig config={config} set={set} />;
   }
 
+  if (triggerType === "contact.manual") {
+    return (
+      <p className="muted small">
+        Se dispara solo cuando un usuario ejecuta el workflow desde la
+        ficha de un contacto o desde el modal «Registrar llamada». No se
+        dispara automáticamente por eventos.
+      </p>
+    );
+  }
   if (triggerType === "contact.matches_conditions") {
     return (
       <p className="muted small">

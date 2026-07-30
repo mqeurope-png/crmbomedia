@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  History,
   Activity as ActivityIcon,
   Briefcase,
   CheckSquare,
@@ -32,6 +33,11 @@ import { ContactTasksPendingCard } from "../../components/contact-detail/Contact
 import { ContactUnsubscribeStatusCard } from "../../components/contact-detail/ContactUnsubscribeStatusCard";
 import { ContactEmailsSection } from "../../components/ContactEmailsSection";
 import { ContactAssignmentsSection } from "../../components/ContactAssignmentsSection";
+import { HistorialTab } from "../../components/contact-detail/HistorialTab";
+import {
+  RegisterCallModal,
+  RunWorkflowMenu,
+} from "../../components/contact-detail/RegisterCallModal";
 import { ContactNotesSection } from "../../components/ContactNotesSection";
 import { ContactPhonesSection } from "../../components/ContactPhonesSection";
 import { ContactProfessionalSection } from "../../components/ContactProfessionalSection";
@@ -85,6 +91,7 @@ type Tab =
   | "emails"
   | "tasks"
   | "notes"
+  | "history"
   | "tags"
   | "opportunities"
   | "workflows"
@@ -104,6 +111,7 @@ const TABS: Array<{ id: Tab; label: string; icon: React.ElementType }> = [
   { id: "emails", label: "Emails", icon: Mail },
   { id: "tasks", label: "Tareas", icon: CheckSquare },
   { id: "notes", label: "Notas", icon: StickyNote },
+  { id: "history", label: "Historial", icon: History },
   { id: "tags", label: "Tags", icon: TagIcon },
   { id: "opportunities", label: "Oportunidades", icon: Layers },
   // PR-Fix-Pestaña-Workflows-Y-Humanizar #1. La pestaña existía como
@@ -123,6 +131,10 @@ export default function ContactDetailPage() {
   const [activeTab, setActiveTab] = useState<Tab>("summary");
   const [showComposer, setShowComposer] = useState(false);
   const [showTaskModal, setShowTaskModal] = useState(false);
+  // Sprint Ficha 360.
+  const [showCallModal, setShowCallModal] = useState(false);
+  const [showRunWorkflow, setShowRunWorkflow] = useState(false);
+  const [historyTick, setHistoryTick] = useState(0);
   const [overflowOpen, setOverflowOpen] = useState(false);
   // PR-Ficha-Fix. Modal "Editar contacto" completo. El botón ✎ del
   // header lo abre; cerrar (Cancel/X) limpia; Save → confirma →
@@ -398,7 +410,8 @@ export default function ContactDetailPage() {
         onPatch={handlePatch}
         onSendEmail={() => setShowComposer(true)}
         onCreateTask={() => setShowTaskModal(true)}
-        onLogCall={() => setShowTaskModal(true)}
+        onLogCall={() => setShowCallModal(true)}
+        onRunWorkflow={() => setShowRunWorkflow(true)}
         onEdit={() => setEditOpen(true)}
         onOpenOverflow={() => setOverflowOpen((v) => !v)}
         overflowOpen={overflowOpen}
@@ -536,6 +549,9 @@ export default function ContactDetailPage() {
             {activeTab === "notes" ? (
               <ContactNotesSection contactId={contact.id} />
             ) : null}
+            {activeTab === "history" ? (
+              <HistorialTab contactId={contact.id} refreshKey={historyTick} />
+            ) : null}
             {activeTab === "tags" ? (
               <ContactTagsTab
                 tags={tags}
@@ -659,6 +675,19 @@ export default function ContactDetailPage() {
         />
         </div>
       ) : null}
+      <RegisterCallModal
+        contactId={contact.id}
+        open={showCallModal}
+        onClose={() => setShowCallModal(false)}
+        onSaved={() => setHistoryTick((t) => t + 1)}
+        onRequestCompose={() => setShowComposer(true)}
+      />
+      <RunWorkflowMenu
+        contactId={contact.id}
+        open={showRunWorkflow}
+        onClose={() => setShowRunWorkflow(false)}
+        onRan={() => setHistoryTick((t) => t + 1)}
+      />
       {showTaskModal ? (
         <TaskModal
           contactId={contact.id}
