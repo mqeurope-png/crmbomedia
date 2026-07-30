@@ -1240,13 +1240,15 @@ type BrevoInteractionValue = {
 };
 
 const BREVO_ACTION_OPTIONS: ReadonlyArray<[string, string]> = [
-  ["received", "recibió"],
+  ["sent", "se le envió"],
+  ["received", "recibió (entregado)"],
   ["opened", "abrió"],
   ["clicked", "clickeó"],
   ["not_opened", "NO abrió"],
   ["not_clicked", "NO clickeó"],
   ["bounced", "rebotó"],
   ["unsubscribed", "se dió de baja"],
+  ["spam", "marcó como spam"],
 ];
 
 function asInteractionValue(raw: unknown): BrevoInteractionValue {

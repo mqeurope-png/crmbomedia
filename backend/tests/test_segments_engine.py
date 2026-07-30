@@ -11,6 +11,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
+import app.main  # noqa: F401 — registra TODOS los modelos en Base.metadata
 import app.models.brevo  # noqa: F401 — registra brevo_campaigns_cache en Base.metadata
 from app.models.crm import (
     Base,
@@ -1007,3 +1008,91 @@ def test_brevo_interaction_invalid_value_is_400_not_500(session_factory):
                     },
                 }
             )
+
+
+# ---------------------------------------------------------------------------
+# Sprint Campaign-Deeplink — nuevos tipos sent/delivered/bounced/spam
+# ---------------------------------------------------------------------------
+
+
+def _seed_brevo_all_event_types(session: Session) -> dict[str, Contact]:
+    """Campaña 99 con un contacto por tipo de evento nuevo."""
+    from app.models.brevo import BrevoCampaignCache
+    from app.models.crm import ActivityEvent, ExternalSystem
+
+    now = datetime.now(UTC)
+    session.add(BrevoCampaignCache(
+        brevo_account_id="main", brevo_campaign_id=99, name="Ofertas MBO",
+        status="sent", type="classic",
+        sent_at=now - timedelta(days=2), cached_at=now,
+    ))
+    contacts = {
+        "sent": Contact(first_name="Sent", email="sent@x.com"),
+        "delivered": Contact(first_name="Deliv", email="deliv@x.com"),
+        "bounced": Contact(first_name="Bounce", email="bounce@x.com"),
+        "spam": Contact(first_name="Spam", email="spam@x.com"),
+        "unsub": Contact(first_name="Unsub", email="unsub@x.com"),
+    }
+    session.add_all(contacts.values())
+    session.flush()
+
+    def _ev(cid: str, et: str) -> ActivityEvent:
+        return ActivityEvent(
+            contact_id=cid, system=ExternalSystem.BREVO, account_id="main",
+            event_type=et, external_id=f"{cid}:{et}:99",
+            campaign_brevo_id=99, occurred_at=now - timedelta(days=1),
+        )
+
+    session.add_all([
+        _ev(contacts["sent"].id, "email.sent"),
+        _ev(contacts["delivered"].id, "email.sent"),
+        _ev(contacts["delivered"].id, "email.delivered"),
+        _ev(contacts["bounced"].id, "email.sent"),
+        _ev(contacts["bounced"].id, "email.bounced_hard"),
+        _ev(contacts["spam"].id, "email.spam_complaint"),
+        _ev(contacts["unsub"].id, "email.unsubscribed"),
+    ])
+    session.commit()
+    return contacts
+
+
+def _match_action(session: Session, action: str, campaign: int = 99) -> set[str]:
+    condition = build_filter({
+        "type": "rule",
+        "field": "brevo_campaign_interaction",
+        "comparator": "matches",
+        "value": {"campaigns": [campaign], "action": action, "period": "all"},
+    })
+    return _ids(list(session.scalars(select(Contact).where(condition))))
+
+
+def test_brevo_campaign_interaction_filter_supports_sent_delivered_bounced_spam(
+    session_factory,
+):
+    with session_factory() as session:
+        s = _seed_brevo_all_event_types(session)
+        # sent: cualquiera con email.sent (sent + delivered + bounced).
+        assert _match_action(session, "sent") == {
+            s["sent"].id, s["delivered"].id, s["bounced"].id,
+        }
+        # delivered: solo quien tiene email.delivered.
+        assert _match_action(session, "delivered") == {s["delivered"].id}
+        # received es alias de delivered.
+        assert _match_action(session, "received") == {s["delivered"].id}
+        # bounced: hard o soft.
+        assert _match_action(session, "bounced") == {s["bounced"].id}
+        # spam: email.spam_complaint.
+        assert _match_action(session, "spam") == {s["spam"].id}
+        # unsubscribed sigue funcionando.
+        assert _match_action(session, "unsubscribed") == {s["unsub"].id}
+
+
+def test_brevo_campaign_interaction_filter_returns_empty_when_event_type_has_no_data(
+    session_factory,
+):
+    """La campaña 99 no tiene aperturas ni clicks → filtro vacío, sin
+    romper (el frontend redirige sin filtro / muestra toast)."""
+    with session_factory() as session:
+        _seed_brevo_all_event_types(session)
+        assert _match_action(session, "opened") == set()
+        assert _match_action(session, "clicked") == set()

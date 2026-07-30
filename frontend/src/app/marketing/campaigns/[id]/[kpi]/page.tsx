@@ -1,178 +1,91 @@
 "use client";
 
 /**
- * PR-Bugs-4-5amp-7-9. Página dedicada por KPI de una campaña Brevo.
- * Reusa el patrón de `/dashboard/leads-prioritarios` (PR #241): tabla
- * compacta con hasta 200 contactos, sin filtros adicionales.
+ * Sprint Campaign-Deeplink. La antigua página estática por KPI
+ * (`/marketing/campaigns/{id}/{kpi}`) ahora REDIRIGE a `/contacts` con
+ * el filtro `brevo_campaign_interaction` de esa métrica + campaña ya
+ * aplicado — donde el operador tiene filtros AND/OR, guardar como vista
+ * y acciones masivas.
  *
- * Coexiste con la pestaña "Destinatarios" del detalle de campaña
- * (`/marketing/campaigns/{id}`): la pestaña sigue funcionando para
- * uso rápido; esta página es para "ver lista completa". El operador
- * llega por click en el número del KPI de la cabecera.
+ * El redirect es client-side (router.replace) porque la app usa auth
+ * por token en localStorage: un server component no puede resolver el
+ * `brevo_campaign_id` (int) que necesita el filtro. Se preserva el
+ * marcador: quien abra la URL antigua aterriza en el listado filtrado.
+ *
+ * NO se borran los componentes del listado estático (ContactKpiTable,
+ * getBrevoCampaignContactsByKpi) — solo se deja de renderizar esta
+ * página, por si Bart necesita revertir.
  */
-import { ExternalLink, Users } from "lucide-react";
-import Link from "next/link";
-import { useParams } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
-import { ContactKpiTable } from "../../../../components/ContactKpiTable";
+import { useParams, useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
 import { PageHeader } from "../../../../components/PageHeader";
-import {
-  type CampaignKpi,
-  getBrevoCampaign,
-  getBrevoCampaignContactsByKpi,
-  type BrevoCampaign,
-} from "../../../../lib/brevoApi";
-import type { PriorityLead } from "../../../../lib/dashboardApi";
+import { campaignKpiContactsHref } from "../../../../lib/campaignDeepLink";
+import { type CampaignKpi, getBrevoCampaign } from "../../../../lib/brevoApi";
 
-const KPI_LABEL: Record<CampaignKpi, { title: string; description: string }> = {
-  sent: {
-    title: "Enviados",
-    description:
-      "Contactos a los que se intentó entregar esta campaña (incluye los que llegaron a abrir o hacer clic).",
-  },
-  delivered: {
-    title: "Entregados",
-    description:
-      "Contactos cuyo proveedor confirmó la entrega de la campaña.",
-  },
-  opened: {
-    title: "Abrieron",
-    description:
-      "Contactos que abrieron la campaña al menos una vez. Incluye los que clickearon.",
-  },
-  clicked: {
-    title: "Clickearon",
-    description:
-      "Contactos que hicieron clic en algún enlace de la campaña.",
-  },
-  bounces: {
-    title: "Rebotes",
-    description:
-      "Contactos con rebote (hard o soft) según Brevo.",
-  },
-  unsubscribed: {
-    title: "Se dieron de baja",
-    description:
-      "Contactos que se dieron de baja a través de esta campaña.",
-  },
-  complained: {
-    title: "Reportaron spam",
-    description:
-      "Contactos que marcaron la campaña como spam (quejas reportadas por el proveedor de correo).",
-  },
-};
-
-const VALID_KPIS = Object.keys(KPI_LABEL) as CampaignKpi[];
+const VALID_KPIS: CampaignKpi[] = [
+  "sent",
+  "delivered",
+  "opened",
+  "clicked",
+  "bounces",
+  "unsubscribed",
+  "complained",
+];
 
 function isValidKpi(value: string): value is CampaignKpi {
   return (VALID_KPIS as string[]).includes(value);
 }
 
-export default function CampaignKpiPage() {
+export default function CampaignKpiRedirectPage() {
   const params = useParams<{ id: string; kpi: string }>();
+  const router = useRouter();
   const campaignId = params.id;
   const kpi = params.kpi;
-  const valid = isValidKpi(kpi);
-
-  const [campaign, setCampaign] = useState<BrevoCampaign | null>(null);
-  const [rows, setRows] = useState<PriorityLead[] | null>(null);
-  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
-    if (!valid) return;
-    setLoading(true);
-    setError(null);
-    try {
-      const [fresh, contacts] = await Promise.all([
-        getBrevoCampaign(campaignId),
-        getBrevoCampaignContactsByKpi(campaignId, kpi as CampaignKpi, 200),
-      ]);
-      setCampaign(fresh);
-      setRows(contacts);
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error(`campaigns/${campaignId}/${kpi} load failed:`, err);
-      setError(
-        "No se han podido cargar los contactos. Reintenta más tarde.",
-      );
-      setRows(null);
-    } finally {
-      setLoading(false);
-    }
-  }, [valid, campaignId, kpi]);
-
   useEffect(() => {
-    void load();
-  }, [load]);
-
-  if (!valid) {
-    return (
-      <main className="shell">
-        <PageHeader
-          title="KPI desconocido"
-          eyebrow="Campañas"
-          crumbs={[
-            { label: "Marketing", href: "/marketing/campaigns" },
-            { label: "Campañas", href: "/marketing/campaigns" },
-            { label: "KPI" },
-          ]}
-        />
-        <p className="muted">
-          El KPI &quot;{kpi}&quot; no existe para esta campaña.
-        </p>
-      </main>
-    );
-  }
-
-  const label = KPI_LABEL[kpi as CampaignKpi];
-  const campaignName = campaign?.name ?? "Campaña";
+    if (!isValidKpi(kpi)) {
+      setError(`El KPI "${kpi}" no existe para esta campaña.`);
+      return;
+    }
+    let cancelled = false;
+    getBrevoCampaign(campaignId)
+      .then((campaign) => {
+        if (cancelled) return;
+        router.replace(
+          campaignKpiContactsHref(campaign.brevo_campaign_id, kpi),
+        );
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setError(
+            "No se pudo resolver la campaña para aplicar el filtro. " +
+              "Vuelve a la ficha de la campaña e inténtalo de nuevo.",
+          );
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [campaignId, kpi, router]);
 
   return (
     <main className="shell">
       <PageHeader
-        title={`${label.title} — ${campaignName}`}
+        title="Abriendo contactos…"
         eyebrow="Campañas"
-        description={label.description}
         crumbs={[
           { label: "Marketing", href: "/marketing/campaigns" },
-          { label: campaignName, href: `/marketing/campaigns/${campaignId}` },
-          { label: label.title },
+          { label: "Campañas", href: "/marketing/campaigns" },
+          { label: "Contactos" },
         ]}
-        actions={
-          campaign ? (
-            <Link
-              href={`/marketing/campaigns/${campaignId}`}
-              className="button secondary small"
-            >
-              <ExternalLink size={12} aria-hidden /> Volver a la campaña
-            </Link>
-          ) : null
-        }
       />
-
-      {loading ? (
-        <p className="muted">Cargando…</p>
-      ) : error ? (
-        <div className="error-state">
-          <p>{error}</p>
-          <button
-            type="button"
-            className="button small secondary"
-            onClick={() => void load()}
-          >
-            Reintentar
-          </button>
-        </div>
-      ) : !rows || rows.length === 0 ? (
-        <div className="empty-state">
-          <Users size={32} aria-hidden />
-          <p className="muted">
-            No hay contactos registrados para este KPI.
-          </p>
-        </div>
+      {error ? (
+        <p className="muted">{error}</p>
       ) : (
-        <ContactKpiTable rows={rows} signalLabel="Último evento" />
+        <p className="muted">
+          Redirigiendo a la lista de contactos con el filtro aplicado…
+        </p>
       )}
     </main>
   );

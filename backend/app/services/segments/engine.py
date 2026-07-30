@@ -547,7 +547,10 @@ def _compile_brevo_campaign_interaction_leaf(
             ).where(*sent_clauses)
         return exists(sub)
 
-    if action in {"received", "opened", "clicked", "bounced", "unsubscribed"}:
+    if action in {
+        "sent", "received", "delivered", "opened", "clicked",
+        "bounced", "unsubscribed", "spam",
+    }:
         return _exists_for(BREVO_INTERACTION_ACTIONS[action])
     if action == "not_opened":
         # Recibió la campaña pero no consta apertura.
