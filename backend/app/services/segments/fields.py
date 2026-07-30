@@ -144,7 +144,11 @@ _BREVO_INTERACTION = ("matches",)
 #: y `not_clicked` son negativas (delivered-pero-no-X / opened-pero-no-X)
 #: y se compilan distinto.
 BREVO_INTERACTION_ACTIONS: dict[str, tuple[str, ...]] = {
-    "sent": ("email.sent",),
+    # PR-Fix-Sent-Delivered-Bounced. Brevo NO ofrece el evento `sent` en su
+    # webhook de Marketing, así que `email.sent` nunca se persiste.
+    # "Enviados" = todo email que Brevo PROCESÓ, que acaba en uno de los 3
+    # estados terminales: entregado o rebotado (hard/soft). Suma exacta.
+    "sent": ("email.delivered", "email.bounced_hard", "email.bounced_soft"),
     "received": ("email.delivered",),  # "Entregados" reusa esta acción
     "delivered": ("email.delivered",),  # alias explícito de la card
     "opened": ("email.opened",),

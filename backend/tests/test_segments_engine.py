@@ -1071,9 +1071,11 @@ def test_brevo_campaign_interaction_filter_supports_sent_delivered_bounced_spam(
 ):
     with session_factory() as session:
         s = _seed_brevo_all_event_types(session)
-        # sent: cualquiera con email.sent (sent + delivered + bounced).
+        # PR-Fix-Sent-Delivered-Bounced. sent = delivered + bounced (Brevo
+        # no ofrece email.sent). El contacto con SOLO email.sent (legacy)
+        # ya NO cuenta como enviado.
         assert _match_action(session, "sent") == {
-            s["sent"].id, s["delivered"].id, s["bounced"].id,
+            s["delivered"].id, s["bounced"].id,
         }
         # delivered: solo quien tiene email.delivered.
         assert _match_action(session, "delivered") == {s["delivered"].id}
@@ -1096,3 +1098,74 @@ def test_brevo_campaign_interaction_filter_returns_empty_when_event_type_has_no_
         _seed_brevo_all_event_types(session)
         assert _match_action(session, "opened") == set()
         assert _match_action(session, "clicked") == set()
+
+
+# ---------------------------------------------------------------------------
+# PR-Fix-Sent-Delivered-Bounced — "Enviados" = delivered + bounced
+# ---------------------------------------------------------------------------
+
+
+def _seed_sent_case(session: Session, email: str, event_types: list[str]) -> str:
+    """Un contacto con los `event_types` dados en la campaña 55."""
+    from app.models.brevo import BrevoCampaignCache
+    from app.models.crm import ActivityEvent, ExternalSystem
+
+    now = datetime.now(UTC)
+    if session.get(BrevoCampaignCache, "camp55") is None:
+        session.add(BrevoCampaignCache(
+            id="camp55", brevo_account_id="main", brevo_campaign_id=55,
+            name="Flux openbox", status="sent", type="classic",
+            sent_at=now - timedelta(days=2), cached_at=now,
+        ))
+    c = Contact(first_name=email.split("@")[0], email=email)
+    session.add(c)
+    session.flush()
+    for et in event_types:
+        session.add(ActivityEvent(
+            contact_id=c.id, system=ExternalSystem.BREVO, account_id="main",
+            event_type=et, external_id=f"{c.id}:{et}:55",
+            campaign_brevo_id=55, occurred_at=now - timedelta(days=1),
+        ))
+    session.commit()
+    return c.id
+
+
+def test_brevo_campaign_interaction_sent_matches_delivered_events(session_factory):
+    with session_factory() as session:
+        cid = _seed_sent_case(session, "d@x.com", ["email.delivered"])
+        assert _match_action(session, "sent", campaign=55) == {cid}
+
+
+def test_brevo_campaign_interaction_sent_matches_hard_bounce_events(session_factory):
+    with session_factory() as session:
+        cid = _seed_sent_case(session, "hb@x.com", ["email.bounced_hard"])
+        assert _match_action(session, "sent", campaign=55) == {cid}
+
+
+def test_brevo_campaign_interaction_sent_matches_soft_bounce_events(session_factory):
+    with session_factory() as session:
+        cid = _seed_sent_case(session, "sb@x.com", ["email.bounced_soft"])
+        assert _match_action(session, "sent", campaign=55) == {cid}
+
+
+def test_brevo_campaign_interaction_sent_does_not_match_opened_or_clicked(
+    session_factory,
+):
+    """Regresión: un evento de apertura/click que NO sea terminal de envío
+    (sin delivered ni bounce) no cuenta como enviado."""
+    with session_factory() as session:
+        _seed_sent_case(session, "oc@x.com", ["email.opened", "email.clicked"])
+        assert _match_action(session, "sent", campaign=55) == set()
+
+
+def test_brevo_campaign_interaction_sent_matches_all_three_types_combined(
+    session_factory,
+):
+    """Un contacto con los 3 tipos cuenta 1 sola vez (EXISTS deduplica)."""
+    with session_factory() as session:
+        cid = _seed_sent_case(session, "all@x.com", [
+            "email.delivered", "email.bounced_hard", "email.bounced_soft",
+        ])
+        matched = _match_action(session, "sent", campaign=55)
+        assert matched == {cid}
+        assert len(matched) == 1
