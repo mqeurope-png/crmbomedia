@@ -112,10 +112,12 @@ app.include_router(timeline_router)
 
 # Sprint Web-Forms — API pública + admin de formularios web.
 from app.api.web_forms_admin import router as web_forms_admin_router  # noqa: E402
+from app.api.web_forms_embed import router as web_forms_embed_router  # noqa: E402
 from app.api.web_forms_public import router as web_forms_public_router  # noqa: E402
 
 app.include_router(web_forms_public_router)
 app.include_router(web_forms_admin_router)
+app.include_router(web_forms_embed_router)
 
 
 # Sprint Web-Forms — CORS abierto (`*`) SOLO para los endpoints públicos
