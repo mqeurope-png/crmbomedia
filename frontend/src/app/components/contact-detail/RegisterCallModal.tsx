@@ -113,7 +113,10 @@ export function RegisterCallModal({
 
   return (
     <div className="modal-overlay" role="dialog" aria-modal="true">
-      <div className="modal register-call-modal">
+      {/* PR-Hotfix-Ficha-360 Bug 1: la caja del modal es `.modal-dialog`
+        * (patrón de TaskModal/TemplatePicker) — la clase `.modal` no
+        * existe en styles.css y los inputs flotaban sobre el backdrop. */}
+      <div className="modal-dialog register-call-modal">
         <header className="modal-header">
           <h2>📞 Registrar llamada</h2>
           <button type="button" className="modal-close" onClick={onClose}>×</button>
@@ -244,15 +247,15 @@ export function RegisterCallModal({
               ) : null}
             </div>
           ) : null}
+          <footer className="modal-footer">
+            <button type="button" className="button secondary" onClick={onClose} disabled={busy}>
+              Cancelar
+            </button>
+            <button type="button" className="button" onClick={handleSave} disabled={busy}>
+              💾 {busy ? "Guardando…" : "Guardar"}
+            </button>
+          </footer>
         </div>
-        <footer className="modal-footer">
-          <button type="button" className="button secondary" onClick={onClose} disabled={busy}>
-            Cancelar
-          </button>
-          <button type="button" className="button" onClick={handleSave} disabled={busy}>
-            💾 {busy ? "Guardando…" : "Guardar"}
-          </button>
-        </footer>
       </div>
     </div>
   );
@@ -278,7 +281,8 @@ export function RunWorkflowMenu({
   if (!open) return null;
   return (
     <div className="modal-overlay" role="dialog" aria-modal="true">
-      <div className="modal run-workflow-modal">
+      {/* PR-Hotfix-Ficha-360 Bug 1: `.modal-dialog` = caja real. */}
+      <div className="modal-dialog small run-workflow-modal">
         <header className="modal-header">
           <h2>⚡ Ejecutar workflow</h2>
           <button type="button" className="modal-close" onClick={onClose}>×</button>
