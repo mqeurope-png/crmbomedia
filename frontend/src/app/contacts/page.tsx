@@ -103,6 +103,33 @@ import { pruneRulesTree } from "../lib/segmentTranslator";
 const PAGE_SIZE = 25;
 const EMPTY_RULES: Record<string, unknown> = {};
 
+// PR-Columnas-Default. Columnas visibles por defecto en /contacts (en
+// este orden) para un usuario SIN configuración guardada. Se filtran
+// contra los campos displayable del schema por seguridad. Los usuarios
+// con columnas custom en localStorage o en una vista guardada NO se
+// tocan (loadColumnConfig respeta lo almacenado).
+const DEFAULT_CONTACT_COLUMNS = [
+  "name",
+  "email",
+  "phone",
+  "tags",
+  "created_at_external",
+  "lead_score",
+];
+
+function defaultContactColumns(schema: EntityFilterSchema): string[] {
+  const displayable = new Set(
+    schema.fields.filter((f) => f.displayable).map((f) => f.key),
+  );
+  const ordered = DEFAULT_CONTACT_COLUMNS.filter((k) => displayable.has(k));
+  // Fallback defensivo: si el schema cambió y ninguna key coincide,
+  // caemos al `default_visible` del backend para no dejar 0 columnas.
+  if (ordered.length > 0) return ordered;
+  return schema.fields
+    .filter((f) => f.displayable && f.default_visible)
+    .map((f) => f.key);
+}
+
 type ContactRow = Record<string, unknown>;
 
 export default function ContactsListPage() {
@@ -257,6 +284,17 @@ export default function ContactsListPage() {
             setQ(urlState.q ?? "");
             setSearchInput(urlState.q ?? "");
             applyCommon();
+            // Deep-link (?rules=…) sin columnas propias en la URL: fijamos
+            // las columnas por defecto (o las del usuario en localStorage)
+            // para no depender del fallback genérico de <EntityTable> y
+            // mantener el mismo set/orden que la entrada fresca.
+            if (!urlState.columns || urlState.columns.length === 0) {
+              const stored = loadColumnConfig(
+                "contact",
+                defaultContactColumns(sch),
+              );
+              setVisibleColumns(stored.visible);
+            }
             return;
           }
           const def = viewList.find((v) => v.is_default);
@@ -268,10 +306,10 @@ export default function ContactsListPage() {
           // Sin vista activa → columnas default del schema o
           // localStorage del usuario (cuando tampoco hay URL guardada).
           if (!urlState.columns || urlState.columns.length === 0) {
-            const defaults = sch.fields
-              .filter((f) => f.displayable && f.default_visible)
-              .map((f) => f.key);
-            const stored = loadColumnConfig("contact", defaults);
+            const stored = loadColumnConfig(
+              "contact",
+              defaultContactColumns(sch),
+            );
             setVisibleColumns(stored.visible);
           }
           applyCommon();

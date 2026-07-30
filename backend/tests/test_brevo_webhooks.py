@@ -131,6 +131,41 @@ def test_event_campaign_id_accepts_string_payload(session_factory):
         assert event.occurred_at is not None
 
 
+def test_brevo_webhook_persists_sent_event_correctly(session_factory):
+    """PR-Fix-Sent-Backfill. El evento `sent` de Brevo se persiste como
+    `email.sent` con la campaña correcta (base del filtro "Enviados")."""
+    with session_factory() as session:
+        status = process_brevo_webhook_event(
+            session, _event("sent", **{"campaign-id": 77}), account_id="main"
+        )
+        session.commit()
+        assert status == "processed"
+        event = session.scalar(
+            select(ActivityEvent).where(ActivityEvent.event_type == "email.sent")
+        )
+        assert event is not None
+        assert event.campaign_brevo_id == 77
+        assert event.contact_id is not None
+
+
+def test_brevo_webhook_persists_delivered_event_correctly(session_factory):
+    with session_factory() as session:
+        status = process_brevo_webhook_event(
+            session,
+            _event("delivered", **{"campaign-id": 77}),
+            account_id="main",
+        )
+        session.commit()
+        assert status == "processed"
+        event = session.scalar(
+            select(ActivityEvent).where(
+                ActivityEvent.event_type == "email.delivered"
+            )
+        )
+        assert event is not None
+        assert event.campaign_brevo_id == 77
+
+
 def test_click_event_stores_url(session_factory):
     with session_factory() as session:
         process_brevo_webhook_event(
