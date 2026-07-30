@@ -287,7 +287,6 @@ FIELD_SPECS: dict[str, FieldSpec] = {
         type="reference-multi",
         comparators=_ASSIGNMENT_MULTI,
         relation="assignments",
-        default_visible=True,
         grouped_under="Comercial",
         source="related_table",
         reference_table="users",
@@ -316,7 +315,6 @@ FIELD_SPECS: dict[str, FieldSpec] = {
         comparators=("eq", "neq", "in", "not_in"),
         enum_values=("agilecrm", "brevo", "freshdesk", "factusol", "manual"),
         relation="external_refs.system",
-        default_visible=True,
         grouped_under="Origen",
         source="related_table",
     ),
@@ -367,7 +365,6 @@ FIELD_SPECS: dict[str, FieldSpec] = {
         enum_values=("new", "qualified", "won", "lost"),
         column=Contact.commercial_status,
         sortable=True,
-        default_visible=True,
         grouped_under="Comercial",
     ),
     "marketing_consent": FieldSpec(
@@ -378,7 +375,6 @@ FIELD_SPECS: dict[str, FieldSpec] = {
         enum_values=("granted", "denied", "unknown", "unsubscribed"),
         column=Contact.marketing_consent,
         sortable=True,
-        default_visible=True,
         grouped_under="GDPR",
     ),
     "is_active": FieldSpec(
@@ -397,6 +393,8 @@ FIELD_SPECS: dict[str, FieldSpec] = {
         comparators=_NUMERIC,
         column=Contact.lead_score,
         sortable=True,
+        # PR-Columnas-Default. Entra al set por defecto de /contacts.
+        default_visible=True,
         grouped_under="Comercial",
     ),
     # PR-Consolidado — Star Rating. Campo independiente del
@@ -564,7 +562,6 @@ FIELD_SPECS: dict[str, FieldSpec] = {
         comparators=_DATE,
         column=Contact.updated_at_external,
         sortable=True,
-        default_visible=True,
         grouped_under="Origen",
     ),
     "in_segment": FieldSpec(
