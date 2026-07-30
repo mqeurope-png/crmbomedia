@@ -2215,3 +2215,33 @@ class EmailMessageAttachment(Base):
         DateTime(timezone=True), nullable=False
     )
 
+
+
+class CallLog(TimestampMixin, Base):
+    """Sprint Ficha 360 - registro de llamadas del contacto.
+    `result_custom` solo cuando result_code=other. `follow_up_task_id`
+    enlaza la tarea de rellamada creada desde el modal."""
+
+    __tablename__ = "call_logs"
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid4())
+    )
+    contact_id: Mapped[str] = mapped_column(
+        ForeignKey("contacts.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id"), nullable=False, index=True
+    )
+    result_code: Mapped[str] = mapped_column(String(32), nullable=False)
+    result_custom: Mapped[str | None] = mapped_column(String(150))
+    subject: Mapped[str | None] = mapped_column(String(255))
+    notes: Mapped[str | None] = mapped_column(Text)
+    duration_bucket: Mapped[str | None] = mapped_column(String(16))
+    called_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, index=True
+    )
+    follow_up_task_id: Mapped[str | None] = mapped_column(
+        ForeignKey("tasks.id", ondelete="SET NULL")
+    )

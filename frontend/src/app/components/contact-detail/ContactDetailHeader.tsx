@@ -14,7 +14,7 @@
  * sidebar de la ficha (todavía no hay modal de edición global de
  * contacto — se edita inline por campo).
  */
-import { Mail, MoreVertical, Pencil, Phone, Plus } from "lucide-react";
+import { Mail, MoreVertical, Pencil, Phone, Plus, Zap } from "lucide-react";
 import { StarRating } from "../StarRating";
 import type { Contact, User } from "../../lib/api";
 import { formatBackendDateTime } from "../../lib/dates";
@@ -40,6 +40,7 @@ type Props = {
   onSendEmail: () => void;
   onCreateTask: () => void;
   onLogCall: () => void;
+  onRunWorkflow?: () => void;
   onEdit: () => void;
   onOpenOverflow: () => void;
   overflowChildren?: React.ReactNode;
@@ -85,6 +86,7 @@ export function ContactDetailHeader({
   onSendEmail,
   onCreateTask,
   onLogCall,
+  onRunWorkflow,
   onEdit,
   onOpenOverflow,
   overflowChildren,
@@ -120,6 +122,13 @@ export function ContactDetailHeader({
       label: "Registrar llamada",
       icon: <Phone size={14} aria-hidden />,
       onClick: onLogCall,
+      variant: "secondary",
+    },
+    {
+      key: "run-workflow",
+      label: "Ejecutar workflow",
+      icon: <Zap size={14} aria-hidden />,
+      onClick: onRunWorkflow ?? (() => undefined),
       variant: "secondary",
     },
     {

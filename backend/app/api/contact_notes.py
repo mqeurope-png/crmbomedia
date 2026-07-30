@@ -21,7 +21,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.auth import require_user
@@ -80,6 +80,11 @@ def list_notes(
             .where(Note.contact_id == contact_id)
             .order_by(
                 Note.pinned.desc(),
+                # Sprint Ficha 360 - orden por FECHA EFECTIVA desc:
+                # external_created_at (fecha real de notas importadas) y
+                # si no, created_at. Antes los NULL de external rompian
+                # el orden mezclando importadas y nativas.
+                func.coalesce(Note.external_created_at, Note.created_at).desc(),
                 # Display by the remote date when present (Agile
                 # timeline notes have a real `external_created_at`),
                 # falling back to our import timestamp otherwise.
@@ -87,8 +92,6 @@ def list_notes(
                 # como sintaxis ANSI (es PG/SQLite); con `DESC` los
                 # NULL caen automáticamente al final, que es lo que
                 # queremos. El bug salió en prod tras PR-Notes-Unif.
-                Note.external_created_at.desc(),
-                Note.created_at.desc(),
             )
         )
     )

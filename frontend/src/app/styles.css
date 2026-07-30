@@ -10133,3 +10133,20 @@ tr.is-inactive {
   font-size: 13px;
   background: white;
 }
+
+
+/* Sprint Ficha 360 */
+.register-call-modal, .run-workflow-modal { max-width: 560px; }
+.register-call-modal .modal-body { display: flex; flex-direction: column; gap: 10px; }
+.call-duration { border: 0; padding: 0; display: flex; gap: 12px; flex-wrap: wrap; }
+.call-actions { display: flex; flex-direction: column; gap: 8px; padding: 10px; background: var(--color-bg-light, #f6f7f9); border-radius: 8px; }
+.call-subform { display: flex; gap: 8px; flex-wrap: wrap; padding-left: 22px; }
+.historial-header { display: flex; justify-content: space-between; align-items: center; }
+.historial-chips { display: flex; gap: 6px; flex-wrap: wrap; margin: 10px 0; }
+.historial-chips .chip { padding: 3px 10px; border-radius: 12px; border: 1px solid var(--line, #d0d5dd); background: transparent; font-size: 12px; cursor: pointer; }
+.historial-chips .chip-active { background: var(--brand, #2563eb); color: #fff; border-color: var(--brand, #2563eb); }
+.historial-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 12px; }
+.historial-item { display: flex; gap: 10px; padding: 10px 12px; border-radius: 10px; background: var(--color-bg-light, #f6f7f9); }
+.historial-icon { font-size: 18px; }
+.historial-title { margin: 0; font-weight: 600; font-size: 13px; }
+.historial-detail { margin: 2px 0 0; font-size: 12px; color: var(--muted, #667085); }

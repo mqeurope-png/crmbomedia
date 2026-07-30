@@ -654,6 +654,54 @@ def use_template_route(
     return _workflow_to_detail(session, new_workflow, current_user=current_user)
 
 
+@router.get("/manual")
+def list_manual_workflows(
+    scope: str = Query(default="all"),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_user),
+) -> list[dict[str, Any]]:
+    """Sprint Ficha 360. Workflows con trigger `contact.manual`
+    ejecutables por el user actual (multi-tenancy via
+    can_user_see_resource). scope: mine|team|all."""
+    from sqlalchemy import func as _f  # noqa: PLC0415
+
+    from app.services.ownership import can_user_see_resource  # noqa: PLC0415
+
+    rows = list(
+        session.scalars(
+            select(Workflow).where(
+                Workflow.trigger_type == "contact.manual",
+                Workflow.status == WorkflowStatus.ACTIVE,
+            )
+        )
+    )
+    out: list[dict[str, Any]] = []
+    for wf in rows:
+        if not can_user_see_resource(current_user, wf):
+            continue
+        if scope == "mine" and wf.owner_user_id != current_user.id:
+            continue
+        if scope == "team" and wf.owner_user_id is not None:
+            continue
+        owner_name = None
+        if wf.owner_user_id:
+            owner = session.get(User, wf.owner_user_id)
+            owner_name = owner.full_name if owner else None
+        last_run_at = session.scalar(
+            select(_f.max(WorkflowRun.started_at)).where(
+                WorkflowRun.workflow_id == wf.id
+            )
+        )
+        out.append({
+            "id": wf.id,
+            "name": wf.name,
+            "description": wf.description,
+            "owner_name": owner_name,
+            "last_run_at": last_run_at.isoformat() if last_run_at else None,
+        })
+    return out
+
+
 @router.get("/{workflow_id}", response_model=WorkflowDetail)
 def get_workflow(
     workflow_id: str,
@@ -1372,6 +1420,9 @@ def cost_estimate(
         }
         preset = str(trigger_cfg.get("preset") or "daily")
         runs_30d = matching * _CRON_MULT.get(preset, 30)
+    elif workflow.trigger_type == "contact.manual":
+        # Sprint Ficha 360: se dispara a demanda -> sin estimacion ("---").
+        runs_30d = None
     elif workflow.trigger_type == "contact.matches_conditions":
         # Las ENTRADAS futuras no son estimables desde historico.
         runs_30d = None

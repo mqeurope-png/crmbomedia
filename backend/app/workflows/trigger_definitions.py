@@ -362,6 +362,10 @@ TRIGGER_DEFS: dict[str, TriggerDef] = {
                    available=False, unavailable_reason=_UNAVAILABLE_NO_COLUMNS),
         TriggerDef("cron.recurring", "Horario fijo", "schedule",
                    config_keys=("preset", "hour")),
+        # Sprint Ficha 360. Solo se dispara via
+        # POST /contacts/{id}/workflows/{wf}/run - nunca por eventos
+        # (ningun productor emite "contact.manual") ni por sweep.
+        TriggerDef("contact.manual", "Ejecución manual", "manual"),
         TriggerDef("contact.matches_conditions",
                    "Contacto pasa a cumplir condiciones", "state",
                    estimator=_est_matches_conditions,

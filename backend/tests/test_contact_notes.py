@@ -406,11 +406,13 @@ def test_list_notes_orders_mixed_null_and_non_null_external_dates(
     )
     assert response.status_code == 200, response.text
     bodies = [r["content"] for r in response.json()]
-    # Las Agile (external_created_at no-NULL) salen primero ordenadas
-    # DESC. La manual (NULL) queda al final.
-    assert bodies[0] == "Agile nueva"
-    assert bodies[1] == "Agile vieja"
-    assert bodies[2] == "Manual reciente"
+    # Sprint Ficha 360: orden por FECHA EFECTIVA desc
+    # (COALESCE(external_created_at, created_at)) — la manual del 10 jun
+    # va antes que las Agile de mayo/marzo. Antes las NULL caian al
+    # final y el orden mezclaba criterios.
+    assert bodies[0] == "Manual reciente"
+    assert bodies[1] == "Agile nueva"
+    assert bodies[2] == "Agile vieja"
 
 
 # -- PR-Hotfix-Notas-Widget-Importadas: el widget del Resumen usa este
