@@ -382,29 +382,41 @@ def test_gmail_app_verified_true_disables_refresh_token_expiry(factory, monkeypa
 # ---------------------------------------------------------------------------
 
 
-def test_sync_aliases_preserves_is_allowed_for_existing_rows(factory):
+def test_sync_aliases_only_own_alias_visible_by_default(factory):
+    """PR-Hotfix-Sync-Aliases. Escenario roto de producción: la tabla
+    quedó contaminada por el sync viejo con TODOS los aliases ajenos en
+    is_allowed=1. Un nuevo sync debe re-normalizar: solo el alias propio
+    del user queda visible; los ajenos (sin ser su default) se ocultan."""
     from app.integrations.gmail.aliases import sync_send_as_aliases
 
     with factory() as session:
         uid = _uid(session, UserRole.USER)
+        user = session.get(User, uid)
         _seed_integration(session, uid)
+        # Contaminación: alias propio + 2 ajenos, todos visibles.
         session.add_all([
             UserEmailAliasPref(
-                user_id=uid, alias_email="keep@bomedia.net",
+                user_id=uid, alias_email=user.email,
+                is_allowed=True, is_default=True,
+            ),
+            UserEmailAliasPref(
+                user_id=uid, alias_email="bart@bomedia.net",
                 is_allowed=True, is_default=False,
             ),
             UserEmailAliasPref(
-                user_id=uid, alias_email="hidden@bomedia.net",
-                is_allowed=False, is_default=False,
+                user_id=uid, alias_email="manel@bomedia.net",
+                is_allowed=True, is_default=False,
             ),
         ])
         session.commit()
 
-        # Gmail trae los mismos aliases (la cuenta org tiene 50+, aquí 2).
+        # La cuenta org compartida devuelve los 3 para este user.
         fake = _FakeGmailClient([
-            {"send_as_email": "keep@bomedia.net", "display_name": "Keep",
+            {"send_as_email": user.email, "display_name": "Yo",
+             "is_default": True},
+            {"send_as_email": "bart@bomedia.net", "display_name": "Bart",
              "is_default": False},
-            {"send_as_email": "hidden@bomedia.net", "display_name": "Hidden",
+            {"send_as_email": "manel@bomedia.net", "display_name": "Manel",
              "is_default": False},
         ])
         with patch(
@@ -420,9 +432,60 @@ def test_sync_aliases_preserves_is_allowed_for_existing_rows(factory):
                 )
             )
         }
-        # El sync NO debe pisar la preferencia del user.
-        assert rows["keep@bomedia.net"].is_allowed is True
-        assert rows["hidden@bomedia.net"].is_allowed is False
+        assert rows[user.email].is_allowed is True
+        assert rows["bart@bomedia.net"].is_allowed is False
+        assert rows["manel@bomedia.net"].is_allowed is False
+
+
+def test_sync_aliases_preserves_manually_allowed_aliases(factory):
+    """PR-Hotfix-Sync-Aliases. Un alias ajeno que el user eligió
+    DELIBERADAMENTE como su default (identidad de envío) se respeta: no
+    se oculta en el sync. Es la única señal de elección deliberada
+    disponible sin columna nueva."""
+    from app.integrations.gmail.aliases import sync_send_as_aliases
+
+    with factory() as session:
+        uid = _uid(session, UserRole.USER)
+        user = session.get(User, uid)
+        _seed_integration(session, uid)
+        session.add_all([
+            # Alias ajeno elegido como default propio → se conserva.
+            UserEmailAliasPref(
+                user_id=uid, alias_email="equipo@bomedia.net",
+                is_allowed=True, is_default=True,
+            ),
+            # Alias ajeno visible pero NO default (contaminación) → se oculta.
+            UserEmailAliasPref(
+                user_id=uid, alias_email="otro@bomedia.net",
+                is_allowed=True, is_default=False,
+            ),
+        ])
+        session.commit()
+
+        fake = _FakeGmailClient([
+            {"send_as_email": user.email, "display_name": "Yo",
+             "is_default": False},
+            {"send_as_email": "equipo@bomedia.net", "display_name": "Equipo",
+             "is_default": False},
+            {"send_as_email": "otro@bomedia.net", "display_name": "Otro",
+             "is_default": False},
+        ])
+        with patch(
+            "app.integrations.gmail.service._client_for", return_value=fake
+        ):
+            sync_send_as_aliases(session, user_id=uid)
+        session.commit()
+        rows = {
+            r.alias_email: r
+            for r in session.scalars(
+                select(UserEmailAliasPref).where(
+                    UserEmailAliasPref.user_id == uid
+                )
+            )
+        }
+        assert rows["equipo@bomedia.net"].is_allowed is True
+        assert rows["otro@bomedia.net"].is_allowed is False
+        assert rows[user.email].is_allowed is True
 
 
 def test_sync_aliases_creates_new_aliases_as_hidden_except_self_email(factory):
@@ -466,10 +529,11 @@ def test_sync_aliases_updates_display_name(factory):
 
     with factory() as session:
         uid = _uid(session, UserRole.USER)
+        user = session.get(User, uid)
         _seed_integration(session, uid)
         session.add(
             UserEmailAliasPref(
-                user_id=uid, alias_email="x@bomedia.net",
+                user_id=uid, alias_email=user.email,
                 is_allowed=True, is_default=False,
                 gmail_display_name="Nombre Viejo",
             )
@@ -477,7 +541,7 @@ def test_sync_aliases_updates_display_name(factory):
         session.commit()
 
         fake = _FakeGmailClient([
-            {"send_as_email": "x@bomedia.net", "display_name": "Nombre Nuevo",
+            {"send_as_email": user.email, "display_name": "Nombre Nuevo",
              "is_default": False},
         ])
         with patch(

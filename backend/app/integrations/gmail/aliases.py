@@ -29,17 +29,30 @@ def sync_send_as_aliases(session: Session, *, user_id: str) -> int:
     RESPETANDO las preferencias previas del user. Devuelve cuántos aliases
     se procesaron.
 
-    PR-Hotfix-OAuth-Banner Bug 15. La cuenta Google es org-wide y compartida:
-    Gmail devuelve los 50+ aliases de la cuenta para CADA user. Antes este
-    sync marcaba TODOS `is_allowed=1` por user, desbordando de 1-4 a 50+ y
-    pisando lo que cada user había elegido. Ahora:
-      - Fila existente: NO se toca `is_allowed` (preferencia del user). Se
-        actualiza `gmail_display_name`; `is_default` solo si el user no
-        tiene ya un default propio.
-      - Fila nueva: `is_allowed=0` (oculta), salvo que el alias sea el
-        email propio del user (`users.email`) → `is_allowed=1`.
-      - Primer sync del user (tabla vacía) + alias propio marcado default
-        en Gmail → se siembra como `is_default=1`.
+    PR-Hotfix-OAuth-Banner Bug 15 + PR-Hotfix-Sync-Aliases. La cuenta Google
+    es org-wide y compartida: Gmail devuelve los 50+ aliases de la cuenta
+    para CADA user. El sync naïve marcaba TODOS `is_allowed=1` por user, así
+    que Norma veía en su selector los emails de Bart, Manel, etc.
+
+    Invariante que este sync GARANTIZA para cada alias que descubre en Gmail:
+      - Alias propio (`alias_email == users.email`) → `is_allowed=1` (visible).
+      - Alias ajeno → `is_allowed=0` (oculto) POR DEFECTO.
+
+    Excepción "respeta la elección deliberada del user": un alias ajeno se
+    mantiene visible SOLO si el user lo tenía marcado como su `is_default`
+    (su identidad de envío elegida). Es la única señal de elección
+    deliberada disponible sin añadir columna: la contaminación del sync
+    viejo dejó `is_allowed=1` pero `is_default=0` en los aliases ajenos, así
+    que resetearlos limpia el desborde sin pisar un default legítimo. Un
+    alias ajeno que el user activó manualmente pero NO puso como default se
+    ocultará en el próximo sync (el user lo re-activa, o el admin lo
+    concede) — trade-off documentado, se prioriza que Norma no vea a Bart.
+
+    Otros campos:
+      - `gmail_display_name` se refresca siempre desde Gmail.
+      - `is_default` se siembra desde el default de Gmail solo si el user no
+        tiene ya uno propio.
+      - `display_name_override` NUNCA se toca (preferencia del user).
       - Alias que ya no existe en Gmail: la fila se conserva pero
         `is_allowed=0` (no se borra).
 
@@ -79,12 +92,21 @@ def sync_send_as_aliases(session: Session, *, user_id: str) -> int:
         is_self = key == user_email
         row = existing.get(key)
         if row is not None:
-            # Fila existente → respetar `is_allowed` (preferencia del user).
+            # Snapshot ANTES de mutar: la preservación del alias ajeno se
+            # decide por el default que el user ya tenía, no por el que
+            # Gmail propague en esta pasada.
+            was_default = bool(row.is_default)
             if display:
                 row.gmail_display_name = display
             if not assigned_default and is_default_gmail:
                 row.is_default = True
                 assigned_default = True
+            # Invariante de visibilidad: propio → visible; ajeno → oculto
+            # salvo que fuera el default deliberado del user.
+            if is_self:
+                row.is_allowed = True
+            elif not was_default:
+                row.is_allowed = False
             row.updated_at = now
         else:
             # Alias nuevo → oculto, salvo el alias propio del user.
