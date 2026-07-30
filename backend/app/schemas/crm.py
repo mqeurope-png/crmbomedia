@@ -986,6 +986,12 @@ class GoogleCalendarStatus(BaseModel):
     token_expiring_soon: bool = False
     refresh_token_expires_at: datetime | None = None
     refresh_token_expiring_soon: bool = False
+    # PR-Hotfix-OAuth-Banner-Caducidad. Distinguimos "caduca pronto" (<48h,
+    # ámbar) de "ya caducado" (rojo). `app_verified` refleja
+    # GMAIL_APP_VERIFIED: cuando la app OAuth está verificada el
+    # refresh_token no caduca y el banner se silencia por completo.
+    refresh_token_expired: bool = False
+    app_verified: bool = False
 
 
 class GoogleCalendarSelectPayload(BaseModel):

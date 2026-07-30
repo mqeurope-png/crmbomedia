@@ -87,7 +87,12 @@ export function PushViewToBrevoModal({
 
   return (
     <div className="modal-backdrop" role="dialog" aria-modal="true">
-      <div className="modal">
+      {/* PR-Hotfix-Brevo-Modal: la caja es `.modal-dialog` — la clase
+        * `.modal` no existe en styles.css (mismo bug que el PR #265
+        * arregló en los modales de Ficha 360). El contenido va dentro
+        * de `.modal-body` para heredar el padding. */}
+      <div className="modal-dialog small">
+        <div className="modal-body push-brevo-body">
         <header>
           <h2>Enviar contactos a lista Brevo</h2>
           <p className="muted small">
@@ -166,6 +171,7 @@ export function PushViewToBrevoModal({
             </div>
           </form>
         )}
+        </div>
       </div>
     </div>
   );

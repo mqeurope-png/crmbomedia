@@ -9628,6 +9628,19 @@ tr.is-inactive {
   z-index: 100;
 }
 
+/* PR-Hotfix-Brevo-Modal: el header y el bloque de acciones del modal
+ * "Enviar a lista Brevo" viven dentro de `.modal-body` (que ya aporta
+ * padding); solo ajustamos los márgenes del título y separamos la fila
+ * de botones. */
+.push-brevo-body > header { margin: 0 0 12px; }
+.push-brevo-body > header h2 { margin: 0 0 4px; font-size: 18px; }
+.push-brevo-body .actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 16px;
+}
+
 
 /* PR-Fix-Pestaña-Workflows-Y-Humanizar #1: pestaña Workflows ficha. */
 .contact-workflows-tab { display: flex; flex-direction: column; gap: 18px; }

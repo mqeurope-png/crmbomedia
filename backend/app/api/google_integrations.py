@@ -173,12 +173,20 @@ def get_status(
     # por la caducidad del refresh_token (7 días), no por el access_token
     # (1h, se refresca solo). NULL = sin caducidad (app verificada) → nunca
     # expiring_soon.
+    # PR-Hotfix-OAuth-Banner-Caducidad. `app_verified` (GMAIL_APP_VERIFIED)
+    # silencia el aviso: el refresh_token no caduca. Además distinguimos
+    # "caduca pronto" (<48h, ámbar) de "ya caducado" (rojo).
+    app_verified = settings.gmail_app_verified
     refresh_expiring_soon = False
+    refresh_expired = False
     refresh_exp = getattr(integration, "refresh_token_expires_at", None)
-    if integ_status == "active" and refresh_exp is not None:
-        if refresh_exp.tzinfo is None:
-            refresh_exp = refresh_exp.replace(tzinfo=UTC)
-        refresh_expiring_soon = now <= refresh_exp <= now + timedelta(hours=48)
+    if refresh_exp is not None and refresh_exp.tzinfo is None:
+        refresh_exp = refresh_exp.replace(tzinfo=UTC)
+    if not app_verified and integ_status == "active" and refresh_exp is not None:
+        if now > refresh_exp:
+            refresh_expired = True
+        else:
+            refresh_expiring_soon = refresh_exp <= now + timedelta(hours=48)
     # Si la integración no está activa, la UI debe ofrecer reconectar —
     # `connected=False` para reutilizar el CTA de conexión, pero
     # exponemos `status` para el banner específico.
@@ -197,6 +205,8 @@ def get_status(
         token_expiring_soon=expiring_soon,
         refresh_token_expires_at=refresh_exp,
         refresh_token_expiring_soon=refresh_expiring_soon,
+        refresh_token_expired=refresh_expired,
+        app_verified=app_verified,
     )
 
 

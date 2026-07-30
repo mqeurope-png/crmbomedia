@@ -10,17 +10,25 @@ import { getGoogleStatus } from "../lib/googleApi";
  *  conexión Google ORG (compartida por todo el equipo). Se monta en
  *  /dashboard y /account.
  *
- *  - status=needs_reconnect → banner rojo "Google desconectado".
- *  - token_expiring_soon (<48h) → banner amarillo "caduca pronto".
- *  - resto → no pinta nada.
+ *  PR-Hotfix-OAuth-Banner-Caducidad. El aviso se basa EXCLUSIVAMENTE en
+ *  la caducidad del REFRESH token (reconexión real, ~7 días mientras la
+ *  app OAuth no esté verificada). El access token (1h) se refresca solo
+ *  y NUNCA dispara el banner.
  *
- *  El ciclo de vida de la conexión es admin-only: a los admins les
- *  ofrecemos el botón "Reconectar" (lleva a /admin/integrations); al
- *  resto del equipo, un aviso para que avisen al admin. */
+ *  - `app_verified` → silencio total (el refresh token no caduca).
+ *  - status=needs_reconnect, refresh caducado, o quedan <6h → rojo.
+ *  - refresh caduca en <48h → ámbar.
+ *  - resto → nada.
+ *
+ *  El ciclo de vida de la conexión es admin-only (post PR #257): solo
+ *  los admins ven este banner. Los comerciales no pueden reconectar, así
+ *  que mostrárselo solo genera ruido. */
+const CRITICAL_HOURS = 6;
+
 export function GoogleConnectionBanner() {
   const [variant, setVariant] = useState<"none" | "warn" | "danger">("none");
   const [expiresAt, setExpiresAt] = useState<string | null>(null);
-  const [isAdmin, setIsAdmin] = useState(false);
+  const [isAdmin, setIsAdmin] = useState<boolean | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -34,12 +42,23 @@ export function GoogleConnectionBanner() {
     getGoogleStatus()
       .then((s) => {
         if (cancelled) return;
-        if (s.status === "needs_reconnect") {
+        // App verificada → el refresh token no caduca, sin banner.
+        if (s.app_verified) {
+          setVariant("none");
+          return;
+        }
+        const hoursLeft = s.refresh_token_expires_at
+          ? (new Date(s.refresh_token_expires_at).getTime() - Date.now()) /
+            3_600_000
+          : null;
+        const critical =
+          s.status === "needs_reconnect" ||
+          s.refresh_token_expired === true ||
+          (hoursLeft !== null && hoursLeft <= CRITICAL_HOURS);
+        if (critical) {
           setVariant("danger");
+          setExpiresAt(s.refresh_token_expires_at ?? null);
         } else if (s.connected && s.refresh_token_expiring_soon) {
-          // PR-Hotfix-OAuth-Banner Bug 14. El aviso amarillo solo aplica a
-          // la caducidad del REFRESH token (reconexión real). El access
-          // token (token_expiring_soon) se refresca solo — no avisamos.
           setVariant("warn");
           setExpiresAt(s.refresh_token_expires_at ?? null);
         } else {
@@ -54,6 +73,9 @@ export function GoogleConnectionBanner() {
     };
   }, []);
 
+  // Solo admins: el reconnect es admin-only, mostrarlo a comerciales
+  // genera falsas alarmas sin acción posible.
+  if (isAdmin !== true) return null;
   if (variant === "none") return null;
 
   const expiresLabel = expiresAt
@@ -65,22 +87,23 @@ export function GoogleConnectionBanner() {
       })
     : null;
 
+  const message =
+    variant === "danger"
+      ? `La conexión Google del CRM ha caducado o está a punto de caducar${
+          expiresLabel ? ` (${expiresLabel})` : ""
+        }. Reconecta desde /admin/integrations para no detener el sync de emails y calendario.`
+      : `La conexión Google del CRM caduca ${
+          expiresLabel ? `el ${expiresLabel}` : "pronto"
+        }. El admin debe reconectar desde /admin/integrations.`;
+
   return (
     <div className={`google-banner google-banner-${variant}`}>
       <AlertTriangle size={16} aria-hidden />
-      <span>
-        {variant === "danger"
-          ? "La conexión Google del equipo está caída. El sync de emails y calendario está detenido."
-          : `La conexión Google del equipo caduca el ${expiresLabel ?? "pronto"}. Reconecta para no perder el sync.`}
-      </span>
+      <span>{message}</span>
       <div style={{ flex: 1 }} />
-      {isAdmin ? (
-        <Link className="button small" href="/admin/integrations">
-          Reconectar ahora
-        </Link>
-      ) : (
-        <span className="small muted">Avisa a un administrador.</span>
-      )}
+      <Link className="button small" href="/admin/integrations">
+        Reconectar ahora
+      </Link>
     </div>
   );
 }
