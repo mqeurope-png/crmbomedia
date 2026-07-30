@@ -156,6 +156,8 @@ class BrevoListContactsMutationResult(BaseModel):
     sent: int
     skipped_unknown_contact: int = 0
     skipped_missing_email: int = 0
+    # PR-Bulk-Comerciales. Contactos descartados por no ser del comercial.
+    skipped_foreign: int = 0
 
 
 class BrevoSenderRead(BaseModel):

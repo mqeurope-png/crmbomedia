@@ -142,14 +142,17 @@ def test_post_contacts_works_for_role_user(
     assert response.status_code in (200, 201), response.text
 
 
-def test_bulk_assign_owner_works_for_role_user(
+def test_bulk_assign_owner_commercial_reassigns_own_contact(
     client: TestClient, session_factory: sessionmaker
 ) -> None:
-    """Pre-hotfix bulk assign_owner pedía manager+ — bloqueaba el flujo
-    "el comercial se auto-asigna desde la lista"."""
+    """PR-Bulk-Comerciales. Un comercial puede reasignar (transferir) SUS
+    contactos a otro user vía bulk. (Nota: bajo el filtro de propiedad ya
+    no puede "agarrar" contactos sin dueño desde la lista — eso queda para
+    admin/manager; ver deuda anotada en el PR.)"""
     uid = _user_id(session_factory, UserRole.USER)
+    mid = _user_id(session_factory, UserRole.MANAGER)
     with session_factory() as session:
-        c = Contact(first_name="L", email="l@l.com")
+        c = Contact(first_name="L", email="l@l.com", owner_user_id=uid)
         session.add(c)
         session.commit()
         cid = c.id
@@ -160,19 +163,13 @@ def test_bulk_assign_owner_works_for_role_user(
         json={
             "contact_ids": [cid],
             "action": "assign_owner",
-            "payload": {"owner_user_id": uid},
+            "payload": {"owner_user_id": mid},
         },
     )
     assert response.status_code == 200, response.text
+    assert response.json()["affected_count"] == 1
     with session_factory() as session:
-        rows = list(
-            session.scalars(
-                select(ContactAssignment).where(
-                    ContactAssignment.contact_id == cid
-                )
-            )
-        )
-        assert len(rows) == 1 and rows[0].user_id == uid
+        assert session.get(Contact, cid).owner_user_id == mid
 
 
 def test_bulk_deactivate_still_admin_only(

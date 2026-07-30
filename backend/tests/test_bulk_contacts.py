@@ -45,11 +45,16 @@ def session_factory() -> Generator[sessionmaker, None, None]:
     factory = sessionmaker(bind=engine, autoflush=False, autocommit=False)
     with factory() as seed:
         seed_test_users(seed)
+        # PR-Bulk-Comerciales. Las acciones masivas del comercial (`user`)
+        # solo aplican a SUS contactos, así que los seeds se asignan al
+        # comercial para que los tests de dispatch con rol "user" sigan
+        # actuando sobre los 3.
+        uid = seed.scalar(select(User.id).where(User.role == UserRole.USER))
         seed.add_all(
             [
-                Contact(first_name="A", email="a@example.com"),
-                Contact(first_name="B", email="b@example.com"),
-                Contact(first_name="C", email="c@example.com"),
+                Contact(first_name="A", email="a@example.com", owner_user_id=uid),
+                Contact(first_name="B", email="b@example.com", owner_user_id=uid),
+                Contact(first_name="C", email="c@example.com", owner_user_id=uid),
             ]
         )
         seed.add(Tag(name="VIP", name_normalized="vip"))
@@ -232,10 +237,11 @@ def test_search_ids_respects_assigned_to_me(
     asking the user to act on contacts they don't own."""
     with session_factory() as s:
         user_id = s.scalar(select(User.id).where(User.role == UserRole.USER))
-        # Tag the first contact as owned by the user.
-        first = s.scalars(select(Contact)).first()
-        assert first is not None
-        first.owner_user_id = user_id
+        # Solo el primer contacto es del user; el resto se desasigna
+        # (el fixture los crea todos suyos para los tests de bulk).
+        contacts = list(s.scalars(select(Contact)))
+        for i, c in enumerate(contacts):
+            c.owner_user_id = user_id if i == 0 else None
         s.commit()
     response = client.post(
         "/api/contacts/search/ids",
@@ -538,17 +544,28 @@ def test_bulk_add_to_workflow_enrolls_contacts(
         assert runs == len(contact_ids)
 
 
-def test_bulk_export_csv_admin_only(
+def test_bulk_export_csv_open_to_commercial_own(
     client: TestClient, session_factory: sessionmaker
 ) -> None:
+    """PR-Bulk-Comerciales. Export abierto a comerciales: exportan sus
+    propios contactos (el fixture los asigna al `user`). Viewer sigue
+    prohibido; admin exporta todo."""
     contact_ids = _all_contact_ids(session_factory)
-    # Comercial: prohibido.
-    forbidden = client.post(
+    # Comercial: OK sobre los suyos.
+    mine = client.post(
         "/api/contacts/bulk-export-csv",
         json={"contact_ids": contact_ids},
         headers=auth_headers(client, "user"),
     )
-    assert forbidden.status_code == 403
+    assert mine.status_code == 200, mine.text
+    assert mine.headers["content-type"].startswith("text/csv")
+    # Viewer: prohibido (require_user excluye viewers).
+    viewer = client.post(
+        "/api/contacts/bulk-export-csv",
+        json={"contact_ids": contact_ids},
+        headers=auth_headers(client, "viewer"),
+    )
+    assert viewer.status_code == 403
     # Admin: OK, devuelve CSV.
     ok = client.post(
         "/api/contacts/bulk-export-csv",
@@ -556,7 +573,6 @@ def test_bulk_export_csv_admin_only(
         headers=auth_headers(client, "admin"),
     )
     assert ok.status_code == 200
-    assert ok.headers["content-type"].startswith("text/csv")
     assert "first_name" in ok.text
 
 

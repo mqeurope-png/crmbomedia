@@ -144,12 +144,11 @@ def test_notes_content_is_empty_matches_contacts_without_notes(
 # === Issue 3: bulk-export-csv role + content =========================
 
 
-def test_bulk_export_csv_admin_only(
+def test_bulk_export_csv_manager_and_admin_export_all(
     client: TestClient, session_factory: sessionmaker
 ) -> None:
-    # PR-Hotfix-Notas-Workflows Item C. El export CSV pasa a admin-only
-    # (antes manager+): la exportación masiva de datos de contactos se
-    # restringe a admin. Un manager ahora recibe 403.
+    # PR-Bulk-Comerciales. El export CSV se abre a manager y comercial
+    # (antes admin-only). Manager/admin exportan toda la selección.
     with session_factory() as session:
         c = Contact(
             first_name="Export",
@@ -166,7 +165,7 @@ def test_bulk_export_csv_admin_only(
         headers=auth_headers(client, "manager"),
         json={"contact_ids": [cid]},
     )
-    assert manager.status_code == 403
+    assert manager.status_code == 200, manager.text
 
     resp = client.post(
         "/api/contacts/bulk-export-csv",
@@ -181,20 +180,41 @@ def test_bulk_export_csv_admin_only(
     assert "export@x.com" in row
 
 
-def test_bulk_export_csv_rejects_user_role(
+def test_bulk_export_csv_commercial_own_only(
     client: TestClient, session_factory: sessionmaker
 ) -> None:
+    # PR-Bulk-Comerciales. Un comercial exporta SUS contactos; sobre
+    # contactos ajenos no obtiene nada (400). Viewer sigue prohibido.
+    user_uid = _user_id(session_factory, UserRole.USER)
     with session_factory() as session:
-        c = Contact(first_name="X", email="x@x.com")
-        session.add(c)
+        mine = Contact(first_name="Mine", email="mine@x.com", owner_user_id=user_uid)
+        foreign = Contact(first_name="Foreign", email="foreign@x.com")
+        session.add_all([mine, foreign])
         session.commit()
-        cid = c.id
-    resp = client.post(
+        mine_id, foreign_id = mine.id, foreign.id
+
+    ok = client.post(
         "/api/contacts/bulk-export-csv",
         headers=auth_headers(client, "user"),
-        json={"contact_ids": [cid]},
+        json={"contact_ids": [mine_id, foreign_id]},
     )
-    assert resp.status_code == 403
+    assert ok.status_code == 200, ok.text
+    assert "mine@x.com" in ok.text
+    assert "foreign@x.com" not in ok.text  # ajeno filtrado
+
+    only_foreign = client.post(
+        "/api/contacts/bulk-export-csv",
+        headers=auth_headers(client, "user"),
+        json={"contact_ids": [foreign_id]},
+    )
+    assert only_foreign.status_code == 400  # nada suyo que exportar
+
+    viewer = client.post(
+        "/api/contacts/bulk-export-csv",
+        headers=auth_headers(client, "viewer"),
+        json={"contact_ids": [mine_id]},
+    )
+    assert viewer.status_code == 403
 
 
 # === Issue 4: /api/tasks/my-buckets scope ============================

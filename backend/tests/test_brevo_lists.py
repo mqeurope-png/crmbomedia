@@ -399,11 +399,20 @@ def test_remove_contacts_strips_and_lowercases_inputs(client: TestClient):
     assert _FakeClient.remove_calls == [(7, ["ana@example.com"])]
 
 
-def test_mutation_requires_manager(client: TestClient):
+def test_mutation_open_to_commercial_not_viewer(client: TestClient):
+    # PR-Bulk-Comerciales. Empujar contactos a una lista Brevo se abre a
+    # comerciales (antes manager+); el filtro de propiedad se aplica sobre
+    # `contact_ids`. Viewer sigue excluido por `require_user`.
     with _patch_api():
-        forbidden = client.post(
+        allowed = client.post(
             "/api/brevo/lists/7/contacts/add?account_id=main",
             json={"emails": ["a@b.c"]},
             headers=auth_headers(client, "user"),
         )
+        forbidden = client.post(
+            "/api/brevo/lists/7/contacts/add?account_id=main",
+            json={"emails": ["a@b.c"]},
+            headers=auth_headers(client, "viewer"),
+        )
+    assert allowed.status_code == 200, allowed.text
     assert forbidden.status_code == 403

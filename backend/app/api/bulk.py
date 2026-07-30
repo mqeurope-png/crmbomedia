@@ -26,7 +26,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.audit import Action, record_event
-from app.core.auth import require_admin, require_user
+from app.core.auth import require_user
 from app.db.session import get_session
 from app.models.crm import (
     Contact,
@@ -44,6 +44,10 @@ from app.repositories import crm as crm_repository
 from app.repositories import pipelines as pipelines_repository
 from app.repositories import segments as segments_repository
 from app.repositories import tasks as tasks_repository
+from app.services.ownership import (
+    partition_contacts_by_ownership,
+    user_processes_all_contacts,
+)
 
 router = APIRouter(prefix="/api/contacts", tags=["contacts"])
 logger = logging.getLogger(__name__)
@@ -106,6 +110,14 @@ def bulk_action(
       dep already excludes viewers).
     """
     _check_role_for(body.action, current_user)
+    # PR-Bulk-Comerciales. Un comercial (`user`) solo aplica acciones
+    # masivas a SUS contactos; admin/manager a todos. Los ajenos se
+    # ignoran silenciosamente (el frontend ya avisó con el modal). El
+    # filtro es la única regla de propiedad — vive en el helper.
+    owned_ids, foreign_ids = partition_contacts_by_ownership(
+        session, body.contact_ids, current_user
+    )
+    owner_filtered = not user_processes_all_contacts(current_user)
     # Sprint Reglas-Assign PR-D: chunking server-side. Sin esto, una
     # selección de >>1000 contactos generaba una sola transacción
     # gigante que (a) lockeaba la tabla durante segundos en MySQL y
@@ -114,8 +126,8 @@ def bulk_action(
     # transacciones cortas, y al fallo a mitad lo procesado queda.
     affected_total = 0
     touched_ids: list[str] = []
-    for chunk_idx in range(0, len(body.contact_ids), CHUNK_SIZE):
-        ids_chunk = body.contact_ids[chunk_idx : chunk_idx + CHUNK_SIZE]
+    for chunk_idx in range(0, len(owned_ids), CHUNK_SIZE):
+        ids_chunk = owned_ids[chunk_idx : chunk_idx + CHUNK_SIZE]
         contacts = list(
             session.scalars(
                 select(Contact).where(Contact.id.in_(ids_chunk))
@@ -128,6 +140,27 @@ def bulk_action(
         session.commit()
 
     if not touched_ids:
+        # Comercial que seleccionó SOLO contactos ajenos REALES: no es un
+        # error, simplemente no hay nada suyo que procesar. Si en cambio
+        # los ids no corresponden a ningún contacto (basura / inexistentes)
+        # sí es un 400.
+        real_foreign = (
+            list(
+                session.scalars(
+                    select(Contact.id).where(Contact.id.in_(foreign_ids))
+                )
+            )
+            if owner_filtered and foreign_ids
+            else []
+        )
+        if real_foreign:
+            return {
+                "action": body.action,
+                "affected_count": 0,
+                "contact_ids": [],
+                "skipped_foreign": len(real_foreign),
+                "skipped_ids": real_foreign[:50],
+            }
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Ningún contacto válido en la selección.",
@@ -151,6 +184,10 @@ def bulk_action(
             "total_targets": len(touched_ids),
             "contact_ids": touched_ids[:50],
             "payload_keys": sorted(body.payload.keys()),
+            # PR-Bulk-Comerciales. Trazabilidad de acciones de comercial.
+            "via": "bulk",
+            "owner_filtered": owner_filtered,
+            "skipped_foreign": len(foreign_ids),
         },
         request=request,
     )
@@ -159,6 +196,8 @@ def bulk_action(
         "action": body.action,
         "affected_count": affected_total,
         "contact_ids": touched_ids,
+        "skipped_foreign": len(foreign_ids),
+        "skipped_ids": foreign_ids[:50],
     }
 
 
@@ -549,22 +588,53 @@ class BulkExportPayload(BaseModel):
     )
 
 
+class OwnershipPreviewPayload(BaseModel):
+    contact_ids: list[str] = Field(
+        min_length=1, max_length=MAX_BULK_CONTACTS
+    )
+
+
+@router.post("/bulk/ownership-preview")
+def bulk_ownership_preview(
+    body: OwnershipPreviewPayload,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_user),
+) -> dict[str, int]:
+    """PR-Bulk-Comerciales. El frontend lo llama antes de ejecutar una
+    acción masiva para decidir si mostrar el modal de "contactos ajenos".
+
+    - admin/manager: `foreign` siempre 0 (procesan todo) — el frontend
+      no muestra el modal.
+    - comercial: `owned_by_me` y `foreign` sobre la selección."""
+    owned_ids, foreign_ids = partition_contacts_by_ownership(
+        session, body.contact_ids, current_user
+    )
+    return {
+        "total": len(body.contact_ids),
+        "owned_by_me": len(owned_ids),
+        "foreign": len(foreign_ids),
+    }
+
+
 @router.post("/bulk-export-csv")
 def bulk_export_csv(
     body: BulkExportPayload,
     request: Request,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_admin),
+    current_user: User = Depends(require_user),
 ) -> Response:
     """Devuelve un text/csv con las columnas básicas del contacto. La
     UI lo dispara desde la bulk-bar (acción 'Exportar CSV').
 
-    PR-Hotfix-Notas-Workflows Item C. Export ahora es admin-only (antes
-    manager+): la exportación masiva de datos de contactos se restringe
-    a admin. El resto de acciones bulk siguen abiertas a comerciales."""
+    PR-Bulk-Comerciales. Export abierto a comerciales: un comercial
+    exporta SOLO sus contactos (filtro de propiedad); admin/manager
+    exportan toda la selección. `require_user` ya excluye viewers."""
+    owned_ids, _foreign = partition_contacts_by_ownership(
+        session, body.contact_ids, current_user
+    )
     contacts = list(
         session.scalars(
-            select(Contact).where(Contact.id.in_(body.contact_ids))
+            select(Contact).where(Contact.id.in_(owned_ids))
         )
     )
     if not contacts:
