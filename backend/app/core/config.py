@@ -127,6 +127,9 @@ class Settings(BaseSettings):
     recaptcha_secret: str | None = None
     # Score mínimo aceptado (v3 devuelve 0.0-1.0). Por debajo → spam.
     recaptcha_min_score: float = 0.5
+    # Host público donde el backend sirve /public/forms/* y /forms/* (el
+    # embed code apunta aquí). Vacío → cae a frontend_base_url.
+    web_forms_embed_base_url: str = ""
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 

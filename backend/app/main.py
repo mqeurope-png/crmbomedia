@@ -110,6 +110,36 @@ from app.api.contact_timeline import router as timeline_router  # noqa: E402
 app.include_router(call_logs_router)
 app.include_router(timeline_router)
 
+# Sprint Web-Forms — API pública + admin de formularios web.
+from app.api.web_forms_admin import router as web_forms_admin_router  # noqa: E402
+from app.api.web_forms_public import router as web_forms_public_router  # noqa: E402
+
+app.include_router(web_forms_public_router)
+app.include_router(web_forms_admin_router)
+
+
+# Sprint Web-Forms — CORS abierto (`*`) SOLO para los endpoints públicos
+# de formularios (`/public/forms/*` y `/forms/*`), que se embeben en webs
+# de terceros. El CORSMiddleware global sigue restringido a `/api/*`.
+# `*` + credenciales es inválido por spec, así que aquí NO se permiten
+# credenciales (los públicos no las necesitan).
+@app.middleware("http")
+async def _public_forms_cors(request, call_next):
+    from starlette.responses import Response  # noqa: PLC0415
+
+    path = request.url.path
+    is_public = path.startswith("/public/forms") or path.startswith("/forms/")
+    if is_public and request.method == "OPTIONS":
+        response = Response(status_code=200)
+    else:
+        response = await call_next(request)
+    if is_public:
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+        response.headers["Access-Control-Max-Age"] = "86400"
+    return response
+
 # Sprint Email v2.2 — serve email-template assets (Tiptap inline
 # uploads). In production nginx aliases `/assets/email-templates/`
 # straight to the host bind mount, so this mount mostly exists for
