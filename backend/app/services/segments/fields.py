@@ -144,13 +144,16 @@ _BREVO_INTERACTION = ("matches",)
 #: y `not_clicked` son negativas (delivered-pero-no-X / opened-pero-no-X)
 #: y se compilan distinto.
 BREVO_INTERACTION_ACTIONS: dict[str, tuple[str, ...]] = {
-    "received": ("email.delivered",),
+    "sent": ("email.sent",),
+    "received": ("email.delivered",),  # "Entregados" reusa esta acción
+    "delivered": ("email.delivered",),  # alias explícito de la card
     "opened": ("email.opened",),
     "clicked": ("email.clicked",),
     "not_opened": ("email.opened",),  # negativa sobre delivered
     "not_clicked": ("email.clicked",),  # negativa sobre opened
     "bounced": ("email.bounced_hard", "email.bounced_soft"),
     "unsubscribed": ("email.unsubscribed",),
+    "spam": ("email.spam_complaint",),
 }
 #: Períodos referidos a `brevo_campaigns_cache.sent_at`. "all" = sin
 #: cota temporal. Reusa la misma escala que los widgets del dashboard.

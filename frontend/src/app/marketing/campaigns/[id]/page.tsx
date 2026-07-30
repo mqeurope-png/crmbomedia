@@ -27,6 +27,7 @@ import {
   type BrevoCampaignRecipients,
   type BrevoCampaignTimeline,
 } from "../../../lib/brevoApi";
+import { campaignKpiContactsHref } from "../../../lib/campaignDeepLink";
 import { extractErrorMessage } from "../../../lib/errors";
 
 const RECIPIENT_TABS = [
@@ -287,115 +288,66 @@ export default function CampaignDetailPage() {
       {error ? <p className="danger-text">{error}</p> : null}
       {message ? <div className="success-state">{message}</div> : null}
 
-      {/* Bug 5 fix (Bart 2026-06-25): KPIs ahora son clicables y
-       * cambian la pestaña de "Destinatarios" abajo para mostrar la
-       * lista correspondiente. Pasar a una página /contacts filtrada
-       * con acciones masivas queda como follow-up (requiere fetch
-       * full IDs y encodearlos en URL state). Mientras, la
-       * navegación dentro del panel ya cubre el "ver quiénes". */}
-      {/* PR-Bugs-4-5amp-7-9. Cada KPI tiene 2 caminos:
-       *   - Click en el NÚMERO/título → página dedicada con la lista
-       *     completa (`/marketing/campaigns/{id}/{kpi}`, hasta 200).
-       *   - Click en "Ver" pequeño → pestaña Destinatarios interna
-       *     (uso rápido, hasta 50 con paginación). */}
+      {/* Sprint Campaign-Deeplink. Cada card ahora enlaza a `/contacts`
+       * con el filtro `brevo_campaign_interaction` de esa métrica +
+       * campaña ya aplicado, para aprovechar todo el stack de contactos
+       * (filtros encima, guardar vista, acciones masivas). El panel
+       * "Destinatarios por evento" de abajo sigue como preview rápido.
+       * Nota: sent/delivered/spam dependen de que Brevo haya persistido
+       * ese webhook; si no hay datos históricos el listado sale vacío. */}
       <section className="stats-grid" aria-label="Estadísticas">
         <Link
-          href={`/marketing/campaigns/${campaign.id}/sent`}
+          href={campaignKpiContactsHref(campaign.brevo_campaign_id, "sent")}
           className="stat-card stat-card-link"
         >
           <span>{stats.sent ?? "—"}</span>
           <p>Enviados</p>
         </Link>
-        <div className="stat-card stat-card-stack">
-          <Link
-            href={`/marketing/campaigns/${campaign.id}/delivered`}
-            className="stat-card-link-inner"
-          >
-            <span>{stats.delivered ?? "—"}</span>
-            <p>Entregados</p>
-          </Link>
-          <button
-            type="button"
-            className="stat-card-quick"
-            onClick={() => setRecipientTab("delivered")}
-          >
-            Ver
-          </button>
-        </div>
-        <div className="stat-card stat-card-stack">
-          <Link
-            href={`/marketing/campaigns/${campaign.id}/opened`}
-            className="stat-card-link-inner"
-          >
-            <span>
-              {stats.uniqueViews ?? stats.viewed ?? "—"}
-              {rates.openRate != null ? ` (${rates.openRate}%)` : ""}
-            </span>
-            <p>Abiertos (OR)</p>
-          </Link>
-          <button
-            type="button"
-            className="stat-card-quick"
-            onClick={() => setRecipientTab("opened")}
-          >
-            Ver
-          </button>
-        </div>
-        <div className="stat-card stat-card-stack">
-          <Link
-            href={`/marketing/campaigns/${campaign.id}/clicked`}
-            className="stat-card-link-inner"
-          >
-            <span>
-              {stats.uniqueClicks ?? stats.clickers ?? "—"}
-              {rates.clickRate != null ? ` (${rates.clickRate}%)` : ""}
-            </span>
-            <p>Clicks (CTR)</p>
-          </Link>
-          <button
-            type="button"
-            className="stat-card-quick"
-            onClick={() => setRecipientTab("clicked")}
-          >
-            Ver
-          </button>
-        </div>
-        <div className="stat-card stat-card-stack">
-          <Link
-            href={`/marketing/campaigns/${campaign.id}/bounces`}
-            className="stat-card-link-inner"
-          >
-            <span>
-              {(stats.hardBounces ?? 0) + (stats.softBounces ?? 0) || "—"}
-            </span>
-            <p>Rebotes</p>
-          </Link>
-          <button
-            type="button"
-            className="stat-card-quick"
-            onClick={() => setRecipientTab("bounces")}
-          >
-            Ver
-          </button>
-        </div>
-        <div className="stat-card stat-card-stack">
-          <Link
-            href={`/marketing/campaigns/${campaign.id}/unsubscribed`}
-            className="stat-card-link-inner"
-          >
-            <span>{stats.unsubscriptions ?? "—"}</span>
-            <p>Bajas</p>
-          </Link>
-          <button
-            type="button"
-            className="stat-card-quick"
-            onClick={() => setRecipientTab("unsubscribed")}
-          >
-            Ver
-          </button>
-        </div>
         <Link
-          href={`/marketing/campaigns/${campaign.id}/complained`}
+          href={campaignKpiContactsHref(campaign.brevo_campaign_id, "delivered")}
+          className="stat-card stat-card-link"
+        >
+          <span>{stats.delivered ?? "—"}</span>
+          <p>Entregados</p>
+        </Link>
+        <Link
+          href={campaignKpiContactsHref(campaign.brevo_campaign_id, "opened")}
+          className="stat-card stat-card-link"
+        >
+          <span>
+            {stats.uniqueViews ?? stats.viewed ?? "—"}
+            {rates.openRate != null ? ` (${rates.openRate}%)` : ""}
+          </span>
+          <p>Abiertos (OR)</p>
+        </Link>
+        <Link
+          href={campaignKpiContactsHref(campaign.brevo_campaign_id, "clicked")}
+          className="stat-card stat-card-link"
+        >
+          <span>
+            {stats.uniqueClicks ?? stats.clickers ?? "—"}
+            {rates.clickRate != null ? ` (${rates.clickRate}%)` : ""}
+          </span>
+          <p>Clicks (CTR)</p>
+        </Link>
+        <Link
+          href={campaignKpiContactsHref(campaign.brevo_campaign_id, "bounces")}
+          className="stat-card stat-card-link"
+        >
+          <span>
+            {(stats.hardBounces ?? 0) + (stats.softBounces ?? 0) || "—"}
+          </span>
+          <p>Rebotes</p>
+        </Link>
+        <Link
+          href={campaignKpiContactsHref(campaign.brevo_campaign_id, "unsubscribed")}
+          className="stat-card stat-card-link"
+        >
+          <span>{stats.unsubscriptions ?? "—"}</span>
+          <p>Bajas</p>
+        </Link>
+        <Link
+          href={campaignKpiContactsHref(campaign.brevo_campaign_id, "complained")}
           className="stat-card stat-card-link"
         >
           <span>{stats.complaints ?? "—"}</span>
