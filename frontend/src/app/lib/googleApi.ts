@@ -29,6 +29,12 @@ export type GoogleStatus = {
    *  `refresh_token_expiring_soon`, NO `token_expiring_soon`. */
   refresh_token_expires_at?: string | null;
   refresh_token_expiring_soon?: boolean;
+  /** PR-Hotfix-OAuth-Banner-Caducidad. `refresh_token_expired`: el
+   *  refresh token ya caducó (rojo). `app_verified`: la app OAuth está
+   *  verificada por Google → el refresh token no caduca y el banner se
+   *  silencia por completo. */
+  refresh_token_expired?: boolean;
+  app_verified?: boolean;
 };
 
 export type GoogleCalendarItem = {

@@ -488,8 +488,56 @@ def test_sync_aliases_updates_display_name(factory):
         row = session.scalar(
             select(UserEmailAliasPref).where(
                 UserEmailAliasPref.user_id == uid,
-                UserEmailAliasPref.alias_email == "x@bomedia.net",
+                UserEmailAliasPref.alias_email == user.email,
             )
         )
         assert row.gmail_display_name == "Nombre Nuevo"
-        assert row.is_allowed is True  # preservado
+        assert row.is_allowed is True  # alias propio → visible
+
+
+def test_oauth_status_endpoint_distinguishes_access_and_refresh_expiry(
+    factory, monkeypatch
+):
+    """PR-Hotfix-OAuth-Banner-Caducidad. El endpoint /status separa la
+    caducidad del ACCESS token (1h, informativa) de la del REFRESH
+    (reconexión). El banner solo debe reaccionar a la del refresh."""
+    from app.api.google_integrations import get_status
+    from app.core.config import get_settings
+
+    with factory() as session:
+        uid = _uid(session, UserRole.USER)
+        user = session.get(User, uid)
+
+        # Access caduca en 1h (siempre <48h); refresh lejos (5 días).
+        _seed_integration(
+            session, uid, expires_in_hours=1, refresh_expires_in_hours=120
+        )
+        s = get_status(session=session, current_user=user)
+        assert s.token_expiring_soon is True  # access <48h
+        assert s.refresh_token_expiring_soon is False  # pero refresh no avisa
+        assert s.refresh_token_expired is False
+
+        # Refresh caduca en 24h → ámbar.
+        _seed_integration(
+            session, uid, expires_in_hours=1, refresh_expires_in_hours=24
+        )
+        s = get_status(session=session, current_user=user)
+        assert s.refresh_token_expiring_soon is True
+        assert s.refresh_token_expired is False
+
+        # Refresh ya caducado → rojo.
+        _seed_integration(
+            session, uid, expires_in_hours=1, refresh_expires_in_hours=-1
+        )
+        s = get_status(session=session, current_user=user)
+        assert s.refresh_token_expired is True
+        assert s.refresh_token_expiring_soon is False
+
+        # GMAIL_APP_VERIFIED=true → silencio total (app verificada).
+        monkeypatch.setattr(
+            get_settings(), "gmail_app_verified", True, raising=False
+        )
+        s = get_status(session=session, current_user=user)
+        assert s.app_verified is True
+        assert s.refresh_token_expiring_soon is False
+        assert s.refresh_token_expired is False
