@@ -241,43 +241,130 @@ def _step_tag_names(cfg: dict[str, Any]) -> list[str]:
     return [single] if single else []
 
 
+def _default_tag_color(name: str) -> str:
+    """Paleta determinista por hash del nombre normalizado — mismo
+    criterio que `routes._default_tag_color` y `bulk._default_tag_color`,
+    así un tag creado por un workflow cae en el mismo color que si se
+    creara desde la ficha."""
+    from app.schemas.crm import TAG_COLOR_PALETTE  # noqa: PLC0415
+
+    key = (name or "").strip().lower()
+    digest = sum(ord(ch) for ch in key)
+    return TAG_COLOR_PALETTE[digest % len(TAG_COLOR_PALETTE)]
+
+
+def _audit_tag_change(
+    session, run: WorkflowRun, contact, *, action: str, tag_id: str, tag_name: str
+) -> None:
+    try:
+        from app.core.audit import record_event  # noqa: PLC0415
+
+        record_event(
+            session,
+            action=action,
+            target_type="contact",
+            target_id=contact.id,
+            metadata={
+                "tag_id": tag_id,
+                "tag_name": tag_name,
+                "via": "workflow",
+                "workflow_id": run.workflow_id,
+                "run_id": run.id,
+                "actor_id": _trigger_payload(run).get("actor_id"),
+            },
+        )
+    except Exception:  # noqa: BLE001 - audit nunca bloquea el run
+        log.warning("workflows.audit tag change failed", exc_info=True)
+
+
 @register_step("action_add_tag")
 def _step_add_tag(session, run, step, contact) -> StepResult:
-    _ = session, run
     cfg = _config(step)
     tags_to_add = _step_tag_names(cfg)
     if not tags_to_add:
         return StepResult(status="skipped", error="empty_tag")
-    # `Contact.tags` es CSV — el campo legacy. Lo respetamos para no
-    # divergir del resto del CRM (la M:N tabla `contact_tags` también
-    # existe pero esto basta para Bloque 1).
+    # PR-Hotfix-Ficha-360 Bug 2. Antes solo se escribía el CSV legacy
+    # `contacts.tags`; la pestaña Tags lee de la M:N `contact_tags`, así
+    # que el tag "no aparecía" aunque el run reportaba ok. La escritura
+    # canónica va a `tags` + `contact_tags` (get-or-create + link
+    # idempotente, igual que POST /contacts/{id}/tags); el CSV se
+    # mantiene en paralelo solo por compat (conditions/gdpr/mapper de
+    # AgileCRM aún lo leen).
+    from app.repositories import crm as crm_repository  # noqa: PLC0415
+
+    actor_id = _trigger_payload(run).get("actor_id")
+    added: list[str] = []
+    for tag_name in tags_to_add:
+        tag, _created = crm_repository.upsert_tag(
+            session,
+            name=tag_name,
+            color=_default_tag_color(tag_name),
+            created_by_user_id=actor_id,
+        )
+        linked = crm_repository.assign_tag_to_contact(
+            session,
+            contact_id=contact.id,
+            tag_id=tag.id,
+            assigned_by_user_id=actor_id,
+            source="workflow",
+        )
+        if linked:
+            added.append(tag.name)
+            _audit_tag_change(
+                session, run, contact, action="contact_tag.added",
+                tag_id=tag.id, tag_name=tag.name,
+            )
     current = [
         t.strip() for t in (contact.tags or "").split(",") if t.strip()
     ]
     existing_lower = {t.lower() for t in current}
-    added: list[str] = []
     for tag_name in tags_to_add:
         if tag_name.lower() not in existing_lower:
             current.append(tag_name)
             existing_lower.add(tag_name.lower())
-            added.append(tag_name)
     contact.tags = ",".join(current)
     return StepResult(result={"added_tags": added})
 
 
 @register_step("action_remove_tag")
 def _step_remove_tag(session, run, step, contact) -> StepResult:
-    _ = session, run
     cfg = _config(step)
-    tags_to_remove = {t.lower() for t in _step_tag_names(cfg)}
-    if not tags_to_remove:
+    names = _step_tag_names(cfg)
+    if not names:
         return StepResult(status="skipped", error="empty_tag")
+    # PR-Hotfix-Ficha-360 Bug 2 (simétrico al add): quitar también el
+    # link M:N `contact_tags`, no solo el CSV legacy.
+    from app.repositories import crm as crm_repository  # noqa: PLC0415
+
+    removed: list[str] = []
+    for tag_name in names:
+        tag = crm_repository.get_tag_by_name(session, tag_name)
+        if tag is None:
+            continue
+        unlinked = crm_repository.remove_tag_from_contact(
+            session, contact_id=contact.id, tag_id=tag.id
+        )
+        if unlinked:
+            removed.append(tag.name)
+            _audit_tag_change(
+                session, run, contact, action="contact_tag.removed",
+                tag_id=tag.id, tag_name=tag.name,
+            )
+    tags_to_remove = {t.lower() for t in names}
     current = [
         t.strip() for t in (contact.tags or "").split(",") if t.strip()
     ]
-    new = [t for t in current if t.lower() not in tags_to_remove]
-    contact.tags = ",".join(new)
-    return StepResult(result={"removed_tags": sorted(tags_to_remove)})
+    csv_removed = [t for t in current if t.lower() in tags_to_remove]
+    contact.tags = ",".join(
+        t for t in current if t.lower() not in tags_to_remove
+    )
+    seen: set[str] = set()
+    all_removed: list[str] = []
+    for name in [*removed, *csv_removed]:
+        if name.lower() not in seen:
+            seen.add(name.lower())
+            all_removed.append(name)
+    return StepResult(result={"removed_tags": all_removed})
 
 
 @register_step("action_change_lifecycle_status")
