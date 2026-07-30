@@ -166,6 +166,14 @@ def process_brevo_webhook_event(
     """Materialise one event. Returns a short status string for logs:
     `processed`, `duplicate`, `unknown_event`, `unknown_contact`."""
     raw_name = str(event.get("event") or "").lower()
+    campaign_brevo_id = _campaign_brevo_id(event)
+    # PR-Fix-Sent-Backfill. Traza de cada evento recibido para diagnosticar
+    # por qué "Enviados" no aparecía: qué evento manda Brevo, a qué
+    # event_type interno mapea y de qué campaña. DEBUG para no inundar prod.
+    logger.debug(
+        "brevo.webhook received event=%r email=%r campaign_brevo_id=%r",
+        raw_name, event.get("email"), campaign_brevo_id,
+    )
     event_type = EVENT_TYPE_MAP.get(raw_name)
     if event_type is None:
         logger.info("brevo.webhook ignoring unsupported event %r", raw_name)
@@ -202,13 +210,17 @@ def process_brevo_webhook_event(
             account_id=account_id,
             external_id=key,
             event_type=event_type,
-            campaign_brevo_id=_campaign_brevo_id(event),
+            campaign_brevo_id=campaign_brevo_id,
             subject=str(subject) if subject else None,
             body=str(url) if url else None,
             metadata_json=json.dumps(event, default=str),
             occurred_at=occurred_at,
             synced_at=datetime.now(UTC),
         )
+    )
+    logger.debug(
+        "brevo.webhook persisted event_type=%s contact=%s campaign_brevo_id=%s",
+        event_type, contact.id, campaign_brevo_id,
     )
 
     # Reactive mutations.
@@ -241,7 +253,7 @@ def process_brevo_webhook_event(
                 contact.id,
                 {
                     "source": f"brevo:{account_id}",
-                    "campaign_brevo_id": _campaign_brevo_id(event),
+                    "campaign_brevo_id": campaign_brevo_id,
                     "brevo_event": raw_name,
                     "link": str(url) if url else None,
                 },
