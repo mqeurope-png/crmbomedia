@@ -10136,7 +10136,10 @@ tr.is-inactive {
 
 
 /* Sprint Ficha 360 */
-.register-call-modal, .run-workflow-modal { max-width: 560px; }
+/* PR-Hotfix-Ficha-360 Bug 1: la caja del modal la pone `.modal-dialog`
+ * (bg + borde + sombra); aquí solo el ancho. El modal de workflows usa
+ * `.modal-dialog.small` (460px). */
+.register-call-modal { max-width: 560px; }
 .register-call-modal .modal-body { display: flex; flex-direction: column; gap: 10px; }
 .call-duration { border: 0; padding: 0; display: flex; gap: 12px; flex-wrap: wrap; }
 .call-actions { display: flex; flex-direction: column; gap: 8px; padding: 10px; background: var(--color-bg-light, #f6f7f9); border-radius: 8px; }
