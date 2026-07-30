@@ -1391,6 +1391,19 @@ def _emit_inbound_activity(
             synced_at=datetime.now(UTC),
         )
     )
+    # Sprint Workflows. Productor de `email.crm.replied`. Payload sin
+    # owner_user_id (no disponible aquí) — el matcher lo tolera.
+    try:
+        from app.workflows.dispatcher import dispatch_event  # noqa: PLC0415
+
+        dispatch_event(
+            session,
+            "email.crm.replied",
+            contact_id,
+            {"source": "crm_inbound", "thread_id": thread_id},
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("gmail.inbound workflow dispatch failed", exc_info=True)
 
 
 def _get_or_create_thread(

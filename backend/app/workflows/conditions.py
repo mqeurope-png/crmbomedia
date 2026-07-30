@@ -55,9 +55,22 @@ def _contact_field(
 
 
 def _contact_tags(ctx: EvalContext) -> list[str]:
-    """Tags como lista. `Contact.tags` viene CSV; lo split en runtime."""
+    """Tags como lista: nombres del CSV legacy + UUIDs y nombres de la
+    tabla M:N `contact_tags` (Sprint Workflows - el builder de la UI
+    emite UUIDs; antes solo se miraba el CSV y esas condiciones eran
+    siempre falsas)."""
     raw = (ctx.contact.tags or "").strip()
-    return [t.strip() for t in raw.split(",") if t.strip()] if raw else []
+    values = [t.strip() for t in raw.split(",") if t.strip()] if raw else []
+    try:
+        for assignment in ctx.contact.tag_assignments:
+            values.append(assignment.tag_id)
+            tag = getattr(assignment, "tag", None)
+            name = getattr(tag, "name", None)
+            if name:
+                values.append(name)
+    except Exception:  # noqa: BLE001 - relacion no cargable -> CSV solo
+        pass
+    return values
 
 
 def _contact_full_name(ctx: EvalContext) -> str:
@@ -480,7 +493,12 @@ def validate_tree(
         return errors
     if not tree:
         return errors
-    op = tree.get("op")
+    # Sprint Workflows E2. El builder de la UI persiste el IR de
+    # segments (`operator`/`comparator`); antes validate_tree solo
+    # entendia el vocabulario legacy `op` y rechazaba con
+    # "leaf without op" TODO workflow con una condicion real -> 400 al
+    # activar. Normalizamos igual que `evaluate`.
+    op = tree.get("op") or _normalize_logical(tree.get("operator"))
     if op in _LOGICAL:
         children = tree.get("children") or []
         for child in children:
@@ -489,7 +507,8 @@ def validate_tree(
     field = tree.get("field")
     if field and not _is_known_field(field):
         errors.append(f"unknown field: {field}")
-    if not op:
+    leaf_op = tree.get("op") or tree.get("comparator")
+    if not leaf_op:
         errors.append(f"leaf without op (field={field})")
     return errors
 

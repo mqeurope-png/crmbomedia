@@ -236,6 +236,29 @@ def process_event_inline(
         advance_run(session, run.id)
 
 
+def _workflow_scopes_contact(
+    session: Session, workflow: Workflow, contact: Contact
+) -> bool:
+    """Sprint Workflows — tenancy. Un workflow PRIVADO (owner_user_id no
+    NULL) solo dispara para contactos asignados a su owner (cache
+    `owner_user_id` o cualquier fila de `contact_assignments`). Los
+    globales (NULL) disparan para todos, como hasta ahora."""
+    owner_id = getattr(workflow, "owner_user_id", None)
+    if not owner_id:
+        return True
+    if contact.owner_user_id == owner_id:
+        return True
+    from app.models.crm import ContactAssignment  # noqa: PLC0415
+
+    assigned = session.scalar(
+        select(ContactAssignment.id).where(
+            ContactAssignment.contact_id == contact.id,
+            ContactAssignment.user_id == owner_id,
+        ).limit(1)
+    )
+    return assigned is not None
+
+
 def _trigger_matches(
     workflow: Workflow,
     trigger_cfg: dict[str, Any],
@@ -243,8 +266,20 @@ def _trigger_matches(
     payload: dict[str, Any],
     session: Session,
 ) -> bool:
-    """Aplica el filter del trigger (condición opcional sobre el
-    contacto + criterio específico del trigger en payload)."""
+    """Aplica: (1) tenancy, (2) los filtros de config específicos del
+    trigger (campaña/link/priority/... — definición canónica en
+    `trigger_definitions`, la MISMA que usa el estimator), (3) el filter
+    tree opcional sobre el contacto."""
+    if not _workflow_scopes_contact(session, workflow, contact):
+        return False
+
+    from app.workflows import trigger_definitions  # noqa: PLC0415
+
+    if not trigger_definitions.config_matches(
+        workflow.trigger_type, trigger_cfg, payload
+    ):
+        return False
+
     # Filtro general por condición sobre el contacto.
     filter_tree = trigger_cfg.get("filter")
     if filter_tree:
@@ -256,13 +291,16 @@ def _trigger_matches(
         if not conditions.evaluate(filter_tree, ctx):
             return False
 
-    # Triggers específicos pueden definir reglas extra. Ej:
-    #   trigger_type=contact.updated + trigger_cfg={"field": "lead_score"}
-    #   significa "solo dispara si el campo modificado es lead_score".
+    # Compat legacy: `field` a nivel raíz del config (contact.updated).
+    # La versión canónica vive en trigger_definitions._match_contact_updated;
+    # este guard se mantiene para configs antiguos con `field` en triggers
+    # sin matcher propio.
     required_field = trigger_cfg.get("field")
-    if required_field:
-        payload_field = payload.get("field")
-        if payload_field != required_field:
+    if required_field and workflow.trigger_type not in (
+        "contact.updated", "contact.date_field"
+    ):
+        changed = payload.get("changed_fields") or []
+        if payload.get("field") != required_field and required_field not in changed:
             return False
 
     return True
@@ -330,6 +368,24 @@ def evaluate_brevo_engagement(
         )
         if opens < min_opens or clicks < min_clicks:
             continue
+        # Sprint Workflows. (a) El filter del operador ahora SÍ aplica —
+        # antes este evaluador saltaba `_trigger_matches` y disparaba
+        # para contactos excluidos. (b) Dedup: 1 disparo por contacto y
+        # ventana — sin esto re-disparaba en cada open/click.
+        payload = {"opens": opens, "clicks": clicks, "window_days": window_days}
+        if not _trigger_matches(workflow, cfg, contact, payload, session):
+            continue
+        from app.models.workflows import WorkflowRun  # noqa: PLC0415
+
+        already = session.scalar(
+            select(WorkflowRun.id).where(
+                WorkflowRun.workflow_id == workflow.id,
+                WorkflowRun.contact_id == contact.id,
+                WorkflowRun.started_at >= cutoff,
+            ).limit(1)
+        )
+        if already is not None:
+            continue
         run = start_run(
             session,
             workflow,
@@ -352,33 +408,14 @@ def evaluate_brevo_engagement(
 # ---------------------------------------------------------------------
 
 
-TRIGGER_CATALOG: list[dict[str, Any]] = [
-    {"type": "contact.created", "label": "Contacto creado"},
-    {"type": "contact.updated", "label": "Contacto actualizado"},
-    {
-        "type": "contact.lifecycle_changed",
-        "label": "Contacto cambia de estado del ciclo",
-    },
-    {"type": "contact.unsubscribed", "label": "Contacto se da de baja"},
-    {"type": "email.crm.opened", "label": "Email del CRM abierto"},
-    {"type": "email.crm.clicked", "label": "Link de email CRM cliqueado"},
-    {"type": "email.crm.replied", "label": "Email del CRM respondido"},
-    {"type": "email.brevo.opened", "label": "Email campaña Brevo abierto"},
-    {"type": "email.brevo.clicked", "label": "Link campaña Brevo cliqueado"},
-    {
-        "type": "engagement.brevo.composed",
-        "label": "Engagement Brevo compuesto (N aperturas + N clicks en X días)",
-    },
-    {"type": "task.created", "label": "Tarea creada"},
-    {"type": "task.completed", "label": "Tarea completada"},
-    {"type": "task.overdue", "label": "Tarea vencida"},
-    {"type": "opportunity.created", "label": "Oportunidad creada"},
-    {"type": "opportunity.stage_changed", "label": "Oportunidad cambia de stage"},
-    {"type": "opportunity.won", "label": "Oportunidad ganada"},
-    {"type": "opportunity.lost", "label": "Oportunidad perdida"},
-    {"type": "contact.date_field", "label": "Fecha del contacto (cumpleaños, aniversario...)"},
-    # PR-Fixes-Pase-2 Bug D: el dropdown frontend leía este label
-    # literalmente. "Recurrente (preset)" no es jerga que un comercial
-    # entienda; "Horario fijo" sí.
-    {"type": "cron.recurring", "label": "Horario fijo"},
-]
+# Sprint Workflows. El catálogo se genera desde la definición canónica
+# (trigger_definitions) — incluye `kind`, `available` y
+# `unavailable_reason` para que el wizard deshabilite los triggers sin
+# productor en vez de ofrecerlos como si funcionaran.
+def _build_trigger_catalog() -> list[dict[str, Any]]:
+    from app.workflows.trigger_definitions import catalog  # noqa: PLC0415
+
+    return catalog()
+
+
+TRIGGER_CATALOG: list[dict[str, Any]] = _build_trigger_catalog()

@@ -892,6 +892,21 @@ def activate_workflow(
                 else "No tienes permiso para activar este workflow."
             ),
         )
+    # Sprint Workflows. Un trigger sin productor no se puede activar de
+    # nuevo (los ya activos no se tocan - compat).
+    from app.workflows import trigger_definitions as _tdefs  # noqa: PLC0415
+
+    _tdef = _tdefs.get_def(workflow.trigger_type)
+    if _tdef is not None and not _tdef.available:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "errors": [
+                    _tdef.unavailable_reason
+                    or "Trigger no disponible en esta version."
+                ]
+            },
+        )
     errors = _validate_workflow_structure(session, workflow)
     if errors:
         raise HTTPException(
@@ -932,6 +947,11 @@ def activate_workflow(
                 "duplicate_of": other,
             },
         )
+    # Sprint Workflows. Baseline del trigger contact.matches_conditions:
+    # sembramos la membresia de los contactos que YA cumplen para que la
+    # activacion no dispare retroactivamente - solo transiciones futuras.
+    if workflow.trigger_type == "contact.matches_conditions":
+        _seed_matches_conditions_baseline(session, workflow)
     workflow.status = WorkflowStatus.ACTIVE
     record_event(
         session,
@@ -1243,28 +1263,13 @@ def cost_estimate(
     # - **Estado actual**: contact.date_field (cumpleaños hoy),
     #   engagement.brevo.composed (N aperturas en X días), cron
     #   (universo de contactos activos). Aquí sí cuenta contactos.
-    EVENT_TRIGGERS = {
-        "contact.created",
-        "contact.updated",
-        "contact.lifecycle_changed",
-        "contact.unsubscribed",
-        "email.crm.opened",
-        "email.crm.clicked",
-        "email.crm.replied",
-        "email.brevo.opened",
-        "email.brevo.clicked",
-        "task.created",
-        "task.completed",
-        "task.overdue",
-        "opportunity.created",
-        "opportunity.stage_changed",
-        "opportunity.won",
-        "opportunity.lost",
-    }
+    # (El set EVENT_TRIGGERS legacy vive ahora en trigger_definitions
+    # como kind='event' — una sola fuente de verdad.)
     STATE_TRIGGERS = {
         "contact.date_field",
         "engagement.brevo.composed",
         "cron.recurring",
+        "contact.matches_conditions",
     }
 
     try:
@@ -1272,8 +1277,39 @@ def cost_estimate(
     except (TypeError, ValueError):
         trigger_cfg = {}
 
+    from app.workflows import trigger_definitions  # noqa: PLC0415
+
+    trigger_def = trigger_definitions.get_def(workflow.trigger_type)
+
     matching = 0
-    if workflow.trigger_type in STATE_TRIGGERS:
+    if trigger_def is not None and not trigger_def.available:
+        # Trigger sin productor -> nada que contar; el estimado va a None
+        # ("---" en UI), no a un 0 enganoso.
+        matching = 0
+    elif workflow.trigger_type == "contact.matches_conditions":
+        # Sprint Workflows. Count por SQL compilado (motor de segmentos)
+        # - nada de cargar la tabla entera de contactos en memoria.
+        from app.models.crm import Contact as _Contact  # noqa: PLC0415
+        from app.services.segments.engine import (  # noqa: PLC0415
+            SegmentRuleError,
+            build_filter,
+        )
+
+        try:
+            clause = build_filter(trigger_cfg.get("filter") or {})
+            from sqlalchemy import func as _cfunc  # noqa: PLC0415
+
+            matching = int(
+                session.scalar(
+                    select(_cfunc.count(_Contact.id)).where(
+                        _Contact.is_active.is_(True), clause
+                    )
+                )
+                or 0
+            )
+        except SegmentRuleError:
+            matching = 0
+    elif workflow.trigger_type in STATE_TRIGGERS:
         from sqlalchemy import func as _func  # noqa: PLC0415
 
         from app.workflows.conditions import (  # noqa: PLC0415
@@ -1313,96 +1349,70 @@ def cost_estimate(
     n_send_email = sum(1 for s in steps if s.type == "action_send_email")
     n_tasks = sum(1 for s in steps if s.type == "action_create_task")
 
-    if workflow.trigger_type == "cron.recurring":
-        # Asumimos 1 ejecución por contacto y por día — N=30.
-        runs_30d = matching * 30
-    elif workflow.trigger_type in STATE_TRIGGERS:
-        # Asumimos que los que cumplen hoy se repartirán a lo largo
-        # del mes (cumpleaños → 12 al mes / 365 al año).
-        runs_30d = matching
-    elif workflow.trigger_type in EVENT_TRIGGERS:
-        # Histórico: cuántos runs hubo en los últimos 30 días → es
-        # también la proyección para los próximos 30. Si es la primera
-        # vez que se activa el workflow, runs_30d = 0.
-        from datetime import UTC, datetime, timedelta  # noqa: PLC0415
+    from datetime import UTC, datetime, timedelta  # noqa: PLC0415
 
-        from sqlalchemy import func as _sfunc  # noqa: PLC0415
+    from sqlalchemy import func as _sfunc  # noqa: PLC0415
 
-        from app.models.workflows import WorkflowRun  # noqa: PLC0415
+    from app.models.workflows import WorkflowRun  # noqa: PLC0415
 
-        cutoff = datetime.now(UTC) - timedelta(days=30)
-        runs_30d = int(
-            session.scalar(
-                select(_sfunc.count(WorkflowRun.id)).where(
-                    WorkflowRun.workflow_id == workflow_id,
-                    WorkflowRun.started_at >= cutoff,
-                )
-            )
-            or 0
+    cutoff = datetime.now(UTC) - timedelta(days=30)
+    runs_30d: int | None
+    if trigger_def is not None and not trigger_def.available:
+        # Sin productor -> "---" honesto en la UI, no un 0 enganoso.
+        runs_30d = None
+    elif workflow.trigger_type == "cron.recurring":
+        # Multiplicador REAL por preset (antes x30 fijo: mal para 4 de
+        # los 5 presets).
+        _CRON_MULT = {
+            "hourly": 720,
+            "daily": 30,
+            "weekly_monday": 4,
+            "weekly_friday": 4,
+            "monthly_first_day": 1,
+        }
+        preset = str(trigger_cfg.get("preset") or "daily")
+        runs_30d = matching * _CRON_MULT.get(preset, 30)
+    elif workflow.trigger_type == "contact.matches_conditions":
+        # Las ENTRADAS futuras no son estimables desde historico.
+        runs_30d = None
+    elif workflow.trigger_type == "engagement.brevo.composed":
+        # Contactos UNICOS que cumplen umbrales hoy (misma semantica que
+        # el runtime: 1 disparo por contacto y ventana).
+        runs_30d = trigger_definitions.estimate_runs_30d(
+            session, workflow.trigger_type, trigger_cfg, cutoff
         )
-        # PR-Hotfix-Notas-Widget Item B. Para los triggers alimentados por
-        # el webhook Brevo, el histórico de runs es 0 en workflows nuevos
-        # (y era 0 SIEMPRE antes del fix del dispatcher en el PR #259) —
-        # pero el stream real de eventos sí existe en `activity_events`.
-        # El nombre del trigger (`email.brevo.opened`) difiere del
-        # event_type almacenado (`email.opened`); reutilizamos el MISMO
-        # mapa que usa el dispatcher del webhook (invirtiéndolo) para que
-        # no puedan divergir. Estimamos con el máximo de ambas señales.
-        from app.integrations.brevo.webhooks import (  # noqa: PLC0415
-            WORKFLOW_TRIGGER_MAP,
+        if runs_30d is not None:
+            matching = runs_30d
+    elif workflow.trigger_type == "contact.date_field":
+        runs_30d = None
+    else:
+        # Event triggers: fuente REAL de eventos 30d con los MISMOS
+        # filtros de config que aplica el runtime (trigger_definitions,
+        # una sola fuente de verdad). Se elimina el max() con el
+        # historico de runs que enmascaraba los filtros (auditoria
+        # estimator bug #2); el historico queda solo como fallback
+        # cuando no hay fuente.
+        source = trigger_definitions.estimate_runs_30d(
+            session, workflow.trigger_type, trigger_cfg, cutoff
         )
-
-        stored_types = [
-            stored
-            for stored, trigger in WORKFLOW_TRIGGER_MAP.items()
-            if trigger == workflow.trigger_type
-        ]
-        if stored_types:
-            from app.models.crm import ActivityEvent  # noqa: PLC0415
-
-            clauses = [
-                ActivityEvent.event_type.in_(stored_types),
-                ActivityEvent.occurred_at >= cutoff,
-            ]
-            # PR-Hotfix-Estimator-Filtro-Campaña. El wizard guarda el
-            # filtro "Campaña específica" en trigger_config.campaign_id
-            # como STRING (value del <select>); la columna
-            # `activity_events.campaign_brevo_id` es Integer → coerción
-            # explícita. Sin filtro (— Cualquier campaña — / vacío) se
-            # mantiene el count global.
-            raw_campaign = trigger_cfg.get("campaign_id")
-            if raw_campaign not in (None, ""):
-                try:
-                    clauses.append(
-                        ActivityEvent.campaign_brevo_id == int(raw_campaign)
-                    )
-                except (TypeError, ValueError):
-                    pass  # valor corrupto → no filtrar (count global)
-            # Bonus: filtro "Link específico" del trigger clicked. El
-            # webhook Brevo persiste la URL clicada en
-            # `activity_events.body` (webhooks.py) → match exacto.
-            link_url = trigger_cfg.get("link_url")
-            if (
-                workflow.trigger_type == "email.brevo.clicked"
-                and link_url not in (None, "")
-            ):
-                clauses.append(ActivityEvent.body == str(link_url))
-
-            events_30d = int(
+        if source is not None:
+            runs_30d = source
+        else:
+            runs_30d = int(
                 session.scalar(
-                    select(_sfunc.count(ActivityEvent.id)).where(*clauses)
+                    select(_sfunc.count(WorkflowRun.id)).where(
+                        WorkflowRun.workflow_id == workflow_id,
+                        WorkflowRun.started_at >= cutoff,
+                    )
                 )
                 or 0
             )
-            runs_30d = max(runs_30d, events_30d)
-    else:
-        runs_30d = 0
 
     return WorkflowCostEstimate(
         matching_contacts_now=matching,
         estimated_runs_30d=runs_30d,
-        estimated_emails_30d=runs_30d * n_send_email,
-        estimated_tasks_30d=runs_30d * n_tasks,
+        estimated_emails_30d=None if runs_30d is None else runs_30d * n_send_email,
+        estimated_tasks_30d=None if runs_30d is None else runs_30d * n_tasks,
         validation_errors=errors,
     )
 
@@ -1599,3 +1609,48 @@ def _validate_workflow_structure(
                     "El nodo Switch tiene la rama «Otros» sin conectar."
                 )
     return errors
+
+
+def _seed_matches_conditions_baseline(session: Session, workflow: Workflow) -> None:
+    """Inserta filas de membresia para los contactos que cumplen las
+    condiciones en el momento de activar (sin disparar runs). Los que
+    entren despues si disparan (scheduler fase 4). Idempotente: solo
+    anade los que faltan."""
+    import json as _json
+    from datetime import UTC, datetime
+
+    from app.models.crm import Contact
+    from app.models.workflows import WorkflowTriggerMembership
+    from app.services.segments.engine import SegmentRuleError, build_filter
+
+    try:
+        cfg = _json.loads(workflow.trigger_config_json or "{}")
+    except (TypeError, ValueError):
+        cfg = {}
+    try:
+        clause = build_filter(cfg.get("filter") or {})
+    except SegmentRuleError:
+        return
+    current_ids = set(
+        session.scalars(
+            select(Contact.id).where(Contact.is_active.is_(True), clause)
+        )
+    )
+    existing = set(
+        session.scalars(
+            select(WorkflowTriggerMembership.contact_id).where(
+                WorkflowTriggerMembership.workflow_id == workflow.id
+            )
+        )
+    )
+    now = datetime.now(UTC)
+    for contact_id in current_ids - existing:
+        session.add(
+            WorkflowTriggerMembership(
+                workflow_id=workflow.id,
+                contact_id=contact_id,
+                first_matched_at=now,
+                last_seen_at=now,
+            )
+        )
+    session.flush()

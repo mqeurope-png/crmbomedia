@@ -292,6 +292,22 @@ def create_task_endpoint(
         google_service.sync_task_to_calendar(session, task)
     session.commit()
     session.refresh(task)
+    # Sprint Workflows. Productor de `task.created` (solo tareas ligadas
+    # a un contacto — los workflows son contact-céntricos).
+    if task.contact_id:
+        from app.workflows.dispatcher import dispatch_event  # noqa: PLC0415
+
+        dispatch_event(
+            session,
+            "task.created",
+            task.contact_id,
+            {
+                "source": "manual",
+                "task_id": task.id,
+                "priority": str(getattr(task.priority, "value", task.priority)),
+                "assigned_user_id": task.assigned_user_id,
+            },
+        )
     return TaskRead.model_validate(task)
 
 
@@ -382,6 +398,20 @@ def complete_task_endpoint(
         google_service.update_task_event(session, task)
     session.commit()
     session.refresh(task)
+    # Sprint Workflows. Productor de `task.completed`.
+    if task.contact_id:
+        from app.workflows.dispatcher import dispatch_event  # noqa: PLC0415
+
+        dispatch_event(
+            session,
+            "task.completed",
+            task.contact_id,
+            {
+                "source": "manual",
+                "task_id": task.id,
+                "priority": str(getattr(task.priority, "value", task.priority)),
+            },
+        )
     return TaskCompleteResponse(task=TaskRead.model_validate(task))
 
 

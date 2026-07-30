@@ -230,9 +230,11 @@ class WorkflowActivateRequest(BaseModel):
 
 class WorkflowCostEstimate(BaseModel):
     matching_contacts_now: int
-    estimated_runs_30d: int
-    estimated_emails_30d: int
-    estimated_tasks_30d: int
+    # Sprint Workflows. None = "sin estimador para este trigger" -> la UI
+    # muestra "---" con tooltip, en vez de un 0 enganoso.
+    estimated_runs_30d: int | None
+    estimated_emails_30d: int | None
+    estimated_tasks_30d: int | None
     validation_errors: list[str] = Field(default_factory=list)
 
 

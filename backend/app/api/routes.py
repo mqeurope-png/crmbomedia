@@ -2460,6 +2460,8 @@ def update_contact(
     if not contact:
         raise not_found("Contact")
     data = payload.model_dump(exclude_unset=True)
+    # Sprint Workflows. Estado previo para el evento lifecycle_changed.
+    _wf_old_commercial_status = contact.commercial_status
 
     if current_user.role not in (UserRole.ADMIN, UserRole.MANAGER):
         blocked = _MANAGER_ONLY_PATCH_FIELDS & data.keys()
@@ -2728,6 +2730,44 @@ def update_contact(
         )
     session.commit()
     session.refresh(contact)
+    # Sprint Workflows. `contact.updated` (y `contact.lifecycle_changed`
+    # si cambió el estado comercial) por fin tienen productor — antes
+    # estaban en el catálogo pero nada los despachaba (auditoría §1).
+    # Post-commit, mismo patrón que create_contact.
+    if changed_fields and changed_fields != ["unsubscribe_action"]:
+        from app.workflows.dispatcher import dispatch_event  # noqa: PLC0415
+
+        _wf_changes = {
+            f: [None, str(getattr(contact, f, None))]
+            for f in changed_fields
+            if hasattr(contact, f)
+        }
+        dispatch_event(
+            session,
+            "contact.updated",
+            contact.id,
+            {
+                "source": "manual",
+                "actor_id": current_user.id,
+                "changed_fields": list(changed_fields),
+                "changes": _wf_changes,
+            },
+        )
+        if (
+            "commercial_status" in changed_fields
+            and contact.commercial_status != _wf_old_commercial_status
+        ):
+            dispatch_event(
+                session,
+                "contact.lifecycle_changed",
+                contact.id,
+                {
+                    "source": "manual",
+                    "actor_id": current_user.id,
+                    "from_status": _wf_old_commercial_status,
+                    "to_status": contact.commercial_status,
+                },
+            )
     return contact
 
 
