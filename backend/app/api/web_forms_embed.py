@@ -9,6 +9,8 @@ Ambos consumen la API pública (`/public/forms/{id}/config.json` +
 `/submit`). El CORS `*` para el prefijo `/forms/` lo aplica el middleware
 de `app.main`.
 """
+# ruff: noqa: E501 — este módulo contiene HTML/JS embebido (widget +
+# iframe) cuyas líneas de template exceden 100 cols a propósito.
 from __future__ import annotations
 
 import html
