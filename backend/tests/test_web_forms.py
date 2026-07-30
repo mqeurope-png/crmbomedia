@@ -378,3 +378,53 @@ def test_public_config_json_exposes_schema_not_secrets(client, session_factory):
     assert "recaptcha_secret" not in json.dumps(body)
     assert "assignment_mode" not in body
     assert "fixed_owner_user_id" not in json.dumps(body)
+
+
+def test_public_endpoints_send_open_cors_header(client, session_factory):
+    with session_factory() as s:
+        fid = _mk_form(s).id
+    r = client.get(f"/public/forms/{fid}/config.json")
+    assert r.headers.get("access-control-allow-origin") == "*"
+
+
+# --- embed: iframe HTML + widget JS (PR-B) ----------------------------------
+
+
+def test_iframe_html_renders_form(client, session_factory):
+    with session_factory() as s:
+        fid = _mk_form(s).id
+    r = client.get(f"/forms/{fid}")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/html")
+    body = r.text
+    assert "Contacto MBO (ES)" in body
+    assert 'name="email"' in body
+    assert 'name="website"' in body  # honeypot presente
+    # El submit se construye en JS: apiBase + "/public/forms/" + id + "/submit".
+    assert "/public/forms/" in body
+    assert fid in body
+
+
+def test_widget_js_served_small_and_selfcontained(client, session_factory):
+    with session_factory() as s:
+        fid = _mk_form(s).id
+    r = client.get(f"/forms/embed/{fid}.js")
+    assert r.status_code == 200
+    assert "javascript" in r.headers["content-type"]
+    body = r.text
+    assert "config.json" in body  # fetch del schema
+    assert fid in body
+    assert "data-bohub-form" in body
+    # Sin dependencias externas (no jQuery/React) y compacto.
+    assert "jquery" not in body.lower()
+    assert len(body.encode()) < 15_000  # <15KB en crudo (gzip aún menor)
+
+
+def test_embed_endpoints_404_when_form_inactive(client, session_factory):
+    with session_factory() as s:
+        form = _mk_form(s)
+        form.is_active = False
+        s.commit()
+        fid = form.id
+    assert client.get(f"/forms/{fid}").status_code == 404
+    assert client.get(f"/forms/embed/{fid}.js").status_code == 404
