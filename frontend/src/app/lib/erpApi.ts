@@ -1,4 +1,4 @@
-import { apiFetch } from "./api";
+import { apiFetch, apiUpload } from "./api";
 
 /** BoHub ERP Fase A — cliente de la API de pedidos (PR 3 backend). */
 
@@ -208,3 +208,74 @@ export const DOMAIN_LABELS: Record<StatusDomain, string> = {
 
 /** Roles con permiso de edición/aprobación en el ERP (espejo de deps.py). */
 export const ERP_EDIT_ROLES = ["admin", "pedidos"] as const;
+
+// --- Cola SAT (PR 5) --------------------------------------------------------
+
+export type SatQueueItem = {
+  id: string;
+  order_number: string;
+  preparation_status: PreparationStatus;
+  payment_status: PaymentStatus;
+  total_amount: number;
+  currency: string;
+  lines: { sku: string; description: string; quantity: number }[];
+};
+
+export async function getSatQueue(): Promise<SatQueueItem[]> {
+  const r = await apiFetch<{ items: SatQueueItem[] }>("/api/erp/sat/queue");
+  return r.items;
+}
+
+/** Catálogo de excepciones que SAT puede reportar (subset del backend con
+ *  subtipos donde aplica). Espejo de ExceptionType/EXCEPTION_SUBTYPES. */
+export const EXCEPTION_CATALOG: {
+  type: string;
+  label: string;
+  subtypes?: { value: string; label: string }[];
+}[] = [
+  {
+    type: "stock_shortage",
+    label: "Falta de stock",
+    subtypes: [
+      { value: "pending_purchase", label: "Pendiente de compra" },
+      { value: "eta_set", label: "Con fecha estimada (ETA)" },
+      { value: "eta_unknown", label: "Sin ETA" },
+      { value: "not_replenishable", label: "Descatalogado" },
+    ],
+  },
+  { type: "material_defective", label: "Material defectuoso (repedir)" },
+  { type: "sat_issue", label: "Problema en preparación" },
+  { type: "size_exceeds_carrier", label: "Excede peso/medidas del transportista" },
+  { type: "blocked_by_customer_request", label: "El cliente pidió parar" },
+];
+
+export async function reportException(
+  orderId: string,
+  body: { type: string; subtype?: string | null; description?: string; metadata?: Record<string, unknown> },
+): Promise<{ id: string; preparation_status: string }> {
+  return apiFetch(`/api/erp/orders/${orderId}/report-exception`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function savePackingInfo(
+  orderId: string,
+  body: { weight_kg?: number | null; dimensions_cm?: string | null; packages?: number | null },
+): Promise<{ packing: Record<string, unknown> }> {
+  return apiFetch(`/api/erp/orders/${orderId}/packing-info`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function attachDocument(
+  orderId: string,
+  file: File,
+): Promise<{ document: Record<string, unknown> }> {
+  const form = new FormData();
+  form.append("file", file);
+  // apiUpload deja que el navegador ponga el boundary multipart (apiFetch
+  // forzaría Content-Type JSON y rompería la subida).
+  return apiUpload(`/api/erp/orders/${orderId}/attach-document`, form);
+}

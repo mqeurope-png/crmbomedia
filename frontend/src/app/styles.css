@@ -10251,3 +10251,38 @@ tr.is-inactive {
   .erp-states { grid-template-columns: repeat(2, 1fr); }
   .erp-detail-grid { grid-template-columns: 1fr; }
 }
+
+/* ===== BoHub ERP — Cola SAT táctil (Fase A PR 5) ==========================
+   Layout full-bleed pensado para tablet vertical + móvil del taller. */
+.sat-shell { min-height: 100vh; display: flex; flex-direction: column; background: #f8fafc; }
+.sat-topbar { display: flex; align-items: center; justify-content: space-between; padding: 12px 18px; background: #0f172a; color: #fff; position: sticky; top: 0; z-index: 10; }
+.sat-topbar-title { font-size: 18px; font-weight: 800; }
+.sat-topbar-back { color: #cbd5e1; text-decoration: none; font-size: 14px; }
+.sat-main { flex: 1; padding: 16px; max-width: 900px; width: 100%; margin: 0 auto; }
+.sat-queue-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+.sat-queue-head h1 { font-size: 20px; margin: 0; }
+.sat-empty { font-size: 18px; text-align: center; padding: 40px 0; color: #16a34a; }
+.sat-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
+.sat-card { display: block; border: 2px solid #e2e8f0; border-radius: 16px; padding: 18px; background: #fff; text-decoration: none; color: inherit; }
+.sat-card:active { transform: scale(0.99); }
+.sat-card-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+.sat-card-num { font-size: 20px; font-weight: 800; }
+.sat-card-warn { color: #b45309; font-weight: 800; font-size: 13px; margin-bottom: 6px; }
+.sat-card-lines { margin: 8px 0; padding-left: 18px; color: #334155; font-size: 15px; }
+.sat-card-cta { color: #2563eb; font-weight: 700; }
+/* Modo trabajo */
+.sat-work { padding: 16px; max-width: 720px; margin: 0 auto; }
+.sat-work h1 { font-size: 24px; margin: 0 0 6px; }
+.sat-work h2 { font-size: 15px; margin: 20px 0 8px; }
+.sat-line-check { display: block; padding: 12px; border: 1px solid #e2e8f0; border-radius: 10px; margin-bottom: 8px; font-size: 16px; }
+.sat-packing-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.sat-upload { display: inline-block; margin-top: 12px; padding: 14px 18px; background: #eef4ff; color: #1d4ed8; border-radius: 12px; font-weight: 700; cursor: pointer; }
+.sat-work-actions { display: flex; flex-direction: column; gap: 12px; margin-top: 24px; }
+.sat-btn { width: 100%; padding: 20px; font-size: 18px; font-weight: 800; border-radius: 14px; border: 0; cursor: pointer; }
+.sat-btn.start { background: #2563eb; color: #fff; }
+.sat-btn.pack { background: #16a34a; color: #fff; }
+.sat-btn.issue { background: #fff; border: 2px solid #fca5a5; color: #b42318; padding: 14px; font-size: 15px; }
+@media (max-width: 640px) {
+  .sat-packing-grid { grid-template-columns: 1fr; }
+  .sat-cards { grid-template-columns: 1fr; }
+}

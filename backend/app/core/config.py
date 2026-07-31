@@ -131,6 +131,14 @@ class Settings(BaseSettings):
     # embed code apunta aquí). Vacío → cae a frontend_base_url.
     web_forms_embed_base_url: str = ""
 
+    # BoHub ERP Fase A — almacenamiento de documentos (fotos SAT, PDFs). El
+    # backend abstracto `DocumentStorage` usa HiDrive si hay credenciales;
+    # si no, cae a disco local en `erp_uploads_dir` (dev + fallback).
+    hidrive_webdav_url: str = ""
+    hidrive_user: str = ""
+    hidrive_password: str = ""
+    erp_uploads_dir: str = "uploads/erp"
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
     @field_validator("integration_secrets_key")
