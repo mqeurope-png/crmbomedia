@@ -25,6 +25,7 @@ from app.models.crm import (
     AssignmentRule,
     Contact,
     ContactTag,
+    CustomFieldDefinition,
     Tag,
     User,
     UserRole,
@@ -428,3 +429,112 @@ def test_embed_endpoints_404_when_form_inactive(client, session_factory):
         fid = form.id
     assert client.get(f"/forms/{fid}").status_code == 404
     assert client.get(f"/forms/embed/{fid}.js").status_code == 404
+
+
+# --- Hotfix editor: mapping + validación + default_value --------------------
+
+
+def test_endpoint_contact_fields_mappable_returns_standard_and_custom(
+    client, session_factory
+):
+    with session_factory() as s:
+        admin_id = s.scalar(select(User.id).where(User.role == UserRole.ADMIN))
+        s.add(CustomFieldDefinition(
+            key="product_interest", label="Producto de interés",
+            field_type="text", source="manual", created_by_user_id=admin_id,
+        ))
+        s.commit()
+    r = client.get("/api/admin/contact-fields-mappable",
+                   headers=auth_headers(client, "manager"))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    std_values = {f["value"] for f in body["standard"]}
+    assert "contact.email" in std_values and "contact.first_name" in std_values
+    cust_values = {f["value"] for f in body["custom"]}
+    assert "contact.custom.product_interest" in cust_values
+    # comercial no accede.
+    assert client.get("/api/admin/contact-fields-mappable",
+                      headers=auth_headers(client, "user")).status_code == 403
+
+
+def _mk_form_custom(session, fields: list[WebFormField], **over) -> WebForm:
+    admin_id = session.scalar(select(User.id).where(User.role == UserRole.ADMIN))
+    form = WebForm(slug=over.pop("slug", "f-custom"), name="F", brand="mbo",
+                   language="es", created_by_user_id=admin_id, **over)
+    session.add(form)
+    session.flush()
+    for f in fields:
+        f.form_id = form.id
+        session.add(f)
+    session.commit()
+    session.refresh(form)
+    return form
+
+
+def test_submit_engine_respects_maps_to_contact_field_when_set(session_factory):
+    """El motor usa maps_to_contact_field, no adivina por field_key: un
+    campo con clave 'nombre_completo' mapeado a contact.first_name debe
+    poblar first_name."""
+    with session_factory() as s:
+        form = _mk_form_custom(s, [
+            WebFormField(field_key="nombre_completo", label="Nombre",
+                         field_type="text", position=0,
+                         maps_to_contact_field="contact.first_name"),
+            WebFormField(field_key="correo", label="Email", field_type="email",
+                         is_required=True, position=1,
+                         maps_to_contact_field="contact.email"),
+        ])
+        _submit(s, form, {"nombre_completo": "Sergio", "correo": "s@lead.com"})
+        c = s.scalar(select(Contact).where(Contact.email == "s@lead.com"))
+        assert c is not None and c.first_name == "Sergio"
+
+
+def test_form_validation_rejects_select_without_options(client):
+    payload = {
+        "slug": "f-sel", "name": "F", "assignment_mode": "none",
+        "fields": [
+            {"field_key": "email", "label": "Email", "field_type": "email",
+             "is_required": True, "position": 0},
+            {"field_key": "prod", "label": "Producto", "field_type": "select",
+             "options": [], "position": 1},
+        ],
+    }
+    r = client.post("/api/admin/forms", json=payload,
+                    headers=auth_headers(client, "manager"))
+    assert r.status_code == 400
+    assert "desplegable" in r.text.lower() or "opción" in r.text.lower()
+
+
+def test_submit_hidden_field_uses_default_value_when_empty(session_factory):
+    """Un campo hidden con default_value que el submit no trae debe usar
+    el default (típico UTM oculto)."""
+    with session_factory() as s:
+        form = _mk_form_custom(s, [
+            WebFormField(field_key="email", label="Email", field_type="email",
+                         is_required=True, position=0,
+                         maps_to_contact_field="contact.email"),
+            WebFormField(field_key="src", label="Origen", field_type="hidden",
+                         is_hidden=True, default_value="web-directa", position=1,
+                         maps_to_contact_field="contact.job_title"),
+        ])
+        # El payload NO trae 'src'.
+        out = _submit(s, form, {"email": "s@lead.com"})
+        assert out.http_status == 200
+        c = s.scalar(select(Contact).where(Contact.email == "s@lead.com"))
+        assert c.job_title == "web-directa"  # default aplicado
+
+
+def test_iframe_renders_hidden_field_with_default_value(client, session_factory):
+    """El campo hidden debe emitirse como input hidden con su default para
+    que llegue en el submit (antes se descartaba)."""
+    with session_factory() as s:
+        form = _mk_form_custom(s, [
+            WebFormField(field_key="email", label="Email", field_type="email",
+                         is_required=True, position=0,
+                         maps_to_contact_field="contact.email"),
+            WebFormField(field_key="utm_source", label="UTM", field_type="hidden",
+                         is_hidden=True, default_value="web-directa", position=1),
+        ], slug="f-hidden")
+        fid = form.id
+    body = client.get(f"/forms/{fid}").text
+    assert 'type="hidden" name="utm_source" value="web-directa"' in body

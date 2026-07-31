@@ -71,7 +71,7 @@ def render_iframe(
     fields = _field_config(form)
     api_base = _api_base()
 
-    rows = "".join(_render_field_html(f) for f in fields if not f["hidden"])
+    rows = "".join(_render_field_html(f) for f in fields)
     recaptcha_script = (
         f'<script src="https://www.google.com/recaptcha/api.js?render='
         f'{html.escape(site_key)}"></script>' if site_key else ""
@@ -145,14 +145,21 @@ def _render_field_html(f: dict) -> str:
     key = html.escape(f["key"])
     label = html.escape(f["label"])
     ph = html.escape(f["placeholder"])
+    default = html.escape(f["default_value"])
     req = ' required' if f["required"] else ""
     star = ' <span class="bh-req">*</span>' if f["required"] else ""
     help_html = f'<span class="bh-help">{html.escape(f["help_text"])}</span>' if f["help_text"] else ""
+    # Campos ocultos (UTM): input hidden con su default_value para que se
+    # envíe en el submit — antes se descartaban y su default se perdía.
+    if f["hidden"] or f["type"] == "hidden":
+        return f'<input type="hidden" name="{key}" value="{default}">'
+    val = f' value="{default}"' if default else ""
     if f["type"] == "textarea":
-        control = f'<textarea name="{key}" placeholder="{ph}"{req} rows="4"></textarea>'
+        control = f'<textarea name="{key}" placeholder="{ph}"{req} rows="4">{default}</textarea>'
     elif f["type"] == "select":
         opts = "".join(
-            f'<option value="{html.escape(str(o.get("value","")))}">'
+            f'<option value="{html.escape(str(o.get("value","")))}"'
+            f'{" selected" if str(o.get("value","")) == f["default_value"] else ""}>'
             f'{html.escape(str(o.get("label","")))}</option>'
             for o in f["options"]
         )
@@ -164,7 +171,7 @@ def _render_field_html(f: dict) -> str:
         )
     else:
         itype = html.escape(f["type"]) if f["type"] in {"email", "tel"} else "text"
-        control = f'<input type="{itype}" name="{key}" placeholder="{ph}"{req}>'
+        control = f'<input type="{itype}" name="{key}" placeholder="{ph}"{req}{val}>'
     return (
         f'<div class="bh-field"><label>{label}{star}</label>'
         f'{control}{help_html}</div>'
@@ -225,14 +232,15 @@ _WIDGET_BOOT_JS = r"""
   document.head.appendChild(style);
   function esc(s){var d=document.createElement("div");d.textContent=s==null?"":s;return d.innerHTML;}
   function field(f){
-    if(f.hidden)return"";
+    var dv=f.default_value||"";
+    if(f.hidden||f.type==="hidden")return'<input type="hidden" name="'+esc(f.key)+'" value="'+esc(dv)+'">';
     var star=f.required?' <span class="bh-req">*</span>':"";
     var help=f.help_text?'<span class="bh-help">'+esc(f.help_text)+'</span>':"";
     var ctrl;
-    if(f.type==="textarea")ctrl='<textarea name="'+esc(f.key)+'" placeholder="'+esc(f.placeholder)+'" rows="4"'+(f.required?" required":"")+'></textarea>';
-    else if(f.type==="select"){var o=(f.options||[]).map(function(x){return'<option value="'+esc(x.value)+'">'+esc(x.label)+'</option>';}).join("");ctrl='<select name="'+esc(f.key)+'"'+(f.required?" required":"")+'><option value="">—</option>'+o+'</select>';}
+    if(f.type==="textarea")ctrl='<textarea name="'+esc(f.key)+'" placeholder="'+esc(f.placeholder)+'" rows="4"'+(f.required?" required":"")+'>'+esc(dv)+'</textarea>';
+    else if(f.type==="select"){var o=(f.options||[]).map(function(x){return'<option value="'+esc(x.value)+'"'+(String(x.value)===dv?" selected":"")+'>'+esc(x.label)+'</option>';}).join("");ctrl='<select name="'+esc(f.key)+'"'+(f.required?" required":"")+'><option value="">—</option>'+o+'</select>';}
     else if(f.type==="checkbox")return'<div class="bh-field"><label><input type="checkbox" name="'+esc(f.key)+'"> '+esc(f.label)+star+'</label>'+help+'</div>';
-    else{var it=(f.type==="email"||f.type==="tel")?f.type:"text";ctrl='<input type="'+it+'" name="'+esc(f.key)+'" placeholder="'+esc(f.placeholder)+'"'+(f.required?" required":"")+'>';}
+    else{var it=(f.type==="email"||f.type==="tel")?f.type:"text";ctrl='<input type="'+it+'" name="'+esc(f.key)+'" placeholder="'+esc(f.placeholder)+'"'+(f.required?" required":"")+(dv?' value="'+esc(dv)+'"':"")+'>';}
     return'<div class="bh-field"><label>'+esc(f.label)+star+'</label>'+ctrl+help+'</div>';
   }
   fetch(API_BASE+"/public/forms/"+FORM_ID+"/config.json").then(function(r){return r.json();}).then(function(cfg){

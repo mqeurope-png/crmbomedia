@@ -19,7 +19,7 @@ from app.core.auth import require_manager
 from app.core.config import get_settings
 from app.core.errors import not_found
 from app.db.session import get_session
-from app.models.crm import User
+from app.models.crm import CustomFieldDefinition, User
 from app.models.web_forms import (
     ASSIGNMENT_MODES,
     FIELD_TYPES,
@@ -30,6 +30,8 @@ from app.models.web_forms import (
 )
 
 router = APIRouter(prefix="/api/admin/forms", tags=["web-forms-admin"])
+# Endpoint auxiliar fuera del prefijo /forms (lo consume el editor).
+aux_router = APIRouter(prefix="/api/admin", tags=["web-forms-admin"])
 
 _SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
@@ -118,6 +120,13 @@ def _validate_enums(payload: FormBase, fields: list[FormFieldIn] | None) -> None
     for f in fields or []:
         if f.field_type not in FIELD_TYPES:
             raise HTTPException(400, f"field_type inválido: {f.field_type!r}")
+        # Bug 3: un desplegable sin opciones es inutilizable.
+        if f.field_type == "select" and not f.options:
+            raise HTTPException(
+                400,
+                f"El campo «{f.label or f.field_key}» es un desplegable y "
+                "necesita al menos una opción.",
+            )
 
 
 def _field_model(form_id: str, f: FormFieldIn) -> WebFormField:
@@ -190,6 +199,51 @@ def _get_form(session: Session, form_id: str) -> WebForm:
     if form is None:
         raise not_found("Form")
     return form
+
+
+# Campos estándar del contacto a los que un form puede mapear. Espejo del
+# whitelist `DIRECT_CONTACT_FIELDS` del motor de submit — solo estos se
+# guardan de verdad en columnas del contacto (el resto va a raw_payload).
+_STANDARD_MAPPABLE: list[tuple[str, str, str]] = [
+    ("contact.first_name", "Nombre", "text"),
+    ("contact.last_name", "Apellidos", "text"),
+    ("contact.email", "Email", "email"),
+    ("contact.phone", "Teléfono", "tel"),
+    ("contact.job_title", "Cargo", "text"),
+    ("contact.personal_website", "Sitio web", "text"),
+    ("contact.linkedin_url", "LinkedIn", "text"),
+    ("contact.address_country", "País", "text"),
+    ("contact.address_city", "Ciudad", "text"),
+    ("contact.address_line", "Dirección", "text"),
+    ("contact.address_postal_code", "Código postal", "text"),
+]
+
+
+@aux_router.get("/contact-fields-mappable")
+def contact_fields_mappable(
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_manager),
+) -> dict[str, list[dict[str, str]]]:
+    """Campos del contacto a los que se puede mapear cada campo del form:
+    estándar (columnas directas) + custom fields definidos en
+    /admin/custom-fields. El editor los pinta en el dropdown «Mapear a»."""
+    _ = current_user
+    standard = [
+        {"value": value, "label": label, "type": ftype, "group": "standard"}
+        for value, label, ftype in _STANDARD_MAPPABLE
+    ]
+    custom = [
+        {
+            "value": f"contact.custom.{cf.key}",
+            "label": f"{cf.label or cf.key} (personalizado)",
+            "type": cf.field_type or "text",
+            "group": "custom",
+        }
+        for cf in session.scalars(
+            select(CustomFieldDefinition).order_by(CustomFieldDefinition.key)
+        )
+    ]
+    return {"standard": standard, "custom": custom}
 
 
 # --- endpoints --------------------------------------------------------------

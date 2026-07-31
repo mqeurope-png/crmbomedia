@@ -10196,3 +10196,10 @@ tr.is-inactive {
 .wf-embed-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 12px 14px; }
 .wf-embed-head h3 { margin: 0; font-size: 14px; }
 .wf-embed-code { margin: 0; padding: 12px 14px; background: #0f172a; color: #e2e8f0; overflow-x: auto; font-size: 12px; }
+
+/* Hotfix editor web-forms */
+.wf-field-map { width: 100%; }
+.wf-field-options { border: 1px dashed var(--line, #cbd5e1); border-radius: 6px; padding: 8px; display: flex; flex-direction: column; gap: 6px; }
+.wf-option-row { display: flex; gap: 6px; }
+.wf-option-row input { flex: 1; }
+.wf-field-more { display: flex; flex-direction: column; gap: 6px; padding: 8px; background: #f8fafc; border-radius: 6px; }
