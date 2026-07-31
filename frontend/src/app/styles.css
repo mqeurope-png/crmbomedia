@@ -10201,6 +10201,13 @@ tr.is-inactive {
 .wf-embed-preview-frame { width: 100%; min-height: 260px; border: 1px solid var(--line, #e5e7eb); border-radius: 8px; background: #fff; }
 .wf-sub-action { margin-right: 6px; }
 .wf-sub-contact-link { font-size: 12px; }
+/* v4 web-forms: widget de estrellas en la preview del editor */
+.wf-preview-stars { display: inline-flex; flex-direction: row-reverse; gap: 0.15em; justify-content: flex-end; }
+.wf-preview-stars input { position: absolute; opacity: 0; pointer-events: none; }
+.wf-preview-star { cursor: pointer; color: #d0d0d0; font-size: 1.7rem; line-height: 1; }
+.wf-preview-star:hover,
+.wf-preview-star:hover ~ .wf-preview-star,
+.wf-preview-stars input:checked ~ .wf-preview-star { color: #f5b301; }
 
 /* Hotfix editor web-forms */
 .wf-field-map { width: 100%; }

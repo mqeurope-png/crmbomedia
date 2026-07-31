@@ -47,4 +47,13 @@ describe("WebFormPreview", () => {
     expect(screen.getByRole("option", { name: "6090" })).toBeInTheDocument();
     expect(screen.getByRole("option", { name: "1390" })).toBeInTheDocument();
   });
+
+  it("un campo tipo stars renderiza 5 estrellas clickeables", () => {
+    render(<WebFormPreview name="F" fields={[
+      field({ field_key: "valoracion", label: "Valoración", field_type: "stars" }),
+    ]} />);
+    // 5 radios (clickeables) + el grupo con rol radiogroup.
+    expect(screen.getAllByRole("radio")).toHaveLength(5);
+    expect(screen.getByRole("radiogroup", { name: "Valoración" })).toBeInTheDocument();
+  });
 });
