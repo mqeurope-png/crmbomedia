@@ -137,6 +137,10 @@ class UserRole(StrEnum):
     MANAGER = "manager"
     USER = "user"
     VIEWER = "viewer"
+    # BoHub ERP Fase A. PEDIDOS revisa/aprueba pedidos; SAT trabaja la cola
+    # táctil del taller. StrEnum con native_enum=False → sin migración.
+    PEDIDOS = "pedidos"
+    SAT = "sat"
 
 
 class Company(TimestampMixin, Base):
@@ -177,8 +181,15 @@ class Company(TimestampMixin, Base):
     external_references_json: Mapped[str | None] = mapped_column(Text)
     custom_fields_json: Mapped[str | None] = mapped_column(Text)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-
-    contacts: Mapped[list["Contact"]] = relationship(back_populates="company")
+    # BoHub ERP Fase A (migración 0080). Vínculo con el cliente FACTUSOL
+    # (CODCLI); el botón «Crear en FACTUSOL» llega en Fase C pero las
+    # columnas nacen ya para que la Cola PEDIDOS detecte «cliente sin
+    # FACTUSOL» como bloqueo desde el primer día.
+    factusol_company_id: Mapped[str | None] = mapped_column(String(36))
+    factusol_synced_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    factusol_sync_source: Mapped[str | None] = mapped_column(String(16))
 
     contacts: Mapped[list["Contact"]] = relationship(back_populates="company")
 
@@ -298,6 +309,12 @@ class Contact(TimestampMixin, Base):
     brevo_contact_id: Mapped[str | None] = mapped_column(String(64))
     brevo_last_synced_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True)
+    )
+    # BoHub ERP Fase A (migración 0080). Vínculo con el contacto FACTUSOL
+    # y marca de contacto principal de su empresa a efectos del ERP.
+    factusol_contact_id: Mapped[str | None] = mapped_column(String(36))
+    factusol_is_primary: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
     )
 
     company: Mapped[Company | None] = relationship(back_populates="contacts")
