@@ -217,4 +217,16 @@ describe("WebFormEditor", () => {
     expect(screen.getAllByRole("option", { name: /Estado comercial/ }).length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByRole("option", { name: /Empresa/ }).length).toBeGreaterThanOrEqual(1);
   });
+
+  // --- v4: tipo campo stars ---
+
+  it("seleccionar tipo «Estrellas» auto-mapea a contact.stars y oculta opciones libres", async () => {
+    const user = userEvent.setup();
+    render(<WebFormEditor formId="new" />);
+    await user.selectOptions(screen.getByLabelText("Tipo campo 1"), "stars");
+    // Auto-map por defecto a contact.stars (el dropdown sigue visible/editable).
+    expect(screen.getByLabelText("Mapear campo 1")).toHaveValue("contact.stars");
+    // No aparece el sub-panel de opciones libres (value/label).
+    expect(screen.queryByLabelText("Opciones campo 1")).not.toBeInTheDocument();
+  });
 });

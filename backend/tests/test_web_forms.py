@@ -964,5 +964,30 @@ def test_stars_mapping_does_not_overwrite_existing_star_rating(session_factory):
         assert c.star_rating == 3  # respeta la valoración ya asignada
 
 
-# NOTE: los tests del NUEVO tipo `stars` (creación + render iframe/HTML) se
-# añaden en el commit de la feature (van con model.FIELD_TYPES + embed).
+def test_field_type_stars_accepted_by_form_creation(client):
+    payload = {
+        "slug": "f-stars-create", "name": "F", "assignment_mode": "none",
+        "fields": [
+            {"label": "Email", "field_type": "email",
+             "maps_to_contact_field": "contact.email"},
+            {"label": "Valoración", "field_type": "stars",
+             "maps_to_contact_field": "contact.stars"},
+        ],
+    }
+    r = client.post("/api/admin/forms", json=payload,
+                    headers=auth_headers(client, "manager"))
+    assert r.status_code == 201, r.text
+    types = {f["field_type"] for f in r.json()["fields"]}
+    assert "stars" in types
+
+
+def test_iframe_and_html_render_stars_field_as_radio_group(client, session_factory):
+    with session_factory() as s:
+        form = _mk_stars_form(s, slug="f-stars-render")
+        fid = form.id
+    for path in (f"/forms/{fid}", f"/public/forms/{fid}/html"):
+        body = client.get(path).text
+        assert 'class="bh-stars"' in body
+        assert 'name="valoracion" value="5"' in body
+        assert 'name="valoracion" value="1"' in body
+        assert "★" in body

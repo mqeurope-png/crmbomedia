@@ -83,6 +83,14 @@ export function WebFormEditor({ formId }: { formId: string }) {
     setForm({ ...form!, fields });
   }
 
+  // v4: al cambiar el tipo a «stars», auto-mapea a contact.stars por defecto
+  // (el user puede cambiarlo luego en el dropdown, que sigue visible).
+  function changeFieldType(idx: number, newType: FormField["field_type"]) {
+    const over: Partial<FormField> = { field_type: newType };
+    if (newType === "stars") over.maps_to_contact_field = "contact.stars";
+    patchField(idx, over);
+  }
+
   function addField() {
     const fields = [...form!.fields, blankField(form!.fields.length)];
     setForm({ ...form!, fields });
@@ -174,7 +182,7 @@ export function WebFormEditor({ formId }: { formId: string }) {
                 <div className="wf-field-row">
                   <select
                     value={f.field_type} aria-label={`Tipo campo ${i + 1}`}
-                    onChange={(e) => patchField(i, { field_type: e.target.value as FormField["field_type"] })}
+                    onChange={(e) => changeFieldType(i, e.target.value as FormField["field_type"])}
                   >
                     {FIELD_TYPES.map((t) => (
                       <option key={t.value} value={t.value}>{t.label}</option>

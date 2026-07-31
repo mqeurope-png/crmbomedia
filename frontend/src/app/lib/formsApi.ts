@@ -4,7 +4,7 @@ import { apiFetch } from "./api";
 
 export type FieldType =
   | "text" | "email" | "tel" | "textarea" | "select" | "checkbox" | "hidden"
-  | "tags";
+  | "tags" | "stars";
 
 export const FIELD_TYPES: { value: FieldType; label: string }[] = [
   { value: "text", label: "Texto" },
@@ -14,6 +14,7 @@ export const FIELD_TYPES: { value: FieldType; label: string }[] = [
   { value: "select", label: "Desplegable" },
   { value: "checkbox", label: "Checkbox (casilla)" },
   { value: "tags", label: "Tags del CRM (multi-select)" },
+  { value: "stars", label: "Estrellas (widget 1-5)" },
   { value: "hidden", label: "Oculto (UTM)" },
 ];
 

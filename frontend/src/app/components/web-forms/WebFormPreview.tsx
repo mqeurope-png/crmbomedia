@@ -1,5 +1,6 @@
 "use client";
 
+import { Fragment } from "react";
 import type { FormField } from "../../lib/formsApi";
 
 /** Preview live del formulario tal y como lo verá el usuario final.
@@ -72,6 +73,29 @@ export function WebFormPreview({
 }
 
 function renderControl(f: FormField) {
+  if (f.field_type === "stars") {
+    // Widget de 5 estrellas clickeables (preview interactivo, no se envía).
+    // input + label como HERMANOS en orden 5→1: con row-reverse el CSS pinta
+    // hasta la estrella hovered/seleccionada (mismo patrón que el embed).
+    return (
+      <div className="wf-preview-stars" role="radiogroup" aria-label={f.label || f.field_key}>
+        {[5, 4, 3, 2, 1].map((v) => (
+          <Fragment key={v}>
+            <input
+              type="radio"
+              name={`preview-${f.field_key}`}
+              value={v}
+              id={`preview-${f.field_key}-${v}`}
+              aria-label={`${v} estrellas`}
+            />
+            <label className="wf-preview-star" htmlFor={`preview-${f.field_key}-${v}`}>
+              ★
+            </label>
+          </Fragment>
+        ))}
+      </div>
+    );
+  }
   if (f.field_type === "textarea") {
     return <textarea placeholder={f.placeholder ?? ""} rows={3} disabled />;
   }
