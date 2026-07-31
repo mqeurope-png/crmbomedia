@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowDown, ArrowUp, Save, Trash2 } from "lucide-react";
+import { ArrowDown, ArrowUp, ChevronDown, Save, Trash2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { getUsers, type User } from "../../lib/api";
@@ -11,9 +11,13 @@ import {
   blankForm,
   createForm,
   FIELD_TYPES,
+  getContactFieldsMappable,
   getForm,
+  listEmailTemplates,
   updateForm,
+  type EmailTemplateItem,
   type FormField,
+  type MappableField,
   type WebFormBase,
 } from "../../lib/formsApi";
 import { WebFormPreview } from "./WebFormPreview";
@@ -26,11 +30,16 @@ export function WebFormEditor({ formId }: { formId: string }) {
   const isNew = formId === "new";
   const [form, setForm] = useState<FormState | null>(isNew ? blankForm() : null);
   const [users, setUsers] = useState<User[]>([]);
+  const [mappable, setMappable] = useState<{ standard: MappableField[]; custom: MappableField[] }>({ standard: [], custom: [] });
+  const [templates, setTemplates] = useState<EmailTemplateItem[]>([]);
+  const [moreOpen, setMoreOpen] = useState<Record<number, boolean>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     getUsers().then((rows) => setUsers(rows.filter((u) => u.is_active))).catch(() => undefined);
+    getContactFieldsMappable().then(setMappable).catch(() => undefined);
+    listEmailTemplates().then(setTemplates).catch(() => undefined);
     if (!isNew) {
       getForm(formId)
         .then((f) => setForm(f))
@@ -69,9 +78,31 @@ export function WebFormEditor({ formId }: { formId: string }) {
     setForm({ ...form!, fields: fields.map((f, i) => ({ ...f, position: i })) });
   }
 
+  // --- opciones de select/checkbox (Bug 3) ---
+  function addOption(idx: number) {
+    const opts = [...form!.fields[idx].options, { value: "", label: "" }];
+    patchField(idx, { options: opts });
+  }
+  function patchOption(idx: number, oi: number, over: Partial<{ value: string; label: string }>) {
+    const opts = form!.fields[idx].options.map((o, i) => (i === oi ? { ...o, ...over } : o));
+    patchField(idx, { options: opts });
+  }
+  function removeOption(idx: number, oi: number) {
+    patchField(idx, { options: form!.fields[idx].options.filter((_, i) => i !== oi) });
+  }
+
   async function save() {
     setBusy(true);
     setError(null);
+    // Bug 3: un desplegable necesita al menos una opción.
+    const badSelect = form!.fields.find(
+      (f) => f.field_type === "select" && f.options.length === 0,
+    );
+    if (badSelect) {
+      setError(`El desplegable «${badSelect.label || badSelect.field_key}» necesita al menos una opción.`);
+      setBusy(false);
+      return;
+    }
     const payload = { ...form!, fields: form!.fields.map((f, i) => ({ ...f, position: i })) };
     try {
       const saved = isNew ? await createForm(payload) : await updateForm(formId, payload);
@@ -124,6 +155,80 @@ export function WebFormEditor({ formId }: { formId: string }) {
                     Obligatorio
                   </label>
                 </div>
+
+                {/* Bug 1: mapear a campo del contacto */}
+                <select
+                  className="wf-field-map"
+                  value={f.maps_to_contact_field ?? ""}
+                  aria-label={`Mapear campo ${i + 1}`}
+                  onChange={(e) => patchField(i, { maps_to_contact_field: e.target.value || null })}
+                >
+                  <option value="">— Sin mapear (solo guardar) —</option>
+                  <optgroup label="Campos del contacto">
+                    {mappable.standard.map((m) => (
+                      <option key={m.value} value={m.value}>{m.label}</option>
+                    ))}
+                  </optgroup>
+                  {mappable.custom.length > 0 ? (
+                    <optgroup label="Personalizados">
+                      {mappable.custom.map((m) => (
+                        <option key={m.value} value={m.value}>{m.label}</option>
+                      ))}
+                    </optgroup>
+                  ) : null}
+                </select>
+
+                {/* Bug 3: opciones de select/checkbox */}
+                {f.field_type === "select" || f.field_type === "checkbox" ? (
+                  <div className="wf-field-options" aria-label={`Opciones campo ${i + 1}`}>
+                    <span className="muted small">Opciones</span>
+                    {f.options.map((o, oi) => (
+                      <div className="wf-option-row" key={oi}>
+                        <input
+                          type="text" placeholder="Valor" value={o.value}
+                          aria-label={`Valor opción ${oi + 1} campo ${i + 1}`}
+                          onChange={(e) => patchOption(i, oi, { value: e.target.value })}
+                        />
+                        <input
+                          type="text" placeholder="Etiqueta" value={o.label}
+                          aria-label={`Etiqueta opción ${oi + 1} campo ${i + 1}`}
+                          onChange={(e) => patchOption(i, oi, { label: e.target.value })}
+                        />
+                        <button type="button" className="button small danger"
+                          aria-label={`Borrar opción ${oi + 1} campo ${i + 1}`}
+                          onClick={() => removeOption(i, oi)}>
+                          <Trash2 size={11} aria-hidden />
+                        </button>
+                      </div>
+                    ))}
+                    <button type="button" className="button small secondary"
+                      onClick={() => addOption(i)}>+ Añadir opción</button>
+                  </div>
+                ) : null}
+
+                {/* Bugs 4/5/6: placeholder, help_text, default_value */}
+                <button type="button" className="link-button small"
+                  aria-expanded={!!moreOpen[i]}
+                  onClick={() => setMoreOpen({ ...moreOpen, [i]: !moreOpen[i] })}>
+                  <ChevronDown size={11} aria-hidden /> Más opciones
+                </button>
+                {moreOpen[i] ? (
+                  <div className="wf-field-more">
+                    <input type="text" placeholder="Placeholder (opcional)"
+                      aria-label={`Placeholder campo ${i + 1}`}
+                      value={f.placeholder ?? ""}
+                      onChange={(e) => patchField(i, { placeholder: e.target.value })} />
+                    <input type="text" placeholder="Texto de ayuda (opcional)"
+                      aria-label={`Ayuda campo ${i + 1}`}
+                      value={f.help_text ?? ""}
+                      onChange={(e) => patchField(i, { help_text: e.target.value })} />
+                    <input type="text" placeholder="Valor por defecto (opcional)"
+                      aria-label={`Default campo ${i + 1}`}
+                      value={f.default_value ?? ""}
+                      onChange={(e) => patchField(i, { default_value: e.target.value })} />
+                  </div>
+                ) : null}
+
                 <div className="wf-field-actions">
                   <button type="button" className="button small secondary" onClick={() => moveField(i, -1)} aria-label={`Subir campo ${i + 1}`}>
                     <ArrowUp size={12} aria-hidden />
@@ -193,9 +298,16 @@ export function WebFormEditor({ formId }: { formId: string }) {
               Enviar email de confirmación al lead
             </label>
             {form.send_confirmation_email ? (
-              <input type="text" placeholder="ID plantilla email (opcional)"
+              <select
+                aria-label="Plantilla de email de confirmación"
                 value={form.confirmation_email_template_id ?? ""}
-                onChange={(e) => patch({ confirmation_email_template_id: e.target.value })} />
+                onChange={(e) => patch({ confirmation_email_template_id: e.target.value || null })}
+              >
+                <option value="">— Selecciona plantilla —</option>
+                {templates.map((t) => (
+                  <option key={t.id} value={t.id}>{t.name}</option>
+                ))}
+              </select>
             ) : null}
           </fieldset>
 

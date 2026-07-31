@@ -153,6 +153,34 @@ export async function getEmbedCode(id: string): Promise<EmbedCode> {
   return apiFetch<EmbedCode>(`/api/admin/forms/${id}/embed-code`);
 }
 
+export type MappableField = {
+  value: string;
+  label: string;
+  type: string;
+  group: string;
+};
+
+/** Campos del contacto a los que mapear cada campo del form (Bug 1). */
+export async function getContactFieldsMappable(): Promise<{
+  standard: MappableField[];
+  custom: MappableField[];
+}> {
+  return apiFetch<{ standard: MappableField[]; custom: MappableField[] }>(
+    "/api/admin/contact-fields-mappable",
+  );
+}
+
+export type EmailTemplateItem = {
+  id: string;
+  name: string;
+  subject: string | null;
+};
+
+/** Plantillas de email para el dropdown de confirmación (Bug 7). */
+export async function listEmailTemplates(): Promise<EmailTemplateItem[]> {
+  return apiFetch<EmailTemplateItem[]>("/api/email-templates");
+}
+
 /** Nuevo campo con valores por defecto. */
 export function blankField(position: number): FormField {
   return {
