@@ -667,3 +667,20 @@ def test_web_form_accepts_language_pt_and_nl(client):
         }, headers=auth_headers(client, "manager"))
         assert r.status_code == 201, r.text
         assert r.json()["language"] == lang
+
+
+def test_iframe_renders_tags_field_as_checkbox_group(client, session_factory):
+    with session_factory() as s:
+        form = _mk_form_custom(s, [
+            WebFormField(field_key="email", label="Email", field_type="email",
+                         position=0, maps_to_contact_field="contact.email"),
+            WebFormField(field_key="modelos", label="Modelos", field_type="tags",
+                         position=1, options_json=json.dumps([
+                             {"tag_id": "t1", "label": "MBO 3050"},
+                             {"tag_id": "t2", "label": "MBO 6090"},
+                         ])),
+        ], slug="f-iframe-tags")
+        fid = form.id
+    body = client.get(f"/forms/{fid}").text
+    assert 'name="modelos[]"' in body
+    assert "MBO 3050" in body and "MBO 6090" in body

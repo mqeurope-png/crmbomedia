@@ -169,6 +169,17 @@ def _render_field_html(f: dict) -> str:
             f'<div class="bh-field"><label>'
             f'<input type="checkbox" name="{key}"> {label}{star}</label>{help_html}</div>'
         )
+    elif f["type"] == "tags":
+        boxes = "".join(
+            f'<label class="bh-check"><input type="checkbox" name="{key}[]" '
+            f'value="{html.escape(str(o.get("tag_id","")))}"> '
+            f'{html.escape(str(o.get("label","")))}</label>'
+            for o in f["options"]
+        )
+        return (
+            f'<div class="bh-field"><label>{label}{star}</label>'
+            f'<div class="bh-tags">{boxes}</div>{help_html}</div>'
+        )
     else:
         itype = html.escape(f["type"]) if f["type"] in {"email", "tel"} else "text"
         control = f'<input type="{itype}" name="{key}" placeholder="{ph}"{req}{val}>'
@@ -200,7 +211,7 @@ window.__bhInit=function(cfg){
     e.preventDefault();
     var btn=form.querySelector("button[type=submit]");if(btn)btn.disabled=true;
     var fd=new FormData(form),body=meta();
-    fd.forEach(function(v,k){body[k]=v;});
+    fd.forEach(function(v,k){if(k.slice(-2)==="[]"){var b=k.slice(0,-2);(body[b]=body[b]||[]).push(v);}else{body[k]=v;}});
     token(function(t){
       if(t)body.recaptcha_token=t;
       fetch(cfg.apiBase+"/public/forms/"+cfg.formId+"/submit",{
@@ -228,7 +239,7 @@ _WIDGET_BOOT_JS = r"""
     if(document.currentScript&&document.currentScript.parentNode)document.currentScript.parentNode.insertBefore(mount,document.currentScript);}
   if(mount.getAttribute("data-bh-mounted"))return;mount.setAttribute("data-bh-mounted","1");
   var style=document.createElement("style");
-  style.textContent='[data-bohub-form] *{box-sizing:border-box}[data-bohub-form] .bh-form{display:flex;flex-direction:column;gap:12px;max-width:520px}[data-bohub-form] .bh-field{display:flex;flex-direction:column;gap:4px}[data-bohub-form] .bh-field label{font-size:14px;font-weight:600}[data-bohub-form] .bh-field input,[data-bohub-form] .bh-field textarea,[data-bohub-form] .bh-field select{padding:10px 12px;border:1px solid #cbd5e1;border-radius:8px;font-size:14px;font-family:inherit}[data-bohub-form] .bh-help{font-size:12px;color:#64748b}[data-bohub-form] .bh-req{color:#dc2626}[data-bohub-form] .bh-btn{padding:12px 16px;background:#2563eb;color:#fff;border:0;border-radius:8px;font-size:15px;font-weight:600;cursor:pointer}[data-bohub-form] .bh-msg{padding:14px;border-radius:8px;font-size:14px}[data-bohub-form] .bh-ok{background:#dcfce7;color:#166534}[data-bohub-form] .bh-err{background:#fee2e2;color:#991b1b}[data-bohub-form] .bh-hp{position:absolute;left:-9999px;width:1px;height:1px;overflow:hidden}';
+  style.textContent='[data-bohub-form] *{box-sizing:border-box}[data-bohub-form] .bh-form{display:flex;flex-direction:column;gap:12px;max-width:520px}[data-bohub-form] .bh-field{display:flex;flex-direction:column;gap:4px}[data-bohub-form] .bh-field label{font-size:14px;font-weight:600}[data-bohub-form] .bh-field input,[data-bohub-form] .bh-field textarea,[data-bohub-form] .bh-field select{padding:10px 12px;border:1px solid #cbd5e1;border-radius:8px;font-size:14px;font-family:inherit}[data-bohub-form] .bh-help{font-size:12px;color:#64748b}[data-bohub-form] .bh-req{color:#dc2626}[data-bohub-form] .bh-btn{padding:12px 16px;background:#2563eb;color:#fff;border:0;border-radius:8px;font-size:15px;font-weight:600;cursor:pointer}[data-bohub-form] .bh-msg{padding:14px;border-radius:8px;font-size:14px}[data-bohub-form] .bh-ok{background:#dcfce7;color:#166534}[data-bohub-form] .bh-err{background:#fee2e2;color:#991b1b}[data-bohub-form] .bh-hp{position:absolute;left:-9999px;width:1px;height:1px;overflow:hidden}[data-bohub-form] .bh-tags{display:flex;flex-direction:column;gap:4px}[data-bohub-form] .bh-check{font-weight:400;display:flex;align-items:center;gap:6px}';
   document.head.appendChild(style);
   function esc(s){var d=document.createElement("div");d.textContent=s==null?"":s;return d.innerHTML;}
   function field(f){
@@ -240,6 +251,7 @@ _WIDGET_BOOT_JS = r"""
     if(f.type==="textarea")ctrl='<textarea name="'+esc(f.key)+'" placeholder="'+esc(f.placeholder)+'" rows="4"'+(f.required?" required":"")+'>'+esc(dv)+'</textarea>';
     else if(f.type==="select"){var o=(f.options||[]).map(function(x){return'<option value="'+esc(x.value)+'"'+(String(x.value)===dv?" selected":"")+'>'+esc(x.label)+'</option>';}).join("");ctrl='<select name="'+esc(f.key)+'"'+(f.required?" required":"")+'><option value="">—</option>'+o+'</select>';}
     else if(f.type==="checkbox")return'<div class="bh-field"><label><input type="checkbox" name="'+esc(f.key)+'"> '+esc(f.label)+star+'</label>'+help+'</div>';
+    else if(f.type==="tags"){var tb=(f.options||[]).map(function(o){return'<label class="bh-check"><input type="checkbox" name="'+esc(f.key)+'[]" value="'+esc(o.tag_id)+'"> '+esc(o.label)+'</label>';}).join("");return'<div class="bh-field"><label>'+esc(f.label)+star+'</label><div class="bh-tags">'+tb+'</div>'+help+'</div>';}
     else{var it=(f.type==="email"||f.type==="tel")?f.type:"text";ctrl='<input type="'+it+'" name="'+esc(f.key)+'" placeholder="'+esc(f.placeholder)+'"'+(f.required?" required":"")+(dv?' value="'+esc(dv)+'"':"")+'>';}
     return'<div class="bh-field"><label>'+esc(f.label)+star+'</label>'+ctrl+help+'</div>';
   }
