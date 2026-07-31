@@ -1,10 +1,11 @@
 "use client";
 
 import { Check, Copy } from "lucide-react";
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import type { EmbedCode } from "../../lib/formsApi";
 
-/** Muestra los 2 snippets de embed (script JS + iframe) con botón copiar. */
+/** Muestra los 3 snippets de embed (script JS + iframe + HTML puro) con
+ *  botón copiar. El HTML puro incluye además una preview aislada. */
 export function WebFormEmbedCode({ embed }: { embed: EmbedCode }) {
   return (
     <div className="wf-embed">
@@ -18,6 +19,25 @@ export function WebFormEmbedCode({ embed }: { embed: EmbedCode }) {
         description="Diseño propio BoHub, aislado de la web. Útil si no puedes tocar el CSS."
         code={embed.iframe_snippet}
       />
+      <Snippet
+        title="HTML puro"
+        description={
+          "Pega este HTML directamente en tu web. Requiere el snippet reCAPTCHA " +
+          "incluido. Estila libremente con tu CSS usando las clases .bh-form, " +
+          ".bh-field, .bh-label, .bh-input, .bh-button."
+        }
+        code={embed.html_snippet}
+      >
+        <div className="wf-embed-preview">
+          <span className="muted small">Vista previa (sin estilar):</span>
+          <iframe
+            className="wf-embed-preview-frame"
+            title="Vista previa del HTML puro"
+            srcDoc={embed.html_snippet}
+            sandbox=""
+          />
+        </div>
+      </Snippet>
     </div>
   );
 }
@@ -26,10 +46,12 @@ function Snippet({
   title,
   description,
   code,
+  children,
 }: {
   title: string;
   description: string;
   code: string;
+  children?: ReactNode;
 }) {
   const [copied, setCopied] = useState(false);
 
@@ -63,6 +85,7 @@ function Snippet({
       <pre className="wf-embed-code">
         <code>{code}</code>
       </pre>
+      {children}
     </div>
   );
 }

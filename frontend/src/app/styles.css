@@ -10196,6 +10196,11 @@ tr.is-inactive {
 .wf-embed-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 12px 14px; }
 .wf-embed-head h3 { margin: 0; font-size: 14px; }
 .wf-embed-code { margin: 0; padding: 12px 14px; background: #0f172a; color: #e2e8f0; overflow-x: auto; font-size: 12px; }
+/* v3 web-forms: preview del HTML puro + badge de acción sobre el contacto */
+.wf-embed-preview { padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; }
+.wf-embed-preview-frame { width: 100%; min-height: 260px; border: 1px solid var(--line, #e5e7eb); border-radius: 8px; background: #fff; }
+.wf-sub-action { margin-right: 6px; }
+.wf-sub-contact-link { font-size: 12px; }
 
 /* Hotfix editor web-forms */
 .wf-field-map { width: 100%; }

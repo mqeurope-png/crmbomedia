@@ -1,9 +1,9 @@
 "use client";
 
-import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
 import { PageHeader } from "../../../../components/PageHeader";
+import { SubmissionsList } from "../../../../components/web-forms/SubmissionsList";
 import { extractErrorMessage } from "../../../../lib/errors";
 import { getSubmissions, type FormSubmissionRow } from "../../../../lib/formsApi";
 
@@ -47,44 +47,7 @@ export default function FormSubmissionsPage() {
       ) : rows.length === 0 ? (
         <p className="muted">No hay submits con este filtro.</p>
       ) : (
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th>Fecha</th>
-              <th>Contacto</th>
-              <th>Estado</th>
-              <th>UTM source</th>
-              <th>IP</th>
-              <th>Payload</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((s) => (
-              <tr key={s.id}>
-                <td className="muted small">{new Date(s.created_at).toLocaleString("es-ES")}</td>
-                <td>
-                  {s.contact_id ? (
-                    <Link href={`/contacts/${s.contact_id}`}>Ver contacto</Link>
-                  ) : (
-                    <span className="muted small">—</span>
-                  )}
-                </td>
-                <td>
-                  {s.is_spam ? (
-                    <span className="badge badge-danger">spam: {s.spam_reason}</span>
-                  ) : (
-                    <span className="badge">ok</span>
-                  )}
-                </td>
-                <td className="muted small">{s.utm_source ?? "—"}</td>
-                <td className="muted small">{s.ip_address ?? "—"}</td>
-                <td className="muted small">
-                  <code>{JSON.stringify(s.payload).slice(0, 80)}</code>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <SubmissionsList rows={rows} />
       )}
     </main>
   );

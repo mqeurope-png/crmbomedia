@@ -91,6 +91,8 @@ export type FormSubmissionRow = {
   contact_id: string | null;
   is_spam: boolean;
   spam_reason: string | null;
+  // v3 Bug 4: created | updated | spam | null (submits pre-migración).
+  contact_action: "created" | "updated" | "spam" | null;
   recaptcha_score: number | null;
   ip_address: string | null;
   utm_source: string | null;
@@ -102,7 +104,12 @@ export type FormSubmissionRow = {
   created_at: string;
 };
 
-export type EmbedCode = { script_snippet: string; iframe_snippet: string };
+export type EmbedCode = {
+  script_snippet: string;
+  iframe_snippet: string;
+  // v3 Bug 3: HTML puro copiable (sin estilar) para pegar en cualquier web.
+  html_snippet: string;
+};
 
 function qs(params: Record<string, string | boolean | undefined>): string {
   const sp = new URLSearchParams();
