@@ -1,6 +1,7 @@
 import { extractErrorMessage, formatFastApiDetail } from "./errors";
 
-export type Role = "admin" | "manager" | "user" | "viewer";
+// BoHub ERP Fase A: roles operativos añadidos al backend (UserRole).
+export type Role = "admin" | "manager" | "user" | "viewer" | "pedidos" | "sat";
 
 export type User = {
   id: string;

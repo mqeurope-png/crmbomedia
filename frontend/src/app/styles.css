@@ -10223,3 +10223,31 @@ tr.is-inactive {
 .wf-tag-chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; background: var(--brand, #2563eb); color: #fff; border-radius: 12px; font-size: 12px; }
 .wf-tag-chip button { background: transparent; border: 0; color: #fff; cursor: pointer; font-size: 14px; line-height: 1; padding: 0; }
 .wf-preview-tags { display: flex; flex-direction: column; gap: 4px; }
+
+/* ===== BoHub ERP (Fase A) ==================================================
+   Reutiliza los tokens del CRM (.badge.{ok,warn,bad,muted,active}, .button,
+   .data-table). Estas clases cubren solo las pantallas ERP. */
+.erp-states { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 4px 0 20px; }
+.erp-state-box { border: 1px solid var(--line, #e5e7eb); border-radius: 12px; padding: 14px; display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+.erp-state-dom { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted, #64748b); font-weight: 700; }
+.erp-state-actions { display: flex; flex-direction: column; gap: 6px; width: 100%; }
+.erp-detail-grid { display: grid; grid-template-columns: 1.3fr 1fr; gap: 18px; align-items: start; }
+.erp-card { border: 1px solid var(--line, #e5e7eb); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+.erp-card h3 { margin: 0 0 10px; font-size: 14px; }
+.erp-timeline { list-style: none; margin: 0; padding: 0; }
+.erp-timeline-item { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; padding: 8px 0; border-bottom: 1px dashed var(--line, #e5e7eb); font-size: 13px; }
+.erp-timeline-item.is-exception .erp-timeline-title { color: #b42318; }
+.erp-timeline-when { color: var(--muted, #94a3b8); white-space: nowrap; font-size: 12px; }
+.erp-timeline-title { font-weight: 600; }
+.erp-blockers { list-style: none; margin: 0 0 14px; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.erp-blocker { font-size: 13px; }
+.erp-approval-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
+.erp-approval-card { border: 1px solid var(--line, #e5e7eb); border-radius: 12px; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+.erp-approval-card.is-blocked { border-color: #fca5a5; background: #fef7f7; }
+.erp-approval-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.erp-approval-num { font-weight: 700; font-size: 16px; }
+.erp-approval-badges { display: flex; gap: 6px; flex-wrap: wrap; }
+@media (max-width: 900px) {
+  .erp-states { grid-template-columns: repeat(2, 1fr); }
+  .erp-detail-grid { grid-template-columns: 1fr; }
+}

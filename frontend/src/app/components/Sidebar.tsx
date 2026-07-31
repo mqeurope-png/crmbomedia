@@ -9,6 +9,7 @@ import {
   Database,
   Kanban,
   Mail,
+  Package,
   Plug,
   ScrollText,
   Shuffle,
@@ -82,6 +83,21 @@ const NAV_ITEMS: ReadonlyArray<Item> = [
     ],
   },
   { href: "/companies", label: "Empresas", icon: Building2, public: true },
+  // BoHub ERP Fase A. Sección ERP visible por rol: admin/manager ven todo;
+  // PEDIDOS ve pedidos + cola de aprobación; SAT solo verá /erp/sat (PR 5);
+  // USER/comercial puede VER la bandeja (read-only en la API); VIEWER no
+  // accede al ERP. Las sub-rutas de SAT/excepciones/settings se añaden en
+  // sus PRs — aquí solo las que ya existen (PR 4).
+  {
+    href: "/erp/orders",
+    label: "ERP · Pedidos",
+    icon: Package,
+    allowedRoles: ["admin", "manager", "pedidos", "user"],
+    children: [
+      { href: "/erp/orders", label: "Bandeja" },
+      { href: "/erp/orders/pending-approval", label: "Cola PEDIDOS" },
+    ],
+  },
   {
     href: "/pipelines",
     label: "Pipelines",
