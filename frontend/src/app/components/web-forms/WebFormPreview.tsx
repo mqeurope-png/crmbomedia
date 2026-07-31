@@ -33,6 +33,21 @@ export function WebFormPreview({
                   <input type="checkbox" disabled /> {f.label || f.field_key}
                   {f.is_required ? <span className="wf-req"> *</span> : null}
                 </label>
+              ) : f.field_type === "tags" ? (
+                <>
+                  <label>{f.label || f.field_key}</label>
+                  <div className="wf-preview-tags">
+                    {f.options.length === 0 ? (
+                      <span className="muted small">Sin tags configuradas.</span>
+                    ) : (
+                      f.options.map((o, oi) => (
+                        <label className="wf-preview-check" key={o.tag_id ?? oi}>
+                          <input type="checkbox" disabled /> {o.label}
+                        </label>
+                      ))
+                    )}
+                  </div>
+                </>
               ) : (
                 <>
                   <label>
