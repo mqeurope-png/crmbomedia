@@ -40,7 +40,9 @@ _SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
 
 class FormFieldIn(BaseModel):
-    field_key: str = Field(min_length=1, max_length=64)
+    # v2 Bug 1: opcional — si viene vacío se autogenera del label
+    # (slugify + sufijo si colisiona). Sigue editable manualmente.
+    field_key: str = Field(default="", max_length=64)
     label: str = Field(min_length=1, max_length=255)
     field_type: str
     placeholder: str | None = None
@@ -103,6 +105,34 @@ class FormDetail(FormBase):
 
 
 # --- helpers ----------------------------------------------------------------
+
+
+import unicodedata  # noqa: E402
+
+
+def _slugify_key(label: str) -> str:
+    """`"¿Cómo nos conociste?"` → `"como_nos_conociste"`."""
+    norm = unicodedata.normalize("NFKD", label or "").encode("ascii", "ignore").decode()
+    norm = re.sub(r"[^a-z0-9]+", "_", norm.lower()).strip("_")
+    return norm or "campo"
+
+
+def _autofill_field_keys(fields: list[FormFieldIn] | None) -> None:
+    """v2 Bug 1. Rellena `field_key` vacíos con slugify(label) y garantiza
+    unicidad dentro del form (sufijo `_2`, `_3`… en colisión, sea el key
+    manual o autogenerado). Muta la lista in-place."""
+    if not fields:
+        return
+    seen: set[str] = set()
+    for f in fields:
+        key = (f.field_key or "").strip() or _slugify_key(f.label)
+        base = key
+        n = 2
+        while key in seen:
+            key = f"{base}_{n}"
+            n += 1
+        seen.add(key)
+        f.field_key = key
 
 
 def _validate_enums(payload: FormBase, fields: list[FormFieldIn] | None) -> None:
@@ -246,6 +276,25 @@ def contact_fields_mappable(
     return {"standard": standard, "custom": custom}
 
 
+@aux_router.get("/tags-selectable")
+def tags_selectable(
+    search: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_manager),
+) -> list[dict[str, str | None]]:
+    """v2 Bug 2. Tags del CRM disponibles como opciones de un campo tipo
+    `tags`. El editor lo usa como autocomplete."""
+    _ = current_user
+    from app.models.crm import Tag  # noqa: PLC0415
+
+    stmt = select(Tag)
+    if search and search.strip():
+        stmt = stmt.where(Tag.name_normalized.like(f"%{search.strip().lower()}%"))
+    rows = list(session.scalars(stmt.order_by(Tag.name).limit(limit)))
+    return [{"id": t.id, "name": t.name, "color": t.color} for t in rows]
+
+
 # --- endpoints --------------------------------------------------------------
 
 
@@ -299,6 +348,7 @@ def create_form(
     session: Session = Depends(get_session),
     current_user: User = Depends(require_manager),
 ) -> FormDetail:
+    _autofill_field_keys(payload.fields)
     _validate_enums(payload, payload.fields)
     if session.scalar(select(WebForm.id).where(WebForm.slug == payload.slug)):
         raise HTTPException(status_code=409, detail=f"slug ya existe: {payload.slug!r}")
@@ -343,6 +393,7 @@ def update_form(
 ) -> FormDetail:
     _ = current_user
     form = _get_form(session, form_id)
+    _autofill_field_keys(payload.fields)
     _validate_enums(payload, payload.fields)
     if payload.slug != form.slug and session.scalar(
         select(WebForm.id).where(WebForm.slug == payload.slug, WebForm.id != form_id)

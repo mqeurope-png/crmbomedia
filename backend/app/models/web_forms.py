@@ -37,7 +37,12 @@ from app.models.crm import Base, TimestampMixin
 
 SUBMIT_SUCCESS_MODES = {"modal", "redirect"}
 ASSIGNMENT_MODES = {"rules", "fixed_owner", "none"}
-FIELD_TYPES = {"text", "email", "tel", "textarea", "select", "checkbox", "hidden"}
+# `tags` = multi-select de tags reales del CRM; sus opciones (options_json)
+# guardan [{tag_id, label}] y al submit se aplican al contacto. No requiere
+# migración: `field_type` es String(16), no un ENUM de MySQL.
+FIELD_TYPES = {
+    "text", "email", "tel", "textarea", "select", "checkbox", "hidden", "tags",
+}
 SPAM_REASONS = {
     "honeypot", "recaptcha_low_score", "rate_limit", "invalid_email",
     "missing_required",

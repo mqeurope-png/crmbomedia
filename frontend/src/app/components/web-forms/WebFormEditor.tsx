@@ -11,6 +11,7 @@ import {
   blankForm,
   createForm,
   FIELD_TYPES,
+  FORM_LANGUAGES,
   getContactFieldsMappable,
   getForm,
   listEmailTemplates,
@@ -21,6 +22,30 @@ import {
   type WebFormBase,
 } from "../../lib/formsApi";
 import { WebFormPreview } from "./WebFormPreview";
+import { WebFormTagsPicker } from "./WebFormTagsPicker";
+
+/** Espejo del slugify del backend para prellenar el field_key vacío. */
+function slugifyKey(label: string): string {
+  const norm = label
+    .normalize("NFKD")
+    .replace(/[̀-ͯ]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return norm || "campo";
+}
+
+function autofillFieldKeys(fields: FormField[]): FormField[] {
+  const seen = new Set<string>();
+  return fields.map((f) => {
+    let key = (f.field_key || "").trim() || slugifyKey(f.label);
+    const base = key;
+    let n = 2;
+    while (seen.has(key)) key = `${base}_${n++}`;
+    seen.add(key);
+    return { ...f, field_key: key };
+  });
+}
 
 type FormState = WebFormBase & { fields: FormField[] };
 
@@ -103,7 +128,9 @@ export function WebFormEditor({ formId }: { formId: string }) {
       setBusy(false);
       return;
     }
-    const payload = { ...form!, fields: form!.fields.map((f, i) => ({ ...f, position: i })) };
+    // Bug 1: autogenera field_key vacíos (slugify + colisión) antes de enviar.
+    const withKeys = autofillFieldKeys(form!.fields);
+    const payload = { ...form!, fields: withKeys.map((f, i) => ({ ...f, position: i })) };
     try {
       const saved = isNew ? await createForm(payload) : await updateForm(formId, payload);
       router.push(`/admin/forms/${saved.id}/embed`);
@@ -135,11 +162,15 @@ export function WebFormEditor({ formId }: { formId: string }) {
                     onChange={(e) => patchField(i, { label: e.target.value })}
                   />
                   <input
-                    type="text" placeholder="clave (field_key)" value={f.field_key}
+                    type="text" placeholder="Nombre técnico (opcional)" value={f.field_key}
                     aria-label={`Clave campo ${i + 1}`}
                     onChange={(e) => patchField(i, { field_key: e.target.value })}
                   />
                 </div>
+                <span className="muted small wf-field-hint">
+                  Nombre interno usado en submissions/reports. Se genera
+                  automáticamente desde la etiqueta si lo dejas vacío.
+                </span>
                 <div className="wf-field-row">
                   <select
                     value={f.field_type} aria-label={`Tipo campo ${i + 1}`}
@@ -156,27 +187,39 @@ export function WebFormEditor({ formId }: { formId: string }) {
                   </label>
                 </div>
 
-                {/* Bug 1: mapear a campo del contacto */}
-                <select
-                  className="wf-field-map"
-                  value={f.maps_to_contact_field ?? ""}
-                  aria-label={`Mapear campo ${i + 1}`}
-                  onChange={(e) => patchField(i, { maps_to_contact_field: e.target.value || null })}
-                >
-                  <option value="">— Sin mapear (solo guardar) —</option>
-                  <optgroup label="Campos del contacto">
-                    {mappable.standard.map((m) => (
-                      <option key={m.value} value={m.value}>{m.label}</option>
-                    ))}
-                  </optgroup>
-                  {mappable.custom.length > 0 ? (
-                    <optgroup label="Personalizados">
-                      {mappable.custom.map((m) => (
+                {/* Bug 1: mapear a campo del contacto (no aplica a tags:
+                    van a la tabla contact_tags, no a una columna). */}
+                {f.field_type !== "tags" ? (
+                  <select
+                    className="wf-field-map"
+                    value={f.maps_to_contact_field ?? ""}
+                    aria-label={`Mapear campo ${i + 1}`}
+                    onChange={(e) => patchField(i, { maps_to_contact_field: e.target.value || null })}
+                  >
+                    <option value="">— Sin mapear (solo guardar) —</option>
+                    <optgroup label="Campos del contacto">
+                      {mappable.standard.map((m) => (
                         <option key={m.value} value={m.value}>{m.label}</option>
                       ))}
                     </optgroup>
-                  ) : null}
-                </select>
+                    {mappable.custom.length > 0 ? (
+                      <optgroup label="Personalizados">
+                        {mappable.custom.map((m) => (
+                          <option key={m.value} value={m.value}>{m.label}</option>
+                        ))}
+                      </optgroup>
+                    ) : null}
+                  </select>
+                ) : null}
+
+                {/* v2 Bug 2: sub-panel de tags del CRM */}
+                {f.field_type === "tags" ? (
+                  <WebFormTagsPicker
+                    value={f.options}
+                    fieldIndex={i}
+                    onChange={(opts) => patchField(i, { options: opts })}
+                  />
+                ) : null}
 
                 {/* Bug 3: opciones de select/checkbox */}
                 {f.field_type === "select" || f.field_type === "checkbox" ? (
@@ -266,7 +309,7 @@ export function WebFormEditor({ formId }: { formId: string }) {
             </label>
             <label>Idioma
               <select value={form.language} onChange={(e) => patch({ language: e.target.value })}>
-                {["es", "en", "fr", "de"].map((l) => <option key={l} value={l}>{l.toUpperCase()}</option>)}
+                {FORM_LANGUAGES.map((l) => <option key={l.value} value={l.value}>{l.label}</option>)}
               </select>
             </label>
           </div>

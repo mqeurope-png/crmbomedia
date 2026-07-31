@@ -35,6 +35,12 @@ beforeEach(() => {
     if (path === "/api/email-templates") {
       return Promise.resolve([{ id: "tpl-1", name: "Bienvenida", subject: "Hola" }]);
     }
+    if (path.startsWith("/api/admin/tags-selectable")) {
+      return Promise.resolve([
+        { id: "tag-1", name: "MBO 3050", color: null },
+        { id: "tag-2", name: "MBO 6090", color: null },
+      ]);
+    }
     return Promise.resolve({ id: "form-1", fields: [] });
   });
   mockUsers.mockResolvedValue([
@@ -144,5 +150,53 @@ describe("WebFormEditor", () => {
     expect(body.fields).toHaveLength(2);
     expect(body.fields[1].maps_to_contact_field).toBe("contact.email");
     await waitFor(() => expect(push).toHaveBeenCalledWith("/admin/forms/form-1/embed"));
+  });
+
+  // --- v2: field_key autofill + tags + idiomas ---
+
+  it("autogenera el field_key del label al guardar si se deja vacío", async () => {
+    const user = userEvent.setup();
+    render(<WebFormEditor formId="new" />);
+    await user.click(screen.getByRole("button", { name: /Añadir campo/i }));
+    // El 3er campo (nuevo) tiene clave vacía; solo ponemos etiqueta.
+    await user.type(screen.getByLabelText("Etiqueta campo 3"), "Nombre completo");
+    await user.type(screen.getByLabelText("Slug"), "f-auto");
+    await user.click(screen.getByRole("button", { name: /Guardar formulario/i }));
+
+    await waitFor(() =>
+      expect(mockFetch).toHaveBeenCalledWith("/api/admin/forms", expect.objectContaining({ method: "POST" })),
+    );
+    const call = mockFetch.mock.calls.find((c) => c[0] === "/api/admin/forms");
+    const body = JSON.parse(call![1].body);
+    expect(body.fields[2].field_key).toBe("nombre_completo");
+  });
+
+  it("un campo tipo Tags CRM muestra el sub-panel + autocomplete carga tags", async () => {
+    const user = userEvent.setup();
+    render(<WebFormEditor formId="new" />);
+    await user.selectOptions(screen.getByLabelText("Tipo campo 1"), "tags");
+    expect(screen.getByLabelText("Tags campo 1")).toBeInTheDocument();
+    // El autocomplete pinta los tags del endpoint.
+    expect(await screen.findByRole("button", { name: /\+ MBO 3050/ })).toBeInTheDocument();
+    // Y NO muestra el dropdown de mapeo (los tags no van a columna).
+    expect(screen.queryByLabelText("Mapear campo 1")).not.toBeInTheDocument();
+  });
+
+  it("añadir un tag crea chip; borrar el chip lo quita", async () => {
+    const user = userEvent.setup();
+    render(<WebFormEditor formId="new" />);
+    await user.selectOptions(screen.getByLabelText("Tipo campo 1"), "tags");
+    await user.click(await screen.findByRole("button", { name: /\+ MBO 3050/ }));
+    // Chip presente + botón quitar.
+    const removeBtn = screen.getByRole("button", { name: /Quitar tag MBO 3050/ });
+    expect(removeBtn).toBeInTheDocument();
+    await user.click(removeBtn);
+    expect(screen.queryByRole("button", { name: /Quitar tag MBO 3050/ })).not.toBeInTheDocument();
+  });
+
+  it("el selector de idioma incluye PT y NL", () => {
+    render(<WebFormEditor formId="new" />);
+    expect(screen.getByRole("option", { name: "PT" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "NL" })).toBeInTheDocument();
   });
 });

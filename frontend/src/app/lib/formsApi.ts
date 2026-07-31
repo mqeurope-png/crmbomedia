@@ -3,7 +3,8 @@ import { apiFetch } from "./api";
 /** Sprint Web-Forms PR-B — cliente de la API admin de formularios web. */
 
 export type FieldType =
-  | "text" | "email" | "tel" | "textarea" | "select" | "checkbox" | "hidden";
+  | "text" | "email" | "tel" | "textarea" | "select" | "checkbox" | "hidden"
+  | "tags";
 
 export const FIELD_TYPES: { value: FieldType; label: string }[] = [
   { value: "text", label: "Texto" },
@@ -12,8 +13,19 @@ export const FIELD_TYPES: { value: FieldType; label: string }[] = [
   { value: "textarea", label: "Texto largo" },
   { value: "select", label: "Desplegable" },
   { value: "checkbox", label: "Checkbox (casilla)" },
+  { value: "tags", label: "Tags del CRM (multi-select)" },
   { value: "hidden", label: "Oculto (UTM)" },
 ];
+
+/** Idiomas soportados en el selector. Añadir uno es 1 línea. */
+export const FORM_LANGUAGES = [
+  { value: "es", label: "ES" },
+  { value: "en", label: "EN" },
+  { value: "fr", label: "FR" },
+  { value: "de", label: "DE" },
+  { value: "pt", label: "PT" },
+  { value: "nl", label: "NL" },
+] as const;
 
 export const ASSIGNMENT_MODES = [
   { value: "rules", label: "Reglas de asignación del CRM" },
@@ -31,7 +43,8 @@ export type FormField = {
   is_required: boolean;
   is_hidden: boolean;
   default_value?: string | null;
-  options: { value: string; label: string }[];
+  // select/checkbox: {value,label}; tags: {tag_id,label}.
+  options: { value?: string; label: string; tag_id?: string }[];
   validation_pattern?: string | null;
   position: number;
   maps_to_contact_field?: string | null;
@@ -177,6 +190,13 @@ export type EmailTemplateItem = {
 };
 
 /** Plantillas de email para el dropdown de confirmación (Bug 7). */
+export type TagOption = { id: string; name: string; color: string | null };
+
+export async function getTagsSelectable(search?: string): Promise<TagOption[]> {
+  const q = search && search.trim() ? `?search=${encodeURIComponent(search.trim())}` : "";
+  return apiFetch<TagOption[]>(`/api/admin/tags-selectable${q}`);
+}
+
 export async function listEmailTemplates(): Promise<EmailTemplateItem[]> {
   return apiFetch<EmailTemplateItem[]>("/api/email-templates");
 }

@@ -117,8 +117,9 @@ def process_submission(
 
     # Asignación (solo contacto nuevo o existente-sin-owner; nunca reasigna).
     _apply_assignment(session, form, contact)
-    # Tag de origen + evento de historial.
+    # Tag de origen + tags seleccionados en campos tipo `tags` + historial.
     _apply_form_tag(session, form, contact)
+    _apply_tag_fields(session, form, contact, payload)
     _record_activity(session, form, contact, payload, meta)
 
     # 6. Submission (no spam).
@@ -156,6 +157,8 @@ def _extract_contact_data(
     custom: dict[str, Any] = {}
     email: str | None = None
     for f in form.fields:
+        if f.field_type == "tags":
+            continue  # los tags se aplican aparte (_apply_tag_fields)
         raw = payload.get(f.field_key)
         value = str(raw).strip() if raw is not None else ""
         if not value:
@@ -269,6 +272,60 @@ def _apply_form_tag(session: Session, form: WebForm, contact: Contact) -> None:
         session, contact_id=contact.id, tag_id=tag.id,
         assigned_by_user_id=None, source="web_form",
     )
+
+
+def _coerce_tag_ids(raw: Any) -> list[str]:
+    """El payload de un campo `tags` llega como lista de tag_ids; toleramos
+    también un string separado por comas (form-encoding)."""
+    if raw is None:
+        return []
+    if isinstance(raw, list):
+        return [str(x).strip() for x in raw if str(x).strip()]
+    return [p.strip() for p in str(raw).split(",") if p.strip()]
+
+
+def _apply_tag_fields(
+    session: Session, form: WebForm, contact: Contact, payload: dict[str, Any]
+) -> None:
+    """v2 Bug 2. Campos tipo `tags`: aplica al contacto los tags reales del
+    CRM seleccionados (por tag_id). Idempotente (assign_tag_to_contact) +
+    audit `contact_tag.added` con via=form. No reasigna nada más."""
+    from app.models.crm import Tag  # noqa: PLC0415
+
+    for f in form.fields:
+        if f.field_type != "tags":
+            continue
+        tag_ids = _coerce_tag_ids(
+            payload.get(f.field_key) or payload.get(f"{f.field_key}[]")
+        )
+        for tag_id in tag_ids:
+            tag = session.get(Tag, tag_id)
+            if tag is None:
+                continue
+            linked = crm_repository.assign_tag_to_contact(
+                session, contact_id=contact.id, tag_id=tag.id,
+                assigned_by_user_id=None, source="form",
+            )
+            if linked:
+                _audit_form_tag(session, form, contact, tag)
+
+
+def _audit_form_tag(session: Session, form: WebForm, contact: Contact, tag: Any) -> None:
+    try:
+        from app.core.audit import record_event  # noqa: PLC0415
+
+        record_event(
+            session,
+            action="contact_tag.added",
+            target_type="contact",
+            target_id=contact.id,
+            metadata={
+                "tag_id": tag.id, "tag_name": tag.name,
+                "via": "form", "form_id": form.id, "form_slug": form.slug,
+            },
+        )
+    except Exception:  # noqa: BLE001 — audit nunca bloquea la captura
+        logger.warning("web_forms.audit form tag failed", exc_info=True)
 
 
 def _record_activity(
