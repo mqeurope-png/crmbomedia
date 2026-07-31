@@ -726,12 +726,17 @@ def test_backfill_uses_single_query_per_alias_not_per_pair(
     backfill_module.run_backfill(r.json()["id"])
 
     list_calls = [c for c in fake_gmail.calls if c[0] == "list_messages"]
-    # PR-OAuth-Google-Unificado. El backfill itera los 4 users activos
-    # del CRM (seed_test_users crea admin/manager/user/viewer) con el
-    # client org compartido — 1 alias cada uno → 4 list_messages.
-    # Lo importante: NO hay explosión por par (sería 4 users × 2
-    # contactos = 8). 4 < 8 confirma que NO se itera por contacto.
-    assert len(list_calls) == 4
+    # PR-OAuth-Google-Unificado. El backfill itera los users activos del
+    # CRM (seed_test_users crea uno por rol de UserRole) con el client
+    # org compartido — 1 alias cada uno → N list_messages. Lo importante:
+    # NO hay explosión por par (sería N users × 2 contactos = 2N). El
+    # conteo se deriva del enum para no romperse al añadir roles (ERP
+    # Fase A añadió pedidos/sat).
+    from app.models.crm import UserRole
+
+    n_users = len(UserRole)
+    assert len(list_calls) == n_users
+    assert len(list_calls) < n_users * 2  # sin explosión alias×contacto
     queries = [c[1]["query"] for c in list_calls]
     # La query debe contener `from:alias OR to:alias`, no `from:alias
     # AND to:contact`.
