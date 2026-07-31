@@ -25,11 +25,11 @@ from app.models.crm import (
     AssignmentRule,
     Contact,
     ContactTag,
+    CustomFieldDefinition,
     Tag,
     User,
     UserRole,
 )
-from app.models.crm import CustomFieldDefinition
 from app.models.web_forms import FormSubmission, WebForm, WebFormField
 from app.services.web_forms import process_submission
 from tests._test_helpers import auth_headers, seed_test_users
