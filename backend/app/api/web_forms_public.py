@@ -89,6 +89,28 @@ def form_config(
     }
 
 
+@router.get("/{form_id}/html")
+def form_pure_html(
+    form_id: str, session: Session = Depends(get_session)
+):
+    """v3 Bug 3. Fragmento HTML puro copiable del formulario (sin
+    <html>/<head>/<body>), con clases semánticas SIN estilar, honeypot y
+    snippet reCAPTCHA v3 inline. Para pegar en cualquier web y maquetar con
+    el CSS propio del sitio."""
+    from fastapi.responses import HTMLResponse  # noqa: PLC0415
+
+    from app.api.web_forms_embed import build_pure_html_fragment  # noqa: PLC0415
+
+    form = _get_active_form(session, form_id)
+    settings = get_settings()
+    base = (
+        settings.web_forms_embed_base_url or settings.frontend_base_url
+    ).rstrip("/")
+    site_key = settings.recaptcha_site_key if form.recaptcha_enabled else None
+    fragment = build_pure_html_fragment(form, api_base=base, site_key=site_key)
+    return HTMLResponse(content=fragment)
+
+
 @router.post("/{form_id}/submit")
 async def form_submit(
     form_id: str, request: Request, session: Session = Depends(get_session)

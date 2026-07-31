@@ -231,9 +231,11 @@ def _get_form(session: Session, form_id: str) -> WebForm:
     return form
 
 
-# Campos estándar del contacto a los que un form puede mapear. Espejo del
-# whitelist `DIRECT_CONTACT_FIELDS` del motor de submit — solo estos se
-# guardan de verdad en columnas del contacto (el resto va a raw_payload).
+# Campos estándar del contacto a los que un form puede mapear. Los
+# primeros son columnas string directas (espejo de `DIRECT_CONTACT_FIELDS`
+# del motor). El bloque v3 son targets con lógica especial en el motor
+# (notas=append, empresa=lookup/create, lead_score/estrellas/estado con
+# coerción + no-pisa). Ver `_apply_mapped_special_fields` en submit.py.
 _STANDARD_MAPPABLE: list[tuple[str, str, str]] = [
     ("contact.first_name", "Nombre", "text"),
     ("contact.last_name", "Apellidos", "text"),
@@ -246,6 +248,12 @@ _STANDARD_MAPPABLE: list[tuple[str, str, str]] = [
     ("contact.address_city", "Ciudad", "text"),
     ("contact.address_line", "Dirección", "text"),
     ("contact.address_postal_code", "Código postal", "text"),
+    # v3 Bug 2 — targets con lógica especial (no columnas string directas).
+    ("contact.notes", "Notas del contacto (append con timestamp)", "textarea"),
+    ("contact.lead_score", "Lead score", "text"),
+    ("contact.stars", "Estrellas (rating 1-5)", "select"),
+    ("contact.commercial_status", "Estado comercial (lifecycle)", "select"),
+    ("contact.company_id", "Empresa (lookup por nombre)", "text"),
 ]
 
 
@@ -454,6 +462,7 @@ def list_submissions(
                 "contact_id": s.contact_id,
                 "is_spam": s.is_spam,
                 "spam_reason": s.spam_reason,
+                "contact_action": s.contact_action,
                 "recaptcha_score": (
                     float(s.recaptcha_score) if s.recaptcha_score is not None else None
                 ),
@@ -478,6 +487,8 @@ def embed_code(
     current_user: User = Depends(require_manager),
 ) -> dict[str, str]:
     _ = current_user
+    from app.api.web_forms_embed import build_pure_html_fragment  # noqa: PLC0415
+
     form = _get_form(session, form_id)
     settings = get_settings()
     base = (settings.web_forms_embed_base_url or settings.frontend_base_url).rstrip("/")
@@ -489,7 +500,15 @@ def embed_code(
         f'<iframe src="{base}/forms/{form.id}" width="100%" height="600" '
         f'frameborder="0" style="border:0;max-width:100%"></iframe>'
     )
-    return {"script_snippet": script_snippet, "iframe_snippet": iframe_snippet}
+    # v3 Bug 3: HTML puro copiable (sin estilar) — mismo builder que sirve
+    # el endpoint público /public/forms/{id}/html.
+    site_key = settings.recaptcha_site_key if form.recaptcha_enabled else None
+    html_snippet = build_pure_html_fragment(form, api_base=base, site_key=site_key)
+    return {
+        "script_snippet": script_snippet,
+        "iframe_snippet": iframe_snippet,
+        "html_snippet": html_snippet,
+    }
 
 
 def _parse_payload(raw: str) -> dict[str, Any]:

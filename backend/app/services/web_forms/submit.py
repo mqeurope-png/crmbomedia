@@ -49,6 +49,19 @@ DIRECT_CONTACT_FIELDS = {
     "address_line", "address_postal_code",
 }
 
+#: Estados comerciales válidos (misma lista que la UI del contacto).
+#: `lifecycle_status` es un alias de `commercial_status` en este modelo.
+ALLOWED_COMMERCIAL_STATUS = {"new", "qualified", "working", "won", "lost"}
+
+#: Targets mapeables que NO son columnas string directas — tienen lógica
+#: propia (notas=append, empresa=lookup/create, etc.) en
+#: `_apply_mapped_special_fields`. `_extract_contact_data` los ignora.
+SPECIAL_MAPPINGS = {
+    "contact.notes", "contact.lead_score", "contact.stars",
+    "contact.commercial_status", "contact.lifecycle_status",
+    "contact.company_id",
+}
+
 
 @dataclass
 class SubmitOutcome:
@@ -120,12 +133,17 @@ def process_submission(
     # Tag de origen + tags seleccionados en campos tipo `tags` + historial.
     _apply_form_tag(session, form, contact)
     _apply_tag_fields(session, form, contact, payload)
+    # v3 Bugs 1+2: notas (append), empresa (lookup/create), lead_score,
+    # estrellas y estado comercial mapeados. Muta `payload` si registra un
+    # intento de cambio de empresa descartado (queda en raw_payload).
+    _apply_mapped_special_fields(session, form, contact, payload)
     _record_activity(session, form, contact, payload, meta)
 
-    # 6. Submission (no spam).
+    # 6. Submission (no spam). v3 Bug 4: marca created/updated para el badge.
     submission = _store_submission(
         session, form, payload, meta,
         contact_id=contact.id, is_spam=False, spam_reason=None, score=score,
+        contact_action="created" if created else "updated",
     )
     session.commit()
 
@@ -328,6 +346,104 @@ def _audit_form_tag(session: Session, form: WebForm, contact: Contact, tag: Any)
         logger.warning("web_forms.audit form tag failed", exc_info=True)
 
 
+# --- campos mapeados con lógica especial (v3 Bugs 1+2) ----------------------
+
+
+def _apply_mapped_special_fields(
+    session: Session, form: WebForm, contact: Contact, payload: dict[str, Any]
+) -> None:
+    """Aplica los campos mapeados a targets que NO son columnas string
+    directas: notas (append con timestamp), lead_score, estrellas, estado
+    comercial y empresa (lookup/create). Respeta la regla de no pisar lo ya
+    poblado — EXCEPTO notas, que siempre añade una entrada nueva."""
+    for f in form.fields:
+        target = (f.maps_to_contact_field or "").strip()
+        if target not in SPECIAL_MAPPINGS:
+            continue
+        raw = payload.get(f.field_key)
+        value = str(raw).strip() if raw is not None else ""
+        if not value:
+            continue
+        if target == "contact.notes":
+            _append_contact_note(session, form, contact, value)
+        elif target == "contact.lead_score":
+            _apply_lead_score(contact, value)
+        elif target == "contact.stars":
+            _apply_stars(contact, value)
+        elif target in ("contact.commercial_status", "contact.lifecycle_status"):
+            _apply_commercial_status(contact, value)
+        elif target == "contact.company_id":
+            _apply_company(session, contact, value, payload)
+    session.flush()
+
+
+def _append_contact_note(
+    session: Session, form: WebForm, contact: Contact, text: str
+) -> None:
+    """`contact.notes` es una tabla timeline (no un campo escalar): cada
+    submit añade una NOTA nueva con timestamp + nombre del form. Nunca pisa
+    notas anteriores. Es el append semántico que pide el spec e idiomático
+    para el timeline del contacto."""
+    from app.models.crm import Note  # noqa: PLC0415
+
+    stamp = datetime.now(UTC).strftime("%Y-%m-%d %H:%M")
+    body = f"--- {stamp} · Formulario: {form.name} ---\n{text}"
+    session.add(Note(contact_id=contact.id, body=body, source="web_form"))
+
+
+def _apply_lead_score(contact: Contact, value: str) -> None:
+    if contact.lead_score is not None:
+        return  # no pisa un score ya asignado
+    try:
+        n = int(float(value))
+    except (TypeError, ValueError):
+        return  # entrada no numérica → se ignora
+    if 0 <= n <= 100:
+        contact.lead_score = n
+
+
+def _apply_stars(contact: Contact, value: str) -> None:
+    if contact.star_rating:
+        return  # no pisa una valoración ya asignada
+    try:
+        n = int(float(value))
+    except (TypeError, ValueError):
+        return
+    if 1 <= n <= 5:
+        contact.star_rating = n
+
+
+def _apply_commercial_status(contact: Contact, value: str) -> None:
+    """Solo aplica si el contacto está sin tocar (default `new`) — nunca
+    degrada un estado ya avanzado (qualified/won/…)."""
+    current = (contact.commercial_status or "").strip()
+    if current and current != "new":
+        return
+    if value in ALLOWED_COMMERCIAL_STATUS:
+        contact.commercial_status = value
+
+
+def _apply_company(
+    session: Session, contact: Contact, name: str, payload: dict[str, Any]
+) -> None:
+    """Empresa por nombre (case-insensitive): la encuentra o la crea con
+    `source='web_form'`. Si el contacto YA tiene empresa, no la pisa y deja
+    constancia del intento en el raw_payload de la submission."""
+    from app.models.crm import Company  # noqa: PLC0415
+
+    if contact.company_id:
+        payload["_company_change_skipped"] = name
+        return
+    existing = session.scalar(
+        select(Company).where(func.lower(Company.name) == name.lower())
+    )
+    if existing is None:
+        existing = Company(name=name, source="web_form")
+        session.add(existing)
+        session.flush()
+    contact.company_id = existing.id
+
+
 def _record_activity(
     session: Session, form: WebForm, contact: Contact,
     payload: dict[str, Any], meta: dict[str, Any],
@@ -375,6 +491,7 @@ def _store_submission(
     session: Session, form: WebForm, payload: dict[str, Any],
     meta: dict[str, Any], *, contact_id: str | None, is_spam: bool,
     spam_reason: str | None, score: float | None,
+    contact_action: str | None = None,
 ) -> FormSubmission:
     submission = FormSubmission(
         form_id=form.id,
@@ -382,6 +499,7 @@ def _store_submission(
         raw_payload_json=json.dumps(_public_payload(payload), default=str),
         is_spam=is_spam,
         spam_reason=spam_reason,
+        contact_action=contact_action,
         recaptcha_score=score,
         ip_address=meta.get("ip"),
         user_agent=(meta.get("user_agent") or None),
@@ -405,6 +523,7 @@ def _record_spam(
     submission = _store_submission(
         session, form, payload, meta,
         contact_id=None, is_spam=True, spam_reason=reason, score=score,
+        contact_action="spam",
     )
     session.commit()
     return SubmitOutcome(

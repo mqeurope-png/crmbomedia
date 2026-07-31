@@ -24,9 +24,11 @@ from app.models.crm import (
     ActivityEvent,
     AssignmentRule,
     AuditLog,
+    Company,
     Contact,
     ContactTag,
     CustomFieldDefinition,
+    Note,
     Tag,
     User,
     UserRole,
@@ -684,3 +686,233 @@ def test_iframe_renders_tags_field_as_checkbox_group(client, session_factory):
     body = client.get(f"/forms/{fid}").text
     assert 'name="modelos[]"' in body
     assert "MBO 3050" in body and "MBO 6090" in body
+
+
+# --- v3: notas + mapeador ampliado + HTML embed + contact_action ------------
+
+
+def _mk_notes_form(session, **over):
+    return _mk_form_custom(session, [
+        WebFormField(field_key="email", label="Email", field_type="email",
+                     is_required=True, position=0,
+                     maps_to_contact_field="contact.email"),
+        WebFormField(field_key="mensaje", label="Mensaje", field_type="textarea",
+                     position=1, maps_to_contact_field="contact.notes"),
+    ], slug=over.pop("slug", "f-notes"), **over)
+
+
+def test_notes_field_appends_with_timestamp_and_form_name(session_factory):
+    import re as _re
+    with session_factory() as s:
+        form = _mk_notes_form(s)
+        _submit(s, form, {"email": "n@lead.com", "mensaje": "Quiero info del 6090"})
+        c = s.scalar(select(Contact).where(Contact.email == "n@lead.com"))
+        notes = s.scalars(select(Note).where(Note.contact_id == c.id)).all()
+        assert len(notes) == 1
+        body = notes[0].body
+        assert "Quiero info del 6090" in body
+        assert f"Formulario: {form.name}" in body
+        assert _re.search(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}", body)
+        assert notes[0].source == "web_form"
+
+
+def test_notes_field_does_not_overwrite_existing_notes(session_factory):
+    with session_factory() as s:
+        form = _mk_notes_form(s)
+        s.add(Contact(first_name="N", email="n@lead.com"))
+        s.flush()
+        c = s.scalar(select(Contact).where(Contact.email == "n@lead.com"))
+        s.add(Note(contact_id=c.id, body="Nota previa importante", source="manual"))
+        s.commit()
+        _submit(s, form, {"email": "n@lead.com", "mensaje": "Nueva desde el form"})
+        bodies = [n.body for n in s.scalars(select(Note).where(Note.contact_id == c.id))]
+        assert len(bodies) == 2
+        assert any("Nota previa importante" in b for b in bodies)  # sigue ahí
+        assert any("Nueva desde el form" in b for b in bodies)     # + la nueva
+
+
+def test_notes_field_first_entry_without_previous_separator(session_factory):
+    with session_factory() as s:
+        form = _mk_notes_form(s)
+        _submit(s, form, {"email": "n@lead.com", "mensaje": "Primera entrada"})
+        c = s.scalar(select(Contact).where(Contact.email == "n@lead.com"))
+        notes = s.scalars(select(Note).where(Note.contact_id == c.id)).all()
+        assert len(notes) == 1
+        # La primera entrada empieza por su propia cabecera, sin arrastrar
+        # contenido anterior (una sola cabecera de separador).
+        assert notes[0].body.startswith("--- ")
+        assert notes[0].body.count("--- ") == 1
+
+
+def test_lead_score_field_ignores_non_numeric_input(session_factory):
+    with session_factory() as s:
+        form = _mk_form_custom(s, [
+            WebFormField(field_key="email", label="Email", field_type="email",
+                         is_required=True, position=0,
+                         maps_to_contact_field="contact.email"),
+            WebFormField(field_key="score", label="Score", field_type="text",
+                         position=1, maps_to_contact_field="contact.lead_score"),
+        ], slug="f-score")
+        _submit(s, form, {"email": "bad@lead.com", "score": "no-numero"})
+        _submit(s, form, {"email": "good@lead.com", "score": "77"})
+        bad = s.scalar(select(Contact).where(Contact.email == "bad@lead.com"))
+        good = s.scalar(select(Contact).where(Contact.email == "good@lead.com"))
+        assert bad.lead_score is None   # no numérico → ignorado
+        assert good.lead_score == 77    # numérico válido → aplicado
+
+
+def test_stars_and_commercial_status_fields_applied(session_factory):
+    with session_factory() as s:
+        form = _mk_form_custom(s, [
+            WebFormField(field_key="email", label="Email", field_type="email",
+                         is_required=True, position=0,
+                         maps_to_contact_field="contact.email"),
+            WebFormField(field_key="rating", label="Interés", field_type="select",
+                         position=1, maps_to_contact_field="contact.stars",
+                         options_json=json.dumps([{"value": "5", "label": "Mucho"}])),
+            WebFormField(field_key="estado", label="Estado", field_type="select",
+                         position=2, maps_to_contact_field="contact.commercial_status",
+                         options_json=json.dumps([{"value": "qualified", "label": "Cualificado"}])),
+        ], slug="f-stars")
+        _submit(s, form, {"email": "n@lead.com", "rating": "5", "estado": "qualified"})
+        c = s.scalar(select(Contact).where(Contact.email == "n@lead.com"))
+        assert c.star_rating == 5
+        assert c.commercial_status == "qualified"
+
+
+def _mk_company_form(session, **over):
+    return _mk_form_custom(session, [
+        WebFormField(field_key="email", label="Email", field_type="email",
+                     is_required=True, position=0,
+                     maps_to_contact_field="contact.email"),
+        WebFormField(field_key="empresa", label="Empresa", field_type="text",
+                     position=1, maps_to_contact_field="contact.company_id"),
+    ], slug=over.pop("slug", "f-company"), **over)
+
+
+def test_company_lookup_by_name_case_insensitive(session_factory):
+    with session_factory() as s:
+        existing = Company(name="Bomedia")
+        s.add(existing)
+        s.flush()
+        cid = existing.id
+        form = _mk_company_form(s)
+        _submit(s, form, {"email": "n@lead.com", "empresa": "bOmEdIa"})
+        c = s.scalar(select(Contact).where(Contact.email == "n@lead.com"))
+        assert c.company_id == cid  # reusa la existente
+        assert s.scalar(select(func.count(Company.id)).where(
+            func.lower(Company.name) == "bomedia")) == 1  # no duplica
+
+
+def test_company_created_when_not_exists_with_form_metadata(session_factory):
+    with session_factory() as s:
+        form = _mk_company_form(s)
+        _submit(s, form, {"email": "n@lead.com", "empresa": "Nueva SL"})
+        comp = s.scalar(select(Company).where(Company.name == "Nueva SL"))
+        assert comp is not None
+        assert comp.source == "web_form"  # provenance del formulario
+        c = s.scalar(select(Contact).where(Contact.email == "n@lead.com"))
+        assert c.company_id == comp.id
+
+
+def test_company_not_overwritten_if_contact_already_has_one(session_factory):
+    with session_factory() as s:
+        orig = Company(name="Original SA")
+        s.add(orig)
+        s.flush()
+        oid = orig.id
+        s.add(Contact(first_name="N", email="n@lead.com", company_id=oid))
+        s.commit()
+        form = _mk_company_form(s)
+        out = _submit(s, form, {"email": "n@lead.com", "empresa": "Otra Distinta"})
+        c = s.scalar(select(Contact).where(Contact.email == "n@lead.com"))
+        assert c.company_id == oid  # respeta la empresa existente
+        # No crea la empresa descartada.
+        assert s.scalar(select(Company).where(Company.name == "Otra Distinta")) is None
+        # Deja constancia del intento en el raw_payload de la submission.
+        sub = s.get(FormSubmission, out.submission_id)
+        assert "_company_change_skipped" in sub.raw_payload_json
+
+
+def test_html_embed_endpoint_returns_valid_html_with_recaptcha_snippet(
+    client, session_factory, monkeypatch
+):
+    from app.core.config import get_settings
+    monkeypatch.setattr(get_settings(), "recaptcha_site_key", "test-site-key")
+    with session_factory() as s:
+        fid = _mk_form(s, recaptcha_enabled=True).id
+    r = client.get(f"/public/forms/{fid}/html")
+    assert r.status_code == 200
+    body = r.text
+    # Fragmento puro: sin <html>/<head>/<body>.
+    assert "<html" not in body.lower() and "<body" not in body.lower()
+    # <form> con action al submit + method POST.
+    assert 'method="POST"' in body and "/public/forms/" in body
+    # reCAPTCHA v3: script api.js + ejecución inline + token.
+    assert "recaptcha/api.js" in body
+    assert "grecaptcha" in body
+    assert "recaptcha_token" in body
+    # Clases semánticas + sugerencia de estilos comentada.
+    assert "bh-form" in body and "bh-field" in body and "bh-button" in body
+    assert "Sugerencia de estilos" in body
+
+
+def test_html_embed_includes_honeypot_and_all_fields(client, session_factory):
+    with session_factory() as s:
+        fid = _mk_form(s).id  # name, email, phone, message
+    r = client.get(f"/public/forms/{fid}/html")
+    assert r.status_code == 200
+    body = r.text
+    assert 'name="website"' in body  # honeypot siempre
+    for key in ("name", "email", "phone", "message"):
+        assert f'name="{key}"' in body
+
+
+def test_submission_contact_action_created_for_new_contact(session_factory):
+    with session_factory() as s:
+        form = _mk_form(s)
+        out = _submit(s, form)
+        sub = s.get(FormSubmission, out.submission_id)
+        assert sub.contact_action == "created"
+
+
+def test_submission_contact_action_updated_for_existing_contact(session_factory):
+    with session_factory() as s:
+        form = _mk_form(s)
+        s.add(Contact(first_name="Sergio", email="sergio@lead.com"))
+        s.commit()
+        out = _submit(s, form)
+        sub = s.get(FormSubmission, out.submission_id)
+        assert sub.contact_action == "updated"
+
+
+def test_submission_contact_action_spam_for_blocked_submission(session_factory):
+    with session_factory() as s:
+        form = _mk_form(s)
+        out = _submit(s, form, _payload(website="http://spam"))
+        sub = s.get(FormSubmission, out.submission_id)
+        assert sub.contact_action == "spam"
+
+
+def test_mappable_endpoint_includes_v3_targets(client):
+    r = client.get("/api/admin/contact-fields-mappable",
+                   headers=auth_headers(client, "manager"))
+    assert r.status_code == 200
+    values = {f["value"] for f in r.json()["standard"]}
+    assert {
+        "contact.notes", "contact.lead_score", "contact.stars",
+        "contact.commercial_status", "contact.company_id",
+    } <= values
+
+
+def test_admin_embed_code_includes_pure_html_snippet(client):
+    r = client.post("/api/admin/forms", json=_create_payload(),
+                    headers=auth_headers(client, "manager"))
+    fid = r.json()["id"]
+    e = client.get(f"/api/admin/forms/{fid}/embed-code",
+                   headers=auth_headers(client, "manager"))
+    assert e.status_code == 200
+    body = e.json()
+    assert "html_snippet" in body
+    assert "bh-form" in body["html_snippet"]
+    assert 'method="POST"' in body["html_snippet"]
