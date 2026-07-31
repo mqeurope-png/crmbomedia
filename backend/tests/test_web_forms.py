@@ -916,3 +916,53 @@ def test_admin_embed_code_includes_pure_html_snippet(client):
     assert "html_snippet" in body
     assert "bh-form" in body["html_snippet"]
     assert 'method="POST"' in body["html_snippet"]
+
+
+# --- v4: fix estrellas + tipo campo `stars` visual -------------------------
+
+
+def _mk_stars_form(session, *, field_type="stars", **over):
+    return _mk_form_custom(session, [
+        WebFormField(field_key="email", label="Email", field_type="email",
+                     is_required=True, position=0,
+                     maps_to_contact_field="contact.email"),
+        WebFormField(field_key="valoracion", label="Valoración",
+                     field_type=field_type, position=1,
+                     maps_to_contact_field="contact.stars"),
+    ], slug=over.pop("slug", "f-stars-v4"), **over)
+
+
+def test_stars_mapping_saves_integer_to_star_rating(session_factory):
+    """Bug 1: un submit con stars=5 sobre contacto nuevo guarda 5 (int) en
+    la columna real star_rating."""
+    with session_factory() as s:
+        form = _mk_stars_form(s)
+        _submit(s, form, {"email": "new@lead.com", "valoracion": "5"})
+        c = s.scalar(select(Contact).where(Contact.email == "new@lead.com"))
+        assert c.star_rating == 5
+        assert isinstance(c.star_rating, int)
+
+
+def test_stars_mapping_ignores_invalid_input(session_factory):
+    with session_factory() as s:
+        form = _mk_stars_form(s)
+        _submit(s, form, {"email": "a@lead.com", "valoracion": "no-numero"})
+        _submit(s, form, {"email": "b@lead.com", "valoracion": "9"})   # fuera de rango
+        _submit(s, form, {"email": "c@lead.com", "valoracion": ""})    # vacío
+        for email in ("a@lead.com", "b@lead.com", "c@lead.com"):
+            c = s.scalar(select(Contact).where(Contact.email == email))
+            assert c is not None and c.star_rating is None
+
+
+def test_stars_mapping_does_not_overwrite_existing_star_rating(session_factory):
+    with session_factory() as s:
+        form = _mk_stars_form(s)
+        s.add(Contact(first_name="X", email="x@lead.com", star_rating=3))
+        s.commit()
+        _submit(s, form, {"email": "x@lead.com", "valoracion": "5"})
+        c = s.scalar(select(Contact).where(Contact.email == "x@lead.com"))
+        assert c.star_rating == 3  # respeta la valoración ya asignada
+
+
+# NOTE: los tests del NUEVO tipo `stars` (creación + render iframe/HTML) se
+# añaden en el commit de la feature (van con model.FIELD_TYPES + embed).

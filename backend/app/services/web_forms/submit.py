@@ -403,14 +403,20 @@ def _apply_lead_score(contact: Contact, value: str) -> None:
 
 
 def _apply_stars(contact: Contact, value: str) -> None:
+    """`contact.stars` → columna `star_rating` (Integer 1-5). Convierte el
+    string del form a int; ignora (con warning) lo no numérico o fuera de
+    rango sin romper el submit. No pisa una valoración ya asignada."""
     if contact.star_rating:
         return  # no pisa una valoración ya asignada
     try:
         n = int(float(value))
     except (TypeError, ValueError):
+        logger.warning("web_forms.stars: valor no numérico ignorado: %r", value)
         return
     if 1 <= n <= 5:
         contact.star_rating = n
+    else:
+        logger.warning("web_forms.stars: valor fuera de rango 1-5 ignorado: %r", value)
 
 
 def _apply_commercial_status(contact: Contact, value: str) -> None:
