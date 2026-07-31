@@ -10,7 +10,10 @@ import { TopBar } from "./TopBar";
 const ANONYMOUS_ROUTES = ["/login", "/password-reset", "/welcome"];
 // PR-F: 4h sin interacción → logout silencioso.
 const IDLE_TIMEOUT_MS = 4 * 60 * 60 * 1000;
-const FULL_BLEED_ROUTES: string[] = [];
+// BoHub ERP Fase A: la Cola SAT táctil renderiza su propio layout ligero
+// (topbar + botón Volver, sin sidebar) — pensado para tablet/móvil del
+// taller. El guard de auth lo hace su propio layout (erp/sat/layout.tsx).
+const FULL_BLEED_ROUTES: string[] = ["/erp/sat"];
 const SIDEBAR_STORAGE_KEY = "crmbo:sidebar:collapsed";
 
 /**

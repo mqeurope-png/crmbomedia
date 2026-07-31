@@ -28,3 +28,6 @@ coverage/
 # Production deploy artifacts (real domain configs are generated from .example)
 deploy/nginx/conf.d/*.conf
 !deploy/nginx/conf.d/*.example
+
+# BoHub ERP — documentos subidos en local (fallback sin HiDrive)
+uploads/

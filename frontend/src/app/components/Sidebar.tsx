@@ -20,6 +20,7 @@ import {
   Users,
   UserCog,
   Workflow,
+  Wrench,
   type LucideIcon,
 } from "lucide-react";
 import Link from "next/link";
@@ -97,6 +98,15 @@ const NAV_ITEMS: ReadonlyArray<Item> = [
       { href: "/erp/orders", label: "Bandeja" },
       { href: "/erp/orders/pending-approval", label: "Cola PEDIDOS" },
     ],
+  },
+  // Cola SAT táctil (taller). Visible para el rol SAT + admin/manager que
+  // supervisan. Es una pantalla full-bleed (layout propio); el enlace del
+  // sidebar solo aplica cuando se navega desde el CRM normal.
+  {
+    href: "/erp/sat",
+    label: "ERP · Taller (SAT)",
+    icon: Wrench,
+    allowedRoles: ["admin", "manager", "sat"],
   },
   {
     href: "/pipelines",
