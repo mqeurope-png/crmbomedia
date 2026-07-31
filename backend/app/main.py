@@ -121,6 +121,13 @@ app.include_router(web_forms_admin_router)
 app.include_router(web_forms_aux_router)
 app.include_router(web_forms_embed_router)
 
+# BoHub ERP Fase A (PR 3): bandeja + Cola PEDIDOS + transiciones + timeline.
+from app.erp.api import order_timeline_router as erp_order_timeline_router  # noqa: E402
+from app.erp.api import orders_router as erp_orders_router  # noqa: E402
+
+app.include_router(erp_orders_router)
+app.include_router(erp_order_timeline_router)
+
 
 # Sprint Web-Forms — CORS abierto (`*`) SOLO para los endpoints públicos
 # de formularios (`/public/forms/*` y `/forms/*`), que se embeben en webs

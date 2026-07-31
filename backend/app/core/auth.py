@@ -17,6 +17,13 @@ ROLE_LEVELS = {
     UserRole.USER: 1,
     UserRole.MANAGER: 2,
     UserRole.ADMIN: 3,
+    # BoHub ERP Fase A. Roles OPERATIVOS fuera de la escalera lineal del
+    # CRM: nivel bajo aquí (SAT=viewer, PEDIDOS=user) para que no hereden
+    # endpoints de manager/admin; el acceso ERP real se controla con
+    # dependencias por conjunto de roles en app/erp/api/deps.py. Sin
+    # nivel aquí, require_role lanzaría KeyError (500) al primer login.
+    UserRole.SAT: 0,
+    UserRole.PEDIDOS: 1,
 }
 
 
