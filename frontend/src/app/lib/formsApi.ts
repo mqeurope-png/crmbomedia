@@ -11,7 +11,7 @@ export const FIELD_TYPES: { value: FieldType; label: string }[] = [
   { value: "tel", label: "Teléfono" },
   { value: "textarea", label: "Texto largo" },
   { value: "select", label: "Desplegable" },
-  { value: "checkbox", label: "Casilla" },
+  { value: "checkbox", label: "Checkbox (casilla)" },
   { value: "hidden", label: "Oculto (UTM)" },
 ];
 

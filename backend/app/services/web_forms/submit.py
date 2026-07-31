@@ -90,6 +90,13 @@ def process_submission(
                 http=400, score=score,
             )
 
+    # Bug 6: prellenar los campos con default_value cuando el submit no
+    # los trae (típico de los hidden UTM). Se aplica ANTES de validar y
+    # de extraer el contacto, así el default cuenta como valor real.
+    for f in form.fields:
+        if f.default_value and not str(payload.get(f.field_key) or "").strip():
+            payload[f.field_key] = f.default_value
+
     # 4. Validación: campos requeridos + email válido.
     data, custom, email = _extract_contact_data(form, payload)
     missing = [
