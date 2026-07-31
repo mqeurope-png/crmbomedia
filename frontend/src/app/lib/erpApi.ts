@@ -279,3 +279,86 @@ export async function attachDocument(
   // forzaría Content-Type JSON y rompería la subida).
   return apiUpload(`/api/erp/orders/${orderId}/attach-document`, form);
 }
+
+// --- Bandeja de excepciones + settings (PR 6) -------------------------------
+
+export type ErpExceptionRow = {
+  id: string;
+  type: string;
+  subtype: string | null;
+  status: "open" | "in_progress" | "resolved" | "dismissed";
+  order_id: string;
+  metadata: Record<string, unknown>;
+  eta_date: string | null;
+  eta_overdue: boolean;
+  assigned_to_user_id: string | null;
+  reported_by_user_id: string | null;
+  resolution_note: string | null;
+  resolved_at: string | null;
+  created_at: string;
+};
+
+export const EXCEPTION_TYPE_LABELS: Record<string, string> = {
+  stock_shortage: "Falta de stock",
+  material_defective: "Material defectuoso",
+  sat_issue: "Problema preparación",
+  size_exceeds_carrier: "Excede transportista",
+  blocked_by_customer_request: "Parada por cliente",
+  carrier_incident: "Incidencia transporte",
+  returned_by_transport: "Devuelto por transporte",
+  factusol_write_failed: "Error escritura FACTUSOL",
+  invoice_email_failed: "Email factura fallido",
+};
+
+export const EXCEPTION_STATUS_LABELS: Record<string, { label: string; tone: string }> = {
+  open: { label: "Abierta", tone: "bad" },
+  in_progress: { label: "En curso", tone: "warn" },
+  resolved: { label: "Resuelta", tone: "ok" },
+  dismissed: { label: "Descartada", tone: "muted" },
+};
+
+export async function listExceptions(
+  filters: { type?: string; status?: string; assigned?: string } = {},
+): Promise<ErpExceptionRow[]> {
+  const r = await apiFetch<{ items: ErpExceptionRow[] }>(`/api/erp/exceptions${qs(filters)}`);
+  return r.items;
+}
+
+export async function assignException(id: string, userId: string | null): Promise<ErpExceptionRow> {
+  return apiFetch(`/api/erp/exceptions/${id}/assign`, {
+    method: "POST",
+    body: JSON.stringify({ assigned_to_user_id: userId }),
+  });
+}
+
+export async function setExceptionStatus(id: string, status: string): Promise<ErpExceptionRow> {
+  return apiFetch(`/api/erp/exceptions/${id}/status`, {
+    method: "POST",
+    body: JSON.stringify({ status }),
+  });
+}
+
+export async function resolveException(id: string, note: string): Promise<ErpExceptionRow> {
+  return apiFetch(`/api/erp/exceptions/${id}/resolve`, {
+    method: "POST",
+    body: JSON.stringify({ resolution_note: note }),
+  });
+}
+
+export type ErpSettings = {
+  default_invoice_mode: "manual" | "auto" | "auto_under_max";
+  auto_invoice_max_amount_eur: number | null;
+  default_carrier_id: string | null;
+  factusol_default_ejercicio: string | null;
+};
+
+export async function getErpSettings(): Promise<ErpSettings> {
+  return apiFetch<ErpSettings>("/api/erp/settings");
+}
+
+export async function updateErpSettings(patch: Partial<ErpSettings>): Promise<ErpSettings> {
+  return apiFetch<ErpSettings>("/api/erp/settings", {
+    method: "PATCH",
+    body: JSON.stringify(patch),
+  });
+}
