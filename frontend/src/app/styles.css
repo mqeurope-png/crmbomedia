@@ -10286,3 +10286,9 @@ tr.is-inactive {
   .sat-packing-grid { grid-template-columns: 1fr; }
   .sat-cards { grid-template-columns: 1fr; }
 }
+
+/* ===== BoHub ERP — bandeja de excepciones + settings (Fase A PR 6) ======== */
+.erp-exc-overdue { background: #fef2f2; }
+.erp-exc-eta-chip { margin-left: 8px; }
+.erp-exc-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.erp-settings-form { display: flex; flex-direction: column; gap: 14px; max-width: 460px; }

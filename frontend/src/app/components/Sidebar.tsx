@@ -97,6 +97,7 @@ const NAV_ITEMS: ReadonlyArray<Item> = [
     children: [
       { href: "/erp/orders", label: "Bandeja" },
       { href: "/erp/orders/pending-approval", label: "Cola PEDIDOS" },
+      { href: "/erp/exceptions", label: "Excepciones" },
     ],
   },
   // Cola SAT táctil (taller). Visible para el rol SAT + admin/manager que
@@ -107,6 +108,12 @@ const NAV_ITEMS: ReadonlyArray<Item> = [
     label: "ERP · Taller (SAT)",
     icon: Wrench,
     allowedRoles: ["admin", "manager", "sat"],
+  },
+  {
+    href: "/erp/settings",
+    label: "ERP · Configuración",
+    icon: Sliders,
+    allowedRoles: ["admin"],
   },
   {
     href: "/pipelines",

@@ -36,6 +36,10 @@ def _require(roles: frozenset[UserRole]):
     return dependency
 
 
+#: Settings del ERP: solo ADMIN (decisión del spec PR 6).
+ERP_ADMIN_ROLES = frozenset({UserRole.ADMIN})
+
 require_erp_view = _require(ERP_VIEW_ROLES)
 require_erp_edit = _require(ERP_EDIT_ROLES)
 require_erp_approve = _require(ERP_APPROVE_ROLES)
+require_erp_admin = _require(ERP_ADMIN_ROLES)
