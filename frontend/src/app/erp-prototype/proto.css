@@ -1,0 +1,53 @@
+/* Sprint 0 — estilos del prototipo ERP (desechable, prefijo .erp-). */
+.erp-shell { max-width: 1180px; margin: 0 auto; padding: 24px 20px 60px; font-size: 14px; }
+.erp-banner { background: #fef3c7; color: #92400e; border: 1px solid #fcd34d; border-radius: 8px; padding: 8px 14px; margin-bottom: 18px; font-size: 12px; }
+.erp-nav { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 22px; }
+.erp-nav a { padding: 8px 14px; border: 1px solid #e2e8f0; border-radius: 8px; text-decoration: none; color: #0f172a; font-weight: 600; font-size: 13px; }
+.erp-nav a:hover { background: #f1f5f9; }
+.erp-h1 { font-size: 20px; margin: 0 0 4px; }
+.erp-sub { color: #64748b; margin: 0 0 18px; }
+.erp-table { width: 100%; border-collapse: collapse; }
+.erp-table th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: #64748b; padding: 8px 10px; border-bottom: 2px solid #e2e8f0; }
+.erp-table td { padding: 10px; border-bottom: 1px solid #f1f5f9; vertical-align: top; }
+.erp-table tr:hover td { background: #f8fafc; }
+.erp-chip { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 11px; font-weight: 700; white-space: nowrap; }
+.erp-chip.ok { background: #ecfdf3; color: #067647; }
+.erp-chip.warn { background: #fffaeb; color: #b54708; }
+.erp-chip.bad { background: #fef3f2; color: #b42318; }
+.erp-chip.muted { background: #f1f5f9; color: #475569; }
+.erp-chip.active { background: #eef4ff; color: #1d4ed8; }
+.erp-domchip { display: flex; flex-direction: column; gap: 2px; font-size: 10px; color: #94a3b8; }
+.erp-grid2 { display: grid; grid-template-columns: 1.4fr 1fr; gap: 22px; align-items: start; }
+.erp-card { border: 1px solid #e2e8f0; border-radius: 12px; padding: 16px; margin-bottom: 16px; background: #fff; }
+.erp-card h3 { margin: 0 0 10px; font-size: 14px; }
+.erp-states { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 16px; }
+.erp-state-box { border: 1px solid #e2e8f0; border-radius: 10px; padding: 12px; text-align: center; }
+.erp-state-box .dom { font-size: 11px; color: #64748b; margin-bottom: 6px; }
+.erp-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.erp-btn { padding: 8px 14px; border-radius: 8px; border: 1px solid #cbd5e1; background: #fff; cursor: pointer; font-weight: 600; font-size: 13px; }
+.erp-btn.primary { background: #2563eb; border-color: #2563eb; color: #fff; }
+.erp-btn.danger { background: #fff; border-color: #fca5a5; color: #b42318; }
+.erp-hist { list-style: none; margin: 0; padding: 0; }
+.erp-hist li { display: flex; gap: 10px; padding: 8px 0; border-bottom: 1px dashed #e2e8f0; font-size: 12.5px; }
+.erp-hist .when { color: #94a3b8; white-space: nowrap; }
+.erp-hist .ev { color: #64748b; font-style: italic; }
+/* Cola SAT táctil */
+.erp-sat { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
+.erp-sat-card { border: 2px solid #e2e8f0; border-radius: 14px; padding: 18px; background: #fff; }
+.erp-sat-card.blocked { border-color: #fca5a5; background: #fef7f7; }
+.erp-sat-card h3 { margin: 0 0 2px; font-size: 18px; }
+.erp-sat-lines { margin: 10px 0; padding-left: 18px; color: #334155; }
+.erp-sat-btn { width: 100%; padding: 18px; font-size: 17px; font-weight: 800; border-radius: 12px; border: 0; cursor: pointer; margin-top: 8px; }
+.erp-sat-btn.start { background: #2563eb; color: #fff; }
+.erp-sat-btn.pack { background: #16a34a; color: #fff; }
+.erp-sat-btn.issue { background: #fff; border: 2px solid #fca5a5; color: #b42318; padding: 10px; font-size: 13px; }
+.erp-unpaid { font-size: 11px; font-weight: 700; color: #b45309; }
+/* Diagramas de estados */
+.erp-flow { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 8px 0 18px; }
+.erp-flow .arrow { color: #94a3b8; }
+.erp-guard { font-size: 11px; color: #7c3aed; background: #f5f3ff; border-radius: 6px; padding: 2px 8px; }
+/* Empresa */
+.erp-kv { display: grid; grid-template-columns: 130px 1fr; row-gap: 6px; font-size: 13px; }
+.erp-kv dt { color: #64748b; } .erp-kv dd { margin: 0; }
+.erp-fsol-chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 12px; border-radius: 999px; font-weight: 700; font-size: 12px; background: #ecfdf3; color: #067647; border: 1px solid #a7f3d0; }
+.erp-fsol-chip.missing { background: #f8fafc; color: #64748b; border-color: #e2e8f0; }
