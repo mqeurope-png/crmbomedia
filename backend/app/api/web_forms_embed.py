@@ -189,6 +189,132 @@ def _render_field_html(f: dict) -> str:
     )
 
 
+# --- HTML puro copiable (v3 Bug 3) ------------------------------------------
+# Fragmento sin <html>/<head>/<body>, clases semánticas SIN estilar, para
+# pegar en cualquier web y maquetar con el CSS propio del sitio. Incluye el
+# honeypot, el snippet reCAPTCHA v3 inline y una sugerencia de estilos base
+# comentada. Sirve tanto al endpoint público /html como al embed-code admin.
+
+_PURE_STYLE_SUGGESTION = """<!-- Sugerencia de estilos base (descomenta y ajusta a tu web):
+<style>
+.bh-form{max-width:520px;display:flex;flex-direction:column;gap:14px}
+.bh-field{display:flex;flex-direction:column;gap:4px}
+.bh-label{font-size:14px;font-weight:600}
+.bh-input{padding:10px 12px;border:1px solid #cbd5e1;border-radius:8px;font-size:14px}
+.bh-button{padding:12px 16px;background:#2563eb;color:#fff;border:0;border-radius:8px;font-size:15px;font-weight:600;cursor:pointer}
+.bh-message{padding:14px;border-radius:8px;font-size:14px;background:#dcfce7;color:#166534}
+</style>
+-->"""
+
+
+def _render_pure_field(f: dict) -> str:
+    """Un campo del form como HTML crudo con clases semánticas (bh-label,
+    bh-input) SIN estilar. Espeja `_render_field_html` pero neutro."""
+    key = html.escape(f["key"])
+    label = html.escape(f["label"])
+    ph = html.escape(f["placeholder"])
+    default = html.escape(f["default_value"])
+    req = " required" if f["required"] else ""
+    star = ' <span class="bh-req">*</span>' if f["required"] else ""
+    help_html = f'<span class="bh-help">{html.escape(f["help_text"])}</span>' if f["help_text"] else ""
+    if f["hidden"] or f["type"] == "hidden":
+        return f'<input type="hidden" name="{key}" value="{default}">'
+    if f["type"] == "textarea":
+        control = f'<textarea class="bh-input" name="{key}" placeholder="{ph}"{req} rows="4">{default}</textarea>'
+    elif f["type"] == "select":
+        opts = "".join(
+            f'<option value="{html.escape(str(o.get("value","")))}"'
+            f'{" selected" if str(o.get("value","")) == f["default_value"] else ""}>'
+            f'{html.escape(str(o.get("label","")))}</option>'
+            for o in f["options"]
+        )
+        control = f'<select class="bh-input" name="{key}"{req}><option value="">—</option>{opts}</select>'
+    elif f["type"] == "checkbox":
+        return (
+            f'<div class="bh-field"><label class="bh-label">'
+            f'<input class="bh-check" type="checkbox" name="{key}"> {label}{star}</label>{help_html}</div>'
+        )
+    elif f["type"] == "tags":
+        boxes = "".join(
+            f'<label class="bh-check-label"><input class="bh-check" type="checkbox" name="{key}[]" '
+            f'value="{html.escape(str(o.get("tag_id","")))}"> '
+            f'{html.escape(str(o.get("label","")))}</label>'
+            for o in f["options"]
+        )
+        return (
+            f'<div class="bh-field"><span class="bh-label">{label}{star}</span>'
+            f'<div class="bh-tags">{boxes}</div>{help_html}</div>'
+        )
+    else:
+        itype = html.escape(f["type"]) if f["type"] in {"email", "tel"} else "text"
+        val = f' value="{default}"' if default else ""
+        control = f'<input class="bh-input" type="{itype}" name="{key}" placeholder="{ph}"{req}{val}>'
+    return (
+        f'<div class="bh-field"><label class="bh-label">{label}{star}</label>'
+        f'{control}{help_html}</div>'
+    )
+
+
+def build_pure_html_fragment(form: WebForm, *, api_base: str, site_key: str | None) -> str:
+    """Fragmento HTML puro copiable del formulario. `<form>` con
+    action/method reales al endpoint de submit, honeypot siempre, y un
+    snippet inline (~25 líneas) que ejecuta reCAPTCHA v3 y envía como JSON
+    vía fetch (sin navegación, sin dependencias externas)."""
+    fields = _field_config(form)
+    action = f"{api_base}/public/forms/{form.id}/submit"
+    form_dom_id = f"bh-form-{form.id}"
+    rows = "\n".join(_render_pure_field(f) for f in fields)
+    honeypot = (
+        '<input class="bh-hp" type="text" name="website" tabindex="-1" '
+        'autocomplete="off" aria-hidden="true" style="position:absolute;left:-9999px">'
+    )
+    recaptcha_head = (
+        f'<script src="https://www.google.com/recaptcha/api.js?render={html.escape(site_key)}" async defer></script>\n'
+        if site_key else ""
+    )
+    submit_js = f"""<script>
+(function(){{
+  var form=document.getElementById({json.dumps(form_dom_id)});
+  if(!form)return;
+  var SITE_KEY={json.dumps(site_key)},ACTION={json.dumps(action)};
+  function send(token){{
+    var data={{}};
+    new FormData(form).forEach(function(v,k){{if(k.slice(-2)==="[]"){{var b=k.slice(0,-2);(data[b]=data[b]||[]).push(v);}}else{{data[k]=v;}}}});
+    if(token)data.recaptcha_token=token;
+    var p=new URLSearchParams(location.search);
+    ["utm_source","utm_medium","utm_campaign"].forEach(function(k){{if(p.get(k))data[k]=p.get(k);}});
+    data.referrer=document.referrer||"";data.landing_page=location.href;
+    var msg=form.querySelector(".bh-message");
+    fetch(ACTION,{{method:"POST",headers:{{"Content-Type":"application/json"}},body:JSON.stringify(data)}})
+      .then(function(r){{return r.json();}})
+      .then(function(j){{
+        if(j.success&&j.action==="redirect"&&j.redirect_url){{location.href=j.redirect_url;return;}}
+        if(msg){{msg.style.display="block";msg.textContent=j.success?(j.success_message||"¡Gracias! Hemos recibido tu solicitud."):"No se pudo enviar. Revisa los datos.";}}
+        if(j.success)form.reset();
+      }})
+      .catch(function(){{if(msg){{msg.style.display="block";msg.textContent="Error de conexión. Inténtalo de nuevo.";}}}});
+  }}
+  form.addEventListener("submit",function(e){{
+    e.preventDefault();
+    if(SITE_KEY&&window.grecaptcha){{grecaptcha.ready(function(){{grecaptcha.execute(SITE_KEY,{{action:"submit"}}).then(send);}});}}
+    else{{send(null);}}
+  }});
+}})();
+</script>"""
+    return (
+        f'{recaptcha_head}'
+        f'<form class="bh-form" id="{form_dom_id}" action="{html.escape(action)}" method="POST">\n'
+        f'{rows}\n'
+        f'{honeypot}\n'
+        f'<input type="hidden" name="recaptcha_token" value="">\n'
+        f'<button class="bh-button" type="submit">Enviar</button>\n'
+        f'<div class="bh-message" role="status" style="display:none"></div>\n'
+        f'</form>\n'
+        f'{submit_js}\n'
+        f'{_PURE_STYLE_SUGGESTION}'
+    )
+
+
 # --- widget JS (vanilla, sin dependencias) ----------------------------------
 # `__bhInit(cfg)` monta el comportamiento sobre un <form> ya presente
 # (iframe) o renderizado por el boot (widget). Compacto para <15KB gzip.

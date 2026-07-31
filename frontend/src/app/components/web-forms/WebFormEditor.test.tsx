@@ -26,6 +26,11 @@ beforeEach(() => {
         standard: [
           { value: "contact.email", label: "Email", type: "email", group: "standard" },
           { value: "contact.first_name", label: "Nombre", type: "text", group: "standard" },
+          { value: "contact.notes", label: "Notas del contacto (append con timestamp)", type: "textarea", group: "standard" },
+          { value: "contact.lead_score", label: "Lead score", type: "text", group: "standard" },
+          { value: "contact.stars", label: "Estrellas (rating 1-5)", type: "select", group: "standard" },
+          { value: "contact.commercial_status", label: "Estado comercial (lifecycle)", type: "select", group: "standard" },
+          { value: "contact.company_id", label: "Empresa (lookup por nombre)", type: "text", group: "standard" },
         ],
         custom: [
           { value: "contact.custom.prod", label: "Producto (personalizado)", type: "text", group: "custom" },
@@ -198,5 +203,18 @@ describe("WebFormEditor", () => {
     render(<WebFormEditor formId="new" />);
     expect(screen.getByRole("option", { name: "PT" })).toBeInTheDocument();
     expect(screen.getByRole("option", { name: "NL" })).toBeInTheDocument();
+  });
+
+  // --- v3: mapeador ampliado ---
+
+  it("el dropdown «Mapear a» incluye los campos v3 (notas, lead score, estrellas, estado, empresa)", async () => {
+    render(<WebFormEditor formId="new" />);
+    expect(
+      await screen.findAllByRole("option", { name: /Notas del contacto/ }),
+    ).not.toHaveLength(0);
+    expect(screen.getAllByRole("option", { name: "Lead score" }).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByRole("option", { name: /Estrellas/ }).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByRole("option", { name: /Estado comercial/ }).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByRole("option", { name: /Empresa/ }).length).toBeGreaterThanOrEqual(1);
   });
 });

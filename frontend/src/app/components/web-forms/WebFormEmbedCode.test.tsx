@@ -5,15 +5,22 @@ import { WebFormEmbedCode } from "./WebFormEmbedCode";
 const embed = {
   script_snippet: '<script src="https://crm/forms/embed/f1.js" async></script>',
   iframe_snippet: '<iframe src="https://crm/forms/f1"></iframe>',
+  html_snippet: '<form class="bh-form" action="https://crm/public/forms/f1/submit" method="POST"></form>',
 };
 
 describe("WebFormEmbedCode", () => {
-  it("muestra los 2 snippets (script + iframe)", () => {
+  it("muestra los 3 snippets (script + iframe + HTML puro)", () => {
     render(<WebFormEmbedCode embed={embed} />);
     expect(screen.getByText(/Script JS \(recomendado\)/i)).toBeInTheDocument();
     expect(screen.getByText(/iframe \(aislado\)/i)).toBeInTheDocument();
+    expect(screen.getByText(/HTML puro/i)).toBeInTheDocument();
     expect(screen.getByText(embed.script_snippet)).toBeInTheDocument();
     expect(screen.getByText(embed.iframe_snippet)).toBeInTheDocument();
+    expect(screen.getByText(embed.html_snippet)).toBeInTheDocument();
+    // La preview aislada del HTML puro.
+    expect(
+      screen.getByTitle("Vista previa del HTML puro"),
+    ).toBeInTheDocument();
   });
 
   it("copia el snippet al clipboard al pulsar Copiar", async () => {

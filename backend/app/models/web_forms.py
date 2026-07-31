@@ -47,6 +47,9 @@ SPAM_REASONS = {
     "honeypot", "recaptcha_low_score", "rate_limit", "invalid_email",
     "missing_required",
 }
+# v3 Bug 4: qué le pasó al contacto en cada submit (para el badge de la
+# vista de Submissions). NULL = submits pre-migración 0079.
+CONTACT_ACTIONS = {"created", "updated", "spam"}
 
 
 class WebForm(TimestampMixin, Base):
@@ -143,6 +146,8 @@ class FormSubmission(Base):
     raw_payload_json: Mapped[str] = mapped_column(Text, nullable=False)
     is_spam: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     spam_reason: Mapped[str | None] = mapped_column(String(128))
+    # v3 Bug 4: created | updated | spam (NULL en submits pre-0079).
+    contact_action: Mapped[str | None] = mapped_column(String(16))
     recaptcha_score: Mapped[float | None] = mapped_column(Numeric(3, 2))
     ip_address: Mapped[str | None] = mapped_column(String(45))
     user_agent: Mapped[str | None] = mapped_column(String(512))
