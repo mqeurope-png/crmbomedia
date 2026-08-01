@@ -130,6 +130,11 @@ class ExternalSystem(StrEnum):
     # el timeout de 60 s de Nginx; el handler tira de la cuenta Gmail
     # del admin que dispara el job.
     EMAIL_TEMPLATES = "email_templates"
+    # BoHub ERP Fase B — integraciones "live" del ERP. WooCommerce = una
+    # cuenta por tienda (boprint/artisjet/flux); GENEI = 1 sola cuenta
+    # (envios@bomedia.net). Reusan integration_accounts + Fernet.
+    WOOCOMMERCE = "woocommerce"
+    GENEI = "genei"
 
 
 class UserRole(StrEnum):
