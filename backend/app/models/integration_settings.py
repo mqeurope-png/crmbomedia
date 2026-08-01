@@ -98,6 +98,19 @@ class IntegrationAccount(TimestampMixin, Base):
     )
     sync_priority: Mapped[int] = mapped_column(Integer, default=100, nullable=False)
 
+    # BoHub ERP Fase B (migración 0081). Campos comunes a WooCommerce y
+    # otras integraciones "live" del ERP. Nullable en todos los sistemas
+    # existentes (AgileCRM/Brevo/etc.) — solo se rellenan cuando aplican.
+    #
+    # WooCommerce necesita 2 secretos (consumer_key + consumer_secret)
+    # ambos cifrados con Fernet — la infra existente solo tenía uno
+    # (api_key_encrypted). `metadata_json` es el saco genérico para datos
+    # de integración (addressId de Genei, versión API, etc.).
+    base_url: Mapped[str | None] = mapped_column(String(255))
+    consumer_key_encrypted: Mapped[str | None] = mapped_column(Text)
+    consumer_secret_encrypted: Mapped[str | None] = mapped_column(Text)
+    metadata_json: Mapped[str | None] = mapped_column(Text)
+
 
 # Backwards-compatible alias for any caller still importing the old name.
 # All first-party code now imports `IntegrationAccount` directly.

@@ -7,6 +7,12 @@ from app.erp.models.exceptions import (
     ExceptionStatus,
     ExceptionType,
 )
+from app.erp.models.integration_events import (
+    MAX_RETRIES,
+    RETRY_BACKOFF_SECONDS,
+    IntegrationEvent,
+    IntegrationEventStatus,
+)
 from app.erp.models.orders import (
     InvoiceStatus,
     Order,
@@ -24,11 +30,15 @@ from app.erp.models.sku_mapping import ProductSkuMapping, SkuMatchedBy
 __all__ = [
     "EXCEPTION_SUBTYPES",
     "ERP_SETTINGS_SINGLETON_ID",
+    "MAX_RETRIES",
+    "RETRY_BACKOFF_SECONDS",
     "Carrier",
     "ErpException",
     "ErpSettings",
     "ExceptionStatus",
     "ExceptionType",
+    "IntegrationEvent",
+    "IntegrationEventStatus",
     "InvoiceMode",
     "InvoiceStatus",
     "Order",
