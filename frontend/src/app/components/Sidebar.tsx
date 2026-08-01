@@ -116,6 +116,12 @@ const NAV_ITEMS: ReadonlyArray<Item> = [
     allowedRoles: ["admin"],
   },
   {
+    href: "/admin/erp/integrations/woocommerce",
+    label: "ERP · Integraciones · Woo",
+    icon: Plug,
+    allowedRoles: ["admin"],
+  },
+  {
     href: "/pipelines",
     label: "Pipelines",
     icon: Kanban,

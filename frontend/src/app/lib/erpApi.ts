@@ -362,3 +362,57 @@ export async function updateErpSettings(patch: Partial<ErpSettings>): Promise<Er
     body: JSON.stringify(patch),
   });
 }
+
+// --- WooCommerce multi-tienda admin (Fase B PR B-2) --------------------------
+
+export type WooStore = {
+  id: string;
+  account_id: string;
+  display_name: string;
+  base_url: string;
+  enabled: boolean;
+  credential_status: string;
+};
+
+export type WooStoreCreate = {
+  account_id: string;
+  display_name: string;
+  base_url: string;
+  consumer_key: string;
+  consumer_secret: string;
+  enabled?: boolean;
+};
+
+export type WooStoreUpdate = Partial<Omit<WooStoreCreate, "account_id">>;
+
+export async function listWooStores(): Promise<WooStore[]> {
+  const r = await apiFetch<{ items: WooStore[] }>("/api/erp/integrations/woocommerce/stores");
+  return r.items;
+}
+
+export async function createWooStore(payload: WooStoreCreate): Promise<WooStore> {
+  return apiFetch("/api/erp/integrations/woocommerce/stores", {
+    method: "POST", body: JSON.stringify(payload),
+  });
+}
+
+export async function updateWooStore(id: string, patch: WooStoreUpdate): Promise<WooStore> {
+  return apiFetch(`/api/erp/integrations/woocommerce/stores/${id}`, {
+    method: "PATCH", body: JSON.stringify(patch),
+  });
+}
+
+export async function testWooStore(id: string): Promise<{ ok: boolean; status?: number; detail?: string }> {
+  return apiFetch(`/api/erp/integrations/woocommerce/stores/${id}/test-connection`, {
+    method: "POST",
+  });
+}
+
+export async function syncWooBackfill(
+  id: string, sinceIso?: string,
+): Promise<{ ok: boolean; queued?: boolean; job_id?: string; outcome?: Record<string, unknown> }> {
+  const q = sinceIso ? `?since_iso=${encodeURIComponent(sinceIso)}` : "";
+  return apiFetch(`/api/erp/integrations/woocommerce/stores/${id}/sync-backfill${q}`, {
+    method: "POST",
+  });
+}
