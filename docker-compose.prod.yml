@@ -157,6 +157,24 @@ services:
       # Sprint Backup. Cola virtual para el job manual + scheduled
       # cada 72 h. `backups:create` cubre los dos caminos.
       - backups:create
+      # BoHub ERP Fase B (hotfix B-2-fix). Colas de las integraciones
+      # live del ERP. Sin ellas en esta lista los jobs se quedan
+      # eternamente en Redis sin procesar (mismo bug que
+      # agilecrm:periodic_read arriba):
+      #  - woocommerce:import    → procesa integration_events de los
+      #                            webhooks Woo (receiver del PR B-3).
+      #  - woocommerce:backfill  → sync-backfill manual desde la UI
+      #                            admin de tiendas (PR B-2).
+      #  - genei:shipments       → operaciones async del adaptador
+      #                            Genei: descarga de etiqueta PDF +
+      #                            subida a HiDrive (PR B-4).
+      #  - genei:webhooks        → procesa integration_events del
+      #                            notificationUrl de Genei (tracking
+      #                            async, PR B-4).
+      - woocommerce:import
+      - woocommerce:backfill
+      - genei:shipments
+      - genei:webhooks
     volumes:
       # Sprint Backup-Hardening. El worker ejecuta
       # `scripts/backup-crmbo.sh` via subprocess: necesita el script
