@@ -78,6 +78,22 @@ export default function ErpSettingsPage() {
             onChange={(e) => setCfg({ ...cfg, factusol_default_ejercicio: e.target.value || null })}
           />
         </label>
+        <label className="field">
+          <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <input
+              type="checkbox"
+              checked={cfg.factusol_live}
+              aria-label="FACTUSOL en producción"
+              onChange={(e) => setCfg({ ...cfg, factusol_live: e.target.checked })}
+            />
+            FACTUSOL en producción (Fase C)
+          </span>
+          <span className="muted small">
+            Mientras esté desactivado, los pedidos con SKU sin mapear o empresa
+            sin vincular a FACTUSOL muestran un aviso pero <strong>se pueden
+            aprobar</strong>. Al activarlo, esos avisos pasan a ser bloqueos.
+          </span>
+        </label>
         <div>
           <button type="button" className="button" onClick={save} disabled={busy}>
             {busy ? "Guardando…" : "Guardar"}

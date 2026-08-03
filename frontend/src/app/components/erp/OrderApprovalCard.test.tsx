@@ -18,7 +18,8 @@ function order(over: Partial<PendingOrder> = {}): PendingOrder {
     payment_status: "paid", preparation_status: "pending_review",
     transport_status: "not_shipped", invoice_status: "not_invoiced",
     tracking_number: null, approved_at: null, placed_at: null,
-    created_at: "2026-07-31T09:00:00Z", blockers: [], ...over,
+    created_at: "2026-07-31T09:00:00Z", externally_processed_at: null,
+    blockers: [], warnings: [], ...over,
   };
 }
 
@@ -51,5 +52,50 @@ describe("OrderApprovalCard", () => {
     render(<OrderApprovalCard order={order()} canApprove onApprove={onApprove} />);
     await user.click(screen.getByRole("button", { name: /Aprobar/ }));
     expect(onApprove).toHaveBeenCalledWith("o1");
+  });
+
+  // --- B-2-fix4: avisos + externalizar --------------------------------------
+
+  it("muestra los avisos (warnings) SIN ocultar «Aprobar»", () => {
+    render(
+      <OrderApprovalCard
+        order={order({ warnings: [{ code: "sku_unmapped", detail: "Sin CODART" }] })}
+        canApprove
+        onApprove={() => {}}
+      />,
+    );
+    expect(screen.getByText("sku_unmapped")).toBeInTheDocument();
+    // El aviso NO bloquea: «Aprobar» sigue visible.
+    expect(screen.getByRole("button", { name: /Aprobar/ })).toBeInTheDocument();
+  });
+
+  it("con onMarkExternal muestra el botón y lo dispara con el id", async () => {
+    const onMarkExternal = jest.fn();
+    const user = userEvent.setup();
+    render(
+      <OrderApprovalCard
+        order={order()}
+        canApprove
+        onApprove={() => {}}
+        onMarkExternal={onMarkExternal}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: /Procesado externamente/ }));
+    expect(onMarkExternal).toHaveBeenCalledWith("o1");
+  });
+
+  it("con onToggleSelect muestra el checkbox de selección múltiple", async () => {
+    const onToggleSelect = jest.fn();
+    const user = userEvent.setup();
+    render(
+      <OrderApprovalCard
+        order={order()}
+        canApprove
+        onApprove={() => {}}
+        onToggleSelect={onToggleSelect}
+      />,
+    );
+    await user.click(screen.getByLabelText(/Seleccionar MAN-0001/));
+    expect(onToggleSelect).toHaveBeenCalledWith("o1");
   });
 });

@@ -74,11 +74,28 @@ export default function ErpOrderDetailPage() {
         ]}
       />
       {error ? <p className="form-error">{error}</p> : null}
+      {order.externally_processed_at ? (
+        <p className="form-info" role="status">
+          <span className="badge muted">Externalizado</span>{" "}
+          Gestionado fuera del ERP el{" "}
+          {new Date(order.externally_processed_at).toLocaleString("es-ES")}
+          {order.externally_processed_note ? ` — ${order.externally_processed_note}` : ""}
+        </p>
+      ) : null}
       {order.blockers.length > 0 ? (
         <ul className="erp-blockers" aria-label="Bloqueos del pedido">
           {order.blockers.map((b) => (
             <li key={b.code} className="erp-blocker">
               <span className="badge bad">{b.code}</span> {b.detail}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {order.warnings.length > 0 ? (
+        <ul className="erp-warnings" aria-label="Avisos del pedido">
+          {order.warnings.map((w) => (
+            <li key={w.code} className="erp-warning">
+              <span className="badge warn">{w.code}</span> {w.detail}
             </li>
           ))}
         </ul>

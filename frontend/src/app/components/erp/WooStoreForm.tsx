@@ -20,6 +20,7 @@ export function WooStoreForm({
   const [baseUrl, setBaseUrl] = useState("");
   const [ck, setCk] = useState("");
   const [cs, setCs] = useState("");
+  const [cutoff, setCutoff] = useState("");
 
   const canSubmit = accountId && displayName && baseUrl && ck && cs;
 
@@ -64,6 +65,17 @@ export function WooStoreForm({
             onChange={(e) => setCs(e.target.value)}
           />
         </label>
+        <label className="field">
+          <span>Fecha de corte (opcional)</span>
+          <input
+            type="date" value={cutoff} aria-label="Fecha de corte"
+            onChange={(e) => setCutoff(e.target.value)}
+          />
+          <span className="muted small">
+            Los pedidos anteriores a esta fecha se importan ya como «procesados
+            externamente» (no entran a la Cola PEDIDOS).
+          </span>
+        </label>
         <div className="modal-actions">
           <button type="button" className="button secondary" onClick={onCancel} disabled={busy}>
             Cancelar
@@ -74,6 +86,7 @@ export function WooStoreForm({
             onClick={() => onSubmit({
               account_id: accountId, display_name: displayName,
               base_url: baseUrl, consumer_key: ck, consumer_secret: cs,
+              external_cutoff_date: cutoff || null,
             })}
           >
             {busy ? "Guardando…" : "Guardar tienda"}

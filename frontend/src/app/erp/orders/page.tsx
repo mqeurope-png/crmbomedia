@@ -15,16 +15,22 @@ export default function ErpOrdersPage() {
   const [rows, setRows] = useState<OrderSummary[]>([]);
   const [prep, setPrep] = useState("");
   const [payment, setPayment] = useState("");
+  // B-2-fix4: por defecto la bandeja esconde los procesados externamente.
+  const [showExternal, setShowExternal] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     setLoading(true);
-    listOrders({ preparation: prep || undefined, payment: payment || undefined })
+    listOrders({
+      preparation: prep || undefined,
+      payment: payment || undefined,
+      show_external: showExternal,
+    })
       .then(setRows)
       .catch((e) => setError(extractErrorMessage(e, "No se pudieron cargar los pedidos.")))
       .finally(() => setLoading(false));
-  }, [prep, payment]);
+  }, [prep, payment, showExternal]);
 
   const stores = useMemo(() => STORES, []);
 
@@ -57,6 +63,15 @@ export default function ErpOrdersPage() {
           <option value="failed">Fallido</option>
           <option value="refunded">Reembolsado</option>
         </select>
+        <label className="checkbox-inline" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <input
+            type="checkbox"
+            checked={showExternal}
+            aria-label="Mostrar procesados externamente"
+            onChange={(e) => setShowExternal(e.target.checked)}
+          />
+          <span className="small">Mostrar procesados externamente</span>
+        </label>
         {stores.length > 1 ? <span /> : null}
       </div>
       {error ? <p className="form-error">{error}</p> : null}
@@ -81,6 +96,9 @@ export default function ErpOrdersPage() {
               <tr key={o.id}>
                 <td>
                   <Link href={`/erp/orders/${o.id}`}><strong>{o.order_number}</strong></Link>
+                  {o.externally_processed_at ? (
+                    <span className="badge muted" style={{ marginLeft: 6 }}>Externalizado</span>
+                  ) : null}
                   <div className="muted small">{o.external_source} · {o.placed_at?.slice(0, 10) ?? "—"}</div>
                 </td>
                 <td>{o.total_amount.toFixed(2)} {o.currency}</td>

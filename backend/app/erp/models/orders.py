@@ -51,6 +51,8 @@ class PreparationStatus(StrEnum):
     PREPARING = "preparing"
     PACKED = "packed"
     BLOCKED = "blocked"
+    # B-2-fix4: gestionado fuera del sistema (Excel/proceso anterior).
+    ALREADY_COMPLETED_EXTERNALLY = "already_completed_externally"
 
 
 class TransportStatus(StrEnum):
@@ -60,6 +62,7 @@ class TransportStatus(StrEnum):
     DELIVERED = "delivered"
     INCIDENT = "incident"
     RETURNED = "returned"
+    ALREADY_SHIPPED_EXTERNALLY = "already_shipped_externally"
 
 
 class InvoiceStatus(StrEnum):
@@ -68,6 +71,7 @@ class InvoiceStatus(StrEnum):
     GENERATED = "generated"
     ERROR = "error"
     CREDIT_NOTE = "credit_note"
+    ALREADY_INVOICED_EXTERNALLY = "already_invoiced_externally"
 
 
 class StatusDomain(StrEnum):
@@ -78,7 +82,9 @@ class StatusDomain(StrEnum):
 
 
 def _enum(enum_cls: type[StrEnum], **kw):
-    return Enum(enum_cls, native_enum=False, values_callable=enum_values, length=24, **kw)
+    # length=40 cubre los valores «already_*_externally» (B-2-fix4, hasta 28
+    # chars). Las columnas se amplían a VARCHAR(40) en la migración 0082.
+    return Enum(enum_cls, native_enum=False, values_callable=enum_values, length=40, **kw)
 
 
 class Order(TimestampMixin, Base):
@@ -143,6 +149,18 @@ class Order(TimestampMixin, Base):
     )
     # Fecha real del pedido en el sistema de origen (Woo) o de alta manual.
     placed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    # B-2-fix4: «Marcar como procesado externamente». Cuando está seteado,
+    # el pedido se gestionó fuera del ERP (Excel/proceso anterior o previo a
+    # la fecha de corte de la tienda) — sale de las colas activas y se
+    # muestra con badge gris «Externalizado».
+    externally_processed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    externally_processed_by_user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    externally_processed_note: Mapped[str | None] = mapped_column(Text)
 
     lines: Mapped[list[OrderLine]] = relationship(
         back_populates="order", cascade="all, delete-orphan",

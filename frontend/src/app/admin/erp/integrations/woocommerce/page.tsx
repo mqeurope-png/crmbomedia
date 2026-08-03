@@ -5,10 +5,12 @@ import { PageHeader } from "../../../../components/PageHeader";
 import { WooStoreForm } from "../../../../components/erp/WooStoreForm";
 import { extractErrorMessage } from "../../../../lib/errors";
 import {
+  bulkMarkExternallyProcessed,
   createWooStore,
   listWooStores,
   syncWooBackfill,
   testWooStore,
+  updateWooStore,
   type WooStore,
   type WooStoreCreate,
 } from "../../../../lib/erpApi";
@@ -21,6 +23,8 @@ export default function WooCommerceAdminPage() {
   const [busy, setBusy] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [testing, setTesting] = useState<string | null>(null);
+  // Borradores de la fecha de corte por tienda (B-2-fix4).
+  const [cutoffDrafts, setCutoffDrafts] = useState<Record<string, string>>({});
 
   const load = useCallback(() => {
     setLoading(true);
@@ -70,6 +74,54 @@ export default function WooCommerceAdminPage() {
     }
   }
 
+  async function onSaveCutoff(store: WooStore) {
+    const value = cutoffDrafts[store.id] ?? store.external_cutoff_date ?? "";
+    setBusy(true);
+    setError(null);
+    setNote(null);
+    try {
+      await updateWooStore(store.id, { external_cutoff_date: value || null });
+      setNote(value
+        ? `Fecha de corte de ${store.account_id} guardada: ${value}.`
+        : `Fecha de corte de ${store.account_id} borrada.`);
+      setCutoffDrafts((d) => {
+        const next = { ...d };
+        delete next[store.id];
+        return next;
+      });
+      load();
+    } catch (e) {
+      setError(extractErrorMessage(e, "No se pudo guardar la fecha de corte."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onExternalizePrevious(store: WooStore) {
+    const cutoff = store.external_cutoff_date;
+    if (!cutoff) {
+      setError("Guarda primero una fecha de corte para esta tienda.");
+      return;
+    }
+    if (!window.confirm(
+      `Marcar como «procesados externamente» todos los pedidos de ` +
+      `${store.account_id} anteriores a ${cutoff}? Saldrán de las colas activas.`,
+    )) return;
+    setBusy(true);
+    setError(null);
+    setNote(null);
+    try {
+      const r = await bulkMarkExternallyProcessed({
+        store_id: store.id, before_date: cutoff,
+      });
+      setNote(`${r.marked} pedido(s) marcados como externalizados en ${store.account_id}.`);
+    } catch (e) {
+      setError(extractErrorMessage(e, "No se pudo externalizar los pedidos previos."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function onBackfill(id: string) {
     const since = window.prompt(
       "Sincronizar pedidos desde (YYYY-MM-DD, vacío = todo desde el principio):",
@@ -116,7 +168,8 @@ export default function WooCommerceAdminPage() {
         <table className="data-table">
           <thead>
             <tr>
-              <th>Slug</th><th>Nombre</th><th>URL</th><th>Estado</th><th>Acciones</th>
+              <th>Slug</th><th>Nombre</th><th>URL</th><th>Estado</th>
+              <th>Fecha de corte</th><th>Acciones</th>
             </tr>
           </thead>
           <tbody>
@@ -129,6 +182,28 @@ export default function WooCommerceAdminPage() {
                   {s.enabled
                     ? <span className="badge ok">activa</span>
                     : <span className="badge muted">pausada</span>}
+                </td>
+                <td>
+                  <div className="erp-exc-actions">
+                    <input
+                      type="date"
+                      aria-label={`Fecha de corte ${s.account_id}`}
+                      value={cutoffDrafts[s.id] ?? s.external_cutoff_date ?? ""}
+                      onChange={(e) => setCutoffDrafts((d) => ({ ...d, [s.id]: e.target.value }))}
+                    />
+                    <button type="button" className="button small secondary"
+                      onClick={() => onSaveCutoff(s)} disabled={busy}>
+                      Guardar corte
+                    </button>
+                    <button type="button" className="button small"
+                      onClick={() => onExternalizePrevious(s)}
+                      disabled={busy || !s.external_cutoff_date}
+                      title={s.external_cutoff_date
+                        ? "Marca los pedidos anteriores al corte como externalizados"
+                        : "Guarda una fecha de corte primero"}>
+                      Externalizar previos
+                    </button>
+                  </div>
                 </td>
                 <td>
                   <div className="erp-exc-actions">

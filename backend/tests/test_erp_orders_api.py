@@ -14,7 +14,13 @@ from sqlalchemy.pool import StaticPool
 import app.main  # noqa: F401
 from app.db.base import Base
 from app.db.session import get_session
-from app.erp.models import ErpException, ExceptionType, Order
+from app.erp.models import (
+    ERP_SETTINGS_SINGLETON_ID,
+    ErpException,
+    ErpSettings,
+    ExceptionType,
+    Order,
+)
 from app.main import app
 from app.models.crm import Company
 from tests._test_helpers import auth_headers, seed_test_users
@@ -130,7 +136,23 @@ def test_sat_and_user_can_view_detail(client):
 # --- Cola PEDIDOS: bloqueos + aprobación ------------------------------------
 
 
-def test_pending_approval_lists_blockers(client, session_factory):
+def _set_factusol_live(session_factory, live: bool) -> None:
+    """B-2-fix4: activa/desactiva el gate FACTUSOL en el singleton settings."""
+    with session_factory() as s:
+        cfg = s.get(ErpSettings, ERP_SETTINGS_SINGLETON_ID)
+        if cfg is None:
+            cfg = ErpSettings(id=ERP_SETTINGS_SINGLETON_ID)
+            s.add(cfg)
+        cfg.factusol_live = live
+        s.commit()
+
+
+def test_pending_approval_splits_factusol_issues_as_warnings_when_not_live(
+    client, session_factory
+):
+    """B-2-fix4: mientras FACTUSOL no esté live, sku_unmapped y
+    company_missing_factusol son WARNINGS (no bloquean). Solo una excepción
+    real abierta (sin code factusol-gated) bloquea la aprobación."""
     with session_factory() as s:
         company = Company(name="Sin Factusol SL")  # sin factusol_company_id
         s.add(company)
@@ -147,16 +169,57 @@ def test_pending_approval_lists_blockers(client, session_factory):
                    headers=auth_headers(client, "pedidos"))
     assert r.status_code == 200
     item = next(i for i in r.json()["items"] if i["id"] == body["id"])
-    codes = {b["code"] for b in item["blockers"]}
-    assert codes == {"sku_unmapped", "company_missing_factusol", "open_exceptions"}
+    # La excepción SAT real (sin code) sigue bloqueando; las de FACTUSOL no.
+    assert {b["code"] for b in item["blockers"]} == {"open_exceptions"}
+    assert {w["code"] for w in item["warnings"]} == {
+        "sku_unmapped", "company_missing_factusol",
+    }
 
 
-def test_approve_blocked_order_returns_409_with_blockers(client):
+def test_pending_approval_factusol_issues_block_when_live(
+    client, session_factory
+):
+    """Al activar factusol_live, los mismos issues pasan a BLOQUEANTES."""
+    with session_factory() as s:
+        company = Company(name="Sin Factusol SL")
+        s.add(company)
+        s.commit()
+        cid = company.id
+    body = _create(client, order_number="MAN-B1L", company_id=cid, lines=[
+        {"product_sku": "SKU-NUEVO", "description": "Sin mapear",
+         "quantity": 1, "unit_price": 100},
+    ])
+    _set_factusol_live(session_factory, True)
+    r = client.get("/api/erp/orders/pending-approval",
+                   headers=auth_headers(client, "pedidos"))
+    item = next(i for i in r.json()["items"] if i["id"] == body["id"])
+    assert {b["code"] for b in item["blockers"]} == {
+        "sku_unmapped", "company_missing_factusol",
+    }
+    assert item["warnings"] == []
+
+
+def test_approve_unmapped_sku_ok_when_not_live_but_409_when_live(
+    client, session_factory
+):
+    """B-2-fix4: con FACTUSOL no live, un SKU sin mapear NO impide aprobar
+    (es warning); al activar el gate, la misma aprobación devuelve 409."""
     body = _create(client, order_number="MAN-B2", lines=[
         {"product_sku": "SKU-NUEVO", "description": "Sin mapear",
          "quantity": 1, "unit_price": 100},
     ])
-    r = client.post(f"/api/erp/orders/{body['id']}/approve",
+    ok = client.post(f"/api/erp/orders/{body['id']}/approve",
+                     headers=auth_headers(client, "pedidos"))
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["preparation_status"] == "in_queue"
+
+    # Otro pedido idéntico, pero ahora con el gate activo → bloqueado.
+    body2 = _create(client, order_number="MAN-B2L", lines=[
+        {"product_sku": "SKU-NUEVO", "description": "Sin mapear",
+         "quantity": 1, "unit_price": 100},
+    ])
+    _set_factusol_live(session_factory, True)
+    r = client.post(f"/api/erp/orders/{body2['id']}/approve",
                     headers=auth_headers(client, "pedidos"))
     assert r.status_code == 409
     assert any(
@@ -264,3 +327,98 @@ def test_timeline_404_for_missing_order(client):
     r = client.get("/api/erp/orders/nope/timeline",
                    headers=auth_headers(client, "user"))
     assert r.status_code == 404
+
+
+# --- procesado externamente (B-2-fix4) --------------------------------------
+
+
+def test_mark_externally_processed_sets_terminal_states_and_stamp(
+    client, session_factory
+):
+    body = _create(client, order_number="MAN-EXT1")
+    r = client.post(
+        f"/api/erp/orders/{body['id']}/mark-externally-processed",
+        json={"note": "Gestionado en el Excel de siempre"},
+        headers=auth_headers(client, "pedidos"),
+    )
+    assert r.status_code == 200, r.text
+    detail = r.json()
+    assert detail["preparation_status"] == "already_completed_externally"
+    assert detail["transport_status"] == "already_shipped_externally"
+    assert detail["invoice_status"] == "already_invoiced_externally"
+    assert detail["payment_status"] == "paid"  # pending → paid al externalizar
+    assert detail["externally_processed_at"] is not None
+    assert detail["externally_processed_note"] == "Gestionado en el Excel de siempre"
+    assert detail["externally_processed_by_user_id"] is not None
+    # Historial: una fila por cada dominio cambiado (pago + 3 estados).
+    with session_factory() as s:
+        o = s.scalar(select(Order).where(Order.id == body["id"]))
+        assert o.externally_processed_at is not None
+
+
+def test_mark_externally_processed_is_idempotent(client):
+    body = _create(client, order_number="MAN-EXT2")
+    first = client.post(
+        f"/api/erp/orders/{body['id']}/mark-externally-processed",
+        json={}, headers=auth_headers(client, "pedidos"),
+    ).json()
+    second = client.post(
+        f"/api/erp/orders/{body['id']}/mark-externally-processed",
+        json={}, headers=auth_headers(client, "pedidos"),
+    )
+    assert second.status_code == 200
+    # El timestamp no se re-estampa (no-op en la 2ª llamada).
+    assert second.json()["externally_processed_at"] == first["externally_processed_at"]
+
+
+def test_mark_externally_processed_forbidden_for_viewer_roles(client):
+    oid = _create(client, order_number="MAN-EXT3")["id"]
+    for role in ("sat", "user", "viewer"):
+        r = client.post(
+            f"/api/erp/orders/{oid}/mark-externally-processed",
+            json={}, headers=auth_headers(client, role),
+        )
+        assert r.status_code == 403, role
+
+
+def test_bulk_mark_externally_processed_by_ids(client):
+    a = _create(client, order_number="MAN-BULK1")["id"]
+    b = _create(client, order_number="MAN-BULK2")["id"]
+    r = client.post(
+        "/api/erp/orders/bulk-mark-externally-processed",
+        json={"order_ids": [a, b], "note": "Migración inicial"},
+        headers=auth_headers(client, "pedidos"),
+    )
+    assert r.status_code == 200, r.text
+    assert r.json() == {"ok": True, "marked": 2}
+    # Re-run: ya externalizados → marked 0 (idempotente).
+    again = client.post(
+        "/api/erp/orders/bulk-mark-externally-processed",
+        json={"order_ids": [a, b]},
+        headers=auth_headers(client, "pedidos"),
+    )
+    assert again.json()["marked"] == 0
+
+
+def test_bulk_mark_requires_ids_or_store(client):
+    r = client.post(
+        "/api/erp/orders/bulk-mark-externally-processed",
+        json={}, headers=auth_headers(client, "pedidos"),
+    )
+    assert r.status_code == 400
+
+
+def test_list_hides_externalized_by_default_and_shows_with_flag(client):
+    oid = _create(client, order_number="MAN-EXT-HIDE")["id"]
+    client.post(
+        f"/api/erp/orders/{oid}/mark-externally-processed",
+        json={}, headers=auth_headers(client, "pedidos"),
+    )
+    # Por defecto la bandeja no lo muestra.
+    default = client.get("/api/erp/orders",
+                         headers=auth_headers(client, "user")).json()
+    assert oid not in {o["id"] for o in default["items"]}
+    # Con show_external=true sí aparece.
+    shown = client.get("/api/erp/orders?show_external=true",
+                       headers=auth_headers(client, "user")).json()
+    assert oid in {o["id"] for o in shown["items"]}

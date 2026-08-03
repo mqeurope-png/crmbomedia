@@ -12,6 +12,7 @@ extendido en PR B-1). Solo ADMIN.
 """
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
@@ -47,6 +48,9 @@ class StoreCreate(BaseModel):
     consumer_key: str = Field(min_length=1)
     consumer_secret: str = Field(min_length=1)
     enabled: bool = True
+    # B-2-fix4: pedidos anteriores a esta fecha se auto-marcan como
+    # procesados externamente al importarlos (ISO 8601 o YYYY-MM-DD).
+    external_cutoff_date: str | None = None
 
 
 class StoreUpdate(BaseModel):
@@ -55,6 +59,7 @@ class StoreUpdate(BaseModel):
     consumer_key: str | None = None
     consumer_secret: str | None = None
     enabled: bool | None = None
+    external_cutoff_date: str | None = None
 
 
 class StoreRead(BaseModel):
@@ -67,6 +72,25 @@ class StoreRead(BaseModel):
     # Nunca devolvemos los secretos.
 
 
+def _metadata(a: IntegrationAccount) -> dict[str, Any]:
+    if not a.metadata_json:
+        return {}
+    try:
+        data = json.loads(a.metadata_json)
+        return data if isinstance(data, dict) else {}
+    except (TypeError, ValueError):
+        return {}
+
+
+def _set_cutoff(a: IntegrationAccount, value: str | None) -> None:
+    meta = _metadata(a)
+    if value:
+        meta["external_cutoff_date"] = value
+    else:
+        meta.pop("external_cutoff_date", None)
+    a.metadata_json = json.dumps(meta) if meta else None
+
+
 def _serialise(a: IntegrationAccount) -> dict[str, Any]:
     return {
         "id": a.id,
@@ -75,6 +99,7 @@ def _serialise(a: IntegrationAccount) -> dict[str, Any]:
         "base_url": a.base_url or "",
         "enabled": a.enabled,
         "credential_status": a.credential_status,
+        "external_cutoff_date": _metadata(a).get("external_cutoff_date"),
     }
 
 
@@ -127,6 +152,7 @@ def create_store(
         consumer_secret_encrypted=encrypt(payload.consumer_secret),
         credential_status="configured",
     )
+    _set_cutoff(account, payload.external_cutoff_date)
     session.add(account)
     session.commit()
     session.refresh(account)
@@ -152,6 +178,8 @@ def update_store(
         account.consumer_secret_encrypted = encrypt(payload.consumer_secret)
     if payload.enabled is not None:
         account.enabled = payload.enabled
+    if payload.external_cutoff_date is not None:
+        _set_cutoff(account, payload.external_cutoff_date or None)
     session.commit()
     session.refresh(account)
     return _serialise(account)
