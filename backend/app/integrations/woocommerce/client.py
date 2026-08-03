@@ -11,6 +11,7 @@ Base: `{base_url}/wp-json/wc/v3/`. Paginación por headers
 from __future__ import annotations
 
 import logging
+import re
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -31,6 +32,30 @@ class WooError(RuntimeError):
         super().__init__(message)
         self.status = status
         self.body = (body or "")[:2000]
+
+
+_DATE_ONLY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _to_iso8601_datetime(value: str) -> str:
+    """Normaliza una fecha para los parámetros de fecha de WC v3
+    (`after`/`before`/`modified_after`), que exigen ISO 8601 CON hora.
+
+    - "2026-07-04"          → "2026-07-04T00:00:00"
+    - "2026-07-04T09:30:00" → sin cambios (ya lleva hora)
+    - "2026-07-04 09:30:00" → "2026-07-04T09:30:00" (normaliza el espacio)
+
+    Un valor no reconocible se devuelve tal cual (que Woo lo valide y su
+    mensaje aparezca en el log gracias al fix del cuerpo en la excepción).
+    """
+    v = (value or "").strip()
+    if not v:
+        return v
+    if _DATE_ONLY_RE.match(v):
+        return f"{v}T00:00:00"
+    if " " in v and "T" not in v:
+        return v.replace(" ", "T", 1)
+    return v
 
 
 @dataclass
@@ -85,7 +110,10 @@ class WooHTTPClient:
         if status:
             params["status"] = status
         if since:
-            params["after"] = since
+            # WC v3 es estricto: `after`/`before`/`modified_after` exigen
+            # ISO 8601 CON hora. "2026-07-04" → 400; hay que enviar
+            # "2026-07-04T00:00:00".
+            params["after"] = _to_iso8601_datetime(since)
         return self.get("/orders", params=params)
 
     def get_order(self, order_id: int) -> dict[str, Any]:
@@ -135,8 +163,11 @@ class WooHTTPClient:
                 self._sleep_backoff(attempt)
                 continue
             if resp.status_code >= 400:
+                # Incluimos el cuerpo de la respuesta en el mensaje (no solo
+                # en `.body`) para que el error de Woo aparezca directo en el
+                # log del worker — WC v3 devuelve {code, message} útil.
                 raise WooError(
-                    f"{method} {path} → {resp.status_code}",
+                    f"{method} {path} → {resp.status_code}: {resp.text[:500]}",
                     status=resp.status_code, body=resp.text,
                 )
             return resp.json()
