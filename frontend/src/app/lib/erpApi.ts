@@ -408,6 +408,12 @@ export async function updateErpSettings(patch: Partial<ErpSettings>): Promise<Er
 
 // --- WooCommerce multi-tienda admin (Fase B PR B-2) --------------------------
 
+export type WooWebhookSummary = {
+  last_received_at: string | null;
+  count_24h: number;
+  errors_24h: number;
+};
+
 export type WooStore = {
   id: string;
   account_id: string;
@@ -418,6 +424,17 @@ export type WooStore = {
   /** B-2-fix4: fecha de corte; pedidos anteriores se auto-marcan como
    *  procesados externamente al importar (ISO 8601 o YYYY-MM-DD). */
   external_cutoff_date: string | null;
+  /** B-3: resumen de webhooks para la tabla (última recepción + 24h). */
+  webhook_summary: WooWebhookSummary;
+};
+
+export type WooWebhookStatus = {
+  webhook_url: string;
+  webhook_secret_last4: string;
+  last_received_at: string | null;
+  count_24h: number;
+  errors_24h: number;
+  topics_received_24h: string[];
 };
 
 export type WooStoreCreate = {
@@ -462,4 +479,19 @@ export async function syncWooBackfill(
   return apiFetch(`/api/erp/integrations/woocommerce/stores/${id}/sync-backfill${q}`, {
     method: "POST",
   });
+}
+
+// --- webhooks (Fase B PR B-3) -----------------------------------------------
+
+export async function getWooWebhookStatus(id: string): Promise<WooWebhookStatus> {
+  return apiFetch(`/api/erp/integrations/woocommerce/stores/${id}/webhook-status`);
+}
+
+export async function regenerateWooWebhookSecret(
+  id: string,
+): Promise<{ webhook_secret: string; webhook_url: string }> {
+  return apiFetch(
+    `/api/erp/integrations/woocommerce/stores/${id}/regenerate-webhook-secret`,
+    { method: "POST" },
+  );
 }

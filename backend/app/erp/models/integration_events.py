@@ -33,6 +33,9 @@ class IntegrationEventStatus(StrEnum):
     PROCESSED = "processed"
     DUPLICATE = "duplicate"
     FAILED = "failed"
+    # B-3: topic no soportado (p.ej. product.updated, ping) — se registra
+    # para trazabilidad pero no dispara import. VARCHAR(16), sin migración.
+    IGNORED = "ignored"
 
 
 #: Backoff exponencial en segundos por intento (índice = retry_count antes

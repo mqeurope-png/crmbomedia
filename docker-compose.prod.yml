@@ -161,10 +161,13 @@ services:
       # live del ERP. Sin ellas en esta lista los jobs se quedan
       # eternamente en Redis sin procesar (mismo bug que
       # agilecrm:periodic_read arriba):
-      #  - woocommerce:import    → procesa integration_events de los
-      #                            webhooks Woo (receiver del PR B-3).
+      #  - woocommerce:import    → procesa integration_events del
+      #                            backfill manual (PR B-2).
       #  - woocommerce:backfill  → sync-backfill manual desde la UI
       #                            admin de tiendas (PR B-2).
+      #  - woocommerce:webhooks  → procesa los webhooks entrantes de las
+      #                            tiendas (receiver del PR B-3), con
+      #                            retry RQ nativo (30s→4h, 5 intentos).
       #  - genei:shipments       → operaciones async del adaptador
       #                            Genei: descarga de etiqueta PDF +
       #                            subida a HiDrive (PR B-4).
@@ -173,6 +176,7 @@ services:
       #                            async, PR B-4).
       - woocommerce:import
       - woocommerce:backfill
+      - woocommerce:webhooks
       - genei:shipments
       - genei:webhooks
     volumes:
