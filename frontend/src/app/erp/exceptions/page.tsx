@@ -16,7 +16,9 @@ import {
 export default function ErpExceptionsPage() {
   const [rows, setRows] = useState<ErpExceptionRow[]>([]);
   const [user, setUser] = useState<User | null>(null);
-  const [status, setStatus] = useState("");
+  // B-2-fix5: por defecto solo las abiertas (menos ruido; las resueltas
+  // siguen accesibles cambiando el filtro).
+  const [status, setStatus] = useState("open");
   const [assigned, setAssigned] = useState("");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);

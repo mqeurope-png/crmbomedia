@@ -13,9 +13,12 @@ import json
 import logging
 from datetime import UTC, datetime
 
+from sqlalchemy import update
 from sqlalchemy.orm import Session
 
 from app.erp.models import (
+    ErpException,
+    ExceptionStatus,
     InvoiceStatus,
     Order,
     OrderStatusHistory,
@@ -27,6 +30,9 @@ from app.erp.models import (
 from app.models.crm import User
 
 logger = logging.getLogger(__name__)
+
+#: Nota con la que se auto-resuelven las excepciones al externalizar.
+_AUTO_RESOLVE_NOTE = "Auto-resuelta: pedido marcado como procesado externamente"
 
 #: Estados terminales «externally» por dominio.
 _EXTERNAL_STATES = {
@@ -79,9 +85,39 @@ def mark_order_externally_processed(
     order.externally_processed_at = now
     order.externally_processed_by_user_id = actor_id
     order.externally_processed_note = note
+
+    # Las excepciones abiertas del pedido (SAT antiguas, etc.) quedarían
+    # huérfanas en la bandeja — se auto-resuelven al externalizar (B-2-fix5).
+    resolved = _resolve_open_exceptions(session, order.id, actor_id, now)
     session.flush()
+    if resolved:
+        logger.info(
+            "erp.external_processed auto-resolved %d exception(s) for order %s",
+            resolved, order.id,
+        )
     _audit(session, order, actor, note)
     return True
+
+
+def _resolve_open_exceptions(
+    session: Session, order_id: str, actor_id: str | None, when: datetime,
+) -> int:
+    """Cierra las excepciones ABIERTAS del pedido con la nota estándar.
+    Devuelve cuántas resolvió."""
+    result = session.execute(
+        update(ErpException)
+        .where(
+            ErpException.order_id == order_id,
+            ErpException.status == ExceptionStatus.OPEN,
+        )
+        .values(
+            status=ExceptionStatus.RESOLVED,
+            resolved_at=when,
+            resolved_by_user_id=actor_id,
+            resolution_note=_AUTO_RESOLVE_NOTE,
+        )
+    )
+    return result.rowcount or 0
 
 
 def _history(

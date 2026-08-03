@@ -390,8 +390,8 @@ export type ErpSettings = {
   auto_invoice_max_amount_eur: number | null;
   default_carrier_id: string | null;
   factusol_default_ejercicio: string | null;
-  /** B-2-fix4: mientras esté en false, las excepciones sku_unmapped y
-   *  company_missing_factusol son informativas (no bloquean la aprobación). */
+  /** Flag reservado para Fase C. Tras B-2-fix5 el ERP confía en la fuente
+   *  y no valida SKU/empresas, así que hoy es un no-op. */
   factusol_live: boolean;
 };
 

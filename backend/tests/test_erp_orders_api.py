@@ -14,13 +14,7 @@ from sqlalchemy.pool import StaticPool
 import app.main  # noqa: F401
 from app.db.base import Base
 from app.db.session import get_session
-from app.erp.models import (
-    ERP_SETTINGS_SINGLETON_ID,
-    ErpException,
-    ErpSettings,
-    ExceptionType,
-    Order,
-)
+from app.erp.models import ErpException, ExceptionStatus, ExceptionType, Order
 from app.main import app
 from app.models.crm import Company
 from tests._test_helpers import auth_headers, seed_test_users
@@ -136,23 +130,10 @@ def test_sat_and_user_can_view_detail(client):
 # --- Cola PEDIDOS: bloqueos + aprobación ------------------------------------
 
 
-def _set_factusol_live(session_factory, live: bool) -> None:
-    """B-2-fix4: activa/desactiva el gate FACTUSOL en el singleton settings."""
-    with session_factory() as s:
-        cfg = s.get(ErpSettings, ERP_SETTINGS_SINGLETON_ID)
-        if cfg is None:
-            cfg = ErpSettings(id=ERP_SETTINGS_SINGLETON_ID)
-            s.add(cfg)
-        cfg.factusol_live = live
-        s.commit()
-
-
-def test_pending_approval_splits_factusol_issues_as_warnings_when_not_live(
-    client, session_factory
-):
-    """B-2-fix4: mientras FACTUSOL no esté live, sku_unmapped y
-    company_missing_factusol son WARNINGS (no bloquean). Solo una excepción
-    real abierta (sin code factusol-gated) bloquea la aprobación."""
+def test_pending_approval_only_real_exceptions_block(client, session_factory):
+    """B-2-fix5: el ERP confía en la fuente. Un SKU sin mapear o una empresa
+    sin vincular a FACTUSOL NO generan bloqueos ni warnings. Solo una
+    excepción operativa abierta (SAT/transporte/facturación) bloquea."""
     with session_factory() as s:
         company = Company(name="Sin Factusol SL")  # sin factusol_company_id
         s.add(company)
@@ -169,61 +150,55 @@ def test_pending_approval_splits_factusol_issues_as_warnings_when_not_live(
                    headers=auth_headers(client, "pedidos"))
     assert r.status_code == 200
     item = next(i for i in r.json()["items"] if i["id"] == body["id"])
-    # La excepción SAT real (sin code) sigue bloqueando; las de FACTUSOL no.
+    # Solo la excepción SAT real bloquea; ni sku_unmapped ni company_missing.
     assert {b["code"] for b in item["blockers"]} == {"open_exceptions"}
-    assert {w["code"] for w in item["warnings"]} == {
-        "sku_unmapped", "company_missing_factusol",
-    }
+    assert item["warnings"] == []
 
 
-def test_pending_approval_factusol_issues_block_when_live(
+def test_pending_approval_no_blockers_without_real_exceptions(
     client, session_factory
 ):
-    """Al activar factusol_live, los mismos issues pasan a BLOQUEANTES."""
+    """SKU sin mapear + empresa sin FACTUSOL pero SIN excepciones operativas
+    → sin bloqueos ni warnings (aprobable). El ERP confía en la fuente."""
     with session_factory() as s:
         company = Company(name="Sin Factusol SL")
         s.add(company)
         s.commit()
         cid = company.id
-    body = _create(client, order_number="MAN-B1L", company_id=cid, lines=[
+    body = _create(client, order_number="MAN-B1C", company_id=cid, lines=[
         {"product_sku": "SKU-NUEVO", "description": "Sin mapear",
          "quantity": 1, "unit_price": 100},
     ])
-    _set_factusol_live(session_factory, True)
     r = client.get("/api/erp/orders/pending-approval",
                    headers=auth_headers(client, "pedidos"))
     item = next(i for i in r.json()["items"] if i["id"] == body["id"])
-    assert {b["code"] for b in item["blockers"]} == {
-        "sku_unmapped", "company_missing_factusol",
-    }
+    assert item["blockers"] == []
     assert item["warnings"] == []
 
 
-def test_approve_unmapped_sku_ok_when_not_live_but_409_when_live(
-    client, session_factory
-):
-    """B-2-fix4: con FACTUSOL no live, un SKU sin mapear NO impide aprobar
-    (es warning); al activar el gate, la misma aprobación devuelve 409."""
+def test_approve_unmapped_sku_never_blocks(client):
+    """B-2-fix5: un SKU sin mapear ya no impide aprobar en ningún caso."""
     body = _create(client, order_number="MAN-B2", lines=[
         {"product_sku": "SKU-NUEVO", "description": "Sin mapear",
          "quantity": 1, "unit_price": 100},
     ])
-    ok = client.post(f"/api/erp/orders/{body['id']}/approve",
-                     headers=auth_headers(client, "pedidos"))
-    assert ok.status_code == 200, ok.text
-    assert ok.json()["preparation_status"] == "in_queue"
+    r = client.post(f"/api/erp/orders/{body['id']}/approve",
+                    headers=auth_headers(client, "pedidos"))
+    assert r.status_code == 200, r.text
+    assert r.json()["preparation_status"] == "in_queue"
 
-    # Otro pedido idéntico, pero ahora con el gate activo → bloqueado.
-    body2 = _create(client, order_number="MAN-B2L", lines=[
-        {"product_sku": "SKU-NUEVO", "description": "Sin mapear",
-         "quantity": 1, "unit_price": 100},
-    ])
-    _set_factusol_live(session_factory, True)
-    r = client.post(f"/api/erp/orders/{body2['id']}/approve",
+
+def test_approve_blocked_by_open_operational_exception(client, session_factory):
+    """Una excepción operativa abierta (SAT) sí devuelve 409 al aprobar."""
+    body = _create(client, order_number="MAN-B2X")
+    with session_factory() as s:
+        s.add(ErpException(type=ExceptionType.SAT_ISSUE, order_id=body["id"]))
+        s.commit()
+    r = client.post(f"/api/erp/orders/{body['id']}/approve",
                     headers=auth_headers(client, "pedidos"))
     assert r.status_code == 409
     assert any(
-        b["code"] == "sku_unmapped" for b in r.json()["detail"]["blockers"]
+        b["code"] == "open_exceptions" for b in r.json()["detail"]["blockers"]
     )
 
 
@@ -422,3 +397,73 @@ def test_list_hides_externalized_by_default_and_shows_with_flag(client):
     shown = client.get("/api/erp/orders?show_external=true",
                        headers=auth_headers(client, "user")).json()
     assert oid in {o["id"] for o in shown["items"]}
+
+
+_AUTO_RESOLVE_NOTE = "Auto-resuelta: pedido marcado como procesado externamente"
+
+
+def test_mark_externally_processed_auto_resolves_open_exceptions(
+    client, session_factory
+):
+    """B-2-fix5: al externalizar, las excepciones abiertas del pedido se
+    auto-resuelven con la nota estándar (no quedan huérfanas)."""
+    body = _create(client, order_number="MAN-AR1")
+    with session_factory() as s:
+        s.add(ErpException(type=ExceptionType.SAT_ISSUE, order_id=body["id"]))
+        s.add(ErpException(type=ExceptionType.CARRIER_INCIDENT, order_id=body["id"]))
+        s.commit()
+    client.post(
+        f"/api/erp/orders/{body['id']}/mark-externally-processed",
+        json={}, headers=auth_headers(client, "pedidos"),
+    )
+    with session_factory() as s:
+        excs = list(s.scalars(
+            select(ErpException).where(ErpException.order_id == body["id"])
+        ))
+        assert len(excs) == 2
+        assert all(e.status == ExceptionStatus.RESOLVED for e in excs)
+        assert all(e.resolved_at is not None for e in excs)
+        assert all(e.resolution_note == _AUTO_RESOLVE_NOTE for e in excs)
+
+
+def test_bulk_mark_externally_processed_auto_resolves_exceptions(
+    client, session_factory
+):
+    a = _create(client, order_number="MAN-AR2")["id"]
+    b = _create(client, order_number="MAN-AR3")["id"]
+    with session_factory() as s:
+        s.add(ErpException(type=ExceptionType.SAT_ISSUE, order_id=a))
+        s.add(ErpException(type=ExceptionType.SAT_ISSUE, order_id=b))
+        s.commit()
+    client.post(
+        "/api/erp/orders/bulk-mark-externally-processed",
+        json={"order_ids": [a, b]}, headers=auth_headers(client, "pedidos"),
+    )
+    with session_factory() as s:
+        excs = list(s.scalars(
+            select(ErpException).where(ErpException.order_id.in_([a, b]))
+        ))
+        assert len(excs) == 2
+        assert all(e.status == ExceptionStatus.RESOLVED for e in excs)
+        assert all(e.resolution_note == _AUTO_RESOLVE_NOTE for e in excs)
+
+
+def test_mark_externally_processed_leaves_dismissed_exceptions_untouched(
+    client, session_factory
+):
+    """Solo se auto-resuelven las ABIERTAS; una descartada no se toca."""
+    body = _create(client, order_number="MAN-AR4")
+    with session_factory() as s:
+        s.add(ErpException(
+            type=ExceptionType.SAT_ISSUE, order_id=body["id"],
+            status=ExceptionStatus.DISMISSED,
+        ))
+        s.commit()
+    client.post(
+        f"/api/erp/orders/{body['id']}/mark-externally-processed",
+        json={}, headers=auth_headers(client, "pedidos"),
+    )
+    with session_factory() as s:
+        exc = s.scalar(select(ErpException).where(ErpException.order_id == body["id"]))
+        assert exc.status == ExceptionStatus.DISMISSED
+        assert exc.resolution_note is None

@@ -32,13 +32,15 @@ describe("OrderApprovalCard", () => {
   it("OCULTA «Aprobar» si hay bloqueos activos", () => {
     render(
       <OrderApprovalCard
-        order={order({ blockers: [{ code: "sku_unmapped", detail: "Sin CODART" }] })}
+        order={order({
+          blockers: [{ code: "open_exceptions", detail: "1 excepción sin resolver" }],
+        })}
         canApprove
         onApprove={() => {}}
       />,
     );
     expect(screen.queryByRole("button", { name: /Aprobar/ })).not.toBeInTheDocument();
-    expect(screen.getByText("sku_unmapped")).toBeInTheDocument();
+    expect(screen.getByText("open_exceptions")).toBeInTheDocument();
   });
 
   it("OCULTA «Aprobar» si el rol no puede aprobar (aunque no haya bloqueos)", () => {
@@ -54,22 +56,23 @@ describe("OrderApprovalCard", () => {
     expect(onApprove).toHaveBeenCalledWith("o1");
   });
 
-  // --- B-2-fix4: avisos + externalizar --------------------------------------
+  // --- externalizar (B-2-fix4/fix5) -----------------------------------------
 
-  it("muestra los avisos (warnings) SIN ocultar «Aprobar»", () => {
+  it("renderiza los warnings si se pasan, SIN ocultar «Aprobar» (contrato del componente)", () => {
+    // El backend ya no envía warnings (B-2-fix5: array vacío), pero el
+    // componente sigue soportando renderizarlos si algún día los recibe.
     render(
       <OrderApprovalCard
-        order={order({ warnings: [{ code: "sku_unmapped", detail: "Sin CODART" }] })}
+        order={order({ warnings: [{ code: "info", detail: "Aviso de ejemplo" }] })}
         canApprove
         onApprove={() => {}}
       />,
     );
-    expect(screen.getByText("sku_unmapped")).toBeInTheDocument();
-    // El aviso NO bloquea: «Aprobar» sigue visible.
+    expect(screen.getByText("info")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Aprobar/ })).toBeInTheDocument();
   });
 
-  it("con onMarkExternal muestra el botón y lo dispara con el id", async () => {
+  it("con onMarkExternal muestra el botón (variante secondary) y lo dispara con el id", async () => {
     const onMarkExternal = jest.fn();
     const user = userEvent.setup();
     render(
@@ -80,7 +83,10 @@ describe("OrderApprovalCard", () => {
         onMarkExternal={onMarkExternal}
       />,
     );
-    await user.click(screen.getByRole("button", { name: /Procesado externamente/ }));
+    const btn = screen.getByRole("button", { name: /Procesado externamente/ });
+    // B-2-fix5: variante con contraste visible (no «ghost», que era invisible).
+    expect(btn).toHaveClass("button", "small", "secondary");
+    await user.click(btn);
     expect(onMarkExternal).toHaveBeenCalledWith("o1");
   });
 
