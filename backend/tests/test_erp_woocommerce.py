@@ -29,6 +29,11 @@ from app.erp.models import (
     ProductSkuMapping,
     SkuMatchedBy,
 )
+from app.integrations.woocommerce.client import (
+    WooError,
+    WooHTTPClient,
+    _to_iso8601_datetime,
+)
 from app.integrations.woocommerce.mapper import import_woo_order
 from app.main import app
 from app.models.crm import Company, Contact, ExternalSystem
@@ -432,3 +437,67 @@ def test_import_from_event_retries_on_failure_with_backoff(session_factory):
         assert ev.retry_count == 1
         assert ev.next_retry_at is not None
         assert ev.next_retry_at > datetime.now(UTC) - timedelta(seconds=5)
+
+
+# --- B-2-fix: ISO 8601 en `after` + cuerpo de error en WooError ------------
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("2026-07-04", "2026-07-04T00:00:00"),
+        ("2026-07-04T09:30:00", "2026-07-04T09:30:00"),
+        ("2026-07-04 09:30:00", "2026-07-04T09:30:00"),
+        ("", ""),
+        ("  2026-07-04  ", "2026-07-04T00:00:00"),
+    ],
+)
+def test_to_iso8601_datetime_normalises_dates(raw, expected):
+    assert _to_iso8601_datetime(raw) == expected
+
+
+def test_list_orders_sends_after_as_full_iso8601(session_factory):
+    """El bug real: WC v3 rechaza `after=2026-07-04` (400). El cliente debe
+    enviar `after=2026-07-04T00:00:00`."""
+    from unittest.mock import MagicMock
+
+    captured: dict[str, object] = {}
+
+    def _fake_request(method, url, **kwargs):  # noqa: ANN001
+        captured["params"] = kwargs.get("params")
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = []
+        return resp
+
+    with session_factory() as s:
+        # Construir el cliente con el store aún atado a la sesión: __init__
+        # descifra CK/CS eagerly, luego ya no necesita la sesión.
+        client = WooHTTPClient(_mk_store(s))
+    with patch("httpx.Client") as MockHttp:
+        MockHttp.return_value.__enter__.return_value.request.side_effect = _fake_request
+        client.list_orders(status="processing", since="2026-07-04", per_page=50)
+    assert captured["params"]["after"] == "2026-07-04T00:00:00"
+
+
+def test_woo_error_message_includes_response_body(session_factory):
+    """Ante 400, el mensaje de WooError debe llevar el cuerpo de Woo para
+    que aparezca en el log del worker (antes solo iba en `.body`)."""
+    from unittest.mock import MagicMock
+
+    with session_factory() as s:
+        client = WooHTTPClient(_mk_store(s))
+
+    def _fake_request(method, url, **kwargs):  # noqa: ANN001
+        resp = MagicMock()
+        resp.status_code = 400
+        resp.text = '{"code":"rest_invalid_param","message":"after no es válido"}'
+        return resp
+
+    with patch("httpx.Client") as MockHttp:
+        MockHttp.return_value.__enter__.return_value.request.side_effect = _fake_request
+        with pytest.raises(WooError) as exc:
+            client.list_orders(since="2026-07-04")
+    assert "400" in str(exc.value)
+    assert "after no es válido" in str(exc.value)  # cuerpo en el mensaje
+    assert exc.value.status == 400
