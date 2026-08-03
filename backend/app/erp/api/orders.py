@@ -13,7 +13,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.errors import not_found
@@ -28,7 +28,7 @@ from app.erp.models import (
     StatusDomain,
 )
 from app.erp.state_machine import TransitionError, apply_transition, available_transitions
-from app.models.crm import Company, User
+from app.models.crm import User
 
 router = APIRouter(prefix="/api/erp/orders", tags=["erp-orders"])
 
@@ -163,81 +163,46 @@ def _serialise_detail(session: Session, o: Order, actor: User) -> dict[str, Any]
     }
 
 
-#: Códigos de excepción que dependen de FACTUSOL — informativos (warning)
-#: mientras `factusol_live=false`, bloqueantes cuando se activa (B-2-fix4).
-_FACTUSOL_GATED_CODES = frozenset({"sku_unmapped", "company_missing_factusol"})
-
-
 def _factusol_live(session: Session) -> bool:
+    # Helper conservado por si la Fase C lo aprovecha. Tras B-2-fix5 ya no
+    # se llama desde el cálculo de bloqueos/warnings: el ERP confía en la
+    # fuente y no valida SKU ni empresas contra FACTUSOL.
     from app.erp.models import ERP_SETTINGS_SINGLETON_ID, ErpSettings  # noqa: PLC0415
 
     cfg = session.get(ErpSettings, ERP_SETTINGS_SINGLETON_ID)
     return bool(cfg and cfg.factusol_live)
 
 
-def _factusol_issues(session: Session, o: Order) -> list[dict[str, str]]:
-    """Problemas relacionados con FACTUSOL: SKU sin CODART + empresa sin
-    vincular. Son BLOQUEANTES solo si `factusol_live`; si no, son warnings."""
-    issues: list[dict[str, str]] = []
-    unmapped = [line.product_sku for line in o.lines if not line.product_codart]
-    if unmapped:
-        issues.append({
-            "code": "sku_unmapped",
-            "detail": f"Líneas sin CODART: {', '.join(unmapped[:5])}",
-        })
-    if o.company_id:
-        company = session.get(Company, o.company_id)
-        if company is not None and not company.factusol_company_id:
-            issues.append({
-                "code": "company_missing_factusol",
-                "detail": f"«{company.name}» sin vincular a FACTUSOL",
-            })
-    return issues
-
-
 def _open_exception_blocker(session: Session, o: Order) -> dict[str, str] | None:
-    """Excepciones abiertas REALES (SAT/transporte…) — excluye las
-    informativas con code factusol-gated, que ya trata `_factusol_issues`."""
-    rows = session.scalars(
-        select(ErpException).where(
+    """Excepciones abiertas de tipos operativos reales (SAT/transporte/
+    facturación) — el único bloqueo de la Cola PEDIDOS (B-2-fix5)."""
+    n = session.scalar(
+        select(func.count(ErpException.id)).where(
             ErpException.order_id == o.id,
             ErpException.status.in_(
                 [ExceptionStatus.OPEN, ExceptionStatus.IN_PROGRESS]
             ),
         )
-    )
-    n_real = 0
-    for e in rows:
-        meta = json.loads(e.metadata_json) if e.metadata_json else {}
-        if meta.get("code") in _FACTUSOL_GATED_CODES:
-            continue
-        n_real += 1
-    if n_real:
+    ) or 0
+    if n:
         return {
             "code": "open_exceptions",
-            "detail": f"{n_real} excepción(es) sin resolver",
+            "detail": f"{n} excepción(es) sin resolver",
         }
     return None
 
 
 def _blockers(session: Session, o: Order) -> list[dict[str, str]]:
-    """Bloqueos que impiden aprobar en la Cola PEDIDOS. Los issues de
-    FACTUSOL solo bloquean cuando `factusol_live` (B-2-fix4)."""
-    out: list[dict[str, str]] = []
-    if _factusol_live(session):
-        out.extend(_factusol_issues(session, o))
+    """Bloqueos que impiden aprobar en la Cola PEDIDOS. Solo excepciones
+    abiertas de tipos operativos reales (SAT/transporte/facturación).
+    El ERP confía en el pedido tal como llega de la fuente (B-2-fix5)."""
     real = _open_exception_blocker(session, o)
-    if real:
-        out.append(real)
-    return out
+    return [real] if real else []
 
 
 def _warnings(session: Session, o: Order) -> list[dict[str, str]]:
-    """Avisos NO bloqueantes. Mientras FACTUSOL no esté live, los issues
-    de FACTUSOL se muestran aquí (visibles pero sin impedir la aprobación)."""
-    if _factusol_live(session):
-        return []
-    return _factusol_issues(session, o)
+    """Sin warnings automáticos: el ERP confía en la fuente (B-2-fix5)."""
+    return []
 
 
 # --- endpoints ---------------------------------------------------------------

@@ -9,8 +9,9 @@ Reglas del spec (decisiones cerradas):
 - Auto-crea company por (CIF+razón social) si el pedido los trae y no
   existe empresa con ese CIF.
 - Cada línea busca product_sku_mapping por (woo_sku, store_id) con
-  confirmed_at NOT NULL → si existe, setea codart; si no, crea excepción
-  sku_unmapped (que bloqueará la aprobación en Cola PEDIDOS).
+  confirmed_at NOT NULL → si existe, setea codart; si no, la línea queda
+  con codart NULL y NO se crea ninguna excepción. El ERP confía en la
+  fuente: un pedido de WooCommerce es válido tal cual llega (B-2-fix5).
 
 Idempotente: si ya existe Order con (external_source='woocommerce',
 external_id=str(woo_id), store_id) hace UPDATE conservativo (no pisa
@@ -29,9 +30,6 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.erp.models import (
-    ErpException,
-    ExceptionStatus,
-    ExceptionType,
     Order,
     OrderLine,
     OrderSource,
@@ -87,7 +85,7 @@ def import_woo_order(
 
     order = _create_order(session, woo_order, store, contact, company)
     session.flush()
-    _apply_lines_and_exceptions(session, order, woo_order, store)
+    _apply_lines(session, order, woo_order, store)
     session.flush()
     # B-2-fix4: pedidos anteriores a la fecha de corte de la tienda se
     # auto-marcan como procesados externamente (no entran a Cola PEDIDOS).
@@ -250,10 +248,12 @@ def _refresh_existing(
         order.company_id = company.id
 
 
-def _apply_lines_and_exceptions(
+def _apply_lines(
     session: Session, order: Order, woo: dict[str, Any], store: IntegrationAccount,
 ) -> None:
-    seen: set[str] = set()
+    """Crea las líneas del pedido. Si el SKU tiene un mapping CONFIRMADO se
+    rellena el CODART; si no, queda NULL y no se hace nada más — el ERP
+    confía en la fuente y no crea excepciones sintéticas (B-2-fix5)."""
     for i, li in enumerate(woo.get("line_items") or []):
         sku = str(li.get("sku") or "").strip()
         if not sku:
@@ -270,9 +270,6 @@ def _apply_lines_and_exceptions(
             tax_rate=float(li.get("tax_class") == "reduced-rate" and 10 or 21),
             line_total=line_total,
         ))
-        if codart is None and sku not in seen:
-            seen.add(sku)
-            _create_sku_unmapped_exception(session, order.id, sku, store.id)
 
 
 def _resolve_codart(
@@ -287,34 +284,6 @@ def _resolve_codart(
         ProductSkuMapping.confirmed_at.is_not(None),
     ))
     return row.factusol_codart if row else None
-
-
-def _create_sku_unmapped_exception(
-    session: Session, order_id: str, sku: str, store_id: str,
-) -> None:
-    """Idempotente: una sola excepción sku_unmapped por (order, sku)."""
-    existing = session.scalar(select(ErpException).where(
-        ErpException.order_id == order_id,
-        ErpException.type == ExceptionType.SAT_ISSUE,  # placeholder
-        ErpException.metadata_json.like(f'%"sku": "{sku}"%'),
-    ))
-    if existing is not None:
-        return
-    session.add(ErpException(
-        # `sku_unmapped` no es un tipo del catálogo Fase A (bloquea la
-        # aprobación, no la SAT) — se representa como sat_issue con
-        # marca en metadata; el catálogo formal se ampliará si Bart quiere
-        # su propio tipo. La Cola PEDIDOS lo detecta por el bloqueo
-        # `sku_unmapped` que ya calcula _blockers() en orders.py.
-        type=ExceptionType.SAT_ISSUE,
-        subtype=None,
-        order_id=order_id,
-        status=ExceptionStatus.OPEN,
-        metadata_json=json.dumps({
-            "code": "sku_unmapped", "sku": sku, "store_id": store_id,
-            "description": f"SKU {sku!r} sin CODART confirmado para esta tienda",
-        }),
-    ))
 
 
 def _store_cutoff(store: IntegrationAccount) -> datetime | None:

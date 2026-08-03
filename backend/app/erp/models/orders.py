@@ -212,8 +212,8 @@ class OrderStatusHistory(Base):
         ForeignKey("orders.id", ondelete="CASCADE"), nullable=False
     )
     domain: Mapped[StatusDomain] = mapped_column(_enum(StatusDomain), nullable=False)
-    from_status: Mapped[str | None] = mapped_column(String(24))
-    to_status: Mapped[str] = mapped_column(String(24), nullable=False)
+    from_status: Mapped[str | None] = mapped_column(String(40))
+    to_status: Mapped[str] = mapped_column(String(40), nullable=False)
     changed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )

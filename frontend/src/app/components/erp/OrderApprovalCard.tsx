@@ -90,7 +90,7 @@ export function OrderApprovalCard({
         {onMarkExternal ? (
           <button
             type="button"
-            className="button small ghost"
+            className="button small secondary"
             disabled={busy}
             onClick={() => onMarkExternal(order.id)}
           >

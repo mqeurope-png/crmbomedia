@@ -39,10 +39,9 @@ class ErpSettings(TimestampMixin, Base):
         ForeignKey("carriers.id", ondelete="SET NULL")
     )
     factusol_default_ejercicio: Mapped[str | None] = mapped_column(String(4))
-    # B-2-fix4: mientras FACTUSOL no esté live (Fase C), las excepciones
-    # sku_unmapped y company_missing_factusol son informativas (warning) y
-    # NO bloquean la aprobación en Cola PEDIDOS. Al activarlo (Fase C
-    # desplegada) pasan a bloqueantes automáticamente.
+    # Flag reservado para la Fase C. Tras B-2-fix5 el ERP confía en la
+    # fuente y NO valida SKU ni empresas contra FACTUSOL, así que este
+    # toggle es hoy un no-op; se conserva por si Fase C lo aprovecha.
     factusol_live: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False
     )

@@ -245,7 +245,9 @@ def test_import_no_company_when_no_cif_or_no_name(session_factory):
         assert s.scalar(select(func.count(Company.id))) == 0
 
 
-def test_unmapped_sku_creates_exception_and_leaves_codart_null(session_factory):
+def test_unmapped_sku_leaves_codart_null_without_exception(session_factory):
+    """B-2-fix5: el ERP confía en la fuente. Un SKU sin mapping confirmado
+    deja el codart NULL y NO crea ninguna excepción sintética."""
     with session_factory() as s:
         store = _mk_store(s)
         payload = _woo()
@@ -255,11 +257,8 @@ def test_unmapped_sku_creates_exception_and_leaves_codart_null(session_factory):
         assert out.unmapped_skus == ["SKU-MBO-3050"]
         line = s.scalar(select(OrderLine).where(OrderLine.order_id == out.order_id))
         assert line.product_codart is None
-        exc = s.scalar(select(ErpException).where(
-            ErpException.order_id == out.order_id))
-        assert exc is not None
-        meta = json.loads(exc.metadata_json)
-        assert meta["code"] == "sku_unmapped" and meta["sku"] == "SKU-MBO-3050"
+        # Ninguna excepción creada por el SKU sin mapear.
+        assert s.scalar(select(func.count(ErpException.id))) == 0
 
 
 def test_import_before_cutoff_auto_marks_externally_processed(session_factory):
