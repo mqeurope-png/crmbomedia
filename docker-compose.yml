@@ -103,6 +103,7 @@ services:
       # del ERP — mismas que prod, ver docker-compose.prod.yml.
       - woocommerce:import
       - woocommerce:backfill
+      - woocommerce:webhooks
       - genei:shipments
       - genei:webhooks
     volumes:

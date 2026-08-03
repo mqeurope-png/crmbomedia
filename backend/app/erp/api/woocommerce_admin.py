@@ -14,18 +14,27 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.core.audit import record_event
 from app.core.crypto import encrypt
 from app.core.errors import not_found
 from app.db.session import get_session
 from app.erp.api.deps import require_erp_admin
+from app.erp.models import IntegrationEvent, IntegrationEventStatus
 from app.integrations.woocommerce.client import WooError, WooHTTPClient
+from app.integrations.woocommerce.webhooks import (
+    get_or_create_webhook_secret,
+    regenerate_webhook_secret,
+    set_initial_webhook_secret,
+    webhook_url_for,
+)
 from app.models.crm import ExternalSystem, User
 from app.models.integration_settings import (
     IntegrationAccount,
@@ -91,7 +100,9 @@ def _set_cutoff(a: IntegrationAccount, value: str | None) -> None:
     a.metadata_json = json.dumps(meta) if meta else None
 
 
-def _serialise(a: IntegrationAccount) -> dict[str, Any]:
+def _serialise(
+    a: IntegrationAccount, summary: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     return {
         "id": a.id,
         "account_id": a.account_id,
@@ -100,7 +111,52 @@ def _serialise(a: IntegrationAccount) -> dict[str, Any]:
         "enabled": a.enabled,
         "credential_status": a.credential_status,
         "external_cutoff_date": _metadata(a).get("external_cutoff_date"),
+        # B-3: resumen de webhooks para la tabla (0 queries extra por fila).
+        "webhook_summary": summary or {
+            "last_received_at": None, "count_24h": 0, "errors_24h": 0,
+        },
     }
+
+
+def _webhook_metrics(
+    session: Session, account_ids: list[str],
+) -> dict[str, dict[str, Any]]:
+    """Métricas de webhooks por tienda: último recibido (histórico) +
+    contadores de las últimas 24h. Dos queries totales, no N por fila."""
+    out: dict[str, dict[str, Any]] = {
+        aid: {"last_received_at": None, "count_24h": 0, "errors_24h": 0,
+              "topics_24h": []}
+        for aid in account_ids
+    }
+    if not account_ids:
+        return out
+    for aid, last in session.execute(
+        select(IntegrationEvent.account_id, func.max(IntegrationEvent.created_at))
+        .where(
+            IntegrationEvent.system == "woocommerce",
+            IntegrationEvent.account_id.in_(account_ids),
+        )
+        .group_by(IntegrationEvent.account_id)
+    ):
+        if aid in out and last is not None:
+            out[aid]["last_received_at"] = last.isoformat()
+    since = datetime.now(UTC) - timedelta(hours=24)
+    topics: dict[str, set[str]] = {aid: set() for aid in account_ids}
+    for ev in session.scalars(select(IntegrationEvent).where(
+        IntegrationEvent.system == "woocommerce",
+        IntegrationEvent.account_id.in_(account_ids),
+        IntegrationEvent.created_at >= since,
+    )):
+        m = out.get(ev.account_id)
+        if m is None:
+            continue
+        m["count_24h"] += 1
+        if ev.status == IntegrationEventStatus.FAILED:
+            m["errors_24h"] += 1
+        topics[ev.account_id].add(ev.event_type)
+    for aid in account_ids:
+        out[aid]["topics_24h"] = sorted(topics[aid])
+    return out
 
 
 def _get_woo(session: Session, store_id: str) -> IntegrationAccount:
@@ -119,7 +175,8 @@ def list_stores(
     rows = list(session.scalars(select(IntegrationAccount).where(
         IntegrationAccount.system == ExternalSystem.WOOCOMMERCE,
     ).order_by(IntegrationAccount.account_id)))
-    return {"items": [_serialise(r) for r in rows]}
+    metrics = _webhook_metrics(session, [r.account_id for r in rows])
+    return {"items": [_serialise(r, metrics.get(r.account_id)) for r in rows]}
 
 
 @router.post("/stores", status_code=201)
@@ -153,6 +210,8 @@ def create_store(
         credential_status="configured",
     )
     _set_cutoff(account, payload.external_cutoff_date)
+    # B-3: cada tienda nace con su secreto de webhook (misma transacción).
+    set_initial_webhook_secret(account)
     session.add(account)
     session.commit()
     session.refresh(account)
@@ -183,6 +242,53 @@ def update_store(
     session.commit()
     session.refresh(account)
     return _serialise(account)
+
+
+@router.get("/stores/{store_id}/webhook-status")
+def webhook_status(
+    store_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_admin),
+) -> dict[str, Any]:
+    """URL + últimos-4 del secreto + métricas 24h para el editor de tienda."""
+    _ = current_user
+    account = _get_woo(session, store_id)
+    secret = get_or_create_webhook_secret(session, account)
+    metrics = _webhook_metrics(session, [account.account_id])[account.account_id]
+    return {
+        "webhook_url": webhook_url_for(account.account_id),
+        "webhook_secret_last4": secret[-4:] if secret else "",
+        "last_received_at": metrics["last_received_at"],
+        "count_24h": metrics["count_24h"],
+        "errors_24h": metrics["errors_24h"],
+        "topics_received_24h": metrics["topics_24h"],
+    }
+
+
+@router.post("/stores/{store_id}/regenerate-webhook-secret")
+def regenerate_secret(
+    store_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_admin),
+) -> dict[str, Any]:
+    """Rota el secreto de webhook. Devuelve el nuevo COMPLETO una única vez
+    (luego solo se muestran los últimos 4). Hay que actualizarlo en el admin
+    de WordPress de la tienda para que los webhooks sigan validando."""
+    account = _get_woo(session, store_id)
+    new_secret = regenerate_webhook_secret(session, account)
+    try:
+        record_event(
+            session, action="erp.woocommerce_webhook_secret_regenerated",
+            target_type="integration_account", target_id=account.id,
+            actor=current_user, metadata={"account_id": account.account_id},
+        )
+        session.commit()
+    except Exception:  # noqa: BLE001 — audit nunca bloquea
+        pass
+    return {
+        "webhook_secret": new_secret,
+        "webhook_url": webhook_url_for(account.account_id),
+    }
 
 
 @router.post("/stores/{store_id}/test-connection")

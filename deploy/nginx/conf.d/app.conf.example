@@ -72,6 +72,23 @@ server {
         client_max_body_size 12m;
     }
 
+    # Inbound webhooks (WooCommerce B-3, Genei B-4). No CRM auth — the
+    # provider HMAC signature is verified in the app. The signature is
+    # computed over the EXACT request bytes, so body buffering MUST be off.
+    location /webhooks/ {
+        set $upstream_api http://api:8000;
+        proxy_pass $upstream_api;
+        proxy_http_version 1.1;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_read_timeout 30s;
+        proxy_request_buffering off;
+        proxy_buffering off;
+        limit_req zone=webhooks burst=20 nodelay;
+    }
+
     # Email-template inline images (Tiptap uploads) are served straight
     # off disk so the API process never has to stream binary bytes back.
     # The host mounts the directory matching the API container's

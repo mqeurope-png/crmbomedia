@@ -137,6 +137,11 @@ app.include_router(erp_sat_router)
 app.include_router(erp_exceptions_router)
 app.include_router(erp_woocommerce_admin_router)
 
+# Webhooks entrantes (fuera de `/api/*`; auth = firma HMAC, no sesión CRM).
+from app.webhooks.woocommerce import router as woocommerce_webhook_router  # noqa: E402
+
+app.include_router(woocommerce_webhook_router)
+
 
 # Sprint Web-Forms — CORS abierto (`*`) SOLO para los endpoints públicos
 # de formularios (`/public/forms/*` y `/forms/*`), que se embeben en webs

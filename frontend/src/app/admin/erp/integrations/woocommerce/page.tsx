@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { PageHeader } from "../../../../components/PageHeader";
 import { WooStoreForm } from "../../../../components/erp/WooStoreForm";
+import { WooWebhookModal } from "../../../../components/erp/WooWebhookModal";
 import { extractErrorMessage } from "../../../../lib/errors";
 import {
   bulkMarkExternallyProcessed,
@@ -15,6 +16,19 @@ import {
   type WooStoreCreate,
 } from "../../../../lib/erpApi";
 
+/** «hace X min / X h / X d» a partir de un ISO; «N/A» si no hay valor. */
+function timeAgo(iso: string | null): string {
+  if (!iso) return "N/A";
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return "N/A";
+  const mins = Math.max(0, Math.floor((Date.now() - then) / 60000));
+  if (mins < 1) return "ahora mismo";
+  if (mins < 60) return `hace ${mins} min`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `hace ${hrs} h`;
+  return `hace ${Math.floor(hrs / 24)} d`;
+}
+
 export default function WooCommerceAdminPage() {
   const [stores, setStores] = useState<WooStore[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -25,6 +39,8 @@ export default function WooCommerceAdminPage() {
   const [testing, setTesting] = useState<string | null>(null);
   // Borradores de la fecha de corte por tienda (B-2-fix4).
   const [cutoffDrafts, setCutoffDrafts] = useState<Record<string, string>>({});
+  // Tienda cuyo panel de webhook está abierto (B-3).
+  const [webhookStore, setWebhookStore] = useState<WooStore | null>(null);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -168,7 +184,8 @@ export default function WooCommerceAdminPage() {
         <table className="data-table">
           <thead>
             <tr>
-              <th>Slug</th><th>Nombre</th><th>URL</th><th>Estado</th>
+              <th>Slug</th><th>Nombre</th><th>Estado</th>
+              <th>Último webhook</th><th>Webhooks 24h</th>
               <th>Fecha de corte</th><th>Acciones</th>
             </tr>
           </thead>
@@ -177,11 +194,18 @@ export default function WooCommerceAdminPage() {
               <tr key={s.id}>
                 <td><code>{s.account_id}</code></td>
                 <td>{s.display_name}</td>
-                <td>{s.base_url}</td>
                 <td>
                   {s.enabled
                     ? <span className="badge ok">activa</span>
                     : <span className="badge muted">pausada</span>}
+                </td>
+                <td className="muted small">{timeAgo(s.webhook_summary.last_received_at)}</td>
+                <td className="small">
+                  {s.webhook_summary.count_24h} recibidos
+                  {" · "}
+                  {s.webhook_summary.errors_24h > 0
+                    ? <span className="badge bad">{s.webhook_summary.errors_24h} errores</span>
+                    : <span className="muted">0 errores</span>}
                 </td>
                 <td>
                   <div className="erp-exc-actions">
@@ -211,6 +235,10 @@ export default function WooCommerceAdminPage() {
                       onClick={() => onTest(s.id)} disabled={testing === s.id || busy}>
                       {testing === s.id ? "Probando…" : "Probar conexión"}
                     </button>
+                    <button type="button" className="button small secondary"
+                      onClick={() => setWebhookStore(s)}>
+                      Webhooks
+                    </button>
                     <button type="button" className="button small"
                       onClick={() => onBackfill(s.id)} disabled={busy}>
                       Sync backfill
@@ -224,6 +252,13 @@ export default function WooCommerceAdminPage() {
       )}
       {showForm ? (
         <WooStoreForm onSubmit={onCreate} onCancel={() => setShowForm(false)} busy={busy} />
+      ) : null}
+      {webhookStore ? (
+        <WooWebhookModal
+          storeId={webhookStore.id}
+          storeName={webhookStore.display_name}
+          onClose={() => { setWebhookStore(null); load(); }}
+        />
       ) : null}
     </main>
   );

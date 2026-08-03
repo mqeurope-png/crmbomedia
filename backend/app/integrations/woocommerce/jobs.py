@@ -39,6 +39,11 @@ logger = logging.getLogger(__name__)
 
 WOO_QUEUE_IMPORT = "woocommerce:import"
 WOO_QUEUE_BACKFILL = "woocommerce:backfill"
+WOO_QUEUE_WEBHOOKS = "woocommerce:webhooks"
+
+#: Backoff RQ nativo del receptor de webhooks (B-3): 30s → 2min → 10min →
+#: 1h → 4h. `len(interval)` intentos totales; tras el último → failed.
+WEBHOOK_RETRY_INTERVALS = [30, 120, 600, 3600, 14400]
 
 
 def _session_factory() -> sessionmaker:
@@ -255,3 +260,146 @@ def _event_exists(session, store: IntegrationAccount, woo: dict[str, Any]) -> bo
         IntegrationEvent.external_event_id == f"backfill:{woo['id']}",
     ))
     return row is not None
+
+
+# --- webhooks (B-3) ---------------------------------------------------------
+
+
+def process_webhook_event(event_id: str) -> dict[str, Any]:
+    """Procesa un webhook Woo persistido en `integration_events`: refetch del
+    pedido completo desde Woo + import idempotente (hereda cutoff-externalize
+    y la filosofía «ERP confía en la fuente» del mapper).
+
+    - Topic no soportado (product.*, ping…) → `ignored`.
+    - 4xx de Woo (pedido borrado) → `failed` sin reintento.
+    - 5xx / red → raise para que RQ reintente con backoff.
+    """
+    from app.integrations.woocommerce.webhooks import SUPPORTED_TOPICS  # noqa: PLC0415
+
+    with _session_factory()() as session:
+        event = session.get(IntegrationEvent, event_id)
+        if event is None:
+            logger.warning("woo webhook: event %s no existe", event_id)
+            return {"skipped": True, "reason": "event_not_found"}
+        if event.status == IntegrationEventStatus.PROCESSED:
+            return {"skipped": True, "reason": "already_processed"}
+
+        topic = event.event_type or "unknown"
+        if topic not in SUPPORTED_TOPICS:
+            event.status = IntegrationEventStatus.IGNORED
+            session.commit()
+            return {"ignored": True, "topic": topic}
+
+        event.status = IntegrationEventStatus.PROCESSING
+        session.commit()
+
+        store = _get_store(session, event.account_id)
+        if store is None:
+            _mark_failed(session, event, f"store {event.account_id!r} not found")
+            return {"ok": False, "error": "store_not_found"}
+
+        try:
+            payload = json.loads(event.payload_json)
+            order_id = payload.get("id")
+            if not order_id:
+                _mark_failed(session, event, "webhook payload sin id de pedido")
+                return {"ok": False, "error": "no_order_id"}
+            # Refetch del pedido completo (el payload del webhook puede venir
+            # incompleto o desfasado si hubo varios eventos seguidos).
+            order_data = WooHTTPClient(store).get_order(int(order_id))
+            order_data["_store_slug"] = store.account_id
+            outcome = import_woo_order(session, store=store, woo_order=order_data)
+            event.status = IntegrationEventStatus.PROCESSED
+            event.processed_at = datetime.now(UTC)
+            event.error_message = None
+            session.commit()
+            _log_webhook_sync(session, store, outcome, topic)
+            return _outcome_dict(outcome, event_id)
+        except WooError as exc:
+            if exc.status is not None and 400 <= exc.status < 500:
+                _mark_failed(
+                    session, event,
+                    f"woo {exc.status}: order not found in source",
+                )
+                _log_webhook_sync(session, store, None, topic, error=str(exc))
+                return {"ok": False, "error": "order_not_found", "status": exc.status}
+            # 5xx / red → RQ reintenta.
+            event.error_message = str(exc)[:2000]
+            session.commit()
+            raise
+        except ValueError as exc:
+            _mark_failed(session, event, f"payload inválido: {exc}")
+            return {"ok": False, "error": "bad_payload"}
+
+
+def _log_webhook_sync(session, store, outcome, topic, error: str | None = None) -> None:
+    from app.models.crm import (  # noqa: PLC0415
+        ExternalSystem,
+        SyncLog,
+        SyncStatus,
+        SyncTrigger,
+    )
+
+    now = datetime.now(UTC)
+    if error:
+        message = None
+    elif outcome is not None and outcome.created:
+        message = f"webhook {topic}: order created"
+    else:
+        message = f"webhook {topic}: order updated"
+    session.add(SyncLog(
+        system=ExternalSystem.WOOCOMMERCE,
+        account_id=store.account_id if store else None,
+        operation="webhook_process",
+        status=SyncStatus.FAILED.value if error else SyncStatus.SUCCESS.value,
+        started_at=now,
+        finished_at=now,
+        records_processed=0 if error else 1,
+        records_failed=1 if error else 0,
+        error_summary=str(error)[:2000] if error else None,
+        triggered_by=SyncTrigger.WEBHOOK.value,
+        message=message,
+    ))
+    session.commit()
+
+
+def enqueue_webhook_event(event_id: str) -> None:
+    """Encola `process_webhook_event` en `woocommerce:webhooks` con retry RQ
+    nativo (backoff WEBHOOK_RETRY_INTERVALS). Sin Redis (tests/local)
+    procesa inline para que el flujo complete igual."""
+    try:
+        from rq import Queue, Retry  # noqa: PLC0415
+
+        from app.workers.queues import redis_connection  # noqa: PLC0415
+
+        conn = redis_connection()
+        conn.ping()
+        Queue(WOO_QUEUE_WEBHOOKS, connection=conn).enqueue(
+            process_webhook_event, event_id,
+            retry=Retry(max=len(WEBHOOK_RETRY_INTERVALS), interval=WEBHOOK_RETRY_INTERVALS),
+            on_failure=handle_webhook_failure,
+        )
+    except Exception:  # noqa: BLE001 — sin Redis → procesa ya
+        try:
+            process_webhook_event(event_id)
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "woo webhook: proceso inline falló para event %s", event_id,
+                exc_info=True,
+            )
+
+
+def handle_webhook_failure(job, connection, exc_type, exc_value, traceback) -> None:  # noqa: ANN001, ARG001
+    """Callback RQ tras agotar los reintentos: marca el evento `failed`."""
+    args = getattr(job, "args", None) or ()
+    event_id = args[0] if args else None
+    if not event_id:
+        return
+    with _session_factory()() as session:
+        event = session.get(IntegrationEvent, event_id)
+        if event is not None and event.status != IntegrationEventStatus.PROCESSED:
+            event.status = IntegrationEventStatus.FAILED
+            event.error_message = (
+                f"{getattr(exc_type, '__name__', 'error')}: {exc_value}"[:2000]
+            )
+            session.commit()
