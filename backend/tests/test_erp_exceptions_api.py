@@ -218,3 +218,16 @@ def test_settings_patch_rejects_bad_invoice_mode(client):
     r = client.patch("/api/erp/settings", json={"default_invoice_mode": "nope"},
                      headers=auth_headers(client, "admin"))
     assert r.status_code == 400
+
+
+def test_settings_factusol_live_defaults_false_and_toggles(client):
+    """B-2-fix4: el gate FACTUSOL arranca en false y es editable por ADMIN."""
+    g = client.get("/api/erp/settings", headers=auth_headers(client, "pedidos"))
+    assert g.json()["factusol_live"] is False
+    p = client.patch("/api/erp/settings", json={"factusol_live": True},
+                     headers=auth_headers(client, "admin"))
+    assert p.status_code == 200
+    assert p.json()["factusol_live"] is True
+    # persiste
+    g2 = client.get("/api/erp/settings", headers=auth_headers(client, "admin"))
+    assert g2.json()["factusol_live"] is True

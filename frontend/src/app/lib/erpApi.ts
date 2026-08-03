@@ -5,11 +5,14 @@ import { apiFetch, apiUpload } from "./api";
 export type PaymentStatus =
   | "pending" | "paid" | "partial_paid" | "credit_approved" | "failed" | "refunded";
 export type PreparationStatus =
-  | "pending_review" | "in_queue" | "preparing" | "packed" | "blocked";
+  | "pending_review" | "in_queue" | "preparing" | "packed" | "blocked"
+  | "already_completed_externally";
 export type TransportStatus =
-  | "not_shipped" | "label_created" | "in_transit" | "delivered" | "incident" | "returned";
+  | "not_shipped" | "label_created" | "in_transit" | "delivered" | "incident" | "returned"
+  | "already_shipped_externally";
 export type InvoiceStatus =
-  | "not_invoiced" | "pending" | "generated" | "error" | "credit_note";
+  | "not_invoiced" | "pending" | "generated" | "error" | "credit_note"
+  | "already_invoiced_externally";
 export type StatusDomain = "payment" | "preparation" | "transport" | "invoice";
 
 export type OrderSummary = {
@@ -29,9 +32,13 @@ export type OrderSummary = {
   approved_at: string | null;
   placed_at: string | null;
   created_at: string;
+  /** B-2-fix4: seteado si el pedido se gestionó fuera del ERP. */
+  externally_processed_at: string | null;
 };
 
 export type Blocker = { code: string; detail: string };
+/** B-2-fix4: aviso NO bloqueante (misma forma que Blocker). */
+export type Warning = { code: string; detail: string };
 
 export type OrderLine = {
   id: string;
@@ -80,9 +87,15 @@ export type OrderDetail = OrderSummary & {
   exceptions: OrderException[];
   available_transitions: Record<StatusDomain, AvailableTransition[]>;
   blockers: Blocker[];
+  warnings: Warning[];
+  externally_processed_note: string | null;
+  externally_processed_by_user_id: string | null;
 };
 
-export type PendingOrder = OrderSummary & { blockers: Blocker[] };
+export type PendingOrder = OrderSummary & {
+  blockers: Blocker[];
+  warnings: Warning[];
+};
 
 export type TimelineEvent = {
   type: "status" | "exception" | "audit";
@@ -107,12 +120,16 @@ export type OrderFilters = {
   transport?: string;
   invoice?: string;
   store?: string;
+  /** B-2-fix4: incluir los pedidos procesados externamente (por defecto ocultos). */
+  show_external?: boolean;
   sort?: string;
   limit?: number;
 };
 
 export async function listOrders(filters: OrderFilters = {}): Promise<OrderSummary[]> {
-  const r = await apiFetch<{ items: OrderSummary[] }>(`/api/erp/orders${qs(filters)}`);
+  const { show_external, ...rest } = filters;
+  const query = qs({ ...rest, show_external: show_external ? "true" : undefined });
+  const r = await apiFetch<{ items: OrderSummary[] }>(`/api/erp/orders${query}`);
   return r.items;
 }
 
@@ -144,6 +161,26 @@ export async function fireTransition(
 
 export async function approveOrder(id: string): Promise<OrderDetail> {
   return apiFetch<OrderDetail>(`/api/erp/orders/${id}/approve`, { method: "POST" });
+}
+
+// --- procesado externamente (B-2-fix4) --------------------------------------
+
+export async function markExternallyProcessed(
+  id: string, note?: string | null,
+): Promise<OrderDetail> {
+  return apiFetch<OrderDetail>(`/api/erp/orders/${id}/mark-externally-processed`, {
+    method: "POST",
+    body: JSON.stringify({ note: note ?? null }),
+  });
+}
+
+export async function bulkMarkExternallyProcessed(
+  body: { order_ids?: string[]; store_id?: string; before_date?: string; note?: string | null },
+): Promise<{ ok: boolean; marked: number }> {
+  return apiFetch("/api/erp/orders/bulk-mark-externally-processed", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
 }
 
 export type OrderCreatePayload = {
@@ -185,6 +222,7 @@ export const STATUS_LABELS: Record<string, { label: string; tone: string }> = {
   preparing: { label: "Preparando", tone: "active" },
   packed: { label: "Embalado", tone: "ok" },
   blocked: { label: "Bloqueado", tone: "bad" },
+  already_completed_externally: { label: "Externalizado", tone: "muted" },
   // transport
   not_shipped: { label: "Sin enviar", tone: "muted" },
   label_created: { label: "Etiqueta creada", tone: "active" },
@@ -192,11 +230,13 @@ export const STATUS_LABELS: Record<string, { label: string; tone: string }> = {
   delivered: { label: "Entregado", tone: "ok" },
   incident: { label: "Incidencia", tone: "bad" },
   returned: { label: "Devuelto", tone: "bad" },
+  already_shipped_externally: { label: "Externalizado", tone: "muted" },
   // invoice
   not_invoiced: { label: "Sin facturar", tone: "muted" },
   generated: { label: "Facturada", tone: "ok" },
   error: { label: "Error factura", tone: "bad" },
   credit_note: { label: "Abono", tone: "muted" },
+  already_invoiced_externally: { label: "Externalizado", tone: "muted" },
 };
 
 export const DOMAIN_LABELS: Record<StatusDomain, string> = {
@@ -350,6 +390,9 @@ export type ErpSettings = {
   auto_invoice_max_amount_eur: number | null;
   default_carrier_id: string | null;
   factusol_default_ejercicio: string | null;
+  /** B-2-fix4: mientras esté en false, las excepciones sku_unmapped y
+   *  company_missing_factusol son informativas (no bloquean la aprobación). */
+  factusol_live: boolean;
 };
 
 export async function getErpSettings(): Promise<ErpSettings> {
@@ -372,6 +415,9 @@ export type WooStore = {
   base_url: string;
   enabled: boolean;
   credential_status: string;
+  /** B-2-fix4: fecha de corte; pedidos anteriores se auto-marcan como
+   *  procesados externamente al importar (ISO 8601 o YYYY-MM-DD). */
+  external_cutoff_date: string | null;
 };
 
 export type WooStoreCreate = {
@@ -381,6 +427,7 @@ export type WooStoreCreate = {
   consumer_key: string;
   consumer_secret: string;
   enabled?: boolean;
+  external_cutoff_date?: string | null;
 };
 
 export type WooStoreUpdate = Partial<Omit<WooStoreCreate, "account_id">>;

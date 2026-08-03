@@ -12,8 +12,10 @@ function detail(over: Partial<OrderDetail> = {}): OrderDetail {
     transport_status: "not_shipped", invoice_status: "not_invoiced",
     tracking_number: null, approved_at: null, placed_at: null,
     created_at: "2026-07-31T09:00:00Z",
+    externally_processed_at: null, externally_processed_note: null,
+    externally_processed_by_user_id: null,
     notes: null, packing: null, lines: [], status_history: [], exceptions: [],
-    blockers: [],
+    blockers: [], warnings: [],
     available_transitions: {
       payment: [],
       preparation: [

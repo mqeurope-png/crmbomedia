@@ -13,7 +13,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.errors import not_found
@@ -98,6 +98,10 @@ def _serialise_summary(o: Order) -> dict[str, Any]:
         "approved_at": o.approved_at.isoformat() if o.approved_at else None,
         "placed_at": o.placed_at.isoformat() if o.placed_at else None,
         "created_at": o.created_at.isoformat(),
+        "externally_processed_at": (
+            o.externally_processed_at.isoformat()
+            if o.externally_processed_at else None
+        ),
     }
 
 
@@ -153,40 +157,87 @@ def _serialise_detail(session: Session, o: Order, actor: User) -> dict[str, Any]
             for domain in StatusDomain
         },
         "blockers": _blockers(session, o),
+        "warnings": _warnings(session, o),
+        "externally_processed_note": o.externally_processed_note,
+        "externally_processed_by_user_id": o.externally_processed_by_user_id,
     }
 
 
-def _blockers(session: Session, o: Order) -> list[dict[str, str]]:
-    """Bloqueos de aprobación de la Cola PEDIDOS (Fase A): SKU sin mapear,
-    cliente sin vincular a FACTUSOL y excepciones abiertas."""
-    out: list[dict[str, str]] = []
+#: Códigos de excepción que dependen de FACTUSOL — informativos (warning)
+#: mientras `factusol_live=false`, bloqueantes cuando se activa (B-2-fix4).
+_FACTUSOL_GATED_CODES = frozenset({"sku_unmapped", "company_missing_factusol"})
+
+
+def _factusol_live(session: Session) -> bool:
+    from app.erp.models import ERP_SETTINGS_SINGLETON_ID, ErpSettings  # noqa: PLC0415
+
+    cfg = session.get(ErpSettings, ERP_SETTINGS_SINGLETON_ID)
+    return bool(cfg and cfg.factusol_live)
+
+
+def _factusol_issues(session: Session, o: Order) -> list[dict[str, str]]:
+    """Problemas relacionados con FACTUSOL: SKU sin CODART + empresa sin
+    vincular. Son BLOQUEANTES solo si `factusol_live`; si no, son warnings."""
+    issues: list[dict[str, str]] = []
     unmapped = [line.product_sku for line in o.lines if not line.product_codart]
     if unmapped:
-        out.append({
+        issues.append({
             "code": "sku_unmapped",
             "detail": f"Líneas sin CODART: {', '.join(unmapped[:5])}",
         })
     if o.company_id:
         company = session.get(Company, o.company_id)
         if company is not None and not company.factusol_company_id:
-            out.append({
+            issues.append({
                 "code": "company_missing_factusol",
                 "detail": f"«{company.name}» sin vincular a FACTUSOL",
             })
-    n_open = session.scalar(
-        select(func.count(ErpException.id)).where(
+    return issues
+
+
+def _open_exception_blocker(session: Session, o: Order) -> dict[str, str] | None:
+    """Excepciones abiertas REALES (SAT/transporte…) — excluye las
+    informativas con code factusol-gated, que ya trata `_factusol_issues`."""
+    rows = session.scalars(
+        select(ErpException).where(
             ErpException.order_id == o.id,
             ErpException.status.in_(
                 [ExceptionStatus.OPEN, ExceptionStatus.IN_PROGRESS]
             ),
         )
     )
-    if n_open:
-        out.append({
+    n_real = 0
+    for e in rows:
+        meta = json.loads(e.metadata_json) if e.metadata_json else {}
+        if meta.get("code") in _FACTUSOL_GATED_CODES:
+            continue
+        n_real += 1
+    if n_real:
+        return {
             "code": "open_exceptions",
-            "detail": f"{n_open} excepción(es) sin resolver",
-        })
+            "detail": f"{n_real} excepción(es) sin resolver",
+        }
+    return None
+
+
+def _blockers(session: Session, o: Order) -> list[dict[str, str]]:
+    """Bloqueos que impiden aprobar en la Cola PEDIDOS. Los issues de
+    FACTUSOL solo bloquean cuando `factusol_live` (B-2-fix4)."""
+    out: list[dict[str, str]] = []
+    if _factusol_live(session):
+        out.extend(_factusol_issues(session, o))
+    real = _open_exception_blocker(session, o)
+    if real:
+        out.append(real)
     return out
+
+
+def _warnings(session: Session, o: Order) -> list[dict[str, str]]:
+    """Avisos NO bloqueantes. Mientras FACTUSOL no esté live, los issues
+    de FACTUSOL se muestran aquí (visibles pero sin impedir la aprobación)."""
+    if _factusol_live(session):
+        return []
+    return _factusol_issues(session, o)
 
 
 # --- endpoints ---------------------------------------------------------------
@@ -241,6 +292,7 @@ def list_orders(
     transport: str | None = Query(default=None),
     invoice: str | None = Query(default=None),
     store: str | None = Query(default=None),
+    show_external: bool = Query(default=False),
     sort: str = Query(default="placed_desc"),
     limit: int = Query(default=100, ge=1, le=500),
     session: Session = Depends(get_session),
@@ -258,6 +310,9 @@ def list_orders(
         stmt = stmt.where(Order.invoice_status == invoice)
     if store:
         stmt = stmt.where(Order.store_id == store)
+    # B-2-fix4: por defecto la bandeja esconde los procesados externamente.
+    if not show_external:
+        stmt = stmt.where(Order.externally_processed_at.is_(None))
     order_by = {
         "placed_desc": Order.placed_at.desc(),
         "placed_asc": Order.placed_at.asc(),
@@ -284,7 +339,11 @@ def pending_approval(
     ))
     return {
         "items": [
-            {**_serialise_summary(o), "blockers": _blockers(session, o)}
+            {
+                **_serialise_summary(o),
+                "blockers": _blockers(session, o),
+                "warnings": _warnings(session, o),
+            }
             for o in rows
         ],
     }
@@ -359,3 +418,66 @@ def approve_order(
     order.approved_by_user_id = current_user.id
     session.commit()
     return _serialise_detail(session, _get_order(session, order_id), current_user)
+
+
+# --- procesado externamente (B-2-fix4) --------------------------------------
+
+
+class MarkExternalIn(BaseModel):
+    note: str | None = Field(default=None, max_length=2000)
+
+
+class BulkMarkExternalIn(BaseModel):
+    order_ids: list[str] = Field(default_factory=list)
+    # Alternativa al listado explícito: marcar por tienda (+ opcional
+    # `before_date` ISO) — la limpieza one-off de los pedidos migrados.
+    store_id: str | None = None
+    before_date: datetime | None = None
+    note: str | None = Field(default=None, max_length=2000)
+
+
+@router.post("/{order_id}/mark-externally-processed")
+def mark_externally_processed(
+    order_id: str,
+    payload: MarkExternalIn,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_edit),
+) -> dict[str, Any]:
+    from app.erp.external_processing import mark_order_externally_processed  # noqa: PLC0415
+
+    order = _get_order(session, order_id)
+    mark_order_externally_processed(
+        session, order=order, actor=current_user, note=payload.note,
+    )
+    session.commit()
+    return _serialise_detail(session, _get_order(session, order_id), current_user)
+
+
+@router.post("/bulk-mark-externally-processed")
+def bulk_mark_externally_processed(
+    payload: BulkMarkExternalIn,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_edit),
+) -> dict[str, Any]:
+    """Marca en bloque. Acepta `order_ids` explícitos O un filtro
+    (`store_id` + opcional `before_date`) para la limpieza one-off de los
+    pedidos migrados de Excel/proceso anterior."""
+    from app.erp.external_processing import mark_order_externally_processed  # noqa: PLC0415
+
+    stmt = select(Order).options(selectinload(Order.lines))
+    if payload.order_ids:
+        stmt = stmt.where(Order.id.in_(payload.order_ids))
+    elif payload.store_id:
+        stmt = stmt.where(Order.store_id == payload.store_id)
+        if payload.before_date:
+            stmt = stmt.where(Order.placed_at < payload.before_date)
+    else:
+        raise HTTPException(400, "Indica `order_ids` o `store_id`.")
+    marked = 0
+    for order in session.scalars(stmt):
+        if mark_order_externally_processed(
+            session, order=order, actor=current_user, note=payload.note,
+        ):
+            marked += 1
+    session.commit()
+    return {"ok": True, "marked": marked}

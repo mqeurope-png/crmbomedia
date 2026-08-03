@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { WooStoreForm } from "./WooStoreForm";
 
@@ -30,7 +30,26 @@ describe("WooStoreForm", () => {
       account_id: "artisjet", display_name: "artisjet",
       base_url: "https://artisjet-printers.eu",
       consumer_key: "ck1", consumer_secret: "cs2",
+      external_cutoff_date: null,
     });
+  });
+
+  it("incluye la fecha de corte en el payload cuando se rellena (B-2-fix4)", async () => {
+    const onSubmit = jest.fn();
+    const user = userEvent.setup();
+    render(<WooStoreForm onSubmit={onSubmit} onCancel={() => {}} />);
+    await user.type(screen.getByLabelText("Slug de tienda"), "boprint");
+    await user.type(screen.getByLabelText("Nombre visible"), "boprint");
+    await user.type(screen.getByLabelText("URL base"), "https://boprint.net");
+    await user.type(screen.getByLabelText("Consumer Key"), "ck1");
+    await user.type(screen.getByLabelText("Consumer Secret"), "cs2");
+    fireEvent.change(screen.getByLabelText("Fecha de corte"), {
+      target: { value: "2026-08-03" },
+    });
+    await user.click(screen.getByRole("button", { name: /Guardar tienda/ }));
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({ external_cutoff_date: "2026-08-03" }),
+    );
   });
 
   it("normaliza el slug a minúsculas y sin espacios", async () => {

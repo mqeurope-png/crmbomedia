@@ -59,6 +59,7 @@ class SettingsIn(BaseModel):
     auto_invoice_max_amount_eur: float | None = None
     default_carrier_id: str | None = None
     factusol_default_ejercicio: str | None = None
+    factusol_live: bool | None = None
 
 
 # --- helpers -----------------------------------------------------------------
@@ -226,6 +227,7 @@ def _serialise_settings(cfg: ErpSettings) -> dict[str, Any]:
         ),
         "default_carrier_id": cfg.default_carrier_id,
         "factusol_default_ejercicio": cfg.factusol_default_ejercicio,
+        "factusol_live": bool(cfg.factusol_live),
     }
 
 
@@ -260,6 +262,8 @@ def update_settings(
         cfg.default_carrier_id = payload.default_carrier_id or None
     if payload.factusol_default_ejercicio is not None:
         cfg.factusol_default_ejercicio = payload.factusol_default_ejercicio or None
+    if payload.factusol_live is not None:
+        cfg.factusol_live = payload.factusol_live
     _audit_settings(session, current_user)
     session.commit()
     return _serialise_settings(cfg)

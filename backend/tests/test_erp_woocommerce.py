@@ -262,6 +262,58 @@ def test_unmapped_sku_creates_exception_and_leaves_codart_null(session_factory):
         assert meta["code"] == "sku_unmapped" and meta["sku"] == "SKU-MBO-3050"
 
 
+def test_import_before_cutoff_auto_marks_externally_processed(session_factory):
+    """B-2-fix4: si la tienda tiene external_cutoff_date, los pedidos con
+    date_created anterior entran ya como «procesado externamente» (fuera de
+    la Cola PEDIDOS)."""
+    with session_factory() as s:
+        store = _mk_store(s)
+        store.metadata_json = json.dumps({"external_cutoff_date": "2026-08-03"})
+        s.commit()
+        payload = _woo(date_created="2026-07-01T10:00:00Z")  # anterior al corte
+        payload["_store_slug"] = store.account_id
+        out = import_woo_order(s, store=store, woo_order=payload)
+        s.commit()
+        order = s.get(Order, out.order_id)
+        assert order.externally_processed_at is not None
+        assert order.preparation_status == PreparationStatus.ALREADY_COMPLETED_EXTERNALLY
+
+
+def test_import_after_cutoff_enters_normal_queue(session_factory):
+    with session_factory() as s:
+        store = _mk_store(s)
+        store.metadata_json = json.dumps({"external_cutoff_date": "2026-07-01"})
+        s.commit()
+        payload = _woo(date_created="2026-08-01T10:00:00Z")  # posterior al corte
+        payload["_store_slug"] = store.account_id
+        out = import_woo_order(s, store=store, woo_order=payload)
+        s.commit()
+        order = s.get(Order, out.order_id)
+        assert order.externally_processed_at is None
+        assert order.preparation_status == PreparationStatus.PENDING_REVIEW
+
+
+def test_admin_store_roundtrips_external_cutoff_date(client, session_factory):
+    created = client.post(
+        "/api/erp/integrations/woocommerce/stores",
+        json={
+            "account_id": "boprint", "display_name": "boprint.net",
+            "base_url": "https://boprint.net",
+            "consumer_key": "ck", "consumer_secret": "cs",
+            "external_cutoff_date": "2026-08-03",
+        },
+        headers=auth_headers(client, "admin"),
+    ).json()
+    assert created["external_cutoff_date"] == "2026-08-03"
+    # PATCH lo actualiza; "" lo limpia.
+    upd = client.patch(
+        f"/api/erp/integrations/woocommerce/stores/{created['id']}",
+        json={"external_cutoff_date": "2026-01-01"},
+        headers=auth_headers(client, "admin"),
+    ).json()
+    assert upd["external_cutoff_date"] == "2026-01-01"
+
+
 def test_confirmed_sku_mapping_populates_codart(session_factory):
     with session_factory() as s:
         store = _mk_store(s)

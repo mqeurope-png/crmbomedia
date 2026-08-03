@@ -89,6 +89,9 @@ def import_woo_order(
     session.flush()
     _apply_lines_and_exceptions(session, order, woo_order, store)
     session.flush()
+    # B-2-fix4: pedidos anteriores a la fecha de corte de la tienda se
+    # auto-marcan como procesados externamente (no entran a Cola PEDIDOS).
+    _auto_mark_external_if_before_cutoff(session, order, store)
     return ImportOutcome(
         order_id=order.id, created=True,
         contact_created=contact_created, company_created=company_created,
@@ -312,6 +315,38 @@ def _create_sku_unmapped_exception(
             "description": f"SKU {sku!r} sin CODART confirmado para esta tienda",
         }),
     ))
+
+
+def _store_cutoff(store: IntegrationAccount) -> datetime | None:
+    if not store.metadata_json:
+        return None
+    try:
+        meta = json.loads(store.metadata_json)
+    except (TypeError, ValueError):
+        return None
+    return _parse_dt(meta.get("external_cutoff_date")) if isinstance(meta, dict) else None
+
+
+def _auto_mark_external_if_before_cutoff(
+    session: Session, order: Order, store: IntegrationAccount,
+) -> None:
+    cutoff = _store_cutoff(store)
+    if cutoff is None or order.placed_at is None:
+        return
+    placed = order.placed_at
+    if placed.tzinfo is None:
+        placed = placed.replace(tzinfo=UTC)
+    if placed < cutoff:
+        from app.erp.external_processing import (  # noqa: PLC0415
+            mark_order_externally_processed,
+        )
+
+        mark_order_externally_processed(
+            session, order=order, actor=None,
+            note="Pedido anterior a la fecha de corte de la tienda "
+                 "(migrado del proceso anterior).",
+        )
+        session.flush()
 
 
 def _unmapped_from(session: Session, order_id: str) -> list[str]:

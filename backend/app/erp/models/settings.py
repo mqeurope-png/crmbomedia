@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-from sqlalchemy import Enum, ForeignKey, Numeric, String
+from sqlalchemy import Boolean, Enum, ForeignKey, Numeric, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.crm import Base, TimestampMixin, enum_values
@@ -39,3 +39,10 @@ class ErpSettings(TimestampMixin, Base):
         ForeignKey("carriers.id", ondelete="SET NULL")
     )
     factusol_default_ejercicio: Mapped[str | None] = mapped_column(String(4))
+    # B-2-fix4: mientras FACTUSOL no esté live (Fase C), las excepciones
+    # sku_unmapped y company_missing_factusol son informativas (warning) y
+    # NO bloquean la aprobación en Cola PEDIDOS. Al activarlo (Fase C
+    # desplegada) pasan a bloqueantes automáticamente.
+    factusol_live: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
