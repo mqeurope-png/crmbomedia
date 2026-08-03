@@ -123,45 +123,132 @@ def _outcome_dict(outcome: ImportOutcome, event_id: str) -> dict[str, Any]:
     }
 
 
+def _enqueue_import(event_id: str) -> None:
+    """Encola `import_order_from_event` en la cola `woocommerce:import`. Si
+    Redis no está disponible (local/tests), procesa INLINE para que el
+    flujo complete igual (el resultado es el mismo: se crea el Order)."""
+    try:
+        from rq import Queue  # noqa: PLC0415
+
+        from app.workers.queues import redis_connection  # noqa: PLC0415
+
+        conn = redis_connection()
+        conn.ping()
+        Queue(WOO_QUEUE_IMPORT, connection=conn).enqueue(
+            import_order_from_event, event_id,
+        )
+    except Exception:  # noqa: BLE001 — sin Redis → procesa ya
+        try:
+            import_order_from_event(event_id)
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "woo backfill: import inline falló para event %s", event_id,
+                exc_info=True,
+            )
+
+
 def sync_orders_backfill(
     store_account_id: str, since_iso: str | None = None,
     max_pages: int = 20,
 ) -> dict[str, Any]:
-    """Descarga hasta `max_pages * 50` pedidos desde `since_iso` y los
-    escribe en `integration_events` (dedup por Woo id), luego el worker
-    los procesará como si vinieran por webhook."""
+    """Descarga hasta `max_pages * 50` pedidos desde `since_iso`, los
+    escribe en `integration_events` (dedup por Woo id) Y ENCOLA el job de
+    import de cada evento pendiente (`received`) en `woocommerce:import`.
+
+    Bug B-2-fix3: antes solo creaba los events y nunca encolaba el
+    procesamiento → se quedaban en `received` para siempre. Ahora, al
+    encolar TODOS los `received` de la tienda (no solo los nuevos), un
+    re-run también RECUPERA los que se quedaron atascados.
+
+    Registra un `SyncLog` (running → success/partial_success/failed).
+    """
+    from datetime import UTC, datetime  # noqa: PLC0415
+
+    from app.models.crm import ExternalSystem, SyncLog, SyncStatus, SyncTrigger  # noqa: PLC0415
+
     with _session_factory()() as session:
         store = _get_store(session, store_account_id)
         if store is None:
             return {"ok": False, "error": "store_not_found"}
-        client = WooHTTPClient(store)
 
-        enqueued = 0
+        sync_log = SyncLog(
+            system=ExternalSystem.WOOCOMMERCE,
+            account_id=store.account_id,
+            operation="sync_backfill",
+            status=SyncStatus.RUNNING.value,
+            started_at=datetime.now(UTC),
+            triggered_by=SyncTrigger.MANUAL.value,
+        )
+        session.add(sync_log)
+        session.commit()
+
+        client = WooHTTPClient(store)
+        created = 0
         skipped = 0
-        for page in range(1, max_pages + 1):
-            orders = client.list_orders(
-                status="processing", since=since_iso, per_page=50, page=page,
-            )
-            if not orders:
-                break
-            for woo in orders:
-                if _event_exists(session, store, woo):
-                    skipped += 1
-                    continue
-                session.add(IntegrationEvent(
-                    system="woocommerce",
-                    account_id=store.account_id,
-                    external_event_id=f"backfill:{woo['id']}",
-                    event_type="order.backfill",
-                    payload_json=json.dumps(woo, default=str),
-                ))
-                enqueued += 1
-            session.commit()
-        return {"ok": True, "enqueued": enqueued, "skipped": skipped}
+        page_failed = False
+        error_summary: str | None = None
+
+        try:
+            for page in range(1, max_pages + 1):
+                orders = client.list_orders(
+                    status="processing", since=since_iso, per_page=50, page=page,
+                )
+                if not orders:
+                    break
+                for woo in orders:
+                    if _event_exists(session, store, woo):
+                        skipped += 1
+                        continue
+                    session.add(IntegrationEvent(
+                        system="woocommerce",
+                        account_id=store.account_id,
+                        external_event_id=f"backfill:{woo['id']}",
+                        event_type="order.backfill",
+                        payload_json=json.dumps(woo, default=str),
+                    ))
+                    created += 1
+                session.commit()
+        except WooError as exc:
+            page_failed = True
+            error_summary = str(exc)[:2000]
+            logger.warning("woo backfill: list_orders falló: %s", exc)
+
+        # Encola TODOS los eventos pendientes (received) de la tienda —
+        # los recién creados + los que se quedaron atascados en runs
+        # anteriores (el import es idempotente: salta los ya processed).
+        pending_ids = list(session.scalars(select(IntegrationEvent.id).where(
+            IntegrationEvent.system == "woocommerce",
+            IntegrationEvent.account_id == store.account_id,
+            IntegrationEvent.status == IntegrationEventStatus.RECEIVED,
+        )))
+        for event_id in pending_ids:
+            _enqueue_import(event_id)
+
+        sync_log.records_processed = len(pending_ids)
+        sync_log.records_skipped = skipped
+        sync_log.records_failed = 1 if page_failed else 0
+        sync_log.error_summary = error_summary
+        sync_log.finished_at = datetime.now(UTC)
+        if page_failed and pending_ids:
+            sync_log.status = SyncStatus.PARTIAL_SUCCESS.value
+        elif page_failed:
+            sync_log.status = SyncStatus.FAILED.value
+        else:
+            sync_log.status = SyncStatus.SUCCESS.value
+        session.commit()
+
+        return {
+            "ok": not page_failed,
+            "created": created,
+            "enqueued": len(pending_ids),
+            "skipped": skipped,
+            "sync_log_id": sync_log.id,
+        }
 
 
 def _event_exists(session, store: IntegrationAccount, woo: dict[str, Any]) -> bool:
-    """Dedup por Woo id — el backfill no repite eventos ya creados."""
+    """Dedup por Woo id — el backfill no crea el event dos veces (pero sí
+    re-encola los `received` existentes, ver sync_orders_backfill)."""
     row = session.scalar(select(IntegrationEvent).where(
         IntegrationEvent.system == "woocommerce",
         IntegrationEvent.account_id == store.account_id,

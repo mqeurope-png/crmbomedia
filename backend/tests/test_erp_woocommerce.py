@@ -501,3 +501,85 @@ def test_woo_error_message_includes_response_body(session_factory):
     assert "400" in str(exc.value)
     assert "after no es válido" in str(exc.value)  # cuerpo en el mensaje
     assert exc.value.status == 400
+
+
+# --- B-2-fix3: el backfill ENCOLA el procesamiento (no deja events en received)
+
+
+def test_backfill_creates_events_enqueues_jobs_and_processes_to_orders(session_factory):
+    """Bug B-2: el backfill creaba integration_events pero nunca encolaba
+    import_order_from_event → se quedaban en `received`. Ahora N pedidos →
+    N events + N jobs encolados en woocommerce:import + N Orders al
+    procesar. Registra SyncLog success."""
+    from app.integrations.woocommerce import jobs as woo_jobs
+    from app.models.crm import SyncLog
+
+    with session_factory() as s:
+        slug = _mk_store(s).account_id
+
+    def _order(oid: int, email: str) -> dict:
+        o = _woo(id=oid, number=str(oid))
+        o["billing"] = {**o["billing"], "email": email}
+        return o
+
+    page1 = [
+        _order(99865, "a@x.com"), _order(99864, "b@x.com"), _order(99863, "c@x.com"),
+    ]
+    enqueued_ids: list[str] = []
+
+    with patch.object(woo_jobs, "_session_factory", return_value=session_factory), \
+         patch.object(woo_jobs, "_enqueue_import", side_effect=enqueued_ids.append), \
+         patch.object(woo_jobs, "WooHTTPClient") as MockClient:
+        MockClient.return_value.list_orders.side_effect = [page1, []]
+        res = woo_jobs.sync_orders_backfill(slug, "2026-07-04")
+
+    assert res["created"] == 3
+    assert res["enqueued"] == 3          # N jobs encolados en woocommerce:import
+    assert len(enqueued_ids) == 3
+    with session_factory() as s:
+        assert s.scalar(select(func.count(IntegrationEvent.id))) == 3
+        sl = s.scalar(select(SyncLog).where(SyncLog.operation == "sync_backfill"))
+        assert sl.status == "success"
+        assert sl.records_processed == 3
+
+    # Procesa los jobs encolados (fuera de la sesión del backfill).
+    for event_id in enqueued_ids:
+        with patch.object(woo_jobs, "_session_factory", return_value=session_factory):
+            woo_jobs.import_order_from_event(event_id)
+
+    with session_factory() as s:
+        assert s.scalar(select(func.count(Order.id))) == 3       # N Orders
+        assert s.scalar(select(func.count(Contact.id)).where(
+            Contact.origin == "woocommerce")) == 3               # contactos auto-creados
+        assert s.scalar(select(func.count(IntegrationEvent.id)).where(
+            IntegrationEvent.status == IntegrationEventStatus.PROCESSED)) == 3
+
+
+def test_backfill_reenqueues_stuck_received_events(session_factory):
+    """Recuperación: un re-run encola también los events `received` que se
+    quedaron atascados en runs anteriores (los 25 de producción), aunque el
+    dedup no cree ninguno nuevo."""
+    from app.integrations.woocommerce import jobs as woo_jobs
+
+    with session_factory() as s:
+        store = _mk_store(s)
+        slug = store.account_id
+        # 2 events atascados de un run previo (status received).
+        for oid in (99865, 99864):
+            s.add(IntegrationEvent(
+                system="woocommerce", account_id=slug,
+                external_event_id=f"backfill:{oid}", event_type="order.backfill",
+                payload_json=json.dumps(_woo(id=oid, number=str(oid))),
+            ))
+        s.commit()
+
+    enqueued_ids: list[str] = []
+    with patch.object(woo_jobs, "_session_factory", return_value=session_factory), \
+         patch.object(woo_jobs, "_enqueue_import", side_effect=enqueued_ids.append), \
+         patch.object(woo_jobs, "WooHTTPClient") as MockClient:
+        MockClient.return_value.list_orders.side_effect = [[], []]  # sin pedidos nuevos
+        res = woo_jobs.sync_orders_backfill(slug)
+
+    assert res["created"] == 0            # dedup: nada nuevo
+    assert res["enqueued"] == 2           # pero re-encola los 2 atascados
+    assert len(enqueued_ids) == 2
