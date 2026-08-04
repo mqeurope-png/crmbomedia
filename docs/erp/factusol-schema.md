@@ -1,5 +1,12 @@
 # FACTUSOL — Esquema de tablas relevantes para el ERP
 
+> ✅ **URLs y formatos verificados contra la API real** (2026-08-04, PR C-1-fix1,
+> vía navegador sobre `apidoc.sdelsol.com` + curl contra producción: fabricante
+> 1626, cliente 22870, base `3FS003`, empresa 003 Bomedia SL, JWT `AdminUser`).
+> Los endpoints de datos cuelgan de **`/admin/`** — las rutas `/registros/*` que
+> asumió el Sprint 0 daban 404. Ver la tabla de endpoints y el formato real de
+> body/response en `factusol-write-flows.md`.
+
 **Estado:** base construida desde documentación pública + convención
 verificada en código comunitario. La validación en vivo (CargaTabla real)
 está **pendiente de credenciales** (Bart habilita el acceso API en el

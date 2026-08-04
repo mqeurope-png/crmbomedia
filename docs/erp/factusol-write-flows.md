@@ -1,5 +1,12 @@
 # FACTUSOL — Flujos de escritura (crear cliente / presupuesto / factura)
 
+> ✅ **URLs y formatos verificados contra la API real** (2026-08-04, PR C-1-fix1,
+> vía navegador sobre `apidoc.sdelsol.com` + curl contra producción: fabricante
+> 1626, cliente 22870, base `3FS003`, empresa 003 Bomedia SL, JWT `AdminUser`).
+> Los endpoints de datos cuelgan de **`/admin/`** — las rutas `/registros/*` que
+> asumió el Sprint 0 daban 404. Ver la tabla de endpoints y el formato real de
+> body/response en `factusol-write-flows.md`.
+
 **Estado:** flujos diseñados + plantillas curl + script end-to-end listo
 (`backend/scripts/factusol_write_flow_test.py`). La **transcripción real**
 (payloads/respuestas exactos) se añade al ejecutarlo con credenciales desde
@@ -126,3 +133,78 @@ worker/cola se cablean en C-2 junto con la UI de emisión.
 
 `POST /api/erp/factusol/smoke-test?mode=login|read_customers|dry_run_invoice`
 valida credenciales / lectura / payload del mapper (dry-run NO escribe).
+
+---
+
+## Referencia de endpoints (verificada 2026-08-04)
+
+| Operación | Método | Path |
+|---|---|---|
+| Leer tabla filtrada | **POST** | `/admin/CargaTabla` |
+| Leer un registro | GET | `/admin/LeerRegistro/{ejercicio}/{tabla}/{filtro}` |
+| Consulta SQL libre | POST | `/admin/LanzarConsulta` |
+| Insertar registro | **POST** | `/admin/EscribirRegistro` |
+| Actualizar registro | **POST** | `/admin/ActualizarRegistro` |
+| Borrar registros | **GET** | `/admin/BorrarRegistros/{ejercicio}/{tabla}/{filtro}` |
+| Imagen de artículo | POST | `/admin/ArticulosImagen` (fuera de scope C-1) |
+
+Auth: `POST /login/Autenticar` (sin cambios; JWT ~3 min).
+
+### Body de `CargaTabla`
+
+```json
+{"ejercicio": "2026", "tabla": "F_CLI", "filtro": "1=1 ORDER BY CODCLI LIMIT 5"}
+```
+
+Solo esos 3 campos: **no existen** `campos` ni `numeroRegistros`. `filtro` es un
+fragmento SQL **WHERE** (admite `LIKE`, `AND`, `>`, `ORDER BY`, `LIMIT`). Un
+filtro vacío devuelve `resultado: null`, así que «sin filtro» se escribe `1=1`.
+Para proyectar columnas hay que usar `LanzarConsulta` con SQL libre —
+`CargaTabla` siempre devuelve todas las columnas de la tabla.
+
+### Response de `CargaTabla` (lista ANIDADA)
+
+```json
+{"resultado": [[{"columna": "CODCLI", "dato": 1},
+                {"columna": "NOFCLI", "dato": "Cliente ejemplo"}]],
+ "respuesta": "OK"}
+```
+
+Cada fila es una **lista de `{columna, dato}`**, no un dict. El cliente lo
+normaliza a `list[dict]` con `_rows_to_dicts()`.
+
+### Body de `EscribirRegistro` / `ActualizarRegistro`
+
+```json
+{"ejercicio": "2026", "tabla": "F_CLI",
+ "registro": [{"columna": "CODCLI", "dato": 12345},
+              {"columna": "NOFCLI", "dato": "Nombre fiscal"}]}
+```
+
+`registro` es un **array de `{columna, dato}`**. En `ActualizarRegistro` debe
+incluir la columna PK (p.ej. `CODCLI`) para identificar la fila. Los mappers del
+CRM siguen devolviendo dicts planos; la conversión la hace el cliente
+(`_to_api_record`). Respuesta: `{"resultado": "", "respuesta": "OK"}`.
+
+### Códigos de `respuesta` (llegan con HTTP 200)
+
+| `respuesta` | Significado |
+|---|---|
+| `OK` | correcto |
+| `Unauthorized` | **token caducado** — NO llega como 401; el cliente re-autentica y reintenta |
+| `BDNoExiste` | el ejercicio no tiene base de datos (2020-2022) |
+
+### Datos confirmados de Bomedia
+
+Empresa (`F_EMP`, ejercicio 2024): **CODEMP 003 · NIFEMP B63609309 · DENEMP
+Bomedia SL · C Aribau 171 1º 1ª, Barcelona**. Ejercicios con datos: **2023-2026**
+(2020-2022 → `BDNoExiste`). En 2026 hay **4531 clientes** en `F_CLI` (la tabla es
+por ejercicio). Default del CRM: `FACTUSOL_DEFAULT_EJERCICIO=2026`.
+
+### Redescubrir rutas si DELSOL las cambia
+
+`scripts/factusol_discover_paths.py` barre una matriz `controller × acción` desde
+el VPS usando el oráculo de ASP.NET (routing antes que autorización): **404** =
+ruta inexistente, **401/400/200** = ruta válida. Las 4 rutas son además
+sobreescribibles por env (`FACTUSOL_PATH_LOAD_TABLE`, `_WRITE_RECORD`,
+`_UPDATE_RECORD`, `_DELETE_RECORDS`) para corregirlas sin redeploy de código.

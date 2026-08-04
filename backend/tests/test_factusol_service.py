@@ -50,9 +50,10 @@ class FakeFactusol:
         self._fail_on_line = fail_on_line
         self._line_calls = 0
 
-    def load_table(self, tabla, *, filtro="", campos=None, numero_registros=None, ejercicio=None):
+    def load_table(self, tabla, *, filtro="1=1", ejercicio=None):
+        # `filtro` es un fragmento SQL WHERE (p.ej. "CIFCLI='B1' LIMIT 1").
         if tabla == "F_CLI" and filtro.startswith("CIFCLI="):
-            cif = filtro.split("=", 1)[1].strip("'")
+            cif = filtro.split("=", 1)[1].split()[0].strip("'")
             codcli = self._existing_by_cif.get(cif)
             return [{"CODCLI": codcli}] if codcli else []
         if tabla == "F_CLI":
