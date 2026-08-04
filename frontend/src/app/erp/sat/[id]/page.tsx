@@ -2,6 +2,7 @@
 
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
+import { EmbalarModal } from "../../../components/erp/EmbalarModal";
 import { ReportExceptionModal } from "../../../components/erp/ReportExceptionModal";
 import { extractErrorMessage } from "../../../lib/errors";
 import {
@@ -9,14 +10,13 @@ import {
   fireTransition,
   getOrder,
   reportException,
-  savePackingInfo,
   STATUS_LABELS,
   type OrderDetail,
 } from "../../../lib/erpApi";
 
-/** Modo trabajo SAT de un pedido: líneas verificables, peso/dimensiones/
- *  bultos, subir foto y avanzar el estado (Empezar / Embalado) o reportar
- *  un problema. Táctil, botones grandes. */
+/** Modo trabajo SAT de un pedido: líneas verificables, subir foto y avanzar el
+ *  estado (Empezar / Embalado) o reportar un problema. Táctil, botones grandes.
+ *  Fase D: «Embalado» abre el modal multi-bulto (el backend exige ≥1 bulto). */
 export default function SatOrderWorkPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
@@ -25,19 +25,11 @@ export default function SatOrderWorkPage() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [showReport, setShowReport] = useState(false);
-  const [weight, setWeight] = useState("");
-  const [dims, setDims] = useState("");
-  const [packages, setPackages] = useState("");
+  const [embalarOpen, setEmbalarOpen] = useState(false);
 
   const load = useCallback(() => {
     getOrder(id)
-      .then((o) => {
-        setOrder(o);
-        const p = (o.packing ?? {}) as Record<string, unknown>;
-        setWeight(p.weight_kg != null ? String(p.weight_kg) : "");
-        setDims(typeof p.dimensions_cm === "string" ? p.dimensions_cm : "");
-        setPackages(p.packages != null ? String(p.packages) : "");
-      })
+      .then(setOrder)
       .catch((e) => setError(extractErrorMessage(e, "No se pudo cargar el pedido.")));
   }, [id]);
 
@@ -47,13 +39,6 @@ export default function SatOrderWorkPage() {
     setBusy(true);
     setError(null);
     try {
-      if (toStatus === "packed") {
-        await savePackingInfo(id, {
-          weight_kg: weight ? Number(weight) : null,
-          dimensions_cm: dims || null,
-          packages: packages ? Number(packages) : null,
-        });
-      }
       await fireTransition(id, { domain: "preparation", to_status: toStatus });
       router.push("/erp/sat");
     } catch (e) {
@@ -115,24 +100,7 @@ export default function SatOrderWorkPage() {
       </section>
 
       <section className="sat-work-packing">
-        <h2>Embalaje</h2>
-        <div className="sat-packing-grid">
-          <label className="field">
-            <span>Peso (kg)</span>
-            <input type="number" inputMode="decimal" value={weight}
-              aria-label="Peso kg" onChange={(e) => setWeight(e.target.value)} />
-          </label>
-          <label className="field">
-            <span>Dimensiones (cm)</span>
-            <input type="text" value={dims} placeholder="60x40x30"
-              aria-label="Dimensiones cm" onChange={(e) => setDims(e.target.value)} />
-          </label>
-          <label className="field">
-            <span>Bultos</span>
-            <input type="number" inputMode="numeric" value={packages}
-              aria-label="Bultos" onChange={(e) => setPackages(e.target.value)} />
-          </label>
-        </div>
+        <h2>Fotos / documentos</h2>
         <label className="sat-upload">
           📷 Subir foto / documento
           <input type="file" accept="image/*,application/pdf" onChange={onUpload}
@@ -150,7 +118,7 @@ export default function SatOrderWorkPage() {
         ) : null}
         {prep === "preparing" ? (
           <button type="button" className="sat-btn pack" disabled={busy}
-            onClick={() => advance("packed")}>📦 EMBALADO</button>
+            onClick={() => setEmbalarOpen(true)}>📦 EMBALADO</button>
         ) : null}
         {prep !== "blocked" ? (
           <button type="button" className="sat-btn issue" disabled={busy}
@@ -159,6 +127,14 @@ export default function SatOrderWorkPage() {
           <p className="muted">Pedido bloqueado — resolver desde la bandeja de excepciones.</p>
         )}
       </div>
+
+      {embalarOpen ? (
+        <EmbalarModal
+          orderId={id}
+          onCancel={() => setEmbalarOpen(false)}
+          onDone={() => router.push("/erp/sat")}
+        />
+      ) : null}
 
       {showReport ? (
         <ReportExceptionModal onSubmit={onReport} onClose={() => setShowReport(false)} busy={busy} />

@@ -1,4 +1,4 @@
-import { apiFetch, apiUpload } from "./api";
+import { apiDownloadBlob, apiFetch, apiUpload } from "./api";
 
 /** BoHub ERP Fase A — cliente de la API de pedidos (PR 3 backend). */
 
@@ -262,6 +262,9 @@ export type SatQueueItem = {
   total_amount: number;
   currency: string;
   lines: { sku: string; description: string; quantity: number }[];
+  /** Fase D: presencia de albarán/etiqueta vigentes (para los chips). */
+  has_albaran: boolean;
+  has_etiqueta: boolean;
 };
 
 export async function getSatQueue(): Promise<SatQueueItem[]> {
@@ -552,4 +555,101 @@ export async function getFactusolStatus(orderId: string): Promise<FactusolStatus
 export async function getFactusolFormasPago(): Promise<FormaPago[]> {
   const r = await apiFetch<{ items: FormaPago[] }>("/api/erp/factusol/formas-pago");
   return r.items;
+}
+
+// --- Expedición manual: bultos + albarán + etiqueta (Fase D · D-1) -----------
+
+export type ShipmentPackage = {
+  id: string;
+  position: number;
+  weight_kg: number;
+  height_cm: number;
+  width_cm: number;
+  depth_cm: number;
+};
+
+/** Un bulto tal como lo introduce el operativo en el modal (antes de guardar). */
+export type PackageInput = {
+  weight_kg: number | null;
+  height_cm: number | null;
+  width_cm: number | null;
+  depth_cm: number | null;
+};
+
+export type ShipmentFileKind = "albaran" | "etiqueta";
+export type ShipmentFileSource = "woo_pdf_plugin" | "manual_upload" | "factusol_pdf";
+
+export type ShipmentFile = {
+  id: string;
+  kind: ShipmentFileKind;
+  source: ShipmentFileSource;
+  filename: string;
+  mime_type: string;
+  size_bytes: number;
+  uploaded_by_user_id: string | null;
+  uploaded_at: string | null;
+  download_url: string;
+};
+
+export async function getPackages(orderId: string): Promise<ShipmentPackage[]> {
+  const r = await apiFetch<{ items: ShipmentPackage[] }>(
+    `/api/erp/orders/${orderId}/packages`,
+  );
+  return r.items;
+}
+
+export async function setPackages(
+  orderId: string, packages: PackageInput[],
+): Promise<{ packages: ShipmentPackage[] }> {
+  return apiFetch(`/api/erp/orders/${orderId}/packages`, {
+    method: "POST",
+    body: JSON.stringify(packages),
+  });
+}
+
+/** Marca el pedido `packed` (exige ≥1 bulto medido, si no → 400). */
+export async function transitionPacked(
+  orderId: string,
+): Promise<{ order_id: string; preparation_status: string }> {
+  return apiFetch(`/api/erp/orders/${orderId}/transition/preparation/packed`, {
+    method: "POST",
+  });
+}
+
+export async function listShippingFiles(
+  orderId: string, kind?: ShipmentFileKind,
+): Promise<ShipmentFile[]> {
+  const q = kind ? `?kind=${kind}` : "";
+  const r = await apiFetch<{ items: ShipmentFile[] }>(
+    `/api/erp/orders/${orderId}/shipping-files${q}`,
+  );
+  return r.items;
+}
+
+export async function uploadShippingFile(
+  orderId: string, kind: ShipmentFileKind, file: File,
+): Promise<{ file: ShipmentFile }> {
+  const form = new FormData();
+  form.append("kind", kind);
+  form.append("file", file);
+  return apiUpload(`/api/erp/orders/${orderId}/shipping-files`, form);
+}
+
+export async function fetchAlbaranFromWoo(
+  orderId: string,
+): Promise<{ file: ShipmentFile; already_present: boolean }> {
+  return apiFetch(`/api/erp/orders/${orderId}/albaran/fetch-from-woo`, {
+    method: "POST",
+  });
+}
+
+/** Descarga el PDF con auth y lo abre en una pestaña nueva (imprimible desde
+ *  el diálogo del navegador — no hay impresora térmica en el taller). */
+export async function openShippingFile(file: ShipmentFile): Promise<void> {
+  const blob = await apiDownloadBlob(file.download_url);
+  const url = URL.createObjectURL(blob);
+  window.open(url, "_blank", "noopener");
+  // El navegador retiene el blob mientras la pestaña lo usa; lo liberamos tras
+  // un margen para no cortar la apertura.
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }

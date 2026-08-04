@@ -10,6 +10,8 @@ Base: `{base_url}/wp-json/wc/v3/`. Paginación por headers
 """
 from __future__ import annotations
 
+import base64
+import binascii
 import logging
 import re
 import time
@@ -58,6 +60,34 @@ def _to_iso8601_datetime(value: str) -> str:
     return v
 
 
+def _extract_pdf(resp: httpx.Response) -> bytes | None:
+    """Extrae los bytes del PDF de una respuesta del plugin: acepta el binario
+    directo (Content-Type application/pdf o cuerpo que empieza por `%PDF-`) o
+    un JSON con el PDF en base64. Devuelve None si no parece un PDF válido."""
+    content = resp.content or b""
+    ctype = resp.headers.get("content-type", "").lower()
+    if content[:5] == b"%PDF-":
+        return content
+    if "application/pdf" in ctype and content:
+        return content
+    if "application/json" in ctype:
+        try:
+            data = resp.json()
+        except ValueError:
+            return None
+        b64 = None
+        if isinstance(data, dict):
+            b64 = data.get("pdf") or data.get("pdf_base64") or data.get("data")
+        if isinstance(b64, str) and b64:
+            try:
+                raw = base64.b64decode(b64, validate=False)
+            except (ValueError, binascii.Error):
+                return None
+            if raw[:5] == b"%PDF-":
+                return raw
+    return None
+
+
 @dataclass
 class WooCredentials:
     base_url: str
@@ -86,9 +116,14 @@ class WooHTTPClient:
     Se construye con la fila de `integration_accounts` — el descifrado
     solo vive en memoria de esta instancia."""
 
-    def __init__(self, account: IntegrationAccount):
+    def __init__(
+        self, account: IntegrationAccount,
+        *, transport: httpx.BaseTransport | None = None,
+    ):
         self.account = account
         self.creds = WooCredentials.from_account(account)
+        # Inyectable en tests (MockTransport); None → salida real a red.
+        self._transport = transport
 
     def _url(self, path: str) -> str:
         return f"{self.creds.base_url}/wp-json/wc/v3{path}"
@@ -138,6 +173,75 @@ class WooHTTPClient:
             out.extend(batch)
             page += 1
 
+    # --- albarán (PDF plugin PDF Invoices & Packing Slips) --------------------
+
+    def get_packing_slip_pdf(self, order_id: int) -> tuple[bytes, str]:
+        """Descarga el PDF de albarán del plugin *PDF Invoices & Packing Slips*.
+
+        Intenta primero la REST API del plugin (versión Pro):
+          `GET /wp-json/wcpdf/v1/documents/packing-slip/{order_id}?output=pdf`
+        y, si no está disponible (404/no-PDF), el endpoint admin AJAX:
+          `GET /wp-admin/admin-ajax.php?action=generate_wpo_wcpdf&`
+          `document_type=packing-slip&order_ids={order_id}`
+        (este último suele exigir un nonce de sesión, así que probablemente
+        falle vía API → el operativo sube el albarán a mano como fallback).
+
+        Devuelve `(pdf_bytes, filename_sugerido)`. Lanza `WooError` si ninguno
+        entrega un PDF, con un mensaje claro para el fallback manual.
+        """
+        filename = f"albaran-{order_id}.pdf"
+        # 1) REST del plugin (Pro).
+        rest_url = (
+            f"{self.creds.base_url}/wp-json/wcpdf/v1/documents/"
+            f"packing-slip/{order_id}"
+        )
+        rest = self._raw_get(rest_url, params={"output": "pdf"})
+        if rest is not None and rest.status_code < 400:
+            pdf = _extract_pdf(rest)
+            if pdf is not None:
+                logger.info("woocommerce albarán %s vía REST del plugin", order_id)
+                return pdf, filename
+        # 2) Fallback admin-ajax (probable 401/403 sin nonce de sesión).
+        ajax_url = f"{self.creds.base_url}/wp-admin/admin-ajax.php"
+        ajax = self._raw_get(ajax_url, params={
+            "action": "generate_wpo_wcpdf",
+            "document_type": "packing-slip",
+            "order_ids": order_id,
+        })
+        if ajax is not None and ajax.status_code < 400:
+            pdf = _extract_pdf(ajax)
+            if pdf is not None:
+                logger.info("woocommerce albarán %s vía admin-ajax", order_id)
+                return pdf, filename
+        rest_code = rest.status_code if rest is not None else "error"
+        ajax_code = ajax.status_code if ajax is not None else "error"
+        raise WooError(
+            f"No se pudo descargar el albarán del pedido {order_id} "
+            f"(REST {rest_code}, admin-ajax {ajax_code}). Sube el PDF a mano.",
+            status=502,
+        )
+
+    def _raw_get(
+        self, url: str, *, params: dict[str, Any] | None = None,
+    ) -> httpx.Response | None:
+        """GET autenticado que devuelve la respuesta cruda (sin parsear JSON),
+        para descargar binarios. None si la red falla tras los reintentos."""
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                with httpx.Client(timeout=30.0, transport=self._transport,
+                                  follow_redirects=True) as c:
+                    return c.get(
+                        url, params=params or {},
+                        auth=(self.creds.consumer_key, self.creds.consumer_secret),
+                    )
+            except httpx.TransportError as exc:
+                if attempt > MAX_RETRIES:
+                    logger.warning("woocommerce _raw_get red KO: %s", exc)
+                    return None
+                self._sleep_backoff(attempt)
+
     # --- transporte -----------------------------------------------------------
 
     def _request(
@@ -149,7 +253,7 @@ class WooHTTPClient:
         while True:
             attempt += 1
             try:
-                with httpx.Client(timeout=30.0) as c:
+                with httpx.Client(timeout=30.0, transport=self._transport) as c:
                     resp = c.request(
                         method, url, params=params or {}, json=json,
                         auth=(self.creds.consumer_key, self.creds.consumer_secret),

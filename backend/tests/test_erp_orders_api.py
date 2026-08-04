@@ -268,6 +268,11 @@ def test_full_flow_via_api_and_available_transitions(client):
     # SAT desde preparing ve packed y blocked como siguientes pasos.
     prep_next = {t["to_status"] for t in detail["available_transitions"]["preparation"]}
     assert prep_next == {"packed", "blocked"}
+    # Fase D: embalar exige ≥1 bulto medido.
+    client.post(f"/api/erp/orders/{oid}/packages",
+                json=[{"weight_kg": 2, "height_cm": 10, "width_cm": 10,
+                       "depth_cm": 10}],
+                headers=auth_headers(client, "sat"))
     r = _fire(client, oid, "preparation", "packed", role="sat")
     assert r.status_code == 200
     assert r.json()["preparation_status"] == "packed"
