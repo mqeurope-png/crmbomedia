@@ -60,6 +60,9 @@ class SettingsIn(BaseModel):
     default_carrier_id: str | None = None
     factusol_default_ejercicio: str | None = None
     factusol_live: bool | None = None
+    # C-2: serie de facturación (global + override por origen/tienda).
+    factusol_series_default: str | None = None
+    factusol_series_by_source: dict[str, str] | None = None
 
 
 # --- helpers -----------------------------------------------------------------
@@ -255,7 +258,21 @@ def _serialise_settings(cfg: ErpSettings) -> dict[str, Any]:
         "default_carrier_id": cfg.default_carrier_id,
         "factusol_default_ejercicio": cfg.factusol_default_ejercicio,
         "factusol_live": bool(cfg.factusol_live),
+        # C-2: serie de facturación (default global + override por origen).
+        "factusol_series_default": _series(cfg).get("default") or "",
+        "factusol_series_by_source": _series(cfg).get("by_source") or {},
     }
+
+
+def _series(cfg: ErpSettings) -> dict[str, Any]:
+    """Blob `factusol_series_json` decodificado (vacío si falta o es ilegible)."""
+    if not cfg.factusol_series_json:
+        return {}
+    try:
+        data = json.loads(cfg.factusol_series_json)
+    except (TypeError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 @router.get("/settings")
@@ -291,6 +308,21 @@ def update_settings(
         cfg.factusol_default_ejercicio = payload.factusol_default_ejercicio or None
     if payload.factusol_live is not None:
         cfg.factusol_live = payload.factusol_live
+    # C-2: serie de facturación — se reescribe el blob completo con lo que
+    # llegue, conservando la parte que el PATCH no toque.
+    if (payload.factusol_series_default is not None
+            or payload.factusol_series_by_source is not None):
+        series = _series(cfg)
+        if payload.factusol_series_default is not None:
+            series["default"] = payload.factusol_series_default.strip()
+        if payload.factusol_series_by_source is not None:
+            # Las series vacías se descartan: «vacío = usa la por defecto».
+            series["by_source"] = {
+                k: v.strip()
+                for k, v in payload.factusol_series_by_source.items()
+                if v and v.strip()
+            }
+        cfg.factusol_series_json = json.dumps(series)
     _audit_settings(session, current_user)
     session.commit()
     return _serialise_settings(cfg)

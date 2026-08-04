@@ -5,6 +5,14 @@ import { PageHeader } from "../../components/PageHeader";
 import { extractErrorMessage } from "../../lib/errors";
 import { getErpSettings, updateErpSettings, type ErpSettings } from "../../lib/erpApi";
 
+/** Orígenes de pedido con serie de facturación propia opcional (C-2).
+ *  Espejo del enum `OrderSource` del backend. */
+const ORDER_SOURCES = [
+  { value: "woocommerce", label: "WooCommerce (las 3 tiendas)" },
+  { value: "manual", label: "Manual" },
+  { value: "factusol_proforma", label: "Proforma FACTUSOL" },
+];
+
 export default function ErpSettingsPage() {
   const [cfg, setCfg] = useState<ErpSettings | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -89,13 +97,54 @@ export default function ErpSettingsPage() {
             FACTUSOL en producción (Fase C)
           </span>
           <span className="muted small">
-            Al activar, los bloqueos por SKU sin mapear o empresa sin vincular a
-            FACTUSOL vuelven a bloquear la Cola PEDIDOS. Actívalo solo{" "}
-            <strong>tras haber emitido facturas de prueba</strong> desde el botón
-            «Emitir factura FACTUSOL» y confirmado que llegan correctamente a
-            FACTUSOL.
+            Al activar, la ficha del pedido consulta FACTUSOL en vivo para
+            detectar si ya existe factura o albarán (y vincularla sola). No
+            añade bloqueos a la Cola PEDIDOS.
           </span>
         </label>
+
+        <fieldset className="erp-series-fieldset">
+          <legend>Serie de facturación</legend>
+          <label className="field">
+            <span>Serie por defecto</span>
+            <input
+              type="text" maxLength={10} placeholder="A"
+              value={cfg.factusol_series_default ?? ""}
+              aria-label="Serie por defecto"
+              onChange={(e) => setCfg({ ...cfg, factusol_series_default: e.target.value })}
+            />
+            <span className="muted small">
+              Se usa al emitir si no se indica otra en el modal. Vacío → «A».
+            </span>
+          </label>
+          <table className="data-table">
+            <thead>
+              <tr><th>Origen del pedido</th><th>Serie (vacío = por defecto)</th></tr>
+            </thead>
+            <tbody>
+              {ORDER_SOURCES.map((src) => (
+                <tr key={src.value}>
+                  <td>{src.label}</td>
+                  <td>
+                    <input
+                      type="text" maxLength={10}
+                      aria-label={`Serie ${src.label}`}
+                      value={cfg.factusol_series_by_source?.[src.value] ?? ""}
+                      onChange={(e) => setCfg({
+                        ...cfg,
+                        factusol_series_by_source: {
+                          ...(cfg.factusol_series_by_source ?? {}),
+                          [src.value]: e.target.value,
+                        },
+                      })}
+                    />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </fieldset>
+
         <div>
           <button type="button" className="button" onClick={save} disabled={busy}>
             {busy ? "Guardando…" : "Guardar"}
