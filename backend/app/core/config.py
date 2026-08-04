@@ -139,6 +139,16 @@ class Settings(BaseSettings):
     hidrive_password: str = ""
     erp_uploads_dir: str = "uploads/erp"
 
+    # BoHub ERP Fase C — FACTUSOL (API DELSOL). Password cifrada con la
+    # Fernet key existente (INTEGRATION_SECRETS_KEY); se descifra on-demand
+    # y se envía en base64 al login. Ejercicio = año fiscal de los documentos.
+    factusol_base_url: str = "https://api.sdelsol.com"
+    factusol_codigo_fabricante: str = ""
+    factusol_codigo_cliente: str = ""
+    factusol_base_datos_cliente: str = ""
+    factusol_password_encrypted: str = ""
+    factusol_default_ejercicio: str = "2026"
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
     @field_validator("integration_secrets_key")

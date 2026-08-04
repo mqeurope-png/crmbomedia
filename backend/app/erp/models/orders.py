@@ -72,6 +72,8 @@ class InvoiceStatus(StrEnum):
     ERROR = "error"
     CREDIT_NOTE = "credit_note"
     ALREADY_INVOICED_EXTERNALLY = "already_invoiced_externally"
+    # Fase C: factura emitida en FACTUSOL desde el ERP (via emit_invoice).
+    INVOICED_BY_ERP = "invoiced_by_erp"
 
 
 class StatusDomain(StrEnum):
@@ -161,6 +163,10 @@ class Order(TimestampMixin, Base):
         ForeignKey("users.id", ondelete="SET NULL")
     )
     externally_processed_note: Mapped[str | None] = mapped_column(Text)
+
+    # Fase C: número de la factura emitida en FACTUSOL (CODFAC) — vincula el
+    # pedido con su factura contable. NULL hasta emitir.
+    factusol_invoice_number: Mapped[str | None] = mapped_column(String(32))
 
     lines: Mapped[list[OrderLine]] = relationship(
         back_populates="order", cascade="all, delete-orphan",
