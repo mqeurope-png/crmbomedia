@@ -11,9 +11,11 @@ import { extractErrorMessage } from "../../../lib/errors";
 import {
   getOrder,
   getOrderTimeline,
+  getFactusolStatus,
   fireTransition,
   ERP_EDIT_ROLES,
   type AvailableTransition,
+  type FactusolStatus,
   type OrderDetail,
   type StatusDomain,
   type TimelineEvent,
@@ -25,6 +27,7 @@ export default function ErpOrderDetailPage() {
   const [order, setOrder] = useState<OrderDetail | null>(null);
   const [timeline, setTimeline] = useState<TimelineEvent[]>([]);
   const [user, setUser] = useState<User | null>(null);
+  const [factusolStatus, setFactusolStatus] = useState<FactusolStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -33,6 +36,17 @@ export default function ErpOrderDetailPage() {
       .then(setOrder)
       .catch((e) => setError(extractErrorMessage(e, "No se pudo cargar el pedido.")));
     getOrderTimeline(id).then((r) => setTimeline(r.items)).catch(() => undefined);
+    // C-2-fix2: consulta en vivo si ya hay factura/albarán en FACTUSOL. Si el
+    // backend auto-vincula una factura existente, releemos el pedido para que
+    // el badge de facturación quede al día.
+    getFactusolStatus(id)
+      .then((st) => {
+        setFactusolStatus(st);
+        if (st.status === "invoiced") {
+          getOrder(id).then(setOrder).catch(() => undefined);
+        }
+      })
+      .catch(() => setFactusolStatus(null));
   }, [id]);
 
   useEffect(() => {
@@ -92,6 +106,8 @@ export default function ErpOrderDetailPage() {
             totalAmount={order.total_amount}
             currency={order.currency}
             companyId={order.company_id}
+            factusolStatus={factusolStatus}
+            enableOptions
             onInvoiced={() => load()}
           />
         </div>

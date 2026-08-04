@@ -25,24 +25,35 @@ JOB_TIMEOUT_SECONDS = 120
 RESULT_TTL_SECONDS = 86_400  # 1 día: el frontend consulta el resultado
 
 
-def emit_invoice_job(order_id: str, actor_user_id: str | None = None) -> dict[str, Any]:
+def emit_invoice_job(
+    order_id: str, actor_user_id: str | None = None,
+    options: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Emite la factura FACTUSOL del pedido. Corre en `factusol:writes`
-    (worker serializado). Un fallo se propaga → RQ marca el job failed."""
+    (worker serializado). Un fallo se propaga → RQ marca el job failed.
+
+    `options` llega como dict serializable (desde el modal de emisión) y se
+    reconstruye a `FacturaOptions`."""
     from sqlalchemy.orm import Session  # noqa: PLC0415
 
     from app.db.session import get_engine  # noqa: PLC0415
+    from app.integrations.factusol.mapper import FacturaOptions  # noqa: PLC0415
     from app.models.crm import User  # noqa: PLC0415
 
+    opts = FacturaOptions(**options) if options else None
     with Session(get_engine()) as session:
         actor = session.get(User, actor_user_id) if actor_user_id else None
         client = FactusolClient.from_settings()
-        result = emit_invoice(session, order_id, client, actor=actor)
+        result = emit_invoice(session, order_id, client, actor=actor, options=opts)
     logger.info("factusol: factura emitida order=%s codfac=%s",
                 order_id, result.get("codfac"))
     return result
 
 
-def enqueue_emit_invoice(order_id: str, actor_user_id: str | None = None) -> str:
+def enqueue_emit_invoice(
+    order_id: str, actor_user_id: str | None = None,
+    options: dict[str, Any] | None = None,
+) -> str:
     """Encola `emit_invoice_job` en `factusol:writes` y devuelve el job_id."""
     from redis import Redis  # noqa: PLC0415
     from rq import Queue  # noqa: PLC0415
@@ -52,7 +63,7 @@ def enqueue_emit_invoice(order_id: str, actor_user_id: str | None = None) -> str
     conn = Redis.from_url(get_settings().redis_url)
     job = Queue(FACTUSOL_QUEUE_WRITES, connection=conn).enqueue(
         "app.integrations.factusol.jobs.emit_invoice_job",
-        order_id, actor_user_id,
+        order_id, actor_user_id, options,
         job_timeout=JOB_TIMEOUT_SECONDS,
         result_ttl=RESULT_TTL_SECONDS,
     )

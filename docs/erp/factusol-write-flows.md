@@ -265,3 +265,61 @@ localiza el F_PCL del pedido y lo convierte en factura F_FAC.
 > distinto sufijo de tabla). Los nombres exactos de columnas de F_PCL/F_LPC se
 > confirman con la validación real de Bart; si `EscribirRegistro` rechaza alguna
 > columna de pedido no prevista, se añade a `mapper.PCL_ONLY_COLUMNS`.
+
+---
+
+## Actualización C-2-fix2 (2026-08-04) — detectar factura/albarán ya existente
+
+**Problema real (BOPRIN-99866):** la factura **260695** ya estaba creada a mano
+en el escritorio FACTUSOL (29-jul). El botón «Emitir factura» habría creado un
+**duplicado**. Datos verificados de esa factura:
+
+| Campo | Valor | Nota |
+|---|---|---|
+| `REFFAC` | `BOP-099866` | referencia común pedido↔factura (el ÚNICO enlace) |
+| `CLIFAC` | `2458` | DUPLICODER, S.L. |
+| `TOTFAC` | `186.34` | |
+| `TIPFAC` | `'1'` (string) | **NO `2`** como asumía el mapper |
+| `PEDFAC` | **vacío** | la app externa NO enlaza por PEDFAC |
+
+La app externa WooCommerce→FACTUSOL solo crea el **Pedido de Cliente (F_PCL)**;
+las facturas (y a veces albaranes) las crea Bart a mano. El nexo común entre
+pedido, albarán y factura es la **referencia** `REF*` (`BOP-099866`), no PEDFAC.
+
+**Flujo nuevo (detección antes de emitir):**
+
+1. `service.check_factusol_status(client, order, ejercicio)` consulta en vivo
+   `F_FAC` por `REFFAC` y `F_ALB` por `REFALB` → `{has_factura, factura,
+   has_albaran, albaran, ref}`.
+2. `GET /api/erp/orders/{id}/factusol-status` (solo si `factusol_live` ON):
+   - **factura existe** → `service.get_and_link_factusol_status` la
+     **auto-vincula** (`factusol_invoice_number=CODFAC`,
+     `invoice_status=invoiced_by_erp`, historial `auto_linked_from_factusol`) y
+     devuelve `{status:"invoiced", codfac, auto_linked:true}` → badge verde.
+   - **solo albarán** → `{status:"albaran", albaran_codigo}` → badge amarillo +
+     se permite emitir.
+   - **nada** → `{status:"pending"}` → botón de emisión.
+   - `factusol_live` OFF o FACTUSOL no responde → `{status:"unknown"}` (el
+     frontend cae al botón manual; el worker reconfirma antes de escribir).
+3. `emit_invoice` **reconfirma** `check_factusol_status` JUSTO antes de escribir:
+   si la factura ya apareció (carrera / creación manual), auto-vincula en vez de
+   duplicar (`already_existed:true`, 0 escrituras).
+
+**Cambios en el mapper (`pcl_row_to_fac_payload`):**
+- **`TIPFAC` por defecto `'1'`** (antes `2`).
+- **Ya NO se inyecta `PEDFAC`** (el enlace es `REFFAC`, que viaja en la copia
+  por sufijo `REFPCL→REFFAC`).
+- Opciones del operador (`FacturaOptions`) aplicadas tras la copia: `TIPFAC`,
+  `SERFAC`, `FECFAC`, `FOPFAC` (forma de pago), `COMFAC` (observaciones).
+
+**Modal de emisión (5 campos, como el escritorio):** Tipo, Serie, Fecha, Forma
+de pago (desplegable de `GET /api/erp/factusol/formas-pago` sobre `F_FOP`, cache
+5 min) y Observaciones. La ficha del pedido usa el modal completo; la Cola
+PEDIDOS mantiene el botón de confirmación simple.
+
+> ⚠️ **Pendiente de confirmar por Bart en la validación real** (el modal se
+> construyó con defaults sensatos): el código de `TIPFAC` (usamos `'1'`), si
+> Bomedia usa `SERFAC`, y los nombres exactos de columna de forma de pago /
+> observaciones (`FOPFAC`/`COMFAC`) y del catálogo `F_FOP` (`CODFOP`/`DESFOP`).
+> Todos están centralizados en `mapper.py` / `api/factusol.py` para ajustarlos
+> en un solo sitio.

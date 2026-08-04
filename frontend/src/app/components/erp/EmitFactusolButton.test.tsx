@@ -1,15 +1,21 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { EmitFactusolButton } from "./EmitFactusolButton";
-import { emitFactusolInvoice, getFactusolInvoiceStatus } from "../../lib/erpApi";
+import {
+  emitFactusolInvoice,
+  getFactusolInvoiceStatus,
+  getFactusolFormasPago,
+} from "../../lib/erpApi";
 
 jest.mock("../../lib/erpApi", () => ({
   emitFactusolInvoice: jest.fn(),
   getFactusolInvoiceStatus: jest.fn(),
+  getFactusolFormasPago: jest.fn(),
 }));
 
 const mockEmit = emitFactusolInvoice as jest.Mock;
 const mockStatus = getFactusolInvoiceStatus as jest.Mock;
+const mockFormas = getFactusolFormasPago as jest.Mock;
 
 function props(over = {}) {
   return {
@@ -22,13 +28,36 @@ function props(over = {}) {
 beforeEach(() => {
   mockEmit.mockReset();
   mockStatus.mockReset();
+  mockFormas.mockReset();
+  mockFormas.mockResolvedValue([]);
 });
 
 describe("EmitFactusolButton", () => {
-  it("muestra el badge si ya está facturado", () => {
+  it("muestra el badge si ya está facturado (props)", () => {
     render(<EmitFactusolButton {...props({ factusolInvoiceNumber: "526067" })} />);
     expect(screen.getByLabelText("Factura FACTUSOL")).toHaveTextContent("526067");
     expect(screen.queryByRole("button", { name: /Emitir/ })).not.toBeInTheDocument();
+  });
+
+  it("muestra el badge si el estado en vivo indica factura existente", () => {
+    render(
+      <EmitFactusolButton
+        {...props({ factusolStatus: { status: "invoiced", codfac: "260695" } })}
+      />,
+    );
+    expect(screen.getByLabelText("Factura FACTUSOL")).toHaveTextContent("260695");
+  });
+
+  it("muestra badge de albarán y aún permite emitir", () => {
+    render(
+      <EmitFactusolButton
+        {...props({ factusolStatus: { status: "albaran", albaran_codigo: "5001" } })}
+      />,
+    );
+    expect(screen.getByLabelText("Albarán FACTUSOL")).toHaveTextContent("5001");
+    expect(
+      screen.getByRole("button", { name: /Emitir factura FACTUSOL/ }),
+    ).toBeInTheDocument();
   });
 
   it("no renderiza nada si está facturado externamente", () => {
@@ -38,12 +67,7 @@ describe("EmitFactusolButton", () => {
     expect(container).toBeEmptyDOMElement();
   });
 
-  it("deshabilita el botón si el pedido no tiene empresa", () => {
-    render(<EmitFactusolButton {...props({ companyId: null })} />);
-    expect(screen.getByRole("button", { name: /Emitir factura FACTUSOL/ })).toBeDisabled();
-  });
-
-  it("confirma, emite y hace polling hasta invoiced", async () => {
+  it("confirma (modal simple), emite y hace polling hasta invoiced", async () => {
     mockEmit.mockResolvedValue({ job_id: "job-1", order_id: "o1", status: "queued" });
     mockStatus.mockResolvedValue({ status: "invoiced", codfac: "526067" });
     const onInvoiced = jest.fn();
@@ -55,11 +79,34 @@ describe("EmitFactusolButton", () => {
     expect(screen.getByText(/no es reversible/)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Emitir factura" }));
 
-    await waitFor(() => expect(mockEmit).toHaveBeenCalledWith("o1"));
+    await waitFor(() => expect(mockEmit).toHaveBeenCalledWith("o1", undefined));
     await waitFor(() => expect(mockStatus).toHaveBeenCalledWith("o1", "job-1"));
-    // Al facturar, el componente pasa a mostrar el badge con el CODFAC.
     expect(await screen.findByLabelText("Factura FACTUSOL")).toHaveTextContent("526067");
     expect(onInvoiced).toHaveBeenCalledWith("526067");
+  });
+
+  it("con enableOptions abre el modal de 5 campos y emite con opciones", async () => {
+    mockEmit.mockResolvedValue({ job_id: "job-9", order_id: "o1", status: "queued" });
+    mockStatus.mockResolvedValue({ status: "invoiced", codfac: "526067" });
+    mockFormas.mockResolvedValue([{ codigo: "03", nombre: "Transferencia" }]);
+    const user = userEvent.setup();
+    render(<EmitFactusolButton {...props({ enableOptions: true })} />);
+
+    await user.click(screen.getByRole("button", { name: /Emitir factura FACTUSOL/ }));
+    // Los 5 campos del modal.
+    expect(screen.getByLabelText("Tipo")).toHaveValue("1");
+    expect(screen.getByLabelText("Serie")).toBeInTheDocument();
+    expect(screen.getByLabelText("Fecha de emisión")).toBeInTheDocument();
+    expect(screen.getByLabelText("Observaciones")).toBeInTheDocument();
+    // Forma de pago cargada de F_FOP.
+    expect(await screen.findByRole("option", { name: "Transferencia" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Emitir factura" }));
+    await waitFor(() => expect(mockEmit).toHaveBeenCalled());
+    const [oid, opts] = mockEmit.mock.calls[0];
+    expect(oid).toBe("o1");
+    expect(opts.tipfac).toBe("1");
+    expect(await screen.findByLabelText("Factura FACTUSOL")).toHaveTextContent("526067");
   });
 
   it("muestra error si el polling devuelve failed", async () => {

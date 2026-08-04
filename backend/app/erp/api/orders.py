@@ -8,10 +8,11 @@ estado directamente.
 from __future__ import annotations
 
 import json
+import logging
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
@@ -30,6 +31,8 @@ from app.erp.models import (
 )
 from app.erp.state_machine import TransitionError, apply_transition, available_transitions
 from app.models.crm import Company, User
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/erp/orders", tags=["erp-orders"])
 
@@ -501,14 +504,29 @@ def _rq_job_status(job_id: str) -> dict[str, Any] | None:
         return None
 
 
+class EmitFactusolInvoicePayload(BaseModel):
+    """Opciones de emisión elegidas en el modal (como el diálogo «Nueva
+    factura» del escritorio FACTUSOL). Todas opcionales con defaults sensatos:
+    un POST sin cuerpo emite con tipo '1' y fecha de hoy."""
+
+    tipfac: str = Field(default="1", max_length=4)
+    serfac: str | None = Field(default=None, max_length=10)
+    #: Fecha de emisión ISO (`YYYY-MM-DD`); None → hoy (lo pone el service).
+    fecfac: str | None = Field(default=None, max_length=10)
+    fopfac: str | None = Field(default=None, max_length=10)
+    comfac: str | None = Field(default=None, max_length=500)
+
+
 @router.post("/{order_id}/emit-factusol-invoice", status_code=202)
 def emit_factusol_invoice(
     order_id: str,
+    payload: EmitFactusolInvoicePayload | None = Body(default=None),
     session: Session = Depends(get_session),
     current_user: User = Depends(require_erp_edit),
 ) -> dict[str, Any]:
     """Encola la emisión REAL de la factura en FACTUSOL (cola serializada
-    `factusol:writes`). Rechaza doble facturación."""
+    `factusol:writes`). Rechaza doble facturación. El cuerpo es opcional: sin
+    él se emite con las opciones por defecto (tipo '1', fecha de hoy)."""
     order = _get_order(session, order_id)
     inv = _status_value(order.invoice_status)
     if order.factusol_invoice_number or inv == InvoiceStatus.INVOICED_BY_ERP.value:
@@ -525,8 +543,9 @@ def emit_factusol_invoice(
 
     from app.integrations.factusol.jobs import enqueue_emit_invoice  # noqa: PLC0415
 
+    options = (payload or EmitFactusolInvoicePayload()).model_dump()
     try:
-        job_id = enqueue_emit_invoice(order.id, current_user.id)
+        job_id = enqueue_emit_invoice(order.id, current_user.id, options=options)
     except Exception as exc:  # noqa: BLE001 — Redis caído, etc.
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, {
             "code": "queue_unavailable", "detail": str(exc)[:200],
@@ -535,6 +554,49 @@ def emit_factusol_invoice(
     _audit_factusol(session, order, current_user, job_id)
     session.commit()
     return {"job_id": job_id, "order_id": order.id, "status": "queued"}
+
+
+@router.get("/{order_id}/factusol-status")
+def factusol_status(
+    order_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_view),
+) -> dict[str, Any]:
+    """Estado del pedido frente a FACTUSOL (C-2-fix2): ¿ya tiene factura o
+    albarán? Consulta EN VIVO F_FAC (por REFFAC) y F_ALB (por REFALB). Si la
+    factura ya existe, la **auto-vincula** al pedido para evitar duplicados.
+
+    Solo hace la consulta en vivo si `factusol_live` está activo; si no, o si
+    FACTUSOL no responde, devuelve `status: "unknown"` y el frontend cae al
+    botón de emisión manual (cuyo worker reconfirma antes de escribir)."""
+    order = _get_order(session, order_id)
+    if order.factusol_invoice_number:
+        return {"status": "invoiced", "codfac": order.factusol_invoice_number,
+                "auto_linked": False}
+    inv = _status_value(order.invoice_status)
+    if inv == InvoiceStatus.ALREADY_INVOICED_EXTERNALLY.value:
+        return {"status": "already_invoiced_externally"}
+    if not _factusol_live(session):
+        return {"status": "unknown", "reason": "factusol_live_off"}
+
+    from app.integrations.factusol.client import FactusolClient  # noqa: PLC0415
+    from app.integrations.factusol.service import (  # noqa: PLC0415
+        _store_ref_prefix,
+        ejercicio_for,
+        get_and_link_factusol_status,
+    )
+
+    try:
+        client = FactusolClient.from_settings()
+        ejercicio = ejercicio_for(session)
+        ref_prefix = _store_ref_prefix(session, order)
+        return get_and_link_factusol_status(
+            session, order, client, ejercicio,
+            ref_prefix=ref_prefix, actor=current_user,
+        )
+    except Exception as exc:  # noqa: BLE001 — FACTUSOL caído / sin credenciales
+        logger.warning("factusol status check falló order=%s: %s", order_id, exc)
+        return {"status": "unknown", "reason": "factusol_unreachable"}
 
 
 @router.get("/{order_id}/factusol-invoice-status")

@@ -5,23 +5,31 @@ import { extractErrorMessage } from "../../lib/errors";
 import {
   emitFactusolInvoice,
   getFactusolInvoiceStatus,
+  type EmitFactusolOptions,
+  type FactusolStatus,
 } from "../../lib/erpApi";
+import { EmitFactusolModal } from "./EmitFactusolModal";
 
 const POLL_INTERVAL_MS = 2000;
 const POLL_MAX_MS = 60_000;
 
 type Phase = "idle" | "confirm" | "working" | "done" | "error";
 
-/** Botón «Emitir factura FACTUSOL» (Fase C · C-2): confirma, encola la
- *  emisión real y hace polling del estado. Si el pedido ya está facturado
- *  muestra el badge en vez del botón. */
+/** Botón «Emitir factura FACTUSOL» (Fase C · C-2 / C-2-fix2).
+ *
+ *  - Si el pedido ya tiene factura (por props o por `factusolStatus` en vivo)
+ *    muestra el badge verde en vez del botón.
+ *  - Si solo hay albarán, muestra un badge amarillo Y permite emitir.
+ *  - `enableOptions` (ficha del pedido) abre el modal de 5 campos; sin él
+ *    (Cola PEDIDOS) usa el modal de confirmación simple. */
 export function EmitFactusolButton({
   orderId,
   invoiceStatus,
   factusolInvoiceNumber,
   totalAmount,
   currency,
-  companyId,
+  factusolStatus = null,
+  enableOptions = false,
   onInvoiced,
 }: {
   orderId: string;
@@ -29,26 +37,42 @@ export function EmitFactusolButton({
   factusolInvoiceNumber: string | null;
   totalAmount: number;
   currency: string;
-  companyId: string | null;
+  /** El pedido no necesita empresa CRM: la factura se copia del F_PCL, que ya
+   *  lleva el cliente. Se acepta la prop por compatibilidad con la Cola. */
+  companyId?: string | null;
+  /** Estado en vivo pre-cargado por la ficha (Promise.all). */
+  factusolStatus?: FactusolStatus | null;
+  enableOptions?: boolean;
   onInvoiced?: (codfac: string) => void;
-  }) {
+}) {
+  const preInvoiced =
+    factusolStatus?.status === "invoiced" ? factusolStatus.codfac : null;
   const [phase, setPhase] = useState<Phase>("idle");
-  const [codfac, setCodfac] = useState<string | null>(factusolInvoiceNumber);
+  const [codfac, setCodfac] = useState<string | null>(
+    factusolInvoiceNumber || preInvoiced,
+  );
   const [message, setMessage] = useState<string | null>(null);
   const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
 
   useEffect(() => () => { timers.current.forEach(clearTimeout); }, []);
 
-  if (codfac || factusolInvoiceNumber) {
+  const effectiveCodfac = codfac || factusolInvoiceNumber || preInvoiced;
+  if (effectiveCodfac) {
     return (
       <span className="badge ok" aria-label="Factura FACTUSOL">
-        Facturado FACTUSOL #{codfac || factusolInvoiceNumber}
+        Facturado FACTUSOL #{effectiveCodfac}
       </span>
     );
   }
-  if (invoiceStatus === "already_invoiced_externally") {
+  if (
+    invoiceStatus === "already_invoiced_externally" ||
+    factusolStatus?.status === "already_invoiced_externally"
+  ) {
     return null; // marcado como facturado fuera del ERP
   }
+
+  const albaran =
+    factusolStatus?.status === "albaran" ? factusolStatus : null;
 
   function poll(jobId: string, deadline: number) {
     getFactusolInvoiceStatus(orderId, jobId)
@@ -78,11 +102,11 @@ export function EmitFactusolButton({
       });
   }
 
-  async function confirmEmit() {
+  async function doEmit(options?: EmitFactusolOptions) {
     setPhase("working");
     setMessage("Factura encolada, generando…");
     try {
-      const r = await emitFactusolInvoice(orderId);
+      const r = await emitFactusolInvoice(orderId, options);
       poll(r.job_id, Date.now() + POLL_MAX_MS);
     } catch (e) {
       setPhase("error");
@@ -92,11 +116,16 @@ export function EmitFactusolButton({
 
   return (
     <>
+      {albaran ? (
+        <span className="badge warn" aria-label="Albarán FACTUSOL">
+          Albarán en FACTUSOL
+          {albaran.albaran_codigo ? ` #${albaran.albaran_codigo}` : ""} — sin factura
+        </span>
+      ) : null}
       <button
         type="button"
         className="button small secondary"
-        disabled={phase === "working" || !companyId}
-        title={companyId ? undefined : "El pedido no tiene empresa"}
+        disabled={phase === "working"}
         onClick={() => setPhase("confirm")}
       >
         {phase === "working" ? "Generando…" : "Emitir factura FACTUSOL"}
@@ -107,7 +136,16 @@ export function EmitFactusolButton({
         </p>
       ) : null}
 
-      {phase === "confirm" ? (
+      {phase === "confirm" && enableOptions ? (
+        <EmitFactusolModal
+          totalAmount={totalAmount}
+          currency={currency}
+          onCancel={() => setPhase("idle")}
+          onSubmit={(opts) => doEmit(opts)}
+        />
+      ) : null}
+
+      {phase === "confirm" && !enableOptions ? (
         <div className="modal-overlay" role="dialog" aria-modal="true"
              aria-label="Confirmar emisión de factura FACTUSOL">
           <div className="modal-dialog">
@@ -124,7 +162,7 @@ export function EmitFactusolButton({
                       onClick={() => setPhase("idle")}>
                 Cancelar
               </button>
-              <button type="button" className="button" onClick={confirmEmit}>
+              <button type="button" className="button" onClick={() => doEmit()}>
                 Emitir factura
               </button>
             </div>
