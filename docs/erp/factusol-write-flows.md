@@ -230,3 +230,38 @@ sobreescribibles por env (`FACTUSOL_PATH_LOAD_TABLE`, `_WRITE_RECORD`,
 - **Toggle `factusol_live`**: OFF por defecto. Al activarlo (`/erp/settings`) los
   bloqueos gated (`sku_unmapped`, `company_missing_factusol`) vuelven a bloquear
   la Cola PEDIDOS.
+
+---
+
+## Actualización C-2-fix1 (2026-08-04) — factura desde el pedido F_PCL existente
+
+Cambio de premisa: una app externa ya replica cada pedido de WooCommerce en
+FACTUSOL como **Pedido de Cliente (F_PCL)** con el cliente y los importes ya
+calculados. BoHub ERP **no crea clientes ni recalcula nada**: `emit_invoice`
+localiza el F_PCL del pedido y lo convierte en factura F_FAC.
+
+**Flujo:**
+1. `find_pcl_by_order`: busca `F_PCL` por `REFPCL` = `<prefijo>-<nºWoo padding 6>`
+   (ej. BOPRIN-99866 → `BOP-099866`). El prefijo sale de
+   `IntegrationAccount.metadata_json["factusol_ref_prefix"]`; si no está, se
+   deriva de las 3 primeras letras del segmento inicial del order_number.
+   Si el F_PCL no existe → error claro al operador («aún no está en FACTUSOL»).
+2. `next_codfac`: siguiente CODFAC secuencial (SELECT MAX+1; sin LIMIT — la API
+   no lo soporta).
+3. `pcl_row_to_fac_payload`: copia la cabecera **por sufijo** (`*PCL → *FAC`,
+   arrastra CLIFAC, TOTFAC y las 4 bandas NET/PIVA/IIVA) excluyendo columnas de
+   estado del pedido (`ESTPCL`, `USUPCL`, …); inyecta CODFAC, EJEFAC, TIPFAC=2,
+   FECFAC (hoy) y **PEDFAC = `<serie>-<codpcl padding 6>`** (link al pedido).
+4. `F_LPC → F_LFA` (`lpc_row_to_lfa_payload`, copia por sufijo + CODLFA/POSLFA).
+5. Escribe F_FAC + F_LFA (compensación borra la factura a medias si falla una
+   línea), marca el pedido `invoiced_by_erp` + guarda el CODFAC + historial +
+   SyncLog.
+
+**Se retira**: creación de clientes (`ensure_customer_in_factusol`), el
+`order_to_factusol_invoice` que recalculaba, y el endpoint
+`POST /companies/{id}/link-factusol`.
+
+> ⚠️ El mapeo por sufijo asume la convención DELSOL (mismo prefijo de campo,
+> distinto sufijo de tabla). Los nombres exactos de columnas de F_PCL/F_LPC se
+> confirman con la validación real de Bart; si `EscribirRegistro` rechaza alguna
+> columna de pedido no prevista, se añade a `mapper.PCL_ONLY_COLUMNS`.

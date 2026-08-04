@@ -1,76 +1,89 @@
-"""Mappers puros CRM → FACTUSOL (Fase C).
+"""Mappers puros CRM/FACTUSOL → FACTUSOL (Fase C · C-2-fix1).
 
-Transforman entidades del CRM en los payloads de las tablas de la API DELSOL.
-Funciones sin efectos (unit-testeables); NO tocan la BD ni la red.
+Cambio de premisa (2026-08-04): una app externa ya replica cada pedido de
+WooCommerce en FACTUSOL como **Pedido de Cliente (F_PCL)** con el cliente
+asociado y todos los importes/IVAs ya calculados. BoHub ERP NO crea clientes
+ni recalcula nada: solo **convierte el F_PCL que ya existe en factura F_FAC**
+copiando los datos y añadiendo el CODFAC nuevo + el link PEDFAC.
 
-Nombres de columnas verificados contra la API real (ver
-`docs/erp/factusol-write-flows.md`). El CODFAC (nº de factura) NO lo pone el
-mapper: FACTUSOL numera solo, así que el service calcula el siguiente con
-`next_codfac()` y lo inyecta en cabecera + líneas justo antes de escribir.
+Estrategia de mapeo — **transformación de sufijo**: las tablas de pedido y de
+factura comparten la convención de columnas de DELSOL (mismo prefijo de campo,
+distinto sufijo de tabla), así que copiamos cada columna sustituyendo el
+sufijo (`*PCL → *FAC`, `*LPC → *LFA`). Esto arrastra automáticamente TODAS las
+bandas de IVA (`NET1PCL→NET1FAC`, `PIVA1PCL→PIVA1FAC`, …), retenciones,
+descuentos, etc., sin depender de enumerar 167 columnas. Las columnas de
+estado/auditoría del pedido se excluyen (no tienen equivalente en F_FAC).
+
+Las inyecciones (CODFAC/EJEFAC/TIPFAC/PEDFAC/FECFAC en la cabecera; CODLFA/
+POSLFA/EJELFA en las líneas) se hacen DESPUÉS de la copia, sobreescribiendo lo
+que herede la transformación de sufijo.
 """
 from __future__ import annotations
 
 from typing import Any
 
-from app.erp.models import Order
-from app.models.crm import Company
-
-#: Tipo de documento de F_FAC: 2 = factura ordinaria (valor observado en las
-#: facturas reales de Bomedia). Bomedia NO usa serie (F_SER vacía) → sin SERFAC.
+#: Tipo de documento de F_FAC: 2 = factura ordinaria (visto en Bomedia).
 TIPFAC_FACTURA_ORDINARIA = 2
 
+#: Columnas de F_PCL propias del PEDIDO (estado / auditoría) que NO se copian a
+#: F_FAC — no tienen equivalente o descuadrarían la factura. Ampliable si el
+#: EscribirRegistro de Bart rechaza alguna columna extra en la validación real.
+PCL_ONLY_COLUMNS = frozenset({
+    "ESTPCL",  # estado del pedido
+    "IMPPCL",  # marca de impreso
+    "USUPCL",  # usuario creación
+    "USMPCL",  # usuario modificación
+    "HORPCL",  # hora
+    "PASPCL",  # pasado a factura / albarán
+    "SUOPCL",  # servido / origen (si existe)
+})
 
-def company_to_factusol_client(company: Company, codcli: str) -> dict[str, Any]:
-    """`Company` del CRM → registro F_CLI. El `codcli` (PK) lo decide el
-    servicio (reusa el existente o genera el siguiente secuencial)."""
-    return {
-        "CODCLI": codcli,
-        "PCOCLI": (company.name or "")[:40],   # nombre comercial
-        "NOFCLI": (company.name or "")[:40],   # nombre fiscal
-        "CIFCLI": (company.tax_id or "")[:20],
-        "DOMCLI": (company.address_line or "")[:60],
-        "POBCLI": (company.city or "")[:40],
-        "CPOCLI": (company.postal_code or "")[:10],
-        "PAICLI": (company.country or "")[:30],
-        "WEBCLI": (company.website or "")[:60],
-    }
-
-
-def _line_to_factusol(position: int, line: Any, ejercicio: str) -> dict[str, Any]:
-    # CODLFA (FK a F_FAC.CODFAC) lo inyecta el service tras calcular el CODFAC.
-    return {
-        "EJELFA": ejercicio,
-        "POSLFA": position,
-        "ARTLFA": line.product_codart or "",   # CODART; vacío si sin mapear
-        "REFLFA": line.product_sku or "",
-        "DESLFA": (line.description or line.product_sku or "")[:50],
-        "CANLFA": float(line.quantity or 0),
-        "PRELFA": float(line.unit_price or 0),
-        "IVALFA": float(line.tax_rate or 0),
-        "TOTLFA": float(line.line_total or 0),
-    }
+#: Columnas de F_LPC propias de la línea de pedido que NO se copian a F_LFA.
+LPC_ONLY_COLUMNS: frozenset[str] = frozenset()
 
 
-def order_to_factusol_invoice(
-    order: Order, factusol_codcli: str, ejercicio: str,
-) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    """`Order` del CRM → (cabecera F_FAC, líneas F_LFA), SIN numerar.
+def _retag(column: str, from_suffix: str, to_suffix: str) -> str:
+    """`NET1PCL`,'PCL','FAC' → `NET1FAC`. Sustituye solo el sufijo final."""
+    return column[: -len(from_suffix)] + to_suffix
 
-    El CODFAC (cabecera) y el CODLFA (líneas) los añade el service con
-    `next_codfac()` justo antes de escribir — FACTUSOL numera secuencialmente
-    por ejercicio y no queremos pisar su numeración.
+
+def pcl_row_to_fac_payload(
+    pcl_row: dict[str, Any], codfac: str, pedfac_ref: str, ejercicio: str,
+    *, fecha_emision: str, tipfac: int = TIPFAC_FACTURA_ORDINARIA,
+) -> dict[str, Any]:
+    """Fila F_PCL → payload de EscribirRegistro para F_FAC.
+
+    Copia por sufijo (`*PCL → *FAC`, salvo `PCL_ONLY_COLUMNS`) e inyecta:
+    - CODFAC  = el nuevo número secuencial (via `next_codfac`).
+    - PEDFAC  = link al pedido origen, formato "<serie>-<codpcl_padded_6>".
+    - EJEFAC  = ejercicio.
+    - TIPFAC  = 2 (factura ordinaria).
+    - FECFAC  = fecha de EMISIÓN (hoy), no la del pedido.
     """
-    fecha = order.placed_at.date().isoformat() if order.placed_at else None
-    cabecera = {
-        "EJEFAC": ejercicio,
-        "TIPFAC": TIPFAC_FACTURA_ORDINARIA,
-        "CLIFAC": factusol_codcli,
-        "FECFAC": fecha,
-        "TOTFAC": float(order.total_amount or 0),
-        "REFFAC": order.order_number,          # referencia externa (nº CRM)
-    }
-    lineas = [
-        _line_to_factusol(i + 1, line, ejercicio)
-        for i, line in enumerate(order.lines)
-    ]
-    return cabecera, lineas
+    payload: dict[str, Any] = {}
+    for col, val in pcl_row.items():
+        if not col.endswith("PCL") or col in PCL_ONLY_COLUMNS:
+            continue
+        payload[_retag(col, "PCL", "FAC")] = val
+    payload["CODFAC"] = codfac
+    payload["EJEFAC"] = ejercicio
+    payload["TIPFAC"] = tipfac
+    payload["PEDFAC"] = pedfac_ref
+    payload["FECFAC"] = fecha_emision
+    return payload
+
+
+def lpc_row_to_lfa_payload(
+    lpc_row: dict[str, Any], codfac: str, posicion: int, ejercicio: str,
+) -> dict[str, Any]:
+    """Línea F_LPC → payload de EscribirRegistro para F_LFA (copia por sufijo
+    `*LPC → *LFA`; inyecta CODLFA=codfac, POSLFA=posición, EJELFA)."""
+    payload: dict[str, Any] = {}
+    for col, val in lpc_row.items():
+        if not col.endswith("LPC") or col in LPC_ONLY_COLUMNS:
+            continue
+        payload[_retag(col, "LPC", "LFA")] = val
+    payload["CODLFA"] = codfac
+    payload["POSLFA"] = posicion
+    payload["EJELFA"] = ejercicio
+    return payload

@@ -522,11 +522,6 @@ def emit_factusol_invoice(
             "code": "already_invoiced_externally",
             "detail": "El pedido está marcado como facturado fuera del ERP",
         })
-    if not order.company_id:
-        raise HTTPException(status.HTTP_409_CONFLICT, {
-            "code": "no_company",
-            "detail": "El pedido no tiene empresa: no se puede facturar",
-        })
 
     from app.integrations.factusol.jobs import enqueue_emit_invoice  # noqa: PLC0415
 

@@ -5,7 +5,7 @@ La cola RQ y el cliente FACTUSOL se mockean — sin Redis ni red.
 from __future__ import annotations
 
 from collections.abc import Generator
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -107,15 +107,6 @@ def test_emit_invoice_rejects_already_invoiced_externally(client, session_factor
     assert r.json()["detail"]["code"] == "already_invoiced_externally"
 
 
-def test_emit_invoice_rejects_order_without_company(client, session_factory):
-    with session_factory() as s:
-        oid = _order(s, with_company=False)
-    r = client.post(f"/api/erp/orders/{oid}/emit-factusol-invoice",
-                    headers=auth_headers(client, "pedidos"))
-    assert r.status_code == 409
-    assert r.json()["detail"]["code"] == "no_company"
-
-
 def test_emit_invoice_forbidden_for_view_only_roles(client, session_factory):
     with session_factory() as s:
         oid = _order(s)
@@ -145,36 +136,3 @@ def test_invoice_status_pending_when_not_yet_invoiced(client, session_factory):
                    headers=auth_headers(client, "user"))
     assert r.status_code == 200
     assert r.json()["status"] == "pending"
-
-
-# --- vincular empresa -------------------------------------------------------
-
-
-def test_link_company_endpoint_returns_codcli(client, session_factory):
-    with session_factory() as s:
-        c = Company(name="Nueva SL", tax_id="B99999999")
-        s.add(c)
-        s.commit()
-        cid = c.id
-    fake_client = MagicMock()
-    with patch("app.integrations.factusol.client.FactusolClient.from_settings",
-               return_value=fake_client), \
-         patch("app.integrations.factusol.service.ensure_customer_in_factusol",
-               return_value=("77777", "existing_cif")):
-        r = client.post(f"/api/companies/{cid}/link-factusol",
-                        headers=auth_headers(client, "admin"))
-    assert r.status_code == 200, r.text
-    assert r.json() == {"company_id": cid, "factusol_codcli": "77777",
-                        "matched_by": "existing_cif"}
-
-
-def test_link_company_requires_admin(client, session_factory):
-    with session_factory() as s:
-        c = Company(name="X SL")
-        s.add(c)
-        s.commit()
-        cid = c.id
-    for role in ("pedidos", "sat", "user", "viewer"):
-        r = client.post(f"/api/companies/{cid}/link-factusol",
-                        headers=auth_headers(client, role))
-        assert r.status_code == 403, role
