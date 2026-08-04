@@ -520,9 +520,3 @@ export async function getFactusolInvoiceStatus(
   const q = jobId ? `?job_id=${encodeURIComponent(jobId)}` : "";
   return apiFetch(`/api/erp/orders/${orderId}/factusol-invoice-status${q}`);
 }
-
-export async function linkCompanyFactusol(
-  companyId: string,
-): Promise<{ company_id: string; factusol_codcli: string; matched_by: string }> {
-  return apiFetch(`/api/companies/${companyId}/link-factusol`, { method: "POST" });
-}

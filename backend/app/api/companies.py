@@ -18,7 +18,6 @@ from app.core.audit import Action, record_event
 from app.core.auth import require_admin, require_user, require_viewer
 from app.core.errors import not_found
 from app.db.session import get_session
-from app.erp.api.deps import require_erp_admin
 from app.models.crm import Company, Contact, User
 from app.schemas.companies import (
     CompanyAssignPayload,
@@ -483,40 +482,3 @@ def bulk_company_action(
         affected_count=len(affected),
         company_ids=affected,
     )
-
-
-@router.post("/{company_id}/link-factusol")
-def link_company_factusol(
-    company_id: str,
-    session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_admin),
-) -> dict[str, object]:
-    """BoHub ERP Fase C · C-2 — vincula la empresa a su cliente FACTUSOL
-    (busca por CIF; si existe la vincula, si no la crea). Síncrono."""
-    company = session.get(Company, company_id)
-    if company is None:
-        raise not_found("Company")
-
-    from app.integrations.factusol.client import FactusolClient, FactusolError  # noqa: PLC0415
-    from app.integrations.factusol.service import ensure_customer_in_factusol  # noqa: PLC0415
-
-    client = FactusolClient.from_settings()
-    try:
-        codcli, matched_by = ensure_customer_in_factusol(session, company_id, client)
-    except FactusolError as exc:
-        raise HTTPException(
-            status.HTTP_502_BAD_GATEWAY,
-            {"code": "factusol_error", "detail": str(exc)[:300]},
-        ) from exc
-
-    try:
-        record_event(
-            session, action="erp.factusol_company_linked",
-            target_type="company", target_id=company_id, actor=current_user,
-            metadata={"factusol_codcli": codcli, "matched_by": matched_by},
-        )
-        session.commit()
-    except Exception:  # noqa: BLE001 — audit nunca bloquea
-        pass
-    return {"company_id": company_id, "factusol_codcli": codcli,
-            "matched_by": matched_by}

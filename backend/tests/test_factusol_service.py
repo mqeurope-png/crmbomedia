@@ -1,7 +1,7 @@
-"""BoHub ERP Fase C PR C-1 — mapper + servicio FACTUSOL.
+"""BoHub ERP Fase C · C-2-fix1 — mapper + servicio FACTUSOL (F_PCL → F_FAC).
 
-El cliente FACTUSOL se sustituye por un fake en memoria (registra escrituras
-y borrados) — sin red. La BD es SQLite in-memory.
+El cliente FACTUSOL se sustituye por un fake en memoria — sin red. La BD es
+SQLite in-memory.
 """
 from __future__ import annotations
 
@@ -15,18 +15,17 @@ from sqlalchemy.pool import StaticPool
 
 import app.main  # noqa: F401 — registra los modelos
 from app.db.base import Base
-from app.erp.models import InvoiceStatus, Order, OrderLine
+from app.erp.models import InvoiceStatus, Order
 from app.integrations.factusol.client import FactusolError
 from app.integrations.factusol.mapper import (
-    company_to_factusol_client,
-    order_to_factusol_invoice,
+    lpc_row_to_lfa_payload,
+    pcl_row_to_fac_payload,
 )
 from app.integrations.factusol.service import (
     emit_invoice,
-    ensure_customer_in_factusol,
+    find_pcl_by_order,
     next_codfac,
 )
-from app.models.crm import Company
 
 
 @pytest.fixture()
@@ -41,29 +40,27 @@ def session_factory() -> Generator[sessionmaker, None, None]:
 
 
 class FakeFactusol:
-    """Cliente FACTUSOL simulado: registra writes/deletes en memoria."""
+    """Cliente FACTUSOL simulado: sirve F_PCL/F_LPC/F_FAC y registra escrituras."""
 
-    def __init__(self, *, existing_by_cif=None, all_codclis=None, fail_on_line=None,
-                 f_fac_last=None):
+    def __init__(self, *, pcl_row=None, lpc_rows=None, f_fac_last=None, fail_on_line=None):
         self.default_ejercicio = "2026"
         self.writes: list[tuple[str, dict]] = []
         self.deletes: list[tuple[str, str]] = []
-        self._existing_by_cif = existing_by_cif or {}
-        self._all_codclis = all_codclis or []
+        self.pcl_filters: list[str] = []
+        self._pcl_row = pcl_row
+        self._lpc_rows = lpc_rows or []
+        self._f_fac_last = f_fac_last
         self._fail_on_line = fail_on_line
-        self._f_fac_last = f_fac_last   # último CODFAC de F_FAC (para next_codfac)
         self._line_calls = 0
 
     def load_table(self, tabla, *, filtro="1=1", ejercicio=None):
-        # `filtro` es un fragmento SQL WHERE (p.ej. "CIFCLI='B1' LIMIT 1").
         if tabla == "F_FAC":
             return [{"CODFAC": self._f_fac_last}] if self._f_fac_last is not None else []
-        if tabla == "F_CLI" and filtro.startswith("CIFCLI="):
-            cif = filtro.split("=", 1)[1].split()[0].strip("'")
-            codcli = self._existing_by_cif.get(cif)
-            return [{"CODCLI": codcli}] if codcli else []
-        if tabla == "F_CLI":
-            return [{"CODCLI": c} for c in self._all_codclis]
+        if tabla == "F_PCL":
+            self.pcl_filters.append(filtro)
+            return [self._pcl_row] if self._pcl_row is not None else []
+        if tabla == "F_LPC":
+            return list(self._lpc_rows)
         return []
 
     def write_record(self, tabla, data, *, ejercicio=None):
@@ -79,61 +76,27 @@ class FakeFactusol:
         return {"ok": True}
 
 
-def _company(s: Session, **over) -> Company:
-    base = {"name": "Rotulación Pérez SL", "tax_id": "B61234567"}
+def _pcl_row(**over) -> dict:
+    base = {
+        "CODPCL": 2765, "REFPCL": "BOP-099866", "CLIPCL": 2458,
+        "CNOPCL": "DUPLICODER, S.L.", "TOTPCL": 186.34, "FECPCL": "2026-08-01",
+        "NET1PCL": 100.0, "PIVA1PCL": 21.0, "IIVA1PCL": 21.0,
+        "NET2PCL": 40.0, "PIVA2PCL": 10.0, "IIVA2PCL": 4.0,
+        "NET3PCL": 10.0, "PIVA3PCL": 4.0, "IIVA3PCL": 0.4,
+        # columnas de pedido que NO deben copiarse:
+        "ESTPCL": "S", "USUPCL": "admin", "HORPCL": "10:00",
+    }
     base.update(over)
-    c = Company(**base)
-    s.add(c)
-    s.commit()
-    return c
+    return base
 
 
-def _order(s: Session, company_id, *, number="MAN-0007", n_lines=3) -> Order:
-    o = Order(order_number=number, company_id=company_id, total_amount=300)
+def _order(s: Session, *, number="BOPRIN-99866", invoice_status=None) -> str:
+    o = Order(order_number=number, total_amount=186.34)
+    if invoice_status is not None:
+        o.invoice_status = invoice_status
     s.add(o)
-    s.flush()
-    for i in range(n_lines):
-        s.add(OrderLine(
-            order_id=o.id, position=i, product_sku=f"SKU-{i}",
-            product_codart=f"ART{i}", description=f"Art {i}",
-            quantity=1, unit_price=100, tax_rate=21, line_total=100,
-        ))
     s.commit()
-    return o
-
-
-# --- mapper (puro) ----------------------------------------------------------
-
-
-def test_company_mapper_builds_f_cli_payload(session_factory):
-    with session_factory() as s:
-        c = _company(s, name="Acme SL", tax_id="B12345678", city="Barcelona",
-                     postal_code="08001", website="https://acme.example")
-        payload = company_to_factusol_client(c, "60001")
-    assert payload["CODCLI"] == "60001"
-    assert payload["PCOCLI"] == "Acme SL"
-    assert payload["CIFCLI"] == "B12345678"
-    assert payload["POBCLI"] == "Barcelona"
-    assert payload["CPOCLI"] == "08001"
-    assert payload["WEBCLI"] == "https://acme.example"
-
-
-def test_invoice_mapper_builds_header_and_lines_without_codfac(session_factory):
-    with session_factory() as s:
-        c = _company(s)
-        o = _order(s, c.id, number="BOPRIN-1042", n_lines=2)
-        o = s.get(Order, o.id)
-        cabecera, lineas = order_to_factusol_invoice(o, "60001", "2026")
-    # C-2: el CODFAC (y el CODLFA de las líneas) los pone el service, no el mapper.
-    assert "CODFAC" not in cabecera
-    assert cabecera["TIPFAC"] == 2                # factura ordinaria
-    assert cabecera["CLIFAC"] == "60001"
-    assert cabecera["EJEFAC"] == "2026"
-    assert cabecera["REFFAC"] == "BOPRIN-1042"
-    assert "SERFAC" not in cabecera              # Bomedia no usa serie
-    assert len(lineas) == 2
-    assert "CODLFA" not in lineas[0] and lineas[0]["POSLFA"] == 1
-    assert lineas[0]["ARTLFA"] == "ART0"
+    return o.id
 
 
 # --- next_codfac ------------------------------------------------------------
@@ -147,93 +110,108 @@ def test_next_codfac_is_last_plus_one():
     assert next_codfac(FakeFactusol(f_fac_last=526066), "2026") == "526067"
 
 
-# --- ensure_customer_in_factusol --------------------------------------------
+# --- find_pcl_by_order ------------------------------------------------------
 
 
-def test_ensure_customer_creates_new_when_no_link_no_cif_match(session_factory):
-    with session_factory() as s:
-        c = _company(s)
-        cid = c.id
-        client = FakeFactusol(all_codclis=[])  # F_CLI vacío → base 60000
-        codcli, matched = ensure_customer_in_factusol(s, cid, client)
-    assert codcli == "60000" and matched == "created_new"
-    assert client.writes[0][0] == "F_CLI"
-    assert client.writes[0][1]["CODCLI"] == "60000"
-    with session_factory() as s:
-        assert s.get(Company, cid).factusol_company_id == "60000"
+def test_find_pcl_by_order_hit_composes_refpcl():
+    order = Order(order_number="BOPRIN-99866")
+    client = FakeFactusol(pcl_row=_pcl_row())
+    row = find_pcl_by_order(client, order, "2026")
+    assert row is not None and row["CODPCL"] == 2765
+    # REFPCL compuesto: prefijo BOP + nº Woo con padding 6.
+    assert client.pcl_filters == ["REFPCL='BOP-099866'"]
 
 
-def test_ensure_customer_reuses_existing_link(session_factory):
-    with session_factory() as s:
-        c = _company(s, factusol_company_id="12345")
-        cid = c.id
-        client = FakeFactusol()
-        codcli, matched = ensure_customer_in_factusol(s, cid, client)
-    assert codcli == "12345" and matched == "already_linked"
-    assert client.writes == []            # no crea nada
+def test_find_pcl_by_order_miss_returns_none():
+    order = Order(order_number="BOPRIN-99866")
+    assert find_pcl_by_order(FakeFactusol(pcl_row=None), order, "2026") is None
 
 
-def test_ensure_customer_links_by_cif_without_duplicating(session_factory):
-    with session_factory() as s:
-        c = _company(s, tax_id="B99999999")
-        cid = c.id
-        client = FakeFactusol(existing_by_cif={"B99999999": "77777"})
-        codcli, matched = ensure_customer_in_factusol(s, cid, client)
-    assert codcli == "77777" and matched == "existing_cif"
-    assert client.writes == []            # vincula sin crear cliente nuevo
-    with session_factory() as s:
-        assert s.get(Company, cid).factusol_company_id == "77777"
+# --- mapper: F_PCL → F_FAC / F_LPC → F_LFA -----------------------------------
 
 
-def test_ensure_customer_next_codcli_is_max_plus_one(session_factory):
-    with session_factory() as s:
-        c = _company(s, tax_id=None)
-        cid = c.id
-        client = FakeFactusol(all_codclis=["100", "70123", "abc"])
-        codcli, _matched = ensure_customer_in_factusol(s, cid, client)
-    assert codcli == "70124"              # max numérico (70123) + 1
+def test_pcl_row_to_fac_payload_maps_all_iva_bands_and_injects():
+    fac = pcl_row_to_fac_payload(
+        _pcl_row(), "526067", "1-002765", "2026", fecha_emision="2026-08-04",
+    )
+    # Bandas de IVA copiadas por sufijo (*PCL → *FAC).
+    assert fac["NET1FAC"] == 100.0 and fac["PIVA1FAC"] == 21.0 and fac["IIVA1FAC"] == 21.0
+    assert fac["NET2FAC"] == 40.0 and fac["IIVA2FAC"] == 4.0
+    assert fac["NET3FAC"] == 10.0 and fac["IIVA3FAC"] == 0.4
+    assert fac["CLIFAC"] == 2458 and fac["TOTFAC"] == 186.34
+    assert fac["REFFAC"] == "BOP-099866"          # REFPCL → REFFAC
+    # Inyecciones.
+    assert fac["CODFAC"] == "526067"
+    assert fac["PEDFAC"] == "1-002765"
+    assert fac["EJEFAC"] == "2026"
+    assert fac["TIPFAC"] == 2
+    assert fac["FECFAC"] == "2026-08-04"          # fecha de emisión, no la del pedido
+    # Columnas de estado del pedido NO copiadas.
+    assert "ESTFAC" not in fac and "USUFAC" not in fac and "HORFAC" not in fac
+    # El CODPCL NO se copia como CODFAC (se inyecta el nuevo).
+    assert fac["CODFAC"] != 2765
+
+
+def test_lpc_row_to_lfa_payload_copies_line():
+    lpc = {"ARTLPC": "ART-1", "DESLPC": "Producto 1", "CANLPC": 2.0,
+           "PRELPC": 50.0, "IVALPC": 21.0, "TOTLPC": 100.0, "CODLPC": 2765}
+    lfa = lpc_row_to_lfa_payload(lpc, "526067", 1, "2026")
+    assert lfa["ARTLFA"] == "ART-1" and lfa["DESLFA"] == "Producto 1"
+    assert lfa["CANLFA"] == 2.0 and lfa["TOTLFA"] == 100.0
+    assert lfa["CODLFA"] == "526067" and lfa["POSLFA"] == 1 and lfa["EJELFA"] == "2026"
 
 
 # --- emit_invoice -----------------------------------------------------------
 
 
-def test_emit_invoice_numbers_writes_and_updates_order(session_factory):
+def test_emit_invoice_when_pcl_missing_raises_clear_error(session_factory):
     with session_factory() as s:
-        c = _company(s, factusol_company_id="55555")
-        o = _order(s, c.id, n_lines=3)
-        oid = o.id
-        client = FakeFactusol(f_fac_last=526066)   # última factura del ejercicio
+        oid = _order(s, number="BOPRIN-99999")
+        client = FakeFactusol(pcl_row=None)   # el pedido no está en F_PCL
+        with pytest.raises(FactusolError, match="aún no está en FACTUSOL"):
+            emit_invoice(s, oid, client)
+
+
+def test_emit_invoice_end_to_end_success(session_factory):
+    from app.models.crm import SyncLog  # noqa: PLC0415
+
+    lpc_rows = [
+        {"ARTLPC": "A1", "DESLPC": "L1", "CANLPC": 1, "TOTLPC": 100, "CODLPC": 2765},
+        {"ARTLPC": "A2", "DESLPC": "L2", "CANLPC": 2, "TOTLPC": 86.34, "CODLPC": 2765},
+    ]
+    with session_factory() as s:
+        oid = _order(s)
+        client = FakeFactusol(pcl_row=_pcl_row(), lpc_rows=lpc_rows, f_fac_last=526066)
         result = emit_invoice(s, oid, client)
     tablas = [t for t, _ in client.writes]
-    assert tablas.count("F_FAC") == 1
-    assert tablas.count("F_LFA") == 3
-    assert result["codfac"] == "526067"    # siguiente secuencial
-    # CODFAC en cabecera y CODLFA en cada línea (inyectados por el service).
+    assert tablas.count("F_FAC") == 1 and tablas.count("F_LFA") == 2
+    assert result == {"codfac": "526067", "codpcl": "2765",
+                      "ejercicio": "2026", "lines": 2}
     cabecera = next(rec for t, rec in client.writes if t == "F_FAC")
-    assert cabecera["CODFAC"] == "526067"
-    for t, rec in client.writes:
-        if t == "F_LFA":
-            assert rec["CODLFA"] == "526067"
+    assert cabecera["PEDFAC"] == "1-002765" and cabecera["CODFAC"] == "526067"
     with session_factory() as s:
         o = s.get(Order, oid)
         assert o.invoice_status == InvoiceStatus.INVOICED_BY_ERP
         assert o.factusol_invoice_number == "526067"
-        # Historial de estado del dominio invoice escrito.
         hist = [h for h in o.status_history
                 if h.to_status == InvoiceStatus.INVOICED_BY_ERP.value]
         assert len(hist) == 1
-        assert json.loads(hist[0].metadata_json)["factusol_codfac"] == "526067"
+        meta = json.loads(hist[0].metadata_json)
+        assert meta["factusol_codfac"] == "526067" and meta["factusol_codpcl"] == "2765"
+        sync = s.query(SyncLog).filter(
+            SyncLog.operation == "factusol_emit_invoice").one()
+        assert sync.status == "success"
 
 
-def test_emit_invoice_rolls_back_on_line_failure(session_factory):
+def test_emit_invoice_compensation_on_line_write_failure(session_factory):
+    lpc_rows = [{"ARTLPC": "A1", "CODLPC": 2765}, {"ARTLPC": "A2", "CODLPC": 2765}]
     with session_factory() as s:
-        c = _company(s, factusol_company_id="55555")
-        o = _order(s, c.id, n_lines=3)
-        oid = o.id
-        client = FakeFactusol(f_fac_last=100, fail_on_line=2)  # falla en la 2ª línea
+        oid = _order(s)
+        client = FakeFactusol(pcl_row=_pcl_row(), lpc_rows=lpc_rows,
+                              f_fac_last=100, fail_on_line=2)
         with pytest.raises(FactusolError):
             emit_invoice(s, oid, client)
-    # Compensación: se borran líneas + cabecera (no queda factura a medias).
+    # Compensación: borra líneas + cabecera.
     assert any(t == "F_LFA" for t, _ in client.deletes)
     assert any(t == "F_FAC" for t, _ in client.deletes)
     with session_factory() as s:
@@ -242,11 +220,8 @@ def test_emit_invoice_rolls_back_on_line_failure(session_factory):
         assert o.factusol_invoice_number is None
 
 
-def test_emit_invoice_requires_company(session_factory):
+def test_emit_invoice_rejects_already_invoiced(session_factory):
     with session_factory() as s:
-        o = Order(order_number="MAN-NOCO", total_amount=10)
-        s.add(o)
-        s.commit()
-        oid = o.id
-        with pytest.raises(FactusolError):
-            emit_invoice(s, oid, FakeFactusol())
+        oid = _order(s, invoice_status=InvoiceStatus.INVOICED_BY_ERP.value)
+        with pytest.raises(FactusolError, match="ya tiene factura"):
+            emit_invoice(s, oid, FakeFactusol(pcl_row=_pcl_row()))

@@ -1,23 +1,21 @@
-"""Operaciones FACTUSOL de alto nivel (Fase C).
+"""Operaciones FACTUSOL de alto nivel (Fase C · C-2-fix1).
 
-Orquesta cliente + mapper contra la BD del CRM, de forma idempotente y
-atómica:
-  - `ensure_customer_in_factusol`: garantiza que una `Company` tiene su
-    CODCLI en FACTUSOL (reusa el vinculado, o el que ya exista por CIF, o
-    crea uno nuevo). Persiste `Company.factusol_company_id`.
-  - `emit_invoice`: emite la factura de un `Order` (cabecera F_FAC + líneas
-    F_LFA), marca el pedido `invoiced_by_erp` + guarda el CODFAC y escribe el
-    historial de estado.
+Nuevo modelo (2026-08-04): una app externa ya replica cada pedido de
+WooCommerce en FACTUSOL como Pedido de Cliente (F_PCL) con el cliente y todos
+los importes ya calculados. BoHub ERP **no crea clientes ni recalcula nada**:
+`emit_invoice` localiza el F_PCL del pedido y lo **convierte en factura F_FAC**
+copiando los datos (+ CODFAC nuevo + link PEDFAC), y copia sus líneas
+F_LPC → F_LFA.
 
 Toda escritura FACTUSOL se serializa vía la cola `factusol:writes`
-(worker-factusol, concurrency=1) para no pisar la numeración CODFAC — ver
-`jobs.py`.
+(worker-factusol, concurrency=1) para no pisar la numeración CODFAC.
 """
 from __future__ import annotations
 
 import json
 import logging
 from datetime import UTC, datetime
+from typing import Any
 
 from sqlalchemy.orm import Session, selectinload
 
@@ -31,12 +29,15 @@ from app.erp.models import (
 )
 from app.integrations.factusol.client import FactusolClient, FactusolError
 from app.integrations.factusol.mapper import (
-    company_to_factusol_client,
-    order_to_factusol_invoice,
+    lpc_row_to_lfa_payload,
+    pcl_row_to_fac_payload,
 )
-from app.models.crm import Company, User
+from app.models.crm import User
 
 logger = logging.getLogger(__name__)
+
+#: Serie de factura de Bomedia (F_FAC.PEDFAC = "<serie>-<codpcl_padded_6>").
+DEFAULT_SERIE_FAC = "1"
 
 
 def ejercicio_for(session: Session) -> str:
@@ -50,27 +51,6 @@ def ejercicio_for(session: Session) -> str:
     return get_settings().factusol_default_ejercicio
 
 
-def next_codfac(client: FactusolClient, ejercicio: str) -> str:
-    """Siguiente CODFAC secuencial del ejercicio = max(CODFAC) + 1.
-
-    FACTUSOL numera solo; consultamos F_FAC ordenada DESC y sumamos 1. Se
-    llama DENTRO de `emit_invoice`, justo antes de escribir la cabecera.
-    La race condition lectura→escritura la evita el worker serializado
-    (concurrency=1 en la cola `factusol:writes`)."""
-    rows = client.load_table(
-        "F_FAC", filtro="1=1 ORDER BY CODFAC DESC LIMIT 1", ejercicio=ejercicio,
-    )
-    if not rows:
-        return "1"
-    last = _int_or_none(rows[0].get("CODFAC"))
-    return str((last or 0) + 1)
-
-#: Base del rango de CODCLI que genera el ERP para clientes nuevos —
-#: deliberadamente alto para no chocar con la numeración manual existente
-#: en FACTUSOL. Confirmar el rango libre con Bart antes de emisión real (C-2).
-CODCLI_BASE = 60000
-
-
 def _int_or_none(value: object) -> int | None:
     try:
         return int(str(value).strip())
@@ -78,90 +58,114 @@ def _int_or_none(value: object) -> int | None:
         return None
 
 
-def _next_codcli(client: FactusolClient) -> str:
-    """Siguiente CODCLI numérico libre = max(existentes) + 1, con un suelo en
-    CODCLI_BASE. Ignora códigos no numéricos."""
-    rows = client.load_table("F_CLI", filtro="1=1 ORDER BY CODCLI DESC LIMIT 1000")
-    max_n = 0
-    for r in rows:
-        n = _int_or_none(r.get("CODCLI"))
-        if n is not None and n > max_n:
-            max_n = n
-    return str(max(max_n + 1, CODCLI_BASE))
+def next_codfac(client: FactusolClient, ejercicio: str) -> str:
+    """Siguiente CODFAC secuencial del ejercicio = max(CODFAC) + 1.
+
+    FACTUSOL numera solo; consultamos F_FAC ordenada DESC y sumamos 1. Se
+    llama DENTRO de `emit_invoice`, justo antes de escribir la cabecera. La
+    race lectura→escritura la evita el worker serializado (concurrency=1).
+    Nota: la API DELSOL no soporta LIMIT en el filtro, así que se pide todo
+    ordenado y se toma la primera fila."""
+    rows = client.load_table(
+        "F_FAC", filtro="1=1 ORDER BY CODFAC DESC", ejercicio=ejercicio,
+    )
+    if not rows:
+        return "1"
+    last = _int_or_none(rows[0].get("CODFAC"))
+    return str((last or 0) + 1)
 
 
-def ensure_customer_in_factusol(
-    session: Session, company_id: str, client: FactusolClient,
-) -> tuple[str, str]:
-    """Garantiza el CODCLI de la empresa en FACTUSOL. Devuelve
-    `(codcli, matched_by)` con `matched_by ∈ {already_linked, existing_cif,
-    created_new}`. Idempotente: reusa el vínculo, o el cliente que ya exista
-    por CIF, o crea uno nuevo."""
-    company = session.get(Company, company_id)
-    if company is None:
-        raise FactusolError(f"Company {company_id!r} no existe en el CRM")
+def _compose_refpcl(order_number: str, ref_prefix: str | None) -> str:
+    """`BOPRIN-99866` (+ prefijo opcional) → `BOP-099866`. El número Woo va con
+    padding a 6 dígitos; el prefijo, si no se pasa, se deriva de las 3 primeras
+    letras del segmento inicial del order_number."""
+    parts = (order_number or "").split("-")
+    number = parts[-1] if parts else ""
+    prefix = (ref_prefix or (parts[0][:3] if parts and parts[0] else "")).upper()
+    n = _int_or_none(number)
+    num_str = f"{n:06d}" if n is not None else number
+    return f"{prefix}-{num_str}"
 
-    if company.factusol_company_id:
-        return company.factusol_company_id, "already_linked"
 
-    # ¿ya existe en FACTUSOL por CIF? → vincular sin duplicar.
-    if company.tax_id:
-        existing = client.load_table(
-            "F_CLI", filtro=f"CIFCLI='{company.tax_id}' LIMIT 1",
-        )
-        if existing:
-            codcli = str(existing[0].get("CODCLI") or "").strip()
-            if codcli:
-                company.factusol_company_id = codcli
-                session.commit()
-                logger.info("factusol: empresa %s vinculada a CODCLI %s (por CIF)",
-                            company_id, codcli)
-                return codcli, "existing_cif"
+def _store_ref_prefix(session: Session, order: Order) -> str | None:
+    """Prefijo REFPCL configurado en la tienda (IntegrationAccount.
+    metadata_json['factusol_ref_prefix']); None si no está configurado."""
+    if not order.store_id:
+        return None
+    from app.models.integration_settings import IntegrationAccount  # noqa: PLC0415
 
-    # crear cliente nuevo.
-    codcli = _next_codcli(client)
-    client.write_record("F_CLI", company_to_factusol_client(company, codcli))
-    company.factusol_company_id = codcli
-    session.commit()
-    logger.info("factusol: empresa %s creada como CODCLI %s", company_id, codcli)
-    return codcli, "created_new"
+    store = session.get(IntegrationAccount, order.store_id)
+    if store is None or not store.metadata_json:
+        return None
+    try:
+        meta = json.loads(store.metadata_json)
+    except (TypeError, ValueError):
+        return None
+    prefix = meta.get("factusol_ref_prefix") if isinstance(meta, dict) else None
+    return str(prefix).upper() if prefix else None
+
+
+def find_pcl_by_order(
+    client: FactusolClient, order: Order, ejercicio: str,
+    *, ref_prefix: str | None = None,
+) -> dict[str, Any] | None:
+    """Localiza en F_PCL el pedido de cliente correspondiente al `order` del
+    CRM (por REFPCL = prefijo-tienda + nº Woo). None si aún no existe."""
+    ref = _compose_refpcl(order.order_number, ref_prefix)
+    rows = client.load_table("F_PCL", filtro=f"REFPCL='{ref}'", ejercicio=ejercicio)
+    return rows[0] if rows else None
 
 
 def emit_invoice(
     session: Session, order_id: str, client: FactusolClient,
     *, actor: User | None = None,
-) -> dict:
-    """Emite la factura del pedido en FACTUSOL (cabecera F_FAC + líneas F_LFA),
+) -> dict[str, Any]:
+    """Convierte el F_PCL del pedido en factura F_FAC (cabecera + líneas),
     marca el pedido `invoiced_by_erp`, guarda el CODFAC y escribe el historial.
 
-    Atómico: si falla una línea, borra la factura a medias en FACTUSOL
-    (compensación) y hace rollback en la BD — sin cabecera huérfana ni estado
-    sucio. El CODFAC lo asigna FACTUSOL vía `next_codfac`."""
+    NO crea cliente ni recalcula importes: copia de F_PCL/F_LPC. Atómico: si
+    falla una línea, borra la factura a medias en FACTUSOL (compensación) y
+    hace rollback en la BD.
+    """
     order = session.get(Order, order_id, options=[selectinload(Order.lines)])
     if order is None:
         raise FactusolError(f"Order {order_id!r} no existe")
-    if not order.company_id:
-        raise FactusolError("El pedido no tiene empresa: no se puede facturar en FACTUSOL")
+    inv = _status_value(order.invoice_status)
+    if order.factusol_invoice_number or inv == InvoiceStatus.INVOICED_BY_ERP.value:
+        raise FactusolError("El pedido ya tiene factura en FACTUSOL")
+    if inv == InvoiceStatus.ALREADY_INVOICED_EXTERNALLY.value:
+        raise FactusolError("El pedido está marcado como facturado fuera del ERP")
 
     ejercicio = ejercicio_for(session)
-    codcli, _matched = ensure_customer_in_factusol(session, order.company_id, client)
-    cabecera, lineas = order_to_factusol_invoice(order, codcli, ejercicio)
+    ref_prefix = _store_ref_prefix(session, order)
+    pcl = find_pcl_by_order(client, order, ejercicio, ref_prefix=ref_prefix)
+    if pcl is None:
+        raise FactusolError(
+            f"Este pedido ({order.order_number}) aún no está en FACTUSOL. La app "
+            "WooCommerce→FACTUSOL debe importarlo antes de facturar."
+        )
+    codpcl = pcl.get("CODPCL")
+    lpc_rows = client.load_table(
+        "F_LPC", filtro=f"CODLPC={codpcl}", ejercicio=ejercicio,
+    )
 
-    # Numeración: FACTUSOL numera secuencialmente; tomamos el siguiente y lo
-    # inyectamos en cabecera (CODFAC) y en cada línea (CODLFA = FK a F_FAC).
     codfac = next_codfac(client, ejercicio)
-    cabecera["CODFAC"] = codfac
-    for linea in lineas:
-        linea["CODLFA"] = codfac
+    pedfac_ref = f"{DEFAULT_SERIE_FAC}-{_pad6(codpcl)}"
+    fecha_emision = datetime.now(UTC).date().isoformat()
+    cabecera = pcl_row_to_fac_payload(
+        pcl, codfac, pedfac_ref, ejercicio, fecha_emision=fecha_emision,
+    )
+    lineas = [
+        lpc_row_to_lfa_payload(row, codfac, i + 1, ejercicio)
+        for i, row in enumerate(lpc_rows)
+    ]
 
-    prev_status = _status_value(order.invoice_status)
     client.write_record("F_FAC", cabecera, ejercicio=ejercicio)
     try:
         for linea in lineas:
             client.write_record("F_LFA", linea, ejercicio=ejercicio)
     except FactusolError:
-        # Compensación: borra líneas ya escritas + cabecera para no dejar una
-        # factura a medias en FACTUSOL, y no toca el estado del pedido.
+        # Compensación: borra líneas + cabecera para no dejar factura a medias.
         try:
             client.delete_records("F_LFA", f"CODLFA='{codfac}'", ejercicio=ejercicio)
             client.delete_records("F_FAC", f"CODFAC='{codfac}'", ejercicio=ejercicio)
@@ -178,17 +182,47 @@ def emit_invoice(
     order.factusol_invoice_number = codfac
     session.add(OrderStatusHistory(
         order_id=order.id, domain=StatusDomain.INVOICE,
-        from_status=prev_status, to_status=InvoiceStatus.INVOICED_BY_ERP.value,
+        from_status=inv, to_status=InvoiceStatus.INVOICED_BY_ERP.value,
         changed_at=now, changed_by_user_id=(actor.id if actor else None),
         reason="Factura emitida en FACTUSOL",
         metadata_json=json.dumps({
-            "factusol_codfac": codfac, "factusol_ejercicio": ejercicio,
-            "factusol_codcli": codcli,
+            "factusol_codfac": codfac, "factusol_codpcl": str(codpcl),
+            "factusol_pedfac": pedfac_ref, "factusol_ejercicio": ejercicio,
         }),
     ))
+    _log_sync(session, order, codfac, str(codpcl), ejercicio, len(lineas))
     session.commit()
-    return {"codfac": codfac, "ejercicio": ejercicio, "codcli": codcli,
+    return {"codfac": codfac, "codpcl": str(codpcl), "ejercicio": ejercicio,
             "lines": len(lineas)}
+
+
+def _pad6(codpcl: object) -> str:
+    n = _int_or_none(codpcl)
+    return f"{n:06d}" if n is not None else str(codpcl)
+
+
+def _log_sync(
+    session: Session, order: Order, codfac: str, codpcl: str,
+    ejercicio: str, lines: int,
+) -> None:
+    from app.models.crm import (  # noqa: PLC0415
+        ExternalSystem,
+        SyncLog,
+        SyncStatus,
+        SyncTrigger,
+    )
+
+    now = datetime.now(UTC)
+    session.add(SyncLog(
+        system=ExternalSystem.FACTUSOL,
+        account_id=order.store_id,
+        operation="factusol_emit_invoice",
+        status=SyncStatus.SUCCESS.value,
+        started_at=now, finished_at=now,
+        records_processed=1,
+        triggered_by=SyncTrigger.MANUAL.value,
+        message=f"F_PCL {codpcl} → F_FAC {codfac} (ej. {ejercicio}, {lines} líneas)",
+    ))
 
 
 def _status_value(v: object) -> str:

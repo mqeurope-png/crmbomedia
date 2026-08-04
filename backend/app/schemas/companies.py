@@ -61,8 +61,6 @@ class CompanyRead(BaseModel):
     notes: str | None
     source: str
     is_active: bool
-    # Fase C: CODCLI en FACTUSOL si la empresa está vinculada; None si no.
-    factusol_company_id: str | None = None
     external_references: dict[str, Any] = Field(
         default_factory=dict,
         validation_alias=AliasChoices(
