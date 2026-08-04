@@ -9,14 +9,11 @@ import {
   type CustomerChoice,
 } from "../../../components/erp/CustomerAutocomplete";
 import { listContacts, type Contact } from "../../../lib/api";
-import {
-  createCompany,
-  listCompanies,
-  type Company,
-} from "../../../lib/companiesApi";
+import { listCompanies, type Company } from "../../../lib/companiesApi";
 import { extractErrorMessage } from "../../../lib/errors";
 import {
   createFactusolCustomer,
+  createFactusolCustomerAndLink,
   createOrder,
   linkFactusolCustomer,
   type FactusolCustomer,
@@ -80,6 +77,8 @@ export default function NewManualOrderPage() {
   const [linkCompanies, setLinkCompanies] = useState<Company[]>([]);
   const [linkCompanyId, setLinkCompanyId] = useState<string | null>(null);
   const [linking, setLinking] = useState(false);
+  // Cambiarlo remonta el buscador para descartar resultados obsoletos.
+  const [customerSearchKey, setCustomerSearchKey] = useState(0);
   const [creatingCustomer, setCreatingCustomer] = useState(false);
   const [factusolNotice, setFactusolNotice] =
     useState<{ tone: "info" | "error"; text: string } | null>(null);
@@ -215,24 +214,30 @@ export default function NewManualOrderPage() {
     setCreatingCrmCompany(true);
     setFactusolNotice(null);
     try {
-      const newCompany = await createCompany({
-        name: cust.nombre ?? cust.nofcli ?? "",
-        tax_id: cust.nif ?? null,
-        address_line: cust.domcli ?? null,
-        city: cust.pobcli ?? null,
-        postal_code: cust.cpocli ?? null,
-        state: cust.procli ?? null,
-        country: "España",
-      });
-      await linkFactusolCustomer({
-        crm_type: "company", crm_id: newCompany.id,
+      // Una sola llamada: el backend crea y vincula en la misma transacción,
+      // así un fallo no puede dejar la empresa creada sin vínculo (C-3-fix3).
+      const name = cust.nombre ?? cust.nofcli ?? "";
+      const r = await createFactusolCustomerAndLink({
         factusol_codcli: cust.codcli,
+        factusol_customer_data: {
+          nombre: name,
+          nif: cust.nif ?? "",
+          direccion: cust.domcli ?? "",
+          ciudad: cust.pobcli ?? "",
+          cp: cust.cpocli ?? "",
+          provincia: cust.procli ?? "",
+          telefono: cust.telcli?.trim() || undefined,
+          email: cust.emacli ?? undefined,
+        },
       });
-      applyCompany(newCompany);
+      setCompanyId(r.company_id);
+      setCompanyQuery(name);
       setPendingFactusolCustomer(null);
+      // Limpia el buscador: la próxima búsqueda debe ver el cliente ya «En CRM».
+      setCustomerSearchKey((k) => k + 1);
       setFactusolNotice({
         tone: "info",
-        text: `Empresa CRM «${newCompany.name}» creada y vinculada a FACTUSOL nº ${cust.codcli}.`,
+        text: `Empresa CRM «${name}» creada y vinculada a FACTUSOL nº ${cust.codcli}.`,
       });
     } catch (e) {
       setFactusolNotice({
@@ -259,6 +264,7 @@ export default function NewManualOrderPage() {
       if (comp) applyCompany(comp);
       setPendingFactusolCustomer(null);
       setLinkingExisting(false);
+      setCustomerSearchKey((k) => k + 1);
       setFactusolNotice({
         tone: "info",
         text: `Empresa «${comp?.name ?? ""}» vinculada a FACTUSOL nº ${cust.codcli}.`,
@@ -374,7 +380,7 @@ export default function NewManualOrderPage() {
             Origen: <strong>manual</strong> · el número de pedido se genera solo.
           </p>
           {/* C-3: busca primero en FACTUSOL (fuente contable) y luego en CRM. */}
-          <CustomerAutocomplete onPick={onPickCustomer} />
+          <CustomerAutocomplete key={customerSearchKey} onPick={onPickCustomer} />
           {factusolNotice ? (
             <p className={factusolNotice.tone === "error" ? "form-error" : "form-info"}
                role="status">

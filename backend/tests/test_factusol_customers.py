@@ -347,3 +347,73 @@ def test_search_alias_falls_back_to_fiscal_when_commercial_empty(client):
         r = client.get("/api/erp/factusol/customers/search?q=B64113590&by=nif",
                        headers=auth_headers(client, "pedidos"))
     assert r.json()["items"][0]["nombre"] == "LABORATORIOS PORTA S.L."
+
+
+# --- C-3-fix3: crear empresa CRM + vincular, atómico ------------------------
+
+
+def _crm_and_link_body(codcli="2758", **over):
+    data = {"nombre": "LABORATORIOS PORTA S.L.", "nif": "B64113590",
+            "direccion": "c. Fígols, 19-21", "ciudad": "Barcelona",
+            "cp": "08028", "provincia": "Barcelona"}
+    data.update(over)
+    return {"factusol_codcli": codcli, "factusol_customer_data": data}
+
+
+def test_create_crm_and_link_success(client, session_factory):
+    r = client.post("/api/erp/factusol/customers/create-crm-and-link",
+                    json=_crm_and_link_body(),
+                    headers=auth_headers(client, "pedidos"))
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["created"] is True and body["factusol_codcli"] == "2758"
+    with session_factory() as s:
+        comp = s.get(Company, body["company_id"])
+        assert comp.name == "LABORATORIOS PORTA S.L."
+        assert comp.factusol_company_id == "2758"   # creada Y vinculada
+        assert comp.tax_id == "B64113590"
+        assert comp.city == "Barcelona"
+
+
+def test_create_crm_and_link_rejects_if_taken(client, session_factory):
+    """El bug de prod: reintentar dejaba empresas huérfanas. Ahora se rechaza
+    ANTES de crear nada y el 409 explica a qué empresa está vinculado."""
+    with session_factory() as s:
+        s.add(Company(name="PORTA YA VINCULADA", factusol_company_id="2758"))
+        s.commit()
+        before = s.query(Company).count()
+
+    r = client.post("/api/erp/factusol/customers/create-crm-and-link",
+                    json=_crm_and_link_body(),
+                    headers=auth_headers(client, "pedidos"))
+    assert r.status_code == 409
+    detail = r.json()["detail"]["detail"]
+    assert "2758" in detail and "PORTA YA VINCULADA" in detail
+
+    with session_factory() as s:
+        # NINGUNA empresa nueva: cero huérfanas.
+        assert s.query(Company).count() == before
+        assert s.query(Company).filter(
+            Company.factusol_company_id.is_(None)).count() == 0
+
+
+def test_create_crm_and_link_rollback_on_db_error(client, session_factory):
+    """Si la escritura falla a mitad, no queda ninguna empresa creada."""
+    with session_factory() as s:
+        before = s.query(Company).count()
+
+    with patch("app.erp.api.factusol._audit_customer_link",
+               side_effect=RuntimeError("boom")):
+        r = client.post("/api/erp/factusol/customers/create-crm-and-link",
+                        json=_crm_and_link_body(codcli="9999"),
+                        headers=auth_headers(client, "pedidos"))
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "create_and_link_failed"
+    with session_factory() as s:
+        assert s.query(Company).count() == before   # rollback efectivo
+
+
+def test_create_crm_and_link_forbidden_for_view_only(client):
+    r = client.post("/api/erp/factusol/customers/create-crm-and-link",
+                    json=_crm_and_link_body(), headers=auth_headers(client, "sat"))
+    assert r.status_code == 403

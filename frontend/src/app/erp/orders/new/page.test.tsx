@@ -4,6 +4,7 @@ import NewManualOrderPage from "./page";
 import { listContacts } from "../../../lib/api";
 import { createCompany, listCompanies } from "../../../lib/companiesApi";
 import {
+  createFactusolCustomerAndLink,
   createOrder,
   linkFactusolCustomer,
   searchFactusolCustomers,
@@ -28,6 +29,7 @@ jest.mock("../../../lib/companiesApi", () => ({
 jest.mock("../../../lib/erpApi", () => ({
   createOrder: jest.fn(),
   createFactusolCustomer: jest.fn(),
+  createFactusolCustomerAndLink: jest.fn(),
   linkFactusolCustomer: jest.fn(),
   searchFactusolCustomers: jest.fn(),
 }));
@@ -36,6 +38,7 @@ const mockCompanies = listCompanies as jest.Mock;
 const mockContacts = listContacts as jest.Mock;
 const mockCreate = createOrder as jest.Mock;
 const mockCreateCompany = createCompany as jest.Mock;
+const mockCreateAndLink = createFactusolCustomerAndLink as jest.Mock;
 const mockLink = linkFactusolCustomer as jest.Mock;
 const mockSearchFac = searchFactusolCustomers as jest.Mock;
 
@@ -68,6 +71,10 @@ beforeEach(() => {
   mockSearchFac.mockReset();
   mockSearchFac.mockResolvedValue([]);
   mockLink.mockResolvedValue({ linked: true });
+  mockCreateAndLink.mockReset();
+  mockCreateAndLink.mockResolvedValue({
+    company_id: "new-c", factusol_codcli: "1", created: true,
+  });
 });
 
 describe("NewManualOrderPage", () => {
@@ -156,11 +163,8 @@ describe("NewManualOrderPage", () => {
     })).toBeInTheDocument();
   });
 
-  it("«Crear empresa CRM…» crea la empresa Y la vincula al codcli", async () => {
+  it("«Crear empresa CRM…» usa el endpoint ATÓMICO (una sola llamada)", async () => {
     mockSearchFac.mockResolvedValue([FAC_SIN_CRM]);
-    mockCreateCompany.mockResolvedValue({
-      ...COMPANY, id: "new-c", name: "LABORATORIOS PORTA S.L.",
-    });
     const user = userEvent.setup();
     render(<NewManualOrderPage />);
     await pickFactusol(user);
@@ -168,24 +172,57 @@ describe("NewManualOrderPage", () => {
       name: /Crear empresa CRM con estos datos y vincular/,
     }));
 
-    // 1) empresa CRM creada con los datos de F_CLI
-    await waitFor(() => expect(mockCreateCompany).toHaveBeenCalled());
-    const payload = mockCreateCompany.mock.calls[0][0];
-    expect(payload.name).toBe("LABORATORIOS PORTA S.L.");
-    expect(payload.tax_id).toBe("B64113590");
-    expect(payload.address_line).toBe("c. Fígols, 19-21");
-    // 2) y vinculada al cliente FACTUSOL
-    await waitFor(() => expect(mockLink).toHaveBeenCalledWith({
-      crm_type: "company", crm_id: "new-c", factusol_codcli: "1",
-    }));
+    await waitFor(() => expect(mockCreateAndLink).toHaveBeenCalledTimes(1));
+    const payload = mockCreateAndLink.mock.calls[0][0];
+    expect(payload.factusol_codcli).toBe("1");
+    expect(payload.factusol_customer_data.nombre).toBe("LABORATORIOS PORTA S.L.");
+    expect(payload.factusol_customer_data.nif).toBe("B64113590");
+    expect(payload.factusol_customer_data.direccion).toBe("c. Fígols, 19-21");
+    // Ya NO se usan las 2 llamadas separadas (dejaban empresas huérfanas).
+    expect(mockCreateCompany).not.toHaveBeenCalled();
+    expect(mockLink).not.toHaveBeenCalled();
+
     expect(await screen.findByText(/creada y vinculada a FACTUSOL nº 1/))
       .toBeInTheDocument();
-    // Los botones desaparecen: ya está resuelto.
-    expect(screen.queryByRole("button", {
-      name: /Crear empresa CRM con estos datos/,
-    })).not.toBeInTheDocument();
   });
 
+  it("muestra el detail del backend cuando el 409 dice que ya está vinculado", async () => {
+    mockSearchFac.mockResolvedValue([FAC_SIN_CRM]);
+    mockCreateAndLink.mockRejectedValue(new Error(
+      'El cliente FACTUSOL 1 ya está vinculado a company «PORTA CRM» (id: c9).',
+    ));
+    const user = userEvent.setup();
+    render(<NewManualOrderPage />);
+    await pickFactusol(user);
+    await user.click(await screen.findByRole("button", {
+      name: /Crear empresa CRM con estos datos y vincular/,
+    }));
+    expect(await screen.findByText(/ya está vinculado a company «PORTA CRM»/))
+      .toBeInTheDocument();
+  });
+
+  it("deshabilita el botón mientras la petición está en curso (anti doble-click)", async () => {
+    mockSearchFac.mockResolvedValue([FAC_SIN_CRM]);
+    let resolve: (v: unknown) => void = () => {};
+    mockCreateAndLink.mockReturnValue(new Promise((r) => { resolve = r; }));
+    const user = userEvent.setup();
+    render(<NewManualOrderPage />);
+    await pickFactusol(user);
+    const btn = await screen.findByRole("button", {
+      name: /Crear empresa CRM con estos datos y vincular/,
+    });
+    await user.click(btn);
+
+    // Con la promesa pendiente el botón queda bloqueado: un 2º click no dispara
+    // otra creación (el bug de prod fueron 3 clicks → 2 empresas huérfanas).
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /Creando…/ })).toBeDisabled());
+    await user.click(screen.getByRole("button", { name: /Creando…/ }));
+    expect(mockCreateAndLink).toHaveBeenCalledTimes(1);
+
+    resolve({ company_id: "new-c", factusol_codcli: "1", created: true });
+    await waitFor(() => expect(mockCreateAndLink).toHaveBeenCalledTimes(1));
+  });
   it("«Vincular a empresa CRM existente…» abre el buscador de empresas", async () => {
     mockSearchFac.mockResolvedValue([FAC_SIN_CRM]);
     const user = userEvent.setup();
