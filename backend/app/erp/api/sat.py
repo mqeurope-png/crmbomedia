@@ -129,10 +129,18 @@ def sat_queue(
         ):
             files_by_order.setdefault(oid, set()).add(kind)
 
+    # D-2: nombre del cliente en las cards del taller (el número solo no basta).
+    from app.erp.api.orders import customer_names  # noqa: PLC0415
+
+    names = customer_names(session, [*prep_rows, *ready_rows])
+
     def _item(o: Order) -> dict[str, Any]:
+        who = names.get(o.id) or {}
         return {
             "id": o.id,
             "order_number": o.order_number,
+            "contact_name": who.get("contact_name"),
+            "company_name": who.get("company_name"),
             "preparation_status": getattr(o.preparation_status, "value", o.preparation_status),
             "transport_status": getattr(o.transport_status, "value", o.transport_status),
             "payment_status": getattr(o.payment_status, "value", o.payment_status),

@@ -6,6 +6,7 @@ import { OrderStatusMachine } from "./OrderStatusMachine";
 function detail(over: Partial<OrderDetail> = {}): OrderDetail {
   return {
     id: "o1", order_number: "MAN-0001", external_source: "manual",
+    contact_name: null, company_name: null,
     store_id: null, contact_id: null, company_id: null,
     total_amount: 100, currency: "EUR",
     payment_status: "paid", preparation_status: "preparing",

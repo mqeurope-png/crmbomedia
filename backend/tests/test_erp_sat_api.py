@@ -79,6 +79,30 @@ def test_sat_queue_priorities_blocked_then_preparing_then_in_queue(
     assert nums == ["Q-BLOCKED", "Q-PREP", "Q-INQUEUE"]  # packed no está en «por embalar»
 
 
+def test_erp_sat_queue_returns_customer_name(client, session_factory):
+    """D-2: las cards del taller muestran el cliente, no solo el número."""
+    from app.models.crm import Company, Contact  # noqa: PLC0415
+
+    with session_factory() as s:
+        comp = Company(name="Duplicoder SL")
+        cont = Contact(first_name="Ana", last_name="Pi", email="ana@example.com")
+        s.add_all([comp, cont])
+        s.commit()
+        comp_id, cont_id = comp.id, cont.id
+        o1 = Order(order_number="Q-EMPRESA", preparation_status="preparing",
+                   payment_status="paid", company_id=comp_id)
+        o2 = Order(order_number="Q-CONTACTO", preparation_status="packed",
+                   payment_status="paid", contact_id=cont_id)
+        s.add_all([o1, o2])
+        s.commit()
+    body = client.get("/api/erp/sat/queue",
+                      headers=auth_headers(client, "sat")).json()
+    prep = {i["order_number"]: i for i in body["preparing"]}
+    ready = {i["order_number"]: i for i in body["ready_for_pickup"]}
+    assert prep["Q-EMPRESA"]["company_name"] == "Duplicoder SL"
+    assert ready["Q-CONTACTO"]["contact_name"] == "Ana Pi"
+
+
 def test_sat_queue_returns_two_sections(client, session_factory):
     """D-1-fix1: preparing (por embalar) + ready_for_pickup (packed sin salir)."""
     with session_factory() as s:

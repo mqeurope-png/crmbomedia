@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
@@ -27,6 +27,7 @@ from app.erp.models import (
     Order,
     OrderLine,
     OrderSource,
+    OrderStatusHistory,
     StatusDomain,
 )
 from app.erp.state_machine import TransitionError, apply_transition, available_transitions
@@ -50,14 +51,44 @@ class OrderLineIn(BaseModel):
     notes: str | None = None
 
 
+class AddressIn(BaseModel):
+    """Dirección de envío/facturación de un pedido manual (D-2). Vive en
+    `packing_json` — el pedido no tiene columnas de dirección y esta fase no
+    lleva migración."""
+
+    address_line: str | None = Field(default=None, max_length=500)
+    city: str | None = Field(default=None, max_length=200)
+    postal_code: str | None = Field(default=None, max_length=20)
+    state: str | None = Field(default=None, max_length=200)
+    country: str | None = Field(default="España", max_length=120)
+
+    def is_empty(self) -> bool:
+        return not any([self.address_line, self.city, self.postal_code, self.state])
+
+
 class OrderCreate(BaseModel):
-    order_number: str = Field(min_length=1, max_length=32)
+    # D-2: opcional — si no llega, se genera `MANUAL-000001` (secuencial).
+    order_number: str | None = Field(default=None, max_length=32)
     contact_id: str | None = None
     company_id: str | None = None
     currency: str = Field(default="EUR", max_length=3)
     notes: str | None = None
     placed_at: datetime | None = None
     lines: list[OrderLineIn] = Field(default_factory=list, min_length=1)
+    # Extras del alta manual (D-2) — se guardan en `packing_json`.
+    tax_id: str | None = Field(default=None, max_length=64)
+    pickup_in_store: bool = False
+    shipping_address: AddressIn | None = None
+    billing_address: AddressIn | None = None
+
+    @model_validator(mode="after")
+    def _require_customer(self) -> OrderCreate:
+        # Un pedido sin cliente no es accionable (ni facturable ni enviable).
+        # La dirección de envío NO se valida aquí: es requisito del formulario
+        # (se puede marcar «Recogida en tienda»), no del contrato de la API.
+        if not self.contact_id and not self.company_id:
+            raise ValueError("El pedido necesita un contacto o una empresa.")
+        return self
 
 
 class TransitionIn(BaseModel):
@@ -84,10 +115,59 @@ def _status_value(v: Any) -> str:
     return getattr(v, "value", v)
 
 
-def _serialise_summary(o: Order) -> dict[str, Any]:
+def _contact_label(contact: Any) -> str | None:
+    """«Nombre Apellido» del contacto (D-2). None si no hay contacto."""
+    if contact is None:
+        return None
+    parts = [contact.first_name or "", contact.last_name or ""]
+    return " ".join(p for p in parts if p).strip() or None
+
+
+def customer_names(
+    session: Session, orders: list[Order],
+) -> dict[str, dict[str, str | None]]:
+    """D-2: `{order_id: {contact_name, company_name}}` en 2 queries (sin N+1).
+
+    El ERP muestra el cliente junto al número de pedido en TODAS las vistas
+    (bandeja, colas, ficha, excepciones) — el número solo no basta para saber
+    a quién va dirigido."""
+    from app.models.crm import Company, Contact  # noqa: PLC0415
+
+    contact_ids = {o.contact_id for o in orders if o.contact_id}
+    company_ids = {o.company_id for o in orders if o.company_id}
+    contacts: dict[str, Any] = {}
+    companies: dict[str, str] = {}
+    if contact_ids:
+        contacts = {
+            c.id: c for c in session.scalars(
+                select(Contact).where(Contact.id.in_(contact_ids))
+            )
+        }
+    if company_ids:
+        companies = {
+            c.id: c.name for c in session.scalars(
+                select(Company).where(Company.id.in_(company_ids))
+            )
+        }
+    return {
+        o.id: {
+            "contact_name": _contact_label(contacts.get(o.contact_id)),
+            "company_name": companies.get(o.company_id) if o.company_id else None,
+        }
+        for o in orders
+    }
+
+
+def _serialise_summary(
+    o: Order, names: dict[str, str | None] | None = None,
+) -> dict[str, Any]:
+    names = names or {}
     return {
         "id": o.id,
         "order_number": o.order_number,
+        # D-2: nombre del cliente para no tener que abrir el pedido.
+        "contact_name": names.get("contact_name"),
+        "company_name": names.get("company_name"),
         "external_source": _status_value(o.external_source),
         "store_id": o.store_id,
         "contact_id": o.contact_id,
@@ -116,7 +196,7 @@ def _serialise_detail(session: Session, o: Order, actor: User) -> dict[str, Any]
         .order_by(ErpException.created_at.desc())
     ))
     return {
-        **_serialise_summary(o),
+        **_serialise_summary(o, customer_names(session, [o]).get(o.id)),
         "notes": o.notes,
         "packing": json.loads(o.packing_json) if o.packing_json else None,
         "lines": [
@@ -225,24 +305,27 @@ def create_order(
     session: Session = Depends(get_session),
     current_user: User = Depends(require_erp_edit),
 ) -> dict[str, Any]:
-    """Alta manual (external_source='manual') — el caso de prueba de la
-    Fase A y los pedidos telefónicos/B2B de siempre."""
-    if session.scalar(select(Order.id).where(
-        Order.order_number == payload.order_number
-    )):
+    """Alta manual (external_source='manual') — encargos por teléfono,
+    muestras y reparaciones sin ticket Woo.
+
+    D-2: `order_number` es opcional (se genera `MANUAL-000001`); la dirección
+    de envío/facturación y el NIF viven en `packing_json` (sin migración)."""
+    number = (payload.order_number or "").strip() or _next_manual_number(session)
+    if session.scalar(select(Order.id).where(Order.order_number == number)):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"order_number ya existe: {payload.order_number!r}",
+            detail=f"order_number ya existe: {number!r}",
         )
     total = 0.0
     order = Order(
         external_source=OrderSource.MANUAL,
-        order_number=payload.order_number,
+        order_number=number,
         contact_id=payload.contact_id,
         company_id=payload.company_id,
         currency=payload.currency,
         notes=payload.notes,
         placed_at=payload.placed_at or datetime.now(UTC),
+        packing_json=_manual_packing_json(payload),
     )
     session.add(order)
     session.flush()
@@ -257,8 +340,57 @@ def create_order(
             tax_rate=line.tax_rate, line_total=line_total, notes=line.notes,
         ))
     order.total_amount = round(total, 2)
+    # D-2: traza del alta manual en el historial (quién y desde dónde).
+    session.add(OrderStatusHistory(
+        order_id=order.id, domain=StatusDomain.PREPARATION,
+        from_status=None,
+        to_status=_status_value(order.preparation_status),
+        changed_at=datetime.now(UTC), changed_by_user_id=current_user.id,
+        reason="Pedido manual creado desde el ERP",
+        metadata_json=json.dumps({
+            "event": "order_created_manual",
+            "origin_source": "manual",
+            "created_by_user_id": current_user.id,
+        }),
+    ))
     session.commit()
     return _serialise_detail(session, _get_order(session, order.id), current_user)
+
+
+#: Prefijo + ancho del secuencial de los pedidos manuales (D-2).
+MANUAL_ORDER_PREFIX = "MANUAL-"
+MANUAL_ORDER_PAD = 6
+
+
+def _next_manual_number(session: Session) -> str:
+    """Siguiente `MANUAL-000001` libre: max(secuencial) + 1 sobre los que ya
+    siguen el patrón. El choque real lo corta el 409 del endpoint."""
+    rows = session.scalars(
+        select(Order.order_number).where(
+            Order.order_number.like(f"{MANUAL_ORDER_PREFIX}%")
+        )
+    )
+    top = 0
+    for number in rows:
+        suffix = (number or "")[len(MANUAL_ORDER_PREFIX):]
+        if suffix.isdigit():
+            top = max(top, int(suffix))
+    return f"{MANUAL_ORDER_PREFIX}{top + 1:0{MANUAL_ORDER_PAD}d}"
+
+
+def _manual_packing_json(payload: OrderCreate) -> str | None:
+    """Direcciones + NIF del alta manual → `packing_json` (el pedido no tiene
+    columnas de dirección y D-2 no lleva migración)."""
+    data: dict[str, Any] = {}
+    if payload.tax_id:
+        data["tax_id"] = payload.tax_id
+    if payload.pickup_in_store:
+        data["pickup_in_store"] = True
+    if payload.shipping_address and not payload.shipping_address.is_empty():
+        data["shipping_address"] = payload.shipping_address.model_dump()
+    if payload.billing_address and not payload.billing_address.is_empty():
+        data["billing_address"] = payload.billing_address.model_dump()
+    return json.dumps(data) if data else None
 
 
 @router.get("")
@@ -298,7 +430,8 @@ def list_orders(
     rows = list(session.scalars(
         stmt.options(selectinload(Order.lines)).order_by(order_by).limit(limit)
     ))
-    return {"items": [_serialise_summary(o) for o in rows]}
+    names = customer_names(session, rows)
+    return {"items": [_serialise_summary(o, names.get(o.id)) for o in rows]}
 
 
 @router.get("/pending-approval")
@@ -313,10 +446,11 @@ def pending_approval(
         .options(selectinload(Order.lines))
         .order_by(Order.placed_at.asc())
     ))
+    names = customer_names(session, rows)
     return {
         "items": [
             {
-                **_serialise_summary(o),
+                **_serialise_summary(o, names.get(o.id)),
                 "blockers": _blockers(session, o),
                 "warnings": _warnings(session, o),
             }

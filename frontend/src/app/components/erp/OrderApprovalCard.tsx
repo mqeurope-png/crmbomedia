@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import type { PendingOrder } from "../../lib/erpApi";
+import { customerLabel, type PendingOrder } from "../../lib/erpApi";
 import { EmitFactusolButton } from "./EmitFactusolButton";
 import { OrderStatusBadge } from "./OrderStatusBadge";
 
@@ -55,6 +55,9 @@ export function OrderApprovalCard({
           {order.total_amount.toFixed(2)} {order.currency}
         </span>
       </header>
+      {customerLabel(order) ? (
+        <p className="erp-approval-customer">{customerLabel(order)}</p>
+      ) : null}
       <div className="erp-approval-badges">
         <OrderStatusBadge status={order.payment_status} />
         <OrderStatusBadge status={order.preparation_status} />

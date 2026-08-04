@@ -5,7 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import { PageHeader } from "../../components/PageHeader";
 import { OrderStatusBadge } from "../../components/erp/OrderStatusBadge";
 import { extractErrorMessage } from "../../lib/errors";
-import { listOrders, type OrderSummary } from "../../lib/erpApi";
+import { customerLabel, listOrders, type OrderSummary } from "../../lib/erpApi";
 
 const STORES = [
   { value: "", label: "Todas las tiendas" },
@@ -42,9 +42,14 @@ export default function ErpOrdersPage() {
         description="Bandeja principal — los 4 estados de cada pedido."
         crumbs={[{ label: "ERP" }, { label: "Pedidos" }]}
         actions={
-          <Link href="/erp/orders/pending-approval" className="button secondary small">
-            Cola PEDIDOS
-          </Link>
+          <>
+            <Link href="/erp/orders/pending-approval" className="button secondary small">
+              Cola PEDIDOS
+            </Link>
+            <Link href="/erp/orders/new" className="button small">
+              + Nuevo pedido manual
+            </Link>
+          </>
         }
       />
       <div className="wf-list-filters" style={{ marginBottom: 12, display: "flex", gap: 8 }}>
@@ -84,6 +89,7 @@ export default function ErpOrdersPage() {
           <thead>
             <tr>
               <th>Pedido</th>
+              <th>Cliente</th>
               <th>Total</th>
               <th>Pago</th>
               <th>Preparación</th>
@@ -101,6 +107,7 @@ export default function ErpOrdersPage() {
                   ) : null}
                   <div className="muted small">{o.external_source} · {o.placed_at?.slice(0, 10) ?? "—"}</div>
                 </td>
+                <td>{customerLabel(o) || <span className="muted">—</span>}</td>
                 <td>{o.total_amount.toFixed(2)} {o.currency}</td>
                 <td><OrderStatusBadge status={o.payment_status} /></td>
                 <td><OrderStatusBadge status={o.preparation_status} /></td>

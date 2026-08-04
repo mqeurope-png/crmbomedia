@@ -78,15 +78,22 @@ def _parse_eta(metadata: dict[str, Any]) -> date | None:
             return None
 
 
-def _serialise(exc: ErpException) -> dict[str, Any]:
+def _serialise(
+    exc: ErpException, order_info: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     metadata = json.loads(exc.metadata_json) if exc.metadata_json else {}
     eta = _parse_eta(metadata)
+    order_info = order_info or {}
     return {
         "id": exc.id,
         "type": getattr(exc.type, "value", exc.type),
         "subtype": exc.subtype,
         "status": getattr(exc.status, "value", exc.status),
         "order_id": exc.order_id,
+        # D-2: identificar el pedido/cliente sin abrir la ficha.
+        "order_number": order_info.get("order_number"),
+        "contact_name": order_info.get("contact_name"),
+        "company_name": order_info.get("company_name"),
         "metadata": metadata,
         "eta_date": eta.isoformat() if eta else None,
         # Chip de alerta: ETA vencida y la excepción sigue abierta.
@@ -99,6 +106,25 @@ def _serialise(exc: ErpException) -> dict[str, Any]:
         "resolution_note": exc.resolution_note,
         "resolved_at": exc.resolved_at.isoformat() if exc.resolved_at else None,
         "created_at": exc.created_at.isoformat(),
+    }
+
+
+def _orders_info(
+    session: Session, rows: list[ErpException],
+) -> dict[str, dict[str, Any]]:
+    """D-2: `{order_id: {order_number, contact_name, company_name}}` para las
+    excepciones listadas — batch, sin N+1."""
+    from app.erp.api.orders import customer_names  # noqa: PLC0415
+    from app.erp.models import Order  # noqa: PLC0415
+
+    order_ids = {e.order_id for e in rows if e.order_id}
+    if not order_ids:
+        return {}
+    orders = list(session.scalars(select(Order).where(Order.id.in_(order_ids))))
+    names = customer_names(session, orders)
+    return {
+        o.id: {"order_number": o.order_number, **(names.get(o.id) or {})}
+        for o in orders
     }
 
 
@@ -133,7 +159,8 @@ def list_exceptions(
     rows = list(session.scalars(
         stmt.order_by(ErpException.created_at.desc()).limit(limit)
     ))
-    return {"items": [_serialise(e) for e in rows]}
+    info = _orders_info(session, rows)
+    return {"items": [_serialise(e, info.get(e.order_id)) for e in rows]}
 
 
 @router.post("/exceptions/{exc_id}/assign")

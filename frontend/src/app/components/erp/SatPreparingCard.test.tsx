@@ -16,6 +16,8 @@ jest.mock("next/link", () => ({
 }));
 
 jest.mock("../../lib/erpApi", () => ({
+  // customerLabel es helper puro: se usa el real (D-2).
+  customerLabel: jest.requireActual("../../lib/erpApi").customerLabel,
   fetchAlbaranFromWoo: jest.fn(),
   listShippingFiles: jest.fn(),
   openShippingFile: jest.fn(),
@@ -27,7 +29,8 @@ const mockOpen = openShippingFile as jest.Mock;
 
 function order(over: Partial<SatQueueItem> = {}): SatQueueItem {
   return {
-    id: "o1", order_number: "BOP-1", preparation_status: "preparing",
+    id: "o1", order_number: "BOP-1", contact_name: null, company_name: null,
+    preparation_status: "preparing",
     transport_status: "not_shipped", payment_status: "paid",
     total_amount: 100, currency: "EUR", lines: [],
     has_albaran: false, has_etiqueta: false, ...over,
@@ -48,6 +51,23 @@ beforeEach(() => {
 });
 
 describe("SatPreparingCard", () => {
+  it("muestra el nombre del cliente bajo el número de pedido (D-2)", () => {
+    render(
+      <SatPreparingCard
+        order={order({ contact_name: "Ana Pi", company_name: "Duplicoder SL" })}
+        onChanged={() => {}}
+      />,
+    );
+    expect(screen.getByText("Ana Pi · Duplicoder SL")).toBeInTheDocument();
+    // El número sigue visible (es lo que escanea el operativo).
+    expect(screen.getByText("BOP-1")).toBeInTheDocument();
+  });
+
+  it("sin cliente no pinta la línea de cliente", () => {
+    render(<SatPreparingCard order={order()} onChanged={() => {}} />);
+    expect(screen.queryByText(/·/)).not.toBeInTheDocument();
+  });
+
   it("sin albarán muestra el chip «Descargar albarán»", () => {
     render(<SatPreparingCard order={order({ has_albaran: false })} onChanged={() => {}} />);
     expect(screen.getByRole("button", { name: /Descargar albarán/ })).toBeInTheDocument();

@@ -13,6 +13,7 @@ jest.mock("next/link", () => ({
 function order(over: Partial<PendingOrder> = {}): PendingOrder {
   return {
     id: "o1", order_number: "MAN-0001", external_source: "manual",
+    contact_name: null, company_name: null,
     store_id: null, contact_id: null, company_id: null,
     total_amount: 4890, currency: "EUR",
     payment_status: "paid", preparation_status: "pending_review",

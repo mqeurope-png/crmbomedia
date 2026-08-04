@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useState } from "react";
 import {
+  customerLabel,
   fetchAlbaranFromWoo,
   listShippingFiles,
   openShippingFile,
@@ -58,6 +59,9 @@ export function SatPreparingCard({
             {STATUS_LABELS[order.preparation_status]?.label ?? order.preparation_status}
           </span>
         </div>
+        {customerLabel(order) ? (
+          <div className="sat-card-customer">{customerLabel(order)}</div>
+        ) : null}
         {order.payment_status !== "paid" ? (
           <div className="sat-card-warn">⚠ SIN COBRAR</div>
         ) : null}
