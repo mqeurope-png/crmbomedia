@@ -10299,3 +10299,26 @@ tr.is-inactive {
 .erp-exc-eta-chip { margin-left: 8px; }
 .erp-exc-actions { display: flex; gap: 6px; flex-wrap: wrap; }
 .erp-settings-form { display: flex; flex-direction: column; gap: 14px; max-width: 460px; }
+
+/* --- BoHub ERP Fase D · D-2: cliente visible + form de alta manual --------- */
+/* Nombre del cliente bajo el número de pedido (cards SAT / Cola PEDIDOS). El
+   número sigue mandando visualmente; el cliente va un escalón por debajo. */
+.sat-card-customer { font-size: 15px; font-weight: 600; color: #334155; margin-bottom: 4px; }
+.erp-approval-customer { margin: 2px 0 6px; font-size: 13px; font-weight: 600; color: #334155; }
+
+/* Chips de documento de la Cola SAT (D-1-fix1/fix2 los usaban sin CSS). */
+.sat-chip-btn {
+  display: inline-block; padding: 8px 12px; border-radius: 999px;
+  border: 1px solid transparent; font-size: 14px; font-weight: 700;
+  cursor: pointer; text-decoration: none; background: var(--line); color: var(--ink);
+}
+.sat-chip-btn.ok { background: #ecfdf3; color: var(--success); border-color: #a7f3d0; }
+.sat-chip-btn.warn { background: #fffaeb; color: #b54708; border-color: #fde68a; }
+.sat-chip-btn.info { background: #eef4ff; color: var(--brand); border-color: #bfdbfe; }
+.sat-card-docs { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
+
+/* Alta de pedido manual (/erp/orders/new). */
+.erp-manual-form { display: flex; flex-direction: column; gap: 16px; }
+.erp-manual-form .erp-card { display: flex; flex-direction: column; gap: 10px; }
+.erp-manual-form .data-table input { width: 100%; }
+.erp-manual-total { margin: 8px 0 0; font-size: 16px; text-align: right; }

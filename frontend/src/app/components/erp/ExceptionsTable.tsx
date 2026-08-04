@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import {
+  customerLabel,
   EXCEPTION_STATUS_LABELS,
   EXCEPTION_TYPE_LABELS,
   type ErpExceptionRow,
@@ -48,7 +49,12 @@ export function ExceptionsTable({
                 ) : null}
               </td>
               <td>
-                <Link href={`/erp/orders/${e.order_id}`}>Ver pedido</Link>
+                <Link href={`/erp/orders/${e.order_id}`}>
+                  {e.order_number ?? "Ver pedido"}
+                </Link>
+                {customerLabel(e) ? (
+                  <div className="muted small">{customerLabel(e)}</div>
+                ) : null}
               </td>
               <td><span className={`badge ${st.tone}`}>{st.label}</span></td>
               <td>

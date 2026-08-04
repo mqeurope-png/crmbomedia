@@ -37,6 +37,9 @@ def session_factory() -> Generator[sessionmaker, None, None]:
     factory = sessionmaker(bind=engine, autoflush=False, autocommit=False)
     with factory() as seed:
         seed_test_users(seed)
+        # D-2: todo pedido necesita cliente — empresa fija para los payloads.
+        seed.add(Company(id=SEED_COMPANY_ID, name="Cliente Demo SL"))
+        seed.commit()
     yield factory
     Base.metadata.drop_all(engine)
 
@@ -52,9 +55,14 @@ def client(session_factory) -> Generator[TestClient, None, None]:
     app.dependency_overrides.clear()
 
 
+#: Empresa sembrada en el fixture — todo pedido manual necesita cliente (D-2).
+SEED_COMPANY_ID = "seed-company-d2"
+
+
 def _payload(**over) -> dict:
     base = {
         "order_number": "MAN-0001",
+        "company_id": SEED_COMPANY_ID,
         "lines": [
             {"product_sku": "SKU-MBO-3050", "product_codart": "MBO3050",
              "description": "MBO 3050", "quantity": 1, "unit_price": 4500},
@@ -105,6 +113,74 @@ def test_create_forbidden_for_sat_user_and_viewer(client):
         r = client.post("/api/erp/orders", json=_payload(order_number=f"X-{role}"),
                         headers=auth_headers(client, role))
         assert r.status_code == 403, role
+
+
+# --- D-2: alta manual desde la UI -------------------------------------------
+
+
+def test_erp_orders_create_manual_success(client, session_factory):
+    """Alta manual completa: número autogenerado, líneas, direcciones en
+    packing_json e historial con el evento de creación."""
+    body = _create(client, order_number=None, tax_id="B12345678",
+                   shipping_address={"address_line": "C Aribau 171",
+                                     "city": "Barcelona", "postal_code": "08036"},
+                   billing_address={"address_line": "C Aribau 171",
+                                    "city": "Barcelona", "postal_code": "08036"})
+    assert body["external_source"] == "manual"
+    # Número autogenerado con el patrón MANUAL-000001.
+    assert body["order_number"].startswith("MANUAL-")
+    assert body["order_number"][len("MANUAL-"):].isdigit()
+    assert body["total_amount"] == pytest.approx(4890.0)
+    assert body["company_name"] == "Cliente Demo SL"
+    # Direcciones + NIF guardados sin migración (packing_json).
+    packing = body["packing"]
+    assert packing["tax_id"] == "B12345678"
+    assert packing["shipping_address"]["city"] == "Barcelona"
+    # Historial: evento de creación manual con el autor.
+    created = [h for h in body["status_history"]
+               if (h["metadata"] or {}).get("event") == "order_created_manual"]
+    assert len(created) == 1
+    assert created[0]["metadata"]["origin_source"] == "manual"
+    assert created[0]["changed_by_user_id"]
+
+
+def test_erp_orders_create_manual_autonumber_increments(client):
+    a = _create(client, order_number=None)["order_number"]
+    b = _create(client, order_number=None)["order_number"]
+    assert a != b
+    assert int(b[len("MANUAL-"):]) == int(a[len("MANUAL-"):]) + 1
+
+
+def test_erp_orders_create_manual_requires_customer(client):
+    payload = _payload(order_number="NO-CUST")
+    payload.pop("company_id", None)
+    r = client.post("/api/erp/orders", json=payload,
+                    headers=auth_headers(client, "pedidos"))
+    assert r.status_code == 422
+
+
+def test_erp_orders_create_manual_requires_lines(client):
+    r = client.post("/api/erp/orders", json=_payload(order_number="NO-LINES", lines=[]),
+                    headers=auth_headers(client, "pedidos"))
+    assert r.status_code == 422
+
+
+def test_erp_orders_list_returns_customer_name(client, session_factory):
+    """La bandeja devuelve contact_name/company_name para pintar el cliente."""
+    from app.models.crm import Contact  # noqa: PLC0415
+
+    with session_factory() as s:
+        c = Contact(first_name="Ana", last_name="Pi", email="ana@example.com")
+        s.add(c)
+        s.commit()
+        cid = c.id
+    _create(client, order_number="CLI-EMPRESA")
+    _create(client, order_number="CLI-CONTACTO", contact_id=cid)
+
+    r = client.get("/api/erp/orders", headers=auth_headers(client, "pedidos"))
+    by_number = {o["order_number"]: o for o in r.json()["items"]}
+    assert by_number["CLI-EMPRESA"]["company_name"] == "Cliente Demo SL"
+    assert by_number["CLI-CONTACTO"]["contact_name"] == "Ana Pi"
 
 
 # --- bandeja + permisos de vista --------------------------------------------
@@ -276,8 +352,8 @@ def test_full_flow_via_api_and_available_transitions(client):
     r = _fire(client, oid, "preparation", "packed", role="sat")
     assert r.status_code == 200
     assert r.json()["preparation_status"] == "packed"
-    # El historial acumula las 4 transiciones.
-    assert len(r.json()["status_history"]) == 4
+    # El historial acumula el alta manual (D-2) + las 4 transiciones.
+    assert len(r.json()["status_history"]) == 5
 
 
 # --- timeline ----------------------------------------------------------------

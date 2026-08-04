@@ -17,6 +17,8 @@ jest.mock("next/link", () => ({
 }));
 
 jest.mock("../../lib/erpApi", () => ({
+  // customerLabel es helper puro: se usa el real (D-2).
+  customerLabel: jest.requireActual("../../lib/erpApi").customerLabel,
   fireTransition: jest.fn(),
   listShippingFiles: jest.fn(),
   markPickedUp: jest.fn(),
@@ -29,7 +31,8 @@ const mockOpen = openShippingFile as jest.Mock;
 
 function order(over: Partial<SatQueueItem> = {}): SatQueueItem {
   return {
-    id: "o1", order_number: "BOP-1", preparation_status: "packed",
+    id: "o1", order_number: "BOP-1", contact_name: null, company_name: null,
+    preparation_status: "packed",
     transport_status: "not_shipped", payment_status: "paid",
     total_amount: 100, currency: "EUR", lines: [],
     has_albaran: true, has_etiqueta: true, ...over,

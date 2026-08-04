@@ -11,6 +11,7 @@ import { ShippingFilesSection } from "../../../components/erp/ShippingFilesSecti
 import { getCurrentUser, type User } from "../../../lib/api";
 import { extractErrorMessage } from "../../../lib/errors";
 import {
+  customerLabel,
   getOrder,
   getOrderTimeline,
   getFactusolStatus,
@@ -98,7 +99,10 @@ export default function ErpOrderDetailPage() {
       <PageHeader
         title={`Pedido ${order.order_number}`}
         eyebrow="ERP"
-        description={`${order.external_source} · ${order.total_amount.toFixed(2)} ${order.currency}`}
+        description={[
+          customerLabel(order) ? `Cliente: ${customerLabel(order)}` : null,
+          `${order.external_source} · ${order.total_amount.toFixed(2)} ${order.currency}`,
+        ].filter(Boolean).join(" — ")}
         crumbs={[
           { label: "ERP" },
           { label: "Pedidos", href: "/erp/orders" },

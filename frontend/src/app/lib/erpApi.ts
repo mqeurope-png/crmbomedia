@@ -22,6 +22,9 @@ export type OrderSummary = {
   store_id: string | null;
   contact_id: string | null;
   company_id: string | null;
+  /** D-2: nombre del cliente para verlo sin abrir el pedido. */
+  contact_name: string | null;
+  company_name: string | null;
   total_amount: number;
   currency: string;
   payment_status: PaymentStatus;
@@ -107,6 +110,14 @@ export type TimelineEvent = {
   actor_user_id: string | null;
 };
 
+/** D-2: «Nombre Apellido · Empresa» a partir de lo que haya. Cadena vacía si
+ *  el pedido no tiene ni contacto ni empresa (el CRM no siempre los tiene). */
+export function customerLabel(
+  order: { contact_name?: string | null; company_name?: string | null },
+): string {
+  return [order.contact_name, order.company_name].filter(Boolean).join(" · ");
+}
+
 function qs(params: Record<string, string | number | undefined>): string {
   const sp = new URLSearchParams();
   for (const [k, v] of Object.entries(params)) {
@@ -185,12 +196,27 @@ export async function bulkMarkExternallyProcessed(
   });
 }
 
+/** Dirección de envío/facturación de un pedido manual (D-2). */
+export type OrderAddress = {
+  address_line?: string | null;
+  city?: string | null;
+  postal_code?: string | null;
+  state?: string | null;
+  country?: string | null;
+};
+
 export type OrderCreatePayload = {
-  order_number: string;
+  /** D-2: opcional — el backend genera `MANUAL-000001` si no se envía. */
+  order_number?: string | null;
   company_id?: string | null;
   contact_id?: string | null;
   currency?: string;
   notes?: string | null;
+  placed_at?: string | null;
+  tax_id?: string | null;
+  pickup_in_store?: boolean;
+  shipping_address?: OrderAddress | null;
+  billing_address?: OrderAddress | null;
   lines: {
     product_sku: string;
     product_codart?: string | null;
@@ -222,13 +248,15 @@ export const STATUS_LABELS: Record<string, { label: string; tone: string }> = {
   pending_review: { label: "Pend. revisión", tone: "warn" },
   in_queue: { label: "En cola", tone: "muted" },
   preparing: { label: "Preparando", tone: "active" },
-  packed: { label: "Embalado", tone: "ok" },
+  // D-2: en curso → azul (el verde queda para «cerrado/cobrado/entregado»).
+  packed: { label: "Embalado", tone: "active" },
   blocked: { label: "Bloqueado", tone: "bad" },
   already_completed_externally: { label: "Externalizado", tone: "muted" },
   // transport
   not_shipped: { label: "Sin enviar", tone: "muted" },
   label_created: { label: "Etiqueta creada", tone: "active" },
-  in_transit: { label: "En tránsito", tone: "active" },
+  // D-2: recogido/en tránsito ya salió del taller → verde.
+  in_transit: { label: "En tránsito", tone: "ok" },
   delivered: { label: "Entregado", tone: "ok" },
   incident: { label: "Incidencia", tone: "bad" },
   returned: { label: "Devuelto", tone: "bad" },
@@ -257,6 +285,9 @@ export const ERP_EDIT_ROLES = ["admin", "pedidos"] as const;
 export type SatQueueItem = {
   id: string;
   order_number: string;
+  /** D-2: cliente visible en la card del taller. */
+  contact_name: string | null;
+  company_name: string | null;
   preparation_status: PreparationStatus;
   /** Fase D-1-fix1: estado de transporte (decide «Marcar recogido»). */
   transport_status: TransportStatus;
@@ -351,6 +382,10 @@ export type ErpExceptionRow = {
   subtype: string | null;
   status: "open" | "in_progress" | "resolved" | "dismissed";
   order_id: string;
+  /** D-2: pedido + cliente para identificar la excepción de un vistazo. */
+  order_number: string | null;
+  contact_name: string | null;
+  company_name: string | null;
   metadata: Record<string, unknown>;
   eta_date: string | null;
   eta_overdue: boolean;

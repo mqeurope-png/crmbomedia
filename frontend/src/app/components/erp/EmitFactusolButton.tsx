@@ -124,7 +124,8 @@ export function EmitFactusolButton({
       ) : null}
       <button
         type="button"
-        className="button small secondary"
+        /* D-2: emitir factura es acción principal → botón primario. */
+        className="button small"
         disabled={phase === "working"}
         onClick={() => setPhase("confirm")}
       >

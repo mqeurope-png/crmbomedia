@@ -13,7 +13,8 @@ jest.mock("next/link", () => ({
 function row(over: Partial<ErpExceptionRow> = {}): ErpExceptionRow {
   return {
     id: "e1", type: "stock_shortage", subtype: "eta_set", status: "open",
-    order_id: "o1", metadata: {}, eta_date: "2026-08-01", eta_overdue: false,
+    order_id: "o1", order_number: "MAN-0001", contact_name: null,
+    company_name: null, metadata: {}, eta_date: "2026-08-01", eta_overdue: false,
     assigned_to_user_id: null, reported_by_user_id: null,
     resolution_note: null, resolved_at: null, created_at: "2026-07-31T09:00:00Z",
     ...over,

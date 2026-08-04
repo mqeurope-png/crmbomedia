@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useState } from "react";
 import { extractErrorMessage } from "../../lib/errors";
 import {
+  customerLabel,
   fireTransition,
   listShippingFiles,
   markPickedUp,
@@ -72,6 +73,9 @@ export function SatReadyCard({
           {order.total_amount.toFixed(2)} {order.currency}
         </span>
       </div>
+      {customerLabel(order) ? (
+        <div className="sat-card-customer">{customerLabel(order)}</div>
+      ) : null}
 
       <div className="sat-ready-chips">
         {order.has_albaran ? (
