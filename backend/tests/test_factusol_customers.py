@@ -73,10 +73,11 @@ class FakeFactusol:
         return {"ok": True}
 
 
-def _cli(codcli, nombre="Laboratorios Porta", nif="B64113590", **over):
-    base = {"CODCLI": codcli, "NOMCLI": nombre, "CIFCLI": nif,
-            "DIRCLI": "C Aribau 171", "POBCLI": "Barcelona", "CPOCLI": "08036",
-            "PROCLI": "Barcelona", "NACCLI": "ES",
+def _cli(codcli, nombre="LABORATORIOS PORTA S.L.", nif="B64113590", **over):
+    """Fila F_CLI con los nombres de columna REALES (C-3-fix1)."""
+    base = {"CODCLI": codcli, "NIFCLI": nif, "NOFCLI": nombre, "NOCCLI": nombre,
+            "DOMCLI": "c. Fígols, 19-21", "POBCLI": "Barcelona",
+            "CPOCLI": "08028", "PROCLI": "Barcelona", "PAICLI": "724",
             "EMACLI": "info@porta.example", "TELCLI": "600000000"}
     base.update(over)
     return base
@@ -101,10 +102,11 @@ def test_factusol_customers_search_by_nif_found(client):
     items = r.json()["items"]
     assert len(items) == 1
     assert items[0]["codcli"] == "2458"
-    assert items[0]["nomcli"] == "Laboratorios Porta"
+    assert items[0]["nombre"] == "LABORATORIOS PORTA S.L."
+    assert items[0]["nif"] == "B64113590"
     assert items[0]["factusol_matches_crm_id"] is None
     # Filtro exacto e insensible a mayúsculas.
-    assert "UPPER(CIFCLI)=UPPER('B64113590')" in fake.filters[0]
+    assert "UPPER(NIFCLI)=UPPER('B64113590')" in fake.filters[0]
 
 
 def test_factusol_customers_search_by_nif_not_found(client):
@@ -231,8 +233,10 @@ def test_factusol_customers_create_new(client, session_factory):
     assert body["created"] is True and body["factusol_codcli"] == "4532"
     written = next(rec for t, rec in fake.writes if t == "F_CLI")
     assert written["CODCLI"] == "4532"
-    assert written["NOMCLI"] == "Nueva SL" and written["CIFCLI"] == "B12345678"
-    assert written["NACCLI"] == "ES"
+    assert written["NOFCLI"] == "Nueva SL" and written["NIFCLI"] == "B12345678"
+    assert written["NOCCLI"] == "Nueva SL"   # comercial = fiscal por defecto
+    assert written["DOMCLI"] == "C Falsa 1"
+    assert written["PAICLI"] == "724"        # ES → ISO numérico
     with session_factory() as s:
         assert s.get(Company, comp_id).factusol_company_id == "4532"
 
@@ -276,3 +280,70 @@ def test_factusol_customers_create_rejects_woo_managed(client, session_factory):
     assert r.status_code == 409
     assert r.json()["detail"]["code"] == "woo_managed_customer"
     assert fake.writes == []
+
+
+# --- C-3-fix1: nombres de columna REALES de F_CLI ---------------------------
+
+
+def test_search_by_name_searches_both_nofcli_and_noccli(client):
+    """El nombre puede estar solo en el fiscal o solo en el comercial."""
+    fake = FakeFactusol([_cli(1)])
+    with _patch_client(fake):
+        client.get("/api/erp/factusol/customers/search?q=LABORA&by=name",
+                   headers=auth_headers(client, "pedidos"))
+    filtro = fake.filters[0]
+    assert "NOFCLI" in filtro and "NOCCLI" in filtro
+    assert "LIKE" in filtro.upper()
+    # Regresión del bug de prod: NOMCLI no existe en F_CLI.
+    assert "NOMCLI" not in filtro
+
+
+def test_build_customer_payload_uses_real_columns():
+    from app.integrations.factusol.customers import build_customer_payload
+
+    payload = build_customer_payload({
+        "nombre": "Nueva SL", "nif": "B1", "direccion": "C Falsa 1",
+        "ciudad": "Barcelona", "cp": "08001", "provincia": "Barcelona",
+        "pais": "ES",
+    }, "77")
+    assert payload["NOFCLI"] == "Nueva SL"     # fiscal
+    assert payload["NOCCLI"] == "Nueva SL"     # comercial
+    assert payload["NIFCLI"] == "B1"
+    assert payload["DOMCLI"] == "C Falsa 1"
+    assert payload["PAICLI"] == "724"
+    # Las columnas inventadas del bug NO deben aparecer.
+    for dead in ("NOMCLI", "CIFCLI", "DIRCLI", "NACCLI"):
+        assert dead not in payload
+
+
+def test_country_code_maps_iso_alpha2_to_numeric():
+    from app.integrations.factusol.customers import _country_code
+
+    assert _country_code("ES") == "724"
+    assert _country_code("FR") == "250"
+    assert _country_code("US") == "840"
+    assert _country_code("es") == "724"      # case-insensitive
+    assert _country_code("724") == "724"     # ya numérico → tal cual
+    assert _country_code("XX") == "724"      # desconocido → fallback ES
+    assert _country_code("") == "724"
+
+
+def test_search_exposes_aliases_for_frontend(client):
+    """`nombre` (comercial > fiscal) y `nif` los consume la UI directamente."""
+    fake = FakeFactusol([_cli(1, nombre="PORTA FISCAL SL")])
+    with _patch_client(fake):
+        r = client.get("/api/erp/factusol/customers/search?q=B64113590&by=nif",
+                       headers=auth_headers(client, "pedidos"))
+    item = r.json()["items"][0]
+    assert item["nombre"] == "PORTA FISCAL SL"
+    assert item["nif"] == "B64113590"
+    assert item["nofcli"] == "PORTA FISCAL SL"
+    assert item["domcli"] == "c. Fígols, 19-21"
+
+
+def test_search_alias_falls_back_to_fiscal_when_commercial_empty(client):
+    fake = FakeFactusol([_cli(1, NOCCLI="")])
+    with _patch_client(fake):
+        r = client.get("/api/erp/factusol/customers/search?q=B64113590&by=nif",
+                       headers=auth_headers(client, "pedidos"))
+    assert r.json()["items"][0]["nombre"] == "LABORATORIOS PORTA S.L."

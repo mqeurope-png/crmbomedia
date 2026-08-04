@@ -31,6 +31,12 @@ TOKEN="eyJ..."
 
 ## Crear cliente (F_CLI)
 
+> ⚠️ **Plantilla histórica de Sprint 0 — nombres de columna NO verificados.**
+> Los reales son `NIFCLI` (no `CIFCLI`), `NOFCLI`/`NOCCLI` (no `NOMCLI`) y
+> `PAICLI` en ISO numérico. Ver la tabla verificada en
+> [`factusol-sync-clientes.md`](./factusol-sync-clientes.md). El alta real de
+> clientes vive hoy en `integrations/factusol/customers.py` (C-3/C-3-fix1).
+
 ```bash
 curl -sS -X POST "$FACTUSOL_API_BASE_URL/registros/escribirRegistro" \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \

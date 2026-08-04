@@ -24,7 +24,7 @@ dos guards:
    endpoint devuelve **409 `woo_managed_customer`**: ahí manda la app externa y
    el CRM solo puede *vincular*.
 2. **Dedupe por NIF** — antes de escribir se consulta
-   `F_CLI WHERE UPPER(CIFCLI)=UPPER(<nif>)`. Si ya existe, **no se escribe**: se
+   `F_CLI WHERE UPPER(NIFCLI)=UPPER(<nif>)`. Si ya existe, **no se escribe**: se
    devuelve el CODCLI existente y se vincula (`created: false`).
 
 Resultado: el alta desde el CRM queda de facto reservada a **pedidos manuales**
@@ -74,6 +74,30 @@ introdujo a propósito, y sin histórico para recuperarla.
 Por eso la ficha de empresa muestra las diferencias campo a campo
 (Nombre / NIF / Dirección / Ciudad / CP / Provincia) con la etiqueta de cada
 origen, y **deja la corrección al operador** en el sistema que proceda.
+
+## Columnas reales de F_CLI (C-3-fix1)
+
+Los nombres de columna de F_CLI **no siguen el patrón que sugiere la doc de
+DELSOL**. Verificados contra la base real de Bomedia (4533 clientes, ej. 2026):
+
+| Concepto | Columna real | Ojo |
+|---|---|---|
+| Nombre fiscal | **`NOFCLI`** | ~~`NOMCLI`~~ no existe |
+| Nombre comercial | **`NOCCLI`** | puede diferir del fiscal o estar vacío |
+| NIF/CIF | **`NIFCLI`** | ~~`CIFCLI`~~ no existe |
+| Domicilio | **`DOMCLI`** | ~~`DIRCLI`~~ no existe |
+| País | **`PAICLI`** | ISO 3166-1 **numérico** (`724` = España), no alfa-2 |
+| Ciudad / CP / Provincia / Teléfono / Email | `POBCLI` · `CPOCLI` · `PROCLI` · `TELCLI` · `EMACLI` | correctos |
+
+C-3 salió a producción con los nombres equivocados y la búsqueda devolvía
+**siempre `[]`** (un filtro sobre una columna inexistente no da error: devuelve
+cero filas). Corregido en **C-3-fix1**. La búsqueda por nombre consulta
+`NOFCLI` **y** `NOCCLI`, y el backend expone dos alias para la UI: `nombre`
+(comercial, con fallback al fiscal) y `nif`.
+
+> **Lección**: un filtro con columna inexistente en la API DELSOL **no falla**,
+> devuelve lista vacía. Si una búsqueda da siempre 0 resultados, lo primero es
+> volcar `list(rows[0].keys())` de un `CargaTabla` sin filtro y comparar.
 
 ## Endpoints
 

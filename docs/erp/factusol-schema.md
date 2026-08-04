@@ -45,11 +45,13 @@ letras de la tabla. Ej.: `CODCLI` (código de cliente en F_CLI), `CODART`
 |---|---|---|
 | `CODCLI` | Código de cliente (PK) | ✅ |
 | `PCOCLI` | Nombre comercial | ✅ |
-| `CIFCLI` | CIF/NIF | ✅ |
+| `NIFCLI` | CIF/NIF | ✅ verificado en prod (C-3-fix1; **no** es `CIFCLI`) |
+| `NOFCLI` | Nombre fiscal | ✅ verificado en prod (C-3-fix1) |
+| `NOCCLI` | Nombre comercial | ✅ verificado en prod (C-3-fix1) |
 | `DOMCLI` | Domicilio | ✅ |
 | `POBCLI` | Población | ✅ |
 | `PROCLI` | Provincia | ✅ |
-| `PAICLI` | País | ✅ |
+| `PAICLI` | País (ISO 3166-1 **numérico**: `724` = ES) | ✅ verificado en prod |
 | `CPOCLI` | Código postal | ✅ |
 | `TELCLI` | Teléfono | ✅ |
 | `EMACLI` | Email | ✅ |
@@ -133,7 +135,7 @@ un 401 en vuelo re-autentica una vez. Password cifrada Fernet en
 ### Mapeo usado por el adaptador (`mapper.py`)
 
 - **`Company` → F_CLI**: CODCLI (PK, decidido por el servicio), PCOCLI /
-  NOFCLI ← `name`, CIFCLI ← `tax_id`, DOMCLI ← `address_line`, POBCLI ←
+  NOFCLI/NOCCLI ← `name`, NIFCLI ← `tax_id`, DOMCLI ← `address_line`, POBCLI ←
   `city`, CPOCLI ← `postal_code`, PAICLI ← `country`, WEBCLI ← `website`.
 - **`Order` → F_FAC + F_LFA**: cabecera CODFAC/EJEFAC/CLIFAC/FECFAC/TOTFAC/
   REFFAC; líneas CODLFA (documento padre)/POSLFA/ARTLFA (CODART)/REFLFA
