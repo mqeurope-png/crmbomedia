@@ -613,6 +613,67 @@ export async function getFactusolFormasPago(): Promise<FormaPago[]> {
   return r.items;
 }
 
+// --- Clientes FACTUSOL ↔ CRM (Fase C · C-3) ---------------------------------
+
+export type FactusolCustomer = {
+  codcli: string | null;
+  nomcli: string | null;
+  cifcli: string | null;
+  dircli: string | null;
+  pobcli: string | null;
+  cpocli: string | null;
+  procli: string | null;
+  naccli: string | null;
+  emacli: string | null;
+  telcli: string | null;
+  /** Vínculo CRM existente (null si el cliente aún no está en el CRM). */
+  crm_link: { type: "company" | "contact"; id: string; name: string } | null;
+  factusol_matches_crm_id: string | null;
+};
+
+export async function searchFactusolCustomers(
+  q: string, by: "nif" | "email" | "name" = "nif",
+): Promise<FactusolCustomer[]> {
+  const r = await apiFetch<{ items: FactusolCustomer[] }>(
+    `/api/erp/factusol/customers/search?q=${encodeURIComponent(q)}&by=${by}`,
+  );
+  return r.items;
+}
+
+export async function linkFactusolCustomer(body: {
+  crm_type: "company" | "contact";
+  crm_id: string;
+  factusol_codcli: string;
+}): Promise<{ linked: boolean }> {
+  return apiFetch("/api/erp/factusol/customers/link", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export type CreateFactusolCustomerPayload = {
+  crm_type: "company" | "contact";
+  crm_id: string;
+  nombre: string;
+  nif?: string;
+  direccion?: string;
+  ciudad?: string;
+  cp?: string;
+  provincia?: string;
+  pais?: string;
+  email?: string | null;
+  telefono?: string | null;
+};
+
+export async function createFactusolCustomer(
+  payload: CreateFactusolCustomerPayload,
+): Promise<{ factusol_codcli: string; created: boolean }> {
+  return apiFetch("/api/erp/factusol/customers/create", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
 // --- Expedición manual: bultos + albarán + etiqueta (Fase D · D-1) -----------
 
 export type ShipmentPackage = {

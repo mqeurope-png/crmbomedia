@@ -18,6 +18,7 @@ import {
 } from "../../lib/companiesApi";
 import { formatBackendDateTime } from "../../lib/dates";
 import { extractErrorMessage } from "../../lib/errors";
+import { CompanyFactusolPanel } from "../../components/erp/CompanyFactusolPanel";
 
 type Tab = "data" | "contacts";
 
@@ -318,6 +319,14 @@ export default function CompanyDetailPage() {
           </table>
         )
       ) : null}
+
+      {/* C-3: vínculo con el cliente FACTUSOL (solo link, sin auto-sync). */}
+      <CompanyFactusolPanel
+        company={company}
+        onLinked={(codcli) =>
+          setCompany((prev) => (prev ? { ...prev, factusol_company_id: codcli } : prev))
+        }
+      />
 
       {mergeOpen ? (
         <MergeDialog
