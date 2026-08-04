@@ -173,6 +173,51 @@ def test_paused_store_returns_404(client, session_factory):
     assert r.status_code == 404
 
 
+def test_save_time_ping_form_encoded_returns_200(client, session_factory):
+    """B-3-fix1: el save-time ping de Woo (form-encoded, sin firma) devuelve
+    200 sin persistir evento ni encolar nada."""
+    with session_factory() as s:
+        _mk_store(s)
+    with patch("app.webhooks.woocommerce.enqueue_webhook_event") as enq:
+        r = client.post(
+            "/webhooks/woocommerce/boprint",
+            content=b"webhook_id=42",
+            headers={"Content-Type": "application/x-www-form-urlencoded",
+                     "User-Agent": "WooCommerce/10.7.0 Hookshot (WordPress/6.5)"},
+        )
+    assert r.status_code == 200
+    assert r.json() == {"received": True, "ping": True}
+    enq.assert_not_called()
+    with session_factory() as s:
+        assert s.scalar(select(func.count(IntegrationEvent.id))) == 0
+
+
+def test_save_time_ping_ignores_signature_header(client, session_factory):
+    """El ping se identifica solo por Content-Type: una firma (aunque sea
+    inválida) en un ping form-encoded no cambia el 200."""
+    with session_factory() as s:
+        _mk_store(s)
+    r = client.post(
+        "/webhooks/woocommerce/boprint",
+        content=b"webhook_id=42",
+        headers={"Content-Type": "application/x-www-form-urlencoded",
+                 "X-WC-Webhook-Signature": "bogus-signature"},
+    )
+    assert r.status_code == 200
+    assert r.json() == {"received": True, "ping": True}
+
+
+def test_save_time_ping_unknown_store_still_404(client, session_factory):
+    """El check de tienda ocurre ANTES que el de ping: slug inexistente → 404."""
+    r = client.post(
+        "/webhooks/woocommerce/nope",
+        content=b"webhook_id=42",
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
+    assert r.status_code == 404
+    assert r.json() == {"error": "unknown_store"}
+
+
 def test_duplicate_delivery_id_is_idempotent(client, session_factory):
     with session_factory() as s:
         _mk_store(s)

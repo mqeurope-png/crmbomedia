@@ -4,6 +4,9 @@
 CRM: la seguridad es la firma HMAC-SHA256 por tienda. Persiste el evento en
 `integration_events` (dedup por delivery-id) y encola el procesamiento async;
 responde 200 en < 1s (Woo reintenta si tarda > 15s).
+
+El save-time "ping" de WooCommerce (form-encoded, sin firma) se acepta con
+200 sin persistir — es solo un check de reachability al guardar el webhook.
 """
 from __future__ import annotations
 
@@ -53,9 +56,27 @@ async def woocommerce_webhook(
     # No llamar request.json() antes.
     raw_body = await request.body()
 
+    # WooCommerce hace un save-time "ping" cuando el admin guarda un webhook:
+    # POST form-encoded con body `webhook_id=<N>` y SIN firma. Solo comprueba
+    # que la URL responda 2xx antes de aceptar el webhook. Las entregas reales
+    # usan application/json + X-WC-Webhook-Signature (B-3-fix1).
+    if request.headers.get("content-type", "").startswith(
+        "application/x-www-form-urlencoded"
+    ):
+        return {"received": True, "ping": True}
+
     secret = get_or_create_webhook_secret(session, store)
     provided = request.headers.get("X-WC-Webhook-Signature", "")
     if not verify_signature(secret, raw_body, provided):
+        # Log conciso para diagnosticar mismatches futuros sin exponer el
+        # body ni la firma en los logs.
+        logger.warning(
+            "webhook signature mismatch store=%s ct=%s ua=%s body_len=%d",
+            account_slug,
+            request.headers.get("content-type"),
+            request.headers.get("user-agent"),
+            len(raw_body),
+        )
         return JSONResponse({"error": "invalid_signature"}, status_code=401)
 
     delivery_id = request.headers.get("X-WC-Webhook-Delivery-ID")
