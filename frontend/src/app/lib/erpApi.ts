@@ -499,18 +499,42 @@ export async function regenerateWooWebhookSecret(
   );
 }
 
-// --- FACTUSOL emisión de factura (Fase C · C-2) -----------------------------
+// --- FACTUSOL emisión de factura (Fase C · C-2 / C-2-fix2) -------------------
 
 export type FactusolInvoiceStatus =
   | { status: "invoiced"; codfac: string }
   | { status: "pending" }
   | { status: "failed"; error?: string };
 
+/** Estado del pedido frente a FACTUSOL (C-2-fix2): consulta en vivo si ya
+ *  existe factura (auto-vinculada) o albarán. `unknown` = no se pudo consultar
+ *  (factusol_live off o FACTUSOL no responde) → se cae al botón de emisión. */
+export type FactusolStatus =
+  | { status: "invoiced"; codfac: string; ref?: string; auto_linked?: boolean }
+  | { status: "albaran"; ref?: string; albaran_codigo?: string | null }
+  | { status: "pending"; ref?: string }
+  | { status: "already_invoiced_externally" }
+  | { status: "unknown"; reason?: string };
+
+/** Opciones de emisión del modal (como el diálogo «Nueva factura» del
+ *  escritorio FACTUSOL). Todas opcionales. */
+export type EmitFactusolOptions = {
+  tipfac?: string;
+  serfac?: string | null;
+  /** Fecha de emisión ISO `YYYY-MM-DD`; omitir → hoy (lo pone el backend). */
+  fecfac?: string | null;
+  fopfac?: string | null;
+  comfac?: string | null;
+};
+
+export type FormaPago = { codigo: string | null; nombre: string };
+
 export async function emitFactusolInvoice(
-  orderId: string,
+  orderId: string, options?: EmitFactusolOptions,
 ): Promise<{ job_id: string; order_id: string; status: string }> {
   return apiFetch(`/api/erp/orders/${orderId}/emit-factusol-invoice`, {
     method: "POST",
+    body: JSON.stringify(options ?? {}),
   });
 }
 
@@ -519,4 +543,13 @@ export async function getFactusolInvoiceStatus(
 ): Promise<FactusolInvoiceStatus> {
   const q = jobId ? `?job_id=${encodeURIComponent(jobId)}` : "";
   return apiFetch(`/api/erp/orders/${orderId}/factusol-invoice-status${q}`);
+}
+
+export async function getFactusolStatus(orderId: string): Promise<FactusolStatus> {
+  return apiFetch(`/api/erp/orders/${orderId}/factusol-status`);
+}
+
+export async function getFactusolFormasPago(): Promise<FormaPago[]> {
+  const r = await apiFetch<{ items: FormaPago[] }>("/api/erp/factusol/formas-pago");
+  return r.items;
 }

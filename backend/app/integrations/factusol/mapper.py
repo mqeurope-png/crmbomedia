@@ -1,29 +1,63 @@
-"""Mappers puros CRM/FACTUSOL → FACTUSOL (Fase C · C-2-fix1).
+"""Mappers puros CRM/FACTUSOL → FACTUSOL (Fase C · C-2-fix2).
 
 Cambio de premisa (2026-08-04): una app externa ya replica cada pedido de
 WooCommerce en FACTUSOL como **Pedido de Cliente (F_PCL)** con el cliente
 asociado y todos los importes/IVAs ya calculados. BoHub ERP NO crea clientes
 ni recalcula nada: solo **convierte el F_PCL que ya existe en factura F_FAC**
-copiando los datos y añadiendo el CODFAC nuevo + el link PEDFAC.
+copiando los datos y añadiendo el CODFAC nuevo.
 
 Estrategia de mapeo — **transformación de sufijo**: las tablas de pedido y de
 factura comparten la convención de columnas de DELSOL (mismo prefijo de campo,
 distinto sufijo de tabla), así que copiamos cada columna sustituyendo el
 sufijo (`*PCL → *FAC`, `*LPC → *LFA`). Esto arrastra automáticamente TODAS las
 bandas de IVA (`NET1PCL→NET1FAC`, `PIVA1PCL→PIVA1FAC`, …), retenciones,
-descuentos, etc., sin depender de enumerar 167 columnas. Las columnas de
-estado/auditoría del pedido se excluyen (no tienen equivalente en F_FAC).
+descuentos, el cliente (`CLIPCL→CLIFAC`) y **la referencia común
+`REFPCL→REFFAC`** — que es el ÚNICO enlace pedido↔factura que usa la app
+externa. Las columnas de estado/auditoría del pedido se excluyen.
 
-Las inyecciones (CODFAC/EJEFAC/TIPFAC/PEDFAC/FECFAC en la cabecera; CODLFA/
-POSLFA/EJELFA en las líneas) se hacen DESPUÉS de la copia, sobreescribiendo lo
-que herede la transformación de sufijo.
+C-2-fix2 (verificado contra la factura real 260695 de BOPRIN-99866):
+- **`TIPFAC` es `'1'`** (string), no `2` — la factura ordinaria de Bomedia usa
+  tipo 1. Editable por el operador en el modal de emisión.
+- **NO se inyecta `PEDFAC`**: en la factura real está vacío; la app externa no
+  enlaza factura↔pedido por PEDFAC, solo por `REFFAC` (que ya viaja en la
+  copia por sufijo). Poner PEDFAC descuadraría respecto a las facturas que crea
+  Bart a mano en el escritorio FACTUSOL.
+
+Las inyecciones (CODFAC/EJEFAC/TIPFAC/FECFAC en la cabecera; CODLFA/POSLFA/
+EJELFA en las líneas) y las opciones del operador (serie / forma de pago /
+observaciones / fecha / tipo) se aplican DESPUÉS de la copia, sobreescribiendo
+lo que herede la transformación de sufijo.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
-#: Tipo de documento de F_FAC: 2 = factura ordinaria (visto en Bomedia).
-TIPFAC_FACTURA_ORDINARIA = 2
+#: Tipo de documento por defecto de F_FAC: '1' = factura ordinaria de Bomedia
+#: (string, confirmado en la factura real 260695). Editable en el modal.
+DEFAULT_TIPFAC = "1"
+
+
+@dataclass(frozen=True)
+class FacturaOptions:
+    """Opciones de emisión que el operador elige en el modal (como el diálogo
+    «Nueva factura» del escritorio FACTUSOL). `None` = no tocar la columna que
+    haya heredado la copia por sufijo; un valor la sobreescribe.
+
+    - `tipfac`: tipo de documento (por defecto '1', factura ordinaria).
+    - `serfac`: serie de facturación (Bomedia no usa series → normalmente '').
+    - `fecfac`: fecha de emisión ISO (`YYYY-MM-DD`); `None` → la calcula el
+      service (hoy).
+    - `fopfac`: código de forma de pago (F_FOP).
+    - `comfac`: observaciones / comentario de la factura.
+    """
+
+    tipfac: str = DEFAULT_TIPFAC
+    serfac: str | None = None
+    fecfac: str | None = None
+    fopfac: str | None = None
+    comfac: str | None = None
+
 
 #: Columnas de F_PCL propias del PEDIDO (estado / auditoría) que NO se copian a
 #: F_FAC — no tienen equivalente o descuadrarían la factura. Ampliable si el
@@ -48,18 +82,23 @@ def _retag(column: str, from_suffix: str, to_suffix: str) -> str:
 
 
 def pcl_row_to_fac_payload(
-    pcl_row: dict[str, Any], codfac: str, pedfac_ref: str, ejercicio: str,
-    *, fecha_emision: str, tipfac: int = TIPFAC_FACTURA_ORDINARIA,
+    pcl_row: dict[str, Any], codfac: str, ejercicio: str,
+    *, fecha_emision: str, options: FacturaOptions | None = None,
 ) -> dict[str, Any]:
     """Fila F_PCL → payload de EscribirRegistro para F_FAC.
 
-    Copia por sufijo (`*PCL → *FAC`, salvo `PCL_ONLY_COLUMNS`) e inyecta:
-    - CODFAC  = el nuevo número secuencial (via `next_codfac`).
-    - PEDFAC  = link al pedido origen, formato "<serie>-<codpcl_padded_6>".
-    - EJEFAC  = ejercicio.
-    - TIPFAC  = 2 (factura ordinaria).
-    - FECFAC  = fecha de EMISIÓN (hoy), no la del pedido.
+    Copia por sufijo (`*PCL → *FAC`, salvo `PCL_ONLY_COLUMNS` — arrastra
+    CLIFAC, TOTFAC, **REFFAC** y las bandas de IVA) e inyecta:
+    - CODFAC = el nuevo número secuencial (via `next_codfac`).
+    - EJEFAC = ejercicio.
+    - TIPFAC = `options.tipfac` (por defecto '1', factura ordinaria).
+    - FECFAC = `options.fecfac` o la fecha de EMISIÓN (hoy), no la del pedido.
+    - SERFAC / FOPFAC / COMFAC = solo si el operador los indica (`options`).
+
+    **No** inyecta PEDFAC (la app externa no enlaza por PEDFAC; el enlace es
+    REFFAC, ya presente en la copia).
     """
+    opts = options or FacturaOptions()
     payload: dict[str, Any] = {}
     for col, val in pcl_row.items():
         if not col.endswith("PCL") or col in PCL_ONLY_COLUMNS:
@@ -67,9 +106,14 @@ def pcl_row_to_fac_payload(
         payload[_retag(col, "PCL", "FAC")] = val
     payload["CODFAC"] = codfac
     payload["EJEFAC"] = ejercicio
-    payload["TIPFAC"] = tipfac
-    payload["PEDFAC"] = pedfac_ref
-    payload["FECFAC"] = fecha_emision
+    payload["TIPFAC"] = opts.tipfac
+    payload["FECFAC"] = opts.fecfac or fecha_emision
+    if opts.serfac is not None:
+        payload["SERFAC"] = opts.serfac
+    if opts.fopfac is not None:
+        payload["FOPFAC"] = opts.fopfac
+    if opts.comfac is not None:
+        payload["COMFAC"] = opts.comfac
     return payload
 
 
