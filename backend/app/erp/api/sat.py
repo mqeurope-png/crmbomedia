@@ -25,10 +25,13 @@ from app.db.session import get_session
 from app.erp.api.deps import require_erp_view
 from app.erp.models import (
     EXCEPTION_SUBTYPES,
+    KIND_ALBARAN,
+    KIND_ETIQUETA,
     ErpException,
     ExceptionType,
     Order,
     PreparationStatus,
+    ShipmentFile,
     StatusDomain,
 )
 from app.erp.state_machine import TransitionError, apply_transition
@@ -96,6 +99,17 @@ def sat_queue(
         _QUEUE_ORDER.get(getattr(o.preparation_status, "value", o.preparation_status), 9),
         o.placed_at or o.created_at,
     ))
+    # Presencia de albarán/etiqueta vigentes (Fase D) — una sola query.
+    files_by_order: dict[str, set[str]] = {}
+    order_ids = [o.id for o in rows]
+    if order_ids:
+        for oid, kind in session.execute(
+            select(ShipmentFile.order_id, ShipmentFile.kind).where(
+                ShipmentFile.order_id.in_(order_ids),
+                ShipmentFile.replaced_at.is_(None),
+            )
+        ):
+            files_by_order.setdefault(oid, set()).add(kind)
     return {
         "items": [
             {
@@ -110,6 +124,8 @@ def sat_queue(
                      "quantity": float(line.quantity)}
                     for line in o.lines
                 ],
+                "has_albaran": KIND_ALBARAN in files_by_order.get(o.id, set()),
+                "has_etiqueta": KIND_ETIQUETA in files_by_order.get(o.id, set()),
             }
             for o in rows
         ],

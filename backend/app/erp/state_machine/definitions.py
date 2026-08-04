@@ -63,6 +63,8 @@ GUARD_PACKED = "packed_before_label"
 GUARD_TRACKING = "tracking_required"
 #: invoice → generated exige pago paid Y todos los CODART mapeados.
 GUARD_INVOICEABLE = "invoice_requires_paid_and_mapped"
+#: preparation → packed exige ≥1 bulto medido (Fase D, multi-bulto obligatorio).
+GUARD_PACKAGES_MEASURED = "packages_measured_before_packed"
 
 #: Estados de pago que desbloquean la preparación (GUARD_PAYMENT_OK).
 PAYMENT_OK_FOR_PREPARATION = {
@@ -122,6 +124,7 @@ TRANSITIONS: tuple[TransitionDef, ...] = (
         StatusDomain.PREPARATION, PreparationStatus.PREPARING.value,
         PreparationStatus.PACKED.value,
         "Embalado", frozenset({_ADMIN, _SAT}),
+        guards=(GUARD_PACKAGES_MEASURED,),
     ),
     TransitionDef(
         StatusDomain.PREPARATION, PreparationStatus.PREPARING.value,

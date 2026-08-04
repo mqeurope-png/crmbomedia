@@ -30,6 +30,7 @@ from app.erp.models.orders import Order, OrderStatusHistory, StatusDomain
 from app.erp.state_machine.definitions import (
     DOMAIN_COLUMN,
     GUARD_INVOICEABLE,
+    GUARD_PACKAGES_MEASURED,
     GUARD_PACKED,
     GUARD_PAYMENT_OK,
     GUARD_TRACKING,
@@ -93,11 +94,35 @@ def _guard_invoiceable(order: Order, _evidence: dict[str, Any]) -> str | None:
     return None
 
 
+def _guard_packages_measured(order: Order, _evidence: dict[str, Any]) -> str | None:
+    """Fase D: embalar exige ≥1 bulto medido. Las columnas de
+    `shipment_packages` son NOT NULL, así que basta con que exista una fila
+    (la validación peso/medidas se aplica al crearlas)."""
+    from sqlalchemy import func, select  # noqa: PLC0415
+    from sqlalchemy.orm import object_session  # noqa: PLC0415
+
+    from app.erp.models import ShipmentPackage  # noqa: PLC0415
+
+    session = object_session(order)
+    if session is None:
+        # Orden desconectado (no debería en apply_transition) → no bloquear.
+        return None
+    n = session.scalar(
+        select(func.count(ShipmentPackage.id)).where(
+            ShipmentPackage.order_id == order.id
+        )
+    ) or 0
+    if n < 1:
+        return "embalar exige al menos un bulto con peso y medidas"
+    return None
+
+
 _GUARDS = {
     GUARD_PAYMENT_OK: _guard_payment_ok,
     GUARD_PACKED: _guard_packed,
     GUARD_TRACKING: _guard_tracking,
     GUARD_INVOICEABLE: _guard_invoiceable,
+    GUARD_PACKAGES_MEASURED: _guard_packages_measured,
 }
 
 

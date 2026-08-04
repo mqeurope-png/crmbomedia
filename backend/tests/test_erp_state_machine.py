@@ -70,6 +70,15 @@ def _t(s, order, domain, to, actor, **kw):
     )
 
 
+def _add_package(s, order) -> None:
+    """Fase D: embalar exige ≥1 bulto medido — se añade antes de packed."""
+    from app.erp.models import ShipmentPackage  # noqa: PLC0415
+
+    s.add(ShipmentPackage(order_id=order.id, position=1, weight_kg=2,
+                          height_cm=10, width_cm=10, depth_cm=10))
+    s.flush()
+
+
 # --- flujo feliz + historial -------------------------------------------------
 
 
@@ -83,6 +92,7 @@ def test_full_happy_path_walks_all_four_domains(session_factory):
         _t(s, order, StatusDomain.PAYMENT, "paid", None)  # webhook (system)
         _t(s, order, StatusDomain.PREPARATION, "in_queue", pedidos)  # aprobar
         _t(s, order, StatusDomain.PREPARATION, "preparing", sat)
+        _add_package(s, order)
         _t(s, order, StatusDomain.PREPARATION, "packed", sat)
         _t(s, order, StatusDomain.TRANSPORT, "label_created", pedidos)
         _t(s, order, StatusDomain.TRANSPORT, "in_transit", pedidos,
@@ -153,6 +163,7 @@ def test_guard_in_transit_requires_tracking_number(session_factory):
         _t(s, order, StatusDomain.PAYMENT, "paid", None)
         _t(s, order, StatusDomain.PREPARATION, "in_queue", pedidos)
         _t(s, order, StatusDomain.PREPARATION, "preparing", sat)
+        _add_package(s, order)
         _t(s, order, StatusDomain.PREPARATION, "packed", sat)
         _t(s, order, StatusDomain.TRANSPORT, "label_created", admin)
         with pytest.raises(TransitionError) as exc:

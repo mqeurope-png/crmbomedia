@@ -62,12 +62,18 @@ services:
       DATABASE_URL: mysql+pymysql://${MYSQL_USER}:${MYSQL_PASSWORD}@db:3306/${MYSQL_DATABASE}
       REDIS_URL: redis://redis:6379/0
       EMAIL_ASSETS_DIR: /opt/crmbo/uploads/email-templates
+      # BoHub ERP Fase D — storage de albaranes/etiquetas en disco del VPS.
+      STORAGE_BACKEND: local
+      LOCAL_SHIPPING_STORAGE_DIR: /opt/crmbo/uploads/erp-shipping
     volumes:
       # Bind mount instead of a named volume so nginx can alias the
       # same `/opt/crmbo/uploads/email-templates/` path on the host —
       # named volumes live under /var/lib/docker/volumes/ and were
       # invisible from nginx's perspective.
       - /opt/crmbo/uploads/email-templates:/opt/crmbo/uploads/email-templates
+      # BoHub ERP Fase D — ficheros de expedición (albarán/etiqueta). Bind
+      # mount para que persistan fuera del contenedor (backup Plesk lo cubre).
+      - /opt/crmbo/uploads/erp-shipping:/opt/crmbo/uploads/erp-shipping
       # Sprint Backup-Hardening. `/admin/backups/{id}/download` lee
       # el archivo cifrado producido por el worker. Sin este bind, el
       # FileResponse del api 404 — el worker crea el binario en su

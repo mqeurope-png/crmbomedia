@@ -460,6 +460,29 @@ export async function apiUpload<T>(
   return parseApiResponse<T>(response);
 }
 
+/** Descarga un binario autenticado (PDF de albarán/etiqueta) como Blob. Igual
+ *  que `exportAuditLogs`: manda cookie + Bearer y NO parsea JSON. El llamante
+ *  crea el object URL y lo abre en una pestaña. */
+export async function apiDownloadBlob(path: string): Promise<Blob> {
+  const token = getStoredToken();
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    credentials: "include",
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    cache: "no-store",
+  });
+  if (!response.ok) {
+    let detail = `Descarga fallida (${response.status})`;
+    try {
+      const body = await response.json();
+      detail = body.detail ?? detail;
+    } catch {
+      // cuerpo vacío / no-JSON: mensaje solo-status
+    }
+    throw new Error(detail);
+  }
+  return response.blob();
+}
+
 async function parseApiResponse<T>(response: Response): Promise<T> {
   if (!response.ok) {
     const fallback = `Error de la API (${response.status})`;

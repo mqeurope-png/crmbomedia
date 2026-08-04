@@ -4,8 +4,10 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { PageHeader } from "../../../components/PageHeader";
+import { EmbalarModal } from "../../../components/erp/EmbalarModal";
 import { EmitFactusolButton } from "../../../components/erp/EmitFactusolButton";
 import { OrderStatusMachine } from "../../../components/erp/OrderStatusMachine";
+import { ShippingFilesSection } from "../../../components/erp/ShippingFilesSection";
 import { getCurrentUser, type User } from "../../../lib/api";
 import { extractErrorMessage } from "../../../lib/errors";
 import {
@@ -28,6 +30,7 @@ export default function ErpOrderDetailPage() {
   const [timeline, setTimeline] = useState<TimelineEvent[]>([]);
   const [user, setUser] = useState<User | null>(null);
   const [factusolStatus, setFactusolStatus] = useState<FactusolStatus | null>(null);
+  const [embalarOpen, setEmbalarOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -57,6 +60,12 @@ export default function ErpOrderDetailPage() {
   const canEmit = !!user && (ERP_EDIT_ROLES as readonly string[]).includes(user.role);
 
   async function onFire(domain: StatusDomain, t: AvailableTransition) {
+    // Fase D: «Embalado» abre el modal multi-bulto en vez de la transición
+    // directa (el backend exige ≥1 bulto medido antes de pasar a packed).
+    if (domain === "preparation" && t.to_status === "packed") {
+      setEmbalarOpen(true);
+      return;
+    }
     const evidence: Record<string, unknown> = {};
     for (const key of t.required_evidence) {
       const val = window.prompt(`«${t.label}» requiere: ${key}`);
@@ -140,6 +149,19 @@ export default function ErpOrderDetailPage() {
       ) : null}
 
       <OrderStatusMachine order={order} onFire={onFire} busy={busy} />
+
+      <ShippingFilesSection
+        orderId={order.id}
+        isWooOrder={order.external_source === "woocommerce"}
+      />
+
+      {embalarOpen ? (
+        <EmbalarModal
+          orderId={order.id}
+          onCancel={() => setEmbalarOpen(false)}
+          onDone={() => { setEmbalarOpen(false); load(); }}
+        />
+      ) : null}
 
       <div className="erp-detail-grid">
         <section className="erp-card">

@@ -3,7 +3,14 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { extractErrorMessage } from "../../lib/errors";
-import { getSatQueue, STATUS_LABELS, type SatQueueItem } from "../../lib/erpApi";
+import {
+  getSatQueue,
+  listShippingFiles,
+  openShippingFile,
+  STATUS_LABELS,
+  type SatQueueItem,
+  type ShipmentFileKind,
+} from "../../lib/erpApi";
 
 /** Cola SAT táctil: cards grandes con lo esencial + acceso al modo trabajo.
  *  Los botones de avance de estado (Empezar/Embalado) viven en el detalle
@@ -22,6 +29,20 @@ export default function SatQueuePage() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+
+  async function openDoc(
+    e: React.MouseEvent, orderId: string, kind: ShipmentFileKind,
+  ) {
+    // Chip ✓: abre el PDF sin navegar a la ficha (el card es un Link).
+    e.preventDefault();
+    e.stopPropagation();
+    try {
+      const files = await listShippingFiles(orderId, kind);
+      if (files[0]) await openShippingFile(files[0]);
+    } catch {
+      // si falla, el operativo puede abrir la ficha y verlo allí
+    }
+  }
 
   return (
     <div className="sat-queue-wrap">
@@ -52,6 +73,27 @@ export default function SatQueuePage() {
                   <li key={i}>{l.quantity}× {l.description}</li>
                 ))}
               </ul>
+              {(o.preparation_status === "preparing"
+                || o.preparation_status === "packed") ? (
+                <div className="sat-card-docs">
+                  {o.has_albaran ? (
+                    <span role="button" tabIndex={0} className="badge ok sat-chip"
+                          onClick={(e) => openDoc(e, o.id, "albaran")}>
+                      Albarán ✓
+                    </span>
+                  ) : (
+                    <span className="badge muted sat-chip">Albarán ✗</span>
+                  )}
+                  {o.has_etiqueta ? (
+                    <span role="button" tabIndex={0} className="badge ok sat-chip"
+                          onClick={(e) => openDoc(e, o.id, "etiqueta")}>
+                      Etiqueta ✓
+                    </span>
+                  ) : (
+                    <span className="badge muted sat-chip">Etiqueta ✗</span>
+                  )}
+                </div>
+              ) : null}
               <span className="sat-card-cta">Abrir →</span>
             </Link>
           ))}

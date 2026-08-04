@@ -139,6 +139,13 @@ class Settings(BaseSettings):
     hidrive_password: str = ""
     erp_uploads_dir: str = "uploads/erp"
 
+    # BoHub ERP Fase D — storage de ficheros de expedición (albaranes +
+    # etiquetas). `STORAGE_BACKEND`=local (default) usa disco local del VPS en
+    # `LOCAL_SHIPPING_STORAGE_DIR`; =hidrive usará HiDrive cuando tenga espacio
+    # (stub hoy). Ver app/storage.
+    storage_backend: str = "local"
+    local_shipping_storage_dir: str = "/opt/crmbo/uploads/erp-shipping"
+
     # BoHub ERP Fase C — FACTUSOL (API DELSOL). Password cifrada con la
     # Fernet key existente (INTEGRATION_SECRETS_KEY); se descifra on-demand
     # y se envía en base64 al login. Ejercicio = año fiscal de los documentos.

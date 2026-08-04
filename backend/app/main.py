@@ -128,6 +128,7 @@ from app.erp.api import factusol_router as erp_factusol_router  # noqa: E402
 from app.erp.api import order_timeline_router as erp_order_timeline_router  # noqa: E402
 from app.erp.api import orders_router as erp_orders_router  # noqa: E402
 from app.erp.api import sat_router as erp_sat_router  # noqa: E402
+from app.erp.api import shipping_router as erp_shipping_router  # noqa: E402
 from app.erp.api import (  # noqa: E402
     woocommerce_admin_router as erp_woocommerce_admin_router,
 )
@@ -138,6 +139,7 @@ app.include_router(erp_sat_router)
 app.include_router(erp_exceptions_router)
 app.include_router(erp_woocommerce_admin_router)
 app.include_router(erp_factusol_router)
+app.include_router(erp_shipping_router)
 
 # Webhooks entrantes (fuera de `/api/*`; auth = firma HMAC, no sesión CRM).
 from app.webhooks.woocommerce import router as woocommerce_webhook_router  # noqa: E402
