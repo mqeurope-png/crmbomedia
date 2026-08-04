@@ -61,6 +61,8 @@ class CompanyRead(BaseModel):
     notes: str | None
     source: str
     is_active: bool
+    #: C-3: CODCLI del cliente en FACTUSOL (None si aún no está vinculado).
+    factusol_company_id: str | None = None
     external_references: dict[str, Any] = Field(
         default_factory=dict,
         validation_alias=AliasChoices(

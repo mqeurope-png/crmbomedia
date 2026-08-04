@@ -4,10 +4,18 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { PageHeader } from "../../../components/PageHeader";
+import {
+  CustomerAutocomplete,
+  type CustomerChoice,
+} from "../../../components/erp/CustomerAutocomplete";
 import { listContacts, type Contact } from "../../../lib/api";
 import { listCompanies, type Company } from "../../../lib/companiesApi";
 import { extractErrorMessage } from "../../../lib/errors";
-import { createOrder, type OrderAddress } from "../../../lib/erpApi";
+import {
+  createFactusolCustomer,
+  createOrder,
+  type OrderAddress,
+} from "../../../lib/erpApi";
 
 type LineRow = {
   product_sku: string;
@@ -56,6 +64,10 @@ export default function NewManualOrderPage() {
   const [shipping, setShipping] = useState<OrderAddress>({ ...EMPTY_ADDRESS });
   const [billingSame, setBillingSame] = useState(true);
   const [billing, setBilling] = useState<OrderAddress>({ ...EMPTY_ADDRESS });
+  const [pendingCrmCompany, setPendingCrmCompany] = useState<Company | null>(null);
+  const [creatingCustomer, setCreatingCustomer] = useState(false);
+  const [factusolNotice, setFactusolNotice] =
+    useState<{ tone: "info" | "error"; text: string } | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -106,6 +118,86 @@ export default function NewManualOrderPage() {
       setCompanyId(hit.company_id);
       const comp = companies.find((c) => c.id === hit.company_id);
       if (comp) setCompanyQuery(comp.name);
+    }
+  }
+
+  /** C-3: elección desde el buscador FACTUSOL/CRM.
+   *  - Cliente FACTUSOL ya vinculado → usa la empresa CRM existente.
+   *  - Cliente FACTUSOL sin vincular → rellena el formulario con sus datos y
+   *    avisa de que se vinculará (el vínculo real necesita empresa CRM, que se
+   *    crea desde Contactos/Empresas — aquí solo pre-rellenamos).
+   *  - Empresa CRM sin código FACTUSOL → ofrece crearla en FACTUSOL. */
+  function onPickCustomer(choice: CustomerChoice) {
+    setFactusolNotice(null);
+    setPendingCrmCompany(null);
+    if (choice.kind === "crm") {
+      const c = choice.company;
+      applyCompany(c);
+      setPendingCrmCompany(c);
+      return;
+    }
+    const cust = choice.customer;
+    setTaxId((prev) => prev || cust.cifcli || "");
+    setShipping((prev) => (addressFilled(prev) ? prev : {
+      address_line: cust.dircli ?? "", city: cust.pobcli ?? "",
+      postal_code: cust.cpocli ?? "", state: cust.procli ?? "",
+      country: cust.naccli || "España",
+    }));
+    if (cust.crm_link?.type === "company") {
+      setCompanyId(cust.crm_link.id);
+      setCompanyQuery(cust.crm_link.name);
+      setFactusolNotice({
+        tone: "info",
+        text: `Cliente FACTUSOL nº ${cust.codcli} — ya vinculado a «${cust.crm_link.name}».`,
+      });
+    } else {
+      setCompanyQuery(cust.nomcli ?? "");
+      setFactusolNotice({
+        tone: "info",
+        text: `Cliente FACTUSOL nº ${cust.codcli} sin empresa en el CRM. Elige o crea la empresa abajo para poder vincularlo.`,
+      });
+    }
+  }
+
+  function applyCompany(c: Company) {
+    setCompanyId(c.id);
+    setCompanyQuery(c.name);
+    setTaxId((prev) => prev || c.tax_id || "");
+    setShipping((prev) => (addressFilled(prev) ? prev : {
+      address_line: c.address_line ?? "", city: c.city ?? "",
+      postal_code: c.postal_code ?? "", state: c.state ?? "",
+      country: c.country ?? "España",
+    }));
+  }
+
+  async function createInFactusol() {
+    if (!pendingCrmCompany) return;
+    setCreatingCustomer(true);
+    setFactusolNotice(null);
+    try {
+      const r = await createFactusolCustomer({
+        crm_type: "company", crm_id: pendingCrmCompany.id,
+        nombre: pendingCrmCompany.name,
+        nif: pendingCrmCompany.tax_id ?? "",
+        direccion: pendingCrmCompany.address_line ?? "",
+        ciudad: pendingCrmCompany.city ?? "",
+        cp: pendingCrmCompany.postal_code ?? "",
+        provincia: pendingCrmCompany.state ?? "",
+      });
+      setPendingCrmCompany(null);
+      setFactusolNotice({
+        tone: "info",
+        text: r.created
+          ? `Creado en FACTUSOL con el nº ${r.factusol_codcli}.`
+          : `Ya existía en FACTUSOL (nº ${r.factusol_codcli}) — vinculado.`,
+      });
+    } catch (e) {
+      setFactusolNotice({
+        tone: "error",
+        text: extractErrorMessage(e, "No se pudo crear en FACTUSOL."),
+      });
+    } finally {
+      setCreatingCustomer(false);
     }
   }
 
@@ -178,6 +270,24 @@ export default function NewManualOrderPage() {
           <p className="muted small">
             Origen: <strong>manual</strong> · el número de pedido se genera solo.
           </p>
+          {/* C-3: busca primero en FACTUSOL (fuente contable) y luego en CRM. */}
+          <CustomerAutocomplete onPick={onPickCustomer} />
+          {factusolNotice ? (
+            <p className={factusolNotice.tone === "error" ? "form-error" : "form-info"}
+               role="status">
+              {factusolNotice.text}
+            </p>
+          ) : null}
+          {pendingCrmCompany ? (
+            <p className="form-info" role="status">
+              «{pendingCrmCompany.name}» aún no está en FACTUSOL.{" "}
+              <button type="button" className="button small"
+                      disabled={creatingCustomer}
+                      onClick={createInFactusol}>
+                {creatingCustomer ? "Creando…" : "Crear en FACTUSOL"}
+              </button>
+            </p>
+          ) : null}
           <div className="form-row">
             <label className="field">
               <span>Empresa</span>

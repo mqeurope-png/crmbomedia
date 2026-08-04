@@ -10327,3 +10327,11 @@ tr.is-inactive {
 .erp-series-fieldset { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
 .erp-series-fieldset legend { font-size: 13px; font-weight: 700; padding: 0 6px; }
 .erp-series-fieldset .data-table input { width: 100%; }
+
+/* C-3: buscador de clientes FACTUSOL ↔ CRM. */
+.erp-customer-autocomplete { display: flex; flex-direction: column; gap: 8px; }
+.erp-ac-heading { margin: 6px 0 2px; font-size: 12px; font-weight: 700; text-transform: uppercase; color: #64748b; }
+.erp-ac-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.erp-ac-item { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: #fff; cursor: pointer; font: inherit; }
+.erp-ac-item:hover { background: #f8fafc; }
+.erp-ac-name { font-weight: 600; flex: 1; }
