@@ -9,11 +9,17 @@ import {
   type CustomerChoice,
 } from "../../../components/erp/CustomerAutocomplete";
 import { listContacts, type Contact } from "../../../lib/api";
-import { listCompanies, type Company } from "../../../lib/companiesApi";
+import {
+  createCompany,
+  listCompanies,
+  type Company,
+} from "../../../lib/companiesApi";
 import { extractErrorMessage } from "../../../lib/errors";
 import {
   createFactusolCustomer,
   createOrder,
+  linkFactusolCustomer,
+  type FactusolCustomer,
   type OrderAddress,
 } from "../../../lib/erpApi";
 
@@ -65,6 +71,15 @@ export default function NewManualOrderPage() {
   const [billingSame, setBillingSame] = useState(true);
   const [billing, setBilling] = useState<OrderAddress>({ ...EMPTY_ADDRESS });
   const [pendingCrmCompany, setPendingCrmCompany] = useState<Company | null>(null);
+  // C-3-fix2: cliente FACTUSOL elegido que aún NO tiene empresa en el CRM.
+  const [pendingFactusolCustomer, setPendingFactusolCustomer] =
+    useState<FactusolCustomer | null>(null);
+  const [creatingCrmCompany, setCreatingCrmCompany] = useState(false);
+  const [linkingExisting, setLinkingExisting] = useState(false);
+  const [linkCompanyQuery, setLinkCompanyQuery] = useState("");
+  const [linkCompanies, setLinkCompanies] = useState<Company[]>([]);
+  const [linkCompanyId, setLinkCompanyId] = useState<string | null>(null);
+  const [linking, setLinking] = useState(false);
   const [creatingCustomer, setCreatingCustomer] = useState(false);
   const [factusolNotice, setFactusolNotice] =
     useState<{ tone: "info" | "error"; text: string } | null>(null);
@@ -89,6 +104,24 @@ export default function NewManualOrderPage() {
     }, 250);
     return () => window.clearTimeout(handle);
   }, [contactQuery]);
+
+  // C-3-fix2: empresas CRM candidatas a vincular (solo las que aún no tienen
+  // código FACTUSOL — las demás ya están vinculadas a otro cliente).
+  useEffect(() => {
+    if (!linkingExisting) return;
+    const handle = window.setTimeout(() => {
+      listCompanies({ q: linkCompanyQuery || undefined, limit: 20 })
+        .then((page) =>
+          setLinkCompanies(page.items.filter((c) => !c.factusol_company_id)))
+        .catch(() => setLinkCompanies([]));
+    }, 250);
+    return () => window.clearTimeout(handle);
+  }, [linkingExisting, linkCompanyQuery]);
+
+  useEffect(() => {
+    const hit = linkCompanies.find((c) => c.name === linkCompanyQuery);
+    setLinkCompanyId(hit?.id ?? null);
+  }, [linkCompanyQuery, linkCompanies]);
 
   const total = useMemo(
     () => lines.reduce((sum, l) => sum + num(l.quantity) * num(l.unit_price), 0),
@@ -130,6 +163,8 @@ export default function NewManualOrderPage() {
   function onPickCustomer(choice: CustomerChoice) {
     setFactusolNotice(null);
     setPendingCrmCompany(null);
+    setPendingFactusolCustomer(null);
+    setLinkingExisting(false);
     if (choice.kind === "crm") {
       const c = choice.company;
       applyCompany(c);
@@ -152,9 +187,10 @@ export default function NewManualOrderPage() {
       });
     } else {
       setCompanyQuery(cust.nombre ?? "");
+      setPendingFactusolCustomer(cust);
       setFactusolNotice({
         tone: "info",
-        text: `Cliente FACTUSOL nº ${cust.codcli} sin empresa en el CRM. Elige o crea la empresa abajo para poder vincularlo.`,
+        text: `Cliente FACTUSOL nº ${cust.codcli} sin empresa en el CRM. Elige debajo qué hacer.`,
       });
     }
   }
@@ -168,6 +204,73 @@ export default function NewManualOrderPage() {
       postal_code: c.postal_code ?? "", state: c.state ?? "",
       country: c.country ?? "España",
     }));
+  }
+
+  /** C-3-fix2: crea la empresa CRM con los datos que vienen de F_CLI y la
+   *  vincula al cliente FACTUSOL. Es la acción que faltaba: antes el aviso
+   *  decía «elige o crea la empresa abajo» pero no había ningún «abajo». */
+  async function createCrmFromFactusol() {
+    const cust = pendingFactusolCustomer;
+    if (!cust?.codcli) return;
+    setCreatingCrmCompany(true);
+    setFactusolNotice(null);
+    try {
+      const newCompany = await createCompany({
+        name: cust.nombre ?? cust.nofcli ?? "",
+        tax_id: cust.nif ?? null,
+        address_line: cust.domcli ?? null,
+        city: cust.pobcli ?? null,
+        postal_code: cust.cpocli ?? null,
+        state: cust.procli ?? null,
+        country: "España",
+      });
+      await linkFactusolCustomer({
+        crm_type: "company", crm_id: newCompany.id,
+        factusol_codcli: cust.codcli,
+      });
+      applyCompany(newCompany);
+      setPendingFactusolCustomer(null);
+      setFactusolNotice({
+        tone: "info",
+        text: `Empresa CRM «${newCompany.name}» creada y vinculada a FACTUSOL nº ${cust.codcli}.`,
+      });
+    } catch (e) {
+      setFactusolNotice({
+        tone: "error",
+        text: extractErrorMessage(e, "No se pudo crear la empresa CRM."),
+      });
+    } finally {
+      setCreatingCrmCompany(false);
+    }
+  }
+
+  /** C-3-fix2: vincula el cliente FACTUSOL a una empresa CRM que ya existe. */
+  async function linkToExistingCompany() {
+    const cust = pendingFactusolCustomer;
+    if (!cust?.codcli || !linkCompanyId) return;
+    setLinking(true);
+    setFactusolNotice(null);
+    try {
+      await linkFactusolCustomer({
+        crm_type: "company", crm_id: linkCompanyId,
+        factusol_codcli: cust.codcli,
+      });
+      const comp = linkCompanies.find((c) => c.id === linkCompanyId);
+      if (comp) applyCompany(comp);
+      setPendingFactusolCustomer(null);
+      setLinkingExisting(false);
+      setFactusolNotice({
+        tone: "info",
+        text: `Empresa «${comp?.name ?? ""}» vinculada a FACTUSOL nº ${cust.codcli}.`,
+      });
+    } catch (e) {
+      setFactusolNotice({
+        tone: "error",
+        text: extractErrorMessage(e, "No se pudo vincular."),
+      });
+    } finally {
+      setLinking(false);
+    }
   }
 
   async function createInFactusol() {
@@ -278,6 +381,51 @@ export default function NewManualOrderPage() {
               {factusolNotice.text}
             </p>
           ) : null}
+          {/* C-3-fix2: cliente FACTUSOL sin empresa CRM → 2 acciones reales. */}
+          {pendingFactusolCustomer ? (
+            <div className="erp-factusol-actions">
+              <button type="button" className="button small"
+                      disabled={creatingCrmCompany}
+                      onClick={createCrmFromFactusol}>
+                {creatingCrmCompany
+                  ? "Creando…"
+                  : "Crear empresa CRM con estos datos y vincular"}
+              </button>
+              <button type="button" className="button small secondary"
+                      onClick={() => setLinkingExisting((v) => !v)}>
+                Vincular a empresa CRM existente…
+              </button>
+            </div>
+          ) : null}
+
+          {pendingFactusolCustomer && linkingExisting ? (
+            <div className="erp-link-existing">
+              <label className="field">
+                <span>Empresa CRM a vincular</span>
+                <input
+                  type="text" list="erp-link-companies" value={linkCompanyQuery}
+                  placeholder="Buscar empresa sin FACTUSOL…"
+                  aria-label="Empresa CRM a vincular"
+                  onChange={(e) => setLinkCompanyQuery(e.target.value)}
+                />
+                <datalist id="erp-link-companies">
+                  {linkCompanies.map((c) => <option key={c.id} value={c.name} />)}
+                </datalist>
+              </label>
+              <div className="erp-exc-actions">
+                <button type="button" className="button small"
+                        disabled={!linkCompanyId || linking}
+                        onClick={linkToExistingCompany}>
+                  {linking ? "Vinculando…" : "Vincular"}
+                </button>
+                <button type="button" className="button small secondary"
+                        onClick={() => setLinkingExisting(false)}>
+                  Cancelar
+                </button>
+              </div>
+            </div>
+          ) : null}
+
           {pendingCrmCompany ? (
             <p className="form-info" role="status">
               «{pendingCrmCompany.name}» aún no está en FACTUSOL.{" "}

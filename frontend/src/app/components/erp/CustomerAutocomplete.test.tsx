@@ -74,12 +74,12 @@ describe("CustomerAutocomplete", () => {
     expect(await screen.findByText("✓ En CRM")).toBeInTheDocument();
   });
 
-  it("marca «Vincular a CRM» si no está vinculado", async () => {
+  it("marca «Sin CRM» si no está vinculado (la acción vive fuera)", async () => {
     mockFactusol.mockResolvedValue([customer()]);
     const user = userEvent.setup();
     render(<CustomerAutocomplete onPick={() => {}} />);
     await user.type(screen.getByLabelText("Buscar cliente"), "porta");
-    expect(await screen.findByText("Vincular a CRM")).toBeInTheDocument();
+    expect(await screen.findByText("Sin CRM")).toBeInTheDocument();
   });
 
   it("elegir un cliente FACTUSOL emite la elección", async () => {

@@ -52,6 +52,34 @@ Resultado: el alta desde el CRM queda de facto reservada a **pedidos manuales**
 - **Solo en FACTUSOL** → se vincula al CRM guardando el CODCLI.
 - **Solo en CRM** → botón «Crear en FACTUSOL» (sujeto a los 2 guards de arriba).
 
+## Flujo desde «Nuevo pedido manual» (C-3-fix2)
+
+El buscador de `/erp/orders/new` cubre los 3 casos **sin salir del formulario**:
+
+```
+Eliges un resultado del buscador
+│
+├─ FACTUSOL «✓ En CRM»  → se usa la empresa vinculada. Nada que hacer.
+│
+├─ FACTUSOL «Sin CRM»   → aparecen 2 acciones:
+│    ├─ «Crear empresa CRM con estos datos y vincular»
+│    │     createCompany(datos de F_CLI) → link(codcli) → listo
+│    └─ «Vincular a empresa CRM existente…»
+│          buscador de empresas SIN código FACTUSOL → link(codcli)
+│
+└─ CRM «Crear en FACTUSOL» → POST customers/create (con dedupe por NIF y
+      bloqueo si el cliente tiene pedidos Woo)
+```
+
+> El chip del buscador dice **«Sin CRM»**, no «Vincular a CRM»: elegir un
+> resultado solo **pre-rellena** el formulario. La vinculación real la hacen los
+> dos botones. Antes el aviso decía «elige o crea la empresa abajo» y **no había
+> ningún abajo** — había que salir a Contactos y volver (corregido en C-3-fix2).
+
+En el modo «vincular a existente» solo se listan empresas **sin** código
+FACTUSOL: las que ya lo tienen están vinculadas a otro cliente y el backend
+rechazaría el link con 409 `already_linked`.
+
 ## Dónde vive el vínculo
 
 | CRM | Columna | Origen |

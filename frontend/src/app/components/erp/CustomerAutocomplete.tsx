@@ -96,7 +96,9 @@ export function CustomerAutocomplete({
                   {c.crm_link ? (
                     <span className="badge ok">✓ En CRM</span>
                   ) : (
-                    <span className="badge warn">Vincular a CRM</span>
+                    /* Elegirlo solo pre-rellena el formulario: la vinculación
+                       real la hacen los botones de abajo (C-3-fix2). */
+                    <span className="badge warn">Sin CRM</span>
                   )}
                 </button>
               </li>
