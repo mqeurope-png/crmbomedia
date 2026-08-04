@@ -50,8 +50,10 @@ def client(session_factory) -> Generator[TestClient, None, None]:
     app.dependency_overrides.clear()
 
 
-def _mk_order(s: Session, *, number="MAN-0001", prep="in_queue") -> str:
-    o = Order(order_number=number, preparation_status=prep, payment_status="paid")
+def _mk_order(s: Session, *, number="MAN-0001", prep="in_queue",
+              transport="not_shipped") -> str:
+    o = Order(order_number=number, preparation_status=prep, payment_status="paid",
+              transport_status=transport)
     s.add(o)
     s.flush()
     s.add(OrderLine(order_id=o.id, product_sku="SKU-A", product_codart="A1",
@@ -70,11 +72,25 @@ def test_sat_queue_priorities_blocked_then_preparing_then_in_queue(
         _mk_order(s, number="Q-INQUEUE", prep="in_queue")
         _mk_order(s, number="Q-PREP", prep="preparing")
         _mk_order(s, number="Q-BLOCKED", prep="blocked")
-        _mk_order(s, number="Q-PACKED", prep="packed")  # NO entra en la cola
+        _mk_order(s, number="Q-PACKED", prep="packed")  # va a «listos para envío»
     r = client.get("/api/erp/sat/queue", headers=auth_headers(client, "sat"))
     assert r.status_code == 200
-    nums = [i["order_number"] for i in r.json()["items"]]
-    assert nums == ["Q-BLOCKED", "Q-PREP", "Q-INQUEUE"]  # packed excluido + orden
+    nums = [i["order_number"] for i in r.json()["preparing"]]
+    assert nums == ["Q-BLOCKED", "Q-PREP", "Q-INQUEUE"]  # packed no está en «por embalar»
+
+
+def test_sat_queue_returns_two_sections(client, session_factory):
+    """D-1-fix1: preparing (por embalar) + ready_for_pickup (packed sin salir)."""
+    with session_factory() as s:
+        _mk_order(s, number="PREP-1", prep="preparing")
+        _mk_order(s, number="READY-1", prep="packed")            # not_shipped → listo
+        _mk_order(s, number="GONE-1", prep="packed", transport="in_transit")  # ya salió
+    r = client.get("/api/erp/sat/queue", headers=auth_headers(client, "sat"))
+    body = r.json()
+    assert [i["order_number"] for i in body["preparing"]] == ["PREP-1"]
+    assert [i["order_number"] for i in body["ready_for_pickup"]] == ["READY-1"]
+    # El item de listos lleva el estado de transporte para decidir «recogido».
+    assert body["ready_for_pickup"][0]["transport_status"] == "not_shipped"
 
 
 def test_sat_queue_visible_to_sat_role(client, session_factory):

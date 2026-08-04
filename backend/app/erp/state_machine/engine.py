@@ -79,9 +79,13 @@ def _guard_packed(order: Order, _evidence: dict[str, Any]) -> str | None:
 
 def _guard_tracking(order: Order, evidence: dict[str, Any]) -> str | None:
     tracking = (evidence.get("tracking_number") or order.tracking_number or "").strip()
-    if not tracking:
-        return "en tránsito exige tracking_number (en el pedido o como evidencia)"
-    return None
+    if tracking:
+        return None
+    # Fase D-1-fix1: recogida manual del taller (transportista sin tracking en
+    # el sistema). El operativo confirma explícitamente que el paquete salió.
+    if evidence.get("manual_pickup"):
+        return None
+    return "en tránsito exige tracking_number (o marcar recogida manual)"
 
 
 def _guard_invoiceable(order: Order, _evidence: dict[str, Any]) -> str | None:

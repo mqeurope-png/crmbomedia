@@ -258,6 +258,8 @@ export type SatQueueItem = {
   id: string;
   order_number: string;
   preparation_status: PreparationStatus;
+  /** Fase D-1-fix1: estado de transporte (decide «Marcar recogido»). */
+  transport_status: TransportStatus;
   payment_status: PaymentStatus;
   total_amount: number;
   currency: string;
@@ -267,9 +269,24 @@ export type SatQueueItem = {
   has_etiqueta: boolean;
 };
 
-export async function getSatQueue(): Promise<SatQueueItem[]> {
-  const r = await apiFetch<{ items: SatQueueItem[] }>("/api/erp/sat/queue");
-  return r.items;
+/** Cola SAT en 2 secciones (D-1-fix1): por embalar + listos para envío. */
+export type SatQueue = {
+  preparing: SatQueueItem[];
+  ready_for_pickup: SatQueueItem[];
+};
+
+export async function getSatQueue(): Promise<SatQueue> {
+  return apiFetch<SatQueue>("/api/erp/sat/queue");
+}
+
+/** «Marcar recogido»: el paquete salió del taller → transporte in_transit. */
+export async function markPickedUp(
+  orderId: string, trackingNumber?: string,
+): Promise<{ order_id: string; transport_status: string; already_picked_up: boolean }> {
+  return apiFetch(`/api/erp/orders/${orderId}/mark-picked-up`, {
+    method: "POST",
+    body: JSON.stringify(trackingNumber ? { tracking_number: trackingNumber } : {}),
+  });
 }
 
 /** Catálogo de excepciones que SAT puede reportar (subset del backend con

@@ -84,24 +84,42 @@ def _packing(order: Order) -> dict[str, Any]:
         return {}
 
 
+#: Estados de transporte que sacan un pedido de «Listos para envío» (ya salió).
+_SHIPPED_TRANSPORT = ("in_transit", "delivered", "already_shipped_externally")
+
+
 @router.get("/sat/queue")
 def sat_queue(
     session: Session = Depends(get_session),
     current_user: User = Depends(require_erp_view),
 ) -> dict[str, Any]:
-    """Cola táctil del taller: pedidos en preparación priorizados."""
+    """Cola táctil del taller en 2 secciones (D-1-fix1):
+
+    - `preparing`: por embalar (in_queue / preparing / blocked), priorizados.
+    - `ready_for_pickup`: embalados (`packed`) pero aún no salidos del taller
+      (transporte NO en tránsito/entregado/externalizado) — falta imprimir
+      albarán/etiqueta y marcar recogido.
+    """
     _ = current_user
-    rows = list(session.scalars(
+    prep_rows = list(session.scalars(
         select(Order).where(Order.preparation_status.in_(list(_QUEUE_ORDER)))
         .options(selectinload(Order.lines))
     ))
-    rows.sort(key=lambda o: (
+    prep_rows.sort(key=lambda o: (
         _QUEUE_ORDER.get(getattr(o.preparation_status, "value", o.preparation_status), 9),
         o.placed_at or o.created_at,
     ))
-    # Presencia de albarán/etiqueta vigentes (Fase D) — una sola query.
+    ready_rows = list(session.scalars(
+        select(Order).where(
+            Order.preparation_status == PreparationStatus.PACKED.value,
+            Order.transport_status.notin_(_SHIPPED_TRANSPORT),
+        ).options(selectinload(Order.lines))
+        .order_by(Order.placed_at.asc())
+    ))
+
+    # Presencia de albarán/etiqueta vigentes (Fase D) — una sola query para ambos.
     files_by_order: dict[str, set[str]] = {}
-    order_ids = [o.id for o in rows]
+    order_ids = [o.id for o in (*prep_rows, *ready_rows)]
     if order_ids:
         for oid, kind in session.execute(
             select(ShipmentFile.order_id, ShipmentFile.kind).where(
@@ -110,25 +128,28 @@ def sat_queue(
             )
         ):
             files_by_order.setdefault(oid, set()).add(kind)
+
+    def _item(o: Order) -> dict[str, Any]:
+        return {
+            "id": o.id,
+            "order_number": o.order_number,
+            "preparation_status": getattr(o.preparation_status, "value", o.preparation_status),
+            "transport_status": getattr(o.transport_status, "value", o.transport_status),
+            "payment_status": getattr(o.payment_status, "value", o.payment_status),
+            "total_amount": float(o.total_amount or 0),
+            "currency": o.currency,
+            "lines": [
+                {"sku": line.product_sku, "description": line.description,
+                 "quantity": float(line.quantity)}
+                for line in o.lines
+            ],
+            "has_albaran": KIND_ALBARAN in files_by_order.get(o.id, set()),
+            "has_etiqueta": KIND_ETIQUETA in files_by_order.get(o.id, set()),
+        }
+
     return {
-        "items": [
-            {
-                "id": o.id,
-                "order_number": o.order_number,
-                "preparation_status": getattr(o.preparation_status, "value", o.preparation_status),
-                "payment_status": getattr(o.payment_status, "value", o.payment_status),
-                "total_amount": float(o.total_amount or 0),
-                "currency": o.currency,
-                "lines": [
-                    {"sku": line.product_sku, "description": line.description,
-                     "quantity": float(line.quantity)}
-                    for line in o.lines
-                ],
-                "has_albaran": KIND_ALBARAN in files_by_order.get(o.id, set()),
-                "has_etiqueta": KIND_ETIQUETA in files_by_order.get(o.id, set()),
-            }
-            for o in rows
-        ],
+        "preparing": [_item(o) for o in prep_rows],
+        "ready_for_pickup": [_item(o) for o in ready_rows],
     }
 
 

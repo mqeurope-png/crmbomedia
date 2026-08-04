@@ -146,20 +146,24 @@ TRANSITIONS: tuple[TransitionDef, ...] = (
     TransitionDef(
         StatusDomain.PREPARATION, PreparationStatus.PACKED.value,
         PreparationStatus.IN_QUEUE.value,
-        "Reabrir (error de picking)", frozenset({_ADMIN}),
+        # Fase D-1-fix1: el operativo SAT que embaló puede reabrir si detecta un
+        # error de picking tarde (además de admin).
+        "Reabrir (error de picking)", frozenset({_ADMIN, _SAT}),
         required_evidence=("reason",),
     ),
     # --- 3. Transporte -------------------------------------------------------
+    # Fase D-1-fix1: SAT (taller) también dispara el envío/recogida — son
+    # acciones físicas del almacén, no solo de back-office.
     TransitionDef(
         StatusDomain.TRANSPORT, TransportStatus.NOT_SHIPPED.value,
         TransportStatus.LABEL_CREATED.value,
-        "Crear envío", _OFFICE_OR_SYSTEM,
+        "Crear envío", _OFFICE_OR_SYSTEM | {_SAT},
         guards=(GUARD_PACKED,),
     ),
     TransitionDef(
         StatusDomain.TRANSPORT, TransportStatus.LABEL_CREATED.value,
         TransportStatus.IN_TRANSIT.value,
-        "Recogido / en tránsito", _OFFICE_OR_SYSTEM,
+        "Recogido / en tránsito", _OFFICE_OR_SYSTEM | {_SAT},
         guards=(GUARD_TRACKING,),
     ),
     TransitionDef(
