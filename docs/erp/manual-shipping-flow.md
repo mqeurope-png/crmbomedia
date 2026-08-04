@@ -185,3 +185,100 @@ caída) — ahí sí toca subir el albarán a mano.
 
 > Dependencia nueva: `reportlab` en `requirements.txt` (pure-Python, sin libs de
 > sistema; arrastra `pillow`). Sin migración ni env nuevos.
+
+---
+
+## Actualización D-1-fix2 (2026-08-04) — mu-plugin WP para el albarán oficial + chip en «Por embalar»
+
+### Descarga del albarán — método definitivo: **mu-plugin → reportlab**
+
+Bart no compra la versión Pro del plugin PDF Invoices, así que ni la REST Pro ni
+el acceso público por `order_key` (B.1/B.2) sirven — **se retiran**. En su lugar,
+un **mu-plugin WordPress propio** (`bohub-albaran`) expone un endpoint público
+autenticado por **token compartido** que genera internamente el PDF *oficial* del
+plugin free (con logo, IVA y datos fiscales):
+
+```
+GET {store}/?bohub_albaran=packing-slip&order_id={id}&token={TOKEN}
+→ 200 application/pdf   (PDF oficial del plugin)
+→ 401 text/plain        (token incorrecto)
+→ 404 text/plain        (mu-plugin no instalado o PDF Invoices inactivo)
+```
+
+Nuevo flujo de `get_packing_slip_pdf()` / `fetch-from-woo`:
+
+1. **mu-plugin** (preferente): `GET …?bohub_albaran=packing-slip&order_id=…&token=…`
+   (timeout 20 s). Si devuelve `application/pdf` → ese es el albarán oficial.
+2. **reportlab** (backstop): si el token no está configurado, el mu-plugin no
+   está instalado, hay 401/404/timeout o la respuesta no es un PDF → el CRM
+   genera su albarán propio (`source=crm_generated_pdf`). **Nunca 502 por el
+   plugin** (solo si `GET /orders/{id}` de Woo falla, tienda caída).
+
+**Env nueva:** `WOOCOMMERCE_ALBARAN_TOKEN` (mismo token en las 3 tiendas). El
+valor real vive **solo en `.env.production`**, nunca en el repo. Vacío → el CRM
+usa siempre reportlab.
+
+### Instalación del mu-plugin en una tienda nueva
+
+1. **Copiar el fichero** `wp-content/mu-plugins/bohub-albaran.php` a la tienda
+   (los mu-plugins se cargan solos, sin activar). Contrato de referencia:
+
+   ```php
+   <?php
+   /* Plugin Name: BoHub Albarán (mu-plugin) */
+   // Token compartido — el MISMO en las 3 tiendas. Reemplazar por el real.
+   if ( ! defined( 'BOHUB_ALBARAN_TOKEN' ) ) {
+       define( 'BOHUB_ALBARAN_TOKEN', 'REEMPLAZAR_POR_EL_TOKEN_REAL' );
+   }
+   add_action( 'wp_loaded', function () {          // wp_loaded: Woo + PDF Invoices ya cargados
+       if ( empty( $_GET['bohub_albaran'] ) ) return;
+       $token = isset( $_GET['token'] ) ? (string) $_GET['token'] : '';
+       if ( ! hash_equals( BOHUB_ALBARAN_TOKEN, $token ) ) {
+           status_header( 401 ); header( 'Content-Type: text/plain' );
+           echo 'token invalido'; exit;
+       }
+       $order_id = isset( $_GET['order_id'] ) ? absint( $_GET['order_id'] ) : 0;
+       $type     = sanitize_text_field( $_GET['bohub_albaran'] ); // packing-slip
+       if ( ! function_exists( 'wcpdf_get_document' ) || ! $order_id ) {
+           status_header( 404 ); header( 'Content-Type: text/plain' );
+           echo 'PDF Invoices no activo o pedido invalido'; exit;
+       }
+       $doc = wcpdf_get_document( $type, wc_get_order( $order_id ), true );
+       if ( ! $doc ) { status_header( 404 ); header( 'Content-Type: text/plain' );
+           echo 'documento no disponible'; exit; }
+       header( 'Content-Type: application/pdf' );
+       echo $doc->get_pdf(); exit;
+   } );
+   ```
+
+2. **Poner el token real** en la constante `BOHUB_ALBARAN_TOKEN` (mismo valor que
+   `WOOCOMMERCE_ALBARAN_TOKEN` del CRM).
+3. **Probar con curl** (con un `order_id` real):
+   ```bash
+   curl -sS "https://<dominio>/?bohub_albaran=packing-slip&order_id=<ID>&token=<TOKEN>" \
+     -o /tmp/test.pdf -w "HTTP %{http_code} · %{content_type}\n"
+   # esperado: HTTP 200 · application/pdf
+   ```
+4. **Añadir la env al CRM**: `WOOCOMMERCE_ALBARAN_TOKEN=<TOKEN>` en
+   `.env.production` y redeploy `api`.
+
+### Cola SAT táctil — chip de albarán en AMBAS secciones
+
+```
+┌─ Cola SAT ──────────────────────────────────────────────────────────┐
+│  📦 Por embalar                       🚚 Listos para envío           │
+│  ───────────────                      ──────────────────            │
+│  card → modo trabajo                  card:                         │
+│  · 📄 Descargar/Imprimir albarán      · 📄 Imprimir/Falta albarán    │
+│    (cotejar líneas antes de embalar)  · 🏷️ Imprimir/Falta etiqueta   │
+│                                       · 📤 Marcar recogido           │
+│                                       · Reabrir preparación          │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+En «📦 Por embalar» cada card lleva el chip de albarán (sin salir del táctil):
+- `has_albaran` → `📄 Imprimir albarán` → abre el PDF en pestaña nueva.
+- si no → `📄 Descargar albarán` → un click dispara `fetch-from-woo`
+  (mu-plugin → reportlab), refresca y **auto-abre** el PDF. Si falla, aviso con
+  enlace a la ficha para subirlo a mano.
+La **etiqueta** sigue solo en «Listos para envío» (requiere multi-bulto).

@@ -173,58 +173,71 @@ class WooHTTPClient:
             out.extend(batch)
             page += 1
 
-    # --- albarán (PDF plugin PDF Invoices & Packing Slips) --------------------
+    # --- albarán (mu-plugin `bohub-albaran` de la tienda WP) ------------------
 
-    def get_packing_slip_pdf(
-        self, order_id: int, *, order_key: str | None = None,
-    ) -> tuple[bytes, str]:
-        """Descarga el PDF de albarán del plugin *PDF Invoices & Packing Slips*.
+    def get_packing_slip_pdf(self, order_id: int) -> tuple[bytes, str]:
+        """Descarga el albarán OFICIAL del plugin *PDF Invoices & Packing Slips*
+        (free) a través del **mu-plugin `bohub-albaran`** instalado en la tienda.
 
-        Dos vías, en orden:
-          1. REST del plugin (versión Pro):
-             `GET /wp-json/wcpdf/v1/documents/packing-slip/{id}?output=pdf`.
-          2. **Acceso público por `order_key`** (D-1-fix1): si el plugin tiene
-             activado «Document access» para invitados, el PDF es accesible sin
-             autenticar vía `/?wpo_wcpdf_document=packing-slip&order_ids={id}&`
-             `access_key={order_key}` (se prueba `access_key` y `order_key`).
+        Flujo real (D-1-fix2): `mu-plugin → (fallback en la capa superior)
+        reportlab`. El mu-plugin expone un endpoint público autenticado por
+        token compartido:
 
-        Devuelve `(pdf_bytes, filename)`. Lanza `WooError` si ninguna entrega un
-        PDF — el llamante genera entonces un albarán propio (`albaran_pdf`).
+            GET {store}/?bohub_albaran=packing-slip&order_id={id}&token={TOKEN}
+
+        El token vive en `settings.woocommerce_albaran_token` (env
+        `WOOCOMMERCE_ALBARAN_TOKEN`), el MISMO que Bart pone hardcodeado en el
+        `bohub-albaran.php` de las 3 tiendas.
+
+        Devuelve `(pdf_bytes, filename)` si el mu-plugin entrega el PDF. Lanza
+        `WooError` si el token no está configurado, el mu-plugin no está
+        instalado (404), el token es rechazado (401), hay timeout, o la
+        respuesta no es un PDF — en cualquiera de esos casos el llamante
+        (`fetch_albaran_from_woo`) genera un albarán propio con `albaran_pdf`.
         """
+        from app.core.config import get_settings  # noqa: PLC0415
+
+        token = get_settings().woocommerce_albaran_token
+        if not token:
+            raise WooError(
+                "WOOCOMMERCE_ALBARAN_TOKEN no configurado; se usa el albarán "
+                "generado por el CRM.",
+                status=503,
+            )
         filename = f"albaran-{order_id}.pdf"
-        base = self.creds.base_url
-        # 1) REST del plugin (Pro).
-        rest = self._raw_get(
-            f"{base}/wp-json/wcpdf/v1/documents/packing-slip/{order_id}",
-            params={"output": "pdf"},
-        )
-        if rest is not None and rest.status_code < 400:
-            pdf = _extract_pdf(rest)
+        resp = self._raw_get(f"{self.creds.base_url}/", params={
+            "bohub_albaran": "packing-slip",
+            "order_id": order_id,
+            "token": token,
+        }, timeout=20.0)
+        if resp is None:
+            raise WooError(
+                f"mu-plugin albarán: sin respuesta (timeout/red) — pedido {order_id}.",
+                status=504,
+            )
+        if resp.status_code == 401:
+            raise WooError(
+                "mu-plugin albarán: token rechazado (401) en esta tienda.",
+                status=401,
+            )
+        if resp.status_code == 404:
+            raise WooError(
+                "mu-plugin albarán: no instalado o PDF Invoices inactivo (404).",
+                status=404,
+            )
+        if resp.status_code < 400:
+            pdf = _extract_pdf(resp)
             if pdf is not None:
-                logger.info("woocommerce albarán %s vía REST del plugin", order_id)
+                logger.info("woocommerce albarán %s vía mu-plugin", order_id)
                 return pdf, filename
-        # 2) Acceso público por order_key / access_key.
-        if order_key:
-            for key_param in ("access_key", "order_key"):
-                pub = self._raw_get(f"{base}/", params={
-                    "wpo_wcpdf_document": "packing-slip",
-                    "order_ids": order_id,
-                    key_param: order_key,
-                })
-                if pub is not None and pub.status_code < 400:
-                    pdf = _extract_pdf(pub)
-                    if pdf is not None:
-                        logger.info("woocommerce albarán %s vía order_key (%s)",
-                                    order_id, key_param)
-                        return pdf, filename
+        # text/plain u otro cuerpo → mensaje de error del mu-plugin.
         raise WooError(
-            f"El plugin de Woo no entregó el albarán del pedido {order_id} "
-            "(sin REST Pro ni acceso público por order_key).",
-            status=502,
+            f"mu-plugin albarán ({resp.status_code}): {(resp.text or '')[:200]}",
+            status=resp.status_code or 502,
         )
 
     def _raw_get(
-        self, url: str, *, params: dict[str, Any] | None = None,
+        self, url: str, *, params: dict[str, Any] | None = None, timeout: float = 30.0,
     ) -> httpx.Response | None:
         """GET autenticado que devuelve la respuesta cruda (sin parsear JSON),
         para descargar binarios. None si la red falla tras los reintentos."""
@@ -232,7 +245,7 @@ class WooHTTPClient:
         while True:
             attempt += 1
             try:
-                with httpx.Client(timeout=30.0, transport=self._transport,
+                with httpx.Client(timeout=timeout, transport=self._transport,
                                   follow_redirects=True) as c:
                     return c.get(
                         url, params=params or {},

@@ -65,6 +65,9 @@ services:
       # BoHub ERP Fase D — storage de albaranes/etiquetas en disco del VPS.
       STORAGE_BACKEND: local
       LOCAL_SHIPPING_STORAGE_DIR: /opt/crmbo/uploads/erp-shipping
+      # D-1-fix2: token del mu-plugin `bohub-albaran` (mismo en las 3 tiendas).
+      # Valor real en .env.production; vacío → el CRM genera el albarán.
+      WOOCOMMERCE_ALBARAN_TOKEN: ${WOOCOMMERCE_ALBARAN_TOKEN:-}
     volumes:
       # Bind mount instead of a named volume so nginx can alias the
       # same `/opt/crmbo/uploads/email-templates/` path on the host —

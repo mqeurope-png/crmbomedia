@@ -371,29 +371,27 @@ def fetch_albaran_from_woo(
         }) from exc
 
     client = WooHTTPClient(account)
-    # Un solo fetch del pedido: da el order_key (para el plugin público) y los
-    # datos (para generar el albarán propio si el plugin no responde).
+    # 1) Vía preferente: el mu-plugin `bohub-albaran` de la tienda (PDF oficial).
     try:
-        order_json = client.get_order(woo_id)
-    except WooError as exc:
-        logger.warning("albarán Woo: pedido %s no accesible: %s", woo_id, exc)
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, {
-            "code": "woo_unreachable",
-            "detail": "WooCommerce no responde; sube el albarán a mano.",
-        }) from exc
-    order_key = order_json.get("order_key") if isinstance(order_json, dict) else None
-    try:
-        pdf, filename = client.get_packing_slip_pdf(woo_id, order_key=order_key)
+        pdf, filename = client.get_packing_slip_pdf(woo_id)
         source = SOURCE_WOO_PDF_PLUGIN
     except WooError:
-        # Fallback garantizado: generamos un albarán propio con los datos del
-        # pedido (nunca 502 por el plugin).
+        # 2) Fallback: generamos un albarán propio con los datos del pedido
+        # (reportlab). Necesita el JSON del pedido; si Woo no responde → 502.
+        try:
+            order_json = client.get_order(woo_id)
+        except WooError as exc:
+            logger.warning("albarán Woo: pedido %s no accesible: %s", woo_id, exc)
+            raise HTTPException(status.HTTP_502_BAD_GATEWAY, {
+                "code": "woo_unreachable",
+                "detail": "WooCommerce no responde; sube el albarán a mano.",
+            }) from exc
         from app.erp.albaran_pdf import generate_albaran_pdf  # noqa: PLC0415
 
         pdf = generate_albaran_pdf(order_json)
         filename = f"albaran-{woo_id}.pdf"
         source = SOURCE_CRM_GENERATED_PDF
-        logger.info("albarán Woo %s generado por el CRM (plugin no disponible)", woo_id)
+        logger.info("albarán Woo %s generado por el CRM (mu-plugin no disponible)", woo_id)
     row = _store_new_file(
         session, order, kind=KIND_ALBARAN, source=source,
         filename=filename, mime_type="application/pdf", data=pdf, actor_id=None,
