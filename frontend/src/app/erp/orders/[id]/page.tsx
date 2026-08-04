@@ -4,12 +4,15 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { PageHeader } from "../../../components/PageHeader";
+import { EmitFactusolButton } from "../../../components/erp/EmitFactusolButton";
 import { OrderStatusMachine } from "../../../components/erp/OrderStatusMachine";
+import { getCurrentUser, type User } from "../../../lib/api";
 import { extractErrorMessage } from "../../../lib/errors";
 import {
   getOrder,
   getOrderTimeline,
   fireTransition,
+  ERP_EDIT_ROLES,
   type AvailableTransition,
   type OrderDetail,
   type StatusDomain,
@@ -21,6 +24,7 @@ export default function ErpOrderDetailPage() {
   const id = params.id;
   const [order, setOrder] = useState<OrderDetail | null>(null);
   const [timeline, setTimeline] = useState<TimelineEvent[]>([]);
+  const [user, setUser] = useState<User | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -31,7 +35,12 @@ export default function ErpOrderDetailPage() {
     getOrderTimeline(id).then((r) => setTimeline(r.items)).catch(() => undefined);
   }, [id]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    getCurrentUser().then(setUser).catch(() => undefined);
+    load();
+  }, [load]);
+
+  const canEmit = !!user && (ERP_EDIT_ROLES as readonly string[]).includes(user.role);
 
   async function onFire(domain: StatusDomain, t: AvailableTransition) {
     const evidence: Record<string, unknown> = {};
@@ -74,6 +83,19 @@ export default function ErpOrderDetailPage() {
         ]}
       />
       {error ? <p className="form-error">{error}</p> : null}
+      {canEmit ? (
+        <div className="erp-factusol-row" style={{ margin: "0 0 14px" }}>
+          <EmitFactusolButton
+            orderId={order.id}
+            invoiceStatus={order.invoice_status}
+            factusolInvoiceNumber={order.factusol_invoice_number}
+            totalAmount={order.total_amount}
+            currency={order.currency}
+            companyId={order.company_id}
+            onInvoiced={() => load()}
+          />
+        </div>
+      ) : null}
       {order.externally_processed_at ? (
         <p className="form-info" role="status">
           <span className="badge muted">Externalizado</span>{" "}

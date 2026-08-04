@@ -14,7 +14,14 @@ from sqlalchemy.pool import StaticPool
 import app.main  # noqa: F401
 from app.db.base import Base
 from app.db.session import get_session
-from app.erp.models import ErpException, ExceptionStatus, ExceptionType, Order
+from app.erp.models import (
+    ERP_SETTINGS_SINGLETON_ID,
+    ErpException,
+    ErpSettings,
+    ExceptionStatus,
+    ExceptionType,
+    Order,
+)
 from app.main import app
 from app.models.crm import Company
 from tests._test_helpers import auth_headers, seed_test_users
@@ -467,3 +474,48 @@ def test_mark_externally_processed_leaves_dismissed_exceptions_untouched(
         exc = s.scalar(select(ErpException).where(ErpException.order_id == body["id"]))
         assert exc.status == ExceptionStatus.DISMISSED
         assert exc.resolution_note is None
+
+
+# --- Fase C · C-2: el toggle factusol_live reactiva los bloqueos gated -------
+
+
+def _set_factusol_live(session_factory, live: bool) -> None:
+    with session_factory() as s:
+        cfg = s.get(ErpSettings, ERP_SETTINGS_SINGLETON_ID)
+        if cfg is None:
+            cfg = ErpSettings(id=ERP_SETTINGS_SINGLETON_ID)
+            s.add(cfg)
+        cfg.factusol_live = live
+        s.commit()
+
+
+def test_factusol_live_toggle_activates_gated_blockers(client, session_factory):
+    """Con factusol_live OFF (default) el ERP confía en la fuente: SKU sin
+    mapear / empresa sin vincular NO bloquean. Al activarlo (Fase C) vuelven a
+    bloquear la Cola PEDIDOS."""
+    with session_factory() as s:
+        company = Company(name="Sin Factusol SL")  # sin factusol_company_id
+        s.add(company)
+        s.commit()
+        cid = company.id
+    body = _create(client, order_number="MAN-FL1", company_id=cid, lines=[
+        {"product_sku": "SKU-NUEVO", "description": "Sin mapear",
+         "quantity": 1, "unit_price": 100},
+    ])
+
+    # OFF → sin bloqueos gated.
+    r = client.get(f"/api/erp/orders/{body['id']}",
+                   headers=auth_headers(client, "pedidos"))
+    assert {b["code"] for b in r.json()["blockers"]} == set()
+
+    # ON → sku_unmapped + company_missing_factusol bloquean.
+    _set_factusol_live(session_factory, True)
+    r = client.get(f"/api/erp/orders/{body['id']}",
+                   headers=auth_headers(client, "pedidos"))
+    assert {b["code"] for b in r.json()["blockers"]} == {
+        "sku_unmapped", "company_missing_factusol",
+    }
+    # Y la aprobación se rechaza con 409.
+    ap = client.post(f"/api/erp/orders/{body['id']}/approve",
+                     headers=auth_headers(client, "pedidos"))
+    assert ap.status_code == 409

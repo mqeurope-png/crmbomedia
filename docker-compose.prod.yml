@@ -246,6 +246,31 @@ services:
         condition: service_healthy
     logging: *default-logging
 
+  # BoHub ERP Fase C · C-2. Worker DEDICADO a las escrituras FACTUSOL, con
+  # concurrencia 1 (un solo proceso, cola única `factusol:writes`): la
+  # numeración de facturas se calcula con SELECT MAX(CODFAC)+1 justo antes de
+  # escribir, así que dos emisiones en paralelo pisarían el número. NO escalar
+  # a más réplicas sin resolver antes la numeración distribuida (lock Redis).
+  worker-factusol:
+    image: crmbomedia-api:latest
+    restart: unless-stopped
+    env_file: .env.production
+    environment:
+      DATABASE_URL: mysql+pymysql://${MYSQL_USER}:${MYSQL_PASSWORD}@db:3306/${MYSQL_DATABASE}
+      REDIS_URL: redis://redis:6379/0
+    command:
+      - rq
+      - worker
+      - --url
+      - redis://redis:6379/0
+      - factusol:writes
+    depends_on:
+      api:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    logging: *default-logging
+
   frontend:
     build:
       context: ./frontend

@@ -18,6 +18,8 @@ export type Company = {
   notes: string | null;
   source: string;
   is_active: boolean;
+  /** Fase C: CODCLI en FACTUSOL si la empresa está vinculada; null si no. */
+  factusol_company_id: string | null;
   external_references: Record<string, unknown>;
   custom_fields: Record<string, unknown>;
   contacts_count: number;

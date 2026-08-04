@@ -142,6 +142,7 @@ export default function PendingApprovalPage() {
               selected={selected.has(o.id)}
               onToggleSelect={canManage ? toggleSelect : undefined}
               onMarkExternal={canManage ? (id) => setMarkTarget([id]) : undefined}
+              canEmitFactusol={canManage}
             />
           ))}
         </div>

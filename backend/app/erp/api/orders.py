@@ -22,13 +22,14 @@ from app.erp.api.deps import require_erp_approve, require_erp_edit, require_erp_
 from app.erp.models import (
     ErpException,
     ExceptionStatus,
+    InvoiceStatus,
     Order,
     OrderLine,
     OrderSource,
     StatusDomain,
 )
 from app.erp.state_machine import TransitionError, apply_transition, available_transitions
-from app.models.crm import User
+from app.models.crm import Company, User
 
 router = APIRouter(prefix="/api/erp/orders", tags=["erp-orders"])
 
@@ -95,6 +96,7 @@ def _serialise_summary(o: Order) -> dict[str, Any]:
         "transport_status": _status_value(o.transport_status),
         "invoice_status": _status_value(o.invoice_status),
         "tracking_number": o.tracking_number,
+        "factusol_invoice_number": o.factusol_invoice_number,
         "approved_at": o.approved_at.isoformat() if o.approved_at else None,
         "placed_at": o.placed_at.isoformat() if o.placed_at else None,
         "created_at": o.created_at.isoformat(),
@@ -175,7 +177,7 @@ def _factusol_live(session: Session) -> bool:
 
 def _open_exception_blocker(session: Session, o: Order) -> dict[str, str] | None:
     """Excepciones abiertas de tipos operativos reales (SAT/transporte/
-    facturación) — el único bloqueo de la Cola PEDIDOS (B-2-fix5)."""
+    facturación) — bloqueo permanente de la Cola PEDIDOS (B-2-fix5)."""
     n = session.scalar(
         select(func.count(ErpException.id)).where(
             ErpException.order_id == o.id,
@@ -192,16 +194,44 @@ def _open_exception_blocker(session: Session, o: Order) -> dict[str, str] | None
     return None
 
 
+def _factusol_issues(session: Session, o: Order) -> list[dict[str, str]]:
+    """Problemas que impiden facturar en FACTUSOL: líneas con SKU sin CODART
+    mapeado + empresa sin vincular. Solo cuentan como bloqueo cuando
+    `factusol_live` está activo (Fase C, C-2)."""
+    issues: list[dict[str, str]] = []
+    unmapped = [ln.product_sku for ln in o.lines if not ln.product_codart]
+    if unmapped:
+        issues.append({
+            "code": "sku_unmapped",
+            "detail": f"Líneas sin CODART: {', '.join(unmapped[:5])}",
+        })
+    if o.company_id:
+        company = session.get(Company, o.company_id)
+        if company is not None and not company.factusol_company_id:
+            issues.append({
+                "code": "company_missing_factusol",
+                "detail": f"«{company.name}» sin vincular a FACTUSOL",
+            })
+    return issues
+
+
 def _blockers(session: Session, o: Order) -> list[dict[str, str]]:
-    """Bloqueos que impiden aprobar en la Cola PEDIDOS. Solo excepciones
-    abiertas de tipos operativos reales (SAT/transporte/facturación).
-    El ERP confía en el pedido tal como llega de la fuente (B-2-fix5)."""
+    """Bloqueos que impiden aprobar en la Cola PEDIDOS: siempre las excepciones
+    abiertas reales; y, cuando `factusol_live` está activo (Fase C), también
+    los issues de FACTUSOL (SKU sin mapear / empresa sin vincular)."""
+    out: list[dict[str, str]] = []
+    if _factusol_live(session):
+        out.extend(_factusol_issues(session, o))
     real = _open_exception_blocker(session, o)
-    return [real] if real else []
+    if real:
+        out.append(real)
+    return out
 
 
 def _warnings(session: Session, o: Order) -> list[dict[str, str]]:
-    """Sin warnings automáticos: el ERP confía en la fuente (B-2-fix5)."""
+    """Sin warnings automáticos mientras FACTUSOL no esté live (el ERP confía
+    en la fuente, B-2-fix5). Con `factusol_live` los issues son bloqueos, no
+    warnings, así que esta lista queda vacía en ambos casos."""
     return []
 
 
@@ -446,3 +476,102 @@ def bulk_mark_externally_processed(
             marked += 1
     session.commit()
     return {"ok": True, "marked": marked}
+
+
+# --- FACTUSOL: emisión de factura (Fase C · C-2) ----------------------------
+
+
+def _rq_job_status(job_id: str) -> dict[str, Any] | None:
+    """Estado del job RQ de emisión (best-effort). None si no se puede
+    consultar (sin Redis, en local/tests)."""
+    try:
+        from redis import Redis  # noqa: PLC0415
+        from rq.job import Job  # noqa: PLC0415
+
+        from app.core.config import get_settings  # noqa: PLC0415
+
+        conn = Redis.from_url(get_settings().redis_url)
+        job = Job.fetch(job_id, connection=conn)
+        rq_status = job.get_status(refresh=True)
+        if rq_status == "failed":
+            return {"status": "failed",
+                    "error": (job.exc_info or "emisión fallida")[-400:]}
+        return {"status": "pending"}
+    except Exception:  # noqa: BLE001 — sin Redis o job caducado → desconocido
+        return None
+
+
+@router.post("/{order_id}/emit-factusol-invoice", status_code=202)
+def emit_factusol_invoice(
+    order_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_edit),
+) -> dict[str, Any]:
+    """Encola la emisión REAL de la factura en FACTUSOL (cola serializada
+    `factusol:writes`). Rechaza doble facturación."""
+    order = _get_order(session, order_id)
+    inv = _status_value(order.invoice_status)
+    if order.factusol_invoice_number or inv == InvoiceStatus.INVOICED_BY_ERP.value:
+        raise HTTPException(status.HTTP_409_CONFLICT, {
+            "code": "already_invoiced_by_erp",
+            "detail": "El pedido ya tiene factura en FACTUSOL",
+            "codfac": order.factusol_invoice_number,
+        })
+    if inv == InvoiceStatus.ALREADY_INVOICED_EXTERNALLY.value:
+        raise HTTPException(status.HTTP_409_CONFLICT, {
+            "code": "already_invoiced_externally",
+            "detail": "El pedido está marcado como facturado fuera del ERP",
+        })
+    if not order.company_id:
+        raise HTTPException(status.HTTP_409_CONFLICT, {
+            "code": "no_company",
+            "detail": "El pedido no tiene empresa: no se puede facturar",
+        })
+
+    from app.integrations.factusol.jobs import enqueue_emit_invoice  # noqa: PLC0415
+
+    try:
+        job_id = enqueue_emit_invoice(order.id, current_user.id)
+    except Exception as exc:  # noqa: BLE001 — Redis caído, etc.
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, {
+            "code": "queue_unavailable", "detail": str(exc)[:200],
+        }) from exc
+
+    _audit_factusol(session, order, current_user, job_id)
+    session.commit()
+    return {"job_id": job_id, "order_id": order.id, "status": "queued"}
+
+
+@router.get("/{order_id}/factusol-invoice-status")
+def factusol_invoice_status(
+    order_id: str,
+    job_id: str | None = Query(default=None),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_view),
+) -> dict[str, Any]:
+    """Estado de la facturación del pedido para el polling del frontend."""
+    _ = current_user
+    order = _get_order(session, order_id)
+    if order.factusol_invoice_number:
+        return {"status": "invoiced",
+                "codfac": order.factusol_invoice_number}
+    if job_id:
+        info = _rq_job_status(job_id)
+        if info is not None:
+            return info
+    return {"status": "pending"}
+
+
+def _audit_factusol(
+    session: Session, order: Order, actor: User, job_id: str,
+) -> None:
+    try:
+        from app.core.audit import record_event  # noqa: PLC0415
+
+        record_event(
+            session, action="erp.factusol_invoice_requested",
+            target_type="order", target_id=order.id, actor=actor,
+            metadata={"order_number": order.order_number, "job_id": job_id},
+        )
+    except Exception:  # noqa: BLE001 — audit nunca bloquea
+        pass

@@ -5,6 +5,7 @@ y borrados) — sin red. La BD es SQLite in-memory.
 """
 from __future__ import annotations
 
+import json
 from collections.abc import Generator
 
 import pytest
@@ -23,6 +24,7 @@ from app.integrations.factusol.mapper import (
 from app.integrations.factusol.service import (
     emit_invoice,
     ensure_customer_in_factusol,
+    next_codfac,
 )
 from app.models.crm import Company
 
@@ -41,17 +43,21 @@ def session_factory() -> Generator[sessionmaker, None, None]:
 class FakeFactusol:
     """Cliente FACTUSOL simulado: registra writes/deletes en memoria."""
 
-    def __init__(self, *, existing_by_cif=None, all_codclis=None, fail_on_line=None):
+    def __init__(self, *, existing_by_cif=None, all_codclis=None, fail_on_line=None,
+                 f_fac_last=None):
         self.default_ejercicio = "2026"
         self.writes: list[tuple[str, dict]] = []
         self.deletes: list[tuple[str, str]] = []
         self._existing_by_cif = existing_by_cif or {}
         self._all_codclis = all_codclis or []
         self._fail_on_line = fail_on_line
+        self._f_fac_last = f_fac_last   # último CODFAC de F_FAC (para next_codfac)
         self._line_calls = 0
 
     def load_table(self, tabla, *, filtro="1=1", ejercicio=None):
         # `filtro` es un fragmento SQL WHERE (p.ej. "CIFCLI='B1' LIMIT 1").
+        if tabla == "F_FAC":
+            return [{"CODFAC": self._f_fac_last}] if self._f_fac_last is not None else []
         if tabla == "F_CLI" and filtro.startswith("CIFCLI="):
             cif = filtro.split("=", 1)[1].split()[0].strip("'")
             codcli = self._existing_by_cif.get(cif)
@@ -112,19 +118,33 @@ def test_company_mapper_builds_f_cli_payload(session_factory):
     assert payload["WEBCLI"] == "https://acme.example"
 
 
-def test_invoice_mapper_builds_header_and_lines(session_factory):
+def test_invoice_mapper_builds_header_and_lines_without_codfac(session_factory):
     with session_factory() as s:
         c = _company(s)
         o = _order(s, c.id, number="BOPRIN-1042", n_lines=2)
         o = s.get(Order, o.id)
         cabecera, lineas = order_to_factusol_invoice(o, "60001", "2026")
-    assert cabecera["CODFAC"] == "1042"          # dígitos del nº de pedido
+    # C-2: el CODFAC (y el CODLFA de las líneas) los pone el service, no el mapper.
+    assert "CODFAC" not in cabecera
+    assert cabecera["TIPFAC"] == 2                # factura ordinaria
     assert cabecera["CLIFAC"] == "60001"
     assert cabecera["EJEFAC"] == "2026"
     assert cabecera["REFFAC"] == "BOPRIN-1042"
+    assert "SERFAC" not in cabecera              # Bomedia no usa serie
     assert len(lineas) == 2
-    assert lineas[0]["CODLFA"] == "1042" and lineas[0]["POSLFA"] == 1
+    assert "CODLFA" not in lineas[0] and lineas[0]["POSLFA"] == 1
     assert lineas[0]["ARTLFA"] == "ART0"
+
+
+# --- next_codfac ------------------------------------------------------------
+
+
+def test_next_codfac_empty_f_fac_returns_1():
+    assert next_codfac(FakeFactusol(f_fac_last=None), "2026") == "1"
+
+
+def test_next_codfac_is_last_plus_one():
+    assert next_codfac(FakeFactusol(f_fac_last=526066), "2026") == "526067"
 
 
 # --- ensure_customer_in_factusol --------------------------------------------
@@ -135,8 +155,8 @@ def test_ensure_customer_creates_new_when_no_link_no_cif_match(session_factory):
         c = _company(s)
         cid = c.id
         client = FakeFactusol(all_codclis=[])  # F_CLI vacío → base 60000
-        codcli = ensure_customer_in_factusol(s, cid, client)
-    assert codcli == "60000"
+        codcli, matched = ensure_customer_in_factusol(s, cid, client)
+    assert codcli == "60000" and matched == "created_new"
     assert client.writes[0][0] == "F_CLI"
     assert client.writes[0][1]["CODCLI"] == "60000"
     with session_factory() as s:
@@ -148,8 +168,8 @@ def test_ensure_customer_reuses_existing_link(session_factory):
         c = _company(s, factusol_company_id="12345")
         cid = c.id
         client = FakeFactusol()
-        codcli = ensure_customer_in_factusol(s, cid, client)
-    assert codcli == "12345"
+        codcli, matched = ensure_customer_in_factusol(s, cid, client)
+    assert codcli == "12345" and matched == "already_linked"
     assert client.writes == []            # no crea nada
 
 
@@ -158,8 +178,8 @@ def test_ensure_customer_links_by_cif_without_duplicating(session_factory):
         c = _company(s, tax_id="B99999999")
         cid = c.id
         client = FakeFactusol(existing_by_cif={"B99999999": "77777"})
-        codcli = ensure_customer_in_factusol(s, cid, client)
-    assert codcli == "77777"
+        codcli, matched = ensure_customer_in_factusol(s, cid, client)
+    assert codcli == "77777" and matched == "existing_cif"
     assert client.writes == []            # vincula sin crear cliente nuevo
     with session_factory() as s:
         assert s.get(Company, cid).factusol_company_id == "77777"
@@ -170,28 +190,39 @@ def test_ensure_customer_next_codcli_is_max_plus_one(session_factory):
         c = _company(s, tax_id=None)
         cid = c.id
         client = FakeFactusol(all_codclis=["100", "70123", "abc"])
-        codcli = ensure_customer_in_factusol(s, cid, client)
+        codcli, _matched = ensure_customer_in_factusol(s, cid, client)
     assert codcli == "70124"              # max numérico (70123) + 1
 
 
 # --- emit_invoice -----------------------------------------------------------
 
 
-def test_emit_invoice_writes_header_lines_and_updates_order(session_factory):
+def test_emit_invoice_numbers_writes_and_updates_order(session_factory):
     with session_factory() as s:
         c = _company(s, factusol_company_id="55555")
         o = _order(s, c.id, n_lines=3)
         oid = o.id
-        client = FakeFactusol()
+        client = FakeFactusol(f_fac_last=526066)   # última factura del ejercicio
         result = emit_invoice(s, oid, client)
     tablas = [t for t, _ in client.writes]
     assert tablas.count("F_FAC") == 1
     assert tablas.count("F_LFA") == 3
-    assert result["lines"] == 3
+    assert result["codfac"] == "526067"    # siguiente secuencial
+    # CODFAC en cabecera y CODLFA en cada línea (inyectados por el service).
+    cabecera = next(rec for t, rec in client.writes if t == "F_FAC")
+    assert cabecera["CODFAC"] == "526067"
+    for t, rec in client.writes:
+        if t == "F_LFA":
+            assert rec["CODLFA"] == "526067"
     with session_factory() as s:
         o = s.get(Order, oid)
         assert o.invoice_status == InvoiceStatus.INVOICED_BY_ERP
-        assert o.factusol_invoice_number == result["factusol_invoice_number"]
+        assert o.factusol_invoice_number == "526067"
+        # Historial de estado del dominio invoice escrito.
+        hist = [h for h in o.status_history
+                if h.to_status == InvoiceStatus.INVOICED_BY_ERP.value]
+        assert len(hist) == 1
+        assert json.loads(hist[0].metadata_json)["factusol_codfac"] == "526067"
 
 
 def test_emit_invoice_rolls_back_on_line_failure(session_factory):
@@ -199,12 +230,11 @@ def test_emit_invoice_rolls_back_on_line_failure(session_factory):
         c = _company(s, factusol_company_id="55555")
         o = _order(s, c.id, n_lines=3)
         oid = o.id
-        client = FakeFactusol(fail_on_line=2)   # falla en la 2ª línea
+        client = FakeFactusol(f_fac_last=100, fail_on_line=2)  # falla en la 2ª línea
         with pytest.raises(FactusolError):
             emit_invoice(s, oid, client)
     # Compensación: se borran líneas + cabecera (no queda factura a medias).
-    assert ("F_LFA", "CODLFA='7'") in client.deletes or any(
-        t == "F_LFA" for t, _ in client.deletes)
+    assert any(t == "F_LFA" for t, _ in client.deletes)
     assert any(t == "F_FAC" for t, _ in client.deletes)
     with session_factory() as s:
         o = s.get(Order, oid)

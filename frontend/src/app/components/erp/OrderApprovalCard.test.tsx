@@ -19,6 +19,7 @@ function order(over: Partial<PendingOrder> = {}): PendingOrder {
     transport_status: "not_shipped", invoice_status: "not_invoiced",
     tracking_number: null, approved_at: null, placed_at: null,
     created_at: "2026-07-31T09:00:00Z", externally_processed_at: null,
+    factusol_invoice_number: null,
     blockers: [], warnings: [], ...over,
   };
 }
@@ -88,6 +89,20 @@ describe("OrderApprovalCard", () => {
     expect(btn).toHaveClass("button", "small", "secondary");
     await user.click(btn);
     expect(onMarkExternal).toHaveBeenCalledWith("o1");
+  });
+
+  it("con canEmitFactusol muestra el botón «Emitir factura FACTUSOL»", () => {
+    render(
+      <OrderApprovalCard
+        order={order()}
+        canApprove
+        onApprove={() => {}}
+        canEmitFactusol
+      />,
+    );
+    expect(
+      screen.getByRole("button", { name: /Emitir factura FACTUSOL/ }),
+    ).toBeInTheDocument();
   });
 
   it("con onToggleSelect muestra el checkbox de selección múltiple", async () => {
