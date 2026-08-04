@@ -1,5 +1,16 @@
 # FACTUSOL — Flujos de escritura (crear cliente / presupuesto / factura)
 
+> ⚠️ **Estado de las URLs (2026-08-04, PR C-1-fix1).** El login
+> `POST /login/Autenticar` está **CONFIRMADO en producción** (200 + JWT).
+> Las rutas de **datos** de este documento (`/registros/*`) **NO lo están**:
+> devuelven 404 en la API real. Eran una conjetura del Sprint 0 y no se han
+> sustituido por otra: `apidoc.sdelsol.com` está bloqueado por la política de
+> egress de CI/dev, así que la verificación tiene que hacerse desde el VPS con
+> `python -m scripts.factusol_discover_paths`. Mientras tanto las rutas son
+> configurables por env (`FACTUSOL_PATH_LOAD_TABLE`, `FACTUSOL_PATH_WRITE_RECORD`,
+> `FACTUSOL_PATH_UPDATE_RECORD`, `FACTUSOL_PATH_DELETE_RECORDS`) — corregirlas
+> NO requiere cambio de código.
+
 **Estado:** flujos diseñados + plantillas curl + script end-to-end listo
 (`backend/scripts/factusol_write_flow_test.py`). La **transcripción real**
 (payloads/respuestas exactos) se añade al ejecutarlo con credenciales desde
@@ -126,3 +137,46 @@ worker/cola se cablean en C-2 junto con la UI de emisión.
 
 `POST /api/erp/factusol/smoke-test?mode=login|read_customers|dry_run_invoice`
 valida credenciales / lectura / payload del mapper (dry-run NO escribe).
+
+---
+
+## Descubrimiento de las rutas de datos (C-1-fix1, pendiente)
+
+`/registros/cargaTabla` y hermanas devuelven **404** en la API real; el 404 lo
+emite ASP.NET (Azure App Service + IIS 10 + ASP.NET 4.0.30319), es decir el
+routing no reconoce la ruta. Rutas ya descartadas (todas 404): `/CargaTabla`,
+`/cargaTabla`, `/registros/{CargaTabla,cargatabla,Cargar,CargarTabla}`,
+`/tabla/*`, `/tablas/*`, `/datos/*`, `/dato/Cargar`, `/api/*`, `/consultas/*`,
+`/servicios/*`, `/factusol/*`, `/empresa(s)/CargarTabla`. Los endpoints de
+discovery (`/swagger`, `/openapi.json`, `/help`, `/docs`) también dan 404.
+
+### Oráculo
+
+En ASP.NET Web API el **routing se resuelve antes que la autorización**:
+
+| Respuesta a `POST {ruta}` con body `{}` | Significado |
+|---|---|
+| `404` + "No HTTP resource was found…" | la ruta **no existe** |
+| `401` (sin token) | la ruta **existe** ✅ |
+| `200` / `400` (con token) | la ruta **existe** ✅ (acierto seguro) |
+
+### Procedimiento (desde el VPS, que sí alcanza la API)
+
+```bash
+docker compose -f /opt/crmbo/docker-compose.prod.yml exec api \
+    python -m scripts.factusol_discover_paths
+```
+
+Barre una matriz `controller × acción` (el patrón confirmado es
+`/{controller}/{action}`, como `/login/Autenticar`), y para el controller
+ganador busca además las acciones de escritura/actualización/borrado. Admite
+candidatos extra por CLI:
+
+```bash
+... python -m scripts.factusol_discover_paths /Datos/Cargar /Api/v1/CargaTabla
+```
+
+Al terminar imprime las líneas `FACTUSOL_PATH_*` listas para pegar en
+`.env.production`. Tras añadirlas: `up -d --force-recreate api worker-sync`.
+Si la matriz no acierta, sacar los paths de `apidoc.sdelsol.com` (requiere
+navegador, la página es Postman JS-rendered) y pasarlos como argumentos.

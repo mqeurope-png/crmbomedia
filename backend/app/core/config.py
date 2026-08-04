@@ -148,6 +148,14 @@ class Settings(BaseSettings):
     factusol_base_datos_cliente: str = ""
     factusol_password_encrypted: str = ""
     factusol_default_ejercicio: str = "2026"
+    # C-1-fix1: las rutas de datos de la API DELSOL NO están confirmadas
+    # (apidoc.sdelsol.com es inaccesible desde CI/dev y `/registros/*` da 404
+    # en prod). Se exponen como env para corregirlas SIN redeploy de código:
+    # `scripts/factusol_discover_paths.py` las descubre desde el VPS.
+    factusol_path_load_table: str = ""
+    factusol_path_write_record: str = ""
+    factusol_path_update_record: str = ""
+    factusol_path_delete_records: str = ""
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 

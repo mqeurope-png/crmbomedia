@@ -12,7 +12,11 @@ from unittest.mock import patch
 import httpx
 import pytest
 
-from app.integrations.factusol.client import FactusolClient, FactusolError
+from app.integrations.factusol.client import (
+    PATH_CARGA_TABLA,
+    FactusolClient,
+    FactusolError,
+)
 
 
 def _make_jwt(exp_offset: int = 3600, role: str = "AdminUser") -> str:
@@ -144,6 +148,54 @@ def test_4xx_raises_without_retry():
         c.load_table("F_CLI", filtro="bad")
     assert exc.value.status == 400
     assert state["data_calls"] == 1      # sin reintento en 4xx
+
+
+def test_data_paths_are_configurable_without_code_change():
+    """C-1-fix1: las rutas de datos no están confirmadas (404 en prod), así
+    que se pueden corregir por env sin tocar código ni redeployar."""
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/login/Autenticar":
+            return _login_response(_make_jwt())
+        seen.append(request.url.path)
+        return httpx.Response(200, json={"registros": []})
+
+    c = FactusolClient(
+        base_url="https://api.sdelsol.test",
+        codigo_fabricante="1626", codigo_cliente="22870",
+        base_datos_cliente="3FS003", password="secret",
+        transport=httpx.MockTransport(handler),
+        path_load_table="/Descubierto/CargarTabla",
+        path_write_record="/Descubierto/EscribirRegistro",
+        path_update_record="/Descubierto/ActualizarRegistro",
+        path_delete_records="/Descubierto/BorrarRegistros",
+    )
+    c.load_table("F_CLI")
+    c.write_record("F_CLI", {"CODCLI": "1"})
+    c.update_record("F_CLI", "CODCLI='1'", {"TELCLI": "600"})
+    c.delete_records("F_CLI", "CODCLI='1'")
+    assert seen == [
+        "/Descubierto/CargarTabla",
+        "/Descubierto/EscribirRegistro",
+        "/Descubierto/ActualizarRegistro",
+        "/Descubierto/BorrarRegistros",
+    ]
+
+
+def test_default_data_paths_used_when_no_override():
+    """Sin override se usan los defaults del módulo (los del Sprint 0)."""
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/login/Autenticar":
+            return _login_response(_make_jwt())
+        seen.append(request.url.path)
+        return httpx.Response(200, json={"registros": []})
+
+    c = _client(handler)
+    c.load_table("F_CLI")
+    assert seen == [PATH_CARGA_TABLA]
 
 
 def test_write_record_posts_registro_payload():

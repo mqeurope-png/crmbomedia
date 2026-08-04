@@ -15,9 +15,12 @@ El password llega cifrado con Fernet (INTEGRATION_SECRETS_KEY) en el env
 `FACTUSOL_PASSWORD_ENCRYPTED`; se descifra en memoria y se envía en base64.
 El JWT se cachea con margen de 30s sobre su `exp`.
 
-Las rutas de datos (`/registros/*`) están aisladas en constantes para
-ajustarlas en un único sitio cuando el descubrimiento en vivo (Bart, vía el
-endpoint admin de smoke-test) confirme los nombres exactos.
+⚠️ C-1-fix1: las rutas de DATOS siguen SIN confirmar — `/registros/*` devuelve
+404 en producción y la doc oficial (apidoc.sdelsol.com) está bloqueada por la
+política de egress de CI/dev, así que no se han cambiado por otra conjetura.
+Son configurables por env (`FACTUSOL_PATH_LOAD_TABLE`, …) para corregirlas sin
+redeploy de código, y `scripts/factusol_discover_paths.py` las descubre desde
+el VPS. El login SÍ está confirmado.
 """
 from __future__ import annotations
 
@@ -43,9 +46,21 @@ TOKEN_FALLBACK_TTL_SECONDS = 150
 MAX_RETRIES = 3
 BACKOFF_BASE_SECONDS = 1.0
 
-#: Rutas de la API — confirmar contra apidoc.sdelsol.com en el descubrimiento
-#: en vivo; centralizadas aquí para ajustarlas en un solo punto.
+#: Ruta de login — CONFIRMADA en producción (200 + JWT). ASP.NET la resuelve
+#: sin distinguir mayúsculas (`/Login/Autenticar` también vale).
 LOGIN_PATH = "/login/Autenticar"
+
+#: Rutas de datos — ⚠️ NO CONFIRMADAS. Estos defaults dan 404 en producción
+#: (C-1-fix1): eran una conjetura del Sprint 0 y la doc oficial
+#: (apidoc.sdelsol.com) no es accesible ni desde CI ni desde el entorno de
+#: desarrollo (bloqueada por política de egress), así que NO se han sustituido
+#: por otra conjetura.
+#:
+#: Se sobreescriben SIN tocar código con las envs
+#: `FACTUSOL_PATH_LOAD_TABLE` / `_WRITE_RECORD` / `_UPDATE_RECORD` /
+#: `_DELETE_RECORDS`. Para averiguar las correctas desde el VPS (que sí llega
+#: a la API) usar `python -m scripts.factusol_discover_paths`, que explota el
+#: oráculo 404 (ruta inexistente) vs 401/400 (ruta válida).
 PATH_CARGA_TABLA = "/registros/cargaTabla"
 PATH_ESCRIBIR = "/registros/escribirRegistro"
 PATH_ACTUALIZAR = "/registros/actualizarRegistro"
@@ -91,6 +106,10 @@ class FactusolClient:
         default_ejercicio: str = "2026",
         timeout: float = 30.0,
         transport: httpx.BaseTransport | None = None,
+        path_load_table: str = "",
+        path_write_record: str = "",
+        path_update_record: str = "",
+        path_delete_records: str = "",
     ):
         self.base_url = base_url.rstrip("/")
         self.codigo_fabricante = codigo_fabricante
@@ -100,6 +119,11 @@ class FactusolClient:
         self.default_ejercicio = default_ejercicio
         self._timeout = timeout
         self._transport = transport
+        # Rutas de datos configurables (ver constantes arriba): vacío → default.
+        self.path_load_table = path_load_table or PATH_CARGA_TABLA
+        self.path_write_record = path_write_record or PATH_ESCRIBIR
+        self.path_update_record = path_update_record or PATH_ACTUALIZAR
+        self.path_delete_records = path_delete_records or PATH_BORRAR
         self._token: str | None = None
         self._token_expires_at: float = 0.0
 
@@ -114,6 +138,10 @@ class FactusolClient:
             base_datos_cliente=s.factusol_base_datos_cliente,
             password=password,
             default_ejercicio=s.factusol_default_ejercicio,
+            path_load_table=s.factusol_path_load_table,
+            path_write_record=s.factusol_path_write_record,
+            path_update_record=s.factusol_path_update_record,
+            path_delete_records=s.factusol_path_delete_records,
         )
 
     # --- auth ----------------------------------------------------------------
@@ -190,7 +218,7 @@ class FactusolClient:
             body["campos"] = campos
         if numero_registros is not None:
             body["numeroRegistros"] = numero_registros
-        data = self._request("POST", PATH_CARGA_TABLA, json=body)
+        data = self._request("POST", self.path_load_table, json=body)
         rows = data.get("registros") or data.get("datos") or data.get("data") or []
         return rows if isinstance(rows, list) else []
 
@@ -199,7 +227,7 @@ class FactusolClient:
     ) -> dict[str, Any]:
         """EscribirRegistro — inserta UN registro (la API es de registro a
         registro; no hay bulk documentado)."""
-        return self._request("POST", PATH_ESCRIBIR, json={
+        return self._request("POST", self.path_write_record, json={
             "tabla": tabla, "registro": data,
             "ejercicio": ejercicio or self.default_ejercicio,
         })
@@ -209,7 +237,7 @@ class FactusolClient:
     ) -> dict[str, Any]:
         """ActualizarRegistro — modifica los registros que cumplan `key`
         (filtro SQL-like, p.ej. "CODCLI='22870'")."""
-        return self._request("POST", PATH_ACTUALIZAR, json={
+        return self._request("POST", self.path_update_record, json={
             "tabla": tabla, "filtro": key, "registro": data,
             "ejercicio": ejercicio or self.default_ejercicio,
         })
@@ -218,7 +246,7 @@ class FactusolClient:
         self, tabla: str, filtro: str, *, ejercicio: str | None = None,
     ) -> dict[str, Any]:
         """BorrarRegistros — borra por filtro."""
-        return self._request("POST", PATH_BORRAR, json={
+        return self._request("POST", self.path_delete_records, json={
             "tabla": tabla, "filtro": filtro,
             "ejercicio": ejercicio or self.default_ejercicio,
         })
