@@ -47,3 +47,24 @@ def test_hidrive_stub_raises_not_implemented():
         st.save("o", "albaran", "f.pdf", b"x")
     with pytest.raises(NotImplementedError):
         st.read("whatever")
+
+
+def test_generate_albaran_pdf_produces_valid_pdf():
+    from app.erp.albaran_pdf import generate_albaran_pdf
+
+    pdf = generate_albaran_pdf({
+        "number": "BOP-123",
+        "shipping": {"first_name": "Ana", "last_name": "Pi",
+                     "address_1": "C Aribau 171", "city": "Barcelona"},
+        "line_items": [{"sku": "A1", "name": "Artículo 1", "quantity": 2}],
+    })
+    assert pdf[:5] == b"%PDF-"
+    assert len(pdf) > 500  # no es un PDF vacío
+
+
+def test_generate_albaran_pdf_handles_missing_fields():
+    from app.erp.albaran_pdf import generate_albaran_pdf
+
+    # Sin líneas ni dirección no debe petar.
+    pdf = generate_albaran_pdf({"id": 5})
+    assert pdf[:5] == b"%PDF-"

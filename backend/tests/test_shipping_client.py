@@ -48,24 +48,30 @@ def test_packing_slip_rest_json_base64():
     assert pdf.startswith(b"%PDF")
 
 
-def test_packing_slip_falls_back_to_admin_ajax():
+def test_packing_slip_uses_order_key_public_url():
+    """D-1-fix1: REST 404 → acceso público con order_key (access_key)."""
+    seen: dict[str, str] = {}
+
     def handler(request: httpx.Request) -> httpx.Response:
-        if "wcpdf/v1" in str(request.url):
+        url = str(request.url)
+        if "wcpdf/v1" in url:
             return httpx.Response(404)
-        if "admin-ajax.php" in str(request.url):
-            assert "generate_wpo_wcpdf" in str(request.url)
-            return httpx.Response(200, content=b"%PDF-1.4 ajax")
-        return httpx.Response(500)
+        if "wpo_wcpdf_document=packing-slip" in url and "access_key=wc_order_k" in url:
+            seen["url"] = url
+            return httpx.Response(200, content=b"%PDF-1.4 pub",
+                                  headers={"content-type": "application/pdf"})
+        return httpx.Response(404)
 
-    pdf, _ = _client(handler).get_packing_slip_pdf(9)
+    pdf, _ = _client(handler).get_packing_slip_pdf(9, order_key="wc_order_k")
     assert pdf.startswith(b"%PDF")
+    assert "access_key=wc_order_k" in seen["url"]
 
 
-def test_packing_slip_raises_when_both_fail():
+def test_packing_slip_raises_when_no_plugin_and_no_order_key():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(404)
 
-    with pytest.raises(WooError, match="Sube el PDF a mano"):
+    with pytest.raises(WooError, match="order_key"):
         _client(handler).get_packing_slip_pdf(7)
 
 

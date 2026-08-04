@@ -39,6 +39,7 @@ from app.erp.api.deps import require_erp_view
 from app.erp.models import (
     KIND_ALBARAN,
     SHIPMENT_FILE_KINDS,
+    SOURCE_CRM_GENERATED_PDF,
     SOURCE_MANUAL_UPLOAD,
     SOURCE_WOO_PDF_PLUGIN,
     Order,
@@ -344,11 +345,11 @@ def fetch_albaran_from_woo(
             "code": "missing_woo_link",
             "detail": "Falta la tienda o el id de Woo del pedido.",
         })
-    # Idempotente: ¿ya hay un albarán de Woo vigente?
+    # Idempotente: ¿ya hay un albarán auto-generado vigente?
     for existing in _current_files(session, order.id, KIND_ALBARAN):
-        if existing.source == SOURCE_WOO_PDF_PLUGIN:
+        if existing.source in (SOURCE_WOO_PDF_PLUGIN, SOURCE_CRM_GENERATED_PDF):
             return {"order_id": order.id, "file": _serialise_file(existing),
-                    "already_present": True}
+                    "already_present": True, "source": existing.source}
 
     from app.integrations.woocommerce.client import (  # noqa: PLC0415
         WooError,
@@ -368,17 +369,90 @@ def fetch_albaran_from_woo(
             "code": "bad_woo_id",
             "detail": f"id de Woo no numérico: {order.external_id!r}",
         }) from exc
+
+    client = WooHTTPClient(account)
+    # Un solo fetch del pedido: da el order_key (para el plugin público) y los
+    # datos (para generar el albarán propio si el plugin no responde).
     try:
-        pdf, filename = WooHTTPClient(account).get_packing_slip_pdf(woo_id)
+        order_json = client.get_order(woo_id)
     except WooError as exc:
-        logger.warning("albarán Woo KO order=%s: %s", order_id, exc)
+        logger.warning("albarán Woo: pedido %s no accesible: %s", woo_id, exc)
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, {
-            "code": "woo_fetch_failed", "detail": str(exc)[:300],
+            "code": "woo_unreachable",
+            "detail": "WooCommerce no responde; sube el albarán a mano.",
         }) from exc
+    order_key = order_json.get("order_key") if isinstance(order_json, dict) else None
+    try:
+        pdf, filename = client.get_packing_slip_pdf(woo_id, order_key=order_key)
+        source = SOURCE_WOO_PDF_PLUGIN
+    except WooError:
+        # Fallback garantizado: generamos un albarán propio con los datos del
+        # pedido (nunca 502 por el plugin).
+        from app.erp.albaran_pdf import generate_albaran_pdf  # noqa: PLC0415
+
+        pdf = generate_albaran_pdf(order_json)
+        filename = f"albaran-{woo_id}.pdf"
+        source = SOURCE_CRM_GENERATED_PDF
+        logger.info("albarán Woo %s generado por el CRM (plugin no disponible)", woo_id)
     row = _store_new_file(
-        session, order, kind=KIND_ALBARAN, source=SOURCE_WOO_PDF_PLUGIN,
+        session, order, kind=KIND_ALBARAN, source=source,
         filename=filename, mime_type="application/pdf", data=pdf, actor_id=None,
     )
     session.commit()
     return {"order_id": order.id, "file": _serialise_file(row),
-            "already_present": False}
+            "already_present": False, "source": source}
+
+
+class MarkPickedUpPayload(BaseModel):
+    #: Tracking del transportista si lo hay; opcional en recogida manual.
+    tracking_number: str | None = None
+
+
+@router.post("/{order_id}/mark-picked-up")
+def mark_picked_up(
+    order_id: str,
+    payload: MarkPickedUpPayload | None = None,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_view),
+) -> dict[str, Any]:
+    """«Marcar recogido» desde el taller: el paquete salió. Lleva transporte a
+    `in_transit` (auto-creando el registro de envío si hacía falta). Exige el
+    pedido `packed`. La recogida es manual (sin tracking del sistema), así que
+    se marca `manual_pickup` en la evidencia (respeta el guard de tracking)."""
+    order = _get_order(session, order_id)
+    if _status_value(order.preparation_status) != "packed":
+        raise HTTPException(400, {
+            "code": "not_packed",
+            "detail": "Solo se puede marcar recogido un pedido embalado.",
+        })
+    transport = _status_value(order.transport_status)
+    if transport in ("in_transit", "delivered", "already_shipped_externally"):
+        return {"order_id": order.id, "transport_status": transport,
+                "already_picked_up": True}
+
+    from app.erp.models import StatusDomain  # noqa: PLC0415
+
+    tracking = (payload.tracking_number if payload else None) or None
+    try:
+        if transport == "not_shipped":
+            apply_transition(
+                session, order=order, domain=StatusDomain.TRANSPORT,
+                to_status="label_created", actor=current_user,
+            )
+        apply_transition(
+            session, order=order, domain=StatusDomain.TRANSPORT,
+            to_status="in_transit", actor=current_user,
+            evidence={"manual_pickup": True, "tracking_number": tracking},
+        )
+    except TransitionError as exc:
+        http = {
+            "invalid_transition": 409, "role_forbidden": 403,
+            "guard_failed": 409, "evidence_missing": 422,
+        }.get(exc.code, 400)
+        raise HTTPException(http, {"code": exc.code, "detail": exc.detail}) from exc
+    if tracking:
+        order.tracking_number = tracking
+    session.commit()
+    return {"order_id": order.id,
+            "transport_status": _status_value(order.transport_status),
+            "already_picked_up": False}

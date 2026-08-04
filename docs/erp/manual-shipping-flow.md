@@ -114,3 +114,74 @@ docker compose -f docker-compose.prod.yml up -d --force-recreate api frontend
 
 El directorio `/opt/crmbo/uploads/erp-shipping` se monta como volumen bind en el
 servicio `api` (patrón espejo de `email-templates`).
+
+---
+
+## Actualización D-1-fix1 (2026-08-04) — Cola SAT en 2 secciones + descarga real del albarán
+
+### Cola SAT táctil con 2 secciones
+
+Un pedido embalado (`packed`) ya no desaparece del táctil: sigue teniendo
+trabajo de taller (imprimir, empaquetar, entregar al transportista).
+
+```
+┌─ Cola SAT (/erp/sat) ──────────────────────────────────────────────┐
+│ Por embalar: N · Listos: M                                          │
+│                                                                     │
+│  📦 Por embalar                     🚚 Listos para envío            │
+│  ───────────────                    ──────────────────             │
+│  in_queue / preparing / blocked     packed  &  transporte NO en    │
+│  (card → modo trabajo SAT →         (in_transit/delivered/external)│
+│   Empezar / Embalado)               · 📄 Imprimir/Falta albarán    │
+│                                     · 🏷️ Imprimir/Falta etiqueta   │
+│                                     · 📤 Marcar recogido (confirmа) │
+│                                     · Reabrir preparación           │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+En móvil/tablet las 2 secciones se apilan; en escritorio pueden ir en columnas.
+
+**Guía para el operativo del taller:**
+- **📦 Por embalar** — pedidos que aún hay que preparar/embalar. Abre la card →
+  «Empezar preparación» → «Embalado» (modal multi-bulto). Al embalar, el pedido
+  salta a «Listos para envío».
+- **🚚 Listos para envío** — ya embalados. Aquí:
+  - `📄 Imprimir albarán` / `🏷️ Imprimir etiqueta` → abren el PDF en pestaña
+    nueva (imprime desde el navegador). Si dice `Falta …`, lleva a la ficha para
+    subirlo/descargarlo.
+  - `📤 Marcar recogido` → confirma («¿el paquete ha salido?») → el pedido pasa a
+    `in_transit` y **sale de la Cola SAT** (ya no es trabajo pendiente).
+  - `Reabrir preparación` → si se detecta un error de picking tarde, vuelve a
+    `in_queue`.
+
+`POST /api/erp/orders/{id}/mark-picked-up`: exige el pedido `packed`; lleva
+transporte a `in_transit` (auto-creando el registro de envío). Es una **recogida
+manual** (transportista sin tracking en el sistema): se marca `manual_pickup` en
+la evidencia, así que respeta el guard de tracking sin exigir número. Acepta un
+`tracking_number` opcional si el operativo lo tiene. SAT puede disparar estas
+transiciones (arcos ampliados a SAT en D-1-fix1: son acciones físicas del taller).
+
+### Descarga real del albarán de Woo — cascada elegida (B.2 + B.3)
+
+El 502 anterior se debía a que el plugin **free** no expone la REST Pro y el
+admin-ajax exige nonce de sesión. Nueva lógica de `fetch-from-woo`, en cascada:
+
+1. **REST del plugin** (Pro): `GET /wp-json/wcpdf/v1/documents/packing-slip/{id}`.
+2. **B.2 — acceso público por `order_key`**: se lee el `order_key` del pedido
+   (`GET /wp-json/wc/v3/orders/{id}`, que sí funciona) y se prueba la URL pública
+   `/?wpo_wcpdf_document=packing-slip&order_ids={id}&access_key={order_key}` (y la
+   variante `order_key=`). Funciona si en el plugin está activado **Document
+   access → invitados** (WooCommerce → PDF Invoices → Advanced). Confirmar por
+   tienda en el deploy.
+3. **B.3 — albarán generado por el CRM** (`app/erp/albaran_pdf.py`, `reportlab`):
+   si el plugin no entrega nada, se **genera un albarán propio** con los datos del
+   pedido Woo (destinatario, líneas, código de barras del nº de pedido) y se
+   guarda con `source=crm_generated_pdf`. **Es el backstop garantizado: el
+   endpoint ya nunca devuelve 502 por el plugin.** El operativo puede seguir
+   imprimiendo el «bonito» desde WP admin si lo prefiere.
+
+Solo devuelve 502 si el propio `GET /orders/{id}` de WooCommerce falla (tienda
+caída) — ahí sí toca subir el albarán a mano.
+
+> Dependencia nueva: `reportlab` en `requirements.txt` (pure-Python, sin libs de
+> sistema; arrastra `pillow`). Sin migración ni env nuevos.

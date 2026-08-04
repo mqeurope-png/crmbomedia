@@ -54,8 +54,10 @@ def client(session_factory, tmp_path) -> Generator[TestClient, None, None]:
 
 
 def _mk_order(s: Session, *, number="MAN-0001", prep="preparing",
-              source="manual", store_id=None, external_id=None) -> str:
+              source="manual", store_id=None, external_id=None,
+              transport="not_shipped") -> str:
     o = Order(order_number=number, preparation_status=prep, payment_status="paid",
+              transport_status=transport,
               external_source=source, store_id=store_id, external_id=external_id)
     s.add(o)
     s.flush()
@@ -226,17 +228,27 @@ def _woo_order(s: Session) -> str:
                      store_id=acc.id, external_id="4567")
 
 
-def test_albaran_fetch_from_woo_saves_shipment_file(client, session_factory):
+def _order_json(woo_id: int) -> dict:
+    return {"id": woo_id, "number": "BOP-1", "order_key": "wc_order_abc",
+            "shipping": {"first_name": "Ana", "last_name": "Pi",
+                         "address_1": "C Aribau 171", "city": "Barcelona"},
+            "line_items": [{"sku": "A1", "name": "Art", "quantity": 1}]}
+
+
+def test_albaran_fetch_from_woo_uses_plugin_when_available(client, session_factory):
     with session_factory() as s:
         oid = _woo_order(s)
 
     class _FakeWoo:
         def __init__(self, account):
-            self._account = account
+            pass
 
-        def get_packing_slip_pdf(self, woo_id):
-            assert woo_id == 4567
-            return b"%PDF-1.5 woo", f"albaran-{woo_id}.pdf"
+        def get_order(self, woo_id):
+            return _order_json(woo_id)
+
+        def get_packing_slip_pdf(self, woo_id, *, order_key=None):
+            assert woo_id == 4567 and order_key == "wc_order_abc"
+            return b"%PDF-1.5 plugin", f"albaran-{woo_id}.pdf"
 
     with patch("app.integrations.woocommerce.client.WooHTTPClient", _FakeWoo):
         r = client.post(f"/api/erp/orders/{oid}/albaran/fetch-from-woo",
@@ -252,22 +264,48 @@ def test_albaran_fetch_from_woo_saves_shipment_file(client, session_factory):
     assert r2.json()["already_present"] is True
 
 
-def test_albaran_fetch_from_woo_502_on_client_failure(client, session_factory):
+def test_albaran_fetch_generates_pdf_when_plugin_unavailable(client, session_factory):
+    """B.3: si el plugin no entrega el albarán, se genera uno propio (nunca 502)."""
     with session_factory() as s:
         oid = _woo_order(s)
 
-    class _BoomWoo:
+    class _NoPluginWoo:
         def __init__(self, account):
             pass
 
-        def get_packing_slip_pdf(self, woo_id):
-            raise WooError("no PDF", status=502)
+        def get_order(self, woo_id):
+            return _order_json(woo_id)
 
-    with patch("app.integrations.woocommerce.client.WooHTTPClient", _BoomWoo):
+        def get_packing_slip_pdf(self, woo_id, *, order_key=None):
+            raise WooError("plugin no disponible", status=502)
+
+    with patch("app.integrations.woocommerce.client.WooHTTPClient", _NoPluginWoo):
+        r = client.post(f"/api/erp/orders/{oid}/albaran/fetch-from-woo",
+                        headers=auth_headers(client, "sat"))
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["file"]["source"] == "crm_generated_pdf"
+    # El fichero generado es un PDF real y descargable.
+    dl = client.get(body["file"]["download_url"], headers=auth_headers(client, "sat"))
+    assert dl.status_code == 200 and dl.content[:5] == b"%PDF-"
+
+
+def test_albaran_fetch_502_when_woo_unreachable(client, session_factory):
+    with session_factory() as s:
+        oid = _woo_order(s)
+
+    class _DeadWoo:
+        def __init__(self, account):
+            pass
+
+        def get_order(self, woo_id):
+            raise WooError("woo down", status=502)
+
+    with patch("app.integrations.woocommerce.client.WooHTTPClient", _DeadWoo):
         r = client.post(f"/api/erp/orders/{oid}/albaran/fetch-from-woo",
                         headers=auth_headers(client, "sat"))
     assert r.status_code == 502
-    assert r.json()["detail"]["code"] == "woo_fetch_failed"
+    assert r.json()["detail"]["code"] == "woo_unreachable"
 
 
 def test_albaran_fetch_from_woo_rejects_non_woo_order(client, session_factory):
@@ -277,3 +315,36 @@ def test_albaran_fetch_from_woo_rejects_non_woo_order(client, session_factory):
                     headers=auth_headers(client, "sat"))
     assert r.status_code == 400
     assert r.json()["detail"]["code"] == "not_woo_order"
+
+
+# --- marcar recogido --------------------------------------------------------
+
+
+def test_mark_picked_up_transitions_state(client, session_factory):
+    with session_factory() as s:
+        oid = _mk_order(s, prep="packed", transport="label_created")
+    r = client.post(f"/api/erp/orders/{oid}/mark-picked-up",
+                    headers=auth_headers(client, "sat"))
+    assert r.status_code == 200, r.text
+    assert r.json()["transport_status"] == "in_transit"
+
+
+def test_mark_picked_up_from_not_shipped_auto_creates_label(client, session_factory):
+    with session_factory() as s:
+        oid = _mk_order(s, prep="packed", transport="not_shipped")
+    r = client.post(f"/api/erp/orders/{oid}/mark-picked-up",
+                    headers=auth_headers(client, "sat"),
+                    json={"tracking_number": "GLS-99"})
+    assert r.status_code == 200, r.text
+    assert r.json()["transport_status"] == "in_transit"
+    with session_factory() as s:
+        assert s.get(Order, oid).tracking_number == "GLS-99"
+
+
+def test_mark_picked_up_rejects_non_packed(client, session_factory):
+    with session_factory() as s:
+        oid = _mk_order(s, prep="preparing")
+    r = client.post(f"/api/erp/orders/{oid}/mark-picked-up",
+                    headers=auth_headers(client, "sat"))
+    assert r.status_code == 400
+    assert r.json()["detail"]["code"] == "not_packed"

@@ -175,49 +175,51 @@ class WooHTTPClient:
 
     # --- albarán (PDF plugin PDF Invoices & Packing Slips) --------------------
 
-    def get_packing_slip_pdf(self, order_id: int) -> tuple[bytes, str]:
+    def get_packing_slip_pdf(
+        self, order_id: int, *, order_key: str | None = None,
+    ) -> tuple[bytes, str]:
         """Descarga el PDF de albarán del plugin *PDF Invoices & Packing Slips*.
 
-        Intenta primero la REST API del plugin (versión Pro):
-          `GET /wp-json/wcpdf/v1/documents/packing-slip/{order_id}?output=pdf`
-        y, si no está disponible (404/no-PDF), el endpoint admin AJAX:
-          `GET /wp-admin/admin-ajax.php?action=generate_wpo_wcpdf&`
-          `document_type=packing-slip&order_ids={order_id}`
-        (este último suele exigir un nonce de sesión, así que probablemente
-        falle vía API → el operativo sube el albarán a mano como fallback).
+        Dos vías, en orden:
+          1. REST del plugin (versión Pro):
+             `GET /wp-json/wcpdf/v1/documents/packing-slip/{id}?output=pdf`.
+          2. **Acceso público por `order_key`** (D-1-fix1): si el plugin tiene
+             activado «Document access» para invitados, el PDF es accesible sin
+             autenticar vía `/?wpo_wcpdf_document=packing-slip&order_ids={id}&`
+             `access_key={order_key}` (se prueba `access_key` y `order_key`).
 
-        Devuelve `(pdf_bytes, filename_sugerido)`. Lanza `WooError` si ninguno
-        entrega un PDF, con un mensaje claro para el fallback manual.
+        Devuelve `(pdf_bytes, filename)`. Lanza `WooError` si ninguna entrega un
+        PDF — el llamante genera entonces un albarán propio (`albaran_pdf`).
         """
         filename = f"albaran-{order_id}.pdf"
+        base = self.creds.base_url
         # 1) REST del plugin (Pro).
-        rest_url = (
-            f"{self.creds.base_url}/wp-json/wcpdf/v1/documents/"
-            f"packing-slip/{order_id}"
+        rest = self._raw_get(
+            f"{base}/wp-json/wcpdf/v1/documents/packing-slip/{order_id}",
+            params={"output": "pdf"},
         )
-        rest = self._raw_get(rest_url, params={"output": "pdf"})
         if rest is not None and rest.status_code < 400:
             pdf = _extract_pdf(rest)
             if pdf is not None:
                 logger.info("woocommerce albarán %s vía REST del plugin", order_id)
                 return pdf, filename
-        # 2) Fallback admin-ajax (probable 401/403 sin nonce de sesión).
-        ajax_url = f"{self.creds.base_url}/wp-admin/admin-ajax.php"
-        ajax = self._raw_get(ajax_url, params={
-            "action": "generate_wpo_wcpdf",
-            "document_type": "packing-slip",
-            "order_ids": order_id,
-        })
-        if ajax is not None and ajax.status_code < 400:
-            pdf = _extract_pdf(ajax)
-            if pdf is not None:
-                logger.info("woocommerce albarán %s vía admin-ajax", order_id)
-                return pdf, filename
-        rest_code = rest.status_code if rest is not None else "error"
-        ajax_code = ajax.status_code if ajax is not None else "error"
+        # 2) Acceso público por order_key / access_key.
+        if order_key:
+            for key_param in ("access_key", "order_key"):
+                pub = self._raw_get(f"{base}/", params={
+                    "wpo_wcpdf_document": "packing-slip",
+                    "order_ids": order_id,
+                    key_param: order_key,
+                })
+                if pub is not None and pub.status_code < 400:
+                    pdf = _extract_pdf(pub)
+                    if pdf is not None:
+                        logger.info("woocommerce albarán %s vía order_key (%s)",
+                                    order_id, key_param)
+                        return pdf, filename
         raise WooError(
-            f"No se pudo descargar el albarán del pedido {order_id} "
-            f"(REST {rest_code}, admin-ajax {ajax_code}). Sube el PDF a mano.",
+            f"El plugin de Woo no entregó el albarán del pedido {order_id} "
+            "(sin REST Pro ni acceso público por order_key).",
             status=502,
         )
 
