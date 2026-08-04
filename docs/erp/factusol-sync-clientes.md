@@ -63,7 +63,7 @@ Eliges un resultado del buscador
 │
 ├─ FACTUSOL «Sin CRM»   → aparecen 2 acciones:
 │    ├─ «Crear empresa CRM con estos datos y vincular»
-│    │     createCompany(datos de F_CLI) → link(codcli) → listo
+│    │     POST customers/create-crm-and-link → crea + vincula ATÓMICO
 │    └─ «Vincular a empresa CRM existente…»
 │          buscador de empresas SIN código FACTUSOL → link(codcli)
 │
@@ -75,6 +75,14 @@ Eliges un resultado del buscador
 > resultado solo **pre-rellena** el formulario. La vinculación real la hacen los
 > dos botones. Antes el aviso decía «elige o crea la empresa abajo» y **no había
 > ningún abajo** — había que salir a Contactos y volver (corregido en C-3-fix2).
+
+> **Atomicidad (C-3-fix3)**: crear la empresa y vincularla va en **una sola
+> transacción** (`POST customers/create-crm-and-link`). Antes eran 2 llamadas
+> (`createCompany` → `link`) y, si la segunda fallaba con 409, la empresa
+> quedaba creada **sin vínculo**: en producción tres reintentos sobre el mismo
+> cliente dejaron 2 empresas huérfanas que hubo que borrar a mano. Ahora el
+> endpoint comprueba el vínculo **antes** de crear nada y hace rollback si algo
+> falla: o hay empresa vinculada, o no hay empresa.
 
 En el modo «vincular a existente» solo se listan empresas **sin** código
 FACTUSOL: las que ya lo tienen están vinculadas a otro cliente y el backend

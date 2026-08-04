@@ -260,3 +260,84 @@ def _audit_customer_link(
             **({"created_in_factusol": created} if created is not None else {}),
         }),
     ))
+
+
+class CreateCrmAndLinkPayload(BaseModel):
+    """Datos del cliente F_CLI con los que se crea la empresa CRM."""
+
+    nombre: str = Field(min_length=1, max_length=255)
+    nif: str = Field(default="", max_length=64)
+    direccion: str = Field(default="", max_length=500)
+    ciudad: str = Field(default="", max_length=200)
+    cp: str = Field(default="", max_length=20)
+    provincia: str = Field(default="", max_length=200)
+    telefono: str | None = Field(default=None, max_length=40)
+    email: str | None = Field(default=None, max_length=255)
+
+
+class CreateCrmAndLinkIn(BaseModel):
+    factusol_codcli: str = Field(min_length=1, max_length=36)
+    factusol_customer_data: CreateCrmAndLinkPayload
+
+
+@router.post("/customers/create-crm-and-link", status_code=201)
+def create_crm_and_link(
+    payload: CreateCrmAndLinkIn,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_edit),
+) -> dict[str, Any]:
+    """Crea la empresa CRM a partir de un cliente F_CLI **y la vincula, en una
+    sola transacción** (C-3-fix3).
+
+    Antes el frontend hacía dos llamadas (crear empresa → vincular). Si la
+    segunda fallaba —p. ej. porque el CODCLI ya estaba vinculado— la empresa
+    quedaba creada y **huérfana**: en producción aparecieron 3 empresas
+    duplicadas de un mismo cliente por reintentos. Aquí se comprueba el
+    vínculo ANTES de crear nada y todo va en una transacción: o hay empresa
+    vinculada, o no hay empresa.
+    """
+    from app.integrations.factusol.customers import crm_links_for  # noqa: PLC0415
+    from app.models.crm import Company  # noqa: PLC0415
+
+    codcli = payload.factusol_codcli.strip()
+    # 1) ¿Ya está vinculado? → 409 SIN crear nada.
+    taken = crm_links_for(session, [codcli]).get(codcli)
+    if taken:
+        raise HTTPException(status.HTTP_409_CONFLICT, {
+            "code": "already_linked",
+            "detail": (
+                f"El cliente FACTUSOL {codcli} ya está vinculado a "
+                f"{taken['type']} «{taken['name']}» (id: {taken['id']}). "
+                "Ve a esa ficha para gestionarlo."
+            ),
+        })
+
+    data = payload.factusol_customer_data
+    company = Company(
+        name=data.nombre.strip(),
+        tax_id=data.nif.strip() or None,
+        address_line=data.direccion.strip() or None,
+        city=data.ciudad.strip() or None,
+        postal_code=data.cp.strip() or None,
+        state=data.provincia.strip() or None,
+        country="España",
+        source="factusol",
+        factusol_company_id=codcli,
+        factusol_sync_source="erp_link",
+    )
+    try:
+        # 2) Empresa + vínculo en la MISMA transacción: si algo falla, rollback
+        # y no queda ninguna empresa huérfana.
+        session.add(company)
+        session.flush()
+        _audit_customer_link(session, current_user, "company", company.id,
+                             codcli, created=True)
+        session.commit()
+    except Exception as exc:  # noqa: BLE001 — integridad, BD caída, etc.
+        session.rollback()
+        logger.warning("factusol create-crm-and-link KO (rollback): %s", exc)
+        raise HTTPException(status.HTTP_409_CONFLICT, {
+            "code": "create_and_link_failed",
+            "detail": f"No se pudo crear y vincular la empresa: {str(exc)[:200]}",
+        }) from exc
+    return {"company_id": company.id, "factusol_codcli": codcli, "created": True}

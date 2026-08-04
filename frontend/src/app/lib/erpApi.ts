@@ -675,6 +675,28 @@ export type CreateFactusolCustomerPayload = {
   telefono?: string | null;
 };
 
+/** C-3-fix3: crea la empresa CRM y la vincula al cliente FACTUSOL en UNA sola
+ *  transacción del backend. Sustituye al par createCompany + link, que dejaba
+ *  empresas huérfanas si el link fallaba. */
+export async function createFactusolCustomerAndLink(payload: {
+  factusol_codcli: string;
+  factusol_customer_data: {
+    nombre: string;
+    nif?: string;
+    direccion?: string;
+    ciudad?: string;
+    cp?: string;
+    provincia?: string;
+    telefono?: string;
+    email?: string;
+  };
+}): Promise<{ company_id: string; factusol_codcli: string; created: boolean }> {
+  return apiFetch("/api/erp/factusol/customers/create-crm-and-link", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function createFactusolCustomer(
   payload: CreateFactusolCustomerPayload,
 ): Promise<{ factusol_codcli: string; created: boolean }> {

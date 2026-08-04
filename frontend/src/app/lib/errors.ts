@@ -50,6 +50,15 @@ export function formatFastApiDetail(detail: unknown, fallback = DEFAULT_MESSAGE)
     }
     if (lines.length > 0) return lines.join("\n");
   }
+  // El ERP lanza `HTTPException(status, {"code": ..., "detail": "..."})`, así
+  // que `detail` llega como OBJETO. Sin esto el usuario veía «Error de la API
+  // (409)» en vez del motivo real (C-3-fix3).
+  if (detail && typeof detail === "object" && !Array.isArray(detail)) {
+    const inner = (detail as { detail?: unknown }).detail;
+    if (typeof inner === "string" && inner.trim()) return inner.trim();
+    const message = (detail as { message?: unknown }).message;
+    if (typeof message === "string" && message.trim()) return message.trim();
+  }
   return fallback;
 }
 
