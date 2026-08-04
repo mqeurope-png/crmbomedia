@@ -89,9 +89,11 @@ export default function ErpSettingsPage() {
             FACTUSOL en producción (Fase C)
           </span>
           <span className="muted small">
-            Mientras esté desactivado, los pedidos con SKU sin mapear o empresa
-            sin vincular a FACTUSOL muestran un aviso pero <strong>se pueden
-            aprobar</strong>. Al activarlo, esos avisos pasan a ser bloqueos.
+            Al activar, los bloqueos por SKU sin mapear o empresa sin vincular a
+            FACTUSOL vuelven a bloquear la Cola PEDIDOS. Actívalo solo{" "}
+            <strong>tras haber emitido facturas de prueba</strong> desde el botón
+            «Emitir factura FACTUSOL» y confirmado que llegan correctamente a
+            FACTUSOL.
           </span>
         </label>
         <div>

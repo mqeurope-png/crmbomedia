@@ -13,6 +13,7 @@ function detail(over: Partial<OrderDetail> = {}): OrderDetail {
     tracking_number: null, approved_at: null, placed_at: null,
     created_at: "2026-07-31T09:00:00Z",
     externally_processed_at: null, externally_processed_note: null,
+    factusol_invoice_number: null,
     externally_processed_by_user_id: null,
     notes: null, packing: null, lines: [], status_history: [], exceptions: [],
     blockers: [], warnings: [],

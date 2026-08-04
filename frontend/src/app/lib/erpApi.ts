@@ -12,7 +12,7 @@ export type TransportStatus =
   | "already_shipped_externally";
 export type InvoiceStatus =
   | "not_invoiced" | "pending" | "generated" | "error" | "credit_note"
-  | "already_invoiced_externally";
+  | "already_invoiced_externally" | "invoiced_by_erp";
 export type StatusDomain = "payment" | "preparation" | "transport" | "invoice";
 
 export type OrderSummary = {
@@ -29,6 +29,8 @@ export type OrderSummary = {
   transport_status: TransportStatus;
   invoice_status: InvoiceStatus;
   tracking_number: string | null;
+  /** Fase C: nº de factura FACTUSOL (CODFAC) si ya se emitió; null si no. */
+  factusol_invoice_number: string | null;
   approved_at: string | null;
   placed_at: string | null;
   created_at: string;
@@ -237,6 +239,7 @@ export const STATUS_LABELS: Record<string, { label: string; tone: string }> = {
   error: { label: "Error factura", tone: "bad" },
   credit_note: { label: "Abono", tone: "muted" },
   already_invoiced_externally: { label: "Externalizado", tone: "muted" },
+  invoiced_by_erp: { label: "Facturado FACTUSOL", tone: "ok" },
 };
 
 export const DOMAIN_LABELS: Record<StatusDomain, string> = {
@@ -494,4 +497,32 @@ export async function regenerateWooWebhookSecret(
     `/api/erp/integrations/woocommerce/stores/${id}/regenerate-webhook-secret`,
     { method: "POST" },
   );
+}
+
+// --- FACTUSOL emisión de factura (Fase C · C-2) -----------------------------
+
+export type FactusolInvoiceStatus =
+  | { status: "invoiced"; codfac: string }
+  | { status: "pending" }
+  | { status: "failed"; error?: string };
+
+export async function emitFactusolInvoice(
+  orderId: string,
+): Promise<{ job_id: string; order_id: string; status: string }> {
+  return apiFetch(`/api/erp/orders/${orderId}/emit-factusol-invoice`, {
+    method: "POST",
+  });
+}
+
+export async function getFactusolInvoiceStatus(
+  orderId: string, jobId?: string,
+): Promise<FactusolInvoiceStatus> {
+  const q = jobId ? `?job_id=${encodeURIComponent(jobId)}` : "";
+  return apiFetch(`/api/erp/orders/${orderId}/factusol-invoice-status${q}`);
+}
+
+export async function linkCompanyFactusol(
+  companyId: string,
+): Promise<{ company_id: string; factusol_codcli: string; matched_by: string }> {
+  return apiFetch(`/api/companies/${companyId}/link-factusol`, { method: "POST" });
 }

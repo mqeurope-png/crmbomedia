@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import type { PendingOrder } from "../../lib/erpApi";
+import { EmitFactusolButton } from "./EmitFactusolButton";
 import { OrderStatusBadge } from "./OrderStatusBadge";
 
 /** Card de la Cola PEDIDOS: muestra el pedido + sus bloqueos + avisos. El
@@ -19,6 +20,7 @@ export function OrderApprovalCard({
   selected,
   onToggleSelect,
   onMarkExternal,
+  canEmitFactusol,
 }: {
   order: PendingOrder;
   canApprove: boolean;
@@ -27,6 +29,7 @@ export function OrderApprovalCard({
   selected?: boolean;
   onToggleSelect?: (id: string) => void;
   onMarkExternal?: (id: string) => void;
+  canEmitFactusol?: boolean;
 }) {
   const blocked = order.blockers.length > 0;
   const warnings = order.warnings ?? [];
@@ -96,6 +99,16 @@ export function OrderApprovalCard({
           >
             Procesado externamente
           </button>
+        ) : null}
+        {canEmitFactusol ? (
+          <EmitFactusolButton
+            orderId={order.id}
+            invoiceStatus={order.invoice_status}
+            factusolInvoiceNumber={order.factusol_invoice_number}
+            totalAmount={order.total_amount}
+            currency={order.currency}
+            companyId={order.company_id}
+          />
         ) : null}
       </div>
     </div>

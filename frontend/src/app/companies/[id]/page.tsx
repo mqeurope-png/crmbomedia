@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { PageHeader } from "../../components/PageHeader";
+import { LinkFactusolButton } from "../../components/erp/LinkFactusolButton";
 import {
   type Company,
   type CompanyContact,
@@ -156,6 +157,16 @@ export default function CompanyDetailPage() {
           <Users size={12} aria-hidden /> Contactos ({contacts.length})
         </button>
       </div>
+
+      {tab === "data" ? (
+        <div className="erp-factusol-row" style={{ display: "flex", alignItems: "center", gap: 8, margin: "0 0 14px" }}>
+          <LinkFactusolButton
+            companyId={company.id}
+            factusolCompanyId={company.factusol_company_id}
+            onLinked={() => load()}
+          />
+        </div>
+      ) : null}
 
       {tab === "data" ? (
         <form className="company-edit-form" onSubmit={onSave}>

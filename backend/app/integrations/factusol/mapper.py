@@ -1,23 +1,23 @@
-"""Mappers puros CRM → FACTUSOL (Fase C PR C-1).
+"""Mappers puros CRM → FACTUSOL (Fase C).
 
 Transforman entidades del CRM en los payloads de las tablas de la API DELSOL.
 Funciones sin efectos (unit-testeables); NO tocan la BD ni la red.
 
-Nombres de columnas según `docs/erp/factusol-schema.md` (convención F_XXX +
-prefijo de 3 letras). Los campos marcados «confirmar» se validan en vivo con
-el smoke-test dry-run antes de emitir facturas reales (C-2).
+Nombres de columnas verificados contra la API real (ver
+`docs/erp/factusol-write-flows.md`). El CODFAC (nº de factura) NO lo pone el
+mapper: FACTUSOL numera solo, así que el service calcula el siguiente con
+`next_codfac()` y lo inyecta en cabecera + líneas justo antes de escribir.
 """
 from __future__ import annotations
 
-import re
 from typing import Any
 
 from app.erp.models import Order
 from app.models.crm import Company
 
-
-def _digits(value: str | None) -> str:
-    return re.sub(r"\D", "", value or "")
+#: Tipo de documento de F_FAC: 2 = factura ordinaria (valor observado en las
+#: facturas reales de Bomedia). Bomedia NO usa serie (F_SER vacía) → sin SERFAC.
+TIPFAC_FACTURA_ORDINARIA = 2
 
 
 def company_to_factusol_client(company: Company, codcli: str) -> dict[str, Any]:
@@ -36,11 +36,9 @@ def company_to_factusol_client(company: Company, codcli: str) -> dict[str, Any]:
     }
 
 
-def _line_to_factusol(
-    codfac: str, position: int, line: Any, ejercicio: str,
-) -> dict[str, Any]:
+def _line_to_factusol(position: int, line: Any, ejercicio: str) -> dict[str, Any]:
+    # CODLFA (FK a F_FAC.CODFAC) lo inyecta el service tras calcular el CODFAC.
     return {
-        "CODLFA": codfac,          # documento padre (F_FAC.CODFAC)
         "EJELFA": ejercicio,
         "POSLFA": position,
         "ARTLFA": line.product_codart or "",   # CODART; vacío si sin mapear
@@ -56,25 +54,23 @@ def _line_to_factusol(
 def order_to_factusol_invoice(
     order: Order, factusol_codcli: str, ejercicio: str,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    """`Order` del CRM → (cabecera F_FAC, líneas F_LFA).
+    """`Order` del CRM → (cabecera F_FAC, líneas F_LFA), SIN numerar.
 
-    El número de factura (CODFAC) se deriva de forma determinista del número
-    de pedido como candidato; la política real de numeración (¿la asigna la
-    API o el integrador?) se confirma en el smoke-test dry-run antes de
-    emitir de verdad (C-2). No se emite ninguna factura en C-1.
+    El CODFAC (cabecera) y el CODLFA (líneas) los añade el service con
+    `next_codfac()` justo antes de escribir — FACTUSOL numera secuencialmente
+    por ejercicio y no queremos pisar su numeración.
     """
-    codfac = _digits(order.order_number) or _digits(order.id)[:8] or "0"
     fecha = order.placed_at.date().isoformat() if order.placed_at else None
     cabecera = {
-        "CODFAC": codfac,
         "EJEFAC": ejercicio,
+        "TIPFAC": TIPFAC_FACTURA_ORDINARIA,
         "CLIFAC": factusol_codcli,
         "FECFAC": fecha,
         "TOTFAC": float(order.total_amount or 0),
         "REFFAC": order.order_number,          # referencia externa (nº CRM)
     }
     lineas = [
-        _line_to_factusol(codfac, i + 1, line, ejercicio)
+        _line_to_factusol(i + 1, line, ejercicio)
         for i, line in enumerate(order.lines)
     ]
     return cabecera, lineas

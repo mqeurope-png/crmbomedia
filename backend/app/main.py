@@ -124,7 +124,6 @@ app.include_router(web_forms_embed_router)
 # BoHub ERP Fase A: bandeja + Cola PEDIDOS + transiciones + timeline (PR 3);
 # Cola SAT + reportar excepción + packing + adjuntos (PR 5).
 from app.erp.api import exceptions_router as erp_exceptions_router  # noqa: E402
-from app.erp.api import factusol_router as erp_factusol_router  # noqa: E402
 from app.erp.api import order_timeline_router as erp_order_timeline_router  # noqa: E402
 from app.erp.api import orders_router as erp_orders_router  # noqa: E402
 from app.erp.api import sat_router as erp_sat_router  # noqa: E402
@@ -137,7 +136,6 @@ app.include_router(erp_order_timeline_router)
 app.include_router(erp_sat_router)
 app.include_router(erp_exceptions_router)
 app.include_router(erp_woocommerce_admin_router)
-app.include_router(erp_factusol_router)
 
 # Webhooks entrantes (fuera de `/api/*`; auth = firma HMAC, no sesión CRM).
 from app.webhooks.woocommerce import router as woocommerce_webhook_router  # noqa: E402

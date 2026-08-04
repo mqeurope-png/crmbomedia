@@ -208,3 +208,25 @@ el VPS usando el oráculo de ASP.NET (routing antes que autorización): **404** 
 ruta inexistente, **401/400/200** = ruta válida. Las 4 rutas son además
 sobreescribibles por env (`FACTUSOL_PATH_LOAD_TABLE`, `_WRITE_RECORD`,
 `_UPDATE_RECORD`, `_DELETE_RECORDS`) para corregirlas sin redeploy de código.
+
+
+---
+
+## Actualización C-2 (2026-08-04) — emisión real desde la UI
+
+- **Numeración CODFAC**: FACTUSOL numera solo. `service.next_codfac()` consulta
+  `CargaTabla("F_FAC", "1=1 ORDER BY CODFAC DESC LIMIT 1")` y suma 1 justo antes
+  de escribir la cabecera. Bomedia usa CODFAC secuencial de 6 dígitos (última
+  observada en 2026: 526066 → siguiente 526067). La race read→write la evita el
+  worker serializado (cola `factusol:writes`, `worker-factusol`, concurrencia 1).
+- **Cabecera F_FAC**: `TIPFAC=2` (factura ordinaria). Bomedia **no usa serie**
+  (F_SER vacía) → sin `SERFAC`. El mapper no pone `CODFAC`; lo inyecta el service
+  en cabecera y en cada `CODLFA` de línea.
+- **Trigger**: manual desde el botón «Emitir factura FACTUSOL» en la Cola PEDIDOS
+  / ficha del pedido (`POST /api/erp/orders/{id}/emit-factusol-invoice` → encola
+  en `factusol:writes`). No hay emisión automática por transición de estado.
+- **Doble facturación**: el endpoint rechaza (409) si el pedido ya tiene
+  `factusol_invoice_number`, ya está `invoiced_by_erp`, o `already_invoiced_externally`.
+- **Toggle `factusol_live`**: OFF por defecto. Al activarlo (`/erp/settings`) los
+  bloqueos gated (`sku_unmapped`, `company_missing_factusol`) vuelven a bloquear
+  la Cola PEDIDOS.
