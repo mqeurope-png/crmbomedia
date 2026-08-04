@@ -137,11 +137,11 @@ export default function NewManualOrderPage() {
       return;
     }
     const cust = choice.customer;
-    setTaxId((prev) => prev || cust.cifcli || "");
+    setTaxId((prev) => prev || cust.nif || "");
     setShipping((prev) => (addressFilled(prev) ? prev : {
-      address_line: cust.dircli ?? "", city: cust.pobcli ?? "",
+      address_line: cust.domcli ?? "", city: cust.pobcli ?? "",
       postal_code: cust.cpocli ?? "", state: cust.procli ?? "",
-      country: cust.naccli || "España",
+      country: "España",  // PAICLI es ISO numérico, no sirve de etiqueta
     }));
     if (cust.crm_link?.type === "company") {
       setCompanyId(cust.crm_link.id);
@@ -151,7 +151,7 @@ export default function NewManualOrderPage() {
         text: `Cliente FACTUSOL nº ${cust.codcli} — ya vinculado a «${cust.crm_link.name}».`,
       });
     } else {
-      setCompanyQuery(cust.nomcli ?? "");
+      setCompanyQuery(cust.nombre ?? "");
       setFactusolNotice({
         tone: "info",
         text: `Cliente FACTUSOL nº ${cust.codcli} sin empresa en el CRM. Elige o crea la empresa abajo para poder vincularlo.`,

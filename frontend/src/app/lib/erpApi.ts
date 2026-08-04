@@ -615,15 +615,25 @@ export async function getFactusolFormasPago(): Promise<FormaPago[]> {
 
 // --- Clientes FACTUSOL ↔ CRM (Fase C · C-3) ---------------------------------
 
+/** Columnas REALES de F_CLI (verificadas contra la base de Bomedia, C-3-fix1):
+ *  el nombre vive en `nofcli` (fiscal) y `noccli` (comercial), el NIF en
+ *  `nifcli`, el domicilio en `domcli` y el país en `paicli` (ISO numérico).
+ *  `nombre` y `nif` son alias que calcula el backend para la UI. */
 export type FactusolCustomer = {
   codcli: string | null;
-  nomcli: string | null;
-  cifcli: string | null;
-  dircli: string | null;
+  /** Alias: comercial si existe, si no el fiscal. */
+  nombre: string | null;
+  /** Alias de `nifcli`. */
+  nif: string | null;
+  nofcli: string | null;
+  noccli: string | null;
+  nifcli: string | null;
+  domcli: string | null;
   pobcli: string | null;
   cpocli: string | null;
   procli: string | null;
-  naccli: string | null;
+  /** Código ISO 3166-1 numérico («724» = España). */
+  paicli: string | null;
   emacli: string | null;
   telcli: string | null;
   /** Vínculo CRM existente (null si el cliente aún no está en el CRM). */

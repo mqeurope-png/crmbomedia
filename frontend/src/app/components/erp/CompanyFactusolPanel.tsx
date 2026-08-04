@@ -13,9 +13,9 @@ import {
 type Diff = { field: string; crm: string; factusol: string };
 
 const DIFF_FIELDS: { label: string; crm: keyof Company; fac: keyof FactusolCustomer }[] = [
-  { label: "Nombre", crm: "name", fac: "nomcli" },
-  { label: "NIF", crm: "tax_id", fac: "cifcli" },
-  { label: "Dirección", crm: "address_line", fac: "dircli" },
+  { label: "Nombre", crm: "name", fac: "nofcli" },
+  { label: "NIF", crm: "tax_id", fac: "nifcli" },
+  { label: "Dirección", crm: "address_line", fac: "domcli" },
   { label: "Ciudad", crm: "city", fac: "pobcli" },
   { label: "CP", crm: "postal_code", fac: "cpocli" },
   { label: "Provincia", crm: "state", fac: "procli" },

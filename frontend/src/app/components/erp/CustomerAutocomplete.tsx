@@ -86,12 +86,12 @@ export function CustomerAutocomplete({
           <h4 className="erp-ac-heading">En FACTUSOL</h4>
           <ul className="erp-ac-list">
             {factusol.map((c) => (
-              <li key={c.codcli ?? c.cifcli}>
+              <li key={c.codcli ?? c.nifcli}>
                 <button type="button" className="erp-ac-item"
                         onClick={() => onPick({ kind: "factusol", customer: c })}>
-                  <span className="erp-ac-name">{c.nomcli}</span>
+                  <span className="erp-ac-name">{c.nombre}</span>
                   <span className="muted small">
-                    {c.cifcli} · nº {c.codcli}
+                    {c.nif} · nº {c.codcli}
                   </span>
                   {c.crm_link ? (
                     <span className="badge ok">✓ En CRM</span>

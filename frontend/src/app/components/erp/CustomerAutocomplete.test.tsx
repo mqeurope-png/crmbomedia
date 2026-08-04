@@ -12,9 +12,11 @@ const mockFactusol = searchFactusolCustomers as jest.Mock;
 
 function customer(over: Partial<FactusolCustomer> = {}): FactusolCustomer {
   return {
-    codcli: "2458", nomcli: "Laboratorios Porta", cifcli: "B64113590",
-    dircli: "C Aribau 171", pobcli: "Barcelona", cpocli: "08036",
-    procli: "Barcelona", naccli: "ES", emacli: null, telcli: null,
+    codcli: "2458", nombre: "LABORATORIOS PORTA S.L.", nif: "B64113590",
+    nofcli: "LABORATORIOS PORTA S.L.", noccli: "LABORATORIOS PORTA S.L.",
+    nifcli: "B64113590", domcli: "c. Fígols, 19-21", pobcli: "Barcelona",
+    cpocli: "08028", procli: "Barcelona", paicli: "724",
+    emacli: null, telcli: null,
     crm_link: null, factusol_matches_crm_id: null, ...over,
   };
 }
@@ -43,7 +45,7 @@ describe("CustomerAutocomplete", () => {
     await waitFor(() => expect(mockFactusol).toHaveBeenCalled());
     await waitFor(() => expect(mockCompanies).toHaveBeenCalled());
     expect(await screen.findByText("En FACTUSOL")).toBeInTheDocument();
-    expect(screen.getByText("Laboratorios Porta")).toBeInTheDocument();
+    expect(screen.getByText("LABORATORIOS PORTA S.L.")).toBeInTheDocument();
     expect(screen.getByText(/Solo en CRM/)).toBeInTheDocument();
     expect(screen.getByText("Solo CRM SL")).toBeInTheDocument();
   });
@@ -86,7 +88,7 @@ describe("CustomerAutocomplete", () => {
     const user = userEvent.setup();
     render(<CustomerAutocomplete onPick={onPick} />);
     await user.type(screen.getByLabelText("Buscar cliente"), "porta");
-    await user.click(await screen.findByText("Laboratorios Porta"));
+    await user.click(await screen.findByText("LABORATORIOS PORTA S.L."));
     expect(onPick).toHaveBeenCalledWith(
       expect.objectContaining({ kind: "factusol" }),
     );

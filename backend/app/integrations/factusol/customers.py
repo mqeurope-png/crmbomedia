@@ -16,7 +16,7 @@ C-2-fix1. Por eso `create_customer`:
 
 1. **Rechaza** crear clientes de pedidos de origen WooCommerce — ahí manda la
    app externa; el CRM solo vincula.
-2. **Deduplica** antes de escribir: consulta `CIFCLI` y, si ya existe, devuelve
+2. **Deduplica** antes de escribir: consulta `NIFCLI` y, si ya existe, devuelve
    el CODCLI existente en vez de crear un duplicado.
 """
 from __future__ import annotations
@@ -36,10 +36,28 @@ logger = logging.getLogger(__name__)
 SEARCH_NAME_LIMIT = 50
 
 #: Campos de F_CLI que exponemos (los mínimos para identificar y crear).
+#: Nombres REALES verificados contra la F_CLI de Bomedia (4533 clientes, 2026):
+#: el nombre va en `NOFCLI` (fiscal) y `NOCCLI` (comercial), el NIF en `NIFCLI`,
+#: el domicilio en `DOMCLI` y el país en `PAICLI` (ISO 3166-1 numérico).
 CUSTOMER_FIELDS = (
-    "CODCLI", "NOMCLI", "CIFCLI", "DIRCLI", "POBCLI",
-    "CPOCLI", "PROCLI", "NACCLI", "EMACLI", "TELCLI",
+    "CODCLI", "NIFCLI", "NOFCLI", "NOCCLI", "DOMCLI", "POBCLI",
+    "CPOCLI", "PROCLI", "PAICLI", "EMACLI", "TELCLI",
 )
+
+#: ISO 3166-1 numérico de los países habituales; el resto cae a 724 (España).
+_COUNTRY_CODES = {
+    "ES": "724", "PT": "620", "FR": "250", "IT": "380", "DE": "276",
+    "GB": "826", "UK": "826", "NL": "528", "BE": "056", "US": "840",
+}
+
+
+def _country_code(pais: str) -> str:
+    """Alfa-2 → numérico ISO para `PAICLI`. Un valor ya numérico pasa tal cual.
+    Default 724 (España)."""
+    value = (pais or "ES").upper().strip()
+    if value.isdigit() and len(value) == 3:
+        return value
+    return _COUNTRY_CODES.get(value, "724")
 
 
 def _sql_escape(value: str) -> str:
@@ -51,6 +69,12 @@ def _sql_escape(value: str) -> str:
 def _row_to_customer(row: dict[str, Any]) -> dict[str, Any]:
     out = {k.lower(): row.get(k) for k in CUSTOMER_FIELDS}
     out["codcli"] = str(out.get("codcli")) if out.get("codcli") is not None else None
+    # Alias cómodos para el frontend: el comercial manda sobre el fiscal para
+    # mostrar, y `nif` evita arrastrar el nombre de columna por toda la UI.
+    out["nombre"] = (
+        str(out.get("noccli") or out.get("nofcli") or "").strip() or None
+    )
+    out["nif"] = out.get("nifcli")
     return out
 
 
@@ -66,11 +90,15 @@ def search_customers(
         return []
     safe = _sql_escape(q)
     if by == "nif":
-        filtro = f"UPPER(CIFCLI)=UPPER('{safe}')"
+        filtro = f"UPPER(NIFCLI)=UPPER('{safe}')"
     elif by == "email":
         filtro = f"UPPER(EMACLI)=UPPER('{safe}')"
     elif by == "name":
-        filtro = f"UPPER(NOMCLI) LIKE UPPER('%{safe}%')"
+        # Fiscal Y comercial: uno de los dos puede estar vacío o diferir.
+        filtro = (
+            f"UPPER(NOFCLI) LIKE UPPER('%{safe}%') "
+            f"OR UPPER(NOCCLI) LIKE UPPER('%{safe}%')"
+        )
     else:
         raise ValueError(f"criterio de búsqueda inválido: {by!r}")
     rows = client.load_table("F_CLI", filtro=filtro, ejercicio=ejercicio)
@@ -121,15 +149,17 @@ def next_codcli(client: FactusolClient, ejercicio: str) -> str:
 def build_customer_payload(data: dict[str, Any], codcli: str) -> dict[str, Any]:
     """Datos mínimos → registro F_CLI. El resto de columnas las deja FACTUSOL
     con sus defaults (no inventamos valores)."""
+    nombre = (data.get("nombre") or "").strip()
     payload = {
         "CODCLI": codcli,
-        "NOMCLI": data.get("nombre") or "",
-        "CIFCLI": data.get("nif") or "",
-        "DIRCLI": data.get("direccion") or "",
+        "NOFCLI": nombre,          # nombre fiscal (razón social)
+        "NOCCLI": nombre,          # comercial: por defecto igual al fiscal
+        "NIFCLI": data.get("nif") or "",
+        "DOMCLI": data.get("direccion") or "",
         "POBCLI": data.get("ciudad") or "",
         "CPOCLI": data.get("cp") or "",
         "PROCLI": data.get("provincia") or "",
-        "NACCLI": data.get("pais") or "ES",
+        "PAICLI": _country_code(data.get("pais") or "ES"),
     }
     if data.get("email"):
         payload["EMACLI"] = data["email"]
@@ -172,9 +202,10 @@ def create_customer(
 
 #: Campos comparables CRM ↔ FACTUSOL para el detector de divergencias.
 DIFF_FIELDS = (
-    ("nombre", "name", "nomcli"),
-    ("nif", "tax_id", "cifcli"),
-    ("direccion", "address_line", "dircli"),
+    # NOFCLI (fiscal) es lo canónico para comparar con el nombre del CRM.
+    ("nombre", "name", "nofcli"),
+    ("nif", "tax_id", "nifcli"),
+    ("direccion", "address_line", "domcli"),
     ("ciudad", "city", "pobcli"),
     ("cp", "postal_code", "cpocli"),
     ("provincia", "state", "procli"),
