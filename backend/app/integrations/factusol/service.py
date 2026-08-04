@@ -44,7 +44,7 @@ def _int_or_none(value: object) -> int | None:
 def _next_codcli(client: FactusolClient) -> str:
     """Siguiente CODCLI numérico libre = max(existentes) + 1, con un suelo en
     CODCLI_BASE. Ignora códigos no numéricos."""
-    rows = client.load_table("F_CLI", campos=["CODCLI"])
+    rows = client.load_table("F_CLI", filtro="1=1 ORDER BY CODCLI DESC LIMIT 1000")
     max_n = 0
     for r in rows:
         n = _int_or_none(r.get("CODCLI"))
@@ -69,7 +69,7 @@ def ensure_customer_in_factusol(
     # ¿ya existe en FACTUSOL por CIF? → vincular sin duplicar.
     if company.tax_id:
         existing = client.load_table(
-            "F_CLI", filtro=f"CIFCLI='{company.tax_id}'", numero_registros=1,
+            "F_CLI", filtro=f"CIFCLI='{company.tax_id}' LIMIT 1",
         )
         if existing:
             codcli = str(existing[0].get("CODCLI") or "").strip()

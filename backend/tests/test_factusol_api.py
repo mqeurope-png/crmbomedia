@@ -87,7 +87,9 @@ def test_smoke_read_customers_returns_rows(client):
         r = client.post(f"{_SMOKE}?mode=read_customers", headers=auth_headers(client, "admin"))
     assert r.status_code == 200
     assert r.json()["count"] == 2
-    fake.load_table.assert_called_once_with("F_CLI", numero_registros=5)
+    fake.load_table.assert_called_once_with(
+        "F_CLI", filtro="1=1 ORDER BY CODCLI LIMIT 5",
+    )
 
 
 def test_smoke_dry_run_invoice_returns_payload_without_network(client, session_factory):

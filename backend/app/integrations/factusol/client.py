@@ -15,12 +15,22 @@ El password llega cifrado con Fernet (INTEGRATION_SECRETS_KEY) en el env
 `FACTUSOL_PASSWORD_ENCRYPTED`; se descifra en memoria y se envía en base64.
 El JWT se cachea con margen de 30s sobre su `exp`.
 
-⚠️ C-1-fix1: las rutas de DATOS siguen SIN confirmar — `/registros/*` devuelve
-404 en producción y la doc oficial (apidoc.sdelsol.com) está bloqueada por la
-política de egress de CI/dev, así que no se han cambiado por otra conjetura.
-Son configurables por env (`FACTUSOL_PATH_LOAD_TABLE`, …) para corregirlas sin
-redeploy de código, y `scripts/factusol_discover_paths.py` las descubre desde
-el VPS. El login SÍ está confirmado.
+C-1-fix1 (2026-08-04): rutas y formatos VERIFICADOS contra la API real. Los
+endpoints de datos cuelgan de `/admin/` (los `/registros/*` del Sprint 0 daban
+404). Particularidades del contrato real, todas manejadas aquí:
+
+- `CargaTabla` solo acepta `{ejercicio, tabla, filtro}`; `filtro` es un
+  fragmento SQL WHERE y vacío devuelve `null` → se manda `1=1`.
+- La respuesta es una lista ANIDADA de `{columna, dato}` por fila
+  (`_rows_to_dicts` la normaliza a `list[dict]`).
+- Los registros de escritura van como array de `{columna, dato}`
+  (`_to_api_record` convierte los dicts planos de los mappers).
+- `BorrarRegistros` es **GET** con path params.
+- El token caducado llega como **HTTP 200 + `respuesta: "Unauthorized"`**, no
+  como 401 — `_request` lo trata igual (re-auth + reintento).
+
+Las rutas siguen siendo sobreescribibles por env (`FACTUSOL_PATH_LOAD_TABLE`, …)
+y `scripts/factusol_discover_paths.py` las redescubre si DELSOL las cambia.
 """
 from __future__ import annotations
 
@@ -29,6 +39,7 @@ import json
 import logging
 import time
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -50,21 +61,24 @@ BACKOFF_BASE_SECONDS = 1.0
 #: sin distinguir mayúsculas (`/Login/Autenticar` también vale).
 LOGIN_PATH = "/login/Autenticar"
 
-#: Rutas de datos — ⚠️ NO CONFIRMADAS. Estos defaults dan 404 en producción
-#: (C-1-fix1): eran una conjetura del Sprint 0 y la doc oficial
-#: (apidoc.sdelsol.com) no es accesible ni desde CI ni desde el entorno de
-#: desarrollo (bloqueada por política de egress), así que NO se han sustituido
-#: por otra conjetura.
-#:
-#: Se sobreescriben SIN tocar código con las envs
-#: `FACTUSOL_PATH_LOAD_TABLE` / `_WRITE_RECORD` / `_UPDATE_RECORD` /
-#: `_DELETE_RECORDS`. Para averiguar las correctas desde el VPS (que sí llega
-#: a la API) usar `python -m scripts.factusol_discover_paths`, que explota el
-#: oráculo 404 (ruta inexistente) vs 401/400 (ruta válida).
-PATH_CARGA_TABLA = "/registros/cargaTabla"
-PATH_ESCRIBIR = "/registros/escribirRegistro"
-PATH_ACTUALIZAR = "/registros/actualizarRegistro"
-PATH_BORRAR = "/registros/borrarRegistros"
+#: Rutas de datos — CONFIRMADAS contra la API real (2026-08-04, C-1-fix1).
+#: Todas cuelgan de `/admin/` (las `/registros/*` del Sprint 0 daban 404).
+#: Siguen siendo sobreescribibles por env (`FACTUSOL_PATH_LOAD_TABLE`, …) por
+#: si DELSOL las cambia — corregirlas no exige redeploy de código.
+PATH_CARGA_TABLA = "/admin/CargaTabla"              # POST {ejercicio,tabla,filtro}
+PATH_ESCRIBIR = "/admin/EscribirRegistro"           # POST {ejercicio,tabla,registro[]}
+PATH_ACTUALIZAR = "/admin/ActualizarRegistro"       # POST, igual + PK en registro[]
+#: GET con path params: /admin/BorrarRegistros/{ejercicio}/{tabla}/{filtro}
+PATH_BORRAR = "/admin/BorrarRegistros"
+
+#: `filtro` es un fragmento SQL WHERE. Vacío devuelve `resultado: null`, así
+#: que "sin filtro" se expresa con `1=1`.
+FILTRO_TODOS = "1=1"
+
+#: Valores de `respuesta` que la API devuelve con HTTP 200 pero significan error.
+RESPUESTA_OK = "OK"
+RESPUESTA_UNAUTHORIZED = "Unauthorized"   # token caducado (¡no llega como 401!)
+RESPUESTA_BD_NO_EXISTE = "BDNoExiste"     # ejercicio sin base de datos
 
 
 class FactusolError(RuntimeError):
@@ -74,6 +88,37 @@ class FactusolError(RuntimeError):
         super().__init__(message)
         self.status = status
         self.body = (body or "")[:2000]
+
+
+def _rows_to_dicts(resultado: Any) -> list[dict[str, Any]]:
+    """Normaliza el `resultado` de CargaTabla a `list[dict]` idiomático.
+
+    La API devuelve una lista ANIDADA: cada fila es una lista de
+    `{"columna": <nombre>, "dato": <valor>}`. Sin filas devuelve `null`.
+
+        [[{"columna":"CODCLI","dato":1}, …], …]  →  [{"CODCLI": 1, …}, …]
+    """
+    if not resultado or not isinstance(resultado, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for row in resultado:
+        if not isinstance(row, list):
+            continue
+        out.append({
+            col["columna"]: col.get("dato")
+            for col in row
+            if isinstance(col, dict) and "columna" in col
+        })
+    return out
+
+
+def _to_api_record(data: dict[str, Any] | list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Convierte un registro a la forma que espera la API:
+    `[{"columna": <nombre>, "dato": <valor>}, …]`. Acepta un dict plano (el
+    formato que devuelven los mappers) o una lista ya en formato API."""
+    if isinstance(data, list):
+        return data
+    return [{"columna": k, "dato": v} for k, v in data.items()]
 
 
 def _jwt_exp(token: str) -> float | None:
@@ -205,60 +250,74 @@ class FactusolClient:
     # --- operaciones genéricas sobre tablas ---------------------------------
 
     def load_table(
-        self, tabla: str, *, filtro: str = "", campos: list[str] | None = None,
-        numero_registros: int | None = None, ejercicio: str | None = None,
+        self, tabla: str, *, filtro: str = FILTRO_TODOS, ejercicio: str | None = None,
     ) -> list[dict[str, Any]]:
-        """CargaTabla — lee registros de una tabla. `filtro` es la cláusula
-        SQL-like de la API; `campos` limita columnas; `numero_registros`
-        acota el volumen (útil para el smoke-test)."""
-        body: dict[str, Any] = {"tabla": tabla, "ejercicio": ejercicio or self.default_ejercicio}
-        if filtro:
-            body["filtro"] = filtro
-        if campos:
-            body["campos"] = campos
-        if numero_registros is not None:
-            body["numeroRegistros"] = numero_registros
-        data = self._request("POST", self.path_load_table, json=body)
-        rows = data.get("registros") or data.get("datos") or data.get("data") or []
-        return rows if isinstance(rows, list) else []
+        """CargaTabla — lee filas de una tabla del ejercicio.
+
+        `filtro` es un fragmento SQL **WHERE** (admite LIKE / AND / ORDER BY /
+        LIMIT). Un filtro vacío hace que la API devuelva `resultado: null`, así
+        que el default es `1=1`. La API devuelve SIEMPRE todas las columnas de
+        la tabla (para proyectar columnas hay que usar `LanzarConsulta`).
+
+        Devuelve las filas ya normalizadas a `list[dict]` (ver `_rows_to_dicts`).
+        """
+        data = self._request("POST", self.path_load_table, json={
+            "ejercicio": ejercicio or self.default_ejercicio,
+            "tabla": tabla,
+            "filtro": filtro or FILTRO_TODOS,
+        })
+        return _rows_to_dicts(data.get("resultado"))
 
     def write_record(
-        self, tabla: str, data: dict[str, Any], *, ejercicio: str | None = None,
+        self, tabla: str, data: dict[str, Any] | list[dict[str, Any]], *,
+        ejercicio: str | None = None,
     ) -> dict[str, Any]:
-        """EscribirRegistro — inserta UN registro (la API es de registro a
-        registro; no hay bulk documentado)."""
+        """EscribirRegistro — inserta UN registro (la API es registro a
+        registro; no hay bulk). Acepta el registro como dict plano
+        `{"CODCLI": 1}` o ya en la forma de la API `[{"columna","dato"}]`."""
         return self._request("POST", self.path_write_record, json={
-            "tabla": tabla, "registro": data,
             "ejercicio": ejercicio or self.default_ejercicio,
+            "tabla": tabla,
+            "registro": _to_api_record(data),
         })
 
     def update_record(
-        self, tabla: str, key: str, data: dict[str, Any], *, ejercicio: str | None = None,
+        self, tabla: str, data: dict[str, Any] | list[dict[str, Any]], *,
+        ejercicio: str | None = None,
     ) -> dict[str, Any]:
-        """ActualizarRegistro — modifica los registros que cumplan `key`
-        (filtro SQL-like, p.ej. "CODCLI='22870'")."""
+        """ActualizarRegistro — mismo formato que EscribirRegistro. El
+        registro DEBE incluir la columna PK (p.ej. `CODCLI`) para que la API
+        sepa qué fila tocar; las demás columnas son los cambios."""
         return self._request("POST", self.path_update_record, json={
-            "tabla": tabla, "filtro": key, "registro": data,
             "ejercicio": ejercicio or self.default_ejercicio,
+            "tabla": tabla,
+            "registro": _to_api_record(data),
         })
 
     def delete_records(
         self, tabla: str, filtro: str, *, ejercicio: str | None = None,
     ) -> dict[str, Any]:
-        """BorrarRegistros — borra por filtro."""
-        return self._request("POST", self.path_delete_records, json={
-            "tabla": tabla, "filtro": filtro,
-            "ejercicio": ejercicio or self.default_ejercicio,
-        })
+        """BorrarRegistros — **GET** con path params:
+        `/admin/BorrarRegistros/{ejercicio}/{tabla}/{filtro}`."""
+        ejercicio = ejercicio or self.default_ejercicio
+        path = (
+            f"{self.path_delete_records}/{quote(str(ejercicio), safe='')}"
+            f"/{quote(tabla, safe='')}/{quote(filtro, safe='')}"
+        )
+        return self._request("GET", path)
 
     # --- transporte ----------------------------------------------------------
 
     def _request(
         self, method: str, path: str, *, json: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Petición autenticada con renovación de token + retry 5xx. Un 401
-        fuerza UNA re-autenticación inmediata y un reintento (token caducado
-        en vuelo)."""
+        """Petición autenticada con renovación de token + retry 5xx.
+
+        OJO: la API DELSOL señala el token caducado con **HTTP 200** y
+        `respuesta: "Unauthorized"` en el cuerpo, no con un 401. Con un JWT de
+        ~3 min eso ocurre a mitad de cualquier secuencia de escrituras, así que
+        se trata igual que un 401: re-autenticar una vez y reintentar.
+        """
         self._ensure_token()
         reauthed = False
         attempt = 0
@@ -277,7 +336,34 @@ class FactusolClient:
                     f"{method} {path} → {resp.status_code}: {resp.text[:500]}",
                     status=resp.status_code, body=resp.text,
                 )
-            return resp.json()
+
+            data = resp.json()
+            if not isinstance(data, dict):
+                return {"resultado": data, "respuesta": RESPUESTA_OK}
+            respuesta = data.get("respuesta")
+
+            # Token caducado disfrazado de 200 → re-auth + reintento.
+            if respuesta == RESPUESTA_UNAUTHORIZED and not reauthed:
+                reauthed = True
+                self.authenticate()
+                continue
+            if respuesta == RESPUESTA_UNAUTHORIZED:
+                raise FactusolError(
+                    f"{method} {path} → token rechazado tras re-autenticar",
+                    status=resp.status_code, body=resp.text,
+                )
+            if respuesta == RESPUESTA_BD_NO_EXISTE:
+                raise FactusolError(
+                    f"{method} {path} → ejercicio sin base de datos en FACTUSOL "
+                    f"(respuesta={respuesta!r})",
+                    status=resp.status_code, body=resp.text,
+                )
+            if respuesta is not None and respuesta != RESPUESTA_OK:
+                raise FactusolError(
+                    f"{method} {path} → respuesta={respuesta!r}: {resp.text[:300]}",
+                    status=resp.status_code, body=resp.text,
+                )
+            return data
 
     def _raw_request(
         self, method: str, path: str, *, json: dict[str, Any] | None = None, authed: bool = True,

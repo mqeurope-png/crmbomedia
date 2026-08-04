@@ -1,15 +1,11 @@
 # FACTUSOL — Esquema de tablas relevantes para el ERP
 
-> ⚠️ **Estado de las URLs (2026-08-04, PR C-1-fix1).** El login
-> `POST /login/Autenticar` está **CONFIRMADO en producción** (200 + JWT).
-> Las rutas de **datos** de este documento (`/registros/*`) **NO lo están**:
-> devuelven 404 en la API real. Eran una conjetura del Sprint 0 y no se han
-> sustituido por otra: `apidoc.sdelsol.com` está bloqueado por la política de
-> egress de CI/dev, así que la verificación tiene que hacerse desde el VPS con
-> `python -m scripts.factusol_discover_paths`. Mientras tanto las rutas son
-> configurables por env (`FACTUSOL_PATH_LOAD_TABLE`, `FACTUSOL_PATH_WRITE_RECORD`,
-> `FACTUSOL_PATH_UPDATE_RECORD`, `FACTUSOL_PATH_DELETE_RECORDS`) — corregirlas
-> NO requiere cambio de código.
+> ✅ **URLs y formatos verificados contra la API real** (2026-08-04, PR C-1-fix1,
+> vía navegador sobre `apidoc.sdelsol.com` + curl contra producción: fabricante
+> 1626, cliente 22870, base `3FS003`, empresa 003 Bomedia SL, JWT `AdminUser`).
+> Los endpoints de datos cuelgan de **`/admin/`** — las rutas `/registros/*` que
+> asumió el Sprint 0 daban 404. Ver la tabla de endpoints y el formato real de
+> body/response en `factusol-write-flows.md`.
 
 **Estado:** base construida desde documentación pública + convención
 verificada en código comunitario. La validación en vivo (CargaTabla real)

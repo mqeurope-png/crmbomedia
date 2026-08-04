@@ -1,19 +1,18 @@
-"""Descubre las rutas REALES de datos de la API DELSOL (C-1-fix1).
+"""Redescubre las rutas de datos de la API DELSOL si DELSOL las cambia.
 
-Contexto: `/login/Autenticar` funciona (200 + JWT), pero las rutas de datos
-que asumió el Sprint 0 (`/registros/cargaTabla`, …) devuelven 404. La doc
-oficial (apidoc.sdelsol.com) está bloqueada por la política de egress del
-entorno de desarrollo/CI, así que este script hace el descubrimiento desde
-donde SÍ hay red: el VPS de producción.
+Las rutas actuales están CONFIRMADAS (2026-08-04, C-1-fix1): cuelgan de
+`/admin/` (`/admin/CargaTabla`, `/admin/EscribirRegistro`, …). Este script se
+conserva como herramienta de diagnóstico para el día que dejen de funcionar —
+fue lo que permitió salir del 404 de las rutas `/registros/*` del Sprint 0.
 
 **Oráculo**: en ASP.NET Web API el routing se resuelve ANTES que la
 autorización, así que:
 
-  - ruta inexistente        → 404  (+ body "No HTTP resource was found…")
-  - ruta EXISTENTE sin token→ 401  ← esto es un ACIERTO
-  - ruta EXISTENTE con token→ 200 / 400 (payload inválido) ← acierto seguro
+  - ruta inexistente         → 404  (+ body "No HTTP resource was found…")
+  - ruta EXISTENTE sin token → 401  ← esto es un ACIERTO
+  - ruta EXISTENTE con token → 200 / 400 (payload inválido) ← acierto seguro
 
-Uso (desde el VPS, dentro del contenedor api):
+Uso (desde el VPS; el entorno de dev/CI no alcanza api.sdelsol.com):
 
     docker compose -f /opt/crmbo/docker-compose.prod.yml exec api \
         python -m scripts.factusol_discover_paths
@@ -21,8 +20,8 @@ Uso (desde el VPS, dentro del contenedor api):
     # probar candidatos extra (además de la matriz por defecto):
     ... python -m scripts.factusol_discover_paths /Datos/Cargar /Api/v1/CargaTabla
 
-Al terminar imprime las envs que hay que añadir a `.env.production`.
-No escribe nada en FACTUSOL: solo manda POSTs con body vacío `{}`.
+Al terminar imprime las envs `FACTUSOL_PATH_*` que hay que añadir a
+`.env.production`. No escribe nada en FACTUSOL: solo manda POSTs con body `{}`.
 """
 from __future__ import annotations
 
@@ -37,6 +36,7 @@ from app.integrations.factusol.client import LOGIN_PATH
 #: como en /login/Autenticar). Incluye los ya descartados por Bart para que el
 #: informe sea completo y reproducible.
 CONTROLLERS = [
+    "admin",  # ← el confirmado en 2026-08-04
     "registros", "registro", "datos", "dato", "tabla", "tablas",
     "consulta", "consultas", "factusol", "empresa", "empresas",
     "api", "gestion", "general", "comun", "servicio", "servicios",

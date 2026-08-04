@@ -1,15 +1,11 @@
 # FACTUSOL — Flujos de escritura (crear cliente / presupuesto / factura)
 
-> ⚠️ **Estado de las URLs (2026-08-04, PR C-1-fix1).** El login
-> `POST /login/Autenticar` está **CONFIRMADO en producción** (200 + JWT).
-> Las rutas de **datos** de este documento (`/registros/*`) **NO lo están**:
-> devuelven 404 en la API real. Eran una conjetura del Sprint 0 y no se han
-> sustituido por otra: `apidoc.sdelsol.com` está bloqueado por la política de
-> egress de CI/dev, así que la verificación tiene que hacerse desde el VPS con
-> `python -m scripts.factusol_discover_paths`. Mientras tanto las rutas son
-> configurables por env (`FACTUSOL_PATH_LOAD_TABLE`, `FACTUSOL_PATH_WRITE_RECORD`,
-> `FACTUSOL_PATH_UPDATE_RECORD`, `FACTUSOL_PATH_DELETE_RECORDS`) — corregirlas
-> NO requiere cambio de código.
+> ✅ **URLs y formatos verificados contra la API real** (2026-08-04, PR C-1-fix1,
+> vía navegador sobre `apidoc.sdelsol.com` + curl contra producción: fabricante
+> 1626, cliente 22870, base `3FS003`, empresa 003 Bomedia SL, JWT `AdminUser`).
+> Los endpoints de datos cuelgan de **`/admin/`** — las rutas `/registros/*` que
+> asumió el Sprint 0 daban 404. Ver la tabla de endpoints y el formato real de
+> body/response en `factusol-write-flows.md`.
 
 **Estado:** flujos diseñados + plantillas curl + script end-to-end listo
 (`backend/scripts/factusol_write_flow_test.py`). La **transcripción real**
@@ -140,43 +136,75 @@ valida credenciales / lectura / payload del mapper (dry-run NO escribe).
 
 ---
 
-## Descubrimiento de las rutas de datos (C-1-fix1, pendiente)
+## Referencia de endpoints (verificada 2026-08-04)
 
-`/registros/cargaTabla` y hermanas devuelven **404** en la API real; el 404 lo
-emite ASP.NET (Azure App Service + IIS 10 + ASP.NET 4.0.30319), es decir el
-routing no reconoce la ruta. Rutas ya descartadas (todas 404): `/CargaTabla`,
-`/cargaTabla`, `/registros/{CargaTabla,cargatabla,Cargar,CargarTabla}`,
-`/tabla/*`, `/tablas/*`, `/datos/*`, `/dato/Cargar`, `/api/*`, `/consultas/*`,
-`/servicios/*`, `/factusol/*`, `/empresa(s)/CargarTabla`. Los endpoints de
-discovery (`/swagger`, `/openapi.json`, `/help`, `/docs`) también dan 404.
+| Operación | Método | Path |
+|---|---|---|
+| Leer tabla filtrada | **POST** | `/admin/CargaTabla` |
+| Leer un registro | GET | `/admin/LeerRegistro/{ejercicio}/{tabla}/{filtro}` |
+| Consulta SQL libre | POST | `/admin/LanzarConsulta` |
+| Insertar registro | **POST** | `/admin/EscribirRegistro` |
+| Actualizar registro | **POST** | `/admin/ActualizarRegistro` |
+| Borrar registros | **GET** | `/admin/BorrarRegistros/{ejercicio}/{tabla}/{filtro}` |
+| Imagen de artículo | POST | `/admin/ArticulosImagen` (fuera de scope C-1) |
 
-### Oráculo
+Auth: `POST /login/Autenticar` (sin cambios; JWT ~3 min).
 
-En ASP.NET Web API el **routing se resuelve antes que la autorización**:
+### Body de `CargaTabla`
 
-| Respuesta a `POST {ruta}` con body `{}` | Significado |
+```json
+{"ejercicio": "2026", "tabla": "F_CLI", "filtro": "1=1 ORDER BY CODCLI LIMIT 5"}
+```
+
+Solo esos 3 campos: **no existen** `campos` ni `numeroRegistros`. `filtro` es un
+fragmento SQL **WHERE** (admite `LIKE`, `AND`, `>`, `ORDER BY`, `LIMIT`). Un
+filtro vacío devuelve `resultado: null`, así que «sin filtro» se escribe `1=1`.
+Para proyectar columnas hay que usar `LanzarConsulta` con SQL libre —
+`CargaTabla` siempre devuelve todas las columnas de la tabla.
+
+### Response de `CargaTabla` (lista ANIDADA)
+
+```json
+{"resultado": [[{"columna": "CODCLI", "dato": 1},
+                {"columna": "NOFCLI", "dato": "Cliente ejemplo"}]],
+ "respuesta": "OK"}
+```
+
+Cada fila es una **lista de `{columna, dato}`**, no un dict. El cliente lo
+normaliza a `list[dict]` con `_rows_to_dicts()`.
+
+### Body de `EscribirRegistro` / `ActualizarRegistro`
+
+```json
+{"ejercicio": "2026", "tabla": "F_CLI",
+ "registro": [{"columna": "CODCLI", "dato": 12345},
+              {"columna": "NOFCLI", "dato": "Nombre fiscal"}]}
+```
+
+`registro` es un **array de `{columna, dato}`**. En `ActualizarRegistro` debe
+incluir la columna PK (p.ej. `CODCLI`) para identificar la fila. Los mappers del
+CRM siguen devolviendo dicts planos; la conversión la hace el cliente
+(`_to_api_record`). Respuesta: `{"resultado": "", "respuesta": "OK"}`.
+
+### Códigos de `respuesta` (llegan con HTTP 200)
+
+| `respuesta` | Significado |
 |---|---|
-| `404` + "No HTTP resource was found…" | la ruta **no existe** |
-| `401` (sin token) | la ruta **existe** ✅ |
-| `200` / `400` (con token) | la ruta **existe** ✅ (acierto seguro) |
+| `OK` | correcto |
+| `Unauthorized` | **token caducado** — NO llega como 401; el cliente re-autentica y reintenta |
+| `BDNoExiste` | el ejercicio no tiene base de datos (2020-2022) |
 
-### Procedimiento (desde el VPS, que sí alcanza la API)
+### Datos confirmados de Bomedia
 
-```bash
-docker compose -f /opt/crmbo/docker-compose.prod.yml exec api \
-    python -m scripts.factusol_discover_paths
-```
+Empresa (`F_EMP`, ejercicio 2024): **CODEMP 003 · NIFEMP B63609309 · DENEMP
+Bomedia SL · C Aribau 171 1º 1ª, Barcelona**. Ejercicios con datos: **2023-2026**
+(2020-2022 → `BDNoExiste`). En 2026 hay **4531 clientes** en `F_CLI` (la tabla es
+por ejercicio). Default del CRM: `FACTUSOL_DEFAULT_EJERCICIO=2026`.
 
-Barre una matriz `controller × acción` (el patrón confirmado es
-`/{controller}/{action}`, como `/login/Autenticar`), y para el controller
-ganador busca además las acciones de escritura/actualización/borrado. Admite
-candidatos extra por CLI:
+### Redescubrir rutas si DELSOL las cambia
 
-```bash
-... python -m scripts.factusol_discover_paths /Datos/Cargar /Api/v1/CargaTabla
-```
-
-Al terminar imprime las líneas `FACTUSOL_PATH_*` listas para pegar en
-`.env.production`. Tras añadirlas: `up -d --force-recreate api worker-sync`.
-Si la matriz no acierta, sacar los paths de `apidoc.sdelsol.com` (requiere
-navegador, la página es Postman JS-rendered) y pasarlos como argumentos.
+`scripts/factusol_discover_paths.py` barre una matriz `controller × acción` desde
+el VPS usando el oráculo de ASP.NET (routing antes que autorización): **404** =
+ruta inexistente, **401/400/200** = ruta válida. Las 4 rutas son además
+sobreescribibles por env (`FACTUSOL_PATH_LOAD_TABLE`, `_WRITE_RECORD`,
+`_UPDATE_RECORD`, `_DELETE_RECORDS`) para corregirlas sin redeploy de código.

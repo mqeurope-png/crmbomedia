@@ -63,7 +63,9 @@ def smoke_test(
     if mode == "read_customers":
         client = FactusolClient.from_settings()
         try:
-            rows = client.load_table("F_CLI", numero_registros=5)
+            rows = client.load_table(
+                "F_CLI", filtro="1=1 ORDER BY CODCLI LIMIT 5",
+            )
         except FactusolError as exc:
             raise HTTPException(502, {"code": "factusol_read_failed",
                                       "detail": str(exc), "body": exc.body[:500]}) from exc
