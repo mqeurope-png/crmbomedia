@@ -10322,3 +10322,8 @@ tr.is-inactive {
 .erp-manual-form .erp-card { display: flex; flex-direction: column; gap: 10px; }
 .erp-manual-form .data-table input { width: 100%; }
 .erp-manual-total { margin: 8px 0 0; font-size: 16px; text-align: right; }
+
+/* C-2: serie de facturación configurable en /erp/settings. */
+.erp-series-fieldset { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
+.erp-series-fieldset legend { font-size: 13px; font-weight: 700; padding: 0 6px; }
+.erp-series-fieldset .data-table input { width: 100%; }

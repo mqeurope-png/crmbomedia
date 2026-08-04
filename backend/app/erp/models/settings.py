@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-from sqlalchemy import Boolean, Enum, ForeignKey, Numeric, String
+from sqlalchemy import Boolean, Enum, ForeignKey, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.crm import Base, TimestampMixin, enum_values
@@ -45,3 +45,8 @@ class ErpSettings(TimestampMixin, Base):
     factusol_live: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False
     )
+    # Fase C · C-2 (serie de facturación): JSON
+    # `{"default": "A", "by_source": {"manual": "M", …}}`. Un solo blob para no
+    # añadir una columna por origen; el service resuelve
+    # by_source[origen] → default → "A". Ver `resolve_serfac`.
+    factusol_series_json: Mapped[str | None] = mapped_column(Text)

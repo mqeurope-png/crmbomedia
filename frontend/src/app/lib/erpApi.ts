@@ -448,9 +448,13 @@ export type ErpSettings = {
   auto_invoice_max_amount_eur: number | null;
   default_carrier_id: string | null;
   factusol_default_ejercicio: string | null;
-  /** Flag reservado para Fase C. Tras B-2-fix5 el ERP confía en la fuente
-   *  y no valida SKU/empresas, así que hoy es un no-op. */
+  /** Fase C: activa la consulta EN VIVO a FACTUSOL (detección/auto-vinculación
+   *  de factura y albarán). Ya no añade bloqueos a la Cola PEDIDOS (C-2-fix3). */
   factusol_live: boolean;
+  /** C-2: serie de facturación por defecto (vacío → «A»). */
+  factusol_series_default: string;
+  /** C-2: override de serie por origen del pedido (o por store_id). */
+  factusol_series_by_source: Record<string, string>;
 };
 
 export async function getErpSettings(): Promise<ErpSettings> {

@@ -231,3 +231,36 @@ def test_settings_factusol_live_defaults_false_and_toggles(client):
     # persiste
     g2 = client.get("/api/erp/settings", headers=auth_headers(client, "admin"))
     assert g2.json()["factusol_live"] is True
+
+
+# --- C-2: serie de facturación configurable ---------------------------------
+
+
+def test_settings_factusol_series_defaults_empty(client):
+    g = client.get("/api/erp/settings", headers=auth_headers(client, "pedidos"))
+    body = g.json()
+    assert body["factusol_series_default"] == ""
+    assert body["factusol_series_by_source"] == {}
+
+
+def test_settings_factusol_series_roundtrip(client):
+    p = client.patch("/api/erp/settings", json={
+        "factusol_series_default": "A",
+        "factusol_series_by_source": {"manual": "M", "woocommerce": ""},
+    }, headers=auth_headers(client, "admin"))
+    assert p.status_code == 200
+    body = p.json()
+    assert body["factusol_series_default"] == "A"
+    # Las series vacías se descartan (vacío = usa la por defecto).
+    assert body["factusol_series_by_source"] == {"manual": "M"}
+    # Persiste y un PATCH parcial no borra el resto.
+    p2 = client.patch("/api/erp/settings", json={"factusol_series_default": "B"},
+                      headers=auth_headers(client, "admin"))
+    assert p2.json()["factusol_series_default"] == "B"
+    assert p2.json()["factusol_series_by_source"] == {"manual": "M"}
+
+
+def test_settings_factusol_series_requires_admin(client):
+    r = client.patch("/api/erp/settings", json={"factusol_series_default": "A"},
+                     headers=auth_headers(client, "pedidos"))
+    assert r.status_code == 403

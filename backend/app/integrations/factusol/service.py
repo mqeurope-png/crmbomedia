@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
 
@@ -54,6 +55,48 @@ def ejercicio_for(session: Session) -> str:
     if cfg is not None and cfg.factusol_default_ejercicio:
         return cfg.factusol_default_ejercicio
     return get_settings().factusol_default_ejercicio
+
+
+#: Serie de facturación de último recurso si no hay nada configurado (C-2).
+FALLBACK_SERFAC = "A"
+
+
+def series_config(session: Session) -> dict[str, Any]:
+    """`{"default": "A", "by_source": {...}}` desde `ErpSettings`. Dict vacío
+    si aún no se ha configurado."""
+    cfg = session.get(ErpSettings, ERP_SETTINGS_SINGLETON_ID)
+    if cfg is None or not cfg.factusol_series_json:
+        return {}
+    try:
+        data = json.loads(cfg.factusol_series_json)
+    except (TypeError, ValueError):
+        logger.warning("factusol: factusol_series_json ilegible; se ignora")
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def resolve_serfac(session: Session, order: Order) -> str:
+    """Serie de la factura para este pedido (C-2):
+    `by_source[origen]` → `default` → `"A"`.
+
+    El origen es `order.external_source` (`woocommerce`, `manual`, …). Si la
+    tienda concreta necesita serie propia, la clave puede ser el `store_id`,
+    que tiene prioridad sobre el origen genérico."""
+    conf = series_config(session)
+    by_source = conf.get("by_source")
+    by_source = by_source if isinstance(by_source, dict) else {}
+    source = _status_value(order.external_source)
+    for key in (order.store_id, source):
+        if key and str(by_source.get(key, "")).strip():
+            return str(by_source[key]).strip()
+    default = str(conf.get("default") or "").strip()
+    if default:
+        return default
+    logger.warning(
+        "factusol: sin serie configurada para origen %r; se usa %r",
+        source, FALLBACK_SERFAC,
+    )
+    return FALLBACK_SERFAC
 
 
 def _int_or_none(value: object) -> int | None:
@@ -232,6 +275,14 @@ def emit_invoice(
 
     codfac = next_codfac(client, ejercicio)
     fecha_emision = datetime.now(UTC).date().isoformat()
+    # C-2: si el operador no fijó serie en el modal, se aplica la configurada
+    # en /erp/settings (override por origen → default → "A").
+    if options is None or options.serfac is None:
+        serie = resolve_serfac(session, order)
+        options = (
+            replace(options, serfac=serie) if options is not None
+            else FacturaOptions(serfac=serie)
+        )
     cabecera = pcl_row_to_fac_payload(
         pcl, codfac, ejercicio, fecha_emision=fecha_emision, options=options,
     )

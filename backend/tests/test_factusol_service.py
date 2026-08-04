@@ -374,6 +374,69 @@ def test_emit_invoice_compensation_on_line_write_failure(session_factory):
         assert o.factusol_invoice_number is None
 
 
+# --- C-2: serie de facturación configurable ---------------------------------
+
+
+def _set_series(s, *, default=None, by_source=None):
+    from app.erp.models import ERP_SETTINGS_SINGLETON_ID, ErpSettings  # noqa: PLC0415
+
+    cfg = s.get(ErpSettings, ERP_SETTINGS_SINGLETON_ID)
+    if cfg is None:
+        cfg = ErpSettings(id=ERP_SETTINGS_SINGLETON_ID)
+        s.add(cfg)
+    payload = {}
+    if default is not None:
+        payload["default"] = default
+    if by_source is not None:
+        payload["by_source"] = by_source
+    cfg.factusol_series_json = json.dumps(payload)
+    s.commit()
+
+
+def test_resolve_serfac_prefers_source_override(session_factory):
+    from app.integrations.factusol.service import resolve_serfac  # noqa: PLC0415
+
+    with session_factory() as s:
+        _set_series(s, default="A", by_source={"manual": "M"})
+        manual = Order(order_number="MANUAL-000001", external_source="manual")
+        woo = Order(order_number="BOPRIN-1", external_source="woocommerce")
+        s.add_all([manual, woo])
+        s.commit()
+        assert resolve_serfac(s, manual) == "M"   # override por origen
+        assert resolve_serfac(s, woo) == "A"      # cae al default
+
+
+def test_resolve_serfac_falls_back_to_A_without_config(session_factory):
+    from app.integrations.factusol.service import resolve_serfac  # noqa: PLC0415
+
+    with session_factory() as s:
+        order = Order(order_number="BOPRIN-2", external_source="woocommerce")
+        s.add(order)
+        s.commit()
+        assert resolve_serfac(s, order) == "A"
+
+
+def test_emit_invoice_uses_configured_series(session_factory):
+    """Sin serie en el modal, emit aplica la configurada en /erp/settings."""
+    with session_factory() as s:
+        _set_series(s, default="A", by_source={"manual": "M"})
+        oid = _order(s)  # order_number BOPRIN-99866, origen por defecto (manual)
+        client = FakeFactusol(pcl_row=_pcl_row(), lpc_rows=[], f_fac_last=100)
+        emit_invoice(s, oid, client)
+    cabecera = next(rec for t, rec in client.writes if t == "F_FAC")
+    assert cabecera["SERFAC"] == "M"
+
+
+def test_emit_invoice_modal_series_wins_over_settings(session_factory):
+    with session_factory() as s:
+        _set_series(s, default="A", by_source={"manual": "M"})
+        oid = _order(s)
+        client = FakeFactusol(pcl_row=_pcl_row(), lpc_rows=[], f_fac_last=100)
+        emit_invoice(s, oid, client, options=FacturaOptions(serfac="Z"))
+    cabecera = next(rec for t, rec in client.writes if t == "F_FAC")
+    assert cabecera["SERFAC"] == "Z"
+
+
 def test_emit_invoice_rejects_already_invoiced(session_factory):
     with session_factory() as s:
         oid = _order(s, invoice_status=InvoiceStatus.INVOICED_BY_ERP.value)
