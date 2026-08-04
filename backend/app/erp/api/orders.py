@@ -30,7 +30,7 @@ from app.erp.models import (
     StatusDomain,
 )
 from app.erp.state_machine import TransitionError, apply_transition, available_transitions
-from app.models.crm import Company, User
+from app.models.crm import User
 
 logger = logging.getLogger(__name__)
 
@@ -169,9 +169,10 @@ def _serialise_detail(session: Session, o: Order, actor: User) -> dict[str, Any]
 
 
 def _factusol_live(session: Session) -> bool:
-    # Helper conservado por si la Fase C lo aprovecha. Tras B-2-fix5 ya no
-    # se llama desde el cálculo de bloqueos/warnings: el ERP confía en la
-    # fuente y no valida SKU ni empresas contra FACTUSOL.
+    # Toggle de Fase C: gobierna SOLO la consulta en vivo del estado de factura
+    # (endpoint factusol-status, C-2-fix2). NO interviene ya en el cálculo de
+    # bloqueos/warnings: el ERP confía en la fuente y no valida SKU ni empresas
+    # contra FACTUSOL (B-2-fix5, reforzado en C-2-fix3).
     from app.erp.models import ERP_SETTINGS_SINGLETON_ID, ErpSettings  # noqa: PLC0415
 
     cfg = session.get(ErpSettings, ERP_SETTINGS_SINGLETON_ID)
@@ -197,44 +198,21 @@ def _open_exception_blocker(session: Session, o: Order) -> dict[str, str] | None
     return None
 
 
-def _factusol_issues(session: Session, o: Order) -> list[dict[str, str]]:
-    """Problemas que impiden facturar en FACTUSOL: líneas con SKU sin CODART
-    mapeado + empresa sin vincular. Solo cuentan como bloqueo cuando
-    `factusol_live` está activo (Fase C, C-2)."""
-    issues: list[dict[str, str]] = []
-    unmapped = [ln.product_sku for ln in o.lines if not ln.product_codart]
-    if unmapped:
-        issues.append({
-            "code": "sku_unmapped",
-            "detail": f"Líneas sin CODART: {', '.join(unmapped[:5])}",
-        })
-    if o.company_id:
-        company = session.get(Company, o.company_id)
-        if company is not None and not company.factusol_company_id:
-            issues.append({
-                "code": "company_missing_factusol",
-                "detail": f"«{company.name}» sin vincular a FACTUSOL",
-            })
-    return issues
-
-
 def _blockers(session: Session, o: Order) -> list[dict[str, str]]:
-    """Bloqueos que impiden aprobar en la Cola PEDIDOS: siempre las excepciones
-    abiertas reales; y, cuando `factusol_live` está activo (Fase C), también
-    los issues de FACTUSOL (SKU sin mapear / empresa sin vincular)."""
-    out: list[dict[str, str]] = []
-    if _factusol_live(session):
-        out.extend(_factusol_issues(session, o))
+    """Bloqueos que impiden aprobar en la Cola PEDIDOS.
+
+    Solo excepciones abiertas de tipos operativos reales (SAT/transporte/
+    facturación). El ERP confía en el pedido tal como llega de la fuente:
+    no valida SKU ni el vínculo empresa→FACTUSOL (filosofía B-2-fix5,
+    reforzada en C-2-fix3; esa validación es responsabilidad de la app
+    externa WooCommerce→FACTUSOL)."""
     real = _open_exception_blocker(session, o)
-    if real:
-        out.append(real)
-    return out
+    return [real] if real else []
 
 
 def _warnings(session: Session, o: Order) -> list[dict[str, str]]:
-    """Sin warnings automáticos mientras FACTUSOL no esté live (el ERP confía
-    en la fuente, B-2-fix5). Con `factusol_live` los issues son bloqueos, no
-    warnings, así que esta lista queda vacía en ambos casos."""
+    """Sin warnings automáticos: el ERP confía en la fuente (B-2-fix5,
+    reforzada en C-2-fix3)."""
     return []
 
 

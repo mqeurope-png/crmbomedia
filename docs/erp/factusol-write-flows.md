@@ -323,3 +323,27 @@ PEDIDOS mantiene el botón de confirmación simple.
 > observaciones (`FOPFAC`/`COMFAC`) y del catálogo `F_FOP` (`CODFOP`/`DESFOP`).
 > Todos están centralizados en `mapper.py` / `api/factusol.py` para ajustarlos
 > en un solo sitio.
+
+---
+
+## Actualización C-2-fix3 (2026-08-04) — «el ERP confía en la fuente» (sin validar SKU/empresa)
+
+Filosofía definitiva (introducida en B-2-fix5, reforzada aquí): **BoHub NO valida
+SKU ni el vínculo empresa→FACTUSOL**. La app externa WooCommerce→FACTUSOL es la
+única responsable de gestionar clientes (F_CLI) y catálogo de artículos (F_ART);
+BoHub solo lee el pedido (F_PCL) que esa app ya dejó preparado y lo convierte en
+factura. Por tanto:
+
+- `orders.py` **ya no calcula** los avisos `sku_unmapped` (líneas sin CODART) ni
+  `company_missing_factusol` (empresa sin `factusol_company_id`). Se retiraron
+  `_factusol_issues` y su gating; `_blockers` devuelve **solo** excepciones
+  operativas abiertas reales (`open_exceptions`: SAT/transporte/facturación) y
+  `_warnings` devuelve siempre `[]`.
+- El toggle `factusol_live` **ya no interviene** en bloqueos/warnings: gobierna
+  únicamente la consulta en vivo del estado de factura (endpoint
+  `factusol-status`, C-2-fix2). Antes reactivaba esos avisos como efecto
+  colateral; al activarlo en prod reaparecían como ruido (además
+  `company_missing_factusol` saldría SIEMPRE, porque el vínculo empresa→FACTUSOL
+  se retiró por completo en C-1-fix1: sin `link-factusol`, `LinkFactusolButton`
+  ni `ensure_customer_in_factusol`, la columna `Company.factusol_company_id`
+  nunca se rellena).

@@ -476,7 +476,7 @@ def test_mark_externally_processed_leaves_dismissed_exceptions_untouched(
         assert exc.resolution_note is None
 
 
-# --- Fase C · C-2: el toggle factusol_live reactiva los bloqueos gated -------
+# --- Fase C · C-2-fix3: factusol_live NO reactiva bloqueos SKU/empresa -------
 
 
 def _set_factusol_live(session_factory, live: bool) -> None:
@@ -489,10 +489,11 @@ def _set_factusol_live(session_factory, live: bool) -> None:
         s.commit()
 
 
-def test_factusol_live_toggle_activates_gated_blockers(client, session_factory):
-    """Con factusol_live OFF (default) el ERP confía en la fuente: SKU sin
-    mapear / empresa sin vincular NO bloquean. Al activarlo (Fase C) vuelven a
-    bloquear la Cola PEDIDOS."""
+def test_factusol_live_does_not_add_sku_or_company_blockers(client, session_factory):
+    """C-2-fix3: aunque `factusol_live` esté activo (necesario para el sync en
+    vivo de factura), un SKU sin mapear + una empresa sin `factusol_company_id`
+    ya NO generan bloqueos ni warnings. El ERP confía en la fuente; solo una
+    excepción operativa abierta bloquea."""
     with session_factory() as s:
         company = Company(name="Sin Factusol SL")  # sin factusol_company_id
         s.add(company)
@@ -503,19 +504,28 @@ def test_factusol_live_toggle_activates_gated_blockers(client, session_factory):
          "quantity": 1, "unit_price": 100},
     ])
 
-    # OFF → sin bloqueos gated.
-    r = client.get(f"/api/erp/orders/{body['id']}",
-                   headers=auth_headers(client, "pedidos"))
-    assert {b["code"] for b in r.json()["blockers"]} == set()
-
-    # ON → sku_unmapped + company_missing_factusol bloquean.
     _set_factusol_live(session_factory, True)
     r = client.get(f"/api/erp/orders/{body['id']}",
                    headers=auth_headers(client, "pedidos"))
-    assert {b["code"] for b in r.json()["blockers"]} == {
-        "sku_unmapped", "company_missing_factusol",
-    }
-    # Y la aprobación se rechaza con 409.
+    assert r.status_code == 200
+    detail = r.json()
+    assert detail["blockers"] == []
+    assert detail["warnings"] == []
+    # Y la aprobación NO se rechaza por SKU/empresa.
     ap = client.post(f"/api/erp/orders/{body['id']}/approve",
                      headers=auth_headers(client, "pedidos"))
-    assert ap.status_code == 409
+    assert ap.status_code == 200, ap.text
+
+
+def test_factusol_live_real_exception_still_blocks(client, session_factory):
+    """Con factusol_live ON, una excepción operativa abierta (SAT) sigue siendo
+    el ÚNICO bloqueo real de la Cola PEDIDOS."""
+    body = _create(client, order_number="MAN-FL2")
+    with session_factory() as s:
+        s.add(ErpException(type=ExceptionType.SAT_ISSUE, order_id=body["id"]))
+        s.commit()
+    _set_factusol_live(session_factory, True)
+    r = client.get(f"/api/erp/orders/{body['id']}",
+                   headers=auth_headers(client, "pedidos"))
+    assert {b["code"] for b in r.json()["blockers"]} == {"open_exceptions"}
+    assert r.json()["warnings"] == []
