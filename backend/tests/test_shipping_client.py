@@ -1,19 +1,26 @@
-"""BoHub ERP Fase D · PR D-1 — descarga del albarán PDF del plugin Woo.
+"""BoHub ERP Fase D · D-1-fix2 — descarga del albarán vía mu-plugin `bohub-albaran`.
 
 Se inyecta un `httpx.MockTransport`: sin red real. El cliente se construye por
-`__new__` para saltar `WooCredentials.from_account` (que descifraría Fernet)."""
+`__new__` para saltar `WooCredentials.from_account` (que descifraría Fernet).
+El token del mu-plugin se controla con monkeypatch sobre los settings."""
 from __future__ import annotations
-
-import base64
 
 import httpx
 import pytest
 
+from app.core.config import get_settings
 from app.integrations.woocommerce.client import (
     WooCredentials,
     WooError,
     WooHTTPClient,
 )
+
+
+@pytest.fixture(autouse=True)
+def _token(monkeypatch):
+    # Por defecto el token está configurado; los tests que prueban el caso
+    # vacío lo sobreescriben.
+    monkeypatch.setattr(get_settings(), "woocommerce_albaran_token", "tok-123")
 
 
 def _client(handler) -> WooHTTPClient:
@@ -26,60 +33,63 @@ def _client(handler) -> WooHTTPClient:
     return client
 
 
-def test_packing_slip_via_rest_pdf_binary():
-    def handler(request: httpx.Request) -> httpx.Response:
-        assert "wcpdf/v1/documents/packing-slip/123" in str(request.url)
-        return httpx.Response(200, content=b"%PDF-1.5 real",
-                              headers={"content-type": "application/pdf"})
-
-    pdf, filename = _client(handler).get_packing_slip_pdf(123)
-    assert pdf.startswith(b"%PDF")
-    assert filename == "albaran-123.pdf"
-
-
-def test_packing_slip_rest_json_base64():
-    def handler(request: httpx.Request) -> httpx.Response:
-        if "wcpdf/v1" in str(request.url):
-            b64 = base64.b64encode(b"%PDF-1.7 x").decode()
-            return httpx.Response(200, json={"pdf": b64})
-        return httpx.Response(404)
-
-    pdf, _ = _client(handler).get_packing_slip_pdf(5)
-    assert pdf.startswith(b"%PDF")
-
-
-def test_packing_slip_uses_order_key_public_url():
-    """D-1-fix1: REST 404 → acceso público con order_key (access_key)."""
+def test_get_packing_slip_pdf_uses_mu_plugin_endpoint():
     seen: dict[str, str] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
-        url = str(request.url)
-        if "wcpdf/v1" in url:
-            return httpx.Response(404)
-        if "wpo_wcpdf_document=packing-slip" in url and "access_key=wc_order_k" in url:
-            seen["url"] = url
-            return httpx.Response(200, content=b"%PDF-1.4 pub",
-                                  headers={"content-type": "application/pdf"})
-        return httpx.Response(404)
+        seen["url"] = str(request.url)
+        return httpx.Response(200, content=b"%PDF-1.5 oficial",
+                              headers={"content-type": "application/pdf"})
 
-    pdf, _ = _client(handler).get_packing_slip_pdf(9, order_key="wc_order_k")
-    assert pdf.startswith(b"%PDF")
-    assert "access_key=wc_order_k" in seen["url"]
+    pdf, filename = _client(handler).get_packing_slip_pdf(123)
+    assert pdf.startswith(b"%PDF") and filename == "albaran-123.pdf"
+    assert "bohub_albaran=packing-slip" in seen["url"]
+    assert "order_id=123" in seen["url"]
+    assert "token=tok-123" in seen["url"]
 
 
-def test_packing_slip_raises_when_no_plugin_and_no_order_key():
+def test_get_packing_slip_pdf_raises_on_401():
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(404)
+        return httpx.Response(401, text="bad token")
 
-    with pytest.raises(WooError, match="order_key"):
-        _client(handler).get_packing_slip_pdf(7)
+    with pytest.raises(WooError, match="401"):
+        _client(handler).get_packing_slip_pdf(9)
 
 
-def test_packing_slip_rejects_non_pdf_html():
-    # Una página HTML de login (200) NO cuenta como PDF.
+def test_get_packing_slip_pdf_raises_on_404():
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, content=b"<html>login</html>",
-                              headers={"content-type": "text/html"})
+        return httpx.Response(404, text="not found")
 
-    with pytest.raises(WooError):
-        _client(handler).get_packing_slip_pdf(1)
+    with pytest.raises(WooError, match="404"):
+        _client(handler).get_packing_slip_pdf(9)
+
+
+def test_get_packing_slip_pdf_raises_on_text_error():
+    # 200 pero text/plain (mensaje de error del mu-plugin) → no es PDF.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="PDF Invoices no activo",
+                              headers={"content-type": "text/plain"})
+
+    with pytest.raises(WooError, match="no activo"):
+        _client(handler).get_packing_slip_pdf(9)
+
+
+def test_get_packing_slip_pdf_falls_back_on_timeout(monkeypatch):
+    # Sin sleeps reales en el retry.
+    monkeypatch.setattr(WooHTTPClient, "_sleep_backoff", staticmethod(lambda a: None))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectTimeout("timeout")
+
+    with pytest.raises(WooError, match="timeout|red"):
+        _client(handler).get_packing_slip_pdf(9)
+
+
+def test_get_packing_slip_pdf_missing_token_skips_network(monkeypatch):
+    monkeypatch.setattr(get_settings(), "woocommerce_albaran_token", "")
+
+    def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover
+        raise AssertionError("no debe llamarse al mu-plugin sin token")
+
+    with pytest.raises(WooError, match="no configurado"):
+        _client(handler).get_packing_slip_pdf(9)

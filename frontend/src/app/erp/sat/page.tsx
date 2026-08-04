@@ -1,10 +1,10 @@
 "use client";
 
-import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
+import { SatPreparingCard } from "../../components/erp/SatPreparingCard";
 import { SatReadyCard } from "../../components/erp/SatReadyCard";
 import { extractErrorMessage } from "../../lib/errors";
-import { getSatQueue, STATUS_LABELS, type SatQueue } from "../../lib/erpApi";
+import { getSatQueue, type SatQueue } from "../../lib/erpApi";
 
 /** Cola SAT táctil (D-1-fix1): 2 secciones — «Por embalar» (con acceso al modo
  *  trabajo) y «Listos para envío» (imprimir albarán/etiqueta + marcar recogido).
@@ -48,23 +48,7 @@ export default function SatQueuePage() {
           ) : (
             <div className="sat-cards">
               {preparing.map((o) => (
-                <Link key={o.id} href={`/erp/sat/${o.id}`} className="sat-card">
-                  <div className="sat-card-top">
-                    <span className="sat-card-num">{o.order_number}</span>
-                    <span className={`badge ${STATUS_LABELS[o.preparation_status]?.tone ?? "muted"}`}>
-                      {STATUS_LABELS[o.preparation_status]?.label ?? o.preparation_status}
-                    </span>
-                  </div>
-                  {o.payment_status !== "paid" ? (
-                    <div className="sat-card-warn">⚠ SIN COBRAR</div>
-                  ) : null}
-                  <ul className="sat-card-lines">
-                    {o.lines.map((l, i) => (
-                      <li key={i}>{l.quantity}× {l.description}</li>
-                    ))}
-                  </ul>
-                  <span className="sat-card-cta">Abrir →</span>
-                </Link>
+                <SatPreparingCard key={o.id} order={o} onChanged={load} />
               ))}
             </div>
           )}

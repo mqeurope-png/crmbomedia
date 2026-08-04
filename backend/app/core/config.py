@@ -145,6 +145,10 @@ class Settings(BaseSettings):
     # (stub hoy). Ver app/storage.
     storage_backend: str = "local"
     local_shipping_storage_dir: str = "/opt/crmbo/uploads/erp-shipping"
+    # D-1-fix2: token compartido con el mu-plugin `bohub-albaran` de cada tienda
+    # WP (mismo token en las 3). Vacío → el CRM genera el albarán con reportlab.
+    # El valor real vive SOLO en `.env.production` (no se commitea).
+    woocommerce_albaran_token: str = ""
 
     # BoHub ERP Fase C — FACTUSOL (API DELSOL). Password cifrada con la
     # Fernet key existente (INTEGRATION_SECRETS_KEY); se descifra on-demand
