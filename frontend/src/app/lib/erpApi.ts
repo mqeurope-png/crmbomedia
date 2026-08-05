@@ -825,6 +825,79 @@ export async function getFactusolCustomerAddresses(
   return r.items;
 }
 
+// --- conciliación masiva CRM ↔ FACTUSOL (Fase C · C-5) ----------------------
+
+export type BulkMatchDifference = {
+  field: string;
+  crm: string;
+  factusol: string;
+  differs: boolean;
+};
+
+export type BulkMatchCandidate = {
+  factusol_codcli: string | null;
+  factusol_nifcli: string | null;
+  factusol_nofcli: string | null;
+  factusol_noccli: string | null;
+  factusol_domcli: string | null;
+  factusol_pobcli: string | null;
+  factusol_cpocli: string | null;
+  factusol_procli: string | null;
+  differences: BulkMatchDifference[];
+  differing_fields: number;
+};
+
+export type BulkMatchRow = {
+  crm_company_id: string;
+  crm_name: string;
+  crm_tax_id: string | null;
+  /** `nif` es contable; `name` es solo una sugerencia. */
+  match_type: "nif" | "email" | "name";
+  confidence: "high" | "medium" | "low";
+  candidates: BulkMatchCandidate[];
+};
+
+export type BulkMatchDryRun = {
+  total_crm_companies: number;
+  total_factusol_customers: number;
+  matches: BulkMatchRow[];
+  no_match: { crm_company_id: string; crm_name: string; crm_tax_id: string | null }[];
+  ejercicio: string;
+};
+
+/** Campos que el sync puede sobrescribir. `companies` no tiene teléfono ni
+ *  email (viven en `contacts`), por eso no están. */
+export const BULK_MATCH_FIELDS = [
+  "name", "tax_id", "address_line", "city", "postal_code", "state",
+] as const;
+
+export const BULK_MATCH_FIELD_LABELS: Record<string, string> = {
+  name: "Nombre", tax_id: "NIF", address_line: "Dirección",
+  city: "Ciudad", postal_code: "CP", state: "Provincia",
+};
+
+export async function bulkMatchDryRun(
+  body: { filter?: "unlinked_only" | "all"; batch_size?: number } = {},
+): Promise<BulkMatchDryRun> {
+  return apiFetch("/api/erp/factusol/bulk-match/dry-run", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function bulkMatchApply(
+  operations: {
+    crm_company_id: string;
+    factusol_codcli: string;
+    fields_to_sync: string[];
+  }[],
+): Promise<{ applied: number; errors: { crm_company_id: string; error: string }[] }> {
+  return apiFetch("/api/erp/factusol/bulk-match/apply", {
+    method: "POST",
+    body: JSON.stringify({ operations }),
+  });
+}
+
 export type CreateQuotePayload = {
   company_id: string;
   referencia?: string;

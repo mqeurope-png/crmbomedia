@@ -17,7 +17,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.db.session import get_session
-from app.erp.api.deps import require_erp_edit, require_erp_view
+from app.erp.api.deps import (
+    require_erp_admin,
+    require_erp_edit,
+    require_erp_view,
+)
 from app.models.crm import User
 
 logger = logging.getLogger(__name__)
@@ -150,6 +154,80 @@ def customer_addresses_endpoint(
     except FactusolError as exc:
         raise _factusol_gateway_error(exc, "factusol_addresses_failed") from exc
     return {"items": items, "ejercicio": ejercicio}
+
+
+# --- conciliación masiva CRM ↔ FACTUSOL (Fase C · C-5) -----------------------
+
+
+class BulkMatchDryRunPayload(BaseModel):
+    filter: str = Field(default="unlinked_only", pattern="^(unlinked_only|all)$")
+    batch_size: int = Field(default=200, ge=1, le=1000)
+
+
+@router.post("/bulk-match/dry-run")
+def bulk_match_dry_run(
+    payload: BulkMatchDryRunPayload | None = None,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_admin),
+) -> dict[str, Any]:
+    """Propone parejas empresa CRM ↔ cliente F_CLI. **Solo lectura.**
+
+    Idempotente: no escribe nada, ni en el CRM ni en FACTUSOL. Lee `F_CLI`
+    entero de una vez y cruza en Python — con miles de empresas, preguntar por
+    cada una serían miles de peticiones contra un token de 3 minutos."""
+    _ = current_user
+    from app.integrations.factusol.bulk_match import dry_run  # noqa: PLC0415
+    from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
+
+    payload = payload or BulkMatchDryRunPayload()
+    client, ejercicio = _client_and_ejercicio(session)
+    try:
+        return dry_run(
+            session, client, ejercicio=ejercicio,
+            unlinked_only=payload.filter == "unlinked_only",
+            batch_size=payload.batch_size,
+        )
+    except FactusolError as exc:
+        raise _factusol_gateway_error(exc, "factusol_bulk_match_failed") from exc
+
+
+class BulkMatchOperation(BaseModel):
+    crm_company_id: str = Field(min_length=1, max_length=36)
+    factusol_codcli: str = Field(min_length=1, max_length=36)
+    fields_to_sync: list[str] = Field(default_factory=list)
+
+
+class BulkMatchApplyPayload(BaseModel):
+    operations: list[BulkMatchOperation] = Field(default_factory=list)
+
+
+@router.post("/bulk-match/apply")
+def bulk_match_apply(
+    payload: BulkMatchApplyPayload,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_admin),
+) -> dict[str, Any]:
+    """Sobrescribe SOLO las empresas y campos aprobados, guardando antes los
+    valores previos en el AuditLog. Una empresa por transacción: que una falle
+    no invalida el resto del lote."""
+    from app.integrations.factusol.bulk_match import (  # noqa: PLC0415
+        apply_operations,
+    )
+    from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
+
+    if not payload.operations:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, {
+            "code": "no_operations", "detail": "No hay nada que aplicar.",
+        })
+    client, ejercicio = _client_and_ejercicio(session)
+    try:
+        return apply_operations(
+            session, client, ejercicio=ejercicio,
+            operations=[op.model_dump() for op in payload.operations],
+            actor_id=current_user.id,
+        )
+    except FactusolError as exc:
+        raise _factusol_gateway_error(exc, "factusol_bulk_apply_failed") from exc
 
 
 class LinkCustomerPayload(BaseModel):

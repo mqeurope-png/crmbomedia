@@ -10368,6 +10368,12 @@ tr.is-inactive {
 .erp-quote-lines th:nth-child(7) { width: 12%; }
 .erp-quote-lines th:nth-child(8) { width: 5%; }
 .erp-quote-row-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+
+/* C-5: conciliación masiva CRM ↔ FACTUSOL. */
+.erp-bulk-candidates { display: flex; flex-direction: column; gap: 4px; }
+.erp-bulk-candidate { display: flex; align-items: baseline; gap: 6px; font-size: 13px; }
+.erp-bulk-diff { margin: 8px 0; background: #f8fafc; }
+.erp-bulk-diff td.muted, .erp-bulk-diff tr.muted td { color: #94a3b8; }
 .erp-quote-lines input { width: 100%; }
 .erp-quote-foot { display: flex; align-items: flex-end; gap: 16px; flex-wrap: wrap; margin-top: 8px; }
 .erp-quote-foot .erp-manual-total { margin-left: auto; }
