@@ -907,10 +907,20 @@ export type BulkMatchByEmailDryRun = {
   ejercicio: string;
 };
 
-/** Un `skipped` no es un error: es un caso en el que aquí no toca escribir. */
-export type BulkMatchSkip = {
+/** Desenlace de cada operación del modo por email (C-5-fix2). */
+export type BulkMatchByEmailResult = {
   contact_id: string;
-  result: "skipped_no_company" | "already_linked_other";
+  result:
+    /** Tenía empresa: se le han traído los datos limpios. */
+    | "refreshed"
+    /** No tenía empresa: se ha creado con los datos de F_CLI. */
+    | "created_new_company"
+    /** No tenía empresa, pero ya había una vinculada a ese CODCLI: se le
+     *  asigna esa. Crear otra duplicaría el vínculo. */
+    | "linked_existing_company"
+    /** Su empresa ya estaba vinculada a OTRO CODCLI: no se pisa. */
+    | "skipped_already_linked_other";
+  company_id?: string;
   detail?: string;
 };
 
@@ -931,7 +941,11 @@ export async function bulkMatchByEmailApply(
   }[],
 ): Promise<{
   applied: number;
-  skipped: BulkMatchSkip[];
+  results: BulkMatchByEmailResult[];
+  refreshed: number;
+  created_new_company: number;
+  linked_existing_company: number;
+  skipped_already_linked_other: number;
   errors: { contact_id: string; error: string }[];
 }> {
   return apiFetch("/api/erp/factusol/bulk-match/by-contact-email/apply", {

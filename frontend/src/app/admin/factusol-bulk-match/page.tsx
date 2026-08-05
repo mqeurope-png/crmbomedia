@@ -131,16 +131,23 @@ export default function FactusolBulkMatchPage() {
         const r = await bulkMatchByEmailApply(picked.map(([contact_id, s]) => ({
           contact_id, factusol_codcli: s.codcli, fields_to_sync: [...s.fields],
         })));
-        setSummary(
-          `${r.applied} empresa(s) actualizada(s)`
-          + (r.skipped.length ? ` · ${r.skipped.length} omitida(s)` : "")
-          + (r.errors.length ? ` · ${r.errors.length} con error` : "")
-          + ".",
-        );
-        // Un `skipped` no es un fallo, pero el operador tiene que verlo: si no,
+        setSummary([
+          `${r.refreshed} actualizada(s)`,
+          `${r.created_new_company} empresa(s) creada(s)`,
+          ...(r.linked_existing_company
+            ? [`${r.linked_existing_company} asignada(s) a empresa existente`]
+            : []),
+          ...(r.skipped_already_linked_other
+            ? [`${r.skipped_already_linked_other} omitida(s)`]
+            : []),
+          ...(r.errors.length ? [`${r.errors.length} con error`] : []),
+        ].join(" · ") + ".");
+        // Un omitido no es un fallo, pero el operador tiene que verlo: si no,
         // creería que se aplicó y no fue así.
         const problems = [
-          ...r.skipped.map((s) => s.detail ?? `${s.contact_id}: ${s.result}`),
+          ...r.results
+            .filter((x) => x.result === "skipped_already_linked_other")
+            .map((x) => x.detail ?? `${x.contact_id}: ${x.result}`),
           ...r.errors.map((e) => `${e.contact_id}: ${e.error}`),
         ];
         if (problems.length) setError(problems.join(" · "));
@@ -365,24 +372,24 @@ function ByEmailRowView({
   if (!selection) return null;
   const chosen = row.candidates.find(
     (c) => c.factusol_codcli === selection.codcli) ?? row.candidates[0];
-  // El backend saltaría estos dos casos igualmente; deshabilitar el checkbox
-  // evita que el operador crea que los ha aplicado.
+  // C-5-fix2: sin empresa ya NO bloquea — se crea una con los datos de F_CLI.
+  // Lo único que sigue bloqueado es pisar un vínculo ajeno, que el backend
+  // saltaría igualmente; deshabilitarlo evita creer que se ha aplicado.
   const noCompany = !row.company_id;
   const linkedElsewhere = Boolean(
     row.company_factusol_id && row.company_factusol_id !== selection.codcli);
-  const blocked = noCompany || linkedElsewhere;
-  const reason = noCompany
-    ? "El contacto no tiene empresa en el CRM: no hay nada que actualizar."
-    : linkedElsewhere
-      ? `Su empresa ya está vinculada al cliente ${row.company_factusol_id}.`
+  const reason = linkedElsewhere
+    ? `Su empresa ya está vinculada al cliente ${row.company_factusol_id}.`
+    : noCompany
+      ? "Se creará una empresa nueva con los datos de FACTUSOL."
       : "";
 
   return (
     <>
       <tr>
         <td>
-          <input type="checkbox" checked={selection.apply} disabled={blocked}
-                 title={reason}
+          <input type="checkbox" checked={selection.apply}
+                 disabled={linkedElsewhere} title={reason}
                  aria-label={`Aplicar a ${row.contact_name}`}
                  onChange={(e) => onUpdate({ apply: e.target.checked })} />
         </td>
@@ -402,7 +409,7 @@ function ByEmailRowView({
               ) : null}
             </>
           ) : (
-            <span className="badge warn">Sin empresa CRM</span>
+            <span className="badge active">Se creará empresa</span>
           )}
         </td>
         <td>
@@ -442,7 +449,14 @@ function ByEmailRowView({
       {expanded && chosen ? (
         <tr>
           <td colSpan={7}>
-            {blocked ? <p className="form-error">{reason}</p> : null}
+            {linkedElsewhere ? <p className="form-error">{reason}</p> : null}
+            {noCompany ? (
+              <p className="form-info">
+                El contacto no tiene empresa: se creará una con todos los datos
+                de FACTUSOL y se le asignará. Si ya existe una empresa vinculada
+                a ese cliente, se usará esa en vez de crear otra.
+              </p>
+            ) : null}
             <DiffTable differences={chosen.differences} selection={selection}
                        label={row.contact_name} onToggleField={onToggleField} />
           </td>

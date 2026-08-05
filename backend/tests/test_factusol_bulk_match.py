@@ -22,6 +22,7 @@ from app.db.base import Base
 from app.integrations.factusol.bulk_match import (
     BULK_SYNC_ACTION,
     BULK_SYNC_BY_EMAIL_ACTION,
+    BULK_SYNC_BY_EMAIL_CREATE_ACTION,
     BULK_SYNC_BY_EMAIL_SOURCE,
     BULK_SYNC_SOURCE,
     apply_by_contact_email,
@@ -376,7 +377,9 @@ def test_by_email_apply_updates_company_of_contact_and_links(session):
         "fields_to_sync": ["name", "city"],
     }])
     assert result["applied"] == 1
-    assert result["skipped"] == [] and result["errors"] == []
+    assert result["refreshed"] == 1
+    assert result["errors"] == []
+    assert result["results"][0]["result"] == "refreshed"
     session.refresh(company)
     assert company.name == "LABORATORIOS PORTA S.L."
     assert company.city == "Barcelona"
@@ -384,17 +387,75 @@ def test_by_email_apply_updates_company_of_contact_and_links(session):
     assert company.factusol_sync_source == BULK_SYNC_BY_EMAIL_SOURCE
 
 
-def test_by_email_apply_skips_when_contact_has_no_company(session):
+def test_by_email_apply_creates_company_when_contact_has_none(session):
+    """C-5-fix2: antes se saltaba. Ahora se crea la empresa con los datos
+    limpios de F_CLI, se vincula al CODCLI y se le asigna al contacto."""
     contact = _contact(session, email="suelto@example.com", company=None)
-    fake = _FakeFactusol(customers=[_cli(1)])
+    fake = _FakeFactusol(customers=[_cli(
+        1, EMACLI="suelto@example.com", NOFCLI="EMPRESA NUEVA SL",
+        NIFCLI="B99999999", DOMCLI="C/ Nueva 1", POBCLI="Girona",
+        CPOCLI="17001", PROCLI="Girona",
+    )])
     result = apply_by_contact_email(session, fake, ejercicio="2026", operations=[{
         "contact_id": contact.id, "factusol_codcli": "1",
         "fields_to_sync": ["name"],
     }])
-    assert result["applied"] == 0
-    assert result["skipped"][0]["result"] == "skipped_no_company"
-    # No es un error: es que aquí no hay nada que actualizar.
+    assert result["applied"] == 1
+    assert result["created_new_company"] == 1
     assert result["errors"] == []
+
+    session.refresh(contact)
+    assert contact.company_id is not None
+    company = session.get(Company, contact.company_id)
+    # La empresa nace con TODOS los datos de F_CLI, no solo los marcados: no
+    # hay nada previo que preservar.
+    assert company.name == "EMPRESA NUEVA SL"
+    assert company.tax_id == "B99999999"
+    assert company.city == "Girona"
+    assert company.postal_code == "17001"
+    assert company.factusol_company_id == "1"
+    assert company.factusol_sync_source == BULK_SYNC_BY_EMAIL_SOURCE
+    assert company.source == "factusol"
+
+
+def test_by_email_apply_reuses_company_already_linked_to_that_codcli(session):
+    """Si otra empresa CRM ya está vinculada a ese CODCLI, se le asigna esa al
+    contacto en vez de crear otra: dos empresas apuntando al mismo cliente de
+    FACTUSOL es la duplicidad que costó C-3-fix3."""
+    existing = _company(session, name="YA VINCULADA", factusol_company_id="1")
+    contact = _contact(session, email="suelto@example.com", company=None)
+    fake = _FakeFactusol(customers=[_cli(1, EMACLI="suelto@example.com")])
+    result = apply_by_contact_email(session, fake, ejercicio="2026", operations=[{
+        "contact_id": contact.id, "factusol_codcli": "1",
+        "fields_to_sync": ["name"],
+    }])
+    assert result["linked_existing_company"] == 1
+    assert result["created_new_company"] == 0
+    session.refresh(contact)
+    assert contact.company_id == existing.id
+    # Y NO se ha creado ninguna empresa de más.
+    assert len(list(session.scalars(select(Company)))) == 1
+
+
+def test_by_email_apply_creation_logs_its_own_audit_action(session):
+    """Acción distinta: una empresa creada no se deshace restaurando valores
+    previos (no los hay), se deshace borrándola."""
+    contact = _contact(session, email="suelto@example.com", company=None)
+    fake = _FakeFactusol(customers=[_cli(1, EMACLI="suelto@example.com",
+                                         NOFCLI="EMPRESA NUEVA SL")])
+    apply_by_contact_email(session, fake, ejercicio="2026", operations=[{
+        "contact_id": contact.id, "factusol_codcli": "1",
+        "fields_to_sync": ["name"],
+    }])
+    entry = session.scalars(
+        select(AuditLog).where(
+            AuditLog.action == BULK_SYNC_BY_EMAIL_CREATE_ACTION)
+    ).one()
+    meta = json.loads(entry.metadata_json)
+    assert meta["created_company"] is True
+    assert meta["company_name"] == "EMPRESA NUEVA SL"
+    assert meta["contact_id"] == contact.id
+    assert meta["previous_values"] == {}
 
 
 def test_by_email_apply_skips_when_company_already_linked_to_other_codcli(session):
@@ -408,7 +469,8 @@ def test_by_email_apply_skips_when_company_already_linked_to_other_codcli(sessio
         "fields_to_sync": ["name"],
     }])
     assert result["applied"] == 0
-    assert result["skipped"][0]["result"] == "already_linked_other"
+    assert result["skipped_already_linked_other"] == 1
+    assert result["results"][0]["result"] == "skipped_already_linked_other"
     session.refresh(company)
     assert company.factusol_company_id == "9999"
 

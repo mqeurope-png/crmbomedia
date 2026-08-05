@@ -64,6 +64,9 @@ BULK_SYNC_SOURCE = "bulk_match"
 #: Modo «contactos por email» (C-5-fix1). Acción y origen propios para poder
 #: distinguirlos del modo por NIF/nombre al auditar o revertir.
 BULK_SYNC_BY_EMAIL_ACTION = "erp.factusol_bulk_sync_by_email"
+#: Acción propia para la empresa CREADA desde cero (C-5-fix2): no hay valores
+#: previos que restaurar, se deshace borrando la empresa.
+BULK_SYNC_BY_EMAIL_CREATE_ACTION = "erp.factusol_bulk_sync_by_email_create_company"
 #: Cabe en String(16) justo — 15 caracteres.
 BULK_SYNC_BY_EMAIL_SOURCE = "bulk_by_email"
 
@@ -420,19 +423,30 @@ def apply_by_contact_email(
     session: Session, client: FactusolClient, *, ejercicio: str,
     operations: list[dict[str, Any]], actor_id: str | None = None,
 ) -> dict[str, Any]:
-    """Actualiza la EMPRESA de cada contacto con los datos de su cliente F_CLI.
+    """Concilia la empresa de cada contacto con su cliente F_CLI.
 
-    Se salta, sin fallar, los dos casos que no son error sino «aquí no toca»:
-    contacto sin empresa (no hay qué actualizar) y empresa ya vinculada a OTRO
-    CODCLI (pisarla rompería un vínculo que alguien estableció a propósito).
+    Cuatro desenlaces posibles, todos en `results`:
+
+    - `refreshed` — el contacto tenía empresa y se le han traído los datos
+      limpios de FACTUSOL.
+    - `created_new_company` — el contacto **no** tenía empresa: se crea una con
+      los datos de F_CLI, se vincula al CODCLI y se le asigna al contacto.
+    - `linked_existing_company` — el contacto no tenía empresa, pero **otra
+      empresa del CRM ya está vinculada a ese CODCLI**: se le asigna esa en vez
+      de crear una nueva. Crearla dejaría dos empresas CRM apuntando al mismo
+      cliente de FACTUSOL, que es justo la duplicidad que arregló C-3-fix3.
+    - `skipped_already_linked_other` — la empresa del contacto ya está vinculada
+      a OTRO CODCLI. Se salta: pisar un vínculo que alguien estableció a
+      propósito sería peor que no hacer nada.
     """
-    from app.models.crm import Company, Contact  # noqa: PLC0415
+    from app.models.crm import Contact  # noqa: PLC0415
 
     rows = client.load_table("F_CLI", filtro="1=1", ejercicio=ejercicio)
     by_codcli = {str(r.get("CODCLI")): r for r in rows}
     columns = dict(SYNCABLE_FIELDS)
 
-    applied, skipped, errors = 0, [], []
+    results: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
     for op in operations:
         contact_id = str(op.get("contact_id") or "")
         codcli = str(op.get("factusol_codcli") or "")
@@ -441,43 +455,120 @@ def apply_by_contact_email(
             contact = session.get(Contact, contact_id)
             if contact is None:
                 raise ValueError("el contacto no existe en el CRM")
-            if not contact.company_id:
-                skipped.append({"contact_id": contact_id,
-                                "result": "skipped_no_company"})
-                continue
-            company = session.get(Company, contact.company_id)
-            if company is None:
-                raise ValueError("la empresa del contacto no existe")
-            if (company.factusol_company_id
-                    and company.factusol_company_id != codcli):
-                skipped.append({
-                    "contact_id": contact_id,
-                    "result": "already_linked_other",
-                    "detail": (f"«{company.name}» ya está vinculada al cliente "
-                               f"{company.factusol_company_id}"),
-                })
-                continue
             row = by_codcli.get(codcli)
             if row is None:
                 raise ValueError(f"el cliente FACTUSOL {codcli} no existe")
 
-            previous = {f: getattr(company, f, None) for f in fields}
-            for field in fields:
-                value = str(row.get(columns[field]) or "").strip()
-                if value:
-                    setattr(company, field, value)
-            company.factusol_company_id = codcli
-            company.factusol_sync_source = BULK_SYNC_BY_EMAIL_SOURCE
-            company.factusol_synced_at = datetime.now(UTC)
-            _log_backup(session, company, codcli, fields, previous, actor_id,
-                        action=BULK_SYNC_BY_EMAIL_ACTION,
-                        extra={"contact_id": contact_id,
-                               "contact_email": contact.email})
+            if contact.company_id:
+                outcome = _refresh_company_of_contact(
+                    session, contact, codcli, row, fields, columns, actor_id,
+                )
+            else:
+                outcome = _company_for_orphan_contact(
+                    session, contact, codcli, row, columns, actor_id,
+                )
             session.commit()
-            applied += 1
+            results.append({"contact_id": contact_id, **outcome})
         except Exception as exc:  # noqa: BLE001 — un fallo no tumba el lote
             session.rollback()
             logger.warning("factusol bulk-match by-email: %s KO: %s",
                            contact_id, exc)
             errors.append({"contact_id": contact_id, "error": str(exc)[:200]})
-    return {"applied": applied, "skipped": skipped, "errors": errors}
+
+    def _count(result: str) -> int:
+        return sum(1 for r in results if r["result"] == result)
+
+    return {
+        "applied": sum(1 for r in results
+                       if r["result"] != "skipped_already_linked_other"),
+        "results": results,
+        "refreshed": _count("refreshed"),
+        "created_new_company": _count("created_new_company"),
+        "linked_existing_company": _count("linked_existing_company"),
+        "skipped_already_linked_other": _count("skipped_already_linked_other"),
+        "errors": errors,
+    }
+
+
+def _refresh_company_of_contact(
+    session: Session, contact: Any, codcli: str, row: dict[str, Any],
+    fields: list[str], columns: dict[str, str], actor_id: str | None,
+) -> dict[str, Any]:
+    """El contacto ya tiene empresa: se le traen los datos limpios."""
+    from app.models.crm import Company  # noqa: PLC0415
+
+    company = session.get(Company, contact.company_id)
+    if company is None:
+        raise ValueError("la empresa del contacto no existe")
+    if company.factusol_company_id and company.factusol_company_id != codcli:
+        return {
+            "result": "skipped_already_linked_other",
+            "detail": (f"«{company.name}» ya está vinculada al cliente "
+                       f"{company.factusol_company_id}"),
+        }
+
+    previous = {f: getattr(company, f, None) for f in fields}
+    for field in fields:
+        value = str(row.get(columns[field]) or "").strip()
+        # Un valor vacío en FACTUSOL no pisa el del CRM: limpiar no es borrar.
+        if value:
+            setattr(company, field, value)
+    company.factusol_company_id = codcli
+    company.factusol_sync_source = BULK_SYNC_BY_EMAIL_SOURCE
+    company.factusol_synced_at = datetime.now(UTC)
+    _log_backup(session, company, codcli, fields, previous, actor_id,
+                action=BULK_SYNC_BY_EMAIL_ACTION,
+                extra={"contact_id": contact.id,
+                       "contact_email": contact.email})
+    return {"result": "refreshed", "company_id": company.id}
+
+
+def _company_for_orphan_contact(
+    session: Session, contact: Any, codcli: str, row: dict[str, Any],
+    columns: dict[str, str], actor_id: str | None,
+) -> dict[str, Any]:
+    """El contacto no tiene empresa: se le da una.
+
+    Si ya hay una empresa CRM vinculada a ese CODCLI se reutiliza. Crear otra
+    dejaría dos empresas apuntando al mismo cliente de FACTUSOL — la duplicidad
+    que costó C-3-fix3.
+    """
+    from app.models.crm import Company  # noqa: PLC0415
+
+    existing = session.scalars(
+        select(Company).where(Company.factusol_company_id == codcli).limit(1)
+    ).first()
+    if existing is not None:
+        contact.company_id = existing.id
+        logger.info("factusol bulk-match by-email: contacto %s asignado a la "
+                    "empresa ya vinculada %s", contact.id, existing.id)
+        return {"result": "linked_existing_company", "company_id": existing.id,
+                "detail": f"Asignado a «{existing.name}», ya vinculada al "
+                          f"cliente {codcli}."}
+
+    # Aquí NO hay `previous_values` que guardar: la empresa nace de cero. El
+    # backup registra igualmente qué se creó, para poder deshacerlo.
+    company = Company(
+        name=str(row.get(columns["name"]) or "").strip() or f"Cliente {codcli}",
+        tax_id=str(row.get(columns["tax_id"]) or "").strip() or None,
+        address_line=str(row.get(columns["address_line"]) or "").strip() or None,
+        city=str(row.get(columns["city"]) or "").strip() or None,
+        postal_code=str(row.get(columns["postal_code"]) or "").strip() or None,
+        state=str(row.get(columns["state"]) or "").strip() or None,
+        country="España",
+        source="factusol",
+        factusol_company_id=codcli,
+        factusol_sync_source=BULK_SYNC_BY_EMAIL_SOURCE,
+        factusol_synced_at=datetime.now(UTC),
+    )
+    session.add(company)
+    session.flush()
+    contact.company_id = company.id
+    _log_backup(
+        session, company, codcli, [], {}, actor_id,
+        action=BULK_SYNC_BY_EMAIL_CREATE_ACTION,
+        extra={"contact_id": contact.id, "contact_email": contact.email,
+               "created_company": True, "company_name": company.name},
+    )
+    return {"result": "created_new_company", "company_id": company.id,
+            "detail": f"Empresa «{company.name}» creada y vinculada."}

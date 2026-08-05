@@ -75,7 +75,11 @@ beforeEach(() => {
     total_contacts_with_email: 0, matches: [], no_match_count: 0,
     matches_without_company: 0, ejercicio: "2026",
   });
-  mockEmailApply.mockResolvedValue({ applied: 1, skipped: [], errors: [] });
+  mockEmailApply.mockResolvedValue({
+    applied: 1, results: [{ contact_id: "ct1", result: "refreshed" }],
+    refreshed: 1, created_new_company: 0, linked_existing_company: 0,
+    skipped_already_linked_other: 0, errors: [],
+  });
 });
 
 describe("FactusolBulkMatchPage", () => {
@@ -277,17 +281,53 @@ describe("FactusolBulkMatchPage", () => {
     expect(mockApply).not.toHaveBeenCalled();
   });
 
-  it("contacto SIN empresa: checkbox deshabilitado y chip de aviso", async () => {
+  it("contacto SIN empresa: se ofrece crearla, no se bloquea", async () => {
+    // C-5-fix2: antes se saltaba; ahora se crea la empresa con los datos F_CLI.
     mockEmailDryRun.mockResolvedValue(emailDryRun({
       matches: [emailMatch({ company_id: null, company_name: null })],
       matches_without_company: 1,
     }));
+    mockEmailApply.mockResolvedValue({
+      applied: 1, results: [{ contact_id: "ct1", result: "created_new_company",
+                              company_id: "new-c" }],
+      refreshed: 0, created_new_company: 1, linked_existing_company: 0,
+      skipped_already_linked_other: 0, errors: [],
+    });
     const user = userEvent.setup();
     render(<FactusolBulkMatchPage />);
     await user.click(screen.getByRole("button", { name: "Ejecutar dry-run" }));
 
-    expect(await screen.findByText("Sin empresa CRM")).toBeInTheDocument();
-    expect(screen.getByLabelText("Aplicar a Juan Pérez")).toBeDisabled();
+    expect(await screen.findByText("Se creará empresa")).toBeInTheDocument();
+    const checkbox = screen.getByLabelText("Aplicar a Juan Pérez");
+    expect(checkbox).toBeEnabled();
+
+    await user.click(checkbox);
+    await user.click(screen.getByRole("button", { name: /Aplicar seleccionadas/ }));
+    expect(await screen.findByText(/1 empresa\(s\) creada\(s\)/)).toBeInTheDocument();
+  });
+
+  it("el resumen desglosa los desenlaces del apply", async () => {
+    mockEmailDryRun.mockResolvedValue(emailDryRun());
+    mockEmailApply.mockResolvedValue({
+      applied: 3,
+      results: [
+        { contact_id: "a", result: "refreshed" },
+        { contact_id: "b", result: "created_new_company" },
+        { contact_id: "c", result: "linked_existing_company" },
+      ],
+      refreshed: 1, created_new_company: 1, linked_existing_company: 1,
+      skipped_already_linked_other: 0, errors: [],
+    });
+    const user = userEvent.setup();
+    render(<FactusolBulkMatchPage />);
+    await user.click(screen.getByRole("button", { name: "Ejecutar dry-run" }));
+    await user.click(await screen.findByLabelText("Aplicar a Juan Pérez"));
+    await user.click(screen.getByRole("button", { name: /Aplicar seleccionadas/ }));
+
+    const summary = await screen.findByRole("status");
+    expect(summary).toHaveTextContent("1 actualizada(s)");
+    expect(summary).toHaveTextContent("1 empresa(s) creada(s)");
+    expect(summary).toHaveTextContent("1 asignada(s) a empresa existente");
   });
 
   it("empresa ya vinculada a OTRO codcli: bloqueada con el motivo", async () => {
@@ -306,9 +346,10 @@ describe("FactusolBulkMatchPage", () => {
     mockEmailDryRun.mockResolvedValue(emailDryRun());
     mockEmailApply.mockResolvedValue({
       applied: 0,
-      skipped: [{ contact_id: "ct1", result: "already_linked_other",
+      results: [{ contact_id: "ct1", result: "skipped_already_linked_other",
                   detail: "«Labor. Porta» ya está vinculada al cliente 9999" }],
-      errors: [],
+      refreshed: 0, created_new_company: 0, linked_existing_company: 0,
+      skipped_already_linked_other: 1, errors: [],
     });
     const user = userEvent.setup();
     render(<FactusolBulkMatchPage />);

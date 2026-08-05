@@ -42,17 +42,29 @@ es fiable.
 
 **Qué actualiza:** la empresa a la que pertenece el contacto que casó.
 
-**Qué se salta**, sin fallar y avisando:
-- Contacto **sin empresa** en el CRM → `skipped_no_company`. No hay nada que
-  actualizar. (Crear la empresa desde aquí es backlog.)
-- Empresa **ya vinculada a OTRO** `CODCLI` → `already_linked_other`. Pisar un
-  vínculo que alguien estableció a propósito sería peor que no hacer nada.
+#### Los cuatro desenlaces del apply
+
+| Resultado | Cuándo | Qué hace |
+|---|---|---|
+| `refreshed` | El contacto tiene empresa | Le trae los datos limpios y la vincula al CODCLI |
+| `created_new_company` | El contacto **no** tiene empresa | **Crea** una con todos los datos de F_CLI, la vincula y se la asigna al contacto |
+| `linked_existing_company` | No tiene empresa, pero ya hay una vinculada a ese CODCLI | Le asigna **esa**, sin crear otra |
+| `skipped_already_linked_other` | Su empresa ya está vinculada a **otro** CODCLI | Nada. Se salta |
 
 Vinculada al **mismo** CODCLI **sí** se aplica: es un refresco de datos.
 
-En la tabla, esos dos casos salen con la casilla «Aplicar» deshabilitada y el
-motivo en el tooltip — el backend los saltaría igualmente, pero así no parece
-que se hayan aplicado.
+> **Por qué `linked_existing_company` existe.** Si ya hay una empresa CRM
+> apuntando a ese cliente y creásemos otra, quedarían **dos empresas
+> apuntando al mismo cliente de FACTUSOL** — exactamente la duplicidad que
+> costó arreglar en C-3-fix3. Se reutiliza la que ya está.
+
+> **Por qué `skipped_already_linked_other` NO se toca.** Pisar un vínculo que
+> alguien estableció a propósito sería peor que no hacer nada. Esa fila sale
+> con la casilla «Aplicar» **deshabilitada** y el motivo en el tooltip: el
+> backend la saltaría igualmente, pero así no parece que se haya aplicado.
+
+Una empresa **creada** nace con **todos** los campos de F_CLI, no solo los
+marcados: no hay nada previo que preservar.
 
 ---
 
@@ -147,8 +159,10 @@ Para encontrar lo que había antes:
 ```sql
 SELECT target_id, created_at, metadata_json
 FROM audit_logs
-WHERE action IN ('erp.factusol_bulk_sync',          -- modo por NIF/nombre
-                 'erp.factusol_bulk_sync_by_email') -- modo por email
+WHERE action IN (
+    'erp.factusol_bulk_sync',                      -- modo por NIF/nombre
+    'erp.factusol_bulk_sync_by_email',             -- modo por email: refresco
+    'erp.factusol_bulk_sync_by_email_create_company') -- modo por email: creada
   AND target_id = '<company_id>'
 ORDER BY created_at DESC;
 ```
@@ -156,6 +170,11 @@ ORDER BY created_at DESC;
 Cada modo usa su propia `action`, para poder revertir un lote sin arrastrar el
 otro. Lo mismo con `companies.factusol_sync_source`: `bulk_match` vs.
 `bulk_by_email`.
+
+> **Una empresa CREADA se deshace distinto.** Su entrada lleva
+> `..._create_company` y `previous_values` vacío — no hay valores anteriores
+> que restaurar porque la empresa no existía. Se revierte **borrándola** (y
+> dejando el `company_id` del contacto a NULL), no con un `UPDATE`.
 
 El `metadata_json` trae:
 
