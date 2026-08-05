@@ -15,8 +15,11 @@ import {
   createFactusolCustomer,
   createFactusolCustomerAndLink,
   createOrder,
+  getFactusolQuote,
   linkFactusolCustomer,
+  listFactusolQuotes,
   type FactusolCustomer,
+  type FactusolQuote,
   type OrderAddress,
 } from "../../../lib/erpApi";
 
@@ -84,6 +87,11 @@ export default function NewManualOrderPage() {
     useState<{ tone: "info" | "error"; text: string } | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // C-4: proformas del cliente elegido, para volcarlas al pedido.
+  const [quotes, setQuotes] = useState<FactusolQuote[]>([]);
+  const [quotesOpen, setQuotesOpen] = useState(false);
+  const [loadingQuote, setLoadingQuote] = useState<string | null>(null);
+  const [quoteNotice, setQuoteNotice] = useState<string | null>(null);
 
   // Autocomplete de empresas (patrón datalist debounced del CRM).
   useEffect(() => {
@@ -122,10 +130,63 @@ export default function NewManualOrderPage() {
     setLinkCompanyId(hit?.id ?? null);
   }, [linkCompanyQuery, linkCompanies]);
 
+  // C-4: proformas recientes de la empresa elegida (solo si está vinculada a
+  // FACTUSOL; si no, el endpoint devuelve `unlinked` y no se muestra nada).
+  useEffect(() => {
+    if (!companyId) {
+      setQuotes([]);
+      return;
+    }
+    let alive = true;
+    listFactusolQuotes({ company_id: companyId, days_back: 180 })
+      .then((r) => { if (alive) setQuotes(r.unlinked ? [] : r.items); })
+      .catch(() => { if (alive) setQuotes([]); });
+    return () => { alive = false; };
+  }, [companyId]);
+
   const total = useMemo(
     () => lines.reduce((sum, l) => sum + num(l.quantity) * num(l.unit_price), 0),
     [lines],
   );
+
+  /** C-4: vuelca el desglose de una proforma en las líneas del pedido.
+   *  Si la proforma se hizo en el FACTUSOL de escritorio no hay desglose
+   *  (F_PRE es mono-línea) y llega una única línea con su texto e importe. */
+  async function loadQuoteLines(codpre: string) {
+    setLoadingQuote(codpre);
+    setQuoteNotice(null);
+    try {
+      const quote = await getFactusolQuote(codpre);
+      const rows: LineRow[] = (quote.lines ?? []).map((l) => ({
+        product_sku: l.codart ?? "",
+        description: l.description,
+        quantity: String(l.quantity),
+        unit_price: String(l.unit_price),
+      }));
+      const fallback: LineRow[] = [{
+        product_sku: "",
+        description: quote.referencia || `Proforma ${codpre}`,
+        quantity: "1",
+        unit_price: String(quote.base),
+      }];
+      const next = rows.length > 0 ? rows : fallback;
+      // Se AÑADEN a lo que ya haya, descartando las filas vacías del inicio.
+      setLines((prev) => {
+        const kept = prev.filter((l) => l.description.trim() || l.product_sku.trim());
+        return [...kept, ...next];
+      });
+      setQuoteNotice(
+        quote.line_source === "cache"
+          ? `Cargadas ${next.length} líneas de la proforma ${codpre}.`
+          : `La proforma ${codpre} se creó en FACTUSOL de escritorio: se ha `
+            + "cargado como una línea única, revisa el importe.",
+      );
+    } catch (e) {
+      setQuoteNotice(extractErrorMessage(e, "No se pudo cargar la proforma."));
+    } finally {
+      setLoadingQuote(null);
+    }
+  }
 
   function pickCompany(value: string) {
     setCompanyQuery(value);
@@ -494,6 +555,37 @@ export default function NewManualOrderPage() {
 
         <section className="erp-card">
           <h3>Líneas</h3>
+          {/* C-4: si el cliente tiene proformas en FACTUSOL, se pueden volcar
+              al pedido en vez de reteclear el presupuesto. */}
+          {quotes.length > 0 ? (
+            <div className="erp-quotes-inline">
+              <button type="button" className="button small secondary"
+                      aria-expanded={quotesOpen}
+                      onClick={() => setQuotesOpen((v) => !v)}>
+                {quotesOpen ? "▾" : "▸"} Proformas FACTUSOL disponibles ({quotes.length})
+              </button>
+              {quoteNotice ? (
+                <p className="form-info" role="status">{quoteNotice}</p>
+              ) : null}
+              {quotesOpen ? (
+                <ul className="erp-quote-list">
+                  {quotes.slice(0, 5).map((q) => (
+                    <li key={q.codpre ?? ""}>
+                      <span>
+                        nº {q.codpre} · {q.fecha ?? "—"} ·{" "}
+                        {q.total.toFixed(2)} € · {q.referencia || "—"}
+                      </span>
+                      <button type="button" className="button small"
+                              disabled={loadingQuote !== null}
+                              onClick={() => loadQuoteLines(q.codpre ?? "")}>
+                        {loadingQuote === q.codpre ? "Cargando…" : "Cargar líneas al pedido"}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+            </div>
+          ) : null}
           <table className="data-table">
             <thead>
               <tr>

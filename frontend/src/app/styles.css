@@ -10339,3 +10339,10 @@ tr.is-inactive {
 /* C-3-fix2: acciones de vinculación FACTUSOL ↔ CRM en el alta de pedido. */
 .erp-factusol-actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 6px 0; }
 .erp-link-existing { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: #f8fafc; }
+
+/* C-4: proformas FACTUSOL (ficha de empresa + alta de pedido). */
+.erp-quotes-inline { display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; align-items: flex-start; }
+.erp-quote-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; width: 100%; }
+.erp-quote-list li { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: #f8fafc; font-size: 13px; }
+.erp-article-hits { list-style: none; margin: 4px 0; padding: 0; display: flex; flex-direction: column; gap: 4px; max-height: 220px; overflow-y: auto; }
+.erp-article-hits .button { width: 100%; text-align: left; }

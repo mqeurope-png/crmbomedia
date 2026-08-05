@@ -6,7 +6,9 @@ import { createCompany, listCompanies } from "../../../lib/companiesApi";
 import {
   createFactusolCustomerAndLink,
   createOrder,
+  getFactusolQuote,
   linkFactusolCustomer,
+  listFactusolQuotes,
   searchFactusolCustomers,
 } from "../../../lib/erpApi";
 
@@ -32,6 +34,9 @@ jest.mock("../../../lib/erpApi", () => ({
   createFactusolCustomerAndLink: jest.fn(),
   linkFactusolCustomer: jest.fn(),
   searchFactusolCustomers: jest.fn(),
+  // C-4: proformas del cliente elegido.
+  listFactusolQuotes: jest.fn(),
+  getFactusolQuote: jest.fn(),
 }));
 
 const mockCompanies = listCompanies as jest.Mock;
@@ -41,6 +46,8 @@ const mockCreateCompany = createCompany as jest.Mock;
 const mockCreateAndLink = createFactusolCustomerAndLink as jest.Mock;
 const mockLink = linkFactusolCustomer as jest.Mock;
 const mockSearchFac = searchFactusolCustomers as jest.Mock;
+const mockListQuotes = listFactusolQuotes as jest.Mock;
+const mockGetQuote = getFactusolQuote as jest.Mock;
 
 const COMPANY = {
   id: "c1", name: "Duplicoder SL", tax_id: "B12345678",
@@ -75,6 +82,9 @@ beforeEach(() => {
   mockCreateAndLink.mockResolvedValue({
     company_id: "new-c", factusol_codcli: "1", created: true,
   });
+  mockListQuotes.mockReset();
+  mockGetQuote.mockReset();
+  mockListQuotes.mockResolvedValue({ items: [], unlinked: false });
 });
 
 describe("NewManualOrderPage", () => {
@@ -307,5 +317,77 @@ describe("NewManualOrderPage", () => {
   it("la columna del SKU se anuncia como opcional", () => {
     render(<NewManualOrderPage />);
     expect(screen.getByText("SKU (opcional)")).toBeInTheDocument();
+  });
+
+  // --- C-4: proformas FACTUSOL del cliente ---------------------------------
+
+  it("carga las líneas de una proforma en el pedido", async () => {
+    mockListQuotes.mockResolvedValue({
+      unlinked: false,
+      items: [{
+        codpre: "77", referencia: "Instalación sala 3", fecha: "2026-08-01",
+        clipre: "55555", cliente_nombre: "Duplicoder SL",
+        base: 100, iva: 21, total: 121,
+      }],
+    });
+    mockGetQuote.mockResolvedValue({
+      codpre: "77", referencia: "Instalación sala 3", fecha: "2026-08-01",
+      clipre: "55555", cliente_nombre: "Duplicoder SL",
+      base: 100, iva: 21, total: 121,
+      line_source: "cache",
+      lines: [{
+        position: 1, codart: "ART-1", description: "Cable HDMI",
+        quantity: 2, unit_price: 10, discount_pct: 0, line_total: 20,
+        iva_pct: 21,
+      }],
+    });
+    const user = userEvent.setup();
+    render(<NewManualOrderPage />);
+    await waitFor(() => expect(mockCompanies).toHaveBeenCalled());
+    await user.type(screen.getByLabelText("Empresa"), "Duplicoder SL");
+
+    await user.click(
+      await screen.findByRole("button", { name: /Proformas FACTUSOL disponibles/ }),
+    );
+    await user.click(
+      await screen.findByRole("button", { name: "Cargar líneas al pedido" }),
+    );
+
+    await waitFor(() => expect(mockGetQuote).toHaveBeenCalledWith("77"));
+    expect(screen.getByLabelText("Descripción línea 1")).toHaveValue("Cable HDMI");
+    expect(screen.getByLabelText("SKU línea 1")).toHaveValue("ART-1");
+  });
+
+  it("avisa cuando la proforma viene del escritorio (sin desglose)", async () => {
+    mockListQuotes.mockResolvedValue({
+      unlinked: false,
+      items: [{
+        codpre: "88", referencia: "Reparación pantalla", fecha: "2026-08-01",
+        clipre: "55555", cliente_nombre: "Duplicoder SL",
+        base: 300, iva: 63, total: 363,
+      }],
+    });
+    // F_PRE es mono-línea: una proforma hecha en el escritorio no tiene
+    // desglose, así que llega una única línea reconstruida del REFPRE.
+    mockGetQuote.mockResolvedValue({
+      codpre: "88", referencia: "Reparación pantalla", fecha: "2026-08-01",
+      clipre: "55555", cliente_nombre: "Duplicoder SL",
+      base: 300, iva: 63, total: 363, line_source: "ref_text", lines: [],
+    });
+    const user = userEvent.setup();
+    render(<NewManualOrderPage />);
+    await waitFor(() => expect(mockCompanies).toHaveBeenCalled());
+    await user.type(screen.getByLabelText("Empresa"), "Duplicoder SL");
+
+    await user.click(
+      await screen.findByRole("button", { name: /Proformas FACTUSOL disponibles/ }),
+    );
+    await user.click(
+      await screen.findByRole("button", { name: "Cargar líneas al pedido" }),
+    );
+
+    expect(await screen.findByText(/FACTUSOL de escritorio/)).toBeInTheDocument();
+    expect(screen.getByLabelText("Descripción línea 1")).toHaveValue("Reparación pantalla");
+    expect(screen.getByLabelText("Precio línea 1")).toHaveValue(300);
   });
 });
