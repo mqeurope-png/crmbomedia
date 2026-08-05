@@ -323,6 +323,73 @@ def test_convert_to_order_encola_con_el_actor(client):
     assert enq.call_args.args[1] is not None
 
 
+# --- conciliación masiva (C-5) ----------------------------------------------
+
+
+def test_bulk_match_dry_run_endpoint(client, session_factory):
+    with session_factory() as s:
+        s.add(Company(name="AUDIOVISUALES DATA", tax_id="B61444402"))
+        s.commit()
+    fake = _FakeFactusol(customers=[{
+        "CODCLI": 3342, "NIFCLI": "B61444402",
+        "NOFCLI": "AUDIOVISUALES DATA SL", "NOCCLI": "AUDIOVISUALES DATA",
+        "DOMCLI": "C/ Industria 12", "POBCLI": "VILADECANS",
+        "CPOCLI": "08840", "PROCLI": "Barcelona", "PAICLI": "724",
+    }])
+    with _patch_client(fake):
+        r = client.post("/api/erp/factusol/bulk-match/dry-run",
+                        headers=auth_headers(client, "admin"), json={})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["matches"][0]["match_type"] == "nif"
+    assert body["matches"][0]["candidates"][0]["factusol_codcli"] == "3342"
+
+
+def test_bulk_match_solo_admin(client):
+    """Reescribe datos maestros de cientos de empresas: solo ADMIN."""
+    for role in ("pedidos", "sat", "user", "viewer"):
+        r = client.post("/api/erp/factusol/bulk-match/dry-run",
+                        headers=auth_headers(client, role), json={})
+        assert r.status_code == 403, role
+        r = client.post("/api/erp/factusol/bulk-match/apply",
+                        headers=auth_headers(client, role),
+                        json={"operations": []})
+        assert r.status_code == 403, role
+
+
+def test_bulk_match_apply_endpoint(client, session_factory):
+    with session_factory() as s:
+        company = Company(name="AUDIOVISUALES DATA", tax_id="B61444402")
+        s.add(company)
+        s.commit()
+        cid = company.id
+    fake = _FakeFactusol(customers=[{
+        "CODCLI": 3342, "NIFCLI": "B61444402",
+        "NOFCLI": "AUDIOVISUALES DATA SL", "POBCLI": "VILADECANS",
+    }])
+    with _patch_client(fake):
+        r = client.post("/api/erp/factusol/bulk-match/apply",
+                        headers=auth_headers(client, "admin"),
+                        json={"operations": [{
+                            "crm_company_id": cid, "factusol_codcli": "3342",
+                            "fields_to_sync": ["name", "city"],
+                        }]})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"applied": 1, "errors": []}
+    with session_factory() as s:
+        updated = s.get(Company, cid)
+        assert updated.name == "AUDIOVISUALES DATA SL"
+        assert updated.factusol_company_id == "3342"
+
+
+def test_bulk_match_apply_422_sin_operaciones(client):
+    r = client.post("/api/erp/factusol/bulk-match/apply",
+                    headers=auth_headers(client, "admin"),
+                    json={"operations": []})
+    assert r.status_code == 422
+    assert r.json()["detail"]["code"] == "no_operations"
+
+
 # --- direcciones del cliente (C-4-fix6) --------------------------------------
 
 
