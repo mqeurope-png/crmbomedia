@@ -165,19 +165,66 @@ Salida real de `scripts/factusol_discover_quotes.py` sobre la base de Bomedia
 comprobados**; los de la versión anterior de esta sección (`F_PRO`, `F_LPP`
 como líneas de presupuesto) eran candidatos y resultaron ser incorrectos.
 
-### 🚨 F_PRE es MONO-LÍNEA — no existe tabla de líneas de presupuesto
+### ❌ CORREGIDO: «F_PRE es mono-línea» era FALSO
 
-Es el hallazgo que condiciona todo C-4. `F_PRE` tiene **653 filas** en 2026 y
-**cada fila es un presupuesto completo**: cliente, importes y totales. No hay
-`F_LPRE`, ni `F_LPR`, ni ninguna otra tabla de líneas de presupuesto (`F_LPP`
-existe, pero pertenece a **F_PPR**, pedidos a *proveedor*, no a presupuestos).
+> C-4 afirmó aquí que `F_PRE` no tenía tabla de líneas, tras probar `F_LPRE`,
+> `F_LPR` y `F_LPP` sin acertar. **Es falso.** La tabla existe y se llama
+> **`F_LPS`** (ver abajo). El error costó la caché local
+> `factusol_quote_lines_cache`, un apaño entero para un problema inexistente,
+> y dejó las proformas del escritorio sin poder duplicarse.
+>
+> Corregido en C-4-fix3 (2026-08-05) con verificación en vivo.
 
-El detalle del presupuesto vive como **texto libre en `REFPRE`, 250 caracteres**.
+### F_LPS — LÍNEAS de presupuesto (3063 filas, 2026) ✅
 
-Consecuencia para el CRM: si BoHub quiere poder duplicar una proforma o volcar
-sus líneas a un pedido, **tiene que guardar el desglose por su cuenta**. Eso es
-la tabla `factusol_quote_lines_cache` (migración 0088). Las proformas creadas
-en el FACTUSOL de escritorio no tienen desglose y degradan a modo «simple».
+`F_LPS.CODLPS` → `F_PRE.CODPRE`. Una fila por línea, ordenadas por `POSLPS`.
+
+| Columna | Contenido |
+|---|---|
+| `TIPLPS` | Siempre `'1'`, igual que el `TIPPRE` de la cabecera. |
+| `CODLPS` | FK a `F_PRE.CODPRE`. |
+| `POSLPS` | Orden de la línea dentro del presupuesto. |
+| `ARTLPS` | Código de artículo (`F_ART.CODART`). **Vacío** en líneas de texto libre. |
+| `DESLPS` | Descripción. |
+| `CANLPS` | Cantidad. |
+| `DT1LPS` / `DT2LPS` / `DT3LPS` | Descuentos en %. |
+| `PRELPS` | Precio unitario. |
+| `TOTLPS` | Total de la línea. |
+| `IVALPS` | % de IVA (vacío en algunas líneas libres → 21 por defecto). |
+| `MEMLPS`, `ALTLPS`, `ANCLPS`, `FONLPS` | Memo y medidas; el CRM no las escribe. |
+
+Verificación empírica:
+
+```
+F_LPS WHERE CODLPS=574   → 4 líneas (Roca Joiers)
+   Cabezal MBO 250 + Capping 25 + Wiper 20 + Hora SAT 60 = 355
+   … que cuadra con el NET1PRE=355 de la cabecera F_PRE. ✅
+
+F_LPS WHERE CODLPS=1     → 21 líneas (AUDIOVISUALES DATA),
+   incluidas líneas de texto libre con ARTLPS='' (garantía).
+```
+
+### F_LTA — tarifas por artículo (3656 filas, 2026) ✅
+
+Aquí vive el **precio de venta**. En `F_ART`, `PCOART` es el **coste**.
+
+| Columna | Contenido |
+|---|---|
+| `TARLTA` | Código de tarifa. **Bomedia usa la 1.** |
+| `ARTLTA` | FK a `F_ART.CODART`. |
+| `MARLTA` | Margen (siempre 0 en esta base). |
+| `PRELTA` | Precio de venta de esa tarifa. |
+
+Verificación empírica:
+
+```
+F_LTA WHERE ARTLTA='99cy'  → TARLTA=1 PRELTA=80.0 · TARLTA=2 PRELTA=0.0
+F_LTA WHERE ARTLTA='1503'  → TARLTA=1 PRELTA=20.0 · TARLTA=2 PRELTA=0.0
+```
+
+Los precios de `TARLTA=1` son los que el FACTUSOL de escritorio muestra en la
+columna «Venta» de su listado Excel. `PRELTA=0` significa «tarifa sin
+configurar», no artículo gratis: el adaptador lo trata como ausente.
 
 ### F_PRE — presupuestos / proformas (653 filas, 2026)
 

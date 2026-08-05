@@ -1,9 +1,10 @@
-"""BoHub ERP Fase C · C-4 — proformas F_PRE + artículos F_ART.
+"""BoHub ERP Fase C · C-4 — proformas (F_PRE + F_LPS) y artículos (F_ART + F_LTA).
 
-F_PRE es **mono-línea** (verificado en la base real: 653 presupuestos, sin
-tabla de líneas), así que casi todo lo que se prueba aquí gira alrededor de
-esa restricción: el desglose viaja resumido en REFPRE y el detalle real vive
-en la caché local del CRM.
+C-4-fix3 corrigió el error de base de C-4: dábamos por hecho que F_PRE era
+mono-línea porque habíamos buscado su tabla de líneas como F_LPRE/F_LPR/F_LPP.
+Se llama **F_LPS** (`CODLPS` → `CODPRE`) y sí existe, así que buena parte de lo
+que se prueba aquí es que las líneas van y vienen de ahí, no de la caché local
+(que quedó obsoleta). El precio de venta hace lo propio con **F_LTA**.
 
 Sin red: el cliente FACTUSOL es un doble que sirve las filas configuradas y
 registra lo que se le pide escribir.
@@ -21,7 +22,7 @@ from sqlalchemy.pool import StaticPool
 
 import app.main  # noqa: F401  — registra todos los modelos en Base.metadata
 from app.db.base import Base
-from app.erp.models import FactusolQuoteLineCache, Order, OrderLine
+from app.erp.models import Order, OrderLine
 from app.integrations.factusol.client import FactusolError
 from app.integrations.factusol.quotes import (
     ARTICLE_SEARCH_LIMIT,
@@ -31,6 +32,7 @@ from app.integrations.factusol.quotes import (
     create_quote,
     duplicate_quote,
     get_quote,
+    list_quote_lines,
     list_quotes,
     next_codpre,
     quote_lines_for_order,
@@ -40,12 +42,19 @@ from app.models.crm import Company
 
 
 class _FakeFactusol:
-    """Doble del cliente: sirve F_PRE/F_ART y guarda las escrituras."""
+    """Doble del cliente: sirve F_PRE/F_LPS/F_ART/F_LTA y guarda las escrituras.
 
-    def __init__(self, *, quotes=None, articles=None):
+    `write_fails_for` permite simular que una tabla rechaza la escritura, para
+    probar la política de «proforma incompleta antes que duplicada»."""
+
+    def __init__(self, *, quotes=None, articles=None, lines=None, tariffs=None,
+                 write_fails_for=None):
         self.default_ejercicio = "2026"
         self._quotes = list(quotes or [])
         self._articles = list(articles or [])
+        self._lines = list(lines or [])
+        self._tariffs = list(tariffs or [])
+        self._write_fails_for = write_fails_for
         self.writes: list[tuple[str, dict[str, Any]]] = []
         self.filters: list[tuple[str, str]] = []
 
@@ -53,6 +62,24 @@ class _FakeFactusol:
         self.filters.append((tabla, filtro))
         if tabla == "F_ART":
             return list(self._articles)
+        if tabla == "F_LTA":
+            rows = list(self._tariffs)
+            if "TARLTA=" in filtro:
+                wanted = filtro.split("TARLTA=", 1)[1].split(" ")[0]
+                rows = [r for r in rows if str(r.get("TARLTA")) == wanted]
+            if "ARTLTA IN (" in filtro:
+                inside = filtro.split("ARTLTA IN (", 1)[1].split(")")[0]
+                codarts = {c.strip().strip("'") for c in inside.split(",")}
+                rows = [r for r in rows if str(r.get("ARTLTA")) in codarts]
+            return rows
+        if tabla == "F_LPS":
+            rows = list(self._lines)
+            if filtro.startswith("CODLPS="):
+                wanted = filtro.split("=", 1)[1].split(" ")[0]
+                rows = [r for r in rows if str(r.get("CODLPS")) == wanted]
+            if "ORDER BY POSLPS" in filtro:
+                rows = sorted(rows, key=lambda r: int(r.get("POSLPS", 0)))
+            return rows
         if tabla != "F_PRE":
             return []
         rows = list(self._quotes)
@@ -67,8 +94,13 @@ class _FakeFactusol:
         return rows
 
     def write_record(self, tabla, data, *, ejercicio=None):
+        if tabla == self._write_fails_for:
+            raise FactusolError(f"BDEscribirRegistroError en {tabla}")
         self.writes.append((tabla, dict(data)))
         return {"respuesta": "OK"}
+
+    def writes_to(self, tabla: str) -> list[dict[str, Any]]:
+        return [data for t, data in self.writes if t == tabla]
 
 
 def _quote_row(codpre: int, *, clipre="55555", fecha="2026-08-01",
@@ -80,6 +112,17 @@ def _quote_row(codpre: int, *, clipre="55555", fecha="2026-08-01",
         "CCPPRE": "28001", "CPRPRE": "Madrid", "CNIPRE": "B12345678",
         "NET1PRE": 100.0, "PIVA1PRE": 21.0, "IIVA1PRE": 21.0,
         "TOTPRE": total, "ALMPRE": "GEN",
+    }
+
+
+def _line_row(codpre: int, pos: int, *, art="", desc="Línea", cant=1.0,
+              precio=10.0, dto=0.0, iva=21.0) -> dict[str, Any]:
+    """Fila de F_LPS. Columnas verificadas contra la base real."""
+    return {
+        "TIPLPS": "1", "CODLPS": codpre, "POSLPS": pos, "ARTLPS": art,
+        "DESLPS": desc, "CANLPS": cant, "DT1LPS": dto, "DT2LPS": 0.0,
+        "DT3LPS": 0.0, "PRELPS": precio,
+        "TOTLPS": round(cant * precio * (1 - dto / 100), 2), "IVALPS": iva,
     }
 
 
@@ -196,32 +239,62 @@ def test_list_quotes_text_filter_applies_before_limit():
     assert [q["codpre"] for q in items] == ["5"]
 
 
-def test_get_quote_usa_la_cache_cuando_la_creo_el_crm(session):
-    fake = _FakeFactusol(quotes=[_quote_row(42)])
-    session.add(FactusolQuoteLineCache(
-        factusol_codpre="42", ejercicio="2026", position=1, artlpc="ART-1",
-        description="Cable HDMI", quantity=2, unit_price=10, discount_pct=0,
-        line_total=20, iva_pct=21, created_at=date(2026, 8, 1),
-    ))
-    session.commit()
+def test_get_quote_lee_las_lineas_reales_de_f_lps(session):
+    """C-4-fix3: las líneas salen de F_LPS, no de la caché local. Funciona con
+    cualquier proforma, también las hechas en el FACTUSOL de escritorio."""
+    fake = _FakeFactusol(
+        quotes=[_quote_row(42)],
+        lines=[_line_row(42, 1, art="ART-1", desc="Cable HDMI", cant=2, precio=10)],
+    )
     quote = get_quote(fake, session, "42", ejercicio="2026")
-    assert quote["line_source"] == "cache"
+    assert quote["line_source"] == "F_LPS"
     assert len(quote["lines"]) == 1
     assert quote["lines"][0]["description"] == "Cable HDMI"
+    assert quote["lines"][0]["codart"] == "ART-1"
 
 
-def test_get_quote_degrada_a_ref_text_sin_cache(session):
-    """Una proforma hecha en el FACTUSOL de escritorio no tiene desglose: es
-    la consecuencia directa de que F_PRE sea mono-línea."""
+def test_get_quote_sin_lineas_devuelve_lista_vacia(session):
     fake = _FakeFactusol(quotes=[_quote_row(42, ref="Reparación pantalla")])
     quote = get_quote(fake, session, "42", ejercicio="2026")
-    assert quote["line_source"] == "ref_text"
     assert quote["lines"] == []
     assert quote["referencia"] == "Reparación pantalla"
 
 
 def test_get_quote_devuelve_none_si_no_existe(session):
     assert get_quote(_FakeFactusol(), session, "999", ejercicio="2026") is None
+
+
+# --- líneas de presupuesto (F_LPS) ------------------------------------------
+
+
+def test_list_quote_lines_reads_f_lps():
+    """El presupuesto 574 real (Roca Joiers) tiene 4 líneas que suman 355, la
+    base NET1PRE de su cabecera. Es la comprobación que cerró el hallazgo."""
+    fake = _FakeFactusol(lines=[
+        _line_row(574, 2, art="CAP", desc="Capping", precio=25),
+        _line_row(574, 1, art="MBO", desc="Cabezal MBO", precio=250),
+        _line_row(574, 4, art="", desc="Hora SAT", precio=60),
+        _line_row(574, 3, art="WIP", desc="Wiper", precio=20),
+        _line_row(999, 1, desc="De otra proforma"),
+    ])
+    lines = list_quote_lines(fake, "574", ejercicio="2026")
+    # Ordenadas por POSLPS y filtradas por CODLPS.
+    assert [line["position"] for line in lines] == [1, 2, 3, 4]
+    assert [line["description"] for line in lines] == [
+        "Cabezal MBO", "Capping", "Wiper", "Hora SAT",
+    ]
+    assert sum(line["line_total"] for line in lines) == 355.0
+    # Línea de texto libre: sin artículo.
+    assert lines[3]["codart"] is None
+
+
+def test_list_quote_lines_empty_returns_empty_list():
+    assert list_quote_lines(_FakeFactusol(), "404", ejercicio="2026") == []
+
+
+def test_list_quote_lines_iva_vacio_cae_a_21():
+    fake = _FakeFactusol(lines=[_line_row(10, 1, iva=0)])
+    assert list_quote_lines(fake, "10", ejercicio="2026")[0]["iva_pct"] == 21.0
 
 
 # --- artículos --------------------------------------------------------------
@@ -266,52 +339,68 @@ def test_search_articles_matches_equart():
     assert items[0]["sku"] == "CDR80WPT"
 
 
-def test_search_articles_returns_pvp_price():
-    """El precio de VENTA sale de la columna real (PVPART aquí); PCOART es
-    coste y no puede ser lo que se factura."""
-    fake = _FakeFactusol(articles=[{
-        "CODART": "00001", "EQUART": "CDR80WPT", "DESART": "CD TQ 700 MB",
-        "PCOART": 0.25, "PVPART": 0.79, "TIVART": 21,
-    }])
-    item = search_articles(fake, "CDR80", ejercicio="2026")[0]
-    assert item["precio_venta"] == 0.79
-    assert item["precio_venta_columna"] == "PVPART"
-    assert item["precio_coste"] == 0.25
-    assert item["precio"] == 0.79
+def test_search_articles_reads_price_from_f_lta():
+    """C-4-fix3: el precio de VENTA vive en F_LTA (tarifa 1), no en F_ART —
+    ahí `PCOART` es el coste. Verificado en la base real: 99cy → 80,00."""
+    fake = _FakeFactusol(
+        articles=[{"CODART": "99cy", "DESART": "CYAN 0,5L", "PCOART": 40.0,
+                   "TIVART": 21}],
+        tariffs=[{"TARLTA": 1, "ARTLTA": "99cy", "MARLTA": 0, "PRELTA": 80.0},
+                 {"TARLTA": 2, "ARTLTA": "99cy", "MARLTA": 0, "PRELTA": 0.0}],
+    )
+    item = search_articles(fake, "cyan", ejercicio="2026")[0]
+    assert item["precio_venta"] == 80.0
+    assert item["precio_venta_source"] == "F_LTA_TAR1"
+    assert item["precio_coste"] == 40.0
+    assert item["precio"] == 80.0
+    # Se pide en LOTE: una sola consulta a F_LTA para todo el autocomplete.
+    lta_filters = [f for t, f in fake.filters if t == "F_LTA"]
+    assert len(lta_filters) == 1
+    assert "TARLTA=1" in lta_filters[0]
 
 
-def test_search_articles_detects_tarifa_column_when_no_pvp():
-    """El nombre de la columna de venta NO está verificado contra la base real,
-    así que se detecta en runtime mirando las claves que devuelve la API. Si la
-    base usa tarifas en vez de PVPART, funciona igual sin tocar código."""
-    fake = _FakeFactusol(articles=[{
-        "CODART": "00002", "DESART": "Tinta", "PCOART": 5.0,
-        "TAR1ART": 9.5, "TAR2ART": 8.0, "TIVART": 21,
-    }])
-    item = search_articles(fake, "tinta", ejercicio="2026")[0]
-    assert item["precio_venta_columna"] == "TAR1ART"
-    assert item["precio_venta"] == 9.5
-    # Las tarifas se exponen como información; ningún cálculo las mira.
-    assert item["tarifas"] == {"tar1art": 9.5, "tar2art": 8.0}
-
-
-def test_search_articles_price_is_none_when_no_sales_column():
-    """Sin columna de venta reconocible se devuelve None, NO un 0.00: el
-    frontend deja el campo en blanco y el operador teclea el precio. Forzar
-    cero dejaría emitir proformas a cero sin que nadie lo note."""
-    fake = _FakeFactusol(articles=[{
-        "CODART": "00003", "DESART": "Servicio", "PCOART": 0.0, "TIVART": 21,
-    }])
+def test_search_articles_null_price_when_no_lta():
+    """Artículo sin fila en tarifa 1 → precio vacío, NO 0.00: el operador lo
+    teclea. Forzar cero dejaría emitir proformas a cero sin que nadie lo note."""
+    fake = _FakeFactusol(
+        articles=[{"CODART": "00003", "DESART": "Servicio", "PCOART": 0.0,
+                   "TIVART": 21}],
+        tariffs=[],
+    )
     item = search_articles(fake, "servicio", ejercicio="2026")[0]
     assert item["precio_venta"] is None
-    assert item["precio_venta_columna"] is None
+    assert item["precio_venta_source"] is None
+
+
+def test_search_articles_null_price_when_tarifa1_is_zero():
+    """PRELTA=0 es «tarifa sin configurar» (pasa con los que solo tienen
+    tarifa 2), no un artículo gratis."""
+    fake = _FakeFactusol(
+        articles=[{"CODART": "1503", "DESART": "Wiper", "TIVART": 21}],
+        tariffs=[{"TARLTA": 1, "ARTLTA": "1503", "PRELTA": 0.0}],
+    )
+    assert search_articles(fake, "wiper", ejercicio="2026")[0]["precio_venta"] is None
+
+
+def test_search_articles_survives_f_lta_failure():
+    """Si F_LTA falla, el autocomplete sigue siendo usable sin precio: es
+    preferible a quedarse sin buscador."""
+    class _NoTariffs(_FakeFactusol):
+        def load_table(self, tabla, *, filtro="1=1", ejercicio=None):
+            if tabla == "F_LTA":
+                raise FactusolError("F_LTA caída")
+            return super().load_table(tabla, filtro=filtro, ejercicio=ejercicio)
+
+    fake = _NoTariffs(articles=[{"CODART": "99cy", "DESART": "CYAN", "TIVART": 21}])
+    item = search_articles(fake, "cyan", ejercicio="2026")[0]
+    assert item["codart"] == "99cy"
+    assert item["precio_venta"] is None
 
 
 def test_search_articles_limit_200():
     """C-4-fix2: el tope sube de 50 a 200 — «tinta» devuelve más de 100
     artículos y el desplegable tiene scroll interno."""
-    rows = [{"CODART": f"{i:05d}", "DESART": "tinta", "PVPART": 1.0}
-            for i in range(300)]
+    rows = [{"CODART": f"{i:05d}", "DESART": "tinta"} for i in range(300)]
     items = search_articles(_FakeFactusol(articles=rows), "tinta",
                             ejercicio="2026")
     assert len(items) == ARTICLE_SEARCH_LIMIT == 200
@@ -334,64 +423,67 @@ def test_search_articles_matches_deeart():
 # --- creación ---------------------------------------------------------------
 
 
-def test_create_quote_escribe_una_sola_fila_con_totales(session):
+def test_create_quote_writes_header_and_lines_to_f_lps(session):
+    """C-4-fix3: cabecera en F_PRE + una fila por línea en F_LPS, con POSLPS
+    correlativo. Antes solo se escribía la cabecera."""
     fake = _FakeFactusol(quotes=[_quote_row(50)])
     result = create_quote(
         fake, session, ejercicio="2026",
         customer={"codcli": "55555", "nombre": "Acme SL", "nif": "B12345678"},
         lines=[
-            {"description": "Cable HDMI", "quantity": 2, "unit_price": 10,
-             "iva_pct": 21},
+            {"codart": "HDMI", "description": "Cable HDMI", "quantity": 2,
+             "unit_price": 10, "iva_pct": 21},
             {"description": "Montaje", "quantity": 1, "unit_price": 30,
              "iva_pct": 21},
+            {"codart": "SAT", "description": "Hora SAT", "quantity": 1,
+             "unit_price": 60, "iva_pct": 21},
         ],
     )
-    # Mono-línea: UNA escritura en F_PRE, ninguna tabla de líneas.
-    assert [t for t, _ in fake.writes] == ["F_PRE"]
-    payload = fake.writes[0][1]
-    assert payload["CODPRE"] == "51"
-    assert payload["CLIPRE"] == "55555"
-    assert payload["NET1PRE"] == 50.0
-    assert payload["IIVA1PRE"] == 10.5
-    assert payload["TOTPRE"] == 60.5
-    assert payload["REFPRE"] == "2x Cable HDMI; 1x Montaje"
-    assert result["codpre"] == "51"
+    assert [t for t, _ in fake.writes] == ["F_PRE", "F_LPS", "F_LPS", "F_LPS"]
+
+    header = fake.writes_to("F_PRE")[0]
+    assert header["CODPRE"] == "51"
+    assert header["CLIPRE"] == "55555"
+    assert header["NET1PRE"] == 110.0
+    assert header["REFPRE"] == "2x Cable HDMI; 1x Montaje; 1x Hora SAT"
+
+    lines = fake.writes_to("F_LPS")
+    assert [line["POSLPS"] for line in lines] == [1, 2, 3]
+    assert all(line["CODLPS"] == "51" for line in lines)
+    assert all(line["TIPLPS"] == "1" for line in lines)
+    assert lines[0]["ARTLPS"] == "HDMI"
+    assert lines[0]["CANLPS"] == 2
+    assert lines[0]["TOTLPS"] == 20.0
+    # Línea de texto libre: sin artículo, pero se escribe igual.
+    assert lines[1]["ARTLPS"] == ""
+    assert result["lines"] == 3
 
 
-def test_create_quote_cachea_el_desglose_que_f_pre_no_puede_guardar(session):
+def test_create_quote_line_payload_applies_discount(session):
     fake = _FakeFactusol()
     create_quote(
-        fake, session, ejercicio="2026",
-        customer={"codcli": "55555", "nombre": "Acme SL"},
+        fake, session, ejercicio="2026", customer={"codcli": "55555"},
         lines=[{"codart": "ART-1", "description": "Cable", "quantity": 3,
                 "unit_price": 10, "discount_pct": 10, "iva_pct": 21}],
     )
-    rows = list(session.scalars(select(FactusolQuoteLineCache)))
-    assert len(rows) == 1
-    assert rows[0].factusol_codpre == "1"
-    assert rows[0].position == 1
-    assert rows[0].artlpc == "ART-1"
-    assert float(rows[0].line_total) == 27.0  # 3 × 10 − 10 %
+    line = fake.writes_to("F_LPS")[0]
+    assert line["DT1LPS"] == 10
+    assert line["TOTLPS"] == 27.0  # 3 × 10 − 10 %
 
 
-def test_create_quote_no_falla_si_la_cache_local_peta(session, monkeypatch):
-    """La proforma ya está escrita en FACTUSOL cuando se cachea el desglose.
-    Propagar el error haría que el operador reintentase y creara un DUPLICADO
-    en la contabilidad; perder el desglose solo degrada a modo simple."""
-    from app.integrations.factusol import quotes as mod
-
-    def boom(*_args, **_kwargs):
-        raise RuntimeError("BD caída")
-
-    monkeypatch.setattr(mod, "_save_lines_cache", boom)
-    fake = _FakeFactusol()
+def test_create_quote_incomplete_lines_do_not_fail_the_job(session):
+    """La cabecera ya existe cuando se escriben las líneas. Propagar el error
+    haría que el operador reintentase y creara una proforma DUPLICADA en la
+    contabilidad; una proforma incompleta es reparable, el duplicado no."""
+    fake = _FakeFactusol(write_fails_for="F_LPS")
     result = create_quote(
         fake, session, ejercicio="2026", customer={"codcli": "55555"},
         lines=[{"description": "Cable", "quantity": 1, "unit_price": 10}],
     )
     assert result["codpre"] == "1"
-    assert result["cached"] is False
-    assert len(fake.writes) == 1  # la proforma sí se escribió
+    assert result["lines"] == 0
+    assert "1 líneas" in result["warning"]
+    assert fake.writes_to("F_PRE")  # la cabecera sí se escribió
 
 
 def test_create_quote_exige_cliente_de_factusol(session):
@@ -408,13 +500,13 @@ def test_create_quote_rechaza_proforma_vacia(session):
 
 
 def test_create_quote_acepta_referencia_libre_sin_lineas(session):
-    """Modo «rápido»: F_PRE es mono-línea, así que una proforma de una frase
-    es su forma nativa y debe poder crearse sin desglose."""
+    """Una proforma de una frase sin desglose sigue siendo válida."""
     fake = _FakeFactusol()
     create_quote(fake, session, ejercicio="2026",
                  customer={"codcli": "55555", "nombre": "Acme SL"},
                  lines=[], referencia="Presupuesto instalación sala 3")
-    assert fake.writes[0][1]["REFPRE"] == "Presupuesto instalación sala 3"
+    assert fake.writes_to("F_PRE")[0]["REFPRE"] == "Presupuesto instalación sala 3"
+    assert fake.writes_to("F_LPS") == []
 
 
 # --- duplicar ---------------------------------------------------------------
@@ -424,7 +516,7 @@ def test_duplicate_quote_copia_la_fila_con_codigo_y_fecha_nuevos(session):
     fake = _FakeFactusol(quotes=[_quote_row(60, ref="Original")])
     result = duplicate_quote(fake, session, "60", ejercicio="2026",
                              fecha="2026-08-05")
-    payload = fake.writes[0][1]
+    payload = fake.writes_to("F_PRE")[0]
     assert payload["CODPRE"] == "61"
     assert payload["FECPRE"] == "2026-08-05"
     # El resto de la fila se arrastra intacto (importes, cliente, columnas
@@ -434,21 +526,28 @@ def test_duplicate_quote_copia_la_fila_con_codigo_y_fecha_nuevos(session):
     assert result["source_codpre"] == "60"
 
 
-def test_duplicate_quote_duplica_tambien_el_desglose_cacheado(session):
-    fake = _FakeFactusol(quotes=[_quote_row(60)])
-    session.add(FactusolQuoteLineCache(
-        factusol_codpre="60", ejercicio="2026", position=1, artlpc="",
-        description="Cable", quantity=1, unit_price=10, discount_pct=0,
-        line_total=10, iva_pct=21, created_at=date(2026, 8, 1),
-    ))
-    session.commit()
-    duplicate_quote(fake, session, "60", ejercicio="2026")
-    copied = list(session.scalars(
-        select(FactusolQuoteLineCache)
-        .where(FactusolQuoteLineCache.factusol_codpre == "61")
-    ))
-    assert len(copied) == 1
-    assert copied[0].description == "Cable"
+def test_duplicate_quote_copies_lines_from_f_lps(session):
+    """C-4-fix3: las líneas salen de F_LPS, así que duplicar funciona también
+    con las proformas creadas en el FACTUSOL de escritorio."""
+    fake = _FakeFactusol(
+        quotes=[_quote_row(60)],
+        lines=[
+            _line_row(60, 1, art="MBO", desc="Cabezal MBO", precio=250),
+            _line_row(60, 2, art="CAP", desc="Capping", precio=25),
+            _line_row(60, 3, art="WIP", desc="Wiper", precio=20),
+            _line_row(60, 4, desc="Hora SAT", precio=60),
+        ],
+    )
+    result = duplicate_quote(fake, session, "60", ejercicio="2026")
+
+    copied = fake.writes_to("F_LPS")
+    assert len(copied) == 4
+    assert all(line["CODLPS"] == "61" for line in copied)
+    assert [line["POSLPS"] for line in copied] == [1, 2, 3, 4]
+    assert [line["DESLPS"] for line in copied] == [
+        "Cabezal MBO", "Capping", "Wiper", "Hora SAT",
+    ]
+    assert result["lines"] == 4
 
 
 def test_duplicate_quote_falla_si_la_proforma_no_existe(session):
@@ -459,39 +558,53 @@ def test_duplicate_quote_falla_si_la_proforma_no_existe(session):
 # --- volcado a pedido -------------------------------------------------------
 
 
-def test_quote_lines_for_order_reconstruye_una_linea_sin_cache(session):
+def test_quote_lines_for_order_usa_las_lineas_de_f_lps(session):
+    fake = _FakeFactusol(
+        quotes=[_quote_row(70)],
+        lines=[_line_row(70, 1, art="ART-1", desc="Cable HDMI", cant=2, precio=10),
+               _line_row(70, 2, desc="Montaje", precio=30)],
+    )
+    data = quote_lines_for_order(fake, session, "70", ejercicio="2026")
+    assert data["line_source"] == "F_LPS"
+    assert [line["description"] for line in data["lines"]] == ["Cable HDMI", "Montaje"]
+
+
+def test_quote_lines_for_order_reconstruye_una_linea_si_no_hay_ninguna(session):
+    """Edge case: proforma sin filas en F_LPS. Se reconstruye desde la cabecera
+    para no dejar el pedido vacío."""
     fake = _FakeFactusol(quotes=[_quote_row(70, ref="Reparación pantalla")])
     data = quote_lines_for_order(fake, session, "70", ejercicio="2026")
-    assert data["line_source"] == "ref_text"
     assert len(data["lines"]) == 1
     assert data["lines"][0]["description"] == "Reparación pantalla"
     assert data["lines"][0]["unit_price"] == 100.0  # la base imponible
 
 
-def test_convert_quote_to_order_crea_pedido_manual_del_crm(session):
+def test_convert_to_order_populates_lines(session):
+    """C-4-fix3: el pedido hereda las líneas reales de F_LPS, con SKU."""
     company = Company(name="Acme SL", factusol_company_id="55555")
     session.add(company)
     session.commit()
-    fake = _FakeFactusol(quotes=[_quote_row(80)])
-    session.add(FactusolQuoteLineCache(
-        factusol_codpre="80", ejercicio="2026", position=1, artlpc="ART-1",
-        description="Cable HDMI", quantity=2, unit_price=10, discount_pct=0,
-        line_total=20, iva_pct=21, created_at=date(2026, 8, 1),
-    ))
-    session.commit()
+    fake = _FakeFactusol(
+        quotes=[_quote_row(80)],
+        lines=[_line_row(80, 1, art="ART-1", desc="Cable HDMI", cant=2, precio=10),
+               _line_row(80, 2, art="SAT", desc="Hora SAT", cant=1, precio=60)],
+    )
 
     result = convert_quote_to_order(fake, session, "80", ejercicio="2026")
 
     order = session.get(Order, result["order_id"])
     assert order.order_number.startswith("MANUAL-")
     assert order.company_id == company.id  # resuelto por el vínculo CODCLI
-    assert float(order.total_amount) == 20.0
+    assert float(order.total_amount) == 80.0
     lines = list(session.scalars(
         select(OrderLine).where(OrderLine.order_id == order.id)
+        .order_by(OrderLine.position)
     ))
-    assert len(lines) == 1
+    assert len(lines) == 2
     assert lines[0].description == "Cable HDMI"
     assert lines[0].product_codart == "ART-1"
+    assert lines[0].product_sku == "ART-1"
+    assert float(lines[1].unit_price) == 60.0
 
 
 def test_convert_quote_to_order_no_escribe_nada_en_factusol(session):

@@ -88,40 +88,71 @@ Los endpoints `/registros/*` del Sprint 0 daban 404. Los buenos son
 `EscribirRegistro` inserta **un** registro. Una factura con 12 líneas son 13
 llamadas. De ahí la compensación manual de `emit_invoice` cuando falla a mitad.
 
-## 9. F_PRE no tiene tabla de líneas
+## 9. ~~F_PRE no tiene tabla de líneas~~ (corregido)
 
-Los presupuestos son **mono-línea**: cada fila de `F_PRE` es un presupuesto
-completo y el desglose es texto en `REFPRE` (250 car.). `F_LPRE` no existe;
-`F_LPP` son líneas de **F_PPR** (pedidos a proveedor), no de presupuestos.
+> ⚠️ **Esto era FALSO y se corrigió en C-4-fix3.** Se deja escrito porque el
+> error en sí es la lección.
 
-Por eso C-4 guarda el desglose en `factusol_quote_lines_cache`. Ver
-`factusol-proformas.md`.
+C-4 concluyó que `F_PRE` era mono-línea tras probar `F_LPRE`, `F_LPR` y `F_LPP`
+sin acertar, y construyó una caché local entera (`factusol_quote_lines_cache`)
+para suplir una tabla que **sí existe**: se llama **`F_LPS`**
+(`CODLPS` → `CODPRE`, 3063 filas). Ver la tabla nº 12.
 
-## 10. `PCOART` es coste, no precio de venta
+**La lección:** no des por cerrada la búsqueda de una tabla tras probar 5-10
+candidatas. Los nombres de FACTUSOL no siguen un patrón fiable —
+`F_LPS` ≠ `F_LPRE`— y una tabla ausente es indistinguible de una vacía porque
+`CargaTabla` devuelve `[]` en ambos casos (trampa nº 1). Antes de concluir «no
+existe», pide a Bart el listado de tablas o compara los totales con lo que
+enseña el FACTUSOL de escritorio.
 
-En F_ART, `PCOART` es el **precio de coste**. Usarlo como precio de venta
+## 10. `PCOART` es coste — el precio de venta está en F_LTA
+
+En `F_ART`, `PCOART` es el **precio de coste**. Usarlo como precio de venta
 factura al cliente lo que cuesta comprar el artículo.
 
-El nombre de la columna de venta **no está verificado** contra la base de
-Bomedia: el descubrimiento de C-4 solo volcó las 15 primeras columnas. En vez
-de apostar por `PVPART`, `quotes.detect_price_column()` mira las claves reales
-que devuelve `CargaTabla` (que sirve la fila completa) y elige la primera
-candidata que exista.
+El de venta **no está en F_ART en absoluto**: vive en **`F_LTA`**, una fila por
+artículo y tarifa (`ARTLTA` → `F_ART.CODART`, `PRELTA` = precio). Bomedia usa
+`TARLTA=1`; sus precios son los que el FACTUSOL de escritorio enseña en la
+columna «Venta».
 
-Es una variante especialmente traicionera de la trampa nº 1: **en lectura, una
-columna inexistente no da error ni `[]` — `row.get()` devuelve `None`**. Los
-precios saldrían todos en blanco, sin un solo log. Por eso, cuando no hay
-columna reconocible, el adaptador deja `precio_venta = None` (la UI muestra el
-campo vacío, nunca `0.00`) y escribe un `WARNING` con las columnas reales.
+```
+F_LTA WHERE ARTLTA='99cy'  → TARLTA=1 PRELTA=80.0
+F_LTA WHERE ARTLTA='1503'  → TARLTA=1 PRELTA=20.0
+```
 
-Confirmar cuál usa esta base:
+`PRELTA=0` es «tarifa sin configurar» (típico de los artículos que solo tienen
+tarifa 2), no un artículo gratis: el adaptador lo trata como ausente y deja el
+campo vacío, nunca `0.00`.
+
+> Antes de C-4-fix3 se buscaba la columna dentro de F_ART (`PVPART`, `TAR1ART`…)
+> con detección en runtime. No existía ninguna: el dato estaba en otra tabla.
+
+## 11. Una tabla que no existe es indistinguible de una vacía
+
+`CargaTabla` devuelve `[]` en los dos casos. Por eso C-4 concluyó que `F_LPS` no
+existía tras probar `F_LPRE`/`F_LPR`/`F_LPP`, y construyó una caché local
+entera para suplirla.
+
+Antes de concluir «esta tabla no existe»: pide el listado real de tablas, o
+compara los totales que devuelve la API con lo que enseña el FACTUSOL de
+escritorio. Los nombres no siguen un patrón fiable.
+
+## 12. F_LPS son las líneas de presupuesto
+
+`F_LPS.CODLPS` → `F_PRE.CODPRE`, ordenadas por `POSLPS`. Columnas: `TIPLPS`,
+`CODLPS`, `POSLPS`, `ARTLPS` (vacío en líneas de texto libre), `DESLPS`,
+`CANLPS`, `DT1LPS`/`DT2LPS`/`DT3LPS`, `PRELPS`, `TOTLPS`, `IVALPS`.
+
+Verificado: `CODLPS=574` → 4 líneas que suman 355, el `NET1PRE` de su cabecera.
+
+Verificar ambas tablas en producción:
 
 ```bash
 docker compose -f /opt/crmbo/docker-compose.prod.yml exec api \
     python -m scripts.factusol_discover_article_prices
 ```
 
-## 11. El cliente lo crea la app externa Woo→FACTUSOL
+## 13. El cliente lo crea la app externa Woo→FACTUSOL
 
 En los pedidos de WooCommerce, la app externa crea el pedido **y el cliente**.
 Si el CRM intenta crearlo también, choca: `BDEscribirRegistroError` (C-2-fix1).

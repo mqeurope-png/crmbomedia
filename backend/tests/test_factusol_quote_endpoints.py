@@ -23,14 +23,24 @@ from tests._test_helpers import auth_headers, seed_test_users
 
 
 class _FakeFactusol:
-    def __init__(self, *, quotes=None, articles=None):
+    def __init__(self, *, quotes=None, articles=None, lines=None, tariffs=None):
         self.default_ejercicio = "2026"
         self._quotes = list(quotes or [])
         self._articles = list(articles or [])
+        self._lines = list(lines or [])
+        self._tariffs = list(tariffs or [])
 
     def load_table(self, tabla, *, filtro="1=1", ejercicio=None):
         if tabla == "F_ART":
             return list(self._articles)
+        if tabla == "F_LTA":
+            return list(self._tariffs)
+        if tabla == "F_LPS":
+            rows = list(self._lines)
+            if filtro.startswith("CODLPS="):
+                wanted = filtro.split("=", 1)[1].split(" ")[0]
+                rows = [r for r in rows if str(r.get("CODLPS")) == wanted]
+            return sorted(rows, key=lambda r: int(r.get("POSLPS", 0)))
         if tabla != "F_PRE":
             return []
         rows = list(self._quotes)
@@ -124,15 +134,41 @@ def test_list_quotes_404_si_la_empresa_no_existe(client):
 # --- detalle ----------------------------------------------------------------
 
 
-def test_get_quote_devuelve_desglose_y_origen(client):
-    with _patch_client(_FakeFactusol(quotes=[_quote_row(10)])):
+def test_get_quote_devuelve_las_lineas_de_f_lps(client):
+    """C-4-fix3: el desglose sale de F_LPS, no de la caché local."""
+    fake = _FakeFactusol(quotes=[_quote_row(10)], lines=[
+        {"TIPLPS": "1", "CODLPS": 10, "POSLPS": 1, "ARTLPS": "MBO",
+         "DESLPS": "Cabezal MBO", "CANLPS": 1, "PRELPS": 250.0,
+         "TOTLPS": 250.0, "IVALPS": 21.0},
+        {"TIPLPS": "1", "CODLPS": 10, "POSLPS": 2, "ARTLPS": "",
+         "DESLPS": "Hora SAT", "CANLPS": 1, "PRELPS": 60.0,
+         "TOTLPS": 60.0, "IVALPS": 21.0},
+    ])
+    with _patch_client(fake):
         r = client.get("/api/erp/factusol/quotes/10",
                        headers=auth_headers(client, "user"))
     assert r.status_code == 200
     body = r.json()
     assert body["codpre"] == "10"
-    assert body["line_source"] == "ref_text"
-    assert body["lines"] == []
+    assert body["line_source"] == "F_LPS"
+    assert [line["description"] for line in body["lines"]] == [
+        "Cabezal MBO", "Hora SAT",
+    ]
+
+
+def test_search_articles_devuelve_precio_de_f_lta(client):
+    fake = _FakeFactusol(
+        articles=[{"CODART": "99cy", "DESART": "CYAN 0,5L", "PCOART": 40.0,
+                   "TIVART": 21}],
+        tariffs=[{"TARLTA": 1, "ARTLTA": "99cy", "PRELTA": 80.0}],
+    )
+    with _patch_client(fake):
+        r = client.get("/api/erp/factusol/articles/search?q=cyan",
+                       headers=auth_headers(client, "user"))
+    assert r.status_code == 200
+    item = r.json()["items"][0]
+    assert item["precio_venta"] == 80.0
+    assert item["precio_venta_source"] == "F_LTA_TAR1"
 
 
 def test_get_quote_404_si_no_existe(client):

@@ -366,10 +366,10 @@ def search_articles_endpoint(
 ) -> dict[str, Any]:
     """Busca artículos en F_ART por sus 6 identificadores.
 
-    `precio_venta_columna` dice de qué columna real salió el precio (`PVPART`,
-    `TAR1ART`…) o `null` si esta base no tiene ninguna de las candidatas. Se
-    expone a propósito: es la forma de comprobar el esquema desde el navegador,
-    sin entrar por shell al contenedor."""
+    `precio_venta` viene de **F_LTA** (tarifa 1), no de F_ART: en F_ART solo
+    está `PCOART`, que es el coste. `precio_venta_source` deja constancia de
+    dónde salió cada precio; `null` = ese artículo no tiene tarifa 1
+    configurada y el operador teclea el importe."""
     _ = current_user
     from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
     from app.integrations.factusol.quotes import search_articles  # noqa: PLC0415
@@ -379,10 +379,7 @@ def search_articles_endpoint(
         items = search_articles(client, q, ejercicio=ejercicio)
     except FactusolError as exc:
         raise _factusol_gateway_error(exc, "factusol_article_search_failed") from exc
-    return {
-        "items": items, "ejercicio": ejercicio,
-        "precio_venta_columna": items[0]["precio_venta_columna"] if items else None,
-    }
+    return {"items": items, "ejercicio": ejercicio}
 
 
 @router.get("/quotes")

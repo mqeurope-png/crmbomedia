@@ -1,22 +1,27 @@
-"""Proformas (presupuestos F_PRE) y artículos (F_ART) — Fase C · C-4.
+"""Proformas (presupuestos F_PRE + líneas F_LPS) y artículos (F_ART + F_LTA).
 
-### El hallazgo que condiciona todo este módulo
+### Corrección importante (C-4-fix3, 2026-08-05)
 
-`F_PRE` es **MONO-LÍNEA**. Verificado en la base real de Bomedia (653
-presupuestos del ejercicio 2026): cada fila de `F_PRE` es un presupuesto
-completo con sus totales ya calculados, y **no existe una tabla de líneas**
-(`F_LPRE` no está; `F_LPP` es de pedidos a proveedor, no de presupuestos). El
-detalle del presupuesto vive como texto libre en `REFPRE`, 250 caracteres.
+C-4 dio por hecho que **F_PRE era mono-línea** tras probar `F_LPRE`, `F_LPR`,
+`F_LPP`… sin acertar. Era **falso**: las líneas existen y viven en **`F_LPS`**
+(3063 filas en 2026), con `F_LPS.CODLPS = F_PRE.CODPRE`. El nombre no seguía el
+patrón que buscábamos, y por eso se escapó.
 
-Consecuencias prácticas:
+Verificado en vivo contra la base de Bomedia:
 
-- Crear una proforma = escribir UNA fila en `F_PRE` con el desglose serializado
-  en `REFPRE` (`build_refpre_from_lines`) y los totales agregados.
-- Para poder duplicar la proforma o volcarla a un pedido con cantidades y
-  precios reales, el CRM guarda el desglose en su propia tabla
-  (`factusol_quote_lines_cache`, migración 0088). Las proformas creadas en el
-  FACTUSOL de escritorio no tienen caché → `get_quote` devuelve
-  `line_source="ref_text"` y la UI degrada a modo simple.
+- `F_LPS WHERE CODLPS=574` → las 4 líneas del presupuesto de Roca Joiers
+  (Cabezal MBO 250 + Capping 25 + Wiper 20 + Hora SAT 60 = 355), que cuadra
+  con el `NET1PRE=355` de la cabecera.
+- `F_LPS WHERE CODLPS=1` → las 21 líneas de AUDIOVISUALES DATA, incluidas
+  líneas de texto libre (`ARTLPS=''`).
+
+Consecuencias: `factusol_quote_lines_cache` (migración 0088) queda **obsoleta**
+— era un apaño para un problema que no existía. La tabla se conserva por si
+guardó algo entre #309 y este PR, pero ya no se lee ni se escribe.
+
+Lo mismo con el precio de venta: no está en `F_ART` sino en **`F_LTA`** (tarifas
+por artículo), con `ARTLTA` → `F_ART.CODART` y `PRELTA` = precio. Bomedia usa
+`TARLTA=1`. Verificado: `99cy` → 80.00 €, `1503` → 20.00 €.
 
 ### Trampa de la API (nos costó C-3-fix1 entero)
 
@@ -35,17 +40,27 @@ from datetime import UTC, date, datetime
 from json import dumps as json_dumps
 from typing import Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.integrations.factusol.client import FactusolClient, FactusolError
 
 logger = logging.getLogger(__name__)
 
-#: Tabla de presupuestos/proformas. NO hay tabla de líneas (mono-línea).
+#: Cabecera de presupuestos/proformas.
 TABLE_QUOTES = "F_PRE"
+#: **Líneas** de presupuesto. `CODLPS` referencia a `F_PRE.CODPRE`.
+#: Descubierta en C-4-fix3: C-4 la buscó como F_LPRE/F_LPR/F_LPP y falló.
+TABLE_QUOTE_LINES = "F_LPS"
 #: Tabla de artículos.
 TABLE_ARTICLES = "F_ART"
+#: Tarifas por artículo. `ARTLTA` → `F_ART.CODART`, `PRELTA` = precio de venta.
+TABLE_TARIFFS = "F_LTA"
+
+#: Tarifa que usa Bomedia. Sus precios son los que el FACTUSOL de escritorio
+#: muestra en la columna «Venta». Multi-tarifa por cliente es backlog: iría a
+#: `erp_settings.factusol_default_tarifa`, no aquí.
+DEFAULT_TARIFA = 1
 
 #: `REFPRE` es un `varchar(250)`; pasarse trunca en silencio en FACTUSOL, así
 #: que el recorte lo hacemos nosotros y de forma visible (con «…»).
@@ -98,30 +113,14 @@ ARTICLE_SEARCH_COLUMNS = (
     "CODART", "EANART", "EQUART", "DESART", "DEEART", "DETART",
 )
 
-#: Candidatas a **precio de venta** en F_ART, por orden de preferencia.
-#:
-#: El nombre real NO está verificado contra la base de Bomedia: el
-#: descubrimiento de C-4 solo llegó a volcar las primeras 15 columnas y ahí solo
-#: aparece `PCOART`, que es **coste**. En vez de apostar por un nombre —que es
-#: justo el error de C-3-fix1— se detecta en runtime: `CargaTabla` devuelve
-#: TODAS las columnas de la fila, así que basta mirar cuál de estas existe de
-#: verdad (ver `detect_price_column`).
-#:
-#: Apostar a ciegas aquí sería peor que en una búsqueda: `row.get("PVPART")`
-#: sobre una columna inexistente devuelve `None` **sin error**, y todos los
-#: precios saldrían en blanco sin un solo log.
-ARTICLE_PRICE_CANDIDATES = (
-    "PVPART",    # precio de venta al público (el habitual en FACTUSOL)
-    "PVP1ART",
-    "PV1ART",
-    "TAR1ART",   # tarifa 1, si la base usa tarifas multi-nivel
-    "PRE1ART",
-    "PREART",
+#: Columnas de F_LPS (líneas de presupuesto), verificadas en la base real.
+QUOTE_LINE_FIELDS = (
+    "TIPLPS", "CODLPS", "POSLPS", "ARTLPS", "DESLPS", "CANLPS",
+    "DT1LPS", "DT2LPS", "DT3LPS", "PRELPS", "TOTLPS", "IVALPS",
 )
 
-#: Prefijo de las tarifas multinivel, si la base las usa (`TAR1ART`…`TAR9ART`).
-#: Se devuelven como información; NO se usan en ningún cálculo (backlog).
-ARTICLE_TARIFF_PREFIX = "TAR"
+#: `TIPLPS` vale siempre '1', igual que el `TIPPRE` de la cabecera.
+DEFAULT_TIPLPS = "1"
 
 
 def _sql_escape(value: str) -> str:
@@ -163,29 +162,35 @@ def _factusol_date(value: Any) -> str | None:
 # --- artículos ---------------------------------------------------------------
 
 
-def detect_price_column(row: dict[str, Any]) -> str | None:
-    """Nombre REAL de la columna de precio de venta en esta base, o None.
+def tariff_prices(
+    client: FactusolClient, codarts: list[str], *, ejercicio: str,
+    tarifa: int = DEFAULT_TARIFA,
+) -> dict[str, float]:
+    """`{CODART: precio}` de la tarifa indicada, en UNA sola consulta a F_LTA.
 
-    Se resuelve mirando las claves que ha devuelto la API en vez de fijar un
-    nombre en el código. `CargaTabla` sirve la fila completa, así que las claves
-    son la verdad sobre el esquema — y así el adaptador funciona tanto si la
-    base usa `PVPART` como si usa tarifas `TAR1ART`, sin tocar código.
+    El precio de venta NO está en F_ART (ahí `PCOART` es el **coste**): vive en
+    F_LTA, una fila por artículo y tarifa. Se pide en lote con un `IN (…)` para
+    no hacer N peticiones desde el autocomplete.
     """
-    for candidate in ARTICLE_PRICE_CANDIDATES:
-        if candidate in row:
-            return candidate
-    return None
-
-
-def _tariffs(row: dict[str, Any]) -> dict[str, float]:
-    """Tarifas multinivel (`TAR1ART`…) si la base las usa. Solo informativas:
-    ningún cálculo las mira. Dict vacío si esta base no las tiene."""
-    return {
-        col.lower(): _num(row[col])
-        for col in row
-        if col.startswith(ARTICLE_TARIFF_PREFIX) and col.endswith("ART")
-        and row[col] not in (None, "")
-    }
+    codarts = [c for c in dict.fromkeys(codarts) if c]
+    if not codarts:
+        return {}
+    in_list = ",".join(f"'{_sql_escape(str(c))}'" for c in codarts)
+    rows = client.load_table(
+        TABLE_TARIFFS,
+        filtro=f"TARLTA={int(tarifa)} AND ARTLTA IN ({in_list})",
+        ejercicio=ejercicio,
+    )
+    prices: dict[str, float] = {}
+    for row in rows:
+        codart = str(row.get("ARTLTA") or "").strip()
+        price = _num(row.get("PRELTA"))
+        # PRELTA=0 significa «tarifa sin precio configurado» (pasa con los
+        # artículos que solo tienen Tarifa 2). Se trata como ausente para que
+        # la UI deje el campo vacío en vez de proponer 0,00 €.
+        if codart and price:
+            prices[codart] = price
+    return prices
 
 
 def _row_to_article(row: dict[str, Any]) -> dict[str, Any]:
@@ -203,16 +208,10 @@ def _row_to_article(row: dict[str, Any]) -> dict[str, Any]:
     )
     # PCOART es precio de COSTE — nunca es el precio que se factura.
     out["precio_coste"] = _num(out.get("pcoart"))
-    # Precio de VENTA, desde la columna que exista de verdad en esta base.
-    price_column = detect_price_column(row)
-    out["precio_venta_columna"] = price_column
-    out["precio_venta"] = _num(row.get(price_column)) if price_column else None
-    # `precio` (C-4/C-4-fix1) era el coste. Ahora manda el de venta y el coste
-    # queda de reserva, para no romper a quien ya leyera esta clave.
-    out["precio"] = out["precio_venta"] if out["precio_venta"] else out["precio_coste"]
-    tariffs = _tariffs(row)
-    if tariffs:
-        out["tarifas"] = tariffs
+    # El de VENTA lo rellena `search_articles` desde F_LTA (no está en F_ART).
+    out["precio_venta"] = None
+    out["precio_venta_source"] = None
+    out["precio"] = out["precio_coste"]
     out["stock"] = _num(out.get("stoart"))
     out["iva_pct"] = _num(out.get("tivart"), DEFAULT_IVA_PCT)
     return out
@@ -228,7 +227,10 @@ def search_articles(
 
     C-4-fix1: se buscaba solo en CODART/EANART/DESART, así que teclear el **SKU
     comercial** no encontraba nada — ese vive en `EQUART`, y la descripción
-    puede estar solo en `DEEART`/`DETART`. Ver `ARTICLE_SEARCH_COLUMNS`."""
+    puede estar solo en `DEEART`/`DETART`. Ver `ARTICLE_SEARCH_COLUMNS`.
+
+    C-4-fix3: el **precio de venta** se completa desde `F_LTA` (tarifa 1) con
+    una única consulta en lote. En F_ART solo está `PCOART`, que es coste."""
     q = (query or "").strip()
     if not q:
         return []
@@ -237,20 +239,26 @@ def search_articles(
         f"UPPER({col}) LIKE UPPER('%{safe}%')" for col in ARTICLE_SEARCH_COLUMNS
     )
     rows = client.load_table(TABLE_ARTICLES, filtro=filtro, ejercicio=ejercicio)
-    if rows:
-        column = detect_price_column(rows[0])
-        if column is None:
-            # Sin columna de venta la UI deja el precio en blanco y el operador
-            # lo teclea. Se avisa una vez por búsqueda para que se vea en los
-            # logs de producción qué columnas hay realmente.
-            logger.warning(
-                "factusol: F_ART sin columna de precio de venta reconocida "
-                "(probadas %s). Columnas reales: %s",
-                ", ".join(ARTICLE_PRICE_CANDIDATES), ", ".join(rows[0].keys()),
-            )
-        else:
-            logger.info("factusol: precio de venta F_ART leído de %s", column)
-    return [_row_to_article(r) for r in rows[:ARTICLE_SEARCH_LIMIT]]
+    articles = [_row_to_article(r) for r in rows[:ARTICLE_SEARCH_LIMIT]]
+
+    # Precio de venta en lote. Si F_LTA falla, se devuelven los artículos sin
+    # precio: mejor un autocomplete usable con el precio a mano que ninguno.
+    try:
+        prices = tariff_prices(
+            client, [a["codart"] for a in articles if a.get("codart")],
+            ejercicio=ejercicio,
+        )
+    except FactusolError:
+        logger.warning("factusol: no se pudieron leer precios de %s",
+                       TABLE_TARIFFS, exc_info=True)
+        prices = {}
+    for article in articles:
+        price = prices.get(article.get("codart") or "")
+        if price:
+            article["precio_venta"] = price
+            article["precio_venta_source"] = f"{TABLE_TARIFFS}_TAR{DEFAULT_TARIFA}"
+            article["precio"] = price
+    return articles
 
 
 # --- lectura de proformas ----------------------------------------------------
@@ -317,54 +325,59 @@ def list_quotes(
     return quotes[:limit]
 
 
-def cached_lines(
-    session: Session, codpre: str, ejercicio: str,
-) -> list[dict[str, Any]]:
-    """Desglose guardado por el CRM al crear la proforma. Lista vacía si la
-    proforma se hizo en el FACTUSOL de escritorio."""
-    from app.erp.models import FactusolQuoteLineCache  # noqa: PLC0415
+def _row_to_quote_line(row: dict[str, Any]) -> dict[str, Any]:
+    """Fila de F_LPS → la forma que ya consumía el frontend desde C-4."""
+    return {
+        "position": _int_or_none(row.get("POSLPS")) or 0,
+        "codart": str(row.get("ARTLPS") or "").strip() or None,
+        "description": str(row.get("DESLPS") or "").strip(),
+        "quantity": _num(row.get("CANLPS")),
+        "unit_price": _num(row.get("PRELPS")),
+        "discount_pct": _num(row.get("DT1LPS")),
+        "line_total": _num(row.get("TOTLPS")),
+        # IVALPS vacío en líneas de texto libre → 21 % por defecto.
+        "iva_pct": _num(row.get("IVALPS")) or DEFAULT_IVA_PCT,
+    }
 
-    rows = session.scalars(
-        select(FactusolQuoteLineCache)
-        .where(
-            FactusolQuoteLineCache.factusol_codpre == str(codpre),
-            FactusolQuoteLineCache.ejercicio == str(ejercicio),
-        )
-        .order_by(FactusolQuoteLineCache.position)
-    ).all()
-    return [
-        {
-            "position": r.position,
-            "codart": r.artlpc or None,
-            "description": r.description,
-            "quantity": float(r.quantity),
-            "unit_price": float(r.unit_price),
-            "discount_pct": float(r.discount_pct),
-            "line_total": float(r.line_total),
-            "iva_pct": float(r.iva_pct),
-        }
-        for r in rows
-    ]
+
+def list_quote_lines(
+    client: FactusolClient, codpre: str, *, ejercicio: str,
+) -> list[dict[str, Any]]:
+    """Líneas REALES de una proforma, leídas de `F_LPS`.
+
+    `F_LPS.CODLPS = F_PRE.CODPRE` (descubierto en C-4-fix3). Sustituye a
+    `factusol_quote_lines_cache`, que era un apaño por haber buscado la tabla de
+    líneas con el nombre equivocado. Funciona con **todas** las proformas,
+    incluidas las creadas en el FACTUSOL de escritorio.
+    """
+    if not str(codpre).strip().isdigit():
+        return []
+    rows = client.load_table(
+        TABLE_QUOTE_LINES,
+        filtro=f"CODLPS={int(codpre)} ORDER BY POSLPS",
+        ejercicio=ejercicio,
+    )
+    return [_row_to_quote_line(r) for r in rows]
 
 
 def get_quote(
     client: FactusolClient, session: Session, codpre: str, *, ejercicio: str,
 ) -> dict[str, Any] | None:
-    """Una proforma con su desglose. None si el CODPRE no existe.
+    """Una proforma con su desglose real de F_LPS. None si el CODPRE no existe.
 
-    `line_source` dice de dónde salen las líneas:
-    - `"cache"`: la creó el CRM y tenemos el desglose real.
-    - `"ref_text"`: se creó en el escritorio; solo hay el texto de `REFPRE`.
+    `session` ya no se usa para leer líneas (la caché local quedó obsoleta en
+    C-4-fix3); se mantiene en la firma porque los llamadores la pasan y para no
+    romper la API interna.
     """
+    _ = session
     rows = client.load_table(
         TABLE_QUOTES, filtro=f"CODPRE={int(codpre)}", ejercicio=ejercicio,
     ) if str(codpre).strip().isdigit() else []
     if not rows:
         return None
     quote = _row_to_quote(rows[0])
-    lines = cached_lines(session, str(quote["codpre"]), ejercicio)
-    quote["lines"] = lines
-    quote["line_source"] = "cache" if lines else "ref_text"
+    quote["lines"] = list_quote_lines(client, str(quote["codpre"]), ejercicio=ejercicio)
+    quote["line_source"] = TABLE_QUOTE_LINES
     return quote
 
 
@@ -469,39 +482,57 @@ def build_quote_payload(
     return payload
 
 
-def _save_lines_cache(
-    session: Session, codpre: str, ejercicio: str, lines: list[dict[str, Any]],
-) -> None:
-    """Guarda el desglose en la caché local (el que F_PRE no puede almacenar).
+def build_quote_line_payload(
+    codpre: str, position: int, line: dict[str, Any],
+) -> dict[str, Any]:
+    """Una línea del CRM → registro `F_LPS` listo para `EscribirRegistro`.
 
-    Borra primero lo que hubiera para ese CODPRE: si un reintento reescribe la
-    misma proforma no queremos líneas duplicadas ni chocar con el UNIQUE."""
-    from app.erp.models import FactusolQuoteLineCache  # noqa: PLC0415
+    Solo columnas verificadas. Las medidas (`ALTLPS`/`ANCLPS`/`FONLPS`) y
+    `MEMLPS` se dejan a FACTUSOL: no inventamos valores."""
+    qty = _num(line.get("quantity"), 1.0)
+    price = _num(line.get("unit_price"))
+    discount = _num(line.get("discount_pct"))
+    return {
+        "TIPLPS": DEFAULT_TIPLPS,
+        "CODLPS": codpre,
+        "POSLPS": position,
+        "ARTLPS": str(line.get("codart") or "")[:64],
+        "DESLPS": str(line.get("description") or "")[:255],
+        "CANLPS": qty,
+        "DT1LPS": discount,
+        "PRELPS": price,
+        "TOTLPS": round(qty * price * (1 - discount / 100), 2),
+        "IVALPS": _num(line.get("iva_pct"), DEFAULT_IVA_PCT),
+    }
 
-    session.execute(
-        delete(FactusolQuoteLineCache).where(
-            FactusolQuoteLineCache.factusol_codpre == str(codpre),
-            FactusolQuoteLineCache.ejercicio == str(ejercicio),
-        )
-    )
-    now = datetime.now(UTC)
+
+def _write_quote_lines(
+    client: FactusolClient, codpre: str, ejercicio: str,
+    lines: list[dict[str, Any]],
+) -> int:
+    """Escribe las líneas en F_LPS. Devuelve cuántas se escribieron.
+
+    Si una línea falla NO se propaga: la cabecera F_PRE ya existe, y hacer
+    fallar el job llevaría al operador a reintentar y crear una proforma
+    **duplicada** en la contabilidad. Se deja constancia en el log y el job
+    devuelve el recuento real para que la UI avise. Misma política que la
+    caché en C-4, ahora sobre la tabla buena.
+    """
+    written = 0
     for i, line in enumerate(lines, start=1):
-        qty = _num(line.get("quantity"), 1.0)
-        price = _num(line.get("unit_price"))
-        discount = _num(line.get("discount_pct"))
-        session.add(FactusolQuoteLineCache(
-            factusol_codpre=str(codpre),
-            ejercicio=str(ejercicio),
-            position=i,
-            artlpc=str(line.get("codart") or "")[:64],
-            description=str(line.get("description") or "")[:255],
-            quantity=qty,
-            unit_price=price,
-            discount_pct=discount,
-            line_total=round(qty * price * (1 - discount / 100), 2),
-            iva_pct=_num(line.get("iva_pct"), DEFAULT_IVA_PCT),
-            created_at=now,
-        ))
+        try:
+            client.write_record(
+                TABLE_QUOTE_LINES, build_quote_line_payload(codpre, i, line),
+                ejercicio=ejercicio,
+            )
+            written += 1
+        except FactusolError:
+            logger.warning(
+                "factusol: proforma %s creada pero falló la línea %d; queda con "
+                "%d de %d líneas", codpre, i, written, len(lines), exc_info=True,
+            )
+            break
+    return written
 
 
 def create_quote(
@@ -510,16 +541,17 @@ def create_quote(
     referencia: str | None = None, fecha: str | None = None,
     fopfac: str | None = None,
 ) -> dict[str, Any]:
-    """Crea la proforma en F_PRE (una sola fila) y cachea su desglose.
+    """Crea la proforma: cabecera en `F_PRE` + una fila por línea en `F_LPS`.
 
-    `referencia` la escribe el operador en modo «rápido» (proforma de una
-    línea de texto); si no la pasa, se compone desde las líneas.
+    `referencia` la escribe el operador cuando quiere fijar el texto de REFPRE;
+    si no la pasa, se compone desde las líneas.
 
-    Orden deliberado: primero FACTUSOL, después la caché local. Si FACTUSOL
-    falla no hay nada que limpiar; si falla el commit local, la proforma existe
-    en la contabilidad y solo perdemos el desglose (degrada a modo simple), que
-    es el fallo menos malo de los dos.
+    Orden deliberado: cabecera primero, líneas después. Si la cabecera falla no
+    hay nada que limpiar; si falla una línea, la proforma queda incompleta pero
+    existe, que es preferible a un duplicado por reintento (ver
+    `_write_quote_lines`).
     """
+    _ = session
     if not customer.get("codcli"):
         raise FactusolError(
             "La proforma necesita un cliente de FACTUSOL (CODCLI). Vincula la "
@@ -535,36 +567,17 @@ def create_quote(
         lines=lines, fecha=fecha, fopfac=fopfac,
     )
     client.write_record(TABLE_QUOTES, payload, ejercicio=ejercicio)
-    cached = _try_cache_lines(session, codpre, ejercicio, lines)
-    logger.info("factusol: proforma creada CODPRE %s (cliente %s, %d líneas)",
-                codpre, customer.get("codcli"), len(lines))
-    return {"codpre": codpre, "ejercicio": ejercicio, "referencia": refpre,
-            "lines": len(lines), "total": payload["TOTPRE"], "cached": cached}
-
-
-def _try_cache_lines(
-    session: Session, codpre: str, ejercicio: str, lines: list[dict[str, Any]],
-) -> bool:
-    """Guarda el desglose sin dejar que un fallo local tumbe la operación.
-
-    Cuando se llama, la proforma YA existe en FACTUSOL. Propagar el error haría
-    que el job se marcase fallido y el operador reintentase — creando una
-    proforma **duplicada** en la contabilidad. Perder el desglose solo degrada
-    esa proforma a modo «simple», que es reparable; el duplicado no.
-    """
-    if not lines:
-        return False
-    try:
-        _save_lines_cache(session, codpre, ejercicio, lines)
-        session.commit()
-        return True
-    except Exception:  # noqa: BLE001 — la proforma ya está escrita en FACTUSOL
-        session.rollback()
-        logger.warning(
-            "factusol: proforma %s creada pero no se pudo cachear su desglose; "
-            "se leerá en modo simple", codpre, exc_info=True,
+    written = _write_quote_lines(client, codpre, ejercicio, lines)
+    logger.info("factusol: proforma creada CODPRE %s (cliente %s, %d/%d líneas)",
+                codpre, customer.get("codcli"), written, len(lines))
+    result = {"codpre": codpre, "ejercicio": ejercicio, "referencia": refpre,
+              "lines": written, "total": payload["TOTPRE"]}
+    if written < len(lines):
+        result["warning"] = (
+            f"La proforma {codpre} se creó con {written} de {len(lines)} líneas. "
+            "Revísala en FACTUSOL antes de enviarla."
         )
-        return False
+    return result
 
 
 def duplicate_quote(
@@ -574,9 +587,11 @@ def duplicate_quote(
     """Copia una proforma existente con CODPRE nuevo y fecha de hoy.
 
     Copia la fila entera de F_PRE (así arrastra cliente, importes y todas las
-    columnas que no mapeamos) y solo sustituye CODPRE y FECPRE. El desglose
-    cacheado, si lo hay, se duplica también.
+    columnas que no mapeamos) y sus líneas de F_LPS. Desde C-4-fix3 funciona con
+    **cualquier** proforma, también las creadas en el FACTUSOL de escritorio:
+    las líneas salen de F_LPS, no de una caché que solo tenía las del CRM.
     """
+    _ = session
     if not str(codpre).strip().isdigit():
         raise FactusolError(f"CODPRE inválido: {codpre!r}")
     rows = client.load_table(
@@ -585,17 +600,18 @@ def duplicate_quote(
     if not rows:
         raise FactusolError(f"La proforma {codpre} no existe en el ejercicio {ejercicio}")
 
+    lines = list_quote_lines(client, str(codpre), ejercicio=ejercicio)
     source = dict(rows[0])
     nuevo = next_codpre(client, ejercicio)
     source["CODPRE"] = nuevo
     source["FECPRE"] = fecha or datetime.now(UTC).date().isoformat()
     client.write_record(TABLE_QUOTES, source, ejercicio=ejercicio)
 
-    lines = cached_lines(session, str(codpre), ejercicio)
-    _try_cache_lines(session, nuevo, ejercicio, lines)
-    logger.info("factusol: proforma %s duplicada → %s", codpre, nuevo)
+    written = _write_quote_lines(client, nuevo, ejercicio, lines)
+    logger.info("factusol: proforma %s duplicada → %s (%d/%d líneas)",
+                codpre, nuevo, written, len(lines))
     return {"codpre": nuevo, "source_codpre": str(codpre), "ejercicio": ejercicio,
-            "lines": len(lines)}
+            "lines": written}
 
 
 def quote_lines_for_order(
@@ -603,16 +619,20 @@ def quote_lines_for_order(
 ) -> dict[str, Any]:
     """Líneas de la proforma listas para volcarlas a un pedido.
 
-    Si el desglose está cacheado se devuelve tal cual. Si no (proforma hecha en
-    el escritorio), se devuelve **una** línea con el texto de `REFPRE` y la base
-    imponible como importe, que el operador ajusta a mano — es lo máximo que se
-    puede reconstruir de una tabla mono-línea.
+    Desde C-4-fix3 salen de `F_LPS`, así que son las reales para cualquier
+    proforma. El fallback de «una línea con el REFPRE y el total» desapareció:
+    ya no hace falta reconstruir nada.
+
+    Si F_LPS no devuelve nada (proforma sin líneas, edge case), se reconstruye
+    una línea con la cabecera para no dejar el pedido vacío.
     """
     quote = get_quote(client, session, codpre, ejercicio=ejercicio)
     if quote is None:
         raise FactusolError(f"La proforma {codpre} no existe en el ejercicio {ejercicio}")
     lines = quote["lines"]
     if not lines:
+        logger.warning("factusol: la proforma %s no tiene líneas en %s",
+                       codpre, TABLE_QUOTE_LINES)
         lines = [{
             "position": 1,
             "codart": None,
@@ -653,6 +673,9 @@ def convert_quote_to_order(
 
     El pedido creado sigue el circuito normal del ERP (preparar → embalar →
     enviar → `emit_invoice`), que es lo que Bart necesita de «convertir».
+
+    C-4-fix3: las líneas ya son las reales de `F_LPS`, con su SKU, cantidad y
+    precio. Antes, sin caché, el pedido salía con una única línea genérica.
     """
     from app.erp.api.orders import _next_manual_number  # noqa: PLC0415
     from app.erp.models import (  # noqa: PLC0415
@@ -695,7 +718,9 @@ def convert_quote_to_order(
         total += line_total
         session.add(OrderLine(
             order_id=order.id, position=i,
-            product_sku="", product_codart=line.get("codart"),
+            # C-4-fix3: con las líneas reales de F_LPS ya hay SKU que copiar.
+            product_sku=str(line.get("codart") or "")[:128],
+            product_codart=line.get("codart"),
             description=line["description"],
             quantity=_num(line["quantity"], 1.0),
             unit_price=_num(line["unit_price"]),
