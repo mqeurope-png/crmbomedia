@@ -88,7 +88,9 @@ ARTICLE_SEARCH_LIMIT = 200
 #: (bandas 2/3/4 de IVA y ~90 columnas más) no las necesita la UI.
 QUOTE_FIELDS = (
     "CODPRE", "TIPPRE", "REFPRE", "FECPRE", "CLIPRE", "CNOPRE", "CDOPRE",
-    "CPOPRE", "CCPPRE", "CPRPRE", "CNIPRE", "TELPRE", "EMAPRE",
+    # El email es CEMPRE. `EMAPRE` (F_CLI/F_ART) no existe en F_PRE: leerlo
+    # devolvía None en silencio y escribirlo reventaba el registro entero.
+    "CPOPRE", "CCPPRE", "CPRPRE", "CNIPRE", "TELPRE", "CEMPRE",
     "NET1PRE", "PIVA1PRE", "IIVA1PRE", "TOTPRE", "FOPPRE", "ALMPRE",
 )
 
@@ -476,7 +478,12 @@ def build_quote_payload(
     if customer.get("telefono"):
         payload["TELPRE"] = str(customer["telefono"])[:40]
     if customer.get("email"):
-        payload["EMAPRE"] = str(customer["email"])[:255]
+        # ⚠️ El email de F_PRE es CEMPRE, **no** EMAPRE. `EMAPRE` existe en
+        # F_CLI y F_ART, pero no en F_PRE: escribirlo hace fallar TODO el
+        # EscribirRegistro con BDEscribirRegistroError, y con él la creación de
+        # cualquier proforma con email (C-4-fix4). Verificado en la proforma
+        # real 574: CEMPRE='direccio@fidelroca.cat'.
+        payload["CEMPRE"] = str(customer["email"])[:255]
     if fopfac:
         payload["FOPPRE"] = str(fopfac)
     return payload
@@ -520,16 +527,21 @@ def _write_quote_lines(
     """
     written = 0
     for i, line in enumerate(lines, start=1):
+        payload = build_quote_line_payload(codpre, i, line)
         try:
-            client.write_record(
-                TABLE_QUOTE_LINES, build_quote_line_payload(codpre, i, line),
-                ejercicio=ejercicio,
-            )
+            client.write_record(TABLE_QUOTE_LINES, payload, ejercicio=ejercicio)
             written += 1
-        except FactusolError:
-            logger.warning(
-                "factusol: proforma %s creada pero falló la línea %d; queda con "
-                "%d de %d líneas", codpre, i, written, len(lines), exc_info=True,
+        except FactusolError as exc:
+            # ERROR, no warning: la proforma queda coja en la contabilidad y
+            # alguien tiene que verlo. Se incluye el mensaje de FACTUSOL y las
+            # columnas enviadas — con un `BDEscribirRegistroError` la causa
+            # suele ser un nombre de columna mal puesto, y sin esto no hay por
+            # dónde empezar (así se perdió el diagnóstico de la proforma 4349).
+            logger.error(
+                "factusol: proforma %s creada pero falló la línea POSLPS=%d "
+                "(%d de %d escritas). Error: %s. Columnas enviadas: %s",
+                codpre, i, written, len(lines), exc, ", ".join(payload),
+                exc_info=True,
             )
             break
     return written
@@ -566,7 +578,19 @@ def create_quote(
         codpre, ejercicio=ejercicio, customer=customer, refpre=refpre,
         lines=lines, fecha=fecha, fopfac=fopfac,
     )
-    client.write_record(TABLE_QUOTES, payload, ejercicio=ejercicio)
+    try:
+        client.write_record(TABLE_QUOTES, payload, ejercicio=ejercicio)
+    except FactusolError as exc:
+        # El error se re-lanza (el job DEBE fallar: no hay proforma), pero antes
+        # se deja en el log qué columnas se enviaron. Un
+        # `BDEscribirRegistroError` aquí suele ser un nombre de columna que no
+        # existe, y sin esta traza hay que bisecar el payload a mano contra
+        # producción — que es lo que costó encontrar el EMAPRE de C-4-fix4.
+        logger.error(
+            "factusol: falló la cabecera de la proforma %s. Error: %s. "
+            "Columnas enviadas: %s", codpre, exc, ", ".join(payload),
+        )
+        raise
     written = _write_quote_lines(client, codpre, ejercicio, lines)
     logger.info("factusol: proforma creada CODPRE %s (cliente %s, %d/%d líneas)",
                 codpre, customer.get("codcli"), written, len(lines))

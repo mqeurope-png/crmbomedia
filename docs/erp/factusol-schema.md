@@ -236,7 +236,8 @@ configurar», no artículo gratis: el adaptador lo trata como ausente.
 | `FECPRE` | Fecha del presupuesto. |
 | `CLIPRE` | FK a `F_CLI.CODCLI`. |
 | `CNOPRE` / `CDOPRE` / `CPOPRE` / `CCPPRE` / `CPRPRE` / `CNIPRE` | Nombre, domicilio, población, CP, provincia y NIF copiados del cliente. |
-| `TELPRE` / `EMAPRE` / `CEMPRE` | Teléfono y email. |
+| `TELPRE` | Teléfono. |
+| `CEMPRE` | **Email.** ⚠️ NO es `EMAPRE` — ver el aviso de abajo. |
 | `CPAPRE` | País ISO numérico (`'724'` = España). |
 | `ALMPRE` | Almacén (`'GEN'`). |
 | `TIVPRE` | Tipo de IVA del documento. |
@@ -250,6 +251,18 @@ configurar», no artículo gratis: el adaptador lo trata como ausente.
 Existen además las bandas 2/3/4 (`NET2PRE`, `PIVA2PRE`, …) y ~92 columnas más.
 El CRM **solo escribe la banda 1**: las proformas de Bomedia son de un único
 tipo de IVA y repartir en bandas sin necesidad añadiría riesgo sin ganancia.
+
+> #### ⚠️ El email de F_PRE es `CEMPRE`, no `EMAPRE`
+>
+> `EMAPRE` existe en **F_CLI** y **F_ART**, pero **no en F_PRE**. Como el sufijo
+> de tabla coincide, es fácil darlo por bueno — y enviarlo hace fallar el
+> `EscribirRegistro` **entero** con `BDEscribirRegistroError`, no solo esa
+> columna.
+>
+> En producción bloqueó la creación de **cualquier** proforma con email hasta
+> C-4-fix4. Bisecado en vivo el 2026-08-05: payload mínimo ✅, payload completo
+> ❌, sin `TELPRE`+`EMAPRE` ✅, solo `TELPRE` ✅, solo `EMAPRE` ❌, solo `CEMPRE` ✅.
+> Confirmado además en la proforma real 574: `CEMPRE='direccio@fidelroca.cat'`.
 
 ### F_PCL / F_LPC — pedidos de cliente (503 cabeceras, 1527 líneas)
 

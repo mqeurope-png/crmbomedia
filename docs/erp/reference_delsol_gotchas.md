@@ -152,7 +152,39 @@ docker compose -f /opt/crmbo/docker-compose.prod.yml exec api \
     python -m scripts.factusol_discover_article_prices
 ```
 
-## 13. El cliente lo crea la app externa Woo→FACTUSOL
+## 13. El mismo concepto cambia de nombre entre tablas
+
+El email es `EMAPRE` en **F_CLI** y **F_ART**, pero `CEMPRE` en **F_PRE**. El
+sufijo de tabla coincide, así que `EMAPRE` parece correcto y no lo es.
+
+Y aquí la trampa nº 1 se invierte de la peor manera: **una columna inexistente
+en `EscribirRegistro` no falla «esa columna», falla el registro ENTERO** con
+`BDEscribirRegistroError`. Un solo nombre mal puesto bloquea la escritura
+completa.
+
+En producción impidió crear **cualquier** proforma con email hasta C-4-fix4.
+Bisecarlo costó siete pruebas en vivo porque el error no dice qué columna
+sobra:
+
+```
+payload mínimo                 ✅
+payload completo               ❌
+sin dirección                  ❌
+sin bandas IVA + CPAPRE        ❌
+sin TELPRE + EMAPRE            ✅   ← aquí estaba
+solo TELPRE                    ✅
+solo EMAPRE                    ❌   ← el culpable
+solo CEMPRE                    ✅
+```
+
+**Regla:** no deduzcas el nombre de una columna del prefijo de otra tabla,
+aunque el patrón encaje. Confírmalo leyendo una fila real de **esa** tabla.
+
+Para que la próxima vez no haya que bisecar: `create_quote` y
+`_write_quote_lines` registran en el log las columnas enviadas cuando
+`EscribirRegistro` falla.
+
+## 14. El cliente lo crea la app externa Woo→FACTUSOL
 
 En los pedidos de WooCommerce, la app externa crea el pedido **y el cliente**.
 Si el CRM intenta crearlo también, choca: `BDEscribirRegistroError` (C-2-fix1).
