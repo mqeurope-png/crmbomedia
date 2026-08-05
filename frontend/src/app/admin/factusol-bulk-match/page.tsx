@@ -61,12 +61,13 @@ function pickDefaultCodcli(candidates: BulkMatchCandidate[]): string {
     Number.parseInt(c, 10) > Number.parseInt(best, 10) ? c : best);
 }
 
-/** Una fila del modo por email es aplicable salvo que su empresa ya apunte a
- *  **otro** cliente de FACTUSOL: el backend la saltaría igualmente. Vive aquí
- *  arriba porque el checkbox master de la cabecera necesita el mismo criterio
- *  que la fila para saber a quién puede marcar. */
-function isEmailRowApplicable(row: BulkMatchByEmailRow, codcli: string): boolean {
-  return !(row.company_factusol_id && row.company_factusol_id !== codcli);
+/** ¿Aplicar esta fila mueve el contacto de empresa?
+ *
+ *  Su empresa apunta a **otro** cliente de FACTUSOL: el contacto está mal
+ *  agrupado. Hasta C-5-fix4 esto bloqueaba la fila; desde C-5-fix5 se reasigna
+ *  a la empresa que le corresponde y la original no se toca. */
+function isReassignment(row: BulkMatchByEmailRow, codcli: string): boolean {
+  return Boolean(row.company_factusol_id && row.company_factusol_id !== codcli);
 }
 
 /** Checkbox de tres estados. `indeterminate` es una propiedad del DOM, no un
@@ -163,16 +164,16 @@ export default function FactusolBulkMatchPage() {
   const selectedCount = Object.values(selections).filter((s) => s.apply).length;
 
   /** Filas **visibles** (respeta «Solo con diferencias») que se pueden marcar.
-   *  Es el universo sobre el que actúa el checkbox master. */
-  const applicableIds = useMemo(() => {
-    if (mode === "by_contact_email") {
-      return emailRows
-        .filter((m) => isEmailRowApplicable(
-          m, selections[m.contact_id]?.codcli ?? ""))
-        .map((m) => m.contact_id);
-    }
-    return companyRows.map((m) => m.crm_company_id);
-  }, [mode, emailRows, companyRows, selections]);
+   *  Es el universo sobre el que actúa el checkbox master.
+   *
+   *  Desde C-5-fix5 son todas: el único caso que estaba bloqueado —empresa
+   *  vinculada a otro CODCLI— ahora se reasigna en vez de saltarse. */
+  const applicableIds = useMemo(
+    () => (mode === "by_contact_email"
+      ? emailRows.map((m) => m.contact_id)
+      : companyRows.map((m) => m.crm_company_id)),
+    [mode, emailRows, companyRows],
+  );
 
   const applicableSelected =
     applicableIds.filter((id) => selections[id]?.apply).length;
@@ -220,6 +221,13 @@ export default function FactusolBulkMatchPage() {
           `${r.created_new_company} empresa(s) creada(s)`,
           ...(r.linked_existing_company
             ? [`${r.linked_existing_company} asignada(s) a empresa existente`]
+            : []),
+          // El desglose entre «a existente» y «a nueva» solo se enseña cuando
+          // hay reasignaciones: si no, sería ruido en todos los lotes.
+          ...(r.reassigned
+            ? [`${r.reassigned} reasignada(s) a empresa correcta `
+               + `(${r.reassigned_to_existing_company} a empresa existente, `
+               + `${r.reassigned_to_new_company} a empresa nueva)`]
             : []),
           ...(r.skipped_already_linked_other
             ? [`${r.skipped_already_linked_other} omitida(s)`]
@@ -500,13 +508,15 @@ function ByEmailRowView({
   if (!selection) return null;
   const chosen = row.candidates.find(
     (c) => c.factusol_codcli === selection.codcli) ?? row.candidates[0];
-  // C-5-fix2: sin empresa ya NO bloquea — se crea una con los datos de F_CLI.
-  // Lo único que sigue bloqueado es pisar un vínculo ajeno, que el backend
-  // saltaría igualmente; deshabilitarlo evita creer que se ha aplicado.
+  // Ninguna fila se bloquea ya. C-5-fix2 quitó el bloqueo de «sin empresa»
+  // (se crea una) y C-5-fix5 el de «vinculada a otro CODCLI» (se reasigna).
   const noCompany = !row.company_id;
-  const linkedElsewhere = !isEmailRowApplicable(row, selection.codcli);
-  const reason = linkedElsewhere
-    ? `Su empresa ya está vinculada al cliente ${row.company_factusol_id}.`
+  const reassign = isReassignment(row, selection.codcli);
+  const reason = reassign
+    ? `Este contacto está actualmente en la empresa «${row.company_name}», `
+      + `pero su email apunta al cliente FACTUSOL ${selection.codcli}. `
+      + "Al aplicar, el contacto se moverá a la empresa correcta (existente o "
+      + `nueva). La empresa «${row.company_name}» original no se toca.`
     : noCompany
       ? "Se creará una empresa nueva con los datos de FACTUSOL."
       : "";
@@ -515,8 +525,7 @@ function ByEmailRowView({
     <>
       <tr>
         <td>
-          <input type="checkbox" checked={selection.apply}
-                 disabled={linkedElsewhere} title={reason}
+          <input type="checkbox" checked={selection.apply} title={reason}
                  aria-label={`Aplicar a ${row.contact_name}`}
                  onChange={(e) => onUpdate({ apply: e.target.checked })} />
         </td>
@@ -526,11 +535,11 @@ function ByEmailRowView({
           {row.company_name ? (
             <>
               {row.company_name}
-              {linkedElsewhere ? (
+              {reassign ? (
                 <>
                   <br />
-                  <span className="badge warn">
-                    Ya vinculada a {row.company_factusol_id}
+                  <span className="badge active" title={reason}>
+                    Reasignar → {selection.codcli}
                   </span>
                 </>
               ) : null}
@@ -576,7 +585,7 @@ function ByEmailRowView({
       {expanded && chosen ? (
         <tr>
           <td colSpan={7}>
-            {linkedElsewhere ? <p className="form-error">{reason}</p> : null}
+            {reassign ? <p className="form-info">{reason}</p> : null}
             {noCompany ? (
               <p className="form-info">
                 El contacto no tiene empresa: se creará una con todos los datos

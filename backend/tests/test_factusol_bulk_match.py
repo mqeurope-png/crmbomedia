@@ -23,6 +23,7 @@ from app.integrations.factusol.bulk_match import (
     BULK_SYNC_ACTION,
     BULK_SYNC_BY_EMAIL_ACTION,
     BULK_SYNC_BY_EMAIL_CREATE_ACTION,
+    BULK_SYNC_BY_EMAIL_REASSIGN_ACTION,
     BULK_SYNC_BY_EMAIL_SOURCE,
     BULK_SYNC_SOURCE,
     apply_by_contact_email,
@@ -458,19 +459,16 @@ def test_by_email_apply_creation_logs_its_own_audit_action(session):
     assert meta["previous_values"] == {}
 
 
-def test_by_email_apply_skips_when_company_already_linked_to_other_codcli(session):
-    """Pisar un vínculo que alguien estableció a propósito sería peor que no
-    hacer nada."""
+def test_by_email_apply_never_overwrites_the_link_of_the_original_company(session):
+    """El vínculo de la empresa original es intocable: C-5-fix5 mueve el
+    contacto, pero jamás repunta la empresa a otro CODCLI."""
     company = _company(session, factusol_company_id="9999")
     contact = _contact(session, email="juan@porta.com", company=company)
     fake = _FakeFactusol(customers=[_cli(1, EMACLI="juan@porta.com")])
-    result = apply_by_contact_email(session, fake, ejercicio="2026", operations=[{
+    apply_by_contact_email(session, fake, ejercicio="2026", operations=[{
         "contact_id": contact.id, "factusol_codcli": "1",
         "fields_to_sync": ["name"],
     }])
-    assert result["applied"] == 0
-    assert result["skipped_already_linked_other"] == 1
-    assert result["results"][0]["result"] == "skipped_already_linked_other"
     session.refresh(company)
     assert company.factusol_company_id == "9999"
 
@@ -545,6 +543,184 @@ def test_by_email_dry_run_processes_all_contacts_not_just_a_batch(session):
     assert result["truncated"] is False
     # Los totales cuadran: con match + sin match = total.
     assert len(result["matches"]) + result["no_match_count"] == 700
+
+
+# --- reasignación de contactos mal agrupados (C-5-fix5) ---------------------
+#
+# Caso Vilatzara: en el primer apply de producción, 128 contactos se omitieron
+# y el 90% eran el mismo patrón — decenas de contactos colgando de un único
+# «Institut Vilatzara» (codcli 3960) cuando sus emails @xtec.cat son de
+# escuelas distintas, cada una con su propio F_CLI. No era un vínculo en
+# conflicto, era una agrupación mal hecha en el CRM.
+
+
+def test_by_email_apply_reassigns_contact_to_existing_company_with_correct_codcli(
+    session,
+):
+    vilatzara = _company(session, name="Institut Vilatzara",
+                         factusol_company_id="3960")
+    ardenya = _company(session, name="Escola Ardenya",
+                       factusol_company_id="4101")
+    contact = _contact(session, email="ardenya@xtec.cat", company=vilatzara,
+                       first_name="Marta")
+    fake = _FakeFactusol(customers=[_cli(4101, EMACLI="ardenya@xtec.cat",
+                                         NOFCLI="ESCOLA ARDENYA")])
+    result = apply_by_contact_email(session, fake, ejercicio="2026", operations=[{
+        "contact_id": contact.id, "factusol_codcli": "4101",
+        "fields_to_sync": ["name"],
+    }])
+
+    assert result["applied"] == 1
+    assert result["reassigned_to_existing_company"] == 1
+    assert result["reassigned"] == 1
+    assert result["skipped_already_linked_other"] == 0
+    assert result["results"][0]["result"] == "reassigned_to_existing_company"
+    session.refresh(contact)
+    assert contact.company_id == ardenya.id
+    # Y no se ha creado ninguna empresa de más: ya existía la correcta.
+    assert len(list(session.scalars(select(Company)))) == 2
+
+
+def test_by_email_apply_reassigns_contact_and_creates_new_company_if_none_exists_with_codcli(  # noqa: E501
+    session,
+):
+    vilatzara = _company(session, name="Institut Vilatzara",
+                         factusol_company_id="3960")
+    contact = _contact(session, email="a8034567@xtec.cat", company=vilatzara,
+                       first_name="Pere")
+    fake = _FakeFactusol(customers=[_cli(
+        4102, EMACLI="a8034567@xtec.cat", NOFCLI="ESCOLA ALEXANDRE GALÍ",
+        NIFCLI="Q0801234A", DOMCLI="C/ Escola 3", POBCLI="Mataró",
+        CPOCLI="08302", PROCLI="Barcelona",
+    )])
+    result = apply_by_contact_email(session, fake, ejercicio="2026", operations=[{
+        "contact_id": contact.id, "factusol_codcli": "4102",
+        "fields_to_sync": ["name"],
+    }])
+
+    assert result["reassigned_to_new_company"] == 1
+    assert result["reassigned_to_existing_company"] == 0
+    assert result["created_new_company"] == 0
+    session.refresh(contact)
+    assert contact.company_id != vilatzara.id
+    nueva = session.get(Company, contact.company_id)
+    # La empresa nace con TODOS los datos de F_CLI, no solo los marcados.
+    assert nueva.name == "ESCOLA ALEXANDRE GALÍ"
+    assert nueva.tax_id == "Q0801234A"
+    assert nueva.city == "Mataró"
+    assert nueva.postal_code == "08302"
+    assert nueva.factusol_company_id == "4102"
+    assert nueva.factusol_sync_source == BULK_SYNC_BY_EMAIL_SOURCE
+
+
+def test_by_email_apply_original_company_untouched_after_reassign(session):
+    """Vilatzara puede tener contactos legítimos: pierde el mal asignado y nada
+    más. Su vínculo, su nombre y sus otros contactos siguen igual."""
+    vilatzara = _company(session, name="Institut Vilatzara", city="VILASSAR",
+                         factusol_company_id="3960")
+    legitimo = _contact(session, email="secretaria@vilatzara.cat",
+                        company=vilatzara, first_name="Rosa")
+    mal_asignado = _contact(session, email="ardenya@xtec.cat",
+                            company=vilatzara, first_name="Marta")
+    fake = _FakeFactusol(customers=[_cli(4101, EMACLI="ardenya@xtec.cat",
+                                         NOFCLI="ESCOLA ARDENYA",
+                                         POBCLI="SANTA CRISTINA")])
+    apply_by_contact_email(session, fake, ejercicio="2026", operations=[{
+        "contact_id": mal_asignado.id, "factusol_codcli": "4101",
+        "fields_to_sync": ["name", "city"],
+    }])
+
+    session.refresh(vilatzara)
+    assert vilatzara.factusol_company_id == "3960"
+    assert vilatzara.name == "Institut Vilatzara"
+    # Ni siquiera se le han traído los datos de la escuela: no es su cliente.
+    assert vilatzara.city == "VILASSAR"
+    session.refresh(legitimo)
+    assert legitimo.company_id == vilatzara.id
+    session.refresh(mal_asignado)
+    assert mal_asignado.company_id != vilatzara.id
+
+
+def test_by_email_apply_audit_log_reassign_includes_old_and_new_company_ids(session):
+    """Se audita el CONTACTO, no una empresa: lo que cambia es su company_id, y
+    revertirlo es devolverlo a `old_company_id`."""
+    vilatzara = _company(session, name="Institut Vilatzara",
+                         factusol_company_id="3960")
+    ardenya = _company(session, name="Escola Ardenya",
+                       factusol_company_id="4101")
+    contact = _contact(session, email="ardenya@xtec.cat", company=vilatzara,
+                       first_name="Marta")
+    fake = _FakeFactusol(customers=[_cli(4101, EMACLI="ardenya@xtec.cat")])
+    apply_by_contact_email(session, fake, ejercicio="2026", operations=[{
+        "contact_id": contact.id, "factusol_codcli": "4101",
+        "fields_to_sync": ["name"],
+    }])
+
+    entry = session.scalars(
+        select(AuditLog).where(
+            AuditLog.action == BULK_SYNC_BY_EMAIL_REASSIGN_ACTION)
+    ).one()
+    assert entry.target_type == "contact"
+    assert entry.target_id == contact.id
+    meta = json.loads(entry.metadata_json)
+    assert meta["contact_id"] == contact.id
+    assert meta["contact_email"] == "ardenya@xtec.cat"
+    assert meta["old_company_id"] == vilatzara.id
+    assert meta["old_company_factusol_id"] == "3960"
+    assert meta["new_company_id"] == ardenya.id
+    assert meta["new_company_factusol_id"] == "4101"
+    assert meta["reassign_type"] == "existing"
+
+
+def test_by_email_apply_audit_log_reassign_marks_a_created_company(session):
+    vilatzara = _company(session, name="Institut Vilatzara",
+                         factusol_company_id="3960")
+    contact = _contact(session, email="perams@xtec.cat", company=vilatzara)
+    fake = _FakeFactusol(customers=[_cli(4103, EMACLI="perams@xtec.cat",
+                                         NOFCLI="ESCOLA JOSEP M. PERAMÀS")])
+    apply_by_contact_email(session, fake, ejercicio="2026", operations=[{
+        "contact_id": contact.id, "factusol_codcli": "4103",
+        "fields_to_sync": ["name"],
+    }])
+
+    entry = session.scalars(
+        select(AuditLog).where(
+            AuditLog.action == BULK_SYNC_BY_EMAIL_REASSIGN_ACTION)
+    ).one()
+    meta = json.loads(entry.metadata_json)
+    assert meta["reassign_type"] == "new_created"
+    session.refresh(contact)
+    assert meta["new_company_id"] == contact.company_id
+
+
+def test_by_email_apply_reassign_does_not_duplicate_companies_in_a_batch(session):
+    """Varios contactos de la MISMA escuela: el primero crea la empresa, los
+    demás la encuentran. Dos empresas apuntando al mismo cliente de FACTUSOL es
+    la duplicidad que costó C-3-fix3."""
+    vilatzara = _company(session, name="Institut Vilatzara",
+                         factusol_company_id="3960")
+    contactos = [
+        _contact(session, email="ardenya@xtec.cat", company=vilatzara,
+                 first_name="Marta"),
+        _contact(session, email="ardenya.direccio@xtec.cat", company=vilatzara,
+                 first_name="Jordi"),
+    ]
+    fake = _FakeFactusol(customers=[
+        _cli(4101, EMACLI="ardenya@xtec.cat", NOFCLI="ESCOLA ARDENYA"),
+        _cli(4101, EMACLI="ardenya.direccio@xtec.cat", NOFCLI="ESCOLA ARDENYA"),
+    ])
+    result = apply_by_contact_email(session, fake, ejercicio="2026", operations=[
+        {"contact_id": c.id, "factusol_codcli": "4101",
+         "fields_to_sync": ["name"]} for c in contactos
+    ])
+
+    assert result["reassigned_to_new_company"] == 1
+    assert result["reassigned_to_existing_company"] == 1
+    for contact in contactos:
+        session.refresh(contact)
+    assert contactos[0].company_id == contactos[1].company_id
+    # Vilatzara + la escuela creada. Ni una más.
+    assert len(list(session.scalars(select(Company)))) == 2
 
 
 def test_by_email_dry_run_flags_truncation_instead_of_silently_cutting(session):

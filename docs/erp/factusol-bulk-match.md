@@ -42,14 +42,16 @@ es fiable.
 
 **Qué actualiza:** la empresa a la que pertenece el contacto que casó.
 
-#### Los cuatro desenlaces del apply
+#### Los desenlaces del apply
 
 | Resultado | Cuándo | Qué hace |
 |---|---|---|
 | `refreshed` | El contacto tiene empresa | Le trae los datos limpios y la vincula al CODCLI |
 | `created_new_company` | El contacto **no** tiene empresa | **Crea** una con todos los datos de F_CLI, la vincula y se la asigna al contacto |
 | `linked_existing_company` | No tiene empresa, pero ya hay una vinculada a ese CODCLI | Le asigna **esa**, sin crear otra |
-| `skipped_already_linked_other` | Su empresa ya está vinculada a **otro** CODCLI | Nada. Se salta |
+| `reassigned_to_existing_company` | Su empresa va a **otro** CODCLI y ya existe una con el del match | **Mueve el contacto** a esa. La original no se toca |
+| `reassigned_to_new_company` | Su empresa va a **otro** CODCLI y no existe ninguna con el del match | **Crea** la correcta y mueve el contacto. La original no se toca |
+| `skipped_already_linked_other` | — | Desenlace histórico de C-5-fix1. Hoy ese caso se reasigna |
 
 Vinculada al **mismo** CODCLI **sí** se aplica: es un refresco de datos.
 
@@ -58,13 +60,43 @@ Vinculada al **mismo** CODCLI **sí** se aplica: es un refresco de datos.
 > apuntando al mismo cliente de FACTUSOL** — exactamente la duplicidad que
 > costó arreglar en C-3-fix3. Se reutiliza la que ya está.
 
-> **Por qué `skipped_already_linked_other` NO se toca.** Pisar un vínculo que
-> alguien estableció a propósito sería peor que no hacer nada. Esa fila sale
-> con la casilla «Aplicar» **deshabilitada** y el motivo en el tooltip: el
-> backend la saltaría igualmente, pero así no parece que se haya aplicado.
-
 Una empresa **creada** nace con **todos** los campos de F_CLI, no solo los
 marcados: no hay nada previo que preservar.
+
+#### Reasignación de contactos mal agrupados
+
+**El caso Vilatzara.** En el primer apply real de este modo salieron 509
+refrescos, 424 empresas creadas y **128 omisiones**. El 90% de esas omisiones
+eran el mismo patrón: decenas de contactos colgaban de una única empresa CRM
+«Institut Vilatzara» (vinculada al codcli 3960), pero sus emails `@xtec.cat`
+casaban con **escuelas distintas** del Departament d'Educació — Escola Ardenya,
+Escola Alexandre Galí, Escola Josep Manuel Peramàs…—, cada una con su propio
+`F_CLI`.
+
+No era un vínculo en conflicto: era una **agrupación mal hecha en el CRM**,
+arrastrada de un import antiguo. C-5-fix1 los saltaba por prudencia, y el
+resultado era que nadie los arreglaba.
+
+Desde C-5-fix5 se reasignan:
+
+1. Si ya existe otra empresa CRM vinculada al CODCLI del match → el contacto se
+   **mueve** a esa.
+2. Si no existe → se **crea** con los datos de F_CLI y el contacto se mueve a
+   ella.
+
+**La empresa original no se toca nunca**: conserva su vínculo, sus datos y sus
+demás contactos, que pueden ser perfectamente legítimos. Lo único que cambia es
+`contacts.company_id` del contacto mal asignado.
+
+> **Qué NO hace.** No borra la empresa original aunque se quede sin contactos
+> (Vilatzara sigue ahí, con menos gente): decidir si una empresa sobra es del
+> operador, no de un lote masivo. Y no mueve contactos sin match por email —
+> solo los que casan exacto.
+
+En la tabla, estas filas salen con un chip azul **«Reasignar → NNNN»** y la
+casilla «Aplicar» **habilitada**. El tooltip dice de dónde sale y a dónde va.
+Hasta C-5-fix4 era un chip ámbar «Ya vinculada a NNNN» con la casilla
+deshabilitada.
 
 ---
 
@@ -212,6 +244,31 @@ ORDER BY created_at DESC;
 Cada modo usa su propia `action`, para poder revertir un lote sin arrastrar el
 otro. Lo mismo con `companies.factusol_sync_source`: `bulk_match` vs.
 `bulk_by_email`.
+
+> **La reasignación se audita sobre el CONTACTO.** Es la única de las cuatro
+> acciones cuyo `target_type` es `contact`: lo que cambia es
+> `contacts.company_id`, no una empresa. Por eso se busca por `contact_id`:
+>
+> ```sql
+> SELECT target_id, created_at, metadata_json
+> FROM audit_logs
+> WHERE action = 'erp.factusol_bulk_sync_by_email_reassign'
+>   AND target_id = '<contact_id>'
+> ORDER BY created_at DESC;
+> ```
+>
+> `metadata_json` trae `{contact_id, contact_email, old_company_id,
+> old_company_factusol_id, new_company_id, new_company_factusol_id,
+> reassign_type}`, donde `reassign_type` es `existing` o `new_created`.
+>
+> Se revierte devolviendo el contacto a su empresa anterior:
+>
+> ```sql
+> UPDATE contacts SET company_id = '<old_company_id>' WHERE id = '<contact_id>';
+> ```
+>
+> Si `reassign_type` era `new_created`, la empresa que se creó queda huérfana:
+> bórrala aparte, después de comprobar que ningún otro contacto la usa.
 
 > **Una empresa CREADA se deshace distinto.** Su entrada lleva
 > `..._create_company` y `previous_values` vacío — no hay valores anteriores
