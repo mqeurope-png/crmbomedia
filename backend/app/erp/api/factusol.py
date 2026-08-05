@@ -161,7 +161,9 @@ def customer_addresses_endpoint(
 
 class BulkMatchDryRunPayload(BaseModel):
     filter: str = Field(default="unlinked_only", pattern="^(unlinked_only|all)$")
-    batch_size: int = Field(default=200, ge=1, le=1000)
+    #: `None` = sin tope (el modo por email procesa TODOS los contactos, C-5-fix2).
+    #: El modo por empresa cae a `DEFAULT_BATCH_SIZE` porque sí pagina en SQL.
+    batch_size: int | None = Field(default=None, ge=1, le=100_000)
 
 
 @router.post("/bulk-match/dry-run")
@@ -176,7 +178,10 @@ def bulk_match_dry_run(
     entero de una vez y cruza en Python — con miles de empresas, preguntar por
     cada una serían miles de peticiones contra un token de 3 minutos."""
     _ = current_user
-    from app.integrations.factusol.bulk_match import dry_run  # noqa: PLC0415
+    from app.integrations.factusol.bulk_match import (  # noqa: PLC0415
+        DEFAULT_BATCH_SIZE,
+        dry_run,
+    )
     from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
 
     payload = payload or BulkMatchDryRunPayload()
@@ -185,7 +190,7 @@ def bulk_match_dry_run(
         return dry_run(
             session, client, ejercicio=ejercicio,
             unlinked_only=payload.filter == "unlinked_only",
-            batch_size=payload.batch_size,
+            batch_size=payload.batch_size or DEFAULT_BATCH_SIZE,
         )
     except FactusolError as exc:
         raise _factusol_gateway_error(exc, "factusol_bulk_match_failed") from exc
@@ -242,7 +247,8 @@ def bulk_match_by_email_dry_run(
     empresas del CRM vienen de imports sin NIF, y el nombre difuso produce
     falsos positivos («4d Factory» ↔ «FACTORY»). El email o coincide o no.
 
-    Lo que se actualizaría es la **empresa del contacto**, no el contacto."""
+    Procesa **todos** los contactos con email: F_CLI se lee una sola vez y el
+    resto es comparar strings, así que el coste apenas crece con el volumen."""
     _ = current_user
     from app.integrations.factusol.bulk_match import (  # noqa: PLC0415
         dry_run_by_contact_email,

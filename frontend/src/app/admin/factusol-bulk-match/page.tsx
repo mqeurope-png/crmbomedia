@@ -68,7 +68,7 @@ export default function FactusolBulkMatchPage() {
     setRunning(true);
     try {
       if (mode === "by_contact_email") {
-        const result = await bulkMatchByEmailDryRun({ batch_size: 200 });
+        const result = await bulkMatchByEmailDryRun();
         setEmailData(result);
         setData(null);
         setSelections(Object.fromEntries(result.matches.map((m) => [
@@ -239,9 +239,19 @@ export default function FactusolBulkMatchPage() {
           {emailData ? (
             <p className="muted small">
               {emailData.total_contacts_with_email} contacto(s) con email ·{" "}
-              <strong>{emailData.matches.length}</strong> con match ·{" "}
-              {emailData.no_match_count} sin match ·{" "}
-              {emailData.matches_without_company} sin empresa CRM.
+              <strong>{emailData.matches.length}</strong> con match{" "}
+              {/* «sin empresa» es un SUBCONJUNTO de los con match, no una
+                  tercera categoría: se anida para que no parezca que suman. */}
+              (de los cuales {emailData.matches_without_company} sin empresa
+              CRM) · {emailData.no_match_count} sin match.
+              {emailData.truncated ? (
+                <>
+                  {" "}
+                  <strong className="form-error">
+                    Resultado truncado: hay más contactos sin evaluar.
+                  </strong>
+                </>
+              ) : null}
             </p>
           ) : data ? (
             <p className="muted small">

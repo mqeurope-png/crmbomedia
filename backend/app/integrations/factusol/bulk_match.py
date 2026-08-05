@@ -51,10 +51,21 @@ SYNCABLE_FIELDS: tuple[tuple[str, str], ...] = (
 #: «SL» o un «TC» casaría con media base.
 MIN_NAME_MATCH_LENGTH = 6
 
-#: Tope de empresas por dry-run. Sin él, una base grande devolvería una
-#: respuesta enorme y la tabla del frontend sería inmanejable.
+#: Tope de filas por dry-run. Es una **red de seguridad**, no una página: por
+#: defecto se procesa TODO.
+#:
+#: C-5-fix2: con el tope en 200 el dry-run por email cortaba el bucle a los 200
+#: matches, así que de 20 282 contactos solo se miraban ~4 000 y el operador
+#: nunca veía los otros 16 000. Peor aún, `no_match_count` contaba solo lo
+#: iterado, así que los totales del resumen no cuadraban.
+#:
+#: Procesarlos todos es barato: `F_CLI` se lee **una vez** (optimización de
+#: C-5) y el resto es comparar strings en Python. Además el número de matches
+#: está acotado por los emails que haya en F_CLI (~4 500), no por el número de
+#: contactos.
+MAX_BATCH_SIZE = 100_000
+#: Tope del modo por empresa, que sí pagina de verdad (`LIMIT` en SQL).
 DEFAULT_BATCH_SIZE = 200
-MAX_BATCH_SIZE = 1000
 
 #: Marca del backup en el AuditLog.
 BULK_SYNC_ACTION = "erp.factusol_bulk_sync"
@@ -332,16 +343,20 @@ def _contact_name(contact: Any) -> str:
 
 def dry_run_by_contact_email(
     session: Session, client: FactusolClient, *, ejercicio: str,
-    batch_size: int = DEFAULT_BATCH_SIZE,
+    batch_size: int | None = None,
 ) -> dict[str, Any]:
     """Propone parejas contacto→cliente por **email exacto**. Solo lectura.
 
     Sin fuzzy de ningún tipo: o el email coincide o no hay match. Lo que se
     actualizaría es la **empresa del contacto**, no el contacto.
+
+    Procesa **todos** los contactos con email (C-5-fix2). `batch_size` es una
+    red de seguridad opcional, no una página: si se pasa, la respuesta avisa con
+    `truncated: true` en vez de callarse los que faltan.
     """
     from app.models.crm import Company, Contact  # noqa: PLC0415
 
-    batch_size = max(1, min(int(batch_size or DEFAULT_BATCH_SIZE), MAX_BATCH_SIZE))
+    limit = min(int(batch_size), MAX_BATCH_SIZE) if batch_size else MAX_BATCH_SIZE
     contacts = list(session.scalars(
         select(Contact)
         .where(Contact.is_active.is_(True), Contact.email.is_not(None),
@@ -368,7 +383,18 @@ def dry_run_by_contact_email(
     } if company_ids else {}
 
     matches, no_match_count, without_company = [], 0, 0
+    truncated = False
     for contact in contacts:
+        if len(matches) >= limit:
+            # Solo se llega aquí con una base descomunal. Se avisa en la
+            # respuesta: cortar en silencio haría que el resumen no cuadrase y
+            # el operador daría por revisados contactos que nadie miró.
+            truncated = True
+            logger.warning(
+                "factusol bulk-match by-email: cortado en %d matches de %d "
+                "contactos; el resto no se ha evaluado", limit, len(contacts),
+            )
+            break
         hits = by_email.get(_norm(contact.email), [])
         if not hits:
             no_match_count += 1
@@ -391,14 +417,15 @@ def dry_run_by_contact_email(
                 for row in hits
             ],
         })
-        if len(matches) >= batch_size:
-            break
 
     return {
         "total_contacts_with_email": len(contacts),
         "matches": matches,
         "no_match_count": no_match_count,
+        # OJO: es un subconjunto de `matches`, NO una tercera categoría.
+        # `len(matches) + no_match_count == total_contacts_with_email`.
         "matches_without_company": without_company,
+        "truncated": truncated,
         "ejercicio": ejercicio,
     }
 

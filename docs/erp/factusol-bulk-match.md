@@ -87,6 +87,27 @@ Filtros:
 > entero de una vez (4533 filas) y el cruce se hace en Python — que además
 > permite el match difuso por nombre, que la API no sabe hacer.
 
+#### Cuántos se procesan
+
+El modo **por email** procesa **todos** los contactos con email, sin tope. Es
+barato: `F_CLI` ya se lee una sola vez y el resto es comparar strings. El número
+de matches además está acotado por los emails que haya en F_CLI (~4 500), no por
+los contactos que tenga el CRM.
+
+> C-5-fix2 arregló esto: había un tope de 200 que **cortaba el bucle**, así que
+> de 20 282 contactos solo se evaluaban ~4 000 y los otros 16 000 no se veían.
+> Peor: el contador de «sin match» solo sumaba lo iterado, así que los totales
+> del resumen ni siquiera cuadraban.
+
+Queda un tope de seguridad de 100 000 por si alguna vez hace falta. Si se
+alcanza, la respuesta trae `truncated: true` y la pantalla lo avisa — cortar en
+silencio haría que se dieran por revisados contactos que nadie miró.
+
+El modo **por empresa** sí pagina de verdad (200 por defecto, `LIMIT` en SQL).
+
+Sobre el resumen: `con match + sin match = total`. Los «sin empresa CRM» son un
+**subconjunto** de los que tienen match, no una tercera categoría.
+
 ### 2. Interpretar el resultado
 
 | Coincidencia | Cómo se busca | Fiabilidad |
