@@ -183,11 +183,22 @@ describe("CreateQuoteModal", () => {
     expect(mockCreate.mock.calls[0][0].company_id).toBe("c1");
   });
 
-  it("plantilla SIN cache: 1 línea con REFPRE y TOTPRE, no cae a «Rápida»", async () => {
-    // F_PRE es mono-línea: las proformas del escritorio no tienen desglose.
-    mockSearchQuotes.mockResolvedValue([quote({ codpre: "88" })]);
+  it("plantilla antigua del escritorio: carga sus líneas reales de F_LPS", async () => {
+    // C-4-fix3: F_PRE SÍ tiene líneas (en F_LPS), así que las proformas del
+    // escritorio ya no degradan a «sin desglose».
+    mockSearchQuotes.mockResolvedValue([quote({ codpre: "574" })]);
     mockGetQuote.mockResolvedValue({
-      ...quote({ codpre: "88" }), line_source: "ref_text", lines: [],
+      ...quote({ codpre: "574" }), line_source: "F_LPS",
+      lines: [
+        { position: 1, codart: "MBO", description: "Cabezal MBO", quantity: 1,
+          unit_price: 250, discount_pct: 0, line_total: 250, iva_pct: 21 },
+        { position: 2, codart: "CAP", description: "Capping", quantity: 1,
+          unit_price: 25, discount_pct: 0, line_total: 25, iva_pct: 21 },
+        { position: 3, codart: "WIP", description: "Wiper", quantity: 1,
+          unit_price: 20, discount_pct: 0, line_total: 20, iva_pct: 21 },
+        { position: 4, codart: null, description: "Hora SAT", quantity: 1,
+          unit_price: 60, discount_pct: 0, line_total: 60, iva_pct: 21 },
+      ],
     });
     const user = userEvent.setup();
     render(<CreateQuoteModal {...base()} />);
@@ -197,11 +208,30 @@ describe("CreateQuoteModal", () => {
       await screen.findByRole("button", { name: "Cargar esta plantilla" }),
     );
 
-    // Sigue en la tabla de líneas, editable — antes caía al modo «Rápida».
     expect(await screen.findByLabelText("Descripción línea 1"))
-      .toHaveValue("Rotulación nave Duaner");
-    expect(screen.getByLabelText("Cantidad línea 1")).toHaveValue(1);
-    expect(screen.getByLabelText("Precio línea 1")).toHaveValue(121);
+      .toHaveValue("Cabezal MBO");
+    expect(screen.getByLabelText("Descripción línea 4")).toHaveValue("Hora SAT");
+    expect(screen.getByLabelText("Precio línea 1")).toHaveValue(250);
+    // Ya no hay banner de «esta proforma no tiene desglose».
+    expect(screen.queryByText(/no tiene líneas/)).not.toBeInTheDocument();
+  });
+
+  it("proforma sin líneas en F_LPS: avisa pero deja la tabla editable", async () => {
+    mockSearchQuotes.mockResolvedValue([quote({ codpre: "88" })]);
+    mockGetQuote.mockResolvedValue({
+      ...quote({ codpre: "88" }), line_source: "F_LPS", lines: [],
+    });
+    const user = userEvent.setup();
+    render(<CreateQuoteModal {...base()} />);
+    await user.click(screen.getByRole("button", { name: "Duplicar" }));
+    await user.type(screen.getByLabelText("Buscar plantilla"), "lab");
+    await user.click(
+      await screen.findByRole("button", { name: "Cargar esta plantilla" }),
+    );
+
+    expect(await screen.findByText(/no tiene líneas en FACTUSOL/))
+      .toBeInTheDocument();
+    expect(screen.getByLabelText("Descripción línea 1")).toHaveValue("");
   });
 
   it("permite cambiar el cliente destino a otra empresa vinculada", async () => {

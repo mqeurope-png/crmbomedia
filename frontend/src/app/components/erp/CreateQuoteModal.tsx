@@ -29,7 +29,6 @@ const EMPTY_LINE: LineRow = {
 const DEBOUNCE_MS = 300;
 const TEMPLATE_DAYS_BACK = 365;
 const REF_PREVIEW_CHARS = 60;
-const REFPRE_MAX_LENGTH = 250;
 
 function num(v: string): number {
   const n = Number(v);
@@ -79,6 +78,7 @@ export function CreateQuoteModal({
   const [loadedFrom, setLoadedFrom] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   // Buscador de plantillas: NO filtra por cliente (C-4-fix1).
   useEffect(() => {
@@ -129,15 +129,16 @@ export function CreateQuoteModal({
     } : r)));
   }
 
-  /** Carga una proforma como plantilla — siempre al modo «Con artículos», para
-   *  poder editarla y añadir más líneas del catálogo.
+  /** Carga una proforma como plantilla, siempre al modo «Con artículos».
    *
-   *  Si la plantilla no tiene desglose cacheado (proforma vieja hecha en el
-   *  FACTUSOL de escritorio, donde F_PRE es mono-línea) se reconstruye **una**
-   *  línea con su referencia y su total, en vez de dejar la tabla vacía. */
+   *  C-4-fix3: las líneas son las **reales** de F_LPS, así que funciona igual
+   *  con proformas creadas en el FACTUSOL de escritorio. Ya no hay «proformas
+   *  sin desglose»; si F_LPS no devuelve nada es que la proforma está vacía, y
+   *  se avisa discretamente dejando la tabla editable. */
   const loadTemplate = useCallback(async (quote: FactusolQuote) => {
     if (!quote.codpre) return;
     setError(null);
+    setNotice(null);
     try {
       const full = await getFactusolQuote(quote.codpre);
       const rows: LineRow[] = (full.lines ?? []).map((l) => ({
@@ -147,13 +148,15 @@ export function CreateQuoteModal({
         unit_price: String(l.unit_price),
         iva_pct: String(l.iva_pct),
       }));
-      setLines(rows.length > 0 ? rows : [{
-        ...EMPTY_LINE,
-        description: (full.referencia || `Proforma ${quote.codpre}`)
-          .slice(0, REFPRE_MAX_LENGTH),
-        quantity: "1",
-        unit_price: String(full.total),
-      }]);
+      if (rows.length > 0) {
+        setLines(rows);
+      } else {
+        setLines([{ ...EMPTY_LINE }]);
+        setNotice(
+          `La proforma ${quote.codpre} no tiene líneas en FACTUSOL. `
+          + "Añádelas aquí.",
+        );
+      }
       setLoadedFrom(quote.codpre);
       setMode("articles");
     } catch (e) {
@@ -231,6 +234,7 @@ export function CreateQuoteModal({
           Se creará un presupuesto <strong>real</strong> en FACTUSOL.
         </p>
         {error ? <p className="form-error">{error}</p> : null}
+        {notice ? <p className="form-info" role="status">{notice}</p> : null}
 
         <div className="tab-bar">
           <button type="button" className={`tab${mode === "articles" ? " is-active" : ""}`}

@@ -10353,8 +10353,10 @@ tr.is-inactive {
 .erp-quote-target { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: #f8fafc; margin-bottom: 8px; }
 
 /* C-4-fix2: modal ancho — la tabla de líneas no cabía y obligaba a scroll
-   horizontal. El contenido scrollea dentro, no la página. */
-.modal-dialog.modal-wide { max-width: min(1200px, 95vw); width: min(1200px, 95vw); max-height: 90vh; overflow-y: auto; }
+   horizontal. El contenido scrollea dentro, no la página.
+   C-4-fix3: con padding interior; sin él el contenido quedaba pegado al borde. */
+.modal-dialog.modal-wide { max-width: min(1200px, 95vw); width: min(1200px, 95vw); max-height: 90vh; overflow-y: auto; padding: 24px; display: flex; flex-direction: column; gap: 16px; }
+.modal-dialog.modal-wide > * { margin: 0; }
 .modal-dialog.modal-wide .data-table { width: 100%; table-layout: fixed; }
 .erp-quote-lines th:nth-child(1) { width: 15%; }
 .erp-quote-lines th:nth-child(2) { width: 38%; }

@@ -1,13 +1,17 @@
-"""BoHub ERP — caché local de líneas de proforma (Fase C · C-4, migración 0088).
+"""BoHub ERP — caché local de líneas de proforma. **OBSOLETA desde C-4-fix3.**
 
-`F_PRE` (presupuestos de FACTUSOL) es **mono-línea**: cada fila es un
-presupuesto completo y no existe tabla de líneas. El desglose real se pierde en
-cuanto se escribe, porque solo cabe como texto en `REFPRE` (250 caracteres).
+Se creó en C-4 (migración 0088) porque dábamos por hecho que `F_PRE` era
+mono-línea: habíamos buscado la tabla de líneas como `F_LPRE`, `F_LPR`, `F_LPP`…
+sin acertar, y concluimos que no existía.
 
-Esta tabla guarda el desglose de las proformas que crea el CRM para poder
-duplicarlas y volcarlas a un pedido con cantidades y precios de verdad. Una
-proforma creada en el FACTUSOL de escritorio simplemente no tiene filas aquí y
-el lector degrada a modo «simple».
+**Existe: es `F_LPS`** (`F_LPS.CODLPS = F_PRE.CODPRE`), descubierta en vivo el
+2026-08-05. Desde C-4-fix3 las líneas se leen y escriben ahí, que además
+funciona con las proformas creadas en el FACTUSOL de escritorio — cosa que esta
+caché nunca pudo hacer.
+
+La tabla **no se borra**: pudo guardar filas de proformas creadas desde el CRM
+entre los PR #309 y #312. Ya no se lee ni se escribe. Retirarla es una limpieza
+posterior, cuando conste que no hace falta.
 """
 from __future__ import annotations
 

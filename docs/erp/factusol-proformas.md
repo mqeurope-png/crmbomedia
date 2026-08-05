@@ -4,28 +4,28 @@ Crear, listar, duplicar y convertir presupuestos de FACTUSOL sin salir del CRM.
 
 ---
 
-## Lo primero: F_PRE es mono-línea
+## Las dos tablas que importan
 
-`F_PRE` (presupuestos) **no tiene tabla de líneas**. Cada fila es un
-presupuesto completo, y el desglose vive como texto en `REFPRE`, 250
-caracteres. Verificado sobre los 653 presupuestos del ejercicio 2026 de Bomedia
-(ver `factusol-schema.md`).
+| Tabla | Qué es |
+|---|---|
+| `F_PRE` | Cabecera del presupuesto: cliente, referencia, totales. |
+| `F_LPS` | **Sus líneas.** `F_LPS.CODLPS` → `F_PRE.CODPRE`, ordenadas por `POSLPS`. |
 
-Eso obliga a una decisión de diseño que explica casi todo lo demás:
+El CRM lee y escribe las dos. Las líneas son las reales de FACTUSOL, así que
+todo funciona igual con proformas creadas desde BoHub y con las hechas en el
+FACTUSOL de escritorio.
 
-> **BoHub guarda el desglose de las proformas que crea él**, en la tabla
-> `factusol_quote_lines_cache` (migración 0088). Sin esa copia no se podría
-> duplicar una proforma ni volcarla a un pedido con cantidades reales.
+> **Corrección de C-4-fix3.** C-4 dio por hecho que `F_PRE` era mono-línea
+> —había buscado su tabla de líneas como `F_LPRE`, `F_LPR`, `F_LPP` sin
+> acertar— y creó la caché local `factusol_quote_lines_cache` para suplirla.
+> La tabla existe: se llama `F_LPS`. La caché quedó **obsoleta**: no se lee ni
+> se escribe, y se conserva solo por si guardó algo entre los PR #309 y #312.
+>
+> Con ello desapareció también el modo degradado `ref_text` («esta proforma no
+> tiene desglose»), que era consecuencia del error, no de FACTUSOL.
 
-De ahí salen los dos «modos» que verás en la UI y en la API:
-
-| `line_source` | Qué significa | Qué se puede hacer |
-|---|---|---|
-| `cache` | La proforma la creó el CRM y tenemos su desglose | Duplicar y volcar con líneas reales |
-| `ref_text` | Se creó en el FACTUSOL de escritorio | Solo el texto de `REFPRE`: se vuelca como **una** línea con la base imponible, y el operador la ajusta |
-
-`ref_text` no es un fallo: es todo lo que se puede reconstruir de una tabla
-mono-línea. La UI lo dice explícitamente en vez de fingir un desglose.
+El precio de venta corrió la misma suerte: no está en `F_ART` sino en **`F_LTA`**
+(tarifas por artículo). Ver «Buscar artículos».
 
 ---
 
@@ -79,36 +79,36 @@ DETART 'CD TQ 700 MB white T'
 El desplegable devuelve hasta **200 resultados** con scroll interno (C-4-fix2;
 antes cortaba en 50 y escondía artículos válidos: «tinta» pasa de 100).
 
-#### El precio de venta se detecta en runtime
+#### El precio de venta sale de F_LTA, no de F_ART
 
-`PCOART` es **coste**, nunca lo que se factura. El nombre de la columna de
-**venta** no está verificado contra la base de Bomedia, así que el adaptador
-**no lo fija en el código**: mira las claves que devuelve `CargaTabla` — que
-sirve la fila completa — y usa la primera de `ARTICLE_PRICE_CANDIDATES` que
-exista de verdad (`PVPART`, `PVP1ART`, `PV1ART`, `TAR1ART`, `PRE1ART`,
-`PREART`).
+`PCOART` es **coste**, nunca lo que se factura. El precio de venta vive en
+**`F_LTA`** (tarifas por artículo): `ARTLTA` → `F_ART.CODART`, `PRELTA` = precio.
+Bomedia usa **`TARLTA=1`**, y son los precios que el FACTUSOL de escritorio
+muestra en su columna «Venta».
 
-> **Por qué no se hardcodea.** En lectura, `row.get("PVPART")` sobre una columna
-> inexistente devuelve `None` **sin error**: todos los precios saldrían en
-> blanco y no habría un solo log que lo delatara. Es la misma familia de trampa
-> que C-3-fix1, pero más silenciosa.
+```
+F_LTA WHERE ARTLTA='99cy'  → TARLTA=1 PRELTA=80.0
+F_LTA WHERE ARTLTA='1503'  → TARLTA=1 PRELTA=20.0
+```
 
-Si ninguna candidata existe, `precio_venta` es `null`, la UI **deja el campo en
-blanco** (nunca un `0.00`, que invitaría a emitir una proforma a cero sin que
-nadie lo note) y el backend deja un `WARNING` con las columnas reales.
+Se resuelve en **una sola consulta en lote** (`ARTLTA IN (…)`) por búsqueda, no
+una por artículo.
 
-Para confirmar cuál usa esta base:
+`PRELTA=0` significa «tarifa sin configurar» —pasa con los artículos que solo
+tienen tarifa 2— y se trata como ausente: `precio_venta` es `null` y la UI deja
+el campo **en blanco**, nunca un `0.00` que invitaría a emitir una proforma a
+cero sin que nadie lo note. Lo mismo si F_LTA no responde: el autocomplete
+sigue funcionando sin precio.
+
+La tarifa está fijada a 1 (`DEFAULT_TARIFA`). Multi-tarifa por cliente es
+backlog: iría a `erp_settings.factusol_default_tarifa`.
+
+Para verificarlo en producción:
 
 ```bash
 docker compose -f /opt/crmbo/docker-compose.prod.yml exec api \
     python -m scripts.factusol_discover_article_prices
 ```
-
-o, sin shell, mirando `precio_venta_columna` en la respuesta de
-`GET /api/erp/factusol/articles/search?q=...`.
-
-Las tarifas multinivel (`TAR1ART`, `TAR2ART`…) se devuelven en `tarifas` como
-información, pero **ningún cálculo las usa**: es backlog.
 
 ### Artículos en el pedido manual
 
@@ -209,16 +209,18 @@ toda la base y se deja un `WARNING` en el log — repartir en las bandas 2/3/4
 añadiría riesgo para un caso que Bomedia no tiene.
 
 **Truncado de REFPRE.** El recorte a 250 lo hace el CRM y añade «…», en vez de
-dejar que FACTUSOL corte a medias sin avisar.
+dejar que FACTUSOL corte a medias sin avisar. `REFPRE` sigue siendo el resumen
+legible del presupuesto aunque el desglose real ya viva en F_LPS.
 
-**Orden de escritura.** Primero FACTUSOL, después la caché local. Si FACTUSOL
-falla no hay nada que limpiar; si falla el commit local, la proforma existe y
-solo se pierde el desglose (degrada a `ref_text`). Es el menos malo de los dos
-fallos posibles.
+**Orden de escritura.** Cabecera `F_PRE` primero, líneas `F_LPS` después. Si la
+cabecera falla no hay nada que limpiar.
 
-**Reintentos.** `_save_lines_cache` borra las filas del CODPRE antes de
-insertar, así que reescribir la misma proforma no duplica líneas ni choca con
-el UNIQUE `(factusol_codpre, ejercicio, position)`.
+**Una línea que falla NO tumba el job.** Cuando se escriben las líneas la
+cabecera ya existe: propagar el error marcaría el job como fallido, el operador
+reintentaría y acabaría con una proforma **duplicada** en la contabilidad. Se
+para en la línea que falla, se registra en el log y el resultado trae un
+`warning` con el recuento real (`«se creó con 2 de 4 líneas»`). Una proforma
+incompleta se arregla; un duplicado, no.
 
 ---
 
