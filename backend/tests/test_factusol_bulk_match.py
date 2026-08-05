@@ -21,11 +21,15 @@ import app.main  # noqa: F401  — registra los modelos en Base.metadata
 from app.db.base import Base
 from app.integrations.factusol.bulk_match import (
     BULK_SYNC_ACTION,
+    BULK_SYNC_BY_EMAIL_ACTION,
+    BULK_SYNC_BY_EMAIL_SOURCE,
     BULK_SYNC_SOURCE,
+    apply_by_contact_email,
     apply_operations,
     dry_run,
+    dry_run_by_contact_email,
 )
-from app.models.crm import AuditLog, Company
+from app.models.crm import AuditLog, Company, Contact
 
 
 class _FakeFactusol:
@@ -280,3 +284,176 @@ def test_bulk_match_apply_rejects_unknown_codcli(session):
     }])
     assert result["applied"] == 0
     assert "no existe" in result["errors"][0]["error"]
+
+
+# --- modo «contactos por email» (C-5-fix1) ----------------------------------
+#
+# El modo por NIF/nombre da ruido: la mayoría de las empresas del CRM vienen de
+# imports sin NIF y el nombre difuso produce falsos positivos. El email o casa
+# exacto o no casa.
+
+
+def _contact(session: Session, *, email: str | None, company: Company | None = None,
+             first_name: str = "Juan", last_name: str = "Pérez") -> Contact:
+    contact = Contact(first_name=first_name, last_name=last_name, email=email,
+                      company_id=company.id if company else None)
+    session.add(contact)
+    session.commit()
+    return contact
+
+
+def test_by_email_dry_run_matches_exact_case_insensitive(session):
+    company = _company(session, name="Labor. Porta")
+    _contact(session, email="Juan@LaboratoriosPorta.com", company=company)
+    fake = _FakeFactusol(customers=[_cli(1, EMACLI="juan@laboratoriosporta.com",
+                                         NOFCLI="LABORATORIOS PORTA S.L.",
+                                         NIFCLI="B64113590")])
+    result = dry_run_by_contact_email(session, fake, ejercicio="2026")
+
+    assert result["total_contacts_with_email"] == 1
+    assert result["no_match_count"] == 0
+    match = result["matches"][0]
+    assert match["contact_email"] == "Juan@LaboratoriosPorta.com"
+    assert match["company_id"] == company.id
+    assert match["candidates"][0]["factusol_codcli"] == "1"
+    diffs = {d["field"]: d for d in match["candidates"][0]["differences"]}
+    assert diffs["name"]["differs"] is True
+    assert diffs["tax_id"]["factusol"] == "B64113590"
+
+
+def test_by_email_dry_run_no_hace_fuzzy(session):
+    """Solo match exacto: un email parecido NO cuenta."""
+    company = _company(session)
+    _contact(session, email="juan@porta.com", company=company)
+    fake = _FakeFactusol(customers=[_cli(1, EMACLI="juan@porta.es")])
+    result = dry_run_by_contact_email(session, fake, ejercicio="2026")
+    assert result["matches"] == []
+    assert result["no_match_count"] == 1
+
+
+def test_by_email_dry_run_skips_contacts_without_email(session):
+    company = _company(session)
+    _contact(session, email=None, company=company)
+    _contact(session, email="", company=company, first_name="Ana")
+    fake = _FakeFactusol(customers=[_cli(1)])
+    result = dry_run_by_contact_email(session, fake, ejercicio="2026")
+    assert result["total_contacts_with_email"] == 0
+    assert result["matches"] == []
+
+
+def test_by_email_dry_run_marks_contacts_without_company(session):
+    _contact(session, email="suelto@example.com", company=None)
+    fake = _FakeFactusol(customers=[_cli(1, EMACLI="suelto@example.com")])
+    result = dry_run_by_contact_email(session, fake, ejercicio="2026")
+    match = result["matches"][0]
+    assert match["company_id"] is None
+    assert result["matches_without_company"] == 1
+    # Sin empresa no hay con qué comparar: se enseña lo que traería FACTUSOL.
+    assert match["candidates"][0]["differing_fields"] > 0
+
+
+def test_by_email_dry_run_reads_f_cli_once(session):
+    company = _company(session)
+    for i in range(5):
+        _contact(session, email=f"c{i}@example.com", company=company,
+                 first_name=f"C{i}")
+    fake = _FakeFactusol(customers=[_cli(1)])
+    dry_run_by_contact_email(session, fake, ejercicio="2026")
+    assert fake.calls.count("F_CLI") == 1
+
+
+# --- apply por email --------------------------------------------------------
+
+
+def test_by_email_apply_updates_company_of_contact_and_links(session):
+    company = _company(session, name="Labor. Porta", city=None)
+    contact = _contact(session, email="juan@porta.com", company=company)
+    fake = _FakeFactusol(customers=[_cli(1, EMACLI="juan@porta.com",
+                                         NOFCLI="LABORATORIOS PORTA S.L.",
+                                         POBCLI="Barcelona")])
+    result = apply_by_contact_email(session, fake, ejercicio="2026", operations=[{
+        "contact_id": contact.id, "factusol_codcli": "1",
+        "fields_to_sync": ["name", "city"],
+    }])
+    assert result["applied"] == 1
+    assert result["skipped"] == [] and result["errors"] == []
+    session.refresh(company)
+    assert company.name == "LABORATORIOS PORTA S.L."
+    assert company.city == "Barcelona"
+    assert company.factusol_company_id == "1"
+    assert company.factusol_sync_source == BULK_SYNC_BY_EMAIL_SOURCE
+
+
+def test_by_email_apply_skips_when_contact_has_no_company(session):
+    contact = _contact(session, email="suelto@example.com", company=None)
+    fake = _FakeFactusol(customers=[_cli(1)])
+    result = apply_by_contact_email(session, fake, ejercicio="2026", operations=[{
+        "contact_id": contact.id, "factusol_codcli": "1",
+        "fields_to_sync": ["name"],
+    }])
+    assert result["applied"] == 0
+    assert result["skipped"][0]["result"] == "skipped_no_company"
+    # No es un error: es que aquí no hay nada que actualizar.
+    assert result["errors"] == []
+
+
+def test_by_email_apply_skips_when_company_already_linked_to_other_codcli(session):
+    """Pisar un vínculo que alguien estableció a propósito sería peor que no
+    hacer nada."""
+    company = _company(session, factusol_company_id="9999")
+    contact = _contact(session, email="juan@porta.com", company=company)
+    fake = _FakeFactusol(customers=[_cli(1, EMACLI="juan@porta.com")])
+    result = apply_by_contact_email(session, fake, ejercicio="2026", operations=[{
+        "contact_id": contact.id, "factusol_codcli": "1",
+        "fields_to_sync": ["name"],
+    }])
+    assert result["applied"] == 0
+    assert result["skipped"][0]["result"] == "already_linked_other"
+    session.refresh(company)
+    assert company.factusol_company_id == "9999"
+
+
+def test_by_email_apply_permite_reaplicar_al_mismo_codcli(session):
+    """Vinculada al MISMO cliente no es conflicto: es un refresco de datos."""
+    company = _company(session, factusol_company_id="1", name="VIEJO")
+    contact = _contact(session, email="juan@porta.com", company=company)
+    fake = _FakeFactusol(customers=[_cli(1, EMACLI="juan@porta.com",
+                                         NOFCLI="NOMBRE LIMPIO")])
+    result = apply_by_contact_email(session, fake, ejercicio="2026", operations=[{
+        "contact_id": contact.id, "factusol_codcli": "1",
+        "fields_to_sync": ["name"],
+    }])
+    assert result["applied"] == 1
+    session.refresh(company)
+    assert company.name == "NOMBRE LIMPIO"
+
+
+def test_by_email_apply_saves_audit_log_backup(session):
+    company = _company(session, name="NOMBRE VIEJO")
+    contact = _contact(session, email="juan@porta.com", company=company)
+    fake = _FakeFactusol(customers=[_cli(1, EMACLI="juan@porta.com",
+                                         NOFCLI="NOMBRE LIMPIO")])
+    apply_by_contact_email(session, fake, ejercicio="2026", operations=[{
+        "contact_id": contact.id, "factusol_codcli": "1",
+        "fields_to_sync": ["name"],
+    }])
+    entry = session.scalars(
+        select(AuditLog).where(AuditLog.action == BULK_SYNC_BY_EMAIL_ACTION)
+    ).one()
+    meta = json.loads(entry.metadata_json)
+    assert meta["previous_values"] == {"name": "NOMBRE VIEJO"}
+    # El contacto que originó el match queda registrado, para poder rastrearlo.
+    assert meta["contact_id"] == contact.id
+    assert meta["contact_email"] == "juan@porta.com"
+
+
+def test_by_email_apply_empty_factusol_value_never_overwrites_crm(session):
+    company = _company(session, city="Barcelona")
+    contact = _contact(session, email="juan@porta.com", company=company)
+    fake = _FakeFactusol(customers=[_cli(1, EMACLI="juan@porta.com", POBCLI="")])
+    apply_by_contact_email(session, fake, ejercicio="2026", operations=[{
+        "contact_id": contact.id, "factusol_codcli": "1",
+        "fields_to_sync": ["city"],
+    }])
+    session.refresh(company)
+    assert company.city == "Barcelona"

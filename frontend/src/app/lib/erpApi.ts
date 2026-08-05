@@ -885,6 +885,61 @@ export async function bulkMatchDryRun(
   });
 }
 
+/** C-5-fix1: fila del modo «contactos por email». Lo que se actualiza es la
+ *  **empresa del contacto**, no el contacto. */
+export type BulkMatchByEmailRow = {
+  contact_id: string;
+  contact_name: string;
+  contact_email: string;
+  /** `null` = el contacto no tiene empresa: no hay nada que actualizar. */
+  company_id: string | null;
+  company_name: string | null;
+  company_factusol_id: string | null;
+  candidates: BulkMatchCandidate[];
+};
+
+export type BulkMatchByEmailDryRun = {
+  total_contacts_with_email: number;
+  matches: BulkMatchByEmailRow[];
+  /** Solo el recuento: son miles y listarlos no aporta. */
+  no_match_count: number;
+  matches_without_company: number;
+  ejercicio: string;
+};
+
+/** Un `skipped` no es un error: es un caso en el que aquí no toca escribir. */
+export type BulkMatchSkip = {
+  contact_id: string;
+  result: "skipped_no_company" | "already_linked_other";
+  detail?: string;
+};
+
+export async function bulkMatchByEmailDryRun(
+  body: { batch_size?: number } = {},
+): Promise<BulkMatchByEmailDryRun> {
+  return apiFetch("/api/erp/factusol/bulk-match/by-contact-email/dry-run", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function bulkMatchByEmailApply(
+  operations: {
+    contact_id: string;
+    factusol_codcli: string;
+    fields_to_sync: string[];
+  }[],
+): Promise<{
+  applied: number;
+  skipped: BulkMatchSkip[];
+  errors: { contact_id: string; error: string }[];
+}> {
+  return apiFetch("/api/erp/factusol/bulk-match/by-contact-email/apply", {
+    method: "POST",
+    body: JSON.stringify({ operations }),
+  });
+}
+
 export async function bulkMatchApply(
   operations: {
     crm_company_id: string;

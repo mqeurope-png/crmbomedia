@@ -19,6 +19,43 @@ fuente contable y no se toca desde aquí.
 
 ---
 
+## Dos modos
+
+| Modo | Itera | Match | Cuándo |
+|---|---|---|---|
+| **Contactos por email** (por defecto) | contactos con email | `EMACLI` **exacto** | Casi siempre. Sin falsos positivos. |
+| **Empresas por NIF/nombre** | empresas | NIF exacto → email → nombre difuso | Cuando la empresa tiene NIF y no hay contacto con email. |
+
+En los dos, lo que se actualiza es **una empresa del CRM**. Lo que cambia es
+por dónde se llega a ella.
+
+### Por qué el modo por email es el recomendado
+
+El modo por NIF/nombre se probó en producción y da mucho ruido:
+
+- La mayoría de las empresas del CRM llegaron de imports masivos **sin NIF**,
+  así que caen al match por nombre.
+- El nombre difuso produce falsos positivos: «4d Factory» ↔ «FACTORY».
+
+El email o coincide exacto o no coincide. Menos cobertura, pero lo que propone
+es fiable.
+
+**Qué actualiza:** la empresa a la que pertenece el contacto que casó.
+
+**Qué se salta**, sin fallar y avisando:
+- Contacto **sin empresa** en el CRM → `skipped_no_company`. No hay nada que
+  actualizar. (Crear la empresa desde aquí es backlog.)
+- Empresa **ya vinculada a OTRO** `CODCLI` → `already_linked_other`. Pisar un
+  vínculo que alguien estableció a propósito sería peor que no hacer nada.
+
+Vinculada al **mismo** CODCLI **sí** se aplica: es un refresco de datos.
+
+En la tabla, esos dos casos salen con la casilla «Aplicar» deshabilitada y el
+motivo en el tooltip — el backend los saltaría igualmente, pero así no parece
+que se hayan aplicado.
+
+---
+
 ## Cómo funciona
 
 Dos tiempos. **Nada se escribe sin marcarlo.**
@@ -110,10 +147,15 @@ Para encontrar lo que había antes:
 ```sql
 SELECT target_id, created_at, metadata_json
 FROM audit_logs
-WHERE action = 'erp.factusol_bulk_sync'
+WHERE action IN ('erp.factusol_bulk_sync',          -- modo por NIF/nombre
+                 'erp.factusol_bulk_sync_by_email') -- modo por email
   AND target_id = '<company_id>'
 ORDER BY created_at DESC;
 ```
+
+Cada modo usa su propia `action`, para poder revertir un lote sin arrastrar el
+otro. Lo mismo con `companies.factusol_sync_source`: `bulk_match` vs.
+`bulk_by_email`.
 
 El `metadata_json` trae:
 
@@ -121,7 +163,10 @@ El `metadata_json` trae:
 {
   "factusol_codcli": "3342",
   "applied_fields": ["name", "city"],
-  "previous_values": {"name": "AUDIOVISUALES DATA", "city": "CIUDAD VIEJA"}
+  "previous_values": {"name": "AUDIOVISUALES DATA", "city": "CIUDAD VIEJA"},
+
+  "contact_id": "uuid",             // solo en el modo por email:
+  "contact_email": "juan@..."       // el contacto que originó el match
 }
 ```
 

@@ -61,6 +61,12 @@ BULK_SYNC_ACTION = "erp.factusol_bulk_sync"
 #: Valor de `companies.factusol_sync_source` (la columna es String(16)).
 BULK_SYNC_SOURCE = "bulk_match"
 
+#: Modo «contactos por email» (C-5-fix1). Acción y origen propios para poder
+#: distinguirlos del modo por NIF/nombre al auditar o revertir.
+BULK_SYNC_BY_EMAIL_ACTION = "erp.factusol_bulk_sync_by_email"
+#: Cabe en String(16) justo — 15 caracteres.
+BULK_SYNC_BY_EMAIL_SOURCE = "bulk_by_email"
+
 
 def _norm(value: Any) -> str:
     """Normaliza para comparar: sin acentos, sin dobles espacios, en minúscula.
@@ -276,6 +282,7 @@ def apply_operations(
 def _log_backup(
     session: Session, company: Any, codcli: str, fields: list[str],
     previous: dict[str, Any], actor_id: str | None,
+    *, action: str = BULK_SYNC_ACTION, extra: dict[str, Any] | None = None,
 ) -> None:
     """Guarda los valores previos en el AuditLog.
 
@@ -283,17 +290,194 @@ def _log_backup(
     AuditLog — que además es su sitio natural: queda fechado, atribuido a quien
     lo hizo y es consultable sin ensuciar el modelo de dominio. Es lo que se
     lee para revertir a mano (ver `docs/erp/factusol-bulk-match.md`).
+
+    `action` distingue el modo (por NIF/nombre vs. por email de contacto) para
+    poder revertir un lote sin arrastrar el otro.
     """
     from app.models.crm import AuditLog  # noqa: PLC0415
 
     session.add(AuditLog(
         actor_user_id=actor_id,
-        action=BULK_SYNC_ACTION,
+        action=action,
         target_type="company",
         target_id=company.id,
         metadata_json=json.dumps({
             "factusol_codcli": codcli,
             "applied_fields": fields,
             "previous_values": previous,
+            **(extra or {}),
         }, ensure_ascii=False, default=str),
     ))
+
+
+# --- modo «contactos por email» (C-5-fix1) -----------------------------------
+#
+# El modo por NIF/nombre da mucho ruido en la práctica: la mayoría de las
+# empresas del CRM llegaron de imports masivos SIN NIF, y el match difuso por
+# nombre produce falsos positivos («4d Factory» ↔ «FACTORY»).
+#
+# El email es un identificador de verdad: o coincide exacto o no coincide. Se
+# itera por CONTACTOS —que sí tienen email— y se actualiza la empresa a la que
+# pertenecen. Menos cobertura, pero lo que propone es fiable.
+
+
+def _contact_name(contact: Any) -> str:
+    return " ".join(
+        x for x in (contact.first_name, contact.last_name) if x
+    ).strip()
+
+
+def dry_run_by_contact_email(
+    session: Session, client: FactusolClient, *, ejercicio: str,
+    batch_size: int = DEFAULT_BATCH_SIZE,
+) -> dict[str, Any]:
+    """Propone parejas contacto→cliente por **email exacto**. Solo lectura.
+
+    Sin fuzzy de ningún tipo: o el email coincide o no hay match. Lo que se
+    actualizaría es la **empresa del contacto**, no el contacto.
+    """
+    from app.models.crm import Company, Contact  # noqa: PLC0415
+
+    batch_size = max(1, min(int(batch_size or DEFAULT_BATCH_SIZE), MAX_BATCH_SIZE))
+    contacts = list(session.scalars(
+        select(Contact)
+        .where(Contact.is_active.is_(True), Contact.email.is_not(None),
+               Contact.email != "")
+        .order_by(Contact.first_name)
+    ))
+
+    rows = client.load_table("F_CLI", filtro="1=1", ejercicio=ejercicio)
+    by_email: dict[str, list[dict]] = {}
+    for row in rows:
+        email = _norm(row.get("EMACLI"))
+        if email:
+            by_email.setdefault(email, []).append(row)
+    logger.info("factusol bulk-match by-email: %d contactos con email contra "
+                "%d clientes F_CLI", len(contacts), len(rows))
+
+    # Las empresas se cargan de golpe: pedirlas una a una dentro del bucle
+    # sería un N+1 sobre miles de contactos.
+    company_ids = {c.company_id for c in contacts if c.company_id}
+    companies = {
+        c.id: c for c in session.scalars(
+            select(Company).where(Company.id.in_(company_ids))
+        )
+    } if company_ids else {}
+
+    matches, no_match_count, without_company = [], 0, 0
+    for contact in contacts:
+        hits = by_email.get(_norm(contact.email), [])
+        if not hits:
+            no_match_count += 1
+            continue
+        company = companies.get(contact.company_id) if contact.company_id else None
+        if company is None:
+            without_company += 1
+        matches.append({
+            "contact_id": contact.id,
+            "contact_name": _contact_name(contact),
+            "contact_email": contact.email,
+            "company_id": company.id if company else None,
+            "company_name": company.name if company else None,
+            "company_factusol_id": company.factusol_company_id if company else None,
+            # Varios F_CLI con el mismo EMACLI es raro pero posible: se
+            # devuelven todos y elige el operador, como en el modo por NIF.
+            "candidates": [
+                _candidate(row, company) if company
+                else _candidate_without_company(row)
+                for row in hits
+            ],
+        })
+        if len(matches) >= batch_size:
+            break
+
+    return {
+        "total_contacts_with_email": len(contacts),
+        "matches": matches,
+        "no_match_count": no_match_count,
+        "matches_without_company": without_company,
+        "ejercicio": ejercicio,
+    }
+
+
+def _candidate_without_company(row: dict[str, Any]) -> dict[str, Any]:
+    """Candidato de un contacto sin empresa: no hay con qué comparar, así que
+    se muestran los valores de FACTUSOL como «lo que habría»."""
+    out = {f"factusol_{k.lower()}": row.get(k) for k in CUSTOMER_FIELDS}
+    out["factusol_codcli"] = (
+        str(row.get("CODCLI")) if row.get("CODCLI") is not None else None
+    )
+    out["differences"] = [
+        {"field": field, "crm": "", "factusol": str(row.get(column) or "").strip(),
+         "differs": bool(str(row.get(column) or "").strip())}
+        for field, column in SYNCABLE_FIELDS
+    ]
+    out["differing_fields"] = sum(1 for d in out["differences"] if d["differs"])
+    return out
+
+
+def apply_by_contact_email(
+    session: Session, client: FactusolClient, *, ejercicio: str,
+    operations: list[dict[str, Any]], actor_id: str | None = None,
+) -> dict[str, Any]:
+    """Actualiza la EMPRESA de cada contacto con los datos de su cliente F_CLI.
+
+    Se salta, sin fallar, los dos casos que no son error sino «aquí no toca»:
+    contacto sin empresa (no hay qué actualizar) y empresa ya vinculada a OTRO
+    CODCLI (pisarla rompería un vínculo que alguien estableció a propósito).
+    """
+    from app.models.crm import Company, Contact  # noqa: PLC0415
+
+    rows = client.load_table("F_CLI", filtro="1=1", ejercicio=ejercicio)
+    by_codcli = {str(r.get("CODCLI")): r for r in rows}
+    columns = dict(SYNCABLE_FIELDS)
+
+    applied, skipped, errors = 0, [], []
+    for op in operations:
+        contact_id = str(op.get("contact_id") or "")
+        codcli = str(op.get("factusol_codcli") or "")
+        fields = [f for f in (op.get("fields_to_sync") or []) if f in columns]
+        try:
+            contact = session.get(Contact, contact_id)
+            if contact is None:
+                raise ValueError("el contacto no existe en el CRM")
+            if not contact.company_id:
+                skipped.append({"contact_id": contact_id,
+                                "result": "skipped_no_company"})
+                continue
+            company = session.get(Company, contact.company_id)
+            if company is None:
+                raise ValueError("la empresa del contacto no existe")
+            if (company.factusol_company_id
+                    and company.factusol_company_id != codcli):
+                skipped.append({
+                    "contact_id": contact_id,
+                    "result": "already_linked_other",
+                    "detail": (f"«{company.name}» ya está vinculada al cliente "
+                               f"{company.factusol_company_id}"),
+                })
+                continue
+            row = by_codcli.get(codcli)
+            if row is None:
+                raise ValueError(f"el cliente FACTUSOL {codcli} no existe")
+
+            previous = {f: getattr(company, f, None) for f in fields}
+            for field in fields:
+                value = str(row.get(columns[field]) or "").strip()
+                if value:
+                    setattr(company, field, value)
+            company.factusol_company_id = codcli
+            company.factusol_sync_source = BULK_SYNC_BY_EMAIL_SOURCE
+            company.factusol_synced_at = datetime.now(UTC)
+            _log_backup(session, company, codcli, fields, previous, actor_id,
+                        action=BULK_SYNC_BY_EMAIL_ACTION,
+                        extra={"contact_id": contact_id,
+                               "contact_email": contact.email})
+            session.commit()
+            applied += 1
+        except Exception as exc:  # noqa: BLE001 — un fallo no tumba el lote
+            session.rollback()
+            logger.warning("factusol bulk-match by-email: %s KO: %s",
+                           contact_id, exc)
+            errors.append({"contact_id": contact_id, "error": str(exc)[:200]})
+    return {"applied": applied, "skipped": skipped, "errors": errors}
