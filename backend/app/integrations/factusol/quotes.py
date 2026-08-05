@@ -64,7 +64,10 @@ DEFAULT_IVA_PCT = 21.0
 DEFAULT_DAYS_BACK = 180
 #: Tope de resultados: la API DELSOL **no soporta LIMIT**, se recorta en Python.
 QUOTE_LIST_LIMIT = 100
-ARTICLE_SEARCH_LIMIT = 50
+#: Tope del autocomplete de artículos. C-4-fix2 lo sube de 50 a 200: el
+#: desplegable tiene scroll interno, así que cortar bajo solo escondía
+#: resultados válidos («tinta» devuelve más de 100 artículos).
+ARTICLE_SEARCH_LIMIT = 200
 
 #: Columnas de F_PRE que exponemos. Verificadas contra la base real; el resto
 #: (bandas 2/3/4 de IVA y ~90 columnas más) no las necesita la UI.
@@ -94,6 +97,31 @@ ARTICLE_FIELDS = (
 ARTICLE_SEARCH_COLUMNS = (
     "CODART", "EANART", "EQUART", "DESART", "DEEART", "DETART",
 )
+
+#: Candidatas a **precio de venta** en F_ART, por orden de preferencia.
+#:
+#: El nombre real NO está verificado contra la base de Bomedia: el
+#: descubrimiento de C-4 solo llegó a volcar las primeras 15 columnas y ahí solo
+#: aparece `PCOART`, que es **coste**. En vez de apostar por un nombre —que es
+#: justo el error de C-3-fix1— se detecta en runtime: `CargaTabla` devuelve
+#: TODAS las columnas de la fila, así que basta mirar cuál de estas existe de
+#: verdad (ver `detect_price_column`).
+#:
+#: Apostar a ciegas aquí sería peor que en una búsqueda: `row.get("PVPART")`
+#: sobre una columna inexistente devuelve `None` **sin error**, y todos los
+#: precios saldrían en blanco sin un solo log.
+ARTICLE_PRICE_CANDIDATES = (
+    "PVPART",    # precio de venta al público (el habitual en FACTUSOL)
+    "PVP1ART",
+    "PV1ART",
+    "TAR1ART",   # tarifa 1, si la base usa tarifas multi-nivel
+    "PRE1ART",
+    "PREART",
+)
+
+#: Prefijo de las tarifas multinivel, si la base las usa (`TAR1ART`…`TAR9ART`).
+#: Se devuelven como información; NO se usan en ningún cálculo (backlog).
+ARTICLE_TARIFF_PREFIX = "TAR"
 
 
 def _sql_escape(value: str) -> str:
@@ -135,6 +163,31 @@ def _factusol_date(value: Any) -> str | None:
 # --- artículos ---------------------------------------------------------------
 
 
+def detect_price_column(row: dict[str, Any]) -> str | None:
+    """Nombre REAL de la columna de precio de venta en esta base, o None.
+
+    Se resuelve mirando las claves que ha devuelto la API en vez de fijar un
+    nombre en el código. `CargaTabla` sirve la fila completa, así que las claves
+    son la verdad sobre el esquema — y así el adaptador funciona tanto si la
+    base usa `PVPART` como si usa tarifas `TAR1ART`, sin tocar código.
+    """
+    for candidate in ARTICLE_PRICE_CANDIDATES:
+        if candidate in row:
+            return candidate
+    return None
+
+
+def _tariffs(row: dict[str, Any]) -> dict[str, float]:
+    """Tarifas multinivel (`TAR1ART`…) si la base las usa. Solo informativas:
+    ningún cálculo las mira. Dict vacío si esta base no las tiene."""
+    return {
+        col.lower(): _num(row[col])
+        for col in row
+        if col.startswith(ARTICLE_TARIFF_PREFIX) and col.endswith("ART")
+        and row[col] not in (None, "")
+    }
+
+
 def _row_to_article(row: dict[str, Any]) -> dict[str, Any]:
     out = {k.lower(): row.get(k) for k in ARTICLE_FIELDS}
     out["codart"] = str(out.get("codart")).strip() if out.get("codart") else None
@@ -148,8 +201,18 @@ def _row_to_article(row: dict[str, Any]) -> dict[str, Any]:
          if str(out.get(k) or "").strip()),
         None,
     )
-    # PCOART es precio de COSTE, no tarifa de venta: solo sugerencia editable.
-    out["precio"] = _num(out.get("pcoart"))
+    # PCOART es precio de COSTE — nunca es el precio que se factura.
+    out["precio_coste"] = _num(out.get("pcoart"))
+    # Precio de VENTA, desde la columna que exista de verdad en esta base.
+    price_column = detect_price_column(row)
+    out["precio_venta_columna"] = price_column
+    out["precio_venta"] = _num(row.get(price_column)) if price_column else None
+    # `precio` (C-4/C-4-fix1) era el coste. Ahora manda el de venta y el coste
+    # queda de reserva, para no romper a quien ya leyera esta clave.
+    out["precio"] = out["precio_venta"] if out["precio_venta"] else out["precio_coste"]
+    tariffs = _tariffs(row)
+    if tariffs:
+        out["tarifas"] = tariffs
     out["stock"] = _num(out.get("stoart"))
     out["iva_pct"] = _num(out.get("tivart"), DEFAULT_IVA_PCT)
     return out
@@ -174,6 +237,19 @@ def search_articles(
         f"UPPER({col}) LIKE UPPER('%{safe}%')" for col in ARTICLE_SEARCH_COLUMNS
     )
     rows = client.load_table(TABLE_ARTICLES, filtro=filtro, ejercicio=ejercicio)
+    if rows:
+        column = detect_price_column(rows[0])
+        if column is None:
+            # Sin columna de venta la UI deja el precio en blanco y el operador
+            # lo teclea. Se avisa una vez por búsqueda para que se vea en los
+            # logs de producción qué columnas hay realmente.
+            logger.warning(
+                "factusol: F_ART sin columna de precio de venta reconocida "
+                "(probadas %s). Columnas reales: %s",
+                ", ".join(ARTICLE_PRICE_CANDIDATES), ", ".join(rows[0].keys()),
+            )
+        else:
+            logger.info("factusol: precio de venta F_ART leído de %s", column)
     return [_row_to_article(r) for r in rows[:ARTICLE_SEARCH_LIMIT]]
 
 

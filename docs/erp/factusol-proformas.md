@@ -33,17 +33,22 @@ mono-línea. La UI lo dice explícitamente en vez de fingir un desglose.
 
 ### Crear una proforma
 
-Ficha de empresa → pestaña **Proformas FACTUSOL** → *Nueva proforma*. Tres
+Ficha de empresa → pestaña **Proformas FACTUSOL** → *Nueva proforma*. Dos
 modos:
 
-1. **Rápida** — un concepto de texto y un importe. Es la forma *nativa* de
-   F_PRE y la que más se usa. Aun así se guarda como una línea en la caché,
-   así que la proforma sigue siendo duplicable.
-2. **Con artículos** — busca en `F_ART` y compone el desglose. El precio que se
-   propone es `PCOART`, que es **coste**: hay que revisarlo, no es una tarifa
-   de venta. Ver «Buscar artículos» más abajo.
-3. **Duplicar** — parte de una proforma anterior de **cualquier** cliente. Ver
+1. **Con artículos** — tabla de líneas con autocomplete contra `F_ART`. Al
+   elegir un artículo se rellenan SKU, descripción y **precio de venta**. Ver
+   «Buscar artículos» más abajo.
+2. **Duplicar** — parte de una proforma anterior de **cualquier** cliente. Ver
    «Duplicar como plantilla».
+
+> **Una proforma «simple»** (un concepto y un importe, sin catálogo) se hace en
+> «Con artículos» con **una sola línea escrita a mano**, dejando el SKU vacío.
+> Es lo normal para mano de obra, portes o reparaciones.
+>
+> C-4-fix2 retiró la pestaña «Rápida» que hacía exactamente esto: dos caminos
+> para el mismo resultado, y el de «Rápida» además no dejaba añadir una segunda
+> línea sin empezar de cero.
 
 Requisito: la empresa debe estar **vinculada a un cliente de FACTUSOL**
 (`companies.factusol_company_id`, que gestiona C-3). Sin CODCLI la proforma no
@@ -70,6 +75,50 @@ DETART 'CD TQ 700 MB white T'
 > C-4-fix1 arregló justo esto: se buscaba solo en `CODART`/`EANART`/`DESART`,
 > así que teclear «CDR80» no devolvía nada aunque el artículo existiera. La
 > descripción también puede vivir solo en `DEEART`/`DETART`.
+
+El desplegable devuelve hasta **200 resultados** con scroll interno (C-4-fix2;
+antes cortaba en 50 y escondía artículos válidos: «tinta» pasa de 100).
+
+#### El precio de venta se detecta en runtime
+
+`PCOART` es **coste**, nunca lo que se factura. El nombre de la columna de
+**venta** no está verificado contra la base de Bomedia, así que el adaptador
+**no lo fija en el código**: mira las claves que devuelve `CargaTabla` — que
+sirve la fila completa — y usa la primera de `ARTICLE_PRICE_CANDIDATES` que
+exista de verdad (`PVPART`, `PVP1ART`, `PV1ART`, `TAR1ART`, `PRE1ART`,
+`PREART`).
+
+> **Por qué no se hardcodea.** En lectura, `row.get("PVPART")` sobre una columna
+> inexistente devuelve `None` **sin error**: todos los precios saldrían en
+> blanco y no habría un solo log que lo delatara. Es la misma familia de trampa
+> que C-3-fix1, pero más silenciosa.
+
+Si ninguna candidata existe, `precio_venta` es `null`, la UI **deja el campo en
+blanco** (nunca un `0.00`, que invitaría a emitir una proforma a cero sin que
+nadie lo note) y el backend deja un `WARNING` con las columnas reales.
+
+Para confirmar cuál usa esta base:
+
+```bash
+docker compose -f /opt/crmbo/docker-compose.prod.yml exec api \
+    python -m scripts.factusol_discover_article_prices
+```
+
+o, sin shell, mirando `precio_venta_columna` en la respuesta de
+`GET /api/erp/factusol/articles/search?q=...`.
+
+Las tarifas multinivel (`TAR1ART`, `TAR2ART`…) se devuelven en `tarifas` como
+información, pero **ningún cálculo las usa**: es backlog.
+
+### Artículos en el pedido manual
+
+`/erp/orders/new` usa el mismo autocomplete en las columnas **SKU** y
+**Descripción** de cada línea (`<ArticleAutocompleteInput>`, compartido con el
+modal). Al elegir un artículo se rellenan SKU, descripción y precio.
+
+Solo se activa si la empresa elegida está **vinculada a FACTUSOL** — sin CODCLI
+no hay catálogo contra el que buscar. Escribir a mano sigue funcionando: el
+autocomplete sugiere, no obliga.
 
 ### Duplicar como plantilla
 

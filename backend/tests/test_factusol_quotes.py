@@ -24,6 +24,7 @@ from app.db.base import Base
 from app.erp.models import FactusolQuoteLineCache, Order, OrderLine
 from app.integrations.factusol.client import FactusolError
 from app.integrations.factusol.quotes import (
+    ARTICLE_SEARCH_LIMIT,
     REFPRE_MAX_LENGTH,
     build_refpre_from_lines,
     convert_quote_to_order,
@@ -263,6 +264,57 @@ def test_search_articles_matches_equart():
     assert items[0]["equart"] == "CDR80WPT"
     # `sku` es el alias que ve la UI: comercial por delante del interno.
     assert items[0]["sku"] == "CDR80WPT"
+
+
+def test_search_articles_returns_pvp_price():
+    """El precio de VENTA sale de la columna real (PVPART aquí); PCOART es
+    coste y no puede ser lo que se factura."""
+    fake = _FakeFactusol(articles=[{
+        "CODART": "00001", "EQUART": "CDR80WPT", "DESART": "CD TQ 700 MB",
+        "PCOART": 0.25, "PVPART": 0.79, "TIVART": 21,
+    }])
+    item = search_articles(fake, "CDR80", ejercicio="2026")[0]
+    assert item["precio_venta"] == 0.79
+    assert item["precio_venta_columna"] == "PVPART"
+    assert item["precio_coste"] == 0.25
+    assert item["precio"] == 0.79
+
+
+def test_search_articles_detects_tarifa_column_when_no_pvp():
+    """El nombre de la columna de venta NO está verificado contra la base real,
+    así que se detecta en runtime mirando las claves que devuelve la API. Si la
+    base usa tarifas en vez de PVPART, funciona igual sin tocar código."""
+    fake = _FakeFactusol(articles=[{
+        "CODART": "00002", "DESART": "Tinta", "PCOART": 5.0,
+        "TAR1ART": 9.5, "TAR2ART": 8.0, "TIVART": 21,
+    }])
+    item = search_articles(fake, "tinta", ejercicio="2026")[0]
+    assert item["precio_venta_columna"] == "TAR1ART"
+    assert item["precio_venta"] == 9.5
+    # Las tarifas se exponen como información; ningún cálculo las mira.
+    assert item["tarifas"] == {"tar1art": 9.5, "tar2art": 8.0}
+
+
+def test_search_articles_price_is_none_when_no_sales_column():
+    """Sin columna de venta reconocible se devuelve None, NO un 0.00: el
+    frontend deja el campo en blanco y el operador teclea el precio. Forzar
+    cero dejaría emitir proformas a cero sin que nadie lo note."""
+    fake = _FakeFactusol(articles=[{
+        "CODART": "00003", "DESART": "Servicio", "PCOART": 0.0, "TIVART": 21,
+    }])
+    item = search_articles(fake, "servicio", ejercicio="2026")[0]
+    assert item["precio_venta"] is None
+    assert item["precio_venta_columna"] is None
+
+
+def test_search_articles_limit_200():
+    """C-4-fix2: el tope sube de 50 a 200 — «tinta» devuelve más de 100
+    artículos y el desplegable tiene scroll interno."""
+    rows = [{"CODART": f"{i:05d}", "DESART": "tinta", "PVPART": 1.0}
+            for i in range(300)]
+    items = search_articles(_FakeFactusol(articles=rows), "tinta",
+                            ejercicio="2026")
+    assert len(items) == ARTICLE_SEARCH_LIMIT == 200
 
 
 def test_search_articles_matches_deeart():

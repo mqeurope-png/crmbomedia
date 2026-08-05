@@ -725,7 +725,18 @@ export type FactusolArticle = {
   detart: string | null;
   eanart: string | null;
   famart: string | null;
+  /** C-4-fix2: precio de VENTA. `null` si esta base de FACTUSOL no tiene
+   *  ninguna de las columnas candidatas — entonces se deja en blanco y lo
+   *  teclea el operador, nunca se fuerza un 0.00. */
+  precio_venta: number | null;
+  /** Columna real de la que salió `precio_venta` (`PVPART`, `TAR1ART`…). */
+  precio_venta_columna: string | null;
+  /** PCOART: precio de COSTE. Nunca es lo que se factura. */
+  precio_coste: number;
+  /** Venta si la hay, coste como reserva. Compat con C-4/C-4-fix1. */
   precio: number;
+  /** Tarifas multinivel si la base las usa. Informativas: no se calculan. */
+  tarifas?: Record<string, number>;
   stock: number;
   iva_pct: number;
 };
