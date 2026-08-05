@@ -142,6 +142,43 @@ puede cambiar arriba del todo con *Cambiar*.
 Solo se ofrecen como destino empresas **ya vinculadas** a un cliente de
 FACTUSOL: sin `CODCLI` el backend responde `409 company_not_linked`.
 
+### Referencia, descuento y dirección (C-4-fix6)
+
+**Referencia (opcional).** Va al campo «Su ref.» del documento: nº de pedido del
+cliente, código de proyecto, obra… Si se deja vacío, queda vacío.
+
+**DTO % por línea.** Columna entre «Precio ud.» e «IVA %». Va a `DT1LPS`, el
+primero de los tres niveles de descuento de F_LPS (los otros dos no se usan). El
+total de la línea se recalcula en vivo con el mismo cálculo que hace el backend
+para `TOTLPS`, así que lo que se ve es lo que se guarda.
+
+**Dirección de envío.** Si el cliente tiene direcciones adicionales en FACTUSOL
+(`ACO1CLI`…`ACO4CLI`), aparece un desplegable para elegir a cuál va la proforma
+— por ejemplo, una delegación distinta de la sede. Con una sola dirección no se
+muestra nada. El CRM **solo elige** entre las que ya existan: crearlas o
+editarlas se hace en FACTUSOL.
+
+### Editar una proforma
+
+Botón *Editar* en cada fila de la pestaña. Abre el mismo modal precargado, con
+«Guardar cambios» en vez de «Crear proforma». Al guardar se reescribe la
+cabecera (`ActualizarRegistro`) y se **reemplazan** las líneas: se borran las de
+`F_LPS` y se escriben las nuevas. No se intenta un diff porque `F_LPS` se
+identifica por `(TIPLPS, CODLPS, POSLPS)` y casar posiciones acabaría
+reescribiéndolas casi siempre.
+
+**Guard de estado.** Si la proforma no está pendiente (`ESTPRE ≠ 0`), el job la
+rechaza y el modal ofrece *Guardar de todos modos* **sin perder lo escrito** —
+por eso el modal espera al job en vez de cerrarse al encolar.
+
+> El mapeo de `ESTPRE` está sin confirmar: solo sabemos que **1 = aceptada**
+> (proforma 574). El guard protege **cualquier** valor distinto de 0, para que
+> equivocarse solo pueda pedir una confirmación de más. Ver la trampa nº 17 de
+> `reference_delsol_gotchas.md`.
+>
+> **Limitación:** no se detecta aún si la proforma se convirtió a pedido,
+> albarán o factura — no hemos encontrado campo de referencia cruzada.
+
 ### Convertir una proforma en pedido
 
 Desde la misma pestaña, *Convertir en pedido*: crea un **pedido manual del
@@ -175,6 +212,8 @@ Todo bajo `/api/erp/factusol`. Lectura: rol de vista. Escritura: `require_erp_ed
 | GET | `/articles/search?q=` | Busca en las 6 columnas de F_ART |
 | GET | `/quotes?company_id=&days_back=180` | Proformas del cliente. `unlinked: true` si la empresa no tiene CODCLI |
 | GET | `/quotes/search?q=&days_back=365&limit=50` | Proformas de **cualquier** cliente (plantillas) |
+| GET | `/customers/{codcli}/addresses` | Sede (`codigo: 0`) + direcciones adicionales |
+| PATCH | `/quotes/{codpre}` | Reescribe cabecera + líneas → **202 + job_id** |
 | GET | `/quotes/{codpre}` | Proforma + desglose + `line_source` |
 | GET | `/quotes/status/{job_id}` | Estado del job (`pending` / `finished` / `failed`) |
 | POST | `/quotes` | Crea la proforma → **202 + job_id** |

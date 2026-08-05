@@ -47,6 +47,17 @@ from app.integrations.factusol.client import FactusolClient, FactusolError
 
 logger = logging.getLogger(__name__)
 
+
+class QuoteNotEditableError(FactusolError):
+    """La proforma no está en un estado que admita edición sin confirmar.
+
+    Se distingue de `FactusolError` para que la API responda 409 (el operador
+    puede reintentar con `force`) en vez de 502 (fallo de FACTUSOL)."""
+
+    def __init__(self, message: str, *, estado: int | None = None):
+        super().__init__(message)
+        self.estado = estado
+
 #: Cabecera de presupuestos/proformas.
 TABLE_QUOTES = "F_PRE"
 #: **Líneas** de presupuesto. `CODLPS` referencia a `F_PRE.CODPRE`.
@@ -465,7 +476,9 @@ def build_quote_payload(
         "CCPPRE": str(customer.get("cp") or "")[:20],
         "CPRPRE": str(customer.get("provincia") or "")[:255],
         "CNIPRE": str(customer.get("nif") or "")[:64],
-        "CPAPRE": DEFAULT_CPAPRE,
+        # El país puede venir de una dirección alternativa del cliente; si no,
+        # España (todas las proformas de la base real llevan 724).
+        "CPAPRE": str(customer.get("pais") or "").strip() or DEFAULT_CPAPRE,
         "ALMPRE": DEFAULT_ALMPRE,
         "NET1PRE": totals["base"],
         "PIVA1PRE": totals["iva_pct"],
@@ -682,6 +695,88 @@ def create_quote(
         result["warning"] = (
             f"La proforma {codpre} se creó con {written} de {len(lines)} líneas. "
             "Revísala en FACTUSOL antes de enviarla."
+        )
+    return result
+
+
+#: `ESTPRE` = estado del presupuesto. **Solo hay un valor confirmado**: la
+#: proforma 574 tiene `ESTPRE=1` y el escritorio la muestra como «Aceptado».
+#: El resto del mapeo (¿2=rechazado? ¿3=facturado?) está sin verificar.
+#:
+#: Por eso el guard NO se apoya en adivinar cada valor: se apoya en que **0 es
+#: el estado inicial** —el default con el que FACTUSOL crea las filas, igual que
+#: `IVALPS=0` o `TIPPRE='1'`— y cualquier otro valor significa que al documento
+#: le ha pasado algo. Con eso, equivocarse solo puede pedir una confirmación de
+#: más, nunca sobrescribir en silencio una proforma ya aceptada o facturada.
+#:
+#: Para cerrarlo: `SELECT DISTINCT ESTPRE, COUNT(*) FROM F_PRE GROUP BY ESTPRE`
+#: (lo hace el script de descubrimiento).
+ESTPRE_PENDING = 0
+#: Etiquetas de los estados que sí conocemos, para el mensaje al operador.
+ESTPRE_LABELS = {0: "pendiente", 1: "aceptada"}
+
+
+def quote_state(client: FactusolClient, codpre: str, *, ejercicio: str) -> int | None:
+    """`ESTPRE` de la proforma, o None si no existe."""
+    if not str(codpre).strip().isdigit():
+        return None
+    rows = client.load_table(
+        TABLE_QUOTES, filtro=f"CODPRE={int(codpre)}", ejercicio=ejercicio,
+    )
+    if not rows:
+        return None
+    return _int_or_none(rows[0].get("ESTPRE")) or ESTPRE_PENDING
+
+
+def update_quote(
+    client: FactusolClient, codpre: str, *, ejercicio: str,
+    customer: dict[str, Any], lines: list[dict[str, Any]],
+    referencia: str | None = None, force: bool = False,
+) -> dict[str, Any]:
+    """Reescribe una proforma: cabecera con `ActualizarRegistro` y líneas
+    borradas + vueltas a escribir.
+
+    Las líneas se reemplazan enteras en vez de intentar un diff: `F_LPS` se
+    identifica por `(TIPLPS, CODLPS, POSLPS)`, así que un diff tendría que
+    casar posiciones y acabaría reescribiéndolas casi siempre. Borrar y
+    reescribir es más simple y deja el mismo resultado.
+
+    `force` salta el guard de estado (ver `ESTPRE_PENDING`).
+    """
+    estado = quote_state(client, codpre, ejercicio=ejercicio)
+    if estado is None:
+        raise FactusolError(
+            f"La proforma {codpre} no existe en el ejercicio {ejercicio}"
+        )
+    if estado != ESTPRE_PENDING and not force:
+        etiqueta = ESTPRE_LABELS.get(estado, f"en estado {estado}")
+        raise QuoteNotEditableError(
+            f"La proforma {codpre} está {etiqueta} en FACTUSOL. Modificarla "
+            "cambia un documento que el cliente ya puede haber recibido.",
+            estado=estado,
+        )
+
+    header = build_quote_payload(
+        str(codpre), ejercicio=ejercicio, customer=customer,
+        refpre=(referencia or "").strip(), lines=lines,
+    )
+    # En un UPDATE no se tocan ni el código ni la fecha de creación: el primero
+    # es la clave y la segunda es cuándo nació el documento, no cuándo se editó.
+    header.pop("FECPRE", None)
+    client.update_record(TABLE_QUOTES, header, ejercicio=ejercicio)
+
+    client.delete_records(
+        TABLE_QUOTE_LINES, f"CODLPS={int(codpre)}", ejercicio=ejercicio,
+    )
+    written = _write_quote_lines(client, str(codpre), ejercicio, lines)
+    logger.info("factusol: proforma %s actualizada (%d/%d líneas, estado %s)",
+                codpre, written, len(lines), estado)
+    result = {"codpre": str(codpre), "ejercicio": ejercicio,
+              "updated": True, "lines": written, "estado": estado}
+    if written < len(lines):
+        result["warning"] = (
+            f"La proforma {codpre} se guardó con {written} de {len(lines)} "
+            "líneas. Revísala en FACTUSOL."
         )
     return result
 

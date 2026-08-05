@@ -26,6 +26,8 @@ from app.erp.models import Order, OrderLine
 from app.integrations.factusol.client import FactusolError
 from app.integrations.factusol.quotes import (
     ARTICLE_SEARCH_LIMIT,
+    QuoteNotEditableError,
+    build_quote_line_payload,
     build_quote_payload,
     convert_quote_to_order,
     create_quote,
@@ -37,6 +39,7 @@ from app.integrations.factusol.quotes import (
     quote_lines_for_order,
     resolve_codarts,
     search_articles,
+    update_quote,
 )
 from app.models.crm import Company
 
@@ -56,6 +59,8 @@ class _FakeFactusol:
         self._tariffs = list(tariffs or [])
         self._write_fails_for = write_fails_for
         self.writes: list[tuple[str, dict[str, Any]]] = []
+        self.updates: list[tuple[str, dict[str, Any]]] = []
+        self.deletes: list[tuple[str, str]] = []
         self.filters: list[tuple[str, str]] = []
 
     def load_table(self, tabla, *, filtro="1=1", ejercicio=None):
@@ -99,8 +104,19 @@ class _FakeFactusol:
         self.writes.append((tabla, dict(data)))
         return {"respuesta": "OK"}
 
+    def update_record(self, tabla, data, *, ejercicio=None):
+        self.updates.append((tabla, dict(data)))
+        return {"respuesta": "OK"}
+
+    def delete_records(self, tabla, filtro, *, ejercicio=None):
+        self.deletes.append((tabla, filtro))
+        return {"respuesta": "OK"}
+
     def writes_to(self, tabla: str) -> list[dict[str, Any]]:
         return [data for t, data in self.writes if t == tabla]
+
+    def updates_to(self, tabla: str) -> list[dict[str, Any]]:
+        return [data for t, data in self.updates if t == tabla]
 
 
 def _quote_row(codpre: int, *, clipre="55555", fecha="2026-08-01",
@@ -575,6 +591,120 @@ def test_create_quote_keeps_explicit_reference(session):
         referencia="Pedido telefónico Marta",
     )
     assert fake.writes_to("F_PRE")[0]["REFPRE"] == "Pedido telefónico Marta"
+
+
+# --- edición de proformas (C-4-fix6) ----------------------------------------
+
+
+def test_patch_quote_updates_header_and_replaces_lines():
+    """Las líneas se reemplazan enteras: F_LPS se identifica por
+    (TIPLPS, CODLPS, POSLPS), así que un diff acabaría reescribiéndolas casi
+    siempre. Borrar y reescribir da el mismo resultado con menos que salir mal."""
+    fake = _FakeFactusol(
+        quotes=[{**_quote_row(700), "ESTPRE": 0}],
+        lines=[_line_row(700, 1, art="VIEJO", desc="Línea vieja")],
+        articles=[{"CODART": "NUEVO"}],
+    )
+    result = update_quote(
+        fake, "700", ejercicio="2026",
+        customer={"codcli": "55555", "nombre": "Acme SL"},
+        lines=[{"codart": "NUEVO", "description": "Línea nueva",
+                "quantity": 2, "unit_price": 50}],
+        referencia="PROY-2026-42",
+    )
+    assert result["updated"] is True
+
+    header = fake.updates_to("F_PRE")[0]
+    assert header["CODPRE"] == "700"
+    assert header["REFPRE"] == "PROY-2026-42"
+    # La fecha de creación no se toca al editar.
+    assert "FECPRE" not in header
+
+    assert fake.deletes == [("F_LPS", "CODLPS=700")]
+    written = fake.writes_to("F_LPS")
+    assert len(written) == 1
+    assert written[0]["DESLPS"] == "Línea nueva"
+    assert written[0]["ARTLPS"] == "NUEVO"
+
+
+def test_patch_quote_rejects_accepted_without_force():
+    """ESTPRE≠0 significa que al documento le ha pasado algo (la 574, aceptada,
+    tiene ESTPRE=1). Sin `force` no se sobrescribe."""
+    fake = _FakeFactusol(quotes=[{**_quote_row(701), "ESTPRE": 1}])
+    with pytest.raises(QuoteNotEditableError) as exc:
+        update_quote(
+            fake, "701", ejercicio="2026", customer={"codcli": "55555"},
+            lines=[{"description": "X", "quantity": 1, "unit_price": 1}],
+        )
+    assert exc.value.estado == 1
+    assert "aceptada" in str(exc.value)
+    # Y no ha tocado nada.
+    assert fake.updates == [] and fake.deletes == [] and fake.writes == []
+
+
+def test_patch_quote_allows_accepted_with_force():
+    fake = _FakeFactusol(quotes=[{**_quote_row(702), "ESTPRE": 1}])
+    result = update_quote(
+        fake, "702", ejercicio="2026", customer={"codcli": "55555"},
+        lines=[{"description": "X", "quantity": 1, "unit_price": 1}],
+        force=True,
+    )
+    assert result["updated"] is True
+    assert fake.updates_to("F_PRE")
+
+
+def test_patch_quote_protects_unknown_states_too():
+    """El mapeo completo de ESTPRE no está verificado (solo sabemos que 1 es
+    «aceptada»). Un estado desconocido se protege igual: equivocarse solo puede
+    pedir una confirmación de más, nunca pisar un documento ya cerrado."""
+    fake = _FakeFactusol(quotes=[{**_quote_row(703), "ESTPRE": 7}])
+    with pytest.raises(QuoteNotEditableError) as exc:
+        update_quote(
+            fake, "703", ejercicio="2026", customer={"codcli": "55555"},
+            lines=[{"description": "X", "quantity": 1, "unit_price": 1}],
+        )
+    assert "estado 7" in str(exc.value)
+
+
+def test_patch_quote_fails_if_missing():
+    with pytest.raises(FactusolError, match="no existe"):
+        update_quote(
+            _FakeFactusol(), "404", ejercicio="2026",
+            customer={"codcli": "55555"},
+            lines=[{"description": "X", "quantity": 1, "unit_price": 1}],
+        )
+
+
+# --- descuento y dirección ---------------------------------------------------
+
+
+def test_build_quote_line_payload_writes_dt1lps():
+    payload = build_quote_line_payload(
+        "800", 1,
+        {"description": "Vinilo", "quantity": 2, "unit_price": 100,
+         "discount_pct": 15},
+    )
+    assert payload["DT1LPS"] == 15.0
+    assert payload["TOTLPS"] == 170.0  # 2 × 100 − 15 %
+
+
+def test_create_quote_uses_selected_address(session):
+    """La dirección elegida manda sobre la de la sede."""
+    fake = _FakeFactusol()
+    create_quote(
+        fake, session, ejercicio="2026",
+        customer={"codcli": "55555", "nombre": "Acme SL",
+                  "direccion": "Delegación Norte, Pol. 4",
+                  "ciudad": "Bilbao", "cp": "48001", "provincia": "Bizkaia",
+                  "pais": "724"},
+        lines=[{"description": "X", "quantity": 1, "unit_price": 1}],
+    )
+    header = fake.writes_to("F_PRE")[0]
+    assert header["CDOPRE"] == "Delegación Norte, Pol. 4"
+    assert header["CPOPRE"] == "Bilbao"
+    assert header["CCPPRE"] == "48001"
+    assert header["CPRPRE"] == "Bizkaia"
+    assert header["CPAPRE"] == "724"
 
 
 def test_create_quote_line_payload_applies_discount(session):

@@ -126,6 +126,32 @@ def search_customers_endpoint(
     return {"items": found, "ejercicio": ejercicio}
 
 
+@router.get("/customers/{codcli}/addresses")
+def customer_addresses_endpoint(
+    codcli: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_view),
+) -> dict[str, Any]:
+    """Direcciones del cliente F_CLI: la principal (`codigo: 0`) más las
+    adicionales configuradas (`ACO1CLI`…`ACO4CLI`) — las que el escritorio
+    enseña en el botón «Direcciones».
+
+    Para mandar una proforma a una delegación distinta de la sede. Solo
+    lectura: se elige entre las que ya existan, nunca se editan desde el CRM."""
+    _ = current_user
+    from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
+    from app.integrations.factusol.customers import (  # noqa: PLC0415
+        customer_addresses,
+    )
+
+    client, ejercicio = _client_and_ejercicio(session)
+    try:
+        items = customer_addresses(client, codcli, ejercicio=ejercicio)
+    except FactusolError as exc:
+        raise _factusol_gateway_error(exc, "factusol_addresses_failed") from exc
+    return {"items": items, "ejercicio": ejercicio}
+
+
 class LinkCustomerPayload(BaseModel):
     crm_type: str = Field(pattern="^(company|contact)$")
     #: Los IDs del CRM son UUID (String 36), no enteros.
@@ -477,14 +503,34 @@ def _rq_quote_status(job_id: str) -> dict[str, Any]:
         job = Job.fetch(job_id, connection=conn)
         rq_status = job.get_status(refresh=True)
         if rq_status == "failed":
-            return {"status": "failed",
-                    "error": (job.exc_info or "la operación falló")[-400:]}
+            return _failed_status(job.exc_info or "")
         if rq_status == "finished":
             return {"status": "finished", "result": job.result}
         return {"status": "pending"}
     except Exception as exc:  # noqa: BLE001 — sin Redis o job caducado
         logger.debug("factusol quote job %s no consultable: %s", job_id, exc)
         return {"status": "pending"}
+
+
+#: Marcador del rechazo por estado dentro del traceback que guarda RQ.
+_NOT_EDITABLE_MARKER = "QuoteNotEditableError"
+
+
+def _failed_status(exc_info: str) -> dict[str, Any]:
+    """Traduce el fallo de un job a algo que el frontend pueda tratar.
+
+    El PATCH responde 202, así que el rechazo por estado («la proforma está
+    aceptada») llega por aquí y no como un 409. Se marca con un `code` propio
+    para que la UI pueda ofrecer «Editar de todos modos» en vez de enseñar un
+    error genérico — y NO lo haga cuando el fallo es otra cosa.
+    """
+    if _NOT_EDITABLE_MARKER in exc_info:
+        # Última línea del traceback: «…QuoteNotEditableError: <mensaje>».
+        last = exc_info.strip().splitlines()[-1]
+        detail = last.split(": ", 1)[1] if ": " in last else last
+        return {"status": "failed", "code": "quote_not_editable",
+                "error": detail}
+    return {"status": "failed", "error": (exc_info or "la operación falló")[-400:]}
 
 
 @router.get("/quotes/{codpre}")
@@ -523,16 +569,42 @@ class QuoteLineIn(BaseModel):
     iva_pct: float = Field(default=21, ge=0, le=100)
 
 
+class QuoteAddressIn(BaseModel):
+    """Dirección de envío elegida entre las que el cliente ya tiene en
+    FACTUSOL. El CRM no las edita, solo escoge (C-4-fix6)."""
+
+    direccion: str = Field(default="", max_length=255)
+    ciudad: str = Field(default="", max_length=255)
+    cp: str = Field(default="", max_length=20)
+    provincia: str = Field(default="", max_length=255)
+    pais: str = Field(default="", max_length=10)
+
+
 class CreateQuotePayload(BaseModel):
     """Alta de proforma. El cliente sale de la empresa CRM vinculada; el
     operador solo elige líneas (o escribe una referencia libre)."""
 
     company_id: str = Field(min_length=1, max_length=36)
-    #: Modo «rápido»: una referencia de texto sin desglose.
+    #: «Su ref.» del documento: nº de pedido del cliente, obra, proyecto…
     referencia: str = Field(default="", max_length=250)
     lines: list[QuoteLineIn] = Field(default_factory=list)
     fecha: str | None = Field(default=None, max_length=10)
     fopfac: str | None = Field(default=None, max_length=10)
+    #: Dirección alternativa; None → la de la empresa CRM.
+    address: QuoteAddressIn | None = None
+
+
+def _apply_address(
+    customer: dict[str, Any], address: QuoteAddressIn | None,
+) -> dict[str, Any]:
+    """Sobrescribe la dirección del cliente con la elegida por el operador.
+
+    Solo pisa los campos que vengan con valor: una dirección alternativa sin
+    provincia no debe borrar la de la sede."""
+    if address is None:
+        return customer
+    chosen = {k: v.strip() for k, v in address.model_dump().items() if v.strip()}
+    return {**customer, **chosen}
 
 
 def _customer_from_company(session: Session, company_id: str) -> dict[str, Any]:
@@ -583,7 +655,9 @@ def create_quote_endpoint(
             "code": "empty_quote",
             "detail": "Añade al menos una línea o escribe una referencia.",
         })
-    customer = _customer_from_company(session, payload.company_id)
+    customer = _apply_address(
+        _customer_from_company(session, payload.company_id), payload.address,
+    )
     job_id = enqueue_create_quote(
         customer,
         [line.model_dump() for line in payload.lines],
@@ -596,6 +670,47 @@ def create_quote_endpoint(
                                       "lines": len(payload.lines)})
     session.commit()
     return {"job_id": job_id, "status": "queued"}
+
+
+class UpdateQuotePayload(CreateQuotePayload):
+    """Edición de proforma. Mismo cuerpo que el alta más `force`, que salta el
+    guard de estado (ver `quotes.ESTPRE_PENDING`)."""
+
+    force: bool = False
+
+
+@router.patch("/quotes/{codpre}", status_code=202)
+def update_quote_endpoint(
+    codpre: str,
+    payload: UpdateQuotePayload,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_edit),
+) -> dict[str, Any]:
+    """Encola la reescritura de la proforma (cabecera + líneas).
+
+    El job comprueba `ESTPRE` antes de tocar nada: si la proforma no está
+    pendiente, falla y el frontend ofrece reintentar con `force`. La
+    comprobación va en el job, no aquí, porque entre el 202 y la escritura
+    puede pasar tiempo — validarlo ahora no garantizaría nada."""
+    from app.integrations.factusol.jobs import enqueue_update_quote  # noqa: PLC0415
+
+    if not payload.lines and not payload.referencia.strip():
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, {
+            "code": "empty_quote",
+            "detail": "Añade al menos una línea o escribe una referencia.",
+        })
+    customer = _apply_address(
+        _customer_from_company(session, payload.company_id), payload.address,
+    )
+    job_id = enqueue_update_quote(
+        codpre, customer, [line.model_dump() for line in payload.lines],
+        payload.referencia.strip() or None, payload.force,
+    )
+    _audit_quote(session, current_user, "erp.factusol_quote_update", codpre,
+                 {"job_id": job_id, "lines": len(payload.lines),
+                  "force": payload.force})
+    session.commit()
+    return {"job_id": job_id, "status": "queued", "codpre": codpre}
 
 
 @router.post("/quotes/{codpre}/duplicate", status_code=202)

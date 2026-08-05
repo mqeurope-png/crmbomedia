@@ -5,8 +5,12 @@ import { listCompanies, type Company } from "../../lib/companiesApi";
 import { extractErrorMessage } from "../../lib/errors";
 import {
   createFactusolQuote,
+  getFactusolCustomerAddresses,
   getFactusolQuote,
   searchFactusolQuotes,
+  updateFactusolQuote,
+  waitForQuoteJob,
+  type FactusolAddress,
   type FactusolArticle,
   type FactusolQuote,
 } from "../../lib/erpApi";
@@ -19,11 +23,14 @@ type LineRow = {
   description: string;
   quantity: string;
   unit_price: string;
+  /** DTO % → `DT1LPS`, el primero de los 3 niveles de descuento de F_LPS. */
+  discount_pct: string;
   iva_pct: string;
 };
 
 const EMPTY_LINE: LineRow = {
-  codart: "", description: "", quantity: "1", unit_price: "", iva_pct: "21",
+  codart: "", description: "", quantity: "1", unit_price: "",
+  discount_pct: "0", iva_pct: "21",
 };
 
 const DEBOUNCE_MS = 300;
@@ -37,6 +44,12 @@ function num(v: string): number {
 
 function today(): string {
   return new Date().toISOString().slice(0, 10);
+}
+
+/** Total de la línea con el descuento aplicado — el mismo cálculo que hace el
+ *  backend para `TOTLPS`, para que lo que se ve cuadre con lo que se escribe. */
+function lineTotal(l: LineRow): number {
+  return num(l.quantity) * num(l.unit_price) * (1 - num(l.discount_pct) / 100);
 }
 
 /** Alta de proforma FACTUSOL. Dos modos:
@@ -54,23 +67,37 @@ function today(): string {
 export function CreateQuoteModal({
   companyId,
   companyName,
+  factusolCodcli,
+  editCodpre,
   onCreated,
   onCancel,
 }: {
   companyId: string;
   companyName: string;
+  /** CODCLI del cliente, para cargar sus direcciones. */
+  factusolCodcli?: string | null;
+  /** Si viene, el modal edita esa proforma en vez de crear una nueva. */
+  editCodpre?: string | null;
   onCreated: (jobId: string) => void;
   onCancel: () => void;
 }) {
+  const editing = Boolean(editCodpre);
   const [mode, setMode] = useState<Mode>("articles");
   const [lines, setLines] = useState<LineRow[]>([{ ...EMPTY_LINE }]);
   const [fecha, setFecha] = useState(today());
+  const [referencia, setReferencia] = useState("");
+  // Direcciones del cliente: la sede + las adicionales de FACTUSOL.
+  const [addresses, setAddresses] = useState<FactusolAddress[]>([]);
+  const [addressCode, setAddressCode] = useState(0);
   // Cliente DESTINO: arranca en la empresa desde la que se abrió el modal.
   const [targetId, setTargetId] = useState(companyId);
   const [targetName, setTargetName] = useState(companyName);
+  const [targetCodcli, setTargetCodcli] = useState(factusolCodcli ?? null);
   const [changingTarget, setChangingTarget] = useState(false);
   const [targetQuery, setTargetQuery] = useState("");
   const [targetOptions, setTargetOptions] = useState<Company[]>([]);
+  // Reintento tras «esta proforma está aceptada».
+  const [needsForce, setNeedsForce] = useState(false);
   // Modo duplicar: búsqueda libre entre TODAS las proformas.
   const [templateQuery, setTemplateQuery] = useState("");
   const [templates, setTemplates] = useState<FactusolQuote[]>([]);
@@ -107,8 +134,48 @@ export function CreateQuoteModal({
     return () => window.clearTimeout(handle);
   }, [changingTarget, targetQuery]);
 
+  // Direcciones del cliente destino. Si solo hay la principal no se enseña
+  // selector: sería una lista de un elemento.
+  useEffect(() => {
+    if (!targetCodcli) {
+      setAddresses([]);
+      return;
+    }
+    let alive = true;
+    getFactusolCustomerAddresses(targetCodcli)
+      .then((items) => { if (alive) setAddresses(items); })
+      .catch(() => { if (alive) setAddresses([]); });
+    return () => { alive = false; };
+  }, [targetCodcli]);
+
+  // Modo edición: precarga la proforma que se va a modificar.
+  useEffect(() => {
+    if (!editCodpre) return;
+    let alive = true;
+    getFactusolQuote(editCodpre)
+      .then((quote) => {
+        if (!alive) return;
+        setReferencia(quote.referencia ?? "");
+        const rows = (quote.lines ?? []).map((l) => ({
+          codart: l.codart ?? "",
+          description: l.description,
+          quantity: String(l.quantity),
+          unit_price: String(l.unit_price),
+          discount_pct: String(l.discount_pct ?? 0),
+          iva_pct: String(l.iva_pct),
+        }));
+        setLines(rows.length > 0 ? rows : [{ ...EMPTY_LINE }]);
+      })
+      .catch((e) => {
+        if (alive) setError(extractErrorMessage(e, "No se pudo cargar la proforma."));
+      });
+    return () => { alive = false; };
+  }, [editCodpre]);
+
   const total = useMemo(
-    () => lines.reduce((sum, l) => sum + num(l.quantity) * num(l.unit_price), 0),
+    () => lines.reduce(
+      (sum, l) => sum + lineTotal(l), 0,
+    ),
     [lines],
   );
 
@@ -146,6 +213,7 @@ export function CreateQuoteModal({
         description: l.description,
         quantity: String(l.quantity),
         unit_price: String(l.unit_price),
+        discount_pct: String(l.discount_pct ?? 0),
         iva_pct: String(l.iva_pct),
       }));
       if (rows.length > 0) {
@@ -166,36 +234,65 @@ export function CreateQuoteModal({
 
   const valid = lines.some((l) => l.description.trim() && num(l.quantity) > 0);
 
-  async function submit() {
+  async function submit(force = false) {
     if (!valid) return;
     setSubmitting(true);
     setError(null);
+    const chosen = addresses.find((a) => a.codigo === addressCode);
+    const payload = {
+      company_id: targetId,
+      referencia: referencia.trim(),
+      lines: lines
+        .filter((l) => l.description.trim() && num(l.quantity) > 0)
+        .map((l) => ({
+          codart: l.codart.trim() || undefined,
+          description: l.description.trim(),
+          quantity: num(l.quantity),
+          unit_price: num(l.unit_price),
+          discount_pct: num(l.discount_pct),
+          iva_pct: num(l.iva_pct),
+        })),
+      fecha: fecha || null,
+      // Solo se manda si el operador eligió una alternativa: la principal ya
+      // es lo que el backend toma de la empresa CRM.
+      address: chosen && chosen.codigo !== 0 ? {
+        direccion: chosen.direccion, ciudad: chosen.ciudad, cp: chosen.cp,
+        provincia: chosen.provincia, pais: chosen.pais,
+      } : null,
+    };
     try {
-      const r = await createFactusolQuote({
-        company_id: targetId,
-        lines: lines
-          .filter((l) => l.description.trim() && num(l.quantity) > 0)
-          .map((l) => ({
-            codart: l.codart.trim() || undefined,
-            description: l.description.trim(),
-            quantity: num(l.quantity),
-            unit_price: num(l.unit_price),
-            iva_pct: num(l.iva_pct),
-          })),
-        fecha: fecha || null,
-      });
+      const r = editCodpre
+        ? await updateFactusolQuote(editCodpre, { ...payload, force })
+        : await createFactusolQuote(payload);
+      // Se espera al job aquí para poder ofrecer «Guardar de todos modos» sin
+      // que el operador pierda lo que acaba de escribir: si el modal se
+      // cerrase al encolar, el rechazo por estado llegaría con el formulario
+      // ya desmontado.
+      const outcome = await waitForQuoteJob(r.job_id);
+      if (outcome.status === "failed") {
+        if (outcome.code === "quote_not_editable") {
+          setNeedsForce(true);
+          setError(outcome.error ?? "La proforma no está en estado editable.");
+        } else {
+          setError(outcome.error ?? "La operación falló en FACTUSOL.");
+        }
+        setSubmitting(false);
+        return;
+      }
       onCreated(r.job_id);
     } catch (e) {
-      setError(extractErrorMessage(e, "No se pudo crear la proforma."));
+      setError(extractErrorMessage(
+        e, editing ? "No se pudo guardar la proforma."
+                   : "No se pudo crear la proforma."));
       setSubmitting(false);
     }
   }
 
   return (
     <div className="modal-overlay" role="dialog" aria-modal="true"
-         aria-label="Nueva proforma FACTUSOL">
+         aria-label={editing ? "Editar proforma FACTUSOL" : "Nueva proforma FACTUSOL"}>
       <div className="modal-dialog modal-wide">
-        <h2>Nueva proforma</h2>
+        <h2>{editing ? `Editar proforma nº ${editCodpre}` : "Nueva proforma"}</h2>
 
         <div className="erp-quote-target">
           <span>
@@ -221,6 +318,8 @@ export function CreateQuoteModal({
                      if (hit) {
                        setTargetId(hit.id);
                        setTargetName(hit.name);
+                       setTargetCodcli(hit.factusol_company_id ?? null);
+                       setAddressCode(0);
                        setChangingTarget(false);
                      }
                    }} />
@@ -230,8 +329,38 @@ export function CreateQuoteModal({
           </label>
         ) : null}
 
+        {/* Solo se ofrece si el cliente tiene alguna dirección adicional. */}
+        {addresses.length > 1 ? (
+          <label className="field">
+            <span>Dirección de envío</span>
+            <select value={addressCode} aria-label="Dirección de envío"
+                    onChange={(e) => setAddressCode(Number(e.target.value))}>
+              {addresses.map((a) => (
+                <option key={a.codigo} value={a.codigo}>
+                  {a.nombre}
+                  {a.direccion ? ` — ${a.direccion}` : ""}
+                  {a.ciudad ? `, ${a.ciudad}` : ""}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : null}
+
+        <label className="field">
+          <span>Referencia (opcional)</span>
+          <input type="text" value={referencia} maxLength={250}
+                 aria-label="Referencia (opcional)"
+                 placeholder="Ej: nº pedido cliente, código proyecto, obra…"
+                 onChange={(e) => setReferencia(e.target.value)} />
+        </label>
+        <span className="muted small">
+          Va al campo «Su ref.» del documento. Si lo dejas vacío, queda vacío.
+        </span>
+
         <p className="form-error">
-          Se creará un presupuesto <strong>real</strong> en FACTUSOL.
+          {editing
+            ? <>Se modificará un presupuesto <strong>real</strong> de FACTUSOL.</>
+            : <>Se creará un presupuesto <strong>real</strong> en FACTUSOL.</>}
         </p>
         {error ? <p className="form-error">{error}</p> : null}
         {notice ? <p className="form-info" role="status">{notice}</p> : null}
@@ -292,7 +421,8 @@ export function CreateQuoteModal({
               <thead>
                 <tr>
                   <th>SKU (opcional)</th><th>Descripción</th><th>Cant.</th>
-                  <th>Precio ud.</th><th>IVA %</th><th>Total</th><th />
+                  <th>Precio ud.</th><th>DTO %</th><th>IVA %</th>
+                  <th>Total</th><th />
                 </tr>
               </thead>
               <tbody>
@@ -327,11 +457,17 @@ export function CreateQuoteModal({
                              onChange={(e) => updateLine(i, "unit_price", e.target.value)} />
                     </td>
                     <td>
+                      <input type="number" min="0" max="100" step="0.01"
+                             value={l.discount_pct}
+                             aria-label={`Descuento línea ${i + 1}`}
+                             onChange={(e) => updateLine(i, "discount_pct", e.target.value)} />
+                    </td>
+                    <td>
                       <input type="number" min="0" step="1" value={l.iva_pct}
                              aria-label={`IVA línea ${i + 1}`}
                              onChange={(e) => updateLine(i, "iva_pct", e.target.value)} />
                     </td>
-                    <td>{(num(l.quantity) * num(l.unit_price)).toFixed(2)}</td>
+                    <td>{lineTotal(l).toFixed(2)}</td>
                     <td>
                       {lines.length > 1 ? (
                         <button type="button" className="button small secondary"
@@ -360,8 +496,8 @@ export function CreateQuoteModal({
               </p>
             </div>
             <p className="muted small">
-              FACTUSOL guarda el presupuesto en una sola línea: el desglose se
-              resume en su referencia y el detalle completo lo conserva el CRM.
+              Las líneas se guardan en FACTUSOL (F_LPS) y se ven igual en el
+              escritorio. El descuento va al primer nivel (DTO 1).
             </p>
           </>
         )}
@@ -371,10 +507,19 @@ export function CreateQuoteModal({
                   onClick={onCancel} disabled={submitting}>
             Cancelar
           </button>
-          <button type="button" className="button"
-                  onClick={submit} disabled={!valid || submitting}>
-            {submitting ? "Creando…" : "Crear proforma"}
-          </button>
+          {needsForce ? (
+            <button type="button" className="button danger"
+                    onClick={() => submit(true)} disabled={submitting}>
+              {submitting ? "Guardando…" : "Guardar de todos modos"}
+            </button>
+          ) : (
+            <button type="button" className="button"
+                    onClick={() => submit()} disabled={!valid || submitting}>
+              {submitting
+                ? (editing ? "Guardando…" : "Creando…")
+                : (editing ? "Guardar cambios" : "Crear proforma")}
+            </button>
+          )}
         </div>
       </div>
     </div>

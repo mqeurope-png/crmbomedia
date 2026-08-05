@@ -13,6 +13,10 @@ jest.mock("../../lib/erpApi", () => ({
   listFactusolQuotes: jest.fn(),
   // El modal hijo usa estos; se dejan inertes.
   createFactusolQuote: jest.fn(),
+  updateFactusolQuote: jest.fn(),
+  getFactusolQuote: jest.fn(),
+  getFactusolCustomerAddresses: jest.fn(),
+  waitForQuoteJob: jest.fn(),
   duplicateFactusolQuote: jest.fn(),
   searchFactusolArticles: jest.fn(),
 }));
@@ -55,6 +59,14 @@ describe("CompanyQuotesPanel", () => {
     render(<CompanyQuotesPanel {...base()} />);
     expect(await screen.findByText("Instalación sala 3")).toBeInTheDocument();
     expect(screen.getByText("121.00 €")).toBeInTheDocument();
+  });
+
+  it("cada proforma ofrece Editar además de Convertir en pedido", async () => {
+    mockList.mockResolvedValue({ items: [quote()], unlinked: false });
+    render(<CompanyQuotesPanel {...base()} />);
+    expect(await screen.findByRole("button", { name: "Editar" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Convertir en pedido" }))
+      .toBeInTheDocument();
   });
 
   it("convertir en pedido encola, espera al job y avisa del pedido creado", async () => {

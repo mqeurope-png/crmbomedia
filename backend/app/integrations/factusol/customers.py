@@ -105,6 +105,62 @@ def search_customers(
     return [_row_to_customer(r) for r in rows[:SEARCH_NAME_LIMIT]]
 
 
+#: FACTUSOL guarda hasta 4 direcciones ADICIONALES por cliente, con sufijo
+#: numérico: `ACO1CLI`…`ACO4CLI` (nombre), `ADOxCLI` (domicilio), `APOxCLI`
+#: (población), `ACPxCLI` (CP), `APRxCLI` (provincia), `APAxCLI` (país). Son las
+#: que el escritorio enseña en el botón «Direcciones». Una dirección cuenta como
+#: configurada si su `ACOxCLI` no está vacío.
+MAX_EXTRA_ADDRESSES = 4
+#: `{clave expuesta: prefijo de columna}`. El sufijo `xCLI` se compone con el
+#: índice: `ADO` + `2` + `CLI` → `ADO2CLI`.
+ADDRESS_COLUMN_PREFIXES = {
+    "nombre": "ACO", "direccion": "ADO", "ciudad": "APO",
+    "cp": "ACP", "provincia": "APR", "pais": "APA",
+}
+
+
+def customer_addresses(
+    client: FactusolClient, codcli: str, *, ejercicio: str,
+) -> list[dict[str, Any]]:
+    """Direcciones del cliente: la principal + las adicionales configuradas.
+
+    La principal va siempre primero, con `codigo=0`. De las adicionales solo se
+    devuelven las que tengan nombre (`ACOxCLI`), que es como FACTUSOL marca que
+    esa dirección existe.
+
+    Sirve para que el operador mande la proforma a una delegación distinta de la
+    sede sin salir del CRM. **Solo lectura**: elegir entre las que ya existan,
+    nunca editarlas (eso se hace en FACTUSOL).
+    """
+    rows = client.load_table(
+        "F_CLI", filtro=f"CODCLI={int(codcli)}", ejercicio=ejercicio,
+    ) if str(codcli).strip().isdigit() else []
+    if not rows:
+        return []
+    row = rows[0]
+
+    def _text(column: str) -> str:
+        return str(row.get(column) or "").strip()
+
+    out = [{
+        "codigo": 0,
+        "nombre": "(principal)",
+        "direccion": _text("DOMCLI"),
+        "ciudad": _text("POBCLI"),
+        "cp": _text("CPOCLI"),
+        "provincia": _text("PROCLI"),
+        "pais": _text("PAICLI"),
+    }]
+    for i in range(1, MAX_EXTRA_ADDRESSES + 1):
+        extra = {
+            key: _text(f"{prefix}{i}CLI")
+            for key, prefix in ADDRESS_COLUMN_PREFIXES.items()
+        }
+        if extra["nombre"]:
+            out.append({"codigo": i, **extra})
+    return out
+
+
 def crm_links_for(session: Session, codclis: list[str]) -> dict[str, dict[str, str]]:
     """`{codcli: {"type": "company"|"contact", "id": …, "name": …}}` para los
     CODCLI que ya están vinculados en el CRM (cross-check de la búsqueda)."""
