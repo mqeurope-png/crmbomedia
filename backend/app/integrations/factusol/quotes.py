@@ -337,9 +337,28 @@ def _row_to_quote_line(row: dict[str, Any]) -> dict[str, Any]:
         "unit_price": _num(row.get("PRELPS")),
         "discount_pct": _num(row.get("DT1LPS")),
         "line_total": _num(row.get("TOTLPS")),
-        # IVALPS vacío en líneas de texto libre → 21 % por defecto.
-        "iva_pct": _num(row.get("IVALPS")) or DEFAULT_IVA_PCT,
+        "iva_pct": _iva_pct_from_line(row),
     }
+
+
+#: Tipos de IVA que existen en España. Cualquier otro valor en `IVALPS` no
+#: puede ser un porcentaje.
+SPANISH_IVA_RATES = frozenset({0.0, 4.0, 10.0, 21.0})
+
+
+def _iva_pct_from_line(row: dict[str, Any]) -> float:
+    """% de IVA de una línea F_LPS, a prueba de que `IVALPS` sea un código.
+
+    No está confirmado si `IVALPS` guarda el porcentaje o el código de tipo
+    (0=general, 1=reducido…) — ver `build_quote_line_payload`. Mientras no se
+    cierre, se acepta el valor solo si **puede** ser un porcentaje español; un
+    1, 2 o 3 sería un IVA que no existe, así que casi seguro es un código y se
+    cae al 21 % en vez de facturar «al 1 %».
+    """
+    value = _num(row.get("IVALPS"))
+    if value and value in SPANISH_IVA_RATES:
+        return value
+    return DEFAULT_IVA_PCT
 
 
 def list_quote_lines(
@@ -384,27 +403,6 @@ def get_quote(
 
 
 # --- escritura de proformas --------------------------------------------------
-
-
-def build_refpre_from_lines(lines: list[dict[str, Any]]) -> str:
-    """Serializa el desglose en el texto de `REFPRE` (250 caracteres).
-
-    F_PRE es mono-línea: este texto es TODO lo que ve Bart en el FACTUSOL de
-    escritorio, así que se escribe legible (`2x Cable HDMI 3m; 1x Montaje`) y se
-    trunca con «…» si no cabe, en vez de dejar que FACTUSOL lo corte a medias.
-    """
-    parts = []
-    for line in lines:
-        desc = str(line.get("description") or line.get("codart") or "").strip()
-        if not desc:
-            continue
-        qty = _num(line.get("quantity"), 1.0)
-        qty_text = f"{qty:g}"
-        parts.append(f"{qty_text}x {desc}")
-    text = "; ".join(parts)
-    if len(text) <= REFPRE_MAX_LENGTH:
-        return text
-    return text[: REFPRE_MAX_LENGTH - 1].rstrip() + "…"
 
 
 def next_codpre(client: FactusolClient, ejercicio: str) -> str:
@@ -459,7 +457,6 @@ def build_quote_payload(
     payload: dict[str, Any] = {
         "CODPRE": codpre,
         "TIPPRE": DEFAULT_TIPPRE,
-        "REFPRE": refpre[:REFPRE_MAX_LENGTH],
         "FECPRE": fecha or datetime.now(UTC).date().isoformat(),
         "CLIPRE": str(customer.get("codcli") or ""),
         "CNOPRE": str(customer.get("nombre") or "")[:255],
@@ -475,6 +472,12 @@ def build_quote_payload(
         "IIVA1PRE": totals["iva"],
         "TOTPRE": totals["total"],
     }
+    # REFPRE = «Su ref.» del documento. Solo se escribe si el operador la
+    # teclea. C-4 la auto-rellenaba con un resumen de las líneas
+    # («1x UV INK; 1x test»), que desde C-4-fix3 es ruido duplicado: el
+    # desglose de verdad vive en F_LPS y el escritorio lo muestra desde ahí.
+    if refpre:
+        payload["REFPRE"] = refpre[:REFPRE_MAX_LENGTH]
     if customer.get("telefono"):
         payload["TELPRE"] = str(customer["telefono"])[:40]
     if customer.get("email"):
@@ -499,6 +502,17 @@ def build_quote_line_payload(
     qty = _num(line.get("quantity"), 1.0)
     price = _num(line.get("unit_price"))
     discount = _num(line.get("discount_pct"))
+    # ⚠️ IVALPS NO se escribe (C-4-fix5). No está confirmado si guarda el
+    # porcentaje o el CÓDIGO de tipo de IVA (0=general, 1=reducido, …), y la
+    # evidencia apunta a lo segundo: la proforma 574, que abre bien en el
+    # escritorio, tiene IVALPS=0 en todas sus líneas — un 0 % de IVA no tiene
+    # sentido en un presupuesto español, un código «tipo general» sí. La 4350,
+    # que crashea, llevaba IVALPS=21.
+    # Omitir la columna deja que FACTUSOL ponga su default, que es exactamente
+    # el valor que tienen las proformas que funcionan. El IVA de verdad viaja
+    # en la cabecera (PIVA1PRE/IIVA1PRE), así que los totales salen bien igual.
+    # Para cerrarlo: SELECT DISTINCT IVALPS FROM F_LPS (ver el script de
+    # descubrimiento). Si son 0/1/2 → es código y hay que traducir.
     return {
         "TIPLPS": DEFAULT_TIPLPS,
         "CODLPS": codpre,
@@ -509,8 +523,49 @@ def build_quote_line_payload(
         "DT1LPS": discount,
         "PRELPS": price,
         "TOTLPS": round(qty * price * (1 - discount / 100), 2),
-        "IVALPS": _num(line.get("iva_pct"), DEFAULT_IVA_PCT),
     }
+
+
+def resolve_codarts(
+    client: FactusolClient, skus: list[str], *, ejercicio: str,
+) -> dict[str, str]:
+    """`{sku_recibido: CODART interno}` para los SKU que existan en F_ART.
+
+    **Por qué hace falta** (C-4-fix5): el autocomplete muestra `EQUART`, el
+    código comercial (`Ink500mlCY`), porque es el que el operativo reconoce —
+    y el frontend lo devuelve como `codart`. Pero `F_LPS.ARTLPS` tiene que
+    llevar el **CODART interno** (`99cy`): FACTUSOL de escritorio busca el
+    artículo por CODART y, si no lo encuentra, **crashea** al abrir la proforma
+    («UPSS! Excepción no controlada»). Le pasó a la 4350.
+
+    Una sola consulta para toda la proforma: `load_table` devuelve la fila
+    completa, así que un `CODART IN (…) OR EQUART IN (…)` basta para construir
+    el mapa en los dos sentidos. Los SKU que no casen no aparecen en el dict —
+    el llamador los convierte en línea de texto libre.
+    """
+    wanted = [s for s in dict.fromkeys(str(x or "").strip() for x in skus) if s]
+    if not wanted:
+        return {}
+    in_list = ",".join(f"'{_sql_escape(s)}'" for s in wanted)
+    rows = client.load_table(
+        TABLE_ARTICLES,
+        filtro=f"CODART IN ({in_list}) OR EQUART IN ({in_list})",
+        ejercicio=ejercicio,
+    )
+    by_codart: dict[str, str] = {}
+    by_equart: dict[str, str] = {}
+    for row in rows:
+        codart = str(row.get("CODART") or "").strip()
+        if not codart:
+            continue
+        by_codart[codart] = codart
+        equart = str(row.get("EQUART") or "").strip()
+        if equart:
+            by_equart[equart] = codart
+    # El CODART directo manda: si un EQUART coincidiera con el CODART de otro
+    # artículo, quedarse con el match exacto es lo correcto.
+    return {sku: by_codart.get(sku) or by_equart[sku]
+            for sku in wanted if sku in by_codart or sku in by_equart}
 
 
 def _write_quote_lines(
@@ -519,15 +574,40 @@ def _write_quote_lines(
 ) -> int:
     """Escribe las líneas en F_LPS. Devuelve cuántas se escribieron.
 
+    Los SKU se traducen antes a CODART interno (ver `resolve_codarts`): escribir
+    un EQUART en `ARTLPS` hace que el FACTUSOL de escritorio crashee al abrir la
+    proforma.
+
     Si una línea falla NO se propaga: la cabecera F_PRE ya existe, y hacer
     fallar el job llevaría al operador a reintentar y crear una proforma
     **duplicada** en la contabilidad. Se deja constancia en el log y el job
     devuelve el recuento real para que la UI avise. Misma política que la
     caché en C-4, ahora sobre la tabla buena.
     """
+    try:
+        codarts = resolve_codarts(
+            client, [line.get("codart") for line in lines], ejercicio=ejercicio,
+        )
+    except FactusolError:
+        # Sin traducción es mejor no arriesgarse: se escriben las líneas como
+        # texto libre (ARTLPS='') antes que con un código que rompa la proforma.
+        logger.error("factusol: no se pudo resolver los CODART de la proforma "
+                     "%s; las líneas irán sin artículo", codpre, exc_info=True)
+        codarts = {}
+
     written = 0
     for i, line in enumerate(lines, start=1):
-        payload = build_quote_line_payload(codpre, i, line)
+        sku = str(line.get("codart") or "").strip()
+        codart = codarts.get(sku, "")
+        if sku and not codart:
+            logger.warning(
+                "factusol: el SKU %r de la proforma %s no casa con ningún "
+                "CODART ni EQUART de F_ART; la línea %d va como texto libre",
+                sku, codpre, i,
+            )
+        elif codart and codart != sku:
+            logger.info("factusol: SKU %r → CODART %r (vía EQUART)", sku, codart)
+        payload = build_quote_line_payload(codpre, i, {**line, "codart": codart})
         try:
             client.write_record(TABLE_QUOTE_LINES, payload, ejercicio=ejercicio)
             written += 1
@@ -572,7 +652,9 @@ def create_quote(
     if not lines and not (referencia or "").strip():
         raise FactusolError("La proforma necesita al menos una línea o una referencia.")
 
-    refpre = (referencia or "").strip() or build_refpre_from_lines(lines)
+    # Sin referencia explícita, REFPRE se queda vacío (C-4-fix5): el desglose
+    # está en F_LPS y repetirlo resumido en «Su ref.» solo ensucia el documento.
+    refpre = (referencia or "").strip()
     codpre = next_codpre(client, ejercicio)
     payload = build_quote_payload(
         codpre, ejercicio=ejercicio, customer=customer, refpre=refpre,

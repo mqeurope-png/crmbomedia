@@ -208,9 +208,18 @@ acciones tengan el mismo contrato de polling en el frontend.
 toda la base y se deja un `WARNING` en el log — repartir en las bandas 2/3/4
 añadiría riesgo para un caso que Bomedia no tiene.
 
-**Truncado de REFPRE.** El recorte a 250 lo hace el CRM y añade «…», en vez de
-dejar que FACTUSOL corte a medias sin avisar. `REFPRE` sigue siendo el resumen
-legible del presupuesto aunque el desglose real ya viva en F_LPS.
+**REFPRE solo si el operador la escribe.** `REFPRE` es el campo «Su ref.» del
+documento. C-4 lo auto-rellenaba con un resumen de las líneas
+(«1x UV INK; 1x test»); desde C-4-fix5 se deja **vacío** si no se teclea una
+referencia, porque el desglose ya vive en F_LPS y repetirlo resumido solo
+ensuciaba el documento. Si se escribe, se recorta a 250 con «…» en vez de dejar
+que FACTUSOL corte a medias.
+
+**El SKU se traduce antes de escribir.** El autocomplete muestra el `EQUART`
+comercial, pero `ARTLPS` necesita el `CODART` interno o el escritorio crashea al
+abrir la proforma. Lo resuelve `resolve_codarts` con **una** consulta por
+proforma. Un SKU que no case con ningún artículo se escribe como línea de texto
+libre (`ARTLPS=''`), que FACTUSOL admite, con un `WARNING` en el log.
 
 **Orden de escritura.** Cabecera `F_PRE` primero, líneas `F_LPS` después. Si la
 cabecera falla no hay nada que limpiar.

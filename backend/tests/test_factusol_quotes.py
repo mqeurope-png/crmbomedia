@@ -26,9 +26,7 @@ from app.erp.models import Order, OrderLine
 from app.integrations.factusol.client import FactusolError
 from app.integrations.factusol.quotes import (
     ARTICLE_SEARCH_LIMIT,
-    REFPRE_MAX_LENGTH,
     build_quote_payload,
-    build_refpre_from_lines,
     convert_quote_to_order,
     create_quote,
     duplicate_quote,
@@ -37,6 +35,7 @@ from app.integrations.factusol.quotes import (
     list_quotes,
     next_codpre,
     quote_lines_for_order,
+    resolve_codarts,
     search_articles,
 )
 from app.models.crm import Company
@@ -142,26 +141,6 @@ def session_factory() -> Generator[sessionmaker, None, None]:
 def session(session_factory) -> Generator[Session, None, None]:
     with session_factory() as s:
         yield s
-
-
-# --- REFPRE: el desglose cabe o se trunca visiblemente ----------------------
-
-
-def test_build_refpre_concatena_lineas_legibles():
-    text = build_refpre_from_lines([
-        {"description": "Cable HDMI 3m", "quantity": 2},
-        {"description": "Montaje", "quantity": 1},
-    ])
-    assert text == "2x Cable HDMI 3m; 1x Montaje"
-
-
-def test_build_refpre_trunca_a_250_con_marca():
-    lines = [{"description": f"Artículo largo número {i}", "quantity": 1}
-             for i in range(40)]
-    text = build_refpre_from_lines(lines)
-    assert len(text) <= REFPRE_MAX_LENGTH
-    # Truncar en silencio ocultaría que se ha perdido detalle.
-    assert text.endswith("…")
 
 
 # --- numeración -------------------------------------------------------------
@@ -427,7 +406,9 @@ def test_search_articles_matches_deeart():
 def test_create_quote_writes_header_and_lines_to_f_lps(session):
     """C-4-fix3: cabecera en F_PRE + una fila por línea en F_LPS, con POSLPS
     correlativo. Antes solo se escribía la cabecera."""
-    fake = _FakeFactusol(quotes=[_quote_row(50)])
+    fake = _FakeFactusol(quotes=[_quote_row(50)], articles=[
+        {"CODART": "HDMI", "EQUART": ""}, {"CODART": "SAT", "EQUART": ""},
+    ])
     result = create_quote(
         fake, session, ejercicio="2026",
         customer={"codcli": "55555", "nombre": "Acme SL", "nif": "B12345678"},
@@ -446,7 +427,8 @@ def test_create_quote_writes_header_and_lines_to_f_lps(session):
     assert header["CODPRE"] == "51"
     assert header["CLIPRE"] == "55555"
     assert header["NET1PRE"] == 110.0
-    assert header["REFPRE"] == "2x Cable HDMI; 1x Montaje; 1x Hora SAT"
+    # C-4-fix5: sin referencia explícita del operador, REFPRE no se escribe.
+    assert "REFPRE" not in header
 
     lines = fake.writes_to("F_LPS")
     assert [line["POSLPS"] for line in lines] == [1, 2, 3]
@@ -487,6 +469,112 @@ def test_create_quote_writes_email_as_cempre(session):
     assert header["CEMPRE"] == "compras@acme.example"
     # TELPRE sí existe en F_PRE: el bisecado en vivo lo descartó como causa.
     assert header["TELPRE"] == "934000000"
+
+
+def test_write_quote_line_translates_equart_to_codart(session):
+    """C-4-fix5: el autocomplete devuelve el EQUART comercial («Ink500mlCY»),
+    pero ARTLPS tiene que llevar el CODART interno («99cy»). Con el EQUART, el
+    FACTUSOL de escritorio CRASHEA al abrir la proforma (le pasó a la 4350)."""
+    fake = _FakeFactusol(articles=[
+        {"CODART": "99cy", "EQUART": "Ink500mlCY", "DESART": "UV INK CYAN"},
+    ])
+    create_quote(
+        fake, session, ejercicio="2026", customer={"codcli": "55555"},
+        lines=[{"codart": "Ink500mlCY", "description": "UV INK CYAN",
+                "quantity": 1, "unit_price": 80}],
+    )
+    assert fake.writes_to("F_LPS")[0]["ARTLPS"] == "99cy"
+
+
+def test_write_quote_line_keeps_valid_codart(session):
+    """Un CODART que ya es interno pasa tal cual."""
+    fake = _FakeFactusol(articles=[
+        {"CODART": "1712", "EQUART": "CAB-HDMI", "DESART": "Cable"},
+    ])
+    create_quote(
+        fake, session, ejercicio="2026", customer={"codcli": "55555"},
+        lines=[{"codart": "1712", "description": "Cable", "quantity": 1,
+                "unit_price": 10}],
+    )
+    assert fake.writes_to("F_LPS")[0]["ARTLPS"] == "1712"
+
+
+def test_write_quote_line_unknown_sku_becomes_free_text(session):
+    """Un SKU que no casa con nada va como línea de texto libre (ARTLPS=''),
+    que FACTUSOL admite — mejor eso que un código que rompa la proforma."""
+    fake = _FakeFactusol(articles=[])
+    create_quote(
+        fake, session, ejercicio="2026", customer={"codcli": "55555"},
+        lines=[{"codart": "NO-EXISTE", "description": "Mano de obra",
+                "quantity": 1, "unit_price": 60}],
+    )
+    line = fake.writes_to("F_LPS")[0]
+    assert line["ARTLPS"] == ""
+    assert line["DESLPS"] == "Mano de obra"
+
+
+def test_resolve_codarts_uses_a_single_query_for_all_lines():
+    """Una consulta por proforma, no dos por línea: el autocomplete puede
+    meter muchas líneas y cada llamada a DELSOL cuesta."""
+    fake = _FakeFactusol(articles=[
+        {"CODART": "99cy", "EQUART": "Ink500mlCY"},
+        {"CODART": "1712", "EQUART": "CAB-HDMI"},
+    ])
+    mapping = resolve_codarts(
+        fake, ["Ink500mlCY", "1712", "NO-EXISTE"], ejercicio="2026",
+    )
+    assert mapping == {"Ink500mlCY": "99cy", "1712": "1712"}
+    assert len([f for t, f in fake.filters if t == "F_ART"]) == 1
+
+
+def test_create_quote_does_not_write_ivalps(session):
+    """IVALPS no se escribe: no está confirmado si guarda el % o el CÓDIGO de
+    tipo de IVA. La proforma 574, que abre bien, tiene IVALPS=0 en todas sus
+    líneas — un 0 % no tiene sentido, un código «general» sí. Se deja que
+    FACTUSOL ponga su default; el IVA real viaja en la cabecera."""
+    fake = _FakeFactusol()
+    create_quote(
+        fake, session, ejercicio="2026", customer={"codcli": "55555"},
+        lines=[{"description": "Cable", "quantity": 1, "unit_price": 10,
+                "iva_pct": 21}],
+    )
+    assert "IVALPS" not in fake.writes_to("F_LPS")[0]
+    # El IVA sí va en la cabecera, que es de donde salen los totales.
+    assert fake.writes_to("F_PRE")[0]["PIVA1PRE"] == 21.0
+
+
+def test_read_line_ignores_ivalps_that_cannot_be_a_spanish_rate():
+    """Si IVALPS resulta ser un código, un 1 se leería como «1 % de IVA», que
+    no existe. Solo se acepta el valor si puede ser un tipo español."""
+    fake = _FakeFactusol(lines=[
+        _line_row(10, 1, iva=1),    # código «reducido», no un 1 %
+        _line_row(10, 2, iva=10),   # sí es un tipo español
+    ])
+    lines = list_quote_lines(fake, "10", ejercicio="2026")
+    assert lines[0]["iva_pct"] == 21.0
+    assert lines[1]["iva_pct"] == 10.0
+
+
+def test_create_quote_leaves_refpre_empty_without_explicit_reference(session):
+    """C-4-fix5: sin referencia del operador, REFPRE se queda vacío. Antes se
+    auto-rellenaba con un resumen de las líneas, que desde que existe F_LPS es
+    ruido duplicado en el campo «Su ref.» del documento."""
+    fake = _FakeFactusol()
+    create_quote(
+        fake, session, ejercicio="2026", customer={"codcli": "55555"},
+        lines=[{"description": "UV INK", "quantity": 1, "unit_price": 80}],
+    )
+    assert "REFPRE" not in fake.writes_to("F_PRE")[0]
+
+
+def test_create_quote_keeps_explicit_reference(session):
+    fake = _FakeFactusol()
+    create_quote(
+        fake, session, ejercicio="2026", customer={"codcli": "55555"},
+        lines=[{"description": "UV INK", "quantity": 1, "unit_price": 80}],
+        referencia="Pedido telefónico Marta",
+    )
+    assert fake.writes_to("F_PRE")[0]["REFPRE"] == "Pedido telefónico Marta"
 
 
 def test_create_quote_line_payload_applies_discount(session):
@@ -567,6 +655,7 @@ def test_duplicate_quote_copies_lines_from_f_lps(session):
             _line_row(60, 3, art="WIP", desc="Wiper", precio=20),
             _line_row(60, 4, desc="Hora SAT", precio=60),
         ],
+        articles=[{"CODART": "MBO"}, {"CODART": "CAP"}, {"CODART": "WIP"}],
     )
     result = duplicate_quote(fake, session, "60", ejercicio="2026")
 
@@ -577,6 +666,8 @@ def test_duplicate_quote_copies_lines_from_f_lps(session):
     assert [line["DESLPS"] for line in copied] == [
         "Cabezal MBO", "Capping", "Wiper", "Hora SAT",
     ]
+    # Los CODART del origen ya son internos: sobreviven la ida y vuelta.
+    assert [line["ARTLPS"] for line in copied] == ["MBO", "CAP", "WIP", ""]
     assert result["lines"] == 4
 
 

@@ -193,6 +193,25 @@ como líneas de presupuesto) eran candidatos y resultaron ser incorrectos.
 | `IVALPS` | % de IVA (vacío en algunas líneas libres → 21 por defecto). |
 | `MEMLPS`, `ALTLPS`, `ANCLPS`, `FONLPS` | Memo y medidas; el CRM no las escribe. |
 
+> #### ⚠️ `ARTLPS` es el CODART interno, NO el EQUART
+>
+> `99cy`, no `Ink500mlCY`. Escribir el EQUART **no falla**: el documento se
+> crea y luego **el FACTUSOL de escritorio crashea al abrirlo** («UPSS!
+> Excepción no controlada»). Le pasó a la proforma 4350.
+>
+> La UI enseña el EQUART a propósito (es el que reconoce el operativo), así que
+> la traducción va justo antes de escribir: `quotes.resolve_codarts`. Aplica
+> igual a `F_LPC.ARTLPC`, `F_LFA.ARTLFA` y demás campos de artículo de líneas.
+>
+> Contraste que lo delató: la 574, creada desde el escritorio, tiene
+> `ARTLPS='1712','99017','1682','99370'` — todos internos.
+>
+> #### ⚠️ `IVALPS`: sin confirmar si es % o código
+>
+> La 574 (abre bien) tiene `IVALPS=0` en todas sus líneas. Un 0 % no tiene
+> sentido; un código «tipo general» sí. **El CRM no escribe la columna** y deja
+> el default de FACTUSOL. Cerrar con `SELECT DISTINCT IVALPS FROM F_LPS`.
+
 Verificación empírica:
 
 ```
