@@ -91,6 +91,24 @@ def main(argv: list[str] | None = None) -> int:
         print("\n  Compara esta base con el NET1PRE de la cabecera F_PRE: si "
               "cuadran, el vínculo CODLPS = CODPRE es correcto.")
 
+    # --- IVALPS: ¿porcentaje o código de tipo de IVA? ----------------------
+    # Pendiente de cerrar (C-4-fix5). La proforma 574, que abre bien en el
+    # escritorio, tiene IVALPS=0 en todas sus líneas: un 0 % de IVA no tiene
+    # sentido en un presupuesto español, un código «tipo general» sí. Mientras
+    # no se confirme, el CRM NO escribe la columna.
+    print(f"\n{TABLE_QUOTE_LINES}.IVALPS — valores distintos que existen:")
+    rows = client.load_table(TABLE_QUOTE_LINES, filtro="1=1", ejercicio=ejercicio)
+    values = sorted({str(r.get("IVALPS")) for r in rows})
+    print(f"  {', '.join(values) if values else '(sin filas)'}")
+    numeric = {v for v in values if v.replace(".", "").isdigit()}
+    if numeric and numeric <= {"0", "1", "2", "3", "0.0", "1.0", "2.0", "3.0"}:
+        print("  → Son CÓDIGOS de tipo de IVA (0=general, 1=reducido, …).")
+        print("    Hay que traducir el % a código antes de escribir IVALPS.")
+    elif numeric & {"21", "21.0", "10", "10.0", "4", "4.0"}:
+        print("  → Son PORCENTAJES directos. Se puede escribir IVALPS = iva_pct.")
+    else:
+        print("  → No concluyente; compara con lo que muestra el escritorio.")
+
     print("\nPega esta salida en docs/erp/factusol-schema.md si algo no cuadra.")
     return 0
 

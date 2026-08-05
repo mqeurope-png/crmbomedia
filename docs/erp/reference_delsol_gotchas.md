@@ -184,7 +184,39 @@ Para que la próxima vez no haya que bisecar: `create_quote` y
 `_write_quote_lines` registran en el log las columnas enviadas cuando
 `EscribirRegistro` falla.
 
-## 14. El cliente lo crea la app externa Woo→FACTUSOL
+## 14. En las líneas, `ART…` es CODART interno — nunca EQUART
+
+`F_LPS.ARTLPS`, `F_LPC.ARTLPC`, `F_LFA.ARTLFA`… **todos** los campos de artículo
+de las tablas de líneas guardan el **`CODART` interno** (`99cy`, `1712`), no el
+`EQUART` comercial (`Ink500mlCY`, `CDR80WPT`).
+
+Meter un EQUART ahí **no da error al escribir**. El documento se crea, y luego
+**el FACTUSOL de escritorio crashea al abrirlo**: «UPSS! Excepción no
+controlada». Le pasó a la proforma 4350.
+
+Es una trampa doble, porque la UI hace lo contrario a propósito: el autocomplete
+muestra `EQUART` porque es el código que el operativo reconoce. La traducción
+tiene que ocurrir **justo antes de escribir** (`quotes.resolve_codarts`), no en
+la UI.
+
+Comparar con una proforma que funcione es lo que lo delató: la 574 tiene
+`ARTLPS='1712','99017','1682','99370'` — todo códigos internos, porque se creó
+desde el escritorio.
+
+## 15. `IVALPS` — sin confirmar si es porcentaje o código
+
+La proforma 574, que abre bien, tiene `IVALPS=0` en **todas** sus líneas. Un
+0 % de IVA no tiene sentido en un presupuesto español; un código «tipo general»
+sí. Hasta cerrarlo, el CRM **no escribe la columna** y deja que FACTUSOL ponga
+su default — que es justo el valor que tienen las proformas que funcionan. El
+IVA real viaja en la cabecera (`PIVA1PRE` / `IIVA1PRE`), así que los totales
+salen bien.
+
+Para cerrarlo: `SELECT DISTINCT IVALPS FROM F_LPS`. Si salen 0/1/2 es código
+(hay que traducir 21 %→0, 10 %→1, 4 %→2); si salen 21/10/4 es porcentaje. Lo
+comprueba el script de descubrimiento.
+
+## 16. El cliente lo crea la app externa Woo→FACTUSOL
 
 En los pedidos de WooCommerce, la app externa crea el pedido **y el cliente**.
 Si el CRM intenta crearlo también, choca: `BDEscribirRegistroError` (C-2-fix1).
