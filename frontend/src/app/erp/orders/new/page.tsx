@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { PageHeader } from "../../../components/PageHeader";
+import { ArticleAutocompleteInput } from "../../../components/erp/ArticleAutocompleteInput";
 import {
   CustomerAutocomplete,
   type CustomerChoice,
@@ -18,6 +19,7 @@ import {
   getFactusolQuote,
   linkFactusolCustomer,
   listFactusolQuotes,
+  type FactusolArticle,
   type FactusolCustomer,
   type FactusolQuote,
   type OrderAddress,
@@ -90,6 +92,9 @@ export default function NewManualOrderPage() {
   // C-4: proformas del cliente elegido, para volcarlas al pedido.
   const [quotes, setQuotes] = useState<FactusolQuote[]>([]);
   const [quotesOpen, setQuotesOpen] = useState(false);
+  // C-4-fix2: ¿la empresa elegida tiene vínculo FACTUSOL? Decide si el
+  // autocomplete de artículos tiene catálogo contra el que buscar.
+  const [companyLinked, setCompanyLinked] = useState(false);
   const [loadingQuote, setLoadingQuote] = useState<string | null>(null);
   const [quoteNotice, setQuoteNotice] = useState<string | null>(null);
 
@@ -135,14 +140,38 @@ export default function NewManualOrderPage() {
   useEffect(() => {
     if (!companyId) {
       setQuotes([]);
+      setCompanyLinked(false);
       return;
     }
     let alive = true;
     listFactusolQuotes({ company_id: companyId, days_back: 180 })
-      .then((r) => { if (alive) setQuotes(r.unlinked ? [] : r.items); })
-      .catch(() => { if (alive) setQuotes([]); });
+      .then((r) => {
+        if (!alive) return;
+        setQuotes(r.unlinked ? [] : r.items);
+        // C-4-fix2: el mismo `unlinked` decide si hay catálogo que buscar. Sin
+        // CODCLI no hay contexto FACTUSOL, así que el autocomplete se apaga.
+        setCompanyLinked(!r.unlinked);
+      })
+      .catch(() => {
+        if (!alive) return;
+        setQuotes([]);
+        setCompanyLinked(false);
+      });
     return () => { alive = false; };
   }, [companyId]);
+
+  const articleSearchEnabled = companyLinked;
+
+  /** C-4-fix2: rellena la línea desde el catálogo F_ART. El precio se deja en
+   *  blanco si FACTUSOL no tiene precio de venta — nunca se fuerza «0.00». */
+  function applyArticle(i: number, a: FactusolArticle) {
+    setLines((rs) => rs.map((r, j) => (j === i ? {
+      ...r,
+      product_sku: a.sku ?? a.codart ?? "",
+      description: a.descripcion ?? a.sku ?? "",
+      unit_price: a.precio_venta ? String(a.precio_venta) : r.unit_price,
+    } : r)));
+  }
 
   const total = useMemo(
     () => lines.reduce((sum, l) => sum + num(l.quantity) * num(l.unit_price), 0),
@@ -597,14 +626,22 @@ export default function NewManualOrderPage() {
               {lines.map((l, i) => (
                 <tr key={i}>
                   <td>
-                    <input type="text" value={l.product_sku}
-                           aria-label={`SKU línea ${i + 1}`}
-                           onChange={(e) => updateLine(i, "product_sku", e.target.value)} />
+                    <ArticleAutocompleteInput
+                      value={l.product_sku}
+                      enabled={articleSearchEnabled}
+                      ariaLabel={`SKU línea ${i + 1}`}
+                      onChange={(v) => updateLine(i, "product_sku", v)}
+                      onPick={(a) => applyArticle(i, a)}
+                    />
                   </td>
                   <td>
-                    <input type="text" value={l.description}
-                           aria-label={`Descripción línea ${i + 1}`}
-                           onChange={(e) => updateLine(i, "description", e.target.value)} />
+                    <ArticleAutocompleteInput
+                      value={l.description}
+                      enabled={articleSearchEnabled}
+                      ariaLabel={`Descripción línea ${i + 1}`}
+                      onChange={(v) => updateLine(i, "description", v)}
+                      onPick={(a) => applyArticle(i, a)}
+                    />
                   </td>
                   <td>
                     <input type="number" min="0" step="1" value={l.quantity}

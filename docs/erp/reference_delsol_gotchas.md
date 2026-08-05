@@ -97,7 +97,31 @@ completo y el desglose es texto en `REFPRE` (250 car.). `F_LPRE` no existe;
 Por eso C-4 guarda el desglose en `factusol_quote_lines_cache`. Ver
 `factusol-proformas.md`.
 
-## 10. El cliente lo crea la app externa Woo→FACTUSOL
+## 10. `PCOART` es coste, no precio de venta
+
+En F_ART, `PCOART` es el **precio de coste**. Usarlo como precio de venta
+factura al cliente lo que cuesta comprar el artículo.
+
+El nombre de la columna de venta **no está verificado** contra la base de
+Bomedia: el descubrimiento de C-4 solo volcó las 15 primeras columnas. En vez
+de apostar por `PVPART`, `quotes.detect_price_column()` mira las claves reales
+que devuelve `CargaTabla` (que sirve la fila completa) y elige la primera
+candidata que exista.
+
+Es una variante especialmente traicionera de la trampa nº 1: **en lectura, una
+columna inexistente no da error ni `[]` — `row.get()` devuelve `None`**. Los
+precios saldrían todos en blanco, sin un solo log. Por eso, cuando no hay
+columna reconocible, el adaptador deja `precio_venta = None` (la UI muestra el
+campo vacío, nunca `0.00`) y escribe un `WARNING` con las columnas reales.
+
+Confirmar cuál usa esta base:
+
+```bash
+docker compose -f /opt/crmbo/docker-compose.prod.yml exec api \
+    python -m scripts.factusol_discover_article_prices
+```
+
+## 11. El cliente lo crea la app externa Woo→FACTUSOL
 
 En los pedidos de WooCommerce, la app externa crea el pedido **y el cliente**.
 Si el CRM intenta crearlo también, choca: `BDEscribirRegistroError` (C-2-fix1).

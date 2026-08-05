@@ -25,6 +25,17 @@ const mockArticles = searchFactusolArticles as jest.Mock;
 const mockSearchQuotes = searchFactusolQuotes as jest.Mock;
 const mockCompanies = listCompanies as jest.Mock;
 
+function article(over = {}) {
+  return {
+    codart: "00001", equart: "CDR80WPT", sku: "CDR80WPT",
+    descripcion: "CD TQ 700 MB white Thermal WPT",
+    desart: "CD TQ 700 MB white Thermal WPT", deeart: null, detart: null,
+    eanart: null, famart: null,
+    precio_venta: 0.79, precio_venta_columna: "PVPART", precio_coste: 0.25,
+    precio: 0.79, stock: 100, iva_pct: 21, ...over,
+  };
+}
+
 function quote(over = {}) {
   return {
     codpre: "77", referencia: "Rotulación nave Duaner", fecha: "2026-07-01",
@@ -53,74 +64,69 @@ function base(over = {}) {
 }
 
 describe("CreateQuoteModal", () => {
-  it("modo rápido: envía una línea única con el concepto y el importe", async () => {
+  // --- C-4-fix2: solo 2 pestañas -------------------------------------------
+
+  it("no renderiza la pestaña «Rápida» (la duplicaba «Con artículos»)", () => {
+    render(<CreateQuoteModal {...base()} />);
+    expect(screen.queryByRole("button", { name: "Rápida" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Con artículos" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Duplicar" })).toBeInTheDocument();
+  });
+
+  it("una proforma simple se hace con una línea escrita a mano, sin catálogo", async () => {
     const onCreated = jest.fn();
     const user = userEvent.setup();
     render(<CreateQuoteModal {...base({ onCreated })} />);
 
-    await user.type(screen.getByLabelText("Concepto"), "Instalación sala 3");
-    await user.type(screen.getByLabelText("Importe (base)"), "500");
+    await user.type(screen.getByLabelText("Descripción línea 1"), "Mano de obra");
+    await user.type(screen.getByLabelText("Precio línea 1"), "500");
     await user.click(screen.getByRole("button", { name: "Crear proforma" }));
 
     await waitFor(() => expect(mockCreate).toHaveBeenCalled());
     const payload = mockCreate.mock.calls[0][0];
     expect(payload.company_id).toBe("c1");
-    expect(payload.referencia).toBe("Instalación sala 3");
     expect(payload.lines).toEqual([
       expect.objectContaining({
-        description: "Instalación sala 3", quantity: 1, unit_price: 500,
+        description: "Mano de obra", quantity: 1, unit_price: 500,
       }),
     ]);
     expect(onCreated).toHaveBeenCalledWith("job-1");
   });
 
-  it("no deja crear una proforma sin concepto ni líneas", async () => {
+  it("no deja crear una proforma sin ninguna línea con descripción", () => {
     render(<CreateQuoteModal {...base()} />);
     expect(screen.getByRole("button", { name: "Crear proforma" })).toBeDisabled();
   });
 
-  // --- C-4-fix1: artículos por SKU comercial -------------------------------
+  // --- C-4-fix2: el autocomplete carga el precio ---------------------------
 
-  it("el autocomplete de artículos muestra SKU comercial, descripción y precio", async () => {
-    mockArticles.mockResolvedValue([{
-      codart: "00001", equart: "CDR80WPT", sku: "CDR80WPT",
-      descripcion: "CD TQ 700 MB white Thermal WPT",
-      desart: "CD TQ 700 MB white Thermal WPT", deeart: null, detart: null,
-      eanart: null, famart: null, precio: 0.25, stock: 100, iva_pct: 21,
-    }]);
+  it("elegir un artículo rellena SKU, descripción y PRECIO de venta", async () => {
+    mockArticles.mockResolvedValue([article()]);
     const user = userEvent.setup();
     render(<CreateQuoteModal {...base()} />);
 
-    await user.click(screen.getByRole("button", { name: "Con artículos" }));
-    await user.type(screen.getByLabelText("Buscar artículo"), "CDR80");
-
-    // El SKU comercial es lo que el operativo reconoce, no el CODART interno.
-    expect(await screen.findByText("CDR80WPT")).toBeInTheDocument();
-    expect(screen.getByText("CD TQ 700 MB white Thermal WPT")).toBeInTheDocument();
-    expect(screen.getByText("0.25 €")).toBeInTheDocument();
-  });
-
-  it("al elegir el artículo rellena la línea con EQUART y su descripción", async () => {
-    mockArticles.mockResolvedValue([{
-      codart: "00001", equart: "CDR80WPT", sku: "CDR80WPT",
-      descripcion: "CD TQ 700 MB white Thermal WPT",
-      desart: "CD TQ 700 MB white Thermal WPT", deeart: null, detart: null,
-      eanart: null, famart: null, precio: 0.25, stock: 100, iva_pct: 21,
-    }]);
-    const user = userEvent.setup();
-    render(<CreateQuoteModal {...base()} />);
-
-    await user.click(screen.getByRole("button", { name: "Con artículos" }));
-    await user.type(screen.getByLabelText("Buscar artículo"), "CDR80");
+    await user.type(screen.getByLabelText("SKU línea 1"), "CDR80");
     await user.click(await screen.findByRole("button", { name: /CDR80WPT/ }));
 
-    expect(screen.getByLabelText("Artículo línea 1")).toHaveValue("CDR80WPT");
+    expect(screen.getByLabelText("SKU línea 1")).toHaveValue("CDR80WPT");
     expect(screen.getByLabelText("Descripción línea 1"))
       .toHaveValue("CD TQ 700 MB white Thermal WPT");
-    expect(screen.getByLabelText("Precio línea 1")).toHaveValue(0.25);
+    // El precio de VENTA, no el coste (0.25).
+    expect(screen.getByLabelText("Precio línea 1")).toHaveValue(0.79);
   });
 
-  // --- C-4-fix1: duplicar de cualquier cliente -----------------------------
+  it("sin precio de venta deja el campo en blanco, no lo fuerza a 0", async () => {
+    mockArticles.mockResolvedValue([article({ precio_venta: null, precio: 0 })]);
+    const user = userEvent.setup();
+    render(<CreateQuoteModal {...base()} />);
+
+    await user.type(screen.getByLabelText("Descripción línea 1"), "CDR80");
+    await user.click(await screen.findByRole("button", { name: /CDR80WPT/ }));
+
+    expect(screen.getByLabelText("Precio línea 1")).toHaveValue(null);
+  });
+
+  // --- C-4-fix1/fix2: duplicar --------------------------------------------
 
   it("modo duplicar: input de búsqueda libre, no la lista filtrada por cliente", async () => {
     const user = userEvent.setup();
@@ -128,10 +134,7 @@ describe("CreateQuoteModal", () => {
     await user.click(screen.getByRole("button", { name: "Duplicar" }));
 
     expect(screen.getByLabelText("Buscar plantilla")).toBeInTheDocument();
-    expect(
-      screen.getByText(/Puedes duplicar/),
-    ).toBeInTheDocument();
-    // Nunca se pide la lista restringida al cliente actual.
+    expect(screen.getByText(/Puedes duplicar/)).toBeInTheDocument();
     const { listFactusolQuotes } = jest.requireMock("../../lib/erpApi");
     expect(listFactusolQuotes).not.toHaveBeenCalled();
   });
@@ -146,19 +149,21 @@ describe("CreateQuoteModal", () => {
     await waitFor(() => expect(mockSearchQuotes).toHaveBeenCalledWith(
       "lab", expect.objectContaining({ days_back: 365 }),
     ));
-    // Muestra el cliente ORIGEN, que es como se reconoce la plantilla.
     expect(await screen.findByText(/Laboratorios Duaner/)).toBeInTheDocument();
   });
 
-  it("cargar una plantilla de otro cliente la crea para el cliente destino", async () => {
+  it("plantilla CON cache: carga sus N líneas y queda en «Con artículos»", async () => {
     mockSearchQuotes.mockResolvedValue([quote()]);
     mockGetQuote.mockResolvedValue({
       ...quote(), line_source: "cache",
-      lines: [{
-        position: 1, codart: "ART-1", description: "Vinilo impreso",
-        quantity: 3, unit_price: 40, discount_pct: 0, line_total: 120,
-        iva_pct: 21,
-      }],
+      lines: [
+        { position: 1, codart: "ART-1", description: "Vinilo impreso",
+          quantity: 3, unit_price: 40, discount_pct: 0, line_total: 120,
+          iva_pct: 21 },
+        { position: 2, codart: "", description: "Montaje",
+          quantity: 1, unit_price: 60, discount_pct: 0, line_total: 60,
+          iva_pct: 21 },
+      ],
     });
     const user = userEvent.setup();
     render(<CreateQuoteModal {...base()} />);
@@ -168,21 +173,18 @@ describe("CreateQuoteModal", () => {
       await screen.findByRole("button", { name: "Cargar esta plantilla" }),
     );
 
-    // La plantilla cae en el modo artículos con sus líneas reales.
     expect(await screen.findByLabelText("Descripción línea 1"))
       .toHaveValue("Vinilo impreso");
+    expect(screen.getByLabelText("Descripción línea 2")).toHaveValue("Montaje");
     await user.click(screen.getByRole("button", { name: "Crear proforma" }));
 
     await waitFor(() => expect(mockCreate).toHaveBeenCalled());
-    const payload = mockCreate.mock.calls[0][0];
-    // Cliente DESTINO (el del modal), no el de origen de la plantilla.
-    expect(payload.company_id).toBe("c1");
-    expect(payload.lines[0]).toEqual(expect.objectContaining({
-      description: "Vinilo impreso", quantity: 3, unit_price: 40,
-    }));
+    // Cliente DESTINO, no el de origen de la plantilla.
+    expect(mockCreate.mock.calls[0][0].company_id).toBe("c1");
   });
 
-  it("una plantilla sin desglose cae al modo rápido con su referencia", async () => {
+  it("plantilla SIN cache: 1 línea con REFPRE y TOTPRE, no cae a «Rápida»", async () => {
+    // F_PRE es mono-línea: las proformas del escritorio no tienen desglose.
     mockSearchQuotes.mockResolvedValue([quote({ codpre: "88" })]);
     mockGetQuote.mockResolvedValue({
       ...quote({ codpre: "88" }), line_source: "ref_text", lines: [],
@@ -195,9 +197,11 @@ describe("CreateQuoteModal", () => {
       await screen.findByRole("button", { name: "Cargar esta plantilla" }),
     );
 
-    expect(await screen.findByLabelText("Concepto"))
+    // Sigue en la tabla de líneas, editable — antes caía al modo «Rápida».
+    expect(await screen.findByLabelText("Descripción línea 1"))
       .toHaveValue("Rotulación nave Duaner");
-    expect(screen.getByLabelText("Importe (base)")).toHaveValue(100);
+    expect(screen.getByLabelText("Cantidad línea 1")).toHaveValue(1);
+    expect(screen.getByLabelText("Precio línea 1")).toHaveValue(121);
   });
 
   it("permite cambiar el cliente destino a otra empresa vinculada", async () => {
@@ -213,9 +217,8 @@ describe("CreateQuoteModal", () => {
 
     await user.click(screen.getByRole("button", { name: "Cambiar" }));
     const input = await screen.findByLabelText("Empresa destino");
-    // Solo se ofrecen empresas ya vinculadas: las demás las rechaza el backend
-    // con 409 company_not_linked. (Las <option> de un <datalist> no exponen
-    // rol ARIA, así que se comprueban en el DOM.)
+    // Solo empresas ya vinculadas: las demás las rechaza el backend con 409.
+    // (Las <option> de un <datalist> no exponen rol ARIA.)
     await waitFor(() => {
       const values = Array.from(
         document.querySelectorAll("#erp-quote-target-companies option"),
@@ -224,7 +227,7 @@ describe("CreateQuoteModal", () => {
     });
 
     await user.type(input, "Laboratorios Porta");
-    await user.type(screen.getByLabelText("Concepto"), "Trabajo nuevo");
+    await user.type(screen.getByLabelText("Descripción línea 1"), "Trabajo nuevo");
     await user.click(screen.getByRole("button", { name: "Crear proforma" }));
 
     await waitFor(() => expect(mockCreate).toHaveBeenCalled());

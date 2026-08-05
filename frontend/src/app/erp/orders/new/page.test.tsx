@@ -9,6 +9,7 @@ import {
   getFactusolQuote,
   linkFactusolCustomer,
   listFactusolQuotes,
+  searchFactusolArticles,
   searchFactusolCustomers,
 } from "../../../lib/erpApi";
 
@@ -37,6 +38,8 @@ jest.mock("../../../lib/erpApi", () => ({
   // C-4: proformas del cliente elegido.
   listFactusolQuotes: jest.fn(),
   getFactusolQuote: jest.fn(),
+  // C-4-fix2: autocomplete F_ART en las líneas del pedido manual.
+  searchFactusolArticles: jest.fn(),
 }));
 
 const mockCompanies = listCompanies as jest.Mock;
@@ -48,6 +51,7 @@ const mockLink = linkFactusolCustomer as jest.Mock;
 const mockSearchFac = searchFactusolCustomers as jest.Mock;
 const mockListQuotes = listFactusolQuotes as jest.Mock;
 const mockGetQuote = getFactusolQuote as jest.Mock;
+const mockArticles = searchFactusolArticles as jest.Mock;
 
 const COMPANY = {
   id: "c1", name: "Duplicoder SL", tax_id: "B12345678",
@@ -85,6 +89,8 @@ beforeEach(() => {
   mockListQuotes.mockReset();
   mockGetQuote.mockReset();
   mockListQuotes.mockResolvedValue({ items: [], unlinked: false });
+  mockArticles.mockReset();
+  mockArticles.mockResolvedValue([]);
 });
 
 describe("NewManualOrderPage", () => {
@@ -356,6 +362,56 @@ describe("NewManualOrderPage", () => {
     await waitFor(() => expect(mockGetQuote).toHaveBeenCalledWith("77"));
     expect(screen.getByLabelText("Descripción línea 1")).toHaveValue("Cable HDMI");
     expect(screen.getByLabelText("SKU línea 1")).toHaveValue("ART-1");
+  });
+
+  // --- C-4-fix2: autocomplete F_ART en las líneas --------------------------
+
+  it("empresa SIN vínculo FACTUSOL: no busca en el catálogo", async () => {
+    // `unlinked` es la misma señal que apaga el bloque de proformas: sin
+    // CODCLI no hay catálogo contra el que buscar.
+    mockListQuotes.mockResolvedValue({ items: [], unlinked: true });
+    const user = userEvent.setup();
+    render(<NewManualOrderPage />);
+    await waitFor(() => expect(mockCompanies).toHaveBeenCalled());
+    await user.type(screen.getByLabelText("Empresa"), "Duplicoder SL");
+    await user.type(screen.getByLabelText("Descripción línea 1"), "tinta");
+
+    await new Promise((r) => setTimeout(r, 400));
+    expect(mockArticles).not.toHaveBeenCalled();
+  });
+
+  it("empresa vinculada: escribir en la descripción dispara el autocomplete", async () => {
+    mockListQuotes.mockResolvedValue({ items: [], unlinked: false });
+    const user = userEvent.setup();
+    render(<NewManualOrderPage />);
+    await waitFor(() => expect(mockCompanies).toHaveBeenCalled());
+    await user.type(screen.getByLabelText("Empresa"), "Duplicoder SL");
+    await user.type(screen.getByLabelText("Descripción línea 1"), "tinta");
+
+    await waitFor(() => expect(mockArticles).toHaveBeenCalledWith("tinta"));
+  });
+
+  it("elegir un artículo autocompleta SKU, descripción y precio", async () => {
+    mockListQuotes.mockResolvedValue({ items: [], unlinked: false });
+    mockArticles.mockResolvedValue([{
+      codart: "00001", equart: "CDR80WPT", sku: "CDR80WPT",
+      descripcion: "CD TQ 700 MB white Thermal WPT",
+      desart: "CD TQ 700 MB white Thermal WPT", deeart: null, detart: null,
+      eanart: null, famart: null,
+      precio_venta: 0.79, precio_venta_columna: "PVPART", precio_coste: 0.25,
+      precio: 0.79, stock: 100, iva_pct: 21,
+    }]);
+    const user = userEvent.setup();
+    render(<NewManualOrderPage />);
+    await waitFor(() => expect(mockCompanies).toHaveBeenCalled());
+    await user.type(screen.getByLabelText("Empresa"), "Duplicoder SL");
+    await user.type(screen.getByLabelText("SKU línea 1"), "CDR80");
+    await user.click(await screen.findByRole("button", { name: /CDR80WPT/ }));
+
+    expect(screen.getByLabelText("SKU línea 1")).toHaveValue("CDR80WPT");
+    expect(screen.getByLabelText("Descripción línea 1"))
+      .toHaveValue("CD TQ 700 MB white Thermal WPT");
+    expect(screen.getByLabelText("Precio línea 1")).toHaveValue(0.79);
   });
 
   it("avisa cuando la proforma viene del escritorio (sin desglose)", async () => {
