@@ -114,6 +114,7 @@ describe("NewManualOrderPage", () => {
     await waitFor(() => expect(mockCompanies).toHaveBeenCalled());
     await user.type(screen.getByLabelText("Empresa"), "Duplicoder SL");
     await user.type(screen.getByLabelText("SKU línea 1"), "SKU-1");
+    await user.type(screen.getByLabelText("Descripción línea 1"), "Artículo 1");
     await user.type(screen.getByLabelText("Precio línea 1"), "100");
 
     const submit = screen.getByRole("button", { name: "Crear pedido" });
@@ -137,6 +138,7 @@ describe("NewManualOrderPage", () => {
     await user.click(screen.getByLabelText("Recogida en tienda"));
     expect(screen.queryByLabelText("Dirección de envío")).not.toBeInTheDocument();
     await user.type(screen.getByLabelText("SKU línea 1"), "SKU-1");
+    await user.type(screen.getByLabelText("Descripción línea 1"), "Artículo 1");
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Crear pedido" })).toBeEnabled());
   });
@@ -268,5 +270,42 @@ describe("NewManualOrderPage", () => {
     expect(screen.queryByRole("button", {
       name: /Crear empresa CRM con estos datos/,
     })).not.toBeInTheDocument();
+  });
+
+  // --- C-4 (parte I): el SKU es opcional -----------------------------------
+
+  it("permite crear el pedido con la línea SIN SKU si hay descripción", async () => {
+    const user = userEvent.setup();
+    render(<NewManualOrderPage />);
+    await waitFor(() => expect(mockCompanies).toHaveBeenCalled());
+    await user.type(screen.getByLabelText("Empresa"), "Duplicoder SL");
+    // Solo descripción y precio: sin tocar el SKU.
+    await user.type(screen.getByLabelText("Descripción línea 1"), "Mano de obra");
+    await user.type(screen.getByLabelText("Precio línea 1"), "45");
+
+    const submit = screen.getByRole("button", { name: "Crear pedido" });
+    await waitFor(() => expect(submit).toBeEnabled());
+    await user.click(submit);
+
+    await waitFor(() => expect(mockCreate).toHaveBeenCalled());
+    const line = mockCreate.mock.calls[0][0].lines[0];
+    expect(line.product_sku).toBe("");
+    expect(line.description).toBe("Mano de obra");
+  });
+
+  it("sigue exigiendo la descripción (una línea vacía no vale)", async () => {
+    const user = userEvent.setup();
+    render(<NewManualOrderPage />);
+    await waitFor(() => expect(mockCompanies).toHaveBeenCalled());
+    await user.type(screen.getByLabelText("Empresa"), "Duplicoder SL");
+    // Con SKU pero sin descripción el submit sigue bloqueado.
+    await user.type(screen.getByLabelText("SKU línea 1"), "SKU-1");
+    await user.type(screen.getByLabelText("Precio línea 1"), "45");
+    expect(screen.getByRole("button", { name: "Crear pedido" })).toBeDisabled();
+  });
+
+  it("la columna del SKU se anuncia como opcional", () => {
+    render(<NewManualOrderPage />);
+    expect(screen.getByText("SKU (opcional)")).toBeInTheDocument();
   });
 });

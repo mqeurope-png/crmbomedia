@@ -165,6 +165,38 @@ def test_erp_orders_create_manual_requires_lines(client):
     assert r.status_code == 422
 
 
+def test_line_without_sku_accepted_if_description_present(client):
+    """C-4: el SKU es opcional — servicios, reparaciones y muestras no lo tienen."""
+    body = _create(client, order_number="SIN-SKU", lines=[
+        {"product_sku": "", "description": "Reparación láser (mano de obra)",
+         "quantity": 2, "unit_price": 45},
+    ])
+    assert len(body["lines"]) == 1
+    line = body["lines"][0]
+    assert line["product_sku"] == ""
+    assert line["description"] == "Reparación láser (mano de obra)"
+    assert body["total_amount"] == pytest.approx(90.0)
+
+
+def test_line_without_sku_nor_description_rejected(client):
+    """Una línea sin nada que la identifique no es preparable ni facturable."""
+    r = client.post("/api/erp/orders", json=_payload(
+        order_number="LINEA-VACIA",
+        lines=[{"product_sku": "", "description": "", "quantity": 1,
+                "unit_price": 10}],
+    ), headers=auth_headers(client, "pedidos"))
+    assert r.status_code == 422
+
+
+def test_line_with_sku_and_no_description_still_works(client):
+    """Retrocompatibilidad: las líneas de Woo llegan con SKU y sin descripción."""
+    body = _create(client, order_number="SOLO-SKU", lines=[
+        {"product_sku": "SKU-X", "quantity": 1, "unit_price": 10},
+    ])
+    # La descripción cae al SKU cuando no viene (comportamiento previo).
+    assert body["lines"][0]["description"] == "SKU-X"
+
+
 def test_erp_orders_list_returns_customer_name(client, session_factory):
     """La bandeja devuelve contact_name/company_name para pintar el cliente."""
     from app.models.crm import Contact  # noqa: PLC0415
