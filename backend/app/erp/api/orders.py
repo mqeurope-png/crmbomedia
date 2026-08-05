@@ -42,13 +42,25 @@ router = APIRouter(prefix="/api/erp/orders", tags=["erp-orders"])
 
 
 class OrderLineIn(BaseModel):
-    product_sku: str = Field(min_length=1, max_length=128)
+    # C-4: el SKU es OPCIONAL. En pedidos manuales (servicios, reparaciones,
+    # muestras) muchas veces no hay SKU real; lo que identifica la línea es la
+    # descripción. La columna en BD es NOT NULL, así que se guarda "" — sin
+    # migración.
+    product_sku: str = Field(default="", max_length=128)
     product_codart: str | None = Field(default=None, max_length=13)
     description: str = Field(default="", max_length=255)
     quantity: float = Field(default=1, gt=0)
     unit_price: float = Field(default=0, ge=0)
     tax_rate: float = Field(default=21, ge=0, le=100)
     notes: str | None = None
+
+    @model_validator(mode="after")
+    def _require_sku_or_description(self) -> OrderLineIn:
+        """Una línea en blanco no es facturable ni preparable: al menos uno de
+        los dos campos identificativos tiene que venir."""
+        if not (self.product_sku or "").strip() and not (self.description or "").strip():
+            raise ValueError("Cada línea necesita al menos SKU o descripción.")
+        return self
 
 
 class AddressIn(BaseModel):

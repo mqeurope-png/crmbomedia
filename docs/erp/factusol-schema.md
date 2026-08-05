@@ -154,3 +154,28 @@ un 401 en vuelo re-autentica una vez. Password cifrada Fernet en
 2. **Política de numeración de facturas**: ¿la asigna la API o el integrador?
    El mapper deriva un CODFAC candidato del nº de pedido (dry-run para revisar).
 3. Rango libre de CODCLI para clientes nuevos (`service.CODCLI_BASE`).
+
+
+---
+
+## Proformas y artículos (C-4) — ⛔ PENDIENTE DE VERIFICAR
+
+`F_PRO` / `F_LPP` / `F_ART` **todavía NO están verificados contra la base real**.
+No escribas código contra ellos hasta ejecutar en el VPS:
+
+```bash
+docker compose -f /opt/crmbo/docker-compose.prod.yml exec api \
+    python -m scripts.factusol_discover_quotes
+```
+
+y pegar aquí la salida (nombres reales + columnas + muestra).
+
+> **Por qué esto es obligatorio**: en la API DELSOL un filtro sobre una columna
+> inexistente **no da error, devuelve `[]`**. C-3 salió a producción con
+> `NOMCLI`/`CIFCLI`/`DIRCLI`/`NACCLI` inventados y la búsqueda devolvía siempre
+> vacío sin un solo log de error (ver C-3-fix1). En C-4 el riesgo es mayor:
+> **se escriben proformas** en la contabilidad real, así que un nombre erróneo
+> no solo no falla, sino que puede dejar documentos mal formados.
+
+Candidatas que prueba el script: cabecera `F_PRO`/`F_PRE`/`F_PPR`/`F_PVT`/`F_PPV`;
+líneas `F_LPP`/`F_LPR`/`F_LPRE`/`F_LPPR`/`F_LPRO`; artículos `F_ART`.

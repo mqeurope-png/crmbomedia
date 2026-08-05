@@ -314,9 +314,11 @@ export default function NewManualOrderPage() {
     setLines((rs) => rs.map((r, j) => (j === i ? { ...r, [key]: value } : r)));
   }
 
+  // C-4: el SKU es opcional (servicios, reparaciones, muestras). Lo que
+  // identifica la línea es la descripción.
   const lineErrors = lines.map((l) =>
-    !l.product_sku.trim()
-      ? "Indica el SKU."
+    !l.description.trim()
+      ? "Indica la descripción."
       : num(l.quantity) <= 0
         ? "La cantidad debe ser > 0."
         : num(l.unit_price) < 0
@@ -495,7 +497,7 @@ export default function NewManualOrderPage() {
           <table className="data-table">
             <thead>
               <tr>
-                <th>SKU</th><th>Descripción</th><th>Cant.</th>
+                <th>SKU (opcional)</th><th>Descripción</th><th>Cant.</th>
                 <th>Precio ud.</th><th>Total</th><th />
               </tr>
             </thead>
