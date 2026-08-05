@@ -709,11 +709,20 @@ export async function createFactusolCustomer(
 // --- Proformas FACTUSOL (Fase C · C-4) --------------------------------------
 
 /** Artículo de F_ART. `precio` es el coste (PCOART): FACTUSOL no expone una
- *  tarifa de venta única, así que sirve solo de sugerencia editable. */
+ *  tarifa de venta única, así que sirve solo de sugerencia editable.
+ *
+ *  C-4-fix1: `equart` es el **SKU comercial** (`CDR80WPT`), distinto del
+ *  `codart` interno (`00001`). `sku` es el alias que calcula el backend
+ *  (comercial → interno) y es lo que hay que enseñar al operativo. */
 export type FactusolArticle = {
   codart: string | null;
+  equart: string | null;
+  /** Alias: `equart` si existe, si no `codart`. */
+  sku: string | null;
   descripcion: string | null;
   desart: string | null;
+  deeart: string | null;
+  detart: string | null;
   eanart: string | null;
   famart: string | null;
   precio: number;
@@ -765,6 +774,17 @@ export async function listFactusolQuotes(
   opts: { company_id?: string; days_back?: number } = {},
 ): Promise<{ items: FactusolQuote[]; unlinked: boolean }> {
   return apiFetch(`/api/erp/factusol/quotes${qs(opts)}`);
+}
+
+/** C-4-fix1: busca proformas de CUALQUIER cliente para usarlas de plantilla.
+ *  A diferencia de `listFactusolQuotes`, no filtra por empresa. */
+export async function searchFactusolQuotes(
+  q: string, opts: { days_back?: number; limit?: number } = {},
+): Promise<FactusolQuote[]> {
+  const r = await apiFetch<{ items: FactusolQuote[] }>(
+    `/api/erp/factusol/quotes/search${qs({ q, ...opts })}`,
+  );
+  return r.items;
 }
 
 export async function getFactusolQuote(codpre: string): Promise<FactusolQuote> {

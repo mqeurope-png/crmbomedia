@@ -1,12 +1,13 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { listCompanies, type Company } from "../../lib/companiesApi";
 import { extractErrorMessage } from "../../lib/errors";
 import {
   createFactusolQuote,
-  duplicateFactusolQuote,
-  listFactusolQuotes,
+  getFactusolQuote,
   searchFactusolArticles,
+  searchFactusolQuotes,
   type FactusolArticle,
   type FactusolQuote,
 } from "../../lib/erpApi";
@@ -25,6 +26,10 @@ const EMPTY_LINE: LineRow = {
   codart: "", description: "", quantity: "1", unit_price: "", iva_pct: "21",
 };
 
+const DEBOUNCE_MS = 300;
+const TEMPLATE_DAYS_BACK = 365;
+const REF_PREVIEW_CHARS = 60;
+
 function num(v: string): number {
   const n = Number(v);
   return Number.isFinite(n) ? n : 0;
@@ -41,7 +46,13 @@ function today(): string {
  *    nativa.
  *  - **con artículos**: busca en F_ART y compone el desglose. El CRM guarda las
  *    líneas en su caché porque FACTUSOL no puede (ver `factusol-proformas.md`).
- *  - **duplicar**: parte de una proforma anterior del mismo cliente.
+ *  - **duplicar**: parte de una proforma anterior **de cualquier cliente**.
+ *
+ *  C-4-fix1 — sobre el modo duplicar: se carga la plantilla en el formulario y
+ *  se crea una proforma NUEVA con el cliente destino elegido. No se usa
+ *  `POST /quotes/{codpre}/duplicate` porque ese endpoint copia la fila F_PRE
+ *  entera, incluido `CLIPRE`: duplicar la de otro cliente dejaría la nueva
+ *  proforma a nombre del cliente equivocado.
  */
 export function CreateQuoteModal({
   companyId,
@@ -62,8 +73,17 @@ export function CreateQuoteModal({
   const [fecha, setFecha] = useState(today());
   const [articleQuery, setArticleQuery] = useState("");
   const [articles, setArticles] = useState<FactusolArticle[]>([]);
-  const [quotes, setQuotes] = useState<FactusolQuote[]>([]);
-  const [sourceCodpre, setSourceCodpre] = useState("");
+  // Cliente DESTINO: arranca en la empresa desde la que se abrió el modal.
+  const [targetId, setTargetId] = useState(companyId);
+  const [targetName, setTargetName] = useState(companyName);
+  const [changingTarget, setChangingTarget] = useState(false);
+  const [targetQuery, setTargetQuery] = useState("");
+  const [targetOptions, setTargetOptions] = useState<Company[]>([]);
+  // Modo duplicar: búsqueda libre entre TODAS las proformas.
+  const [templateQuery, setTemplateQuery] = useState("");
+  const [templates, setTemplates] = useState<FactusolQuote[]>([]);
+  const [searchingTemplates, setSearchingTemplates] = useState(false);
+  const [loadedFrom, setLoadedFrom] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -77,17 +97,36 @@ export function CreateQuoteModal({
       searchFactusolArticles(articleQuery.trim())
         .then(setArticles)
         .catch(() => setArticles([]));
-    }, 300);
+    }, DEBOUNCE_MS);
     return () => window.clearTimeout(handle);
   }, [mode, articleQuery]);
 
-  // Proformas previas del cliente para el modo duplicar.
+  // Buscador de plantillas: NO filtra por cliente (C-4-fix1).
   useEffect(() => {
     if (mode !== "duplicate") return;
-    listFactusolQuotes({ company_id: companyId, days_back: 365 })
-      .then((r) => setQuotes(r.items))
-      .catch(() => setQuotes([]));
-  }, [mode, companyId]);
+    let alive = true;
+    setSearchingTemplates(true);
+    const handle = window.setTimeout(() => {
+      searchFactusolQuotes(templateQuery.trim(), { days_back: TEMPLATE_DAYS_BACK })
+        .then((items) => { if (alive) setTemplates(items); })
+        .catch(() => { if (alive) setTemplates([]); })
+        .finally(() => { if (alive) setSearchingTemplates(false); });
+    }, DEBOUNCE_MS);
+    return () => { alive = false; window.clearTimeout(handle); };
+  }, [mode, templateQuery]);
+
+  // Empresas candidatas a cliente destino: solo las YA vinculadas a FACTUSOL,
+  // que son las únicas que el backend acepta (si no, 409 company_not_linked).
+  useEffect(() => {
+    if (!changingTarget) return;
+    const handle = window.setTimeout(() => {
+      listCompanies({ q: targetQuery || undefined, limit: 20 })
+        .then((page) =>
+          setTargetOptions(page.items.filter((c) => c.factusol_company_id)))
+        .catch(() => setTargetOptions([]));
+    }, DEBOUNCE_MS);
+    return () => window.clearTimeout(handle);
+  }, [changingTarget, targetQuery]);
 
   const total = useMemo(() => {
     if (mode === "quick") return num(quickAmount);
@@ -101,8 +140,9 @@ export function CreateQuoteModal({
   function addArticle(a: FactusolArticle) {
     setLines((rs) => {
       const next: LineRow = {
-        codart: a.codart ?? "",
-        description: a.descripcion ?? a.codart ?? "",
+        // El SKU comercial (EQUART) es el que el operativo reconoce.
+        codart: a.sku ?? a.codart ?? "",
+        description: a.descripcion ?? a.sku ?? "",
         quantity: "1",
         unit_price: String(a.precio || ""),
         iva_pct: String(a.iva_pct || 21),
@@ -115,25 +155,48 @@ export function CreateQuoteModal({
     setArticles([]);
   }
 
+  /** Carga una proforma como plantilla. Si tiene desglose cacheado se copian
+   *  sus líneas; si no (proforma del escritorio, F_PRE es mono-línea) se cae al
+   *  modo rápido con su referencia y su base. */
+  const loadTemplate = useCallback(async (quote: FactusolQuote) => {
+    if (!quote.codpre) return;
+    setError(null);
+    try {
+      const full = await getFactusolQuote(quote.codpre);
+      if (full.lines && full.lines.length > 0) {
+        setLines(full.lines.map((l) => ({
+          codart: l.codart ?? "",
+          description: l.description,
+          quantity: String(l.quantity),
+          unit_price: String(l.unit_price),
+          iva_pct: String(l.iva_pct),
+        })));
+        setMode("articles");
+      } else {
+        setReferencia(full.referencia);
+        setQuickAmount(String(full.base));
+        setMode("quick");
+      }
+      setLoadedFrom(quote.codpre);
+    } catch (e) {
+      setError(extractErrorMessage(e, "No se pudo cargar la plantilla."));
+    }
+  }, []);
+
   const valid = mode === "quick"
     ? referencia.trim().length > 0
     : mode === "articles"
       ? lines.some((l) => l.description.trim() && num(l.quantity) > 0)
-      : sourceCodpre.length > 0;
+      : false;  // en modo duplicar hay que cargar una plantilla primero
 
   async function submit() {
     if (!valid) return;
     setSubmitting(true);
     setError(null);
     try {
-      if (mode === "duplicate") {
-        const r = await duplicateFactusolQuote(sourceCodpre);
-        onCreated(r.job_id);
-        return;
-      }
       const payloadLines = mode === "quick"
         // Modo rápido: una sola línea con el texto y el importe. Así la
-        // proforma sigue teniendo desglose cacheado y se puede duplicar.
+        // proforma sigue teniendo desglose cacheado y se puede reutilizar.
         ? [{
             description: referencia.trim(),
             quantity: 1,
@@ -150,7 +213,7 @@ export function CreateQuoteModal({
               iva_pct: num(l.iva_pct),
             }));
       const r = await createFactusolQuote({
-        company_id: companyId,
+        company_id: targetId,
         referencia: mode === "quick" ? referencia.trim() : "",
         lines: payloadLines,
         fecha: fecha || null,
@@ -166,7 +229,41 @@ export function CreateQuoteModal({
     <div className="modal-overlay" role="dialog" aria-modal="true"
          aria-label="Nueva proforma FACTUSOL">
       <div className="modal-dialog">
-        <h2>Nueva proforma · {companyName}</h2>
+        <h2>Nueva proforma</h2>
+
+        <div className="erp-quote-target">
+          <span>
+            Cliente destino: <strong>{targetName}</strong>
+            {loadedFrom ? (
+              <span className="muted small"> · plantilla nº {loadedFrom}</span>
+            ) : null}
+          </span>
+          <button type="button" className="button small secondary"
+                  onClick={() => setChangingTarget((v) => !v)}>
+            Cambiar
+          </button>
+        </div>
+        {changingTarget ? (
+          <label className="field">
+            <span>Empresa destino (vinculada a FACTUSOL)</span>
+            <input type="text" list="erp-quote-target-companies"
+                   value={targetQuery} placeholder="Buscar empresa…"
+                   aria-label="Empresa destino"
+                   onChange={(e) => {
+                     setTargetQuery(e.target.value);
+                     const hit = targetOptions.find((c) => c.name === e.target.value);
+                     if (hit) {
+                       setTargetId(hit.id);
+                       setTargetName(hit.name);
+                       setChangingTarget(false);
+                     }
+                   }} />
+            <datalist id="erp-quote-target-companies">
+              {targetOptions.map((c) => <option key={c.id} value={c.name} />)}
+            </datalist>
+          </label>
+        ) : null}
+
         <p className="form-error">
           Se creará un presupuesto <strong>real</strong> en FACTUSOL.
         </p>
@@ -218,17 +315,20 @@ export function CreateQuoteModal({
             <label className="field">
               <span>Buscar artículo</span>
               <input type="text" value={articleQuery}
-                     placeholder="Código, EAN o descripción…"
+                     placeholder="SKU, EAN o descripción…"
                      onChange={(e) => setArticleQuery(e.target.value)} />
             </label>
             {articles.length > 0 ? (
               <ul className="erp-article-hits">
                 {articles.slice(0, 8).map((a) => (
                   <li key={a.codart ?? a.eanart ?? a.descripcion}>
-                    <button type="button" className="button small secondary"
+                    <button type="button" className="button small secondary erp-article-hit"
                             onClick={() => addArticle(a)}>
-                      + {a.codart} · {a.descripcion}
-                      {a.precio ? ` · ${a.precio.toFixed(2)} €` : ""}
+                      <span className="erp-article-sku">{a.sku ?? a.codart}</span>
+                      <span className="erp-article-desc">{a.descripcion}</span>
+                      <span className="erp-article-price">
+                        {a.precio ? `${a.precio.toFixed(2)} €` : "—"}
+                      </span>
                     </button>
                   </li>
                 ))}
@@ -290,23 +390,39 @@ export function CreateQuoteModal({
         ) : null}
 
         {mode === "duplicate" ? (
-          quotes.length === 0 ? (
-            <p className="muted">Este cliente no tiene proformas previas.</p>
-          ) : (
+          <>
+            <p className="form-info">
+              Puedes duplicar <strong>cualquier</strong> proforma — se creará
+              como nueva con el cliente que elijas arriba.
+            </p>
             <label className="field">
-              <span>Proforma a duplicar</span>
-              <select value={sourceCodpre}
-                      onChange={(e) => setSourceCodpre(e.target.value)}>
-                <option value="">— Elige una —</option>
-                {quotes.map((q) => (
-                  <option key={q.codpre ?? ""} value={q.codpre ?? ""}>
-                    nº {q.codpre} · {q.fecha ?? "—"} · {q.total.toFixed(2)} € ·{" "}
-                    {q.referencia.slice(0, 60)}
-                  </option>
-                ))}
-              </select>
+              <span>Buscar plantilla</span>
+              <input type="text" value={templateQuery}
+                     placeholder="Buscar por nº, cliente o descripción…"
+                     onChange={(e) => setTemplateQuery(e.target.value)} />
             </label>
-          )
+            {searchingTemplates ? (
+              <p className="muted small">Buscando…</p>
+            ) : templates.length === 0 ? (
+              <p className="muted small">Sin proformas que coincidan.</p>
+            ) : (
+              <ul className="erp-quote-list">
+                {templates.slice(0, 20).map((q) => (
+                  <li key={q.codpre ?? ""}>
+                    <span>
+                      <strong>nº {q.codpre}</strong> · {q.fecha ?? "—"} ·{" "}
+                      {q.cliente_nombre ?? "—"} · {q.total.toFixed(2)} € ·{" "}
+                      {q.referencia.slice(0, REF_PREVIEW_CHARS)}
+                    </span>
+                    <button type="button" className="button small"
+                            onClick={() => loadTemplate(q)}>
+                      Cargar esta plantilla
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </>
         ) : (
           <label className="field">
             <span>Fecha</span>
@@ -328,9 +444,7 @@ export function CreateQuoteModal({
           </button>
           <button type="button" className="button"
                   onClick={submit} disabled={!valid || submitting}>
-            {submitting
-              ? "Creando…"
-              : mode === "duplicate" ? "Duplicar proforma" : "Crear proforma"}
+            {submitting ? "Creando…" : "Crear proforma"}
           </button>
         </div>
       </div>

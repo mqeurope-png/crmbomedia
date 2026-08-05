@@ -152,6 +152,44 @@ def test_status_no_colisiona_con_la_ruta_de_codpre(client):
     assert r.json()["status"] == "pending"
 
 
+# --- búsqueda global de plantillas (C-4-fix1) --------------------------------
+
+
+def test_search_quotes_devuelve_proformas_de_varios_clientes(client):
+    fake = _FakeFactusol(quotes=[
+        _quote_row(10, CLIPRE="55555"),
+        _quote_row(11, CLIPRE="66666"),
+    ])
+    with _patch_client(fake):
+        r = client.get("/api/erp/factusol/quotes/search?q=&days_back=0",
+                       headers=auth_headers(client, "user"))
+    assert r.status_code == 200, r.text
+    assert {q["clipre"] for q in r.json()["items"]} == {"55555", "66666"}
+
+
+def test_search_quotes_filtra_por_texto(client):
+    fake = _FakeFactusol(quotes=[
+        _quote_row(10, REFPRE="Rotulación nave", CLIPRE="55555"),
+        _quote_row(11, REFPRE="Otra cosa", CNOPRE="LABORATORIOS ADOR",
+                   CLIPRE="66666"),
+    ])
+    with _patch_client(fake):
+        r = client.get("/api/erp/factusol/quotes/search?q=ador&days_back=0",
+                       headers=auth_headers(client, "user"))
+    assert r.status_code == 200
+    assert [q["codpre"] for q in r.json()["items"]] == ["11"]
+
+
+def test_search_quotes_no_colisiona_con_la_ruta_de_codpre(client):
+    """«search» se declara antes que `{codpre}`; invertido se leería como un
+    CODPRE y devolvería 404 en vez de la búsqueda."""
+    with _patch_client(_FakeFactusol(quotes=[_quote_row(10)])):
+        r = client.get("/api/erp/factusol/quotes/search?q=&days_back=0",
+                       headers=auth_headers(client, "user"))
+    assert r.status_code == 200
+    assert "items" in r.json()
+
+
 # --- artículos --------------------------------------------------------------
 
 

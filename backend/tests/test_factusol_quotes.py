@@ -153,6 +153,48 @@ def test_list_quotes_ordena_descendente_por_codpre():
     assert [q["codpre"] for q in items] == ["9", "7", "5"]
 
 
+def test_list_quotes_global_no_customer_filter():
+    """C-4-fix1: sin codcli devuelve proformas de TODOS los clientes — el 80 %
+    de las plantillas que se reutilizan son de otro cliente parecido."""
+    fake = _FakeFactusol(quotes=[
+        _quote_row(10, clipre="55555"),
+        _quote_row(11, clipre="66666"),
+        _quote_row(12, clipre="77777"),
+    ])
+    items = list_quotes(fake, ejercicio="2026", codcli=None, days_back=0)
+    assert {q["clipre"] for q in items} == {"55555", "66666", "77777"}
+    # Y el filtro que va a la API no menciona CLIPRE.
+    _, filtro = fake.filters[0]
+    assert "CLIPRE" not in filtro
+
+
+def test_list_quotes_global_filters_by_refpre_and_cnopre():
+    fake = _FakeFactusol(quotes=[
+        _quote_row(10, ref="Rotulación ador para nave"),          # casa REFPRE
+        {**_quote_row(11, ref="Otra cosa"),
+         "CNOPRE": "LABORATORIOS ADOR"},                          # casa CNOPRE
+        _quote_row(12, ref="Nada que ver"),                       # no casa
+    ])
+    items = list_quotes(fake, ejercicio="2026", days_back=0, text="ador")
+    assert [q["codpre"] for q in items] == ["11", "10"]
+
+
+def test_list_quotes_text_filter_matches_codpre():
+    fake = _FakeFactusol(quotes=[_quote_row(512), _quote_row(77)])
+    items = list_quotes(fake, ejercicio="2026", days_back=0, text="512")
+    assert [q["codpre"] for q in items] == ["512"]
+
+
+def test_list_quotes_text_filter_applies_before_limit():
+    """El recorte va DESPUÉS del filtro: si truncara primero, una plantilla
+    antigua no aparecería nunca (las recientes se la comerían)."""
+    rows = [_quote_row(i, ref="relleno") for i in range(200, 100, -1)]
+    rows.append(_quote_row(5, ref="plantilla rotulación"))
+    items = list_quotes(_FakeFactusol(quotes=rows), ejercicio="2026",
+                        days_back=0, text="rotulación", limit=50)
+    assert [q["codpre"] for q in items] == ["5"]
+
+
 def test_get_quote_usa_la_cache_cuando_la_creo_el_crm(session):
     fake = _FakeFactusol(quotes=[_quote_row(42)])
     session.add(FactusolQuoteLineCache(
@@ -196,11 +238,45 @@ def test_search_articles_normaliza_columnas_reales():
     assert items[0]["iva_pct"] == 21
 
 
-def test_search_articles_busca_en_codigo_ean_y_descripcion():
+def test_search_articles_filter_includes_all_6_columns():
+    """C-4-fix1: buscar solo en CODART/EANART/DESART dejaba fuera el SKU
+    comercial (EQUART) y las descripciones media/corta."""
     fake = _FakeFactusol(articles=[])
     search_articles(fake, "hdmi", ejercicio="2026")
     _, filtro = fake.filters[0]
-    assert "CODART" in filtro and "EANART" in filtro and "DESART" in filtro
+    for col in ("CODART", "EANART", "EQUART", "DESART", "DEEART", "DETART"):
+        assert f"UPPER({col})" in filtro, col
+
+
+def test_search_articles_matches_equart():
+    """El artículo real: CODART '00001' pero SKU comercial 'CDR80WPT'. Teclear
+    «CDR80» no aparece en ninguna descripción — solo casa por EQUART."""
+    fake = _FakeFactusol(articles=[{
+        "CODART": "00001", "EQUART": "CDR80WPT",
+        "DESART": "CD TQ 700 MB white Thermal WPT",
+        "DEEART": "CD TQ 700 MB white Thermal WPT",
+        "DETART": "CD TQ 700 MB white T", "PCOART": 0.25, "TIVART": 21,
+    }])
+    items = search_articles(fake, "CDR80", ejercicio="2026")
+    _, filtro = fake.filters[0]
+    assert "UPPER(EQUART) LIKE UPPER('%CDR80%')" in filtro
+    assert items[0]["equart"] == "CDR80WPT"
+    # `sku` es el alias que ve la UI: comercial por delante del interno.
+    assert items[0]["sku"] == "CDR80WPT"
+
+
+def test_search_articles_matches_deeart():
+    fake = _FakeFactusol(articles=[{
+        "CODART": "00002", "EQUART": "", "DESART": "",
+        "DEEART": "Tinta negra pigmentada", "DETART": "Tinta negra",
+        "PCOART": 12.0, "TIVART": 21,
+    }])
+    items = search_articles(fake, "tinta", ejercicio="2026")
+    _, filtro = fake.filters[0]
+    assert "UPPER(DEEART) LIKE UPPER('%tinta%')" in filtro
+    # Sin DESART, la descripción cae a la media y el SKU al código interno.
+    assert items[0]["descripcion"] == "Tinta negra pigmentada"
+    assert items[0]["sku"] == "00002"
 
 
 # --- creación ---------------------------------------------------------------

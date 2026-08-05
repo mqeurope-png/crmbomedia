@@ -414,6 +414,38 @@ def list_quotes_endpoint(
     return {"items": items, "unlinked": False, "ejercicio": ejercicio}
 
 
+@router.get("/quotes/search")
+def search_quotes_endpoint(
+    q: str = Query(default="", max_length=120),
+    days_back: int = Query(default=365, ge=0, le=1825),
+    limit: int = Query(default=50, ge=1, le=200),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_view),
+) -> dict[str, Any]:
+    """Busca proformas de **cualquier cliente** para usarlas como plantilla.
+
+    A diferencia de `GET /quotes`, aquí NO se filtra por empresa: el 80 % de las
+    plantillas que reutiliza Bomedia son de otro cliente parecido («duplicar la
+    de Laboratorios Duaner para Laboratorios Porta»). El texto casa contra
+    referencia, nombre del cliente de origen y número de proforma.
+
+    Se declara ANTES de `/quotes/{codpre}`: FastAPI casa por orden y «search»
+    encajaría como CODPRE."""
+    _ = current_user
+    from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
+    from app.integrations.factusol.quotes import list_quotes  # noqa: PLC0415
+
+    client, ejercicio = _client_and_ejercicio(session)
+    try:
+        items = list_quotes(
+            client, ejercicio=ejercicio, codcli=None, days_back=days_back,
+            text=q, limit=limit,
+        )
+    except FactusolError as exc:
+        raise _factusol_gateway_error(exc, "factusol_quotes_search_failed") from exc
+    return {"items": items, "ejercicio": ejercicio}
+
+
 @router.get("/quotes/status/{job_id}")
 def quote_job_status(
     job_id: str,
