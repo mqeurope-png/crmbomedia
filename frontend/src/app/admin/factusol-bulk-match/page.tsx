@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { PageHeader } from "../../components/PageHeader";
 import { extractErrorMessage } from "../../lib/errors";
 import {
@@ -12,6 +12,7 @@ import {
   bulkMatchDryRun,
   type BulkMatchByEmailDryRun,
   type BulkMatchByEmailRow,
+  type BulkMatchCandidate,
   type BulkMatchDryRun,
   type BulkMatchRow,
 } from "../../lib/erpApi";
@@ -33,8 +34,61 @@ const MATCH_LABELS: Record<string, string> = {
   nif: "NIF exacto", email: "Email exacto", name: "Nombre parecido",
 };
 
+/** A partir de aquí, «Aplicar seleccionadas» pide confirmación. Marcar todo con
+ *  un clic hace muy fácil lanzar un lote enorme sin querer, y revertirlo es SQL
+ *  a mano. Por debajo del umbral no se molesta al operador. */
+const CONFIRM_THRESHOLD = 50;
+
 function emptySelection(codcli: string): Selection {
   return { codcli, fields: new Set<string>(BULK_MATCH_FIELDS), apply: false };
+}
+
+/** Candidato preseleccionado en un multi-match: el de `codcli` **mayor**.
+ *
+ *  Los CODCLI de Bomedia son autonuméricos, así que el mayor es el cliente
+ *  creado más tarde — el que suele traer los datos buenos. Caso real: un mismo
+ *  email casa con 2123, 2210 y 2278; el bueno es el 2278.
+ *
+ *  `factusol_codcli` llega como string, hay que comparar como número (si no,
+ *  «999» ganaría a «2278»). Un codcli no numérico nunca gana: la comparación
+ *  con `NaN` es falsa, así que se queda el primero. */
+function pickDefaultCodcli(candidates: BulkMatchCandidate[]): string {
+  const codclis = candidates
+    .map((c) => c.factusol_codcli)
+    .filter((c): c is string => Boolean(c));
+  if (codclis.length === 0) return "";
+  return codclis.reduce((best, c) =>
+    Number.parseInt(c, 10) > Number.parseInt(best, 10) ? c : best);
+}
+
+/** Una fila del modo por email es aplicable salvo que su empresa ya apunte a
+ *  **otro** cliente de FACTUSOL: el backend la saltaría igualmente. Vive aquí
+ *  arriba porque el checkbox master de la cabecera necesita el mismo criterio
+ *  que la fila para saber a quién puede marcar. */
+function isEmailRowApplicable(row: BulkMatchByEmailRow, codcli: string): boolean {
+  return !(row.company_factusol_id && row.company_factusol_id !== codcli);
+}
+
+/** Checkbox de tres estados. `indeterminate` es una propiedad del DOM, no un
+ *  atributo: no se puede pasar por JSX y hay que escribirla por ref. */
+function MasterCheckbox({
+  checked, indeterminate, disabled, onChange,
+}: {
+  checked: boolean;
+  indeterminate: boolean;
+  disabled: boolean;
+  onChange: (checked: boolean) => void;
+}) {
+  const ref = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (ref.current) ref.current.indeterminate = indeterminate;
+  }, [indeterminate]);
+  return (
+    <input ref={ref} type="checkbox" checked={checked} disabled={disabled}
+           aria-label="Seleccionar todas"
+           title="Marca todas las filas visibles que se pueden aplicar"
+           onChange={(e) => onChange(e.target.checked)} />
+  );
 }
 
 /** Conciliación masiva CRM ↔ FACTUSOL (C-5 + C-5-fix1).
@@ -60,6 +114,7 @@ export default function FactusolBulkMatchPage() {
   const [applying, setApplying] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [summary, setSummary] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState(false);
 
   /** Relee y repuebla la tabla. NO toca `summary`/`error`: se llama también
    *  como refresco después de aplicar, y borrar el resultado ahí dejaría al
@@ -73,7 +128,7 @@ export default function FactusolBulkMatchPage() {
         setData(null);
         setSelections(Object.fromEntries(result.matches.map((m) => [
           m.contact_id,
-          emptySelection(m.candidates[0]?.factusol_codcli ?? ""),
+          emptySelection(pickDefaultCodcli(m.candidates)),
         ])));
       } else {
         const result = await bulkMatchDryRun({ filter, batch_size: 200 });
@@ -81,7 +136,7 @@ export default function FactusolBulkMatchPage() {
         setEmailData(null);
         setSelections(Object.fromEntries(result.matches.map((m) => [
           m.crm_company_id,
-          emptySelection(m.candidates[0]?.factusol_codcli ?? ""),
+          emptySelection(pickDefaultCodcli(m.candidates)),
         ])));
       }
     } catch (e) {
@@ -107,6 +162,34 @@ export default function FactusolBulkMatchPage() {
 
   const selectedCount = Object.values(selections).filter((s) => s.apply).length;
 
+  /** Filas **visibles** (respeta «Solo con diferencias») que se pueden marcar.
+   *  Es el universo sobre el que actúa el checkbox master. */
+  const applicableIds = useMemo(() => {
+    if (mode === "by_contact_email") {
+      return emailRows
+        .filter((m) => isEmailRowApplicable(
+          m, selections[m.contact_id]?.codcli ?? ""))
+        .map((m) => m.contact_id);
+    }
+    return companyRows.map((m) => m.crm_company_id);
+  }, [mode, emailRows, companyRows, selections]);
+
+  const applicableSelected =
+    applicableIds.filter((id) => selections[id]?.apply).length;
+  const allSelected =
+    applicableIds.length > 0 && applicableSelected === applicableIds.length;
+  const someSelected = applicableSelected > 0 && !allSelected;
+
+  function toggleAll(checked: boolean) {
+    setSelections((prev) => {
+      const next = { ...prev };
+      for (const id of applicableIds) {
+        if (next[id]) next[id] = { ...next[id], apply: checked };
+      }
+      return next;
+    });
+  }
+
   function update(id: string, patch: Partial<Selection>) {
     setSelections((prev) => ({ ...prev, [id]: { ...prev[id], ...patch } }));
   }
@@ -121,6 +204,7 @@ export default function FactusolBulkMatchPage() {
   }
 
   async function applySelected() {
+    setConfirming(false);
     const picked = Object.entries(selections)
       .filter(([, s]) => s.apply && s.codcli && s.fields.size > 0);
     if (picked.length === 0) return;
@@ -176,6 +260,11 @@ export default function FactusolBulkMatchPage() {
 
   const byEmail = mode === "by_contact_email";
   const loaded = byEmail ? emailData : data;
+  const masterCheckbox = (
+    <MasterCheckbox checked={allSelected} indeterminate={someSelected}
+                    disabled={applying || applicableIds.length === 0}
+                    onChange={toggleAll} />
+  );
 
   return (
     <main className="shell shell-wide">
@@ -269,13 +358,14 @@ export default function FactusolBulkMatchPage() {
               <thead>
                 {byEmail ? (
                   <tr>
-                    <th>Aplicar</th><th>Contacto CRM</th><th>Email</th>
+                    <th>{masterCheckbox}</th><th>Contacto CRM</th><th>Email</th>
                     <th>Empresa actual</th><th>Cliente FACTUSOL</th>
                     <th>Difieren</th><th />
                   </tr>
                 ) : (
                   <tr>
-                    <th>Aplicar</th><th>Empresa CRM</th><th>Cliente FACTUSOL</th>
+                    <th>{masterCheckbox}</th><th>Empresa CRM</th>
+                    <th>Cliente FACTUSOL</th>
                     <th>Coincidencia</th><th>Difieren</th><th />
                   </tr>
                 )}
@@ -313,13 +403,41 @@ export default function FactusolBulkMatchPage() {
           <div className="form-actions">
             <button type="button" className="button"
                     disabled={applying || selectedCount === 0}
-                    onClick={applySelected}>
+                    onClick={() => {
+                      if (selectedCount >= CONFIRM_THRESHOLD) setConfirming(true);
+                      else applySelected();
+                    }}>
               {applying
                 ? "Aplicando…"
                 : `Aplicar seleccionadas (${selectedCount})`}
             </button>
           </div>
         </section>
+      ) : null}
+
+      {confirming ? (
+        <div className="modal-overlay" role="dialog" aria-modal="true"
+             aria-label="Confirmar aplicación masiva">
+          <div className="modal-dialog">
+            <h2>Confirmar aplicación masiva</h2>
+            <p>
+              Vas a aplicar <strong>{selectedCount}</strong> operaciones. Esto
+              modificará {selectedCount} empresas del CRM con los datos de
+              FACTUSOL. Los cambios son reversibles solo via SQL manual
+              (audit_logs). ¿Continuar?
+            </p>
+            <div className="modal-actions">
+              <button type="button" className="button secondary"
+                      onClick={() => setConfirming(false)}>
+                Cancelar
+              </button>
+              <button type="button" className="button danger"
+                      onClick={applySelected}>
+                Sí, aplicar {selectedCount} cambios
+              </button>
+            </div>
+          </div>
+        </div>
       ) : null}
     </main>
   );
@@ -386,8 +504,7 @@ function ByEmailRowView({
   // Lo único que sigue bloqueado es pisar un vínculo ajeno, que el backend
   // saltaría igualmente; deshabilitarlo evita creer que se ha aplicado.
   const noCompany = !row.company_id;
-  const linkedElsewhere = Boolean(
-    row.company_factusol_id && row.company_factusol_id !== selection.codcli);
+  const linkedElsewhere = !isEmailRowApplicable(row, selection.codcli);
   const reason = linkedElsewhere
     ? `Su empresa ya está vinculada al cliente ${row.company_factusol_id}.`
     : noCompany
