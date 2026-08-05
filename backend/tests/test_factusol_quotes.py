@@ -27,6 +27,7 @@ from app.integrations.factusol.client import FactusolError
 from app.integrations.factusol.quotes import (
     ARTICLE_SEARCH_LIMIT,
     REFPRE_MAX_LENGTH,
+    build_quote_payload,
     build_refpre_from_lines,
     convert_quote_to_order,
     create_quote,
@@ -457,6 +458,35 @@ def test_create_quote_writes_header_and_lines_to_f_lps(session):
     # Línea de texto libre: sin artículo, pero se escribe igual.
     assert lines[1]["ARTLPS"] == ""
     assert result["lines"] == 3
+
+
+def test_build_quote_payload_uses_cempre_not_emapre_for_email():
+    """Regresión de C-4-fix4. El email de F_PRE es CEMPRE; `EMAPRE` existe en
+    F_CLI/F_ART pero NO en F_PRE, y enviarlo hace fallar el EscribirRegistro
+    ENTERO — bloqueó la creación de proformas en producción."""
+    payload = build_quote_payload(
+        "4400", ejercicio="2026",
+        customer={"codcli": "1", "nombre": "TEST", "email": "test@test.com"},
+        refpre="TEST", lines=[],
+    )
+    assert "EMAPRE" not in payload, "EMAPRE no existe en F_PRE; usar CEMPRE"
+    assert payload["CEMPRE"] == "test@test.com"
+
+
+def test_create_quote_writes_email_as_cempre(session):
+    """El mismo guard, pero sobre lo que llega de verdad a EscribirRegistro."""
+    fake = _FakeFactusol()
+    create_quote(
+        fake, session, ejercicio="2026",
+        customer={"codcli": "55555", "nombre": "Acme SL",
+                  "email": "compras@acme.example", "telefono": "934000000"},
+        lines=[{"description": "Cable", "quantity": 1, "unit_price": 10}],
+    )
+    header = fake.writes_to("F_PRE")[0]
+    assert "EMAPRE" not in header
+    assert header["CEMPRE"] == "compras@acme.example"
+    # TELPRE sí existe en F_PRE: el bisecado en vivo lo descartó como causa.
+    assert header["TELPRE"] == "934000000"
 
 
 def test_create_quote_line_payload_applies_discount(session):
