@@ -1,33 +1,48 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { CreateQuoteModal } from "./CreateQuoteModal";
+import { listCompanies } from "../../lib/companiesApi";
 import {
   createFactusolQuote,
-  duplicateFactusolQuote,
-  listFactusolQuotes,
+  getFactusolQuote,
   searchFactusolArticles,
+  searchFactusolQuotes,
 } from "../../lib/erpApi";
 
+jest.mock("../../lib/companiesApi", () => ({ listCompanies: jest.fn() }));
 jest.mock("../../lib/erpApi", () => ({
   createFactusolQuote: jest.fn(),
-  duplicateFactusolQuote: jest.fn(),
-  listFactusolQuotes: jest.fn(),
+  getFactusolQuote: jest.fn(),
   searchFactusolArticles: jest.fn(),
+  searchFactusolQuotes: jest.fn(),
+  // C-4-fix1: el modo duplicar ya NO filtra por cliente; si alguien vuelve a
+  // llamar a listFactusolQuotes desde aquí, el test lo detecta.
+  listFactusolQuotes: jest.fn(),
 }));
 const mockCreate = createFactusolQuote as jest.Mock;
-const mockDuplicate = duplicateFactusolQuote as jest.Mock;
-const mockList = listFactusolQuotes as jest.Mock;
+const mockGetQuote = getFactusolQuote as jest.Mock;
 const mockArticles = searchFactusolArticles as jest.Mock;
+const mockSearchQuotes = searchFactusolQuotes as jest.Mock;
+const mockCompanies = listCompanies as jest.Mock;
+
+function quote(over = {}) {
+  return {
+    codpre: "77", referencia: "Rotulación nave Duaner", fecha: "2026-07-01",
+    clipre: "55555", cliente_nombre: "Laboratorios Duaner",
+    base: 100, iva: 21, total: 121, ...over,
+  };
+}
 
 beforeEach(() => {
   mockCreate.mockReset();
-  mockDuplicate.mockReset();
-  mockList.mockReset();
+  mockGetQuote.mockReset();
   mockArticles.mockReset();
+  mockSearchQuotes.mockReset();
+  mockCompanies.mockReset();
   mockCreate.mockResolvedValue({ job_id: "job-1", status: "queued" });
-  mockDuplicate.mockResolvedValue({ job_id: "job-2", status: "queued" });
-  mockList.mockResolvedValue({ items: [], unlinked: false });
   mockArticles.mockResolvedValue([]);
+  mockSearchQuotes.mockResolvedValue([]);
+  mockCompanies.mockResolvedValue({ items: [], total: 0 });
 });
 
 function base(over = {}) {
@@ -59,47 +74,160 @@ describe("CreateQuoteModal", () => {
     expect(onCreated).toHaveBeenCalledWith("job-1");
   });
 
-  it("modo con artículos: busca en F_ART y añade el resultado como línea", async () => {
-    mockArticles.mockResolvedValue([
-      { codart: "ART-1", descripcion: "Cable HDMI 3m", precio: 8.5, iva_pct: 21 },
-    ]);
+  it("no deja crear una proforma sin concepto ni líneas", async () => {
+    render(<CreateQuoteModal {...base()} />);
+    expect(screen.getByRole("button", { name: "Crear proforma" })).toBeDisabled();
+  });
+
+  // --- C-4-fix1: artículos por SKU comercial -------------------------------
+
+  it("el autocomplete de artículos muestra SKU comercial, descripción y precio", async () => {
+    mockArticles.mockResolvedValue([{
+      codart: "00001", equart: "CDR80WPT", sku: "CDR80WPT",
+      descripcion: "CD TQ 700 MB white Thermal WPT",
+      desart: "CD TQ 700 MB white Thermal WPT", deeart: null, detart: null,
+      eanart: null, famart: null, precio: 0.25, stock: 100, iva_pct: 21,
+    }]);
     const user = userEvent.setup();
     render(<CreateQuoteModal {...base()} />);
 
     await user.click(screen.getByRole("button", { name: "Con artículos" }));
-    await user.type(screen.getByLabelText("Buscar artículo"), "hdmi");
-    const hit = await screen.findByRole("button", { name: /ART-1 · Cable HDMI 3m/ });
-    await user.click(hit);
+    await user.type(screen.getByLabelText("Buscar artículo"), "CDR80");
 
-    // La fila vacía inicial se reutiliza: queda UNA línea con el artículo.
-    expect(screen.getByLabelText("Descripción línea 1")).toHaveValue("Cable HDMI 3m");
-    expect(screen.getByLabelText("Precio línea 1")).toHaveValue(8.5);
+    // El SKU comercial es lo que el operativo reconoce, no el CODART interno.
+    expect(await screen.findByText("CDR80WPT")).toBeInTheDocument();
+    expect(screen.getByText("CD TQ 700 MB white Thermal WPT")).toBeInTheDocument();
+    expect(screen.getByText("0.25 €")).toBeInTheDocument();
   });
 
-  it("modo duplicar: lista las proformas previas y duplica la elegida", async () => {
-    mockList.mockResolvedValue({
-      items: [{
-        codpre: "77", referencia: "Proforma anterior", fecha: "2026-07-01",
-        clipre: "55555", cliente_nombre: "Acme SL", base: 100, iva: 21, total: 121,
-      }],
-      unlinked: false,
-    });
-    const onCreated = jest.fn();
+  it("al elegir el artículo rellena la línea con EQUART y su descripción", async () => {
+    mockArticles.mockResolvedValue([{
+      codart: "00001", equart: "CDR80WPT", sku: "CDR80WPT",
+      descripcion: "CD TQ 700 MB white Thermal WPT",
+      desart: "CD TQ 700 MB white Thermal WPT", deeart: null, detart: null,
+      eanart: null, famart: null, precio: 0.25, stock: 100, iva_pct: 21,
+    }]);
     const user = userEvent.setup();
-    render(<CreateQuoteModal {...base({ onCreated })} />);
+    render(<CreateQuoteModal {...base()} />);
 
-    await user.click(screen.getByRole("button", { name: "Duplicar" }));
-    const select = await screen.findByLabelText("Proforma a duplicar");
-    await user.selectOptions(select, "77");
-    await user.click(screen.getByRole("button", { name: "Duplicar proforma" }));
+    await user.click(screen.getByRole("button", { name: "Con artículos" }));
+    await user.type(screen.getByLabelText("Buscar artículo"), "CDR80");
+    await user.click(await screen.findByRole("button", { name: /CDR80WPT/ }));
 
-    await waitFor(() => expect(mockDuplicate).toHaveBeenCalledWith("77"));
-    expect(onCreated).toHaveBeenCalledWith("job-2");
-    expect(mockCreate).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("Artículo línea 1")).toHaveValue("CDR80WPT");
+    expect(screen.getByLabelText("Descripción línea 1"))
+      .toHaveValue("CD TQ 700 MB white Thermal WPT");
+    expect(screen.getByLabelText("Precio línea 1")).toHaveValue(0.25);
   });
 
-  it("no deja crear una proforma sin concepto ni líneas", async () => {
+  // --- C-4-fix1: duplicar de cualquier cliente -----------------------------
+
+  it("modo duplicar: input de búsqueda libre, no la lista filtrada por cliente", async () => {
+    const user = userEvent.setup();
     render(<CreateQuoteModal {...base()} />);
-    expect(screen.getByRole("button", { name: "Crear proforma" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Duplicar" }));
+
+    expect(screen.getByLabelText("Buscar plantilla")).toBeInTheDocument();
+    expect(
+      screen.getByText(/Puedes duplicar/),
+    ).toBeInTheDocument();
+    // Nunca se pide la lista restringida al cliente actual.
+    const { listFactusolQuotes } = jest.requireMock("../../lib/erpApi");
+    expect(listFactusolQuotes).not.toHaveBeenCalled();
+  });
+
+  it("escribir en el buscador llama a la búsqueda global, sin company_id", async () => {
+    mockSearchQuotes.mockResolvedValue([quote()]);
+    const user = userEvent.setup();
+    render(<CreateQuoteModal {...base()} />);
+    await user.click(screen.getByRole("button", { name: "Duplicar" }));
+    await user.type(screen.getByLabelText("Buscar plantilla"), "lab");
+
+    await waitFor(() => expect(mockSearchQuotes).toHaveBeenCalledWith(
+      "lab", expect.objectContaining({ days_back: 365 }),
+    ));
+    // Muestra el cliente ORIGEN, que es como se reconoce la plantilla.
+    expect(await screen.findByText(/Laboratorios Duaner/)).toBeInTheDocument();
+  });
+
+  it("cargar una plantilla de otro cliente la crea para el cliente destino", async () => {
+    mockSearchQuotes.mockResolvedValue([quote()]);
+    mockGetQuote.mockResolvedValue({
+      ...quote(), line_source: "cache",
+      lines: [{
+        position: 1, codart: "ART-1", description: "Vinilo impreso",
+        quantity: 3, unit_price: 40, discount_pct: 0, line_total: 120,
+        iva_pct: 21,
+      }],
+    });
+    const user = userEvent.setup();
+    render(<CreateQuoteModal {...base()} />);
+    await user.click(screen.getByRole("button", { name: "Duplicar" }));
+    await user.type(screen.getByLabelText("Buscar plantilla"), "lab");
+    await user.click(
+      await screen.findByRole("button", { name: "Cargar esta plantilla" }),
+    );
+
+    // La plantilla cae en el modo artículos con sus líneas reales.
+    expect(await screen.findByLabelText("Descripción línea 1"))
+      .toHaveValue("Vinilo impreso");
+    await user.click(screen.getByRole("button", { name: "Crear proforma" }));
+
+    await waitFor(() => expect(mockCreate).toHaveBeenCalled());
+    const payload = mockCreate.mock.calls[0][0];
+    // Cliente DESTINO (el del modal), no el de origen de la plantilla.
+    expect(payload.company_id).toBe("c1");
+    expect(payload.lines[0]).toEqual(expect.objectContaining({
+      description: "Vinilo impreso", quantity: 3, unit_price: 40,
+    }));
+  });
+
+  it("una plantilla sin desglose cae al modo rápido con su referencia", async () => {
+    mockSearchQuotes.mockResolvedValue([quote({ codpre: "88" })]);
+    mockGetQuote.mockResolvedValue({
+      ...quote({ codpre: "88" }), line_source: "ref_text", lines: [],
+    });
+    const user = userEvent.setup();
+    render(<CreateQuoteModal {...base()} />);
+    await user.click(screen.getByRole("button", { name: "Duplicar" }));
+    await user.type(screen.getByLabelText("Buscar plantilla"), "lab");
+    await user.click(
+      await screen.findByRole("button", { name: "Cargar esta plantilla" }),
+    );
+
+    expect(await screen.findByLabelText("Concepto"))
+      .toHaveValue("Rotulación nave Duaner");
+    expect(screen.getByLabelText("Importe (base)")).toHaveValue(100);
+  });
+
+  it("permite cambiar el cliente destino a otra empresa vinculada", async () => {
+    mockCompanies.mockResolvedValue({
+      items: [
+        { id: "c2", name: "Laboratorios Porta", factusol_company_id: "66666" },
+        { id: "c3", name: "Sin FACTUSOL", factusol_company_id: null },
+      ],
+      total: 2,
+    });
+    const user = userEvent.setup();
+    render(<CreateQuoteModal {...base()} />);
+
+    await user.click(screen.getByRole("button", { name: "Cambiar" }));
+    const input = await screen.findByLabelText("Empresa destino");
+    // Solo se ofrecen empresas ya vinculadas: las demás las rechaza el backend
+    // con 409 company_not_linked. (Las <option> de un <datalist> no exponen
+    // rol ARIA, así que se comprueban en el DOM.)
+    await waitFor(() => {
+      const values = Array.from(
+        document.querySelectorAll("#erp-quote-target-companies option"),
+      ).map((o) => (o as HTMLOptionElement).value);
+      expect(values).toEqual(["Laboratorios Porta"]);
+    });
+
+    await user.type(input, "Laboratorios Porta");
+    await user.type(screen.getByLabelText("Concepto"), "Trabajo nuevo");
+    await user.click(screen.getByRole("button", { name: "Crear proforma" }));
+
+    await waitFor(() => expect(mockCreate).toHaveBeenCalled());
+    expect(mockCreate.mock.calls[0][0].company_id).toBe("c2");
   });
 });

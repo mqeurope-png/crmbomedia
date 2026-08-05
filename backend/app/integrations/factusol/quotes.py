@@ -75,9 +75,24 @@ QUOTE_FIELDS = (
 )
 
 #: Columnas de F_ART que exponemos en el buscador de artículos.
+#: `EQUART` es el **SKU comercial** (el que teclean los operativos: `CDR80WPT`,
+#: `BOB180-25`), distinto del `CODART` interno (`00001`).
 ARTICLE_FIELDS = (
-    "CODART", "EANART", "DESART", "DEEART", "FAMART", "TIVART", "PCOART",
-    "DT0ART", "STOART", "UMEART",
+    "CODART", "EANART", "EQUART", "DESART", "DEEART", "DETART",
+    "FAMART", "TIVART", "PCOART", "DT0ART", "STOART", "UMEART",
+)
+
+#: Columnas donde busca el autocomplete de artículos. Son las 6 que identifican
+#: un artículo en la base real de Bomedia — verificadas con el script de
+#: descubrimiento. Antes solo se miraba en CODART/EANART/DESART y buscar por el
+#: SKU comercial no encontraba nada (C-4-fix1):
+#:
+#:     CODART '00001'  EQUART 'CDR80WPT'
+#:     DESART 'CD TQ 700 MB white Thermal WPT'   ← «CDR80» NO aparece aquí
+#:     DEEART 'CD TQ 700 MB white Thermal WPT'
+#:     DETART 'CD TQ 700 MB white T'
+ARTICLE_SEARCH_COLUMNS = (
+    "CODART", "EANART", "EQUART", "DESART", "DEEART", "DETART",
 )
 
 
@@ -123,9 +138,17 @@ def _factusol_date(value: Any) -> str | None:
 def _row_to_article(row: dict[str, Any]) -> dict[str, Any]:
     out = {k.lower(): row.get(k) for k in ARTICLE_FIELDS}
     out["codart"] = str(out.get("codart")).strip() if out.get("codart") else None
-    # Alias para la UI: la descripción corta manda; el precio de coste PCOART
-    # es el que sirve de sugerencia al operador (no hay tarifa de venta única).
-    out["descripcion"] = str(out.get("desart") or "").strip() or None
+    out["equart"] = str(out.get("equart") or "").strip() or None
+    # Alias para la UI. `sku` es lo que el operativo reconoce: el código
+    # comercial (EQUART) y, si no lo tiene, el interno (CODART).
+    out["sku"] = out.get("equart") or out.get("codart")
+    # Descripción: larga → media → corta, la primera no vacía.
+    out["descripcion"] = next(
+        (str(out.get(k) or "").strip() for k in ("desart", "deeart", "detart")
+         if str(out.get(k) or "").strip()),
+        None,
+    )
+    # PCOART es precio de COSTE, no tarifa de venta: solo sugerencia editable.
     out["precio"] = _num(out.get("pcoart"))
     out["stock"] = _num(out.get("stoart"))
     out["iva_pct"] = _num(out.get("tivart"), DEFAULT_IVA_PCT)
@@ -135,19 +158,20 @@ def _row_to_article(row: dict[str, Any]) -> dict[str, Any]:
 def search_articles(
     client: FactusolClient, query: str, *, ejercicio: str,
 ) -> list[dict[str, Any]]:
-    """Busca artículos en F_ART por código, EAN o descripción (LIKE).
+    """Busca artículos en F_ART por cualquiera de sus 6 identificadores (LIKE).
 
-    Un único filtro con OR sobre las tres columnas: el operador teclea «cable»
-    o «8412345» sin tener que elegir criterio. Recorte en Python porque la API
-    DELSOL no soporta LIMIT."""
+    Un único filtro con OR: el operador teclea «CDR80», «8412345» o «cable» sin
+    elegir criterio. Recorte en Python porque la API DELSOL no soporta LIMIT.
+
+    C-4-fix1: se buscaba solo en CODART/EANART/DESART, así que teclear el **SKU
+    comercial** no encontraba nada — ese vive en `EQUART`, y la descripción
+    puede estar solo en `DEEART`/`DETART`. Ver `ARTICLE_SEARCH_COLUMNS`."""
     q = (query or "").strip()
     if not q:
         return []
     safe = _sql_escape(q)
-    filtro = (
-        f"UPPER(CODART) LIKE UPPER('%{safe}%') "
-        f"OR UPPER(EANART) LIKE UPPER('%{safe}%') "
-        f"OR UPPER(DESART) LIKE UPPER('%{safe}%')"
+    filtro = " OR ".join(
+        f"UPPER({col}) LIKE UPPER('%{safe}%')" for col in ARTICLE_SEARCH_COLUMNS
     )
     rows = client.load_table(TABLE_ARTICLES, filtro=filtro, ejercicio=ejercicio)
     return [_row_to_article(r) for r in rows[:ARTICLE_SEARCH_LIMIT]]
@@ -169,17 +193,33 @@ def _row_to_quote(row: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _quote_matches(quote: dict[str, Any], needle: str) -> bool:
+    """¿La proforma casa con el texto buscado? Mira en la referencia, el nombre
+    del cliente de origen y el propio número — que es como Bart identifica una
+    plantilla («la de Laboratorios Duaner», «la 512», «rotulación»)."""
+    haystack = " ".join(str(x or "") for x in (
+        quote.get("referencia"), quote.get("cliente_nombre"), quote.get("codpre"),
+    ))
+    return needle in haystack.casefold()
+
+
 def list_quotes(
     client: FactusolClient, *, ejercicio: str, codcli: str | None = None,
     days_back: int = DEFAULT_DAYS_BACK, today: date | None = None,
+    text: str | None = None, limit: int = QUOTE_LIST_LIMIT,
 ) -> list[dict[str, Any]]:
-    """Proformas de un cliente (o de todos) en los últimos `days_back` días.
+    """Proformas de un cliente (o de TODOS si `codcli` es None) en los últimos
+    `days_back` días, opcionalmente filtradas por `text`.
 
     Se ordena DESC por CODPRE y se recorta en Python (la API no soporta LIMIT).
     El filtro de fecha se resuelve **en Python** a propósito: el dialecto SQL de
     la API DELSOL no está documentado y una función de fecha no soportada
     devolvería `[]` en silencio (la trampa de C-3-fix1). Filtrar por `CLIPRE`,
     que es una comparación trivial, sí es seguro.
+
+    `text` también se aplica en Python, y **antes** del recorte a `limit`: si se
+    truncase primero, buscar una plantilla antigua no la encontraría nunca
+    porque las 100 más recientes se la habrían comido.
     """
     filtro = "1=1"
     if codcli:
@@ -195,7 +235,10 @@ def list_quotes(
             q for q in quotes
             if q["fecha"] is None or date.fromisoformat(q["fecha"]).toordinal() >= ref
         ]
-    return quotes[:QUOTE_LIST_LIMIT]
+    needle = (text or "").strip().casefold()
+    if needle:
+        quotes = [q for q in quotes if _quote_matches(q, needle)]
+    return quotes[:limit]
 
 
 def cached_lines(

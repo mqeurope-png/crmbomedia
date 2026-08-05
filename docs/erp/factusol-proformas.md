@@ -39,14 +39,59 @@ modos:
 1. **Rápida** — un concepto de texto y un importe. Es la forma *nativa* de
    F_PRE y la que más se usa. Aun así se guarda como una línea en la caché,
    así que la proforma sigue siendo duplicable.
-2. **Con artículos** — busca en `F_ART` (código, EAN o descripción) y compone
-   el desglose. El precio que se propone es `PCOART`, que es **coste**: hay que
-   revisarlo, no es una tarifa de venta.
-3. **Duplicar** — parte de una proforma anterior del mismo cliente.
+2. **Con artículos** — busca en `F_ART` y compone el desglose. El precio que se
+   propone es `PCOART`, que es **coste**: hay que revisarlo, no es una tarifa
+   de venta. Ver «Buscar artículos» más abajo.
+3. **Duplicar** — parte de una proforma anterior de **cualquier** cliente. Ver
+   «Duplicar como plantilla».
 
 Requisito: la empresa debe estar **vinculada a un cliente de FACTUSOL**
 (`companies.factusol_company_id`, que gestiona C-3). Sin CODCLI la proforma no
 tendría dueño en la contabilidad → la API responde `409 company_not_linked`.
+
+### Buscar artículos
+
+El autocomplete busca el texto en **6 columnas de `F_ART`** a la vez, así que
+da igual si tecleas el SKU, el EAN o media descripción:
+
+`CODART` · `EANART` · `EQUART` · `DESART` · `DEEART` · `DETART`
+
+La distinción que importa: **`CODART` es el código interno** (`00001`) y
+**`EQUART` el SKU comercial** (`CDR80WPT`) — el que usan los operativos. La
+lista muestra el comercial, con el interno como reserva si está vacío.
+
+```
+CODART '00001'   EQUART 'CDR80WPT'
+DESART 'CD TQ 700 MB white Thermal WPT'   ← «CDR80» NO aparece aquí
+DEEART 'CD TQ 700 MB white Thermal WPT'
+DETART 'CD TQ 700 MB white T'
+```
+
+> C-4-fix1 arregló justo esto: se buscaba solo en `CODART`/`EANART`/`DESART`,
+> así que teclear «CDR80» no devolvía nada aunque el artículo existiera. La
+> descripción también puede vivir solo en `DEEART`/`DETART`.
+
+### Duplicar como plantilla
+
+Se puede duplicar **cualquier proforma, sea del cliente que sea**: en Bomedia
+la mayoría de las plantillas vienen de otro cliente parecido («la de
+Laboratorios Duaner sirve para Laboratorios Porta»).
+
+En el modo «Duplicar» hay un buscador libre sobre todas las proformas del
+último año. El texto casa contra **referencia**, **nombre del cliente de
+origen** y **número de proforma**. Al pulsar *Cargar esta plantilla* el modal
+se rellena con su desglose (o con su texto, si la proforma venía del
+escritorio) y se crea una proforma **nueva** para el cliente destino, que se
+puede cambiar arriba del todo con *Cambiar*.
+
+> **Por qué no se usa `POST /quotes/{codpre}/duplicate` aquí.** Ese endpoint
+> copia la fila `F_PRE` **entera**, incluido `CLIPRE`. Duplicar la proforma de
+> otro cliente dejaría la nueva a nombre del cliente equivocado. La UI crea una
+> proforma nueva con `POST /quotes` y el `company_id` destino. El endpoint de
+> duplicado sigue existiendo para una copia exacta del mismo cliente.
+
+Solo se ofrecen como destino empresas **ya vinculadas** a un cliente de
+FACTUSOL: sin `CODCLI` el backend responde `409 company_not_linked`.
 
 ### Convertir una proforma en pedido
 
@@ -78,17 +123,22 @@ Todo bajo `/api/erp/factusol`. Lectura: rol de vista. Escritura: `require_erp_ed
 
 | Método | Ruta | Qué hace |
 |---|---|---|
-| GET | `/articles/search?q=` | Busca en F_ART por código, EAN o descripción |
+| GET | `/articles/search?q=` | Busca en las 6 columnas de F_ART |
 | GET | `/quotes?company_id=&days_back=180` | Proformas del cliente. `unlinked: true` si la empresa no tiene CODCLI |
+| GET | `/quotes/search?q=&days_back=365&limit=50` | Proformas de **cualquier** cliente (plantillas) |
 | GET | `/quotes/{codpre}` | Proforma + desglose + `line_source` |
 | GET | `/quotes/status/{job_id}` | Estado del job (`pending` / `finished` / `failed`) |
 | POST | `/quotes` | Crea la proforma → **202 + job_id** |
 | POST | `/quotes/{codpre}/duplicate` | Duplica → **202 + job_id** |
 | POST | `/quotes/{codpre}/convert-to-order` | Crea el pedido CRM → **202 + job_id** |
 
-> `/quotes/status/{job_id}` se declara **antes** que `/quotes/{codpre}`: FastAPI
-> resuelve por orden y si no, «status» se interpretaría como un CODPRE. Hay un
-> test que lo fija.
+> `/quotes/search` y `/quotes/status/{job_id}` se declaran **antes** que
+> `/quotes/{codpre}`: FastAPI resuelve por orden y si no, «search» y «status»
+> se interpretarían como un CODPRE. Hay un test para cada uno.
+
+El filtro de texto de `/quotes/search` se aplica **antes** del recorte a
+`limit`. Al revés, buscar una plantilla antigua no la encontraría nunca porque
+las más recientes se habrían comido el cupo.
 
 ### Por qué 202 y no 200
 
