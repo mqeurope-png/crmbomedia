@@ -23,14 +23,18 @@ from tests._test_helpers import auth_headers, seed_test_users
 
 
 class _FakeFactusol:
-    def __init__(self, *, quotes=None, articles=None, lines=None, tariffs=None):
+    def __init__(self, *, quotes=None, articles=None, lines=None, tariffs=None,
+                 customers=None):
         self.default_ejercicio = "2026"
         self._quotes = list(quotes or [])
         self._articles = list(articles or [])
         self._lines = list(lines or [])
         self._tariffs = list(tariffs or [])
+        self._customers = list(customers or [])
 
     def load_table(self, tabla, *, filtro="1=1", ejercicio=None):
+        if tabla == "F_CLI":
+            return list(self._customers)
         if tabla == "F_ART":
             return list(self._articles)
         if tabla == "F_LTA":
@@ -317,6 +321,143 @@ def test_convert_to_order_encola_con_el_actor(client):
     assert r.json()["job_id"] == "job-c1"
     # El actor viaja al job para firmar el historial del pedido creado.
     assert enq.call_args.args[1] is not None
+
+
+# --- direcciones del cliente (C-4-fix6) --------------------------------------
+
+
+def _customer_row(**over):
+    row = {"CODCLI": 55555, "DOMCLI": "C/ Mayor 1", "POBCLI": "Madrid",
+           "CPOCLI": "28001", "PROCLI": "Madrid", "PAICLI": "724"}
+    row.update(over)
+    return row
+
+
+def test_addresses_endpoint_returns_principal_only_when_no_alternatives(client):
+    fake = _FakeFactusol(customers=[_customer_row()])
+    with _patch_client(fake):
+        r = client.get("/api/erp/factusol/customers/55555/addresses",
+                       headers=auth_headers(client, "user"))
+    assert r.status_code == 200, r.text
+    items = r.json()["items"]
+    assert len(items) == 1
+    assert items[0] == {"codigo": 0, "nombre": "(principal)",
+                        "direccion": "C/ Mayor 1", "ciudad": "Madrid",
+                        "cp": "28001", "provincia": "Madrid", "pais": "724"}
+
+
+def test_addresses_endpoint_returns_all_alternatives(client):
+    """FACTUSOL guarda hasta 4 adicionales con sufijo numérico. Solo cuentan
+    las que tengan nombre (`ACOxCLI`); las vacías no se listan."""
+    fake = _FakeFactusol(customers=[_customer_row(
+        ACO1CLI="Delegación Norte", ADO1CLI="Pol. Ind. 4", APO1CLI="Bilbao",
+        ACP1CLI="48001", APR1CLI="Bizkaia", APA1CLI="724",
+        ACO2CLI="Almacén Sur", ADO2CLI="Ctra. 12", APO2CLI="Sevilla",
+        ACP2CLI="41001", APR2CLI="Sevilla", APA2CLI="724",
+        ACO3CLI="Obra Valencia", ADO3CLI="Av. del Puerto 3",
+        APO3CLI="Valencia", ACP3CLI="46001", APR3CLI="Valencia",
+        ACO4CLI="",  # sin nombre → no se lista
+    )])
+    with _patch_client(fake):
+        r = client.get("/api/erp/factusol/customers/55555/addresses",
+                       headers=auth_headers(client, "user"))
+    items = r.json()["items"]
+    assert [a["codigo"] for a in items] == [0, 1, 2, 3]
+    assert items[1]["nombre"] == "Delegación Norte"
+    assert items[1]["ciudad"] == "Bilbao"
+    assert items[3]["direccion"] == "Av. del Puerto 3"
+
+
+def test_addresses_endpoint_empty_when_customer_missing(client):
+    with _patch_client(_FakeFactusol()):
+        r = client.get("/api/erp/factusol/customers/99999/addresses",
+                       headers=auth_headers(client, "user"))
+    assert r.status_code == 200
+    assert r.json()["items"] == []
+
+
+# --- edición de proforma (C-4-fix6) ------------------------------------------
+
+
+def test_patch_quote_encola_y_audita(client, session_factory):
+    with session_factory() as s:
+        cid = _company(s)
+    with patch("app.integrations.factusol.jobs.enqueue_update_quote",
+               return_value="job-u1") as enq:
+        r = client.patch("/api/erp/factusol/quotes/700",
+                         headers=auth_headers(client, "pedidos"),
+                         json={"company_id": cid, "referencia": "PROY-42",
+                               "lines": [{"description": "Vinilo",
+                                          "quantity": 1, "unit_price": 100,
+                                          "discount_pct": 15}]})
+    assert r.status_code == 202, r.text
+    assert r.json()["job_id"] == "job-u1"
+    args = enq.call_args.args
+    assert args[0] == "700"
+    assert args[2][0]["discount_pct"] == 15
+    assert args[3] == "PROY-42"
+    assert args[4] is False  # force
+    with session_factory() as s:
+        assert list(s.scalars(select(AuditLog).where(
+            AuditLog.action == "erp.factusol_quote_update")))
+
+
+def test_patch_quote_pasa_la_direccion_elegida(client, session_factory):
+    with session_factory() as s:
+        cid = _company(s)
+    with patch("app.integrations.factusol.jobs.enqueue_update_quote",
+               return_value="job-u2") as enq:
+        r = client.patch("/api/erp/factusol/quotes/700",
+                         headers=auth_headers(client, "pedidos"),
+                         json={"company_id": cid, "referencia": "X",
+                               "address": {"direccion": "Pol. Ind. 4",
+                                           "ciudad": "Bilbao",
+                                           "cp": "48001"}})
+    assert r.status_code == 202
+    customer = enq.call_args.args[1]
+    assert customer["direccion"] == "Pol. Ind. 4"
+    assert customer["ciudad"] == "Bilbao"
+    # Los campos que la dirección alternativa no trae conservan los de la sede.
+    assert customer["nombre"] == "Acme SL"
+
+
+def test_patch_quote_prohibido_para_solo_lectura(client, session_factory):
+    with session_factory() as s:
+        cid = _company(s)
+    r = client.patch("/api/erp/factusol/quotes/700",
+                     headers=auth_headers(client, "user"),
+                     json={"company_id": cid, "referencia": "X"})
+    assert r.status_code == 403
+
+
+def test_patch_quote_422_si_va_vacia(client, session_factory):
+    with session_factory() as s:
+        cid = _company(s)
+    r = client.patch("/api/erp/factusol/quotes/700",
+                     headers=auth_headers(client, "pedidos"),
+                     json={"company_id": cid})
+    assert r.status_code == 422
+
+
+def test_job_status_marca_el_rechazo_por_estado(client):
+    """El PATCH responde 202, así que el «está aceptada» llega por el estado del
+    job. Se marca con un code propio para que la UI ofrezca «Editar de todos
+    modos» — y no lo haga cuando el fallo es cualquier otra cosa."""
+    from app.erp.api.factusol import _failed_status
+
+    traceback = (
+        "Traceback (most recent call last):\n"
+        "  File ...\n"
+        "app.integrations.factusol.quotes.QuoteNotEditableError: "
+        "La proforma 701 está aceptada en FACTUSOL."
+    )
+    assert _failed_status(traceback) == {
+        "status": "failed", "code": "quote_not_editable",
+        "error": "La proforma 701 está aceptada en FACTUSOL.",
+    }
+    otro = "Traceback...\nFactusolError: BDEscribirRegistroError"
+    assert _failed_status(otro)["status"] == "failed"
+    assert "code" not in _failed_status(otro)
 
 
 def test_convert_to_order_prohibido_para_solo_lectura(client):

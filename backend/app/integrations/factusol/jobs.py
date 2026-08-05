@@ -110,6 +110,27 @@ def create_quote_job(
     return result
 
 
+def update_quote_job(
+    codpre: str, customer: dict[str, Any], lines: list[dict[str, Any]],
+    referencia: str | None = None, force: bool = False,
+) -> dict[str, Any]:
+    """Reescribe cabecera + líneas de una proforma existente."""
+    from sqlalchemy.orm import Session  # noqa: PLC0415
+
+    from app.db.session import get_engine  # noqa: PLC0415
+    from app.integrations.factusol.quotes import update_quote  # noqa: PLC0415
+    from app.integrations.factusol.service import ejercicio_for  # noqa: PLC0415
+
+    with Session(get_engine()) as session:
+        client = FactusolClient.from_settings()
+        result = update_quote(
+            client, codpre, ejercicio=ejercicio_for(session),
+            customer=customer, lines=lines, referencia=referencia, force=force,
+        )
+    logger.info("factusol: proforma %s actualizada", codpre)
+    return result
+
+
 def duplicate_quote_job(codpre: str, fecha: str | None = None) -> dict[str, Any]:
     """Duplica una proforma existente con CODPRE nuevo y fecha de hoy."""
     from sqlalchemy.orm import Session  # noqa: PLC0415
@@ -156,6 +177,16 @@ def enqueue_create_quote(
     return _enqueue(
         "app.integrations.factusol.jobs.create_quote_job",
         customer, lines, referencia, fecha, fopfac,
+    )
+
+
+def enqueue_update_quote(
+    codpre: str, customer: dict[str, Any], lines: list[dict[str, Any]],
+    referencia: str | None = None, force: bool = False,
+) -> str:
+    return _enqueue(
+        "app.integrations.factusol.jobs.update_quote_job",
+        codpre, customer, lines, referencia, force,
     )
 
 

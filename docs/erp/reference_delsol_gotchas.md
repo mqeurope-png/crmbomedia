@@ -216,7 +216,45 @@ Para cerrarlo: `SELECT DISTINCT IVALPS FROM F_LPS`. Si salen 0/1/2 es código
 (hay que traducir 21 %→0, 10 %→1, 4 %→2); si salen 21/10/4 es porcentaje. Lo
 comprueba el script de descubrimiento.
 
-## 16. El cliente lo crea la app externa Woo→FACTUSOL
+## 16. Direcciones adicionales de F_CLI: sufijo numérico en medio
+
+Un cliente puede tener hasta **4 direcciones adicionales** además de la sede —
+las del botón «Direcciones» del escritorio. El número va **en medio** del nombre
+de columna, no al final:
+
+| Concepto | Sede | Adicionales |
+|---|---|---|
+| Nombre | — | `ACO1CLI` … `ACO4CLI` |
+| Domicilio | `DOMCLI` | `ADO1CLI` … `ADO4CLI` |
+| Población | `POBCLI` | `APO1CLI` … `APO4CLI` |
+| CP | `CPOCLI` | `ACP1CLI` … `ACP4CLI` |
+| Provincia | `PROCLI` | `APR1CLI` … `APR4CLI` |
+| País | `PAICLI` | `APA1CLI` … `APA4CLI` |
+
+Una dirección **existe** si su `ACOxCLI` tiene nombre; las demás columnas pueden
+estar vacías. Ojo con el parecido: `APOxCLI` es la **población** y `APAxCLI` el
+**país** — se confunden fácil.
+
+## 17. `ESTPRE` — el mapeo completo está sin confirmar
+
+Solo hay un valor verificado: la proforma **574** tiene `ESTPRE=1` y el
+escritorio la muestra como «Aceptado». Del resto (¿2 = rechazado? ¿3 =
+facturado?) no sabemos nada.
+
+Por eso el guard de edición **no adivina valor por valor**: se apoya en que
+`0` es el estado inicial (el default con el que FACTUSOL crea las filas, como
+`IVALPS=0` o `TIPPRE='1'`) y trata **cualquier otro valor** como «a este
+documento le ha pasado algo» → pide confirmación. Equivocarse así solo puede
+pedir una confirmación de más; nunca sobrescribir en silencio una proforma
+aceptada o facturada.
+
+Para cerrarlo: `SELECT DISTINCT ESTPRE, COUNT(*) FROM F_PRE GROUP BY ESTPRE`.
+
+**Limitación conocida:** no sabemos aún detectar si una proforma se convirtió a
+`F_PCL`/`F_ALB`/`F_FAC` — no hemos encontrado campo de referencia cruzada. Una
+proforma convertida pero con `ESTPRE=0` se editaría sin avisar.
+
+## 18. El cliente lo crea la app externa Woo→FACTUSOL
 
 En los pedidos de WooCommerce, la app externa crea el pedido **y el cliente**.
 Si el CRM intenta crearlo también, choca: `BDEscribirRegistroError` (C-2-fix1).

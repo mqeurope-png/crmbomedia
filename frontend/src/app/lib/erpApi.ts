@@ -772,7 +772,9 @@ export type FactusolQuote = {
 export type QuoteJobStatus =
   | { status: "pending" }
   | { status: "finished"; result: Record<string, unknown> }
-  | { status: "failed"; error?: string };
+  /** `code: "quote_not_editable"` → la proforma no está pendiente; se puede
+   *  reintentar con `force` (C-4-fix6). */
+  | { status: "failed"; error?: string; code?: string };
 
 export async function searchFactusolArticles(q: string): Promise<FactusolArticle[]> {
   const r = await apiFetch<{ items: FactusolArticle[] }>(
@@ -802,6 +804,27 @@ export async function getFactusolQuote(codpre: string): Promise<FactusolQuote> {
   return apiFetch(`/api/erp/factusol/quotes/${encodeURIComponent(codpre)}`);
 }
 
+/** Dirección del cliente en FACTUSOL. `codigo: 0` es la sede; 1-4 son las
+ *  adicionales del botón «Direcciones» del escritorio (C-4-fix6). */
+export type FactusolAddress = {
+  codigo: number;
+  nombre: string;
+  direccion: string;
+  ciudad: string;
+  cp: string;
+  provincia: string;
+  pais: string;
+};
+
+export async function getFactusolCustomerAddresses(
+  codcli: string,
+): Promise<FactusolAddress[]> {
+  const r = await apiFetch<{ items: FactusolAddress[] }>(
+    `/api/erp/factusol/customers/${encodeURIComponent(codcli)}/addresses`,
+  );
+  return r.items;
+}
+
 export type CreateQuotePayload = {
   company_id: string;
   referencia?: string;
@@ -815,6 +838,14 @@ export type CreateQuotePayload = {
   }[];
   fecha?: string | null;
   fopfac?: string | null;
+  /** Dirección de envío elegida; omitir → la de la empresa CRM. */
+  address?: {
+    direccion?: string;
+    ciudad?: string;
+    cp?: string;
+    provincia?: string;
+    pais?: string;
+  } | null;
 };
 
 export async function createFactusolQuote(
@@ -822,6 +853,18 @@ export async function createFactusolQuote(
 ): Promise<{ job_id: string; status: string }> {
   return apiFetch("/api/erp/factusol/quotes", {
     method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+/** C-4-fix6: reescribe una proforma existente (cabecera + líneas).
+ *  `force` salta el guard de estado; el job responde
+ *  `code: "quote_not_editable"` cuando hace falta. */
+export async function updateFactusolQuote(
+  codpre: string, payload: CreateQuotePayload & { force?: boolean },
+): Promise<{ job_id: string; status: string; codpre: string }> {
+  return apiFetch(`/api/erp/factusol/quotes/${encodeURIComponent(codpre)}`, {
+    method: "PATCH",
     body: JSON.stringify(payload),
   });
 }
@@ -846,6 +889,20 @@ export async function convertFactusolQuoteToOrder(
 
 export async function getQuoteJobStatus(jobId: string): Promise<QuoteJobStatus> {
   return apiFetch(`/api/erp/factusol/quotes/status/${encodeURIComponent(jobId)}`);
+}
+
+/** Espera a que el job termine. Devuelve su estado final, o `pending` si se
+ *  agota el margen (el worker es serie: puede haber cola por delante). */
+export async function waitForQuoteJob(
+  jobId: string, { tries = 30, delayMs = 2000 } = {},
+): Promise<QuoteJobStatus> {
+  let last: QuoteJobStatus = { status: "pending" };
+  for (let i = 0; i < tries; i++) {
+    last = await getQuoteJobStatus(jobId);
+    if (last.status !== "pending") return last;
+    await new Promise((r) => setTimeout(r, delayMs));
+  }
+  return last;
 }
 
 // --- Expedición manual: bultos + albarán + etiqueta (Fase D · D-1) -----------

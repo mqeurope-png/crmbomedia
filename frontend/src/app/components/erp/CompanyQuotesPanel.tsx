@@ -35,6 +35,8 @@ export function CompanyQuotesPanel({
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  // CODPRE de la proforma que se está editando (C-4-fix6).
+  const [editing, setEditing] = useState<string | null>(null);
   const [busyJob, setBusyJob] = useState(false);
 
   const load = useCallback(() => {
@@ -68,6 +70,7 @@ export function CompanyQuotesPanel({
 
   async function onCreated(jobId: string) {
     setCreating(false);
+    setEditing(null);
     setBusyJob(true);
     setNotice("Creando la proforma en FACTUSOL…");
     setError(null);
@@ -138,7 +141,12 @@ export function CompanyQuotesPanel({
                 <td className="muted small">{q.fecha ?? "—"}</td>
                 <td>{q.referencia || "—"}</td>
                 <td>{q.total.toFixed(2)} €</td>
-                <td>
+                <td className="erp-quote-row-actions">
+                  <button type="button" className="button small secondary"
+                          disabled={busyJob}
+                          onClick={() => setEditing(q.codpre ?? "")}>
+                    Editar
+                  </button>
                   <button type="button" className="button small secondary"
                           disabled={busyJob}
                           onClick={() => convert(q.codpre ?? "")}>
@@ -151,12 +159,14 @@ export function CompanyQuotesPanel({
         </table>
       )}
 
-      {creating ? (
+      {creating || editing ? (
         <CreateQuoteModal
           companyId={companyId}
           companyName={companyName}
+          factusolCodcli={factusolCodcli}
+          editCodpre={editing}
           onCreated={onCreated}
-          onCancel={() => setCreating(false)}
+          onCancel={() => { setCreating(false); setEditing(null); }}
         />
       ) : null}
     </section>
