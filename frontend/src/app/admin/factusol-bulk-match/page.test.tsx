@@ -78,7 +78,8 @@ beforeEach(() => {
   mockEmailApply.mockResolvedValue({
     applied: 1, results: [{ contact_id: "ct1", result: "refreshed" }],
     refreshed: 1, created_new_company: 0, linked_existing_company: 0,
-    skipped_already_linked_other: 0, errors: [],
+    reassigned_to_existing_company: 0, reassigned_to_new_company: 0,
+    reassigned: 0, skipped_already_linked_other: 0, errors: [],
   });
 });
 
@@ -334,7 +335,9 @@ describe("FactusolBulkMatchPage", () => {
     expect(summary).toHaveTextContent("1 asignada(s) a empresa existente");
   });
 
-  it("empresa ya vinculada a OTRO codcli: bloqueada con el motivo", async () => {
+  it("empresa vinculada a OTRO codcli: chip de reasignación, aplicable", async () => {
+    // C-5-fix5: antes salía en ámbar «Ya vinculada a 9999» y deshabilitada.
+    // Era el 90% de las 128 omisiones del primer apply (caso Vilatzara).
     mockEmailDryRun.mockResolvedValue(emailDryRun({
       matches: [emailMatch({ company_factusol_id: "9999" })],
     }));
@@ -342,8 +345,74 @@ describe("FactusolBulkMatchPage", () => {
     render(<FactusolBulkMatchPage />);
     await user.click(screen.getByRole("button", { name: "Ejecutar dry-run" }));
 
-    expect(await screen.findByText("Ya vinculada a 9999")).toBeInTheDocument();
-    expect(screen.getByLabelText("Aplicar a Juan Pérez")).toBeDisabled();
+    const chip = await screen.findByText("Reasignar → 1");
+    expect(chip).toHaveClass("badge", "active");
+    expect(screen.queryByText(/Ya vinculada a 9999/)).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Aplicar a Juan Pérez")).toBeEnabled();
+    expect(chip).toHaveAttribute(
+      "title", expect.stringContaining("no se toca") as unknown as string);
+  });
+
+  it("aplicar una fila de reasignación manda la operación normal", async () => {
+    mockEmailDryRun.mockResolvedValue(emailDryRun({
+      matches: [emailMatch({ company_factusol_id: "9999" })],
+    }));
+    mockEmailApply.mockResolvedValue({
+      applied: 1,
+      results: [{ contact_id: "ct1", result: "reassigned_to_new_company",
+                  company_id: "new-c", old_company_id: "c1" }],
+      refreshed: 0, created_new_company: 0, linked_existing_company: 0,
+      reassigned_to_existing_company: 0, reassigned_to_new_company: 1,
+      reassigned: 1, skipped_already_linked_other: 0, errors: [],
+    });
+    const user = userEvent.setup();
+    render(<FactusolBulkMatchPage />);
+    await user.click(screen.getByRole("button", { name: "Ejecutar dry-run" }));
+    await user.click(await screen.findByLabelText("Aplicar a Juan Pérez"));
+    await user.click(screen.getByRole("button", { name: /Aplicar seleccionadas \(1\)/ }));
+
+    await waitFor(() => expect(mockEmailApply).toHaveBeenCalled());
+    expect(mockEmailApply.mock.calls[0][0][0]).toMatchObject({
+      contact_id: "ct1", factusol_codcli: "1",
+    });
+    const summary = await screen.findByRole("status");
+    expect(summary).toHaveTextContent("1 reasignada(s) a empresa correcta");
+    expect(summary).toHaveTextContent("0 a empresa existente, 1 a empresa nueva");
+  });
+
+  it("el resumen desglosa las reasignaciones entre existente y nueva", async () => {
+    mockEmailDryRun.mockResolvedValue(emailDryRun());
+    mockEmailApply.mockResolvedValue({
+      applied: 5,
+      results: [{ contact_id: "ct1", result: "reassigned_to_existing_company" }],
+      refreshed: 1, created_new_company: 1, linked_existing_company: 1,
+      reassigned_to_existing_company: 2, reassigned_to_new_company: 1,
+      reassigned: 3, skipped_already_linked_other: 0, errors: [],
+    });
+    const user = userEvent.setup();
+    render(<FactusolBulkMatchPage />);
+    await user.click(screen.getByRole("button", { name: "Ejecutar dry-run" }));
+    await user.click(await screen.findByLabelText("Aplicar a Juan Pérez"));
+    await user.click(screen.getByRole("button", { name: /Aplicar seleccionadas/ }));
+
+    const summary = await screen.findByRole("status");
+    expect(summary).toHaveTextContent("1 actualizada(s)");
+    expect(summary).toHaveTextContent("1 empresa(s) creada(s)");
+    expect(summary).toHaveTextContent("1 asignada(s) a empresa existente");
+    expect(summary).toHaveTextContent(
+      "3 reasignada(s) a empresa correcta (2 a empresa existente, 1 a empresa nueva)");
+  });
+
+  it("sin reasignaciones el resumen no las menciona", async () => {
+    mockEmailDryRun.mockResolvedValue(emailDryRun());
+    const user = userEvent.setup();
+    render(<FactusolBulkMatchPage />);
+    await user.click(screen.getByRole("button", { name: "Ejecutar dry-run" }));
+    await user.click(await screen.findByLabelText("Aplicar a Juan Pérez"));
+    await user.click(screen.getByRole("button", { name: /Aplicar seleccionadas/ }));
+
+    const summary = await screen.findByRole("status");
+    expect(summary).not.toHaveTextContent("reasignada");
   });
 
   it("los omitidos del apply se muestran, no se tragan", async () => {
@@ -415,12 +484,13 @@ describe("FactusolBulkMatchPage", () => {
     }));
   }
 
-  it("el master marca todas las filas aplicables y salta las bloqueadas", async () => {
+  it("el master marca todas las filas visibles", async () => {
     mockEmailDryRun.mockResolvedValue(emailDryRun({
       matches: [
         emailMatch({ contact_id: "ct1", contact_name: "Ana" }),
         emailMatch({ contact_id: "ct2", contact_name: "Bea" }),
-        // Su empresa apunta a OTRO codcli: el backend la saltaría igualmente.
+        // C-5-fix5: su empresa apunta a otro codcli, pero ya no bloquea —
+        // se reasigna, así que el master también la marca.
         emailMatch({ contact_id: "ct3", contact_name: "Carla",
                      company_factusol_id: "9999" }),
       ],
@@ -433,8 +503,8 @@ describe("FactusolBulkMatchPage", () => {
 
     expect(screen.getByLabelText("Aplicar a Ana")).toBeChecked();
     expect(screen.getByLabelText("Aplicar a Bea")).toBeChecked();
-    expect(screen.getByLabelText("Aplicar a Carla")).not.toBeChecked();
-    expect(screen.getByRole("button", { name: /Aplicar seleccionadas \(2\)/ }))
+    expect(screen.getByLabelText("Aplicar a Carla")).toBeChecked();
+    expect(screen.getByRole("button", { name: /Aplicar seleccionadas \(3\)/ }))
       .toBeEnabled();
   });
 

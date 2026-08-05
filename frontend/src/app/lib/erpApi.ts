@@ -923,9 +923,18 @@ export type BulkMatchByEmailResult = {
     /** No tenía empresa, pero ya había una vinculada a ese CODCLI: se le
      *  asigna esa. Crear otra duplicaría el vínculo. */
     | "linked_existing_company"
-    /** Su empresa ya estaba vinculada a OTRO CODCLI: no se pisa. */
+    /** C-5-fix5: estaba mal agrupado. Se mueve a la empresa que ya está
+     *  vinculada a su CODCLI. La original no se toca. */
+    | "reassigned_to_existing_company"
+    /** C-5-fix5: mal agrupado y no había empresa con ese CODCLI: se crea y
+     *  se mueve. */
+    | "reassigned_to_new_company"
+    /** Desenlace de C-5-fix1, hoy prácticamente extinto: ese caso se
+     *  reasigna. Se mantiene por el historial ya auditado. */
     | "skipped_already_linked_other";
   company_id?: string;
+  /** Solo en las reasignaciones: de dónde venía el contacto. */
+  old_company_id?: string;
   detail?: string;
 };
 
@@ -952,6 +961,10 @@ export async function bulkMatchByEmailApply(
   refreshed: number;
   created_new_company: number;
   linked_existing_company: number;
+  reassigned_to_existing_company: number;
+  reassigned_to_new_company: number;
+  /** Suma de las dos anteriores, para el titular del resumen. */
+  reassigned: number;
   skipped_already_linked_other: number;
   errors: { contact_id: string; error: string }[];
 }> {

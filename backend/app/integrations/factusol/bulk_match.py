@@ -78,6 +78,10 @@ BULK_SYNC_BY_EMAIL_ACTION = "erp.factusol_bulk_sync_by_email"
 #: Acción propia para la empresa CREADA desde cero (C-5-fix2): no hay valores
 #: previos que restaurar, se deshace borrando la empresa.
 BULK_SYNC_BY_EMAIL_CREATE_ACTION = "erp.factusol_bulk_sync_by_email_create_company"
+#: Reasignación de contacto (C-5-fix5). A diferencia de las otras tres, esta
+#: acción audita un **contacto**, no una empresa: lo que cambia es
+#: `contacts.company_id`. Se deshace devolviéndolo a `old_company_id`.
+BULK_SYNC_BY_EMAIL_REASSIGN_ACTION = "erp.factusol_bulk_sync_by_email_reassign"
 #: Cabe en String(16) justo — 15 caracteres.
 BULK_SYNC_BY_EMAIL_SOURCE = "bulk_by_email"
 
@@ -452,7 +456,7 @@ def apply_by_contact_email(
 ) -> dict[str, Any]:
     """Concilia la empresa de cada contacto con su cliente F_CLI.
 
-    Cuatro desenlaces posibles, todos en `results`:
+    Desenlaces posibles, todos en `results`:
 
     - `refreshed` — el contacto tenía empresa y se le han traído los datos
       limpios de FACTUSOL.
@@ -462,9 +466,13 @@ def apply_by_contact_email(
       empresa del CRM ya está vinculada a ese CODCLI**: se le asigna esa en vez
       de crear una nueva. Crearla dejaría dos empresas CRM apuntando al mismo
       cliente de FACTUSOL, que es justo la duplicidad que arregló C-3-fix3.
-    - `skipped_already_linked_other` — la empresa del contacto ya está vinculada
-      a OTRO CODCLI. Se salta: pisar un vínculo que alguien estableció a
-      propósito sería peor que no hacer nada.
+    - `reassigned_to_existing_company` / `reassigned_to_new_company` (C-5-fix5)
+      — la empresa del contacto está vinculada a **otro** CODCLI: el contacto
+      está mal agrupado y se mueve a la empresa que le corresponde. La empresa
+      original **no se toca**.
+    - `skipped_already_linked_other` — desenlace de C-5-fix1, hoy prácticamente
+      extinto: ese caso ahora se reasigna. Se mantiene en el contrato porque hay
+      historial auditado con él y el frontend lo sigue reconociendo.
     """
     from app.models.crm import Contact  # noqa: PLC0415
 
@@ -505,6 +513,8 @@ def apply_by_contact_email(
     def _count(result: str) -> int:
         return sum(1 for r in results if r["result"] == result)
 
+    reassigned_existing = _count("reassigned_to_existing_company")
+    reassigned_new = _count("reassigned_to_new_company")
     return {
         "applied": sum(1 for r in results
                        if r["result"] != "skipped_already_linked_other"),
@@ -512,6 +522,10 @@ def apply_by_contact_email(
         "refreshed": _count("refreshed"),
         "created_new_company": _count("created_new_company"),
         "linked_existing_company": _count("linked_existing_company"),
+        "reassigned_to_existing_company": reassigned_existing,
+        "reassigned_to_new_company": reassigned_new,
+        #: Total de reasignaciones, para el titular del resumen.
+        "reassigned": reassigned_existing + reassigned_new,
         "skipped_already_linked_other": _count("skipped_already_linked_other"),
         "errors": errors,
     }
@@ -528,11 +542,11 @@ def _refresh_company_of_contact(
     if company is None:
         raise ValueError("la empresa del contacto no existe")
     if company.factusol_company_id and company.factusol_company_id != codcli:
-        return {
-            "result": "skipped_already_linked_other",
-            "detail": (f"«{company.name}» ya está vinculada al cliente "
-                       f"{company.factusol_company_id}"),
-        }
+        # C-5-fix5: el contacto está mal agrupado, no hay conflicto real. Se
+        # mueve a la empresa que le corresponde en vez de saltarlo.
+        return _reassign_contact_to_correct_company(
+            session, contact, company, codcli, row, columns, actor_id,
+        )
 
     previous = {f: getattr(company, f, None) for f in fields}
     for field in fields:
@@ -575,6 +589,28 @@ def _company_for_orphan_contact(
 
     # Aquí NO hay `previous_values` que guardar: la empresa nace de cero. El
     # backup registra igualmente qué se creó, para poder deshacerlo.
+    company = _new_company_from_factusol(session, codcli, row, columns)
+    contact.company_id = company.id
+    _log_backup(
+        session, company, codcli, [], {}, actor_id,
+        action=BULK_SYNC_BY_EMAIL_CREATE_ACTION,
+        extra={"contact_id": contact.id, "contact_email": contact.email,
+               "created_company": True, "company_name": company.name},
+    )
+    return {"result": "created_new_company", "company_id": company.id,
+            "detail": f"Empresa «{company.name}» creada y vinculada."}
+
+
+def _new_company_from_factusol(
+    session: Session, codcli: str, row: dict[str, Any], columns: dict[str, str],
+) -> Any:
+    """Crea (y flushea) una empresa CRM con **todos** los datos de F_CLI.
+
+    Nace completa, no solo con los campos marcados: no hay nada previo que
+    preservar. Compartido por la creación para un contacto huérfano y por la
+    reasignación, para que las dos no puedan divergir."""
+    from app.models.crm import Company  # noqa: PLC0415
+
     company = Company(
         name=str(row.get(columns["name"]) or "").strip() or f"Cliente {codcli}",
         tax_id=str(row.get(columns["tax_id"]) or "").strip() or None,
@@ -590,12 +626,76 @@ def _company_for_orphan_contact(
     )
     session.add(company)
     session.flush()
-    contact.company_id = company.id
-    _log_backup(
-        session, company, codcli, [], {}, actor_id,
-        action=BULK_SYNC_BY_EMAIL_CREATE_ACTION,
-        extra={"contact_id": contact.id, "contact_email": contact.email,
-               "created_company": True, "company_name": company.name},
-    )
-    return {"result": "created_new_company", "company_id": company.id,
-            "detail": f"Empresa «{company.name}» creada y vinculada."}
+    return company
+
+
+def _reassign_contact_to_correct_company(
+    session: Session, contact: Any, old_company: Any, codcli: str,
+    row: dict[str, Any], columns: dict[str, str], actor_id: str | None,
+) -> dict[str, Any]:
+    """El contacto está en una empresa vinculada a **otro** CODCLI: se mueve.
+
+    C-5-fix1 saltaba este caso por prudencia, y en el primer apply de
+    producción resultó ser el 90% de las 128 omisiones: decenas de contactos
+    colgaban de un único «Institut Vilatzara» (codcli 3960) cuando sus emails
+    `@xtec.cat` son de escuelas distintas, cada una con su propio F_CLI. No era
+    un vínculo en conflicto, era una **agrupación mal hecha en el CRM**.
+
+    Se mueve el contacto a la empresa que le corresponde —la que ya existe con
+    ese CODCLI, o una nueva creada desde F_CLI—. La empresa original **no se
+    toca**: conserva su vínculo y los demás contactos, que pueden ser legítimos.
+    Por eso el backup se audita sobre el *contacto*: lo único que cambia es su
+    `company_id`, y revertirlo es devolverlo a `old_company_id`.
+    """
+    from app.models.crm import Company  # noqa: PLC0415
+
+    target = session.scalars(
+        select(Company).where(Company.factusol_company_id == codcli).limit(1)
+    ).first()
+    if target is not None:
+        reassign_type, result = "existing", "reassigned_to_existing_company"
+        detail = (f"Movido de «{old_company.name}» a «{target.name}», ya "
+                  f"vinculada al cliente {codcli}.")
+    else:
+        target = _new_company_from_factusol(session, codcli, row, columns)
+        reassign_type, result = "new_created", "reassigned_to_new_company"
+        detail = (f"Movido de «{old_company.name}» a «{target.name}», creada "
+                  f"desde el cliente {codcli}.")
+
+    _log_reassign(session, contact, old_company, target, codcli,
+                  reassign_type, actor_id)
+    contact.company_id = target.id
+    logger.info("factusol bulk-match by-email: contacto %s reasignado de %s "
+                "(codcli %s) a %s (codcli %s)", contact.id, old_company.id,
+                old_company.factusol_company_id, target.id, codcli)
+    return {"result": result, "company_id": target.id,
+            "old_company_id": old_company.id, "detail": detail}
+
+
+def _log_reassign(
+    session: Session, contact: Any, old_company: Any, new_company: Any,
+    codcli: str, reassign_type: str, actor_id: str | None,
+) -> None:
+    """Backup de una reasignación.
+
+    A diferencia de los otros tres backups, este audita un **contacto**: lo que
+    cambia es `contacts.company_id`, no una empresa. Así la consulta de rollback
+    es directa por `target_id = <contact_id>` (ver
+    `docs/erp/factusol-bulk-match.md`)."""
+    from app.models.crm import AuditLog  # noqa: PLC0415
+
+    session.add(AuditLog(
+        actor_user_id=actor_id,
+        action=BULK_SYNC_BY_EMAIL_REASSIGN_ACTION,
+        target_type="contact",
+        target_id=contact.id,
+        metadata_json=json.dumps({
+            "contact_id": contact.id,
+            "contact_email": contact.email,
+            "old_company_id": old_company.id,
+            "old_company_factusol_id": old_company.factusol_company_id,
+            "new_company_id": new_company.id,
+            "new_company_factusol_id": codcli,
+            "reassign_type": reassign_type,
+        }, ensure_ascii=False, default=str),
+    ))

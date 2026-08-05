@@ -283,9 +283,9 @@ def bulk_match_by_email_apply(
 ) -> dict[str, Any]:
     """Actualiza la empresa de cada contacto con los datos de su cliente F_CLI.
 
-    Devuelve `skipped` aparte de `errors`: un contacto sin empresa o una
-    empresa ya vinculada a otro CODCLI no son fallos, son casos en los que
-    aquí no toca escribir."""
+    Los desenlaces van desglosados aparte de `errors`: crear la empresa de un
+    contacto huérfano, reutilizar una ya vinculada a ese CODCLI o reasignar un
+    contacto mal agrupado (C-5-fix5) no son fallos, son resultados distintos."""
     from app.integrations.factusol.bulk_match import (  # noqa: PLC0415
         apply_by_contact_email,
     )
