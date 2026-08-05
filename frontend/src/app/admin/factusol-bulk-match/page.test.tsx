@@ -178,14 +178,15 @@ describe("FactusolBulkMatchPage", () => {
     await switchToCompanyMode(user);
     await user.click(screen.getByRole("button", { name: "Ejecutar dry-run" }));
 
-    // Por defecto el primero; el operador cambia al segundo.
-    await user.click(await screen.findByLabelText(
-      "Cliente 2758 para LABORATORIOS PORTA"));
+    // C-5-fix4: por defecto el codcli MAYOR (2758). El operador puede cambiarlo.
+    expect(await screen.findByLabelText("Cliente 2758 para LABORATORIOS PORTA"))
+      .toBeChecked();
+    await user.click(screen.getByLabelText("Cliente 1 para LABORATORIOS PORTA"));
     await user.click(screen.getByLabelText("Aplicar a LABORATORIOS PORTA"));
     await user.click(screen.getByRole("button", { name: /Aplicar seleccionadas/ }));
 
     await waitFor(() => expect(mockApply).toHaveBeenCalled());
-    expect(mockApply.mock.calls[0][0][0].factusol_codcli).toBe("2758");
+    expect(mockApply.mock.calls[0][0][0].factusol_codcli).toBe("1");
   });
 
   it("el filtro «Solo con diferencias» esconde las que ya cuadran", async () => {
@@ -401,5 +402,230 @@ describe("FactusolBulkMatchPage", () => {
     await user.click(screen.getByRole("button", { name: "Ejecutar dry-run" }));
 
     expect(await screen.findByText(/Resultado truncado/)).toBeInTheDocument();
+  });
+
+  // --- C-5-fix4: master «Seleccionar todas» + codcli mayor + confirmación ---
+
+  /** N contactos con match, todos aplicables. */
+  function manyMatches(n: number) {
+    return Array.from({ length: n }, (_, i) => emailMatch({
+      contact_id: `ct${i}`, contact_name: `Contacto ${i}`,
+      contact_email: `c${i}@x.com`, company_id: `co${i}`,
+      company_name: `Empresa ${i}`,
+    }));
+  }
+
+  it("el master marca todas las filas aplicables y salta las bloqueadas", async () => {
+    mockEmailDryRun.mockResolvedValue(emailDryRun({
+      matches: [
+        emailMatch({ contact_id: "ct1", contact_name: "Ana" }),
+        emailMatch({ contact_id: "ct2", contact_name: "Bea" }),
+        // Su empresa apunta a OTRO codcli: el backend la saltaría igualmente.
+        emailMatch({ contact_id: "ct3", contact_name: "Carla",
+                     company_factusol_id: "9999" }),
+      ],
+    }));
+    const user = userEvent.setup();
+    render(<FactusolBulkMatchPage />);
+    await user.click(screen.getByRole("button", { name: "Ejecutar dry-run" }));
+
+    await user.click(await screen.findByLabelText("Seleccionar todas"));
+
+    expect(screen.getByLabelText("Aplicar a Ana")).toBeChecked();
+    expect(screen.getByLabelText("Aplicar a Bea")).toBeChecked();
+    expect(screen.getByLabelText("Aplicar a Carla")).not.toBeChecked();
+    expect(screen.getByRole("button", { name: /Aplicar seleccionadas \(2\)/ }))
+      .toBeEnabled();
+  });
+
+  it("el master queda indeterminado cuando solo hay algunas marcadas", async () => {
+    mockEmailDryRun.mockResolvedValue(emailDryRun({
+      matches: [
+        emailMatch({ contact_id: "ct1", contact_name: "Ana" }),
+        emailMatch({ contact_id: "ct2", contact_name: "Bea" }),
+      ],
+    }));
+    const user = userEvent.setup();
+    render(<FactusolBulkMatchPage />);
+    await user.click(screen.getByRole("button", { name: "Ejecutar dry-run" }));
+
+    const master = await screen.findByLabelText("Seleccionar todas") as HTMLInputElement;
+    expect(master).not.toBeChecked();
+    expect(master.indeterminate).toBe(false);
+
+    await user.click(screen.getByLabelText("Aplicar a Ana"));
+    expect(master).not.toBeChecked();
+    expect(master.indeterminate).toBe(true);
+
+    await user.click(screen.getByLabelText("Aplicar a Bea"));
+    expect(master).toBeChecked();
+    expect(master.indeterminate).toBe(false);
+
+    // Y desmarcarlo las quita todas.
+    await user.click(master);
+    expect(screen.getByLabelText("Aplicar a Ana")).not.toBeChecked();
+    expect(screen.getByRole("button", { name: /Aplicar seleccionadas \(0\)/ }))
+      .toBeDisabled();
+  });
+
+  it("el master respeta «Solo con diferencias»: no marca lo escondido", async () => {
+    mockEmailDryRun.mockResolvedValue(emailDryRun({
+      matches: [
+        emailMatch({ contact_id: "ct1", contact_name: "Ana" }),
+        emailMatch({ contact_id: "ct2", contact_name: "Bea",
+                     candidates: [candidate("1", { differing_fields: 0 })] }),
+      ],
+    }));
+    const user = userEvent.setup();
+    render(<FactusolBulkMatchPage />);
+    await user.click(screen.getByRole("button", { name: "Ejecutar dry-run" }));
+    await screen.findByText("Ana");
+
+    await user.click(screen.getByLabelText("Solo con diferencias"));
+    await user.click(screen.getByLabelText("Seleccionar todas"));
+
+    expect(screen.queryByText("Bea")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Aplicar seleccionadas \(1\)/ }))
+      .toBeEnabled();
+  });
+
+  it("50 o más operaciones piden confirmación antes de escribir", async () => {
+    mockEmailDryRun.mockResolvedValue(emailDryRun({ matches: manyMatches(60) }));
+    const user = userEvent.setup();
+    render(<FactusolBulkMatchPage />);
+    await user.click(screen.getByRole("button", { name: "Ejecutar dry-run" }));
+    await user.click(await screen.findByLabelText("Seleccionar todas"));
+    await user.click(screen.getByRole("button", { name: /Aplicar seleccionadas \(60\)/ }));
+
+    expect(await screen.findByRole("dialog")).toHaveTextContent(
+      "Vas a aplicar 60 operaciones");
+    expect(screen.getByRole("dialog")).toHaveTextContent(
+      "reversibles solo via SQL manual (audit_logs)");
+    expect(mockEmailApply).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "Sí, aplicar 60 cambios" }));
+    await waitFor(() => expect(mockEmailApply).toHaveBeenCalled());
+    expect(mockEmailApply.mock.calls[0][0]).toHaveLength(60);
+  });
+
+  it("cancelar la confirmación no escribe nada y conserva la selección", async () => {
+    mockEmailDryRun.mockResolvedValue(emailDryRun({ matches: manyMatches(55) }));
+    const user = userEvent.setup();
+    render(<FactusolBulkMatchPage />);
+    await user.click(screen.getByRole("button", { name: "Ejecutar dry-run" }));
+    await user.click(await screen.findByLabelText("Seleccionar todas"));
+    await user.click(screen.getByRole("button", { name: /Aplicar seleccionadas \(55\)/ }));
+    await user.click(await screen.findByRole("button", { name: "Cancelar" }));
+
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(mockEmailApply).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: /Aplicar seleccionadas \(55\)/ }))
+      .toBeEnabled();
+  });
+
+  it("por debajo del umbral aplica directo, sin confirmación", async () => {
+    mockEmailDryRun.mockResolvedValue(emailDryRun({ matches: manyMatches(49) }));
+    const user = userEvent.setup();
+    render(<FactusolBulkMatchPage />);
+    await user.click(screen.getByRole("button", { name: "Ejecutar dry-run" }));
+    await user.click(await screen.findByLabelText("Seleccionar todas"));
+    await user.click(screen.getByRole("button", { name: /Aplicar seleccionadas \(49\)/ }));
+
+    await waitFor(() => expect(mockEmailApply).toHaveBeenCalled());
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("multi-match: preselecciona el codcli mayor, no el primero", async () => {
+    // Caso real de Bart: evamariamc1@gmail.com casa con 2123, 2210 y 2278.
+    // Los CODCLI son autonuméricos → el mayor es el cliente bueno.
+    mockEmailDryRun.mockResolvedValue(emailDryRun({
+      matches: [emailMatch({
+        contact_name: "Eva", contact_email: "evamariamc1@gmail.com",
+        candidates: [candidate("2123"), candidate("2278"), candidate("2210")],
+      })],
+    }));
+    const user = userEvent.setup();
+    render(<FactusolBulkMatchPage />);
+    await user.click(screen.getByRole("button", { name: "Ejecutar dry-run" }));
+
+    expect(await screen.findByLabelText("Cliente 2278 para Eva")).toBeChecked();
+    expect(screen.getByLabelText("Cliente 2123 para Eva")).not.toBeChecked();
+    expect(screen.getByLabelText("Cliente 2210 para Eva")).not.toBeChecked();
+
+    await user.click(screen.getByLabelText("Aplicar a Eva"));
+    await user.click(screen.getByRole("button", { name: /Aplicar seleccionadas/ }));
+    await waitFor(() => expect(mockEmailApply).toHaveBeenCalled());
+    expect(mockEmailApply.mock.calls[0][0][0].factusol_codcli).toBe("2278");
+  });
+
+  it("compara los codcli como número: «999» no gana a «2278»", async () => {
+    mockEmailDryRun.mockResolvedValue(emailDryRun({
+      matches: [emailMatch({
+        contact_name: "Eva",
+        candidates: [candidate("999"), candidate("2278")],
+      })],
+    }));
+    const user = userEvent.setup();
+    render(<FactusolBulkMatchPage />);
+    await user.click(screen.getByRole("button", { name: "Ejecutar dry-run" }));
+
+    expect(await screen.findByLabelText("Cliente 2278 para Eva")).toBeChecked();
+  });
+
+  it("con un solo candidato, ese va seleccionado de salida", async () => {
+    mockEmailDryRun.mockResolvedValue(emailDryRun({
+      matches: [emailMatch({ contact_name: "Eva",
+                             candidates: [candidate("2278")] })],
+    }));
+    const user = userEvent.setup();
+    render(<FactusolBulkMatchPage />);
+    await user.click(screen.getByRole("button", { name: "Ejecutar dry-run" }));
+    await user.click(await screen.findByLabelText("Aplicar a Eva"));
+    await user.click(screen.getByRole("button", { name: /Aplicar seleccionadas/ }));
+
+    await waitFor(() => expect(mockEmailApply).toHaveBeenCalled());
+    expect(mockEmailApply.mock.calls[0][0][0].factusol_codcli).toBe("2278");
+  });
+
+  it("el operador puede cambiar el candidato preseleccionado", async () => {
+    mockEmailDryRun.mockResolvedValue(emailDryRun({
+      matches: [emailMatch({
+        contact_name: "Eva",
+        candidates: [candidate("2123"), candidate("2278")],
+      })],
+    }));
+    const user = userEvent.setup();
+    render(<FactusolBulkMatchPage />);
+    await user.click(screen.getByRole("button", { name: "Ejecutar dry-run" }));
+
+    await user.click(await screen.findByLabelText("Cliente 2123 para Eva"));
+    await user.click(screen.getByLabelText("Aplicar a Eva"));
+    await user.click(screen.getByRole("button", { name: /Aplicar seleccionadas/ }));
+
+    await waitFor(() => expect(mockEmailApply).toHaveBeenCalled());
+    expect(mockEmailApply.mock.calls[0][0][0].factusol_codcli).toBe("2123");
+  });
+
+  it("el master también funciona en el modo por empresa", async () => {
+    mockDryRun.mockResolvedValue(dryRun({
+      matches: [
+        { crm_company_id: "c1", crm_name: "UNA", crm_tax_id: "B1",
+          match_type: "nif", confidence: "high", candidates: [candidate("10")] },
+        { crm_company_id: "c2", crm_name: "OTRA", crm_tax_id: "B2",
+          match_type: "nif", confidence: "high", candidates: [candidate("20")] },
+      ],
+    }));
+    const user = userEvent.setup();
+    render(<FactusolBulkMatchPage />);
+    await switchToCompanyMode(user);
+    await user.click(screen.getByRole("button", { name: "Ejecutar dry-run" }));
+    await user.click(await screen.findByLabelText("Seleccionar todas"));
+
+    expect(screen.getByLabelText("Aplicar a UNA")).toBeChecked();
+    expect(screen.getByLabelText("Aplicar a OTRA")).toBeChecked();
+    await user.click(screen.getByRole("button", { name: /Aplicar seleccionadas \(2\)/ }));
+
+    await waitFor(() => expect(mockApply).toHaveBeenCalled());
+    expect(mockApply.mock.calls[0][0]).toHaveLength(2);
   });
 });

@@ -122,6 +122,12 @@ de 6 caracteres no se buscan: un «SL» casaría con media base.
 **Varios candidatos.** Pasa de verdad: LABORATORIOS PORTA tiene dos `F_CLI` con
 el mismo NIF (`codcli` 1 y 2758). Salen todos con un radio button para elegir.
 
+> **Cuál viene premarcado: el `codcli` MAYOR.** Los CODCLI de Bomedia son
+> autonuméricos, así que el mayor es el cliente dado de alta más tarde — el que
+> suele traer los datos buenos. Caso real: `evamariamc1@gmail.com` casa con
+> 2123, 2210 y 2278; el bueno es el 2278. La comparación es **numérica**, no
+> alfabética: si no, «999» ganaría a «2278». El operador puede cambiarlo.
+
 *Ver diferencias* despliega el diff campo a campo: valor actual del CRM y valor
 de FACTUSOL, con las filas que difieren en negrita.
 
@@ -130,6 +136,21 @@ de FACTUSOL, con las filas que difieren en negrita.
 Cada fila tiene su casilla **Aplicar**, que arranca **desmarcada** — es la que
 escribe en la base. Dentro del diff, una casilla por campo (todas marcadas por
 defecto) para elegir qué se sobrescribe.
+
+En la cabecera de la columna *Aplicar* hay un **checkbox master** que marca de
+golpe todas las filas **visibles que se pueden aplicar**:
+
+- Respeta el filtro «Solo con diferencias»: lo que no se ve, no se marca.
+- Salta las `skipped_already_linked_other` — su casilla está deshabilitada y el
+  backend las saltaría igualmente.
+- Tres estados: marcado (todas), **indeterminado** (algunas), desmarcado
+  (ninguna). Desmarcarlo las quita todas.
+- Funciona en los dos modos.
+
+**A partir de 50 operaciones se pide confirmación**, con el número exacto y el
+recordatorio de que revertir es SQL a mano. Marcar cientos de filas con un clic
+es justo lo que hace fácil lanzar un lote enorme sin querer. Por debajo de 50 se
+aplica directo, sin fricción.
 
 *Aplicar seleccionadas* manda solo lo marcado. Cada empresa va en su propia
 transacción: **que una falle no bloquea el resto del lote** — en una limpieza de
