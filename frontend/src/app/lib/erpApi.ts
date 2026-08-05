@@ -901,9 +901,14 @@ export type BulkMatchByEmailRow = {
 export type BulkMatchByEmailDryRun = {
   total_contacts_with_email: number;
   matches: BulkMatchByEmailRow[];
-  /** Solo el recuento: son miles y listarlos no aporta. */
+  /** Solo el recuento: son miles y listarlos no aporta.
+   *  `matches.length + no_match_count === total_contacts_with_email`. */
   no_match_count: number;
+  /** Subconjunto de `matches`, NO una tercera categoría. */
   matches_without_company: number;
+  /** `true` si se llegó al tope de seguridad y quedaron contactos sin
+   *  evaluar. Normalmente `false`: se procesan todos (C-5-fix2). */
+  truncated: boolean;
   ejercicio: string;
 };
 
@@ -924,6 +929,8 @@ export type BulkMatchByEmailResult = {
   detail?: string;
 };
 
+/** Sin `batch_size` procesa TODOS los contactos con email. El parámetro existe
+ *  solo como red de seguridad. */
 export async function bulkMatchByEmailDryRun(
   body: { batch_size?: number } = {},
 ): Promise<BulkMatchByEmailDryRun> {

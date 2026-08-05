@@ -73,7 +73,7 @@ beforeEach(() => {
   mockEmailApply.mockReset();
   mockEmailDryRun.mockResolvedValue({
     total_contacts_with_email: 0, matches: [], no_match_count: 0,
-    matches_without_company: 0, ejercicio: "2026",
+    matches_without_company: 0, truncated: false, ejercicio: "2026",
   });
   mockEmailApply.mockResolvedValue({
     applied: 1, results: [{ contact_id: "ct1", result: "refreshed" }],
@@ -240,7 +240,8 @@ describe("FactusolBulkMatchPage", () => {
   function emailDryRun(over = {}) {
     return {
       total_contacts_with_email: 10, matches: [emailMatch()],
-      no_match_count: 9, matches_without_company: 0, ejercicio: "2026",
+      no_match_count: 9, matches_without_company: 0, truncated: false,
+      ejercicio: "2026",
       ...over,
     };
   }
@@ -260,6 +261,8 @@ describe("FactusolBulkMatchPage", () => {
 
     await waitFor(() => expect(mockEmailDryRun).toHaveBeenCalled());
     expect(mockDryRun).not.toHaveBeenCalled();
+    // C-5-fix2: sin batch_size — el backend procesa TODOS los contactos.
+    expect(mockEmailDryRun).toHaveBeenCalledWith();
     expect(await screen.findByText("Juan Pérez")).toBeInTheDocument();
     expect(screen.getByText("juan@laboratoriosporta.com")).toBeInTheDocument();
     expect(screen.getByText("Labor. Porta")).toBeInTheDocument();
@@ -373,5 +376,30 @@ describe("FactusolBulkMatchPage", () => {
 
     await user.click(screen.getByLabelText("Solo con diferencias"));
     expect(screen.queryByText("Juan Pérez")).not.toBeInTheDocument();
+  });
+
+  it("el resumen no presenta «sin empresa» como una tercera categoría", async () => {
+    // Es un SUBCONJUNTO de los con match: 3 + 17 = 20, y de esos 3 hay 1 sin
+    // empresa. Presentarlos sumando confundiría los totales.
+    mockEmailDryRun.mockResolvedValue(emailDryRun({
+      total_contacts_with_email: 20, no_match_count: 17,
+      matches_without_company: 1,
+    }));
+    const user = userEvent.setup();
+    render(<FactusolBulkMatchPage />);
+    await user.click(screen.getByRole("button", { name: "Ejecutar dry-run" }));
+
+    const resumen = await screen.findByText(/contacto\(s\) con email/);
+    expect(resumen).toHaveTextContent("de los cuales 1 sin empresa CRM");
+    expect(resumen).toHaveTextContent("17 sin match");
+  });
+
+  it("avisa si el resultado viene truncado", async () => {
+    mockEmailDryRun.mockResolvedValue(emailDryRun({ truncated: true }));
+    const user = userEvent.setup();
+    render(<FactusolBulkMatchPage />);
+    await user.click(screen.getByRole("button", { name: "Ejecutar dry-run" }));
+
+    expect(await screen.findByText(/Resultado truncado/)).toBeInTheDocument();
   });
 });

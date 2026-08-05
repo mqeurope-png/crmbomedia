@@ -519,3 +519,47 @@ def test_by_email_apply_empty_factusol_value_never_overwrites_crm(session):
     }])
     session.refresh(company)
     assert company.city == "Barcelona"
+
+
+def test_by_email_dry_run_processes_all_contacts_not_just_a_batch(session):
+    """C-5-fix2: el tope de 200 cortaba el bucle a los 200 matches, así que de
+    20 282 contactos solo se miraban ~4 000 — y `no_match_count` contaba solo lo
+    iterado, con lo que el resumen ni siquiera cuadraba."""
+    company = _company(session)
+    # 500 con match + 200 sin match: muy por encima del viejo tope de 200.
+    customers = []
+    for i in range(500):
+        _contact(session, email=f"match{i}@example.com", company=company,
+                 first_name=f"M{i}")
+        customers.append(_cli(1000 + i, EMACLI=f"match{i}@example.com"))
+    for i in range(200):
+        _contact(session, email=f"nomatch{i}@example.com", company=company,
+                 first_name=f"N{i}")
+
+    result = dry_run_by_contact_email(
+        session, _FakeFactusol(customers=customers), ejercicio="2026",
+    )
+    assert result["total_contacts_with_email"] == 700
+    assert len(result["matches"]) == 500
+    assert result["no_match_count"] == 200
+    assert result["truncated"] is False
+    # Los totales cuadran: con match + sin match = total.
+    assert len(result["matches"]) + result["no_match_count"] == 700
+
+
+def test_by_email_dry_run_flags_truncation_instead_of_silently_cutting(session):
+    """Si algún día se llega al tope de seguridad, se avisa: cortar en silencio
+    haría que el operador diera por revisados contactos que nadie miró."""
+    company = _company(session)
+    customers = []
+    for i in range(5):
+        _contact(session, email=f"m{i}@example.com", company=company,
+                 first_name=f"M{i}")
+        customers.append(_cli(2000 + i, EMACLI=f"m{i}@example.com"))
+
+    result = dry_run_by_contact_email(
+        session, _FakeFactusol(customers=customers), ejercicio="2026",
+        batch_size=2,
+    )
+    assert len(result["matches"]) == 2
+    assert result["truncated"] is True
