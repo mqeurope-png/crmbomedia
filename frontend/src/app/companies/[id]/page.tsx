@@ -1,6 +1,6 @@
 "use client";
 
-import { Building2, Save, Trash2, Users } from "lucide-react";
+import { Building2, FileText, Save, Trash2, Users } from "lucide-react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
@@ -19,8 +19,9 @@ import {
 import { formatBackendDateTime } from "../../lib/dates";
 import { extractErrorMessage } from "../../lib/errors";
 import { CompanyFactusolPanel } from "../../components/erp/CompanyFactusolPanel";
+import { CompanyQuotesPanel } from "../../components/erp/CompanyQuotesPanel";
 
-type Tab = "data" | "contacts";
+type Tab = "data" | "contacts" | "quotes";
 
 export default function CompanyDetailPage() {
   const params = useParams<{ id: string }>();
@@ -155,6 +156,13 @@ export default function CompanyDetailPage() {
           onClick={() => setTab("contacts")}
         >
           <Users size={12} aria-hidden /> Contactos ({contacts.length})
+        </button>
+        <button
+          type="button"
+          className={`tab${tab === "quotes" ? " is-active" : ""}`}
+          onClick={() => setTab("quotes")}
+        >
+          <FileText size={12} aria-hidden /> Proformas FACTUSOL
         </button>
       </div>
 
@@ -318,6 +326,15 @@ export default function CompanyDetailPage() {
             </tbody>
           </table>
         )
+      ) : null}
+
+      {tab === "quotes" ? (
+        <CompanyQuotesPanel
+          companyId={company.id}
+          companyName={company.name}
+          factusolCodcli={company.factusol_company_id}
+          onOrderCreated={(orderId) => router.push(`/erp/orders/${orderId}`)}
+        />
       ) : null}
 
       {/* C-3: vínculo con el cliente FACTUSOL (solo link, sin auto-sync). */}

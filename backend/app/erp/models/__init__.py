@@ -24,6 +24,7 @@ from app.erp.models.orders import (
     StatusDomain,
     TransportStatus,
 )
+from app.erp.models.quotes import FactusolQuoteLineCache
 from app.erp.models.settings import ERP_SETTINGS_SINGLETON_ID, ErpSettings, InvoiceMode
 from app.erp.models.shipping import (
     KIND_ALBARAN,
@@ -55,6 +56,7 @@ __all__ = [
     "ErpSettings",
     "ExceptionStatus",
     "ExceptionType",
+    "FactusolQuoteLineCache",
     "IntegrationEvent",
     "IntegrationEventStatus",
     "InvoiceMode",

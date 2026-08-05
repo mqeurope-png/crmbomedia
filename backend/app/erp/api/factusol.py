@@ -341,3 +341,271 @@ def create_crm_and_link(
             "detail": f"No se pudo crear y vincular la empresa: {str(exc)[:200]}",
         }) from exc
     return {"company_id": company.id, "factusol_codcli": codcli, "created": True}
+
+
+# --- proformas / presupuestos F_PRE (Fase C · C-4) ---------------------------
+#
+# F_PRE es MONO-LÍNEA (653 presupuestos verificados en la base real): cada fila
+# es un presupuesto completo y no hay tabla de líneas. El desglose de las
+# proformas que crea el CRM se guarda aparte, en `factusol_quote_lines_cache`.
+# Ver `app/integrations/factusol/quotes.py` y `docs/erp/factusol-proformas.md`.
+
+
+def _factusol_gateway_error(exc: Exception, code: str) -> HTTPException:
+    logger.warning("factusol %s KO: %s", code, exc)
+    return HTTPException(status.HTTP_502_BAD_GATEWAY, {
+        "code": code, "detail": str(exc)[:300],
+    })
+
+
+@router.get("/articles/search")
+def search_articles_endpoint(
+    q: str = Query(..., min_length=1),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_view),
+) -> dict[str, Any]:
+    """Busca artículos en F_ART por código, EAN o descripción."""
+    _ = current_user
+    from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
+    from app.integrations.factusol.quotes import search_articles  # noqa: PLC0415
+
+    client, ejercicio = _client_and_ejercicio(session)
+    try:
+        items = search_articles(client, q, ejercicio=ejercicio)
+    except FactusolError as exc:
+        raise _factusol_gateway_error(exc, "factusol_article_search_failed") from exc
+    return {"items": items, "ejercicio": ejercicio}
+
+
+@router.get("/quotes")
+def list_quotes_endpoint(
+    company_id: str | None = Query(default=None),
+    days_back: int = Query(default=180, ge=0, le=1825),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_view),
+) -> dict[str, Any]:
+    """Proformas de una empresa del CRM (por su CODCLI vinculado).
+
+    Sin `company_id` lista las de todos los clientes. Si la empresa existe pero
+    **no está vinculada** a FACTUSOL devuelve lista vacía con
+    `unlinked=True` — no es un error, es que aún no hay nada que enseñar."""
+    _ = current_user
+    from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
+    from app.integrations.factusol.quotes import list_quotes  # noqa: PLC0415
+    from app.models.crm import Company  # noqa: PLC0415
+
+    codcli: str | None = None
+    if company_id:
+        company = session.get(Company, company_id)
+        if company is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, {
+                "code": "company_not_found", "detail": "La empresa no existe.",
+            })
+        if not company.factusol_company_id:
+            return {"items": [], "unlinked": True, "ejercicio": None}
+        codcli = str(company.factusol_company_id)
+
+    client, ejercicio = _client_and_ejercicio(session)
+    try:
+        items = list_quotes(client, ejercicio=ejercicio, codcli=codcli,
+                            days_back=days_back)
+    except FactusolError as exc:
+        raise _factusol_gateway_error(exc, "factusol_quotes_failed") from exc
+    return {"items": items, "unlinked": False, "ejercicio": ejercicio}
+
+
+@router.get("/quotes/status/{job_id}")
+def quote_job_status(
+    job_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_view),
+) -> dict[str, Any]:
+    """Estado del job de proforma para el polling del frontend.
+
+    Va ANTES de `/quotes/{codpre}` a propósito: FastAPI casa las rutas por
+    orden de declaración y `status` encajaría en `{codpre}`."""
+    _ = current_user, session
+    return _rq_quote_status(job_id)
+
+
+def _rq_quote_status(job_id: str) -> dict[str, Any]:
+    """Estado del job RQ (best-effort). Sin Redis (local/tests) → `pending`."""
+    try:
+        from redis import Redis  # noqa: PLC0415
+        from rq.job import Job  # noqa: PLC0415
+
+        from app.core.config import get_settings  # noqa: PLC0415
+
+        conn = Redis.from_url(get_settings().redis_url)
+        job = Job.fetch(job_id, connection=conn)
+        rq_status = job.get_status(refresh=True)
+        if rq_status == "failed":
+            return {"status": "failed",
+                    "error": (job.exc_info or "la operación falló")[-400:]}
+        if rq_status == "finished":
+            return {"status": "finished", "result": job.result}
+        return {"status": "pending"}
+    except Exception as exc:  # noqa: BLE001 — sin Redis o job caducado
+        logger.debug("factusol quote job %s no consultable: %s", job_id, exc)
+        return {"status": "pending"}
+
+
+@router.get("/quotes/{codpre}")
+def get_quote_endpoint(
+    codpre: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_view),
+) -> dict[str, Any]:
+    """Una proforma con su desglose.
+
+    `line_source` = `cache` (la creó el CRM, hay líneas reales) o `ref_text`
+    (se creó en el escritorio FACTUSOL: solo existe el texto de REFPRE)."""
+    _ = current_user
+    from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
+    from app.integrations.factusol.quotes import get_quote  # noqa: PLC0415
+
+    client, ejercicio = _client_and_ejercicio(session)
+    try:
+        quote = get_quote(client, session, codpre, ejercicio=ejercicio)
+    except FactusolError as exc:
+        raise _factusol_gateway_error(exc, "factusol_quote_failed") from exc
+    if quote is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, {
+            "code": "quote_not_found",
+            "detail": f"La proforma {codpre} no existe en el ejercicio {ejercicio}.",
+        })
+    return quote
+
+
+class QuoteLineIn(BaseModel):
+    codart: str = Field(default="", max_length=64)
+    description: str = Field(default="", max_length=255)
+    quantity: float = Field(default=1, gt=0)
+    unit_price: float = Field(default=0, ge=0)
+    discount_pct: float = Field(default=0, ge=0, le=100)
+    iva_pct: float = Field(default=21, ge=0, le=100)
+
+
+class CreateQuotePayload(BaseModel):
+    """Alta de proforma. El cliente sale de la empresa CRM vinculada; el
+    operador solo elige líneas (o escribe una referencia libre)."""
+
+    company_id: str = Field(min_length=1, max_length=36)
+    #: Modo «rápido»: una referencia de texto sin desglose.
+    referencia: str = Field(default="", max_length=250)
+    lines: list[QuoteLineIn] = Field(default_factory=list)
+    fecha: str | None = Field(default=None, max_length=10)
+    fopfac: str | None = Field(default=None, max_length=10)
+
+
+def _customer_from_company(session: Session, company_id: str) -> dict[str, Any]:
+    """Datos de cliente para la cabecera de F_PRE, tomados de la empresa CRM.
+    409 si la empresa no está vinculada: sin CODCLI la proforma no tiene dueño
+    en la contabilidad y acabaría huérfana."""
+    from app.models.crm import Company  # noqa: PLC0415
+
+    company = session.get(Company, company_id)
+    if company is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, {
+            "code": "company_not_found", "detail": "La empresa no existe.",
+        })
+    if not company.factusol_company_id:
+        raise HTTPException(status.HTTP_409_CONFLICT, {
+            "code": "company_not_linked",
+            "detail": (
+                f"«{company.name}» no está vinculada a un cliente de FACTUSOL. "
+                "Vincúlala antes de crear la proforma."
+            ),
+        })
+    return {
+        "codcli": str(company.factusol_company_id),
+        "nombre": company.name,
+        "nif": company.tax_id or "",
+        "direccion": company.address_line or "",
+        "ciudad": company.city or "",
+        "cp": company.postal_code or "",
+        "provincia": company.state or "",
+    }
+
+
+@router.post("/quotes", status_code=202)
+def create_quote_endpoint(
+    payload: CreateQuotePayload,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_edit),
+) -> dict[str, Any]:
+    """Encola la creación de la proforma en `factusol:writes` (202 + job_id).
+
+    Va por cola porque el CODPRE se calcula con `MAX+1` justo antes de escribir
+    y el worker serializado (concurrency=1) es lo que impide que dos altas
+    simultáneas se pisen la numeración."""
+    from app.integrations.factusol.jobs import enqueue_create_quote  # noqa: PLC0415
+
+    if not payload.lines and not payload.referencia.strip():
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, {
+            "code": "empty_quote",
+            "detail": "Añade al menos una línea o escribe una referencia.",
+        })
+    customer = _customer_from_company(session, payload.company_id)
+    job_id = enqueue_create_quote(
+        customer,
+        [line.model_dump() for line in payload.lines],
+        payload.referencia.strip() or None,
+        payload.fecha,
+        payload.fopfac,
+    )
+    _audit_quote(session, current_user, "erp.factusol_quote_create",
+                 payload.company_id, {"job_id": job_id,
+                                      "lines": len(payload.lines)})
+    session.commit()
+    return {"job_id": job_id, "status": "queued"}
+
+
+@router.post("/quotes/{codpre}/duplicate", status_code=202)
+def duplicate_quote_endpoint(
+    codpre: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_edit),
+) -> dict[str, Any]:
+    """Encola la duplicación de una proforma (CODPRE nuevo, fecha de hoy)."""
+    from app.integrations.factusol.jobs import enqueue_duplicate_quote  # noqa: PLC0415
+
+    job_id = enqueue_duplicate_quote(codpre)
+    _audit_quote(session, current_user, "erp.factusol_quote_duplicate",
+                 codpre, {"job_id": job_id})
+    session.commit()
+    return {"job_id": job_id, "status": "queued", "source_codpre": codpre}
+
+
+@router.post("/quotes/{codpre}/convert-to-order", status_code=202)
+def convert_quote_endpoint(
+    codpre: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_edit),
+) -> dict[str, Any]:
+    """Encola la conversión de la proforma en pedido manual del CRM.
+
+    No escribe nada nuevo en FACTUSOL — ver el docstring de
+    `quotes.convert_quote_to_order` para el porqué."""
+    from app.integrations.factusol.jobs import (  # noqa: PLC0415
+        enqueue_convert_quote_to_order,
+    )
+
+    job_id = enqueue_convert_quote_to_order(codpre, current_user.id)
+    _audit_quote(session, current_user, "erp.factusol_quote_convert",
+                 codpre, {"job_id": job_id})
+    session.commit()
+    return {"job_id": job_id, "status": "queued", "codpre": codpre}
+
+
+def _audit_quote(
+    session: Session, actor: User, action: str, target_id: str,
+    metadata: dict[str, Any],
+) -> None:
+    from app.models.crm import AuditLog  # noqa: PLC0415
+
+    session.add(AuditLog(
+        actor_user_id=actor.id, action=action,
+        target_type="factusol_quote", target_id=target_id,
+        metadata_json=json.dumps(metadata),
+    ))

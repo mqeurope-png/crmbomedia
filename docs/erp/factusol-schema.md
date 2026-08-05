@@ -158,24 +158,89 @@ un 401 en vuelo re-autentica una vez. Password cifrada Fernet en
 
 ---
 
-## Proformas y artículos (C-4) — ⛔ PENDIENTE DE VERIFICAR
+## Proformas, pedidos de cliente y artículos (C-4) — ✅ VERIFICADO 2026-08-05
 
-`F_PRO` / `F_LPP` / `F_ART` **todavía NO están verificados contra la base real**.
-No escribas código contra ellos hasta ejecutar en el VPS:
+Salida real de `scripts/factusol_discover_quotes.py` sobre la base de Bomedia
+(ejercicio 2026), ejecutado por Bart en el VPS. **Estos nombres sí están
+comprobados**; los de la versión anterior de esta sección (`F_PRO`, `F_LPP`
+como líneas de presupuesto) eran candidatos y resultaron ser incorrectos.
 
-```bash
-docker compose -f /opt/crmbo/docker-compose.prod.yml exec api \
-    python -m scripts.factusol_discover_quotes
-```
+### 🚨 F_PRE es MONO-LÍNEA — no existe tabla de líneas de presupuesto
 
-y pegar aquí la salida (nombres reales + columnas + muestra).
+Es el hallazgo que condiciona todo C-4. `F_PRE` tiene **653 filas** en 2026 y
+**cada fila es un presupuesto completo**: cliente, importes y totales. No hay
+`F_LPRE`, ni `F_LPR`, ni ninguna otra tabla de líneas de presupuesto (`F_LPP`
+existe, pero pertenece a **F_PPR**, pedidos a *proveedor*, no a presupuestos).
 
-> **Por qué esto es obligatorio**: en la API DELSOL un filtro sobre una columna
-> inexistente **no da error, devuelve `[]`**. C-3 salió a producción con
-> `NOMCLI`/`CIFCLI`/`DIRCLI`/`NACCLI` inventados y la búsqueda devolvía siempre
-> vacío sin un solo log de error (ver C-3-fix1). En C-4 el riesgo es mayor:
-> **se escriben proformas** en la contabilidad real, así que un nombre erróneo
-> no solo no falla, sino que puede dejar documentos mal formados.
+El detalle del presupuesto vive como **texto libre en `REFPRE`, 250 caracteres**.
 
-Candidatas que prueba el script: cabecera `F_PRO`/`F_PRE`/`F_PPR`/`F_PVT`/`F_PPV`;
-líneas `F_LPP`/`F_LPR`/`F_LPRE`/`F_LPPR`/`F_LPRO`; artículos `F_ART`.
+Consecuencia para el CRM: si BoHub quiere poder duplicar una proforma o volcar
+sus líneas a un pedido, **tiene que guardar el desglose por su cuenta**. Eso es
+la tabla `factusol_quote_lines_cache` (migración 0088). Las proformas creadas
+en el FACTUSOL de escritorio no tienen desglose y degradan a modo «simple».
+
+### F_PRE — presupuestos / proformas (653 filas, 2026)
+
+| Columna | Contenido |
+|---|---|
+| `CODPRE` | PK numérica. Se asigna con `MAX+1` (cola serializada). |
+| `TIPPRE` | Siempre `'1'` en los 653 registros. |
+| `REFPRE` | Texto libre, 250 car. **Es donde vive el desglose.** |
+| `FECPRE` | Fecha del presupuesto. |
+| `CLIPRE` | FK a `F_CLI.CODCLI`. |
+| `CNOPRE` / `CDOPRE` / `CPOPRE` / `CCPPRE` / `CPRPRE` / `CNIPRE` | Nombre, domicilio, población, CP, provincia y NIF copiados del cliente. |
+| `TELPRE` / `EMAPRE` / `CEMPRE` | Teléfono y email. |
+| `CPAPRE` | País ISO numérico (`'724'` = España). |
+| `ALMPRE` | Almacén (`'GEN'`). |
+| `TIVPRE` | Tipo de IVA del documento. |
+| `NET1PRE` / `BAS1PRE` | Base imponible banda 1. |
+| `PIVA1PRE` / `IIVA1PRE` | % e importe de IVA banda 1. |
+| `PREC1PRE` / `IREC1PRE` | % e importe de recargo de equivalencia banda 1. |
+| `TOTPRE` | Total del presupuesto. |
+| `FOPPRE` | Forma de pago (F_FOP). |
+| `USUPRE` / `USMPRE` / `FUMPRE` / `HORPRE` | Auditoría de FACTUSOL. |
+
+Existen además las bandas 2/3/4 (`NET2PRE`, `PIVA2PRE`, …) y ~92 columnas más.
+El CRM **solo escribe la banda 1**: las proformas de Bomedia son de un único
+tipo de IVA y repartir en bandas sin necesidad añadiría riesgo sin ganancia.
+
+### F_PCL / F_LPC — pedidos de cliente (503 cabeceras, 1527 líneas)
+
+Estos **sí** tienen cabecera + líneas. Los crea la app externa Woo→FACTUSOL.
+
+- **F_PCL**: `CODPCL, TIPPCL, REFPCL, FECPCL, CLIPCL, CNOPCL, CDOPCL, CPOPCL,
+  CCPPCL, CPRPCL, CNIPCL, TIVPCL, REQPCL, TELPCL, ESTPCL, ALMPCL, NET1PCL,
+  NET2PCL…`
+- **F_LPC**: `TIPLPC, CODLPC, POSLPC, ARTLPC, DESLPC, CANLPC, DT1LPC, DT2LPC,
+  DT3LPC, PRELPC, TOTLPC, PENLPC, IVALPC…`
+- Join: `F_LPC.TIPLPC = F_PCL.TIPPCL AND F_LPC.CODLPC = F_PCL.CODPCL`.
+
+> **Por qué C-4 NO escribe F_PCL.** «Convertir proforma en pedido» crea un
+> pedido **del CRM**, no un F_PCL. Escribir un F_PCL exigiría dar por buena una
+> correspondencia de columnas `F_PRE → F_PCL` por sufijo que nadie ha
+> verificado, y en `EscribirRegistro` una columna inexistente **sí revienta**
+> (en `CargaTabla` devuelve `[]` en silencio). Además duplicaría lo que ya hace
+> la app externa Woo→FACTUSOL — que es exactamente el origen del
+> `BDEscribirRegistroError` de C-2-fix1.
+
+### F_ART — artículos (1828 filas)
+
+`CODART` (PK, texto), `EANART`, `EQUART`, `FAMART`, `DESART` (descripción),
+`DEEART`, `DETART`, `TIVART` (% IVA), `PCOART` (precio de coste), `DT0ART` /
+`DT1ART` / `DT2ART` (descuentos), `STOART` (stock), `UMEART`, `FUMART` + 78 más.
+
+`PCOART` es **coste**, no tarifa de venta: en la UI se ofrece como sugerencia
+editable, nunca como precio final.
+
+### F_ALB / F_LAL — albaranes (388 / 1493)
+
+Cabecera + líneas, misma convención de sufijos.
+
+### Recordatorio permanente: la trampa del filtro
+
+> En la API DELSOL un filtro sobre una columna **inexistente no da error:
+> devuelve `[]`**. C-3 salió a producción con `NOMCLI`/`CIFCLI`/`DIRCLI`/
+> `NACCLI` inventados y la búsqueda devolvía siempre vacío sin un solo log
+> (ver C-3-fix1).
+>
+> Antes de filtrar por una columna nueva: `list(rows[0].keys())` primero.

@@ -706,6 +706,117 @@ export async function createFactusolCustomer(
   });
 }
 
+// --- Proformas FACTUSOL (Fase C · C-4) --------------------------------------
+
+/** Artículo de F_ART. `precio` es el coste (PCOART): FACTUSOL no expone una
+ *  tarifa de venta única, así que sirve solo de sugerencia editable. */
+export type FactusolArticle = {
+  codart: string | null;
+  descripcion: string | null;
+  desart: string | null;
+  eanart: string | null;
+  famart: string | null;
+  precio: number;
+  stock: number;
+  iva_pct: number;
+};
+
+/** Una línea del desglose de la proforma. */
+export type FactusolQuoteLine = {
+  position: number;
+  codart: string | null;
+  description: string;
+  quantity: number;
+  unit_price: number;
+  discount_pct: number;
+  line_total: number;
+  iva_pct: number;
+};
+
+/** Proforma (presupuesto F_PRE). Recuerda que F_PRE es MONO-LÍNEA: `lines`
+ *  sale de la caché del CRM y está vacío en las proformas hechas en el
+ *  FACTUSOL de escritorio (`line_source: "ref_text"`). */
+export type FactusolQuote = {
+  codpre: string | null;
+  referencia: string;
+  fecha: string | null;
+  clipre: string | null;
+  cliente_nombre: string | null;
+  base: number;
+  iva: number;
+  total: number;
+  lines?: FactusolQuoteLine[];
+  line_source?: "cache" | "ref_text";
+};
+
+export type QuoteJobStatus =
+  | { status: "pending" }
+  | { status: "finished"; result: Record<string, unknown> }
+  | { status: "failed"; error?: string };
+
+export async function searchFactusolArticles(q: string): Promise<FactusolArticle[]> {
+  const r = await apiFetch<{ items: FactusolArticle[] }>(
+    `/api/erp/factusol/articles/search?q=${encodeURIComponent(q)}`,
+  );
+  return r.items;
+}
+
+export async function listFactusolQuotes(
+  opts: { company_id?: string; days_back?: number } = {},
+): Promise<{ items: FactusolQuote[]; unlinked: boolean }> {
+  return apiFetch(`/api/erp/factusol/quotes${qs(opts)}`);
+}
+
+export async function getFactusolQuote(codpre: string): Promise<FactusolQuote> {
+  return apiFetch(`/api/erp/factusol/quotes/${encodeURIComponent(codpre)}`);
+}
+
+export type CreateQuotePayload = {
+  company_id: string;
+  referencia?: string;
+  lines?: {
+    codart?: string;
+    description: string;
+    quantity: number;
+    unit_price: number;
+    discount_pct?: number;
+    iva_pct?: number;
+  }[];
+  fecha?: string | null;
+  fopfac?: string | null;
+};
+
+export async function createFactusolQuote(
+  payload: CreateQuotePayload,
+): Promise<{ job_id: string; status: string }> {
+  return apiFetch("/api/erp/factusol/quotes", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function duplicateFactusolQuote(
+  codpre: string,
+): Promise<{ job_id: string; status: string; source_codpre: string }> {
+  return apiFetch(
+    `/api/erp/factusol/quotes/${encodeURIComponent(codpre)}/duplicate`,
+    { method: "POST" },
+  );
+}
+
+export async function convertFactusolQuoteToOrder(
+  codpre: string,
+): Promise<{ job_id: string; status: string; codpre: string }> {
+  return apiFetch(
+    `/api/erp/factusol/quotes/${encodeURIComponent(codpre)}/convert-to-order`,
+    { method: "POST" },
+  );
+}
+
+export async function getQuoteJobStatus(jobId: string): Promise<QuoteJobStatus> {
+  return apiFetch(`/api/erp/factusol/quotes/status/${encodeURIComponent(jobId)}`);
+}
+
 // --- Expedición manual: bultos + albarán + etiqueta (Fase D · D-1) -----------
 
 export type ShipmentPackage = {
