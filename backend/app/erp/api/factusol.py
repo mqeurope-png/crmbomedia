@@ -230,6 +230,76 @@ def bulk_match_apply(
         raise _factusol_gateway_error(exc, "factusol_bulk_apply_failed") from exc
 
 
+@router.post("/bulk-match/by-contact-email/dry-run")
+def bulk_match_by_email_dry_run(
+    payload: BulkMatchDryRunPayload | None = None,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_admin),
+) -> dict[str, Any]:
+    """Propone parejas contacto → cliente F_CLI por **email exacto**.
+
+    C-5-fix1: el modo por NIF/nombre da mucho ruido — la mayoría de las
+    empresas del CRM vienen de imports sin NIF, y el nombre difuso produce
+    falsos positivos («4d Factory» ↔ «FACTORY»). El email o coincide o no.
+
+    Lo que se actualizaría es la **empresa del contacto**, no el contacto."""
+    _ = current_user
+    from app.integrations.factusol.bulk_match import (  # noqa: PLC0415
+        dry_run_by_contact_email,
+    )
+    from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
+
+    payload = payload or BulkMatchDryRunPayload()
+    client, ejercicio = _client_and_ejercicio(session)
+    try:
+        return dry_run_by_contact_email(
+            session, client, ejercicio=ejercicio, batch_size=payload.batch_size,
+        )
+    except FactusolError as exc:
+        raise _factusol_gateway_error(exc, "factusol_bulk_match_failed") from exc
+
+
+class BulkMatchByEmailOperation(BaseModel):
+    contact_id: str = Field(min_length=1, max_length=36)
+    factusol_codcli: str = Field(min_length=1, max_length=36)
+    fields_to_sync: list[str] = Field(default_factory=list)
+
+
+class BulkMatchByEmailApplyPayload(BaseModel):
+    operations: list[BulkMatchByEmailOperation] = Field(default_factory=list)
+
+
+@router.post("/bulk-match/by-contact-email/apply")
+def bulk_match_by_email_apply(
+    payload: BulkMatchByEmailApplyPayload,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_admin),
+) -> dict[str, Any]:
+    """Actualiza la empresa de cada contacto con los datos de su cliente F_CLI.
+
+    Devuelve `skipped` aparte de `errors`: un contacto sin empresa o una
+    empresa ya vinculada a otro CODCLI no son fallos, son casos en los que
+    aquí no toca escribir."""
+    from app.integrations.factusol.bulk_match import (  # noqa: PLC0415
+        apply_by_contact_email,
+    )
+    from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
+
+    if not payload.operations:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, {
+            "code": "no_operations", "detail": "No hay nada que aplicar.",
+        })
+    client, ejercicio = _client_and_ejercicio(session)
+    try:
+        return apply_by_contact_email(
+            session, client, ejercicio=ejercicio,
+            operations=[op.model_dump() for op in payload.operations],
+            actor_id=current_user.id,
+        )
+    except FactusolError as exc:
+        raise _factusol_gateway_error(exc, "factusol_bulk_apply_failed") from exc
+
+
 class LinkCustomerPayload(BaseModel):
     crm_type: str = Field(pattern="^(company|contact)$")
     #: Los IDs del CRM son UUID (String 36), no enteros.

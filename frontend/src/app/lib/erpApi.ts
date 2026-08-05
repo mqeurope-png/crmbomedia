@@ -885,6 +885,75 @@ export async function bulkMatchDryRun(
   });
 }
 
+/** C-5-fix1: fila del modo «contactos por email». Lo que se actualiza es la
+ *  **empresa del contacto**, no el contacto. */
+export type BulkMatchByEmailRow = {
+  contact_id: string;
+  contact_name: string;
+  contact_email: string;
+  /** `null` = el contacto no tiene empresa: no hay nada que actualizar. */
+  company_id: string | null;
+  company_name: string | null;
+  company_factusol_id: string | null;
+  candidates: BulkMatchCandidate[];
+};
+
+export type BulkMatchByEmailDryRun = {
+  total_contacts_with_email: number;
+  matches: BulkMatchByEmailRow[];
+  /** Solo el recuento: son miles y listarlos no aporta. */
+  no_match_count: number;
+  matches_without_company: number;
+  ejercicio: string;
+};
+
+/** Desenlace de cada operación del modo por email (C-5-fix2). */
+export type BulkMatchByEmailResult = {
+  contact_id: string;
+  result:
+    /** Tenía empresa: se le han traído los datos limpios. */
+    | "refreshed"
+    /** No tenía empresa: se ha creado con los datos de F_CLI. */
+    | "created_new_company"
+    /** No tenía empresa, pero ya había una vinculada a ese CODCLI: se le
+     *  asigna esa. Crear otra duplicaría el vínculo. */
+    | "linked_existing_company"
+    /** Su empresa ya estaba vinculada a OTRO CODCLI: no se pisa. */
+    | "skipped_already_linked_other";
+  company_id?: string;
+  detail?: string;
+};
+
+export async function bulkMatchByEmailDryRun(
+  body: { batch_size?: number } = {},
+): Promise<BulkMatchByEmailDryRun> {
+  return apiFetch("/api/erp/factusol/bulk-match/by-contact-email/dry-run", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function bulkMatchByEmailApply(
+  operations: {
+    contact_id: string;
+    factusol_codcli: string;
+    fields_to_sync: string[];
+  }[],
+): Promise<{
+  applied: number;
+  results: BulkMatchByEmailResult[];
+  refreshed: number;
+  created_new_company: number;
+  linked_existing_company: number;
+  skipped_already_linked_other: number;
+  errors: { contact_id: string; error: string }[];
+}> {
+  return apiFetch("/api/erp/factusol/bulk-match/by-contact-email/apply", {
+    method: "POST",
+    body: JSON.stringify({ operations }),
+  });
+}
+
 export async function bulkMatchApply(
   operations: {
     crm_company_id: string;

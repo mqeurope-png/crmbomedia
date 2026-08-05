@@ -19,6 +19,55 @@ fuente contable y no se toca desde aquí.
 
 ---
 
+## Dos modos
+
+| Modo | Itera | Match | Cuándo |
+|---|---|---|---|
+| **Contactos por email** (por defecto) | contactos con email | `EMACLI` **exacto** | Casi siempre. Sin falsos positivos. |
+| **Empresas por NIF/nombre** | empresas | NIF exacto → email → nombre difuso | Cuando la empresa tiene NIF y no hay contacto con email. |
+
+En los dos, lo que se actualiza es **una empresa del CRM**. Lo que cambia es
+por dónde se llega a ella.
+
+### Por qué el modo por email es el recomendado
+
+El modo por NIF/nombre se probó en producción y da mucho ruido:
+
+- La mayoría de las empresas del CRM llegaron de imports masivos **sin NIF**,
+  así que caen al match por nombre.
+- El nombre difuso produce falsos positivos: «4d Factory» ↔ «FACTORY».
+
+El email o coincide exacto o no coincide. Menos cobertura, pero lo que propone
+es fiable.
+
+**Qué actualiza:** la empresa a la que pertenece el contacto que casó.
+
+#### Los cuatro desenlaces del apply
+
+| Resultado | Cuándo | Qué hace |
+|---|---|---|
+| `refreshed` | El contacto tiene empresa | Le trae los datos limpios y la vincula al CODCLI |
+| `created_new_company` | El contacto **no** tiene empresa | **Crea** una con todos los datos de F_CLI, la vincula y se la asigna al contacto |
+| `linked_existing_company` | No tiene empresa, pero ya hay una vinculada a ese CODCLI | Le asigna **esa**, sin crear otra |
+| `skipped_already_linked_other` | Su empresa ya está vinculada a **otro** CODCLI | Nada. Se salta |
+
+Vinculada al **mismo** CODCLI **sí** se aplica: es un refresco de datos.
+
+> **Por qué `linked_existing_company` existe.** Si ya hay una empresa CRM
+> apuntando a ese cliente y creásemos otra, quedarían **dos empresas
+> apuntando al mismo cliente de FACTUSOL** — exactamente la duplicidad que
+> costó arreglar en C-3-fix3. Se reutiliza la que ya está.
+
+> **Por qué `skipped_already_linked_other` NO se toca.** Pisar un vínculo que
+> alguien estableció a propósito sería peor que no hacer nada. Esa fila sale
+> con la casilla «Aplicar» **deshabilitada** y el motivo en el tooltip: el
+> backend la saltaría igualmente, pero así no parece que se haya aplicado.
+
+Una empresa **creada** nace con **todos** los campos de F_CLI, no solo los
+marcados: no hay nada previo que preservar.
+
+---
+
 ## Cómo funciona
 
 Dos tiempos. **Nada se escribe sin marcarlo.**
@@ -110,10 +159,22 @@ Para encontrar lo que había antes:
 ```sql
 SELECT target_id, created_at, metadata_json
 FROM audit_logs
-WHERE action = 'erp.factusol_bulk_sync'
+WHERE action IN (
+    'erp.factusol_bulk_sync',                      -- modo por NIF/nombre
+    'erp.factusol_bulk_sync_by_email',             -- modo por email: refresco
+    'erp.factusol_bulk_sync_by_email_create_company') -- modo por email: creada
   AND target_id = '<company_id>'
 ORDER BY created_at DESC;
 ```
+
+Cada modo usa su propia `action`, para poder revertir un lote sin arrastrar el
+otro. Lo mismo con `companies.factusol_sync_source`: `bulk_match` vs.
+`bulk_by_email`.
+
+> **Una empresa CREADA se deshace distinto.** Su entrada lleva
+> `..._create_company` y `previous_values` vacío — no hay valores anteriores
+> que restaurar porque la empresa no existía. Se revierte **borrándola** (y
+> dejando el `company_id` del contacto a NULL), no con un `UPDATE`.
 
 El `metadata_json` trae:
 
@@ -121,7 +182,10 @@ El `metadata_json` trae:
 {
   "factusol_codcli": "3342",
   "applied_fields": ["name", "city"],
-  "previous_values": {"name": "AUDIOVISUALES DATA", "city": "CIUDAD VIEJA"}
+  "previous_values": {"name": "AUDIOVISUALES DATA", "city": "CIUDAD VIEJA"},
+
+  "contact_id": "uuid",             // solo en el modo por email:
+  "contact_email": "juan@..."       // el contacto que originó el match
 }
 ```
 
