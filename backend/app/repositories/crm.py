@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.models.crm import (
     ActivityEvent,
     AuditLog,
+    CallLog,
     Company,
     Contact,
     ContactTag,
@@ -156,6 +157,11 @@ def _apply_contact_filters(
     lead_score_max: int | None = None,
     created_after: datetime | None = None,
     created_before: datetime | None = None,
+    call_result: list[str] | None = None,
+    call_action: list[str] | None = None,
+    call_duration_bucket: list[str] | None = None,
+    call_date_from: datetime | None = None,
+    call_date_to: datetime | None = None,
     include_inactive: bool = False,
 ) -> Select:
     """Single source of truth for contact-list filtering. Used by both
@@ -265,7 +271,63 @@ def _apply_contact_filters(
         statement = statement.where(Contact.created_at >= created_after)
     if created_before:
         statement = statement.where(Contact.created_at <= created_before)
+    statement = _apply_call_filters(
+        statement,
+        call_result=call_result,
+        call_action=call_action,
+        call_duration_bucket=call_duration_bucket,
+        call_date_from=call_date_from,
+        call_date_to=call_date_to,
+    )
     return statement
+
+
+def _apply_call_filters(
+    statement: Select,
+    *,
+    call_result: list[str] | None,
+    call_action: list[str] | None,
+    call_duration_bucket: list[str] | None,
+    call_date_from: datetime | None,
+    call_date_to: datetime | None,
+) -> Select:
+    """Filtra contactos por atributos de sus llamadas (CRM-1).
+
+    **Una sola llamada tiene que cumplir TODOS los criterios**, no una por
+    cada uno: los `AND` van dentro del mismo `EXISTS` sobre `call_logs`. Dentro
+    de un criterio multivalor (resultado, acción, duración) basta con que
+    coincida uno (`OR`).
+
+    La duración se filtra por **bucket** (`lt_1min`…`gt_30min`), no por un rango
+    de segundos: `call_logs` no guarda la duración exacta, solo el tramo que el
+    operador marca en el modal.
+
+    La acción posterior se busca con un `LIKE` sobre `actions_taken` (JSON
+    texto). La clave sale entrecomillada —`"adjust_star_score"`— en SQLite y en
+    MySQL, así que el mismo patrón corre en los dos sin depender de funciones
+    JSON nativas."""
+    conditions = []
+    if call_result:
+        conditions.append(CallLog.result_code.in_(call_result))
+    if call_duration_bucket:
+        conditions.append(CallLog.duration_bucket.in_(call_duration_bucket))
+    if call_date_from:
+        conditions.append(CallLog.called_at >= call_date_from)
+    if call_date_to:
+        conditions.append(CallLog.called_at <= call_date_to)
+    if call_action:
+        from sqlalchemy import or_  # noqa: PLC0415
+
+        conditions.append(or_(*[
+            CallLog.actions_taken.like(f'%"{action}"%') for action in call_action
+        ]))
+    if not conditions:
+        return statement
+    return statement.where(
+        select(CallLog.id)
+        .where(CallLog.contact_id == Contact.id, *conditions)
+        .exists()
+    )
 
 
 def list_contacts(
@@ -284,6 +346,11 @@ def list_contacts(
     lead_score_max: int | None = None,
     created_after: datetime | None = None,
     created_before: datetime | None = None,
+    call_result: list[str] | None = None,
+    call_action: list[str] | None = None,
+    call_duration_bucket: list[str] | None = None,
+    call_date_from: datetime | None = None,
+    call_date_to: datetime | None = None,
     skip: int = 0,
     limit: int = 25,
     include_inactive: bool = False,
@@ -311,6 +378,11 @@ def list_contacts(
         lead_score_max=lead_score_max,
         created_after=created_after,
         created_before=created_before,
+        call_result=call_result,
+        call_action=call_action,
+        call_duration_bucket=call_duration_bucket,
+        call_date_from=call_date_from,
+        call_date_to=call_date_to,
         include_inactive=include_inactive,
     )
     sort_column = CONTACT_SORT_COLUMNS.get(sort_by, Contact.created_at)
@@ -335,6 +407,11 @@ def count_contacts(
     lead_score_max: int | None = None,
     created_after: datetime | None = None,
     created_before: datetime | None = None,
+    call_result: list[str] | None = None,
+    call_action: list[str] | None = None,
+    call_duration_bucket: list[str] | None = None,
+    call_date_from: datetime | None = None,
+    call_date_to: datetime | None = None,
     include_inactive: bool = False,
 ) -> int:
     """Return the total number of contacts matching the same filters the
@@ -357,6 +434,11 @@ def count_contacts(
         lead_score_max=lead_score_max,
         created_after=created_after,
         created_before=created_before,
+        call_result=call_result,
+        call_action=call_action,
+        call_duration_bucket=call_duration_bucket,
+        call_date_from=call_date_from,
+        call_date_to=call_date_to,
         include_inactive=include_inactive,
     )
     return int(session.scalar(statement) or 0)

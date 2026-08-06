@@ -94,4 +94,31 @@ describe("RegisterCallModal", () => {
     expect(payload.result_code).toBe("contacted");
     expect(props.onSaved).toHaveBeenCalled();
   });
+
+  it("«Ajustar star score» manda la valoración elegida (CRM-1)", async () => {
+    const user = userEvent.setup();
+    // Sin valoración previa → solo aparece el selector nuevo, sin ambigüedad.
+    renderModal({ currentStarRating: 0 });
+    await user.click(screen.getByRole("button", { name: /Acciones tras la llamada/i }));
+
+    // No hay selector de estrellas hasta marcar la acción.
+    expect(screen.queryByTestId("star-rating")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("checkbox", { name: /Ajustar star score/i }));
+
+    await user.click(screen.getByRole("button", { name: "4 estrellas" }));
+    await user.click(screen.getByRole("button", { name: /Guardar/i }));
+
+    await waitFor(() => expect(createCallLog).toHaveBeenCalled());
+    expect((createCallLog as jest.Mock).mock.calls[0][1].actions.adjust_star_score)
+      .toBe(4);
+  });
+
+  it("sin marcar «Ajustar star score» no manda valoración", async () => {
+    const user = userEvent.setup();
+    renderModal({ currentStarRating: 3 });
+    await user.click(screen.getByRole("button", { name: /Guardar/i }));
+    await waitFor(() => expect(createCallLog).toHaveBeenCalled());
+    expect((createCallLog as jest.Mock).mock.calls[0][1].actions.adjust_star_score)
+      .toBeNull();
+  });
 });

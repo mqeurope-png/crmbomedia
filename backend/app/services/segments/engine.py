@@ -246,6 +246,10 @@ def _compile_leaf(
     # insensitive (vía func.lower).
     if spec.relation == "notes.body":
         return _compile_notes_content_leaf(comparator, value)
+    # CRM-1 — filtro por atributos de las llamadas del contacto. EXISTS sobre
+    # `call_logs`, reutilizando la lógica de comparadores de columna.
+    if spec.relation == "call_logs":
+        return _compile_call_leaf(spec, comparator, value)
     # PR-E3 (Deuda #8) — interacción con campañas Brevo. EXISTS /
     # NOT EXISTS sobre activity_events filtrado por campaña + acción
     # + ventana temporal (sent_at de la campaña).
@@ -473,6 +477,39 @@ def _compile_notes_content_leaf(
         select(Note.contact_id).where(
             func.lower(Note.body).like(pattern)
         )
+    )
+
+
+def _compile_call_leaf(
+    spec: FieldSpec, comparator: str, value: Any
+) -> ColumnElement[bool]:
+    """CRM-1 — `EXISTS` sobre `call_logs` para «el contacto tiene ≥1 llamada
+    que cumple X».
+
+    Los campos de columna directa (resultado, duración, fecha) reutilizan
+    `_compile_column_leaf` sobre la columna de `CallLog` y se envuelven en el
+    `IN (SELECT contact_id …)`, así heredan todos los comparadores (in, before,
+    in_last_n_days…) sin reimplementarlos.
+
+    La acción posterior no es una columna: vive en `actions_taken` (JSON texto).
+    Se busca con `LIKE '%"<accion>"%'`, portable SQLite/MySQL porque la clave
+    sale entrecomillada en los dos."""
+    from app.models.crm import CallLog  # noqa: PLC0415
+
+    if spec.key == "call_action":
+        values = value if isinstance(value, list) else [value]
+        inner = or_(*[
+            CallLog.actions_taken.like(f'%"{v}"%') for v in values
+        ])
+    else:
+        column = {
+            "call_result": CallLog.result_code,
+            "call_duration": CallLog.duration_bucket,
+            "call_date": CallLog.called_at,
+        }[spec.key]
+        inner = _compile_column_leaf(column, spec, comparator, value)
+    return Contact.id.in_(
+        select(CallLog.contact_id).where(inner)
     )
 
 
