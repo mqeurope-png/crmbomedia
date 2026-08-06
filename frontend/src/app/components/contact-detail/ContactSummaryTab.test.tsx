@@ -1,5 +1,8 @@
 import { render, screen } from "@testing-library/react";
-import { ContactSummaryTab } from "./ContactSummaryTab";
+import {
+  ContactSummaryTab,
+  ContactSummaryPlaceholderCards,
+} from "./ContactSummaryTab";
 import type { ActivityEvent } from "../../lib/api";
 
 function event(over: Partial<ActivityEvent> = {}): ActivityEvent {
@@ -32,5 +35,13 @@ describe("ContactSummaryTab · CRM-1 llamadas en actividad reciente", () => {
   it("sin actividad lo dice", () => {
     render(<ContactSummaryTab contactId="c1" events={[]} />);
     expect(screen.getByText("Sin actividad reciente.")).toBeInTheDocument();
+  });
+});
+
+describe("ContactSummaryPlaceholderCards · CRM-2 rename Pipelines", () => {
+  it("el placeholder se llama «Pipelines vinculados», no «Oportunidades»", () => {
+    render(<ContactSummaryPlaceholderCards />);
+    expect(screen.getByText("Pipelines vinculados")).toBeInTheDocument();
+    expect(screen.queryByText(/Oportunidades/)).not.toBeInTheDocument();
   });
 });

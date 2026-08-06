@@ -1,18 +1,6 @@
 "use client";
 
-import {
-  History,
-  Activity as ActivityIcon,
-  Briefcase,
-  CheckSquare,
-  Layers,
-  LifeBuoy,
-  Mail,
-  Sparkles,
-  StickyNote,
-  Tag as TagIcon,
-  Workflow as WorkflowIcon,
-} from "lucide-react";
+import { Briefcase } from "lucide-react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useRouter } from "next/navigation";
@@ -41,7 +29,6 @@ import {
 import { ContactNotesSection } from "../../components/ContactNotesSection";
 import { ContactPhonesSection } from "../../components/ContactPhonesSection";
 import { ContactProfessionalSection } from "../../components/ContactProfessionalSection";
-import { EmailEventBadges } from "../../components/email/EmailEventBadges";
 import { ContactPipelinesSection } from "../../components/ContactPipelinesSection";
 import { ContactTasksSection } from "../../components/ContactTasksSection";
 import { EmailComposerModal } from "../../components/EmailComposerModal";
@@ -51,10 +38,7 @@ import { RefreshExternalDataButton } from "../../components/RefreshExternalDataB
 import { TaskModal } from "../../components/TaskModal";
 import { getCompany } from "../../lib/companiesApi";
 import { ContactEditForm } from "./ContactEditForm";
-import {
-  getMessageEvents,
-  type EmailEvent,
-} from "../../lib/emailTrackingApi";
+import { CONTACT_DETAIL_TABS, type ContactTab } from "./tabs";
 import {
   addTagToContact,
   deactivateContact,
@@ -65,61 +49,13 @@ import {
   removeTagFromContact,
   type User as CurrentUser,
   updateContact,
-  type ActivityEvent,
   type Contact,
   type ContactAssignment,
   type ExternalRefreshResult,
 } from "../../lib/api";
 import { extractErrorMessage } from "../../lib/errors";
 
-function formatDateTime(value: string | null | undefined): string {
-  if (!value) return "—";
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return "—";
-  return parsed.toLocaleString("es-ES", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-}
-
-type Tab =
-  | "summary"
-  | "activity"
-  | "emails"
-  | "tasks"
-  | "notes"
-  | "history"
-  | "tags"
-  | "opportunities"
-  | "workflows"
-  | "support";
-
-// Bart pidió re-añadir la pestaña "Notas" perdida en el rediseño
-// PR-D. Posición entre Tareas y Oportunidades — el `tasks` flow + el
-// `notes` flow comparten sidebar y resultaba intuitivo en la ficha
-// vieja.
-//
-// PR-Ficha-Cleanup: nueva pestaña "Tags" entre Notas y Oportunidades.
-// La cell del strip estaba abarrotada (max 3 chips + "+N"), y los
-// comerciales necesitan ver/editar la lista completa con autocomplete.
-const TABS: Array<{ id: Tab; label: string; icon: React.ElementType }> = [
-  { id: "summary", label: "Resumen", icon: Sparkles },
-  { id: "activity", label: "Actividad", icon: ActivityIcon },
-  { id: "emails", label: "Emails", icon: Mail },
-  { id: "tasks", label: "Tareas", icon: CheckSquare },
-  { id: "notes", label: "Notas", icon: StickyNote },
-  { id: "history", label: "Historial", icon: History },
-  { id: "tags", label: "Tags", icon: TagIcon },
-  { id: "opportunities", label: "Oportunidades", icon: Layers },
-  // PR-Fix-Pestaña-Workflows-Y-Humanizar #1. La pestaña existía como
-  // componente (ContactWorkflowsTab) desde el PR #209 pero nunca se
-  // añadió al array TABS → no aparecía en la ficha. Ahora visible.
-  { id: "workflows", label: "Workflows", icon: WorkflowIcon },
-  { id: "support", label: "Soporte", icon: LifeBuoy },
-];
+type Tab = ContactTab;
 
 export default function ContactDetailPage() {
   const params = useParams<{ id: string }>();
@@ -479,7 +415,7 @@ export default function ContactDetailPage() {
       <div className="contact-detail-grid-v2">
         <section className="contact-detail-main contact-detail-main-v2">
           <nav className="contact-detail-tabs" aria-label="Pestañas">
-            {TABS.map((t) => {
+            {CONTACT_DETAIL_TABS.map((t) => {
               const Icon = t.icon;
               return (
                 <button
@@ -506,7 +442,7 @@ export default function ContactDetailPage() {
                 <ContactSummaryTab
                   contactId={contact.id}
                   events={contact.activity_events ?? []}
-                  onSeeAllActivity={() => setActiveTab("activity")}
+                  onSeeAllActivity={() => setActiveTab("history")}
                 />
                 {/* PR-Ficha-Cleanup: nuevo orden del extras grid:
                       Tareas pendientes →
@@ -536,12 +472,6 @@ export default function ContactDetailPage() {
                   <ContactSummaryPlaceholderCards />
                 </div>
               </div>
-            ) : null}
-            {activeTab === "activity" ? (
-              <ActivityTab
-                events={contact.activity_events ?? []}
-                lastRefresh={contact.last_external_refresh_at}
-              />
             ) : null}
             {activeTab === "tasks" ? (
               <ContactTasksSection contactId={contact.id} />
@@ -777,184 +707,4 @@ export default function ContactDetailPage() {
       ) : null}
     </main>
   );
-}
-
-// ---------------------------------------------------------------------------
-// Sub-views — la `ActivityTab` se mantiene 1:1 desde la versión anterior;
-// pintar la timeline completa con tracking de email events es lógica que
-// no aporta cambiar en PR-D (que es puramente visual).
-// ---------------------------------------------------------------------------
-
-const EVENT_TYPE_ICON: Record<string, string> = {
-  EMAIL_SENT: "↗",
-  EMAIL_OPENED: "👁",
-  EMAIL_CLICKED: "🔗",
-  CALL_LOG: "📞",
-  NOTE: "🗒️",
-  FORM_FILL: "📝",
-  DEAL_CREATED: "💼",
-  PAGE_VIEWED: "🌐",
-  TASK_COMPLETED: "✅",
-  "task.created": "📌",
-  "task.completed": "✅",
-  "task.updated": "📝",
-  "task.deleted": "🗑️",
-  "email.sent_from_crm": "↗",
-  "email.reply_received": "↙",
-  "email.thread_marked_read": "👁",
-};
-
-function readMetadata(
-  meta: Record<string, unknown> | null | undefined,
-): Record<string, unknown> {
-  return meta && typeof meta === "object" ? meta : {};
-}
-
-function emailEventClass(type: string): string {
-  if (type === "email.sent_from_crm" || type === "EMAIL_SENT") {
-    return "timeline-row timeline-row-email-out";
-  }
-  if (type === "email.reply_received") {
-    return "timeline-row timeline-row-email-in";
-  }
-  if (type === "EMAIL_OPENED" || type === "EMAIL_CLICKED") {
-    return "timeline-row timeline-row-email-track";
-  }
-  return "timeline-row";
-}
-
-function ActivityTab({
-  events,
-  lastRefresh,
-}: {
-  events: ActivityEvent[];
-  lastRefresh: string | null | undefined;
-}) {
-  const [eventsByMessage, setEventsByMessage] = useState<
-    Record<string, EmailEvent[]>
-  >({});
-  useEffect(() => {
-    const ids = events
-      .map((e) => {
-        const m = readMetadata(e.metadata);
-        return e.event_type === "email.sent_from_crm" &&
-          typeof m.message_id === "string"
-          ? m.message_id
-          : null;
-      })
-      .filter((x): x is string => Boolean(x));
-    if (ids.length === 0) return;
-    let cancelled = false;
-    Promise.allSettled(ids.map((id) => getMessageEvents(id))).then((rs) => {
-      if (cancelled) return;
-      const next: Record<string, EmailEvent[]> = {};
-      rs.forEach((r, idx) => {
-        next[ids[idx]] =
-          r.status === "fulfilled" ? r.value.events : [];
-      });
-      setEventsByMessage(next);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [events]);
-
-  if (events.length === 0) {
-    return (
-      <p className="muted small">
-        {lastRefresh
-          ? `Sin eventos sincronizados. Última actualización: ${formatDateTime(
-              lastRefresh,
-            )}.`
-          : "Sin eventos sincronizados. Pulsa \"Actualizar\" para traerlos."}
-      </p>
-    );
-  }
-  // PR-Dc: compactamos a una línea por evento — icono + título +
-  // (badges si aplica) + tiempo relativo. Snippets + sublines viven en
-  // el `title=` para HOVER (sin reflow). Click en email.sent_from_crm
-  // abre el thread en una pestaña nueva.
-  return (
-    <ul className="timeline-list timeline-list-dense">
-      {events.map((event) => {
-        const meta = readMetadata(event.metadata);
-        const threadId = typeof meta.thread_id === "string" ? meta.thread_id : null;
-        const direction =
-          typeof meta.direction === "string" ? meta.direction : null;
-        const fromEmail =
-          typeof meta.from_email === "string" ? meta.from_email : null;
-        const to = typeof meta.to === "string" ? meta.to : null;
-        const messageId =
-          typeof meta.message_id === "string" ? meta.message_id : null;
-        const trackingEvents = messageId
-          ? eventsByMessage[messageId] ?? []
-          : [];
-        const snippet =
-          typeof meta.snippet === "string" ? meta.snippet : event.body ?? null;
-        const isEmail = event.event_type.startsWith("email.");
-        const titleText = event.subject || event.event_type;
-        const subline =
-          direction === "outbound" && to
-            ? `Enviado a ${to}`
-            : direction === "inbound" && fromEmail
-              ? `Recibido de ${fromEmail}`
-              : null;
-        const tooltipParts = [
-          formatDateTime(event.occurred_at),
-          subline,
-          snippet ? `"${snippet}"` : null,
-        ].filter((p): p is string => Boolean(p));
-        return (
-          <li
-            key={event.id}
-            className={`${emailEventClass(event.event_type)} is-dense`}
-            title={tooltipParts.join(" — ")}
-          >
-            <span className="timeline-icon" aria-hidden>
-              {EVENT_TYPE_ICON[event.event_type] ?? "•"}
-            </span>
-            <span className="timeline-title-dense">
-              {threadId && isEmail ? (
-                <a
-                  href={`/emails/${threadId}`}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  {titleText}
-                </a>
-              ) : (
-                titleText
-              )}
-            </span>
-            {event.event_type === "email.sent_from_crm" && messageId ? (
-              <EmailEventBadges events={trackingEvents} />
-            ) : null}
-            <span className="muted small timeline-time-dense">
-              {relativeTimeShort(event.occurred_at)}
-            </span>
-          </li>
-        );
-      })}
-    </ul>
-  );
-}
-
-// Tiempo relativo compacto compartido. Coincide con `relativeTime` de
-// ContactSummaryTab pero local para no acoplar archivos. Considerar
-// extraer a `lib/time.ts` en un PR de cleanup posterior.
-function relativeTimeShort(value: string | null | undefined): string {
-  if (!value) return "—";
-  const then = new Date(value).getTime();
-  if (Number.isNaN(then)) return "—";
-  const diffSec = Math.floor((Date.now() - then) / 1000);
-  if (diffSec < 60) return "ahora";
-  const min = Math.floor(diffSec / 60);
-  if (min < 60) return `hace ${min}m`;
-  const hr = Math.floor(min / 60);
-  if (hr < 24) return `hace ${hr}h`;
-  const day = Math.floor(hr / 24);
-  if (day < 30) return `hace ${day}d`;
-  const mo = Math.floor(day / 30);
-  if (mo < 12) return `hace ${mo}mo`;
-  return `hace ${Math.floor(mo / 12)}y`;
 }

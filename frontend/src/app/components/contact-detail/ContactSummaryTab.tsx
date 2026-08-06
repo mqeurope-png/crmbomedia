@@ -235,11 +235,11 @@ export function ContactSummaryPlaceholderCards() {
     <>
       <article className="card contact-summary-card">
         <header className="contact-summary-card-header">
-          <h3>Oportunidades vinculadas</h3>
+          <h3>Pipelines vinculados</h3>
         </header>
         <p className="muted small">
           Próximamente — vista resumida del pipeline. Consulta la pestaña{" "}
-          <em>Oportunidades</em> para ver el detalle.
+          <em>Pipelines</em> para ver el detalle.
         </p>
       </article>
 
