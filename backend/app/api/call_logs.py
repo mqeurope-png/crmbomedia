@@ -13,6 +13,7 @@ Cada acción deja su propia fila de audit.
 """
 from __future__ import annotations
 
+import json
 import logging
 from datetime import UTC, datetime
 
@@ -25,7 +26,16 @@ from app.core.audit import Action, record_event
 from app.core.auth import require_user
 from app.core.errors import not_found
 from app.db.session import get_session
-from app.models.crm import CallLog, Contact, TaskPriority, TaskStatus, User, UserRole
+from app.models.crm import (
+    ActivityEvent,
+    CallLog,
+    Contact,
+    Note,
+    TaskPriority,
+    TaskStatus,
+    User,
+    UserRole,
+)
 from app.models.workflows import Workflow, WorkflowStatus
 
 log = logging.getLogger(__name__)
@@ -37,6 +47,16 @@ RESULT_CODES = {
     "interested", "not_interested", "info_requested", "other",
 }
 DURATION_BUCKETS = {"lt_1min", "1_to_5min", "5_to_30min", "gt_30min"}
+
+#: Etiqueta legible por `result_code`, para el subject de la actividad. La
+#: pestaña Historial tiene su propia copia (contact_timeline._RESULT_LABELS);
+#: se mantienen en paralelo a propósito — una es del feed, otra del timeline.
+RESULT_LABELS = {
+    "contacted": "Contactado", "no_answer": "No contesta",
+    "voicemail": "Buzón de voz", "call_back": "Volver a llamar",
+    "interested": "Interesado", "not_interested": "No interesado",
+    "info_requested": "Pidió información", "other": "Otro",
+}
 
 
 class PipelineChange(BaseModel):
@@ -53,6 +73,9 @@ class FollowUpTask(BaseModel):
 class CallActions(BaseModel):
     pipeline_change: PipelineChange | None = None
     lead_score_delta: int | None = None
+    # CRM-1: nuevo valor absoluto del star rating (1-5). A diferencia del lead
+    # score, que es un delta, aquí el operador fija la valoración final.
+    adjust_star_score: int | None = Field(default=None, ge=1, le=5)
     follow_up_task: FollowUpTask | None = None
     trigger_workflow_ids: list[str] = Field(default_factory=list)
 
@@ -144,14 +167,21 @@ def create_call_log(
         request=request,
     )
 
-    # Acciones en ORDEN: pipeline → lead_score → tarea → workflows.
+    # Acciones en ORDEN: pipeline → lead_score → star_score → tarea → workflows.
+    # `executed` es lo que devuelve la respuesta; `actions_taken` es lo que se
+    # PERSISTE en la fila (con sus valores) para poder filtrar contactos por la
+    # acción posterior de sus llamadas (CRM-1) y para rehacer el resumen. Las
+    # claves de `actions_taken` son las canónicas del filtro, distintas de los
+    # nombres del payload.
     executed: list[str] = []
+    actions_taken: dict[str, object] = {}
     acts = payload.actions
     if acts.pipeline_change and acts.pipeline_change.pipeline_id:
         _do_pipeline_change(
             session, contact, acts.pipeline_change, current_user, request
         )
         executed.append("pipeline_change")
+        actions_taken["change_pipeline"] = True
     if acts.lead_score_delta:
         contact.lead_score = (contact.lead_score or 0) + acts.lead_score_delta
         record_event(
@@ -162,22 +192,89 @@ def create_call_log(
             request=request,
         )
         executed.append("lead_score_delta")
+        actions_taken["adjust_lead_score"] = acts.lead_score_delta
+    if acts.adjust_star_score is not None:
+        previous_stars = contact.star_rating
+        contact.star_rating = acts.adjust_star_score
+        record_event(
+            session, action="call_log.star_score_adjusted",
+            target_type="contact", target_id=contact.id, actor=current_user,
+            metadata={"from": previous_stars, "to": acts.adjust_star_score,
+                      "call_log_id": row.id},
+            request=request,
+        )
+        executed.append("adjust_star_score")
+        actions_taken["adjust_star_score"] = acts.adjust_star_score
     if acts.follow_up_task:
         task = _do_follow_up_task(
             session, contact, acts.follow_up_task, current_user, request
         )
         row.follow_up_task_id = task.id
         executed.append("follow_up_task")
+        actions_taken["create_callback_task"] = True
     for wf_id in acts.trigger_workflow_ids:
         _run_manual_workflow(
             session, contact, wf_id, current_user, request,
             source=f"call_log:{row.id}",
         )
         executed.append(f"workflow:{wf_id}")
+    if acts.trigger_workflow_ids:
+        actions_taken["add_to_workflow"] = list(acts.trigger_workflow_ids)
+
+    row.actions_taken = json.dumps(actions_taken) if actions_taken else None
+
+    # La nota de la llamada se propaga al timeline del contacto como una `Note`
+    # (`source='call_log'`), para que aparezca en la pestaña Notas y en el
+    # Historial sin que el operador la reescriba. Se enlaza a la llamada; si la
+    # llamada se borra, la nota se conserva (FK ON DELETE SET NULL).
+    if (payload.notes or "").strip():
+        session.add(Note(
+            contact_id=contact.id,
+            body=payload.notes.strip(),
+            source="call_log",
+            call_log_id=row.id,
+            created_by_user_id=current_user.id,
+            author_user_id=current_user.id,
+            created_at=row.called_at,
+            updated_at=row.called_at,
+        ))
+
+    # La llamada entra en «Actividad reciente» de la ficha, que lee
+    # `activity_events` (el resumen no consulta `call_logs`). El bucket
+    # `CALL_LOG` ya lo pinta el frontend.
+    _emit_call_activity_event(session, contact, row)
 
     session.commit()
     session.refresh(row)
     return _serialise(row, executed)
+
+
+def _emit_call_activity_event(
+    session: Session, contact: Contact, row: CallLog,
+) -> None:
+    """Registra la llamada en `activity_events` para el feed de la ficha.
+
+    `activity_events` tiene UNIQUE `(system, account_id, external_id)`; se usa
+    `crm/calls/call_log:<id>` para que un re-registro nunca duplique."""
+    label = RESULT_LABELS.get(row.result_code, row.result_code)
+    if row.result_code == "other" and row.result_custom:
+        label = row.result_custom
+    session.add(ActivityEvent(
+        contact_id=contact.id,
+        system="crm",
+        account_id="calls",
+        external_id=f"call_log:{row.id}",
+        event_type="CALL_LOG",
+        subject=f"Llamada: {label}",
+        body=(row.notes or None),
+        metadata_json=json.dumps({
+            "call_log_id": row.id,
+            "result_code": row.result_code,
+            "duration_bucket": row.duration_bucket,
+        }, default=str),
+        occurred_at=row.called_at,
+        synced_at=datetime.now(UTC),
+    ))
 
 
 def _do_pipeline_change(
@@ -346,6 +443,15 @@ def delete_call_log(
         target_id=row.id, actor=current_user,
         metadata={"contact_id": contact_id, "result_code": row.result_code},
         request=request,
+    )
+    # La nota de la llamada se CONSERVA (menos destructivo que perder lo que se
+    # escribió); solo se suelta el enlace. Se hace explícito aquí en vez de
+    # confiar en el `ON DELETE SET NULL` de la FK: SQLite no lo aplica sin
+    # PRAGMA y así el comportamiento es idéntico en test y en prod.
+    session.execute(
+        Note.__table__.update()  # type: ignore[attr-defined]
+        .where(Note.call_log_id == row.id)
+        .values(call_log_id=None)
     )
     session.delete(row)
     session.commit()

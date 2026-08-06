@@ -681,6 +681,7 @@ export default function ContactDetailPage() {
         onClose={() => setShowCallModal(false)}
         onSaved={() => setHistoryTick((t) => t + 1)}
         onRequestCompose={() => setShowComposer(true)}
+        currentStarRating={contact.star_rating}
       />
       <RunWorkflowMenu
         contactId={contact.id}

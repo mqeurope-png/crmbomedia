@@ -1671,6 +1671,27 @@ def list_contacts(
     lead_score_max: int | None = Query(default=None),
     created_after: datetime | None = Query(default=None),
     created_before: datetime | None = Query(default=None),
+    call_result: list[str] | None = Query(
+        default=None,
+        description="CRM-1: result_code de al menos una llamada del contacto",
+    ),
+    call_action: list[str] | None = Query(
+        default=None,
+        description=(
+            "CRM-1: acción post-llamada ejecutada en al menos una llamada "
+            "(change_pipeline, adjust_lead_score, adjust_star_score, "
+            "create_callback_task, add_to_workflow)"
+        ),
+    ),
+    call_duration_bucket: list[str] | None = Query(
+        default=None,
+        description=(
+            "CRM-1: tramo de duración (lt_1min, 1_to_5min, 5_to_30min, "
+            "gt_30min). `call_logs` guarda el tramo, no los segundos exactos"
+        ),
+    ),
+    call_date_from: datetime | None = Query(default=None),
+    call_date_to: datetime | None = Query(default=None),
     sort_by: str = Query(
         default="created_at",
         description="created_at | updated_at | name | email",
@@ -1756,6 +1777,11 @@ def list_contacts(
         lead_score_max=lead_score_max,
         created_after=created_after,
         created_before=created_before,
+        call_result=call_result,
+        call_action=call_action,
+        call_duration_bucket=call_duration_bucket,
+        call_date_from=call_date_from,
+        call_date_to=call_date_to,
         skip=skip,
         limit=limit,
         include_inactive=include_inactive,
@@ -1777,6 +1803,11 @@ def list_contacts(
         lead_score_max=lead_score_max,
         created_after=created_after,
         created_before=created_before,
+        call_result=call_result,
+        call_action=call_action,
+        call_duration_bucket=call_duration_bucket,
+        call_date_from=call_date_from,
+        call_date_to=call_date_to,
         include_inactive=include_inactive,
     )
     return ContactListPage(

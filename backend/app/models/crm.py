@@ -919,6 +919,12 @@ class Note(TimestampMixin, Base):
         Boolean, default=False, nullable=False
     )
     created_by_user_id: Mapped[str | None] = mapped_column(String(36))
+    # CRM-1 (migración 0089). Si la nota nació de una llamada, apunta a ella
+    # (`source='call_log'`). `ON DELETE SET NULL`: borrar la llamada conserva
+    # la nota — es menos destructivo que perder lo que se escribió.
+    call_log_id: Mapped[str | None] = mapped_column(
+        ForeignKey("call_logs.id", ondelete="SET NULL"), index=True
+    )
 
     contact: Mapped[Contact] = relationship(back_populates="notes")
 
@@ -2267,3 +2273,10 @@ class CallLog(TimestampMixin, Base):
     follow_up_task_id: Mapped[str | None] = mapped_column(
         ForeignKey("tasks.id", ondelete="SET NULL")
     )
+    # CRM-1 (migración 0089). JSON texto con las acciones post-llamada que
+    # realmente corrieron, p.ej. `{"adjust_lead_score": 10,
+    # "adjust_star_score": 4, "create_callback_task": true}`. Antes solo
+    # quedaban en `audit_logs`; aquí se pueden filtrar por LIKE (la clave sale
+    # entrecomillada en SQLite y MySQL). Guarda también el valor del star score
+    # ajustado, que el resumen y el filtro necesitan.
+    actions_taken: Mapped[str | None] = mapped_column(Text)

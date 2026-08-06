@@ -45,11 +45,33 @@ const ORIGIN_SYSTEM_LABELS: Record<string, string> = {
   manual: "Manual",
 };
 
+// CRM-1: los campos de llamada guardan slugs; el picker muestra el texto que
+// el operador reconoce del modal «Registrar llamada».
+const CALL_RESULT_LABELS: Record<string, string> = {
+  contacted: "Contactado", no_answer: "No contesta",
+  voicemail: "Buzón de voz", call_back: "Volver a llamar",
+  interested: "Interesado", not_interested: "No interesado",
+  info_requested: "Pidió información", other: "Otro",
+};
+const CALL_ACTION_LABELS: Record<string, string> = {
+  change_pipeline: "Cambió pipeline", adjust_lead_score: "Ajustó lead score",
+  adjust_star_score: "Ajustó star score",
+  create_callback_task: "Creó tarea de rellamada",
+  add_to_workflow: "Añadió a workflow",
+};
+const CALL_DURATION_LABELS: Record<string, string> = {
+  lt_1min: "<1 min", "1_to_5min": "1-5 min",
+  "5_to_30min": "5-30 min", gt_30min: ">30 min",
+};
+const ENUM_LABELS_BY_FIELD: Record<string, Record<string, string>> = {
+  origin_system: ORIGIN_SYSTEM_LABELS,
+  call_result: CALL_RESULT_LABELS,
+  call_action: CALL_ACTION_LABELS,
+  call_duration: CALL_DURATION_LABELS,
+};
+
 function labelForEnumValue(spec: SegmentFieldDescriptor, value: string): string {
-  if (spec.key === "origin_system") {
-    return ORIGIN_SYSTEM_LABELS[value] ?? value;
-  }
-  return value;
+  return ENUM_LABELS_BY_FIELD[spec.key]?.[value] ?? value;
 }
 
 /**

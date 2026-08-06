@@ -16,6 +16,7 @@ import {
   type ManualWorkflow,
 } from "../../lib/callsApi";
 import { extractErrorMessage } from "../../lib/errors";
+import { StarRating } from "../StarRating";
 
 type Props = {
   contactId: string;
@@ -25,10 +26,14 @@ type Props = {
   /** Si el user marcó "Enviar email de seguimiento", se llama tras
    *  guardar para abrir el composer con el contacto precargado. */
   onRequestCompose: () => void;
+  /** CRM-1: valoración actual del contacto, para mostrarla en la acción
+   *  «Ajustar star score». `null`/0 = sin valorar. */
+  currentStarRating?: number | null;
 };
 
 export function RegisterCallModal({
   contactId, open, onClose, onSaved, onRequestCompose,
+  currentStarRating = null,
 }: Props) {
   const [result, setResult] = useState<CallResultCode>("contacted");
   const [custom, setCustom] = useState("");
@@ -43,6 +48,8 @@ export function RegisterCallModal({
   const [stageId, setStageId] = useState("");
   const [doScore, setDoScore] = useState(false);
   const [scoreDelta, setScoreDelta] = useState(10);
+  const [doStar, setDoStar] = useState(false);
+  const [starValue, setStarValue] = useState(0);
   const [doTask, setDoTask] = useState(false);
   const [taskTitle, setTaskTitle] = useState("");
   const [taskDue, setTaskDue] = useState("");
@@ -65,7 +72,9 @@ export function RegisterCallModal({
     now.setSeconds(0, 0);
     setCalledAt(new Date(now.getTime() - now.getTimezoneOffset() * 60000)
       .toISOString().slice(0, 16));
-  }, [open]);
+    // Arranca el selector en la valoración actual del contacto.
+    setStarValue(currentStarRating ?? 0);
+  }, [open, currentStarRating]);
 
   if (!open) return null;
 
@@ -91,6 +100,7 @@ export function RegisterCallModal({
             ? { pipeline_id: pipelineId, stage_id: stageId || null }
             : null,
           lead_score_delta: doScore ? scoreDelta : null,
+          adjust_star_score: doStar && starValue >= 1 ? starValue : null,
           follow_up_task: doTask && taskTitle.trim()
             ? {
                 title: taskTitle.trim(),
@@ -196,6 +206,26 @@ export function RegisterCallModal({
                   <button type="button" className="button small secondary" onClick={() => setScoreDelta(10)}>+10</button>
                   <input type="number" value={scoreDelta}
                     onChange={(e) => setScoreDelta(Number(e.target.value) || 0)} />
+                </div>
+              ) : null}
+              <label className="checkbox-inline">
+                <input type="checkbox" checked={doStar}
+                  onChange={(e) => setDoStar(e.target.checked)} />
+                Ajustar star score
+              </label>
+              {doStar ? (
+                <div className="call-subform call-star-action">
+                  <span className="muted small">
+                    Actual:{" "}
+                    {currentStarRating
+                      ? <StarRating value={currentStarRating} size="sm"
+                                    ariaLabel="Star score actual" />
+                      : "sin valorar"}
+                  </span>
+                  <span className="muted small">Nuevo:</span>
+                  <StarRating value={starValue} editable size="md"
+                    ariaLabel="Nuevo star score"
+                    onChange={(v) => setStarValue(v)} />
                 </div>
               ) : null}
               <label className="checkbox-inline">

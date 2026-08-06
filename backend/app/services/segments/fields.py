@@ -627,6 +627,63 @@ FIELD_SPECS: dict[str, FieldSpec] = {
         source="related_table",
         reference_table="brevo_campaigns",
     ),
+    # CRM-1 — filtrar contactos por atributos de sus llamadas. Cada campo es
+    # un `EXISTS` independiente sobre `call_logs`: «tiene ≥1 llamada con
+    # resultado X», «…con acción Y», etc. Combinar dos de ellos NO exige que
+    # sea la MISMA llamada (eso lo da el endpoint plano `GET /api/contacts`,
+    # ver `_apply_call_filters`); en el builder cada condición es suelta, como
+    # el resto de filtros de relación. El motor los compila reutilizando
+    # `_compile_column_leaf` envuelto en el EXISTS (ver engine._compile_call_leaf).
+    "call_result": FieldSpec(
+        key="call_result",
+        label="Resultado de llamada",
+        type="enum",
+        comparators=("eq", "neq", "in", "not_in"),
+        enum_values=(
+            "contacted", "no_answer", "voicemail", "call_back",
+            "interested", "not_interested", "info_requested", "other",
+        ),
+        relation="call_logs",
+        displayable=False,
+        grouped_under="Llamadas",
+        source="related_table",
+    ),
+    "call_action": FieldSpec(
+        key="call_action",
+        label="Acción tras llamada",
+        type="enum",
+        comparators=("eq", "in"),
+        enum_values=(
+            "change_pipeline", "adjust_lead_score", "adjust_star_score",
+            "create_callback_task", "add_to_workflow",
+        ),
+        relation="call_logs",
+        displayable=False,
+        grouped_under="Llamadas",
+        source="related_table",
+    ),
+    "call_duration": FieldSpec(
+        key="call_duration",
+        label="Duración de llamada",
+        type="enum",
+        comparators=("eq", "in"),
+        # `call_logs` guarda el TRAMO, no los segundos: se filtra por bucket.
+        enum_values=("lt_1min", "1_to_5min", "5_to_30min", "gt_30min"),
+        relation="call_logs",
+        displayable=False,
+        grouped_under="Llamadas",
+        source="related_table",
+    ),
+    "call_date": FieldSpec(
+        key="call_date",
+        label="Fecha de llamada",
+        type="date",
+        comparators=_DATE,
+        relation="call_logs",
+        displayable=False,
+        grouped_under="Llamadas",
+        source="related_table",
+    ),
 }
 
 

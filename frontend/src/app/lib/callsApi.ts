@@ -34,6 +34,8 @@ export type CallLogPayload = {
   actions?: {
     pipeline_change?: { pipeline_id: string; stage_id?: string | null } | null;
     lead_score_delta?: number | null;
+    /** CRM-1: nuevo valor absoluto del star rating (1-5). */
+    adjust_star_score?: number | null;
     follow_up_task?: {
       title: string;
       due_at?: string | null;
@@ -41,6 +43,17 @@ export type CallLogPayload = {
     } | null;
     trigger_workflow_ids?: string[];
   };
+};
+
+/** CRM-1: etiquetas de las acciones post-llamada, para el filtro de la lista
+ *  de contactos. Las claves son las que persiste el backend en
+ *  `call_logs.actions_taken`. */
+export const CALL_ACTION_LABELS: Record<string, string> = {
+  change_pipeline: "Cambió pipeline",
+  adjust_lead_score: "Ajustó lead score",
+  adjust_star_score: "Ajustó star score",
+  create_callback_task: "Creó tarea de rellamada",
+  add_to_workflow: "Añadió a workflow",
 };
 
 export type CallLogRead = {
