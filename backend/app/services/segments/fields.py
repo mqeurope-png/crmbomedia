@@ -684,7 +684,162 @@ FIELD_SPECS: dict[str, FieldSpec] = {
         grouped_under="Llamadas",
         source="related_table",
     ),
+    # CRM-1.5 — Actividad reciente. Todos son EXISTS sobre datos LOCALES del CRM
+    # (call_logs, notes, tasks, email_messages, workflow_runs); ninguno consulta
+    # FACTUSOL. Ver engine._compile_activity_leaf.
+    "last_interaction": FieldSpec(
+        key="last_interaction",
+        label="Fecha última interacción",
+        type="date",
+        comparators=_DATE,
+        # «Interacción» = llamada, nota, email o tarea. El filtro es «tiene una
+        # interacción en la ventana», no «la MÁS reciente cae en la ventana».
+        relation="activity_last_interaction",
+        displayable=False,
+        grouped_under="Actividad reciente",
+        source="related_table",
+    ),
+    "days_since_contact": FieldSpec(
+        key="days_since_contact",
+        label="Días sin contactar",
+        type="int",
+        # `>= N` = inactivo desde hace N+ días (incluye nunca contactados);
+        # `<= N` = contactado en los últimos N días.
+        comparators=("gte", "lte", "gt", "lt"),
+        relation="activity_days_since",
+        displayable=False,
+        grouped_under="Actividad reciente",
+        source="related_table",
+    ),
+    "has_tasks": FieldSpec(
+        key="has_tasks",
+        label="Con tareas",
+        type="enum",
+        comparators=("eq",),
+        enum_values=("pending", "overdue", "none", "any"),
+        relation="activity_tasks",
+        displayable=False,
+        grouped_under="Actividad reciente",
+        source="related_table",
+    ),
+    "has_emails": FieldSpec(
+        key="has_emails",
+        label="Con emails (fecha)",
+        type="date",
+        comparators=_DATE,
+        relation="activity_emails",
+        displayable=False,
+        grouped_under="Actividad reciente",
+        source="related_table",
+    ),
+    "has_notes": FieldSpec(
+        key="has_notes",
+        label="Con notas",
+        type="enum",
+        comparators=("eq",),
+        enum_values=("any", "none"),
+        relation="activity_notes",
+        displayable=False,
+        grouped_under="Actividad reciente",
+        source="related_table",
+    ),
+    "in_workflow": FieldSpec(
+        key="in_workflow",
+        label="En workflow",
+        type="uuid-multi",
+        comparators=("in", "not_in"),
+        relation="activity_workflow",
+        displayable=False,
+        grouped_under="Actividad reciente",
+        source="related_table",
+        reference_table="workflows",
+    ),
+    # CRM-1.5 — ERP y FACTUSOL. Datos LOCALES: el vínculo vive en `companies` y
+    # los pedidos en `orders` (Fase A). Los filtros que necesitan consulta viva
+    # a FACTUSOL (proformas por estado, facturación) se difieren a CRM-1.6.
+    "factusol_linked": FieldSpec(
+        key="factusol_linked",
+        label="Vinculado a FACTUSOL",
+        type="bool",
+        comparators=("eq",),
+        relation="erp_factusol_linked",
+        displayable=False,
+        grouped_under="ERP y FACTUSOL",
+        source="related_table",
+    ),
+    "has_orders": FieldSpec(
+        key="has_orders",
+        label="Con pedidos ERP",
+        type="enum",
+        comparators=("eq", "in"),
+        enum_values=("in_queue", "packed", "in_transit", "delivered", "any"),
+        relation="erp_orders",
+        displayable=False,
+        grouped_under="ERP y FACTUSOL",
+        source="related_table",
+    ),
 }
+
+
+# --- CRM-1.5: reorganización del panel de filtros en 7 grupos ----------------
+#
+# El panel de /contacts agrupa los campos por `grouped_under`. Reorganizar =
+# reasignar el grupo; retirar del panel = `filterable=False` (el campo SIGUE
+# como columna y como query param del backend — solo desaparece del selector de
+# filtros). Se hace aquí, en un bloque central y legible, en vez de tocar 25
+# FieldSpec sueltos: `dataclasses.replace` devuelve una copia (el FieldSpec es
+# frozen) y deja la intención en un solo sitio.
+
+_FILTER_GROUP_OVERRIDES: dict[str, str] = {
+    # Datos del contacto
+    "tags": "Datos del contacto",
+    "notes_content": "Datos del contacto",
+    "lead_score": "Datos del contacto",
+    "star_rating": "Datos del contacto",
+    "commercial_status": "Datos del contacto",
+    # Propiedad y origen
+    "owner_user_id": "Propiedad y origen",
+    "origin_account_id": "Propiedad y origen",
+    "created_at_external": "Propiedad y origen",
+    # Pertenencia
+    "in_segment": "Pertenencia",
+    "in_brevo_list": "Pertenencia",
+    "pipeline_id": "Pertenencia",
+    "pipeline_stage_id": "Pertenencia",
+    "brevo_campaign_interaction": "Pertenencia",
+}
+
+#: Campos redundantes o poco útiles que salen del panel de filtros (siguen
+#: existiendo como columna/param). El buscador general `q=` ya cubre
+#: nombre+apellidos+email+teléfono, así que esos cinco sobran aquí.
+_RETIRED_FROM_FILTER: frozenset[str] = frozenset({
+    "name", "first_name", "last_name", "email", "phone",  # cubiertos por q=
+    "company_id", "is_email_valid", "job_title",          # decisión de Bart
+    "id",                                                 # UUID, solo debug
+    "linkedin_url", "personal_website",                   # URLs, no se filtran
+    "assigned_users", "primary_user",                     # cubierto por owner
+    "origin_system",                                      # cubierto por cuenta
+    "created_at", "updated_at",                           # solo «creado en origen»
+    "external_data_refreshed_at", "updated_at_external",
+    "address_line", "address_postal_code", "address_region",  # dirección simple
+    "marketing_consent", "is_active",                    # fuera del panel
+})
+
+
+def _apply_filter_panel_reorg() -> None:
+    import dataclasses  # noqa: PLC0415
+
+    for key, group in _FILTER_GROUP_OVERRIDES.items():
+        if key in FIELD_SPECS:
+            FIELD_SPECS[key] = dataclasses.replace(
+                FIELD_SPECS[key], grouped_under=group)
+    for key in _RETIRED_FROM_FILTER:
+        if key in FIELD_SPECS:
+            FIELD_SPECS[key] = dataclasses.replace(
+                FIELD_SPECS[key], filterable=False)
+
+
+_apply_filter_panel_reorg()
 
 
 def get_field_spec(field_key: str) -> FieldSpec | None:

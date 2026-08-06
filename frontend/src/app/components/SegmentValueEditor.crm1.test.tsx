@@ -44,4 +44,30 @@ describe("SegmentValueEditor · filtros de llamada (CRM-1)", () => {
     expect(screen.getByText("Ajustó star score")).toBeInTheDocument();
     expect(screen.getByText("Cambió pipeline")).toBeInTheDocument();
   });
+
+  // CRM-1.5 — filtros nuevos de Actividad reciente y ERP.
+  it("«Con tareas» muestra etiquetas legibles", () => {
+    const spec: SegmentFieldDescriptor = {
+      key: "has_tasks", label: "Con tareas", type: "enum",
+      comparators: ["eq"], enum_values: ["pending", "overdue", "none", "any"],
+    };
+    render(<SegmentValueEditor spec={spec} comparator="eq"
+                               value="" onChange={() => {}} />);
+    expect(screen.getByText("Vencidas")).toBeInTheDocument();
+    expect(screen.getByText("Sin tareas")).toBeInTheDocument();
+    expect(screen.queryByText("overdue")).not.toBeInTheDocument();
+  });
+
+  it("«Con pedidos ERP» muestra los estados en castellano", () => {
+    const spec: SegmentFieldDescriptor = {
+      key: "has_orders", label: "Con pedidos ERP", type: "enum",
+      comparators: ["eq", "in"],
+      enum_values: ["in_queue", "packed", "in_transit", "delivered", "any"],
+    };
+    render(<SegmentValueEditor spec={spec} comparator="in"
+                               value={[]} onChange={() => {}} />);
+    expect(screen.getByText("En cola")).toBeInTheDocument();
+    expect(screen.getByText("En tránsito")).toBeInTheDocument();
+    expect(screen.getByText("Entregado")).toBeInTheDocument();
+  });
 });

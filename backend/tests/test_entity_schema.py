@@ -99,8 +99,13 @@ def test_every_field_schema_is_well_formed(entity: str) -> None:
             "source",
         ):
             assert attr in f, f"{entity}.{f.get('key')} missing {attr}"
-        # A field with comparators is filterable; without, it isn't.
-        assert f["filterable"] == bool(f["comparators"])
+        # Filtrable IMPLICA tener comparadores (no se puede filtrar sin ellos).
+        # El recíproco NO se exige: desde CRM-1.5 un campo puede tener
+        # comparadores y estar OCULTO del panel de filtros (`filterable=False`)
+        # aunque siga como columna — p.ej. nombre/email/teléfono, ya cubiertos
+        # por el buscador general `q=`.
+        if f["filterable"]:
+            assert f["comparators"], f"{entity}.{f['key']} filtrable sin comparadores"
         # At least one default-visible column so the list isn't empty.
     assert any(f["default_visible"] for f in fields), entity
 
