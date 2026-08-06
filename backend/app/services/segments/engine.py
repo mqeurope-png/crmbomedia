@@ -250,6 +250,11 @@ def _compile_leaf(
     # `call_logs`, reutilizando la lógica de comparadores de columna.
     if spec.relation == "call_logs":
         return _compile_call_leaf(spec, comparator, value)
+    # CRM-1.5 — actividad reciente (datos locales) y ERP.
+    if spec.relation and spec.relation.startswith("activity_"):
+        return _compile_activity_leaf(spec, comparator, value)
+    if spec.relation and spec.relation.startswith("erp_"):
+        return _compile_erp_leaf(spec, comparator, value)
     # PR-E3 (Deuda #8) — interacción con campañas Brevo. EXISTS /
     # NOT EXISTS sobre activity_events filtrado por campaña + acción
     # + ventana temporal (sent_at de la campaña).
@@ -511,6 +516,134 @@ def _compile_call_leaf(
     return Contact.id.in_(
         select(CallLog.contact_id).where(inner)
     )
+
+
+def _interaction_sources() -> list[tuple[Any, Any]]:
+    """`(columna contact_id, columna fecha)` de cada tabla que cuenta como
+    interacción con el contacto: llamada, nota, email, tarea. Datos locales."""
+    from app.models.crm import (  # noqa: PLC0415
+        CallLog,
+        EmailMessage,
+        Note,
+        Task,
+    )
+
+    return [
+        (CallLog.contact_id, CallLog.called_at),
+        (Note.contact_id, Note.created_at),
+        (EmailMessage.contact_id, EmailMessage.sent_at),
+        (Task.contact_id, Task.created_at),
+    ]
+
+
+def _compile_activity_leaf(
+    spec: FieldSpec, comparator: str, value: Any
+) -> ColumnElement[bool]:
+    """CRM-1.5 — filtros de «Actividad reciente». Todo EXISTS sobre datos
+    locales del CRM; ninguno consulta FACTUSOL."""
+    from app.models.crm import EmailMessage, Note, Task, TaskStatus  # noqa: PLC0415
+    from app.models.workflows import WorkflowRun  # noqa: PLC0415
+
+    if spec.key == "last_interaction":
+        # «Tiene una interacción (llamada/nota/email/tarea) en la ventana».
+        # No es «la MÁS reciente cae en la ventana»: para «lleva X sin
+        # contactar» está `days_since_contact`.
+        clauses = []
+        for contact_col, date_col in _interaction_sources():
+            pred = _compile_column_leaf(date_col, spec, comparator, value)
+            clauses.append(Contact.id.in_(select(contact_col).where(pred)))
+        return or_(*clauses)
+
+    if spec.key == "days_since_contact":
+        n = int(value)
+        cutoff = _now() - timedelta(days=n)
+        recent = or_(*[
+            Contact.id.in_(select(c).where(d > cutoff))
+            for c, d in _interaction_sources()
+        ])
+        # `>= N` / `> N` días sin contactar = NO hay interacción más reciente
+        # que hace N días (incluye a los nunca contactados). `<= N` / `< N` =
+        # sí la hay. La granularidad de día hace irrelevante el estricto.
+        return not_(recent) if comparator in ("gte", "gt") else recent
+
+    if spec.key == "has_tasks":
+        any_task = Contact.id.in_(select(Task.contact_id))
+        if value == "any":
+            return any_task
+        if value == "none":
+            return not_(any_task)
+        if value == "pending":
+            return Contact.id.in_(
+                select(Task.contact_id).where(Task.status == TaskStatus.PENDING))
+        if value == "overdue":
+            return Contact.id.in_(select(Task.contact_id).where(
+                Task.status == TaskStatus.PENDING, Task.due_at < _now()))
+        raise SegmentRuleError(f"has_tasks valor inválido: {value!r}")
+
+    if spec.key == "has_emails":
+        pred = _compile_column_leaf(EmailMessage.sent_at, spec, comparator, value)
+        return Contact.id.in_(select(EmailMessage.contact_id).where(pred))
+
+    if spec.key == "has_notes":
+        any_note = Contact.id.in_(select(Note.contact_id))
+        if value == "any":
+            return any_note
+        if value == "none":
+            return not_(any_note)
+        raise SegmentRuleError(f"has_notes valor inválido: {value!r}")
+
+    if spec.key == "in_workflow":
+        ids = value if isinstance(value, list) else [value]
+        in_wf = Contact.id.in_(
+            select(WorkflowRun.contact_id).where(WorkflowRun.workflow_id.in_(ids)))
+        return in_wf if comparator == "in" else not_(in_wf)
+
+    raise SegmentRuleError(f"Campo de actividad desconocido: {spec.key!r}")
+
+
+def _compile_erp_leaf(
+    spec: FieldSpec, comparator: str, value: Any
+) -> ColumnElement[bool]:
+    """CRM-1.5 — filtros ERP con datos LOCALES: el vínculo FACTUSOL en
+    `companies` y los pedidos en `orders`. Los que necesitan consulta viva a
+    FACTUSOL (proformas, facturación) se difieren a CRM-1.6."""
+    from app.erp.models.orders import (  # noqa: PLC0415
+        Order,
+        PreparationStatus,
+        TransportStatus,
+    )
+    from app.models.crm import Company  # noqa: PLC0415
+
+    if spec.key == "factusol_linked":
+        linked_ids = select(Company.id).where(
+            Company.factusol_company_id.is_not(None))
+        # `value` ya viene coercionado a bool. Para `False`, un contacto sin
+        # empresa (company_id NULL) cuenta como «no vinculado»: hay que sacarlo
+        # explícito porque `NULL NOT IN (…)` es NULL, no True.
+        if value:
+            return Contact.company_id.in_(linked_ids)
+        return or_(Contact.company_id.is_(None),
+                   Contact.company_id.not_in(linked_ids))
+
+    if spec.key == "has_orders":
+        vals = value if isinstance(value, list) else [value]
+        if "any" in vals:
+            return Contact.company_id.in_(select(Order.company_id))
+        # Los estados viven en dos columnas: preparación (cola/embalado) y
+        # transporte (en tránsito/entregado).
+        status_map = {
+            "in_queue": Order.preparation_status == PreparationStatus.IN_QUEUE,
+            "packed": Order.preparation_status == PreparationStatus.PACKED,
+            "in_transit": Order.transport_status == TransportStatus.IN_TRANSIT,
+            "delivered": Order.transport_status == TransportStatus.DELIVERED,
+        }
+        conds = [status_map[v] for v in vals if v in status_map]
+        if not conds:
+            raise SegmentRuleError(f"has_orders valores inválidos: {vals!r}")
+        return Contact.company_id.in_(
+            select(Order.company_id).where(or_(*conds)))
+
+    raise SegmentRuleError(f"Campo ERP desconocido: {spec.key!r}")
 
 
 def _compile_brevo_campaign_interaction_leaf(

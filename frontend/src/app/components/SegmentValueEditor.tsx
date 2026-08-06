@@ -63,11 +63,26 @@ const CALL_DURATION_LABELS: Record<string, string> = {
   lt_1min: "<1 min", "1_to_5min": "1-5 min",
   "5_to_30min": "5-30 min", gt_30min: ">30 min",
 };
+// CRM-1.5 — filtros nuevos de Actividad reciente y ERP.
+const HAS_TASKS_LABELS: Record<string, string> = {
+  pending: "Pendientes", overdue: "Vencidas",
+  none: "Sin tareas", any: "Cualquiera",
+};
+const HAS_NOTES_LABELS: Record<string, string> = {
+  any: "Con nota", none: "Sin nota",
+};
+const HAS_ORDERS_LABELS: Record<string, string> = {
+  in_queue: "En cola", packed: "Embalado", in_transit: "En tránsito",
+  delivered: "Entregado", any: "Cualquiera",
+};
 const ENUM_LABELS_BY_FIELD: Record<string, Record<string, string>> = {
   origin_system: ORIGIN_SYSTEM_LABELS,
   call_result: CALL_RESULT_LABELS,
   call_action: CALL_ACTION_LABELS,
   call_duration: CALL_DURATION_LABELS,
+  has_tasks: HAS_TASKS_LABELS,
+  has_notes: HAS_NOTES_LABELS,
+  has_orders: HAS_ORDERS_LABELS,
 };
 
 function labelForEnumValue(spec: SegmentFieldDescriptor, value: string): string {
