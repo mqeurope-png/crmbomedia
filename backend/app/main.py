@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app.api.admin_backups import router as admin_backups_router
+from app.api.admin_companies_dedupe import router as admin_companies_dedupe_router
 from app.api.assignment_rules import router as assignment_rules_router
 from app.api.bulk import router as bulk_router
 from app.api.companies import assign_router as contacts_assign_router
@@ -98,6 +99,7 @@ app.include_router(email_templates_router)
 app.include_router(email_signatures_router)
 app.include_router(email_tracking_router)
 app.include_router(admin_backups_router)
+app.include_router(admin_companies_dedupe_router)
 # Sprint Workflows Bloque 1 — motor de automatización.
 # `app.workflows.steps` se importa por side-effect: el decorador
 # `@register_step` rellena el registry sin necesidad de wiring extra.
