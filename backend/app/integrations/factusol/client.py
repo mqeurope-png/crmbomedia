@@ -79,6 +79,16 @@ FILTRO_TODOS = "1=1"
 RESPUESTA_OK = "OK"
 RESPUESTA_UNAUTHORIZED = "Unauthorized"   # token caducado (¡no llega como 401!)
 RESPUESTA_BD_NO_EXISTE = "BDNoExiste"     # ejercicio sin base de datos
+#: `KO` pelado, sin más contexto: `{"resultado":"","respuesta":"KO"}`. DELSOL no
+#: dice por qué. Visto en producción (C-6-fix1) en una `CargaTabla` de F_CLI
+#: entera que había funcionado 66 segundos antes — o sea, **transitorio**:
+#: sobrecarga, timeout interno o rate-limit sin cabecera que lo diga.
+#: Se reintenta antes de darlo por perdido.
+RESPUESTA_KO = "KO"
+
+#: Espera entre reintentos de `KO`. Cuenta aparte del backoff de los 5xx: un
+#: `KO` no es un error de transporte y no debe gastarles el presupuesto.
+KO_BACKOFF_SECONDS = (0.5, 2.0, 5.0)
 
 
 class FactusolError(RuntimeError):
@@ -317,10 +327,15 @@ class FactusolClient:
         `respuesta: "Unauthorized"` en el cuerpo, no con un 401. Con un JWT de
         ~3 min eso ocurre a mitad de cualquier secuencia de escrituras, así que
         se trata igual que un 401: re-autenticar una vez y reintentar.
+
+        Lo mismo con `respuesta: "KO"`, que también llega con 200 y sin decir
+        por qué: se reintenta con backoff (`KO_BACKOFF_SECONDS`) antes de darlo
+        por perdido. Ver C-6-fix1.
         """
         self._ensure_token()
         reauthed = False
         attempt = 0
+        ko_retries = 0
         while True:
             attempt += 1
             resp = self._raw_request(method, path, json=json, authed=True)
@@ -356,6 +371,23 @@ class FactusolClient:
                 raise FactusolError(
                     f"{method} {path} → ejercicio sin base de datos en FACTUSOL "
                     f"(respuesta={respuesta!r})",
+                    status=resp.status_code, body=resp.text,
+                )
+            # `KO` pelado: transitorio hasta que se demuestre lo contrario.
+            if respuesta == RESPUESTA_KO and ko_retries < len(KO_BACKOFF_SECONDS):
+                wait = KO_BACKOFF_SECONDS[ko_retries]
+                ko_retries += 1
+                logger.warning(
+                    "factusol %s %s → respuesta='KO' (transitorio); reintento "
+                    "%d/%d en %.1fs", method, path, ko_retries,
+                    len(KO_BACKOFF_SECONDS), wait,
+                )
+                time.sleep(wait)
+                continue
+            if respuesta == RESPUESTA_KO:
+                raise FactusolError(
+                    f"{method} {path} → respuesta='KO' tras "
+                    f"{len(KO_BACKOFF_SECONDS)} reintentos: {resp.text[:300]}",
                     status=resp.status_code, body=resp.text,
                 )
             if respuesta is not None and respuesta != RESPUESTA_OK:

@@ -12,6 +12,7 @@ import {
   bulkMatchDryRun,
   importOrphansApply,
   importOrphansDryRun,
+  orphanToOperation,
   type BulkMatchByEmailDryRun,
   type BulkMatchByEmailRow,
   type BulkMatchCandidate,
@@ -122,6 +123,8 @@ export default function FactusolBulkMatchPage() {
   const [error, setError] = useState<string | null>(null);
   const [summary, setSummary] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
+  /** CODCLI que fallaron en el último apply, para «Reintentar fallidas». */
+  const [failedCodclis, setFailedCodclis] = useState<string[]>([]);
 
   /** Relee y repuebla la tabla. NO toca `summary`/`error`: se llama también
    *  como refresco después de aplicar, y borrar el resultado ahí dejaría al
@@ -234,6 +237,52 @@ export default function FactusolBulkMatchPage() {
     });
   }
 
+  /** Importa los CODCLI dados mandando **sus datos de F_CLI**, que ya vinieron
+   *  en el dry-run. El backend no vuelve a preguntar a DELSOL.
+   *
+   *  Se separa de `applySelected` porque «Reintentar fallidas» reenvía una
+   *  lista distinta de la que está marcada en la tabla. */
+  async function importOrphans(codclis: string[]) {
+    const byCodcli = new Map(orphanRows.map((o) => [o.codcli ?? "", o]));
+    const ops = codclis
+      .map((c) => byCodcli.get(c))
+      .filter((o): o is FactusolOrphan => Boolean(o))
+      .map(orphanToOperation);
+    if (ops.length === 0) return;
+
+    const r = await importOrphansApply(ops);
+    setSummary([
+      `${r.imported_company_and_contact} empresa(s) creada(s) con contacto`,
+      `${r.imported_company_only} empresa(s) creada(s) sin contacto`,
+      ...(r.skipped_race
+        ? [`${r.skipped_race} omitida(s) por conflicto`]
+        : []),
+      ...(r.errors.length ? [`${r.errors.length} fallida(s)`] : []),
+    ].join(" · ") + ".");
+    // Se recuerdan para poder reenviar SOLO esas: un KO de DELSOL es
+    // transitorio y volver a marcarlas a mano en una tabla de miles de filas
+    // no es razonable.
+    setFailedCodclis(r.errors.map((e) => e.codcli));
+    if (r.errors.length) {
+      setError(r.errors.map((e) => `${e.codcli}: ${e.error}`).join(" · "));
+    }
+  }
+
+  async function retryFailed() {
+    const codclis = failedCodclis;
+    if (codclis.length === 0) return;
+    setApplying(true);
+    setError(null);
+    try {
+      await importOrphans(codclis);
+      await runDryRun();
+    } catch (e) {
+      setError(extractErrorMessage(e, "No se pudo reintentar."));
+    } finally {
+      setApplying(false);
+    }
+  }
+
   async function applySelected() {
     setConfirming(false);
     // En importación no hay campos que elegir: la empresa nace entera.
@@ -245,18 +294,7 @@ export default function FactusolBulkMatchPage() {
     setError(null);
     try {
       if (mode === "import_orphans") {
-        const r = await importOrphansApply(picked.map(([codcli]) => codcli));
-        setSummary([
-          `${r.imported_company_and_contact} empresa(s) creada(s) con contacto`,
-          `${r.imported_company_only} empresa(s) creada(s) sin contacto`,
-          ...(r.skipped_race
-            ? [`${r.skipped_race} omitida(s) por conflicto`]
-            : []),
-          ...(r.errors.length ? [`${r.errors.length} con error`] : []),
-        ].join(" · ") + ".");
-        if (r.errors.length) {
-          setError(r.errors.map((e) => `${e.codcli}: ${e.error}`).join(" · "));
-        }
+        await importOrphans(picked.map(([codcli]) => codcli));
       } else if (mode === "by_contact_email") {
         const r = await bulkMatchByEmailApply(picked.map(([contact_id, s]) => ({
           contact_id, factusol_codcli: s.codcli, fields_to_sync: [...s.fields],
@@ -340,6 +378,7 @@ export default function FactusolBulkMatchPage() {
                       setEmailData(null);
                       setOrphanData(null);
                       setSelections({});
+                      setFailedCodclis([]);
                     }}>
               <option value="by_contact_email">
                 Contactos por email (recomendado)
@@ -503,6 +542,14 @@ export default function FactusolBulkMatchPage() {
                 ? "Aplicando…"
                 : `Aplicar seleccionadas (${selectedCount})`}
             </button>
+            {/* Un KO de DELSOL es transitorio: volver a marcar a mano las
+                fallidas en una tabla de miles de filas no es razonable. */}
+            {orphans && failedCodclis.length > 0 ? (
+              <button type="button" className="button secondary"
+                      disabled={applying} onClick={retryFailed}>
+                Reintentar fallidas ({failedCodclis.length})
+              </button>
+            ) : null}
           </div>
         </section>
       ) : null}

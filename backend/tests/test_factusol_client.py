@@ -362,3 +362,71 @@ def test_update_record_sends_pk_inside_registro_array():
         {"columna": "CODCLI", "dato": 12345},
         {"columna": "TELCLI", "dato": "600000000"},
     ]
+
+
+# --- C-6-fix1: `KO` es transitorio ------------------------------------------
+#
+# En producción, una CargaTabla de F_CLI que había funcionado 66 segundos antes
+# devolvió `{"resultado":"","respuesta":"KO"}`. DELSOL no dice por qué. Un solo
+# KO reventaba el batch entero del import de huérfanas con un 502.
+
+
+def _ko() -> httpx.Response:
+    return httpx.Response(200, json={"resultado": "", "respuesta": "KO"})
+
+
+def test_client_retries_ko_response_up_to_3_times():
+    state = {"data_calls": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/login/Autenticar":
+            return _login_response(_make_jwt())
+        state["data_calls"] += 1
+        if state["data_calls"] <= 3:
+            return _ko()
+        return httpx.Response(200, json={
+            "resultado": [[{"columna": "CODCLI", "dato": 7}]], "respuesta": "OK",
+        })
+
+    c = _client(handler)
+    with patch("app.integrations.factusol.client.time.sleep") as sleep:
+        rows = c.load_table("F_CLI")
+    assert rows == [{"CODCLI": 7}]
+    assert state["data_calls"] == 4
+    # Backoff propio, aparte del de los 5xx: 500ms, 2s, 5s.
+    assert [call.args[0] for call in sleep.call_args_list] == [0.5, 2.0, 5.0]
+
+
+def test_client_gives_up_after_3_ko_retries():
+    state = {"data_calls": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/login/Autenticar":
+            return _login_response(_make_jwt())
+        state["data_calls"] += 1
+        return _ko()
+
+    c = _client(handler)
+    with patch("app.integrations.factusol.client.time.sleep"), \
+            pytest.raises(FactusolError, match="KO"):
+        c.load_table("F_CLI")
+    # El original + 3 reintentos. No insiste indefinidamente.
+    assert state["data_calls"] == 4
+
+
+def test_ko_retry_does_not_swallow_other_error_responses():
+    """Solo `KO` se reintenta. `BDNoExiste` es un error de configuración: no se
+    arregla insistiendo, y reintentarlo solo retrasa el diagnóstico."""
+    state = {"data_calls": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/login/Autenticar":
+            return _login_response(_make_jwt())
+        state["data_calls"] += 1
+        return httpx.Response(200, json={"resultado": "", "respuesta": "BDNoExiste"})
+
+    c = _client(handler)
+    with patch("app.integrations.factusol.client.time.sleep"), \
+            pytest.raises(FactusolError, match="ejercicio sin base de datos"):
+        c.load_table("F_CLI")
+    assert state["data_calls"] == 1

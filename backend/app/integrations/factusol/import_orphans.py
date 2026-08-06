@@ -63,6 +63,11 @@ IMPORT_ORPHANS_TAG = "factusol_import"
 #: `contacts.first_name` es String(120) y `NOFCLI` puede venir más largo.
 CONTACT_NAME_MAX_LENGTH = 120
 
+#: CODCLI por `CODCLI IN (…)` al releer de F_CLI (solo en el camino de
+#: compatibilidad). Un `IN` con miles de valores es un WHERE de kilobytes y no
+#: hay forma de saber dónde lo corta DELSOL.
+CODCLI_BATCH_SIZE = 500
+
 #: ISO 3166-1 numérico → nombre de país, para `companies.country` (String(120)).
 #: Solo los habituales; el resto cae a España, que es la inmensa mayoría.
 COUNTRY_BY_CODE = {
@@ -150,15 +155,68 @@ def dry_run_orphans(
     }
 
 
+def _row_from_payload(data: dict[str, Any], codcli: str) -> dict[str, Any]:
+    """`factusol_data` del frontend (claves en minúscula) → fila estilo F_CLI.
+
+    El resto del módulo trabaja con los nombres de columna de DELSOL en
+    mayúscula; normalizar aquí evita duplicar la lógica de mapeo."""
+    row = {str(k).upper(): v for k, v in data.items()}
+    row.setdefault("CODCLI", codcli)
+    return row
+
+
+def _fetch_rows_by_codcli(
+    client: FactusolClient, codclis: list[str], *, ejercicio: str,
+) -> tuple[dict[str, dict[str, Any]], str | None]:
+    """Relee de F_CLI **solo** los CODCLI que no vinieron en el payload.
+
+    `(filas por codcli, motivo del fallo | None)`. No lanza: si DELSOL no
+    responde, quien llama marca esas operaciones y sigue con las demás.
+
+    Los CODCLI se filtran a numéricos antes de entrar en el fragmento SQL:
+    `filtro` es un WHERE crudo que va tal cual a la base de DELSOL, así que
+    interpolar ahí lo que llegue por HTTP sería una inyección. En Bomedia los
+    CODCLI son autonuméricos, así que no se pierde nada legítimo.
+    """
+    safe = [c for c in codclis if c.isdigit()]
+    if not safe:
+        return {}, ("codcli_no_numerico" if codclis else None)
+
+    by_codcli: dict[str, dict[str, Any]] = {}
+    # Se trocea: un `IN` con miles de valores es un WHERE de kilobytes, y no
+    # hay forma de saber dónde lo corta DELSOL.
+    for start in range(0, len(safe), CODCLI_BATCH_SIZE):
+        chunk = safe[start:start + CODCLI_BATCH_SIZE]
+        filtro = f"CODCLI IN ({','.join(chunk)})"
+        try:
+            for row in client.load_table("F_CLI", filtro=filtro,
+                                         ejercicio=ejercicio):
+                by_codcli[str(row.get("CODCLI"))] = row
+        except Exception as exc:  # noqa: BLE001 — no tumba el lote entero
+            logger.warning("factusol import-orphans: relectura de %d CODCLI "
+                           "falló: %s", len(chunk), exc)
+            return by_codcli, "factusol_unavailable"
+    return by_codcli, None
+
+
 def apply_import_orphans(
     session: Session, client: FactusolClient, *, ejercicio: str,
-    codclis: list[str], create_contacts_if_email: bool = True,
+    operations: list[dict[str, Any]], create_contacts_if_email: bool = True,
     actor_id: str | None = None,
 ) -> dict[str, Any]:
     """Crea empresa (y contacto) para los CODCLI marcados.
 
     Un CODCLI por transacción: en un lote de cientos, abortar todo por un caso
-    raro obligaría a repetir la revisión entera.
+    raro obligaría a repetir la revisión entera. **Nunca lanza por una
+    operación**: lo que falle va a `errors` y el resto sigue.
+
+    Cada operación es `{codcli, factusol_data?}`. Con `factusol_data` —lo que
+    manda el frontend desde el dry-run— **no se llama a FACTUSOL en absoluto**.
+
+    > C-6-fix1: el apply releía `F_CLI` entera. En producción esa `CargaTabla`
+    > devolvió `KO` 66 segundos después de haber funcionado en el dry-run, y el
+    > lote entero se fue en un 502. Los datos ya los tenía el navegador: pedirlos
+    > otra vez solo añadía un punto de fallo.
 
     Desenlaces, en `results`:
 
@@ -168,18 +226,38 @@ def apply_import_orphans(
     - `skipped_race` — entre el dry-run y el apply alguien vinculó ese CODCLI.
       No se pisa, y no es un error.
     """
-    from app.models.crm import Company, Contact  # noqa: PLC0415
+    from app.models.crm import Company  # noqa: PLC0415
 
-    rows = client.load_table("F_CLI", filtro="1=1", ejercicio=ejercicio)
-    by_codcli = {str(r.get("CODCLI")): r for r in rows}
+    pending: list[tuple[str, dict[str, Any] | None]] = []
+    for op in operations:
+        codcli = str(op.get("codcli") or "")
+        data = op.get("factusol_data")
+        pending.append((codcli, dict(data) if isinstance(data, dict) else None))
+
+    # Solo se pregunta a DELSOL por lo que NO vino en el payload — el camino de
+    # compatibilidad con el frontend viejo.
+    missing = [c for c, data in pending if data is None and c]
+    fetched, fetch_failure = (
+        _fetch_rows_by_codcli(client, missing, ejercicio=ejercicio)
+        if missing else ({}, None)
+    )
 
     results: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
-    for raw in codclis:
-        codcli = str(raw or "")
+    for codcli, data in pending:
         try:
-            row = by_codcli.get(codcli)
+            if not codcli:
+                raise ValueError("operación sin codcli")
+            row = (_row_from_payload(data, codcli) if data is not None
+                   else fetched.get(codcli))
             if row is None:
+                if fetch_failure == "factusol_unavailable":
+                    # No es culpa del dato: FACTUSOL no contestó. Se marca como
+                    # reintentable en vez de «no existe», que induciría a
+                    # borrarlo de la lista.
+                    raise ValueError(
+                        "factusol_unavailable: FACTUSOL no respondió al releer "
+                        f"el cliente {codcli}; reinténtalo")
                 raise ValueError(f"el cliente FACTUSOL {codcli} no existe")
 
             # Guard anti-carrera: se relee por cada CODCLI, no del set del
@@ -220,7 +298,6 @@ def apply_import_orphans(
     def _count(result: str) -> int:
         return sum(1 for r in results if r["result"] == result)
 
-    _ = Contact  # importado por claridad del contrato de la función
     return {
         "imported_company_and_contact": _count("imported_company_and_contact"),
         "imported_company_only": _count("imported_company_only"),

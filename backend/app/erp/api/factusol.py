@@ -338,9 +338,25 @@ def import_orphans_dry_run(
         raise _factusol_gateway_error(exc, "factusol_import_orphans_failed") from exc
 
 
+class ImportOrphanOperation(BaseModel):
+    codcli: str = Field(min_length=1, max_length=36)
+    #: Los datos de F_CLI tal cual los devolvió el dry-run. Con esto el apply
+    #: no llama a FACTUSOL: el navegador ya los tiene y volver a pedirlos solo
+    #: añadía un punto de fallo (C-6-fix1).
+    factusol_data: dict[str, Any] | None = None
+
+
 class ImportOrphansApplyPayload(BaseModel):
+    operations: list[ImportOrphanOperation] = Field(default_factory=list)
+    #: Formato viejo, solo códigos. Se mantiene para no romper a un cliente que
+    #: no se haya recargado; obliga a releer esos CODCLI de F_CLI.
     codclis: list[str] = Field(default_factory=list)
     create_contacts_if_email: bool = True
+
+    def as_operations(self) -> list[dict[str, Any]]:
+        if self.operations:
+            return [op.model_dump() for op in self.operations]
+        return [{"codcli": c, "factusol_data": None} for c in self.codclis]
 
 
 @router.post("/bulk-match/import-orphans/apply")
@@ -351,27 +367,28 @@ def import_orphans_apply(
 ) -> dict[str, Any]:
     """Crea empresa (y contacto, si hay `EMACLI`) para los CODCLI marcados.
 
-    Un CODCLI por transacción: en un lote de cientos, abortar todo por un caso
-    raro obligaría a repetir la revisión entera."""
-    from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
+    Un CODCLI por transacción, y **siempre 200**: lo que falle va en `errors`
+    con su CODCLI, para poder reintentar solo eso. Antes un `KO` de DELSOL en
+    la relectura de F_CLI devolvía 502 y se llevaba el lote entero por delante
+    (C-6-fix1)."""
     from app.integrations.factusol.import_orphans import (  # noqa: PLC0415
         apply_import_orphans,
     )
 
-    if not payload.codclis:
+    operations = payload.as_operations()
+    if not operations:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, {
             "code": "no_operations", "detail": "No hay nada que importar.",
         })
     client, ejercicio = _client_and_ejercicio(session)
-    try:
-        return apply_import_orphans(
-            session, client, ejercicio=ejercicio, codclis=payload.codclis,
-            create_contacts_if_email=payload.create_contacts_if_email,
-            actor_id=current_user.id,
-        )
-    except FactusolError as exc:
-        raise _factusol_gateway_error(
-            exc, "factusol_import_orphans_apply_failed") from exc
+    # Sin `except FactusolError`: `apply_import_orphans` ya no lo deja escapar.
+    # Un fallo de FACTUSOL afecta a las operaciones que lo necesiten, no al
+    # lote; propagarlo como 502 tiraría también las que sí se han escrito.
+    return apply_import_orphans(
+        session, client, ejercicio=ejercicio, operations=operations,
+        create_contacts_if_email=payload.create_contacts_if_email,
+        actor_id=current_user.id,
+    )
 
 
 class LinkCustomerPayload(BaseModel):

@@ -9,6 +9,7 @@ Sin red: el cliente FACTUSOL es un doble que sirve las filas configuradas.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Generator
 from typing import Any
 
@@ -19,6 +20,7 @@ from sqlalchemy.pool import StaticPool
 
 import app.main  # noqa: F401  — registra los modelos en Base.metadata
 from app.db.base import Base
+from app.integrations.factusol.client import FactusolError
 from app.integrations.factusol.import_orphans import (
     IMPORT_ORPHANS_ACTION,
     IMPORT_ORPHANS_SOURCE,
@@ -31,14 +33,28 @@ from app.models.crm import AuditLog, Company, Contact, ContactTag, Tag
 
 
 class _FakeFactusol:
-    def __init__(self, *, customers=None):
+    def __init__(self, *, customers=None, fail_load=False):
         self.default_ejercicio = "2026"
         self._customers = list(customers or [])
+        self._fail_load = fail_load
         self.calls: list[str] = []
+        self.filtros: list[str] = []
 
     def load_table(self, tabla, *, filtro="1=1", ejercicio=None):
         self.calls.append(tabla)
-        return list(self._customers) if tabla == "F_CLI" else []
+        self.filtros.append(filtro)
+        if self._fail_load:
+            raise FactusolError("POST /admin/CargaTabla → respuesta='KO'")
+        if tabla != "F_CLI":
+            return []
+        # Honra `CODCLI IN (…)`, que es lo que manda el camino de
+        # compatibilidad: si no, el test no distinguiría una relectura
+        # acotada de traerse F_CLI entera.
+        match = re.search(r"CODCLI IN \(([^)]*)\)", filtro)
+        if match:
+            wanted = {x.strip() for x in match.group(1).split(",")}
+            return [r for r in self._customers if str(r["CODCLI"]) in wanted]
+        return list(self._customers)
 
 
 def _cli(codcli: int, **over: Any) -> dict[str, Any]:
@@ -143,7 +159,7 @@ def test_import_orphans_apply_creates_company_with_tag(session):
     empresas sin contacto."""
     fake = _FakeFactusol(customers=[_cli(1234)])
     result = apply_import_orphans(session, fake, ejercicio="2026",
-                                  codclis=["1234"])
+                                  operations=[{"codcli": "1234"}])
 
     assert result["imported_company_and_contact"] == 1
     assert result["errors"] == []
@@ -176,7 +192,7 @@ def test_import_orphans_apply_creates_contact_when_emacli_present(session):
     fake = _FakeFactusol(customers=[_cli(1, EMACLI="hola@acme.example",
                                          NOFCLI="ACME S.L.",
                                          TELCLI="934567890")])
-    result = apply_import_orphans(session, fake, ejercicio="2026", codclis=["1"])
+    result = apply_import_orphans(session, fake, ejercicio="2026", operations=[{"codcli": "1"}])
 
     assert result["results"][0]["result"] == "imported_company_and_contact"
     contact = session.scalars(select(Contact)).one()
@@ -194,7 +210,7 @@ def test_import_orphans_apply_creates_contact_when_emacli_present(session):
 def test_import_orphans_apply_skips_contact_when_no_emacli(session):
     """Un contacto con solo el nombre de la empresa no aporta y ensucia."""
     fake = _FakeFactusol(customers=[_cli(1, EMACLI="")])
-    result = apply_import_orphans(session, fake, ejercicio="2026", codclis=["1"])
+    result = apply_import_orphans(session, fake, ejercicio="2026", operations=[{"codcli": "1"}])
 
     assert result["imported_company_only"] == 1
     assert result["imported_company_and_contact"] == 0
@@ -207,7 +223,7 @@ def test_import_orphans_apply_skips_contact_when_no_emacli(session):
 def test_import_orphans_apply_honours_create_contacts_flag(session):
     fake = _FakeFactusol(customers=[_cli(1, EMACLI="hola@acme.example")])
     result = apply_import_orphans(session, fake, ejercicio="2026",
-                                  codclis=["1"], create_contacts_if_email=False)
+                                  operations=[{"codcli": "1"}], create_contacts_if_email=False)
     assert result["imported_company_only"] == 1
     assert result["results"][0]["contact_skipped"] == "disabled"
     assert list(session.scalars(select(Contact))) == []
@@ -216,7 +232,7 @@ def test_import_orphans_apply_honours_create_contacts_flag(session):
 def test_import_orphans_apply_creates_tag_if_not_exists(session):
     assert list(session.scalars(select(Tag))) == []
     fake = _FakeFactusol(customers=[_cli(1)])
-    apply_import_orphans(session, fake, ejercicio="2026", codclis=["1"])
+    apply_import_orphans(session, fake, ejercicio="2026", operations=[{"codcli": "1"}])
     tag = session.scalars(select(Tag)).one()
     assert tag.name == IMPORT_ORPHANS_TAG
     assert tag.name_normalized == IMPORT_ORPHANS_TAG
@@ -227,8 +243,8 @@ def test_import_orphans_apply_reuses_tag_if_exists(session):
     fake = _FakeFactusol(customers=[
         _cli(1, EMACLI="uno@acme.example"), _cli(2, EMACLI="dos@acme.example"),
     ])
-    apply_import_orphans(session, fake, ejercicio="2026", codclis=["1"])
-    apply_import_orphans(session, fake, ejercicio="2026", codclis=["2"])
+    apply_import_orphans(session, fake, ejercicio="2026", operations=[{"codcli": "1"}])
+    apply_import_orphans(session, fake, ejercicio="2026", operations=[{"codcli": "2"}])
 
     assert len(list(session.scalars(select(Tag)))) == 1
     assert len(list(session.scalars(select(ContactTag)))) == 2
@@ -239,7 +255,7 @@ def test_import_orphans_apply_race_condition_skips_gracefully(session):
     pisar un vínculo que alguien puso a propósito sería peor."""
     ya = _company(session, name="LLEGÓ ANTES", factusol_company_id="1")
     fake = _FakeFactusol(customers=[_cli(1)])
-    result = apply_import_orphans(session, fake, ejercicio="2026", codclis=["1"])
+    result = apply_import_orphans(session, fake, ejercicio="2026", operations=[{"codcli": "1"}])
 
     assert result["skipped_race"] == 1
     assert result["imported"] == 0
@@ -259,7 +275,7 @@ def test_import_orphans_apply_skips_contact_when_email_already_taken(session):
     session.commit()
 
     fake = _FakeFactusol(customers=[_cli(1, EMACLI="info@acme.example")])
-    result = apply_import_orphans(session, fake, ejercicio="2026", codclis=["1"])
+    result = apply_import_orphans(session, fake, ejercicio="2026", operations=[{"codcli": "1"}])
 
     assert result["imported_company_only"] == 1
     assert result["errors"] == []
@@ -276,7 +292,7 @@ def test_import_orphans_apply_skips_contact_when_email_already_taken(session):
 
 def test_import_orphans_audit_log_contains_created_ids(session):
     fake = _FakeFactusol(customers=[_cli(1234)])
-    apply_import_orphans(session, fake, ejercicio="2026", codclis=["1234"])
+    apply_import_orphans(session, fake, ejercicio="2026", operations=[{"codcli": "1234"}])
 
     entry = session.scalars(
         select(AuditLog).where(AuditLog.action == IMPORT_ORPHANS_ACTION)
@@ -294,7 +310,7 @@ def test_import_orphans_audit_log_contains_created_ids(session):
 
 def test_import_orphans_audit_log_marks_null_contact(session):
     fake = _FakeFactusol(customers=[_cli(1, EMACLI="")])
-    apply_import_orphans(session, fake, ejercicio="2026", codclis=["1"])
+    apply_import_orphans(session, fake, ejercicio="2026", operations=[{"codcli": "1"}])
     entry = session.scalars(
         select(AuditLog).where(AuditLog.action == IMPORT_ORPHANS_ACTION)
     ).one()
@@ -306,7 +322,7 @@ def test_import_orphans_audit_log_marks_null_contact(session):
 def test_import_orphans_apply_one_failure_does_not_block_the_batch(session):
     fake = _FakeFactusol(customers=[_cli(1, EMACLI="uno@acme.example")])
     result = apply_import_orphans(session, fake, ejercicio="2026",
-                                  codclis=["404", "1"])
+                                  operations=[{"codcli": "404"}, {"codcli": "1"}])
     assert result["imported"] == 1
     assert len(result["errors"]) == 1
     assert "no existe" in result["errors"][0]["error"]
@@ -320,7 +336,8 @@ def test_import_orphans_apply_falls_back_to_noccli_and_placeholder(session):
         _cli(1, NOFCLI="", NOCCLI="SOLO COMERCIAL", EMACLI=""),
         _cli(2, NOFCLI="", NOCCLI="", EMACLI=""),
     ])
-    apply_import_orphans(session, fake, ejercicio="2026", codclis=["1", "2"])
+    apply_import_orphans(session, fake, ejercicio="2026",
+                         operations=[{"codcli": "1"}, {"codcli": "2"}])
     nombres = {
         c.factusol_company_id: c.name
         for c in session.scalars(select(Company))
@@ -336,7 +353,7 @@ def test_import_orphans_apply_maps_country_from_paicli(session):
         _cli(3, PAICLI="999", EMACLI=""), _cli(4, PAICLI="", EMACLI=""),
     ])
     apply_import_orphans(session, fake, ejercicio="2026",
-                         codclis=["1", "2", "3", "4"])
+                         operations=[{"codcli": c} for c in "1234"])
     paises = {
         c.factusol_company_id: c.country for c in session.scalars(select(Company))
     }
@@ -352,6 +369,129 @@ def test_import_orphans_apply_truncates_long_contact_name(session):
     largo = "A" * 300
     fake = _FakeFactusol(customers=[_cli(1, NOFCLI=largo,
                                          EMACLI="largo@acme.example")])
-    apply_import_orphans(session, fake, ejercicio="2026", codclis=["1"])
+    apply_import_orphans(session, fake, ejercicio="2026", operations=[{"codcli": "1"}])
     contact = session.scalars(select(Contact)).one()
     assert len(contact.first_name) == 120
+
+
+# --- C-6-fix1: el apply ya no relee F_CLI -----------------------------------
+#
+# En producción el apply hacía una `CargaTabla` de F_CLI entera y DELSOL
+# devolvió `KO` 66 segundos después de haber funcionado en el dry-run. El lote
+# entero se fue en un 502. Los datos ya los tenía el navegador.
+
+
+def _payload(codcli: str, **over: Any) -> dict[str, Any]:
+    """Lo que manda el frontend: los campos del dry-run, en minúscula."""
+    data = {
+        "nofcli": "ACME S.L.", "noccli": "ACME", "nifcli": "B12345678",
+        "domcli": "C. Mayor 1", "pobcli": "Barcelona", "cpocli": "08001",
+        "procli": "Barcelona", "paicli": "724", "emacli": "info@acme.example",
+        "telcli": "934567890",
+    }
+    data.update(over)
+    return {"codcli": codcli, "factusol_data": data}
+
+
+def test_import_orphans_apply_accepts_factusol_data_in_payload_without_calling_factusol(
+    session,
+):
+    # El doble reventaría si lo llamasen: si el test pasa, no lo llamaron.
+    fake = _FakeFactusol(fail_load=True)
+    result = apply_import_orphans(session, fake, ejercicio="2026",
+                                  operations=[_payload("1234")])
+
+    assert fake.calls == []
+    assert result["imported_company_and_contact"] == 1
+    assert result["errors"] == []
+    company = session.scalars(select(Company)).one()
+    assert company.name == "ACME S.L."
+    assert company.tax_id == "B12345678"
+    assert company.city == "Barcelona"
+    assert company.country == "España"
+    assert company.factusol_company_id == "1234"
+    assert session.scalars(select(Contact)).one().email == "info@acme.example"
+
+
+def test_import_orphans_apply_handles_missing_factusol_data_by_batch_query(session):
+    """Camino de compatibilidad: sin `factusol_data` se relee de F_CLI, pero
+    **solo** los CODCLI pedidos, no la tabla entera."""
+    fake = _FakeFactusol(customers=[_cli(1), _cli(2), _cli(3)])
+    result = apply_import_orphans(
+        session, fake, ejercicio="2026",
+        operations=[{"codcli": "1"}, {"codcli": "3"}],
+    )
+
+    assert fake.calls == ["F_CLI"]
+    assert fake.filtros == ["CODCLI IN (1,3)"]
+    assert result["imported"] == 2
+    assert {c.factusol_company_id for c in session.scalars(select(Company))} == {"1", "3"}
+
+
+def test_import_orphans_apply_mixes_payload_and_batch_query(session):
+    """Solo se pregunta por lo que falta, no por todo el lote."""
+    fake = _FakeFactusol(customers=[_cli(1), _cli(2, EMACLI="dos@acme.example")])
+    apply_import_orphans(
+        session, fake, ejercicio="2026",
+        operations=[_payload("1", emacli="uno@acme.example"), {"codcli": "2"}],
+    )
+    assert fake.filtros == ["CODCLI IN (2)"]
+
+
+def test_import_orphans_apply_returns_200_when_individual_operation_fails(session):
+    """Un KO de FACTUSOL afecta a las operaciones que lo necesitan, no al lote:
+    las que traen sus datos se escriben igual y la función NO lanza."""
+    fake = _FakeFactusol(fail_load=True)
+    result = apply_import_orphans(
+        session, fake, ejercicio="2026",
+        operations=[_payload("1", emacli="uno@acme.example"), {"codcli": "2"}],
+    )
+
+    assert result["imported"] == 1
+    assert len(result["errors"]) == 1
+    assert result["errors"][0]["codcli"] == "2"
+    # «no responde» y no «no existe»: lo segundo invitaría a borrarlo de la
+    # lista en vez de reintentarlo.
+    assert "factusol_unavailable" in result["errors"][0]["error"]
+    assert session.scalars(
+        select(Company).where(Company.factusol_company_id == "1")
+    ).one() is not None
+
+
+def test_import_orphans_apply_never_puts_raw_codcli_into_the_sql_filter(session):
+    """`filtro` es un WHERE crudo que va tal cual a la base de DELSOL:
+    interpolar ahí lo que llegue por HTTP sería una inyección."""
+    fake = _FakeFactusol(customers=[_cli(1)])
+    result = apply_import_orphans(
+        session, fake, ejercicio="2026",
+        operations=[{"codcli": "1) OR 1=1--"}],
+    )
+    assert fake.calls == []
+    assert len(result["errors"]) == 1
+    assert result["imported"] == 0
+
+
+def test_import_orphans_apply_batches_the_in_clause(session):
+    """Un `IN` con miles de valores es un WHERE de kilobytes y no se sabe dónde
+    lo corta DELSOL."""
+    customers = [_cli(i, EMACLI="") for i in range(1, 1202)]
+    fake = _FakeFactusol(customers=customers)
+    apply_import_orphans(
+        session, fake, ejercicio="2026",
+        operations=[{"codcli": str(i)} for i in range(1, 1202)],
+    )
+    # 1201 CODCLI en trozos de 500 → 3 llamadas.
+    assert len(fake.calls) == 3
+    assert len(list(session.scalars(select(Company)))) == 1201
+
+
+def test_import_orphans_apply_still_guards_the_race_with_payload_data(session):
+    """Traer los datos en el payload no relaja el guard: se relee la BD local
+    por cada CODCLI, que es donde vive la verdad del vínculo."""
+    ya = _company(session, name="LLEGÓ ANTES", factusol_company_id="1234")
+    fake = _FakeFactusol(fail_load=True)
+    result = apply_import_orphans(session, fake, ejercicio="2026",
+                                  operations=[_payload("1234")])
+    assert result["skipped_race"] == 1
+    assert result["results"][0]["company_id"] == ya.id
+    assert len(list(session.scalars(select(Company)))) == 1
