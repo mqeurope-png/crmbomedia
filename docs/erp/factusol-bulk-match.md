@@ -221,6 +221,24 @@ sin, y de cuántos clientes de F_CLI salen.
 
 ### Aplicar
 
+**El apply NO vuelve a preguntar a FACTUSOL.** El navegador manda los datos de
+F_CLI que ya trajo el dry-run, dentro de cada operación:
+
+```json
+{"operations": [{"codcli": "1234", "factusol_data": {"nofcli": "ACME S.L.", …}}]}
+```
+
+> **Por qué.** El apply releía `F_CLI` **entera**. En producción esa
+> `CargaTabla` devolvió `KO` **66 segundos** después de haber funcionado en el
+> dry-run, y el lote entero se fue en un **502 Bad Gateway** sin escribir nada.
+> Los datos ya estaban en el navegador: volver a pedirlos solo añadía un punto
+> de fallo. (C-6-fix1)
+
+Si llegan operaciones **sin** `factusol_data` —un cliente que no se ha
+recargado— el backend relee **solo esos CODCLI** con `CODCLI IN (…)`, en trozos
+de 500, no la tabla entera. Los CODCLI se filtran a numéricos antes de entrar en
+el fragmento SQL: `filtro` es un WHERE crudo que va tal cual a la base de DELSOL.
+
 Por cada CODCLI marcado, en su **propia transacción**:
 
 1. **Empresa** con los datos de F_CLI: `NOFCLI` → `name` (con `NOCCLI` de
@@ -247,6 +265,27 @@ Confirmación a partir de 50, igual que en los otros modos.
 > contacto, no se intenta crear —el INSERT reventaría y se llevaría por delante
 > la empresa, que sí queremos— ni se le roba a su empresa actual. Se queda la
 > empresa creada y el motivo en `contact_skipped`.
+
+### Errores y reintentos
+
+**El apply siempre devuelve 200.** Lo que falle va en `errors` con su CODCLI, y
+lo que se haya escrito queda escrito. Antes un fallo de FACTUSOL devolvía 502 y
+tiraba el lote entero, incluidas las empresas ya creadas.
+
+El resumen muestra «N fallida(s)» y aparece un botón **«Reintentar fallidas
+(N)»** que reenvía **solo esas**, con sus datos. En una tabla de miles de filas,
+volver a marcarlas a mano no es razonable.
+
+> **`KO` es transitorio.** DELSOL devuelve `{"resultado":"","respuesta":"KO"}`
+> con HTTP 200 y sin decir por qué — sobrecarga, timeout interno o rate-limit
+> sin cabecera que lo anuncie. El cliente lo **reintenta solo**: 500 ms, 2 s y
+> 5 s, y si sigue en KO propaga el error. Cuenta aparte del backoff de los 5xx:
+> un KO no es un fallo de transporte y no debe gastarles el presupuesto. Esto
+> beneficia a **todas** las llamadas a FACTUSOL, no solo a este modo.
+>
+> `BDNoExiste` y `Unauthorized` **no** entran en ese retry: el primero es un
+> error de configuración que no se arregla insistiendo, y el segundo ya tiene su
+> propio camino (re-autenticar una vez).
 
 ### Dónde acabó la etiqueta, y por qué
 

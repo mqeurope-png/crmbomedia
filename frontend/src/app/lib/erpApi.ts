@@ -1025,8 +1025,35 @@ export async function importOrphansDryRun(
   });
 }
 
+/** Los datos de F_CLI que viajan con cada operación del apply.
+ *
+ *  C-6-fix1: el backend releía `F_CLI` entera para esto y DELSOL devolvió `KO`
+ *  66 segundos después de un dry-run correcto — el lote entero se fue en un
+ *  502. El navegador ya tiene los datos; pedirlos otra vez solo añadía un punto
+ *  de fallo. */
+export type ImportOrphanOperation = {
+  codcli: string;
+  factusol_data: Omit<FactusolOrphan, "codcli" | "will_create_contact">;
+};
+
+/** Extrae del dry-run lo que el apply necesita.
+ *
+ *  Campo a campo, no con un spread: así el contrato del payload se ve, y si
+ *  algún día `FactusolOrphan` crece no se cuela solo en la petición. */
+export function orphanToOperation(row: FactusolOrphan): ImportOrphanOperation {
+  return {
+    codcli: row.codcli ?? "",
+    factusol_data: {
+      nofcli: row.nofcli, noccli: row.noccli, nifcli: row.nifcli,
+      domcli: row.domcli, pobcli: row.pobcli, cpocli: row.cpocli,
+      procli: row.procli, paicli: row.paicli, emacli: row.emacli,
+      telcli: row.telcli,
+    },
+  };
+}
+
 export async function importOrphansApply(
-  codclis: string[],
+  operations: ImportOrphanOperation[],
   createContactsIfEmail = true,
 ): Promise<{
   imported_company_and_contact: number;
@@ -1039,7 +1066,7 @@ export async function importOrphansApply(
   return apiFetch("/api/erp/factusol/bulk-match/import-orphans/apply", {
     method: "POST",
     body: JSON.stringify({
-      codclis, create_contacts_if_email: createContactsIfEmail,
+      operations, create_contacts_if_email: createContactsIfEmail,
     }),
   });
 }

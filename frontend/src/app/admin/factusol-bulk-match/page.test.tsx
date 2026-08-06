@@ -17,6 +17,9 @@ jest.mock("../../lib/erpApi", () => ({
   bulkMatchByEmailApply: jest.fn(),
   importOrphansDryRun: jest.fn(),
   importOrphansApply: jest.fn(),
+  // El helper es lógica pura del cliente API: se usa el real para que el test
+  // compruebe de verdad la forma del payload, no un doble que la invente.
+  orphanToOperation: jest.requireActual("../../lib/erpApi").orphanToOperation,
   BULK_MATCH_FIELDS: ["name", "tax_id", "address_line", "city", "postal_code", "state"],
   BULK_MATCH_FIELD_LABELS: {
     name: "Nombre", tax_id: "NIF", address_line: "Dirección",
@@ -790,7 +793,8 @@ describe("FactusolBulkMatchPage", () => {
     await user.click(screen.getByRole("button", { name: /Aplicar seleccionadas \(2\)/ }));
 
     await waitFor(() => expect(mockOrphanApply).toHaveBeenCalled());
-    expect(mockOrphanApply.mock.calls[0][0]).toEqual(["1", "2"]);
+    expect(mockOrphanApply.mock.calls[0][0].map((o: { codcli: string }) => o.codcli))
+      .toEqual(["1", "2"]);
     const summary = await screen.findByRole("status");
     expect(summary).toHaveTextContent("1 empresa(s) creada(s) con contacto");
     expect(summary).toHaveTextContent("1 empresa(s) creada(s) sin contacto");
@@ -812,8 +816,84 @@ describe("FactusolBulkMatchPage", () => {
 
     const summary = await screen.findByRole("status");
     expect(summary).toHaveTextContent("1 omitida(s) por conflicto");
-    expect(summary).toHaveTextContent("1 con error");
+    expect(summary).toHaveTextContent("1 fallida(s)");
     expect(await screen.findByText(/no existe/)).toBeInTheDocument();
+  });
+
+  // --- C-6-fix1: el apply manda los datos, y las fallidas se reintentan ----
+
+  it("el apply manda los datos F_CLI de cada fila, no solo el codcli", async () => {
+    // El backend releía F_CLI entera para esto y un KO de DELSOL se llevaba el
+    // lote entero por delante con un 502. El navegador ya tiene los datos.
+    mockOrphanDryRun.mockResolvedValue(orphanDryRun());
+    const user = userEvent.setup();
+    render(<FactusolBulkMatchPage />);
+    await switchToOrphanMode(user);
+    await user.click(screen.getByRole("button", { name: "Ejecutar dry-run" }));
+    await user.click(await screen.findByLabelText("Importar ACME S.L."));
+    await user.click(screen.getByRole("button", { name: /Aplicar seleccionadas/ }));
+
+    await waitFor(() => expect(mockOrphanApply).toHaveBeenCalled());
+    expect(mockOrphanApply.mock.calls[0][0]).toEqual([{
+      codcli: "1234",
+      factusol_data: {
+        nofcli: "ACME S.L.", noccli: "ACME", nifcli: "B12345678",
+        domcli: "C. Mayor 1", pobcli: "Barcelona", cpocli: "08001",
+        procli: "Barcelona", paicli: "724", emacli: "info@acme.example",
+        telcli: "934567890",
+      },
+    }]);
+  });
+
+  it("con fallidas aparece «Reintentar fallidas» y reenvía solo esas", async () => {
+    mockOrphanDryRun.mockResolvedValue(orphanDryRun({
+      orphans: [orphan("1", { nofcli: "UNA" }), orphan("2", { nofcli: "OTRA" })],
+      orphans_to_import: 2, with_email: 2, without_email: 0,
+    }));
+    mockOrphanApply.mockResolvedValueOnce({
+      imported_company_and_contact: 1, imported_company_only: 0,
+      skipped_race: 0, imported: 1, results: [],
+      errors: [{ codcli: "2", error: "factusol_unavailable: reinténtalo" }],
+    });
+    const user = userEvent.setup();
+    render(<FactusolBulkMatchPage />);
+    await switchToOrphanMode(user);
+    await user.click(screen.getByRole("button", { name: "Ejecutar dry-run" }));
+    await user.click(await screen.findByLabelText("Seleccionar todas"));
+    await user.click(screen.getByRole("button", { name: /Aplicar seleccionadas \(2\)/ }));
+
+    const retry = await screen.findByRole("button", {
+      name: "Reintentar fallidas (1)",
+    });
+    mockOrphanApply.mockResolvedValue({
+      imported_company_and_contact: 1, imported_company_only: 0,
+      skipped_race: 0, imported: 1, results: [], errors: [],
+    });
+    await user.click(retry);
+
+    await waitFor(() => expect(mockOrphanApply).toHaveBeenCalledTimes(2));
+    // Solo el que falló, con sus datos.
+    expect(mockOrphanApply.mock.calls[1][0]).toHaveLength(1);
+    expect(mockOrphanApply.mock.calls[1][0][0].codcli).toBe("2");
+    expect(mockOrphanApply.mock.calls[1][0][0].factusol_data.nofcli).toBe("OTRA");
+    // Y cuando ya no queda ninguna fallida, el botón desaparece.
+    await waitFor(() => expect(
+      screen.queryByRole("button", { name: /Reintentar fallidas/ }),
+    ).not.toBeInTheDocument());
+  });
+
+  it("sin fallidas no se ofrece reintentar", async () => {
+    mockOrphanDryRun.mockResolvedValue(orphanDryRun());
+    const user = userEvent.setup();
+    render(<FactusolBulkMatchPage />);
+    await switchToOrphanMode(user);
+    await user.click(screen.getByRole("button", { name: "Ejecutar dry-run" }));
+    await user.click(await screen.findByLabelText("Importar ACME S.L."));
+    await user.click(screen.getByRole("button", { name: /Aplicar seleccionadas/ }));
+
+    await screen.findByRole("status");
+    expect(screen.queryByRole("button", { name: /Reintentar fallidas/ }))
+      .not.toBeInTheDocument();
   });
 
   it("importar 50 o más pide confirmación, con el texto de crear", async () => {
