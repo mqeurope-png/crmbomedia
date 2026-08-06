@@ -28,6 +28,10 @@ import {
   listCompanies,
 } from "../lib/companiesApi";
 import type { DashboardWindow } from "../lib/dashboardApi";
+import {
+  listActiveWorkflows,
+  type ActiveWorkflowOption,
+} from "../lib/workflowsApi";
 import { PeriodSelector } from "./dashboard/PeriodSelector";
 import { WorkflowTagsPicker } from "./workflows/WorkflowTagsPicker";
 
@@ -215,6 +219,10 @@ export function SegmentValueEditor({
         onChange={onChange}
       />
     );
+  }
+  // CRM-1.6 — «En workflow»: dropdown de workflows activos en vez de UUID.
+  if (spec.key === "in_workflow") {
+    return <WorkflowMultiEditor value={value} onChange={onChange} />;
   }
 
   if (spec.key === "brevo_campaign_interaction") {
@@ -1117,6 +1125,67 @@ function SegmentPicker({
           ? "Contactos que NO están en ninguno de los segmentos elegidos."
           : "Contactos que pertenecen a alguno de los segmentos."}
       </span>
+    </div>
+  );
+}
+
+/** CRM-1.6 — editor del filtro «En workflow». `in_workflow` es uuid-multi
+ *  (in/not_in), así que es un multi-select: carga los workflows activos y
+ *  guarda sus UUID. Antes se tecleaba el UUID a mano. */
+function WorkflowMultiEditor({
+  value,
+  onChange,
+}: {
+  value: unknown;
+  onChange: (next: unknown) => void;
+}) {
+  const [workflows, setWorkflows] = useState<ActiveWorkflowOption[]>([]);
+  const [loading, setLoading] = useState(true);
+  const selected: string[] = Array.isArray(value) ? value.map(String) : [];
+
+  useEffect(() => {
+    let cancelled = false;
+    listActiveWorkflows()
+      .then((rows) => {
+        if (!cancelled) setWorkflows(rows);
+      })
+      .catch(() => {
+        if (!cancelled) setWorkflows([]);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  function toggle(id: string) {
+    onChange(
+      selected.includes(id)
+        ? selected.filter((x) => x !== id)
+        : [...selected, id],
+    );
+  }
+
+  if (loading) {
+    return <span className="muted small">Cargando workflows…</span>;
+  }
+  if (workflows.length === 0) {
+    return <span className="muted small">No hay workflows activos.</span>;
+  }
+  return (
+    <div className="qb-value-multi" role="group" aria-label="Elige un workflow">
+      {workflows.map((wf) => (
+        <label key={wf.id} className="qb-value-chip">
+          <input
+            type="checkbox"
+            checked={selected.includes(wf.id)}
+            onChange={() => toggle(wf.id)}
+          />
+          {wf.name}
+        </label>
+      ))}
     </div>
   );
 }

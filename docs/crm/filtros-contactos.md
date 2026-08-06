@@ -20,8 +20,37 @@ un panel a medida — cada filtro es un campo del registro
 | **Propiedad y origen** | Propietario · Cuenta de origen · Creado en origen (fecha) |
 | **Pertenencia** | En segmento · En lista Brevo · En pipeline · En etapa de pipeline · Interacción con campañas |
 | **Actividad reciente** | Fecha última interacción · Días sin contactar · Con tareas · Con emails · Con notas · En workflow |
-| **Llamadas** | Resultado · Acción posterior · Duración · Fecha (CRM-1) |
+| **Llamadas** | Resultado · Acción posterior · Duración · Fecha · **Con llamadas / Sin llamadas** (CRM-1.6) |
 | **ERP y FACTUSOL** | Vinculado a FACTUSOL · Con pedidos ERP |
+
+> **«Con llamadas / Sin llamadas»** (CRM-1.6): presencia de llamadas registradas.
+> Para filtrar por **fecha** de llamada está «Fecha de llamada» (antes de /
+> después de / periodo), que ya existía.
+
+---
+
+## La UI del panel (CRM-1.6)
+
+El panel envuelve el constructor de reglas con tres capas de UX (sin
+reescribirlo):
+
+- **Secciones colapsables.** Los 7 grupos salen como un accordion. Cada cabecera
+  lleva su **contador de filtros aplicados** —gris `(0)`, en azul si hay alguno—
+  y despliega los campos de la sección como botones «+ Campo» para añadirlos.
+  Por defecto abren **«Datos del contacto»** y **«Llamadas»**; el resto cerradas.
+- **Chip stack.** Arriba, cada filtro aplicado es un chip `campo · comparador ·
+  valor` con una **×** para quitarlo, más **«Limpiar todo»**.
+- **Selector agrupado.** El desplegable de campo del constructor separa los
+  campos por sección (`optgroup`).
+- **Persistencia.** El estado abierto/cerrado de las secciones se guarda en
+  `localStorage['crm-contacts-filter-sections']`. Los **filtros** aplicados NO
+  se persisten ahí: para eso están las **Vistas** guardadas del CRM.
+
+El **editor de «En workflow»** es un desplegable de los workflows **activos**
+(`GET /api/workflows/active`), no un campo donde pegar el UUID a mano.
+
+> Esta capa es genérica del `EntityFilterBuilder`, así que las demás entidades
+> que lo usan (empresas, condiciones de workflow) ganan la misma UX.
 
 ---
 
@@ -73,35 +102,25 @@ Vía la **empresa** del contacto (`contacts.company_id`) y el ERP local.
 | **Vinculado a FACTUSOL** | «Ya es cliente contable» | La empresa del contacto tiene `factusol_company_id`. En «No» entran también los contactos sin empresa |
 | **Con pedidos ERP** | «Trabajo en el taller» | EXISTS un `order` de su empresa: En cola / Embalado (estado de preparación) · En tránsito / Entregado (estado de transporte) · Cualquiera |
 
-### Diferidos a CRM-1.6 (consulta viva a FACTUSOL)
+### Diferidos a CRM-1.6b (consulta viva a FACTUSOL)
 
-Dos filtros del spec original necesitan preguntar a FACTUSOL **en cada carga del
-listado** y no hay datos locales que reflejen su estado:
+Dos filtros necesitan preguntar a FACTUSOL **en cada carga del listado** y no hay
+datos locales que reflejen su estado:
 
 - **Con proformas** (por estado: activas/aceptadas/rechazadas) → `F_PRE`.
 - **Con facturación** (importe mínimo, rango de fechas) → `F_FAC`.
 
-Se **difieren**: meter una `CargaTabla` por cada listado, sobre miles de
-contactos y sin poder validarlo, es un riesgo de latencia que el propio spec
-señala. Irán en CRM-1.6 con su estrategia de caché (una sola lectura por
-request + tope de resultados). El vínculo `factusol_linked` sí está aquí porque
-es dato local.
+Siguen **diferidos** (ahora a CRM-1.6b): meter una `CargaTabla` por cada listado,
+sobre miles de contactos y sin poder validarlo contra FACTUSOL real, es un riesgo
+de latencia en la ruta caliente. Irán con su estrategia de caché (una sola
+lectura por request + tope de resultados si el set es grande). El vínculo
+`factusol_linked` sí está porque es dato local.
 
 ---
 
 ## Rendimiento
 
-Todos los filtros de este PR son EXISTS sobre tablas **locales** indexadas
+Todos los filtros son EXISTS sobre tablas **locales** indexadas
 (`call_logs.contact_id`, `notes.contact_id`, `orders.company_id`, etc.), así que
-no cambian el coste del listado de forma apreciable. Los filtros que sí tocarán
-FACTUSOL (CRM-1.6) llevarán su propia salvaguarda de caché + paginación.
-
----
-
-## Nota sobre la UI colapsable
-
-La reorganización en 7 grupos ya se ve en el selector de campos del panel (los
-grupos son sus secciones). El **accordion colapsable + chip stack de filtros
-aplicados + contador por sección + persistencia en localStorage** son una capa
-de UI aparte sobre el constructor de filtros (compartido con otras entidades) y
-van en **CRM-1.6**.
+no cambian el coste del listado de forma apreciable. Los dos filtros que tocarán
+FACTUSOL (CRM-1.6b) llevarán su propia salvaguarda de caché + tope.

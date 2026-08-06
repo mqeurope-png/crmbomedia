@@ -898,6 +898,8 @@ export default function ContactsListPage() {
           key={`builder:${builderKey}`}
           fields={schema.fields}
           value={rules}
+          sectionsStorageKey="crm-contacts-filter-sections"
+          defaultOpenSections={["Datos del contacto", "Llamadas"]}
           onChange={(next) => {
             setRules(next);
             setOffset(0);
