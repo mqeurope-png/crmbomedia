@@ -10389,3 +10389,28 @@ tr.is-inactive {
 .erp-dedupe-group { background: var(--surface-2, #fafafa); margin-bottom: 12px; }
 .erp-dedupe-group .form-row { align-items: center; justify-content: space-between; }
 .erp-dedupe-group .data-table { margin-top: 10px; }
+
+/* CRM-1.6 — panel de filtros: chip stack + accordion de secciones sobre el
+   querybuilder (EntityFilterBuilder). */
+.efb-chips {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+  margin-bottom: 10px;
+}
+.efb-chip { display: inline-flex; align-items: center; gap: 4px; }
+.efb-clear-all { margin-left: 4px; }
+.efb-sections {
+  display: flex; flex-direction: column; gap: 2px; margin-bottom: 12px;
+  border: 1px solid var(--line, #e5e7eb); border-radius: 8px; padding: 6px;
+  background: var(--surface-2, #fafafa);
+}
+.efb-section-header {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  background: none; border: 0; padding: 6px 4px; cursor: pointer;
+  font: inherit; text-align: left; color: inherit;
+}
+.efb-section-title { font-weight: 600; }
+.efb-section-count.is-active { color: var(--brand, #2563eb); font-weight: 600; }
+.efb-section-body {
+  display: flex; flex-wrap: wrap; gap: 6px; padding: 4px 4px 8px 22px;
+}
+.efb-add-field { white-space: nowrap; }

@@ -191,6 +191,14 @@ export async function listWorkflows(
   return apiFetch<WorkflowRead[]>(`/api/workflows${qs}`);
 }
 
+/** CRM-1.6 — lista slim de workflows activos para el editor del filtro
+ *  «En workflow» de /contacts (dropdown en vez de UUID a mano). */
+export type ActiveWorkflowOption = { id: string; name: string };
+
+export async function listActiveWorkflows(): Promise<ActiveWorkflowOption[]> {
+  return apiFetch<ActiveWorkflowOption[]>("/api/workflows/active");
+}
+
 export async function getWorkflow(id: string): Promise<WorkflowDetail> {
   return apiFetch<WorkflowDetail>(`/api/workflows/${id}`);
 }

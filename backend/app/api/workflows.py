@@ -386,6 +386,30 @@ def list_workflows(
     ]
 
 
+@router.get("/active")
+def list_active_workflows(
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_user),
+) -> list[dict[str, str]]:
+    """CRM-1.6 — lista slim `[{id, name}]` de los workflows ACTIVOS visibles
+    por el usuario. Alimenta el dropdown del filtro «En workflow» de /contacts
+    (antes se pegaba un UUID a mano). Respeta la misma visibilidad que
+    `list_workflows`: propios + globales del equipo; el admin ve todos."""
+    from app.services.ownership import is_admin  # noqa: PLC0415
+
+    stmt = (
+        select(Workflow.id, Workflow.name)
+        .where(Workflow.status == WorkflowStatus.ACTIVE)
+        .order_by(Workflow.name)
+    )
+    if not is_admin(current_user):
+        stmt = stmt.where(
+            (Workflow.owner_user_id == current_user.id)
+            | (Workflow.owner_user_id.is_(None))
+        )
+    return [{"id": wid, "name": name} for wid, name in session.execute(stmt)]
+
+
 @router.post("", response_model=WorkflowDetail, status_code=201)
 def create_workflow(
     payload: WorkflowCreate,

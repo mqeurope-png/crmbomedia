@@ -501,6 +501,10 @@ def _compile_call_leaf(
     sale entrecomillada en los dos."""
     from app.models.crm import CallLog  # noqa: PLC0415
 
+    if spec.key == "has_calls":
+        # `value` ya viene coercionado a bool. True = tiene ≥1 llamada.
+        any_call = Contact.id.in_(select(CallLog.contact_id))
+        return any_call if value else not_(any_call)
     if spec.key == "call_action":
         values = value if isinstance(value, list) else [value]
         inner = or_(*[

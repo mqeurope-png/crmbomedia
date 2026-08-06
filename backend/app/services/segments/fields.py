@@ -684,6 +684,18 @@ FIELD_SPECS: dict[str, FieldSpec] = {
         grouped_under="Llamadas",
         source="related_table",
     ),
+    # CRM-1.6 — «Con llamadas» / «Sin llamadas». La fecha de las llamadas ya la
+    # cubre `call_date` (antes/después/periodo); esto es solo presencia.
+    "has_calls": FieldSpec(
+        key="has_calls",
+        label="Con llamadas registradas",
+        type="bool",
+        comparators=("eq",),
+        relation="call_logs",
+        displayable=False,
+        grouped_under="Llamadas",
+        source="related_table",
+    ),
     # CRM-1.5 — Actividad reciente. Todos son EXISTS sobre datos LOCALES del CRM
     # (call_logs, notes, tasks, email_messages, workflow_runs); ninguno consulta
     # FACTUSOL. Ver engine._compile_activity_leaf.
