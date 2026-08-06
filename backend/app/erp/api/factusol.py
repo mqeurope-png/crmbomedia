@@ -306,6 +306,74 @@ def bulk_match_by_email_apply(
         raise _factusol_gateway_error(exc, "factusol_bulk_apply_failed") from exc
 
 
+class ImportOrphansDryRunPayload(BaseModel):
+    filter: str = Field(default="all", pattern="^(all|only_with_email)$")
+
+
+@router.post("/bulk-match/import-orphans/dry-run")
+def import_orphans_dry_run(
+    payload: ImportOrphansDryRunPayload | None = None,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_admin),
+) -> dict[str, Any]:
+    """Lista los clientes de FACTUSOL que no tiene ninguna empresa del CRM.
+
+    C-6: después de conciliar lo que existía en los dos lados (C-5), quedan
+    miles de `F_CLI` que nunca llegaron al CRM — facturación de años que no
+    entró por Woo, formularios ni imports antiguos. Solo lee."""
+    _ = current_user
+    from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
+    from app.integrations.factusol.import_orphans import (  # noqa: PLC0415
+        dry_run_orphans,
+    )
+
+    payload = payload or ImportOrphansDryRunPayload()
+    client, ejercicio = _client_and_ejercicio(session)
+    try:
+        return dry_run_orphans(
+            session, client, ejercicio=ejercicio,
+            only_with_email=payload.filter == "only_with_email",
+        )
+    except FactusolError as exc:
+        raise _factusol_gateway_error(exc, "factusol_import_orphans_failed") from exc
+
+
+class ImportOrphansApplyPayload(BaseModel):
+    codclis: list[str] = Field(default_factory=list)
+    create_contacts_if_email: bool = True
+
+
+@router.post("/bulk-match/import-orphans/apply")
+def import_orphans_apply(
+    payload: ImportOrphansApplyPayload,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_admin),
+) -> dict[str, Any]:
+    """Crea empresa (y contacto, si hay `EMACLI`) para los CODCLI marcados.
+
+    Un CODCLI por transacción: en un lote de cientos, abortar todo por un caso
+    raro obligaría a repetir la revisión entera."""
+    from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
+    from app.integrations.factusol.import_orphans import (  # noqa: PLC0415
+        apply_import_orphans,
+    )
+
+    if not payload.codclis:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, {
+            "code": "no_operations", "detail": "No hay nada que importar.",
+        })
+    client, ejercicio = _client_and_ejercicio(session)
+    try:
+        return apply_import_orphans(
+            session, client, ejercicio=ejercicio, codclis=payload.codclis,
+            create_contacts_if_email=payload.create_contacts_if_email,
+            actor_id=current_user.id,
+        )
+    except FactusolError as exc:
+        raise _factusol_gateway_error(
+            exc, "factusol_import_orphans_apply_failed") from exc
+
+
 class LinkCustomerPayload(BaseModel):
     crm_type: str = Field(pattern="^(company|contact)$")
     #: Los IDs del CRM son UUID (String 36), no enteros.

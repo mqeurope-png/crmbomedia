@@ -6,6 +6,8 @@ import {
   bulkMatchByEmailApply,
   bulkMatchByEmailDryRun,
   bulkMatchDryRun,
+  importOrphansApply,
+  importOrphansDryRun,
 } from "../../lib/erpApi";
 
 jest.mock("../../lib/erpApi", () => ({
@@ -13,6 +15,8 @@ jest.mock("../../lib/erpApi", () => ({
   bulkMatchApply: jest.fn(),
   bulkMatchByEmailDryRun: jest.fn(),
   bulkMatchByEmailApply: jest.fn(),
+  importOrphansDryRun: jest.fn(),
+  importOrphansApply: jest.fn(),
   BULK_MATCH_FIELDS: ["name", "tax_id", "address_line", "city", "postal_code", "state"],
   BULK_MATCH_FIELD_LABELS: {
     name: "Nombre", tax_id: "NIF", address_line: "Dirección",
@@ -23,6 +27,8 @@ const mockDryRun = bulkMatchDryRun as jest.Mock;
 const mockApply = bulkMatchApply as jest.Mock;
 const mockEmailDryRun = bulkMatchByEmailDryRun as jest.Mock;
 const mockEmailApply = bulkMatchByEmailApply as jest.Mock;
+const mockOrphanDryRun = importOrphansDryRun as jest.Mock;
+const mockOrphanApply = importOrphansApply as jest.Mock;
 
 /** El modo por defecto es «Contactos por email»; los tests de C-5 prueban el
  *  modo por empresa, así que cambian antes de nada. */
@@ -80,6 +86,16 @@ beforeEach(() => {
     refreshed: 1, created_new_company: 0, linked_existing_company: 0,
     reassigned_to_existing_company: 0, reassigned_to_new_company: 0,
     reassigned: 0, skipped_already_linked_other: 0, errors: [],
+  });
+  mockOrphanDryRun.mockReset();
+  mockOrphanApply.mockReset();
+  mockOrphanDryRun.mockResolvedValue({
+    total_factusol_clientes: 0, linked_already: 0, orphans_to_import: 0,
+    with_email: 0, without_email: 0, orphans: [], ejercicio: "2026",
+  });
+  mockOrphanApply.mockResolvedValue({
+    imported_company_and_contact: 1, imported_company_only: 0,
+    skipped_race: 0, imported: 1, results: [], errors: [],
   });
 });
 
@@ -674,6 +690,164 @@ describe("FactusolBulkMatchPage", () => {
 
     await waitFor(() => expect(mockEmailApply).toHaveBeenCalled());
     expect(mockEmailApply.mock.calls[0][0][0].factusol_codcli).toBe("2123");
+  });
+
+  // --- C-6: importar F_CLI huérfanas ---------------------------------------
+
+  async function switchToOrphanMode(user: ReturnType<typeof userEvent.setup>) {
+    await user.selectOptions(screen.getByLabelText("Modo"), "import_orphans");
+  }
+
+  function orphan(codcli: string, over = {}) {
+    return {
+      codcli, nofcli: "ACME S.L.", noccli: "ACME", nifcli: "B12345678",
+      domcli: "C. Mayor 1", pobcli: "Barcelona", cpocli: "08001",
+      procli: "Barcelona", paicli: "724", emacli: "info@acme.example",
+      telcli: "934567890", will_create_contact: true,
+      ...over,
+    };
+  }
+
+  function orphanDryRun(over = {}) {
+    return {
+      total_factusol_clientes: 4533, linked_already: 3200,
+      orphans_to_import: 1, with_email: 1, without_email: 0,
+      orphans: [orphan("1234")], ejercicio: "2026",
+      ...over,
+    };
+  }
+
+  it("el modo importación pinta la tabla de huérfanas y su resumen", async () => {
+    mockOrphanDryRun.mockResolvedValue(orphanDryRun());
+    const user = userEvent.setup();
+    render(<FactusolBulkMatchPage />);
+    await switchToOrphanMode(user);
+    await user.click(screen.getByRole("button", { name: "Ejecutar dry-run" }));
+
+    await waitFor(() => expect(mockOrphanDryRun).toHaveBeenCalledWith(
+      { filter: "all" }));
+    expect(mockEmailDryRun).not.toHaveBeenCalled();
+    expect(mockDryRun).not.toHaveBeenCalled();
+    expect(await screen.findByText("ACME S.L.")).toBeInTheDocument();
+    expect(screen.getByText("nº 1234")).toBeInTheDocument();
+    expect(screen.getByText("B12345678")).toBeInTheDocument();
+    const resumen = screen.getByText(/F_CLI huérfana/);
+    expect(resumen).toHaveTextContent("3200 ya vinculado(s)");
+    expect(resumen).toHaveTextContent("4533 cliente(s) en FACTUSOL");
+  });
+
+  it("el chip depende de si la F_CLI trae email", async () => {
+    mockOrphanDryRun.mockResolvedValue(orphanDryRun({
+      orphans: [
+        orphan("1", { nofcli: "CON EMAIL" }),
+        orphan("2", { nofcli: "SIN EMAIL", emacli: null,
+                      will_create_contact: false }),
+      ],
+      orphans_to_import: 2, with_email: 1, without_email: 1,
+    }));
+    const user = userEvent.setup();
+    render(<FactusolBulkMatchPage />);
+    await switchToOrphanMode(user);
+    await user.click(screen.getByRole("button", { name: "Ejecutar dry-run" }));
+
+    expect(await screen.findByText("Se creará empresa + contacto"))
+      .toBeInTheDocument();
+    expect(screen.getByText("Se creará solo empresa")).toBeInTheDocument();
+    expect(screen.getByText("(sin email)")).toBeInTheDocument();
+  });
+
+  it("«Solo los que tengan email» viaja al backend como filtro", async () => {
+    mockOrphanDryRun.mockResolvedValue(orphanDryRun());
+    const user = userEvent.setup();
+    render(<FactusolBulkMatchPage />);
+    await switchToOrphanMode(user);
+    // «Solo con diferencias» no aplica aquí: no hay nada previo que comparar.
+    expect(screen.queryByLabelText("Solo con diferencias")).not.toBeInTheDocument();
+
+    await user.click(screen.getByLabelText("Solo los que tengan email"));
+    await user.click(screen.getByRole("button", { name: "Ejecutar dry-run" }));
+
+    await waitFor(() => expect(mockOrphanDryRun).toHaveBeenCalledWith(
+      { filter: "only_with_email" }));
+  });
+
+  it("marcar e importar manda los codclis y resume los desenlaces", async () => {
+    mockOrphanDryRun.mockResolvedValue(orphanDryRun({
+      orphans: [orphan("1", { nofcli: "UNA" }),
+                orphan("2", { nofcli: "OTRA", emacli: null,
+                              will_create_contact: false })],
+      orphans_to_import: 2, with_email: 1, without_email: 1,
+    }));
+    mockOrphanApply.mockResolvedValue({
+      imported_company_and_contact: 1, imported_company_only: 1,
+      skipped_race: 0, imported: 2, results: [], errors: [],
+    });
+    const user = userEvent.setup();
+    render(<FactusolBulkMatchPage />);
+    await switchToOrphanMode(user);
+    await user.click(screen.getByRole("button", { name: "Ejecutar dry-run" }));
+    await user.click(await screen.findByLabelText("Seleccionar todas"));
+    await user.click(screen.getByRole("button", { name: /Aplicar seleccionadas \(2\)/ }));
+
+    await waitFor(() => expect(mockOrphanApply).toHaveBeenCalled());
+    expect(mockOrphanApply.mock.calls[0][0]).toEqual(["1", "2"]);
+    const summary = await screen.findByRole("status");
+    expect(summary).toHaveTextContent("1 empresa(s) creada(s) con contacto");
+    expect(summary).toHaveTextContent("1 empresa(s) creada(s) sin contacto");
+  });
+
+  it("el resumen enseña las omitidas por conflicto y los errores", async () => {
+    mockOrphanDryRun.mockResolvedValue(orphanDryRun());
+    mockOrphanApply.mockResolvedValue({
+      imported_company_and_contact: 0, imported_company_only: 0,
+      skipped_race: 1, imported: 0, results: [],
+      errors: [{ codcli: "9", error: "el cliente FACTUSOL 9 no existe" }],
+    });
+    const user = userEvent.setup();
+    render(<FactusolBulkMatchPage />);
+    await switchToOrphanMode(user);
+    await user.click(screen.getByRole("button", { name: "Ejecutar dry-run" }));
+    await user.click(await screen.findByLabelText("Importar ACME S.L."));
+    await user.click(screen.getByRole("button", { name: /Aplicar seleccionadas/ }));
+
+    const summary = await screen.findByRole("status");
+    expect(summary).toHaveTextContent("1 omitida(s) por conflicto");
+    expect(summary).toHaveTextContent("1 con error");
+    expect(await screen.findByText(/no existe/)).toBeInTheDocument();
+  });
+
+  it("importar 50 o más pide confirmación, con el texto de crear", async () => {
+    const many = Array.from({ length: 60 }, (_, i) =>
+      orphan(String(i), { nofcli: `EMPRESA ${i}` }));
+    mockOrphanDryRun.mockResolvedValue(orphanDryRun({
+      orphans: many, orphans_to_import: 60, with_email: 60, without_email: 0,
+    }));
+    const user = userEvent.setup();
+    render(<FactusolBulkMatchPage />);
+    await switchToOrphanMode(user);
+    await user.click(screen.getByRole("button", { name: "Ejecutar dry-run" }));
+    await user.click(await screen.findByLabelText("Seleccionar todas"));
+    await user.click(screen.getByRole("button", { name: /Aplicar seleccionadas \(60\)/ }));
+
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toHaveTextContent("creará 60 empresas nuevas en el CRM");
+    expect(mockOrphanApply).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "Sí, aplicar 60 cambios" }));
+    await waitFor(() => expect(mockOrphanApply).toHaveBeenCalled());
+    expect(mockOrphanApply.mock.calls[0][0]).toHaveLength(60);
+  });
+
+  it("cambiar de modo limpia la tabla anterior", async () => {
+    mockOrphanDryRun.mockResolvedValue(orphanDryRun());
+    const user = userEvent.setup();
+    render(<FactusolBulkMatchPage />);
+    await switchToOrphanMode(user);
+    await user.click(screen.getByRole("button", { name: "Ejecutar dry-run" }));
+    expect(await screen.findByText("ACME S.L.")).toBeInTheDocument();
+
+    await switchToCompanyMode(user);
+    expect(screen.queryByText("ACME S.L.")).not.toBeInTheDocument();
   });
 
   it("el master también funciona en el modo por empresa", async () => {
