@@ -166,3 +166,96 @@ export async function bulkCompanyAction(
     }),
   });
 }
+
+// --- deduplicar por NIF (Fase C · C-7) --------------------------------------
+
+/** Una de las empresas de un grupo de duplicados, con lo que aporta. */
+export type DuplicateCompany = {
+  id: string;
+  name: string;
+  city: string | null;
+  address_line: string | null;
+  postal_code: string | null;
+  state: string | null;
+  country: string | null;
+  website: string | null;
+  domain: string | null;
+  notes: string | null;
+  factusol_company_id: string | null;
+  source: string;
+  created_at: string;
+  contacts_count: number;
+  orders_count: number;
+  tasks_count: number;
+};
+
+export type DuplicateGroup = {
+  tax_id: string;
+  companies: DuplicateCompany[];
+};
+
+export type DuplicatesResult = {
+  total_groups: number;
+  total_companies_involved: number;
+  groups: DuplicateGroup[];
+};
+
+export type MergeResult = {
+  merged_groups: number;
+  companies_deleted: number;
+  contacts_moved: number;
+  orders_moved: number;
+  tasks_moved: number;
+  results: {
+    keep_id: string;
+    merged_ids: string[];
+    contacts_moved: number;
+    orders_moved: number;
+    tasks_moved: number;
+    filled_fields: string[];
+    discarded_factusol_codclis: string[];
+  }[];
+  errors: { keep_id: string; merge_ids: string[]; error: string }[];
+};
+
+export async function findDuplicateCompanies(): Promise<DuplicatesResult> {
+  return apiFetch<DuplicatesResult>(
+    "/api/admin/companies/duplicates?by=tax_id");
+}
+
+export async function mergeDuplicateCompanies(
+  operations: { keep_id: string; merge_ids: string[] }[],
+): Promise<MergeResult> {
+  return apiFetch<MergeResult>("/api/admin/companies/merge", {
+    method: "POST",
+    body: JSON.stringify({ operations }),
+  });
+}
+
+/** Qué empresa del grupo viene premarcada como principal.
+ *
+ *  Por orden: más pedidos (más historia comercial que conservar), más
+ *  contactos, más antigua, y por último la que tenga vínculo con FACTUSOL.
+ *  El operador puede cambiarla. */
+export function pickDefaultKeep(companies: DuplicateCompany[]): string {
+  const score = (c: DuplicateCompany): number[] => [
+    c.orders_count,
+    c.contacts_count,
+    // created_at ascendente: se niega para que «más antigua» puntúe más alto.
+    -new Date(c.created_at).getTime(),
+    c.factusol_company_id ? 1 : 0,
+  ];
+  let best = companies[0];
+  if (!best) return "";
+  let bestScore = score(best);
+  for (const c of companies.slice(1)) {
+    const s = score(c);
+    // Comparación lexicográfica: el primer criterio que difiera decide.
+    for (let i = 0; i < s.length; i += 1) {
+      if (s[i] === bestScore[i]) continue;
+      if (s[i] > bestScore[i]) { best = c; bestScore = s; }
+      break;
+    }
+  }
+  return best.id;
+}

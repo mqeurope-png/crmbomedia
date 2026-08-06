@@ -10382,3 +10382,10 @@ tr.is-inactive {
 .erp-article-ac { position: relative; }
 .erp-article-ac input { width: 100%; }
 .erp-article-ac-list { position: absolute; z-index: 30; top: 100%; left: 0; right: 0; list-style: none; margin: 2px 0 0; padding: 4px; max-height: 260px; overflow-y: auto; background: #fff; border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 24px rgba(15, 23, 42, .12); min-width: 320px; }
+
+/* Deduplicar empresas por CIF (Fase C · C-7). Cada grupo es una tarjeta
+   anidada dentro de la lista, así que se distingue con un fondo suave para
+   que no parezca que la tabla de detalle pertenece a la sección de arriba. */
+.erp-dedupe-group { background: var(--surface-2, #fafafa); margin-bottom: 12px; }
+.erp-dedupe-group .form-row { align-items: center; justify-content: space-between; }
+.erp-dedupe-group .data-table { margin-top: 10px; }
