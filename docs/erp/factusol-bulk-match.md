@@ -19,15 +19,16 @@ fuente contable y no se toca desde aquí.
 
 ---
 
-## Dos modos
+## Tres modos
 
 | Modo | Itera | Match | Cuándo |
 |---|---|---|---|
 | **Contactos por email** (por defecto) | contactos con email | `EMACLI` **exacto** | Casi siempre. Sin falsos positivos. |
 | **Empresas por NIF/nombre** | empresas | NIF exacto → email → nombre difuso | Cuando la empresa tiene NIF y no hay contacto con email. |
+| **Importar clientes que no están en el CRM** (C-6) | clientes `F_CLI` | ninguno — son los que **no** casan con nadie | Después de conciliar, para traer el resto |
 
-En los dos, lo que se actualiza es **una empresa del CRM**. Lo que cambia es
-por dónde se llega a ella.
+Los dos primeros **actualizan** una empresa que ya existe; lo que cambia es por
+dónde se llega a ella. El tercero **crea** las que faltan.
 
 ### Por qué el modo por email es el recomendado
 
@@ -191,6 +192,113 @@ revisión entera.
 
 Al terminar, la tabla se recarga: las aplicadas ya están vinculadas y salen de
 la lista.
+
+---
+
+## Modo 3: importar las F_CLI que no están en el CRM
+
+Los modos 1 y 2 concilian lo que ya existe en los dos lados. Cuando terminas
+con ellos quedan **miles de clientes de FACTUSOL que nunca llegaron al CRM**:
+facturación de años que no entró por WooCommerce, ni por formularios, ni por los
+imports antiguos. Existen en la contabilidad y no existen en el CRM.
+
+Este modo los trae.
+
+### Dry-run
+
+Lista los `F_CLI` cuyo CODCLI **no está** en `companies.factusol_company_id`.
+Una sola lectura de F_CLI y una sola consulta al CRM: preguntar por cada cliente
+serían 4 500 SELECTs.
+
+Filtro propio: **«Solo los que tengan email»**. De los que no lo traen solo
+saldría una empresa sin nadie con quien hablar. Por defecto se listan todos.
+
+> «Solo con diferencias» **no aparece** en este modo: no hay nada previo con lo
+> que comparar.
+
+El resumen de arriba dice cuántas huérfanas hay, cuántas con email y cuántas
+sin, y de cuántos clientes de F_CLI salen.
+
+### Aplicar
+
+Por cada CODCLI marcado, en su **propia transacción**:
+
+1. **Empresa** con los datos de F_CLI: `NOFCLI` → `name` (con `NOCCLI` de
+   respaldo, y `Cliente <codcli>` si no hay ninguno), `NIFCLI` → `tax_id`,
+   `DOMCLI` → `address_line`, `POBCLI` → `city`, `CPOCLI` → `postal_code`,
+   `PROCLI` → `state`, `PAICLI` → `country`.
+   Queda ya vinculada: `factusol_company_id = <codcli>`,
+   `source = factusol_import`, `factusol_sync_source = import_orphans`.
+2. **Contacto**, solo si hay `EMACLI`: `first_name` = el nombre de la empresa
+   (F_CLI guarda razones sociales, no personas — sin apellido, se edita
+   después), `email` = `EMACLI`, `phone` = `TELCLI`.
+3. **Etiqueta `factusol_import`** al contacto (se crea la primera vez y se
+   reutiliza después).
+
+Confirmación a partir de 50, igual que en los otros modos.
+
+| Resultado | Cuándo |
+|---|---|
+| `imported_company_and_contact` | Había `EMACLI` y el email estaba libre |
+| `imported_company_only` | Sin contacto. `contact_skipped` dice por qué: `no_email`, `email_taken` o `disabled` |
+| `skipped_race` | Entre el dry-run y el apply alguien vinculó ese CODCLI. No se pisa, y no es un error |
+
+> **`email_taken`.** `contacts.email` es **UNIQUE**. Si ese email ya es de otro
+> contacto, no se intenta crear —el INSERT reventaría y se llevaría por delante
+> la empresa, que sí queremos— ni se le roba a su empresa actual. Se queda la
+> empresa creada y el motivo en `contact_skipped`.
+
+### Dónde acabó la etiqueta, y por qué
+
+El spec de C-6 pedía etiquetar la **empresa**. En este CRM **las etiquetas son
+de contacto**: existen `tags` y `contact_tags`, pero **no hay tabla de etiquetas
+de empresa**, y `/api/companies` no tiene filtro por tag — tiene filtro por
+`source`. Montar etiquetas de empresa sería migración + API + UI, fuera del
+alcance de C-6.
+
+Así que se hacen las dos cosas que sí funcionan hoy:
+
+| Qué | Dónde | Para qué |
+|---|---|---|
+| `source = factusol_import` | **todas** las empresas creadas | El filtro operativo: `GET /api/companies?source=factusol_import` |
+| tag `factusol_import` | el **contacto** creado | Segmentación por etiqueta, donde el CRM sabe guardarlas |
+
+**El filtro bueno es el de `source`**: cubre el 100% del lote, incluidas las
+empresas sin email, que no tienen contacto que etiquetar.
+
+### Cómo revertir un lote de importación
+
+```sql
+SELECT target_id, created_at, metadata_json
+FROM audit_logs
+WHERE action = 'erp.factusol_bulk_import_orphan'
+ORDER BY created_at DESC;
+```
+
+`metadata_json` trae `{codcli, created_company_id, created_contact_id,
+company_name, tag}`. `created_contact_id` es `null` cuando no se creó contacto.
+
+Aquí **no hay `previous_values`**: no existía nada antes. Se deshace borrando,
+y en este orden (la asignación de etiqueta y el contacto cuelgan de la empresa):
+
+```sql
+DELETE ct FROM contact_tags ct
+  JOIN contacts c ON c.id = ct.contact_id
+ WHERE c.id = '<created_contact_id>';
+DELETE FROM contacts  WHERE id = '<created_contact_id>';
+DELETE FROM companies WHERE id = '<created_company_id>';
+```
+
+Para deshacer el lote **entero** de una vez, el `source` es el ancla — y por eso
+conviene no reutilizarlo para nada más:
+
+```sql
+-- Mira primero qué se va a llevar por delante.
+SELECT COUNT(*) FROM companies WHERE source = 'factusol_import';
+```
+
+La etiqueta `factusol_import` en sí no hace falta borrarla: sin asignaciones
+queda huérfana y no molesta.
 
 ---
 

@@ -974,6 +974,76 @@ export async function bulkMatchByEmailApply(
   });
 }
 
+// --- C-6: importar F_CLI huérfanas ------------------------------------------
+
+/** Cliente de FACTUSOL que no tiene ninguna empresa en el CRM. */
+export type FactusolOrphan = {
+  codcli: string | null;
+  nofcli: string | null;
+  noccli: string | null;
+  nifcli: string | null;
+  domcli: string | null;
+  pobcli: string | null;
+  cpocli: string | null;
+  procli: string | null;
+  paicli: string | null;
+  emacli: string | null;
+  telcli: string | null;
+  /** `true` si trae `EMACLI`: sin email no se crea contacto. */
+  will_create_contact: boolean;
+};
+
+export type ImportOrphansDryRun = {
+  total_factusol_clientes: number;
+  linked_already: number;
+  orphans_to_import: number;
+  with_email: number;
+  without_email: number;
+  orphans: FactusolOrphan[];
+  ejercicio: string;
+};
+
+export type ImportOrphansResult = {
+  codcli: string;
+  result:
+    | "imported_company_and_contact"
+    | "imported_company_only"
+    | "skipped_race";
+  company_id: string | null;
+  contact_id: string | null;
+  /** Por qué no hubo contacto: sin email, email ya usado, o desactivado. */
+  contact_skipped?: "no_email" | "email_taken" | "disabled";
+  detail?: string;
+};
+
+export async function importOrphansDryRun(
+  body: { filter?: "all" | "only_with_email" } = {},
+): Promise<ImportOrphansDryRun> {
+  return apiFetch("/api/erp/factusol/bulk-match/import-orphans/dry-run", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function importOrphansApply(
+  codclis: string[],
+  createContactsIfEmail = true,
+): Promise<{
+  imported_company_and_contact: number;
+  imported_company_only: number;
+  skipped_race: number;
+  imported: number;
+  results: ImportOrphansResult[];
+  errors: { codcli: string; error: string }[];
+}> {
+  return apiFetch("/api/erp/factusol/bulk-match/import-orphans/apply", {
+    method: "POST",
+    body: JSON.stringify({
+      codclis, create_contacts_if_email: createContactsIfEmail,
+    }),
+  });
+}
+
 export async function bulkMatchApply(
   operations: {
     crm_company_id: string;

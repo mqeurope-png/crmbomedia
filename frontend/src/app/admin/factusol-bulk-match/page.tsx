@@ -10,14 +10,18 @@ import {
   bulkMatchByEmailApply,
   bulkMatchByEmailDryRun,
   bulkMatchDryRun,
+  importOrphansApply,
+  importOrphansDryRun,
   type BulkMatchByEmailDryRun,
   type BulkMatchByEmailRow,
   type BulkMatchCandidate,
   type BulkMatchDryRun,
   type BulkMatchRow,
+  type FactusolOrphan,
+  type ImportOrphansDryRun,
 } from "../../lib/erpApi";
 
-type Mode = "by_company" | "by_contact_email";
+type Mode = "by_company" | "by_contact_email" | "import_orphans";
 type Filter = "unlinked_only" | "all";
 
 /** Selección del operador por fila: qué candidato y qué campos. */
@@ -109,6 +113,8 @@ export default function FactusolBulkMatchPage() {
   const [onlyWithDifferences, setOnlyWithDifferences] = useState(false);
   const [data, setData] = useState<BulkMatchDryRun | null>(null);
   const [emailData, setEmailData] = useState<BulkMatchByEmailDryRun | null>(null);
+  const [orphanData, setOrphanData] = useState<ImportOrphansDryRun | null>(null);
+  const [orphansOnlyWithEmail, setOrphansOnlyWithEmail] = useState(false);
   const [selections, setSelections] = useState<Record<string, Selection>>({});
   const [expanded, setExpanded] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
@@ -123,10 +129,23 @@ export default function FactusolBulkMatchPage() {
   async function runDryRun() {
     setRunning(true);
     try {
-      if (mode === "by_contact_email") {
+      if (mode === "import_orphans") {
+        const result = await importOrphansDryRun({
+          filter: orphansOnlyWithEmail ? "only_with_email" : "all",
+        });
+        setOrphanData(result);
+        setData(null);
+        setEmailData(null);
+        setSelections(Object.fromEntries(
+          result.orphans
+            .filter((o) => o.codcli)
+            .map((o) => [o.codcli as string, emptySelection(o.codcli as string)]),
+        ));
+      } else if (mode === "by_contact_email") {
         const result = await bulkMatchByEmailDryRun();
         setEmailData(result);
         setData(null);
+        setOrphanData(null);
         setSelections(Object.fromEntries(result.matches.map((m) => [
           m.contact_id,
           emptySelection(pickDefaultCodcli(m.candidates)),
@@ -135,6 +154,7 @@ export default function FactusolBulkMatchPage() {
         const result = await bulkMatchDryRun({ filter, batch_size: 200 });
         setData(result);
         setEmailData(null);
+        setOrphanData(null);
         setSelections(Object.fromEntries(result.matches.map((m) => [
           m.crm_company_id,
           emptySelection(pickDefaultCodcli(m.candidates)),
@@ -161,6 +181,11 @@ export default function FactusolBulkMatchPage() {
       m.candidates.some((c) => c.differing_fields > 0));
   }, [emailData, onlyWithDifferences]);
 
+  /** El modo importación no filtra por diferencias: no hay nada previo con
+   *  qué compararse. Lo que sí filtra —«solo con email»— lo aplica el backend
+   *  en el dry-run, así que aquí llega ya resuelto. */
+  const orphanRows = useMemo(() => orphanData?.orphans ?? [], [orphanData]);
+
   const selectedCount = Object.values(selections).filter((s) => s.apply).length;
 
   /** Filas **visibles** (respeta «Solo con diferencias») que se pueden marcar.
@@ -169,10 +194,15 @@ export default function FactusolBulkMatchPage() {
    *  Desde C-5-fix5 son todas: el único caso que estaba bloqueado —empresa
    *  vinculada a otro CODCLI— ahora se reasigna en vez de saltarse. */
   const applicableIds = useMemo(
-    () => (mode === "by_contact_email"
-      ? emailRows.map((m) => m.contact_id)
-      : companyRows.map((m) => m.crm_company_id)),
-    [mode, emailRows, companyRows],
+    () => {
+      if (mode === "import_orphans") {
+        return orphanRows.map((o) => o.codcli).filter((c): c is string => !!c);
+      }
+      return mode === "by_contact_email"
+        ? emailRows.map((m) => m.contact_id)
+        : companyRows.map((m) => m.crm_company_id);
+    },
+    [mode, emailRows, companyRows, orphanRows],
   );
 
   const applicableSelected =
@@ -206,13 +236,28 @@ export default function FactusolBulkMatchPage() {
 
   async function applySelected() {
     setConfirming(false);
-    const picked = Object.entries(selections)
-      .filter(([, s]) => s.apply && s.codcli && s.fields.size > 0);
+    // En importación no hay campos que elegir: la empresa nace entera.
+    const picked = Object.entries(selections).filter(([, s]) =>
+      s.apply && s.codcli
+      && (mode === "import_orphans" || s.fields.size > 0));
     if (picked.length === 0) return;
     setApplying(true);
     setError(null);
     try {
-      if (mode === "by_contact_email") {
+      if (mode === "import_orphans") {
+        const r = await importOrphansApply(picked.map(([codcli]) => codcli));
+        setSummary([
+          `${r.imported_company_and_contact} empresa(s) creada(s) con contacto`,
+          `${r.imported_company_only} empresa(s) creada(s) sin contacto`,
+          ...(r.skipped_race
+            ? [`${r.skipped_race} omitida(s) por conflicto`]
+            : []),
+          ...(r.errors.length ? [`${r.errors.length} con error`] : []),
+        ].join(" · ") + ".");
+        if (r.errors.length) {
+          setError(r.errors.map((e) => `${e.codcli}: ${e.error}`).join(" · "));
+        }
+      } else if (mode === "by_contact_email") {
         const r = await bulkMatchByEmailApply(picked.map(([contact_id, s]) => ({
           contact_id, factusol_codcli: s.codcli, fields_to_sync: [...s.fields],
         })));
@@ -267,7 +312,8 @@ export default function FactusolBulkMatchPage() {
   }
 
   const byEmail = mode === "by_contact_email";
-  const loaded = byEmail ? emailData : data;
+  const orphans = mode === "import_orphans";
+  const loaded = orphans ? orphanData : byEmail ? emailData : data;
   const masterCheckbox = (
     <MasterCheckbox checked={allSelected} indeterminate={someSelected}
                     disabled={applying || applicableIds.length === 0}
@@ -292,15 +338,19 @@ export default function FactusolBulkMatchPage() {
                       setMode(e.target.value as Mode);
                       setData(null);
                       setEmailData(null);
+                      setOrphanData(null);
                       setSelections({});
                     }}>
               <option value="by_contact_email">
                 Contactos por email (recomendado)
               </option>
               <option value="by_company">Empresas por NIF/nombre</option>
+              <option value="import_orphans">
+                Importar clientes de FACTUSOL que no están en el CRM
+              </option>
             </select>
           </label>
-          {!byEmail ? (
+          {!byEmail && !orphans ? (
             <label className="field">
               <span>Empresas</span>
               <select value={filter} aria-label="Empresas"
@@ -310,20 +360,32 @@ export default function FactusolBulkMatchPage() {
               </select>
             </label>
           ) : null}
-          <label className="field-toggle">
-            <input type="checkbox" checked={onlyWithDifferences}
-                   onChange={(e) => setOnlyWithDifferences(e.target.checked)} />
-            <span>Solo con diferencias</span>
-          </label>
+          {/* «Solo con diferencias» no aplica a la importación: no hay nada
+              previo con qué compararse. Su filtro es el del email. */}
+          {orphans ? (
+            <label className="field-toggle">
+              <input type="checkbox" checked={orphansOnlyWithEmail}
+                     onChange={(e) => setOrphansOnlyWithEmail(e.target.checked)} />
+              <span>Solo los que tengan email</span>
+            </label>
+          ) : (
+            <label className="field-toggle">
+              <input type="checkbox" checked={onlyWithDifferences}
+                     onChange={(e) => setOnlyWithDifferences(e.target.checked)} />
+              <span>Solo con diferencias</span>
+            </label>
+          )}
         </div>
         <button type="button" className="button" disabled={running}
                 onClick={() => { setError(null); setSummary(null); runDryRun(); }}>
           {running ? "Analizando…" : "Ejecutar dry-run"}
         </button>
         <p className="muted small">
-          {byEmail
-            ? "Busca el email del contacto en FACTUSOL y actualiza la empresa a la que pertenece. Match exacto: sin falsos positivos."
-            : "Busca por NIF exacto o nombre parecido. El nombre parecido es una sugerencia — revísala antes de marcar."}
+          {orphans
+            ? "Trae al CRM los clientes de FACTUSOL que no tiene ninguna empresa. Crea la empresa con los datos de F_CLI y, si hay email, un contacto etiquetado «factusol_import». Las empresas creadas quedan con source «factusol_import»: filtrables en /companies?source=factusol_import."
+            : byEmail
+              ? "Busca el email del contacto en FACTUSOL y actualiza la empresa a la que pertenece. Match exacto: sin falsos positivos."
+              : "Busca por NIF exacto o nombre parecido. El nombre parecido es una sugerencia — revísala antes de marcar."}
           {" "}El dry-run <strong>no modifica nada</strong>.
         </p>
       </section>
@@ -333,7 +395,14 @@ export default function FactusolBulkMatchPage() {
 
       {loaded ? (
         <section className="erp-card">
-          {emailData ? (
+          {orphanData ? (
+            <p className="muted small">
+              <strong>{orphanData.orphans_to_import}</strong> F_CLI huérfana(s) ·{" "}
+              {orphanData.with_email} con email · {orphanData.without_email} sin
+              email. ({orphanData.total_factusol_clientes} cliente(s) en
+              FACTUSOL, {orphanData.linked_already} ya vinculado(s) al CRM.)
+            </p>
+          ) : emailData ? (
             <p className="muted small">
               {emailData.total_contacts_with_email} contacto(s) con email ·{" "}
               <strong>{emailData.matches.length}</strong> con match{" "}
@@ -359,12 +428,18 @@ export default function FactusolBulkMatchPage() {
             </p>
           ) : null}
 
-          {(byEmail ? emailRows.length : companyRows.length) === 0 ? (
+          {(orphans ? orphanRows.length
+                    : byEmail ? emailRows.length : companyRows.length) === 0 ? (
             <p className="muted">Sin resultados con estos filtros.</p>
           ) : (
             <table className="data-table">
               <thead>
-                {byEmail ? (
+                {orphans ? (
+                  <tr>
+                    <th>{masterCheckbox}</th><th>Nº FACTUSOL</th><th>Nombre</th>
+                    <th>NIF</th><th>Ciudad</th><th>Email</th><th>Se creará</th>
+                  </tr>
+                ) : byEmail ? (
                   <tr>
                     <th>{masterCheckbox}</th><th>Contacto CRM</th><th>Email</th>
                     <th>Empresa actual</th><th>Cliente FACTUSOL</th>
@@ -379,7 +454,16 @@ export default function FactusolBulkMatchPage() {
                 )}
               </thead>
               <tbody>
-                {byEmail
+                {orphans
+                  ? orphanRows.map((o) => (
+                      <OrphanRowView
+                        key={o.codcli}
+                        row={o}
+                        selection={selections[o.codcli ?? ""]}
+                        onUpdate={(patch) => update(o.codcli ?? "", patch)}
+                      />
+                    ))
+                  : byEmail
                   ? emailRows.map((m) => (
                       <ByEmailRowView
                         key={m.contact_id}
@@ -429,10 +513,14 @@ export default function FactusolBulkMatchPage() {
           <div className="modal-dialog">
             <h2>Confirmar aplicación masiva</h2>
             <p>
-              Vas a aplicar <strong>{selectedCount}</strong> operaciones. Esto
-              modificará {selectedCount} empresas del CRM con los datos de
-              FACTUSOL. Los cambios son reversibles solo via SQL manual
-              (audit_logs). ¿Continuar?
+              Vas a aplicar <strong>{selectedCount}</strong> operaciones. Esto{" "}
+              {orphans
+                ? `creará ${selectedCount} empresas nuevas en el CRM con los `
+                  + "datos de FACTUSOL"
+                : `modificará ${selectedCount} empresas del CRM con los datos `
+                  + "de FACTUSOL"}
+              . Los cambios son reversibles solo via SQL manual (audit_logs).
+              ¿Continuar?
             </p>
             <div className="modal-actions">
               <button type="button" className="button secondary"
@@ -448,6 +536,45 @@ export default function FactusolBulkMatchPage() {
         </div>
       ) : null}
     </main>
+  );
+}
+
+/** Fila del modo importación: un cliente de FACTUSOL que no está en el CRM.
+ *
+ *  No hay diff que enseñar —no existe nada previo— así que tampoco hay
+ *  «Ver diferencias» ni casillas por campo: la empresa nace con todo F_CLI. */
+function OrphanRowView({
+  row, selection, onUpdate,
+}: {
+  row: FactusolOrphan;
+  selection?: Selection;
+  onUpdate: (patch: Partial<Selection>) => void;
+}) {
+  if (!selection) return null;
+  const name = row.nofcli || row.noccli || `Cliente ${row.codcli}`;
+
+  return (
+    <tr>
+      <td>
+        <input type="checkbox" checked={selection.apply}
+               aria-label={`Importar ${name}`}
+               onChange={(e) => onUpdate({ apply: e.target.checked })} />
+      </td>
+      <td>nº {row.codcli}</td>
+      <td><strong>{name}</strong></td>
+      <td>{row.nifcli || "—"}</td>
+      <td>{row.pobcli || "—"}</td>
+      <td className="erp-bulk-email">
+        {row.emacli || <span className="muted">(sin email)</span>}
+      </td>
+      <td>
+        <span className="badge active">
+          {row.will_create_contact
+            ? "Se creará empresa + contacto"
+            : "Se creará solo empresa"}
+        </span>
+      </td>
+    </tr>
   );
 }
 
