@@ -76,6 +76,35 @@ no aplica el filtro por alias. El comercial con >1 alias tiene un dropdown
   `history.list` desde el cursor por si el push falla o el Watch caduca. Si
   recupera >0 mensajes, emite un warning (señal de que el push no funciona).
 
+## Arquitectura de workers (RQ)
+
+Los jobs corren en workers RQ; **cada worker procesa sus colas de forma
+secuencial** en el orden declarado. Por eso el reparto de colas entre workers
+importa: si una cola con trabajo constante va delante de otra en el MISMO
+worker, la de atrás se queda esperando.
+
+| Worker | Colas | Por qué separado |
+|---|---|---|
+| `worker-sync` | general: `agilecrm:*`, `brevo:*`, `freshdesk:*`, `factusol:sync_invoices`, `woocommerce:*`, `genei:*`, `gmail:*`, `emails:snooze_sweep`, … | cola compartida de integraciones |
+| **`worker-gmail`** | **exclusivo `gmail:*`** (`process_history`, `renew_watches`, `backfill_historic`, `backfill_per_contact`, `token_expiry_check`, `admin_digest`, `sync_aliases`, `poll_fallback`) | **PR-CRM-GMAIL-fix1** — evita que el push en tiempo real quede bloqueado |
+| `worker-workflows` | `workflows:dispatch` / `execute` / `scheduler` | aislado por historia previa (throughput de automatizaciones) |
+| `worker-factusol` | `factusol:writes` | **concurrencia 1** obligatoria (numeración CODFAC secuencial) |
+
+**Por qué `worker-gmail` (PR-CRM-GMAIL-fix1).** Tras el deploy de CRM-GMAIL, el
+push llegaba (200 OK, JWT válido) y `gmail:process_history` se encolaba, pero
+`worker-sync` estaba saturado con el bucle de `agilecrm:sync_contacts`
+(paginación de miles de contactos, siempre con trabajo pendiente y declarada
+antes que las colas Gmail). Como RQ vacía las colas en orden dentro de un
+worker, `gmail:process_history` acumulaba jobs sin ejecutarse (`LLEN
+rq:queue:gmail:process_history` crecía) y el mail nunca aparecía en tiempo real.
+
+`worker-gmail` es un worker dedicado **solo** a `gmail:*`. **No se quitan** esas
+colas de `worker-sync`: RQ **reparte** los jobs de una cola entre todos los
+workers que la escuchan, así que tener ambos escuchando `gmail:*` suma capacidad
+y da resiliencia (si un worker cae, el otro sigue) sin tocar la config anterior.
+Reutiliza la imagen `crmbomedia-api:latest` (no necesita build propio) y monta el
+volumen `crmbo_email_attachments` para los adjuntos del backfill.
+
 ## Backlog (fuera de este PR)
 
 - Convertir el remitente de un email huérfano en lead desde la propia UI.

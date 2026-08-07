@@ -164,6 +164,42 @@ services:
       redis:
         condition: service_healthy
 
+  # PR-CRM-GMAIL-fix1. Worker dedicado SOLO a colas Gmail (post PR #329).
+  # Motivo: el worker-sync se satura con el bucle de sync AgileCRM
+  # (paginación de miles de contactos) y RQ procesa colas secuencial
+  # dentro de un worker → gmail:process_history acumulaba jobs sin
+  # procesar (Pub/Sub llegaba pero el mail nunca aparecía en CRM en
+  # real-time). worker-sync sigue escuchando estas colas también; RQ
+  # reparte jobs entre workers cuando 2+ escuchan la misma cola, así
+  # ganamos capacidad sin tocar la config existente.
+  worker-gmail:
+    build: ./backend
+    env_file: .env
+    environment:
+      DATABASE_URL: mysql+pymysql://crm:crm@db:3306/crm
+      REDIS_URL: redis://redis:6379/0
+    command:
+      - rq
+      - worker
+      - --with-scheduler
+      - --url
+      - redis://redis:6379/0
+      - gmail:process_history
+      - gmail:renew_watches
+      - gmail:backfill_historic
+      - gmail:backfill_per_contact
+      - gmail:token_expiry_check
+      - gmail:admin_digest
+      - gmail:sync_aliases
+      - gmail:poll_fallback
+    volumes:
+      - crmbo_email_attachments:/var/lib/crmbo/attachments
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
   frontend:
     build:
       context: ./frontend
