@@ -42,6 +42,35 @@ def create_reset_token() -> str:
     return secrets.token_urlsafe(32)
 
 
+def generate_temp_password(length: int = 14) -> str:
+    """CRM-PERFIL — contraseña temporal aleatoria que cumple la política
+    (>=12 chars, mayúscula + minúscula + dígito) y es legible (sin caracteres
+    ambiguos I/O/l/0/1). La usa el reset de admin: se muestra una sola vez."""
+    from app.core.passwords import validate_password_policy  # noqa: PLC0415
+
+    upper = "ABCDEFGHJKLMNPQRSTUVWXYZ"
+    lower = "abcdefghijkmnpqrstuvwxyz"
+    digits = "23456789"
+    alphabet = upper + lower + digits
+    rng = secrets.SystemRandom()
+    for _ in range(20):
+        chars = [
+            secrets.choice(upper),
+            secrets.choice(lower),
+            secrets.choice(digits),
+        ]
+        chars += [secrets.choice(alphabet) for _ in range(max(0, length - 3))]
+        rng.shuffle(chars)
+        candidate = "".join(chars)
+        try:
+            validate_password_policy(candidate)
+        except Exception:  # noqa: BLE001
+            continue
+        return candidate
+    # Fallback prácticamente inalcanzable (garantiza los 3 grupos + longitud).
+    return "Aa2" + secrets.token_urlsafe(max(9, length - 3))
+
+
 def hash_reset_token(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 

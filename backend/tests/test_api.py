@@ -2181,39 +2181,37 @@ def test_audit_log_records_login_and_crm_actions(client: TestClient):
 
 
 def test_change_current_user_password(client: TestClient):
-    headers = auth_headers(client, "user")
+    # CRM-PERFIL — el comercial (user) YA NO puede cambiar su contraseña.
+    denied = client.post(
+        "/api/auth/change-password",
+        json={"current_password": "password123", "new_password": "ChangedPass123!"},
+        headers=auth_headers(client, "user"),
+    )
+    assert denied.status_code == 403
+    assert denied.json()["detail"]["code"] == "requires_admin"
 
+    # El admin sí puede cambiar la suya (verifica la actual).
+    admin_headers = auth_headers(client, "admin")
     changed = client.post(
         "/api/auth/change-password",
         json={"current_password": "password123", "new_password": "ChangedPass123!"},
-        headers=headers,
+        headers=admin_headers,
     )
-    login_response = client.post(
-        "/api/auth/login", json={"email": "user@example.com", "password": "ChangedPass123!"}
-    )
-
     assert changed.status_code == 200
-    assert login_response.status_code == 200
 
 
 def test_password_reset_request_and_confirm(client: TestClient):
+    # CRM-PERFIL — flujo público de reset retirado: ambos endpoints 403.
     requested = client.post(
         "/api/auth/password-reset/request", json={"email": "viewer@example.com"}
     )
-    token = requested.json()["reset_token"]
-
     confirmed = client.post(
         "/api/auth/password-reset/confirm",
-        json={"token": token, "new_password": "ResetPass123!Z"},
+        json={"token": "x" * 16, "new_password": "ResetPass123!Z"},
     )
-    login_response = client.post(
-        "/api/auth/login", json={"email": "viewer@example.com", "password": "ResetPass123!Z"}
-    )
-
-    assert requested.status_code == 200
-    assert token
-    assert confirmed.status_code == 200
-    assert login_response.status_code == 200
+    assert requested.status_code == 403
+    assert confirmed.status_code == 403
+    assert requested.json()["detail"]["code"] == "password_reset_disabled"
 
 
 def test_admin_can_deactivate_and_reactivate_user(client: TestClient):

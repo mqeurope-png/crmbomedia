@@ -4,6 +4,7 @@ import {
   Ban,
   CalendarClock,
   KeyRound,
+  Lock,
   PenLine,
   ShieldCheck,
 } from "lucide-react";
@@ -19,16 +20,19 @@ import {
 } from "../lib/emailTrackingApi";
 import { extractErrorMessage } from "../lib/errors";
 
-/** Account hub — quick links to password + 2FA + Google Calendar.
+/** Account hub.
  *
- * Lives at `/account` because `/account/security` and
- * `/account/password` already existed and there was no parent index;
- * the Google integration needs one too. */
+ * CRM-PERFIL — el comercial ve su perfil en SOLO LECTURA salvo la firma (y su
+ * 2FA, que queda fuera de este sprint). Todo lo demás (contraseña, alias,
+ * calendario, preferencias) lo gestiona el administrador desde /admin/users.
+ * El admin sigue viendo su propia cuenta con todo editable. */
 export default function AccountPage() {
   const [user, setUser] = useState<User | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [includeUnsub, setIncludeUnsub] = useState(false);
   const [prefsSaving, setPrefsSaving] = useState(false);
+
+  const isAdmin = user?.role === "admin";
 
   useEffect(() => {
     getCurrentUser()
@@ -52,8 +56,6 @@ export default function AccountPage() {
       });
       setIncludeUnsub(updated.email_include_unsubscribe_default);
     } catch (err) {
-      // Roll the checkbox back if the API rejects — the operator's
-      // mental model trusts what they see, so we keep state honest.
       setIncludeUnsub((prev) => !next || prev);
       setError(
         extractErrorMessage(err, "No se pudo guardar tu preferencia."),
@@ -72,6 +74,13 @@ export default function AccountPage() {
     );
   }
 
+  const managedNote = (
+    <p className="muted small">
+      <Lock size={11} aria-hidden /> Gestionado por el administrador. Contacta
+      con soporte interno para modificarlo.
+    </p>
+  );
+
   return (
     <main className="shell narrow">
       <PageHeader
@@ -80,7 +89,16 @@ export default function AccountPage() {
         description={user ? user.email : undefined}
       />
 
-      {/* PR-OAuth-Permisos-Admin Items 9 + 12. Banner de estado Gmail. */}
+      {/* Banner permanente para el comercial: perfil gestionado por admin. */}
+      {user && !isAdmin ? (
+        <div className="info-state account-managed-banner" role="note">
+          Este perfil está gestionado por el administrador. Solo puedes editar
+          tu <strong>firma</strong>. Para cambiar tu contraseña, tus alias o el
+          calendario, pídelo al administrador.
+        </div>
+      ) : null}
+
+      {/* Banner de estado Gmail (se auto-oculta para no-admin). */}
       <GoogleConnectionBanner />
 
       <section className="account-grid">
@@ -90,12 +108,18 @@ export default function AccountPage() {
               <KeyRound size={16} aria-hidden /> Contraseña
             </h2>
           </header>
-          <p className="muted small">
-            Cambia la contraseña que usas para entrar al CRM.
-          </p>
-          <Link className="button small" href="/account/password">
-            Cambiar contraseña
-          </Link>
+          {isAdmin ? (
+            <>
+              <p className="muted small">
+                Cambia la contraseña que usas para entrar al CRM.
+              </p>
+              <Link className="button small" href="/account/password">
+                Cambiar contraseña
+              </Link>
+            </>
+          ) : (
+            managedNote
+          )}
         </article>
 
         <article className="card">
@@ -133,33 +157,53 @@ export default function AccountPage() {
               <Ban size={16} aria-hidden /> Preferencias de envío
             </h2>
           </header>
-          <label className="account-pref-row">
-            <input
-              type="checkbox"
-              checked={includeUnsub}
-              disabled={prefsSaving}
-              onChange={(e) => handleTogglePref(e.target.checked)}
-            />
-            <span>
-              <strong>Incluir opción de baja por defecto en mis emails.</strong>
-              <span className="muted small">
-                {" "}Si lo activas, cada email que envíes incluirá enlace de
-                desuscripción y la cabecera <code>List-Unsubscribe</code>.
-                Recomendado para newsletters / mailings; déjalo apagado para
-                correos 1-a-1 normales.
+          {isAdmin ? (
+            <label className="account-pref-row">
+              <input
+                type="checkbox"
+                checked={includeUnsub}
+                disabled={prefsSaving}
+                onChange={(e) => handleTogglePref(e.target.checked)}
+              />
+              <span>
+                <strong>Incluir opción de baja por defecto en mis emails.</strong>
+                <span className="muted small">
+                  {" "}Si lo activas, cada email que envíes incluirá enlace de
+                  desuscripción y la cabecera <code>List-Unsubscribe</code>.
+                </span>
               </span>
-            </span>
-          </label>
+            </label>
+          ) : (
+            <>
+              <p className="account-pref-readonly">
+                Incluir opción de baja por defecto:{" "}
+                <strong>{includeUnsub ? "Sí" : "No"}</strong>
+              </p>
+              {managedNote}
+            </>
+          )}
         </article>
 
-        <article className="card account-card-wide">
-          <header className="section-title">
-            <h2>
-              <CalendarClock size={16} aria-hidden /> Google Calendar
-            </h2>
-          </header>
-          <GoogleCalendarSection />
-        </article>
+        {/* Calendario / alias Google: editable solo para admin. */}
+        {isAdmin ? (
+          <article className="card account-card-wide">
+            <header className="section-title">
+              <h2>
+                <CalendarClock size={16} aria-hidden /> Google Calendar
+              </h2>
+            </header>
+            <GoogleCalendarSection />
+          </article>
+        ) : (
+          <article className="card account-card-wide">
+            <header className="section-title">
+              <h2>
+                <CalendarClock size={16} aria-hidden /> Google Calendar y alias
+              </h2>
+            </header>
+            {managedNote}
+          </article>
+        )}
       </section>
     </main>
   );

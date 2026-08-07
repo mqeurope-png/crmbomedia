@@ -300,6 +300,12 @@ def upsert_alias_preferences(
     payload: AliasPreferencesPayload,
     request: Request,
     session: Session = Depends(get_session),
+    # CRM-PERFIL — endpoint /me de prefs Send-As del composer (auto-sincronizado
+    # desde Gmail). NO se bloquea a nivel API: es per-usuario y romperlo dejaría
+    # sin remitente al comercial. El riesgo de «desconfiguración» manual se
+    # elimina quitando el selector del /account readonly (frontend). El control
+    # de PROPIEDAD de alias (inbound `user_email_aliases`) ya es admin-only
+    # (CRM-GMAIL), igual que conectar/desconectar la cuenta Google org.
     current_user: User = Depends(require_user),
 ) -> list[EmailAlias]:
     """Upsert the user's alias preferences in one shot.

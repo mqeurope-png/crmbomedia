@@ -50,6 +50,11 @@ export function UserMenu({ user }: Props) {
     .join("")
     .toUpperCase();
 
+  // CRM-PERFIL — el auto-servicio de contraseña queda reservado al admin.
+  // El comercial ya no puede cambiar su propia contraseña (backend 403), así
+  // que ocultamos el acceso directo para no ofrecer una acción que fallará.
+  const isAdmin = user.role === "admin";
+
   return (
     <div ref={wrapper} className="user-menu">
       <button
@@ -80,14 +85,16 @@ export function UserMenu({ user }: Props) {
           >
             <UserIcon size={14} aria-hidden /> Mi cuenta
           </Link>
-          <Link
-            href="/account/password"
-            role="menuitem"
-            className="user-menu-item"
-            onClick={() => setOpen(false)}
-          >
-            <KeyRound size={14} aria-hidden /> Cambiar contraseña
-          </Link>
+          {isAdmin ? (
+            <Link
+              href="/account/password"
+              role="menuitem"
+              className="user-menu-item"
+              onClick={() => setOpen(false)}
+            >
+              <KeyRound size={14} aria-hidden /> Cambiar contraseña
+            </Link>
+          ) : null}
           <Link
             href="/account/security"
             role="menuitem"

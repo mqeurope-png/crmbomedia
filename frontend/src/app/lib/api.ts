@@ -1012,24 +1012,21 @@ export async function adminUpdateUserPassword(id: string, newPassword: string) {
   });
 }
 
+// CRM-PERFIL — el admin resetea la contraseña de un usuario a una aleatoria y
+// la recibe UNA sola vez para comunicársela (no se vuelve a mostrar).
+export async function adminResetUserPassword(
+  id: string,
+): Promise<{ password: string; message: string }> {
+  return apiFetch<{ password: string; message: string }>(
+    `/api/users/${id}/reset-password`,
+    { method: "POST" },
+  );
+}
+
 export async function changePassword(currentPassword: string, newPassword: string) {
   return apiFetch<{ message: string }>("/api/auth/change-password", {
     method: "POST",
     body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
-  });
-}
-
-export async function requestPasswordReset(email: string): Promise<{ message: string; reset_token?: string }> {
-  return apiFetch<{ message: string; reset_token?: string }>("/api/auth/password-reset/request", {
-    method: "POST",
-    body: JSON.stringify({ email }),
-  });
-}
-
-export async function confirmPasswordReset(token: string, newPassword: string) {
-  return apiFetch<{ message: string }>("/api/auth/password-reset/confirm", {
-    method: "POST",
-    body: JSON.stringify({ token, new_password: newPassword }),
   });
 }
 

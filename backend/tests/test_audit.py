@@ -103,19 +103,19 @@ def test_login_failed_is_recorded_with_reason(client: TestClient):
 
 
 def test_password_change_audits_with_actor(client: TestClient):
-    headers = auth_headers(client, "user")
+    # CRM-PERFIL — change-password es admin-only; el actor del audit es admin.
+    admin_headers = auth_headers(client, "admin")
     response = client.post(
         "/api/auth/change-password",
         json={
             "current_password": DEFAULT_PASSWORD,
             "new_password": STRONG_PASSWORD,
         },
-        headers=headers,
+        headers=admin_headers,
     )
     assert response.status_code == 200
-    admin_headers = auth_headers(client, "admin")
     rows = _fetch_audits(client, admin_headers, action=Action.AUTH_PASSWORD_CHANGED)
-    assert any(r["actor_email"] == "user@example.com" for r in rows)
+    assert any(r["actor_email"] == "admin@example.com" for r in rows)
 
 
 def test_user_lifecycle_events_recorded(client: TestClient):

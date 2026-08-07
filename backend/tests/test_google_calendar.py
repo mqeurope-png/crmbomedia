@@ -373,10 +373,17 @@ def test_select_calendar_persists_choice(
         lambda *args, **kwargs: fake_client,
     )
 
-    response = client.patch(
+    # CRM-PERFIL — seleccionar calendario es admin-only.
+    denied = client.patch(
         "/api/integrations/google/calendar",
         json={"calendar_id": "cal-123"},
         headers=auth_headers(client, "user"),
+    )
+    assert denied.status_code == 403
+    response = client.patch(
+        "/api/integrations/google/calendar",
+        json={"calendar_id": "cal-123"},
+        headers=auth_headers(client, "admin"),
     )
     assert response.status_code == 200, response.text
     body = response.json()
@@ -403,7 +410,7 @@ def test_select_calendar_rejects_id_not_in_user_account(
     response = client.patch(
         "/api/integrations/google/calendar",
         json={"calendar_id": "fake-cal-id"},
-        headers=auth_headers(client, "user"),
+        headers=auth_headers(client, "admin"),
     )
     assert response.status_code == 400
 

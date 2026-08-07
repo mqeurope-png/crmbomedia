@@ -29,7 +29,7 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
 from app.core.audit import Action, record_event
-from app.core.auth import require_admin, require_viewer
+from app.core.auth import require_admin, require_admin_action, require_viewer
 from app.core.config import get_settings
 from app.db.session import get_session
 from app.integrations.google_calendar import service as google_service
@@ -100,7 +100,8 @@ def scopes_status(
 @router.post("/refresh-watch")
 def refresh_gmail_watch(
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_viewer),
+    # CRM-PERFIL — acción org-wide, solo admin.
+    current_user: User = Depends(require_admin_action),
 ) -> dict[str, str]:
     """Manual fallback for the auto-register on OAuth. Useful when
     the OAuth callback's watch registration failed (transient
@@ -322,7 +323,8 @@ def select_calendar(
     payload: GoogleCalendarSelectPayload,
     request: Request,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_viewer),
+    # CRM-PERFIL — la selección de calendario la configura el admin.
+    current_user: User = Depends(require_admin_action),
 ) -> GoogleCalendarStatus:
     """PR-OAuth-Google-Unificado. Persiste el calendario que el user
     eligió (per-user) validándolo contra la cuenta org."""

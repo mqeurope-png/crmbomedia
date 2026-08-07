@@ -5432,6 +5432,25 @@ a.origin-chip:hover { filter: brightness(0.97); }
   font-size: 11.5px;
 }
 
+/* CRM-PERFIL — perfil del comercial en solo lectura. Banner permanente
+ * "gestionado por el administrador" + valor de preferencia readonly. */
+.info-state {
+  background: #eff6ff;
+  color: #1e40af;
+  border: 1px solid #bfdbfe;
+  border-radius: 8px;
+  padding: 12px 14px;
+  font-size: 13.5px;
+  line-height: 1.5;
+  margin-bottom: 20px;
+}
+.account-managed-banner strong { font-weight: 600; }
+.account-pref-readonly {
+  font-size: 14px;
+  margin: 0 0 8px;
+}
+.account-pref-readonly strong { font-weight: 600; }
+
 /* Email event badges — Sprint Email v2.3b. Same styling shared across
  * the thread page, the contact emails card and any other surface. */
 .ev-badges {
@@ -7023,6 +7042,43 @@ a.origin-chip:hover { filter: brightness(0.97); }
   align-items: center;
   gap: 6px;
   font-size: 13px;
+}
+
+/* CRM-PERFIL — modal de reset de contraseña por admin. Muestra la
+ * contraseña generada una sola vez con botón de copiar. */
+.form-error {
+  color: var(--danger);
+  font-size: 13px;
+}
+.reset-pw-confirm,
+.reset-pw-done {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.reset-pw-confirm .modal-actions,
+.reset-pw-done .modal-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 4px;
+}
+.reset-pw-value {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--primary-tint, #f1f5f9);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.reset-pw-value code {
+  flex: 1;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  word-break: break-all;
 }
 
 /* PR-Eb — drag-reorder feedback */

@@ -20,7 +20,7 @@ from fastapi import (
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from app.core.auth import require_user
+from app.core.auth import require_admin_action, require_user
 from app.core.config import get_settings
 from app.core.errors import not_found
 from app.db.session import get_session
@@ -605,7 +605,8 @@ def list_folder_tree(
 def set_default_template_folder(
     payload: DefaultTemplateFolderRequest,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_user),
+    # CRM-PERFIL — preferencia personal bloqueada (solo firma editable).
+    current_user: User = Depends(require_admin_action),
 ) -> Response:
     from app.models.crm import UserTemplateFolderPref  # noqa: PLC0415
 

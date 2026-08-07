@@ -109,16 +109,9 @@ def test_password_reset_request_sends_email(
         json={"email": "viewer@example.com"},
     )
 
-    assert response.status_code == 200
-    token = response.json()["reset_token"]
-    assert token
-
-    assert len(email_capture.sent) == 1
-    sent = email_capture.sent[0]
-    assert sent.to_email == "viewer@example.com"
-    assert sent.to_name == "Viewer User"
-    assert token in sent.text_body
-    assert f"/password-reset?token={token}" in sent.text_body
+    # CRM-PERFIL — endpoint retirado: 403 y NO se envía ningún email.
+    assert response.status_code == 403
+    assert email_capture.sent == []
 
 
 def test_password_reset_request_unknown_email_does_not_send(
@@ -130,8 +123,8 @@ def test_password_reset_request_unknown_email_does_not_send(
         json={"email": "ghost@example.com"},
     )
 
-    assert response.status_code == 200
-    # No user → no token created → no email sent.
+    # CRM-PERFIL — endpoint retirado: 403, sin email.
+    assert response.status_code == 403
     assert email_capture.sent == []
 
 
@@ -148,11 +141,10 @@ class _FailingEmailService(EmailService):
 
 def test_production_returns_202_when_smtp_fails(
     client: TestClient,
-    caplog: pytest.LogCaptureFixture,
 ):
-    """In production an email-delivery failure must NOT leak account existence
-    nor break the request: still 202 + neutral body, only a WARNING in the log.
-    """
+    """CRM-PERFIL — el endpoint de reset está retirado: responde 403 sin tocar
+    el servicio de email, en producción incluido. (Antes: 202 neutral aun si
+    fallaba el SMTP.)"""
     failing = _FailingEmailService()
     base = config_module.get_settings()
     overridden = base.model_copy(update={"environment": "production"})
@@ -161,23 +153,15 @@ def test_production_returns_202_when_smtp_fails(
     app.dependency_overrides[config_module.get_settings] = lambda: overridden
 
     try:
-        with caplog.at_level(logging.WARNING):
-            response = client.post(
-                "/api/auth/password-reset/request",
-                json={"email": "viewer@example.com"},
-            )
+        response = client.post(
+            "/api/auth/password-reset/request",
+            json={"email": "viewer@example.com"},
+        )
     finally:
         app.dependency_overrides.pop(config_module.get_settings, None)
-        # Restore the email_capture override that the fixture installed.
-        # The client fixture's teardown will run after this test completes.
 
-    assert response.status_code == 202
-    assert response.json() == {"message": "If the email exists, a reset link has been sent."}
-    assert any(
-        "could not be delivered" in record.message.lower()
-        or "smtp" in record.message.lower()
-        for record in caplog.records
-    )
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "password_reset_disabled"
 
 
 # ----- Factory selection by environment -------------------------------------

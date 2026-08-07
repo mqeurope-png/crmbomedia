@@ -27,6 +27,7 @@ from app.core.audit import Action, record_event
 from app.core.auth import (
     get_current_user,
     require_admin,
+    require_admin_action,
     require_manager,
     require_user,
     require_viewer,
@@ -37,10 +38,9 @@ from app.core.errors import conflict, not_found, unauthorized
 from app.core.security import (
     PRE_2FA_TOKEN_TTL_MINUTES,
     create_access_token,
-    create_reset_token,
     decode_access_token,
+    generate_temp_password,
     hash_password,
-    hash_reset_token,
     verify_password,
 )
 from app.core.totp import (
@@ -78,7 +78,6 @@ from app.workers.jobs import enqueue_sync_job
 from app.services import assignment_rules as assignment_rules_engine
 from app.services import llm as llm_service
 from app.services import pipeline_templates as pipeline_templates_service
-from app.services.email import EmailService, get_email_service
 from app.services.segments import engine as segment_engine
 from app.services.segments import fields as segment_fields
 from app.services.segments import templates as segments_templates
@@ -164,7 +163,6 @@ from app.schemas.crm import (
     MessageRead,
     PasswordResetConfirm,
     PasswordResetRequest,
-    PasswordResetRequestRead,
     TaskRead,
     TokenRead,
     TotpConfirmRead,
@@ -489,7 +487,10 @@ def change_password(
     payload: ChangePasswordRequest,
     request: Request,
     session: Session = Depends(get_session),
-    current_user: User = Depends(get_current_user),
+    # CRM-PERFIL — el comercial ya no puede cambiar su propia contraseña; el
+    # admin la resetea (POST /api/users/{id}/reset-password). Admin sí puede
+    # cambiar la suya aquí (verifica la actual).
+    current_user: User = Depends(require_admin_action),
 ) -> MessageRead:
     if not verify_password(payload.current_password, current_user.password_hash):
         raise unauthorized("Invalid current password")
@@ -508,125 +509,60 @@ def change_password(
     return MessageRead(message="Password changed")
 
 
-@router.post(
-    "/auth/password-reset/request",
-    tags=["auth"],
-    responses={
-        200: {
-            "model": PasswordResetRequestRead,
-            "description": (
-                "Development / test environments only: returns the reset token in the body so "
-                "Codespaces and the CI suite can complete the flow without an email service."
-            ),
-        },
-        202: {
-            "model": MessageRead,
-            "description": (
-                "Production: request accepted. The response is the same regardless of whether "
-                "the email exists, to prevent account enumeration. The token is delivered out "
-                "of band (email)."
-            ),
-        },
-    },
-)
+# CRM-PERFIL — flujo público «olvidé contraseña» RETIRADO (sin sustituto). El
+# comercial pide el reset por interno y el admin lo hace desde /admin/users
+# (POST /api/users/{id}/reset-password). Los dos endpoints públicos se
+# conservan pero responden 403 y registran el intento en audit (para detectar
+# abuso). No hay email de reset ni token público.
+_PASSWORD_RESET_DISABLED = {
+    "code": "password_reset_disabled",
+    "detail": (
+        "El auto-servicio de contraseña está deshabilitado. Contacta con el "
+        "administrador para que la resetee."
+    ),
+}
+
+
+def _audit_reset_attempt(
+    session: Session, request: Request, *, email: str | None
+) -> None:
+    record_event(
+        session,
+        action=Action.AUTH_PASSWORD_RESET_REQUESTED,
+        target_type="auth",
+        target_id="password-reset-disabled",
+        actor_email=email,
+        metadata={"path": request.url.path, "disabled": True},
+        request=request,
+    )
+    session.commit()
+
+
+@router.post("/auth/password-reset/request", tags=["auth"])
 def request_password_reset(
     payload: PasswordResetRequest,
     request: Request,
     session: Session = Depends(get_session),
-    settings: Settings = Depends(get_settings),
-    email_service: EmailService = Depends(get_email_service),
 ) -> JSONResponse:
-    is_production = settings.environment.lower() == "production"
-    user = crm_repository.get_user_by_email(session, str(payload.email))
-    reset_token: str | None = None
-
-    if user and user.is_active:
-        reset_token = create_reset_token()
-        user.password_reset_token_hash = hash_reset_token(reset_token)
-        user.password_reset_requested_at = datetime.now(UTC)
-        record_event(
-            session,
-            action=Action.AUTH_PASSWORD_RESET_REQUESTED,
-            target_type="user",
-            target_id=user.id,
-            actor=user,
-            request=request,
-        )
-        session.commit()
-
-        try:
-            email_service.send_password_reset(
-                to_email=user.email,
-                to_name=user.full_name,
-                token=reset_token,
-            )
-        except Exception as exc:  # noqa: BLE001 - we want to swallow any provider error
-            # Production: never reveal whether the email exists; just log so an
-            # operator can investigate. Dev: noisy stack so the failure is obvious.
-            if is_production:
-                logger.warning(
-                    "Password reset email could not be delivered for user_id=%s: %s",
-                    user.id,
-                    exc,
-                )
-            else:
-                logger.error(
-                    "Password reset email failed for user_id=%s",
-                    user.id,
-                    exc_info=True,
-                )
-
-    if is_production:
-        # Always 202 + neutral message to avoid revealing whether the email exists.
-        return JSONResponse(
-            status_code=status.HTTP_202_ACCEPTED,
-            content={"message": "If the email exists, a reset link has been sent."},
-        )
-
-    # Development / test: keep the legacy behaviour so the existing flow can be
-    # exercised end-to-end without an email service.
-    if reset_token is None:
-        return JSONResponse(
-            status_code=status.HTTP_200_OK,
-            content={"message": "If the user exists, a reset token was generated"},
-        )
+    _audit_reset_attempt(session, request, email=str(payload.email))
     return JSONResponse(
-        status_code=status.HTTP_200_OK,
-        content={
-            "message": "Password reset token generated",
-            "reset_token": reset_token,
-        },
+        status_code=status.HTTP_403_FORBIDDEN,
+        content={"detail": _PASSWORD_RESET_DISABLED},
     )
 
 
-@router.post(
-    "/auth/password-reset/confirm",
-    response_model=MessageRead,
-    responses=ERROR_RESPONSES,
-    tags=["auth"],
-)
+@router.post("/auth/password-reset/confirm", tags=["auth"])
 def confirm_password_reset(
     payload: PasswordResetConfirm,
     request: Request,
     session: Session = Depends(get_session),
-) -> MessageRead:
-    token_hash = hash_reset_token(payload.token)
-    user = crm_repository.get_user_by_reset_token_hash(session, token_hash)
-    if not user or not user.is_active:
-        raise unauthorized("Invalid reset token")
-    user.password_hash = hash_password(payload.new_password)
-    user.password_reset_token_hash = None
-    user.password_reset_requested_at = None
-    record_event(
-        session,
-        action=Action.AUTH_PASSWORD_RESET_CONFIRMED,
-        target_type="user",
-        target_id=user.id,
-        actor=user,
-        request=request,
+) -> JSONResponse:
+    _ = payload
+    _audit_reset_attempt(session, request, email=None)
+    return JSONResponse(
+        status_code=status.HTTP_403_FORBIDDEN,
+        content={"detail": _PASSWORD_RESET_DISABLED},
     )
-    session.commit()
-    return MessageRead(message="Password reset completed")
 
 
 @router.get(
@@ -672,7 +608,9 @@ def read_my_preferences(
 def update_my_preferences(
     payload: UserPreferencesWrite,
     session: Session = Depends(get_session),
-    current_user: User = Depends(get_current_user),
+    # CRM-PERFIL — solo admin. El comercial no edita ninguna preferencia
+    # (solo su firma).
+    current_user: User = Depends(require_admin_action),
 ) -> UserPreferencesRead:
     current_user.email_include_unsubscribe_default = (
         payload.email_include_unsubscribe_default
@@ -853,6 +791,47 @@ def admin_update_user_password(
     )
     session.commit()
     return MessageRead(message="Password updated")
+
+
+@router.post(
+    "/users/{user_id}/reset-password",
+    responses=ERROR_RESPONSES,
+    tags=["users"],
+)
+def admin_reset_user_password(
+    user_id: str,
+    request: Request,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_admin),
+) -> dict[str, str]:
+    """CRM-PERFIL — el admin resetea la contraseña de un usuario a una
+    aleatoria y la recibe UNA sola vez para comunicársela al comercial (no se
+    almacena en claro ni se vuelve a mostrar). Sustituye al flujo público de
+    «olvidé contraseña», retirado."""
+    user = session.get(User, user_id)
+    if not user:
+        raise not_found("User")
+    new_password = generate_temp_password()
+    user.password_hash = hash_password(new_password)
+    user.password_reset_token_hash = None
+    user.password_reset_requested_at = None
+    record_event(
+        session,
+        action=Action.USER_PASSWORD_SET_BY_ADMIN,
+        target_type="user",
+        target_id=user.id,
+        actor=current_user,
+        metadata={"target_email": user.email, "method": "admin_reset_generated"},
+        request=request,
+    )
+    session.commit()
+    return {
+        "password": new_password,
+        "message": (
+            "Contraseña reseteada. Cópiala y comunícasela al usuario: no se "
+            "volverá a mostrar."
+        ),
+    }
 
 
 @router.patch(
