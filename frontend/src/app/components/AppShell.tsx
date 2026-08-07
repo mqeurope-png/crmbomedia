@@ -7,7 +7,7 @@ import { useIdleTimeout } from "../lib/useIdleTimeout";
 import { Sidebar } from "./Sidebar";
 import { TopBar } from "./TopBar";
 
-const ANONYMOUS_ROUTES = ["/login", "/password-reset", "/welcome"];
+const ANONYMOUS_ROUTES = ["/login", "/welcome"];
 // PR-F: 4h sin interacción → logout silencioso.
 const IDLE_TIMEOUT_MS = 4 * 60 * 60 * 1000;
 // BoHub ERP Fase A: la Cola SAT táctil renderiza su propio layout ligero

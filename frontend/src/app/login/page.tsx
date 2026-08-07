@@ -111,7 +111,11 @@ export default function LoginPage() {
           <button className="button" type="submit" disabled={isSubmitting}>
             {isSubmitting ? "Entrando..." : "Entrar"}
           </button>
-          <p className="muted"><a href="/password-reset">¿Has olvidado la contraseña?</a></p>
+          {/* CRM-PERFIL — auto-servicio de contraseña retirado: si la olvidas,
+              pídele al administrador que la resetee. */}
+          <p className="muted small">
+            ¿Olvidaste la contraseña? Pide al administrador que la resetee.
+          </p>
         </form>
       ) : (
         <form className="form-card" onSubmit={on2faSubmit}>

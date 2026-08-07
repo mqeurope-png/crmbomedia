@@ -142,3 +142,29 @@ def require_admin(
         _audit_forbidden(request, session, current_user, UserRole.ADMIN)
         raise forbidden()
     return current_user
+
+
+# CRM-PERFIL — mensaje de error consistente para las acciones de perfil que el
+# comercial ya NO puede hacer (contraseña, alias Gmail, calendario, prefs). El
+# frontend (`formatFastApiDetail`) desempaqueta el `detail` anidado y lo muestra
+# en rojo. No reutilizamos `require_admin` para no cambiar el 403 genérico del
+# resto de endpoints admin (evita romper sus tests/contrato).
+_REQUIRES_ADMIN_DETAIL = (
+    "Este cambio solo puede hacerlo un administrador. "
+    "Contacta con soporte interno."
+)
+
+
+def require_admin_action(
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> User:
+    """Como `require_admin` pero devuelve `{code: requires_admin, detail}`."""
+    if ROLE_LEVELS[current_user.role] < ROLE_LEVELS[UserRole.ADMIN]:
+        _audit_forbidden(request, session, current_user, UserRole.ADMIN)
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"code": "requires_admin", "detail": _REQUIRES_ADMIN_DETAIL},
+        )
+    return current_user

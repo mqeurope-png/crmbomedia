@@ -9,7 +9,6 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app.core.config import get_settings
 from app.core.passwords import (
     MIN_LENGTH,
     PasswordPolicyError,
@@ -126,7 +125,9 @@ def test_create_user_rejects_common_password(client: TestClient):
 
 
 def test_change_password_rejects_no_uppercase(client: TestClient):
-    headers = login(client, "user")
+    # CRM-PERFIL — change-password ahora es admin-only; la política sigue
+    # aplicándose (422) al `new_password` débil.
+    headers = login(client, "admin")
     response = client.post(
         "/api/auth/change-password",
         json={"current_password": "password123", "new_password": "alllowercase123"},
@@ -150,103 +151,23 @@ def test_admin_password_update_rejects_short(client: TestClient):
     assert response.status_code == 422
 
 
-def test_password_reset_confirm_rejects_weak(client: TestClient):
-    requested = client.post(
+# -------- CRM-PERFIL: flujo público «olvidé contraseña» RETIRADO -------------
+
+
+def test_password_reset_request_is_disabled(client: TestClient):
+    response = client.post(
         "/api/auth/password-reset/request", json={"email": "viewer@example.com"}
     )
-    token = requested.json()["reset_token"]
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "password_reset_disabled"
 
+
+def test_password_reset_confirm_is_disabled(client: TestClient):
     response = client.post(
         "/api/auth/password-reset/confirm",
-        json={"token": token, "new_password": "weakpass1A"},
+        json={"token": "x" * 16, "new_password": VALID_PASSWORD},
     )
-    assert response.status_code == 422
-
-
-# -------- Reset-flow environment behavior ------------------------------------
-
-
-def _override_environment(env: str) -> None:
-    base = get_settings()
-    overridden = base.model_copy(update={"environment": env})
-    app.dependency_overrides[get_settings] = lambda: overridden
-
-
-def _clear_environment_override() -> None:
-    app.dependency_overrides.pop(get_settings, None)
-
-
-def test_password_reset_request_in_production_returns_202_without_token(client: TestClient):
-    _override_environment("production")
-    try:
-        response = client.post(
-            "/api/auth/password-reset/request",
-            json={"email": "viewer@example.com"},
-        )
-    finally:
-        _clear_environment_override()
-
-    assert response.status_code == 202
-    body = response.json()
-    assert body == {"message": "If the email exists, a reset link has been sent."}
-    assert "reset_token" not in body
-
-
-def test_password_reset_request_in_production_neutral_for_unknown_email(client: TestClient):
-    _override_environment("production")
-    try:
-        response = client.post(
-            "/api/auth/password-reset/request",
-            json={"email": "ghost@example.com"},
-        )
-    finally:
-        _clear_environment_override()
-
-    # Same status + message regardless of whether the email exists.
-    assert response.status_code == 202
-    assert response.json() == {"message": "If the email exists, a reset link has been sent."}
-
-
-def test_password_reset_request_in_production_persists_token_for_real_user(
-    client: TestClient,
-):
-    """Even though the API hides the token, the DB must store the hash so the
-    user can complete the flow once email delivery is wired up."""
-    _override_environment("production")
-    try:
-        client.post(
-            "/api/auth/password-reset/request",
-            json={"email": "viewer@example.com"},
-        )
-    finally:
-        _clear_environment_override()
-
-    # Switch back to development and confirm a follow-up request rotates the
-    # token (sanity: the production call did write something).
-    second = client.post(
-        "/api/auth/password-reset/request",
-        json={"email": "viewer@example.com"},
-    )
-    assert second.status_code == 200
-    assert second.json()["reset_token"] is not None
-
-
-def test_password_reset_request_in_development_returns_token(client: TestClient):
-    response = client.post(
-        "/api/auth/password-reset/request",
-        json={"email": "viewer@example.com"},
-    )
-    assert response.status_code == 200
-    assert response.json()["reset_token"]
-
-
-def test_password_reset_request_in_development_neutral_for_unknown_email(client: TestClient):
-    response = client.post(
-        "/api/auth/password-reset/request",
-        json={"email": "nobody@example.com"},
-    )
-    assert response.status_code == 200
-    body = response.json()
-    assert "reset_token" not in body or body.get("reset_token") is None
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "password_reset_disabled"
 
 

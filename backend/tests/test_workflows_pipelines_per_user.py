@@ -321,44 +321,51 @@ def _create_folder(client: TestClient, *, role: str, name: str) -> dict:
 
 
 def test_default_template_folder_pref_upsert(client: TestClient):
-    f = _create_folder(client, role="manager", name="Frio")
-    response = client.put(
+    # CRM-PERFIL — set default-template-folder ahora es admin-only.
+    f = _create_folder(client, role="admin", name="Frio")
+    denied = client.put(
         "/api/users/me/default-template-folder",
         json={"folder_id": f["id"]},
         headers=auth_headers(client, "manager"),
+    )
+    assert denied.status_code == 403
+    response = client.put(
+        "/api/users/me/default-template-folder",
+        json={"folder_id": f["id"]},
+        headers=auth_headers(client, "admin"),
     )
     assert response.status_code == 204
     # Idempotente — segundo PUT a la misma carpeta es 204.
     response2 = client.put(
         "/api/users/me/default-template-folder",
         json={"folder_id": f["id"]},
-        headers=auth_headers(client, "manager"),
+        headers=auth_headers(client, "admin"),
     )
     assert response2.status_code == 204
     # GET devuelve el folder_id.
     get_resp = client.get(
         "/api/users/me/default-template-folder",
-        headers=auth_headers(client, "manager"),
+        headers=auth_headers(client, "admin"),
     )
     assert get_resp.json()["folder_id"] == f["id"]
 
 
 def test_default_template_folder_pref_clear_via_null(client: TestClient):
-    f = _create_folder(client, role="manager", name="X")
+    f = _create_folder(client, role="admin", name="X")
     client.put(
         "/api/users/me/default-template-folder",
         json={"folder_id": f["id"]},
-        headers=auth_headers(client, "manager"),
+        headers=auth_headers(client, "admin"),
     )
     response = client.put(
         "/api/users/me/default-template-folder",
         json={"folder_id": None},
-        headers=auth_headers(client, "manager"),
+        headers=auth_headers(client, "admin"),
     )
     assert response.status_code == 204
     get_resp = client.get(
         "/api/users/me/default-template-folder",
-        headers=auth_headers(client, "manager"),
+        headers=auth_headers(client, "admin"),
     )
     assert get_resp.json()["folder_id"] is None
 
@@ -366,16 +373,16 @@ def test_default_template_folder_pref_clear_via_null(client: TestClient):
 def test_email_template_folders_includes_is_default_for_me(
     client: TestClient,
 ):
-    f1 = _create_folder(client, role="manager", name="A")
-    f2 = _create_folder(client, role="manager", name="B")
+    f1 = _create_folder(client, role="admin", name="A")
+    f2 = _create_folder(client, role="admin", name="B")
     client.put(
         "/api/users/me/default-template-folder",
         json={"folder_id": f2["id"]},
-        headers=auth_headers(client, "manager"),
+        headers=auth_headers(client, "admin"),
     )
     tree = client.get(
         "/api/email-template-folders",
-        headers=auth_headers(client, "manager"),
+        headers=auth_headers(client, "admin"),
     ).json()
     by_id = {node["id"]: node for node in tree}
     assert by_id[f1["id"]]["is_default_for_me"] is False

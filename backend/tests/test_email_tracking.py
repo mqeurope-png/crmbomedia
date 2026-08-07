@@ -1084,16 +1084,24 @@ def test_get_my_preferences_defaults_to_false(client: TestClient) -> None:
 def test_put_my_preferences_persists(
     client: TestClient, session_factory: sessionmaker
 ) -> None:
-    response = client.put(
+    # CRM-PERFIL — el comercial ya no edita preferencias (403); el admin sí.
+    denied = client.put(
         "/api/users/me/preferences",
         json={"email_include_unsubscribe_default": True},
         headers=auth_headers(client, "user"),
+    )
+    assert denied.status_code == 403
+
+    response = client.put(
+        "/api/users/me/preferences",
+        json={"email_include_unsubscribe_default": True},
+        headers=auth_headers(client, "admin"),
     )
     assert response.status_code == 200
     assert response.json()["email_include_unsubscribe_default"] is True
 
     # Survives the round-trip; /auth/me also surfaces it.
-    me = client.get("/api/auth/me", headers=auth_headers(client, "user"))
+    me = client.get("/api/auth/me", headers=auth_headers(client, "admin"))
     assert me.status_code == 200
     assert me.json()["email_include_unsubscribe_default"] is True
 

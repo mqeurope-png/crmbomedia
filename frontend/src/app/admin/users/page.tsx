@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { AliasManager } from "../../components/AliasManager";
 import { ErrorState } from "../../components/ErrorState";
 import { PageHeader } from "../../components/PageHeader";
+import { ResetPasswordModal } from "../../components/ResetPasswordModal";
 import {
   isPasswordCompliant,
   PasswordRequirements,
@@ -32,6 +33,7 @@ export default function AdminUsersPage() {
   const [createPassword, setCreatePassword] = useState("");
   const [createConfirm, setCreateConfirm] = useState("");
   const [editPasswords, setEditPasswords] = useState<Record<string, string>>({});
+  const [resetUser, setResetUser] = useState<User | null>(null);
 
   const createCompliant = isPasswordCompliant(createPassword);
   const createMatchesShow = createConfirm.length > 0;
@@ -189,6 +191,7 @@ export default function AdminUsersPage() {
                       >
                         Guardar
                       </button>
+                      <button className="button secondary small" type="button" onClick={() => setResetUser(user)}>Resetear contraseña</button>
                       <button className="button secondary small" type="button" onClick={() => toggleActive(user)}>{user.is_active ? "Desactivar" : "Reactivar"}</button>
                     </form>
                     {draft.length > 0 ? <PasswordRequirements password={draft} /> : null}
@@ -200,6 +203,12 @@ export default function AdminUsersPage() {
           </article>
         </section>
       ) : null}
+      <ResetPasswordModal
+        open={!!resetUser}
+        onClose={() => setResetUser(null)}
+        userId={resetUser?.id ?? ""}
+        userEmail={resetUser?.email ?? ""}
+      />
     </main>
   );
 }
