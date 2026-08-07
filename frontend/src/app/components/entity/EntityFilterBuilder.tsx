@@ -8,20 +8,16 @@
  * como capa visual, alimentado por el `filter-schema` de la entidad.
  *
  * CRM-1.6 — capa de UX sobre el querybuilder (NO lo sustituye):
- *  - Los campos del selector se agrupan por `grouped_under` (`OptionGroup[]`).
+ *  - Los campos del selector se agrupan por `grouped_under` (`OptionGroup[]`),
+ *    de modo que el desplegable de campo ya sale ordenado por sección.
  *  - Chip stack de filtros aplicados arriba + «Limpiar todo».
- *  - Accordion colapsable con las secciones del schema: cada sección lista sus
- *    campos como botones de «añadir filtro» y muestra el nº de filtros aplicados
- *    en esa sección. El estado abierto/cerrado se persiste en localStorage.
  *  - El `<QueryBuilder>` sigue siendo la superficie de EDICIÓN (valores, AND/OR).
  *
- * Decisión de la Parte B (2 opciones del spec): **Opción 2** — envolver el
- * querybuilder con optgroups + accordion-guía + chips, en vez de reimplementar
- * un panel de secciones con inputs inline (eso sería sustituir el querybuilder,
- * fuera de alcance). Usable sin reescribir la capa compartida por otras
- * entidades.
+ * CRM-1.6-fix1 — retirado el panel accordion-guía que añadía CRM-1.6: con el
+ * desplegable ya agrupado por `<optgroup>` (Parte A) esa capa sólo duplicaba
+ * la selección de campo y metía ruido. Se conservan optgroups + chip stack.
  */
-import { createContext, useContext, useEffect, useMemo, useState } from "react";
+import { createContext, useContext, useMemo, useState } from "react";
 import {
   QueryBuilder,
   type Field,
@@ -46,11 +42,6 @@ type Props = {
   /** Initial IR tree. Cambios posteriores son ignorados — ver doc. */
   value: Record<string, unknown>;
   onChange: (next: Record<string, unknown>) => void;
-  /** CRM-1.6: clave localStorage del estado abierto/cerrado de secciones.
-   *  Por entidad, para que /contacts y otras no se pisen. */
-  sectionsStorageKey?: string;
-  /** Secciones abiertas por defecto la primera vez (sin nada en localStorage). */
-  defaultOpenSections?: string[];
 };
 
 const COMPARATOR_LABELS: Record<string, string> = {
@@ -152,15 +143,7 @@ function removeRuleById(group: RuleGroupType, id: string): RuleGroupType {
   };
 }
 
-let _ruleSeq = 0;
-
-export function EntityFilterBuilder({
-  fields,
-  value,
-  onChange,
-  sectionsStorageKey = "crm-entity-filter-sections",
-  defaultOpenSections = [],
-}: Props) {
+export function EntityFilterBuilder({ fields, value, onChange }: Props) {
   const [query, setQuery] = useState<RuleGroupType>(() =>
     value && Object.keys(value).length ? backendToQB(value) : EMPTY_QB_GROUP,
   );
@@ -189,66 +172,12 @@ export function EntityFilterBuilder({
     [groups],
   );
 
-  // Parte B/D — estado abierto/cerrado de secciones, persistido.
-  const [openSections, setOpenSections] = useState<Set<string>>(() => {
-    if (typeof window !== "undefined") {
-      try {
-        const raw = window.localStorage.getItem(sectionsStorageKey);
-        if (raw) return new Set(JSON.parse(raw) as string[]);
-      } catch {
-        /* ignore */
-      }
-    }
-    return new Set(defaultOpenSections);
-  });
-  useEffect(() => {
-    try {
-      window.localStorage.setItem(
-        sectionsStorageKey,
-        JSON.stringify([...openSections]),
-      );
-    } catch {
-      /* ignore */
-    }
-  }, [openSections, sectionsStorageKey]);
-
-  function toggleSection(label: string) {
-    setOpenSections((cur) => {
-      const next = new Set(cur);
-      if (next.has(label)) next.delete(label);
-      else next.add(label);
-      return next;
-    });
-  }
-
   function apply(next: RuleGroupType) {
     setQuery(next);
     onChange(qbToBackend(next));
   }
 
   const appliedRules = useMemo(() => flattenRules(query), [query]);
-
-  // Nº de filtros aplicados por sección (para el contador de la cabecera).
-  const countBySection = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const rule of appliedRules) {
-      const spec = fieldsByKey.get(String(rule.field));
-      const group = spec?.grouped_under || "Otros";
-      counts.set(group, (counts.get(group) ?? 0) + 1);
-    }
-    return counts;
-  }, [appliedRules, fieldsByKey]);
-
-  function addFilter(spec: FieldDescriptor) {
-    _ruleSeq += 1;
-    const rule: RuleType = {
-      id: `r-${_ruleSeq}-${spec.key}`,
-      field: spec.key,
-      operator: backendOpToQB(spec.comparators[0] ?? "eq"),
-      value: "",
-    };
-    apply({ ...query, rules: [...query.rules, rule] });
-  }
 
   function removeChip(id: string) {
     apply(removeRuleById(query, id));
@@ -281,8 +210,12 @@ export function EntityFilterBuilder({
         {appliedRules.length > 0 ? (
           <div className="efb-chips" role="list" aria-label="Filtros aplicados">
             <span className="muted small">Filtros:</span>
-            {appliedRules.map((rule) => (
-              <span key={rule.id} className="tag-chip efb-chip" role="listitem">
+            {appliedRules.map((rule, idx) => (
+              <span
+                key={rule.id ?? `${rule.field}-${idx}`}
+                className="tag-chip efb-chip"
+                role="listitem"
+              >
                 {chipLabel(rule)}
                 <button
                   type="button"
@@ -303,46 +236,6 @@ export function EntityFilterBuilder({
             </button>
           </div>
         ) : null}
-
-        {/* Parte B — accordion de secciones para añadir filtros. */}
-        <div className="efb-sections">
-          {groups.map((g) => {
-            const open = openSections.has(g.label);
-            const count = countBySection.get(g.label) ?? 0;
-            return (
-              <div key={g.label} className="efb-section">
-                <button
-                  type="button"
-                  className="efb-section-header"
-                  aria-expanded={open}
-                  onClick={() => toggleSection(g.label)}
-                >
-                  <span>{open ? "▾" : "▸"}</span>
-                  <span className="efb-section-title">{g.label}</span>
-                  <span
-                    className={count > 0 ? "efb-section-count is-active" : "efb-section-count muted"}
-                  >
-                    ({count})
-                  </span>
-                </button>
-                {open ? (
-                  <div className="efb-section-body">
-                    {g.fields.map((spec) => (
-                      <button
-                        key={spec.key}
-                        type="button"
-                        className="button small secondary efb-add-field"
-                        onClick={() => addFilter(spec)}
-                      >
-                        + {spec.label}
-                      </button>
-                    ))}
-                  </div>
-                ) : null}
-              </div>
-            );
-          })}
-        </div>
 
         {/* Superficie de edición: valores + AND/OR. */}
         <QueryBuilder
