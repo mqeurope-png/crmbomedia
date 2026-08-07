@@ -39,6 +39,8 @@ WARNING_DEDUP_HOURS = 12
 _EXPIRY_LOCK = "gmail:token_expiry_check:lock"
 _DIGEST_LOCK = "gmail:admin_digest:lock"
 _ALIASES_LOCK = "gmail:sync_aliases:lock"
+_RENEW_LOCK = "gmail:renew_watches:lock"
+_POLL_LOCK = "gmail:poll_fallback:lock"
 
 
 # ---------------------------------------------------------------------------
@@ -280,6 +282,47 @@ def sync_aliases_runner() -> None:
         schedule_sync_aliases()
 
 
+def renew_watches_runner() -> None:
+    """CRM-GMAIL Parte D — cron diario. Renueva el Watch de la cuenta org si
+    está a <1 día de caducar (el watch expira a los 7d; así se re-registra
+    ~cada 6d). Re-arma en `finally`."""
+    try:
+        with _open_session() as session:
+            from app.integrations.gmail import service as gmail_service  # noqa: PLC0415
+            from app.integrations.gmail.jobs import (  # noqa: PLC0415
+                watches_expiring_soon,
+            )
+
+            if not watches_expiring_soon(session, days=1):
+                return
+            org = get_org_integration(session)
+            if org is None or org.status != "active" or not org.connected_by_user_id:
+                return
+            gmail_service.register_watch(
+                session, user_id=org.connected_by_user_id
+            )
+            session.commit()
+    except Exception:  # noqa: BLE001
+        logger.warning("gmail.renew_watches_runner failed", exc_info=True)
+    finally:
+        schedule_renew_watches()
+
+
+def poll_fallback_runner() -> None:
+    """CRM-GMAIL Parte D — cron cada 15 min. Safety-net por si el push falla.
+    Re-arma en `finally`."""
+    try:
+        from app.integrations.gmail.jobs import (  # noqa: PLC0415
+            poll_history_fallback_job,
+        )
+
+        poll_history_fallback_job()
+    except Exception:  # noqa: BLE001
+        logger.warning("gmail.poll_fallback_runner failed", exc_info=True)
+    finally:
+        schedule_poll_fallback()
+
+
 def _arm(lock_key: str, queue_op: str, runner, interval: timedelta) -> None:
     try:
         conn = redis_connection()
@@ -318,8 +361,26 @@ def schedule_sync_aliases() -> None:
     _arm(_ALIASES_LOCK, "sync_aliases", sync_aliases_runner, timedelta(hours=24))
 
 
+def schedule_renew_watches() -> None:
+    _arm(
+        _RENEW_LOCK, "renew_watches", renew_watches_runner, timedelta(hours=24)
+    )
+
+
+def schedule_poll_fallback() -> None:
+    _arm(
+        _POLL_LOCK, "poll_fallback", poll_fallback_runner, timedelta(minutes=15)
+    )
+
+
 def arm_all() -> None:
-    """Llamado al arranque de la API. Arma los 3 crons."""
+    """Llamado al arranque de la API. Arma los crons de Gmail.
+
+    CRM-GMAIL añade dos: renovación diaria del Watch (antes existía el job
+    pero NADIE lo programaba → el watch solo se recreaba al reconectar
+    OAuth) y el poller de respaldo cada 15 min."""
     schedule_token_expiry_check()
     schedule_admin_digest()
     schedule_sync_aliases()
+    schedule_renew_watches()
+    schedule_poll_fallback()

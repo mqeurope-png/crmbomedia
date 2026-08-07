@@ -373,10 +373,18 @@ class GmailClient:
         service = self._build_service()
         service.users().stop(userId="me").execute()
 
-    def list_history(self, start_history_id: int) -> dict[str, Any]:
+    def list_history(
+        self,
+        start_history_id: int,
+        history_types: list[str] | None = None,
+    ) -> dict[str, Any]:
         """Wraps `users.history.list`. The caller is responsible for
         paginating with `nextPageToken` if needed — typical webhook
-        loads stay on the first page."""
+        loads stay on the first page.
+
+        CRM-GMAIL: por defecto pedimos `messageAdded` + `labelAdded` +
+        `labelRemoved` para capturar tanto mensajes nuevos como los
+        cambios de la label SPAM (sync de spam bidireccional)."""
         service = self._build_service()
         return (
             service.users()
@@ -384,7 +392,8 @@ class GmailClient:
             .list(
                 userId="me",
                 startHistoryId=str(start_history_id),
-                historyTypes=["messageAdded"],
+                historyTypes=history_types
+                or ["messageAdded", "labelAdded", "labelRemoved"],
             )
             .execute()
         )

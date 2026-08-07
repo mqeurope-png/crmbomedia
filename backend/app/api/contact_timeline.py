@@ -84,7 +84,6 @@ def contact_timeline(
     session: Session = Depends(get_session),
     current_user: User = Depends(require_user),
 ) -> dict[str, Any]:
-    _ = current_user
     if session.get(Contact, contact_id) is None:
         raise not_found("Contact")
     wanted = (
@@ -138,11 +137,22 @@ def contact_timeline(
                 ))
 
     if "email" in wanted:
-        rows = session.execute(
+        # CRM-GMAIL Parte E — el timeline respeta la visibilidad por alias:
+        # el comercial solo ve en la ficha los emails que inició o que
+        # llegaron a sus alias; admin ve todos.
+        from app.services.email_aliases import (  # noqa: PLC0415
+            thread_visibility_filter,
+        )
+
+        email_stmt = (
             select(EmailMessage, EmailThread.contact_id)
             .join(EmailThread, EmailThread.id == EmailMessage.thread_id)
             .where(EmailThread.contact_id == contact_id)
-        ).all()
+        )
+        _vis = thread_visibility_filter(session, current_user)
+        if _vis is not None:
+            email_stmt = email_stmt.where(_vis)
+        rows = session.execute(email_stmt).all()
         for msg, _cid in rows:
             outbound = str(getattr(msg.direction, "value", msg.direction)) == "outbound"
             events.append(_event(

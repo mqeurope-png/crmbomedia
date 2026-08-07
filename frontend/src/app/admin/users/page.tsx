@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { AliasManager } from "../../components/AliasManager";
 import { ErrorState } from "../../components/ErrorState";
 import { PageHeader } from "../../components/PageHeader";
 import {
@@ -191,6 +192,7 @@ export default function AdminUsersPage() {
                       <button className="button secondary small" type="button" onClick={() => toggleActive(user)}>{user.is_active ? "Desactivar" : "Reactivar"}</button>
                     </form>
                     {draft.length > 0 ? <PasswordRequirements password={draft} /> : null}
+                    <AliasManager userId={user.id} />
                   </li>
                 );
               })}

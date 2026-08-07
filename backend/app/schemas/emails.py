@@ -157,6 +157,11 @@ class EmailMessageRead(BaseModel):
     # message went out immediately (every legacy row).
     scheduled_for: datetime | None = None
     scheduled_status: str | None = None
+    # CRM-GMAIL — spam sync + captura universal.
+    #   is_spam: Gmail marcó este mensaje como SPAM (se muestra con tag,
+    #     no se oculta). delivered_to: alias del CRM al que llegó el mail.
+    is_spam: bool = False
+    delivered_to: str | None = None
 
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
@@ -216,6 +221,10 @@ class EmailThreadRead(BaseModel):
     is_starred: bool = False
     snooze_until: datetime | None = None
     labels: list[EmailLabelRead] = Field(default_factory=list)
+    # CRM-GMAIL — el thread contiene ≥1 mensaje marcado como spam (para el
+    # chip «Spam» en la lista). Se computa en el handler (no es columna del
+    # modelo); no cambia `state`, así el thread NO se oculta.
+    has_spam: bool = False
 
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 

@@ -99,6 +99,50 @@ def renew_all_watches_job() -> int:
             return 0
 
 
+def enqueue_poll_history_fallback() -> None:
+    try:
+        from app.workers.queues import queue_for  # noqa: PLC0415
+
+        queue = queue_for("gmail", "poll_fallback")
+        queue.enqueue(poll_history_fallback_job)
+    except Exception:  # noqa: BLE001
+        logger.warning("gmail.poll_fallback.enqueue_failed; running inline")
+        poll_history_fallback_job()
+
+
+def poll_history_fallback_job() -> int:
+    """CRM-GMAIL Parte D — safety-net. Si el webhook push falla o el watch
+    caduca sin renovarse, este cron (cada 15 min) hace `history.list` desde
+    el cursor guardado y recupera lo que se haya perdido. Si recupera >0
+    mensajes emite un warning: el push no está funcionando y hay que mirarlo.
+    Devuelve el nº de mensajes recuperados."""
+    from app.integrations.gmail import service as gmail_service  # noqa: PLC0415
+    from app.integrations.google_calendar.service import (  # noqa: PLC0415
+        get_org_integration,
+    )
+
+    with Session(get_engine()) as session:
+        org = get_org_integration(session)
+        if org is None or org.status != "active" or not org.connected_by_user_id:
+            return 0
+        try:
+            recovered = gmail_service.process_history(
+                session, user_id=org.connected_by_user_id, new_history_id=None
+            )
+            session.commit()
+        except Exception:  # noqa: BLE001
+            session.rollback()
+            logger.warning("gmail.poll_fallback_failed", exc_info=True)
+            return 0
+        if recovered > 0:
+            logger.warning(
+                "gmail.poll_fallback recovered=%s — el push en tiempo real "
+                "parece no estar funcionando; revisa Watch/Pub-Sub",
+                recovered,
+            )
+        return recovered
+
+
 def watches_expiring_soon(session: Session, *, days: int = 1) -> list[GmailPubsubWatch]:
     """Return watches whose expiry is within `days` days. Used by
     the cron heartbeat to renew lazily instead of unconditionally."""
