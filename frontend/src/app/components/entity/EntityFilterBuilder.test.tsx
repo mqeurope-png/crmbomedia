@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { EntityFilterBuilder } from "./EntityFilterBuilder";
 import type { FieldDescriptor } from "../../lib/entitySchema";
@@ -24,31 +24,29 @@ const SCHEMA: FieldDescriptor[] = [
           enum_values: ["contacted", "interested"] }),
 ];
 
-const KEY = "test-filter-sections";
+/** Un árbol IR con las reglas hoja indicadas (todas AND). */
+function irWith(
+  ...rules: { field: string; comparator: string; value: unknown }[]
+) {
+  return {
+    operator: "AND",
+    children: rules.map((r) => ({ type: "rule", ...r })),
+  };
+}
 
-beforeEach(() => window.localStorage.clear());
-
-function renderBuilder(over: Record<string, unknown> = {}) {
+function renderBuilder(value: Record<string, unknown> = {}) {
   const onChange = jest.fn();
-  render(
-    <EntityFilterBuilder
-      fields={SCHEMA}
-      value={{}}
-      onChange={onChange}
-      sectionsStorageKey={KEY}
-      defaultOpenSections={["Datos del contacto"]}
-      {...over}
-    />,
-  );
+  render(<EntityFilterBuilder fields={SCHEMA} value={value} onChange={onChange} />);
   return { onChange };
 }
 
-describe("EntityFilterBuilder · CRM-1.6", () => {
-  it("agrupa los campos por sección en optgroups del selector", async () => {
+describe("EntityFilterBuilder · CRM-1.6-fix1", () => {
+  it("agrupa los campos por sección en <optgroup> del selector", async () => {
     const user = userEvent.setup();
     renderBuilder();
-    // El <select> de campo solo aparece cuando hay una regla; se añade una.
-    await user.click(screen.getByRole("button", { name: "+ Tags" }));
+    // El <select> de campo solo aparece cuando hay una regla; se añade una
+    // con el botón «+ Rule» del propio querybuilder (ya no hay accordion).
+    await user.click(screen.getByRole("button", { name: "+ Rule" }));
     const labels = [...document.querySelectorAll("optgroup")].map((o) =>
       o.getAttribute("label"),
     );
@@ -57,73 +55,46 @@ describe("EntityFilterBuilder · CRM-1.6", () => {
     );
   });
 
-  it("muestra las 7 secciones; solo las default abiertas", () => {
-    renderBuilder();
-    // «Datos del contacto» abierta → sus campos visibles como botones de añadir.
-    expect(screen.getByRole("button", { name: "+ Tags" })).toBeInTheDocument();
-    // «Llamadas» cerrada → su campo no visible.
-    expect(screen.queryByRole("button", { name: "+ Resultado de llamada" }))
+  it("no renderiza el panel accordion-guía retirado", () => {
+    renderBuilder(irWith({ field: "commercial_status", comparator: "eq", value: "new" }));
+    // Las cabeceras de sección del accordion ya no existen.
+    expect(document.querySelector(".efb-sections")).toBeNull();
+    expect(document.querySelector(".efb-section-header")).toBeNull();
+    // Tampoco los botones «+ Campo» que duplicaban el desplegable.
+    expect(screen.queryByRole("button", { name: "+ Estado comercial" }))
       .not.toBeInTheDocument();
   });
 
-  it("expandir una sección revela sus campos", async () => {
-    const user = userEvent.setup();
-    renderBuilder();
-    await user.click(screen.getByRole("button", { name: /Llamadas/ }));
-    expect(screen.getByRole("button", { name: "+ Resultado de llamada" }))
-      .toBeInTheDocument();
-  });
-
-  it("añadir un filtro crea un chip y actualiza el contador de sección", async () => {
-    const user = userEvent.setup();
-    const { onChange } = renderBuilder();
-    await user.click(screen.getByRole("button", { name: "+ Estado comercial" }));
-
-    // Chip aplicado arriba.
-    expect(screen.getByText(/Estado comercial es igual a/)).toBeInTheDocument();
-    // Contador de la sección pasa a (1).
-    const header = screen.getByRole("button", { name: /Datos del contacto/ });
-    expect(within(header).getByText("(1)")).toBeInTheDocument();
-    // El onChange emitió el árbol.
-    expect(onChange).toHaveBeenCalled();
+  it("el chip stack muestra los filtros aplicados desde el value inicial", () => {
+    renderBuilder(
+      irWith(
+        { field: "commercial_status", comparator: "eq", value: "new" },
+        { field: "address_city", comparator: "eq", value: "Madrid" },
+      ),
+    );
+    expect(screen.getByText(/Estado comercial es igual a new/)).toBeInTheDocument();
+    expect(screen.getByText(/Ciudad es igual a Madrid/)).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: /Quitar filtro/ }).length).toBe(2);
   });
 
   it("la «×» del chip quita ese filtro; «Limpiar todo» los quita todos", async () => {
     const user = userEvent.setup();
-    renderBuilder();
-    await user.click(screen.getByRole("button", { name: "+ Estado comercial" }));
-    await user.click(screen.getByRole("button", { name: "+ Tags" }));
+    const { onChange } = renderBuilder(
+      irWith(
+        { field: "commercial_status", comparator: "eq", value: "new" },
+        { field: "address_city", comparator: "eq", value: "Madrid" },
+      ),
+    );
     expect(screen.getAllByRole("button", { name: /Quitar filtro/ }).length).toBe(2);
 
     // Quitar uno por su ×.
     await user.click(screen.getAllByRole("button", { name: /Quitar filtro/ })[0]);
     expect(screen.getAllByRole("button", { name: /Quitar filtro/ }).length).toBe(1);
+    expect(onChange).toHaveBeenCalled();
 
     // Limpiar todo.
     await user.click(screen.getByRole("button", { name: "Limpiar todo" }));
     expect(screen.queryByRole("button", { name: /Quitar filtro/ }))
-      .not.toBeInTheDocument();
-  });
-
-  it("persiste el estado abierto/cerrado en localStorage", async () => {
-    const user = userEvent.setup();
-    renderBuilder();
-    // Abrir «Llamadas», que arranca cerrada.
-    await user.click(screen.getByRole("button", { name: /Llamadas/ }));
-    const stored = JSON.parse(window.localStorage.getItem(KEY) || "[]");
-    expect(stored).toEqual(
-      expect.arrayContaining(["Datos del contacto", "Llamadas"]),
-    );
-  });
-
-  it("al recargar, restaura las secciones guardadas en localStorage", () => {
-    window.localStorage.setItem(KEY, JSON.stringify(["Llamadas"]));
-    renderBuilder();
-    // «Llamadas» abierta (de localStorage), «Datos del contacto» NO (el
-    // localStorage manda sobre los defaults).
-    expect(screen.getByRole("button", { name: "+ Resultado de llamada" }))
-      .toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "+ Tags" }))
       .not.toBeInTheDocument();
   });
 });
