@@ -122,6 +122,9 @@ export function ContactEmailsSection({
                   {t.has_unread_replies ? (
                     <span className="badge ok"> Nuevo</span>
                   ) : null}
+                  {t.has_spam ? (
+                    <span className="badge bad"> 🔴 Spam</span>
+                  ) : null}
                 </p>
                 <p className="widget-row-meta muted small">
                   {formatDateTime(t.last_message_at)} · {t.message_count} mensaje

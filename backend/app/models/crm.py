@@ -1576,6 +1576,21 @@ class EmailMessage(TimestampMixin, Base):
     imported_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True)
     )
+    # CRM-GMAIL — captura universal + sync de spam.
+    #   is_spam: refleja la label SPAM de Gmail para este mensaje. NO
+    #     oculta el email (Bart: visible con tag «Spam»); se sincroniza
+    #     por el webhook cuando la label se añade/quita en Gmail.
+    #   delivered_to: alias del CRM al que llegó el mail (header
+    #     Delivered-To / X-Original-To, o fallback matching To/Cc/Bcc
+    #     contra los alias activos). Base del filtro de visibilidad por
+    #     comercial (Parte E). NULL en outbound y en inbound sin match.
+    #   gmail_labels: array JSON de labelIds de Gmail (INBOX/SPAM/…),
+    #     para debug y para recomputar is_spam.
+    is_spam: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )
+    delivered_to: Mapped[str | None] = mapped_column(String(320), index=True)
+    gmail_labels: Mapped[str | None] = mapped_column(Text)
 
     thread: Mapped[EmailThread] = relationship(back_populates="messages")
 
@@ -1965,6 +1980,41 @@ class UserEmailAliasPref(TimestampMixin, Base):
     # `gmail_display_name`. Trim + NULL on empty al persistir; la UI
     # /account expone un input "Restaurar" que vuelve a NULL.
     display_name_override: Mapped[str | None] = mapped_column(String(255))
+
+
+class UserEmailAlias(TimestampMixin, Base):
+    """CRM-GMAIL — registro de propiedad de un alias de correo ENTRANTE.
+
+    Distinto de `UserEmailAliasPref` (preferencias Send-As, outbound, no
+    único global, sincronizadas desde Gmail). Aquí cada `alias_email`
+    pertenece a EXACTAMENTE un usuario (unique global): define de quién es
+    la bandeja del correo entrante dirigido a ese alias.
+
+    Lo usa (a) la captura universal del sync (`process_history` guarda un
+    mail entrante solo si va dirigido a un alias `active`), y (b) el filtro
+    de visibilidad (Parte E): cada comercial ve solo los emails cuyo
+    `delivered_to` está en sus alias activos; admin ve todos.
+    """
+
+    __tablename__ = "user_email_aliases"
+    __table_args__ = (
+        UniqueConstraint(
+            "alias_email", name="uq_user_email_aliases_alias_email"
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid4())
+    )
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    alias_email: Mapped[str] = mapped_column(String(320), nullable=False)
+    active: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False, index=True
+    )
 
 
 class GdprRequestType(StrEnum):

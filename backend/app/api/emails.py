@@ -46,6 +46,11 @@ from app.schemas.emails import (
     GmailTemplate,
     MyAlias,
 )
+from app.services.email_aliases import (
+    personal_mailbox_filter,
+    thread_is_visible,
+    thread_visibility_filter,
+)
 
 router = APIRouter(prefix="/api/emails", tags=["emails"])
 logger = logging.getLogger(__name__)
@@ -631,6 +636,13 @@ def list_threads(
     since: datetime | None = Query(default=None),
     until: datetime | None = Query(default=None),
     include_snoozed: bool = Query(default=False),
+    # CRM-GMAIL — los mails marcados como spam se muestran (con chip), no se
+    # ocultan. Este flag opcional permite excluirlos si se pide en el futuro.
+    exclude_spam: bool = Query(default=False),
+    # CRM-GMAIL Parte H — el comercial con >1 alias filtra su bandeja por uno.
+    # Restringe a threads con algún mensaje entregado a ese alias (encima del
+    # filtro de visibilidad, así solo puede acotar a los suyos).
+    delivered_to: str | None = Query(default=None),
     # QoL sprint — toggle "Mías ↔ Todo el equipo" del listing /emails.
     # Pre-QoL: el manager veía TODOS los threads por defecto (overload).
     # Post-QoL: el manager por defecto ve solo los suyos (`mine`); con
@@ -658,22 +670,21 @@ def list_threads(
             stmt = stmt.where(
                 EmailThread.initiated_by_user_id == team_user_id
             )
-        # else: no filter → todos los threads del equipo.
+        # else: no filter → todos los threads del equipo. Vista privilegiada
+        # explícita: no se aplica el filtro por alias.
     elif contact_id:
-        # PR-Contact-Emails-Team. Bart: la pestaña Emails de la ficha
-        # contacto es COLABORATIVA — cualquiera que vea la ficha debe
-        # ver el historial completo de comunicación con ese contacto,
-        # independiente de qué comercial envió cada mensaje. Si NO
-        # quitamos el filtro per-user, un comercial nuevo nunca verá
-        # los emails que mandó su predecesor al mismo cliente.
-        #
-        # La bandeja general /emails sigue siendo per-user
-        # (`scope=mine` sin contact_id → el filtro abajo se aplica).
-        pass
-    else:  # scope == "mine" (default), bandeja general
-        stmt = stmt.where(
-            EmailThread.initiated_by_user_id == current_user.id
-        )
+        # CRM-GMAIL Parte E — ficha de contacto. Bart eligió filtrarla por
+        # alias: admin ve todo el historial del contacto (predicado None); el
+        # comercial solo los threads que inició o entregados a sus alias.
+        visibility = thread_visibility_filter(session, current_user)
+        if visibility is not None:
+            stmt = stmt.where(visibility)
+    else:
+        # Bandeja personal (scope=mine, sin contact_id): SIEMPRE «mis»
+        # threads, incluido admin (para ver todo usa scope=team). Reemplaza
+        # el antiguo `initiated_by == me` añadiendo el correo entrante a mis
+        # alias (captura universal).
+        stmt = stmt.where(personal_mailbox_filter(session, current_user))
     # State default = INBOX so the legacy list view keeps its
     # narrow scope. The contact-detail panel (which passes
     # `contact_id`) explicitly drops the default so it still shows
@@ -720,6 +731,19 @@ def list_threads(
         stmt = stmt.where(EmailThread.last_message_at >= since)
     if until is not None:
         stmt = stmt.where(EmailThread.last_message_at <= until)
+    if exclude_spam:
+        spam_thread_ids = select(EmailMessage.thread_id).where(
+            EmailMessage.is_spam.is_(True)
+        )
+        stmt = stmt.where(EmailThread.id.not_in(spam_thread_ids))
+    if delivered_to:
+        stmt = stmt.where(
+            EmailThread.id.in_(
+                select(EmailMessage.thread_id).where(
+                    EmailMessage.delivered_to == delivered_to
+                )
+            )
+        )
     if not include_snoozed:
         from sqlalchemy import or_ as _or_sn  # noqa: PLC0415
 
@@ -785,10 +809,12 @@ def list_threads(
     last_by_thread = _latest_messages(session, thread_ids)
     contacts_by_id = _contacts_for_threads(session, items)
     tracking_by_thread = _tracking_counts_for_threads(session, thread_ids)
+    spam_thread_set = _spam_thread_ids(session, thread_ids)
     out: list[EmailThreadRead] = []
     for thread in items:
         last = last_by_thread.get(thread.id)
         read = EmailThreadRead.model_validate(thread)
+        read.has_spam = thread.id in spam_thread_set
         if last is not None:
             read.last_message_direction = (
                 last.direction.value
@@ -824,10 +850,11 @@ def thread_detail(
     )
     if thread is None:
         raise not_found("EmailThread")
-    if (
-        current_user.role not in (UserRole.ADMIN, UserRole.MANAGER)
-        and thread.initiated_by_user_id != current_user.id
-    ):
+    # CRM-GMAIL Parte E — admin/manager pueden abrir cualquier hilo; el resto
+    # solo si es visible por alias (lo inició o tiene un mensaje entregado a
+    # uno de sus alias activos). Antes: solo `initiated_by == me`.
+    privileged = current_user.role in (UserRole.ADMIN, UserRole.MANAGER)
+    if not privileged and not thread_is_visible(session, current_user, thread):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="No tienes permiso para ver este hilo.",
@@ -953,12 +980,20 @@ def email_activity(
     if scope == "mine" or current_user.role != UserRole.ADMIN:
         from sqlalchemy import or_ as _or  # noqa: PLC0415
 
-        stmt = stmt.where(
-            _or(
-                EmailThread.initiated_by_user_id == current_user.id,
-                EmailThread.gmail_account_user_id == current_user.id,
-            )
+        from app.services.email_aliases import (  # noqa: PLC0415
+            user_active_aliases,
         )
+
+        conds = [
+            EmailThread.initiated_by_user_id == current_user.id,
+            EmailThread.gmail_account_user_id == current_user.id,
+        ]
+        # CRM-GMAIL Parte E — incluir el correo entrante dirigido a los alias
+        # del comercial (que va bajo la cuenta org, no bajo su user).
+        _my_aliases = user_active_aliases(session, current_user.id)
+        if _my_aliases:
+            conds.append(EmailMessage.delivered_to.in_(_my_aliases))
+        stmt = stmt.where(_or(*conds))
     stmt = stmt.order_by(EmailMessage.sent_at.desc()).limit(limit)
     rows = list(session.execute(stmt).all())
     out: list[dict[str, Any]] = []
@@ -1150,6 +1185,20 @@ def _tracking_counts_for_threads(
         )
         out.setdefault(thread_id, {})[key] = int(count)
     return out
+
+
+def _spam_thread_ids(session: Session, thread_ids: list[str]) -> set[str]:
+    """CRM-GMAIL — threads con ≥1 mensaje marcado como spam (para el chip
+    «Spam» de la lista). Una query batch por página."""
+    if not thread_ids:
+        return set()
+    rows = session.scalars(
+        select(EmailMessage.thread_id).where(
+            EmailMessage.thread_id.in_(thread_ids),
+            EmailMessage.is_spam.is_(True),
+        )
+    )
+    return set(rows)
 
 
 def _contacts_for_threads(

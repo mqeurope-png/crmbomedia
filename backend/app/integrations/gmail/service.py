@@ -29,6 +29,7 @@ from app.models.crm import (
     GmailPubsubWatch,
     SyncLog,
 )
+from app.services.email_aliases import active_alias_map, resolve_delivered_to
 
 logger = logging.getLogger(__name__)
 
@@ -935,11 +936,16 @@ def process_history(
     session: Session,
     *,
     user_id: str,
-    new_history_id: int,
+    new_history_id: int | None = None,
 ) -> int:
     """Fetch the upstream history slice and import inbound messages
-    that land in a CRM-initiated thread. Returns the number of
-    messages persisted.
+    delivered to an active alias. Returns the number of messages
+    persisted.
+
+    `new_history_id` es el `historyId` que llegó por el push de Pub/Sub;
+    se usa como punto al que avanzar el cursor. El poller de respaldo
+    (Parte D, sin push) lo pasa como None: en ese caso avanzamos al
+    `historyId` que devuelve la propia `history.list`.
     """
     watch = session.scalar(
         select(GmailPubsubWatch).where(GmailPubsubWatch.user_id == user_id)
@@ -963,14 +969,11 @@ def process_history(
         session.commit()
         return 0
 
-    crm_thread_ids = {
-        t.gmail_thread_id
-        for t in session.scalars(
-            select(EmailThread).where(
-                EmailThread.gmail_account_user_id == user_id
-            )
-        )
-    }
+    # CRM-GMAIL — captura universal. Ya no filtramos por «thread que el CRM
+    # ya conoce»: guardamos cualquier mail dirigido a un alias ACTIVO (sea o
+    # no un contacto conocido; `contact_id=NULL` si no casa). Además
+    # sincronizamos la label SPAM sobre los mensajes ya almacenados.
+    alias_map = active_alias_map(session)
     seen_messages = {
         m.gmail_message_id
         for m in session.scalars(
@@ -991,19 +994,35 @@ def process_history(
             msg_meta = added.get("message", {})
             mid = msg_meta.get("id")
             tid = msg_meta.get("threadId")
-            if not mid or not tid or tid not in crm_thread_ids:
+            stub_labels = msg_meta.get("labelIds") or []
+            if not mid or not tid or mid in seen_messages:
                 continue
-            if mid in seen_messages:
+            # Pre-filtro barato: si el stub trae labels y NO es INBOX ni
+            # SPAM (SENT/DRAFT/CHAT), lo ignoramos sin gastar un
+            # get_message. Cuando el stub no trae labels (p.ej. en tests)
+            # dejamos que `_persist_inbound` decida por `delivered_to`.
+            if (
+                stub_labels
+                and "INBOX" not in stub_labels
+                and "SPAM" not in stub_labels
+            ):
+                continue
+            if not alias_map:
+                # Sin alias activos no hay nada que capturar; seguimos
+                # procesando labelsAdded/Removed más abajo.
                 continue
             try:
                 full = client.get_message(mid)
-                _persist_inbound(
+                message = _persist_inbound(
                     session,
                     user_id=user_id,
                     raw=full,
                     gmail_thread_id=tid,
+                    alias_map=alias_map,
                 )
-                imported += 1
+                seen_messages.add(mid)
+                if message is not None:
+                    imported += 1
             except HttpError as exc:
                 gone_status = (
                     getattr(exc, "status_code", None)
@@ -1042,12 +1061,59 @@ def process_history(
                 )
                 continue
 
+        # Sync de spam: reclasificaciones de la label SPAM en Gmail se
+        # reflejan sobre el mensaje ya almacenado (no lo ocultan, lo
+        # marcan). `labelsAdded`/`labelsRemoved` traen la lista de labels
+        # que cambiaron en `entry["labelIds"]`.
+        for lbl_entry in entry.get("labelsAdded", []):
+            _sync_spam_label(session, user_id=user_id, entry=lbl_entry, spam=True)
+        for lbl_entry in entry.get("labelsRemoved", []):
+            _sync_spam_label(session, user_id=user_id, entry=lbl_entry, spam=False)
+
     # Always advance the watch — even when every message in the
     # range failed individually. Otherwise a single ghost message
-    # would trap us reprocessing the same history forever.
-    watch.history_id = new_history_id
+    # would trap us reprocessing the same history forever. El poller
+    # (new_history_id None) avanza al historyId que reporta la respuesta.
+    if new_history_id is not None:
+        watch.history_id = new_history_id
+    else:
+        resp_history_id = history.get("historyId")
+        if resp_history_id:
+            watch.history_id = int(resp_history_id)
     session.flush()
     return imported
+
+
+def _sync_spam_label(
+    session: Session,
+    *,
+    user_id: str,
+    entry: dict[str, Any],
+    spam: bool,
+) -> bool:
+    """Aplica un cambio de label SPAM (add/remove) al `EmailMessage`
+    correspondiente. `entry["labelIds"]` es el delta de labels; solo
+    actuamos si incluye SPAM. Idempotente. Devuelve True si tocó una fila."""
+    delta = entry.get("labelIds") or []
+    if "SPAM" not in delta:
+        return False
+    mid = entry.get("message", {}).get("id")
+    if not mid:
+        return False
+    message = session.scalar(
+        select(EmailMessage).where(
+            EmailMessage.gmail_account_user_id == user_id,
+            EmailMessage.gmail_message_id == mid,
+        )
+    )
+    if message is None:
+        return False
+    message.is_spam = spam
+    full_labels = entry.get("message", {}).get("labelIds")
+    if full_labels is not None:
+        message.gmail_labels = json.dumps(full_labels)
+    session.flush()
+    return True
 
 
 _NDR_FROM_PREFIXES = (
@@ -1238,11 +1304,13 @@ def _persist_inbound(
     user_id: str,
     raw: dict[str, Any],
     gmail_thread_id: str,
+    alias_map: dict[str, str] | None = None,
 ) -> EmailMessage | None:
     headers = _index_headers(raw.get("payload", {}).get("headers", []))
     from_header = headers.get("from") or ""
     to_header = headers.get("to") or ""
     cc_header = headers.get("cc")
+    bcc_header = headers.get("bcc")
     subject = headers.get("subject")
     sent_at = _parse_date(headers.get("date")) or datetime.now(UTC)
 
@@ -1251,7 +1319,34 @@ def _persist_inbound(
     from_email = from_addresses[0][1] if from_addresses else ""
     to_emails = [addr for _, addr in getaddresses([to_header]) if addr]
     cc_emails = [addr for _, addr in getaddresses([cc_header])] if cc_header else None
+    bcc_emails = (
+        [addr for _, addr in getaddresses([bcc_header])] if bcc_header else None
+    )
     body_text, body_html = _extract_bodies(raw.get("payload", {}))
+
+    # CRM-GMAIL — captura universal. `delivered_to` = alias del CRM al que
+    # llegó el mail: preferimos los headers Delivered-To / X-Original-To
+    # (fiables) y, si no, casamos To/Cc/Bcc contra los alias activos. Si el
+    # mail no va a ninguno de nuestros alias, no es nuestro → no lo
+    # guardamos (solo cuando el caller pasa `alias_map`; un llamador legacy
+    # sin alias_map conserva el comportamiento anterior).
+    labels = raw.get("labelIds") or []
+    delivered_candidates = [
+        addr.strip()
+        for addr in (
+            headers.get("delivered-to"),
+            headers.get("x-original-to"),
+        )
+        if addr
+    ]
+    delivered_candidates += to_emails + (cc_emails or []) + (bcc_emails or [])
+    delivered_to = (
+        resolve_delivered_to(delivered_candidates, alias_map)
+        if alias_map is not None
+        else None
+    )
+    if alias_map is not None and delivered_to is None:
+        return None
 
     # Sprint Email v2.3a — NDR detection. When this looks like a
     # bounce we attach the event to the ORIGINAL outbound message and
@@ -1325,12 +1420,17 @@ def _persist_inbound(
         from_name=from_name,
         to_emails_json=json.dumps(to_emails),
         cc_emails_json=json.dumps(cc_emails) if cc_emails else None,
+        bcc_emails_json=json.dumps(bcc_emails) if bcc_emails else None,
         subject=subject,
         body_html=body_html,
         body_text=body_text,
         snippet=raw.get("snippet"),
         sent_at=sent_at,
         contact_id=contact.id if contact else None,
+        delivered_to=delivered_to,
+        is_spam="SPAM" in labels,
+        gmail_labels=json.dumps(labels) if labels else None,
+        imported_via="incoming_realtime",
     )
     session.add(message)
     thread.last_message_at = sent_at
@@ -1452,7 +1552,11 @@ def register_watch(session: Session, *, user_id: str) -> GmailPubsubWatch:
             " push notifications."
         )
     client = _client_for(session, user_id)
-    response = client.watch_mailbox(settings.gmail_pubsub_topic)
+    # CRM-GMAIL: vigilar INBOX + SPAM para recibir push tanto de mail
+    # nuevo como de reclasificaciones de spam (sync de is_spam).
+    response = client.watch_mailbox(
+        settings.gmail_pubsub_topic, label_ids=["INBOX", "SPAM"]
+    )
     history_id = int(response.get("historyId", 0))
     expiration_ms = int(response.get("expiration", 0))
     expires_at = datetime.fromtimestamp(expiration_ms / 1000, tz=UTC)
@@ -1476,6 +1580,24 @@ def register_watch(session: Session, *, user_id: str) -> GmailPubsubWatch:
         watch.topic_name = settings.gmail_pubsub_topic
     session.flush()
     return watch
+
+
+def unregister_watch(session: Session, *, user_id: str) -> bool:
+    """CRM-GMAIL — para el Watch en Gmail y borra la fila de bookkeeping.
+    Para cleanup / migraciones. Devuelve True si había un watch."""
+    watch = session.scalar(
+        select(GmailPubsubWatch).where(GmailPubsubWatch.user_id == user_id)
+    )
+    try:
+        client = _client_for(session, user_id)
+        client.stop_watch()
+    except Exception:  # noqa: BLE001
+        logger.warning("gmail.unregister_watch stop failed", exc_info=True)
+    if watch is not None:
+        session.delete(watch)
+        session.flush()
+        return True
+    return False
 
 
 # ---------------------------------------------------------------------------

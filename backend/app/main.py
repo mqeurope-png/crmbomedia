@@ -24,6 +24,7 @@ from app.api.gmail_backfill import router as gmail_backfill_router
 from app.api.google_integrations import router as google_router
 from app.api.routes import router
 from app.api.tasks import router as tasks_router
+from app.api.user_aliases import router as user_aliases_router
 from app.api.workflows import router as workflows_router
 from app.core.config import get_settings
 from app.core.observability import setup_sentry
@@ -90,6 +91,7 @@ app.include_router(emails_router)
 app.include_router(emails_mailbox_router)
 app.include_router(emails_scheduled_router)
 app.include_router(email_drafts_router)
+app.include_router(user_aliases_router)
 app.include_router(gmail_webhook_router)
 # Sprint-Backfill-Gmail. Endpoints admin para 3 años de Gmail
 # histórico — propio módulo porque el patrón estimate/execute/cancel

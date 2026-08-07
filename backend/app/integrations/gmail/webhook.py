@@ -31,47 +31,71 @@ router = APIRouter(prefix="/api/webhooks", tags=["webhooks"])
 def _validate_jwt(authorization: str | None) -> None:
     """Verify the JWT signature + claims from Cloud Pub/Sub.
 
-    Pub/Sub signs every push with the service-account that owns the
-    subscription. We accept either signature verification via the
-    google-auth library OR a static verification token when the
-    operator prefers the simpler shared-secret path.
+    CRM-GMAIL — verificación fuerte. Pub/Sub firma cada push con el
+    service-account que la suscripción tiene configurado (OIDC). Cuando
+    `gmail_webhook_jwt_audience` / `gmail_webhook_service_account_email`
+    están puestos, exigimos:
+      - firma válida (google-auth) + emisor `accounts.google.com`,
+      - `aud` == audiencia configurada (la URL del webhook),
+      - `email` == service account configurado + `email_verified`.
+    Compat: si además hay `gmail_pubsub_verification_token`, aceptamos ese
+    Bearer estático. Si NO hay ninguna verificación configurada, aceptamos
+    (log warning) — como el webhook de Brevo — para no romper el arranque
+    antes de que admin haga el setup de Cloud.
     """
     settings = get_settings()
-    if not settings.gmail_pubsub_verification_token:
-        # No token configured → log + accept. Same pattern as the
-        # Brevo Marketing webhook: the upstream provider (Pub/Sub
-        # subscription without authentication) can't be told to send
-        # a header. Subir el log a warning para que sea visible —
-        # un atacante con la URL podría inyectar pushes hasta que
-        # admin configure la verificación.
+    audience = settings.gmail_webhook_jwt_audience
+    sa_email = settings.gmail_webhook_service_account_email
+    shared_token = settings.gmail_pubsub_verification_token
+
+    if not audience and not sa_email and not shared_token:
         logger.warning(
-            "gmail.webhook.jwt_skipped reason=token_unconfigured — "
-            "subscription accepts unsigned pushes; set "
-            "GMAIL_PUBSUB_VERIFICATION_TOKEN to enforce verification"
+            "gmail.webhook.jwt_skipped reason=unconfigured — subscription "
+            "accepts unsigned pushes; set GMAIL_WEBHOOK_JWT_AUDIENCE + "
+            "GMAIL_WEBHOOK_SERVICE_ACCOUNT_EMAIL to enforce verification"
         )
         return
+
     if not authorization:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing Authorization header.",
         )
-    expected = f"Bearer {settings.gmail_pubsub_verification_token}"
-    if authorization != expected:
-        # Try full JWT verification as a fallback (Pub/Sub default).
-        try:
-            from google.auth.transport import requests as g_requests  # noqa: PLC0415
-            from google.oauth2 import id_token as id_token_lib  # noqa: PLC0415
 
-            token = authorization.removeprefix("Bearer ").strip()
-            id_token_lib.verify_oauth2_token(
-                token, g_requests.Request()
+    # Shared-secret path (compat) — acepta directamente si casa.
+    if shared_token and authorization == f"Bearer {shared_token}":
+        return
+
+    # Verificación OIDC completa (Pub/Sub authenticated push).
+    try:
+        from google.auth.transport import requests as g_requests  # noqa: PLC0415
+        from google.oauth2 import id_token as id_token_lib  # noqa: PLC0415
+
+        token = authorization.removeprefix("Bearer ").strip()
+        claims = id_token_lib.verify_oauth2_token(
+            token,
+            g_requests.Request(),
+            audience=audience or None,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("gmail.webhook.jwt_invalid", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid push notification token.",
+        ) from exc
+
+    # El JWT es válido y firmado por Google; ahora exigimos que quien firma
+    # sea NUESTRO service account (evita tokens Google legítimos de terceros).
+    if sa_email:
+        token_email = claims.get("email")
+        if token_email != sa_email or not claims.get("email_verified", False):
+            logger.warning(
+                "gmail.webhook.jwt_wrong_sa email=%s", token_email
             )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("gmail.webhook.jwt_invalid", exc_info=True)
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid push notification token.",
-            ) from exc
+                detail="Push token not from the expected service account.",
+            )
 
 
 def _decode_pubsub_payload(body: dict[str, Any]) -> dict[str, Any]:

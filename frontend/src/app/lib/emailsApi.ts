@@ -69,6 +69,10 @@ export type EmailMessage = {
   /** v2.4e scheduled-send fields. */
   scheduled_for?: string | null;
   scheduled_status?: "pending" | "sent" | "cancelled" | "failed" | null;
+  /** CRM-GMAIL: Gmail marcó el mensaje como SPAM (se muestra con tag, no se
+   *  oculta). `delivered_to` = alias del CRM al que llegó el mail. */
+  is_spam?: boolean;
+  delivered_to?: string | null;
 };
 
 export type EmailThread = {
@@ -100,6 +104,9 @@ export type EmailThread = {
   is_starred?: boolean;
   snooze_until?: string | null;
   labels?: EmailLabel[];
+  /** CRM-GMAIL: el thread tiene ≥1 mensaje marcado como spam → chip «Spam».
+   *  No cambia `state`, así el thread NO se oculta de la bandeja. */
+  has_spam?: boolean;
 };
 
 export type EmailThreadStateValue =
@@ -153,6 +160,10 @@ export type EmailThreadListFilters = {
   // QoL sprint — toggle "Mías ↔ Todo el equipo" en /emails.
   scope?: "mine" | "team";
   team_user_id?: string;
+  // CRM-GMAIL Parte H — filtrar la bandeja por un alias entrante concreto.
+  delivered_to?: string;
+  // CRM-GMAIL — excluir threads con spam (por defecto se muestran).
+  exclude_spam?: boolean;
   // PR-Fix-Backfill-Gmail-Tras-Validación bug 8. Paginación cliente
   // del listado de threads. Backend acepta `limit` hasta 100 y
   // `offset` arbitrario. Antes la UI nunca los pasaba y se quedaba
@@ -239,6 +250,8 @@ export async function listEmailThreads(
   if (filters?.include_snoozed) params.set("include_snoozed", "true");
   if (filters?.scope) params.set("scope", filters.scope);
   if (filters?.team_user_id) params.set("team_user_id", filters.team_user_id);
+  if (filters?.delivered_to) params.set("delivered_to", filters.delivered_to);
+  if (filters?.exclude_spam) params.set("exclude_spam", "true");
   if (filters?.limit !== undefined) params.set("limit", String(filters.limit));
   if (filters?.offset !== undefined) {
     params.set("offset", String(filters.offset));

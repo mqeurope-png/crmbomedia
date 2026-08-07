@@ -21,6 +21,7 @@ import {
 import { getCurrentUser, getUsers, type User } from "../../lib/api";
 import { parseBackendDate } from "../../lib/dates";
 import { extractErrorMessage } from "../../lib/errors";
+import { AliasFilterDropdown } from "./AliasFilterDropdown";
 import { EmailEventBadges } from "./EmailEventBadges";
 import { EmailBulkActionsBar } from "./EmailBulkActionsBar";
 
@@ -100,6 +101,8 @@ export function EmailThreadList({ folders, labels, refreshKey }: Props) {
   const urlScope: "mine" | "team" =
     params.get("scope") === "team" ? "team" : "mine";
   const urlTeamUserId = params.get("team_user_id") ?? "";
+  // CRM-GMAIL Parte H — alias entrante seleccionado para filtrar la bandeja.
+  const urlDeliveredTo = params.get("delivered_to") ?? "";
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [teamUsers, setTeamUsers] = useState<User[]>([]);
 
@@ -164,6 +167,13 @@ export function EmailThreadList({ folders, labels, refreshKey }: Props) {
     router.replace(`/emails?${sp.toString()}`);
   }
 
+  function setDeliveredToUrl(alias: string) {
+    const sp = new URLSearchParams(params.toString());
+    if (alias) sp.set("delivered_to", alias);
+    else sp.delete("delivered_to");
+    router.replace(`/emails?${sp.toString()}`);
+  }
+
   const canSeeTeam =
     currentUser?.role === "admin" || currentUser?.role === "manager";
 
@@ -205,6 +215,7 @@ export function EmailThreadList({ folders, labels, refreshKey }: Props) {
         scope: urlScope,
         team_user_id:
           urlScope === "team" && urlTeamUserId ? urlTeamUserId : undefined,
+        delivered_to: urlDeliveredTo || undefined,
         limit: PAGE_SIZE,
         offset: 0,
       });
@@ -222,7 +233,7 @@ export function EmailThreadList({ folders, labels, refreshKey }: Props) {
     } finally {
       setLoading(false);
     }
-  }, [debounced, state, folderId, labelId, starred, urlScope, urlTeamUserId]);
+  }, [debounced, state, folderId, labelId, starred, urlScope, urlTeamUserId, urlDeliveredTo]);
 
   const fetchMoreThreads = useCallback(async () => {
     if (loadingMore || !hasMore) return;
@@ -236,6 +247,7 @@ export function EmailThreadList({ folders, labels, refreshKey }: Props) {
         scope: urlScope,
         team_user_id:
           urlScope === "team" && urlTeamUserId ? urlTeamUserId : undefined,
+        delivered_to: urlDeliveredTo || undefined,
         limit: PAGE_SIZE,
         offset: threads.length,
       });
@@ -263,6 +275,7 @@ export function EmailThreadList({ folders, labels, refreshKey }: Props) {
     starred,
     urlScope,
     urlTeamUserId,
+    urlDeliveredTo,
   ]);
 
   useEffect(() => {
@@ -398,6 +411,16 @@ export function EmailThreadList({ folders, labels, refreshKey }: Props) {
             ) : null}
           </div>
         ) : null}
+        {/* CRM-GMAIL Parte H — dropdown de alias para el comercial con >1
+            alias (se auto-oculta si tiene 0/1). Fuera del bloque de equipo:
+            aplica a cualquier rol. */}
+        {currentUser ? (
+          <AliasFilterDropdown
+            userId={currentUser.id}
+            value={urlDeliveredTo}
+            onChange={setDeliveredToUrl}
+          />
+        ) : null}
       </div>
 
       {someSelected ? (
@@ -499,6 +522,9 @@ export function EmailThreadList({ folders, labels, refreshKey }: Props) {
                     ) : null}
                   </span>
                   <span className="email-list-meta">
+                    {t.has_spam ? (
+                      <span className="badge bad email-list-spam">🔴 Spam</span>
+                    ) : null}
                     {labelsForThread.length > 0 ? (
                       <span className="email-list-labels">
                         {labelsForThread.map((label) => (

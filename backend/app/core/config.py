@@ -91,6 +91,14 @@ class Settings(BaseSettings):
     gmail_pubsub_topic: str | None = None
     gmail_pubsub_subscription: str | None = None
     gmail_pubsub_verification_token: str | None = None
+    # CRM-GMAIL — verificación fuerte del push de Pub/Sub. Cuando la
+    # suscripción se crea con autenticación (service account + OIDC token),
+    # Google firma cada push con un JWT cuya `aud` es la URL del webhook y
+    # cuyo `email` es el service account. Configurando estos dos, el webhook
+    # valida firma + audiencia + emisor + service account (más fuerte que el
+    # `gmail_pubsub_verification_token` de secreto compartido).
+    gmail_webhook_jwt_audience: str | None = None
+    gmail_webhook_service_account_email: str | None = None
 
     # PR-OAuth-Permisos-Admin Item 9. Mientras la app OAuth no esté
     # verificada por Google, los refresh tokens caducan a 7 días y hay

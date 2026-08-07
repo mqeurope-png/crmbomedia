@@ -275,7 +275,10 @@ def test_process_history_imports_inbound_reply(
         if gmail_thread_id != "thr-A":
             thread.gmail_thread_id = "thr-A"
         # Seed the watch row so process_history can resume.
-        from app.models.crm import GmailPubsubWatch  # noqa: PLC0415
+        from app.models.crm import (  # noqa: PLC0415
+            GmailPubsubWatch,
+            UserEmailAlias,
+        )
 
         session.add(
             GmailPubsubWatch(
@@ -284,6 +287,16 @@ def test_process_history_imports_inbound_reply(
                 watch_expires_at=datetime.now(UTC) + timedelta(days=6),
                 last_renewed_at=datetime.now(UTC),
                 topic_name="projects/x/topics/y",
+            )
+        )
+        # CRM-GMAIL — captura universal: el mail entra por ir dirigido a un
+        # alias activo (info@bomedia.net), no por pertenecer a un thread
+        # conocido.
+        session.add(
+            UserEmailAlias(
+                user_id=thread.gmail_account_user_id,
+                alias_email="info@bomedia.net",
+                active=True,
             )
         )
         session.commit()
@@ -417,21 +430,22 @@ def test_threads_filtered_by_contact_skip_user_scope(
     client: TestClient,
     session_factory: sessionmaker,
 ) -> None:
-    """PR-Contact-Emails-Team. La pestaña Emails de la ficha contacto
-    es COLABORATIVA: muestra TODOS los threads del contacto sin
-    filtrar por quién los envió. Bug pre-fix: Bart abría la ficha de
-    un cliente que Manel había contactado, veía "sin emails" porque
-    el endpoint filtraba por `initiated_by_user_id == bart.id`.
+    """CRM-GMAIL Parte E — Bart eligió FILTRAR también la pestaña Emails de
+    la ficha por alias (revierte el «historial colaborativo» previo).
 
-    Spec: cuando el filtro contact_id está presente, el scope=mine
-    default se SALTA. La bandeja general (`/emails` sin contact_id)
-    sigue siendo per-user."""
-    from app.models.crm import Contact  # noqa: PLC0415
+    Un comercial (user) ve en la ficha solo los threads que inició o que
+    llegaron a sus alias; NO los que otro comercial cruzó con el contacto.
+    Admin ve todo el historial del contacto."""
+    from app.models.crm import Contact, EmailMessage, UserEmailAlias  # noqa: PLC0415
 
     with session_factory() as session:
-        # bart = el operador que abre la ficha (no es el sender);
-        # manel = el sender histórico que envió el email.
-        manel_id = _user_id(session, UserRole.ADMIN)
+        manel_id = _user_id(session, UserRole.ADMIN)  # otro comercial (admin)
+        bart_id = _user_id(session, UserRole.USER)  # abre la ficha
+        session.add(
+            UserEmailAlias(
+                user_id=bart_id, alias_email="bart@bomedia.net", active=True
+            )
+        )
         contact = Contact(
             first_name="Salome",
             email="sara_kali@hotmail.es",
@@ -441,43 +455,59 @@ def test_threads_filtered_by_contact_skip_user_scope(
         session.add(contact)
         session.flush()
         contact_id = contact.id
-        # Thread enviado por Manel al contacto. Bart NO es el sender,
-        # pero al abrir la ficha del contacto debería verlo.
-        session.add(
-            EmailThread(
-                contact_id=contact_id,
-                initiated_by_user_id=manel_id,
-                gmail_thread_id="thr-manel-to-salome",
-                gmail_account_user_id=manel_id,
-                first_message_at=datetime.now(UTC),
-                last_message_at=datetime.now(UTC),
-                message_count=1,
-            )
+        # (1) Thread iniciado por Manel al contacto: Bart NO debe verlo.
+        manel_thread = EmailThread(
+            contact_id=contact_id,
+            initiated_by_user_id=manel_id,
+            gmail_thread_id="thr-manel-to-salome",
+            gmail_account_user_id=manel_id,
+            first_message_at=datetime.now(UTC),
+            last_message_at=datetime.now(UTC),
+            message_count=1,
         )
-        # Thread huérfano (contact_id=None) enviado por Manel.
-        # NO debe aparecer en la ficha del contacto.
+        # (2) Thread con un mensaje entregado al alias de Bart: SÍ lo ve.
+        bart_thread = EmailThread(
+            contact_id=contact_id,
+            initiated_by_user_id=manel_id,
+            gmail_thread_id="thr-inbound-to-bart",
+            gmail_account_user_id=manel_id,
+            first_message_at=datetime.now(UTC),
+            last_message_at=datetime.now(UTC),
+            message_count=1,
+        )
+        session.add_all([manel_thread, bart_thread])
+        session.flush()
         session.add(
-            EmailThread(
-                contact_id=None,
-                initiated_by_user_id=manel_id,
-                gmail_thread_id="thr-manel-other",
+            EmailMessage(
+                thread_id=bart_thread.id,
+                gmail_message_id="m-in-bart",
                 gmail_account_user_id=manel_id,
-                first_message_at=datetime.now(UTC),
-                last_message_at=datetime.now(UTC),
-                message_count=1,
+                direction="inbound",
+                from_email="sara_kali@hotmail.es",
+                to_emails_json='["bart@bomedia.net"]',
+                delivered_to="bart@bomedia.net",
+                sent_at=datetime.now(UTC),
+                contact_id=contact_id,
             )
         )
         session.commit()
 
-    # Bart abre la ficha del contacto → debe ver el thread de Manel.
-    response = client.get(
+    # Bart (user) abre la ficha → solo el thread entregado a su alias.
+    resp_user = client.get(
         f"/api/emails/threads?contact_id={contact_id}",
         headers=auth_headers(client, "user"),
     )
-    assert response.status_code == 200
-    body = response.json()
-    assert body["total"] == 1, body
-    assert body["items"][0]["gmail_thread_id"] == "thr-manel-to-salome"
+    assert resp_user.status_code == 200
+    body_user = resp_user.json()
+    assert body_user["total"] == 1, body_user
+    assert body_user["items"][0]["gmail_thread_id"] == "thr-inbound-to-bart"
+
+    # Admin ve todo el historial del contacto (ambos threads).
+    resp_admin = client.get(
+        f"/api/emails/threads?contact_id={contact_id}",
+        headers=auth_headers(client, "admin"),
+    )
+    assert resp_admin.json()["total"] == 2, resp_admin.json()
 
 
 def test_bandeja_general_keeps_user_scope_default(
@@ -1231,8 +1261,12 @@ def test_process_history_skips_messages_returning_404(
         uid = _user_id(session, UserRole.USER)
     _seed_gmail_integration(session_factory, user_id=uid)
 
-    # Seed a thread the user owns + the watch row.
-    from app.models.crm import EmailThread, GmailPubsubWatch  # noqa: PLC0415
+    # Seed a thread the user owns + the watch row + an active alias.
+    from app.models.crm import (  # noqa: PLC0415
+        EmailThread,
+        GmailPubsubWatch,
+        UserEmailAlias,
+    )
 
     with session_factory() as session:
         thread = EmailThread(
@@ -1251,6 +1285,11 @@ def test_process_history_skips_messages_returning_404(
                 watch_expires_at=datetime.now(UTC) + timedelta(days=6),
                 last_renewed_at=datetime.now(UTC),
                 topic_name="projects/x/topics/y",
+            )
+        )
+        session.add(
+            UserEmailAlias(
+                user_id=uid, alias_email="info@bomedia.net", active=True
             )
         )
         session.commit()
@@ -1331,7 +1370,11 @@ def test_process_history_advances_watch_even_when_every_message_fails(
         uid = _user_id(session, UserRole.USER)
     _seed_gmail_integration(session_factory, user_id=uid)
 
-    from app.models.crm import EmailThread, GmailPubsubWatch  # noqa: PLC0415
+    from app.models.crm import (  # noqa: PLC0415
+        EmailThread,
+        GmailPubsubWatch,
+        UserEmailAlias,
+    )
 
     with session_factory() as session:
         session.add(
@@ -1351,6 +1394,13 @@ def test_process_history_advances_watch_even_when_every_message_fails(
                 watch_expires_at=datetime.now(UTC) + timedelta(days=6),
                 last_renewed_at=datetime.now(UTC),
                 topic_name="projects/x/topics/y",
+            )
+        )
+        # Alias activo para que la captura universal llegue a get_message
+        # (y ejercite el 404) en vez de descartar por «sin alias».
+        session.add(
+            UserEmailAlias(
+                user_id=uid, alias_email="info@bomedia.net", active=True
             )
         )
         session.commit()
@@ -1671,6 +1721,13 @@ def test_inbound_reply_emits_activity_event_on_contact(
                 watch_expires_at=datetime.now(UTC) + timedelta(days=6),
                 last_renewed_at=datetime.now(UTC),
                 topic_name="projects/x/topics/y",
+            )
+        )
+        from app.models.crm import UserEmailAlias  # noqa: PLC0415
+
+        session.add(
+            UserEmailAlias(
+                user_id=uid, alias_email="info@bomedia.net", active=True
             )
         )
         session.commit()
