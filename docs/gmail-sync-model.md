@@ -105,6 +105,41 @@ y da resiliencia (si un worker cae, el otro sigue) sin tocar la config anterior.
 Reutiliza la imagen `crmbomedia-api:latest` (no necesita build propio) y monta el
 volumen `crmbo_email_attachments` para los adjuntos del backfill.
 
+## Backfill histórico universal (CLI)
+
+El push en tiempo real solo captura correo **desde que se activó** (#329). El
+histórico anterior lo trajo el backfill de PR #246, pero **con el filtro viejo**
+(solo remitentes que ya eran contacto), así que le faltan los mails huérfanos.
+Para recuperarlos hay un comando CLI que reprocesa un rango de fechas con la
+regla universal (guarda TODO mail a un alias activo), reutilizando la misma
+`_persist_inbound` que el push (con `emit_activity=False`: **no** re-dispara
+workflows ni ensucia timelines con correo viejo, y `imported_via =
+'historic_backfill_universal'`).
+
+```bash
+python -m app.integrations.gmail_watch backfill_universal \
+  --since 2026-02-07 [--until 2026-08-07] [--dry-run] [--dry-run-limit 500] \
+  [--labels INBOX,SPAM] [--yes] [--batch-size 100]
+```
+
+- **Prerequisito**: los alias en `/admin/users` deben estar **completos**. Un
+  mail a un alias que no esté en la BD se descarta silenciosamente; el comando
+  los cuenta y los lista al final («Descartados por alias»). El comando pide
+  confirmación al arrancar (salta con `--yes`).
+- **`--dry-run`**: no escribe nada; solo cuenta cuántos mails caerían por rama
+  (importable con contacto / huérfano / spam / dedupe / sin alias). `--dry-run-limit`
+  (default 500) acota los mensajes examinados por rendimiento.
+- **Idempotente**: dedupe por `(gmail_account_user_id, gmail_message_id)`.
+  Re-ejecutar con la misma fecha solo importa lo que faltaba (el resto se salta).
+- **Spam**: los mails con label `SPAM` entran con `is_spam=true` (igual que el
+  push); no se ocultan (chip «Spam», o `?exclude_spam=true` en la lista).
+- Corre en **foreground** en el proceso invocado (sin cola RQ). Para runs largos:
+  `nohup docker exec crmbo-api-1 python -m app.integrations.gmail_watch \
+  backfill_universal --since 2026-02-07 --yes > /root/backfill-$(date +%F).log 2>&1 &`.
+
+El report final resume totales + duración + los alias que descartaron mails
+(ordenados por número), con la sugerencia de añadirlos y re-ejecutar.
+
 ## Backlog (fuera de este PR)
 
 - Convertir el remitente de un email huérfano en lead desde la propia UI.

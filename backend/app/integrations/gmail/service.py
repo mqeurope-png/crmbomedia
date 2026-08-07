@@ -1298,6 +1298,40 @@ def _find_bounced_message(
     return None
 
 
+def compute_delivered_to(
+    raw: dict[str, Any], alias_map: dict[str, str]
+) -> str | None:
+    """CRM-GMAIL — alias del CRM al que llegó el mail. Preferimos los headers
+    Delivered-To / X-Original-To (fiables) y, si no, casamos To/Cc/Bcc contra
+    los alias activos. Devuelve el alias en su forma canónica o None. Es la
+    MISMA lógica que aplica `_persist_inbound`, extraída para que el backfill
+    universal clasifique idéntico (Parte C del spec)."""
+    headers = _index_headers(raw.get("payload", {}).get("headers", []))
+    candidates = [
+        addr.strip()
+        for addr in (headers.get("delivered-to"), headers.get("x-original-to"))
+        if addr
+    ]
+    for key in ("to", "cc", "bcc"):
+        header_val = headers.get(key)
+        if header_val:
+            candidates += [a for _, a in getaddresses([header_val]) if a]
+    return resolve_delivered_to(candidates, alias_map)
+
+
+def primary_recipient(raw: dict[str, Any]) -> str | None:
+    """Destinatario «principal» (lowercased) para el report de alias
+    descartados: Delivered-To / X-Original-To, o el primer To."""
+    headers = _index_headers(raw.get("payload", {}).get("headers", []))
+    for key in ("delivered-to", "x-original-to", "to"):
+        val = headers.get(key)
+        if val:
+            parsed = getaddresses([val])
+            if parsed and parsed[0][1]:
+                return parsed[0][1].lower()
+    return None
+
+
 def _persist_inbound(
     session: Session,
     *,
@@ -1305,6 +1339,9 @@ def _persist_inbound(
     raw: dict[str, Any],
     gmail_thread_id: str,
     alias_map: dict[str, str] | None = None,
+    dry_run: bool = False,
+    emit_activity: bool = True,
+    imported_via: str = "incoming_realtime",
 ) -> EmailMessage | None:
     headers = _index_headers(raw.get("payload", {}).get("headers", []))
     from_header = headers.get("from") or ""
@@ -1325,25 +1362,13 @@ def _persist_inbound(
     body_text, body_html = _extract_bodies(raw.get("payload", {}))
 
     # CRM-GMAIL — captura universal. `delivered_to` = alias del CRM al que
-    # llegó el mail: preferimos los headers Delivered-To / X-Original-To
-    # (fiables) y, si no, casamos To/Cc/Bcc contra los alias activos. Si el
-    # mail no va a ninguno de nuestros alias, no es nuestro → no lo
-    # guardamos (solo cuando el caller pasa `alias_map`; un llamador legacy
-    # sin alias_map conserva el comportamiento anterior).
+    # llegó el mail (misma lógica compartida con el backfill vía
+    # `compute_delivered_to`). Si el mail no va a ninguno de nuestros alias,
+    # no es nuestro → no lo guardamos (solo cuando el caller pasa `alias_map`;
+    # un llamador legacy sin alias_map conserva el comportamiento anterior).
     labels = raw.get("labelIds") or []
-    delivered_candidates = [
-        addr.strip()
-        for addr in (
-            headers.get("delivered-to"),
-            headers.get("x-original-to"),
-        )
-        if addr
-    ]
-    delivered_candidates += to_emails + (cc_emails or []) + (bcc_emails or [])
     delivered_to = (
-        resolve_delivered_to(delivered_candidates, alias_map)
-        if alias_map is not None
-        else None
+        compute_delivered_to(raw, alias_map) if alias_map is not None else None
     )
     if alias_map is not None and delivered_to is None:
         return None
@@ -1355,35 +1380,38 @@ def _persist_inbound(
     # send still lives in the thread and now has a BOUNCE event next
     # to it, which is what the timeline UI surfaces.
     if _is_ndr(from_email, headers):
-        ndr = _parse_ndr(headers, body_text)
-        original = _find_bounced_message(
-            session,
-            user_id=user_id,
-            gmail_thread_id=gmail_thread_id,
-            failed_to=ndr.get("failed_to"),
-        )
-        from app.email_tracking.services import record_event  # noqa: PLC0415
-        from app.models.crm import EmailEventType  # noqa: PLC0415
-
-        if original is not None:
-            record_event(
+        # El backfill (emit_activity=False) y el dry-run NO adjuntan eventos
+        # de bounce a mensajes históricos: solo señalan «nada que insertar».
+        if emit_activity and not dry_run:
+            ndr = _parse_ndr(headers, body_text)
+            original = _find_bounced_message(
                 session,
-                message_id=original.id,
-                event_type=EmailEventType.BOUNCE,
-                metadata={
-                    **(ndr or {}),
-                    "from": from_email,
-                    "subject": subject,
-                },
+                user_id=user_id,
+                gmail_thread_id=gmail_thread_id,
+                failed_to=ndr.get("failed_to"),
             )
-            session.commit()
-        else:
-            logger.info(
-                "gmail.ndr.original_not_found user=%s subject=%r failed_to=%s",
-                user_id,
-                (subject or "")[:80],
-                ndr.get("failed_to"),
-            )
+            from app.email_tracking.services import record_event  # noqa: PLC0415
+            from app.models.crm import EmailEventType  # noqa: PLC0415
+
+            if original is not None:
+                record_event(
+                    session,
+                    message_id=original.id,
+                    event_type=EmailEventType.BOUNCE,
+                    metadata={
+                        **(ndr or {}),
+                        "from": from_email,
+                        "subject": subject,
+                    },
+                )
+                session.commit()
+            else:
+                logger.info(
+                    "gmail.ndr.original_not_found user=%s subject=%r failed_to=%s",
+                    user_id,
+                    (subject or "")[:80],
+                    ndr.get("failed_to"),
+                )
         # Signal the caller: nothing to insert.
         return None
 
@@ -1397,9 +1425,11 @@ def _persist_inbound(
             EmailThread.gmail_thread_id == gmail_thread_id,
         )
     )
-    if thread is None:
-        # Should not happen — process_history filters by known
-        # threads — but stay defensive.
+    if thread is None and not dry_run:
+        # Should not happen en real-time (process_history) pero sí en el
+        # backfill universal de un thread nunca visto. En dry-run NO creamos
+        # el thread (sería una escritura): el outcome linked/orphan solo
+        # depende del contacto.
         thread = _get_or_create_thread(
             session,
             gmail_account_user_id=user_id,
@@ -1412,7 +1442,7 @@ def _persist_inbound(
         )
 
     message = EmailMessage(
-        thread_id=thread.id,
+        thread_id=thread.id if thread is not None else "dry-run",
         gmail_message_id=raw["id"],
         gmail_account_user_id=user_id,
         direction=EmailDirection.INBOUND,
@@ -1430,18 +1460,22 @@ def _persist_inbound(
         delivered_to=delivered_to,
         is_spam="SPAM" in labels,
         gmail_labels=json.dumps(labels) if labels else None,
-        imported_via="incoming_realtime",
+        imported_via=imported_via,
     )
+    # dry-run: devolvemos el mensaje TRANSITORIO (sin persistir) para que el
+    # caller clasifique el resultado; no tocamos la sesión.
+    if dry_run:
+        return message
     session.add(message)
     thread.last_message_at = sent_at
     thread.message_count = (thread.message_count or 0) + 1
     thread.has_unread_replies = True
     session.flush()
-    # Mirror the reply onto the contact's activity timeline so the
-    # ficha de contacto picks it up alongside the outbound sends and
-    # the rest of the activity. Skipped when the inbound came from
-    # an unknown address (no contact_id).
-    if contact is not None:
+    # Mirror the reply onto the contact's activity timeline. Skipped when el
+    # inbound vino de una dirección desconocida (sin contact_id) o cuando el
+    # caller pide no emitir actividad (backfill histórico: no re-disparar
+    # workflows ni ensuciar el timeline con correo viejo).
+    if emit_activity and contact is not None:
         _emit_inbound_activity(
             session,
             contact_id=contact.id,

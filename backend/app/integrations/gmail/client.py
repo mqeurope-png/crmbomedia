@@ -305,12 +305,18 @@ class GmailClient:
         query: str,
         page_size: int = 100,
         page_token: str | None = None,
+        label_ids: list[str] | None = None,
     ) -> dict[str, Any]:
         """Sprint-Backfill-Gmail. Wraps `users.messages.list(q=...)`.
 
         Devuelve `{messages: [{id, threadId}], nextPageToken?, resultSizeEstimate}`.
         El caller pagina con `nextPageToken`. `query` usa la sintaxis
-        nativa de Gmail (eg `from:foo to:bar newer_than:36m`)."""
+        nativa de Gmail (eg `from:foo to:bar newer_than:36m`).
+
+        CRM-GMAIL-BACKFILL: `label_ids` opcional filtra por labels de Gmail
+        (`labelIds`, AND-combinados). Pasar `['SPAM']` para incluir spam, que
+        `q` por sí solo excluye por defecto. Para INBOX+SPAM el caller hace
+        una pasada por label."""
         service = self._build_service()
         kwargs: dict[str, Any] = {
             "userId": "me",
@@ -319,6 +325,8 @@ class GmailClient:
         }
         if page_token:
             kwargs["pageToken"] = page_token
+        if label_ids:
+            kwargs["labelIds"] = label_ids
         response = service.users().messages().list(**kwargs).execute()
         return {
             "messages": list(response.get("messages") or []),
