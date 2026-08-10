@@ -1966,6 +1966,8 @@ td {
 .badge.bad { background: #fef3f2; color: var(--danger); }
 .badge.active { background: #eef4ff; color: var(--brand); }
 .badge.muted { background: var(--line); color: var(--ink); }
+/* CRM-BANDEJA — chip azul suave «Respuesta entrante». */
+.badge.info { background: #e0f2fe; color: #0369a1; }
 
 .sync-detail { display: grid; grid-template-columns: 200px 1fr; gap: 8px 16px; }
 .sync-detail dt { font-weight: 700; }
@@ -4803,6 +4805,199 @@ a.origin-chip:hover { filter: brightness(0.97); }
 .email-message-meta { flex: 1; min-width: 0; }
 .email-message-from { margin: 0; font-size: 13px; }
 .email-message-from .badge { margin-left: 6px; font-size: 10px; }
+
+/* CRM-BANDEJA — thread detail estilo Gmail ------------------------- */
+.email-thread-expand-row {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+.email-message.is-collapsed {
+  padding: 0;
+  background: #fafbfc;
+}
+.email-message.is-expanded { padding: 0 0 12px; }
+.email-message-headerbtn {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 12px;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+}
+.email-message-headerbtn:hover { background: rgba(29, 41, 64, 0.04); }
+.email-message .email-message-avatar {
+  width: 30px;
+  height: 30px;
+  font-size: 13px;
+  font-weight: 700;
+}
+.email-message-headmain {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.email-message-headline {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 13px;
+}
+.email-message-headline .badge { font-size: 10px; }
+.email-message-fromaddr { font-weight: 400; }
+.email-message-snippetline,
+.email-message-tosummary {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.email-message-date {
+  flex-shrink: 0;
+  white-space: nowrap;
+  align-self: flex-start;
+  margin-top: 2px;
+}
+.email-message-body-wrap {
+  padding: 0 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.email-message-details-toggle {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  border: 0;
+  background: transparent;
+  color: #6b7280;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0;
+}
+.email-message-details-toggle:hover { color: var(--brand); }
+.email-message-details {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 12px;
+  margin: 0;
+  padding: 8px 10px;
+  background: #f8fafc;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12px;
+}
+.email-message-details dt {
+  color: #6b7280;
+  font-weight: 600;
+}
+.email-message-details dd {
+  margin: 0;
+  word-break: break-word;
+}
+/* Sin scroll interno: el iframe crece a la altura del contenido (la
+ * mide el padre) y el que scrollea es .email-thread-pane. */
+.email-html-preview-auto {
+  min-height: 0;
+  border: 0;
+  margin-top: 0;
+  display: block;
+  overflow: hidden;
+}
+.email-body-natural {
+  max-height: none;
+  overflow: visible;
+}
+.email-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-top: 4px;
+  border-top: 1px dashed var(--border);
+}
+.email-attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: #f8fafc;
+  font-size: 12px;
+  max-width: 100%;
+}
+.email-attachment-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 220px;
+}
+.email-attachment-download {
+  display: inline-flex;
+  align-items: center;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  color: var(--brand);
+  padding: 0;
+}
+.email-attachment-download:hover { color: #1d4ed8; }
+
+/* CRM-BANDEJA — toolbar del hilo agrupada en 3 secciones. */
+.email-thread-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 0;
+  border-bottom: 1px solid #e5e7eb;
+}
+.email-toolbar-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.email-toolbar-group-actions { gap: 6px; }
+.email-toolbar-divider {
+  width: 1px;
+  height: 22px;
+  background: var(--border);
+  flex-shrink: 0;
+}
+
+/* CRM-BANDEJA — breadcrumb encima del hilo. */
+.email-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  min-width: 0;
+}
+.email-breadcrumb-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  color: var(--brand);
+  text-decoration: none;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+.email-breadcrumb-link:hover { text-decoration: underline; }
+.email-breadcrumb-current {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #6b7280;
+}
 
 /* Contact timeline email rows v2.1 */
 .timeline-row-email-out {
@@ -9932,10 +10127,13 @@ tr.is-inactive {
   width: 4px;
   border: 0;
   padding: 0;
-  background: transparent;
+  /* CRM-BANDEJA — antes era transparente y Bart no sabía que existía.
+   * Línea sutil siempre visible; primario al hover/drag. */
+  background: var(--line, #e5e7eb);
   cursor: col-resize;
   position: relative;
   transition: background 0.15s ease;
+  border-radius: 2px;
 }
 .resizable-handle:hover,
 .resizable-handle:focus-visible,

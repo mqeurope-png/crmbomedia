@@ -1,4 +1,24 @@
-import { apiFetch } from "./api";
+import { apiFetch, apiFetchBlob } from "./api";
+
+/** CRM-BANDEJA — descarga el binario de un adjunto y dispara el guardado
+ *  en el navegador. El endpoint audita cada descarga en el backend. */
+export async function downloadEmailAttachment(
+  messageId: string,
+  attachmentId: string,
+  filename: string,
+): Promise<void> {
+  const blob = await apiFetchBlob(
+    `/api/email-messages/${messageId}/attachments/${attachmentId}/download`,
+  );
+  const url = window.URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename || "adjunto";
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.URL.revokeObjectURL(url);
+}
 
 export type EmailAlias = {
   send_as_email: string;
@@ -47,6 +67,17 @@ export async function putEmailAliasPreferences(
   });
 }
 
+/** CRM-BANDEJA — adjunto de un mensaje en el thread detail. `id` nulo
+ *  cuando solo existe el sumario inline (binario no descargado) — el chip
+ *  se muestra sin botón de descarga. */
+export type EmailMessageAttachment = {
+  id: string | null;
+  filename: string;
+  mime_type: string | null;
+  size_bytes: number | null;
+  downloadable: boolean;
+};
+
 export type EmailMessage = {
   id: string;
   thread_id: string;
@@ -73,6 +104,8 @@ export type EmailMessage = {
    *  oculta). `delivered_to` = alias del CRM al que llegó el mail. */
   is_spam?: boolean;
   delivered_to?: string | null;
+  /** CRM-BANDEJA — solo poblado por el thread detail. */
+  attachments?: EmailMessageAttachment[];
 };
 
 export type EmailThread = {
@@ -154,6 +187,9 @@ export type EmailThreadListFilters = {
   label_id?: string;
   starred?: boolean;
   has_unread?: boolean;
+  // CRM-BANDEJA — filtros rápidos «Con adjuntos» / «Con contacto CRM».
+  has_attachments?: boolean;
+  has_contact?: boolean;
   since?: string;
   until?: string;
   include_snoozed?: boolean;
@@ -244,6 +280,12 @@ export async function listEmailThreads(
   }
   if (filters?.has_unread !== undefined) {
     params.set("has_unread", String(filters.has_unread));
+  }
+  if (filters?.has_attachments !== undefined) {
+    params.set("has_attachments", String(filters.has_attachments));
+  }
+  if (filters?.has_contact !== undefined) {
+    params.set("has_contact", String(filters.has_contact));
   }
   if (filters?.since) params.set("since", filters.since);
   if (filters?.until) params.set("until", filters.until);

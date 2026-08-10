@@ -128,6 +128,22 @@ class ScheduledMessageUpdate(BaseModel):
     body_text: str | None = None
 
 
+class EmailMessageAttachmentRead(BaseModel):
+    """CRM-BANDEJA — adjunto expuesto en el thread detail. `id` es la fila
+    de `email_message_attachments` (binario descargable); cuando el binario
+    no se descargó (p. ej. superaba el límite de tamaño del backfill) el
+    mensaje aún conserva el sumario inline `attachments_json` y exponemos
+    la metadata con `downloadable=False` para que la UI muestre el chip."""
+
+    id: str | None = None
+    filename: str
+    mime_type: str | None = None
+    size_bytes: int | None = None
+    downloadable: bool = False
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class EmailMessageRead(BaseModel):
     id: str
     thread_id: str
@@ -158,10 +174,13 @@ class EmailMessageRead(BaseModel):
     scheduled_for: datetime | None = None
     scheduled_status: str | None = None
     # CRM-GMAIL — spam sync + captura universal.
-    #   is_spam: Gmail marcó este mensaje como SPAM (se muestra con tag,
+    #   is_spam: Gmail marcó el mensaje como SPAM (se muestra con tag,
     #     no se oculta). delivered_to: alias del CRM al que llegó el mail.
     is_spam: bool = False
     delivered_to: str | None = None
+    # CRM-BANDEJA — adjuntos del mensaje (chips con descarga en el thread
+    # detail). Solo lo puebla `get_thread`; el resto de rutas devuelven [].
+    attachments: list[EmailMessageAttachmentRead] = Field(default_factory=list)
 
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 

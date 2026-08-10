@@ -433,6 +433,35 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
   return parseApiResponse<T>(response);
 }
 
+/** CRM-BANDEJA — variante binaria de apiFetch para descargas (adjuntos
+ * de email). Devuelve el Blob crudo; el caller decide cómo servirlo al
+ * usuario (objectURL + <a download>). */
+export async function apiFetchBlob(path: string): Promise<Blob> {
+  const token = getStoredToken();
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE_URL}${path}`, {
+      credentials: "include",
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      cache: "no-store",
+    });
+  } catch (networkError) {
+    throw new Error(extractErrorMessage(networkError));
+  }
+  if (!response.ok) {
+    let detail: unknown = null;
+    try {
+      detail = await response.json();
+    } catch {
+      /* cuerpo no-JSON — usamos el status */
+    }
+    throw new Error(
+      extractErrorMessage(detail, `Descarga fallida (HTTP ${response.status})`),
+    );
+  }
+  return response.blob();
+}
+
 /** Sprint Email v2.5 — A. Multipart variant for binary uploads
  * (draft attachments). The browser sets the multipart boundary on
  * `Content-Type` automatically when `body` is FormData — so we
