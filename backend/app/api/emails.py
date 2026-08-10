@@ -713,11 +713,42 @@ def list_threads(
     # add a "sent" enum member so a thread can simultaneously
     # belong to "Enviados" and to a custom folder.
     if state == "sent":
-        sent_subq = select(EmailMessage.thread_id).where(
+        # CRM-BANDEJA-FIX-ENVIADOS. El filtro antiguo condicionaba por
+        # `gmail_account_user_id == current_user.id`, que dejó de
+        # discriminar con la cuenta Google ORG unificada (los mensajes
+        # capturados llevan el id de la cuenta org, no el del comercial) y
+        # además dejaba pasar los falsos outbound del backfill de junio
+        # (heurística from≠contacto). Propiedad real de un enviado:
+        #   - `created_by_user_id` = yo (envíos desde el compositor CRM y
+        #     capturados SENT, que lo rellenan con el dueño del alias), O
+        #   - `from_email` es uno de MIS alias activos (señal fuerte que
+        #     también excluye los falsos outbound: su From es externo).
+        # Admin: sin condición de propiedad (con scope=team ve los
+        # enviados de todo el equipo, consistente con el resto de la
+        # bandeja).
+        from sqlalchemy import or_ as _or_sent  # noqa: PLC0415
+
+        from app.services.email_aliases import (  # noqa: PLC0415
+            user_active_aliases,
+        )
+
+        sent_conditions = [
             EmailMessage.direction == "outbound",
             EmailMessage.sent_at.is_not(None),
-            EmailMessage.gmail_account_user_id == current_user.id,
-        )
+        ]
+        if current_user.role != UserRole.ADMIN:
+            aliases_lower = [
+                a.lower() for a in user_active_aliases(session, current_user.id)
+            ]
+            ownership = [
+                EmailMessage.created_by_user_id == current_user.id,
+            ]
+            if aliases_lower:
+                ownership.append(
+                    func.lower(EmailMessage.from_email).in_(aliases_lower)
+                )
+            sent_conditions.append(_or_sent(*ownership))
+        sent_subq = select(EmailMessage.thread_id).where(*sent_conditions)
         stmt = stmt.where(
             EmailThread.id.in_(sent_subq),
             EmailThread.state == EmailThreadState.INBOX,

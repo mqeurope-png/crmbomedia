@@ -2408,8 +2408,12 @@ def _seed_bandeja_thread(
     contact_id: str | None = None,
     message_contact_id: str | None = None,
     attachments_json: str | None = None,
+    direction: str = "outbound",
+    from_email: str = "user@example.com",
+    created_by_user_id: str | None = None,
 ) -> tuple[str, str]:
-    """Thread + 1 mensaje outbound del user. Devuelve (thread_id, message_id)."""
+    """Thread + 1 mensaje del user (outbound por defecto). Devuelve
+    (thread_id, message_id)."""
     from app.models.crm import EmailDirection  # noqa: PLC0415
 
     thread = EmailThread(
@@ -2428,12 +2432,13 @@ def _seed_bandeja_thread(
         thread_id=thread.id,
         gmail_message_id=f"msg-{gmail_thread_id}",
         gmail_account_user_id=uid,
-        direction=EmailDirection.OUTBOUND,
-        from_email="user@example.com",
+        direction=EmailDirection(direction),
+        from_email=from_email,
         to_emails_json='["dest@example.com"]',
         sent_at=datetime.now(UTC),
         contact_id=message_contact_id,
         attachments_json=attachments_json,
+        created_by_user_id=created_by_user_id,
     )
     session.add(message)
     session.flush()
@@ -2624,3 +2629,130 @@ def test_thread_detail_metadata_only_attachment_is_downloadable(
     assert atts[0]["filename"] == "factura.pdf"
     assert atts[0]["downloadable"] is True
     assert atts[0]["id"]
+
+
+# ---------------------------------------------------------------------------
+# CRM-BANDEJA-FIX-ENVIADOS — la carpeta «Enviados» (state=sent) filtra por
+# outbound REALMENTE propio (created_by o From = alias activo del comercial)
+# ---------------------------------------------------------------------------
+
+
+def _seed_enviados_fixture(session: Session) -> dict[str, str]:
+    """4 threads visibles para el user (initiated_by=user):
+    - sent-own-alias: outbound capturado de Gmail (From = SU alias).
+    - sent-own-composer: outbound del compositor CRM (created_by = user).
+    - sent-false-outbound: falso outbound del backfill de junio (From
+      externo, sin created_by) — NO debe salir en su Enviados.
+    - inbound-only: mensaje recibido.
+    """
+    from app.models.crm import UserEmailAlias  # noqa: PLC0415
+
+    uid = _user_id(session, UserRole.USER)
+    session.add(
+        UserEmailAlias(
+            user_id=uid, alias_email="brice@artisjet.eu", active=True
+        )
+    )
+    session.flush()
+    ids = {}
+    ids["own_alias"], _ = _seed_bandeja_thread(
+        session,
+        uid=uid,
+        gmail_thread_id="sent-own-alias",
+        from_email="Brice@Artisjet.eu".lower(),
+    )
+    ids["own_composer"], _ = _seed_bandeja_thread(
+        session,
+        uid=uid,
+        gmail_thread_id="sent-own-composer",
+        from_email="user@example.com",
+        created_by_user_id=uid,
+    )
+    ids["false_outbound"], _ = _seed_bandeja_thread(
+        session,
+        uid=uid,
+        gmail_thread_id="sent-false-outbound",
+        from_email="noreply@leboncoin.fr",
+    )
+    ids["inbound_only"], _ = _seed_bandeja_thread(
+        session,
+        uid=uid,
+        gmail_thread_id="inbound-only",
+        direction="inbound",
+        from_email="cliente@fuera.com",
+    )
+    session.commit()
+    return ids
+
+
+def test_list_threads_state_sent_returns_only_outbound_owned(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    with session_factory() as session:
+        _seed_enviados_fixture(session)
+
+    response = client.get(
+        "/api/emails/threads?state=sent", headers=auth_headers(client, "user")
+    )
+    assert response.status_code == 200
+    got = {t["gmail_thread_id"] for t in response.json()["items"]}
+    # Solo los enviados PROPIOS: por alias en el From o por created_by.
+    assert got == {"sent-own-alias", "sent-own-composer"}
+
+
+def test_list_threads_state_sent_hides_inbound_threads(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    with session_factory() as session:
+        _seed_enviados_fixture(session)
+
+    response = client.get(
+        "/api/emails/threads?state=sent", headers=auth_headers(client, "user")
+    )
+    got = {t["gmail_thread_id"] for t in response.json()["items"]}
+    assert "inbound-only" not in got
+    # El falso outbound del backfill de junio (From externo) tampoco sale.
+    assert "sent-false-outbound" not in got
+
+
+def test_list_threads_state_sent_admin_sees_all_outbound(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    with session_factory() as session:
+        _seed_enviados_fixture(session)
+
+    # Admin sin condición de propiedad — con scope=team ve TODOS los hilos
+    # con outbound del equipo (consistente con el resto de la bandeja).
+    response = client.get(
+        "/api/emails/threads?state=sent&scope=team",
+        headers=auth_headers(client, "admin"),
+    )
+    assert response.status_code == 200
+    got = {t["gmail_thread_id"] for t in response.json()["items"]}
+    assert got == {
+        "sent-own-alias",
+        "sent-own-composer",
+        "sent-false-outbound",
+    }
+    assert "inbound-only" not in got
+
+
+def test_list_threads_state_inbox_still_shows_all_visible_threads(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    """Regresión: «Bandeja» (default, sin state) sigue mostrando todo lo
+    visible del comercial — inbound y outbound."""
+    with session_factory() as session:
+        _seed_enviados_fixture(session)
+
+    response = client.get(
+        "/api/emails/threads", headers=auth_headers(client, "user")
+    )
+    assert response.status_code == 200
+    got = {t["gmail_thread_id"] for t in response.json()["items"]}
+    assert got == {
+        "sent-own-alias",
+        "sent-own-composer",
+        "sent-false-outbound",
+        "inbound-only",
+    }
