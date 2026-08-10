@@ -200,6 +200,15 @@ export function EmailThreadList({ folders, labels, refreshKey }: Props) {
   const folderId = params.get("folder_id");
   const labelId = params.get("label_id");
   const starred = params.get("starred") === "true" ? true : undefined;
+  // CRM-BANDEJA — la FiltersBar escribía has_unread/since/until en la URL
+  // pero el fetch nunca los pasaba al backend (los chips no filtraban).
+  // Se leen aquí junto a los nuevos «Con adjuntos» / «Con contacto CRM».
+  const hasUnread = params.get("has_unread") === "true" ? true : undefined;
+  const hasAttachments =
+    params.get("has_attachments") === "true" ? true : undefined;
+  const hasContact = params.get("has_contact") === "true" ? true : undefined;
+  const since = params.get("since") ?? undefined;
+  const until = params.get("until") ?? undefined;
 
   const PAGE_SIZE = 50;
 
@@ -212,6 +221,11 @@ export function EmailThreadList({ folders, labels, refreshKey }: Props) {
         folder_id: folderId ?? undefined,
         label_id: labelId ?? undefined,
         starred,
+        has_unread: hasUnread,
+        has_attachments: hasAttachments,
+        has_contact: hasContact,
+        since,
+        until,
         scope: urlScope,
         team_user_id:
           urlScope === "team" && urlTeamUserId ? urlTeamUserId : undefined,
@@ -233,7 +247,7 @@ export function EmailThreadList({ folders, labels, refreshKey }: Props) {
     } finally {
       setLoading(false);
     }
-  }, [debounced, state, folderId, labelId, starred, urlScope, urlTeamUserId, urlDeliveredTo]);
+  }, [debounced, state, folderId, labelId, starred, hasUnread, hasAttachments, hasContact, since, until, urlScope, urlTeamUserId, urlDeliveredTo]);
 
   const fetchMoreThreads = useCallback(async () => {
     if (loadingMore || !hasMore) return;
@@ -244,6 +258,11 @@ export function EmailThreadList({ folders, labels, refreshKey }: Props) {
         folder_id: folderId ?? undefined,
         label_id: labelId ?? undefined,
         starred,
+        has_unread: hasUnread,
+        has_attachments: hasAttachments,
+        has_contact: hasContact,
+        since,
+        until,
         scope: urlScope,
         team_user_id:
           urlScope === "team" && urlTeamUserId ? urlTeamUserId : undefined,
@@ -273,6 +292,11 @@ export function EmailThreadList({ folders, labels, refreshKey }: Props) {
     folderId,
     labelId,
     starred,
+    hasUnread,
+    hasAttachments,
+    hasContact,
+    since,
+    until,
     urlScope,
     urlTeamUserId,
     urlDeliveredTo,

@@ -27,6 +27,7 @@ from app.models.crm import (
     Contact,
     EmailEventType,
     EmailMessage,
+    EmailMessageAttachment,
     EmailMessageEvent,
     EmailThread,
     EmailThreadLabel,
@@ -38,6 +39,7 @@ from app.models.crm import (
 from app.schemas.emails import (
     AliasPreferencesPayload,
     EmailAlias,
+    EmailMessageAttachmentRead,
     EmailMessageRead,
     EmailSendRequest,
     EmailThreadDetail,
@@ -639,6 +641,12 @@ def list_threads(
     label_id: str | None = Query(default=None),
     starred: bool | None = Query(default=None),
     has_unread: bool | None = Query(default=None),
+    # CRM-BANDEJA — filtros rápidos del listado. `has_attachments` = al
+    # menos un mensaje del hilo con adjunto (fila binaria descargada O
+    # sumario inline `attachments_json`). `has_contact` = el hilo (o alguno
+    # de sus mensajes) está vinculado a un contacto del CRM.
+    has_attachments: bool | None = Query(default=None),
+    has_contact: bool | None = Query(default=None),
     since: datetime | None = Query(default=None),
     until: datetime | None = Query(default=None),
     include_snoozed: bool = Query(default=False),
@@ -733,6 +741,39 @@ def list_threads(
         stmt = stmt.where(EmailThread.is_starred.is_(starred))
     if has_unread is not None:
         stmt = stmt.where(EmailThread.has_unread_replies.is_(has_unread))
+    if has_attachments is not None:
+        from sqlalchemy import or_ as _or_att  # noqa: PLC0415
+
+        attachment_threads = select(EmailMessage.thread_id).where(
+            _or_att(
+                EmailMessage.attachments_json.is_not(None),
+                EmailMessage.id.in_(
+                    select(EmailMessageAttachment.message_id)
+                ),
+            )
+        )
+        if has_attachments:
+            stmt = stmt.where(EmailThread.id.in_(attachment_threads))
+        else:
+            stmt = stmt.where(EmailThread.id.not_in(attachment_threads))
+    if has_contact is not None:
+        from sqlalchemy import or_ as _or_ct  # noqa: PLC0415
+
+        message_contact_threads = select(EmailMessage.thread_id).where(
+            EmailMessage.contact_id.is_not(None)
+        )
+        if has_contact:
+            stmt = stmt.where(
+                _or_ct(
+                    EmailThread.contact_id.is_not(None),
+                    EmailThread.id.in_(message_contact_threads),
+                )
+            )
+        else:
+            stmt = stmt.where(
+                EmailThread.contact_id.is_(None),
+                EmailThread.id.not_in(message_contact_threads),
+            )
     if since is not None:
         stmt = stmt.where(EmailThread.last_message_at >= since)
     if until is not None:
@@ -882,9 +923,24 @@ def thread_detail(
             .values(read_at=datetime.now(UTC))
         )
         session.commit()
+    # CRM-BANDEJA — adjuntos de todos los mensajes del hilo en una sola
+    # query, agrupados por mensaje para los chips del detail.
+    attachments_by_message: dict[str, list[EmailMessageAttachment]] = {}
+    message_ids = [m.id for m in thread.messages]
+    if message_ids:
+        rows = session.scalars(
+            select(EmailMessageAttachment)
+            .where(EmailMessageAttachment.message_id.in_(message_ids))
+            .order_by(EmailMessageAttachment.filename.asc())
+        )
+        for row in rows:
+            attachments_by_message.setdefault(row.message_id, []).append(row)
     return EmailThreadDetail(
         **EmailThreadRead.model_validate(thread).model_dump(),
-        messages=[_message_read(m) for m in thread.messages],
+        messages=[
+            _message_read(m, attachments_by_message.get(m.id))
+            for m in thread.messages
+        ],
         reply_to_suggestion=_reply_to_suggestion(
             session, thread, current_user
         ),
@@ -1054,7 +1110,10 @@ def admin_all_threads(
     )
 
 
-def _message_read(m: EmailMessage) -> EmailMessageRead:
+def _message_read(
+    m: EmailMessage,
+    attachments: list[EmailMessageAttachment] | None = None,
+) -> EmailMessageRead:
     # PR-Aperturas-Falsas. The DB row keeps the original body_html for
     # audit; the wire response strips the CRM's own tracking pixel so
     # rendering the preview in /emails (or the contact's emails tab)
@@ -1067,6 +1126,38 @@ def _message_read(m: EmailMessage) -> EmailMessageRead:
 
     read = EmailMessageRead.model_validate(m)
     read.body_html = strip_tracking_pixel(read.body_html)
+    # CRM-BANDEJA — chips de adjuntos en el thread detail. Preferimos las
+    # filas de `email_message_attachments` (binario descargable); si el
+    # mensaje solo conserva el sumario inline `attachments_json` (p. ej.
+    # el binario superaba el límite del backfill) exponemos la metadata
+    # sin descarga para que el operador sepa que el adjunto existe.
+    if attachments:
+        read.attachments = [
+            EmailMessageAttachmentRead(
+                id=a.id,
+                filename=a.filename,
+                mime_type=a.mime_type,
+                size_bytes=a.size_bytes,
+                downloadable=bool(a.storage_path),
+            )
+            for a in attachments
+        ]
+    elif m.attachments_json:
+        try:
+            meta = json.loads(m.attachments_json)
+        except (TypeError, ValueError):
+            meta = []
+        read.attachments = [
+            EmailMessageAttachmentRead(
+                id=None,
+                filename=str(item.get("filename") or "adjunto"),
+                mime_type=item.get("mime_type"),
+                size_bytes=item.get("size") or None,
+                downloadable=False,
+            )
+            for item in meta
+            if isinstance(item, dict)
+        ]
     return read
 
 

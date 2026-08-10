@@ -152,11 +152,13 @@ export default function EmailsLayout({
     minPx: 180,
     maxPx: 400,
   });
+  // CRM-BANDEJA — Bart no podía ampliar la lista más allá de 600px
+  // (residuo del PR #249). Tope subido a 800px.
   const middle = usePanelWidth({
     key: "crmbomedia_ui:emails:middle_width",
     defaultPx: 380,
     minPx: 280,
-    maxPx: 600,
+    maxPx: 800,
   });
 
   return (

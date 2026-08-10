@@ -116,7 +116,9 @@ export function ContactEmailsSection({
             <li key={t.id} className="widget-row">
               <div className="widget-row-main">
                 <p className="widget-row-title">
-                  <Link href={`/emails/${t.id}`}>
+                  {/* CRM-BANDEJA — `from=ficha` cambia el breadcrumb del
+                      hilo para volver a esta ficha en vez de a la bandeja. */}
+                  <Link href={`/emails/${t.id}?from=ficha`}>
                     {t.subject || "(sin asunto)"}
                   </Link>
                   {t.has_unread_replies ? (

@@ -1,6 +1,6 @@
 "use client";
 
-import { Calendar, Eye, X } from "lucide-react";
+import { Calendar, Eye, Paperclip, UserCheck, X } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useState } from "react";
 
@@ -12,6 +12,10 @@ export function EmailFiltersBar() {
   const router = useRouter();
   const params = useSearchParams();
   const hasUnread = params.get("has_unread") === "true";
+  // CRM-BANDEJA — chips «Con adjuntos» / «Con contacto CRM». Acumulables
+  // entre sí y con No leídos / fechas.
+  const hasAttachments = params.get("has_attachments") === "true";
+  const hasContact = params.get("has_contact") === "true";
   const since = params.get("since");
   const [customOpen, setCustomOpen] = useState(false);
   const [customSince, setCustomSince] = useState("");
@@ -84,6 +88,26 @@ export function EmailFiltersBar() {
         <Eye size={12} aria-hidden />
         No leídos
       </button>
+      <button
+        type="button"
+        className={`email-filter-chip${hasAttachments ? " is-active" : ""}`}
+        onClick={() =>
+          setParam({ has_attachments: hasAttachments ? null : "true" })
+        }
+      >
+        <Paperclip size={12} aria-hidden />
+        Con adjuntos
+      </button>
+      <button
+        type="button"
+        className={`email-filter-chip${hasContact ? " is-active" : ""}`}
+        onClick={() =>
+          setParam({ has_contact: hasContact ? null : "true" })
+        }
+      >
+        <UserCheck size={12} aria-hidden />
+        Con contacto CRM
+      </button>
 
       <div className="email-filter-group" aria-label="Rango de fechas">
         <Calendar size={12} aria-hidden className="email-filter-icon" />
@@ -151,6 +175,8 @@ export function EmailFiltersBar() {
         params.get("label_id") ||
         params.get("starred") ||
         params.get("has_unread") ||
+        params.get("has_attachments") ||
+        params.get("has_contact") ||
         params.get("since") ||
         params.get("until")) ? (
         <button
@@ -162,6 +188,8 @@ export function EmailFiltersBar() {
               label_id: null,
               starred: null,
               has_unread: null,
+              has_attachments: null,
+              has_contact: null,
               since: null,
               until: null,
               state: null,

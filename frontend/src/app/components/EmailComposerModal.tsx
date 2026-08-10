@@ -82,6 +82,12 @@ type Props = {
    *  auto-saves under the same id. Send-flow deletes the draft
    *  on success. */
   initialDraft?: EmailDraft | null;
+  /** CRM-BANDEJA — «Responder a todos»: Cc prellenado con el resto de
+   *  destinatarios del mensaje original. */
+  initialCc?: string[] | null;
+  /** CRM-BANDEJA — «Reenviar»: subject con prefijo Fwd: y cuerpo con el
+   *  mensaje original citado. Mensaje nuevo, sin threading. */
+  forwardOf?: { subject: string | null; bodyHtml: string } | null;
   onClose: () => void;
   onSent?: (message: EmailMessage) => void;
 };
@@ -123,6 +129,8 @@ export function EmailComposerModal({
   contactEmail,
   replyTo,
   initialDraft,
+  initialCc,
+  forwardOf,
   onClose,
   onSent,
 }: Props) {
@@ -132,16 +140,26 @@ export function EmailComposerModal({
   const [to, setTo] = useState(
     initialDraft?.to_emails?.join(", ") ?? contactEmail ?? "",
   );
-  const [cc, setCc] = useState(initialDraft?.cc_emails?.join(", ") ?? "");
+  const [cc, setCc] = useState(
+    initialDraft?.cc_emails?.join(", ") ?? initialCc?.join(", ") ?? "",
+  );
   const [subject, setSubject] = useState(
     initialDraft?.subject ??
-      (replyTo?.subject
-        ? replyTo.subject.toLowerCase().startsWith("re:")
-          ? replyTo.subject
-          : `Re: ${replyTo.subject}`
-        : ""),
+      (forwardOf
+        ? forwardOf.subject
+          ? forwardOf.subject.toLowerCase().startsWith("fwd:")
+            ? forwardOf.subject
+            : `Fwd: ${forwardOf.subject}`
+          : "Fwd:"
+        : replyTo?.subject
+          ? replyTo.subject.toLowerCase().startsWith("re:")
+            ? replyTo.subject
+            : `Re: ${replyTo.subject}`
+          : ""),
   );
-  const [bodyHtml, setBodyHtml] = useState(initialDraft?.body_html ?? "");
+  const [bodyHtml, setBodyHtml] = useState(
+    initialDraft?.body_html ?? forwardOf?.bodyHtml ?? "",
+  );
   const [draftId, setDraftId] = useState<string | null>(
     initialDraft?.id ?? null,
   );

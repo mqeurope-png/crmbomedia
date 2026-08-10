@@ -2392,3 +2392,199 @@ def test_thread_list_includes_tracking_counts(
     )
     # 2 opens + 1 click; sent is NOT counted in the inbox aggregate.
     assert item["tracking"] == {"open": 2, "click": 1}
+
+
+# ---------------------------------------------------------------------------
+# CRM-BANDEJA — filtros rápidos «Con adjuntos» / «Con contacto CRM» +
+# adjuntos expuestos en el thread detail
+# ---------------------------------------------------------------------------
+
+
+def _seed_bandeja_thread(
+    session: Session,
+    *,
+    uid: str,
+    gmail_thread_id: str,
+    contact_id: str | None = None,
+    message_contact_id: str | None = None,
+    attachments_json: str | None = None,
+) -> tuple[str, str]:
+    """Thread + 1 mensaje outbound del user. Devuelve (thread_id, message_id)."""
+    from app.models.crm import EmailDirection  # noqa: PLC0415
+
+    thread = EmailThread(
+        initiated_by_user_id=uid,
+        gmail_thread_id=gmail_thread_id,
+        gmail_account_user_id=uid,
+        subject=f"Asunto {gmail_thread_id}",
+        first_message_at=datetime.now(UTC),
+        last_message_at=datetime.now(UTC),
+        message_count=1,
+        contact_id=contact_id,
+    )
+    session.add(thread)
+    session.flush()
+    message = EmailMessage(
+        thread_id=thread.id,
+        gmail_message_id=f"msg-{gmail_thread_id}",
+        gmail_account_user_id=uid,
+        direction=EmailDirection.OUTBOUND,
+        from_email="user@example.com",
+        to_emails_json='["dest@example.com"]',
+        sent_at=datetime.now(UTC),
+        contact_id=message_contact_id,
+        attachments_json=attachments_json,
+    )
+    session.add(message)
+    session.flush()
+    return thread.id, message.id
+
+
+def test_list_threads_has_attachments_filter(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    """`has_attachments=true` → hilos con adjunto vía sumario inline
+    (`attachments_json`) O vía fila binaria en `email_message_attachments`.
+    `false` → solo los hilos sin ninguno de los dos."""
+    from app.models.crm import EmailMessageAttachment  # noqa: PLC0415
+
+    with session_factory() as session:
+        uid = _user_id(session, UserRole.USER)
+        _seed_bandeja_thread(
+            session,
+            uid=uid,
+            gmail_thread_id="att-inline",
+            attachments_json=(
+                '[{"filename": "oferta.pdf",'
+                ' "mime_type": "application/pdf", "size": 2048}]'
+            ),
+        )
+        _, msg_row_id = _seed_bandeja_thread(
+            session, uid=uid, gmail_thread_id="att-row"
+        )
+        session.add(
+            EmailMessageAttachment(
+                message_id=msg_row_id,
+                filename="foto.jpg",
+                mime_type="image/jpeg",
+                size_bytes=4096,
+                storage_path="2026/08/foto.jpg",
+                created_at=datetime.now(UTC),
+            )
+        )
+        _seed_bandeja_thread(session, uid=uid, gmail_thread_id="att-none")
+        session.commit()
+
+    headers = auth_headers(client, "user")
+    with_att = client.get(
+        "/api/emails/threads?has_attachments=true", headers=headers
+    )
+    assert with_att.status_code == 200
+    got = {t["gmail_thread_id"] for t in with_att.json()["items"]}
+    assert got == {"att-inline", "att-row"}
+
+    without_att = client.get(
+        "/api/emails/threads?has_attachments=false", headers=headers
+    )
+    assert without_att.status_code == 200
+    got = {t["gmail_thread_id"] for t in without_att.json()["items"]}
+    assert got == {"att-none"}
+
+
+def test_list_threads_has_contact_filter(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    """`has_contact=true` → hilos vinculados a contacto CRM, ya sea en el
+    propio thread o en cualquiera de sus mensajes."""
+    from app.models.crm import Contact  # noqa: PLC0415
+
+    with session_factory() as session:
+        uid = _user_id(session, UserRole.USER)
+        contact = Contact(first_name="Eva", email="eva@cliente.com")
+        session.add(contact)
+        session.flush()
+        _seed_bandeja_thread(
+            session,
+            uid=uid,
+            gmail_thread_id="ct-thread",
+            contact_id=contact.id,
+        )
+        _seed_bandeja_thread(
+            session,
+            uid=uid,
+            gmail_thread_id="ct-message",
+            message_contact_id=contact.id,
+        )
+        _seed_bandeja_thread(session, uid=uid, gmail_thread_id="ct-none")
+        session.commit()
+
+    headers = auth_headers(client, "user")
+    with_contact = client.get(
+        "/api/emails/threads?has_contact=true", headers=headers
+    )
+    assert with_contact.status_code == 200
+    got = {t["gmail_thread_id"] for t in with_contact.json()["items"]}
+    assert got == {"ct-thread", "ct-message"}
+
+    without_contact = client.get(
+        "/api/emails/threads?has_contact=false", headers=headers
+    )
+    assert without_contact.status_code == 200
+    got = {t["gmail_thread_id"] for t in without_contact.json()["items"]}
+    assert got == {"ct-none"}
+
+
+def test_thread_detail_exposes_message_attachments(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    """El detail expone chips de adjuntos: fila binaria → downloadable
+    (con id); solo sumario inline → metadata sin descarga."""
+    from app.models.crm import EmailMessageAttachment  # noqa: PLC0415
+
+    with session_factory() as session:
+        uid = _user_id(session, UserRole.USER)
+        thread_id, message_id = _seed_bandeja_thread(
+            session,
+            uid=uid,
+            gmail_thread_id="att-detail",
+            attachments_json='[{"filename": "resumen.txt", "size": 10}]',
+        )
+        session.add(
+            EmailMessageAttachment(
+                message_id=message_id,
+                filename="contrato.pdf",
+                mime_type="application/pdf",
+                size_bytes=1234,
+                storage_path="2026/08/contrato.pdf",
+                created_at=datetime.now(UTC),
+            )
+        )
+        # Segundo mensaje SOLO con sumario inline (binario no descargado).
+        thread2_id, _ = _seed_bandeja_thread(
+            session,
+            uid=uid,
+            gmail_thread_id="att-detail-inline",
+            attachments_json=(
+                '[{"filename": "grande.zip",'
+                ' "mime_type": "application/zip", "size": 999}]'
+            ),
+        )
+        session.commit()
+
+    headers = auth_headers(client, "user")
+    detail = client.get(f"/api/emails/threads/{thread_id}", headers=headers)
+    assert detail.status_code == 200
+    atts = detail.json()["messages"][0]["attachments"]
+    # La fila binaria tiene prioridad sobre el sumario inline.
+    assert len(atts) == 1
+    assert atts[0]["filename"] == "contrato.pdf"
+    assert atts[0]["downloadable"] is True
+    assert atts[0]["id"]
+
+    detail2 = client.get(f"/api/emails/threads/{thread2_id}", headers=headers)
+    assert detail2.status_code == 200
+    atts2 = detail2.json()["messages"][0]["attachments"]
+    assert len(atts2) == 1
+    assert atts2[0]["filename"] == "grande.zip"
+    assert atts2[0]["downloadable"] is False
+    assert atts2[0]["id"] is None
