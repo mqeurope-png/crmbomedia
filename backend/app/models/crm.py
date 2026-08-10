@@ -2269,9 +2269,22 @@ class EmailMessageAttachment(Base):
     se pierde el archivo (Gmail lo retiene mientras el mensaje exista).
 
     `email_messages.attachments_json` sigue ahí como sumario inline
-    barato — esta tabla es para los binarios pesados."""
+    barato — esta tabla es para los binarios pesados.
+
+    CRM-ADJUNTOS-BACKFILL (Opción B): `storage_path` puede ser NULL —
+    metadata-only. El binario se descarga on-demand desde Gmail con
+    `gmail_attachment_id` cuando el operador pulsa «Descargar»; nunca
+    toca el disco del VPS."""
 
     __tablename__ = "email_message_attachments"
+    __table_args__ = (
+        # Idempotencia del backfill de metadata: un adjunto de Gmail solo
+        # se registra una vez por mensaje.
+        UniqueConstraint(
+            "message_id", "gmail_attachment_id",
+            name="uq_message_attachment",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(
         String(36), primary_key=True, default=lambda: str(uuid4())
