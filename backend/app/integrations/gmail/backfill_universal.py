@@ -5,7 +5,11 @@ contacto del CRM. CRM-GMAIL (#329) retiró ese filtro para el flujo real-time,
 pero el histórico anterior sigue sin los mails «huérfanos». Este módulo recorre
 un rango de fechas y guarda TODO mail dirigido a un alias ACTIVO del CRM
 (`user_email_aliases`), sea o no de un contacto conocido — reutilizando
-`service._persist_inbound` (misma semántica que el push en tiempo real).
+`service._persist_message` (misma semántica que el push en tiempo real).
+
+CRM-BACKFILL-SENT: la label SENT entra en el default — los mails ENVIADOS
+desde Gmail directo (From = alias activo) se guardan con
+`direction=outbound`, propietario = dueño del alias.
 
 Se invoca desde `python -m app.integrations.gmail_watch backfill_universal`.
 Idempotente: los mails ya guardados se saltan por dedupe (unique
@@ -24,7 +28,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.models.crm import EmailMessage
+from app.models.crm import EmailDirection, EmailMessage
 from app.services.email_aliases import active_alias_map
 
 logger = logging.getLogger(__name__)
@@ -43,6 +47,9 @@ class BackfillReport:
     imported_linked: int = 0
     imported_orphan: int = 0
     spam: int = 0
+    # CRM-BACKFILL-SENT — mensajes capturados con direction=outbound
+    # (label SENT / From = alias del CRM). Subconjunto de linked+orphan.
+    outbound: int = 0
     skipped_dedupe: int = 0
     skipped_no_alias: int = 0
     skipped_ndr: int = 0
@@ -82,6 +89,7 @@ class BackfillReport:
             f"Total procesados:            {self.total_processed:>8}",
             f"├── Importados con contacto: {self.imported_linked:>8}",
             f"├── Importados huérfanos:    {self.imported_orphan:>8}",
+            f"├── Enviados (outbound):     {self.outbound:>8}",
             f"├── Marcados como spam:      {self.spam:>8}",
             f"├── Descartados por dedupe:  {self.skipped_dedupe:>8} (ya existían)",
             f"└── Descartados por alias:   {self.skipped_no_alias:>8} "
@@ -140,7 +148,9 @@ def run_backfill_universal(
     until: date,
     dry_run: bool = False,
     dry_run_limit: int = 500,
-    labels: Sequence[str] = ("INBOX", "SPAM"),
+    # CRM-BACKFILL-SENT: SENT en el default — trae también los mails
+    # ENVIADOS desde Gmail directo (direction=outbound).
+    labels: Sequence[str] = ("INBOX", "SPAM", "SENT"),
     batch_size: int = 100,
     alias_map: dict[str, str] | None = None,
     sleep_between_pages: float = 0.0,
@@ -195,8 +205,21 @@ def run_backfill_universal(
                     continue
 
                 examined += 1
+                # CRM-BACKFILL-SENT — el mensaje «es nuestro» si llegó a un
+                # alias activo (inbound) O si lo envió un alias activo
+                # (outbound, label SENT). El gate de siempre + el nuevo.
                 delivered = gmail_service.compute_delivered_to(raw, alias_map)
-                if delivered is None:
+                sender_alias = gmail_service.sender_alias_of(raw, alias_map)
+                if delivered is None and sender_alias is None:
+                    if label == "SENT":
+                        # SENT cuyo From no es un alias del CRM: raro
+                        # (forward de alias de Gmail) — descarta con aviso.
+                        logger.warning(
+                            "gmail.backfill unexpected sent from non-alias "
+                            "msg=%s to=%s",
+                            mid,
+                            gmail_service.primary_recipient(raw),
+                        )
                     report.skipped_no_alias += 1
                     key = gmail_service.primary_recipient(raw) or "(desconocido)"
                     report.discard_by_alias[key] = (
@@ -205,7 +228,7 @@ def run_backfill_universal(
                 else:
                     try:
                         if dry_run:
-                            result = gmail_service._persist_inbound(
+                            result = gmail_service._persist_message(
                                 session,
                                 user_id=user_id,
                                 raw=raw,
@@ -217,7 +240,7 @@ def run_backfill_universal(
                             )
                         else:
                             with session.begin_nested():
-                                result = gmail_service._persist_inbound(
+                                result = gmail_service._persist_message(
                                     session,
                                     user_id=user_id,
                                     raw=raw,
@@ -248,6 +271,8 @@ def run_backfill_universal(
                             report.imported_linked += 1
                         else:
                             report.imported_orphan += 1
+                        if result.direction == EmailDirection.OUTBOUND:
+                            report.outbound += 1
                         if result.is_spam:
                             report.spam += 1
                         seen.add(mid)

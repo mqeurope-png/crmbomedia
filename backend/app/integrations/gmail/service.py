@@ -28,6 +28,7 @@ from app.models.crm import (
     EmailThread,
     GmailPubsubWatch,
     SyncLog,
+    UserEmailAlias,
 )
 from app.services.email_aliases import active_alias_map, resolve_delivered_to
 
@@ -997,14 +998,17 @@ def process_history(
             stub_labels = msg_meta.get("labelIds") or []
             if not mid or not tid or mid in seen_messages:
                 continue
-            # Pre-filtro barato: si el stub trae labels y NO es INBOX ni
-            # SPAM (SENT/DRAFT/CHAT), lo ignoramos sin gastar un
-            # get_message. Cuando el stub no trae labels (p.ej. en tests)
-            # dejamos que `_persist_inbound` decida por `delivered_to`.
+            # Pre-filtro barato: si el stub trae labels y NO es INBOX,
+            # SPAM ni SENT (DRAFT/CHAT), lo ignoramos sin gastar un
+            # get_message. CRM-BACKFILL-SENT: SENT ahora también se
+            # captura (mails enviados desde Gmail directo → outbound).
+            # Cuando el stub no trae labels (p.ej. en tests) dejamos que
+            # `_persist_message` decida por From-alias / `delivered_to`.
             if (
                 stub_labels
                 and "INBOX" not in stub_labels
                 and "SPAM" not in stub_labels
+                and "SENT" not in stub_labels
             ):
                 continue
             if not alias_map:
@@ -1013,7 +1017,7 @@ def process_history(
                 continue
             try:
                 full = client.get_message(mid)
-                message = _persist_inbound(
+                message = _persist_message(
                     session,
                     user_id=user_id,
                     raw=full,
@@ -1319,6 +1323,19 @@ def compute_delivered_to(
     return resolve_delivered_to(candidates, alias_map)
 
 
+def sender_alias_of(
+    raw: dict[str, Any], alias_map: dict[str, str]
+) -> str | None:
+    """CRM-BACKFILL-SENT — alias activo del CRM en el `From` del mensaje
+    (forma canónica) o None. Es el trigger de `direction=outbound`: la misma
+    comprobación que hace `_persist_message`, extraída para que el backfill
+    universal clasifique idéntico ANTES de decidir persistir."""
+    headers = _index_headers(raw.get("payload", {}).get("headers", []))
+    from_addresses = getaddresses([headers.get("from") or ""])
+    from_email = from_addresses[0][1] if from_addresses else ""
+    return resolve_delivered_to([from_email], alias_map)
+
+
 def primary_recipient(raw: dict[str, Any]) -> str | None:
     """Destinatario «principal» (lowercased) para el report de alias
     descartados: Delivered-To / X-Original-To, o el primer To."""
@@ -1332,7 +1349,7 @@ def primary_recipient(raw: dict[str, Any]) -> str | None:
     return None
 
 
-def _persist_inbound(
+def _persist_message(
     session: Session,
     *,
     user_id: str,
@@ -1343,6 +1360,13 @@ def _persist_inbound(
     emit_activity: bool = True,
     imported_via: str = "incoming_realtime",
 ) -> EmailMessage | None:
+    """Persiste un mensaje capturado de Gmail — inbound U outbound.
+
+    CRM-BACKFILL-SENT: antes solo manejaba inbound (`_persist_inbound`).
+    Ahora, si el `From` es un alias activo del CRM, el mensaje se guarda
+    como OUTBOUND (mail enviado desde Gmail directo, no desde el
+    compositor): el dueño del alias es el propietario, `delivered_to` no
+    aplica y el contacto se casa por los destinatarios."""
     headers = _index_headers(raw.get("payload", {}).get("headers", []))
     from_header = headers.get("from") or ""
     to_header = headers.get("to") or ""
@@ -1361,17 +1385,38 @@ def _persist_inbound(
     )
     body_text, body_html = _extract_bodies(raw.get("payload", {}))
 
-    # CRM-GMAIL — captura universal. `delivered_to` = alias del CRM al que
-    # llegó el mail (misma lógica compartida con el backfill vía
-    # `compute_delivered_to`). Si el mail no va a ninguno de nuestros alias,
-    # no es nuestro → no lo guardamos (solo cuando el caller pasa `alias_map`;
-    # un llamador legacy sin alias_map conserva el comportamiento anterior).
     labels = raw.get("labelIds") or []
-    delivered_to = (
-        compute_delivered_to(raw, alias_map) if alias_map is not None else None
+    # CRM-BACKFILL-SENT — detección de dirección. Si el From es un alias
+    # activo → OUTBOUND. Cubre también el auto-forward / CC a uno mismo
+    # (From alias Y To alias): outbound gana.
+    sender_alias = (
+        resolve_delivered_to([from_email], alias_map)
+        if alias_map is not None
+        else None
     )
-    if alias_map is not None and delivered_to is None:
-        return None
+    is_outbound = sender_alias is not None
+
+    delivered_to: str | None = None
+    owner_user_id: str | None = None
+    if is_outbound:
+        owner_user_id = session.scalar(
+            select(UserEmailAlias.user_id).where(
+                UserEmailAlias.alias_email == sender_alias,
+                UserEmailAlias.active.is_(True),
+            )
+        )
+    else:
+        # CRM-GMAIL — captura universal. `delivered_to` = alias del CRM al
+        # que llegó el mail (misma lógica compartida con el backfill vía
+        # `compute_delivered_to`). Si el mail no va a ninguno de nuestros
+        # alias, no es nuestro → no lo guardamos (solo cuando el caller pasa
+        # `alias_map`; un llamador legacy sin alias_map conserva el
+        # comportamiento anterior).
+        delivered_to = (
+            compute_delivered_to(raw, alias_map) if alias_map is not None else None
+        )
+        if alias_map is not None and delivered_to is None:
+            return None
 
     # Sprint Email v2.3a — NDR detection. When this looks like a
     # bounce we attach the event to the ORIGINAL outbound message and
@@ -1379,7 +1424,7 @@ def _persist_inbound(
     # "Mail delivery failed" row cluttering their thread. The original
     # send still lives in the thread and now has a BOUNCE event next
     # to it, which is what the timeline UI surfaces.
-    if _is_ndr(from_email, headers):
+    if not is_outbound and _is_ndr(from_email, headers):
         # El backfill (emit_activity=False) y el dry-run NO adjuntan eventos
         # de bounce a mensajes históricos: solo señalan «nada que insertar».
         if emit_activity and not dry_run:
@@ -1415,9 +1460,20 @@ def _persist_inbound(
         # Signal the caller: nothing to insert.
         return None
 
-    contact = session.scalar(
-        select(Contact).where(Contact.email == from_email)
-    )
+    if is_outbound:
+        # OUTBOUND: el contacto se casa por los destinatarios (To y Cc),
+        # no por el From (que es nuestro alias).
+        contact = None
+        for addr in [*to_emails, *(cc_emails or [])]:
+            contact = session.scalar(
+                select(Contact).where(Contact.email == addr)
+            )
+            if contact is not None:
+                break
+    else:
+        contact = session.scalar(
+            select(Contact).where(Contact.email == from_email)
+        )
 
     thread = session.scalar(
         select(EmailThread).where(
@@ -1430,11 +1486,17 @@ def _persist_inbound(
         # backfill universal de un thread nunca visto. En dry-run NO creamos
         # el thread (sería una escritura): el outcome linked/orphan solo
         # depende del contacto.
+        #
+        # CRM-BACKFILL-SENT: en un thread nuevo iniciado por un mail
+        # enviado, el propietario es el DUEÑO del alias del From (así el
+        # comercial lo ve en su bandeja via initiated_by), no la cuenta org.
         thread = _get_or_create_thread(
             session,
             gmail_account_user_id=user_id,
             gmail_thread_id=gmail_thread_id,
-            initiated_by_user_id=user_id,
+            initiated_by_user_id=(
+                owner_user_id if is_outbound and owner_user_id else user_id
+            ),
             contact_id=contact.id if contact else None,
             subject=subject,
             first_message_at=sent_at,
@@ -1445,7 +1507,9 @@ def _persist_inbound(
         thread_id=thread.id if thread is not None else "dry-run",
         gmail_message_id=raw["id"],
         gmail_account_user_id=user_id,
-        direction=EmailDirection.INBOUND,
+        direction=(
+            EmailDirection.OUTBOUND if is_outbound else EmailDirection.INBOUND
+        ),
         from_email=from_email,
         from_name=from_name,
         to_emails_json=json.dumps(to_emails),
@@ -1457,6 +1521,7 @@ def _persist_inbound(
         snippet=raw.get("snippet"),
         sent_at=sent_at,
         contact_id=contact.id if contact else None,
+        created_by_user_id=owner_user_id if is_outbound else None,
         delivered_to=delivered_to,
         is_spam="SPAM" in labels,
         gmail_labels=json.dumps(labels) if labels else None,
@@ -1469,13 +1534,17 @@ def _persist_inbound(
     session.add(message)
     thread.last_message_at = sent_at
     thread.message_count = (thread.message_count or 0) + 1
-    thread.has_unread_replies = True
+    # Un mail ENVIADO por nosotros no marca el hilo como «no leído».
+    if not is_outbound:
+        thread.has_unread_replies = True
     session.flush()
     # Mirror the reply onto the contact's activity timeline. Skipped when el
-    # inbound vino de una dirección desconocida (sin contact_id) o cuando el
+    # inbound vino de una dirección desconocida (sin contact_id), cuando el
     # caller pide no emitir actividad (backfill histórico: no re-disparar
-    # workflows ni ensuciar el timeline con correo viejo).
-    if emit_activity and contact is not None:
+    # workflows ni ensuciar el timeline con correo viejo), o cuando el
+    # mensaje es OUTBOUND capturado (no es una «respuesta recibida» — no
+    # debe disparar email.crm.replied ni el evento reply_received).
+    if emit_activity and contact is not None and not is_outbound:
         _emit_inbound_activity(
             session,
             contact_id=contact.id,
@@ -1487,6 +1556,11 @@ def _persist_inbound(
             occurred_at=sent_at,
         )
     return message
+
+
+# Alias retro-compatible: el nombre histórico sigue funcionando para
+# cualquier caller/test que lo referencie.
+_persist_inbound = _persist_message
 
 
 def _emit_inbound_activity(
@@ -1588,8 +1662,12 @@ def register_watch(session: Session, *, user_id: str) -> GmailPubsubWatch:
     client = _client_for(session, user_id)
     # CRM-GMAIL: vigilar INBOX + SPAM para recibir push tanto de mail
     # nuevo como de reclasificaciones de spam (sync de is_spam).
+    # CRM-BACKFILL-SENT: + SENT para que los mails enviados desde Gmail
+    # directo aparezcan en el CRM en tiempo real (<10s), no solo por
+    # backfill. Tras deploy hay que re-registrar el watch (CLI
+    # register_watch) para que Gmail empiece a empujar SENT.
     response = client.watch_mailbox(
-        settings.gmail_pubsub_topic, label_ids=["INBOX", "SPAM"]
+        settings.gmail_pubsub_topic, label_ids=["INBOX", "SPAM", "SENT"]
     )
     history_id = int(response.get("historyId", 0))
     expiration_ms = int(response.get("expiration", 0))

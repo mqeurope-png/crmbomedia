@@ -140,6 +140,43 @@ python -m app.integrations.gmail_watch backfill_universal \
 El report final resume totales + duración + los alias que descartaron mails
 (ordenados por número), con la sugerencia de añadirlos y re-ejecutar.
 
+## Direcciones — inbound vs outbound (CRM-BACKFILL-SENT)
+
+Cada `email_message` guarda su `direction` propia (el thread no tiene
+dirección global). El trigger es el **From contra los alias activos**
+(`user_email_aliases`):
+
+- **`From` = alias activo del CRM → `outbound`.** Mail enviado desde Gmail
+  directo (no desde el compositor). El propietario es el **dueño del
+  alias**: en threads nuevos `initiated_by_user_id` = ese user (así lo ve
+  en su bandeja), `created_by_user_id` se rellena en el mensaje,
+  `delivered_to` queda NULL (no aplica) y el contacto se casa por los
+  **destinatarios** (To y luego Cc). No marca el hilo como no leído ni
+  emite `email.reply_received`/workflows. La bandeja lo pinta con el chip
+  🟢 «Enviado desde CRM» (mismo `direction=outbound` que los envíos del
+  compositor).
+- **`From` externo → `inbound`.** Comportamiento de siempre: el gate por
+  `delivered_to` (alias al que llegó) decide si se guarda; si no va a
+  ningún alias configurado, se descarta.
+- **Auto-forward / CC a uno mismo** (From alias Y To alias): outbound gana.
+- **SENT cuyo From no es un alias** (forward raro de Gmail): descartado con
+  warning `unexpected sent from non-alias` en el log del backfill.
+
+Tanto el **push real-time** (Watch con `INBOX,SPAM,SENT` — re-registrar
+tras el deploy) como el **backfill universal** (labels default
+`INBOX,SPAM,SENT`) aplican esta misma lógica (`_persist_message`).
+
+### Traer los enviados retroactivos
+
+Re-ejecutar el backfill con la **misma fecha** es idempotente: los mails
+INBOX/SPAM ya importados se saltan por dedupe y solo entran los SENT
+nuevos. El report los muestra en la línea «Enviados (outbound)».
+
+```bash
+nohup docker exec crmbo-api-1 python -m app.integrations.gmail_watch backfill_universal \
+  --since 2026-02-07 --yes > /root/backfill-sent-$(date +%Y%m%d).log 2>&1 &
+```
+
 ## Adjuntos — metadata-only + descarga on-demand (CRM-ADJUNTOS-BACKFILL)
 
 **Decisión Bart 2026-08-10: Opción B.** Los binarios de los adjuntos NO se

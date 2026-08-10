@@ -95,8 +95,12 @@ def backfill_universal(argv: list[str]) -> None:
                         help="No escribe nada; solo cuenta.")
     parser.add_argument("--dry-run-limit", type=int, default=500,
                         help="Máx. mensajes a examinar en dry-run (default 500).")
-    parser.add_argument("--labels", default="INBOX,SPAM",
-                        help="Labels de Gmail, coma-separadas (default INBOX,SPAM).")
+    parser.add_argument(
+        "--labels", default="INBOX,SPAM,SENT",
+        help="Labels de Gmail, coma-separadas (default INBOX,SPAM,SENT — "
+        "SENT trae los mails ENVIADOS desde Gmail directo, que se guardan "
+        "como outbound).",
+    )
     parser.add_argument("--yes", action="store_true",
                         help="Salta la confirmación interactiva.")
     parser.add_argument("--batch-size", type=int, default=100,
