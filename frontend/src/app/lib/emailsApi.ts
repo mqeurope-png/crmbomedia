@@ -146,7 +146,10 @@ export type EmailThreadStateValue =
   | "inbox"
   | "archived"
   | "trashed"
-  | "spam";
+  | "spam"
+  // CRM-BANDEJA-FIX-ENVIADOS — vista virtual «Enviados» (threads con ≥1
+  // mensaje outbound del operador). El backend la acepta desde v2.4d.
+  | "sent";
 
 export type EmailFolder = {
   id: string;

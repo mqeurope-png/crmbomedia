@@ -61,11 +61,15 @@ function formatRelative(value: string): string {
 }
 
 /** Map a URL `state` param to the typed union the API expects. */
-function parseState(raw: string | null): EmailThreadStateValue {
+export function parseState(raw: string | null): EmailThreadStateValue {
+  // CRM-BANDEJA-FIX-ENVIADOS — "sent" faltaba aquí: el sidebar ponía
+  // `state=sent` en la URL pero el fetch salía con state=inbox, así que
+  // «Enviados» mostraba exactamente lo mismo que «Bandeja».
   if (
     raw === "archived" ||
     raw === "trashed" ||
     raw === "spam" ||
+    raw === "sent" ||
     raw === "inbox"
   ) {
     return raw;
