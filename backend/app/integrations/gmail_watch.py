@@ -162,20 +162,86 @@ def backfill_universal(argv: list[str]) -> None:
         print(report.render())
 
 
+def backfill_attachments(argv: list[str]) -> None:
+    """CRM-ADJUNTOS-BACKFILL — metadata de adjuntos para mensajes ya
+    importados (Opción B: sin descargar binarios; on-demand desde Gmail)."""
+    parser = argparse.ArgumentParser(
+        prog="python -m app.integrations.gmail_watch backfill_attachments",
+        description="Registra la METADATA de adjuntos (filename/mime/tamaño/"
+        "gmail_attachment_id) de los mensajes ya importados que no la tienen. "
+        "No descarga ningún binario: la descarga es on-demand desde Gmail al "
+        "pulsar «Descargar» en el CRM.",
+    )
+    parser.add_argument(
+        "--since", type=date.fromisoformat, default=None,
+        help="Fecha mínima YYYY-MM-DD (default: hoy - 6 meses).",
+    )
+    parser.add_argument(
+        "--until", type=date.fromisoformat, default=None,
+        help="Fecha tope YYYY-MM-DD, inclusiva (default: hoy).",
+    )
+    parser.add_argument("--dry-run", action="store_true",
+                        help="No escribe nada; solo cuenta adjuntos + tamaño.")
+    parser.add_argument("--yes", action="store_true",
+                        help="Salta la confirmación interactiva.")
+    parser.add_argument("--batch-size", type=int, default=100,
+                        help="Mensajes por batch (default 100).")
+    args = parser.parse_args(argv)
+
+    since = args.since or (date.today() - timedelta(days=183))
+    until = args.until or date.today()
+
+    from app.integrations.gmail.backfill_attachments import (  # noqa: PLC0415
+        run_backfill_attachments,
+    )
+
+    with Session(get_engine()) as session:
+        user_id = _org_user_id(session)
+        if not args.yes:
+            try:
+                resp = input(
+                    f"¿Backfill metadata de adjuntos {since} → {until}"
+                    f"{' [DRY-RUN]' if args.dry_run else ''}? "
+                    "(no descarga binarios) (Y/n) "
+                ).strip().lower()
+            except EOFError:
+                resp = "n"
+            if resp not in ("", "y", "yes", "s", "si", "sí"):
+                print("Abortado.")
+                return
+
+        report = run_backfill_attachments(
+            session,
+            user_id=user_id,
+            since=since,
+            until=until,
+            dry_run=args.dry_run,
+            batch_size=args.batch_size,
+            progress=print,
+        )
+        print()
+        print(report.render())
+
+
 _COMMANDS = {
     "register_watch": register_watch,
     "renew_watch_if_expiring": renew_watch_if_expiring,
     "unregister_watch": unregister_watch,
 }
 
+_ARGV_COMMANDS = {
+    "backfill_universal": backfill_universal,
+    "backfill_attachments": backfill_attachments,
+}
+
 
 def main(argv: list[str] | None = None) -> None:
     args = argv if argv is not None else sys.argv[1:]
-    if args and args[0] == "backfill_universal":
-        backfill_universal(args[1:])
+    if args and args[0] in _ARGV_COMMANDS:
+        _ARGV_COMMANDS[args[0]](args[1:])
         return
     if not args or args[0] not in _COMMANDS:
-        names = "|".join([*_COMMANDS, "backfill_universal"])
+        names = "|".join([*_COMMANDS, *_ARGV_COMMANDS])
         print(f"uso: python -m app.integrations.gmail_watch {{{names}}}")
         raise SystemExit(2)
     _COMMANDS[args[0]]()

@@ -2588,3 +2588,39 @@ def test_thread_detail_exposes_message_attachments(
     assert atts2[0]["filename"] == "grande.zip"
     assert atts2[0]["downloadable"] is False
     assert atts2[0]["id"] is None
+
+
+def test_thread_detail_metadata_only_attachment_is_downloadable(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    """CRM-ADJUNTOS-BACKFILL (Opción B): fila metadata-only (storage_path
+    NULL pero con gmail_attachment_id) → downloadable=True vía fetch
+    on-demand desde Gmail."""
+    from app.models.crm import EmailMessageAttachment  # noqa: PLC0415
+
+    with session_factory() as session:
+        uid = _user_id(session, UserRole.USER)
+        thread_id, message_id = _seed_bandeja_thread(
+            session, uid=uid, gmail_thread_id="att-ondemand"
+        )
+        session.add(
+            EmailMessageAttachment(
+                message_id=message_id,
+                filename="factura.pdf",
+                mime_type="application/pdf",
+                size_bytes=2048,
+                storage_path=None,
+                gmail_attachment_id="att-live-1",
+                created_at=datetime.now(UTC),
+            )
+        )
+        session.commit()
+
+    headers = auth_headers(client, "user")
+    detail = client.get(f"/api/emails/threads/{thread_id}", headers=headers)
+    assert detail.status_code == 200
+    atts = detail.json()["messages"][0]["attachments"]
+    assert len(atts) == 1
+    assert atts[0]["filename"] == "factura.pdf"
+    assert atts[0]["downloadable"] is True
+    assert atts[0]["id"]

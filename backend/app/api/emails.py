@@ -1132,13 +1132,16 @@ def _message_read(
     # el binario superaba el límite del backfill) exponemos la metadata
     # sin descarga para que el operador sepa que el adjunto existe.
     if attachments:
+        # CRM-ADJUNTOS-BACKFILL (Opción B): descargable si el binario está
+        # en disco (legacy) O si hay gmail_attachment_id para el fetch
+        # on-demand desde Gmail.
         read.attachments = [
             EmailMessageAttachmentRead(
                 id=a.id,
                 filename=a.filename,
                 mime_type=a.mime_type,
                 size_bytes=a.size_bytes,
-                downloadable=bool(a.storage_path),
+                downloadable=bool(a.storage_path or a.gmail_attachment_id),
             )
             for a in attachments
         ]

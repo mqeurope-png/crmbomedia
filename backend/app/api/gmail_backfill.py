@@ -16,11 +16,13 @@ El estimate y el execute usan la misma cola; el endpoint de download
 no encola, solo lee del disco."""
 from __future__ import annotations
 
+import base64
 import json
 import logging
 from datetime import UTC, datetime, timedelta
+from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -475,11 +477,16 @@ def download_attachment(
     request: Request,
     session: Session = Depends(get_session),
     current_user: User = Depends(require_user),
-) -> FileResponse:
-    """Sirve el binario desde disco. Permisos: el contacto del mensaje
-    debe ser accesible al user actual (admin/manager pueden todos;
-    user/viewer solo si son el owner del contacto). Cada download
-    emite `email.attachment.downloaded` en audit log."""
+) -> Response:
+    """Sirve el binario del adjunto. Dos rutas:
+
+    - `storage_path` en disco (legacy, backfill junio) → FileResponse.
+    - metadata-only (CRM-ADJUNTOS-BACKFILL, Opción B) → fetch on-demand a
+      Gmail y stream directo al navegador; el binario nunca toca disco.
+
+    Permisos: admin/manager cualquier contacto; user/viewer solo si son
+    owner del contacto. Cada download emite `email.attachment.downloaded`
+    en audit log (metadata.source = local_disk | gmail_on_demand)."""
     attachment = session.get(EmailMessageAttachment, attachment_id)
     if attachment is None or attachment.message_id != message_id:
         raise not_found("Attachment")
@@ -500,44 +507,158 @@ def download_attachment(
                 detail="No tienes permiso sobre el contacto de este adjunto.",
             )
 
-    if not attachment.storage_path:
-        raise HTTPException(
-            status_code=status.HTTP_410_GONE,
-            detail="El binario de este adjunto no está disponible en disco.",
+    def _audit(source: str) -> None:
+        record_event(
+            session,
+            action=Action.EMAIL_ATTACHMENT_DOWNLOADED,
+            target_type="email_message_attachment",
+            target_id=attachment.id,
+            actor=current_user,
+            metadata={
+                "filename": attachment.filename,
+                "size_bytes": attachment.size_bytes,
+                "message_id": message_id,
+                "contact_id": message.contact_id,
+                "source": source,
+            },
+            request=request,
         )
-    full_path = (ATTACHMENT_ROOT / attachment.storage_path).resolve()
-    # Defensa contra path traversal: storage_path debe estar bajo root.
-    try:
-        full_path.relative_to(ATTACHMENT_ROOT.resolve())
-    except ValueError:
-        raise HTTPException(
-            status_code=status.HTTP_410_GONE,
-            detail="Storage path inválido.",
-        ) from None
-    if not full_path.is_file():
-        raise HTTPException(
-            status_code=status.HTTP_410_GONE,
-            detail="El archivo del adjunto no existe en disco.",
+        session.commit()
+
+    # Ruta legacy: binario en disco (backfill junio con incluir_adjuntos).
+    if attachment.storage_path:
+        full_path = (ATTACHMENT_ROOT / attachment.storage_path).resolve()
+        # Defensa contra path traversal: storage_path debe estar bajo root.
+        try:
+            full_path.relative_to(ATTACHMENT_ROOT.resolve())
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_410_GONE,
+                detail="Storage path inválido.",
+            ) from None
+        if not full_path.is_file():
+            raise HTTPException(
+                status_code=status.HTTP_410_GONE,
+                detail="El archivo del adjunto no existe en disco.",
+            )
+        _audit("local_disk")
+        return FileResponse(
+            path=str(full_path),
+            media_type=attachment.mime_type or "application/octet-stream",
+            filename=attachment.filename,
         )
 
-    record_event(
-        session,
-        action=Action.EMAIL_ATTACHMENT_DOWNLOADED,
-        target_type="email_message_attachment",
-        target_id=attachment.id,
-        actor=current_user,
-        metadata={
-            "filename": attachment.filename,
-            "size_bytes": attachment.size_bytes,
-            "message_id": message_id,
-            "contact_id": message.contact_id,
-        },
-        request=request,
-    )
-    session.commit()
-
-    return FileResponse(
-        path=str(full_path),
+    # CRM-ADJUNTOS-BACKFILL (Opción B): metadata-only → fetch on-demand
+    # desde Gmail. El binario se streamea al navegador sin tocar disco.
+    if not attachment.gmail_attachment_id or not message.gmail_message_id:
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail="El binario de este adjunto no está disponible.",
+        )
+    binary = _fetch_attachment_from_gmail(session, message, attachment)
+    _audit("gmail_on_demand")
+    quoted_name = quote(attachment.filename)
+    return Response(
+        content=binary,
         media_type=attachment.mime_type or "application/octet-stream",
-        filename=attachment.filename,
+        headers={
+            "Content-Disposition": (
+                f"attachment; filename*=UTF-8''{quoted_name}"
+            ),
+        },
     )
+
+
+def _fetch_attachment_from_gmail(
+    session: Session,
+    message: EmailMessage,
+    attachment: EmailMessageAttachment,
+) -> bytes:
+    """Descarga on-demand del binario vía `messages.attachments.get`.
+
+    Los `attachmentId` de Gmail NO son estables a largo plazo: el que se
+    guardó en el backfill puede haber caducado. Si Gmail responde 404 con
+    el id guardado, re-pedimos el mensaje, localizamos la parte por
+    filename+size, refrescamos el id en BD y reintentamos una vez. Si el
+    mensaje ya no existe en Gmail (papelera vaciada), 410 — trade-off
+    aceptado de la Opción B."""
+    from app.integrations.gmail.service import (  # noqa: PLC0415
+        GmailNotConnectedError,
+        _client_for,
+    )
+
+    try:
+        client = _client_for(session, message.gmail_account_user_id)
+    except GmailNotConnectedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Gmail no está conectado — no se puede descargar el adjunto.",
+        ) from exc
+
+    def _status_of(exc: BaseException) -> int | None:
+        return getattr(getattr(exc, "resp", None), "status", None)
+
+    gmail_message_id = message.gmail_message_id or ""
+    try:
+        resp = client.get_attachment(
+            message_id=gmail_message_id,
+            attachment_id=attachment.gmail_attachment_id or "",
+        )
+        return base64.urlsafe_b64decode((resp.get("data") or "").encode())
+    except Exception as exc:  # noqa: BLE001
+        if _status_of(exc) != 404:
+            logger.warning(
+                "adjuntos.on_demand fallo att=%s mid=%s: %s",
+                attachment.id, gmail_message_id, exc,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Gmail no respondió al descargar el adjunto. Reintenta.",
+            ) from exc
+
+    # 404 → attachmentId caducado o mensaje borrado. Refrescamos el id.
+    from app.integrations.gmail.backfill_attachments import (  # noqa: PLC0415
+        extract_attachments_from_gmail_payload,
+    )
+
+    try:
+        raw = client.get_message(gmail_message_id)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail=(
+                "El mensaje ya no existe en Gmail — el adjunto no se puede "
+                "recuperar."
+            ),
+        ) from exc
+
+    fresh = extract_attachments_from_gmail_payload(raw.get("payload"))
+    match = next(
+        (
+            a for a in fresh
+            if a["filename"] == attachment.filename
+            and a["size"] == (attachment.size_bytes or a["size"])
+        ),
+        None,
+    ) or next(
+        (a for a in fresh if a["filename"] == attachment.filename), None
+    )
+    if match is None or not match.get("gmail_attachment_id"):
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail="El adjunto ya no existe en el mensaje de Gmail.",
+        )
+    try:
+        resp = client.get_attachment(
+            message_id=gmail_message_id,
+            attachment_id=match["gmail_attachment_id"],
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Gmail no respondió al descargar el adjunto. Reintenta.",
+        ) from exc
+    # Persistimos el id fresco para la próxima descarga.
+    attachment.gmail_attachment_id = match["gmail_attachment_id"]
+    session.commit()
+    return base64.urlsafe_b64decode((resp.get("data") or "").encode())

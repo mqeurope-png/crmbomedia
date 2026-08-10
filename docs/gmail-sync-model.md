@@ -140,6 +140,52 @@ python -m app.integrations.gmail_watch backfill_universal \
 El report final resume totales + duración + los alias que descartaron mails
 (ordenados por número), con la sugerencia de añadirlos y re-ejecutar.
 
+## Adjuntos — metadata-only + descarga on-demand (CRM-ADJUNTOS-BACKFILL)
+
+**Decisión Bart 2026-08-10: Opción B.** Los binarios de los adjuntos NO se
+almacenan en el VPS. La BD solo guarda la **metadata** (filename, mime,
+tamaño, `gmail_attachment_id`) en `email_message_attachments` con
+`storage_path = NULL`; cuando el operador pulsa «Descargar» en el chip del
+thread detail, el backend hace `messages.attachments.get` a Gmail **en ese
+momento** y streamea el binario directo al navegador. **0 storage local.**
+
+- **Latencia esperada**: <1s para adjuntos <10MB (una llamada a Gmail API).
+- **Ruta legacy intacta**: los adjuntos del backfill de junio que sí están
+  en disco (`storage_path` set) se siguen sirviendo desde disco.
+- **attachmentId caducado**: los ids de Gmail no son estables a largo plazo.
+  Si Gmail responde 404 con el id guardado, el endpoint re-pide el mensaje,
+  localiza la parte por filename+tamaño, refresca el id en BD y reintenta —
+  transparente para el usuario.
+- **Trade-off aceptado**: si el mail se borra en Gmail (papelera vaciada),
+  el adjunto deja de ser recuperable desde el CRM → 410. Coherente con
+  «si lo borro, es que no lo quiero».
+- Cada descarga se audita (`email.attachment.downloaded`, con
+  `metadata.source = local_disk | gmail_on_demand`).
+- Idempotencia: UNIQUE `(message_id, gmail_attachment_id)` (migración 0091)
+  + el backfill salta mensajes que ya tienen filas de adjuntos.
+
+### Backfill de metadata para mensajes ya importados
+
+Los ~15k mensajes de los backfills de junio/agosto y del go-forward se
+importaron **sin** adjuntos. Para registrarles la metadata:
+
+```bash
+# 1. Dry-run (opcional, 2-3 min): cuenta adjuntos + tamaño agregado.
+docker exec crmbo-api-1 python -m app.integrations.gmail_watch backfill_attachments \
+  --since 2026-02-07 --dry-run --yes
+
+# 2. Ejecución real (10-30 min según volumen):
+nohup docker exec crmbo-api-1 python -m app.integrations.gmail_watch backfill_attachments \
+  --since 2026-02-07 --yes > /root/adjuntos-$(date +%Y%m%d).log 2>&1 &
+tail -f /root/adjuntos-$(date +%Y%m%d).log
+```
+
+Flags: `--since` (requerido en la práctica; default hoy-6meses), `--until`
+(default hoy, inclusivo), `--dry-run`, `--yes`, `--batch-size` (default 100).
+No descarga ningún binario en ningún modo; el report final muestra el tamaño
+agregado solo como dato informativo. Re-ejecutable sin duplicar (los
+mensajes con adjuntos ya registrados se saltan).
+
 ## Backlog (fuera de este PR)
 
 - Convertir el remitente de un email huérfano en lead desde la propia UI.
