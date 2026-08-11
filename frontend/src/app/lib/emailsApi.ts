@@ -140,6 +140,9 @@ export type EmailThread = {
   /** CRM-GMAIL: el thread tiene ≥1 mensaje marcado como spam → chip «Spam».
    *  No cambia `state`, así el thread NO se oculta de la bandeja. */
   has_spam?: boolean;
+  /** CRM-ADJUNTOS-UX: el thread tiene ≥1 adjunto real (no inline) → clip 📎
+   *  en la fila de la bandeja. */
+  has_attachments?: boolean;
 };
 
 export type EmailThreadStateValue =

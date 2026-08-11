@@ -244,6 +244,9 @@ class EmailThreadRead(BaseModel):
     # chip «Spam» en la lista). Se computa en el handler (no es columna del
     # modelo); no cambia `state`, así el thread NO se oculta.
     has_spam: bool = False
+    # CRM-ADJUNTOS-UX — el thread tiene ≥1 adjunto REAL (no inline). Se
+    # computa en el handler; alimenta el clip 📎 de la fila en la bandeja.
+    has_attachments: bool = False
 
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 

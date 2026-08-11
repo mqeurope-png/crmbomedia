@@ -30,6 +30,7 @@ from app.integrations.gmail.backfill import (
     _is_attachment_part,
     _walk_parts,
     _with_backoff,
+    is_inline_part,
 )
 from app.integrations.gmail.service import _client_for
 from app.models.crm import EmailMessage, EmailMessageAttachment
@@ -41,12 +42,13 @@ def extract_attachments_from_gmail_payload(
     payload: dict[str, Any] | None,
 ) -> list[dict[str, Any]]:
     """Recorre recursivamente `parts[]` del payload de Gmail y devuelve
-    `[{filename, mime_type, size, gmail_attachment_id}]`.
+    `[{filename, mime_type, size, gmail_attachment_id, is_inline}]`.
 
-    Solo cuentan las partes con `body.attachmentId` y tamaño > 0 (mismo
-    criterio `_is_attachment_part` que el backfill con binarios — incluye
-    inline images con Content-ID). Se excluyen las partes con `filename`
-    vacío: son piezas técnicas MIME sin nada descargable con sentido."""
+    Cuentan las partes con `body.attachmentId` y tamaño > 0 y `filename`
+    no vacío. CRM-ADJUNTOS-UX: cada parte se marca `is_inline` (imagen
+    embebida vs adjunto real) — se sigue devolviendo para no perder el
+    binario ni la capacidad de re-descarga, pero las surfaces de usuario
+    filtran las inline."""
     out: list[dict[str, Any]] = []
     for part in _walk_parts(payload or {}):
         if not _is_attachment_part(part):
@@ -61,6 +63,7 @@ def extract_attachments_from_gmail_payload(
                 "mime_type": part.get("mimeType"),
                 "size": int(body.get("size") or 0),
                 "gmail_attachment_id": body.get("attachmentId"),
+                "is_inline": is_inline_part(part),
             }
         )
     return out
@@ -211,6 +214,7 @@ def run_backfill_attachments(
                                 size_bytes=att["size"],
                                 storage_path=None,  # Opción B: sin binario
                                 gmail_attachment_id=att["gmail_attachment_id"],
+                                is_inline=att.get("is_inline", False),
                                 created_at=datetime.now(UTC),
                             )
                         )

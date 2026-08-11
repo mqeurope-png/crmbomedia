@@ -2302,6 +2302,13 @@ class EmailMessageAttachment(Base):
     # base64 de ~350-450 chars. El String(255) truncaba en INSERT con
     # DataError 1406 — confirmado por Bart 2026-06-26.
     gmail_attachment_id: Mapped[str | None] = mapped_column(String(512))
+    # CRM-ADJUNTOS-UX — la parte es una imagen embebida en el HTML del
+    # cuerpo (Content-Disposition: inline / referenciada por Content-ID),
+    # no un adjunto real. No se muestra como chip descargable; el filtro
+    # `has_attachments` y el clip de la bandeja la ignoran.
+    is_inline: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )

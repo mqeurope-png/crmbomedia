@@ -251,6 +251,37 @@ def _is_attachment_part(part: dict[str, Any]) -> bool:
     return size > 0
 
 
+def _part_header(part: dict[str, Any], name: str) -> str:
+    """Valor del header `name` (case-insensitive) de una parte MIME de
+    Gmail, o "" si no está. Las partes de `messages.get` traen su propio
+    array `headers`."""
+    target = name.lower()
+    for header in part.get("headers") or []:
+        if str(header.get("name", "")).lower() == target:
+            return str(header.get("value") or "")
+    return ""
+
+
+def is_inline_part(part: dict[str, Any]) -> bool:
+    """CRM-ADJUNTOS-UX — la parte es una imagen embebida en el cuerpo, no
+    un adjunto real:
+
+    - `Content-Disposition: inline` → inline explícito, O
+    - sin `Content-Disposition` pero con `Content-ID` → referenciada por
+      `cid:` desde el HTML (patrón típico de `image001.jpg` de Outlook).
+
+    Con `Content-Disposition: attachment` (aunque tenga Content-ID) se trata
+    como adjunto real."""
+    disposition = _part_header(part, "Content-Disposition").lower()
+    if "attachment" in disposition:
+        return False
+    if "inline" in disposition:
+        return True
+    if not disposition and _part_header(part, "Content-ID"):
+        return True
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Resource loading
 # ---------------------------------------------------------------------------
@@ -1071,6 +1102,7 @@ def _download_attachments(
                 size_bytes=size,
                 storage_path=rel_path,
                 gmail_attachment_id=att_id,
+                is_inline=is_inline_part(part),
                 created_at=datetime.now(UTC),
             )
         )
