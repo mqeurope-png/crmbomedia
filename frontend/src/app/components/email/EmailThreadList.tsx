@@ -1,6 +1,6 @@
 "use client";
 
-import { Inbox, Search, Star } from "lucide-react";
+import { Inbox, Paperclip, Search, Star } from "lucide-react";
 import Link from "next/link";
 import {
   useParams,
@@ -557,6 +557,13 @@ export function EmailThreadList({ folders, labels, refreshKey }: Props) {
                     ) : null}
                   </span>
                   <span className="email-list-meta">
+                    {t.has_attachments ? (
+                      <Paperclip
+                        size={14}
+                        className="email-list-clip"
+                        aria-label="Con adjuntos"
+                      />
+                    ) : null}
                     {t.has_spam ? (
                       <span className="badge bad email-list-spam">🔴 Spam</span>
                     ) : null}

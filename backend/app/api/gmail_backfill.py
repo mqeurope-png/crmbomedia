@@ -39,11 +39,11 @@ from app.models.crm import (
     Contact,
     EmailMessage,
     EmailMessageAttachment,
+    EmailThread,
     GmailBackfillJob,
     GmailBackfillMode,
     GmailBackfillStatus,
     User,
-    UserRole,
 )
 from app.schemas.gmail_backfill import (
     BackfillEstimateRequest,
@@ -484,9 +484,12 @@ def download_attachment(
     - metadata-only (CRM-ADJUNTOS-BACKFILL, Opción B) → fetch on-demand a
       Gmail y stream directo al navegador; el binario nunca toca disco.
 
-    Permisos: admin/manager cualquier contacto; user/viewer solo si son
-    owner del contacto. Cada download emite `email.attachment.downloaded`
-    en audit log (metadata.source = local_disk | gmail_on_demand)."""
+    Permisos (CRM-ADJUNTOS-UX): heredan la VISIBILIDAD DEL THREAD, no el
+    owner del contacto. Si el operador ve el email en su bandeja (thread
+    con un mensaje entregado a uno de sus alias, o iniciado por él; admin
+    ve todo) puede descargar el adjunto. Cada download emite
+    `email.attachment.downloaded` en audit log (metadata.source =
+    local_disk | gmail_on_demand)."""
     attachment = session.get(EmailMessageAttachment, attachment_id)
     if attachment is None or attachment.message_id != message_id:
         raise not_found("Attachment")
@@ -494,18 +497,26 @@ def download_attachment(
     if message is None:
         raise not_found("Email message")
 
-    # Authorization: admin/manager → cualquier contacto.
-    # user/viewer → solo si son el owner del contacto.
-    if current_user.role not in (UserRole.ADMIN, UserRole.MANAGER):
-        contact = (
-            session.get(Contact, message.contact_id)
-            if message.contact_id else None
+    # Authorization: misma regla que ver el hilo (thread_is_visible). El
+    # check anterior miraba el owner del contacto, que niega a un comercial
+    # que SÍ ve el mail por alias pero cuyo contacto pertenece a otro (o es
+    # NULL) — el bug reportado por Bart.
+    from app.services.email_aliases import (  # noqa: PLC0415
+        thread_is_visible,
+    )
+
+    thread = session.get(EmailThread, message.thread_id)
+    if thread is None or not thread_is_visible(session, current_user, thread):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "attachment_not_visible",
+                "detail": (
+                    "No tienes acceso a este email. Pide al admin que te "
+                    "asigne el alias correspondiente."
+                ),
+            },
         )
-        if contact is None or contact.owner_user_id != current_user.id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="No tienes permiso sobre el contacto de este adjunto.",
-            )
 
     def _audit(source: str) -> None:
         record_event(

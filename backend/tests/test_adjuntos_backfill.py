@@ -499,3 +499,179 @@ def test_attachment_download_410_when_message_gone_from_gmail(
             headers=auth_headers(client, "admin"),
         )
     assert response.status_code == 410
+
+
+# ---------------------------------------------------------------------------
+# CRM-ADJUNTOS-UX — inline vs adjunto real + permisos por visibilidad de hilo
+# ---------------------------------------------------------------------------
+
+
+def _part(
+    filename: str,
+    att_id: str,
+    size: int,
+    *,
+    headers: list[dict[str, str]] | None = None,
+) -> dict[str, Any]:
+    return {
+        "filename": filename,
+        "mimeType": "image/jpeg",
+        "headers": headers or [],
+        "body": {"attachmentId": att_id, "size": size},
+    }
+
+
+def test_extract_attachments_excludes_inline_by_disposition() -> None:
+    payload = {
+        "mimeType": "multipart/mixed",
+        "parts": [
+            _part(
+                "factura.pdf", "att-real", 2048,
+                headers=[{"name": "Content-Disposition",
+                          "value": "attachment; filename=factura.pdf"}],
+            ),
+            _part(
+                "image001.jpg", "att-inline", 3072,
+                headers=[{"name": "Content-Disposition", "value": "inline"}],
+            ),
+        ],
+    }
+    out = extract_attachments_from_gmail_payload(payload)
+    by_name = {a["filename"]: a for a in out}
+    # Ambas se devuelven (no perdemos el binario) pero marcadas.
+    assert by_name["factura.pdf"]["is_inline"] is False
+    assert by_name["image001.jpg"]["is_inline"] is True
+
+
+def test_extract_attachments_excludes_cid_referenced_parts() -> None:
+    payload = {
+        "mimeType": "multipart/related",
+        "parts": [
+            # Sin Content-Disposition pero con Content-ID → inline (cid:).
+            _part(
+                "logo.png", "att-cid", 1500,
+                headers=[{"name": "Content-ID", "value": "<logo@firma>"}],
+            ),
+            # Content-Disposition: attachment aunque tenga Content-ID → real.
+            _part(
+                "adjunto.png", "att-real2", 5000,
+                headers=[
+                    {"name": "Content-ID", "value": "<x@y>"},
+                    {"name": "Content-Disposition", "value": "attachment"},
+                ],
+            ),
+        ],
+    }
+    by_name = {
+        a["filename"]: a
+        for a in extract_attachments_from_gmail_payload(payload)
+    }
+    assert by_name["logo.png"]["is_inline"] is True
+    assert by_name["adjunto.png"]["is_inline"] is False
+
+
+def _seed_visible_attachment(
+    session: Session,
+    *,
+    owner_id: str,
+    delivered_to: str,
+    gmail_message_id: str = "vis-msg",
+) -> tuple[str, str]:
+    """Thread INBOUND entregado a `delivered_to` (alias del comercial) con
+    un adjunto real. Devuelve (message_id, attachment_id)."""
+    thread = EmailThread(
+        initiated_by_user_id=owner_id,
+        gmail_thread_id=f"thr-{gmail_message_id}",
+        gmail_account_user_id=owner_id,
+        subject="Con adjunto",
+        first_message_at=datetime(2026, 6, 1, tzinfo=UTC),
+        last_message_at=datetime(2026, 6, 1, tzinfo=UTC),
+        message_count=1,
+    )
+    session.add(thread)
+    session.flush()
+    message = EmailMessage(
+        thread_id=thread.id,
+        gmail_message_id=gmail_message_id,
+        gmail_account_user_id=owner_id,
+        direction=EmailDirection.INBOUND,
+        from_email="cliente@fuera.com",
+        to_emails_json=f'["{delivered_to}"]',
+        delivered_to=delivered_to,
+        sent_at=datetime(2026, 6, 1, tzinfo=UTC),
+    )
+    session.add(message)
+    session.flush()
+    att = EmailMessageAttachment(
+        message_id=message.id,
+        filename="informe.pdf",
+        mime_type="application/pdf",
+        size_bytes=17,
+        storage_path=None,
+        gmail_attachment_id="att-live",
+        created_at=datetime.now(UTC),
+    )
+    session.add(att)
+    session.flush()
+    return message.id, att.id
+
+
+def test_download_attachment_uses_thread_visibility_not_contact_owner(
+    client: TestClient, factory: sessionmaker
+) -> None:
+    """El comercial ve el mail por su alias (delivered_to) aunque el
+    contacto no sea suyo → puede descargar. (Antes fallaba por el check de
+    owner del contacto.)"""
+    from app.models.crm import UserEmailAlias  # noqa: PLC0415
+
+    fake = _FakeClient()
+    with factory() as session:
+        admin = _admin_id(session)  # cuenta org = admin
+        user = session.scalar(
+            select(User.id).where(User.role == UserRole.USER)
+        )
+        session.add(
+            UserEmailAlias(
+                user_id=user, alias_email="norma@bomedia.net", active=True
+            )
+        )
+        session.flush()
+        message_id, att_id = _seed_visible_attachment(
+            session, owner_id=admin, delivered_to="norma@bomedia.net",
+        )
+        session.commit()
+
+    with patch(
+        "app.integrations.gmail.service._client_for", return_value=fake
+    ):
+        resp = client.get(
+            f"/api/email-messages/{message_id}/attachments/{att_id}/download",
+            headers=auth_headers(client, "user"),
+        )
+    assert resp.status_code == 200, resp.text
+    assert resp.content == b"BINARY:att-live"
+
+
+def test_download_attachment_403_when_user_cannot_see_thread(
+    client: TestClient, factory: sessionmaker
+) -> None:
+    """Un comercial sin el alias del mail (no lo ve en su bandeja) → 403
+    con code=attachment_not_visible y mensaje sobre el email, no el
+    contacto."""
+    with factory() as session:
+        admin = _admin_id(session)
+        # El user NO tiene ningún alias activo → no ve el hilo (pero sí
+        # pasa require_user, a diferencia de viewer).
+        message_id, att_id = _seed_visible_attachment(
+            session, owner_id=admin, delivered_to="otra@bomedia.net",
+        )
+        session.commit()
+
+    resp = client.get(
+        f"/api/email-messages/{message_id}/attachments/{att_id}/download",
+        headers=auth_headers(client, "user"),
+    )
+    assert resp.status_code == 403
+    body = resp.json()
+    assert body["detail"]["code"] == "attachment_not_visible"
+    assert "email" in body["detail"]["detail"].lower()

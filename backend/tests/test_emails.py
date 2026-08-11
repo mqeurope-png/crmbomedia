@@ -2455,34 +2455,50 @@ def _seed_bandeja_thread(
 def test_list_threads_has_attachments_filter(
     client: TestClient, session_factory: sessionmaker
 ) -> None:
-    """`has_attachments=true` → hilos con adjunto vía sumario inline
-    (`attachments_json`) O vía fila binaria en `email_message_attachments`.
-    `false` → solo los hilos sin ninguno de los dos."""
+    """CRM-ADJUNTOS-UX — `has_attachments=true` → hilos con un adjunto REAL
+    (fila en email_message_attachments con is_inline=false). Las imágenes
+    embebidas (is_inline=true) y los sumarios `attachments_json` sin fila
+    NO cuentan. `false` → el resto."""
     from app.models.crm import EmailMessageAttachment  # noqa: PLC0415
 
     with session_factory() as session:
         uid = _user_id(session, UserRole.USER)
-        _seed_bandeja_thread(
-            session,
-            uid=uid,
-            gmail_thread_id="att-inline",
-            attachments_json=(
-                '[{"filename": "oferta.pdf",'
-                ' "mime_type": "application/pdf", "size": 2048}]'
-            ),
-        )
-        _, msg_row_id = _seed_bandeja_thread(
+        # Adjunto real (fila, no inline) → cuenta.
+        _, real_id = _seed_bandeja_thread(
             session, uid=uid, gmail_thread_id="att-row"
         )
         session.add(
             EmailMessageAttachment(
-                message_id=msg_row_id,
-                filename="foto.jpg",
-                mime_type="image/jpeg",
+                message_id=real_id,
+                filename="factura.pdf",
+                mime_type="application/pdf",
                 size_bytes=4096,
-                storage_path="2026/08/foto.jpg",
+                gmail_attachment_id="att-real",
+                is_inline=False,
                 created_at=datetime.now(UTC),
             )
+        )
+        # Solo imagen embebida (is_inline=true) → NO cuenta.
+        _, inline_id = _seed_bandeja_thread(
+            session, uid=uid, gmail_thread_id="att-inline-only"
+        )
+        session.add(
+            EmailMessageAttachment(
+                message_id=inline_id,
+                filename="image001.jpg",
+                mime_type="image/jpeg",
+                size_bytes=3072,
+                gmail_attachment_id="att-inline",
+                is_inline=True,
+                created_at=datetime.now(UTC),
+            )
+        )
+        # Solo sumario attachments_json (sin fila) → NO cuenta.
+        _seed_bandeja_thread(
+            session,
+            uid=uid,
+            gmail_thread_id="att-summary-only",
+            attachments_json='[{"filename": "x.pdf", "size": 10}]',
         )
         _seed_bandeja_thread(session, uid=uid, gmail_thread_id="att-none")
         session.commit()
@@ -2493,14 +2509,24 @@ def test_list_threads_has_attachments_filter(
     )
     assert with_att.status_code == 200
     got = {t["gmail_thread_id"] for t in with_att.json()["items"]}
-    assert got == {"att-inline", "att-row"}
+    assert got == {"att-row"}
 
     without_att = client.get(
         "/api/emails/threads?has_attachments=false", headers=headers
     )
     assert without_att.status_code == 200
     got = {t["gmail_thread_id"] for t in without_att.json()["items"]}
-    assert got == {"att-none"}
+    assert got == {"att-inline-only", "att-summary-only", "att-none"}
+
+    # El flag has_attachments va en la respuesta (para el clip de la fila).
+    all_threads = client.get("/api/emails/threads", headers=headers)
+    flags = {
+        t["gmail_thread_id"]: t["has_attachments"]
+        for t in all_threads.json()["items"]
+    }
+    assert flags["att-row"] is True
+    assert flags["att-inline-only"] is False
+    assert flags["att-none"] is False
 
 
 def test_list_threads_has_contact_filter(

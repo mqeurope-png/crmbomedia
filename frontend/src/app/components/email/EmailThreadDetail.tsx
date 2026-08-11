@@ -4,7 +4,11 @@ import {
   ChevronDown,
   ChevronRight,
   Download,
-  Paperclip,
+  File as FileIcon,
+  FileArchive,
+  FileSpreadsheet,
+  FileText,
+  Image as ImageIcon,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -260,7 +264,7 @@ function MessageCard({
           )}
 
           {(m.attachments ?? []).length > 0 ? (
-            <AttachmentChips
+            <AttachmentCards
               messageId={m.id}
               attachments={m.attachments ?? []}
             />
@@ -333,7 +337,32 @@ function humanSize(bytes: number | null): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function AttachmentChips({
+/** CRM-ADJUNTOS-UX — icono + etiqueta de tipo por extensión/mime. */
+function attachmentKind(
+  filename: string,
+  mime: string | null,
+): { Icon: typeof FileIcon; label: string } {
+  const ext = filename.split(".").pop()?.toLowerCase() ?? "";
+  const m = (mime ?? "").toLowerCase();
+  if (m.startsWith("image/") || ["jpg", "jpeg", "png", "gif", "webp", "bmp", "svg"].includes(ext)) {
+    return { Icon: ImageIcon, label: ext ? ext.toUpperCase() : "Imagen" };
+  }
+  if (ext === "pdf" || m === "application/pdf") {
+    return { Icon: FileText, label: "PDF" };
+  }
+  if (["zip", "rar", "7z", "gz", "tar"].includes(ext)) {
+    return { Icon: FileArchive, label: ext.toUpperCase() };
+  }
+  if (["xls", "xlsx", "csv", "ods"].includes(ext)) {
+    return { Icon: FileSpreadsheet, label: ext.toUpperCase() };
+  }
+  if (["doc", "docx", "txt", "rtf", "odt"].includes(ext)) {
+    return { Icon: FileText, label: ext.toUpperCase() };
+  }
+  return { Icon: FileIcon, label: ext ? ext.toUpperCase() : "Archivo" };
+}
+
+function AttachmentCards({
   messageId,
   attachments,
 }: {
@@ -341,44 +370,56 @@ function AttachmentChips({
   attachments: EmailMessageAttachment[];
 }) {
   const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
   return (
-    <div className="email-attachments">
+    <div className="email-attachments" data-testid="email-attachments">
       {attachments.map((a, idx) => {
         const attachmentId = a.id;
+        const { Icon, label } = attachmentKind(a.filename, a.mime_type);
+        const size = humanSize(a.size_bytes);
+        const meta = [size, label].filter(Boolean).join(" · ");
         return (
-          <span
+          <div
             key={attachmentId ?? `${a.filename}-${idx}`}
-            className="email-attachment-chip"
+            className="email-attachment-card"
           >
-            <Paperclip size={12} aria-hidden />
-            <span className="email-attachment-name">{a.filename}</span>
-            {humanSize(a.size_bytes) ? (
-              <span className="muted small">{humanSize(a.size_bytes)}</span>
-            ) : null}
+            <span className="email-attachment-icon" aria-hidden>
+              <Icon size={28} />
+            </span>
+            <span className="email-attachment-info">
+              <span className="email-attachment-name" title={a.filename}>
+                {a.filename}
+              </span>
+              {meta ? (
+                <span className="email-attachment-meta">{meta}</span>
+              ) : null}
+            </span>
             {attachmentId && a.downloadable ? (
               <button
                 type="button"
-                className="email-attachment-download"
+                className="button small email-attachment-dl-btn"
                 title={`Descargar ${a.filename}`}
                 aria-label={`Descargar ${a.filename}`}
-                onClick={() =>
-                  downloadEmailAttachment(
-                    messageId,
-                    attachmentId,
-                    a.filename,
-                  ).catch((err) =>
-                    setError(
-                      err instanceof Error
-                        ? err.message
-                        : "No se pudo descargar el adjunto.",
-                    ),
-                  )
-                }
+                disabled={busy === attachmentId}
+                onClick={() => {
+                  setBusy(attachmentId);
+                  setError(null);
+                  downloadEmailAttachment(messageId, attachmentId, a.filename)
+                    .catch((err) =>
+                      setError(
+                        err instanceof Error
+                          ? err.message
+                          : "No se pudo descargar el adjunto.",
+                      ),
+                    )
+                    .finally(() => setBusy(null));
+                }}
               >
-                <Download size={12} aria-hidden />
+                <Download size={14} aria-hidden />{" "}
+                {busy === attachmentId ? "Descargando…" : "Descargar"}
               </button>
             ) : null}
-          </span>
+          </div>
         );
       })}
       {error ? <p className="form-error small">{error}</p> : null}

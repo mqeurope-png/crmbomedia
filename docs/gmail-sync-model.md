@@ -201,6 +201,39 @@ momento** y streamea el binario directo al navegador. **0 storage local.**
 - Idempotencia: UNIQUE `(message_id, gmail_attachment_id)` (migración 0091)
   + el backfill salta mensajes que ya tienen filas de adjuntos.
 
+### Inline vs adjunto real (CRM-ADJUNTOS-UX)
+
+Las **imágenes embebidas en el cuerpo** (firmas con logo, `image001.jpg` de
+Outlook) NO son adjuntos: se renderizan dentro del HTML, no deben aparecer
+como chip descargable ni disparar el clip 📎 de la bandeja. Se distinguen
+con la columna `email_message_attachments.is_inline`:
+
+- **Cómo se decide** (extractor, a partir de los headers MIME de la parte):
+  - `Content-Disposition: inline` → inline.
+  - Sin `Content-Disposition` pero con `Content-ID` (referenciada por `cid:`
+    desde el HTML) → inline.
+  - `Content-Disposition: attachment` (aunque tenga `Content-ID`) → real.
+- **Por qué**: es la señal fiable del propio correo; el criterio previo
+  («cualquier parte con `attachmentId`») incluía los logos de firma.
+- **Retroactivo** (migración 0092): las ~23k filas ya guardadas se marcan
+  con una heurística **conservadora** por nombre+tamaño (`imageNNN.jpg`
+  pequeña < 100 KB). Preferimos dejar como adjunto algún inline dudoso antes
+  que ocultar un adjunto legítimo; un re-backfill clasifica exacto por
+  headers.
+- Las surfaces de usuario filtran `is_inline = false`: los chips del detalle,
+  el filtro «Con adjuntos» y el flag `has_attachments` (clip de la fila).
+
+### Permisos de descarga — visibilidad del hilo
+
+La descarga de un adjunto **hereda la visibilidad del thread**
+(`thread_is_visible`), NO el owner del contacto. Si el operador ve el email
+en su bandeja (mensaje entregado a uno de sus alias activos, o hilo iniciado
+por él; admin ve todo) puede descargar el adjunto. Antes el endpoint miraba
+`contact.owner_user_id`, que negaba a un comercial que SÍ veía el mail por
+alias pero cuyo contacto pertenecía a otro (o era NULL). Si no es visible →
+403 `{code: attachment_not_visible}` con un mensaje sobre el **email** (no el
+contacto).
+
 ### Backfill de metadata para mensajes ya importados
 
 Los ~15k mensajes de los backfills de junio/agosto y del go-forward se

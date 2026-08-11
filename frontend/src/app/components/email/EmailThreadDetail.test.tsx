@@ -217,6 +217,40 @@ describe("EmailThreadDetail — CRM-BANDEJA", () => {
       screen.queryByRole("button", { name: /Descargar grande.zip/i }),
     ).not.toBeInTheDocument();
   });
+
+  it("CRM-ADJUNTOS-UX: renderiza cards destacadas con tipo + tamaño + botón grande", () => {
+    const messages = [
+      makeMessage({
+        id: "m-card",
+        direction: "outbound",
+        attachments: [
+          {
+            id: "a-2",
+            filename: "oferta.pdf",
+            mime_type: "application/pdf",
+            size_bytes: 234 * 1024,
+            downloadable: true,
+          },
+        ],
+      }),
+    ];
+    const { container } = render(
+      <EmailThreadDetail
+        thread={makeThread(messages)}
+        eventsByMessage={{}}
+      />,
+    );
+    // Card grande, no un chip pequeño.
+    const card = container.querySelector(".email-attachment-card");
+    expect(card).toBeInTheDocument();
+    expect(card?.querySelector(".email-attachment-icon")).toBeInTheDocument();
+    // Metadata: tamaño legible + tipo.
+    expect(screen.getByText(/234 KB · PDF/i)).toBeInTheDocument();
+    // Botón «Descargar» con texto (no icon-only).
+    expect(
+      screen.getByRole("button", { name: /Descargar oferta.pdf/i }),
+    ).toHaveTextContent(/Descargar/);
+  });
 });
 
 describe("formatToSummary", () => {

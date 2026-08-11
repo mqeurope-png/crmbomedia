@@ -4917,40 +4917,68 @@ a.origin-chip:hover { filter: brightness(0.97); }
   max-height: none;
   overflow: visible;
 }
+/* CRM-ADJUNTOS-UX — adjuntos como cards grandes tipo Gmail (apilados). */
 .email-attachments {
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  padding-top: 4px;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 10px;
+  margin-top: 4px;
   border-top: 1px dashed var(--border);
 }
-.email-attachment-chip {
+.email-attachment-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #f8fafc;
+  max-width: 460px;
+}
+.email-attachment-icon {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: #f8fafc;
-  font-size: 12px;
-  max-width: 100%;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  flex-shrink: 0;
+  border-radius: 8px;
+  background: #eef2ff;
+  color: var(--brand);
+}
+.email-attachment-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
 }
 .email-attachment-name {
+  font-weight: 600;
+  font-size: 14px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 220px;
 }
-.email-attachment-download {
+.email-attachment-meta {
+  font-size: 12px;
+  color: #6b7280;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+.email-attachment-dl-btn {
+  flex-shrink: 0;
   display: inline-flex;
   align-items: center;
-  border: 0;
-  background: transparent;
-  cursor: pointer;
-  color: var(--brand);
-  padding: 0;
+  gap: 4px;
 }
-.email-attachment-download:hover { color: #1d4ed8; }
+/* CRM-ADJUNTOS-UX — clip 📎 en la línea del asunto de la bandeja. */
+.email-list-clip {
+  color: #9ca3af;
+  flex-shrink: 0;
+  margin-right: 2px;
+}
 
 /* CRM-BANDEJA — toolbar del hilo agrupada en 3 secciones. */
 .email-thread-toolbar {

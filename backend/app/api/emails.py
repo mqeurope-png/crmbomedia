@@ -796,14 +796,15 @@ def list_threads(
     if has_unread is not None:
         stmt = stmt.where(EmailThread.has_unread_replies.is_(has_unread))
     if has_attachments is not None:
-        from sqlalchemy import or_ as _or_att  # noqa: PLC0415
-
+        # CRM-ADJUNTOS-UX — «Con adjuntos» = hilos con al menos un adjunto
+        # REAL (fila en email_message_attachments con is_inline=false). Las
+        # imágenes embebidas ya no cuentan (el clip de la bandeja usa la
+        # misma señal, `_attachment_thread_ids`).
         attachment_threads = select(EmailMessage.thread_id).where(
-            _or_att(
-                EmailMessage.attachments_json.is_not(None),
-                EmailMessage.id.in_(
-                    select(EmailMessageAttachment.message_id)
-                ),
+            EmailMessage.id.in_(
+                select(EmailMessageAttachment.message_id).where(
+                    EmailMessageAttachment.is_inline.is_(False)
+                )
             )
         )
         if has_attachments:
@@ -918,11 +919,13 @@ def list_threads(
     contacts_by_id = _contacts_for_threads(session, items)
     tracking_by_thread = _tracking_counts_for_threads(session, thread_ids)
     spam_thread_set = _spam_thread_ids(session, thread_ids)
+    attachment_thread_set = _attachment_thread_ids(session, thread_ids)
     out: list[EmailThreadRead] = []
     for thread in items:
         last = last_by_thread.get(thread.id)
         read = EmailThreadRead.model_validate(thread)
         read.has_spam = thread.id in spam_thread_set
+        read.has_attachments = thread.id in attachment_thread_set
         if last is not None:
             read.last_message_direction = (
                 last.direction.value
@@ -1192,7 +1195,10 @@ def _message_read(
     # mensaje solo conserva el sumario inline `attachments_json` (p. ej.
     # el binario superaba el límite del backfill) exponemos la metadata
     # sin descarga para que el operador sepa que el adjunto existe.
-    if attachments:
+    # CRM-ADJUNTOS-UX: las imágenes embebidas en el cuerpo (is_inline) no
+    # se exponen como chips — se renderizan solas dentro del HTML.
+    real_attachments = [a for a in (attachments or []) if not a.is_inline]
+    if real_attachments:
         # CRM-ADJUNTOS-BACKFILL (Opción B): descargable si el binario está
         # en disco (legacy) O si hay gmail_attachment_id para el fetch
         # on-demand desde Gmail.
@@ -1204,9 +1210,11 @@ def _message_read(
                 size_bytes=a.size_bytes,
                 downloadable=bool(a.storage_path or a.gmail_attachment_id),
             )
-            for a in attachments
+            for a in real_attachments
         ]
-    elif m.attachments_json:
+    elif not attachments and m.attachments_json:
+        # Fallback sumario inline (mensajes sin filas de adjunto). Filtramos
+        # las imágenes embebidas por heurística de nombre+tamaño.
         try:
             meta = json.loads(m.attachments_json)
         except (TypeError, ValueError):
@@ -1221,8 +1229,25 @@ def _message_read(
             )
             for item in meta
             if isinstance(item, dict)
+            and not _looks_inline_summary(
+                str(item.get("filename") or ""), item.get("size")
+            )
         ]
     return read
+
+
+def _looks_inline_summary(filename: str, size: object) -> bool:
+    """CRM-ADJUNTOS-UX — heurística para el sumario `attachments_json`
+    (sin headers MIME): imagen pequeña tipo `imageNNN.jpg` → inline."""
+    name = filename.lower()
+    if not name.startswith("image"):
+        return False
+    if not name.endswith((".jpg", ".jpeg", ".png", ".gif")):
+        return False
+    try:
+        return int(size or 0) < 102_400
+    except (TypeError, ValueError):
+        return False
 
 
 def _user_own_emails(session: Session, user: User) -> set[str]:
@@ -1357,6 +1382,26 @@ def _spam_thread_ids(session: Session, thread_ids: list[str]) -> set[str]:
         select(EmailMessage.thread_id).where(
             EmailMessage.thread_id.in_(thread_ids),
             EmailMessage.is_spam.is_(True),
+        )
+    )
+    return set(rows)
+
+
+def _attachment_thread_ids(session: Session, thread_ids: list[str]) -> set[str]:
+    """CRM-ADJUNTOS-UX — threads con ≥1 adjunto REAL (fila en
+    email_message_attachments con is_inline=false) para el clip 📎 de la
+    bandeja. Una query batch por página (join mensaje→adjunto)."""
+    if not thread_ids:
+        return set()
+    rows = session.scalars(
+        select(EmailMessage.thread_id)
+        .join(
+            EmailMessageAttachment,
+            EmailMessageAttachment.message_id == EmailMessage.id,
+        )
+        .where(
+            EmailMessage.thread_id.in_(thread_ids),
+            EmailMessageAttachment.is_inline.is_(False),
         )
     )
     return set(rows)
