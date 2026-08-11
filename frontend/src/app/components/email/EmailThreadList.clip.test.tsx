@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import { EmailThreadList } from "./EmailThreadList";
 import { listEmailThreads, type EmailThread } from "../../lib/emailsApi";
 
@@ -72,9 +72,7 @@ describe("EmailThreadList — CRM-ADJUNTOS-UX clip", () => {
     const { container } = render(
       <EmailThreadList folders={[]} labels={[]} refreshKey={0} />,
     );
-    await waitFor(() =>
-      expect(screen.getByText("Con adjunto")).toBeInTheDocument(),
-    );
+    expect(await screen.findByText("Con adjunto")).toBeInTheDocument();
     // Un solo clip, en la fila con adjuntos.
     const clips = container.querySelectorAll(".email-list-clip");
     expect(clips.length).toBe(1);
