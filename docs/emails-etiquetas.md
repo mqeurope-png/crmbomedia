@@ -60,6 +60,16 @@ mensaje entregado a un alias propio); 404 para hilos ajenos. Solo aceptan
 etiquetas org (`gmail_label_id` no NULL) — las personales siguen operando
 a nivel de hilo con sus endpoints de siempre.
 
+## Colores
+
+Gmail define **dos** colores por label: `color.backgroundColor` (fondo
+del chip) y `color.textColor` (el que contrasta con ese fondo — blanco
+sobre rojo, negro sobre amarillo). En el CRM son `email_labels.color` y
+`email_labels.text_color` (migración 0096); se conserva el nombre `color`
+para el fondo porque es el que ya usaban el sidebar y los chips desde
+v2.4a. Ambos se capturan en `sync_labels`, así que **re-ejecutarlo tras
+la 0096 rellena `text_color` en las labels ya importadas**.
+
 ## API / UI
 
 - `GET /api/emails/labels` devuelve ahora personales **+ org** (no
@@ -67,11 +77,29 @@ a nivel de hilo con sus endpoints de siempre.
   (nº de hilos con la etiqueta, a nivel hilo o mensaje).
 - `GET /api/emails/threads?label_id=X` casa etiquetas de hilo **o** de
   mensaje.
+- `GET /api/emails/threads` incluye en cada hilo `labels[]` = unión de
+  sus etiquetas de hilo + las de Gmail de sus mensajes, en **una** query
+  batch por página (sin N+1, con test que lo vigila).
+- Bandeja (CRM-ETIQUETAS-EN-BANDEJA): chips a la izquierda del asunto,
+  con el color pleno de Gmail, máximo 3 + «+N» con el resto en el
+  tooltip. Una fila sin etiquetas se ve exactamente igual que antes.
 - Thread detail: cada mensaje expone `labels[]`; la UI pinta chips con
   «×» y un dropdown «+» con las etiquetas org restantes.
 - Sidebar: las etiquetas org aparecen en la sección «Etiquetas» con badge
   de conteo y sin botones de editar/borrar (su ciclo de vida vive en
   Gmail).
+
+### Silenciar una etiqueta ruidosa
+
+Una etiqueta «cajón de sastre» (p. ej. «todos los emails», que marca
+decenas de miles de mails) no aporta señal como chip y tapa a las que sí.
+Se oculta del sidebar **y** de los chips sin perder el mapeo ni el filtro
+por `label_id`:
+
+```bash
+docker exec crmbo-api-1 python -m app.integrations.gmail_watch hide_label "- Bart - todos los emails"
+docker exec crmbo-api-1 python -m app.integrations.gmail_watch hide_label "- Bart - todos los emails" --show  # deshacer
+```
 
 ## Fuera de alcance (backlog)
 
@@ -82,9 +110,13 @@ a nivel de hilo con sus endpoints de siempre.
 
 ## Deploy
 
-`api` + `frontend` + `worker-gmail` (process_history) + migración
-`20260811_0095`. Después del deploy, ejecutar una vez:
+`api` + `frontend` + `worker-gmail` (process_history) + migraciones
+`20260811_0095` (etiquetas) y `20260811_0096` (`text_color`). Después del
+deploy, ejecutar una vez:
 
 ```bash
 docker exec crmbo-api-1 python -m app.integrations.gmail_watch sync_labels
 ```
+
+Tras la 0096 esa misma ejecución rellena el `text_color` de las labels ya
+importadas (las contabiliza como «actualizadas» en el report).

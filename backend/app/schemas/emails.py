@@ -408,9 +408,22 @@ class EmailLabelWrite(BaseModel):
 
 
 class EmailLabelRead(BaseModel):
+    """Etiqueta tal como la consume la UI (sidebar, chips de la bandeja y
+    del thread detail).
+
+    Colores: `color` es el FONDO (Gmail `color.backgroundColor`) y
+    `text_color` el color de texto que contrasta con él (Gmail
+    `color.textColor`). Se mantiene el nombre `color` en vez de
+    `background_color` porque es la columna que ya usan el sidebar y los
+    chips desde v2.4a. `gmail_label_id` no nulo ⇒ es una label de Gmail
+    (equivalente al `is_gmail_label` del spec)."""
+
     id: str
     name: str
     color: str | None
+    # CRM-ETIQUETAS-EN-BANDEJA — NULL en labels sin color asignado en
+    # Gmail y en las personales del CRM; la UI cae a un gris legible.
+    text_color: str | None = None
     sort_order: int
     # CRM-ETIQUETAS-GMAIL-V2.3 — no-NULL = etiqueta org espejo de una label
     # de Gmail (se aplica a nivel de mensaje y se propaga vía

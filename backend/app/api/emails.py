@@ -27,6 +27,7 @@ from app.integrations.gmail.service import (
 from app.models.crm import (
     Contact,
     EmailEventType,
+    EmailLabel,
     EmailMessage,
     EmailMessageAttachment,
     EmailMessageEvent,
@@ -41,6 +42,7 @@ from app.models.crm import (
 from app.schemas.emails import (
     AliasPreferencesPayload,
     EmailAlias,
+    EmailLabelRead,
     EmailMessageAttachmentRead,
     EmailMessageRead,
     EmailSendRequest,
@@ -971,12 +973,18 @@ def list_threads(
     tracking_by_thread = _tracking_counts_for_threads(session, thread_ids)
     spam_thread_set = _spam_thread_ids(session, thread_ids)
     attachment_thread_set = _attachment_thread_ids(session, thread_ids)
+    message_labels = _message_labels_for_threads(session, thread_ids)
     out: list[EmailThreadRead] = []
     for thread in items:
         last = last_by_thread.get(thread.id)
         read = EmailThreadRead.model_validate(thread)
         read.has_spam = thread.id in spam_thread_set
         read.has_attachments = thread.id in attachment_thread_set
+        # CRM-ETIQUETAS-EN-BANDEJA — chips de la fila: etiquetas del hilo
+        # + las de Gmail heredadas de sus mensajes.
+        read.labels = _merge_row_labels(
+            read.labels, message_labels.get(thread.id, [])
+        )
         if last is not None:
             read.last_message_direction = (
                 last.direction.value
@@ -1523,6 +1531,71 @@ def _attachment_thread_ids(session: Session, thread_ids: list[str]) -> set[str]:
         )
     )
     return set(rows)
+
+
+def _message_labels_for_threads(
+    session: Session, thread_ids: list[str]
+) -> dict[str, list[EmailLabelRead]]:
+    """CRM-ETIQUETAS-EN-BANDEJA — etiquetas de Gmail de cada hilo, para
+    los chips de la fila del asunto.
+
+    Las labels de Gmail viven a nivel de MENSAJE, así que el chip del
+    hilo es la UNIÓN de las etiquetas de todos sus mensajes (si un mail
+    de la conversación está en «AA Facturas», el hilo lo está). Una sola
+    query batch por página — el conteo de queries no crece con el nº de
+    hilos.
+
+    Se excluyen las de sistema (`is_system`: INBOX/SPAM/… ya son la
+    carpeta en la que estás) y las ocultas (`is_hidden`: la vía para
+    silenciar una etiqueta ruidosa tipo «todos los emails», que marca
+    decenas de miles de mails y no aporta señal en la fila)."""
+    if not thread_ids:
+        return {}
+    rows = session.execute(
+        select(EmailMessage.thread_id, EmailLabel)
+        .join(
+            EmailMessageLabel,
+            EmailMessageLabel.message_id == EmailMessage.id,
+        )
+        .join(EmailLabel, EmailLabel.id == EmailMessageLabel.label_id)
+        .where(
+            EmailMessage.thread_id.in_(thread_ids),
+            EmailLabel.is_system.is_(False),
+            EmailLabel.is_hidden.is_(False),
+        )
+    )
+    # Dedupe por (hilo, etiqueta): varios mensajes del mismo hilo con la
+    # misma label producen un único chip.
+    seen: dict[str, set[str]] = {}
+    out: dict[str, list[EmailLabelRead]] = {}
+    for thread_id, label in rows:
+        if label.id in seen.setdefault(thread_id, set()):
+            continue
+        seen[thread_id].add(label.id)
+        out.setdefault(thread_id, []).append(
+            EmailLabelRead.model_validate(label)
+        )
+    return out
+
+
+def _merge_row_labels(
+    thread_labels: list[EmailLabelRead],
+    message_labels: list[EmailLabelRead],
+) -> list[EmailLabelRead]:
+    """Etiquetas a pintar en la fila: las del hilo (personales del CRM)
+    + las de Gmail heredadas de sus mensajes, sin duplicados y en orden
+    estable (`sort_order`, luego nombre) para que los chips no bailen
+    entre recargas."""
+    merged: dict[str, EmailLabelRead] = {}
+    for label in thread_labels:
+        if label.is_system:
+            continue
+        merged[label.id] = label
+    for label in message_labels:
+        merged.setdefault(label.id, label)
+    return sorted(
+        merged.values(), key=lambda lbl: (lbl.sort_order, lbl.name.lower())
+    )
 
 
 def _contacts_for_threads(

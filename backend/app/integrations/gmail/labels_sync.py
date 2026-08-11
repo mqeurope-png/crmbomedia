@@ -81,10 +81,21 @@ def org_label_map(session: Session) -> dict[str, EmailLabel]:
     return {row.gmail_label_id: row for row in rows if row.gmail_label_id}
 
 
+def label_colors(raw: dict) -> tuple[str | None, str | None]:
+    """`(backgroundColor, textColor)` de una label de Gmail.
+
+    CRM-ETIQUETAS-EN-BANDEJA — Gmail define los DOS: el fondo del chip y
+    el color de texto que contrasta con él (blanco sobre rojo, negro
+    sobre amarillo). Los chips de la bandeja necesitan ambos para
+    replicar el aspecto del original."""
+    color = raw.get("color") or {}
+    return color.get("backgroundColor"), color.get("textColor")
+
+
 def upsert_gmail_label(
     session: Session, *, raw: dict
 ) -> EmailLabel | None:
-    """Crea (o actualiza nombre/color de) la etiqueta org espejo de una
+    """Crea (o actualiza nombre/colores de) la etiqueta org espejo de una
     label de Gmail. Devuelve None si la label no es de usuario."""
     if (raw or {}).get("type") != "user":
         return None
@@ -92,7 +103,7 @@ def upsert_gmail_label(
     if not gid:
         return None
     name = raw.get("name") or gid
-    color = (raw.get("color") or {}).get("backgroundColor")
+    color, text_color = label_colors(raw)
     label = session.scalar(
         select(EmailLabel).where(EmailLabel.gmail_label_id == gid)
     )
@@ -101,6 +112,7 @@ def upsert_gmail_label(
             user_id=None,
             name=name,
             color=color,
+            text_color=text_color,
             gmail_label_id=gid,
         )
         session.add(label)
@@ -110,6 +122,8 @@ def upsert_gmail_label(
         label.name = name
     if color and label.color != color:
         label.color = color
+    if text_color and label.text_color != text_color:
+        label.text_color = text_color
     return label
 
 
@@ -141,7 +155,7 @@ def sync_gmail_labels(
             continue
         report.labels_found += 1
         name = item.get("name") or gid
-        color = (item.get("color") or {}).get("backgroundColor")
+        color, text_color = label_colors(item)
         existing = label_map.get(gid)
         if existing is None:
             report.labels_created += 1
@@ -152,7 +166,14 @@ def sync_gmail_labels(
                 # que ESTA label generaría sin escribir la fila.
                 label_map[gid] = None  # type: ignore[assignment]
         else:
-            if existing.name != name or (color and existing.color != color):
+            # Re-ejecutar tras la migración 0096 rellena `text_color` en
+            # las labels ya importadas (por eso entra en el diff).
+            changed = (
+                existing.name != name
+                or (color and existing.color != color)
+                or (text_color and existing.text_color != text_color)
+            )
+            if changed:
                 report.labels_updated += 1
                 if not dry_run:
                     upsert_gmail_label(session, raw=item)

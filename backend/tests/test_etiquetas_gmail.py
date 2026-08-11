@@ -271,6 +271,44 @@ def test_sync_imports_only_custom_labels(
         assert len(list(session.scalars(select(EmailLabel)))) == 2
 
 
+def test_sync_captures_both_gmail_colors(
+    factory: sessionmaker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CRM-ETIQUETAS-EN-BANDEJA — fondo Y color de texto. Y re-ejecutar
+    tras la migración 0096 rellena `text_color` en las ya importadas."""
+    _FakeLabelsClient.upstream = [
+        {
+            "id": "Label_1",
+            "name": "Clientes VIP",
+            "type": "user",
+            "color": {"backgroundColor": "#fb4c2f", "textColor": "#ffffff"},
+        },
+    ]
+    _patch_client(monkeypatch)
+    with factory() as session:
+        uid = _uid(session)
+        # Fila pre-0096: importada sin text_color.
+        session.add(
+            EmailLabel(
+                user_id=None,
+                name="Clientes VIP",
+                color="#fb4c2f",
+                gmail_label_id="Label_1",
+            )
+        )
+        session.commit()
+
+        report = sync_gmail_labels(session, user_id=uid)
+        session.commit()
+        assert report.labels_updated == 1
+        label = session.scalar(
+            select(EmailLabel).where(EmailLabel.gmail_label_id == "Label_1")
+        )
+        assert label is not None
+        assert label.color == "#fb4c2f"
+        assert label.text_color == "#ffffff"
+
+
 def test_sync_updates_renamed_label(
     factory: sessionmaker, monkeypatch: pytest.MonkeyPatch
 ) -> None:
