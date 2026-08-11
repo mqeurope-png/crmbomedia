@@ -2302,6 +2302,12 @@ class EmailMessageAttachment(Base):
     # base64 de ~350-450 chars. El String(255) truncaba en INSERT con
     # DataError 1406 — confirmado por Bart 2026-06-26.
     gmail_attachment_id: Mapped[str | None] = mapped_column(String(512))
+    # CRM-ADJUNTOS-INLINE-FIX — Content-ID de la parte MIME (sin los `<>`).
+    # Casa las referencias `cid:...` del HTML del cuerpo con el adjunto para
+    # reescribirlas a la URL de descarga. NULL en las filas ya importadas
+    # (el backfill no lo guardaba); se rellena go-forward y hay fallback por
+    # filename para el histórico.
+    content_id: Mapped[str | None] = mapped_column(String(255))
     # CRM-ADJUNTOS-UX — la parte es una imagen embebida en el HTML del
     # cuerpo (Content-Disposition: inline / referenciada por Content-ID),
     # no un adjunto real. No se muestra como chip descargable; el filtro

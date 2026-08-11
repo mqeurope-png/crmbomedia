@@ -262,6 +262,16 @@ def _part_header(part: dict[str, Any], name: str) -> str:
     return ""
 
 
+def _part_content_id(part: dict[str, Any]) -> str | None:
+    """CRM-ADJUNTOS-INLINE-FIX — el `Content-ID` de la parte sin los `<>`
+    (p. ej. `image001.jpg@01D9A5B0`), o None. Se usa para casar las
+    referencias `cid:` del HTML con el adjunto."""
+    raw = _part_header(part, "Content-ID").strip()
+    if not raw:
+        return None
+    return raw.strip("<>").strip() or None
+
+
 def is_inline_part(part: dict[str, Any]) -> bool:
     """CRM-ADJUNTOS-UX — la parte es una imagen embebida en el cuerpo, no
     un adjunto real:
@@ -1103,6 +1113,7 @@ def _download_attachments(
                 storage_path=rel_path,
                 gmail_attachment_id=att_id,
                 is_inline=is_inline_part(part),
+                content_id=_part_content_id(part),
                 created_at=datetime.now(UTC),
             )
         )

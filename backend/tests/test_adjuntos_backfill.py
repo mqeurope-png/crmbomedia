@@ -17,7 +17,7 @@ from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -675,3 +675,190 @@ def test_download_attachment_403_when_user_cannot_see_thread(
     body = resp.json()
     assert body["detail"]["code"] == "attachment_not_visible"
     assert "email" in body["detail"]["detail"].lower()
+
+
+# ---------------------------------------------------------------------------
+# CRM-ADJUNTOS-INLINE-FIX — re-clasificación 0093 + swap cid:→URL
+# ---------------------------------------------------------------------------
+
+from app.api.emails import rewrite_cid_urls  # noqa: E402
+
+_RECLASSIFY_SQL = """
+    UPDATE email_message_attachments
+    SET is_inline = 1
+    WHERE is_inline = 0
+      AND (
+            LOWER(filename) LIKE 'image___.jpg'
+         OR LOWER(filename) LIKE 'image___.jpeg'
+         OR LOWER(filename) LIKE 'image___.png'
+         OR LOWER(filename) LIKE 'image___.gif'
+      )
+"""
+
+
+def _seed_att(
+    session: Session,
+    message_id: str,
+    *,
+    filename: str,
+    size: int,
+    is_inline: bool = False,
+    content_id: str | None = None,
+    gmail_attachment_id: str = "att-x",
+) -> str:
+    att = EmailMessageAttachment(
+        message_id=message_id,
+        filename=filename,
+        mime_type="image/jpeg" if filename.endswith((".jpg", ".png")) else "application/pdf",
+        size_bytes=size,
+        storage_path=None,
+        gmail_attachment_id=gmail_attachment_id,
+        is_inline=is_inline,
+        content_id=content_id,
+        created_at=datetime.now(UTC),
+    )
+    session.add(att)
+    session.flush()
+    return att.id
+
+
+def test_migration_0093_reclassifies_outlook_image_series(
+    factory: sessionmaker,
+) -> None:
+    from sqlalchemy import select as _select
+    from sqlalchemy import text as _text
+
+    with factory() as session:
+        uid = _admin_id(session)
+        mid = _seed_message(session, uid=uid, gmail_message_id="g-093")
+        # Firma Outlook grande (559 KB) — la vieja heurística (<100KB) NO la
+        # marcaba; la nueva sí.
+        big = _seed_att(
+            session, mid, filename="image001.jpg", size=559 * 1024,
+            gmail_attachment_id="a-img",
+        )
+        session.commit()
+        session.execute(_text(_RECLASSIFY_SQL))
+        session.commit()
+        row = session.scalar(
+            _select(EmailMessageAttachment).where(
+                EmailMessageAttachment.id == big
+            )
+        )
+        assert row is not None
+        assert row.is_inline is True
+
+
+def test_migration_0093_preserves_real_attachments(
+    factory: sessionmaker,
+) -> None:
+    from sqlalchemy import select as _select
+    from sqlalchemy import text as _text
+
+    with factory() as session:
+        uid = _admin_id(session)
+        mid = _seed_message(session, uid=uid, gmail_message_id="g-093b")
+        pdf = _seed_att(
+            session, mid, filename="invoice.pdf", size=500 * 1024,
+            gmail_attachment_id="a-pdf",
+        )
+        # Foto de producto legítima con nombre no-Outlook → NO marcada.
+        photo = _seed_att(
+            session, mid, filename="producto-final.jpg", size=800 * 1024,
+            gmail_attachment_id="a-photo",
+        )
+        session.commit()
+        session.execute(_text(_RECLASSIFY_SQL))
+        session.commit()
+        for aid in (pdf, photo):
+            row = session.scalar(
+                _select(EmailMessageAttachment).where(
+                    EmailMessageAttachment.id == aid
+                )
+            )
+            assert row is not None
+            assert row.is_inline is False
+
+
+class _Att:
+    def __init__(self, id, filename, content_id=None):
+        self.id = id
+        self.filename = filename
+        self.content_id = content_id
+
+
+def test_rewrite_cid_urls_replaces_by_content_id() -> None:
+    atts = [_Att("a-1", "image001.jpg", content_id="image001.jpg@01D9A5B0")]
+    html = '<p>Hola</p><img src="cid:image001.jpg@01D9A5B0" width="120">'
+    out = rewrite_cid_urls(html, "M-1", atts)
+    assert 'src="/api/email-messages/M-1/attachments/a-1/download?inline=1"' in out
+    assert "cid:" not in out
+
+
+def test_rewrite_cid_urls_fallback_matches_filename() -> None:
+    # Sin content_id (histórico): casa por filename y por stem sin extensión.
+    atts = [_Att("a-2", "image001.jpg", content_id=None)]
+    by_name = rewrite_cid_urls('<img src="cid:image001.jpg@HOST">', "M", atts)
+    by_stem = rewrite_cid_urls('<img src="cid:image001@HOST">', "M", atts)
+    assert "/attachments/a-2/download?inline=1" in by_name
+    assert "/attachments/a-2/download?inline=1" in by_stem
+    # cid desconocido se deja intacto.
+    unknown = rewrite_cid_urls('<img src="cid:otro@x">', "M", atts)
+    assert unknown == '<img src="cid:otro@x">'
+
+
+def test_thread_get_returns_body_html_with_inline_urls(
+    client: TestClient, factory: sessionmaker
+) -> None:
+    with factory() as session:
+        uid = _admin_id(session)
+        mid = _seed_message(session, uid=uid, gmail_message_id="g-cid")
+        msg = session.get(EmailMessage, mid)
+        msg.body_html = '<img src="cid:image001.jpg@X"> texto'
+        thread_id = msg.thread_id
+        _seed_att(
+            session, mid, filename="image001.jpg", size=200 * 1024,
+            is_inline=True, content_id="image001.jpg@X", gmail_attachment_id="a-i",
+        )
+        session.commit()
+
+    resp = client.get(
+        f"/api/emails/threads/{thread_id}", headers=auth_headers(client, "admin")
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()["messages"][0]["body_html"]
+    assert "cid:" not in body
+    assert "/download?inline=1" in body
+
+
+def test_inline_download_does_not_audit(
+    client: TestClient, factory: sessionmaker
+) -> None:
+    """La carga de una imagen inline (?inline=1) NO registra evento de
+    descarga en el audit log."""
+    fake = _FakeClient()
+    with factory() as session:
+        uid = _admin_id(session)
+        mid = _seed_message(session, uid=uid, gmail_message_id="g-inl")
+        att_id = _seed_att(
+            session, mid, filename="image001.jpg", size=1000,
+            is_inline=True, gmail_attachment_id="att-live",
+        )
+        session.commit()
+
+    with patch(
+        "app.integrations.gmail.service._client_for", return_value=fake
+    ):
+        resp = client.get(
+            f"/api/email-messages/{mid}/attachments/{att_id}/download?inline=1",
+            headers=auth_headers(client, "admin"),
+        )
+    assert resp.status_code == 200, resp.text
+    assert resp.content == b"BINARY:att-live"
+    with factory() as session:
+        n = session.scalar(
+            select(func.count())
+            .select_from(AuditLog)
+            .where(AuditLog.action == Action.EMAIL_ATTACHMENT_DOWNLOADED)
+        )
+        assert n == 0

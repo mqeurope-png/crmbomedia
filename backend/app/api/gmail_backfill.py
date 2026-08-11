@@ -475,6 +475,7 @@ def download_attachment(
     message_id: str,
     attachment_id: str,
     request: Request,
+    inline: bool = False,
     session: Session = Depends(get_session),
     current_user: User = Depends(require_user),
 ) -> Response:
@@ -519,6 +520,11 @@ def download_attachment(
         )
 
     def _audit(source: str) -> None:
+        # CRM-ADJUNTOS-INLINE-FIX — `inline=1` (imagen embebida cargada por
+        # el iframe al abrir el hilo) NO es una descarga del operador; no la
+        # registramos para no inundar el audit log con cada apertura.
+        if inline:
+            return
         record_event(
             session,
             action=Action.EMAIL_ATTACHMENT_DOWNLOADED,

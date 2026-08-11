@@ -223,6 +223,40 @@ con la columna `email_message_attachments.is_inline`:
 - Las surfaces de usuario filtran `is_inline = false`: los chips del detalle,
   el filtro «Con adjuntos» y el flag `has_attachments` (clip de la fila).
 
+### Render de imágenes inline (CRM-ADJUNTOS-INLINE-FIX)
+
+Las imágenes embebidas se referencian en el HTML con `<img src="cid:…">`; el
+iframe del thread detail no resuelve el esquema `cid:`, así que salían como
+cuadros rotos. **El backend reescribe** cada `cid:<ref>` a la URL de descarga
+del adjunto **antes de servir** el `body_html` (`rewrite_cid_urls` en
+`_message_read`):
+
+- Se hace en **backend**, no en frontend, porque el mapeo `cid → adjunto`
+  vive en la BD (`content_id` / `filename`) y el iframe es «tonto» (sirve el
+  HTML tal cual).
+- **Mapeo** (en orden): `content_id` exacto → `filename` → `filename` sin
+  extensión. El `<ref>` de Outlook suele ser `image001.jpg@01D9…`; nos
+  quedamos con la parte antes de `@`.
+- **`content_id`**: columna nueva (migración 0093). El backfill metadata-only
+  **no** la guardaba, así que en el histórico es NULL y el mapeo cae al
+  **fallback por filename** (el patrón `image001.jpg` de Outlook casa bien).
+  Go-forward el extractor la rellena desde el header `Content-ID`.
+- La URL es **relativa** `…/download?inline=1`: en prod nginx sirve frontend
+  y API bajo el mismo origen, y el iframe (`sandbox="allow-same-origin"`)
+  manda la cookie de sesión → la imagen carga autenticada. `inline=1` evita
+  que la carga de cada imagen al abrir el hilo cuente como «descarga» en el
+  audit log.
+
+### Heurística retroactiva de inline — por qué se relajó (0093)
+
+La 0092 solo marcaba `image%` de **< 100 KB**, pero las firmas corporativas
+incrustadas (`imageNNN.jpg` de Outlook con logo grande) pesan típicamente
+200 KB – 2 MB y seguían apareciendo como adjunto descargable. La **0093**
+amplía a `imageNNN.<ext>` de **cualquier tamaño** (`image` + 3 caracteres +
+extensión de imagen, con `LIKE` portable). Sigue siendo conservadora: un
+adjunto legítimo debe llamarse exactamente `imageNNN.jpg` (patrón Outlook)
+para marcarse — `factura.pdf`, `producto-final.jpg`, etc. no se tocan.
+
 ### Permisos de descarga — visibilidad del hilo
 
 La descarga de un adjunto **hereda la visibilidad del thread**

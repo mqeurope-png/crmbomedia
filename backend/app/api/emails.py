@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import UTC, datetime
 from typing import Any
 
@@ -1174,6 +1175,65 @@ def admin_all_threads(
     )
 
 
+_CID_RE = re.compile(r"""cid:([^"'\s>)]+)""", re.IGNORECASE)
+
+
+def rewrite_cid_urls(
+    body_html: str,
+    message_id: str,
+    attachments: list[EmailMessageAttachment],
+) -> str:
+    """CRM-ADJUNTOS-INLINE-FIX — reemplaza `cid:<ref>` en el HTML por la URL
+    de descarga del adjunto correspondiente, para que las imágenes
+    embebidas carguen en el iframe.
+
+    Mapeo (en orden de preferencia):
+      1. `content_id` exacto (go-forward, lo puebla el extractor).
+      2. filename exacto (`cid:image001.jpg` → `image001.jpg`).
+      3. filename sin extensión (`cid:image001` → `image001.jpg`).
+    El `<ref>` de Outlook suele ser `image001.jpg@01D…`; nos quedamos con la
+    parte antes de `@`. URL relativa `?inline=1` (misma-origin tras nginx; el
+    iframe sandbox `allow-same-origin` manda la cookie); `inline=1` evita que
+    la carga de cada imagen ensucie el audit log como «descarga»."""
+    by_content_id: dict[str, str] = {}
+    by_filename: dict[str, str] = {}
+    by_stem: dict[str, str] = {}
+    for att in attachments:
+        if not att.id:
+            continue
+        if att.content_id:
+            by_content_id.setdefault(att.content_id.strip("<>").lower(), att.id)
+        fname = (att.filename or "").lower()
+        if fname:
+            by_filename.setdefault(fname, att.id)
+            stem = fname.rsplit(".", 1)[0]
+            if stem:
+                by_stem.setdefault(stem, att.id)
+
+    def _resolve(ref: str) -> str | None:
+        token = ref.strip().strip("<>")
+        local = token.split("@", 1)[0].lower()
+        full = token.lower()
+        return (
+            by_content_id.get(full)
+            or by_content_id.get(local)
+            or by_filename.get(local)
+            or by_stem.get(local)
+            or by_stem.get(local.rsplit(".", 1)[0] if "." in local else local)
+        )
+
+    def _sub(match: re.Match[str]) -> str:
+        att_id = _resolve(match.group(1))
+        if not att_id:
+            return match.group(0)
+        return (
+            f"/api/email-messages/{message_id}/attachments/{att_id}"
+            "/download?inline=1"
+        )
+
+    return _CID_RE.sub(_sub, body_html)
+
+
 def _message_read(
     m: EmailMessage,
     attachments: list[EmailMessageAttachment] | None = None,
@@ -1190,6 +1250,12 @@ def _message_read(
 
     read = EmailMessageRead.model_validate(m)
     read.body_html = strip_tracking_pixel(read.body_html)
+    # CRM-ADJUNTOS-INLINE-FIX — las imágenes embebidas (`<img src="cid:…">`)
+    # no las resuelve el iframe: reescribimos las referencias `cid:` a la URL
+    # de descarga del adjunto para que carguen. Solo si el mensaje tiene
+    # adjuntos (los cid casan contra ellos).
+    if read.body_html and attachments:
+        read.body_html = rewrite_cid_urls(read.body_html, m.id, attachments)
     # CRM-BANDEJA — chips de adjuntos en el thread detail. Preferimos las
     # filas de `email_message_attachments` (binario descargable); si el
     # mensaje solo conserva el sumario inline `attachments_json` (p. ej.
