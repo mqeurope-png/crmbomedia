@@ -28,6 +28,7 @@ from sqlalchemy.orm import Session
 
 from app.integrations.gmail.backfill import (
     _is_attachment_part,
+    _part_content_id,
     _walk_parts,
     _with_backoff,
     is_inline_part,
@@ -64,6 +65,7 @@ def extract_attachments_from_gmail_payload(
                 "size": int(body.get("size") or 0),
                 "gmail_attachment_id": body.get("attachmentId"),
                 "is_inline": is_inline_part(part),
+                "content_id": _part_content_id(part),
             }
         )
     return out
@@ -215,6 +217,7 @@ def run_backfill_attachments(
                                 storage_path=None,  # Opción B: sin binario
                                 gmail_attachment_id=att["gmail_attachment_id"],
                                 is_inline=att.get("is_inline", False),
+                                content_id=att.get("content_id"),
                                 created_at=datetime.now(UTC),
                             )
                         )
