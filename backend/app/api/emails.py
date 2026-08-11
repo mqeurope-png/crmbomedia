@@ -636,7 +636,7 @@ def list_threads(
     # restricts to that folder. `include_snoozed` flips the snooze
     # filter off so the dedicated "Pospuestos" view can see them.
     state: str | None = Query(
-        default=None, pattern="^(inbox|archived|trashed|spam|sent)$"
+        default=None, pattern="^(inbox|archived|trashed|spam|sent|deleted)$"
     ),
     folder_id: str | None = Query(default=None),
     label_id: str | None = Query(default=None),
@@ -759,6 +759,14 @@ def list_threads(
             EmailThread.id.in_(sent_subq),
             EmailThread.state == EmailThreadState.INBOX,
         )
+    elif state == "deleted":
+        # CRM-ADJUNTOS-PURGE — «Papelera Gmail»: hilos con ≥1 mensaje cuyo
+        # gmail_message_id ya no existe en Gmail (papelera vaciada). NO
+        # confundir con state=TRASHED (mover a papelera manual del CRM).
+        deleted_threads = select(EmailMessage.thread_id).where(
+            EmailMessage.gmail_status == "deleted_gmail"
+        )
+        stmt = stmt.where(EmailThread.id.in_(deleted_threads))
     elif state == "spam":
         # CRM-BANDEJA-FIX-SPAM. La carpeta «Spam» del sidebar debe mostrar
         # el spam SINCRONIZADO de Gmail — mensajes `is_spam=true` cuyo
@@ -846,6 +854,28 @@ def list_threads(
             EmailMessage.is_spam.is_(True)
         )
         stmt = stmt.where(EmailThread.id.not_in(spam_thread_ids))
+    # CRM-ADJUNTOS-PURGE — los hilos cuyos mensajes son TODOS
+    # deleted_gmail (huérfanos: borrados de Gmail) se ocultan de las
+    # vistas generales. Siguen visibles en state=deleted («Papelera
+    # Gmail») y en la ficha del contacto (contact_id) para no cortar el
+    # histórico de la conversación.
+    if state != "deleted" and contact_id is None:
+        from sqlalchemy import or_ as _or_purge  # noqa: PLC0415
+
+        orphan_threads = select(EmailMessage.thread_id).where(
+            EmailMessage.gmail_status == "deleted_gmail"
+        )
+        alive_threads = select(EmailMessage.thread_id).where(
+            EmailMessage.gmail_status != "deleted_gmail"
+        )
+        # Excluir SOLO los hilos que tienen huérfanos y ningún mensaje vivo
+        # (un hilo sin mensajes o mixto se mantiene).
+        stmt = stmt.where(
+            _or_purge(
+                EmailThread.id.not_in(orphan_threads),
+                EmailThread.id.in_(alive_threads),
+            )
+        )
     if delivered_to:
         stmt = stmt.where(
             EmailThread.id.in_(

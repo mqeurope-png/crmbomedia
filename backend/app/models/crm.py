@@ -1591,6 +1591,21 @@ class EmailMessage(TimestampMixin, Base):
     )
     delivered_to: Mapped[str | None] = mapped_column(String(320), index=True)
     gmail_labels: Mapped[str | None] = mapped_column(Text)
+    # CRM-ADJUNTOS-PURGE — estado del mensaje en Gmail:
+    #   'active' (default): existe en Gmail y es accesible.
+    #   'deleted_gmail': ya no existe en Gmail (papelera vaciada / borrado
+    #     permanente). Los hilos cuyos mensajes son TODOS deleted_gmail se
+    #     ocultan de las vistas generales y viven en state=deleted
+    #     («Papelera Gmail»). El mensaje se conserva en el CRM (historia).
+    # Lo marca el flag --purge-not-found de los backfills cuando Gmail
+    # devuelve 404 al pedir el mensaje.
+    gmail_status: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        default="active",
+        server_default="active",
+        index=True,
+    )
 
     thread: Mapped[EmailThread] = relationship(back_populates="messages")
 

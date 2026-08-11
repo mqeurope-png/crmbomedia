@@ -70,6 +70,7 @@ export function parseState(raw: string | null): EmailThreadStateValue {
     raw === "trashed" ||
     raw === "spam" ||
     raw === "sent" ||
+    raw === "deleted" ||
     raw === "inbox"
   ) {
     return raw;

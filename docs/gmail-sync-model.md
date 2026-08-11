@@ -257,6 +257,37 @@ extensión de imagen, con `LIKE` portable). Sigue siendo conservadora: un
 adjunto legítimo debe llamarse exactamente `imageNNN.jpg` (patrón Outlook)
 para marcarse — `factura.pdf`, `producto-final.jpg`, etc. no se tocan.
 
+### Estado del mensaje en Gmail — `gmail_status` (CRM-ADJUNTOS-PURGE)
+
+Cada `email_message` lleva `gmail_status`:
+
+- **`active`** (default): existe en Gmail; todo funciona normal.
+- **`deleted_gmail`**: el mensaje ya no existe en Gmail (papelera vaciada /
+  borrado permanente). El CRM lo conserva (historia) pero: los hilos cuyos
+  mensajes son **todos** `deleted_gmail` se ocultan de las vistas generales
+  (Bandeja/Enviados/etc.); la vista **`state=deleted`** («Papelera Gmail»
+  del sidebar) lista los hilos con ≥1 mensaje borrado; la **ficha del
+  contacto** los mantiene visibles (no se corta el histórico); el detail
+  muestra banner «ya no existe en Gmail» y las descargas quedan
+  deshabilitadas. NO confundir con `EmailThread.state=TRASHED` (mover a
+  papelera manual desde el CRM).
+
+**`--purge-not-found`** (en `backfill_universal` y `backfill_attachments`):
+ante un 404 de Gmail marca el mensaje `deleted_gmail` en vez de contarlo
+como error. Matiz importante: `backfill_universal` lista mensajes DESDE
+Gmail, así que allí el flag solo cubre la carrera list→get; el **purge
+efectivo del histórico** lo hace `backfill_attachments`, que itera los
+mensajes de NUESTRA BD y toca cada `gmail_message_id`:
+
+```bash
+docker exec crmbo-api-1 python -m app.integrations.gmail_watch backfill_attachments \
+  --since 2026-02-07 --purge-not-found --yes
+```
+
+Cuándo usarlo: limpieza tras cambios masivos en Gmail (vaciar papelera) o
+housekeeping de admin. El report añade «Marcados como borrados en Gmail: N».
+Sin cron automático — solo ejecución manual.
+
 ### Permisos de descarga — visibilidad del hilo
 
 La descarga de un adjunto **hereda la visibilidad del thread**

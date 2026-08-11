@@ -105,6 +105,12 @@ def backfill_universal(argv: list[str]) -> None:
                         help="Salta la confirmación interactiva.")
     parser.add_argument("--batch-size", type=int, default=100,
                         help="Mensajes por página de Gmail (máx 100).")
+    parser.add_argument(
+        "--purge-not-found", action="store_true",
+        help="Si Gmail devuelve 404 para un mensaje que YA está en la BD, "
+        "marcarlo gmail_status='deleted_gmail' (huérfano) en vez de "
+        "contarlo como error.",
+    )
     args = parser.parse_args(argv)
 
     since = args.since or (date.today() - timedelta(days=183))
@@ -156,6 +162,7 @@ def backfill_universal(argv: list[str]) -> None:
             until=until,
             dry_run=args.dry_run,
             dry_run_limit=args.dry_run_limit,
+            purge_not_found=args.purge_not_found,
             labels=labels,
             batch_size=args.batch_size,
             alias_map=alias_map,
@@ -190,6 +197,13 @@ def backfill_attachments(argv: list[str]) -> None:
                         help="Salta la confirmación interactiva.")
     parser.add_argument("--batch-size", type=int, default=100,
                         help="Mensajes por batch (default 100).")
+    parser.add_argument(
+        "--purge-not-found", action="store_true",
+        help="404 de Gmail para un mensaje de la BD → marcarlo "
+        "gmail_status='deleted_gmail' (huérfano). Este comando itera "
+        "mensajes de NUESTRA BD, así que es el purge efectivo del "
+        "histórico.",
+    )
     args = parser.parse_args(argv)
 
     since = args.since or (date.today() - timedelta(days=183))
@@ -221,6 +235,7 @@ def backfill_attachments(argv: list[str]) -> None:
             until=until,
             dry_run=args.dry_run,
             batch_size=args.batch_size,
+            purge_not_found=args.purge_not_found,
             progress=print,
         )
         print()

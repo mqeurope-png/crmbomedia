@@ -104,6 +104,9 @@ export type EmailMessage = {
    *  oculta). `delivered_to` = alias del CRM al que llegó el mail. */
   is_spam?: boolean;
   delivered_to?: string | null;
+  /** CRM-ADJUNTOS-PURGE — 'deleted_gmail' = el mensaje ya no existe en
+   *  Gmail (banner + descargas deshabilitadas). */
+  gmail_status?: string;
   /** CRM-BANDEJA — solo poblado por el thread detail. */
   attachments?: EmailMessageAttachment[];
 };
@@ -152,7 +155,10 @@ export type EmailThreadStateValue =
   | "spam"
   // CRM-BANDEJA-FIX-ENVIADOS — vista virtual «Enviados» (threads con ≥1
   // mensaje outbound del operador). El backend la acepta desde v2.4d.
-  | "sent";
+  | "sent"
+  // CRM-ADJUNTOS-PURGE — «Papelera Gmail»: hilos con mensajes borrados de
+  // Gmail (gmail_status='deleted_gmail').
+  | "deleted";
 
 export type EmailFolder = {
   id: string;
