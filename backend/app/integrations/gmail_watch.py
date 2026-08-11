@@ -278,6 +278,51 @@ def sync_labels(argv: list[str]) -> None:
         print(report.render())
 
 
+def hide_label(argv: list[str]) -> None:
+    """CRM-ETIQUETAS-EN-BANDEJA — oculta (o vuelve a mostrar) una etiqueta.
+
+    Una etiqueta «cajón de sastre» de Gmail (p. ej. «todos los emails»,
+    que marca decenas de miles de mails) no aporta señal como chip en la
+    bandeja y además tapa a las que sí la aportan. Marcarla `is_hidden`
+    la retira del sidebar y de los chips SIN romper el mapeo ni el
+    filtro por `label_id`."""
+    parser = argparse.ArgumentParser(
+        prog="python -m app.integrations.gmail_watch hide_label",
+        description="Oculta una etiqueta del sidebar y de los chips de la "
+        "bandeja (no borra nada: el mapeo mensaje↔etiqueta se conserva).",
+    )
+    parser.add_argument(
+        "name",
+        help="Nombre EXACTO de la etiqueta (o su gmail_label_id).",
+    )
+    parser.add_argument(
+        "--show", action="store_true",
+        help="Operación inversa: volver a mostrarla.",
+    )
+    args = parser.parse_args(argv)
+
+    from sqlalchemy import or_, select  # noqa: PLC0415
+
+    from app.models.crm import EmailLabel  # noqa: PLC0415
+
+    with Session(get_engine()) as session:
+        label = session.scalar(
+            select(EmailLabel).where(
+                or_(
+                    EmailLabel.name == args.name,
+                    EmailLabel.gmail_label_id == args.name,
+                )
+            )
+        )
+        if label is None:
+            print(f"No existe ninguna etiqueta «{args.name}».")
+            raise SystemExit(1)
+        label.is_hidden = not args.show
+        session.commit()
+        estado = "visible" if args.show else "oculta"
+        print(f"OK «{label.name}» ahora está {estado}.")
+
+
 _COMMANDS = {
     "register_watch": register_watch,
     "renew_watch_if_expiring": renew_watch_if_expiring,
@@ -288,6 +333,7 @@ _ARGV_COMMANDS = {
     "backfill_universal": backfill_universal,
     "backfill_attachments": backfill_attachments,
     "sync_labels": sync_labels,
+    "hide_label": hide_label,
 }
 
 

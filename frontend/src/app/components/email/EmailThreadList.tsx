@@ -60,6 +60,44 @@ function formatRelative(value: string): string {
   });
 }
 
+/** CRM-ETIQUETAS-EN-BANDEJA — chips visibles por fila antes de colapsar
+ *  en «+N». Gmail muestra 3-4; con más, la fila deja de leerse. */
+const MAX_ROW_LABELS = 3;
+
+/** Chips de etiquetas a la IZQUIERDA del asunto, estilo Gmail: fondo con
+ *  el color pleno de la label y texto en su color de contraste. Los que
+ *  no caben se resumen en «+N» con el listado en el tooltip. */
+export function ThreadLabelChips({ labels }: { labels: EmailLabel[] }) {
+  if (labels.length === 0) return null;
+  const visible = labels.slice(0, MAX_ROW_LABELS);
+  const overflow = labels.slice(MAX_ROW_LABELS);
+  return (
+    <span className="email-list-labels" data-testid="thread-label-chips">
+      {visible.map((label) => (
+        <span
+          key={label.id}
+          className="email-list-label-chip"
+          style={{
+            backgroundColor: label.color ?? "#e5e7eb",
+            color: label.text_color ?? "#374151",
+          }}
+          title={label.name}
+        >
+          {label.name}
+        </span>
+      ))}
+      {overflow.length > 0 ? (
+        <span
+          className="email-list-label-chip email-list-label-more"
+          title={overflow.map((l) => l.name).join(", ")}
+        >
+          +{overflow.length}
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
 /** Map a URL `state` param to the typed union the API expects. */
 export function parseState(raw: string | null): EmailThreadStateValue {
   // CRM-BANDEJA-FIX-ENVIADOS — "sent" faltaba aquí: el sidebar ponía
@@ -547,6 +585,7 @@ export function EmailThreadList({ folders, labels, refreshKey }: Props) {
                     ) : null}
                   </span>
                   <span className="email-list-subject">
+                    <ThreadLabelChips labels={labelsForThread} />
                     {t.subject || "(sin asunto)"}
                     {t.last_message_snippet ? (
                       <>
@@ -568,24 +607,9 @@ export function EmailThreadList({ folders, labels, refreshKey }: Props) {
                     {t.has_spam ? (
                       <span className="badge bad email-list-spam">🔴 Spam</span>
                     ) : null}
-                    {labelsForThread.length > 0 ? (
-                      <span className="email-list-labels">
-                        {labelsForThread.map((label) => (
-                          <span
-                            key={label.id}
-                            className="email-list-label-chip"
-                            style={{
-                              backgroundColor:
-                                (label.color ?? "#e5e7eb") + "33",
-                              color: label.color ?? "#1d2940",
-                              borderColor: label.color ?? "#e5e7eb",
-                            }}
-                          >
-                            {label.name}
-                          </span>
-                        ))}
-                      </span>
-                    ) : null}
+                    {/* Los chips de etiquetas vivían aquí (a la derecha,
+                        en color diluido). CRM-ETIQUETAS-EN-BANDEJA los
+                        mueve delante del asunto, como Gmail. */}
                     {t.tracking && Object.keys(t.tracking).length > 0 ? (
                       <EmailEventBadges counts={t.tracking} compact />
                     ) : null}

@@ -177,7 +177,12 @@ export type EmailFolder = {
 export type EmailLabel = {
   id: string;
   name: string;
+  /** Fondo del chip (Gmail `color.backgroundColor`). */
   color: string | null;
+  /** CRM-ETIQUETAS-EN-BANDEJA — color de texto que contrasta con el
+   *  fondo (Gmail `color.textColor`: blanco sobre rojo, negro sobre
+   *  amarillo). Null en etiquetas sin color asignado. */
+  text_color?: string | null;
   sort_order: number;
   /** CRM-ETIQUETAS-GMAIL — no-null = etiqueta org espejo de una label de
    *  Gmail (se aplica a nivel de MENSAJE y se propaga a Gmail); null =

@@ -1908,7 +1908,13 @@ class EmailLabel(TimestampMixin, Base):
         index=True,
     )
     name: Mapped[str] = mapped_column(String(80), nullable=False)
+    # `color` es el FONDO del chip (Gmail: color.backgroundColor).
+    # CRM-ETIQUETAS-EN-BANDEJA — `text_color` es el color de texto que
+    # Gmail asocia a ese fondo (color.textColor: blanco sobre rojo,
+    # negro sobre amarillo). Sin él los chips de la bandeja no pueden
+    # replicar el contraste del original.
     color: Mapped[str | None] = mapped_column(String(20))
+    text_color: Mapped[str | None] = mapped_column(String(20))
     sort_order: Mapped[int] = mapped_column(
         Integer, default=0, nullable=False
     )

@@ -6065,19 +6065,33 @@ a.origin-chip:hover { filter: brightness(0.97); }
   color: #6b7280;
   flex-shrink: 0;
 }
+/* CRM-ETIQUETAS-EN-BANDEJA — chips a la izquierda del asunto, estilo
+   Gmail: color pleno (no diluido), rectángulo de esquinas suaves y
+   nombre recortado con ellipsis para que no empujen al asunto fuera de
+   la fila. El color de texto lo pone la propia label (`text_color`). */
 .email-list-labels {
   display: inline-flex;
   gap: 4px;
+  margin-right: 6px;
+  vertical-align: middle;
 }
 .email-list-label-chip {
   display: inline-flex;
   align-items: center;
-  padding: 2px 6px;
-  border-radius: 999px;
-  border: 1px solid #e5e7eb;
-  font-size: 10px;
+  max-width: 140px;
+  overflow: hidden;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 11px;
   font-weight: 600;
-  line-height: 1.4;
+  line-height: 1.5;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.email-list-label-more {
+  background: #e5e7eb;
+  color: #4b5563;
+  flex: none;
 }
 .email-list-date {
   font-size: 11px;
