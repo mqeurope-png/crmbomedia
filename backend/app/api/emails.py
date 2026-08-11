@@ -650,9 +650,14 @@ def list_threads(
     since: datetime | None = Query(default=None),
     until: datetime | None = Query(default=None),
     include_snoozed: bool = Query(default=False),
-    # CRM-GMAIL — los mails marcados como spam se muestran (con chip), no se
-    # ocultan. Este flag opcional permite excluirlos si se pide en el futuro.
-    exclude_spam: bool = Query(default=False),
+    # CRM-BANDEJA-FIX-SPAM — control de spam sincronizado de Gmail
+    # (`email_messages.is_spam`).
+    #   None (default): comportamiento tipo Gmail — la Bandeja (state
+    #     inbox/None, sin contact_id) OCULTA los hilos con spam; el resto
+    #     de vistas los incluye. La carpeta Spam (state=spam) los muestra.
+    #   True: fuerza a excluir. False: fuerza a incluir (p. ej. una vista
+    #     "Todos" o la ficha de contacto que quiera verlo todo).
+    exclude_spam: bool | None = Query(default=None),
     # CRM-GMAIL Parte H — el comercial con >1 alias filtra su bandeja por uno.
     # Restringe a threads con algún mensaje entregado a ese alias (encima del
     # filtro de visibilidad, así solo puede acotar a los suyos).
@@ -753,6 +758,24 @@ def list_threads(
             EmailThread.id.in_(sent_subq),
             EmailThread.state == EmailThreadState.INBOX,
         )
+    elif state == "spam":
+        # CRM-BANDEJA-FIX-SPAM. La carpeta «Spam» del sidebar debe mostrar
+        # el spam SINCRONIZADO de Gmail — mensajes `is_spam=true` cuyo
+        # thread sigue en `state=INBOX` (el sync no mueve el thread, solo
+        # marca el mensaje) — además de los hilos que el operador movió a
+        # spam desde el CRM (`state=SPAM`). Antes solo miraba `state=SPAM`,
+        # así que la carpeta salía vacía pese a haber spam de Gmail.
+        from sqlalchemy import or_ as _or_spam  # noqa: PLC0415
+
+        spam_msg_threads = select(EmailMessage.thread_id).where(
+            EmailMessage.is_spam.is_(True)
+        )
+        stmt = stmt.where(
+            _or_spam(
+                EmailThread.id.in_(spam_msg_threads),
+                EmailThread.state == EmailThreadState.SPAM,
+            )
+        )
     elif state is not None:
         stmt = stmt.where(EmailThread.state == EmailThreadState(state))
     elif contact_id is None:
@@ -809,7 +832,14 @@ def list_threads(
         stmt = stmt.where(EmailThread.last_message_at >= since)
     if until is not None:
         stmt = stmt.where(EmailThread.last_message_at <= until)
-    if exclude_spam:
+    # CRM-BANDEJA-FIX-SPAM. La Bandeja (state inbox/None, sin contact_id)
+    # oculta por defecto los hilos con spam de Gmail; antes se mezclaban.
+    # El flag explícito gana. Nunca aplica a la propia carpeta Spam.
+    is_bandeja = state in (None, "inbox") and contact_id is None
+    apply_exclude_spam = (
+        exclude_spam if exclude_spam is not None else is_bandeja
+    )
+    if apply_exclude_spam and state != "spam":
         spam_thread_ids = select(EmailMessage.thread_id).where(
             EmailMessage.is_spam.is_(True)
         )

@@ -2411,10 +2411,15 @@ def _seed_bandeja_thread(
     direction: str = "outbound",
     from_email: str = "user@example.com",
     created_by_user_id: str | None = None,
+    is_spam: bool = False,
+    thread_state: str = "inbox",
 ) -> tuple[str, str]:
     """Thread + 1 mensaje del user (outbound por defecto). Devuelve
     (thread_id, message_id)."""
-    from app.models.crm import EmailDirection  # noqa: PLC0415
+    from app.models.crm import (  # noqa: PLC0415
+        EmailDirection,
+        EmailThreadState,
+    )
 
     thread = EmailThread(
         initiated_by_user_id=uid,
@@ -2425,6 +2430,7 @@ def _seed_bandeja_thread(
         last_message_at=datetime.now(UTC),
         message_count=1,
         contact_id=contact_id,
+        state=EmailThreadState(thread_state),
     )
     session.add(thread)
     session.flush()
@@ -2439,6 +2445,7 @@ def _seed_bandeja_thread(
         contact_id=message_contact_id,
         attachments_json=attachments_json,
         created_by_user_id=created_by_user_id,
+        is_spam=is_spam,
     )
     session.add(message)
     session.flush()
@@ -2756,3 +2763,157 @@ def test_list_threads_state_inbox_still_shows_all_visible_threads(
         "sent-false-outbound",
         "inbound-only",
     }
+
+
+# ---------------------------------------------------------------------------
+# CRM-BANDEJA-FIX-SPAM — Bandeja oculta spam de Gmail por defecto; carpeta
+# Spam muestra los hilos con mensajes is_spam=true (sincronizados de Gmail)
+# ---------------------------------------------------------------------------
+
+
+def _seed_spam_fixture(session: Session) -> None:
+    """Para el user: 1 hilo normal (inbox), 1 hilo con spam de Gmail
+    (is_spam=true, state sigue inbox), 1 hilo movido a spam desde el CRM
+    (state=SPAM)."""
+    uid = _user_id(session, UserRole.USER)
+    _seed_bandeja_thread(
+        session, uid=uid, gmail_thread_id="normal", direction="inbound",
+        from_email="cliente@fuera.com",
+    )
+    _seed_bandeja_thread(
+        session, uid=uid, gmail_thread_id="gmail-spam", direction="inbound",
+        from_email="promo@spam.com", is_spam=True,
+    )
+    _seed_bandeja_thread(
+        session, uid=uid, gmail_thread_id="crm-spam", direction="inbound",
+        from_email="otro@spam.com", thread_state="spam",
+    )
+    session.commit()
+
+
+def test_list_threads_inbox_excludes_spam_by_default(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    with session_factory() as session:
+        _seed_spam_fixture(session)
+
+    # Bandeja por defecto (sin state) NO debe traer el hilo con spam Gmail.
+    response = client.get(
+        "/api/emails/threads", headers=auth_headers(client, "user")
+    )
+    assert response.status_code == 200
+    got = {t["gmail_thread_id"] for t in response.json()["items"]}
+    assert got == {"normal"}
+    assert "gmail-spam" not in got
+
+    # state=inbox explícito → mismo comportamiento.
+    response2 = client.get(
+        "/api/emails/threads?state=inbox", headers=auth_headers(client, "user")
+    )
+    got2 = {t["gmail_thread_id"] for t in response2.json()["items"]}
+    assert got2 == {"normal"}
+
+
+def test_list_threads_spam_returns_only_is_spam_true(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    with session_factory() as session:
+        _seed_spam_fixture(session)
+
+    response = client.get(
+        "/api/emails/threads?state=spam", headers=auth_headers(client, "user")
+    )
+    assert response.status_code == 200
+    got = {t["gmail_thread_id"] for t in response.json()["items"]}
+    # Carpeta Spam: el spam sincronizado de Gmail (is_spam) + el movido a
+    # spam desde el CRM (state=SPAM). NO el hilo normal.
+    assert got == {"gmail-spam", "crm-spam"}
+    assert "normal" not in got
+
+
+def test_list_threads_spam_can_be_forced_to_show_in_inbox(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    """`exclude_spam=false` explícito fuerza a incluir el spam de Gmail en
+    la Bandeja (vía "ver todo" / ficha) — el default no rompe el override."""
+    with session_factory() as session:
+        _seed_spam_fixture(session)
+
+    response = client.get(
+        "/api/emails/threads?state=inbox&exclude_spam=false",
+        headers=auth_headers(client, "user"),
+    )
+    got = {t["gmail_thread_id"] for t in response.json()["items"]}
+    assert "gmail-spam" in got
+
+
+def test_is_spam_marked_when_gmail_labels_include_SPAM(
+    session_factory: sessionmaker,
+) -> None:
+    """Regresión de la persistencia: un mensaje con label SPAM de Gmail se
+    guarda con is_spam=true (la base del filtro de carpeta Spam)."""
+    from app.integrations.gmail import service as gmail_service  # noqa: PLC0415
+    from app.models.crm import UserEmailAlias  # noqa: PLC0415
+
+    with session_factory() as session:
+        uid = _user_id(session, UserRole.USER)
+        session.add(
+            UserEmailAlias(
+                user_id=uid, alias_email="norma@bomedia.net", active=True
+            )
+        )
+        session.commit()
+        alias_map = {"norma@bomedia.net": "norma@bomedia.net"}
+        raw = {
+            "id": "spam-msg-1",
+            "threadId": "spam-thr-1",
+            "snippet": "gana dinero ya",
+            "labelIds": ["SPAM"],
+            "payload": {
+                "headers": [
+                    {"name": "From", "value": "promo@spam.com"},
+                    {"name": "To", "value": "norma@bomedia.net"},
+                    {"name": "Subject", "value": "Oferta"},
+                    {"name": "Date", "value": "Mon, 03 Aug 2026 10:00:00 +0000"},
+                ],
+                "mimeType": "text/plain",
+                "body": {"data": "aG9sYQ=="},
+            },
+        }
+        msg = gmail_service._persist_message(
+            session,
+            user_id=uid,
+            raw=raw,
+            gmail_thread_id="spam-thr-1",
+            alias_map=alias_map,
+            emit_activity=False,
+        )
+        session.commit()
+        assert msg is not None
+        assert msg.is_spam is True
+
+
+def test_bandeja_admin_scope_team_still_excludes_spam(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    """La vista de equipo del admin (scope=team, state inbox) sigue
+    ocultando el spam de Gmail — la exclusión depende de la vista, no del
+    scope."""
+    with session_factory() as session:
+        _seed_spam_fixture(session)
+
+    response = client.get(
+        "/api/emails/threads?scope=team", headers=auth_headers(client, "admin")
+    )
+    assert response.status_code == 200
+    got = {t["gmail_thread_id"] for t in response.json()["items"]}
+    assert "gmail-spam" not in got
+    assert "normal" in got
+
+    # Pero la carpeta Spam del admin SÍ lo muestra.
+    spam = client.get(
+        "/api/emails/threads?state=spam&scope=team",
+        headers=auth_headers(client, "admin"),
+    )
+    got_spam = {t["gmail_thread_id"] for t in spam.json()["items"]}
+    assert "gmail-spam" in got_spam
