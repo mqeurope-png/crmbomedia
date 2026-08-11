@@ -1608,6 +1608,12 @@ class EmailMessage(TimestampMixin, Base):
     )
 
     thread: Mapped[EmailThread] = relationship(back_populates="messages")
+    # CRM-ETIQUETAS-GMAIL-V2.3 — etiquetas a nivel de mensaje (labels de
+    # Gmail). Paralelo a `EmailThread.labels` (personales, por hilo).
+    labels: Mapped[list["EmailLabel"]] = relationship(
+        secondary="email_message_labels",
+        order_by="EmailLabel.name",
+    )
 
 
 class EmailScheduledStatus(StrEnum):
@@ -1873,7 +1879,18 @@ class EmailLabel(TimestampMixin, Base):
     """Sprint Email v2.4a. Per-user tag applied many-to-many to
     threads via `email_thread_labels`. Unique by `(user_id, name)`
     so a comercial can't accidentally create two "Leads en frío"
-    labels."""
+    labels.
+
+    CRM-ETIQUETAS-GMAIL-V2.3 — la misma tabla aloja además las labels
+    PERSONALIZADAS de Gmail como etiquetas org-wide:
+      - `user_id` NULL = etiqueta org (espejo de una label de Gmail,
+        visible para todos los operadores); no-NULL = personal CRM.
+      - `gmail_label_id`: id upstream ('Label_123…'), unique. NULL en
+        las personales. Las org se aplican a nivel de MENSAJE
+        (`email_message_labels`) y se propagan a Gmail vía
+        `messages.modify`; las personales siguen a nivel de hilo.
+      - `is_system` / `is_hidden`: marcar labels de sistema / ocultar
+        del sidebar sin perder el mapeo."""
 
     __tablename__ = "email_labels"
     __table_args__ = (
@@ -1885,15 +1902,24 @@ class EmailLabel(TimestampMixin, Base):
     id: Mapped[str] = mapped_column(
         String(36), primary_key=True, default=lambda: str(uuid4())
     )
-    user_id: Mapped[str] = mapped_column(
+    user_id: Mapped[str | None] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
         index=True,
     )
     name: Mapped[str] = mapped_column(String(80), nullable=False)
     color: Mapped[str | None] = mapped_column(String(20))
     sort_order: Mapped[int] = mapped_column(
         Integer, default=0, nullable=False
+    )
+    gmail_label_id: Mapped[str | None] = mapped_column(
+        String(100), unique=True
+    )
+    is_system: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )
+    is_hidden: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
     )
 
 
@@ -1914,6 +1940,33 @@ class EmailThreadLabel(Base):
         String(36),
         ForeignKey("email_labels.id", ondelete="CASCADE"),
         primary_key=True,
+    )
+    applied_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+
+class EmailMessageLabel(Base):
+    """CRM-ETIQUETAS-GMAIL-V2.3 — junction `email_messages` ↔
+    `email_labels`. Las labels de Gmail viven a nivel de MENSAJE (un
+    hilo puede tener un mensaje etiquetado y otros no), así que el
+    mapeo es paralelo a `email_thread_labels` (personales, por hilo).
+    Lo pueblan `sync_labels` (retroactivo desde el JSON
+    `email_messages.gmail_labels`), el push de Gmail
+    (labelsAdded/Removed) y los endpoints de mensaje."""
+
+    __tablename__ = "email_message_labels"
+
+    message_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("email_messages.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    label_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("email_labels.id", ondelete="CASCADE"),
+        primary_key=True,
+        index=True,
     )
     applied_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False

@@ -184,6 +184,9 @@ class EmailMessageRead(BaseModel):
     # CRM-BANDEJA — adjuntos del mensaje (chips con descarga en el thread
     # detail). Solo lo puebla `get_thread`; el resto de rutas devuelven [].
     attachments: list[EmailMessageAttachmentRead] = Field(default_factory=list)
+    # CRM-ETIQUETAS-GMAIL-V2.3 — etiquetas a nivel de mensaje (labels de
+    # Gmail). Se serializa desde la relación `EmailMessage.labels`.
+    labels: list[EmailLabelRead] = Field(default_factory=list)
 
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
@@ -409,6 +412,14 @@ class EmailLabelRead(BaseModel):
     name: str
     color: str | None
     sort_order: int
+    # CRM-ETIQUETAS-GMAIL-V2.3 — no-NULL = etiqueta org espejo de una label
+    # de Gmail (se aplica a nivel de mensaje y se propaga vía
+    # messages.modify); NULL = etiqueta personal CRM (nivel de hilo).
+    gmail_label_id: str | None = None
+    is_system: bool = False
+    # Nº de hilos con la etiqueta (nivel hilo O algún mensaje). Lo puebla
+    # GET /api/emails/labels para los badges del sidebar.
+    thread_count: int = 0
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -444,6 +455,7 @@ class EmailThreadBulkSnooze(EmailThreadBulkAction):
 # annotation a string). Resolve it now that EmailLabelRead exists.
 EmailThreadRead.model_rebuild()
 EmailThreadDetail.model_rebuild()
+EmailMessageRead.model_rebuild()
 
 
 class EmailDraftAttachmentRead(BaseModel):

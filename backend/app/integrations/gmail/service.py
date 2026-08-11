@@ -1145,8 +1145,24 @@ def process_history(
         # que cambiaron en `entry["labelIds"]`.
         for lbl_entry in entry.get("labelsAdded", []):
             _sync_spam_label(session, user_id=user_id, entry=lbl_entry, spam=True)
+            # CRM-ETIQUETAS-GMAIL-V2.3 — cambios de labels personalizadas
+            # (Gmail→CRM). Una label desconocida se importa on-the-fly.
+            _sync_custom_label_change(
+                session,
+                client=client,
+                user_id=user_id,
+                entry=lbl_entry,
+                added=True,
+            )
         for lbl_entry in entry.get("labelsRemoved", []):
             _sync_spam_label(session, user_id=user_id, entry=lbl_entry, spam=False)
+            _sync_custom_label_change(
+                session,
+                client=client,
+                user_id=user_id,
+                entry=lbl_entry,
+                added=False,
+            )
 
     # Always advance the watch — even when every message in the
     # range failed individually. Otherwise a single ghost message
@@ -1192,6 +1208,126 @@ def _sync_spam_label(
         message.gmail_labels = json.dumps(full_labels)
     session.flush()
     return True
+
+
+def _sync_custom_label_change(
+    session: Session,
+    *,
+    client: Any,
+    user_id: str,
+    entry: dict[str, Any],
+    added: bool,
+) -> bool:
+    """CRM-ETIQUETAS-GMAIL-V2.3 — aplica un cambio de label PERSONALIZADA
+    (labelsAdded/labelsRemoved del history) al mapeo `email_message_labels`
+    del mensaje ya almacenado. Las labels de sistema (INBOX/SPAM/…) no
+    entran aquí (SPAM la maneja `_sync_spam_label`). Si el add referencia
+    una label que aún no está importada, se importa on-the-fly vía
+    `labels.get` (solo si `type == 'user'`). Idempotente."""
+    from app.integrations.gmail.labels_sync import (  # noqa: PLC0415
+        is_custom_label_id,
+        upsert_gmail_label,
+    )
+    from app.models.crm import EmailLabel, EmailMessageLabel  # noqa: PLC0415
+
+    delta = [
+        gid
+        for gid in (entry.get("labelIds") or [])
+        if is_custom_label_id(gid)
+    ]
+    if not delta:
+        return False
+    mid = entry.get("message", {}).get("id")
+    if not mid:
+        return False
+    message = session.scalar(
+        select(EmailMessage).where(
+            EmailMessage.gmail_account_user_id == user_id,
+            EmailMessage.gmail_message_id == mid,
+        )
+    )
+    if message is None:
+        return False
+
+    touched = False
+    for gid in delta:
+        label = session.scalar(
+            select(EmailLabel).where(EmailLabel.gmail_label_id == gid)
+        )
+        if label is None and added:
+            try:
+                raw = client.labels_get(gid)
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "gmail.labels.get_failed label=%s", gid, exc_info=True
+                )
+                continue
+            label = upsert_gmail_label(session, raw=raw)
+        if label is None:
+            continue
+        existing = session.get(EmailMessageLabel, (message.id, label.id))
+        if added and existing is None:
+            session.add(
+                EmailMessageLabel(
+                    message_id=message.id,
+                    label_id=label.id,
+                    applied_at=datetime.now(UTC),
+                )
+            )
+            touched = True
+        elif not added and existing is not None:
+            session.delete(existing)
+            touched = True
+
+    # Mantener el JSON `gmail_labels` coherente: con la foto completa si
+    # viene en el entry; si no, aplicando el delta sobre lo almacenado.
+    full_labels = entry.get("message", {}).get("labelIds")
+    if full_labels is not None:
+        message.gmail_labels = json.dumps(full_labels)
+    else:
+        try:
+            current = set(json.loads(message.gmail_labels or "[]"))
+        except (TypeError, ValueError):
+            current = set()
+        current = current | set(delta) if added else current - set(delta)
+        message.gmail_labels = json.dumps(sorted(current))
+    if touched:
+        session.flush()
+    return touched
+
+
+def _apply_custom_labels_to_message(
+    session: Session, *, message: EmailMessage, gmail_label_ids: list[str]
+) -> int:
+    """CRM-ETIQUETAS-GMAIL-V2.3 — materializa en `email_message_labels` las
+    labels personalizadas YA IMPORTADAS que trae un mensaje recién
+    persistido. Las desconocidas se ignoran (las importa `sync_labels` o el
+    push de labelsAdded). Devuelve cuántos mapeos añadió."""
+    from app.integrations.gmail.labels_sync import (  # noqa: PLC0415
+        is_custom_label_id,
+    )
+    from app.models.crm import EmailLabel, EmailMessageLabel  # noqa: PLC0415
+
+    custom = [gid for gid in gmail_label_ids if is_custom_label_id(gid)]
+    if not custom:
+        return 0
+    count = 0
+    now = datetime.now(UTC)
+    for label in session.scalars(
+        select(EmailLabel).where(EmailLabel.gmail_label_id.in_(custom))
+    ):
+        if session.get(EmailMessageLabel, (message.id, label.id)) is None:
+            session.add(
+                EmailMessageLabel(
+                    message_id=message.id,
+                    label_id=label.id,
+                    applied_at=now,
+                )
+            )
+            count += 1
+    if count:
+        session.flush()
+    return count
 
 
 _NDR_FROM_PREFIXES = (
@@ -1612,6 +1748,11 @@ def _persist_message(
     if not is_outbound:
         thread.has_unread_replies = True
     session.flush()
+    # CRM-ETIQUETAS-GMAIL-V2.3 — si el mensaje llega con labels
+    # personalizadas ya importadas, materializa el mapeo mensaje↔etiqueta.
+    _apply_custom_labels_to_message(
+        session, message=message, gmail_label_ids=labels
+    )
     # Mirror the reply onto the contact's activity timeline. Skipped when el
     # inbound vino de una dirección desconocida (sin contact_id), cuando el
     # caller pide no emitir actividad (backfill histórico: no re-disparar

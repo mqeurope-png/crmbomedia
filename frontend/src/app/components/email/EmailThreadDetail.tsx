@@ -9,13 +9,19 @@ import {
   FileSpreadsheet,
   FileText,
   Image as ImageIcon,
+  Plus,
+  Tag,
+  X,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  type EmailLabel,
   type EmailMessage,
   type EmailMessageAttachment,
   type EmailThreadDetail as EmailThreadDetailType,
+  addMessageLabel,
   downloadEmailAttachment,
+  removeMessageLabel,
 } from "../../lib/emailsApi";
 import {
   type EmailEvent,
@@ -39,12 +45,19 @@ type Props = {
   eventsByMessage: Record<string, EmailEvent[]>;
   /** Alias del operador (lowercase) para renderizar «para mí». */
   ownEmails?: Set<string>;
+  /** CRM-ETIQUETAS-GMAIL — etiquetas org (labels de Gmail) disponibles
+   *  para el dropdown «+» de cada mensaje. Sin ellas los chips se
+   *  renderizan igual pero no se puede añadir. */
+  gmailLabels?: EmailLabel[];
+  onLabelsChanged?: () => void;
 };
 
 export function EmailThreadDetail({
   thread,
   eventsByMessage,
   ownEmails,
+  gmailLabels,
+  onLabelsChanged,
 }: Props) {
   const messages = thread.messages;
   const lastId = messages[messages.length - 1]?.id ?? null;
@@ -99,6 +112,8 @@ export function EmailThreadDetail({
             onToggle={() => toggleOne(m.id)}
             events={eventsByMessage[m.id] ?? []}
             ownEmails={ownEmails}
+            gmailLabels={gmailLabels}
+            onLabelsChanged={onLabelsChanged}
           />
         ))}
       </ul>
@@ -132,12 +147,16 @@ function MessageCard({
   onToggle,
   events,
   ownEmails,
+  gmailLabels,
+  onLabelsChanged,
 }: {
   message: EmailMessage;
   expanded: boolean;
   onToggle: () => void;
   events: EmailEvent[];
   ownEmails?: Set<string>;
+  gmailLabels?: EmailLabel[];
+  onLabelsChanged?: () => void;
 }) {
   const [detailsOpen, setDetailsOpen] = useState(false);
 
@@ -215,6 +234,11 @@ function MessageCard({
               pueden descargar.
             </p>
           ) : null}
+          <MessageLabels
+            message={m}
+            available={gmailLabels}
+            onChanged={onLabelsChanged}
+          />
           <button
             type="button"
             className="email-message-details-toggle"
@@ -337,6 +361,122 @@ function AutoHeightHtmlBody({
       style={{ height: `${height}px`, overflow: "hidden" }}
       scrolling="no"
     />
+  );
+}
+
+/** CRM-ETIQUETAS-GMAIL — chips de etiquetas del MENSAJE (labels de Gmail)
+ *  con «×» para quitar y dropdown «+» para añadir. El backend propaga el
+ *  cambio a Gmail (messages.modify) antes de persistir; si Gmail falla se
+ *  muestra el error y no cambia nada. */
+function MessageLabels({
+  message: m,
+  available,
+  onChanged,
+}: {
+  message: EmailMessage;
+  available?: EmailLabel[];
+  onChanged?: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const applied = m.labels ?? [];
+  const appliedIds = new Set(applied.map((l) => l.id));
+  // Solo etiquetas org (espejo de Gmail) — las personales van a nivel de
+  // hilo en el toolbar. Sin gmail_message_id (envío programado pendiente)
+  // no hay nada que etiquetar en Gmail.
+  const candidates = (available ?? []).filter(
+    (l) => l.gmail_label_id && !appliedIds.has(l.id),
+  );
+  const canEdit = Boolean(m.gmail_message_id);
+
+  if (applied.length === 0 && !(canEdit && candidates.length > 0)) {
+    return null;
+  }
+
+  const run = async (fn: () => Promise<unknown>) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await fn();
+      onChanged?.();
+    } catch {
+      setError("No se pudo actualizar la etiqueta en Gmail.");
+    } finally {
+      setBusy(false);
+      setOpen(false);
+    }
+  };
+
+  return (
+    <div className="email-message-labels" data-testid="message-labels">
+      {applied.map((label) => (
+        <span
+          key={label.id}
+          className="email-list-label-chip email-message-label-chip"
+          style={{
+            backgroundColor: (label.color ?? "#e5e7eb") + "33",
+            color: label.color ?? "#1d2940",
+            borderColor: label.color ?? "#e5e7eb",
+          }}
+        >
+          <Tag size={10} aria-hidden />
+          {label.name}
+          {canEdit ? (
+            <button
+              type="button"
+              className="email-message-label-remove"
+              aria-label={`Quitar etiqueta ${label.name}`}
+              disabled={busy}
+              onClick={() =>
+                run(() => removeMessageLabel(m.id, label.id))
+              }
+            >
+              <X size={10} aria-hidden />
+            </button>
+          ) : null}
+        </span>
+      ))}
+      {canEdit && candidates.length > 0 ? (
+        <span className="email-message-label-addwrap">
+          <button
+            type="button"
+            className="email-message-label-add"
+            aria-label="Añadir etiqueta"
+            title="Añadir etiqueta"
+            disabled={busy}
+            onClick={() => setOpen((v) => !v)}
+          >
+            <Plus size={11} aria-hidden />
+          </button>
+          {open ? (
+            <ul className="email-message-label-menu" role="menu">
+              {candidates.map((label) => (
+                <li key={label.id}>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    disabled={busy}
+                    onClick={() =>
+                      run(() => addMessageLabel(m.id, label.id))
+                    }
+                  >
+                    <Tag
+                      size={10}
+                      aria-hidden
+                      color={label.color ?? "#9ca3af"}
+                    />
+                    {label.name}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </span>
+      ) : null}
+      {error ? <span className="form-error small">{error}</span> : null}
+    </div>
   );
 }
 

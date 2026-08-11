@@ -13,10 +13,12 @@ selection still does as much as the caller is allowed to do.
 """
 from __future__ import annotations
 
+import json
+import logging
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Response, status
-from sqlalchemy import delete, select
+from sqlalchemy import and_, delete, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.audit import Action, record_event
@@ -27,6 +29,7 @@ from app.models.crm import (
     EmailFolder,
     EmailLabel,
     EmailMessage,
+    EmailMessageLabel,
     EmailThread,
     EmailThreadLabel,
     EmailThreadState,
@@ -43,8 +46,11 @@ from app.schemas.emails import (
     EmailThreadBulkMove,
     EmailThreadBulkSnooze,
 )
+from app.services.email_aliases import thread_is_visible
 
 router = APIRouter(prefix="/api/emails", tags=["emails-mailbox"])
+
+logger = logging.getLogger(__name__)
 
 
 # -- helpers --------------------------------------------------------
@@ -226,19 +232,65 @@ def delete_folder(
 # -- labels ---------------------------------------------------------
 
 
+def _label_thread_counts(
+    session: Session, label_ids: list[str]
+) -> dict[str, int]:
+    """Nº de hilos distintos con cada etiqueta — a nivel de hilo
+    (`email_thread_labels`, personales) O con algún mensaje etiquetado
+    (`email_message_labels`, labels de Gmail). Se cuentan pares
+    (label, thread) únicos para no duplicar un hilo presente en ambos."""
+    if not label_ids:
+        return {}
+    pairs: set[tuple[str, str]] = set()
+    for label_id, thread_id in session.execute(
+        select(EmailThreadLabel.label_id, EmailThreadLabel.thread_id).where(
+            EmailThreadLabel.label_id.in_(label_ids)
+        )
+    ):
+        pairs.add((label_id, thread_id))
+    for label_id, thread_id in session.execute(
+        select(EmailMessageLabel.label_id, EmailMessage.thread_id)
+        .join(EmailMessage, EmailMessage.id == EmailMessageLabel.message_id)
+        .where(EmailMessageLabel.label_id.in_(label_ids))
+    ):
+        pairs.add((label_id, thread_id))
+    counts: dict[str, int] = {}
+    for label_id, _thread_id in pairs:
+        counts[label_id] = counts.get(label_id, 0) + 1
+    return counts
+
+
 @router.get("/labels", response_model=list[EmailLabelRead])
 def list_labels(
     session: Session = Depends(get_session),
     current_user: User = Depends(require_user),
 ) -> list[EmailLabelRead]:
+    """Etiquetas del usuario + etiquetas org (labels de Gmail importadas,
+    `user_id NULL`) no ocultas, con el nº de hilos para los badges del
+    sidebar. Las org son de solo-lectura desde aquí (su ciclo de vida
+    vive en Gmail + `sync_labels`)."""
     labels = list(
         session.scalars(
             select(EmailLabel)
-            .where(EmailLabel.user_id == current_user.id)
+            .where(
+                or_(
+                    EmailLabel.user_id == current_user.id,
+                    and_(
+                        EmailLabel.user_id.is_(None),
+                        EmailLabel.is_hidden.is_(False),
+                    ),
+                )
+            )
             .order_by(EmailLabel.sort_order, EmailLabel.name)
         )
     )
-    return [EmailLabelRead.model_validate(label) for label in labels]
+    counts = _label_thread_counts(session, [label.id for label in labels])
+    out: list[EmailLabelRead] = []
+    for label in labels:
+        read = EmailLabelRead.model_validate(label)
+        read.thread_count = counts.get(label.id, 0)
+        out.append(read)
+    return out
 
 
 @router.post("/labels", response_model=EmailLabelRead, status_code=201)
@@ -586,6 +638,173 @@ def remove_thread_label(
         metadata={"field": "label_removed", "value": label.id},
     )
     session.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# -- message-level labels (CRM-ETIQUETAS-GMAIL-V2.3) ----------------
+#
+# Las labels de Gmail se aplican a nivel de MENSAJE y se propagan a Gmail
+# vía `messages.modify` (pata CRM→Gmail del sync bidireccional). Solo
+# aceptan etiquetas org (`gmail_label_id` no NULL); las personales siguen
+# operando a nivel de hilo con los endpoints de arriba.
+
+
+def _get_visible_message(
+    session: Session, message_id: str, user: User
+) -> EmailMessage:
+    """Mensaje cuyo hilo es visible para el caller (mismo criterio que el
+    thread detail: privilegiado, iniciador, o entregado a sus alias).
+    404 en vez de 403 para no filtrar existencia."""
+    message = session.get(EmailMessage, message_id)
+    if message is None:
+        raise not_found("EmailMessage")
+    thread = session.get(EmailThread, message.thread_id)
+    if thread is None:
+        raise not_found("EmailMessage")
+    if not _is_privileged(user) and not thread_is_visible(
+        session, user, thread
+    ):
+        raise not_found("EmailMessage")
+    return message
+
+
+def _get_gmail_label(session: Session, label_id: str) -> EmailLabel:
+    label = session.get(EmailLabel, label_id)
+    if label is None or label.user_id is not None:
+        raise not_found("EmailLabel")
+    if not label.gmail_label_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Esta etiqueta no está vinculada a una label de Gmail.",
+        )
+    return label
+
+
+def _propagate_label_change(
+    session: Session,
+    message: EmailMessage,
+    *,
+    add: list[str] | None = None,
+    remove: list[str] | None = None,
+) -> None:
+    """Refleja el cambio en Gmail ANTES de persistirlo en el CRM. Si Gmail
+    falla no se escribe nada local — el estado de Gmail es la fuente de
+    verdad y un mapeo local sin reflejo upstream se perdería en el próximo
+    sync."""
+    from app.integrations.gmail import service as gmail_service  # noqa: PLC0415
+
+    try:
+        client = gmail_service._client_for(
+            session, message.gmail_account_user_id
+        )
+        client.modify_message(
+            message.gmail_message_id,
+            add_label_ids=add,
+            remove_label_ids=remove,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "emails.message_label.gmail_modify_failed msg=%s",
+            message.id,
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="No se pudo actualizar la etiqueta en Gmail.",
+        ) from exc
+
+
+def _merge_message_gmail_labels(
+    message: EmailMessage, *, gmail_label_id: str, added: bool
+) -> None:
+    """Mantiene el JSON `gmail_labels` del mensaje coherente con el cambio."""
+    try:
+        current = set(json.loads(message.gmail_labels or "[]"))
+    except (TypeError, ValueError):
+        current = set()
+    if added:
+        current.add(gmail_label_id)
+    else:
+        current.discard(gmail_label_id)
+    message.gmail_labels = json.dumps(sorted(current))
+
+
+@router.post(
+    "/messages/{message_id}/labels/{label_id}",
+    response_model=EmailLabelRead,
+)
+def add_message_label(
+    message_id: str,
+    label_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_user),
+) -> EmailLabelRead:
+    message = _get_visible_message(session, message_id, current_user)
+    label = _get_gmail_label(session, label_id)
+    if not message.gmail_message_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="El mensaje aún no existe en Gmail (envío pendiente).",
+        )
+    existing = session.get(EmailMessageLabel, (message.id, label.id))
+    if existing is None:
+        _propagate_label_change(
+            session, message, add=[label.gmail_label_id]
+        )
+        session.add(
+            EmailMessageLabel(
+                message_id=message.id,
+                label_id=label.id,
+                applied_at=datetime.now(UTC),
+            )
+        )
+        _merge_message_gmail_labels(
+            message, gmail_label_id=label.gmail_label_id, added=True
+        )
+        record_event(
+            session,
+            action=Action.EMAIL_THREADS_UPDATED,
+            target_type="email_message",
+            target_id=message.id,
+            actor=current_user,
+            metadata={"field": "message_label_added", "value": label.id},
+        )
+        session.commit()
+    return EmailLabelRead.model_validate(label)
+
+
+@router.delete(
+    "/messages/{message_id}/labels/{label_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def remove_message_label(
+    message_id: str,
+    label_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_user),
+) -> Response:
+    message = _get_visible_message(session, message_id, current_user)
+    label = _get_gmail_label(session, label_id)
+    existing = session.get(EmailMessageLabel, (message.id, label.id))
+    if existing is not None:
+        _propagate_label_change(
+            session, message, remove=[label.gmail_label_id]
+        )
+        session.delete(existing)
+        _merge_message_gmail_labels(
+            message, gmail_label_id=label.gmail_label_id, added=False
+        )
+        record_event(
+            session,
+            action=Action.EMAIL_THREADS_UPDATED,
+            target_type="email_message",
+            target_id=message.id,
+            actor=current_user,
+            metadata={"field": "message_label_removed", "value": label.id},
+        )
+        session.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 

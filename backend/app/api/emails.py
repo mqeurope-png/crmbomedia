@@ -30,6 +30,7 @@ from app.models.crm import (
     EmailMessage,
     EmailMessageAttachment,
     EmailMessageEvent,
+    EmailMessageLabel,
     EmailThread,
     EmailThreadLabel,
     EmailThreadState,
@@ -796,10 +797,29 @@ def list_threads(
     if label_id is not None:
         # Subquery instead of join so the outer count/pagination
         # stay unique-by-thread without DISTINCT gymnastics.
+        # CRM-ETIQUETAS-GMAIL-V2.3 — una etiqueta puede vivir a nivel de
+        # hilo (personales, email_thread_labels) o de mensaje (labels de
+        # Gmail, email_message_labels): el filtro casa cualquiera de las
+        # dos.
+        from sqlalchemy import or_ as _or_lbl  # noqa: PLC0415
+
         label_match = select(EmailThreadLabel.thread_id).where(
             EmailThreadLabel.label_id == label_id
         )
-        stmt = stmt.where(EmailThread.id.in_(label_match))
+        msg_label_match = (
+            select(EmailMessage.thread_id)
+            .join(
+                EmailMessageLabel,
+                EmailMessageLabel.message_id == EmailMessage.id,
+            )
+            .where(EmailMessageLabel.label_id == label_id)
+        )
+        stmt = stmt.where(
+            _or_lbl(
+                EmailThread.id.in_(label_match),
+                EmailThread.id.in_(msg_label_match),
+            )
+        )
     if starred is not None:
         stmt = stmt.where(EmailThread.is_starred.is_(starred))
     if has_unread is not None:
@@ -986,7 +1006,9 @@ def thread_detail(
         select(EmailThread)
         .where(EmailThread.id == thread_id)
         .options(
-            selectinload(EmailThread.messages),
+            selectinload(EmailThread.messages).selectinload(
+                EmailMessage.labels
+            ),
             selectinload(EmailThread.labels),
         )
     )

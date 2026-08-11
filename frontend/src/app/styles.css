@@ -4987,6 +4987,81 @@ a.origin-chip:hover { filter: brightness(0.97); }
   opacity: 0.55;
   filter: grayscale(0.6);
 }
+/* CRM-ETIQUETAS-GMAIL — chips de etiquetas a nivel de mensaje. */
+.email-message-labels {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+.email-message-label-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.email-message-label-remove {
+  display: inline-flex;
+  align-items: center;
+  border: none;
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  cursor: pointer;
+  opacity: 0.7;
+}
+.email-message-label-remove:hover {
+  opacity: 1;
+}
+.email-message-label-addwrap {
+  position: relative;
+  display: inline-flex;
+}
+.email-message-label-add {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: 1px dashed #cbd5e1;
+  border-radius: 999px;
+  background: transparent;
+  color: #64748b;
+  cursor: pointer;
+}
+.email-message-label-add:hover {
+  border-color: #64748b;
+  color: #1d2940;
+}
+.email-message-label-menu {
+  position: absolute;
+  top: 24px;
+  left: 0;
+  z-index: 30;
+  min-width: 180px;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+}
+.email-message-label-menu button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  text-align: left;
+  font-size: 13px;
+  cursor: pointer;
+}
+.email-message-label-menu button:hover {
+  background: #f1f5f9;
+}
 /* CRM-ADJUNTOS-UX — clip 📎 en la línea del asunto de la bandeja. */
 .email-list-clip {
   color: #9ca3af;

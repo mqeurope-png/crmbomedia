@@ -8,7 +8,13 @@ import type {
 
 jest.mock("../../lib/emailsApi", () => ({
   downloadEmailAttachment: jest.fn(),
+  addMessageLabel: jest.fn().mockResolvedValue({}),
+  removeMessageLabel: jest.fn().mockResolvedValue(undefined),
 }));
+
+const { addMessageLabel, removeMessageLabel } = jest.requireMock(
+  "../../lib/emailsApi",
+);
 
 function makeMessage(overrides: Partial<EmailMessage>): EmailMessage {
   return {
@@ -298,6 +304,92 @@ describe("EmailThreadDetail — CRM-BANDEJA", () => {
     expect(
       container.querySelector(".email-attachment-card.is-unavailable"),
     ).toBeInTheDocument();
+  });
+});
+
+describe("EmailThreadDetail — CRM-ETIQUETAS-GMAIL", () => {
+  const vip = {
+    id: "lbl-1",
+    name: "Clientes VIP",
+    color: "#fb4c2f",
+    sort_order: 0,
+    gmail_label_id: "Label_1",
+  };
+  const prov = {
+    id: "lbl-2",
+    name: "Proveedores",
+    color: null,
+    sort_order: 0,
+    gmail_label_id: "Label_2",
+  };
+
+  it("renderiza chips de etiquetas del mensaje", () => {
+    const messages = [
+      makeMessage({ id: "m-lbl", labels: [vip] }),
+    ];
+    render(
+      <EmailThreadDetail
+        thread={makeThread(messages)}
+        eventsByMessage={{}}
+      />,
+    );
+    expect(screen.getByTestId("message-labels")).toHaveTextContent(
+      "Clientes VIP",
+    );
+  });
+
+  it("el dropdown «+» añade una etiqueta vía addMessageLabel", async () => {
+    const user = userEvent.setup();
+    const onChanged = jest.fn();
+    const messages = [makeMessage({ id: "m-lbl", labels: [vip] })];
+    render(
+      <EmailThreadDetail
+        thread={makeThread(messages)}
+        eventsByMessage={{}}
+        gmailLabels={[vip, prov]}
+        onLabelsChanged={onChanged}
+      />,
+    );
+    await user.click(
+      screen.getByRole("button", { name: /Añadir etiqueta/i }),
+    );
+    await user.click(
+      await screen.findByRole("menuitem", { name: /Proveedores/i }),
+    );
+    expect(addMessageLabel).toHaveBeenCalledWith("m-lbl", "lbl-2");
+    expect(onChanged).toHaveBeenCalled();
+  });
+
+  it("la «×» del chip quita la etiqueta vía removeMessageLabel", async () => {
+    const user = userEvent.setup();
+    const messages = [makeMessage({ id: "m-lbl", labels: [vip] })];
+    render(
+      <EmailThreadDetail
+        thread={makeThread(messages)}
+        eventsByMessage={{}}
+        gmailLabels={[vip]}
+      />,
+    );
+    await user.click(
+      screen.getByRole("button", { name: /Quitar etiqueta Clientes VIP/i }),
+    );
+    expect(removeMessageLabel).toHaveBeenCalledWith("m-lbl", "lbl-1");
+  });
+
+  it("sin gmail_message_id (envío programado) no ofrece añadir", () => {
+    const messages = [
+      makeMessage({ id: "m-pend", gmail_message_id: null, labels: [] }),
+    ];
+    render(
+      <EmailThreadDetail
+        thread={makeThread(messages)}
+        eventsByMessage={{}}
+        gmailLabels={[vip]}
+      />,
+    );
+    expect(
+      screen.queryByRole("button", { name: /Añadir etiqueta/i }),
+    ).not.toBeInTheDocument();
   });
 });
 
