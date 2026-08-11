@@ -8,6 +8,7 @@ import {
 } from "react";
 import type { Editor as TinyMCEEditor } from "tinymce";
 import { getStoredToken } from "../../lib/api";
+import { EDITOR_INVALID_ELEMENTS } from "./editorConfig";
 
 // Self-host every TinyMCE asset — never the cloud build (no API key,
 // no external CDN, works offline / behind the VPN). The static imports
@@ -252,6 +253,10 @@ export const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
         // through the schema so backgrounds, gradients and column widths
         // survive a paste.
         valid_elements: "*[*]",
+        // CRM-COMPOSITOR-V2.2 — cinturón cliente: fuera scripts/iframes al
+        // pegar. La barrera real es el sanitizador bleach del backend en
+        // el envío; esto solo evita que el editor los muestre.
+        invalid_elements: EDITOR_INVALID_ELEMENTS,
         extended_valid_elements:
           "div[*],span[*],table[*],tr[*],td[*],th[*],tbody[*]," +
           "thead[*],tfoot[*],colgroup[*],col[*]",

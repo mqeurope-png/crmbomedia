@@ -22,3 +22,6 @@ google-auth-oauthlib==1.2.1
 google-api-python-client==2.158.0
 python-dateutil==2.9.0
 reportlab==4.2.5
+# CRM-COMPOSITOR-V2.2 — sanitize HTML del compositor + fallback text/plain
+bleach[css]==6.4.0
+html2text==2025.4.15

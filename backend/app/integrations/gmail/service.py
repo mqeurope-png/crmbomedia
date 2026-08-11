@@ -205,6 +205,62 @@ _CRM_ATTACHMENT_SRC_PATTERN = re.compile(
 )
 
 
+# CRM-COMPOSITOR-V2.2 — imágenes pegadas/soltadas en el editor. El
+# uploader las guarda content-addressed en disco y las inserta como
+# `src="…/assets/email-templates/YYYY/MM/<sha256>.<ext>"`. El path del
+# regex está anclado (año/mes numéricos + hex de 64) — no hay traversal.
+_ASSET_SRC_PATTERN = re.compile(
+    r"""src=["'](?:https?://[^"']+?)?/assets/email-templates/"""
+    r"""(\d{4}/\d{2}/[0-9a-f]{64}(?:\.[A-Za-z0-9]{1,5})?)["']""",
+)
+
+
+def _swap_asset_urls_to_cid(
+    body_html: str,
+) -> tuple[str, list[dict[str, Any]]]:
+    """Sustituye cada `src` de asset del compositor por `src="cid:…"` y
+    devuelve los blobs (leídos de disco) como inline parts. Si el fichero
+    ya no existe en disco, la URL se deja intacta (imagen remota — sigue
+    funcionando para clientes que no bloquean remotas)."""
+    import mimetypes as _mimetypes  # noqa: PLC0415
+    from pathlib import Path as _Path  # noqa: PLC0415
+
+    from app.core.config import get_settings  # noqa: PLC0415
+
+    assets_dir = _Path(get_settings().email_assets_dir)
+    inline_parts: list[dict[str, Any]] = []
+    seen: dict[str, str] = {}
+
+    def _sub(match: re.Match[str]) -> str:
+        relative = match.group(1)
+        if relative in seen:
+            return f'src="cid:{seen[relative]}"'
+        target = (assets_dir / relative).resolve()
+        try:
+            target.relative_to(assets_dir.resolve())
+        except ValueError:
+            return match.group(0)
+        if not target.is_file():
+            return match.group(0)
+        digest = relative.rsplit("/", 1)[-1].split(".", 1)[0]
+        cid = f"asset-{digest[:16]}"
+        content_type = (
+            _mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+        )
+        inline_parts.append(
+            {
+                "cid": cid,
+                "content_type": content_type,
+                "filename": target.name,
+                "data": target.read_bytes(),
+            }
+        )
+        seen[relative] = cid
+        return f'src="cid:{cid}"'
+
+    return _ASSET_SRC_PATTERN.sub(_sub, body_html), inline_parts
+
+
 def _swap_crm_urls_to_cid(
     session: Session, body_html: str
 ) -> tuple[str, list[dict[str, Any]]]:
@@ -757,6 +813,18 @@ def send_email(
             override = (pref.display_name_override or "").strip()
             gmail_name = (pref.gmail_display_name or "").strip()
             from_name = override or gmail_name or None
+    # CRM-COMPOSITOR-V2.2 — el HTML del compositor se sanitiza SIEMPRE
+    # antes de enviar y de persistir (whitelist bleach: fuera script/
+    # iframe/on*), y si el caller solo mandó HTML generamos el fallback
+    # text/plain para el multipart/alternative.
+    from app.services.html_sanitizer import (  # noqa: PLC0415
+        html_to_text,
+        sanitize_email_html,
+    )
+
+    body_html = sanitize_email_html(body_html)
+    if body_html and not (body_text or "").strip():
+        body_text = html_to_text(body_html)
     client = _client_for(session, sender_user_id)
 
     in_reply_to_header: str | None = None
@@ -852,6 +920,12 @@ def send_email(
         outbound_html, inline_attachments = _swap_crm_urls_to_cid(
             session, outbound_html
         )
+        # CRM-COMPOSITOR-V2.2 — las imágenes pegadas/soltadas en el editor
+        # viven como assets en disco (/assets/email-templates/…). Al enviar
+        # las incrustamos como CID inline: el destinatario ve la imagen
+        # embebida aunque su cliente bloquee imágenes remotas.
+        outbound_html, asset_inline = _swap_asset_urls_to_cid(outbound_html)
+        inline_attachments.extend(asset_inline)
 
     response = client.send_message(
         from_alias=from_alias,
