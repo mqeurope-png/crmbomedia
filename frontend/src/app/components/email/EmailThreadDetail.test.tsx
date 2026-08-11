@@ -251,6 +251,54 @@ describe("EmailThreadDetail — CRM-BANDEJA", () => {
       screen.getByRole("button", { name: /Descargar oferta.pdf/i }),
     ).toHaveTextContent(/Descargar/);
   });
+
+  it("CRM-ADJUNTOS-PURGE: banner cuando el mensaje ya no existe en Gmail", () => {
+    const messages = [
+      makeMessage({
+        id: "m-del",
+        gmail_status: "deleted_gmail",
+        body_text: "cuerpo",
+      }),
+    ];
+    render(
+      <EmailThreadDetail
+        thread={makeThread(messages)}
+        eventsByMessage={{}}
+      />,
+    );
+    expect(screen.getByTestId("deleted-gmail-banner")).toHaveTextContent(
+      /ya no existe en Gmail/i,
+    );
+  });
+
+  it("CRM-ADJUNTOS-PURGE: card de adjunto deshabilitada si gmail_deleted", () => {
+    const messages = [
+      makeMessage({
+        id: "m-del2",
+        gmail_status: "deleted_gmail",
+        attachments: [
+          {
+            id: "a-x",
+            filename: "factura.pdf",
+            mime_type: "application/pdf",
+            size_bytes: 2048,
+            downloadable: true,
+          },
+        ],
+      }),
+    ];
+    const { container } = render(
+      <EmailThreadDetail
+        thread={makeThread(messages)}
+        eventsByMessage={{}}
+      />,
+    );
+    const btn = screen.getByRole("button", { name: /No disponible/i });
+    expect(btn).toBeDisabled();
+    expect(
+      container.querySelector(".email-attachment-card.is-unavailable"),
+    ).toBeInTheDocument();
+  });
 });
 
 describe("formatToSummary", () => {

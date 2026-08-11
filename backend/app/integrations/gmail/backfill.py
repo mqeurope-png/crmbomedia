@@ -142,6 +142,18 @@ def _is_transient_error(exc: BaseException) -> bool:
     return any(s in text for s in ("429", "503", "rate", "quotaexceeded"))
 
 
+def is_not_found_error(exc: BaseException) -> bool:
+    """CRM-ADJUNTOS-PURGE — detección de «el mensaje ya no existe en
+    Gmail» (papelera vaciada / borrado permanente). Mismo duck-typing que
+    `_is_transient_error`: `HttpError.resp.status` si está; fallback a
+    substring del repr para los fakes de tests."""
+    status = getattr(getattr(exc, "resp", None), "status", None)
+    if status is not None:
+        return status in (404, 410)
+    text = repr(exc).lower()
+    return "404" in text or "not found" in text or "notfound" in text
+
+
 def _with_backoff(fn: Callable[[], T], *, label: str = "gmail-call") -> T:
     """Ejecuta `fn` con backoff exponencial 1s/2s/4s/8s. Máximo 3
     retries — al cuarto fallo seguido propagamos al caller."""

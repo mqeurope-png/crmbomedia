@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  CloudOff,
   Archive,
   CalendarClock,
   CheckCircle2,
@@ -64,6 +65,9 @@ const SYSTEM_VIEWS: SystemView[] = [
   { key: "archived", label: "Archivados", icon: Archive, state: "archived" },
   { key: "trashed", label: "Papelera", icon: Trash2, state: "trashed" },
   { key: "spam", label: "Spam", icon: MailWarning, state: "spam" },
+  // CRM-ADJUNTOS-PURGE — hilos borrados de Gmail (papelera vaciada). Solo
+  // consulta; los mensajes se conservan en el CRM como historia.
+  { key: "deleted", label: "Papelera Gmail", icon: CloudOff, state: "deleted" },
 ];
 
 function buildHref(

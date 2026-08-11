@@ -178,6 +178,9 @@ class EmailMessageRead(BaseModel):
     #     no se oculta). delivered_to: alias del CRM al que llegó el mail.
     is_spam: bool = False
     delivered_to: str | None = None
+    # CRM-ADJUNTOS-PURGE — 'active' | 'deleted_gmail' (el mensaje ya no
+    # existe en Gmail: banner en el detail + chips de descarga deshabilitados).
+    gmail_status: str = "active"
     # CRM-BANDEJA — adjuntos del mensaje (chips con descarga en el thread
     # detail). Solo lo puebla `get_thread`; el resto de rutas devuelven [].
     attachments: list[EmailMessageAttachmentRead] = Field(default_factory=list)

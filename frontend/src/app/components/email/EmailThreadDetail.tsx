@@ -206,6 +206,15 @@ function MessageCard({
 
       {expanded ? (
         <div className="email-message-body-wrap">
+          {m.gmail_status === "deleted_gmail" ? (
+            <p
+              className="email-deleted-gmail-banner"
+              data-testid="deleted-gmail-banner"
+            >
+              ⚠ Este mensaje ya no existe en Gmail. Los adjuntos no se
+              pueden descargar.
+            </p>
+          ) : null}
           <button
             type="button"
             className="email-message-details-toggle"
@@ -267,6 +276,7 @@ function MessageCard({
             <AttachmentCards
               messageId={m.id}
               attachments={m.attachments ?? []}
+              gmailDeleted={m.gmail_status === "deleted_gmail"}
             />
           ) : null}
         </div>
@@ -365,9 +375,13 @@ function attachmentKind(
 function AttachmentCards({
   messageId,
   attachments,
+  gmailDeleted = false,
 }: {
   messageId: string;
   attachments: EmailMessageAttachment[];
+  /** CRM-ADJUNTOS-PURGE — el mensaje ya no existe en Gmail: cards en
+   *  gris y descarga deshabilitada. */
+  gmailDeleted?: boolean;
 }) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -381,7 +395,7 @@ function AttachmentCards({
         return (
           <div
             key={attachmentId ?? `${a.filename}-${idx}`}
-            className="email-attachment-card"
+            className={`email-attachment-card${gmailDeleted ? " is-unavailable" : ""}`}
           >
             <span className="email-attachment-icon" aria-hidden>
               <Icon size={28} />
@@ -398,9 +412,13 @@ function AttachmentCards({
               <button
                 type="button"
                 className="button small email-attachment-dl-btn"
-                title={`Descargar ${a.filename}`}
-                aria-label={`Descargar ${a.filename}`}
-                disabled={busy === attachmentId}
+                title={
+                  gmailDeleted ? "No disponible" : `Descargar ${a.filename}`
+                }
+                aria-label={
+                  gmailDeleted ? "No disponible" : `Descargar ${a.filename}`
+                }
+                disabled={gmailDeleted || busy === attachmentId}
                 onClick={() => {
                   setBusy(attachmentId);
                   setError(null);

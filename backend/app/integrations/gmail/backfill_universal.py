@@ -25,9 +25,11 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 
 from sqlalchemy import select
+from sqlalchemy import update as _sa_update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.integrations.gmail.backfill import is_not_found_error as _is_not_found
 from app.models.crm import EmailDirection, EmailMessage
 from app.services.email_aliases import active_alias_map
 
@@ -52,6 +54,11 @@ class BackfillReport:
     outbound: int = 0
     skipped_dedupe: int = 0
     skipped_no_alias: int = 0
+    # CRM-ADJUNTOS-PURGE — mensajes marcados gmail_status='deleted_gmail'
+    # (404 de Gmail con --purge-not-found; aquí solo cubre carreras entre
+    # list y get — el purge efectivo del histórico lo hace
+    # backfill_attachments, que itera mensajes de la BD).
+    purged_not_found: int = 0
     skipped_ndr: int = 0
     errors: int = 0
     # {alias_descartado: nº de mails que iban ahí y NO está configurado}
@@ -95,6 +102,10 @@ class BackfillReport:
             f"└── Descartados por alias:   {self.skipped_no_alias:>8} "
             f"(a alias no configurado)",
         ]
+        if self.purged_not_found:
+            lines.append(
+                f"Marcados como borrados en Gmail: {self.purged_not_found}"
+            )
         if self.skipped_ndr:
             lines.append(
                 f"    (NDR/bounce ignorados:   {self.skipped_ndr:>8})"
@@ -148,6 +159,7 @@ def run_backfill_universal(
     until: date,
     dry_run: bool = False,
     dry_run_limit: int = 500,
+    purge_not_found: bool = False,
     # CRM-BACKFILL-SENT: SENT en el default — trae también los mails
     # ENVIADOS desde Gmail directo (direction=outbound).
     labels: Sequence[str] = ("INBOX", "SPAM", "SENT"),
@@ -197,7 +209,23 @@ def run_backfill_universal(
                     continue
                 try:
                     raw = client.get_message(mid)
-                except Exception:  # noqa: BLE001
+                except Exception as exc:  # noqa: BLE001
+                    # CRM-ADJUNTOS-PURGE — 404 entre list y get (mensaje
+                    # borrado en Gmail en la ventana). Con el flag, si el
+                    # mensaje YA está en nuestra BD lo marcamos huérfano.
+                    if purge_not_found and _is_not_found(exc):
+                        result_marked = session.execute(
+                            _sa_update(EmailMessage)
+                            .where(EmailMessage.gmail_message_id == mid)
+                            .values(gmail_status="deleted_gmail")
+                        )
+                        session.commit()
+                        if result_marked.rowcount:
+                            report.purged_not_found += 1
+                            # Al dedupe: que las pasadas de otras labels no
+                            # re-marquen (ni re-llamen a Gmail) por este mid.
+                            seen.add(mid)
+                            continue
                     logger.warning(
                         "gmail.backfill.get_failed msg=%s", mid, exc_info=True
                     )

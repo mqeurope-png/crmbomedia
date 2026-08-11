@@ -22,7 +22,7 @@ from datetime import UTC, date, datetime, timedelta
 from datetime import time as dt_time
 from typing import Any
 
-from sqlalchemy import exists, select
+from sqlalchemy import exists, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -32,6 +32,7 @@ from app.integrations.gmail.backfill import (
     _walk_parts,
     _with_backoff,
     is_inline_part,
+    is_not_found_error,
 )
 from app.integrations.gmail.service import _client_for
 from app.models.crm import EmailMessage, EmailMessageAttachment
@@ -82,6 +83,10 @@ class AttachmentsBackfillReport:
     attachments_total: int = 0
     imported: int = 0
     skipped_dedupe: int = 0
+    # CRM-ADJUNTOS-PURGE — mensajes de la BD cuyo gmail_message_id ya no
+    # existe en Gmail, marcados gmail_status='deleted_gmail' (solo con
+    # --purge-not-found).
+    purged_not_found: int = 0
     errors: int = 0
     total_size_bytes: int = 0
     duration_seconds: float = 0.0
@@ -116,6 +121,7 @@ class AttachmentsBackfillReport:
             f"Adjuntos totales:            {self.attachments_total:>8}",
             f"├── Metadata {verb:<18}{self.imported:>8}",
             f"├── Descartados por dedupe:  {self.skipped_dedupe:>8}",
+            f"├── Marcados como borrados en Gmail: {self.purged_not_found:>3}",
             f"└── Errores:                 {self.errors:>8}",
             f"Tamaño total (si se descargaran): {size_h}",
             "Storage local usado:              0 B ← Opción B: cero descarga",
@@ -136,6 +142,7 @@ def run_backfill_attachments(
     until: date,
     dry_run: bool = False,
     batch_size: int = 100,
+    purge_not_found: bool = False,
     progress: Callable[[str], None] = print,
     sleep_between_messages: float = 0.0,
 ) -> AttachmentsBackfillReport:
@@ -183,9 +190,21 @@ def run_backfill_attachments(
                     lambda mid=gmail_message_id: client.get_message(mid),
                     label=f"get_message[{gmail_message_id}]",
                 )
-            except Exception:  # noqa: BLE001
-                report.errors += 1
+            except Exception as exc:  # noqa: BLE001
                 report.processed += 1
+                # CRM-ADJUNTOS-PURGE — este loop itera mensajes de NUESTRA
+                # BD, así que un 404 aquí = huérfano real (borrado en
+                # Gmail). Con --purge-not-found lo marcamos y seguimos.
+                if purge_not_found and is_not_found_error(exc):
+                    session.execute(
+                        update(EmailMessage)
+                        .where(EmailMessage.id == message_id)
+                        .values(gmail_status="deleted_gmail")
+                    )
+                    session.commit()
+                    report.purged_not_found += 1
+                    continue
+                report.errors += 1
                 logger.exception(
                     "adjuntos.backfill get_message failed mid=%s",
                     gmail_message_id,
