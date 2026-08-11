@@ -109,6 +109,8 @@ export type EmailMessage = {
   gmail_status?: string;
   /** CRM-BANDEJA — solo poblado por el thread detail. */
   attachments?: EmailMessageAttachment[];
+  /** CRM-ETIQUETAS-GMAIL — etiquetas a nivel de mensaje (labels de Gmail). */
+  labels?: EmailLabel[];
 };
 
 export type EmailThread = {
@@ -177,6 +179,13 @@ export type EmailLabel = {
   name: string;
   color: string | null;
   sort_order: number;
+  /** CRM-ETIQUETAS-GMAIL — no-null = etiqueta org espejo de una label de
+   *  Gmail (se aplica a nivel de MENSAJE y se propaga a Gmail); null =
+   *  etiqueta personal CRM (nivel de hilo). */
+  gmail_label_id?: string | null;
+  is_system?: boolean;
+  /** Nº de hilos con la etiqueta — badge del sidebar. */
+  thread_count?: number;
 };
 
 export type EmailFolderWrite = {
@@ -412,6 +421,29 @@ export async function addThreadLabel(
   return apiFetch<EmailLabel>(
     `/api/emails/threads/${thread_id}/labels/${label_id}`,
     { method: "POST" },
+  );
+}
+
+/** CRM-ETIQUETAS-GMAIL — etiquetas a nivel de MENSAJE (labels de Gmail).
+ *  El backend propaga el cambio a Gmail vía messages.modify antes de
+ *  persistirlo. */
+export async function addMessageLabel(
+  message_id: string,
+  label_id: string,
+): Promise<EmailLabel> {
+  return apiFetch<EmailLabel>(
+    `/api/emails/messages/${message_id}/labels/${label_id}`,
+    { method: "POST" },
+  );
+}
+
+export async function removeMessageLabel(
+  message_id: string,
+  label_id: string,
+): Promise<void> {
+  await apiFetch(
+    `/api/emails/messages/${message_id}/labels/${label_id}`,
+    { method: "DELETE" },
   );
 }
 

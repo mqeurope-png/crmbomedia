@@ -264,12 +264,17 @@ export function EmailSidebar({
         <ul className="email-sidebar-list">
           {labels.map((label) => {
             const isActive = currentLabel === label.id;
+            // CRM-ETIQUETAS-GMAIL — las etiquetas org (espejo de labels
+            // de Gmail) no se editan ni borran desde el CRM: su ciclo de
+            // vida vive en Gmail (+ sync_labels).
+            const isGmail = Boolean(label.gmail_label_id);
             return (
               <li key={label.id}>
                 <div className="email-sidebar-row">
                   <button
                     type="button"
                     className={`email-sidebar-item${isActive ? " is-active" : ""}`}
+                    title={isGmail ? "Etiqueta de Gmail" : undefined}
                     onClick={() =>
                       router.push(
                         buildHref(params, {
@@ -288,33 +293,46 @@ export function EmailSidebar({
                       fill={label.color ?? "transparent"}
                     />
                     <span>{label.name}</span>
+                    {(label.thread_count ?? 0) > 0 ? (
+                      <span className="email-sidebar-count">
+                        {label.thread_count}
+                      </span>
+                    ) : null}
                   </button>
-                  <button
-                    type="button"
-                    className="email-sidebar-edit"
-                    aria-label={`Editar ${label.name}`}
-                    onClick={() => onEditLabel(label)}
-                  >
-                    <Pencil size={11} aria-hidden />
-                  </button>
-                  <button
-                    type="button"
-                    className="email-sidebar-edit"
-                    aria-label={`Borrar ${label.name}`}
-                    onClick={async () => {
-                      if (
-                        !confirm(`¿Borrar la etiqueta "${label.name}"?`)
-                      )
-                        return;
-                      await deleteEmailLabel(label.id);
-                      if (isActive) {
-                        router.push(buildHref(params, { label_id: null }));
-                      }
-                      onChanged();
-                    }}
-                  >
-                    <X size={11} aria-hidden />
-                  </button>
+                  {!isGmail ? (
+                    <>
+                      <button
+                        type="button"
+                        className="email-sidebar-edit"
+                        aria-label={`Editar ${label.name}`}
+                        onClick={() => onEditLabel(label)}
+                      >
+                        <Pencil size={11} aria-hidden />
+                      </button>
+                      <button
+                        type="button"
+                        className="email-sidebar-edit"
+                        aria-label={`Borrar ${label.name}`}
+                        onClick={async () => {
+                          if (
+                            !confirm(
+                              `¿Borrar la etiqueta "${label.name}"?`,
+                            )
+                          )
+                            return;
+                          await deleteEmailLabel(label.id);
+                          if (isActive) {
+                            router.push(
+                              buildHref(params, { label_id: null }),
+                            );
+                          }
+                          onChanged();
+                        }}
+                      >
+                        <X size={11} aria-hidden />
+                      </button>
+                    </>
+                  ) : null}
                 </div>
               </li>
             );

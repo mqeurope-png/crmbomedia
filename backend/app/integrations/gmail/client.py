@@ -361,6 +361,49 @@ class GmailClient:
             .execute()
         )
 
+    def labels_list(self) -> list[dict[str, Any]]:
+        """CRM-ETIQUETAS-GMAIL-V2.3. `users.labels.list` — todas las labels
+        del buzón. Cada item trae `{id, name, type}` y, para las de usuario,
+        opcionalmente `color: {backgroundColor, textColor}`. El caller
+        filtra por `type == 'user'` (las de sistema tienen vista nativa)."""
+        service = self._build_service()
+        response = service.users().labels().list(userId="me").execute()
+        return list(response.get("labels") or [])
+
+    def labels_get(self, label_id: str) -> dict[str, Any]:
+        """`users.labels.get` — detalle de una label concreta. Usado por el
+        push cuando un labelAdded referencia una label aún no importada."""
+        service = self._build_service()
+        return (
+            service.users()
+            .labels()
+            .get(userId="me", id=label_id)
+            .execute()
+        )
+
+    def modify_message(
+        self,
+        message_id: str,
+        *,
+        add_label_ids: list[str] | None = None,
+        remove_label_ids: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """`users.messages.modify` — añade/quita labels de un mensaje en
+        Gmail. Es la pata CRM→Gmail del sync bidireccional de etiquetas.
+        Requiere el scope gmail.modify (ya concedido por la integración)."""
+        body: dict[str, Any] = {}
+        if add_label_ids:
+            body["addLabelIds"] = list(add_label_ids)
+        if remove_label_ids:
+            body["removeLabelIds"] = list(remove_label_ids)
+        service = self._build_service()
+        return (
+            service.users()
+            .messages()
+            .modify(userId="me", id=message_id, body=body)
+            .execute()
+        )
+
     def watch_mailbox(
         self,
         topic_name: str,

@@ -273,7 +273,9 @@ export default function EmailThreadPage() {
       <EmailThreadToolbar
         thread={thread}
         folders={folders}
-        labels={labels}
+        // Solo las personales — las etiquetas org (labels de Gmail) se
+        // aplican a nivel de MENSAJE desde el detail, no al hilo.
+        labels={labels.filter((l) => !l.gmail_label_id)}
         appliedLabelIds={appliedLabelIds}
         onStarToggle={() =>
           runMutation(() =>
@@ -324,6 +326,8 @@ export default function EmailThreadPage() {
         thread={thread}
         eventsByMessage={eventsByMessage}
         ownEmails={ownEmails}
+        gmailLabels={labels.filter((l) => Boolean(l.gmail_label_id))}
+        onLabelsChanged={() => void load()}
       />
 
       {compose ? (

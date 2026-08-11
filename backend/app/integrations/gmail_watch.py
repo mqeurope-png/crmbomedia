@@ -242,6 +242,42 @@ def backfill_attachments(argv: list[str]) -> None:
         print(report.render())
 
 
+def sync_labels(argv: list[str]) -> None:
+    """CRM-ETIQUETAS-GMAIL-V2.3 — importa las labels personalizadas de Gmail
+    como etiquetas org y materializa el mapeo retroactivo mensaje↔etiqueta
+    desde el JSON `email_messages.gmail_labels`."""
+    parser = argparse.ArgumentParser(
+        prog="python -m app.integrations.gmail_watch sync_labels",
+        description="Importa las labels PERSONALIZADAS de Gmail (type=user) "
+        "como etiquetas org del CRM y puebla email_message_labels para los "
+        "mensajes ya importados. Idempotente: re-ejecutar solo añade lo que "
+        "falta. Las labels de sistema (INBOX/SPAM/SENT/TRASH/CATEGORY_*) se "
+        "ignoran — ya tienen vista nativa.",
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        help="No escribe nada; solo cuenta labels y mapeos.",
+    )
+    args = parser.parse_args(argv)
+
+    from app.integrations.gmail.labels_sync import (  # noqa: PLC0415
+        sync_gmail_labels,
+    )
+
+    with Session(get_engine()) as session:
+        user_id = _org_user_id(session)
+        report = sync_gmail_labels(
+            session,
+            user_id=user_id,
+            dry_run=args.dry_run,
+            progress=print,
+        )
+        if not args.dry_run:
+            session.commit()
+        print()
+        print(report.render())
+
+
 _COMMANDS = {
     "register_watch": register_watch,
     "renew_watch_if_expiring": renew_watch_if_expiring,
@@ -251,6 +287,7 @@ _COMMANDS = {
 _ARGV_COMMANDS = {
     "backfill_universal": backfill_universal,
     "backfill_attachments": backfill_attachments,
+    "sync_labels": sync_labels,
 }
 
 
