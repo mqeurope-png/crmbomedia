@@ -767,9 +767,12 @@ def test_list_emails_admin_sees_all(
     assert resp.json()["total"] == 2
 
 
-def test_list_emails_never_hides_spam(
+def test_list_emails_spam_hidden_from_bandeja_shown_in_spam_folder(
     client: TestClient, session_factory: sessionmaker
 ) -> None:
+    # CRM-BANDEJA-FIX-SPAM revisa la decisión de CRM-GMAIL: el spam de
+    # Gmail YA NO se mezcla en la Bandeja; se oculta por defecto y vive en
+    # la carpeta Spam (el chip sigue existiendo al abrir el hilo).
     with session_factory() as session:
         org_user = _user_id(session, UserRole.MANAGER)
         norma = _user_id(session, UserRole.USER)
@@ -784,19 +787,26 @@ def test_list_emails_never_hides_spam(
         )
         session.commit()
 
+    # Bandeja por defecto: el spam se oculta.
     resp = client.get(
         "/api/emails/threads", headers=auth_headers(client, "user")
     )
-    body = resp.json()
-    assert body["total"] == 1, body  # el spam NO se oculta
-    assert body["items"][0]["has_spam"] is True
+    assert resp.json()["total"] == 0, resp.json()
 
-    # Con ?exclude_spam=true sí se excluye.
-    resp2 = client.get(
-        "/api/emails/threads?exclude_spam=true",
+    # Carpeta Spam: aparece (con su chip has_spam).
+    resp_spam = client.get(
+        "/api/emails/threads?state=spam", headers=auth_headers(client, "user")
+    )
+    body_spam = resp_spam.json()
+    assert body_spam["total"] == 1, body_spam
+    assert body_spam["items"][0]["has_spam"] is True
+
+    # `exclude_spam=false` fuerza a verlo también en la Bandeja.
+    resp3 = client.get(
+        "/api/emails/threads?exclude_spam=false",
         headers=auth_headers(client, "user"),
     )
-    assert resp2.json()["total"] == 0
+    assert resp3.json()["total"] == 1
 
 
 # ---------------------------------------------------------------------------

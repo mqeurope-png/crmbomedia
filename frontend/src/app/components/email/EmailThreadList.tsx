@@ -213,6 +213,11 @@ export function EmailThreadList({ folders, labels, refreshKey }: Props) {
   const hasContact = params.get("has_contact") === "true" ? true : undefined;
   const since = params.get("since") ?? undefined;
   const until = params.get("until") ?? undefined;
+  // CRM-BANDEJA-FIX-SPAM — la Bandeja (state=inbox, incl. Estrellados)
+  // oculta el spam de Gmail; la carpeta Spam (state=spam) lo muestra. El
+  // backend ya excluye por defecto en la bandeja, pero lo mandamos
+  // explícito para que el comportamiento sea visible y testeable.
+  const excludeSpam = state === "inbox" ? true : undefined;
 
   const PAGE_SIZE = 50;
 
@@ -234,6 +239,7 @@ export function EmailThreadList({ folders, labels, refreshKey }: Props) {
         team_user_id:
           urlScope === "team" && urlTeamUserId ? urlTeamUserId : undefined,
         delivered_to: urlDeliveredTo || undefined,
+        exclude_spam: excludeSpam,
         limit: PAGE_SIZE,
         offset: 0,
       });
@@ -271,6 +277,7 @@ export function EmailThreadList({ folders, labels, refreshKey }: Props) {
         team_user_id:
           urlScope === "team" && urlTeamUserId ? urlTeamUserId : undefined,
         delivered_to: urlDeliveredTo || undefined,
+        exclude_spam: excludeSpam,
         limit: PAGE_SIZE,
         offset: threads.length,
       });
