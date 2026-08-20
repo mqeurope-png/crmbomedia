@@ -56,13 +56,14 @@ describe("EmitFactusolModal", () => {
     expect(screen.getByRole("option", { name: "Contado" })).toBeInTheDocument();
   });
 
-  it("preselecciona Streamtec (serie 5) y ofrece el resto de empresas", async () => {
+  it("por defecto hereda la serie del pedido y ofrece las empresas", async () => {
     render(<EmitFactusolModal {...base()} />);
-    // Esperar a que resuelva la carga de series antes de mirar el valor.
     expect(
       await screen.findByRole("option", { name: "5 · Streamtec" }),
     ).toBeInTheDocument();
-    expect(screen.getByLabelText("Empresa emisora / Serie")).toHaveValue("5");
+    // ERP-E2-fix1: sin selección → el backend hereda la serie del F_PCL.
+    expect(screen.getByLabelText("Empresa emisora / Serie")).toHaveValue("");
+    expect(screen.getByText(/serie con la que el pedido ya está/i)).toBeInTheDocument();
     expect(screen.getByRole("option", { name: "2 · MQ Europe" })).toBeInTheDocument();
     expect(screen.getByRole("option", { name: "1 · Bomedia" })).toBeInTheDocument();
     // Las series sin nombre siguen disponibles, detrás de las conocidas.
@@ -90,14 +91,14 @@ describe("EmitFactusolModal", () => {
     expect(onSubmit.mock.calls[0][0]).not.toHaveProperty("serfac");
   });
 
-  it("emite con la serie por defecto si el operador no la toca", async () => {
+  it("sin tocar el selector manda serie null (= heredar la del pedido)", async () => {
     const onSubmit = jest.fn();
     const user = userEvent.setup();
     render(<EmitFactusolModal {...base({ onSubmit })} />);
     await screen.findByRole("option", { name: "5 · Streamtec" });
     await user.click(screen.getByRole("button", { name: "Emitir factura" }));
     expect(onSubmit).toHaveBeenCalledWith(
-      expect.objectContaining({ serie: 5 }),
+      expect.objectContaining({ serie: null }),
     );
   });
 

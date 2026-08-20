@@ -198,10 +198,16 @@ TRANSITIONS: tuple[TransitionDef, ...] = (
         InvoiceStatus.PENDING.value,
         "Solicitar factura", _OFFICE_OR_SYSTEM,
     ),
+    # ERP-E2-fix1 — SOLO el sistema. Este botón lo disparaba el operador desde
+    # la tarjeta «Facturación» y marcaba el pedido como facturado SIN emitir
+    # nada en FACTUSOL: convivía con el botón real de emisión y mentía sobre el
+    # resultado. La emisión de verdad va por «Emitir factura FACTUSOL», que
+    # escribe la factura y pone `invoiced_by_erp` al confirmarla el worker.
+    # Para una factura hecha fuera del ERP existe `already_invoiced_externally`.
     TransitionDef(
         StatusDomain.INVOICE, InvoiceStatus.PENDING.value,
         InvoiceStatus.GENERATED.value,
-        "Factura generada", _OFFICE_OR_SYSTEM,
+        "Factura generada", frozenset({SYSTEM}),
         guards=(GUARD_INVOICEABLE,),
     ),
     TransitionDef(

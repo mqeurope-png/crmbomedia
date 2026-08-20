@@ -21,6 +21,10 @@ origen (no se puede adivinar: ver §4).
 ### Los tres comandos
 
 ```bash
+# 0) ERP-E2-fix1 — serie, contador y ESTPCL a partir de un pedido real
+docker exec crmbo-api-1 python -m scripts.factusol_discover_albaranes \
+    --trace-order BOP-099917
+
 # 1) Estructura de F_ALB + líneas + numeración + sondeo de impresión
 docker exec crmbo-api-1 python -m scripts.factusol_discover_albaranes
 
@@ -251,36 +255,76 @@ Ojo con la asimetría que delató el discovery: **`EJEFAC` no existe pero
 `EJELFA` sí**. En la cabecera el ejercicio va como parámetro; en las líneas es
 columna. Deducirlo por convención habría fallado en los dos sentidos.
 
-## 6b. La serie es la empresa emisora (ERP-E2)
+## 6b. La serie es la empresa emisora — y es el «tipo» del documento
 
-`SERFAC` no existe porque en FACTUSOL **la serie no es un campo de la
-factura**: identifica la empresa que emite y va codificada en el **rango del
-número de documento**. La serie N ocupa `[N·100000, (N+1)·100000)`:
+`SERFAC` no existe porque en FACTUSOL **la serie no es un campo aparte**:
+identifica la empresa que emite y viaja en la columna **`TIPFAC` / `TIPPCL` /
+`TIPPRE`** (el «tipo» del documento). El escritorio los muestra como
+`<serie>-<número>`.
 
-| Serie | Empresa | Rango | Visto en el discovery |
-|---|---|---|---|
-| 1 | Bomedia | `1xxxxx` | |
-| 2 | MQ Europe | `2xxxxx` | facturas 260000-260002 |
-| 5 | Streamtec | `5xxxxx` | máximo 526082 |
+> ### ⚠️ ERP-E2 se equivocó: la serie NO es el rango del número
+>
+> E2 supuso que la serie N ocupaba `[N·100000, (N+1)·100000)`. La validación
+> de Bart lo tumbó con dos contraejemplos: existe una factura **`2-526082`**
+> (bajo el modelo de rangos sería «serie 5») y el pedido de MOVIATICOS es
+> **`5-000005`** (número 5 en serie 5, imposible con rangos).
+>
+> Evidencia de que es `TIPFAC`: la factura que emitió el CRM llevaba
+> `TIPFAC="1"` (nuestro default) y salió como `1-100000`; el join documentado
+> de las líneas es **compuesto** (`F_LPC.TIPLPC = F_PCL.TIPPCL AND
+> F_LPC.CODLPC = F_PCL.CODPCL`), que es justo lo que exige un contador por
+> serie; y todas las proformas de Bomedia tienen `TIPPRE='1'`.
 
-Hay más series en uso; el sistema acepta cualquiera de 1 a 9 y los nombres son
-configurables (`factusol_series_json.names`), sin hardcodear el juego actual.
+| Serie | Empresa | Ejemplo real |
+|---|---|---|
+| 1 | Bomedia | la factura errónea `1-100000` |
+| 2 | MQ Europe | factura `2-526082` |
+| 5 | Streamtec | pedido `5-000005` (MOVIATICOS, `BOP-099917`) |
 
-Consecuencias en el código:
+**El número solo es único por `(tipo, código)`.** Consecuencias que esto
+arrastra, más allá de la numeración:
 
-- **`next_codfac(client, ejercicio, serie)`** calcula `MAX+1` **dentro del
-  rango de la serie**, no global. Antes cogía el máximo global, así que
-  facturar como Bomedia habría numerado en el rango de Streamtec. Una serie sin
-  facturas arranca en su suelo (`serie·100000`).
-- **`resolve_serie`** (sustituye a `resolve_serfac`): elección del modal →
-  `by_source[store_id]` → `by_source[origen]` → default de ajustes → **5
-  (Streamtec)**. La configuración heredada de C-2 con series en letra (`"A"`)
-  se ignora y cae al default en vez de romper.
-- **Modal de emisión**: la «Serie» pasa de texto libre a desplegable de
-  **empresa emisora**, con Streamtec preseleccionado y el resto disponibles.
-- La serie emitida se guarda en el historial del pedido
-  (`metadata.factusol_serie`): sin eso, a posteriori no habría forma de saber
-  desde el CRM qué empresa emitió, porque no viaja en la factura.
+- El borrado de compensación filtra por `TIPFAC` **y** `CODFAC`: borrar por
+  número a secas se llevaría por delante la factura homónima de otra serie.
+- Las líneas llevan `TIPLFA` = la serie, o colgarían de la cabecera equivocada.
+
+### El bug de la validación
+
+El pedido ya existía en FACTUSOL en la serie correcta (`5-000005`), y el
+mapper **copiaba `TIPPCL→TIPFAC`**… para acto seguido pisarlo con
+`opts.tipfac`, cuyo default era `"1"`. De ahí `1-100000`: serie de Bomedia
+(el default que pisó) y número 100000 (el suelo del rango que E2 inventó,
+por debajo del mínimo real).
+
+### Flujo correcto (ERP-E2-fix1)
+
+1. Localizar el `F_PCL` del pedido por `REFPCL`.
+2. **Heredar la serie** de su `TIPPCL`. La config de `/erp/settings` solo
+   actúa si el pedido no está en FACTUSOL (pedidos manuales). El modal puede
+   forzar otra, pero por defecto ofrece «heredar la del pedido».
+3. Número = **contador de esa serie**: `MAX(CODFAC donde TIPFAC=serie) + 1`.
+   El filtro por serie se hace en Python, no en el `filtro` de la API: no
+   sabemos si `TIPFAC` viaja como `'5'` o `5`, y un filtro que no casa
+   devolvería `[]` en silencio (gotcha nº 1) → el contador arrancaría de cero
+   sobre facturas existentes.
+4. Escribir F_FAC + F_LFA heredando cliente, líneas, totales y bandas de IVA.
+5. Enlazar `PEDFAC = CODPCL` y marcar el pedido como facturado.
+6. Todo por el worker serial `factusol:writes`.
+
+> **Sobre `PEDFAC`:** C-2-fix2 decidió NO ponerlo porque la factura real de
+> Bart lo tenía vacío. Se reintroduce porque sin él no hay forma de saber de
+> qué pedido salió una factura del CRM. Si el discovery confirma que el
+> escritorio lo deja vacío al convertir, conviene revisar si conviene mantener
+> la divergencia.
+
+### Marcar el pedido como facturado
+
+`ESTPCL` pasa a «Enviado». **El valor del código no se adivina**: como con
+`ESTPRE` (gotcha nº 17), meter un código inventado en la contabilidad es peor
+que no marcar nada. El discovery (`--trace-order`, sección A4) lista el
+reparto de `ESTPCL` de todos los pedidos para identificarlo; luego se guarda
+en `factusol_series_json.estpcl_invoiced` y la emisión lo aplica. Mientras no
+esté configurado, la factura se emite igual y queda un warning en el log.
 
 ## 6c. Columnas canónicas (referencia)
 
