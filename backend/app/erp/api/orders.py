@@ -634,7 +634,10 @@ class EmitFactusolInvoicePayload(BaseModel):
     un POST sin cuerpo emite con tipo '1' y fecha de hoy."""
 
     tipfac: str = Field(default="1", max_length=4)
-    serfac: str | None = Field(default=None, max_length=10)
+    #: ERP-E2 — empresa emisora. NO es una columna de F_FAC: determina el rango
+    #: de numeración del CODFAC (serie 5 ⇒ 5xxxxx). None → la resuelve el
+    #: service (override por origen → default de ajustes → 5 Streamtec).
+    serie: int | None = Field(default=None, ge=1, le=9)
     #: Fecha de emisión ISO (`YYYY-MM-DD`); None → hoy (lo pone el service).
     fecfac: str | None = Field(default=None, max_length=10)
     fopfac: str | None = Field(default=None, max_length=10)

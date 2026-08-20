@@ -217,9 +217,78 @@ El spec sugería verificar si la emisión usa el retry de `respuesta: "KO"` de
 C-6-fix1. **Sí lo usa**: vive en `client._request`, que es el camino común de
 `load_table` / `write_record` / `update_record`. No hace falta tocar nada.
 
-### Resultado real
+### Resultado real — ✅ H1 CONFIRMADA (2026-08-20)
 
-> _Pendiente: pegar aquí la salida del comando 3 y del comando 4._
+Salida del comando 3 contra la base real:
+
+```
+❌ COLUMNAS QUE NO EXISTEN EN F_FAC: CEWFAC, EJEFAC, INCFAC, PENFAC, PPOFAC, SERFAC, SMDFAC
+❌ COLUMNAS QUE NO EXISTEN EN F_LFA: ANULFA, PENLFA
+```
+
+Y el log del worker:
+
+```
+FactusolError: POST /admin/EscribirRegistro → respuesta='BDEscribirRegistroError'
+[Job ...]: exception raised while executing (…jobs.emit_invoice_job)
+```
+
+Nueve columnas fantasma, y **basta una** para tumbar el registro entero. Dos
+orígenes distintos:
+
+| Origen | Columnas | Por qué |
+|---|---|---|
+| Copia por sufijo | `CEWFAC`, `INCFAC`, `PENFAC`, `PPOFAC`, `SMDFAC` (+ `ANULFA`, `PENLFA`) | F_PCL/F_LPC **sí** tienen `PENPCL`, `PPOPCL`, `INCPCL`… pero F_FAC/F_LFA no tienen su contrapartida. El mapeo por sufijo asumía simetría que no existe. |
+| Inyectadas a mano | `EJEFAC`, `SERFAC` | El ejercicio es **parámetro** de la llamada, no columna. La serie **no es un dato de la factura** (ver §6b). |
+
+**Arreglado en ERP-E2.** Además de quitarlas, el payload ahora se filtra contra
+la lista canónica de columnas reales (`mapper.FAC_COLUMNS` / `LFA_COLUMNS`):
+lo que no exista se descarta con un warning en el log en vez de tumbar la
+emisión. Un test fija el invariante «toda columna del payload existe en la
+tabla», así que reintroducir una inventada falla en CI, no en producción.
+
+Ojo con la asimetría que delató el discovery: **`EJEFAC` no existe pero
+`EJELFA` sí**. En la cabecera el ejercicio va como parámetro; en las líneas es
+columna. Deducirlo por convención habría fallado en los dos sentidos.
+
+## 6b. La serie es la empresa emisora (ERP-E2)
+
+`SERFAC` no existe porque en FACTUSOL **la serie no es un campo de la
+factura**: identifica la empresa que emite y va codificada en el **rango del
+número de documento**. La serie N ocupa `[N·100000, (N+1)·100000)`:
+
+| Serie | Empresa | Rango | Visto en el discovery |
+|---|---|---|---|
+| 1 | Bomedia | `1xxxxx` | |
+| 2 | MQ Europe | `2xxxxx` | facturas 260000-260002 |
+| 5 | Streamtec | `5xxxxx` | máximo 526082 |
+
+Hay más series en uso; el sistema acepta cualquiera de 1 a 9 y los nombres son
+configurables (`factusol_series_json.names`), sin hardcodear el juego actual.
+
+Consecuencias en el código:
+
+- **`next_codfac(client, ejercicio, serie)`** calcula `MAX+1` **dentro del
+  rango de la serie**, no global. Antes cogía el máximo global, así que
+  facturar como Bomedia habría numerado en el rango de Streamtec. Una serie sin
+  facturas arranca en su suelo (`serie·100000`).
+- **`resolve_serie`** (sustituye a `resolve_serfac`): elección del modal →
+  `by_source[store_id]` → `by_source[origen]` → default de ajustes → **5
+  (Streamtec)**. La configuración heredada de C-2 con series en letra (`"A"`)
+  se ignora y cae al default en vez de romper.
+- **Modal de emisión**: la «Serie» pasa de texto libre a desplegable de
+  **empresa emisora**, con Streamtec preseleccionado y el resto disponibles.
+- La serie emitida se guarda en el historial del pedido
+  (`metadata.factusol_serie`): sin eso, a posteriori no habría forma de saber
+  desde el CRM qué empresa emitió, porque no viaja en la factura.
+
+## 6c. Columnas canónicas (referencia)
+
+Volcadas en vivo por el discovery. Viven en `mapper.FAC_COLUMNS` (167) y
+`mapper.LFA_COLUMNS` (36), con un test que verifica los recuentos para que un
+error de transcripción no pase inadvertido. **Antes de escribir una columna
+nueva, confírmala contra estas listas** — no la deduzcas del sufijo de otra
+tabla (gotcha nº 13).
 
 ---
 
@@ -227,13 +296,16 @@ C-6-fix1. **Sí lo usa**: vive en `client._request`, que es el camino común de
 
 Condicionado a lo que salga arriba; se cierra cuando Bart pegue las salidas.
 
-**ERP-E2 — arreglar facturación + vista central de proformas**
-1. Fix del payload según el diff de H1 (quitar las columnas que no existan).
-   Añadir un test que compare el payload del mapper contra la lista de columnas
-   reales, para que no vuelva a colarse una inventada.
-2. Vista `/erp/proformas` con estado del ciclo (proforma / albarán / factura),
+**ERP-E2 — arreglar facturación** ✅ HECHO
+1. ~~Fix del payload~~ — 9 columnas fantasma fuera + filtro contra la lista
+   canónica + test del invariante.
+2. ~~Serie~~ — numeración por rango + selector de empresa emisora en el modal.
+
+**ERP-E3 — albaranes + vista central de proformas**
+1. Vista `/erp/proformas` con estado del ciclo (proforma / albarán / factura),
    usando la referencia descubierta en §4 — o columnas propias del CRM si
    resulta que FACTUSOL no enlaza los documentos.
+2. Crear albaranes desde el CRM (abajo).
 
 **ERP-E3 — crear albaranes desde el CRM**
 `create_albaran` siguiendo el patrón de `create_quote`: `next_codalb` con

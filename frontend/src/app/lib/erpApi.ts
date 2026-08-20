@@ -579,7 +579,10 @@ export type FactusolStatus =
  *  escritorio FACTUSOL). Todas opcionales. */
 export type EmitFactusolOptions = {
   tipfac?: string;
-  serfac?: string | null;
+  /** ERP-E2 — empresa emisora. NO es una columna de F_FAC: determina el rango
+   *  de numeración del CODFAC (serie 5 ⇒ 5xxxxx). Omitir → la resuelve el
+   *  backend (override por origen → default de ajustes → 5 Streamtec). */
+  serie?: number | null;
   /** Fecha de emisión ISO `YYYY-MM-DD`; omitir → hoy (lo pone el backend). */
   fecfac?: string | null;
   fopfac?: string | null;
@@ -587,6 +590,15 @@ export type EmitFactusolOptions = {
 };
 
 export type FormaPago = { codigo: string | null; nombre: string };
+
+/** Serie de facturación = empresa emisora (ERP-E2). */
+export type FactusolSerie = {
+  serie: number;
+  nombre: string;
+  is_default: boolean;
+  /** `false` = serie sin nombre asignado; la UI las ordena al final. */
+  is_known: boolean;
+};
 
 export async function emitFactusolInvoice(
   orderId: string, options?: EmitFactusolOptions,
@@ -611,6 +623,13 @@ export async function getFactusolStatus(orderId: string): Promise<FactusolStatus
 export async function getFactusolFormasPago(): Promise<FormaPago[]> {
   const r = await apiFetch<{ items: FormaPago[] }>("/api/erp/factusol/formas-pago");
   return r.items;
+}
+
+export async function getFactusolSeries(): Promise<{
+  items: FactusolSerie[];
+  default: number;
+}> {
+  return apiFetch("/api/erp/factusol/series");
 }
 
 // --- Clientes FACTUSOL ↔ CRM (Fase C · C-3) ---------------------------------

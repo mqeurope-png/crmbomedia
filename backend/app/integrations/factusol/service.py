@@ -57,13 +57,54 @@ def ejercicio_for(session: Session) -> str:
     return get_settings().factusol_default_ejercicio
 
 
-#: Serie de facturación de último recurso si no hay nada configurado (C-2).
-FALLBACK_SERFAC = "A"
+# ---------------------------------------------------------------------------
+# Series = empresas emisoras (ERP-E2)
+#
+# En FACTUSOL la serie identifica la EMPRESA que emite y **no es una columna**
+# (`SERFAC` no existe en F_FAC — ver mapper). Va codificada en el RANGO del
+# número de documento: la serie N ocupa `[N·100000, (N+1)·100000)`.
+#
+#     serie 1 = Bomedia    → 1xxxxx
+#     serie 2 = MQ Europe  → 2xxxxx   (facturas 26xxxx vistas en el discovery)
+#     serie 5 = Streamtec  → 5xxxxx   (máximo visto: 526082)
+#
+# Cada serie lleva su propia numeración correlativa independiente, así que el
+# `MAX+1` se calcula DENTRO del rango, nunca global. No se hardcodea el juego
+# de series: cualquiera de 1 a 9 vale, y los nombres viven en los ajustes.
+# ---------------------------------------------------------------------------
+
+#: Tamaño del rango de cada serie. Serie N ⇒ [N·100000, (N+1)·100000).
+SERIES_RANGE_SIZE = 100_000
+#: Serie por defecto: BoHub opera prioritariamente como Streamtec.
+DEFAULT_SERIE = 5
+#: Series válidas (un dígito: el prefijo del número de documento).
+VALID_SERIES = range(1, 10)
+
+
+def series_range(serie: int) -> tuple[int, int]:
+    """`(lo, hi)` del rango de numeración de la serie; `hi` es exclusivo."""
+    lo = serie * SERIES_RANGE_SIZE
+    return lo, lo + SERIES_RANGE_SIZE
+
+
+def coerce_serie(value: Any) -> int | None:
+    """Normaliza a número de serie válido. Devuelve `None` si no lo es.
+
+    Tolera la configuración heredada de C-2, donde la serie se guardaba como
+    letra (`"A"`) para escribirla en la inexistente columna `SERFAC`: eso ya no
+    significa nada, así que se ignora y se cae al default en vez de romper."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        serie = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return serie if serie in VALID_SERIES else None
 
 
 def series_config(session: Session) -> dict[str, Any]:
-    """`{"default": "A", "by_source": {...}}` desde `ErpSettings`. Dict vacío
-    si aún no se ha configurado."""
+    """`{"default": 5, "by_source": {...}, "names": {...}}` desde
+    `ErpSettings`. Dict vacío si aún no se ha configurado."""
     cfg = session.get(ErpSettings, ERP_SETTINGS_SINGLETON_ID)
     if cfg is None or not cfg.factusol_series_json:
         return {}
@@ -75,28 +116,55 @@ def series_config(session: Session) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
-def resolve_serfac(session: Session, order: Order) -> str:
-    """Serie de la factura para este pedido (C-2):
-    `by_source[origen]` → `default` → `"A"`.
+def series_names(session: Session) -> dict[int, str]:
+    """`{5: "Streamtec", 2: "MQ Europe", …}` — mapping serie→empresa emisora
+    configurable en `/erp/settings`. Alimenta el selector del modal."""
+    raw = series_config(session).get("names")
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[int, str] = {}
+    for key, value in raw.items():
+        serie = coerce_serie(key)
+        if serie is not None and str(value).strip():
+            out[serie] = str(value).strip()
+    return out
 
-    El origen es `order.external_source` (`woocommerce`, `manual`, …). Si la
-    tienda concreta necesita serie propia, la clave puede ser el `store_id`,
-    que tiene prioridad sobre el origen genérico."""
+
+def default_serie(session: Session) -> int:
+    """Serie por defecto de los ajustes; `DEFAULT_SERIE` (5) si no hay nada."""
+    return coerce_serie(series_config(session).get("default")) or DEFAULT_SERIE
+
+
+def resolve_serie(
+    session: Session, order: Order, requested: int | None = None
+) -> int:
+    """Serie (empresa emisora) con la que facturar este pedido:
+    elección del modal → `by_source[store_id]` → `by_source[origen]` →
+    default de ajustes → 5 (Streamtec).
+
+    Sustituye a `resolve_serfac` de C-2: aquel devolvía un valor para
+    escribirlo en la columna `SERFAC`, que no existe. Ahora el valor decide el
+    RANGO de numeración del CODFAC."""
+    explicit = coerce_serie(requested)
+    if explicit is not None:
+        return explicit
     conf = series_config(session)
     by_source = conf.get("by_source")
     by_source = by_source if isinstance(by_source, dict) else {}
     source = _status_value(order.external_source)
     for key in (order.store_id, source):
-        if key and str(by_source.get(key, "")).strip():
-            return str(by_source[key]).strip()
-    default = str(conf.get("default") or "").strip()
-    if default:
-        return default
-    logger.warning(
-        "factusol: sin serie configurada para origen %r; se usa %r",
-        source, FALLBACK_SERFAC,
+        if key:
+            serie = coerce_serie(by_source.get(key))
+            if serie is not None:
+                return serie
+    configured = coerce_serie(conf.get("default"))
+    if configured is not None:
+        return configured
+    logger.info(
+        "factusol: sin serie configurada para origen %r; se usa la %d",
+        source, DEFAULT_SERIE,
     )
-    return FALLBACK_SERFAC
+    return DEFAULT_SERIE
 
 
 def _int_or_none(value: object) -> int | None:
@@ -106,21 +174,37 @@ def _int_or_none(value: object) -> int | None:
         return None
 
 
-def next_codfac(client: FactusolClient, ejercicio: str) -> str:
-    """Siguiente CODFAC secuencial del ejercicio = max(CODFAC) + 1.
+def next_codfac(
+    client: FactusolClient, ejercicio: str, serie: int = DEFAULT_SERIE
+) -> str:
+    """Siguiente CODFAC de la SERIE = max(CODFAC dentro del rango) + 1.
 
-    FACTUSOL numera solo; consultamos F_FAC ordenada DESC y sumamos 1. Se
-    llama DENTRO de `emit_invoice`, justo antes de escribir la cabecera. La
+    ERP-E2: cada serie (= empresa emisora) lleva su propia numeración
+    correlativa dentro de `[serie·100000, (serie+1)·100000)`. Antes se cogía el
+    máximo GLOBAL, que con varias empresas en la misma base daba el número de
+    la serie más alta (Streamtec, 5xxxxx) para todas — habría numerado las
+    facturas de Bomedia en el rango de Streamtec.
+
+    Si la serie aún no tiene facturas empieza en `serie·100000`.
+
+    Se llama DENTRO de `emit_invoice`, justo antes de escribir la cabecera. La
     race lectura→escritura la evita el worker serializado (concurrency=1).
-    Nota: la API DELSOL no soporta LIMIT en el filtro, así que se pide todo
-    ordenado y se toma la primera fila."""
+    Nota: la API DELSOL no soporta LIMIT, así que se filtra en Python."""
+    lo, hi = series_range(serie)
     rows = client.load_table(
         "F_FAC", filtro="1=1 ORDER BY CODFAC DESC", ejercicio=ejercicio,
     )
-    if not rows:
-        return "1"
-    last = _int_or_none(rows[0].get("CODFAC"))
-    return str((last or 0) + 1)
+    in_series = [
+        n for n in (_int_or_none(r.get("CODFAC")) for r in rows)
+        if n is not None and lo <= n < hi
+    ]
+    if not in_series:
+        logger.info(
+            "factusol: serie %d sin facturas en %s; se arranca en %d",
+            serie, ejercicio, lo,
+        )
+        return str(lo)
+    return str(max(in_series) + 1)
 
 
 def _compose_ref(order_number: str, ref_prefix: str | None) -> str:
@@ -273,16 +357,17 @@ def emit_invoice(
         "F_LPC", filtro=f"CODLPC={codpcl}", ejercicio=ejercicio,
     )
 
-    codfac = next_codfac(client, ejercicio)
+    # ERP-E2: la serie (= empresa emisora) decide el RANGO de numeración, no
+    # una columna. Elección del modal → override por origen → default (5).
+    serie = resolve_serie(
+        session, order, options.serie if options is not None else None
+    )
+    options = (
+        replace(options, serie=serie) if options is not None
+        else FacturaOptions(serie=serie)
+    )
+    codfac = next_codfac(client, ejercicio, serie)
     fecha_emision = datetime.now(UTC).date().isoformat()
-    # C-2: si el operador no fijó serie en el modal, se aplica la configurada
-    # en /erp/settings (override por origen → default → "A").
-    if options is None or options.serfac is None:
-        serie = resolve_serfac(session, order)
-        options = (
-            replace(options, serfac=serie) if options is not None
-            else FacturaOptions(serfac=serie)
-        )
     cabecera = pcl_row_to_fac_payload(
         pcl, codfac, ejercicio, fecha_emision=fecha_emision, options=options,
     )
@@ -319,12 +404,15 @@ def emit_invoice(
         metadata_json=json.dumps({
             "factusol_codfac": codfac, "factusol_codpcl": str(codpcl),
             "factusol_ref": cabecera.get("REFFAC"), "factusol_ejercicio": ejercicio,
+            # ERP-E2: qué empresa emitió (la serie no viaja en la factura, así
+            # que sin esto no hay forma de saberlo desde el CRM a posteriori).
+            "factusol_serie": serie,
         }),
     ))
     _log_sync(session, order, codfac, str(codpcl), ejercicio, len(lineas))
     session.commit()
     return {"codfac": codfac, "codpcl": str(codpcl), "ejercicio": ejercicio,
-            "lines": len(lineas)}
+            "lines": len(lineas), "serie": serie}
 
 
 def _auto_link_factura(

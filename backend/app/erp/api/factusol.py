@@ -50,6 +50,50 @@ def _normalise_fop(row: dict[str, Any]) -> dict[str, Any]:
             "nombre": nombre or (str(codigo) if codigo is not None else "")}
 
 
+#: Nombres de serie por defecto si aún no se han configurado en /erp/settings.
+#: Confirmados por Bart (ERP-E2). Hay más series en uso para otras cosas; el
+#: selector las lista igualmente como «Serie N» para no bloquear al operador.
+FALLBACK_SERIES_NAMES: dict[int, str] = {
+    1: "Bomedia",
+    2: "MQ Europe",
+    5: "Streamtec",
+}
+
+
+@router.get("/series")
+def series(
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_view),
+) -> dict[str, Any]:
+    """Series de facturación = empresas emisoras, para el selector del modal.
+
+    En FACTUSOL la serie NO es una columna: identifica la empresa y va
+    codificada en el rango del número de documento (serie N ⇒ `Nxxxxx`). Los
+    nombres son configurables en `/erp/settings`; si no hay nada guardado se
+    usan los conocidos y el resto se muestran como «Serie N»."""
+    from app.integrations.factusol.service import (  # noqa: PLC0415
+        VALID_SERIES,
+        default_serie,
+        series_names,
+    )
+
+    configured = series_names(session)
+    predeterminada = default_serie(session)
+    items = [
+        {
+            "serie": n,
+            "nombre": configured.get(n) or FALLBACK_SERIES_NAMES.get(n)
+            or f"Serie {n}",
+            "is_default": n == predeterminada,
+            # Sin nombre propio = serie que nadie ha reclamado todavía; la UI
+            # las ordena detrás para que las de Bart salgan arriba.
+            "is_known": n in configured or n in FALLBACK_SERIES_NAMES,
+        }
+        for n in VALID_SERIES
+    ]
+    return {"items": items, "default": predeterminada}
+
+
 @router.get("/formas-pago")
 def formas_pago(
     session: Session = Depends(get_session),

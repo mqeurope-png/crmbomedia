@@ -40,7 +40,9 @@ def emit_invoice_job(
     from app.integrations.factusol.mapper import FacturaOptions  # noqa: PLC0415
     from app.models.crm import User  # noqa: PLC0415
 
-    opts = FacturaOptions(**options) if options else None
+    # `from_payload` ignora claves obsoletas: un job encolado antes de ERP-E2
+    # trae `serfac` (la serie como string), que ya no existe.
+    opts = FacturaOptions.from_payload(options) if options else None
     with Session(get_engine()) as session:
         actor = session.get(User, actor_user_id) if actor_user_id else None
         client = FactusolClient.from_settings()
