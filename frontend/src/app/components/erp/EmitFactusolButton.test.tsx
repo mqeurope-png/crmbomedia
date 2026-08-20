@@ -5,17 +5,20 @@ import {
   emitFactusolInvoice,
   getFactusolInvoiceStatus,
   getFactusolFormasPago,
+  getFactusolSeries,
 } from "../../lib/erpApi";
 
 jest.mock("../../lib/erpApi", () => ({
   emitFactusolInvoice: jest.fn(),
   getFactusolInvoiceStatus: jest.fn(),
   getFactusolFormasPago: jest.fn(),
+  getFactusolSeries: jest.fn(),
 }));
 
 const mockEmit = emitFactusolInvoice as jest.Mock;
 const mockStatus = getFactusolInvoiceStatus as jest.Mock;
 const mockFormas = getFactusolFormasPago as jest.Mock;
+const mockSeries = getFactusolSeries as jest.Mock;
 
 function props(over = {}) {
   return {
@@ -30,6 +33,11 @@ beforeEach(() => {
   mockStatus.mockReset();
   mockFormas.mockReset();
   mockFormas.mockResolvedValue([]);
+  mockSeries.mockReset();
+  mockSeries.mockResolvedValue({
+    items: [{ serie: 5, nombre: "Streamtec", is_default: true, is_known: true }],
+    default: 5,
+  });
 });
 
 describe("EmitFactusolButton", () => {
@@ -95,7 +103,7 @@ describe("EmitFactusolButton", () => {
     await user.click(screen.getByRole("button", { name: /Emitir factura FACTUSOL/ }));
     // Los 5 campos del modal.
     expect(screen.getByLabelText("Tipo")).toHaveValue("1");
-    expect(screen.getByLabelText("Serie")).toBeInTheDocument();
+    expect(screen.getByLabelText("Empresa emisora / Serie")).toBeInTheDocument();
     expect(screen.getByLabelText("Fecha de emisión")).toBeInTheDocument();
     expect(screen.getByLabelText("Observaciones")).toBeInTheDocument();
     // Forma de pago cargada de F_FOP.

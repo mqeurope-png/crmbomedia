@@ -49,7 +49,8 @@ class FakeFactusol:
     factura?) vs. ORDER BY CODFAC DESC (siguiente número)."""
 
     def __init__(self, *, pcl_row=None, lpc_rows=None, f_fac_last=None,
-                 fac_by_ref=None, alb_by_ref=None, fail_on_line=None):
+                 fac_by_ref=None, alb_by_ref=None, fail_on_line=None,
+                 f_fac_rows=None):
         self.default_ejercicio = "2026"
         self.writes: list[tuple[str, dict]] = []
         self.deletes: list[tuple[str, str]] = []
@@ -59,6 +60,9 @@ class FakeFactusol:
         self._pcl_row = pcl_row
         self._lpc_rows = lpc_rows or []
         self._f_fac_last = f_fac_last
+        #: ERP-E2 — varias facturas de series distintas, para comprobar que
+        #: `next_codfac` numera dentro del rango de la serie pedida.
+        self._f_fac_rows = f_fac_rows
         self._fac_by_ref = fac_by_ref or []
         self._alb_by_ref = alb_by_ref or []
         self._fail_on_line = fail_on_line
@@ -70,6 +74,8 @@ class FakeFactusol:
                 self.fac_filters.append(filtro)
                 return list(self._fac_by_ref)
             # next_codfac: 1=1 ORDER BY CODFAC DESC
+            if self._f_fac_rows is not None:
+                return list(self._f_fac_rows)
             return [{"CODFAC": self._f_fac_last}] if self._f_fac_last is not None else []
         if tabla == "F_ALB":
             self.alb_filters.append(filtro)
@@ -120,12 +126,30 @@ def _order(s: Session, *, number="BOPRIN-99866", invoice_status=None) -> str:
 # --- next_codfac ------------------------------------------------------------
 
 
-def test_next_codfac_empty_f_fac_returns_1():
-    assert next_codfac(FakeFactusol(f_fac_last=None), "2026") == "1"
+def test_next_codfac_empty_series_starts_at_range_floor():
+    """ERP-E2: una serie sin facturas arranca en `serie·100000`, no en 1."""
+    assert next_codfac(FakeFactusol(f_fac_last=None), "2026", 5) == "500000"
+    assert next_codfac(FakeFactusol(f_fac_last=None), "2026", 2) == "200000"
 
 
 def test_next_codfac_is_last_plus_one():
     assert next_codfac(FakeFactusol(f_fac_last=526066), "2026") == "526067"
+
+
+def test_next_codfac_ignores_numbers_of_other_series():
+    """El máximo GLOBAL es de Streamtec (5xxxxx); facturar como MQ Europe
+    (serie 2) no puede heredarlo o numeraría en el rango ajeno."""
+    client = FakeFactusol(f_fac_rows=[
+        {"CODFAC": 526082},   # serie 5
+        {"CODFAC": 260002},   # serie 2 ← el que manda para serie 2
+        {"CODFAC": 260001},
+        {"CODFAC": 100500},   # serie 1
+    ])
+    assert next_codfac(client, "2026", 2) == "260003"
+    assert next_codfac(client, "2026", 5) == "526083"
+    assert next_codfac(client, "2026", 1) == "100501"
+    # Serie sin facturas → arranca en su suelo, no hereda de otra.
+    assert next_codfac(client, "2026", 7) == "700000"
 
 
 # --- find_pcl_by_order ------------------------------------------------------
@@ -239,9 +263,11 @@ def test_pcl_row_to_fac_payload_maps_all_iva_bands_and_injects():
     assert fac["REFFAC"] == "BOP-099866"          # REFPCL → REFFAC (el enlace)
     # Inyecciones.
     assert fac["CODFAC"] == "526067"
-    assert fac["EJEFAC"] == "2026"
     assert fac["TIPFAC"] == "1"                    # factura ordinaria (string)
     assert fac["FECFAC"] == "2026-08-04"          # fecha de emisión, no la del pedido
+    # ERP-E2: el ejercicio NO es columna de cabecera (va como parámetro de
+    # write_record). Mandarlo tumbaba el EscribirRegistro entero.
+    assert "EJEFAC" not in fac
     # C-2-fix2: NO se inyecta PEDFAC (la factura real lo tiene vacío).
     assert "PEDFAC" not in fac
     # Columnas de estado del pedido NO copiadas.
@@ -251,24 +277,123 @@ def test_pcl_row_to_fac_payload_maps_all_iva_bands_and_injects():
 
 
 def test_pcl_row_to_fac_payload_applies_operator_options():
-    opts = FacturaOptions(tipfac="4", serfac="A", fecfac="2026-07-29",
+    opts = FacturaOptions(tipfac="4", serie=2, fecfac="2026-07-29",
                           fopfac="03", comfac="Pago a 30 días")
     fac = pcl_row_to_fac_payload(
-        _pcl_row(), "526067", "2026", fecha_emision="2026-08-04", options=opts,
+        _pcl_row(), "260003", "2026", fecha_emision="2026-08-04", options=opts,
     )
     assert fac["TIPFAC"] == "4"
-    assert fac["SERFAC"] == "A"
     assert fac["FECFAC"] == "2026-07-29"          # la opción gana a la fecha de hoy
     assert fac["FOPFAC"] == "03"
     assert fac["COMFAC"] == "Pago a 30 días"
+    # ERP-E2: la serie NO viaja como columna; va en el rango del CODFAC.
+    assert "SERFAC" not in fac
 
 
 def test_pcl_row_to_fac_payload_defaults_omit_optional_columns():
     fac = pcl_row_to_fac_payload(
         _pcl_row(), "1", "2026", fecha_emision="2026-08-04",
     )
-    # Sin opciones no se inyectan serie / forma de pago / observaciones.
-    assert "SERFAC" not in fac and "FOPFAC" not in fac and "COMFAC" not in fac
+    # Sin opciones no se inyectan forma de pago / observaciones.
+    assert "FOPFAC" not in fac and "COMFAC" not in fac
+
+
+# --- ERP-E2: columnas fantasma que rompían TODAS las emisiones --------------
+
+
+def test_fac_payload_excludes_phantom_columns():
+    """Las 7 columnas que no existen en F_FAC no pueden salir en el payload:
+    una sola tumba el EscribirRegistro entero (gotcha nº 13)."""
+    from app.integrations.factusol.mapper import PHANTOM_FAC_COLUMNS  # noqa: PLC0415
+
+    # F_PCL sí tiene las contrapartidas — la copia por sufijo las arrastraría.
+    pcl = _pcl_row(PENPCL=1, PPOPCL=2, INCPCL=3, CEWPCL=4, SMDPCL=5)
+    fac = pcl_row_to_fac_payload(
+        pcl, "526067", "2026", fecha_emision="2026-08-04",
+        options=FacturaOptions(serie=5),
+    )
+    assert PHANTOM_FAC_COLUMNS.isdisjoint(fac)
+
+
+def test_lfa_payload_excludes_phantom_columns_but_keeps_ejelfa():
+    """En LÍNEAS el ejercicio SÍ es columna (`EJELFA`); las que no existen
+    (`ANULFA`, `PENLFA`) se quedan fuera."""
+    lpc = {"ARTLPC": "A1", "CANLPC": 1, "CODLPC": 2765, "PENLPC": 0, "ANULPC": 0}
+    lfa = lpc_row_to_lfa_payload(lpc, "526067", 1, "2026")
+    assert "PENLFA" not in lfa and "ANULFA" not in lfa
+    assert lfa["EJELFA"] == "2026"
+
+
+def test_fac_payload_only_contains_real_columns():
+    """Invariante: TODA columna del payload existe en F_FAC (lista canónica de
+    167 volcada en vivo). Si alguien inyecta una nueva sin verificarla, salta
+    aquí y no en producción."""
+    from app.integrations.factusol.mapper import FAC_COLUMNS  # noqa: PLC0415
+
+    pcl = _pcl_row(PENPCL=1, PPOPCL=2, INVENTADAPCL="x")
+    fac = pcl_row_to_fac_payload(
+        pcl, "526067", "2026", fecha_emision="2026-08-04",
+        options=FacturaOptions(serie=5, fopfac="03", comfac="obs"),
+    )
+    assert set(fac) <= FAC_COLUMNS
+
+
+def test_lfa_payload_only_contains_real_columns():
+    from app.integrations.factusol.mapper import LFA_COLUMNS  # noqa: PLC0415
+
+    lpc = {"ARTLPC": "A1", "CANLPC": 1, "CODLPC": 2765, "INVENTADALPC": "x"}
+    assert set(lpc_row_to_lfa_payload(lpc, "1", 1, "2026")) <= LFA_COLUMNS
+
+
+def test_canonical_column_lists_match_live_dump():
+    """Guard de transcripción: el discovery contó 167 y 36 columnas."""
+    from app.integrations.factusol.mapper import FAC_COLUMNS, LFA_COLUMNS  # noqa: PLC0415
+
+    assert len(FAC_COLUMNS) == 167
+    assert len(LFA_COLUMNS) == 36
+    # Las fantasma no pueden colarse en las listas canónicas.
+    assert "EJEFAC" not in FAC_COLUMNS and "SERFAC" not in FAC_COLUMNS
+    assert "EJELFA" in LFA_COLUMNS
+
+
+def test_emit_invoice_still_sends_required_fields(session_factory):
+    """Regresión: quitar columnas no puede haberse llevado por delante lo que
+    la factura necesita (cliente, referencia, totales y bandas de IVA)."""
+    lpc_rows = [{"ARTLPC": "A1", "CANLPC": 1, "TOTLPC": 100, "CODLPC": 2765}]
+    with session_factory() as s:
+        oid = _order(s)
+        client = FakeFactusol(pcl_row=_pcl_row(), lpc_rows=lpc_rows,
+                              f_fac_last=526066)
+        emit_invoice(s, oid, client)
+    cabecera = next(rec for t, rec in client.writes if t == "F_FAC")
+    assert cabecera["CLIFAC"] == 2458
+    assert cabecera["REFFAC"] == "BOP-099866"
+    assert cabecera["TOTFAC"] == 186.34
+    for banda in ("NET1FAC", "PIVA1FAC", "IIVA1FAC", "NET2FAC", "IIVA2FAC",
+                  "NET3FAC", "IIVA3FAC"):
+        assert banda in cabecera, f"falta la banda {banda}"
+    linea = next(rec for t, rec in client.writes if t == "F_LFA")
+    assert linea["ARTLFA"] == "A1" and linea["TOTLFA"] == 100
+
+
+def test_ejercicio_passed_as_parameter_not_column(session_factory):
+    """El ejercicio viaja como argumento de `write_record`, nunca en el
+    payload de cabecera."""
+    calls: list[dict] = []
+
+    class _RecordingClient(FakeFactusol):
+        def write_record(self, tabla, data, *, ejercicio=None):
+            calls.append({"tabla": tabla, "ejercicio": ejercicio, "data": data})
+            return super().write_record(tabla, data, ejercicio=ejercicio)
+
+    with session_factory() as s:
+        oid = _order(s)
+        client = _RecordingClient(pcl_row=_pcl_row(), lpc_rows=[],
+                                  f_fac_last=526066)
+        emit_invoice(s, oid, client)
+    cabecera = next(c for c in calls if c["tabla"] == "F_FAC")
+    assert cabecera["ejercicio"] == "2026"
+    assert "EJEFAC" not in cabecera["data"]
 
 
 def test_lpc_row_to_lfa_payload_copies_line():
@@ -305,7 +430,7 @@ def test_emit_invoice_end_to_end_success(session_factory):
     tablas = [t for t, _ in client.writes]
     assert tablas.count("F_FAC") == 1 and tablas.count("F_LFA") == 2
     assert result == {"codfac": "526067", "codpcl": "2765",
-                      "ejercicio": "2026", "lines": 2}
+                      "ejercicio": "2026", "lines": 2, "serie": 5}
     cabecera = next(rec for t, rec in client.writes if t == "F_FAC")
     assert cabecera["REFFAC"] == "BOP-099866" and cabecera["CODFAC"] == "526067"
     assert cabecera["TIPFAC"] == "1" and "PEDFAC" not in cabecera
@@ -350,11 +475,13 @@ def test_emit_invoice_threads_options_to_header(session_factory):
         oid = _order(s)
         client = FakeFactusol(pcl_row=_pcl_row(), lpc_rows=[], f_fac_last=100)
         emit_invoice(s, oid, client,
-                     options=FacturaOptions(serfac="A", fopfac="03",
+                     options=FacturaOptions(serie=5, fopfac="03",
                                             comfac="obs"))
     cabecera = next(rec for t, rec in client.writes if t == "F_FAC")
-    assert cabecera["SERFAC"] == "A" and cabecera["FOPFAC"] == "03"
+    assert cabecera["FOPFAC"] == "03"
     assert cabecera["COMFAC"] == "obs" and cabecera["TIPFAC"] == "1"
+    # La serie se refleja en el NÚMERO, no en una columna.
+    assert cabecera["CODFAC"].startswith("5")
 
 
 def test_emit_invoice_compensation_on_line_write_failure(session_factory):
@@ -393,48 +520,74 @@ def _set_series(s, *, default=None, by_source=None):
     s.commit()
 
 
-def test_resolve_serfac_prefers_source_override(session_factory):
-    from app.integrations.factusol.service import resolve_serfac  # noqa: PLC0415
+def test_resolve_serie_prefers_source_override(session_factory):
+    from app.integrations.factusol.service import resolve_serie  # noqa: PLC0415
 
     with session_factory() as s:
-        _set_series(s, default="A", by_source={"manual": "M"})
+        _set_series(s, default=5, by_source={"manual": 2})
         manual = Order(order_number="MANUAL-000001", external_source="manual")
         woo = Order(order_number="BOPRIN-1", external_source="woocommerce")
         s.add_all([manual, woo])
         s.commit()
-        assert resolve_serfac(s, manual) == "M"   # override por origen
-        assert resolve_serfac(s, woo) == "A"      # cae al default
+        assert resolve_serie(s, manual) == 2   # override por origen
+        assert resolve_serie(s, woo) == 5      # cae al default
+        # La elección del modal gana a todo.
+        assert resolve_serie(s, manual, 1) == 1
 
 
-def test_resolve_serfac_falls_back_to_A_without_config(session_factory):
-    from app.integrations.factusol.service import resolve_serfac  # noqa: PLC0415
+def test_resolve_serie_falls_back_to_streamtec_without_config(session_factory):
+    from app.integrations.factusol.service import resolve_serie  # noqa: PLC0415
 
     with session_factory() as s:
         order = Order(order_number="BOPRIN-2", external_source="woocommerce")
         s.add(order)
         s.commit()
-        assert resolve_serfac(s, order) == "A"
+        assert resolve_serie(s, order) == 5   # Streamtec
+
+
+def test_resolve_serie_ignores_legacy_letter_config(session_factory):
+    """C-2 guardaba la serie como letra («A») para escribir la columna
+    `SERFAC`, que no existe. Esa config heredada no puede romper la emisión:
+    se ignora y se cae al default."""
+    from app.integrations.factusol.service import resolve_serie  # noqa: PLC0415
+
+    with session_factory() as s:
+        _set_series(s, default="A", by_source={"manual": "M"})
+        order = Order(order_number="MANUAL-1", external_source="manual")
+        s.add(order)
+        s.commit()
+        assert resolve_serie(s, order) == 5
 
 
 def test_emit_invoice_uses_configured_series(session_factory):
-    """Sin serie en el modal, emit aplica la configurada en /erp/settings."""
+    """Sin serie en el modal, emit aplica la configurada en /erp/settings —
+    y numera dentro del rango de ESA serie."""
     with session_factory() as s:
-        _set_series(s, default="A", by_source={"manual": "M"})
-        oid = _order(s)  # order_number BOPRIN-99866, origen por defecto (manual)
-        client = FakeFactusol(pcl_row=_pcl_row(), lpc_rows=[], f_fac_last=100)
-        emit_invoice(s, oid, client)
+        _set_series(s, default=5, by_source={"manual": 2})
+        oid = _order(s)  # origen `manual` por defecto → override a serie 2
+        client = FakeFactusol(pcl_row=_pcl_row(), lpc_rows=[],
+                              f_fac_rows=[{"CODFAC": 526082},
+                                          {"CODFAC": 260002}])
+        result = emit_invoice(s, oid, client)
+    assert result["serie"] == 2   # gana el override por origen, no el default
     cabecera = next(rec for t, rec in client.writes if t == "F_FAC")
-    assert cabecera["SERFAC"] == "M"
+    # Numerado en el rango de SU serie, no heredando el máximo global 526082.
+    assert cabecera["CODFAC"] == "260003"
 
 
 def test_emit_invoice_modal_series_wins_over_settings(session_factory):
+    """Elegir MQ Europe (2) en el modal numera en 2xxxxx aunque el default
+    sea Streamtec y el máximo global sea 5xxxxx."""
     with session_factory() as s:
-        _set_series(s, default="A", by_source={"manual": "M"})
+        _set_series(s, default=5)
         oid = _order(s)
-        client = FakeFactusol(pcl_row=_pcl_row(), lpc_rows=[], f_fac_last=100)
-        emit_invoice(s, oid, client, options=FacturaOptions(serfac="Z"))
+        client = FakeFactusol(pcl_row=_pcl_row(), lpc_rows=[],
+                              f_fac_rows=[{"CODFAC": 526082},
+                                          {"CODFAC": 260002}])
+        result = emit_invoice(s, oid, client, options=FacturaOptions(serie=2))
+    assert result["serie"] == 2
     cabecera = next(rec for t, rec in client.writes if t == "F_FAC")
-    assert cabecera["SERFAC"] == "Z"
+    assert cabecera["CODFAC"] == "260003"
 
 
 def test_emit_invoice_rejects_already_invoiced(session_factory):

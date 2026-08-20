@@ -105,27 +105,31 @@ def test_payload_column_diff_clean_payload_has_no_unknowns() -> None:
 
 
 def test_payload_column_diff_against_real_mapper_output() -> None:
-    """Ejercita el mapper real: si un día alguien añade una columna al
-    payload, este test enseña exactamente cuál sale sobrando."""
+    """El diagnóstico que este script hizo en ERP-E1 ahora tiene que salir
+    LIMPIO: tras el fix de ERP-E2 el payper del mapper no lleva ninguna
+    columna que F_FAC no tenga."""
     from app.integrations.factusol.mapper import (
+        FAC_COLUMNS,
         FacturaOptions,
         pcl_row_to_fac_payload,
     )
 
-    pcl_row = {"CODPCL": 5, "CLIPCL": 22, "TOTPCL": 100.0, "REFPCL": "BOP-1"}
+    pcl_row = {"CODPCL": 5, "CLIPCL": 22, "TOTPCL": 100.0, "REFPCL": "BOP-1",
+               "PENPCL": 0, "PPOPCL": 0}
     payload = pcl_row_to_fac_payload(
-        pcl_row, "999", "2026", fecha_emision="2026-08-11",
-        options=FacturaOptions(serfac="A"),
+        pcl_row, "526083", "2026", fecha_emision="2026-08-11",
+        options=FacturaOptions(serie=5),
     )
-    # Tabla real que SÍ tiene todas las columnas que inyecta el mapper.
-    real_full = [
-        "CODFAC", "CLIFAC", "TOTFAC", "REFFAC", "EJEFAC", "TIPFAC",
-        "FECFAC", "SERFAC",
-    ]
-    assert payload_column_diff(payload, real_full)[0] == []
-    # Tabla real SIN EJEFAC ni SERFAC: el diff los delata.
-    real_narrow = ["CODFAC", "CLIFAC", "TOTFAC", "REFFAC", "TIPFAC", "FECFAC"]
-    assert payload_column_diff(payload, real_narrow)[0] == ["EJEFAC", "SERFAC"]
+    unknown, _ = payload_column_diff(payload, sorted(FAC_COLUMNS))
+    assert unknown == []
+
+
+def test_payload_column_diff_would_have_caught_the_erp_e1_bug() -> None:
+    """El diff sigue delatando columnas inventadas — es el guard que evita
+    repetir el bug si alguien vuelve a inyectar a mano."""
+    payload = {"CODFAC": "1", "CLIFAC": 22, "EJEFAC": "2026", "SERFAC": "A"}
+    real = ["CODFAC", "CLIFAC", "TOTFAC", "REFFAC", "TIPFAC", "FECFAC"]
+    assert payload_column_diff(payload, real)[0] == ["EJEFAC", "SERFAC"]
 
 
 # ---------------------------------------------------------------------------

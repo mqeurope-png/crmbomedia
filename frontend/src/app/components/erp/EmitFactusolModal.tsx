@@ -3,7 +3,9 @@
 import { useEffect, useState } from "react";
 import {
   getFactusolFormasPago,
+  getFactusolSeries,
   type EmitFactusolOptions,
+  type FactusolSerie,
   type FormaPago,
 } from "../../lib/erpApi";
 
@@ -14,7 +16,12 @@ function today(): string {
 /** Modal de emisión de factura FACTUSOL (C-2-fix2): reproduce el diálogo
  *  «Nueva factura» del escritorio con 5 campos (Tipo, Serie, Fecha, Forma de
  *  pago, Observaciones). Las formas de pago se cargan de F_FOP; los valores
- *  reales del desplegable los confirma la validación de Bart. */
+ *  reales del desplegable los confirma la validación de Bart.
+ *
+ *  ERP-E2: la «Serie» pasa de campo de texto libre a desplegable de EMPRESA
+ *  EMISORA. En FACTUSOL la serie no es un dato de la factura: identifica la
+ *  empresa y va codificada en el rango del número (serie 5 ⇒ 5xxxxx). Por eso
+ *  escribirla como columna `SERFAC` rompía todas las emisiones. */
 export function EmitFactusolModal({
   totalAmount,
   currency,
@@ -29,16 +36,30 @@ export function EmitFactusolModal({
   submitting?: boolean;
 }) {
   const [tipfac, setTipfac] = useState("1");
-  const [serfac, setSerfac] = useState("");
+  const [serie, setSerie] = useState<number | null>(null);
   const [fecfac, setFecfac] = useState(today());
   const [fopfac, setFopfac] = useState("");
   const [comfac, setComfac] = useState("");
   const [formasPago, setFormasPago] = useState<FormaPago[]>([]);
+  const [series, setSeries] = useState<FactusolSerie[]>([]);
 
   useEffect(() => {
     let alive = true;
     getFactusolFormasPago()
       .then((items) => { if (alive) setFormasPago(items); })
+      .catch(() => undefined);
+    getFactusolSeries()
+      .then((r) => {
+        if (!alive) return;
+        // Las series con nombre (las empresas de Bart) primero; el resto
+        // detrás, disponibles pero sin estorbar.
+        setSeries(
+          [...r.items].sort(
+            (a, b) => Number(b.is_known) - Number(a.is_known) || a.serie - b.serie,
+          ),
+        );
+        setSerie(r.default);
+      })
       .catch(() => undefined);
     return () => { alive = false; };
   }, []);
@@ -46,7 +67,7 @@ export function EmitFactusolModal({
   function submit() {
     onSubmit({
       tipfac: tipfac.trim() || "1",
-      serfac: serfac.trim() || null,
+      serie,
       fecfac: fecfac || null,
       fopfac: fopfac || null,
       comfac: comfac.trim() || null,
@@ -77,14 +98,26 @@ export function EmitFactusolModal({
         <span className="muted small">1 = factura ordinaria (código FACTUSOL)</span>
 
         <label className="field">
-          <span>Serie</span>
-          <input
-            type="text"
-            value={serfac}
-            placeholder="(sin serie)"
-            onChange={(e) => setSerfac(e.target.value)}
-          />
+          <span>Empresa emisora / Serie</span>
+          <select
+            value={serie ?? ""}
+            onChange={(e) =>
+              setSerie(e.target.value ? Number(e.target.value) : null)
+            }
+          >
+            {series.length === 0 ? (
+              <option value="">— Cargando —</option>
+            ) : null}
+            {series.map((s) => (
+              <option key={s.serie} value={s.serie}>
+                {s.serie} · {s.nombre}
+              </option>
+            ))}
+          </select>
         </label>
+        <span className="muted small">
+          La factura se numerará en el rango de esta serie ({serie ?? "…"}xxxxx).
+        </span>
 
         <label className="field">
           <span>Fecha de emisión</span>

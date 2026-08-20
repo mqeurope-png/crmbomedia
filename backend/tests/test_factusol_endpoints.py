@@ -152,12 +152,12 @@ def test_emit_invoice_threads_options_body(client, session_factory):
         r = client.post(
             f"/api/erp/orders/{oid}/emit-factusol-invoice",
             headers=auth_headers(client, "pedidos"),
-            json={"tipfac": "4", "serfac": "A", "fopfac": "03",
+            json={"tipfac": "4", "serie": 2, "fopfac": "03",
                   "comfac": "Pago 30 días"},
         )
     assert r.status_code == 202, r.text
     options = enq.call_args.kwargs["options"]
-    assert options["tipfac"] == "4" and options["serfac"] == "A"
+    assert options["tipfac"] == "4" and options["serie"] == 2
     assert options["fopfac"] == "03" and options["comfac"] == "Pago 30 días"
 
 
