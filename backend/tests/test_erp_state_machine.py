@@ -176,24 +176,47 @@ def test_guard_in_transit_requires_tracking_number(session_factory):
         assert order.tracking_number == "DSV-5512"
 
 
-def test_guard_invoice_requires_paid_and_all_codart_mapped(session_factory):
+def test_guard_invoice_requires_paid(session_factory):
     with session_factory() as s:
         admin = _user(s, UserRole.ADMIN)
-        # Caso 1: línea SIN mapear → falla aunque esté pagado.
-        order = _mk_order(s, mapped=False)
+        # Pago NO 'paid' (credit_approved) → falla. La transición la dispara
+        # el SISTEMA: desde ERP-E2-fix1 el operador ya no la ve (ver abajo).
+        order = _mk_order(s, order_number="MAN-0002")
+        _t(s, order, StatusDomain.PAYMENT, "credit_approved", admin)
+        _t(s, order, StatusDomain.INVOICE, "pending", admin)
+        with pytest.raises(TransitionError) as exc:
+            _t(s, order, StatusDomain.INVOICE, "generated", None)
+        assert exc.value.code == "guard_failed"
+
+
+def test_manual_generated_transition_is_system_only(session_factory):
+    """El botón «Factura generada» de la tarjeta marcaba el pedido como
+    facturado SIN emitir nada en FACTUSOL, conviviendo con el botón real. Ya no
+    se ofrece a los operadores: la emisión de verdad es la que mueve el
+    estado."""
+    with session_factory() as s:
+        admin = _user(s, UserRole.ADMIN)
+        order = _mk_order(s)
         _t(s, order, StatusDomain.PAYMENT, "paid", None)
         _t(s, order, StatusDomain.INVOICE, "pending", admin)
         with pytest.raises(TransitionError) as exc:
             _t(s, order, StatusDomain.INVOICE, "generated", admin)
-        assert exc.value.code == "guard_failed"
-        assert "SKU-MBO-3050" in str(exc.value)
-        # Caso 2: mapeado pero pago NO 'paid' (credit_approved) → falla.
-        order2 = _mk_order(s, order_number="MAN-0002")
-        _t(s, order2, StatusDomain.PAYMENT, "credit_approved", admin)
-        _t(s, order2, StatusDomain.INVOICE, "pending", admin)
-        with pytest.raises(TransitionError) as exc2:
-            _t(s, order2, StatusDomain.INVOICE, "generated", admin)
-        assert exc2.value.code == "guard_failed"
+        assert exc.value.code == "role_forbidden"
+
+
+def test_unmapped_sku_becomes_free_text_not_blocked(session_factory):
+    """ERP-E2-fix1: una línea sin CODART ya NO bloquea la factura — se emite
+    como texto libre (igual que las proformas, C-4-fix5). Bloquear por un dato
+    de catálogo dejaba pedidos sin facturar sin razón técnica."""
+    with session_factory() as s:
+        admin = _user(s, UserRole.ADMIN)
+        order = _mk_order(s, mapped=False)
+        _t(s, order, StatusDomain.PAYMENT, "paid", None)
+        _t(s, order, StatusDomain.INVOICE, "pending", admin)
+        _t(s, order, StatusDomain.INVOICE, "generated", None)
+        assert getattr(
+            order.invoice_status, "value", order.invoice_status
+        ) == "generated"
 
 
 # --- matriz de roles ---------------------------------------------------------

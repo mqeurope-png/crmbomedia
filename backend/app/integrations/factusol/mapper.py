@@ -164,11 +164,17 @@ class FacturaOptions:
     - `comfac`: observaciones / comentario de la factura.
     """
 
-    tipfac: str = DEFAULT_TIPFAC
+    #: ERP-E2-fix1 — `None` = heredar el tipo/serie del pedido (lo normal). Un
+    #: valor explícito lo fuerza. Antes tenía default `'1'` y pisaba SIEMPRE la
+    #: serie heredada: por eso el pedido `5-000005` salió facturado `1-100000`.
+    tipfac: str | None = None
     serie: int | None = None
     fecfac: str | None = None
     fopfac: str | None = None
     comfac: str | None = None
+    #: CODPCL del pedido de cliente origen → `PEDFAC` (trazabilidad). Lo
+    #: rellena el service, no el modal.
+    pedfac: Any = None
 
     @classmethod
     def from_payload(cls, data: dict[str, Any] | None) -> FacturaOptions:
@@ -188,8 +194,6 @@ class FacturaOptions:
                 "factusol: opciones de emisión ignoradas (obsoletas): %s",
                 ", ".join(ignored),
             )
-        if "tipfac" not in clean:
-            clean["tipfac"] = DEFAULT_TIPFAC
         return cls(**clean)
 
 
@@ -247,8 +251,20 @@ def pcl_row_to_fac_payload(
             continue
         payload[_retag(col, "PCL", "FAC")] = val
     payload["CODFAC"] = codfac
-    payload["TIPFAC"] = opts.tipfac
+    # TIPFAC = la SERIE (empresa emisora). La copia por sufijo ya trajo el
+    # `TIPPCL` del pedido: solo se pisa si el operador forzó otra en el modal.
+    if opts.tipfac is not None:
+        payload["TIPFAC"] = opts.tipfac
+    elif opts.serie is not None:
+        payload["TIPFAC"] = str(opts.serie)
+    payload.setdefault("TIPFAC", DEFAULT_TIPFAC)
     payload["FECFAC"] = opts.fecfac or fecha_emision
+    # ERP-E2-fix1 — trazabilidad factura→pedido. C-2-fix2 decidió NO ponerlo
+    # porque la factura real de Bart lo tenía vacío; se reintroduce porque sin
+    # él no hay forma de saber de qué pedido salió una factura del CRM (y el
+    # CODPCL es justo lo que E3 necesita para la cadena PRE→ALB→FAC).
+    if opts.pedfac is not None:
+        payload["PEDFAC"] = opts.pedfac
     if opts.fopfac is not None:
         payload["FOPFAC"] = opts.fopfac
     if opts.comfac is not None:
@@ -258,6 +274,7 @@ def pcl_row_to_fac_payload(
 
 def lpc_row_to_lfa_payload(
     lpc_row: dict[str, Any], codfac: str, posicion: int, ejercicio: str,
+    *, serie: int | None = None,
 ) -> dict[str, Any]:
     """Línea F_LPC → payload de EscribirRegistro para F_LFA (copia por sufijo
     `*LPC → *LFA`; inyecta CODLFA=codfac, POSLFA=posición, EJELFA).
@@ -273,4 +290,9 @@ def lpc_row_to_lfa_payload(
     payload["CODLFA"] = codfac
     payload["POSLFA"] = posicion
     payload["EJELFA"] = ejercicio
+    # La línea se ata a su cabecera por la clave COMPUESTA (tipo, código) —
+    # así lo documenta el join de F_LPC/F_PCL. Sin el tipo correcto la línea
+    # colgaría de la factura con el mismo número de OTRA serie.
+    if serie is not None:
+        payload["TIPLFA"] = str(serie)
     return filter_to_real_columns(payload, LFA_COLUMNS, tabla="F_LFA")

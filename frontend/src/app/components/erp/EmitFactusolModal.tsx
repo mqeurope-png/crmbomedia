@@ -58,7 +58,9 @@ export function EmitFactusolModal({
             (a, b) => Number(b.is_known) - Number(a.is_known) || a.serie - b.serie,
           ),
         );
-        setSerie(r.default);
+        // ERP-E2-fix1: NO se preselecciona ninguna. El default es «heredar la
+        // del pedido»: preseleccionar una la forzaría siempre, que es
+        // exactamente lo que facturó un pedido de Streamtec como Bomedia.
       })
       .catch(() => undefined);
     return () => { alive = false; };
@@ -108,6 +110,9 @@ export function EmitFactusolModal({
             {series.length === 0 ? (
               <option value="">— Cargando —</option>
             ) : null}
+            <option value="">
+              Heredar la del pedido en FACTUSOL (recomendado)
+            </option>
             {series.map((s) => (
               <option key={s.serie} value={s.serie}>
                 {s.serie} · {s.nombre}
@@ -116,7 +121,9 @@ export function EmitFactusolModal({
           </select>
         </label>
         <span className="muted small">
-          La factura se numerará en el rango de esta serie ({serie ?? "…"}xxxxx).
+          {serie === null
+            ? "Se usará la serie con la que el pedido ya está en FACTUSOL."
+            : `Se fuerza la serie ${serie}, ignorando la del pedido.`}
         </span>
 
         <label className="field">

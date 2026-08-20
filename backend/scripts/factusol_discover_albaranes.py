@@ -392,6 +392,116 @@ def trace_chain(client: Any, ejercicio: str, codpre: str) -> None:
     )
 
 
+def trace_order(client: Any, ejercicio: str, ref: str) -> None:
+    """ERP-E2-fix1 — cómo se codifica la SERIE y dónde vive su contador.
+
+    El escritorio muestra los documentos como `<serie>-<número>`: el pedido
+    `BOP-099917` es el `5-000005` y hay facturas `2-526082`. Bajo el modelo de
+    ERP-E2 (serie = rango del número) ninguna de las dos cuadra, así que la
+    serie tiene que ser una COLUMNA. La hipótesis es `TIPPCL` / `TIPFAC`; esto
+    lo confirma o lo tumba con filas reales."""
+    print("=" * 74)
+    print(f"A1/A2/A3 · SERIE y CONTADOR — pedido {ref}")
+    print("=" * 74)
+
+    pcl_rows = client.load_table(
+        "F_PCL", filtro=f"REFPCL='{ref}'", ejercicio=ejercicio
+    )
+    if not pcl_rows:
+        print(f"\n  ❌ No hay F_PCL con REFPCL='{ref}' en {ejercicio}.")
+        print("     Comprueba la referencia (formato BOP-099917).")
+        return
+    pcl = pcl_rows[0]
+    print(f"\n  F_PCL completo de {ref} ({len(pcl)} columnas, no vacías):")
+    for col, val in pcl.items():
+        if normalize(val):
+            print(f"      {col:<12} = {val!r}")
+    tip = normalize(pcl.get("TIPPCL"))
+    cod = normalize(pcl.get("CODPCL"))
+    print(
+        f"\n  → El escritorio lo muestra como «{tip}-{int(cod):06d}»?"
+        if cod.isdigit() else f"\n  → TIPPCL={tip!r} CODPCL={cod!r}"
+    )
+    print(
+        "     Si TIPPCL coincide con la serie del display, LA SERIE ES EL\n"
+        "     «TIPO» y el número es correlativo por serie."
+    )
+
+    # A4 — ¿qué valor de ESTPCL marca «facturado»?
+    print("\n  A4 · ESTPCL — reparto de estados en los pedidos del ejercicio:")
+    todos = client.load_table("F_PCL", filtro="1=1", ejercicio=ejercicio)
+    conteo: dict[str, int] = {}
+    for row in todos:
+        key = normalize(row.get("ESTPCL"))
+        conteo[key] = conteo.get(key, 0) + 1
+    for estado, n in sorted(conteo.items(), key=lambda kv: -kv[1]):
+        marca = "  ← el de ESTE pedido" if estado == normalize(
+            pcl.get("ESTPCL")
+        ) else ""
+        print(f"      ESTPCL={estado!r:<8} {n:>5} pedidos{marca}")
+    print(
+        "     Abre en el escritorio un pedido «Enviado» (facturado) y otro\n"
+        "     «Pendiente» y localiza sus ESTPCL arriba: el del «Enviado» es el\n"
+        "     valor que hay que poner en /erp/settings → estpcl_invoiced."
+    )
+
+    # A2 — contador por serie en F_FAC y F_PCL.
+    for tabla, tipo_col, cod_col in (
+        ("F_FAC", "TIPFAC", "CODFAC"), ("F_PCL", "TIPPCL", "CODPCL"),
+    ):
+        print(f"\n  A2 · Contador por serie en {tabla}:")
+        try:
+            rows = client.load_table(tabla, filtro="1=1", ejercicio=ejercicio)
+        except Exception as exc:  # noqa: BLE001
+            print(f"      ERROR: {str(exc)[:200]}")
+            continue
+        por_serie: dict[str, list[int]] = {}
+        for row in rows:
+            serie = normalize(row.get(tipo_col))
+            num = normalize(row.get(cod_col))
+            if num.lstrip("-").isdigit():
+                por_serie.setdefault(serie, []).append(int(num))
+        if not por_serie:
+            print(f"      {tabla} sin filas numéricas.")
+            continue
+        for serie, nums in sorted(por_serie.items()):
+            print(
+                f"      {tipo_col}={serie!r:<6} {len(nums):>5} docs · "
+                f"min={min(nums)} max={max(nums)} → siguiente={max(nums) + 1}"
+            )
+        print(
+            "      Si cada serie tiene su propio rango correlativo, el\n"
+            "      contador es MAX(código de esa serie)+1 y no hace falta\n"
+            "      tabla de contadores."
+        )
+
+    # ¿Existe una tabla de contadores aparte?
+    print("\n  A2b · ¿Tabla de contadores / configuración de empresa?")
+    for tabla in ("F_CON", "F_CONTA", "F_EMP", "F_SER", "F_NUM", "F_PAR"):
+        res = probe_table(client, tabla, ejercicio)
+        print_table_result(res, verbose=res.get("rows", 0) < 20)
+
+    # A3 — ¿tiene ya albarán o factura este pedido?
+    print(f"\n  A3 · ¿El pedido {cod} ya tiene albarán/factura?")
+    for tabla, campo in (("F_ALB", "PEDALB"), ("F_FAC", "PEDFAC")):
+        try:
+            rows = client.load_table(tabla, filtro="1=1", ejercicio=ejercicio)
+        except Exception as exc:  # noqa: BLE001
+            print(f"      {tabla}: ERROR {str(exc)[:120]}")
+            continue
+        hits = [r for r in rows if normalize(r.get(campo)) == cod and cod]
+        if hits:
+            for row in hits:
+                print(f"      ✅ {tabla}.{campo}={cod} → {dict(list(row.items())[:8])}")
+        else:
+            print(f"      {tabla}.{campo}: sin coincidencias con CODPCL={cod}")
+    print(
+        "\n  (Si PEDFAC está vacío en las facturas del escritorio, FACTUSOL no\n"
+        "   enlaza factura→pedido por ahí y la trazabilidad tendrá que vivir\n"
+        "   en el CRM.)"
+    )
+
+
 def _scan_for_reference(
     client: Any, ejercicio: str, *, tabla: str, needle: Any, origen: str
 ) -> str | None:
@@ -597,6 +707,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--trace-codpre", default=None,
                         help="CODPRE de la proforma convertida a mano en el "
                              "escritorio, para seguir la cadena PRE→ALB→FAC")
+    parser.add_argument("--trace-order", default=None,
+                        help="REFPCL del pedido (ej. BOP-099917): descubre "
+                             "cómo se codifica la serie, el contador por "
+                             "serie y el ESTPCL que marca facturado")
     parser.add_argument("--check-invoice-pipeline", action="store_true",
                         help="diagnóstico del bug de emisión de facturas")
     parser.add_argument("--skip-print-probe", action="store_true",
@@ -612,6 +726,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.check_invoice_pipeline:
         check_invoice_pipeline(client, ejercicio)
+        return 0
+
+    if args.trace_order:
+        trace_order(client, ejercicio, args.trace_order)
         return 0
 
     if args.trace_codpre:

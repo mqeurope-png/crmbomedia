@@ -58,33 +58,38 @@ def ejercicio_for(session: Session) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Series = empresas emisoras (ERP-E2)
+# Series = empresas emisoras
 #
-# En FACTUSOL la serie identifica la EMPRESA que emite y **no es una columna**
-# (`SERFAC` no existe en F_FAC — ver mapper). Va codificada en el RANGO del
-# número de documento: la serie N ocupa `[N·100000, (N+1)·100000)`.
+# ERP-E2 supuso que la serie iba codificada en el RANGO del número
+# (`[N·100000, (N+1)·100000)`). **Era falso**, y la validación de Bart lo
+# tumbó: el escritorio muestra los documentos como `<serie>-<número>` y hay
+# una factura `2-526082` (526082 sería «serie 5» bajo el modelo de rangos) y
+# un pedido `5-000005` (número 5 en serie 5, imposible con rangos).
 #
-#     serie 1 = Bomedia    → 1xxxxx
-#     serie 2 = MQ Europe  → 2xxxxx   (facturas 26xxxx vistas en el discovery)
-#     serie 5 = Streamtec  → 5xxxxx   (máximo visto: 526082)
+# ERP-E2-fix1: la serie es **`TIPFAC` / `TIPPCL` / `TIPPRE`** — la columna
+# «tipo» que ya existe en cada tabla de documento. Evidencia convergente:
 #
-# Cada serie lleva su propia numeración correlativa independiente, así que el
-# `MAX+1` se calcula DENTRO del rango, nunca global. No se hardcodea el juego
-# de series: cualquiera de 1 a 9 vale, y los nombres viven en los ajustes.
+#   1. La factura que emitió el CRM llevaba `TIPFAC="1"` (nuestro default) y
+#      salió como `1-100000`. La serie mostrada = el TIPFAC enviado.
+#   2. El join documentado de las líneas es COMPUESTO:
+#      `F_LPC.TIPLPC = F_PCL.TIPPCL AND F_LPC.CODLPC = F_PCL.CODPCL`. Un
+#      código que necesita el tipo para identificar el documento es
+#      exactamente un contador POR SERIE.
+#   3. Todas las proformas de Bomedia tienen `TIPPRE='1'` (C-4): serie 1.
+#
+# Por tanto el número NO es único global: es único por (tipo, código), y el
+# contador de cada serie es `MAX(CODFAC donde TIPFAC=serie) + 1`.
+#
+# Y de ahí el bug de la validación: el mapper COPIABA `TIPPCL→TIPFAC` (serie
+# correcta, heredada del pedido) y acto seguido lo pisaba con `opts.tipfac`
+# ("1" por defecto). El pedido `5-000005` acabó facturado como `1-100000`.
 # ---------------------------------------------------------------------------
 
-#: Tamaño del rango de cada serie. Serie N ⇒ [N·100000, (N+1)·100000).
-SERIES_RANGE_SIZE = 100_000
-#: Serie por defecto: BoHub opera prioritariamente como Streamtec.
+#: Serie de último recurso para pedidos que NO existen en FACTUSOL (sin
+#: F_PCL del que heredar). BoHub opera prioritariamente como Streamtec.
 DEFAULT_SERIE = 5
-#: Series válidas (un dígito: el prefijo del número de documento).
+#: Series válidas (el «tipo» de documento es un dígito).
 VALID_SERIES = range(1, 10)
-
-
-def series_range(serie: int) -> tuple[int, int]:
-    """`(lo, hi)` del rango de numeración de la serie; `hi` es exclusivo."""
-    lo = serie * SERIES_RANGE_SIZE
-    return lo, lo + SERIES_RANGE_SIZE
 
 
 def coerce_serie(value: Any) -> int | None:
@@ -100,6 +105,12 @@ def coerce_serie(value: Any) -> int | None:
     except (TypeError, ValueError):
         return None
     return serie if serie in VALID_SERIES else None
+
+
+def serie_of_row(row: dict[str, Any], columna: str) -> int | None:
+    """Serie de una fila de documento leyendo su columna «tipo»
+    (`TIPPCL` en F_PCL, `TIPFAC` en F_FAC…). `None` si no es un valor útil."""
+    return coerce_serie(row.get(columna))
 
 
 def series_config(session: Session) -> dict[str, Any]:
@@ -136,18 +147,32 @@ def default_serie(session: Session) -> int:
 
 
 def resolve_serie(
-    session: Session, order: Order, requested: int | None = None
+    session: Session,
+    order: Order,
+    requested: int | None = None,
+    pcl_row: dict[str, Any] | None = None,
 ) -> int:
     """Serie (empresa emisora) con la que facturar este pedido:
-    elección del modal → `by_source[store_id]` → `by_source[origen]` →
-    default de ajustes → 5 (Streamtec).
+    elección explícita del modal → **serie del pedido en FACTUSOL (`TIPPCL`)**
+    → `by_source[store_id]` → `by_source[origen]` → default de ajustes → 5.
 
-    Sustituye a `resolve_serfac` de C-2: aquel devolvía un valor para
-    escribirlo en la columna `SERFAC`, que no existe. Ahora el valor decide el
-    RANGO de numeración del CODFAC."""
+    ERP-E2-fix1: la fuente primaria es el propio pedido. Cuando entra un
+    pedido Woo, la app externa ya lo crea en FACTUSOL con SU serie (el
+    `BOP-099917` de MOVIATICOS es el `5-000005`), así que la factura tiene que
+    salir en esa misma serie. La config de `/erp/settings` queda solo como
+    fallback para pedidos manuales que no existen en FACTUSOL — usarla como
+    fuente primaria es lo que facturó un pedido de Streamtec como Bomedia."""
     explicit = coerce_serie(requested)
     if explicit is not None:
         return explicit
+    if pcl_row is not None:
+        inherited = serie_of_row(pcl_row, "TIPPCL")
+        if inherited is not None:
+            return inherited
+        logger.warning(
+            "factusol: el pedido de cliente %r no trae TIPPCL utilizable; "
+            "se cae a la configuración.", pcl_row.get("CODPCL"),
+        )
     conf = series_config(session)
     by_source = conf.get("by_source")
     by_source = by_source if isinstance(by_source, dict) else {}
@@ -174,36 +199,96 @@ def _int_or_none(value: object) -> int | None:
         return None
 
 
+def estpcl_invoiced_value(session: Session) -> str | None:
+    """Valor de `F_PCL.ESTPCL` que marca el pedido como FACTURADO («Enviado»
+    en el escritorio), o `None` si aún no se ha configurado.
+
+    Deliberadamente NO se adivina. Los estados de FACTUSOL son códigos sin
+    documentar — el mismo motivo por el que el guard de proformas no interpreta
+    `ESTPRE` valor por valor (gotcha nº 17). Escribir un código inventado en la
+    contabilidad de Bart es peor que no marcarlo: se vería «facturado» algo que
+    no lo está, o al revés.
+
+    El valor real lo revela el discovery (`--trace-order`, sección A4)
+    comparando un pedido «Enviado» con uno «Pendiente»; se guarda luego en
+    `factusol_series_json.estpcl_invoiced`."""
+    raw = series_config(session).get("estpcl_invoiced")
+    value = str(raw).strip() if raw is not None else ""
+    return value or None
+
+
+def mark_pcl_invoiced(
+    client: FactusolClient,
+    session: Session,
+    *,
+    codpcl: Any,
+    serie: int,
+    ejercicio: str,
+) -> bool:
+    """Marca el pedido de cliente como facturado en FACTUSOL. Devuelve `True`
+    si se escribió.
+
+    Sin el valor de estado configurado no toca nada y avisa: el pedido se
+    quedará como «Pendiente» hasta que Bart lo configure, que es un problema
+    visible y reversible, al revés que meter un código erróneo."""
+    estado = estpcl_invoiced_value(session)
+    if not estado:
+        logger.warning(
+            "factusol: no se marca el pedido %s como facturado — falta "
+            "`estpcl_invoiced` en /erp/settings (lo revela el discovery "
+            "--trace-order).", codpcl,
+        )
+        return False
+    # `ActualizarRegistro` necesita la PK en el registro. La de un documento
+    # es COMPUESTA (tipo, código): mandar solo CODPCL podría tocar el pedido
+    # con el mismo número de OTRA serie.
+    client.update_record(
+        "F_PCL",
+        {"TIPPCL": serie, "CODPCL": codpcl, "ESTPCL": estado},
+        ejercicio=ejercicio,
+    )
+    logger.info(
+        "factusol: pedido %s-%s marcado como facturado (ESTPCL=%r)",
+        serie, codpcl, estado,
+    )
+    return True
+
+
 def next_codfac(
     client: FactusolClient, ejercicio: str, serie: int = DEFAULT_SERIE
 ) -> str:
-    """Siguiente CODFAC de la SERIE = max(CODFAC dentro del rango) + 1.
+    """Contador de la SERIE = max(CODFAC de las facturas con TIPFAC=serie) + 1.
 
-    ERP-E2: cada serie (= empresa emisora) lleva su propia numeración
-    correlativa dentro de `[serie·100000, (serie+1)·100000)`. Antes se cogía el
-    máximo GLOBAL, que con varias empresas en la misma base daba el número de
-    la serie más alta (Streamtec, 5xxxxx) para todas — habría numerado las
-    facturas de Bomedia en el rango de Streamtec.
+    ERP-E2-fix1. Es el mecanismo que confirmó Bart: al facturar, FACTUSOL mira
+    el número más alto de ESA serie y pone el siguiente. Cada serie lleva su
+    propio correlativo, así que el número solo es único por `(TIPFAC, CODFAC)`.
 
-    Si la serie aún no tiene facturas empieza en `serie·100000`.
+    El filtro por serie se hace **en Python**, no en el `filtro` de la API: no
+    sabemos si `TIPFAC` viaja como `'5'` o como `5`, y un filtro que no casa
+    devolvería `[]` en silencio (gotcha nº 1) — es decir, arrancaría el
+    contador desde cero y machacaría facturas existentes.
+
+    Una serie sin facturas arranca en 1 (primer documento de esa empresa).
 
     Se llama DENTRO de `emit_invoice`, justo antes de escribir la cabecera. La
-    race lectura→escritura la evita el worker serializado (concurrency=1).
-    Nota: la API DELSOL no soporta LIMIT, así que se filtra en Python."""
-    lo, hi = series_range(serie)
+    race lectura→escritura la evita el worker serializado (concurrency=1)."""
     rows = client.load_table(
         "F_FAC", filtro="1=1 ORDER BY CODFAC DESC", ejercicio=ejercicio,
     )
     in_series = [
-        n for n in (_int_or_none(r.get("CODFAC")) for r in rows)
-        if n is not None and lo <= n < hi
+        n for n in (
+            _int_or_none(r.get("CODFAC"))
+            for r in rows if serie_of_row(r, "TIPFAC") == serie
+        )
+        if n is not None
     ]
     if not in_series:
-        logger.info(
-            "factusol: serie %d sin facturas en %s; se arranca en %d",
-            serie, ejercicio, lo,
+        logger.warning(
+            "factusol: serie %d sin facturas en %s; se arranca el contador en "
+            "1. Si la serie SÍ tiene facturas, revisa que TIPFAC codifique la "
+            "serie (discovery --trace-order).", serie, ejercicio,
         )
-        return str(lo)
+        return "1"
     return str(max(in_series) + 1)
 
 
@@ -357,14 +442,16 @@ def emit_invoice(
         "F_LPC", filtro=f"CODLPC={codpcl}", ejercicio=ejercicio,
     )
 
-    # ERP-E2: la serie (= empresa emisora) decide el RANGO de numeración, no
-    # una columna. Elección del modal → override por origen → default (5).
+    # ERP-E2-fix1: la serie se HEREDA del pedido que ya existe en FACTUSOL
+    # (`TIPPCL`); la config solo actúa si el pedido no está allí. El modal
+    # sigue pudiendo forzarla.
     serie = resolve_serie(
-        session, order, options.serie if options is not None else None
+        session, order, options.serie if options is not None else None,
+        pcl_row=pcl,
     )
     options = (
-        replace(options, serie=serie) if options is not None
-        else FacturaOptions(serie=serie)
+        replace(options, serie=serie, pedfac=codpcl) if options is not None
+        else FacturaOptions(serie=serie, pedfac=codpcl)
     )
     codfac = next_codfac(client, ejercicio, serie)
     fecha_emision = datetime.now(UTC).date().isoformat()
@@ -372,7 +459,7 @@ def emit_invoice(
         pcl, codfac, ejercicio, fecha_emision=fecha_emision, options=options,
     )
     lineas = [
-        lpc_row_to_lfa_payload(row, codfac, i + 1, ejercicio)
+        lpc_row_to_lfa_payload(row, codfac, i + 1, ejercicio, serie=serie)
         for i, row in enumerate(lpc_rows)
     ]
 
@@ -382,9 +469,18 @@ def emit_invoice(
             client.write_record("F_LFA", linea, ejercicio=ejercicio)
     except FactusolError:
         # Compensación: borra líneas + cabecera para no dejar factura a medias.
+        # El filtro DEBE incluir el tipo: el número solo es único por (tipo,
+        # código), así que borrar por CODFAC a secas se llevaría por delante la
+        # factura homónima de otra serie.
         try:
-            client.delete_records("F_LFA", f"CODLFA='{codfac}'", ejercicio=ejercicio)
-            client.delete_records("F_FAC", f"CODFAC='{codfac}'", ejercicio=ejercicio)
+            client.delete_records(
+                "F_LFA", f"TIPLFA='{serie}' AND CODLFA='{codfac}'",
+                ejercicio=ejercicio,
+            )
+            client.delete_records(
+                "F_FAC", f"TIPFAC='{serie}' AND CODFAC='{codfac}'",
+                ejercicio=ejercicio,
+            )
         except FactusolError:
             logger.warning(
                 "factusol: no se pudo limpiar la factura %s a medias", codfac,
@@ -392,6 +488,20 @@ def emit_invoice(
             )
         session.rollback()
         raise
+
+    # ERP-E2-fix1: cerrar el pedido en FACTUSOL. Va DESPUÉS de la factura y no
+    # aborta la emisión si falla — la factura ya está escrita y correcta; el
+    # estado del pedido es recuperable a mano y no justifica revertirla.
+    pcl_marked = False
+    try:
+        pcl_marked = mark_pcl_invoiced(
+            client, session, codpcl=codpcl, serie=serie, ejercicio=ejercicio,
+        )
+    except FactusolError:
+        logger.warning(
+            "factusol: factura %s emitida pero el pedido %s no se pudo marcar "
+            "como facturado", codfac, codpcl, exc_info=True,
+        )
 
     now = datetime.now(UTC)
     order.invoice_status = InvoiceStatus.INVOICED_BY_ERP.value
@@ -404,15 +514,16 @@ def emit_invoice(
         metadata_json=json.dumps({
             "factusol_codfac": codfac, "factusol_codpcl": str(codpcl),
             "factusol_ref": cabecera.get("REFFAC"), "factusol_ejercicio": ejercicio,
-            # ERP-E2: qué empresa emitió (la serie no viaja en la factura, así
-            # que sin esto no hay forma de saberlo desde el CRM a posteriori).
+            # Qué empresa emitió. La serie es TIPFAC, pero guardarla aquí evita
+            # tener que releer la factura para saberlo.
             "factusol_serie": serie,
+            "factusol_pcl_marked": pcl_marked,
         }),
     ))
     _log_sync(session, order, codfac, str(codpcl), ejercicio, len(lineas))
     session.commit()
     return {"codfac": codfac, "codpcl": str(codpcl), "ejercicio": ejercicio,
-            "lines": len(lineas), "serie": serie}
+            "lines": len(lineas), "serie": serie, "pcl_marked": pcl_marked}
 
 
 def _auto_link_factura(

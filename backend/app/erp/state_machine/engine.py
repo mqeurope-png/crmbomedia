@@ -89,12 +89,17 @@ def _guard_tracking(order: Order, evidence: dict[str, Any]) -> str | None:
 
 
 def _guard_invoiceable(order: Order, _evidence: dict[str, Any]) -> str | None:
+    """Facturar exige pago cobrado. **No** exige que los SKU estén mapeados.
+
+    ERP-E2-fix1: el sub-requisito «todos los CODART mapeados» se retira. Una
+    línea sin CODART se emite como texto libre (`ARTLFA=''`), que es lo que ya
+    hacen las proformas (C-4-fix5) y lo que Bart validó en la emisión real: la
+    factura sale bien y el artículo aparece por su descripción. Bloquear por
+    mapeo dejaba pedidos sin facturar por un dato de catálogo que no impide
+    emitir, y contradecía C-2-fix3 (que retiró el aviso `sku_unmapped`)."""
     status = getattr(order.payment_status, "value", order.payment_status)
     if status != "paid":
         return f"facturar exige pago 'paid'; actual: {status!r}"
-    unmapped = [line.product_sku for line in order.lines if not line.product_codart]
-    if unmapped:
-        return f"líneas sin CODART mapeado: {', '.join(unmapped[:5])}"
     return None
 
 
