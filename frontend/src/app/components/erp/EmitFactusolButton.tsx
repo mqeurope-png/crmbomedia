@@ -30,6 +30,7 @@ export function EmitFactusolButton({
   currency,
   factusolStatus = null,
   enableOptions = false,
+  openSignal = 0,
   onInvoiced,
 }: {
   orderId: string;
@@ -43,6 +44,11 @@ export function EmitFactusolButton({
   /** Estado en vivo pre-cargado por la ficha (Promise.all). */
   factusolStatus?: FactusolStatus | null;
   enableOptions?: boolean;
+  /** ERP-E2-fix2 — contador que, al incrementarse, abre el modal desde fuera.
+   *  Lo usa el botón «Solicitar factura» de la tarjeta FACTURACIÓN para
+   *  compartir ESTE flujo en vez de disparar una transición que no emitía
+   *  nada y dejaba el pedido colgado en «pending». */
+  openSignal?: number;
   onInvoiced?: (codfac: string) => void;
 }) {
   const preInvoiced =
@@ -55,6 +61,12 @@ export function EmitFactusolButton({
   const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
 
   useEffect(() => () => { timers.current.forEach(clearTimeout); }, []);
+
+  // Apertura externa (tarjeta FACTURACIÓN). Se ignora el montaje inicial y
+  // cuando ya hay factura o una emisión en vuelo.
+  useEffect(() => {
+    if (openSignal > 0) setPhase((p) => (p === "idle" || p === "error" ? "confirm" : p));
+  }, [openSignal]);
 
   const effectiveCodfac = codfac || factusolInvoiceNumber || preInvoiced;
   if (effectiveCodfac) {

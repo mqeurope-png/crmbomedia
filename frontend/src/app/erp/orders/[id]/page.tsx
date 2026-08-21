@@ -59,12 +59,21 @@ export default function ErpOrderDetailPage() {
   }, [load]);
 
   const canEmit = !!user && (ERP_EDIT_ROLES as readonly string[]).includes(user.role);
+  // Señal para abrir el modal de emisión desde la tarjeta FACTURACIÓN.
+  const [emitSignal, setEmitSignal] = useState(0);
 
   async function onFire(domain: StatusDomain, t: AvailableTransition) {
     // Fase D: «Embalado» abre el modal multi-bulto en vez de la transición
     // directa (el backend exige ≥1 bulto medido antes de pasar a packed).
     if (domain === "preparation" && t.to_status === "packed") {
       setEmbalarOpen(true);
+      return;
+    }
+    // ERP-E2-fix2: «Solicitar factura» abre el MISMO modal de emisión que el
+    // botón azul. Antes solo movía el estado a «pending» sin encolar nada en
+    // FACTUSOL, y el pedido se quedaba ahí para siempre.
+    if (domain === "invoice" && t.to_status === "pending") {
+      setEmitSignal((n) => n + 1);
       return;
     }
     const evidence: Record<string, unknown> = {};
@@ -121,6 +130,7 @@ export default function ErpOrderDetailPage() {
             companyId={order.company_id}
             factusolStatus={factusolStatus}
             enableOptions
+            openSignal={emitSignal}
             onInvoiced={() => load()}
           />
         </div>

@@ -114,7 +114,23 @@ export default function ErpSettingsPage() {
               onChange={(e) => setCfg({ ...cfg, factusol_series_default: e.target.value })}
             />
             <span className="muted small">
-              Se usa al emitir si no se indica otra en el modal. Vacío → «A».
+              Solo para pedidos que NO están en FACTUSOL. Si el pedido ya
+              existe allí, la factura hereda SU serie (empresa emisora).
+            </span>
+          </label>
+          <label className="field">
+            <span>Estado ESTPCL del pedido facturado</span>
+            <input
+              type="text" maxLength={10} placeholder="2"
+              value={cfg.factusol_estpcl_invoiced ?? ""}
+              aria-label="Estado ESTPCL del pedido facturado"
+              onChange={(e) => setCfg({
+                ...cfg, factusol_estpcl_invoiced: e.target.value,
+              })}
+            />
+            <span className="muted small">
+              Valor que FACTUSOL usa para marcar el pedido como facturado
+              («Enviado»). Por defecto 2. Vacío → el pedido no se marca.
             </span>
           </label>
           <table className="data-table">

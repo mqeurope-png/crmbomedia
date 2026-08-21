@@ -14,14 +14,16 @@ function today(): string {
 }
 
 /** Modal de emisión de factura FACTUSOL (C-2-fix2): reproduce el diálogo
- *  «Nueva factura» del escritorio con 5 campos (Tipo, Serie, Fecha, Forma de
- *  pago, Observaciones). Las formas de pago se cargan de F_FOP; los valores
- *  reales del desplegable los confirma la validación de Bart.
+ *  «Nueva factura» del escritorio con 4 campos (Empresa/Serie, Fecha, Forma de
+ *  pago, Observaciones). Las formas de pago se cargan de F_FOP.
+ *
+ *  ERP-E2-fix2: se retira el campo «Tipo». Era un malentendido — `TIPFAC` no
+ *  es un tipo de documento, es la serie/empresa emisora, y su default "1"
+ *  sellaba todas las facturas como Bomedia.
  *
  *  ERP-E2: la «Serie» pasa de campo de texto libre a desplegable de EMPRESA
- *  EMISORA. En FACTUSOL la serie no es un dato de la factura: identifica la
- *  empresa y va codificada en el rango del número (serie 5 ⇒ 5xxxxx). Por eso
- *  escribirla como columna `SERFAC` rompía todas las emisiones. */
+ *  EMISORA (vive en `TIPFAC`). Por defecto se hereda la del pedido que ya
+ *  está en FACTUSOL; el desplegable solo sirve para forzar otra. */
 export function EmitFactusolModal({
   totalAmount,
   currency,
@@ -35,7 +37,6 @@ export function EmitFactusolModal({
   onCancel: () => void;
   submitting?: boolean;
 }) {
-  const [tipfac, setTipfac] = useState("1");
   const [serie, setSerie] = useState<number | null>(null);
   const [fecfac, setFecfac] = useState(today());
   const [fopfac, setFopfac] = useState("");
@@ -68,7 +69,6 @@ export function EmitFactusolModal({
 
   function submit() {
     onSubmit({
-      tipfac: tipfac.trim() || "1",
       serie,
       fecfac: fecfac || null,
       fopfac: fopfac || null,
@@ -79,7 +79,7 @@ export function EmitFactusolModal({
   return (
     <div className="modal-overlay" role="dialog" aria-modal="true"
          aria-label="Emitir factura FACTUSOL">
-      <div className="modal-dialog">
+      <div className="modal-dialog erp-emit-modal">
         <h2>Emitir factura en FACTUSOL</h2>
         <p>
           Total: <strong>{totalAmount.toFixed(2)} {currency}</strong>
@@ -88,16 +88,6 @@ export function EmitFactusolModal({
           Se creará una factura <strong>real</strong> en FACTUSOL. Esta acción
           no es reversible desde el CRM.
         </p>
-
-        <label className="field">
-          <span>Tipo</span>
-          <input
-            type="text"
-            value={tipfac}
-            onChange={(e) => setTipfac(e.target.value)}
-          />
-        </label>
-        <span className="muted small">1 = factura ordinaria (código FACTUSOL)</span>
 
         <label className="field">
           <span>Empresa emisora / Serie</span>

@@ -93,7 +93,7 @@ describe("EmitFactusolButton", () => {
     expect(onInvoiced).toHaveBeenCalledWith("526067");
   });
 
-  it("con enableOptions abre el modal de 5 campos y emite con opciones", async () => {
+  it("con enableOptions abre el modal de opciones y emite", async () => {
     mockEmit.mockResolvedValue({ job_id: "job-9", order_id: "o1", status: "queued" });
     mockStatus.mockResolvedValue({ status: "invoiced", codfac: "526067" });
     mockFormas.mockResolvedValue([{ codigo: "03", nombre: "Transferencia" }]);
@@ -101,9 +101,9 @@ describe("EmitFactusolButton", () => {
     render(<EmitFactusolButton {...props({ enableOptions: true })} />);
 
     await user.click(screen.getByRole("button", { name: /Emitir factura FACTUSOL/ }));
-    // Los 5 campos del modal.
-    expect(screen.getByLabelText("Tipo")).toHaveValue("1");
+    // Los campos del modal (sin «Tipo», retirado en ERP-E2-fix2).
     expect(screen.getByLabelText("Empresa emisora / Serie")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Tipo")).not.toBeInTheDocument();
     expect(screen.getByLabelText("Fecha de emisión")).toBeInTheDocument();
     expect(screen.getByLabelText("Observaciones")).toBeInTheDocument();
     // Forma de pago cargada de F_FOP.
@@ -113,7 +113,7 @@ describe("EmitFactusolButton", () => {
     await waitFor(() => expect(mockEmit).toHaveBeenCalled());
     const [oid, opts] = mockEmit.mock.calls[0];
     expect(oid).toBe("o1");
-    expect(opts.tipfac).toBe("1");
+    expect(opts).not.toHaveProperty("tipfac");
     expect(await screen.findByLabelText("Factura FACTUSOL")).toHaveTextContent("526067");
   });
 
@@ -125,6 +125,21 @@ describe("EmitFactusolButton", () => {
     await user.click(screen.getByRole("button", { name: /Emitir factura FACTUSOL/ }));
     await user.click(screen.getByRole("button", { name: "Emitir factura" }));
     expect(await screen.findByText(/Error: boom/)).toBeInTheDocument();
+  });
+
+  it("openSignal abre el mismo modal (botón «Solicitar factura» de la tarjeta)", async () => {
+    mockEmit.mockResolvedValue({ job_id: "job-c", order_id: "o1", status: "queued" });
+    mockStatus.mockResolvedValue({ status: "invoiced", codfac: "260066" });
+    const { rerender } = render(
+      <EmitFactusolButton {...props({ enableOptions: true, openSignal: 0 })} />,
+    );
+    expect(screen.queryByText(/no es reversible/)).not.toBeInTheDocument();
+    // La tarjeta incrementa la señal → se abre ESTE modal, no una transición
+    // huérfana que dejaba el pedido colgado en «pending».
+    rerender(
+      <EmitFactusolButton {...props({ enableOptions: true, openSignal: 1 })} />,
+    );
+    expect(await screen.findByText(/no es reversible/)).toBeInTheDocument();
   });
 
   it("cancelar cierra el modal sin emitir", async () => {

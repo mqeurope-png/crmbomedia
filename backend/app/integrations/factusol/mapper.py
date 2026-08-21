@@ -16,8 +16,11 @@ descuentos, el cliente (`CLIPCL→CLIFAC`) y **la referencia común
 externa. Las columnas de estado/auditoría del pedido se excluyen.
 
 C-2-fix2 (verificado contra la factura real 260695 de BOPRIN-99866):
-- **`TIPFAC` es `'1'`** (string), no `2` — la factura ordinaria de Bomedia usa
-  tipo 1. Editable por el operador en el modal de emisión.
+- ~~**`TIPFAC` es `'1'`** — la factura ordinaria de Bomedia usa tipo 1.~~
+  **FALSO, corregido en ERP-E2-fix2.** `TIPFAC` no es un tipo de documento:
+  es la SERIE = empresa emisora (1=Bomedia, 2=MQ Europe, 5=Streamtec). Aquella
+  factura era `'1'` porque la emitió Bomedia. Tratarlo como «tipo» hizo que el
+  modal mandara `"1"` por defecto y sellara TODAS las facturas como Bomedia.
 - **NO se inyecta `PEDFAC`**: en la factura real está vacío; la app externa no
   enlaza factura↔pedido por PEDFAC, solo por `REFFAC` (que ya viaja en la
   copia por sufijo). Poner PEDFAC descuadraría respecto a las facturas que crea
@@ -37,9 +40,11 @@ Cinco venían de la copia por sufijo (F_PCL sí tiene `PENPCL`, `PPOPCL`,
   llamada** (`write_record(..., ejercicio=YYYY)`). Lo demuestra `create_quote`,
   que crea proformas a diario sin mandar ningún `EJEPRE`. Ojo con la asimetría:
   en las LÍNEAS el ejercicio **sí** es columna (`EJELFA` existe en F_LFA).
-- **`SERFAC`**: la serie tampoco es columna. En FACTUSOL la serie identifica la
-  **empresa emisora** y va codificada en el RANGO del número de documento
-  (serie N ⇒ `[N·100000, (N+1)·100000)`). Ver `service.next_codfac`.
+- **`SERFAC`**: la serie tampoco es columna propia. La serie identifica la
+  **empresa emisora** y vive en **`TIPFAC`** (ERP-E2-fix2, confirmado en vivo:
+  1=Bomedia 736 facturas, 2=MQ Europe 83, 5=Streamtec 66). La clave real de
+  F_FAC es `(TIPFAC, CODFAC)` — el mismo número convive en varias series el
+  mismo ejercicio. Ver `service.next_codfac`.
 
 Y bastaba UNA para que `EscribirRegistro` fallara ENTERO con
 `BDEscribirRegistroError` sin decir cuál sobraba (gotcha nº 13, mismo patrón
@@ -58,8 +63,9 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-#: Tipo de documento por defecto de F_FAC: '1' = factura ordinaria de Bomedia
-#: (string, confirmado en la factura real 260695). Editable en el modal.
+#: Serie de último recurso si no hay ninguna resuelta ni heredada. NO es un
+#: «tipo de documento»: ERP-E2-fix2 confirmó en vivo que TIPFAC es la empresa
+#: emisora (1=Bomedia, 2=MQ Europe, 5=Streamtec).
 DEFAULT_TIPFAC = "1"
 
 
@@ -154,20 +160,18 @@ class FacturaOptions:
     «Nueva factura» del escritorio FACTUSOL). `None` = no tocar la columna que
     haya heredado la copia por sufijo; un valor la sobreescribe.
 
-    - `tipfac`: tipo de documento (por defecto '1', factura ordinaria).
-    - `serie`: **empresa emisora**. No es una columna: determina el rango de
-      numeración del CODFAC (serie 5 ⇒ 5xxxxx). `None` → la resuelve el
-      service (override por origen → default de ajustes → 5 Streamtec).
+    - `serie`: **empresa emisora**. Se escribe en `TIPFAC` y decide el
+      contador del CODFAC. `None` → la resuelve el service (heredada del
+      pedido → override por origen → default de ajustes).
     - `fecfac`: fecha de emisión ISO (`YYYY-MM-DD`); `None` → la calcula el
       service (hoy).
     - `fopfac`: código de forma de pago (F_FOP).
     - `comfac`: observaciones / comentario de la factura.
     """
 
-    #: ERP-E2-fix1 — `None` = heredar el tipo/serie del pedido (lo normal). Un
-    #: valor explícito lo fuerza. Antes tenía default `'1'` y pisaba SIEMPRE la
-    #: serie heredada: por eso el pedido `5-000005` salió facturado `1-100000`.
-    tipfac: str | None = None
+    #: ERP-E2-fix2 — la empresa emisora. Es lo ÚNICO que decide `TIPFAC`.
+    #: (El antiguo campo `tipfac` «tipo de documento» no existía como concepto
+    #: en FACTUSOL: `from_payload` lo ignora si llega de un job viejo.)
     serie: int | None = None
     fecfac: str | None = None
     fopfac: str | None = None
@@ -228,17 +232,14 @@ def pcl_row_to_fac_payload(
 
     Copia por sufijo (`*PCL → *FAC`, salvo `PCL_ONLY_COLUMNS` — arrastra
     CLIFAC, TOTFAC, **REFFAC** y las bandas de IVA) e inyecta:
-    - CODFAC = el nuevo número secuencial DENTRO de la serie (`next_codfac`).
-    - TIPFAC = `options.tipfac` (por defecto '1', factura ordinaria).
+    - CODFAC = el contador de la serie (`next_codfac`).
+    - **TIPFAC = la SERIE (empresa emisora)**, heredada del `TIPPCL` del
+      pedido y ya resuelta por `resolve_serie`.
     - FECFAC = `options.fecfac` o la fecha de EMISIÓN (hoy), no la del pedido.
-    - FOPFAC / COMFAC = solo si el operador los indica (`options`).
+    - PEDFAC / FOPFAC / COMFAC = solo si el caller los indica.
 
-    **No** inyecta:
-    - `EJEFAC` ni `SERFAC` — no son columnas de F_FAC (ERP-E2). El ejercicio va
-      como parámetro de `write_record`; la serie, codificada en el rango del
-      CODFAC.
-    - `PEDFAC` — la app externa no enlaza por PEDFAC; el enlace es REFFAC, ya
-      presente en la copia.
+    **No** inyecta `EJEFAC` ni `SERFAC` — no son columnas de F_FAC (ERP-E2).
+    El ejercicio va como parámetro de `write_record`.
 
     El resultado pasa por `filter_to_real_columns`: lo que la copia por sufijo
     arrastre y no exista en F_FAC se descarta con un warning en vez de tumbar
@@ -251,13 +252,16 @@ def pcl_row_to_fac_payload(
             continue
         payload[_retag(col, "PCL", "FAC")] = val
     payload["CODFAC"] = codfac
-    # TIPFAC = la SERIE (empresa emisora). La copia por sufijo ya trajo el
-    # `TIPPCL` del pedido: solo se pisa si el operador forzó otra en el modal.
-    if opts.tipfac is not None:
-        payload["TIPFAC"] = opts.tipfac
-    elif opts.serie is not None:
+    # TIPFAC = la SERIE, y punto. ERP-E2-fix2: aquí había un override por
+    # `opts.tipfac` que SIEMPRE ganaba (el modal mandaba "1" por defecto,
+    # creyendo que era «tipo de documento») y pisaba la serie heredada. El
+    # resultado era intentar escribir (TIPFAC=1, CODFAC=<contador de la serie
+    # 5>) — una clave que YA existe en la serie 1 → `BDExisteRegistro`, y la
+    # emisión entera al suelo. `TIPFAC` no es un tipo: es la empresa emisora.
+    if opts.serie is not None:
         payload["TIPFAC"] = str(opts.serie)
-    payload.setdefault("TIPFAC", DEFAULT_TIPFAC)
+    # Sin serie resuelta se respeta la que trajo la copia del pedido; nunca
+    # se fuerza un "1" fijo, que es lo que causó el bug.
     payload["FECFAC"] = opts.fecfac or fecha_emision
     # ERP-E2-fix1 — trazabilidad factura→pedido. C-2-fix2 decidió NO ponerlo
     # porque la factura real de Bart lo tenía vacío; se reintroduce porque sin

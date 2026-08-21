@@ -36,10 +36,14 @@ function base(over = {}) {
 }
 
 describe("EmitFactusolModal", () => {
-  it("renderiza los 5 campos con defaults y la advertencia", async () => {
+  it("renderiza los 4 campos y la advertencia, SIN campo «Tipo»", async () => {
     render(<EmitFactusolModal {...base()} />);
-    expect(await screen.findByLabelText("Tipo")).toHaveValue("1");
-    expect(screen.getByLabelText("Empresa emisora / Serie")).toBeInTheDocument();
+    expect(
+      await screen.findByLabelText("Empresa emisora / Serie"),
+    ).toBeInTheDocument();
+    // ERP-E2-fix2: «Tipo» era un malentendido (TIPFAC es la serie) y su
+    // default "1" sellaba todas las facturas como Bomedia.
+    expect(screen.queryByLabelText("Tipo")).not.toBeInTheDocument();
     expect(screen.getByLabelText("Fecha de emisión")).toBeInTheDocument();
     expect(screen.getByLabelText("Forma de pago")).toBeInTheDocument();
     expect(screen.getByLabelText("Observaciones")).toBeInTheDocument();
@@ -83,12 +87,11 @@ describe("EmitFactusolModal", () => {
     await user.selectOptions(await screen.findByLabelText("Forma de pago"), "03");
     await user.click(screen.getByRole("button", { name: "Emitir factura" }));
     expect(onSubmit).toHaveBeenCalledWith(
-      expect.objectContaining({
-        tipfac: "1", serie: 2, fopfac: "03", comfac: "Pago 30d",
-      }),
+      expect.objectContaining({ serie: 2, fopfac: "03", comfac: "Pago 30d" }),
     );
-    // `serfac` ya no existe: era la columna fantasma que rompía la emisión.
+    // `serfac` era la columna fantasma; `tipfac`, el sellado a serie 1.
     expect(onSubmit.mock.calls[0][0]).not.toHaveProperty("serfac");
+    expect(onSubmit.mock.calls[0][0]).not.toHaveProperty("tipfac");
   });
 
   it("sin tocar el selector manda serie null (= heredar la del pedido)", async () => {

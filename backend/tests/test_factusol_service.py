@@ -10,7 +10,7 @@ import json
 from collections.abc import Generator
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -301,12 +301,13 @@ def test_pcl_row_to_fac_payload_maps_all_iva_bands_and_injects():
 
 
 def test_pcl_row_to_fac_payload_applies_operator_options():
-    opts = FacturaOptions(tipfac="4", serie=2, fecfac="2026-07-29",
+    opts = FacturaOptions(serie=2, fecfac="2026-07-29",
                           fopfac="03", comfac="Pago a 30 días")
     fac = pcl_row_to_fac_payload(
         _pcl_row(), "260003", "2026", fecha_emision="2026-08-04", options=opts,
     )
-    assert fac["TIPFAC"] == "4"
+    # TIPFAC = la serie elegida (2 = MQ Europe), no un «tipo de documento».
+    assert fac["TIPFAC"] == "2"
     assert fac["FECFAC"] == "2026-07-29"          # la opción gana a la fecha de hoy
     assert fac["FOPFAC"] == "03"
     assert fac["COMFAC"] == "Pago a 30 días"
@@ -681,3 +682,97 @@ def test_emit_invoice_rejects_already_invoiced(session_factory):
         oid = _order(s, invoice_status=InvoiceStatus.INVOICED_BY_ERP.value)
         with pytest.raises(FactusolError, match="ya tiene factura"):
             emit_invoice(s, oid, FakeFactusol(pcl_row=_pcl_row()))
+
+
+# --- ERP-E2-fix2: TIPFAC = serie ------------------------------------------
+
+
+def test_fac_payload_tipfac_equals_serie():
+    """La cabecera se sella con la SERIE resuelta, no con un «tipo»."""
+    fac = pcl_row_to_fac_payload(
+        _pcl_row(), "260066", "2026", fecha_emision="2026-08-20",
+        options=FacturaOptions(serie=5),
+    )
+    assert fac["TIPFAC"] == "5"
+
+
+def test_fac_payload_ignores_legacy_tipfac_option():
+    """Un job encolado antes de fix2 trae `tipfac="1"`. Ese valor NO puede
+    volver a pisar la serie: era exactamente lo que sellaba toda factura como
+    Bomedia y provocaba `BDExisteRegistro`."""
+    opts = FacturaOptions.from_payload({"serie": 5, "tipfac": "1"})
+    fac = pcl_row_to_fac_payload(
+        _pcl_row(), "260066", "2026", fecha_emision="2026-08-20", options=opts,
+    )
+    assert fac["TIPFAC"] == "5"
+
+
+def test_emit_invoice_writes_series5_number(session_factory):
+    """Reproduce el caso real de MOVIATICOS: pedido F_PCL serie 5, facturas de
+    la serie 5 hasta 260065 → escribe (TIPFAC=5, CODFAC=260066)."""
+    with session_factory() as s:
+        oid = _order(s, number="BOPRIN-99917")
+        client = FakeFactusol(
+            pcl_row=_pcl_row(CODPCL=5, REFPCL="BOP-099917"), lpc_rows=[],
+            f_fac_rows=[
+                {"TIPFAC": "1", "CODFAC": 260736},   # Bomedia, número mayor
+                {"TIPFAC": "5", "CODFAC": 260065},   # Streamtec, el que manda
+                {"TIPFAC": "2", "CODFAC": 526082},
+            ],
+        )
+        result = emit_invoice(s, oid, client)
+    assert result["serie"] == 5
+    cabecera = next(rec for t, rec in client.writes if t == "F_FAC")
+    assert cabecera["TIPFAC"] == "5"
+    assert cabecera["CODFAC"] == "260066"
+
+
+def test_next_codfac_anti_collision():
+    """Si el `max+1` estuviera ocupado en la serie, avanza al primer libre en
+    vez de morir con BDExisteRegistro contra la clave (TIPFAC, CODFAC)."""
+    client = FakeFactusol(f_fac_rows=[
+        {"TIPFAC": "5", "CODFAC": 10},
+        {"TIPFAC": "5", "CODFAC": 11},
+        {"TIPFAC": "5", "CODFAC": 9},
+    ])
+    # max=11 → 12 libre.
+    assert next_codfac(client, "2026", 5) == "12"
+    client2 = FakeFactusol(f_fac_rows=[
+        {"TIPFAC": "5", "CODFAC": 10}, {"TIPFAC": "5", "CODFAC": 12},
+    ])
+    # max=12 → 13 libre (no reutiliza el hueco 11: la numeración no retrocede).
+    assert next_codfac(client2, "2026", 5) == "13"
+
+
+def test_estpcl_invoiced_from_settings_json(session_factory):
+    from app.integrations.factusol.service import (  # noqa: PLC0415
+        estpcl_invoiced_value,
+    )
+
+    with session_factory() as s:
+        assert estpcl_invoiced_value(s) is None      # sin configurar
+        _set_series(s, estpcl_invoiced="2")
+        s.commit()
+        assert estpcl_invoiced_value(s) == "2"
+
+
+def test_emit_job_failure_records_error_and_keeps_order_reemitible(session_factory):
+    """El job falla → el pedido NO queda `invoiced_by_erp` y el fallo se
+    registra en el historial. Sin esto la ficha se quedaba en «Generando…»
+    esperando un job muerto."""
+    from app.erp.models import OrderStatusHistory  # noqa: PLC0415
+    from app.integrations.factusol.service import (  # noqa: PLC0415
+        record_emit_failure,
+    )
+
+    with session_factory() as s:
+        oid = _order(s)
+        record_emit_failure(s, oid, "BDExisteRegistro")
+        order = s.get(Order, oid)
+        assert order.invoice_status != InvoiceStatus.INVOICED_BY_ERP.value
+        assert order.factusol_invoice_number is None
+        hist = list(s.scalars(
+            select(OrderStatusHistory).where(OrderStatusHistory.order_id == oid)
+        ))
+        assert len(hist) == 1
+        assert "BDExisteRegistro" in hist[0].metadata_json

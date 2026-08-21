@@ -633,10 +633,12 @@ class EmitFactusolInvoicePayload(BaseModel):
     factura» del escritorio FACTUSOL). Todas opcionales con defaults sensatos:
     un POST sin cuerpo emite con tipo '1' y fecha de hoy."""
 
-    tipfac: str = Field(default="1", max_length=4)
-    #: ERP-E2 — empresa emisora. NO es una columna de F_FAC: determina el rango
-    #: de numeración del CODFAC (serie 5 ⇒ 5xxxxx). None → la resuelve el
-    #: service (override por origen → default de ajustes → 5 Streamtec).
+    #: ERP-E2-fix2 — empresa emisora. Se escribe en `TIPFAC` y decide el
+    #: contador del CODFAC. None → la hereda el service del pedido en FACTUSOL
+    #: (`TIPPCL`) y, si no está allí, de los ajustes.
+    #:
+    #: Ya NO existe un campo `tipfac`: era un malentendido («1 = factura
+    #: ordinaria») que sellaba TODAS las facturas como serie 1 = Bomedia.
     serie: int | None = Field(default=None, ge=1, le=9)
     #: Fecha de emisión ISO (`YYYY-MM-DD`); None → hoy (lo pone el service).
     fecfac: str | None = Field(default=None, max_length=10)

@@ -289,7 +289,61 @@ def next_codfac(
             "serie (discovery --trace-order).", serie, ejercicio,
         )
         return "1"
-    return str(max(in_series) + 1)
+    # Guarda anti-colisión: el número se escribe contra la clave COMPUESTA
+    # `(TIPFAC, CODFAC)`, así que si el `max+1` estuviera ocupado en esta serie
+    # (hueco raro, escritura concurrente, carga manual) el EscribirRegistro
+    # moriría con `BDExisteRegistro`. Avanzamos al primer libre en vez de
+    # fallar — es lo que haría el escritorio.
+    ocupados = set(in_series)
+    candidato = max(in_series) + 1
+    while candidato in ocupados:
+        logger.warning(
+            "factusol: (TIPFAC=%d, CODFAC=%d) ya existe; se avanza al "
+            "siguiente libre de la serie.", serie, candidato,
+        )
+        candidato += 1
+    return str(candidato)
+
+
+def record_emit_failure(
+    session: Session,
+    order_id: str,
+    error: str,
+    *,
+    actor_user_id: str | None = None,
+) -> bool:
+    """Deja constancia en la BD de que la emisión falló. Devuelve `True` si
+    escribió algo.
+
+    ERP-E2-fix2. `emit_invoice` es atómico: si falla, NO marca el pedido — lo
+    que dejaba la ficha en «Generando…» indefinidamente, esperando un job
+    muerto. Aquí se escribe una entrada de historial con el error real de
+    FACTUSOL (`BDExisteRegistro`, `BDEscribirRegistroError`…) para que el
+    operador vea qué pasó y pueda reintentar.
+
+    El estado NO se mueve a un `invoice_failed` nuevo: se deja tal cual estaba
+    (re-emitible). Un estado de error extra obligaría a que alguien lo
+    «desatasque» antes de reintentar, y el pedido ya está en un estado válido
+    desde el que se puede volver a emitir."""
+    order = session.get(Order, order_id)
+    if order is None:
+        return False
+    inv = _status_value(order.invoice_status)
+    session.add(OrderStatusHistory(
+        order_id=order.id, domain=StatusDomain.INVOICE,
+        from_status=inv, to_status=inv,   # el estado no se mueve
+        changed_at=datetime.now(UTC), changed_by_user_id=actor_user_id,
+        reason="Error al emitir la factura en FACTUSOL",
+        metadata_json=json.dumps({"error": error[:500], "outcome": "failed"}),
+    ))
+    _log_sync(
+        session, order, "-", "-", ejercicio_for(session), 0,
+        operation="factusol_emit_invoice",
+        message=f"ERROR emitiendo factura: {error[:300]}",
+        success=False,
+    )
+    session.commit()
+    return True
 
 
 def _compose_ref(order_number: str, ref_prefix: str | None) -> str:
@@ -556,6 +610,7 @@ def _log_sync(
     session: Session, order: Order, codfac: str, codpcl: str,
     ejercicio: str, lines: int, *,
     operation: str = "factusol_emit_invoice", message: str | None = None,
+    success: bool = True,
 ) -> None:
     from app.models.crm import (  # noqa: PLC0415
         ExternalSystem,
@@ -569,7 +624,7 @@ def _log_sync(
         system=ExternalSystem.FACTUSOL,
         account_id=order.store_id,
         operation=operation,
-        status=SyncStatus.SUCCESS.value,
+        status=(SyncStatus.SUCCESS if success else SyncStatus.FAILED).value,
         started_at=now, finished_at=now,
         records_processed=1,
         triggered_by=SyncTrigger.MANUAL.value,

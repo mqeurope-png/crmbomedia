@@ -255,76 +255,61 @@ Ojo con la asimetría que delató el discovery: **`EJEFAC` no existe pero
 `EJELFA` sí**. En la cabecera el ejercicio va como parámetro; en las líneas es
 columna. Deducirlo por convención habría fallado en los dos sentidos.
 
-## 6b. La serie es la empresa emisora — y es el «tipo» del documento
+## 6b. La serie es la empresa emisora — y vive en `TIPFAC`
 
-`SERFAC` no existe porque en FACTUSOL **la serie no es un campo aparte**:
-identifica la empresa que emite y viaja en la columna **`TIPFAC` / `TIPPCL` /
-`TIPPRE`** (el «tipo» del documento). El escritorio los muestra como
-`<serie>-<número>`.
+✅ **CONFIRMADO EN VIVO** (ERP-E2-fix2, sondeo de F_FAC ejercicio 2026, 906
+filas). `SERFAC` no existe; la serie identifica la **empresa que emite** y va
+en la columna **`TIPFAC` / `TIPPCL` / `TIPPRE`**. El escritorio los muestra
+como `<serie>-<número>`.
 
-> ### ⚠️ ERP-E2 se equivocó: la serie NO es el rango del número
+| `TIPFAC` | Empresa | Facturas | Rango CODFAC |
+|---|---|---|---|
+| 1 | Bomedia | 736 | 260000–260736 |
+| 2 | MQ Europe | 83 | 526000–526082 |
+| 3 | (sin nombrar) | 15 | 260001–260539 |
+| 4 | (sin nombrar) | 6 | 260001–260006 |
+| 5 | Streamtec | 66 | 260000–260065 |
+
+> ### ⚠️ Dos modelos anteriores, los dos falsos
 >
-> E2 supuso que la serie N ocupaba `[N·100000, (N+1)·100000)`. La validación
-> de Bart lo tumbó con dos contraejemplos: existe una factura **`2-526082`**
-> (bajo el modelo de rangos sería «serie 5») y el pedido de MOVIATICOS es
-> **`5-000005`** (número 5 en serie 5, imposible con rangos).
->
-> Evidencia de que es `TIPFAC`: la factura que emitió el CRM llevaba
-> `TIPFAC="1"` (nuestro default) y salió como `1-100000`; el join documentado
-> de las líneas es **compuesto** (`F_LPC.TIPLPC = F_PCL.TIPPCL AND
-> F_LPC.CODLPC = F_PCL.CODPCL`), que es justo lo que exige un contador por
-> serie; y todas las proformas de Bomedia tienen `TIPPRE='1'`.
+> 1. **«TIPFAC = tipo de documento»** (C-2-fix2): la factura verificada tenía
+>    `TIPFAC='1'`… porque la emitió Bomedia. No hay un «1 = factura ordinaria».
+> 2. **«la serie es el rango del número»** (ERP-E2): lo desmienten `2-526082`
+>    y `5-000005`. Y la tabla de arriba lo remata — las series 1, 3, 4 y 5
+>    comparten el rango 260xxx.
 
-| Serie | Empresa | Ejemplo real |
-|---|---|---|
-| 1 | Bomedia | la factura errónea `1-100000` |
-| 2 | MQ Europe | factura `2-526082` |
-| 5 | Streamtec | pedido `5-000005` (MOVIATICOS, `BOP-099917`) |
+**La clave real de F_FAC es `(TIPFAC, CODFAC)`.** El mismo número convive en
+varias series el mismo ejercicio: `260000` existe como serie 1 (REFFAC
+ART-005587, 07-ene) **y** como serie 5 (REFFAC ENERO, 12-ene); `260065`
+existe en la 1 y en la 5 (BOP-099894, 14-ago).
 
-**El número solo es único por `(tipo, código)`.** Consecuencias que esto
-arrastra, más allá de la numeración:
+Consecuencias en el código:
 
-- El borrado de compensación filtra por `TIPFAC` **y** `CODFAC`: borrar por
-  número a secas se llevaría por delante la factura homónima de otra serie.
-- Las líneas llevan `TIPLFA` = la serie, o colgarían de la cabecera equivocada.
+- Numeración: `max(CODFAC WHERE TIPFAC=serie) + 1`, con guarda anti-colisión
+  que avanza si el hueco estuviera ocupado.
+- El borrado de compensación filtra por `TIPFAC` **y** `CODFAC`.
+- Las líneas llevan `TIPLFA` = la serie.
 
-### El bug de la validación
+### El bug de la segunda validación (`BDExisteRegistro`)
 
-El pedido ya existía en FACTUSOL en la serie correcta (`5-000005`), y el
-mapper **copiaba `TIPPCL→TIPFAC`**… para acto seguido pisarlo con
-`opts.tipfac`, cuyo default era `"1"`. De ahí `1-100000`: serie de Bomedia
-(el default que pisó) y número 100000 (el suelo del rango que E2 inventó,
-por debajo del mínimo real).
+El pedido `BOPRIN-99917` (MOVIATICOS) es el F_PCL `5-000005`. La copia por
+sufijo traía `TIPPCL='5'` → `TIPFAC='5'`, correcto… y el mapper lo pisaba:
 
-### Flujo correcto (ERP-E2-fix1)
+```python
+if opts.tipfac is not None:      # "1", default del modal → SIEMPRE ganaba
+    payload["TIPFAC"] = opts.tipfac
+```
 
-1. Localizar el `F_PCL` del pedido por `REFPCL`.
-2. **Heredar la serie** de su `TIPPCL`. La config de `/erp/settings` solo
-   actúa si el pedido no está en FACTUSOL (pedidos manuales). El modal puede
-   forzar otra, pero por defecto ofrece «heredar la del pedido».
-3. Número = **contador de esa serie**: `MAX(CODFAC donde TIPFAC=serie) + 1`.
-   El filtro por serie se hace en Python, no en el `filtro` de la API: no
-   sabemos si `TIPFAC` viaja como `'5'` o `5`, y un filtro que no casa
-   devolvería `[]` en silencio (gotcha nº 1) → el contador arrancaría de cero
-   sobre facturas existentes.
-4. Escribir F_FAC + F_LFA heredando cliente, líneas, totales y bandas de IVA.
-5. Enlazar `PEDFAC = CODPCL` y marcar el pedido como facturado.
-6. Todo por el worker serial `factusol:writes`.
-
-> **Sobre `PEDFAC`:** C-2-fix2 decidió NO ponerlo porque la factura real de
-> Bart lo tenía vacío. Se reintroduce porque sin él no hay forma de saber de
-> qué pedido salió una factura del CRM. Si el discovery confirma que el
-> escritorio lo deja vacío al convertir, conviene revisar si conviene mantener
-> la divergencia.
+Resultado: se intentaba escribir `(TIPFAC=1, CODFAC=260066)`, que **ya existe**
+en la serie 1 (factura ART-005622 de Bomedia, 27-ene-2026) → `BDExisteRegistro`.
+El campo «Tipo» del modal se ha retirado: no existe tal concepto.
 
 ### Marcar el pedido como facturado
 
-`ESTPCL` pasa a «Enviado». **El valor del código no se adivina**: como con
-`ESTPRE` (gotcha nº 17), meter un código inventado en la contabilidad es peor
-que no marcar nada. El discovery (`--trace-order`, sección A4) lista el
-reparto de `ESTPCL` de todos los pedidos para identificarlo; luego se guarda
-en `factusol_series_json.estpcl_invoiced` y la emisión lo aplica. Mientras no
-esté configurado, la factura se emite igual y queda un warning en el log.
+`ESTPCL = 2` («Enviado») marca el pedido como facturado. Se configura en
+`/erp/settings` → «Estado ESTPCL del pedido facturado»; sin valor, la factura
+se emite igual y queda un aviso en el log en vez de escribir un código
+inventado en la contabilidad.
 
 ## 6c. Columnas canónicas (referencia)
 

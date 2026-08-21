@@ -455,6 +455,9 @@ export type ErpSettings = {
   factusol_series_default: string;
   /** C-2: override de serie por origen del pedido (o por store_id). */
   factusol_series_by_source: Record<string, string>;
+  /** ERP-E2-fix2 — valor de F_PCL.ESTPCL que marca el pedido como facturado
+   *  («Enviado» en el escritorio). Confirmado en vivo: "2". */
+  factusol_estpcl_invoiced?: string;
 };
 
 export async function getErpSettings(): Promise<ErpSettings> {
