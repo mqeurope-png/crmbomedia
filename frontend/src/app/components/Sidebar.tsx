@@ -7,6 +7,7 @@ import {
   ChevronsLeft,
   ChevronsRight,
   Database,
+  FileText,
   Kanban,
   Mail,
   Package,
@@ -99,6 +100,14 @@ const NAV_ITEMS: ReadonlyArray<Item> = [
       { href: "/erp/orders/pending-approval", label: "Cola PEDIDOS" },
       { href: "/erp/exceptions", label: "Excepciones" },
     ],
+  },
+  // ERP-E3-A — explorador de documentos FACTUSOL (solo lectura, en vivo).
+  // Mismos roles que la bandeja: cualquiera con vista ERP puede consultar.
+  {
+    href: "/erp/documentos",
+    label: "ERP · Documentos",
+    icon: FileText,
+    allowedRoles: ["admin", "manager", "pedidos", "user"],
   },
   // Cola SAT táctil (taller). Visible para el rol SAT + admin/manager que
   // supervisan. Es una pantalla full-bleed (layout propio); el enlace del

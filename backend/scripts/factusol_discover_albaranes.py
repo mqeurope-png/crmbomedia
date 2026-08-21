@@ -502,6 +502,158 @@ def trace_order(client: Any, ejercicio: str, ref: str) -> None:
     )
 
 
+def trace_quote_chain(client: Any, ejercicio: str, codpre: str) -> None:
+    """ERP-E3-A — cadena COMPLETA presupuesto → albarán → factura de una
+    proforma que Bart acaba de convertir en el escritorio.
+
+    Además del scan de referencias (como `--trace-codpre`), casa candidatos
+    por REF*/cliente/importe, vuelca las columnas COMPLETAS de F_ALB y F_LAL
+    (el allowlist de escritura que E3-B necesita, como FAC_COLUMNS/LFA_COLUMNS)
+    y analiza la numeración de albaranes por serie (TIPALB)."""
+    print("=" * 74)
+    print(f"E3-B PREP · CADENA PRE→ALB→FAC de la proforma CODPRE={codpre}")
+    print("=" * 74)
+
+    pre_rows = client.load_table(
+        "F_PRE", filtro=f"CODPRE={int(codpre)}", ejercicio=ejercicio
+    )
+    if not pre_rows:
+        print(f"\n  ❌ No existe F_PRE con CODPRE={codpre} en {ejercicio}.")
+        return
+    pre = pre_rows[0]
+    print(f"\n  F_PRE {codpre} — columnas no vacías:")
+    for col, val in pre.items():
+        if normalize(val):
+            print(f"      {col:<12} = {val!r}")
+    print(
+        "\n  → Anota el ESTPRE de ARRIBA y compáralo con el que tenía ANTES\n"
+        "    de convertirla: si cambió, ese valor es el marcador «proforma ya\n"
+        "    convertida» que le falta al guard de edición (gotcha nº 17)."
+    )
+    lps = client.load_table(
+        "F_LPS", filtro=f"CODLPS={int(codpre)}", ejercicio=ejercicio
+    )
+    print(f"\n  F_LPS: {len(lps)} líneas de la proforma.")
+
+    cli = normalize(pre.get("CLIPRE"))
+    tot = normalize(pre.get("TOTPRE"))
+    ref = normalize(pre.get("REFPRE"))
+
+    # ---- F_ALB: referencias + casado por cliente/importe/ref -------------
+    print("\n" + "-" * 74)
+    print("  A · F_ALB — ¿qué albarán salió de esta proforma?")
+    alb_rows = client.load_table("F_ALB", filtro="1=1", ejercicio=ejercicio)
+    if not alb_rows:
+        print("      F_ALB sin filas (¿tabla vacía o nombre equivocado?).")
+        return
+    alb_cols = list(alb_rows[0].keys())
+    print(f"\n  COLUMNAS COMPLETAS de F_ALB ({len(alb_cols)}) — el allowlist "
+          "de escritura de E3-B:")
+    print("      " + ", ".join(alb_cols))
+
+    codalb_hit: str | None = None
+    print(f"\n  A1 · Scan de CODPRE={codpre} por TODAS las columnas:")
+    hits = []
+    for row in alb_rows:
+        for col, val in find_matching_columns(row, codpre):
+            if col.upper() == "CODALB":
+                continue
+            hits.append((normalize(row.get("CODALB")), col, val,
+                         looks_like_reference(col)))
+    for codalb, col, val, strong in hits:
+        star = "⭐" if strong else "  "
+        print(f"      {star} F_ALB.{col} = {val!r} (fila CODALB={codalb})")
+        if strong and codalb_hit is None:
+            codalb_hit = codalb
+    if not hits:
+        print("      Sin coincidencias por valor exacto.")
+
+    print("\n  A2 · Casado por cliente + importe (candidatos):")
+    candidates = []
+    for row in alb_rows:
+        same_cli = cli and normalize(row.get("CLIALB")) == cli
+        same_tot = tot and normalize(row.get("TOTALB")) == tot
+        same_ref = ref and ref in (normalize(row.get("REFALB")) or "")
+        if same_cli and (same_tot or same_ref):
+            candidates.append(row)
+    for row in candidates[:5]:
+        resumen = {k: row.get(k) for k in (
+            "TIPALB", "CODALB", "REFALB", "FECALB", "CLIALB", "TOTALB",
+            "ESTALB",
+        ) if k in row}
+        print(f"      candidato: {resumen}")
+        if codalb_hit is None:
+            codalb_hit = normalize(row.get("CODALB"))
+    if not candidates:
+        print("      Ningún albarán casa cliente+importe/ref.")
+
+    # ---- F_LAL: columnas completas ---------------------------------------
+    lal_res = probe_table(client, "F_LAL", ejercicio)
+    if lal_res.get("rows"):
+        print(f"\n  COLUMNAS COMPLETAS de F_LAL ({len(lal_res['columns'])}):")
+        print("      " + ", ".join(lal_res["columns"]))
+        if codalb_hit:
+            lal = client.load_table(
+                "F_LAL", filtro=f"CODLAL={int(codalb_hit)}"
+                if codalb_hit.isdigit() else "1=1",
+                ejercicio=ejercicio,
+            )
+            print(f"      líneas del albarán {codalb_hit}: {len(lal)}")
+            for row in lal[:3]:
+                print(f"        {dict(list(row.items())[:10])}")
+    else:
+        print("\n  F_LAL sin filas — verificar el nombre de la tabla de "
+              "líneas (candidatas: F_LALB, F_LIA, F_LPA).")
+
+    # ---- Numeración de albaranes por serie -------------------------------
+    print("\n  A3 · Numeración de F_ALB por serie (TIPALB):")
+    por_serie: dict[str, list[int]] = {}
+    for row in alb_rows:
+        serie = normalize(row.get("TIPALB"))
+        num = normalize(row.get("CODALB"))
+        if num.lstrip("-").isdigit():
+            por_serie.setdefault(serie, []).append(int(num))
+    for serie, nums in sorted(por_serie.items()):
+        print(f"      TIPALB={serie!r:<6} {len(nums):>4} docs · "
+              f"min={min(nums)} max={max(nums)} → siguiente={max(nums) + 1}")
+    print("      Si cada serie es correlativa e independiente, next_codalb = "
+          "max(CODALB WHERE TIPALB=serie)+1 (como facturas).")
+
+    # ---- F_FAC: la factura resultante ------------------------------------
+    print("\n" + "-" * 74)
+    print("  B · F_FAC — ¿qué factura salió del albarán?")
+    needle = codalb_hit or codpre
+    fac_rows = client.load_table("F_FAC", filtro="1=1", ejercicio=ejercicio)
+    fac_hits = []
+    for row in fac_rows:
+        for col, val in find_matching_columns(row, needle):
+            if col.upper() == "CODFAC":
+                continue
+            fac_hits.append((normalize(row.get("CODFAC")), col, val,
+                             looks_like_reference(col)))
+    for codfac, col, val, strong in fac_hits[:10]:
+        star = "⭐" if strong else "  "
+        print(f"      {star} F_FAC.{col} = {val!r} (fila CODFAC={codfac})")
+    if not fac_hits:
+        print(f"      Sin coincidencias buscando {needle!r} en F_FAC.")
+        matched = [
+            r for r in fac_rows
+            if cli and normalize(r.get("CLIFAC")) == cli
+            and tot and normalize(r.get("TOTFAC")) == tot
+        ]
+        for row in matched[:5]:
+            resumen = {k: row.get(k) for k in (
+                "TIPFAC", "CODFAC", "REFFAC", "FECFAC", "CLIFAC", "TOTFAC",
+                "PEDFAC", "ESTFAC",
+            )}
+            print(f"      candidato por cliente+importe: {resumen}")
+
+    print("\n" + "=" * 74)
+    print("  Pega esta salida en el PR de E3-A: con ella se diseña E3-B")
+    print("  (crear albarán/factura desde proforma + ciclo cruzado).")
+    print("=" * 74)
+
+
 def _scan_for_reference(
     client: Any, ejercicio: str, *, tabla: str, needle: Any, origen: str
 ) -> str | None:
@@ -707,6 +859,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--trace-codpre", default=None,
                         help="CODPRE de la proforma convertida a mano en el "
                              "escritorio, para seguir la cadena PRE→ALB→FAC")
+    parser.add_argument("--trace-quote-chain", default=None,
+                        help="CODPRE de una proforma convertida a mano en el "
+                             "escritorio (presupuesto → albarán → factura): "
+                             "descubre los campos de enlace de la cadena, "
+                             "las columnas completas de F_ALB/F_LAL y la "
+                             "numeración de albaranes por serie (E3-B)")
     parser.add_argument("--trace-order", default=None,
                         help="REFPCL del pedido (ej. BOP-099917): descubre "
                              "cómo se codifica la serie, el contador por "
@@ -726,6 +884,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.check_invoice_pipeline:
         check_invoice_pipeline(client, ejercicio)
+        return 0
+
+    if args.trace_quote_chain:
+        trace_quote_chain(client, ejercicio, args.trace_quote_chain)
         return 0
 
     if args.trace_order:

@@ -635,6 +635,67 @@ export async function getFactusolSeries(): Promise<{
   return apiFetch("/api/erp/factusol/series");
 }
 
+
+// --- explorador de documentos FACTUSOL (ERP-E3-A, solo lectura) --------------
+
+export type FactusolDocType =
+  | "pedidos" | "presupuestos" | "albaranes" | "facturas";
+
+/** Cabecera normalizada de un documento FACTUSOL (lectura en vivo). Los
+ *  campos pueden venir a null cuando la columna no existe en la tabla
+ *  (F_ALB aún sin confirmar) — la UI pinta «—». */
+export type FactusolDocument = {
+  doc_type: FactusolDocType;
+  codigo: number | string | null;
+  serie: number | null;
+  /** `TIPO-CÓDIGO` como lo muestra el escritorio (`5-000005`). */
+  numero: string;
+  cliente_codigo: string | null;
+  cliente_nombre: string | null;
+  fecha: string | null;
+  total: number | null;
+  estado: string | null;
+  estado_label: string;
+  referencia: string | null;
+};
+
+export type FactusolDocumentDetail = FactusolDocument & {
+  lines: {
+    position: number;
+    codart: string | null;
+    description: string;
+    quantity: number;
+    unit_price: number;
+    line_total: number;
+  }[];
+};
+
+export type FactusolDocumentFilters = {
+  codcli?: string;
+  serie?: number;
+  estado?: string;
+  fecha_desde?: string;
+  fecha_hasta?: string;
+  q?: string;
+  limit?: number;
+  offset?: number;
+};
+
+export async function listFactusolDocuments(
+  docType: FactusolDocType, filters: FactusolDocumentFilters = {},
+): Promise<{ items: FactusolDocument[]; total: number }> {
+  const query = qs({ ...filters });
+  return apiFetch(`/api/erp/factusol/documents/${docType}${query}`);
+}
+
+export async function getFactusolDocument(
+  docType: FactusolDocType, serie: number, codigo: number | string,
+): Promise<FactusolDocumentDetail> {
+  return apiFetch(
+    `/api/erp/factusol/documents/${docType}/${serie}/${codigo}`,
+  );
+}
+
 // --- Clientes FACTUSOL ↔ CRM (Fase C · C-3) ---------------------------------
 
 /** Columnas REALES de F_CLI (verificadas contra la base de Bomedia, C-3-fix1):
