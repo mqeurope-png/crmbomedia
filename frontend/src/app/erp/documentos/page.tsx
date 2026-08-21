@@ -7,10 +7,9 @@ import { FactusolDocumentDetailModal } from
 import {
   getFactusolSeries,
   listFactusolDocuments,
-  searchFactusolCustomers,
-  type FactusolCustomer,
   type FactusolDocType,
   type FactusolDocument,
+  type FactusolDocumentSort,
   type FactusolSerie,
 } from "../../lib/erpApi";
 import { extractErrorMessage } from "../../lib/errors";
@@ -38,14 +37,17 @@ export default function FactusolDocumentosPage() {
   const [series, setSeries] = useState<FactusolSerie[]>([]);
   const [detail, setDetail] = useState<FactusolDocument | null>(null);
 
-  // Filtros. `cliente` guarda el CODCLI resuelto por el buscador.
+  // Filtros. `clienteQ` viaja tal cual: el backend lo resuelve contra
+  // F_CLI por nombre, CIF o email (E3-A-fix1).
   const [serie, setSerie] = useState<string>("");
-  const [cliente, setCliente] = useState<FactusolCustomer | null>(null);
-  const [clienteQuery, setClienteQuery] = useState("");
-  const [clienteOpts, setClienteOpts] = useState<FactusolCustomer[]>([]);
+  const [clienteInput, setClienteInput] = useState("");
+  const [clienteQ, setClienteQ] = useState("");
   const [fechaDesde, setFechaDesde] = useState("");
   const [fechaHasta, setFechaHasta] = useState("");
   const [q, setQ] = useState("");
+  // Orden (E3-A-fix1): sobre el conjunto completo filtrado, en el backend.
+  const [sort, setSort] = useState<FactusolDocumentSort>("numero");
+  const [dir, setDir] = useState<"asc" | "desc">("desc");
 
   useEffect(() => {
     getFactusolSeries()
@@ -59,10 +61,12 @@ export default function FactusolDocumentosPage() {
     try {
       const r = await listFactusolDocuments(tab, {
         serie: serie ? Number(serie) : undefined,
-        codcli: cliente?.codcli ?? undefined,
+        cliente_q: clienteQ.trim() || undefined,
         fecha_desde: fechaDesde || undefined,
         fecha_hasta: fechaHasta || undefined,
         q: q.trim() || undefined,
+        sort,
+        dir,
         limit: PAGE_SIZE,
         offset: nextOffset,
       });
@@ -76,34 +80,34 @@ export default function FactusolDocumentosPage() {
     } finally {
       setLoading(false);
     }
-  }, [tab, serie, cliente, fechaDesde, fechaHasta, q]);
+  }, [tab, serie, clienteQ, fechaDesde, fechaHasta, q, sort, dir]);
 
   useEffect(() => {
     void load(0);
   }, [load]);
 
-  async function buscarCliente() {
-    const query = clienteQuery.trim();
-    if (!query) return;
-    try {
-      setClienteOpts(await searchFactusolCustomers(query, "name"));
-    } catch {
-      setClienteOpts([]);
+  function toggleSort(column: FactusolDocumentSort) {
+    if (sort === column) {
+      setDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSort(column);
+      // Texto asc primero (cliente); numérico/fecha desc primero, como el
+      // orden por defecto.
+      setDir(column === "cliente" ? "asc" : "desc");
     }
   }
 
   function limpiar() {
     setSerie("");
-    setCliente(null);
-    setClienteQuery("");
-    setClienteOpts([]);
+    setClienteInput("");
+    setClienteQ("");
     setFechaDesde("");
     setFechaHasta("");
     setQ("");
   }
 
   const hasFilters =
-    serie !== "" || cliente !== null || fechaDesde !== "" ||
+    serie !== "" || clienteQ !== "" || fechaDesde !== "" ||
     fechaHasta !== "" || q.trim() !== "";
 
   return (
@@ -146,57 +150,26 @@ export default function FactusolDocumentosPage() {
         </label>
 
         <label className="field erp-doc-filter-cliente">
-          <span>Cliente</span>
-          {cliente ? (
-            <span className="badge info erp-doc-cliente-activo">
-              {cliente.nombre || cliente.codcli}
-              <button
-                type="button"
-                aria-label="Quitar filtro de cliente"
-                onClick={() => setCliente(null)}
-              >
-                ×
-              </button>
-            </span>
-          ) : (
-            <span className="erp-doc-cliente-buscar">
-              <input
-                type="text"
-                placeholder="Nombre del cliente…"
-                value={clienteQuery}
-                aria-label="Buscar cliente"
-                onChange={(e) => setClienteQuery(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") void buscarCliente();
-                }}
-              />
-              <button
-                type="button"
-                className="button small secondary"
-                onClick={() => void buscarCliente()}
-              >
-                Buscar
-              </button>
-            </span>
-          )}
-          {!cliente && clienteOpts.length > 0 ? (
-            <ul className="erp-doc-cliente-opts">
-              {clienteOpts.slice(0, 8).map((c) => (
-                <li key={c.codcli ?? c.nombre}>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setCliente(c);
-                      setClienteOpts([]);
-                    }}
-                  >
-                    {c.nombre || "(sin nombre)"}{" "}
-                    <span className="muted small">#{c.codcli}</span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          ) : null}
+          <span>Cliente, CIF o email</span>
+          <span className="erp-doc-cliente-buscar">
+            <input
+              type="text"
+              placeholder="Nombre, B12345678 o email@…"
+              value={clienteInput}
+              aria-label="Cliente, CIF o email"
+              onChange={(e) => setClienteInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") setClienteQ(clienteInput);
+              }}
+            />
+            <button
+              type="button"
+              className="button small secondary"
+              onClick={() => setClienteQ(clienteInput)}
+            >
+              Buscar
+            </button>
+          </span>
         </label>
 
         <label className="field">
@@ -249,10 +222,30 @@ export default function FactusolDocumentosPage() {
           <table className="data-table erp-doc-table">
             <thead>
               <tr>
-                <th>Número</th>
-                <th>Cliente</th>
-                <th>Fecha</th>
-                <th>Total</th>
+                {([
+                  ["numero", "Número"],
+                  ["cliente", "Cliente"],
+                  ["fecha", "Fecha"],
+                  ["total", "Total"],
+                ] as [FactusolDocumentSort, string][]).map(([col, label]) => (
+                  <th
+                    key={col}
+                    aria-sort={
+                      sort === col
+                        ? dir === "asc" ? "ascending" : "descending"
+                        : "none"
+                    }
+                  >
+                    <button
+                      type="button"
+                      className="erp-doc-sort"
+                      onClick={() => toggleSort(col)}
+                    >
+                      {label}
+                      {sort === col ? (dir === "asc" ? " ▲" : " ▼") : ""}
+                    </button>
+                  </th>
+                ))}
                 <th>Estado</th>
                 <th>Referencia</th>
               </tr>

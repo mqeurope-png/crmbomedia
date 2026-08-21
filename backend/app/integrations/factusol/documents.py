@@ -105,6 +105,12 @@ class DocSpec:
         return f"TOT{self.suffix}"
 
     @property
+    def fop(self) -> str:
+        """Forma de pago (código F_FOP). FOPPRE/FOPFAC confirmadas en el
+        schema; FOPPCL vista en vivo ('002'); FOPALB por convención."""
+        return f"FOP{self.suffix}"
+
+    @property
     def line_fk(self) -> str:
         return f"COD{self.lines_suffix}"
 
@@ -177,7 +183,56 @@ def normalize_header(doc_type: str, row: dict[str, Any]) -> dict[str, Any]:
         "estado": estado_raw,
         "estado_label": estado_label(doc_type, estado_raw),
         "referencia": _clean(row.get(spec.ref)),
+        "forma_pago": _clean(row.get(spec.fop)),
     }
+
+
+#: Columnas de F_CLI donde casa el término del filtro de cliente. Todas
+#: confirmadas en vivo (C-3-fix1 + sondeo 2026-08-20): nombre fiscal y
+#: comercial, CIF y email.
+CUSTOMER_MATCH_COLUMNS = ("NOFCLI", "NOCCLI", "NIFCLI", "EMACLI")
+
+
+def matching_codclis(
+    client: FactusolClient, q: str, *, ejercicio: str
+) -> set[str]:
+    """CODCLIs cuyos nombre/CIF/email contienen `q` (case-insensitive).
+
+    Una sola carga de F_CLI y matching en memoria — sin N+1 y sin arriesgar
+    un LIKE server-side multi-columna (gotcha nº 1). Devuelve set vacío si
+    nada casa: el caller lo traduce a «0 documentos», nunca a «todos»."""
+    needle = (q or "").strip().casefold()
+    if not needle:
+        return set()
+    rows = client.load_table("F_CLI", filtro="1=1", ejercicio=ejercicio)
+    out: set[str] = set()
+    for row in rows:
+        for col in CUSTOMER_MATCH_COLUMNS:
+            if needle in str(row.get(col) or "").casefold():
+                codcli = _clean(row.get("CODCLI"))
+                if codcli:
+                    out.add(codcli)
+                break
+    return out
+
+
+#: Claves de ordenación del listado. None / no-numérico se van al final en
+#: ambas direcciones.
+SORT_FIELDS = ("numero", "cliente", "fecha", "total")
+
+
+def _sort_key(sort: str):
+    def key(doc):
+        if sort == "cliente":
+            value = (doc.get("cliente_nombre") or "").casefold() or None
+        elif sort == "fecha":
+            value = doc.get("fecha")
+        elif sort == "total":
+            value = doc.get("total")
+        else:  # numero
+            value = doc["codigo"] if isinstance(doc["codigo"], int) else None
+        return (value is None, value if value is not None else "")
+    return key
 
 
 def _sql_predicate(
@@ -242,16 +297,33 @@ def list_documents(
     fecha_desde: str | None = None,
     fecha_hasta: str | None = None,
     q: str | None = None,
+    cliente_q: str | None = None,
+    sort: str = "numero",
+    direction: str = "desc",
     limit: int = DEFAULT_PAGE_SIZE,
     offset: int = 0,
 ) -> dict[str, Any]:
-    """Listado en vivo de un tipo de documento, filtrado y paginado.
+    """Listado en vivo de un tipo de documento, filtrado, ordenado y paginado.
 
     Devuelve `{"items": [...], "total": N}` — `total` es el nº de documentos
-    que casan TODOS los filtros (para la paginación de la UI), `items` la
-    página `offset:offset+limit` ordenada por código DESC.
+    que casan TODOS los filtros, `items` la página `offset:offset+limit`.
+    El orden (E3-A-fix1) se aplica sobre el conjunto COMPLETO filtrado antes
+    de paginar, numérico donde toca.
+
+    `cliente_q` (E3-A-fix1): término libre que se resuelve contra F_CLI por
+    nombre/CIF/email → set de CODCLI; los documentos se filtran por
+    pertenencia. Si no casa ningún cliente, el resultado es vacío (correcto),
+    nunca «todos».
     """
     spec = DOC_SPECS[doc_type]
+    codclis: set[str] | None = None
+    if cliente_q and cliente_q.strip():
+        codclis = matching_codclis(client, cliente_q, ejercicio=ejercicio)
+        if not codclis:
+            return {"items": [], "total": 0}
+        if len(codclis) == 1 and not codcli:
+            # Un único cliente casó → su código sirve de predicado SQL.
+            codcli = next(iter(codclis))
     predicate = _sql_predicate(spec, codcli=codcli, serie=serie)
     rows = client.load_table(
         spec.table,
@@ -281,12 +353,18 @@ def list_documents(
             fecha_desde=fecha_desde, fecha_hasta=fecha_hasta, q=q,
         )
     ]
-    # Orden DESC garantizado en Python (el ORDER BY del filtro no está
-    # documentado como fiable; re-ordenar filas ya traídas es gratis).
-    docs.sort(
-        key=lambda d: d["codigo"] if isinstance(d["codigo"], int) else -1,
-        reverse=True,
-    )
+    if codclis is not None:
+        docs = [d for d in docs if (d["cliente_codigo"] or "") in codclis]
+    # Orden sobre el conjunto COMPLETO filtrado, antes de paginar. El ORDER
+    # BY del filtro SQL no está documentado como fiable; ordenar en Python
+    # filas ya traídas es gratis. None/no-numérico al final siempre.
+    if sort not in SORT_FIELDS:
+        sort = "numero"
+    key = _sort_key(sort)
+    nones = [d for d in docs if key(d)[0]]
+    values = [d for d in docs if not key(d)[0]]
+    values.sort(key=key, reverse=(direction != "asc"))
+    docs = values + nones
     total = len(docs)
     limit = max(1, min(int(limit or DEFAULT_PAGE_SIZE), MAX_PAGE_SIZE))
     offset = max(0, int(offset or 0))

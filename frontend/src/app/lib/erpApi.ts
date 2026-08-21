@@ -657,9 +657,14 @@ export type FactusolDocument = {
   estado: string | null;
   estado_label: string;
   referencia: string | null;
+  /** Código de forma de pago (F_FOP), p. ej. "002". */
+  forma_pago: string | null;
 };
 
 export type FactusolDocumentDetail = FactusolDocument & {
+  /** Nombre de la forma de pago resuelto del catálogo F_FOP; null si el
+   *  documento no la trae o el catálogo no la conoce. */
+  forma_pago_nombre: string | null;
   lines: {
     position: number;
     codart: string | null;
@@ -670,8 +675,15 @@ export type FactusolDocumentDetail = FactusolDocument & {
   }[];
 };
 
+export type FactusolDocumentSort = "numero" | "cliente" | "fecha" | "total";
+
 export type FactusolDocumentFilters = {
   codcli?: string;
+  /** E3-A-fix1 — término libre que el backend resuelve contra F_CLI por
+   *  nombre, CIF (NIFCLI) o email (EMACLI). */
+  cliente_q?: string;
+  sort?: FactusolDocumentSort;
+  dir?: "asc" | "desc";
   serie?: number;
   estado?: string;
   fecha_desde?: string;

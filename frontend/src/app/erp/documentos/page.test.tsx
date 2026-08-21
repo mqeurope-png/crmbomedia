@@ -5,14 +5,12 @@ import {
   getFactusolDocument,
   getFactusolSeries,
   listFactusolDocuments,
-  searchFactusolCustomers,
 } from "../../lib/erpApi";
 
 jest.mock("../../lib/erpApi", () => ({
   listFactusolDocuments: jest.fn(),
   getFactusolDocument: jest.fn(),
   getFactusolSeries: jest.fn(),
-  searchFactusolCustomers: jest.fn(),
 }));
 jest.mock("../../components/PageHeader", () => ({
   PageHeader: ({ title }: { title: string }) => <h1>{title}</h1>,
@@ -21,14 +19,14 @@ jest.mock("../../components/PageHeader", () => ({
 const mockList = listFactusolDocuments as jest.Mock;
 const mockDetail = getFactusolDocument as jest.Mock;
 const mockSeries = getFactusolSeries as jest.Mock;
-const mockCustomers = searchFactusolCustomers as jest.Mock;
 
 function doc(over = {}) {
   return {
     doc_type: "facturas", codigo: 260066, serie: 5, numero: "5-260066",
     cliente_codigo: "99", cliente_nombre: "MOVIATICOS",
     fecha: "2026-08-21", total: 186.34, estado: "0",
-    estado_label: "Estado 0", referencia: "BOP-099917", ...over,
+    estado_label: "Estado 0", referencia: "BOP-099917",
+    forma_pago: "002", ...over,
   };
 }
 
@@ -45,7 +43,6 @@ beforeEach(() => {
     ],
     default: 5,
   });
-  mockCustomers.mockReset();
 });
 
 describe("ERP · Documentos (E3-A)", () => {
@@ -87,20 +84,58 @@ describe("ERP · Documentos (E3-A)", () => {
     );
   });
 
-  it("buscar cliente resuelve a CODCLI y filtra por él", async () => {
-    mockCustomers.mockResolvedValue([
-      { codcli: "99", nombre: "MOVIATICOS" },
-    ]);
+  it("el campo cliente acepta CIF/email y viaja como cliente_q", async () => {
     const user = userEvent.setup();
     render(<FactusolDocumentosPage />);
     await screen.findByText("5-260066");
-    await user.type(screen.getByLabelText("Buscar cliente"), "movia{Enter}");
-    await user.click(await screen.findByRole("button", { name: /MOVIATICOS/ }));
+    const input = screen.getByLabelText("Cliente, CIF o email");
+    expect(input).toHaveAttribute(
+      "placeholder", expect.stringContaining("B12345678"),
+    );
+    await user.type(input, "admin@moviaticos.com{Enter}");
     await waitFor(() =>
       expect(mockList).toHaveBeenCalledWith(
-        "facturas", expect.objectContaining({ codcli: "99" }),
+        "facturas",
+        expect.objectContaining({ cliente_q: "admin@moviaticos.com" }),
       ),
     );
+  });
+
+  it("las cabeceras ordenan asc/desc sobre el conjunto (toggle)", async () => {
+    const user = userEvent.setup();
+    render(<FactusolDocumentosPage />);
+    await screen.findByText("5-260066");
+    // Default: numero desc.
+    expect(mockList).toHaveBeenCalledWith(
+      "facturas", expect.objectContaining({ sort: "numero", dir: "desc" }),
+    );
+    await user.click(screen.getByRole("button", { name: /^Total/ }));
+    await waitFor(() =>
+      expect(mockList).toHaveBeenCalledWith(
+        "facturas", expect.objectContaining({ sort: "total", dir: "desc" }),
+      ),
+    );
+    // Segundo click en la misma columna → asc, con indicador.
+    await user.click(screen.getByRole("button", { name: /^Total/ }));
+    await waitFor(() =>
+      expect(mockList).toHaveBeenCalledWith(
+        "facturas", expect.objectContaining({ sort: "total", dir: "asc" }),
+      ),
+    );
+    expect(screen.getByRole("button", { name: /Total ▲/ })).toBeInTheDocument();
+  });
+
+  it("el detalle muestra la forma de pago con nombre", async () => {
+    mockDetail.mockResolvedValue({
+      ...doc(),
+      forma_pago_nombre: "Transferencia 30 días",
+      lines: [],
+    });
+    const user = userEvent.setup();
+    render(<FactusolDocumentosPage />);
+    await user.click(await screen.findByText("5-260066"));
+    expect(await screen.findByText("Transferencia 30 días")).toBeInTheDocument();
+    expect(screen.getByText("Forma de pago")).toBeInTheDocument();
   });
 
   it("abrir una fila carga el detalle con líneas", async () => {
