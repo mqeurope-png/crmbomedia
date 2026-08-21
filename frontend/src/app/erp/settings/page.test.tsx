@@ -19,6 +19,7 @@ function settings(over: Partial<ErpSettings> = {}): ErpSettings {
     factusol_live: false,
     factusol_series_default: "",
     factusol_series_by_source: {},
+    factusol_estpcl_invoiced: "",
     ...over,
   };
 }
@@ -61,5 +62,27 @@ describe("ErpSettingsPage — serie de facturación (C-2)", () => {
     const patch = mockUpdate.mock.calls[0][0];
     expect(patch.factusol_series_default).toBe("A");
     expect(patch.factusol_series_by_source.manual).toBe("M");
+  });
+
+  it("expone y guarda el ESTPCL del pedido facturado (ERP-E2-fix2)", async () => {
+    const user = userEvent.setup();
+    render(<ErpSettingsPage />);
+    // Antes solo se podía tocar en la BD a mano; sin él el pedido no se marca.
+    const field = await screen.findByLabelText(
+      "Estado ESTPCL del pedido facturado",
+    );
+    expect(field).toHaveValue("");
+    await user.type(field, "2");
+    await user.click(screen.getByRole("button", { name: "Guardar" }));
+    await waitFor(() => expect(mockUpdate).toHaveBeenCalled());
+    expect(mockUpdate.mock.calls[0][0].factusol_estpcl_invoiced).toBe("2");
+  });
+
+  it("precarga el ESTPCL guardado", async () => {
+    mockGet.mockResolvedValue(settings({ factusol_estpcl_invoiced: "2" }));
+    render(<ErpSettingsPage />);
+    expect(
+      await screen.findByLabelText("Estado ESTPCL del pedido facturado"),
+    ).toHaveValue("2");
   });
 });

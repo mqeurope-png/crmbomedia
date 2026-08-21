@@ -33,20 +33,44 @@ def emit_invoice_job(
     (worker serializado). Un fallo se propaga → RQ marca el job failed.
 
     `options` llega como dict serializable (desde el modal de emisión) y se
-    reconstruye a `FacturaOptions`."""
+    reconstruye a `FacturaOptions`.
+
+    ERP-E2-fix2: antes de propagar el error se **registra el fallo en la BD**
+    (`record_emit_failure`). Sin eso el pedido se quedaba en «Generando…» para
+    siempre: `emit_invoice` no llega a marcar nada y nadie deshace el estado,
+    así que la ficha seguía esperando un job que ya había muerto."""
     from sqlalchemy.orm import Session  # noqa: PLC0415
 
     from app.db.session import get_engine  # noqa: PLC0415
     from app.integrations.factusol.mapper import FacturaOptions  # noqa: PLC0415
+    from app.integrations.factusol.service import record_emit_failure  # noqa: PLC0415
     from app.models.crm import User  # noqa: PLC0415
 
     # `from_payload` ignora claves obsoletas: un job encolado antes de ERP-E2
     # trae `serfac` (la serie como string), que ya no existe.
     opts = FacturaOptions.from_payload(options) if options else None
-    with Session(get_engine()) as session:
-        actor = session.get(User, actor_user_id) if actor_user_id else None
-        client = FactusolClient.from_settings()
-        result = emit_invoice(session, order_id, client, actor=actor, options=opts)
+    try:
+        with Session(get_engine()) as session:
+            actor = session.get(User, actor_user_id) if actor_user_id else None
+            client = FactusolClient.from_settings()
+            result = emit_invoice(
+                session, order_id, client, actor=actor, options=opts
+            )
+    except Exception as exc:  # noqa: BLE001 — se re-lanza tras registrarlo
+        logger.warning(
+            "factusol: emisión fallida order=%s", order_id, exc_info=True
+        )
+        try:
+            with Session(get_engine()) as fail_session:
+                record_emit_failure(
+                    fail_session, order_id, str(exc), actor_user_id=actor_user_id
+                )
+        except Exception:  # noqa: BLE001 — el fallo original manda
+            logger.warning(
+                "factusol: no se pudo registrar el fallo de emisión order=%s",
+                order_id, exc_info=True,
+            )
+        raise
     logger.info("factusol: factura emitida order=%s codfac=%s",
                 order_id, result.get("codfac"))
     return result

@@ -152,13 +152,15 @@ def test_emit_invoice_threads_options_body(client, session_factory):
         r = client.post(
             f"/api/erp/orders/{oid}/emit-factusol-invoice",
             headers=auth_headers(client, "pedidos"),
-            json={"tipfac": "4", "serie": 2, "fopfac": "03",
-                  "comfac": "Pago 30 días"},
+            json={"serie": 2, "fopfac": "03", "comfac": "Pago 30 días"},
         )
     assert r.status_code == 202, r.text
     options = enq.call_args.kwargs["options"]
-    assert options["tipfac"] == "4" and options["serie"] == 2
+    assert options["serie"] == 2
     assert options["fopfac"] == "03" and options["comfac"] == "Pago 30 días"
+    # ERP-E2-fix2: `tipfac` ya no existe — su default "1" sellaba TODAS las
+    # facturas como serie 1 (Bomedia) y provocaba BDExisteRegistro.
+    assert "tipfac" not in options
 
 
 # --- estado FACTUSOL en vivo (factura/albarán existente, C-2-fix2) -----------

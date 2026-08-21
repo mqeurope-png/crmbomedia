@@ -65,6 +65,9 @@ class SettingsIn(BaseModel):
     factusol_series_by_source: dict[str, str] | None = None
     #: ERP-E2 — nombre de la empresa emisora de cada serie: {"5": "Streamtec"}.
     factusol_series_names: dict[str, str] | None = None
+    #: ERP-E2-fix2 — valor de F_PCL.ESTPCL que FACTUSOL usa para «Enviado»
+    #: (= pedido facturado). Confirmado en vivo: "2".
+    factusol_estpcl_invoiced: str | None = None
 
 
 # --- helpers -----------------------------------------------------------------
@@ -266,6 +269,7 @@ def _serialise_settings(cfg: ErpSettings) -> dict[str, Any]:
         "factusol_series_default": _series(cfg).get("default") or "",
         "factusol_series_by_source": _series(cfg).get("by_source") or {},
         "factusol_series_names": _series(cfg).get("names") or {},
+        "factusol_estpcl_invoiced": _series(cfg).get("estpcl_invoiced") or "",
     }
 
 
@@ -317,7 +321,8 @@ def update_settings(
     # llegue, conservando la parte que el PATCH no toque.
     if (payload.factusol_series_default is not None
             or payload.factusol_series_by_source is not None
-            or payload.factusol_series_names is not None):
+            or payload.factusol_series_names is not None
+            or payload.factusol_estpcl_invoiced is not None):
         series = _series(cfg)
         if payload.factusol_series_default is not None:
             series["default"] = payload.factusol_series_default.strip()
@@ -328,6 +333,8 @@ def update_settings(
                 for k, v in payload.factusol_series_by_source.items()
                 if v and v.strip()
             }
+        if payload.factusol_estpcl_invoiced is not None:
+            series["estpcl_invoiced"] = payload.factusol_estpcl_invoiced.strip()
         if payload.factusol_series_names is not None:
             # ERP-E2: {"5": "Streamtec", …}. Claves como string por JSON.
             series["names"] = {

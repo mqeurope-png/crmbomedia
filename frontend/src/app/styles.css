@@ -1829,6 +1829,25 @@ td {
   max-width: 460px;
 }
 
+/* ERP-E2-fix2 — el modal de emisión mete el contenido DIRECTO en
+   `.modal-dialog`, que no trae padding propio (lo ponen `.modal-header` /
+   `.modal-body`, que aquí no se usan). Sin esto los campos salen pegados a
+   los bordes. */
+.erp-emit-modal {
+  max-width: 520px;
+  padding: 22px 24px 20px;
+  gap: 10px;
+}
+.erp-emit-modal h2 {
+  margin: 0 0 4px;
+}
+.erp-emit-modal > p {
+  margin: 0;
+}
+.erp-emit-modal .modal-actions {
+  margin-top: 8px;
+}
+
 .modal-header {
   display: flex;
   align-items: center;
