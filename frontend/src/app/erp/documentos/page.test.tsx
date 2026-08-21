@@ -11,6 +11,12 @@ jest.mock("../../lib/erpApi", () => ({
   listFactusolDocuments: jest.fn(),
   getFactusolDocument: jest.fn(),
   getFactusolSeries: jest.fn(),
+  convertFactusolDocument: jest.fn(),
+  getFactusolConvertStatus: jest.fn(),
+  ERP_EDIT_ROLES: ["admin", "pedidos"],
+}));
+jest.mock("../../lib/api", () => ({
+  getCurrentUser: jest.fn(() => Promise.resolve({ role: "admin" })),
 }));
 jest.mock("../../components/PageHeader", () => ({
   PageHeader: ({ title }: { title: string }) => <h1>{title}</h1>,
@@ -151,6 +157,52 @@ describe("ERP · Documentos (E3-A)", () => {
     await user.click(await screen.findByText("5-260066"));
     expect(await screen.findByText("Tinta cyan")).toBeInTheDocument();
     expect(mockDetail).toHaveBeenCalledWith("facturas", 5, 260066);
+  });
+
+  it("pinta el badge del ciclo y filtra por él (E3-B)", async () => {
+    const user = userEvent.setup();
+    mockList.mockResolvedValue({
+      items: [doc({
+        doc_type: "presupuestos", codigo: 27, numero: "5-000027",
+        ciclo: {
+          albaranes: [{ doc_type: "albaranes", serie: 5, codigo: 500004,
+                        numero: "5-500004" }],
+          facturas: [{ doc_type: "facturas", serie: 5, codigo: 260063,
+                       numero: "5-260063" }],
+          origen: [], estado: "facturado",
+        },
+      })],
+      total: 1,
+    });
+    render(<FactusolDocumentosPage />);
+    await user.click(screen.getByRole("tab", { name: "Presupuestos" }));
+    expect(await screen.findByText("Facturado")).toBeInTheDocument();
+    // El filtro de ciclo existe en presupuestos y viaja al backend.
+    await user.selectOptions(
+      screen.getByLabelText("Estado del ciclo"), "facturado",
+    );
+    await waitFor(() =>
+      expect(mockList).toHaveBeenCalledWith(
+        "presupuestos", expect.objectContaining({ ciclo: "facturado" }),
+      ),
+    );
+  });
+
+  it("la pestaña facturas no ofrece filtro de ciclo y enseña el origen", async () => {
+    mockList.mockResolvedValue({
+      items: [doc({
+        ciclo: {
+          albaranes: [], facturas: [],
+          origen: [{ doc_type: "albaranes", serie: 5, codigo: 500004,
+                     numero: "5-500004" }],
+          estado: null,
+        },
+      })],
+      total: 1,
+    });
+    render(<FactusolDocumentosPage />);
+    expect(await screen.findByText(/de 5-500004/)).toBeInTheDocument();
+    expect(screen.queryByLabelText("Estado del ciclo")).not.toBeInTheDocument();
   });
 
   it("«Limpiar filtros» resetea y re-consulta sin filtros", async () => {

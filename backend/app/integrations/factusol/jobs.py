@@ -104,6 +104,85 @@ def _enqueue(func_path: str, *args: Any) -> str:
     return job.id
 
 
+# --- cadena de documentos (ERP-E3-B) -----------------------------------------
+
+
+def create_document_job(
+    source_type: str, target_type: str, tip: int, cod: int,
+    options: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Crea el documento DESTINO (albarán/factura) desde el ORIGEN, enlazado
+    por `DOC/DTP/DCO` en las líneas. Corre en `factusol:writes` (serial): el
+    contador MAX+1 y el re-chequeo anti-duplicado necesitan concurrency=1.
+
+    `options`: `{"ejercicio", "serie", "fecha", "force"}` — el ejercicio lo
+    fija el endpoint (el mismo contra el que pre-chequeó duplicados);
+    serie/fecha son los overrides del modal; `force` salta el anti-duplicado
+    (el operador ya vio el aviso).
+
+    Como en la emisión (E2-fix2), el fallo se registra en SyncLog ANTES de
+    propagarse: el frontend ve el job failed por polling, y Bart ve el motivo
+    en la bandeja de sincronización aunque nadie estuviera mirando."""
+    from sqlalchemy.orm import Session  # noqa: PLC0415
+
+    from app.db.session import get_engine  # noqa: PLC0415
+    from app.integrations.factusol.chain import (  # noqa: PLC0415
+        convert_document,
+        log_chain_sync,
+    )
+    from app.integrations.factusol.service import ejercicio_for  # noqa: PLC0415
+
+    opts = options or {}
+    try:
+        with Session(get_engine()) as session:
+            ejercicio = opts.get("ejercicio") or ejercicio_for(session)
+            client = FactusolClient.from_settings()
+            result = convert_document(
+                session, client,
+                source_type=source_type, target_type=target_type,
+                tip=int(tip), cod=int(cod), ejercicio=ejercicio,
+                serie_override=opts.get("serie"),
+                fecha=opts.get("fecha"),
+                force=bool(opts.get("force")),
+            )
+    except Exception as exc:  # noqa: BLE001 — se re-lanza tras registrarlo
+        logger.warning(
+            "factusol: conversión fallida %s %s-%s → %s",
+            source_type, tip, cod, target_type, exc_info=True,
+        )
+        try:
+            with Session(get_engine()) as fail_session:
+                log_chain_sync(
+                    fail_session, success=False,
+                    message=(
+                        f"{source_type} {tip}-{cod} → {target_type}: {exc}"
+                    ),
+                )
+                fail_session.commit()
+        except Exception:  # noqa: BLE001 — el fallo original manda
+            logger.warning(
+                "factusol: no se pudo registrar el fallo de conversión "
+                "%s %s-%s", source_type, tip, cod, exc_info=True,
+            )
+        raise
+    logger.info(
+        "factusol: %s %s creado desde %s %s-%s",
+        target_type, result.get("numero"), source_type, tip, cod,
+    )
+    return result
+
+
+def enqueue_create_document(
+    source_type: str, target_type: str, tip: int, cod: int,
+    options: dict[str, Any] | None = None,
+) -> str:
+    """Encola `create_document_job` en `factusol:writes`; devuelve el job_id."""
+    return _enqueue(
+        "app.integrations.factusol.jobs.create_document_job",
+        source_type, target_type, tip, cod, options,
+    )
+
+
 # --- proformas (Fase C · C-4) ------------------------------------------------
 #
 # Las tres van a la MISMA cola serializada que la emisión de facturas. Crear y

@@ -10937,3 +10937,24 @@ tr.is-inactive {
 .erp-doc-sort:hover {
   text-decoration: underline;
 }
+
+/* ERP-E3-B — ciclo PRE→ALB→FAC en el detalle: badge + enlaces al origen y a
+ * los hijos, que navegan dentro del propio modal. */
+.erp-doc-ciclo {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  margin: 0 0 12px;
+  font-size: 13px;
+}
+.erp-doc-ciclo-link {
+  border: none;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  font-weight: 600;
+  color: var(--brand);
+  cursor: pointer;
+  text-decoration: underline;
+}

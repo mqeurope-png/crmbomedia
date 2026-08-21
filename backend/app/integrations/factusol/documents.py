@@ -302,6 +302,8 @@ def list_documents(
     direction: str = "desc",
     limit: int = DEFAULT_PAGE_SIZE,
     offset: int = 0,
+    annotate: Any = None,
+    ciclo: str | None = None,
 ) -> dict[str, Any]:
     """Listado en vivo de un tipo de documento, filtrado, ordenado y paginado.
 
@@ -314,6 +316,11 @@ def list_documents(
     nombre/CIF/email → set de CODCLI; los documentos se filtran por
     pertenencia. Si no casa ningún cliente, el resultado es vacío (correcto),
     nunca «todos».
+
+    `annotate`/`ciclo` (E3-B): `annotate` es un callable que añade `ciclo` a
+    cada doc (lo construye `chain.cycle_annotator` — inyectado para no crear
+    el import circular documents↔chain), y `ciclo` filtra por su `estado`
+    ANTES de paginar, para que el total sea el filtrado.
     """
     spec = DOC_SPECS[doc_type]
     codclis: set[str] | None = None
@@ -355,6 +362,13 @@ def list_documents(
     ]
     if codclis is not None:
         docs = [d for d in docs if (d["cliente_codigo"] or "") in codclis]
+    if annotate is not None:
+        annotate(docs)
+    if ciclo:
+        docs = [
+            d for d in docs
+            if (d.get("ciclo") or {}).get("estado") == str(ciclo).strip()
+        ]
     # Orden sobre el conjunto COMPLETO filtrado, antes de paginar. El ORDER
     # BY del filtro SQL no está documentado como fiable; ordenar en Python
     # filas ya traídas es gratis. None/no-numérico al final siempre.
