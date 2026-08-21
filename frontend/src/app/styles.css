@@ -10818,3 +10818,107 @@ tr.is-inactive {
 .alias-add input { flex: 1 1 180px; min-width: 140px; }
 /* El chip «Spam» reutiliza .badge.bad; solo un pequeño margen en la lista. */
 .email-list-spam { margin-right: 4px; }
+
+/* ERP-E3-A — explorador de documentos FACTUSOL. */
+.erp-doc-tabs {
+  display: flex;
+  gap: 6px;
+  margin: 0 0 14px;
+}
+.erp-doc-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+  margin: 0 0 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--card);
+}
+.erp-doc-filters .field {
+  margin: 0;
+  min-width: 150px;
+}
+.erp-doc-filter-q {
+  min-width: 220px;
+}
+.erp-doc-filter-cliente {
+  position: relative;
+  min-width: 240px;
+}
+.erp-doc-cliente-buscar {
+  display: flex;
+  gap: 6px;
+}
+.erp-doc-cliente-activo {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.erp-doc-cliente-activo button {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  color: inherit;
+}
+.erp-doc-cliente-opts {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 30;
+  min-width: 260px;
+  margin: 4px 0 0;
+  padding: 4px;
+  list-style: none;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+}
+.erp-doc-cliente-opts button {
+  display: block;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+.erp-doc-cliente-opts button:hover {
+  background: #f1f5f9;
+}
+.erp-doc-clear {
+  margin-left: auto;
+}
+.erp-doc-row {
+  cursor: pointer;
+}
+.erp-doc-row:hover td {
+  background: #f8fafc;
+}
+.erp-doc-pager {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+}
+.erp-doc-detail {
+  max-width: 720px;
+}
+.erp-doc-detail-head {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 14px;
+  margin: 0 0 12px;
+}
+.erp-doc-detail-head dt {
+  color: #64748b;
+  font-size: 13px;
+}
+.erp-doc-detail-head dd {
+  margin: 0;
+}

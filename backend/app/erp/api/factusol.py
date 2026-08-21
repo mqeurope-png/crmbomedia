@@ -94,6 +94,92 @@ def series(
     return {"items": items, "default": predeterminada}
 
 
+# --- explorador de documentos (ERP-E3-A, solo lectura) -----------------------
+
+
+@router.get("/documents/{doc_type}")
+def list_factusol_documents(
+    doc_type: str,
+    codcli: str | None = Query(default=None),
+    serie: int | None = Query(default=None, ge=1, le=9),
+    estado: str | None = Query(default=None, max_length=10),
+    fecha_desde: str | None = Query(default=None, max_length=10),
+    fecha_hasta: str | None = Query(default=None, max_length=10),
+    q: str | None = Query(default=None, max_length=120),
+    limit: int = Query(default=100, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_view),
+) -> dict[str, Any]:
+    """Listado EN VIVO de pedidos/presupuestos/albaranes/facturas de
+    FACTUSOL, filtrable. Solo lectura — este endpoint no escribe nada."""
+    _ = current_user
+    from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
+    from app.integrations.factusol.documents import (  # noqa: PLC0415
+        DOC_SPECS,
+        list_documents,
+    )
+
+    if doc_type not in DOC_SPECS:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            f"Tipo de documento desconocido: {doc_type!r}",
+        )
+    client, ejercicio = _client_and_ejercicio(session)
+    try:
+        return list_documents(
+            client, doc_type, ejercicio=ejercicio,
+            codcli=codcli, serie=serie, estado=estado,
+            fecha_desde=fecha_desde, fecha_hasta=fecha_hasta,
+            q=q, limit=limit, offset=offset,
+        )
+    except FactusolError as exc:
+        logger.warning("factusol documents/%s KO: %s", doc_type, exc)
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, {
+            "code": "factusol_list_failed", "detail": str(exc)[:200],
+        }) from exc
+
+
+@router.get("/documents/{doc_type}/{serie}/{codigo}")
+def get_factusol_document(
+    doc_type: str,
+    serie: int,
+    codigo: int,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_view),
+) -> dict[str, Any]:
+    """Detalle read-only de un documento con sus líneas. La clave es
+    COMPUESTA (serie, código): el código solo es único por serie."""
+    _ = current_user
+    from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
+    from app.integrations.factusol.documents import (  # noqa: PLC0415
+        DOC_SPECS,
+        get_document,
+    )
+
+    if doc_type not in DOC_SPECS:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            f"Tipo de documento desconocido: {doc_type!r}",
+        )
+    client, ejercicio = _client_and_ejercicio(session)
+    try:
+        doc = get_document(
+            client, doc_type, serie=serie, codigo=codigo, ejercicio=ejercicio,
+        )
+    except FactusolError as exc:
+        logger.warning("factusol documents/%s detalle KO: %s", doc_type, exc)
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, {
+            "code": "factusol_detail_failed", "detail": str(exc)[:200],
+        }) from exc
+    if doc is None:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            f"No existe el documento {serie}-{codigo} en {doc_type}",
+        )
+    return doc
+
+
 @router.get("/formas-pago")
 def formas_pago(
     session: Session = Depends(get_session),

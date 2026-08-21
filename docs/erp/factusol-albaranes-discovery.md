@@ -356,3 +356,38 @@ propósito**. Rellenarlas con lo que *suponemos* sería repetir el error de C-4:
 `factusol-schema.md` afirmó durante semanas que `F_PRE` era mono-línea porque se
 dio por buena una deducción. En esta base de datos, lo no verificado no se
 escribe.
+
+
+---
+
+## 8. Explorador de documentos (ERP-E3-A) y discovery de la cadena
+
+**E3-A** añade `ERP · Documentos`: 4 vistas solo-lectura EN VIVO (pedidos /
+presupuestos / albaranes / facturas) con filtros (serie, cliente, fechas,
+texto) y detalle con líneas. Endpoints:
+`GET /api/erp/factusol/documents/{tipo}` y `.../{tipo}/{serie}/{codigo}`
+(clave compuesta — el código solo es único por serie).
+
+Filtrado: a SQL solo va UN predicado trivial (cliente o serie); el resto en
+Python (mismo criterio que `quotes.list_quotes`). Red anti-gotcha-1: si el
+predicado devuelve `[]` sin ser `1=1`, refetch completo + filtros en Python,
+con warning — una columna mal asumida (F_ALB, aún sin volcar) degrada a un
+fetch completo, nunca a un falso «no hay resultados».
+
+Estados mostrados: solo los CONFIRMADOS se traducen (ESTPCL 0/2, ESTPRE 0/1);
+el resto sale crudo («Estado N») hasta que el discovery los cierre.
+
+**Discovery para E3-B** — tras convertir en el escritorio una proforma de
+prueba → albarán → factura (anotando el CODPRE y su ESTPRE previo):
+
+```bash
+docker exec crmbo-api-1 python -m scripts.factusol_discover_albaranes \
+    --trace-quote-chain <CODPRE>
+```
+
+Vuelca: la fila F_PRE completa (para comparar ESTPRE antes/después), el scan
+de referencias en F_ALB + casado por cliente/importe/ref, las **columnas
+completas de F_ALB y F_LAL** (el allowlist de escritura de E3-B), la
+numeración de albaranes por serie (TIPALB) y la factura resultante en F_FAC.
+Con esa salida se diseña E3-B (crear albarán/factura desde proforma + ciclo
+cruzado en las vistas).
