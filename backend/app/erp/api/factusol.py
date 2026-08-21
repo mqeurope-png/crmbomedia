@@ -134,6 +134,9 @@ def list_factusol_documents(
     fecha_hasta: str | None = Query(default=None, max_length=10),
     q: str | None = Query(default=None, max_length=120),
     cliente_q: str | None = Query(default=None, max_length=120),
+    ciclo: str | None = Query(
+        default=None, pattern="^(pendiente|con_albaran|facturado)$",
+    ),
     sort: str = Query(default="numero", pattern="^(numero|cliente|fecha|total)$"),
     dir: str = Query(default="desc", pattern="^(asc|desc)$"),
     limit: int = Query(default=100, ge=1, le=200),
@@ -142,8 +145,15 @@ def list_factusol_documents(
     current_user: User = Depends(require_erp_view),
 ) -> dict[str, Any]:
     """Listado EN VIVO de pedidos/presupuestos/albaranes/facturas de
-    FACTUSOL, filtrable. Solo lectura — este endpoint no escribe nada."""
+    FACTUSOL, filtrable. Solo lectura — este endpoint no escribe nada.
+
+    E3-B: cada fila lleva `ciclo` (hijos albarán/factura, origen y estado del
+    ciclo PRE→ALB→FAC, vía los enlaces `DOC/DTP/DCO` de las líneas), y
+    `ciclo=` filtra por ese estado. La anotación es best-effort: si el índice
+    no se puede cargar, el listado sale sin `ciclo` — salvo que se pidiera
+    filtrar por él, que entonces sí es un error."""
     _ = current_user
+    from app.integrations.factusol.chain import cycle_annotator  # noqa: PLC0415
     from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
     from app.integrations.factusol.documents import (  # noqa: PLC0415
         DOC_SPECS,
@@ -156,6 +166,14 @@ def list_factusol_documents(
             f"Tipo de documento desconocido: {doc_type!r}",
         )
     client, ejercicio = _client_and_ejercicio(session)
+    annotate = None
+    try:
+        annotate = cycle_annotator(client, doc_type, ejercicio=ejercicio)
+    except FactusolError as exc:
+        if ciclo:
+            raise _factusol_gateway_error(exc, "factusol_cycle_failed") from exc
+        logger.warning("factusol ciclo no disponible (%s); listado sin "
+                       "anotar: %s", doc_type, exc)
     try:
         return list_documents(
             client, doc_type, ejercicio=ejercicio,
@@ -163,6 +181,7 @@ def list_factusol_documents(
             fecha_desde=fecha_desde, fecha_hasta=fecha_hasta,
             q=q, cliente_q=cliente_q, sort=sort, direction=dir,
             limit=limit, offset=offset,
+            annotate=annotate, ciclo=ciclo,
         )
     except FactusolError as exc:
         logger.warning("factusol documents/%s KO: %s", doc_type, exc)
@@ -216,7 +235,143 @@ def get_factusol_document(
         doc["forma_pago_nombre"] = (
             names.get(fop) or names.get(fop.lstrip("0") or "0")
         )
+    # E3-B — posición en el ciclo PRE→ALB→FAC (best-effort: el detalle sigue
+    # sirviendo aunque el índice del ciclo no cargue).
+    doc["ciclo"] = None
+    try:
+        from app.integrations.factusol.chain import (  # noqa: PLC0415
+            cycle_of,
+            load_chain_index,
+        )
+
+        doc["ciclo"] = cycle_of(
+            load_chain_index(client, ejercicio=ejercicio),
+            doc_type, serie, codigo,
+        )
+    except FactusolError as exc:
+        logger.warning("factusol ciclo del detalle %s %s-%s KO: %s",
+                       doc_type, serie, codigo, exc)
     return doc
+
+
+class ConvertDocumentPayload(BaseModel):
+    """Crear albarán/factura desde el documento abierto (ERP-E3-B).
+
+    `serie`: override de la serie del destino; sin él, hereda la del origen.
+    `force`: crear aunque el origen ya tenga un hijo de ese tipo (el operador
+    ya vio el aviso del 409)."""
+
+    target: str = Field(pattern="^(albaranes|facturas)$")
+    serie: int | None = Field(default=None, ge=1, le=9)
+    fecha: str | None = Field(default=None, max_length=10)
+    force: bool = False
+
+
+@router.get("/documents/convert-status/{job_id}")
+def convert_document_status(
+    job_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_view),
+) -> dict[str, Any]:
+    """Polling del job de conversión — mismo contrato que el de proformas:
+    `pending` / `finished` (+result con el nº creado) / `failed` (+error)."""
+    _ = current_user, session
+    return _rq_quote_status(job_id)
+
+
+@router.post("/documents/{doc_type}/{serie}/{codigo}/convert", status_code=202)
+def convert_factusol_document(
+    doc_type: str,
+    serie: int,
+    codigo: int,
+    payload: ConvertDocumentPayload,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_edit),
+) -> dict[str, Any]:
+    """Encola la creación del documento DESTINO (albarán o factura) a partir
+    del abierto, enlazado por `DOC/DTP/DCO` en las líneas (ERP-E3-B).
+
+    Va por `factusol:writes` (202 + job_id) como toda escritura: el número
+    del destino es un `MAX+1` por serie que exige el worker serializado.
+
+    Anti-duplicado en dos capas: aquí un pre-chequeo EN VIVO que devuelve 409
+    con los números existentes («este presupuesto ya tiene albarán 5-500004»)
+    — el operador puede reenviar con `force` —, y el mismo chequeo repetido
+    DENTRO del worker, que es el que cubre la carrera entre dos 202."""
+    from app.integrations.factusol.chain import (  # noqa: PLC0415
+        ALLOWED_CONVERSIONS,
+        SINGULAR,
+        find_existing_children,
+    )
+    from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
+    from app.integrations.factusol.documents import (  # noqa: PLC0415
+        DOC_SPECS,
+        get_document,
+        visible_number,
+    )
+    from app.integrations.factusol.jobs import (  # noqa: PLC0415
+        enqueue_create_document,
+    )
+
+    if doc_type not in DOC_SPECS:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            f"Tipo de documento desconocido: {doc_type!r}",
+        )
+    if payload.target not in ALLOWED_CONVERSIONS.get(doc_type, ()):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, {
+            "code": "conversion_not_supported",
+            "detail": (
+                f"No se puede crear {SINGULAR.get(payload.target, payload.target)} "
+                f"desde un {SINGULAR.get(doc_type, doc_type)}."
+            ),
+        })
+    client, ejercicio = _client_and_ejercicio(session)
+    try:
+        doc = get_document(
+            client, doc_type, serie=serie, codigo=codigo, ejercicio=ejercicio,
+        )
+        if doc is None:
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND,
+                f"No existe el documento {serie}-{codigo} en {doc_type}",
+            )
+        if not payload.force:
+            existing = find_existing_children(
+                client, doc_type, payload.target,
+                tip=serie, cod=codigo, ejercicio=ejercicio,
+            )
+            if existing:
+                raise HTTPException(status.HTTP_409_CONFLICT, {
+                    "code": "already_converted",
+                    "detail": (
+                        f"El {SINGULAR[doc_type]} "
+                        f"{visible_number(serie, codigo)} ya tiene "
+                        f"{SINGULAR[payload.target]} {', '.join(existing)} "
+                        "en FACTUSOL."
+                    ),
+                    "existing": existing,
+                })
+    except FactusolError as exc:
+        raise _factusol_gateway_error(exc, "factusol_convert_failed") from exc
+
+    job_id = enqueue_create_document(
+        doc_type, payload.target, serie, codigo,
+        {
+            "ejercicio": ejercicio,
+            "serie": payload.serie,
+            "fecha": payload.fecha,
+            "force": payload.force,
+        },
+    )
+    _audit_quote(
+        session, current_user, "erp.factusol_document_convert",
+        f"{doc_type}:{serie}-{codigo}",
+        {"job_id": job_id, "target": payload.target,
+         "serie_override": payload.serie, "force": payload.force},
+    )
+    session.commit()
+    return {"job_id": job_id, "status": "queued"}
 
 
 @router.get("/formas-pago")

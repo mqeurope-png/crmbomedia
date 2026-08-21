@@ -2,13 +2,14 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { PageHeader } from "../../components/PageHeader";
-import { FactusolDocumentDetailModal } from
+import { cycleBadge, FactusolDocumentDetailModal } from
   "../../components/erp/FactusolDocumentDetailModal";
 import {
   getFactusolSeries,
   listFactusolDocuments,
   type FactusolDocType,
   type FactusolDocument,
+  type FactusolDocumentFilters,
   type FactusolDocumentSort,
   type FactusolSerie,
 } from "../../lib/erpApi";
@@ -23,10 +24,55 @@ const TABS: { key: FactusolDocType; label: string }[] = [
   { key: "facturas", label: "Facturas" },
 ];
 
-/** ERP-E3-A — explorador de documentos FACTUSOL. Lectura EN VIVO (sin
+/** E3-B — estados del ciclo por los que se puede filtrar en cada pestaña
+ *  (una factura no tiene «siguiente paso», así que no filtra). */
+const CICLO_OPTIONS: Partial<Record<
+  FactusolDocType,
+  { value: NonNullable<FactusolDocumentFilters["ciclo"]>; label: string }[]
+>> = {
+  presupuestos: [
+    { value: "pendiente", label: "Sin albarán ni factura" },
+    { value: "con_albaran", label: "Con albarán (sin factura)" },
+    { value: "facturado", label: "Facturados" },
+  ],
+  pedidos: [
+    { value: "pendiente", label: "Sin albarán ni factura" },
+    { value: "con_albaran", label: "Con albarán (sin factura)" },
+    { value: "facturado", label: "Facturados" },
+  ],
+  albaranes: [
+    { value: "pendiente", label: "Sin factura" },
+    { value: "facturado", label: "Facturados" },
+  ],
+};
+
+/** Celda «Ciclo» (E3-B): las facturas enseñan su origen; el resto, el badge
+ *  del estado del ciclo PRE→ALB→FAC. Sin anotación (el backend la sirve
+ *  best-effort) → «—». */
+function renderCiclo(d: FactusolDocument) {
+  const ciclo = d.ciclo;
+  if (!ciclo) return <span className="muted">—</span>;
+  if (d.doc_type === "facturas") {
+    return ciclo.origen.length > 0 ? (
+      <span className="muted small">
+        de {ciclo.origen.map((o) => o.numero).join(", ")}
+      </span>
+    ) : (
+      <span className="muted">—</span>
+    );
+  }
+  const badge = cycleBadge(ciclo.estado);
+  return badge ? (
+    <span className={badge.className}>{badge.label}</span>
+  ) : (
+    <span className="muted">—</span>
+  );
+}
+
+/** ERP-E3-A/E3-B — explorador de documentos FACTUSOL. Lectura EN VIVO (sin
  *  cache): cada listado consulta la contabilidad real, igual que la vista
- *  de proformas de C-4. Solo lectura — las acciones de crear llegan en
- *  E3-B. */
+ *  de proformas de C-4. Desde E3-B el detalle permite crear el siguiente
+ *  documento del ciclo (albarán/factura). */
 export default function FactusolDocumentosPage() {
   const [tab, setTab] = useState<FactusolDocType>("facturas");
   const [items, setItems] = useState<FactusolDocument[]>([]);
@@ -45,6 +91,8 @@ export default function FactusolDocumentosPage() {
   const [fechaDesde, setFechaDesde] = useState("");
   const [fechaHasta, setFechaHasta] = useState("");
   const [q, setQ] = useState("");
+  // E3-B — filtro por estado del ciclo PRE→ALB→FAC.
+  const [ciclo, setCiclo] = useState<string>("");
   // Orden (E3-A-fix1): sobre el conjunto completo filtrado, en el backend.
   const [sort, setSort] = useState<FactusolDocumentSort>("numero");
   const [dir, setDir] = useState<"asc" | "desc">("desc");
@@ -65,6 +113,7 @@ export default function FactusolDocumentosPage() {
         fecha_desde: fechaDesde || undefined,
         fecha_hasta: fechaHasta || undefined,
         q: q.trim() || undefined,
+        ciclo: (ciclo || undefined) as FactusolDocumentFilters["ciclo"],
         sort,
         dir,
         limit: PAGE_SIZE,
@@ -80,7 +129,7 @@ export default function FactusolDocumentosPage() {
     } finally {
       setLoading(false);
     }
-  }, [tab, serie, clienteQ, fechaDesde, fechaHasta, q, sort, dir]);
+  }, [tab, serie, clienteQ, fechaDesde, fechaHasta, q, ciclo, sort, dir]);
 
   useEffect(() => {
     void load(0);
@@ -104,11 +153,13 @@ export default function FactusolDocumentosPage() {
     setFechaDesde("");
     setFechaHasta("");
     setQ("");
+    setCiclo("");
   }
 
   const hasFilters =
     serie !== "" || clienteQ !== "" || fechaDesde !== "" ||
-    fechaHasta !== "" || q.trim() !== "";
+    fechaHasta !== "" || q.trim() !== "" || ciclo !== "";
+  const cicloOptions = CICLO_OPTIONS[tab];
 
   return (
     <main className="shell">
@@ -125,7 +176,7 @@ export default function FactusolDocumentosPage() {
             role="tab"
             aria-selected={tab === t.key}
             className={`pill-toggle ${tab === t.key ? "is-active" : ""}`}
-            onClick={() => { setTab(t.key); setDetail(null); }}
+            onClick={() => { setTab(t.key); setDetail(null); setCiclo(""); }}
           >
             {t.label}
           </button>
@@ -200,6 +251,21 @@ export default function FactusolDocumentosPage() {
             onChange={(e) => setQ(e.target.value)}
           />
         </label>
+        {cicloOptions ? (
+          <label className="field">
+            <span>Ciclo</span>
+            <select
+              value={ciclo}
+              aria-label="Estado del ciclo"
+              onChange={(e) => setCiclo(e.target.value)}
+            >
+              <option value="">Todos</option>
+              {cicloOptions.map((opt) => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
+            </select>
+          </label>
+        ) : null}
         {hasFilters ? (
           <button
             type="button"
@@ -247,6 +313,7 @@ export default function FactusolDocumentosPage() {
                   </th>
                 ))}
                 <th>Estado</th>
+                <th>Ciclo</th>
                 <th>Referencia</th>
               </tr>
             </thead>
@@ -265,6 +332,7 @@ export default function FactusolDocumentosPage() {
                       ? `${d.total.toFixed(2)} €` : "—"}
                   </td>
                   <td>{d.estado_label}</td>
+                  <td>{renderCiclo(d)}</td>
                   <td className="muted small">{d.referencia ?? "—"}</td>
                 </tr>
               ))}
@@ -300,6 +368,7 @@ export default function FactusolDocumentosPage() {
           serie={detail.serie}
           codigo={detail.codigo}
           onClose={() => setDetail(null)}
+          onChanged={() => void load(offset)}
         />
       ) : null}
     </main>

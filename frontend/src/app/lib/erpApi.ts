@@ -659,7 +659,29 @@ export type FactusolDocument = {
   referencia: string | null;
   /** Código de forma de pago (F_FOP), p. ej. "002". */
   forma_pago: string | null;
+  /** E3-B — posición en el ciclo PRE→ALB→FAC. `null`/ausente = el backend
+   *  no pudo cargar el índice (anotación best-effort). */
+  ciclo?: FactusolCycle;
 };
+
+/** Referencia a otro documento del ciclo (hijo u origen), con lo justo para
+ *  abrir su detalle. */
+export type FactusolCycleRef = {
+  doc_type: FactusolDocType;
+  serie: number;
+  codigo: number;
+  numero: string;
+};
+
+/** E3-B — enlaces del documento en el ciclo PRE→ALB→FAC, leídos de los
+ *  campos `DOC/DTP/DCO` de las líneas de F_LAL/F_LFA. `estado` solo aplica a
+ *  presupuestos/pedidos (¿facturado?) y albaranes; en facturas es null. */
+export type FactusolCycle = {
+  albaranes: FactusolCycleRef[];
+  facturas: FactusolCycleRef[];
+  origen: FactusolCycleRef[];
+  estado: "pendiente" | "con_albaran" | "facturado" | null;
+} | null;
 
 export type FactusolDocumentDetail = FactusolDocument & {
   /** Nombre de la forma de pago resuelto del catálogo F_FOP; null si el
@@ -689,6 +711,8 @@ export type FactusolDocumentFilters = {
   fecha_desde?: string;
   fecha_hasta?: string;
   q?: string;
+  /** E3-B — filtra por el estado del ciclo (antes de paginar). */
+  ciclo?: "pendiente" | "con_albaran" | "facturado";
   limit?: number;
   offset?: number;
 };
@@ -705,6 +729,50 @@ export async function getFactusolDocument(
 ): Promise<FactusolDocumentDetail> {
   return apiFetch(
     `/api/erp/factusol/documents/${docType}/${serie}/${codigo}`,
+  );
+}
+
+// --- crear la cadena de documentos (ERP-E3-B) --------------------------------
+
+export type FactusolConvertTarget = "albaranes" | "facturas";
+
+/** Encola crear albarán/factura desde el documento (202 + job_id). El 409
+ *  `already_converted` llega con `existing` (números de los hijos que ya
+ *  apuntan al origen); reintentar con `force: true` crea el segundo. */
+export async function convertFactusolDocument(
+  docType: FactusolDocType, serie: number, codigo: number | string,
+  payload: {
+    target: FactusolConvertTarget;
+    serie?: number | null;
+    fecha?: string | null;
+    force?: boolean;
+  },
+): Promise<{ job_id: string; status: string }> {
+  return apiFetch(
+    `/api/erp/factusol/documents/${docType}/${serie}/${codigo}/convert`,
+    { method: "POST", body: JSON.stringify(payload) },
+  );
+}
+
+export type FactusolConvertStatus =
+  | { status: "pending" }
+  | {
+      status: "finished";
+      result: {
+        target_type: FactusolDocType;
+        serie: number;
+        codigo: number;
+        numero: string;
+        lines: number;
+      };
+    }
+  | { status: "failed"; error?: string; code?: string };
+
+export async function getFactusolConvertStatus(
+  jobId: string,
+): Promise<FactusolConvertStatus> {
+  return apiFetch(
+    `/api/erp/factusol/documents/convert-status/${encodeURIComponent(jobId)}`,
   );
 }
 

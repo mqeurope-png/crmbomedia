@@ -391,3 +391,50 @@ completas de F_ALB y F_LAL** (el allowlist de escritura de E3-B), la
 numeración de albaranes por serie (TIPALB) y la factura resultante en F_FAC.
 Con esa salida se diseña E3-B (crear albarán/factura desde proforma + ciclo
 cruzado en las vistas).
+
+---
+
+## 9. El modelo de la cadena — CONFIRMADO (2026-08-20) y su escritura (ERP-E3-B)
+
+El `--trace-quote-chain` sobre la cadena real que Bart creó en el escritorio
+(`5-000027 → 5-500004 → 5-260063`) cerró las preguntas abiertas:
+
+1. **El enlace vive en las LÍNEAS, no en las cabeceras.** El albarán real
+   tiene `PEDALB` vacío y no existe `PREALB`. Cada línea del hijo lleva tres
+   campos: `DOC*` (tipo del documento ORIGEN: `'P'` presupuesto, `'A'`
+   albarán, `'C'` pedido de cliente), `DTP*` (serie del origen) y `DCO*`
+   (número del origen). Las líneas del albarán 5-500004 dicen
+   `DOCLAL='P', DTPLAL=5, DCOLAL=27`; las de la factura 5-260063 dicen
+   `DOCLFA='A', DTPLFA=5, DCOLFA=500004`.
+2. **Clave compuesta SIEMPRE.** Las líneas se casan por `(TIP*, COD*)` +
+   `POS*` — `CODLPS=27` devuelve líneas de 3 presupuestos de series 1/2/5.
+3. **Cada TIPO de documento tiene su contador por serie.** Facturas serie 5
+   van por 260xxx; albaranes serie 5 por 500xxx. El siguiente número es
+   `max(COD* WHERE TIP*=serie) + 1`, por tabla.
+4. **Los estados se propagan por la copia de sufijo.** `ESTALB=1` del albarán
+   real es el `ESTPRE=1` heredado. No se inventa ningún código.
+5. **Líneas de texto libre** (`ART*=''`) existen y se copian tal cual.
+
+**ERP-E3-B** implementa la escritura con ese modelo
+(`app/integrations/factusol/chain.py`):
+
+- `convert_document`: motor genérico presupuesto→albarán,
+  presupuesto→factura (directa) y albarán→factura. Copia cabecera y líneas
+  por sufijo (`*PRE→*ALB`, `*ALB→*FAC`) excluyendo auditoría
+  (`USU/USM/HOR/FUM/IMP/PAS/FEC/CID/PDF`), inyecta `(TIP, COD)` + `FEC*` +
+  el enlace `DOC/DTP/DCO` por línea, y filtra por la **allowlist de columnas
+  vivas** (`live_columns`: las claves de una fila real de la tabla, cacheadas
+  1 h; tabla vacía → lista de referencia de este discovery — gotcha nº 13).
+- La serie del hijo se **hereda del origen** (`TIP*`), con override opcional
+  del modal. El enlace `DTP/DCO` apunta SIEMPRE al origen real.
+- Todo va por la cola serial `factusol:writes` (worker concurrency=1);
+  compensación al fallar: borrar por la clave COMPUESTA `(TIP, COD)` — por
+  número a secas se llevaría el homónimo de otra serie.
+- Anti-duplicado en dos capas (endpoint → 409 con los hijos existentes;
+  re-chequeo dentro del worker). `force` crea el segundo documento a
+  propósito.
+- **Parte D**: `load_chain_index` lee F_LAL + F_LFA una vez (cache 30 s) y
+  anota cada documento con su `ciclo` (hijos, origen y estado
+  pendiente/con_albaran/facturado); el explorador lo pinta y filtra por él.
+- Endpoints: `POST /api/erp/factusol/documents/{tipo}/{serie}/{codigo}/convert`
+  (202 + job_id) y `GET .../documents/convert-status/{job_id}`.
