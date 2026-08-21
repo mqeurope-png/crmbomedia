@@ -41,6 +41,33 @@ def _first(row: dict[str, Any], *cols: str) -> Any:
     return None
 
 
+def _fop_names(client, ejercicio: str) -> dict[str, str]:
+    """`{codigo → nombre}` de F_FOP, reutilizando la cache de /formas-pago.
+    Best-effort: si FACTUSOL no responde, dict vacío (el caller pinta el
+    código crudo). Indexa también el código sin ceros a la izquierda: el
+    documento guarda `'002'` y el catálogo puede servir `2`."""
+    now = time.time()
+    cached = _FOP_CACHE.get(ejercicio)
+    if cached and cached[0] > now:
+        items = cached[1]
+    else:
+        try:
+            rows = client.load_table("F_FOP", ejercicio=ejercicio)
+            items = [_normalise_fop(r) for r in rows]
+            _FOP_CACHE[ejercicio] = (now + _FOP_CACHE_TTL_SECONDS, items)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("factusol F_FOP para nombres falló: %s", exc)
+            return {}
+    out: dict[str, str] = {}
+    for item in items:
+        codigo = str(item.get("codigo") or "").strip()
+        nombre = str(item.get("nombre") or "").strip()
+        if codigo and nombre:
+            out[codigo] = nombre
+            out[codigo.lstrip("0") or "0"] = nombre
+    return out
+
+
 def _normalise_fop(row: dict[str, Any]) -> dict[str, Any]:
     """F_FOP → {codigo, nombre}. Los nombres exactos de columna se confirman
     con la validación de Bart; se prueban varios candidatos habituales."""
@@ -106,6 +133,9 @@ def list_factusol_documents(
     fecha_desde: str | None = Query(default=None, max_length=10),
     fecha_hasta: str | None = Query(default=None, max_length=10),
     q: str | None = Query(default=None, max_length=120),
+    cliente_q: str | None = Query(default=None, max_length=120),
+    sort: str = Query(default="numero", pattern="^(numero|cliente|fecha|total)$"),
+    dir: str = Query(default="desc", pattern="^(asc|desc)$"),
     limit: int = Query(default=100, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     session: Session = Depends(get_session),
@@ -131,7 +161,8 @@ def list_factusol_documents(
             client, doc_type, ejercicio=ejercicio,
             codcli=codcli, serie=serie, estado=estado,
             fecha_desde=fecha_desde, fecha_hasta=fecha_hasta,
-            q=q, limit=limit, offset=offset,
+            q=q, cliente_q=cliente_q, sort=sort, direction=dir,
+            limit=limit, offset=offset,
         )
     except FactusolError as exc:
         logger.warning("factusol documents/%s KO: %s", doc_type, exc)
@@ -176,6 +207,14 @@ def get_factusol_document(
         raise HTTPException(
             status.HTTP_404_NOT_FOUND,
             f"No existe el documento {serie}-{codigo} en {doc_type}",
+        )
+    # E3-A-fix1 — forma de pago con nombre (catálogo F_FOP de C-2-fix2).
+    fop = str(doc.get("forma_pago") or "").strip()
+    doc["forma_pago_nombre"] = None
+    if fop:
+        names = _fop_names(client, ejercicio)
+        doc["forma_pago_nombre"] = (
+            names.get(fop) or names.get(fop.lstrip("0") or "0")
         )
     return doc
 

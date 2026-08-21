@@ -64,6 +64,11 @@ export function FactusolDocumentDetailModal({
               <dd>{doc.fecha ?? "—"}</dd>
               <dt>Estado</dt>
               <dd>{doc.estado_label}</dd>
+              <dt>Forma de pago</dt>
+              <dd>
+                {doc.forma_pago_nombre
+                  ?? (doc.forma_pago ? `Código ${doc.forma_pago}` : "—")}
+              </dd>
               {doc.referencia ? (
                 <>
                   <dt>Referencia</dt>

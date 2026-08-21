@@ -10922,3 +10922,18 @@ tr.is-inactive {
 .erp-doc-detail-head dd {
   margin: 0;
 }
+
+/* ERP-E3-A-fix1 — cabeceras ordenables del explorador. */
+.erp-doc-sort {
+  border: none;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  font-weight: 600;
+  color: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.erp-doc-sort:hover {
+  text-decoration: underline;
+}

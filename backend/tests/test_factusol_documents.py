@@ -318,3 +318,127 @@ def test_all_doc_specs_cover_the_four_tables() -> None:
     assert {s.lines_table for s in DOC_SPECS.values()} == {
         "F_LPC", "F_LPS", "F_LAL", "F_LFA",
     }
+
+
+# ---------------------------------------------------------------------------
+# ERP-E3-A-fix1: orden por columnas + cliente por CIF/email + forma de pago
+# ---------------------------------------------------------------------------
+
+F_CLI = [
+    {"CODCLI": 2458, "NOFCLI": "DUPLICODER, S.L.", "NOCCLI": "Duplicoder",
+     "NIFCLI": "B12345678", "EMACLI": "compras@duplicoder.es"},
+    {"CODCLI": 99, "NOFCLI": "MOVIATICOS SL", "NOCCLI": "Moviaticos",
+     "NIFCLI": "B99887766", "EMACLI": "admin@moviaticos.com"},
+]
+
+
+def test_documents_sort_by_total_number_date() -> None:
+    """El orden se aplica al conjunto COMPLETO filtrado antes de paginar,
+    numérico donde toca (no orden lexicográfico de strings)."""
+    from app.integrations.factusol.documents import list_documents as ld
+
+    rows = [
+        _fac(9, "5", TOTFAC=1000.0, FECFAC="2026-01-01"),     # total alto, nº bajo
+        _fac(100, "5", TOTFAC=20.0, FECFAC="2026-03-01"),
+        _fac(50, "5", TOTFAC=200.0, FECFAC="2026-02-01"),
+    ]
+    client = FakeClient({"F_FAC": rows})
+    by_total = ld(client, "facturas", ejercicio="2026",
+                  sort="total", direction="asc")
+    assert [d["total"] for d in by_total["items"]] == [20.0, 200.0, 1000.0]
+    # 9 < 50 < 100 numérico (lexicográfico daría "100" < "50" < "9").
+    by_num = ld(client, "facturas", ejercicio="2026",
+                sort="numero", direction="asc")
+    assert [d["codigo"] for d in by_num["items"]] == [9, 50, 100]
+    by_date = ld(client, "facturas", ejercicio="2026",
+                 sort="fecha", direction="desc")
+    assert [d["fecha"] for d in by_date["items"]] == [
+        "2026-03-01", "2026-02-01", "2026-01-01",
+    ]
+    # Paginar DESPUÉS de ordenar: la página 2 trae el siguiente del orden.
+    page2 = ld(client, "facturas", ejercicio="2026",
+               sort="total", direction="asc", limit=1, offset=1)
+    assert [d["total"] for d in page2["items"]] == [200.0]
+    assert page2["total"] == 3
+
+
+def test_documents_sort_pushes_missing_values_last() -> None:
+    from app.integrations.factusol.documents import list_documents as ld
+
+    rows = [
+        {"TIPALB": "5", "CODALB": 2},                       # sin fecha ni total
+        {"TIPALB": "5", "CODALB": 1, "FECALB": "2026-05-01", "TOTALB": 7.0},
+    ]
+    client = FakeClient({"F_ALB": rows})
+    out = ld(client, "albaranes", ejercicio="2026", sort="fecha",
+             direction="asc")
+    assert [d["codigo"] for d in out["items"]] == [1, 2]  # None al final
+
+
+def test_customer_filter_matches_nif_and_email() -> None:
+    from app.integrations.factusol.documents import list_documents as ld
+
+    client = FakeClient({"F_FAC": FACTURAS, "F_CLI": F_CLI})
+    by_nif = ld(client, "facturas", ejercicio="2026", cliente_q="b99887766")
+    assert by_nif["total"] == 1
+    assert by_nif["items"][0]["cliente_nombre"] == "MOVIATICOS"
+    by_email = ld(client, "facturas", ejercicio="2026",
+                  cliente_q="compras@duplicoder")
+    # Las 3 facturas de DUPLICODER (CLIFAC=2458).
+    assert by_email["total"] == 3
+    by_name = ld(client, "facturas", ejercicio="2026", cliente_q="moviatic")
+    assert by_name["total"] == 1
+
+
+def test_customer_filter_no_match_returns_empty_not_all() -> None:
+    from app.integrations.factusol.documents import list_documents as ld
+
+    client = FakeClient({"F_FAC": FACTURAS, "F_CLI": F_CLI})
+    out = ld(client, "facturas", ejercicio="2026", cliente_q="no-existe-xyz")
+    assert out == {"items": [], "total": 0}
+    # Cortocircuito: ni siquiera se consulta la tabla de documentos.
+    assert not any(t == "F_FAC" for t, _ in client.calls)
+
+
+def test_forma_pago_in_header_and_resolved_in_detail(client, session_factory) -> None:
+    """El listado expone el código FOP*; el detalle lo resuelve a nombre con
+    el catálogo F_FOP (C-2-fix2). Vacío → null (la UI pinta «—»)."""
+    _ = session_factory
+    facturas = [
+        _fac(260066, "5", FOPFAC="002"),
+        _fac(260065, "5"),  # sin forma de pago
+    ]
+    fop = [{"CODFOP": "002", "DESFOP": "Transferencia 30 días"}]
+    with _patched_factusol(FakeClient({
+        "F_FAC": facturas, "F_LFA": [], "F_FOP": fop,
+    })):
+        detail = client.get(
+            "/api/erp/factusol/documents/facturas/5/260066",
+            headers=auth_headers(client, "user"),
+        )
+        empty = client.get(
+            "/api/erp/factusol/documents/facturas/5/260065",
+            headers=auth_headers(client, "user"),
+        )
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["forma_pago"] == "002"
+    assert detail.json()["forma_pago_nombre"] == "Transferencia 30 días"
+    assert empty.json()["forma_pago"] is None
+    assert empty.json()["forma_pago_nombre"] is None
+
+
+def test_documents_endpoint_accepts_sort_and_cliente_q(client, session_factory) -> None:
+    _ = session_factory
+    with _patched_factusol(FakeClient({"F_FAC": FACTURAS, "F_CLI": F_CLI})):
+        r = client.get(
+            "/api/erp/factusol/documents/facturas"
+            "?cliente_q=admin@moviaticos.com&sort=total&dir=asc",
+            headers=auth_headers(client, "user"),
+        )
+    assert r.status_code == 200, r.text
+    assert [d["codigo"] for d in r.json()["items"]] == [260065]
+    bad = client.get(
+        "/api/erp/factusol/documents/facturas?sort=hackme",
+        headers=auth_headers(client, "user"),
+    )
+    assert bad.status_code == 422
