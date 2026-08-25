@@ -147,14 +147,16 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          # SEC-1: Node 20 llegó a EOL en abril-2026; Next 16 exige >=20.9.
+          # 22 = LTS activa, la misma major que la imagen Docker del frontend.
+          node-version: "22"
       - uses: actions/cache@v4
         with:
           path: ~/.npm
           key: ${{ runner.os }}-npm-${{ hashFiles('frontend/package.json') }}
           restore-keys: |
             ${{ runner.os }}-npm-
-      - run: npm install
+      - run: npm ci
       - run: npm run build
       - run: npm run lint
       - run: npm test -- --ci --coverage=false

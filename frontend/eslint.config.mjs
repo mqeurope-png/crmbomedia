@@ -1,12 +1,10 @@
-import { FlatCompat } from "@eslint/eslintrc";
+// SEC-1 (Next 16): eslint-config-next es flat-config nativo; el puente
+// FlatCompat de eslintrc muere con "Converting circular structure to JSON"
+// contra los configs nuevos, así que se importan directamente.
+import nextCoreWebVitals from "eslint-config-next/core-web-vitals";
+import nextTypescript from "eslint-config-next/typescript";
 import jest from "eslint-plugin-jest";
 import testingLibrary from "eslint-plugin-testing-library";
-import { dirname } from "path";
-import { fileURLToPath } from "url";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-const compat = new FlatCompat({ baseDirectory: __dirname });
 
 const TEST_FILES = ["src/**/*.test.{ts,tsx}"];
 
@@ -18,7 +16,22 @@ const eslintConfig = [
     // linterse — se sustituye en bloque cuando el manual se regenera.
     ignores: [".next/**", "public/manual/**"],
   },
-  ...compat.extends("next/core-web-vitals", "next/typescript"),
+  ...nextCoreWebVitals,
+  ...nextTypescript,
+  {
+    // SEC-1 (Next 16): eslint-config-next 16 trae react-hooks v6 con las
+    // reglas nuevas del React Compiler en "error". Activarlas de golpe son
+    // ~140 errores en código que funciona — se degradan a warning para
+    // adoptarlas incrementalmente, sin mezclar un refactor masivo con un
+    // parche de seguridad urgente. exhaustive-deps ya era warning en 15.x.
+    rules: {
+      "react-hooks/set-state-in-effect": "warn",
+      "react-hooks/purity": "warn",
+      "react-hooks/refs": "warn",
+      "react-hooks/incompatible-library": "warn",
+      "react-hooks/exhaustive-deps": "warn",
+    },
+  },
   // Sprint Frontend-Test-Runner. Reglas `recommended` (suaves) de jest +
   // testing-library SOLO sobre los ficheros de test, para no meter ruido
   // en el código de producción.

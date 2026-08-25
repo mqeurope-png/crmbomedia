@@ -326,6 +326,30 @@ services:
         NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL}
     image: crmbomedia-frontend:latest
     restart: unless-stopped
+    # SEC-1 — endurecimiento tras el incidente de agosto-2026 (minero +
+    # rootkit DENTRO del contenedor). Defensa en profundidad: la imagen ya
+    # corre como usuario `nextjs` sin privilegios (Dockerfile); aquí además:
+    # - read_only: el rootfs es inmutable — no se puede escribir
+    #   /etc/ld.so.preload, ni crontabs, ni soltar binarios (./XXbIBGhJ).
+    #   Solo /tmp y la cache de Next son escribibles, en tmpfs (RAM,
+    #   se vacían al recrear el contenedor).
+    # - no-new-privileges: sin escaladas via setuid/setgid.
+    # - cap_drop ALL: sin capabilities de kernel.
+    # Sigue SIN publicar puertos al host y SIN montar docker.sock.
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    volumes:
+      - type: tmpfs
+        target: /tmp
+        tmpfs:
+          mode: 0o1777
+      - type: tmpfs
+        target: /app/.next/cache
+        tmpfs:
+          mode: 0o1777
     environment:
       NODE_ENV: production
       NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL}

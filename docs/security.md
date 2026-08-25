@@ -409,7 +409,7 @@ En Sentry → *Alerts → Create Alert Rule*:
 Sentry recomienda servir `/monitoring` (o cualquier ruta) como proxy hacia `sentry.io` para que los uBlock-likes no bloqueen el reporting. Para activarlo en el frontend:
 
 ```ts
-// sentry.client.config.ts
+// instrumentation-client.ts (antes sentry.client.config.ts, pre-Next 16)
 Sentry.init({
   // ...
   tunnel: "/monitoring",
@@ -677,3 +677,44 @@ python -m pytest tests/test_audit.py -q
 ```
 
 Cubre cada categoría de evento, el header `X-Total-Count`, los filtros (`action`, `action_prefix`, `target_type`, rango de fechas), la auditoría del propio export, el límite de 50 000 rows (vía `monkeypatch.setattr(routes, "EXPORT_MAX_ROWS", 5)`) y el corte por defecto a los últimos 365 días.
+
+---
+
+# SEC-1 — Incidente de agosto-2026 y endurecimiento del frontend
+
+El 19/24-ago-2026 el contenedor del frontend fue comprometido en producción
+(inyección de script GTM malicioso primero; después minero + persistencia
+tipo rootkit DENTRO del contenedor: `/etc/ld.so.preload`, crontabs, passwd).
+El contenedor no era privilegiado y no montaba `docker.sock`, así que el host
+no se vio afectado. Vector: la app exponía Next.js 15.1.4 + React 19.0.0,
+vulnerables a **CVE-2025-55182** (RCE pre-auth en React Server Components;
+los logs de nginx muestran tráfico `?_rsc=`) y **CVE-2025-29927** (bypass de
+middleware vía `x-middleware-subrequest`, específico de `output: standalone`
+auto-alojado).
+
+Medidas (PR SEC-1):
+
+1. **Parche del vector**: Next.js 16.x + React 19.2.x (línea con soporte;
+   15.x muere el 21-oct-2026). El `react-server-dom-*` vendorizado dentro de
+   Next queda parcheado con él; `npm audit` debe quedar a 0.
+2. **Contenedor sin root**: la imagen corre como `nextjs` (uid 1001) — el
+   patrón oficial standalone. Un RCE futuro no puede escribir `/etc` ni
+   instalar persistencia de sistema.
+3. **Rootfs inmutable**: `read_only: true` + tmpfs solo en `/tmp` y
+   `/app/.next/cache`, `cap_drop: ALL`, `no-new-privileges` en
+   `docker-compose.prod.yml`. Sin puertos publicados al host y sin
+   `docker.sock`, como estaba.
+4. **Cinturón y tirantes en nginx**: `proxy_set_header
+   x-middleware-subrequest "";` en el `location /` que hace proxy al
+   frontend (ver `deploy/nginx/conf.d/*.example`) — la cabecera del bypass
+   jamás llega desde fuera aunque el fallo se reintrodujera.
+5. **Builds reproducibles**: `npm ci` en imagen y CI (nunca `npm install`),
+   Node 22 (20 es EOL desde abril-2026). Desplegar SIEMPRE con
+   `docker compose build --no-cache frontend`: en el incidente una capa
+   cacheada envenenada sobrevivió a un rebuild.
+6. **Backend**: pins con CVE subidos (cryptography 50, python-multipart
+   0.0.32, aiosmtplib 5.1.2, Jinja2 3.1.6) — `pip-audit` a 0.
+
+Vigilancia post-deploy: `docker exec crmbo-frontend-1 id` (no root),
+`ps aux --sort=-%cpu | head` sin procesos extraños, y el HTML servido sin
+`GTM-*` inesperados.

@@ -42,9 +42,13 @@ import "tinymce/plugins/emoticons/js/emojis";
 import "tinymce-i18n/langs8/es.js";
 // Skins (light theme) + the default content stylesheet rendered inside
 // the editor iframe.
-import "tinymce/skins/ui/oxide/skin.min.css";
-import "tinymce/skins/ui/oxide/content.min.css";
-import "tinymce/skins/content/default/content.min.css";
+// SEC-1 (Next 16): las variantes .min.css de TinyMCE llevan un
+// `:nth-child(2of.…)` mal minificado (sin espacio) que el parser CSS de
+// Turbopack rechaza; las no minificadas son CSS válido y el bundler las
+// minifica igualmente.
+import "tinymce/skins/ui/oxide/skin.css";
+import "tinymce/skins/ui/oxide/content.css";
+import "tinymce/skins/content/default/content.css";
 
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
