@@ -1,5 +1,6 @@
-// Sentry config for the browser. Loaded automatically by Next.js when
-// @sentry/nextjs's withSentryConfig wraps next.config.ts.
+// Sentry config for the browser (Next 16: `instrumentation-client.ts`,
+// que Turbopack carga de serie; el viejo `sentry.client.config.ts` solo
+// funcionaba con webpack).
 //
 // Only initializes when NEXT_PUBLIC_SENTRY_DSN is set, so dev / Codespaces
 // / self-hosted deploys without a Sentry account stay fully offline.

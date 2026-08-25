@@ -18,9 +18,12 @@ const exportedConfig = sentryDsn
       // Source-map upload requires SENTRY_AUTH_TOKEN; keep this PR
       // ready-but-disabled until the user wires up CI credentials.
       widenClientFileUpload: true,
-      hideSourceMaps: true,
+      // SEC-1 (Sentry 8 → 10): `hideSourceMaps` ya no existe — ahora los
+      // sourcemaps subidos se borran del bundle publicado, que es lo que
+      // `hideSourceMaps: true` buscaba. `automaticVercelMonitors` murió
+      // con la propia opción (no somos Vercel).
+      sourcemaps: { deleteSourcemapsAfterUpload: true },
       disableLogger: true,
-      automaticVercelMonitors: false,
     })
   : nextConfig;
 

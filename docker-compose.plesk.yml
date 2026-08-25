@@ -41,7 +41,9 @@ services:
       - /opt/crmbo/uploads/email-templates:/opt/crmbo/uploads/email-templates:ro
 
   frontend:
-    # Next.js 15 standalone server defaults to listening on the container
-    # hostname; force 0.0.0.0 so the Nginx container can reach it.
+    # El server standalone de Next escucha en el hostname del contenedor por
+    # defecto; se fuerza 0.0.0.0 para que el contenedor de Nginx lo alcance.
+    # (Desde SEC-1 el Dockerfile ya lo fija; se mantiene por redundancia
+    # inofensiva.)
     environment:
       HOSTNAME: "0.0.0.0"
