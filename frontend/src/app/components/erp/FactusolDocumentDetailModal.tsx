@@ -71,70 +71,45 @@ export function cycleBadge(
   return { label, className };
 }
 
-/** Disponibilidad de las acciones de conversión según el ciclo (E3-B-fix1):
- *  - primary: el camino normal del flujo.
- *  - secondary: posible pero requiere pasar por la confirmación explícita
- *    (duplicado / ya facturado) del modal de confirmación.
- *  - ausente: la regla de negocio lo prohíbe desde aquí (p. ej. facturar un
- *    presupuesto que YA tiene albarán: la factura se genera desde el
- *    albarán). */
-type CycleAction = {
-  target: FactusolConvertTarget;
-  primary: boolean;
-  contextWarning: string | null;
-};
-
+/** Acciones de conversión disponibles como BOTÓN (E3-B-fix2): SOLO cuando
+ *  el documento hijo aún no existe. Si ya existe, el botón DESAPARECE —
+ *  duplicar por un clic de más es inaceptable en la contabilidad. La única
+ *  vía legítima de un segundo albarán es la acción discreta de «entrega
+ *  parcial» (`partialDeliveryAvailable`); para facturas no hay vía: una
+ *  segunda factura es un error contable, se haría en FACTUSOL escritorio. */
 function availableActions(
   docType: FactusolDocType,
   ciclo: FactusolCycle,
-): CycleAction[] {
+): FactusolConvertTarget[] {
   const targets = CONVERSIONS[docType] ?? [];
   if (targets.length === 0) return [];
   if (!ciclo) {
     // Sin anotación del ciclo (best-effort del backend): se ofrecen las
-    // acciones normales — el anti-duplicado del backend sigue cubriendo.
-    return targets.map((target) => ({
-      target, primary: true, contextWarning: null,
-    }));
+    // acciones normales — el 409 anti-duplicado del backend sigue de red.
+    return [...targets];
   }
-  const albaranes = ciclo.albaranes;
-  const facturas = ciclo.facturas;
-  const tipo = TYPE_LABELS[docType].toLowerCase();
-  const out: CycleAction[] = [];
-  for (const target of targets) {
-    if (target === "albaranes") {
-      // Crear (otro) albarán: primario solo con el ciclo virgen; con
-      // albarán previo el confirm ya avisa del duplicado y exige «de todos
-      // modos»; con factura previa se avisa del facturado.
-      out.push({
-        target,
-        primary: albaranes.length === 0 && facturas.length === 0,
-        contextWarning:
-          albaranes.length === 0 && facturas.length > 0
-            ? `Este ${tipo} ya está facturado en ${facturas
-                .map((f) => f.numero).join(", ")}. ¿Crear un albarán ` +
-              "igualmente?"
-            : null,
-      });
-    } else {
-      // Crear factura.
-      if (docType !== "albaranes" && albaranes.length > 0) {
-        // Regla de negocio: con albarán, la factura SE GENERA DESDE EL
-        // ALBARÁN — aquí ni siquiera se ofrece (el aviso enlaza a él).
-        continue;
-      }
-      if (docType === "albaranes" && facturas.length > 0) {
-        // Albarán ya facturado: sin botón; el aviso enlaza a la factura.
-        continue;
-      }
-      out.push({
-        target,
-        primary: facturas.length === 0,
-        contextWarning: null,
-      });
-    }
+  const tieneAlbaran = ciclo.albaranes.length > 0;
+  const facturado = ciclo.facturas.length > 0;
+  if (docType === "albaranes") {
+    // Albarán facturado: nada (el aviso enlaza a la factura).
+    return facturado ? [] : [...targets];
   }
-  return out;
+  // Presupuesto/pedido: cualquier hijo retira los botones — facturado no
+  // deja vía; con albarán, la factura se genera DESDE el albarán y el
+  // segundo albarán solo existe como «entrega parcial».
+  return tieneAlbaran || facturado ? [] : [...targets];
+}
+
+/** Enlace discreto de «entrega parcial»: presupuesto/pedido que ya tiene
+ *  albarán y AÚN no está facturado (un pedido entregado en varios envíos
+ *  genera varios albaranes del mismo presupuesto — caso real). */
+function partialDeliveryAvailable(
+  docType: FactusolDocType,
+  ciclo: FactusolCycle,
+): boolean {
+  if (docType !== "presupuestos" && docType !== "pedidos") return false;
+  if (!ciclo) return false;
+  return ciclo.albaranes.length > 0 && ciclo.facturas.length === 0;
 }
 
 function today(): string {
@@ -165,6 +140,10 @@ export function FactusolDocumentDetailModal({
   const [user, setUser] = useState<User | null>(null);
   const [convertTarget, setConvertTarget] =
     useState<FactusolConvertTarget | null>(null);
+  // E3-B-fix2: la conversión abierta desde el enlace de «entrega parcial»
+  // (el único camino para un segundo albarán) — cambia el texto del modal
+  // de confirmación y manda `force`.
+  const [convertPartial, setConvertPartial] = useState(false);
   const [jobId, setJobId] = useState<string | null>(null);
   const [created, setCreated] = useState<FactusolCycleRef | null>(null);
   const [createError, setCreateError] = useState<string | null>(null);
@@ -241,6 +220,7 @@ export function FactusolDocumentDetailModal({
     setCreated(null);
     setCreateError(null);
     setConvertTarget(null);
+    setConvertPartial(false);
     setCurrent({ docType: ref.doc_type, serie: ref.serie, codigo: ref.codigo });
   }
 
@@ -355,6 +335,24 @@ export function FactusolDocumentDetailModal({
                 Ya facturado en {refLinks(ciclo.facturas)}.
               </p>
             ) : null}
+            {/* E3-B-fix2: la ÚNICA vía de un segundo albarán — un enlace
+                discreto explícitamente etiquetado como entrega parcial. */}
+            {canEdit && partialDeliveryAvailable(current.docType, ciclo) ? (
+              <p className="muted small">
+                <button
+                  type="button"
+                  className="erp-doc-ciclo-link"
+                  disabled={!!jobId}
+                  onClick={() => {
+                    setCreateError(null);
+                    setConvertPartial(true);
+                    setConvertTarget("albaranes");
+                  }}
+                >
+                  ¿Entrega parcial? Crear otro albarán
+                </button>
+              </p>
+            ) : null}
 
             {doc.lines.length > 0 ? (
               <table className="data-table">
@@ -392,18 +390,19 @@ export function FactusolDocumentDetailModal({
             Cerrar
           </button>
           {doc && canEdit
-            ? actions.map((action) => (
+            ? actions.map((target) => (
                 <button
-                  key={action.target}
+                  key={target}
                   type="button"
-                  className={action.primary ? "button" : "button secondary"}
+                  className="button"
                   disabled={!!jobId}
                   onClick={() => {
                     setCreateError(null);
-                    setConvertTarget(action.target);
+                    setConvertPartial(false);
+                    setConvertTarget(target);
                   }}
                 >
-                  Crear {TARGET_LABELS[action.target]}
+                  Crear {TARGET_LABELS[target]}
                 </button>
               ))
             : null}
@@ -416,12 +415,9 @@ export function FactusolDocumentDetailModal({
           docType={current.docType}
           target={convertTarget}
           existing={existingChildren(convertTarget)}
-          contextWarning={
-            actions.find((a) => a.target === convertTarget)?.contextWarning
-              ?? null
-          }
+          partial={convertPartial}
           submitting={!!jobId}
-          onCancel={() => setConvertTarget(null)}
+          onCancel={() => { setConvertTarget(null); setConvertPartial(false); }}
           onSubmit={async (opts) => {
             setCreateError(null);
             setCreated(null);
@@ -431,6 +427,7 @@ export function FactusolDocumentDetailModal({
                 { target: convertTarget, ...opts },
               );
               setConvertTarget(null);
+              setConvertPartial(false);
               setJobId(r.job_id);
             } catch (e) {
               // 409 anti-duplicado (carrera: alguien lo creó después de abrir
@@ -448,15 +445,17 @@ export function FactusolDocumentDetailModal({
 
 /** Confirmación de conversión — mismo patrón que el modal de emisión E2:
  *  total, aviso de irreversibilidad, serie heredada con override y fecha.
- *  Si el origen YA tiene un hijo de ese tipo, avisa y exige «de todos
- *  modos» (`force`); `contextWarning` añade el aviso de negocio (p. ej.
- *  «ya está facturado, ¿crear un albarán igualmente?»). */
+ *
+ *  E3-B-fix2: el modo `partial` (entrega parcial — la ÚNICA vía de un
+ *  segundo albarán) cambia el título, el aviso y el botón («Crear albarán
+ *  parcial», NUNCA «de todos modos») y manda `force`. Un 409 por carrera se
+ *  enseña como error, sin ofrecer forzar desde aquí. */
 function ConvertConfirmModal({
   doc,
   docType,
   target,
   existing,
-  contextWarning,
+  partial,
   submitting,
   onCancel,
   onSubmit,
@@ -465,7 +464,7 @@ function ConvertConfirmModal({
   docType: FactusolDocType;
   target: FactusolConvertTarget;
   existing: FactusolCycleRef[];
-  contextWarning: string | null;
+  partial: boolean;
   submitting: boolean;
   onCancel: () => void;
   onSubmit: (opts: {
@@ -477,10 +476,10 @@ function ConvertConfirmModal({
   const [series, setSeries] = useState<FactusolSerie[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  // El aviso anti-duplicado puede venir del ciclo ya cargado o de un 409
-  // del backend (carrera). En ambos casos el botón pasa a «de todos modos».
-  const [serverDuplicate, setServerDuplicate] = useState(false);
-  const hasDuplicate = existing.length > 0 || serverDuplicate;
+  const tipo = TYPE_LABELS[docType].toLowerCase();
+  const targetLabel = partial
+    ? `${TARGET_LABELS[target]} parcial`
+    : TARGET_LABELS[target];
 
   useEffect(() => {
     getFactusolSeries()
@@ -499,12 +498,10 @@ function ConvertConfirmModal({
       await onSubmit({
         serie,
         fecha: fecha || null,
-        force: hasDuplicate,
+        force: partial,
       });
     } catch (e) {
-      const message = extractErrorMessage(e, "No se pudo crear el documento.");
-      setError(message);
-      if (/ya tiene/i.test(message)) setServerDuplicate(true);
+      setError(extractErrorMessage(e, "No se pudo crear el documento."));
     } finally {
       setBusy(false);
     }
@@ -512,11 +509,10 @@ function ConvertConfirmModal({
 
   return (
     <div className="modal-overlay" role="dialog" aria-modal="true"
-         aria-label={`Crear ${TARGET_LABELS[target]}`}>
+         aria-label={`Crear ${targetLabel}`}>
       <div className="modal-dialog erp-emit-modal">
         <h2>
-          Crear {TARGET_LABELS[target]} desde{" "}
-          {TYPE_LABELS[docType].toLowerCase()} {doc.numero}
+          Crear {targetLabel} desde {tipo} {doc.numero}
         </h2>
         <p>
           Total:{" "}
@@ -526,19 +522,15 @@ function ConvertConfirmModal({
         </p>
         <p className="form-error">
           Se creará un documento <strong>real</strong> en FACTUSOL, enlazado a
-          este {TYPE_LABELS[docType].toLowerCase()}. Esta acción no es
-          reversible desde el CRM.
+          este {tipo}. Esta acción no es reversible desde el CRM.
         </p>
-        {existing.length > 0 ? (
+        {partial ? (
           <p className="form-error">
-            Este {TYPE_LABELS[docType].toLowerCase()} ya tiene{" "}
-            {TARGET_LABELS[target]}{" "}
-            <strong>{existing.map((r) => r.numero).join(", ")}</strong>. Crear
-            otro duplicará el documento en la contabilidad.
+            Este {tipo} ya tiene el albarán{" "}
+            <strong>{existing.map((r) => r.numero).join(", ")}</strong>. Úsalo
+            solo si estás entregando el pedido en varios envíos — de lo
+            contrario duplicarás el documento en la contabilidad.
           </p>
-        ) : null}
-        {contextWarning ? (
-          <p className="form-error">{contextWarning}</p>
         ) : null}
         {error ? <p className="form-error">{error}</p> : null}
 
@@ -584,11 +576,7 @@ function ConvertConfirmModal({
           </button>
           <button type="button" className="button"
                   onClick={submit} disabled={busy || submitting}>
-            {busy || submitting
-              ? "Creando…"
-              : hasDuplicate
-                ? `Crear ${TARGET_LABELS[target]} de todos modos`
-                : `Crear ${TARGET_LABELS[target]}`}
+            {busy || submitting ? "Creando…" : `Crear ${targetLabel}`}
           </button>
         </div>
       </div>
