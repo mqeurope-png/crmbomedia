@@ -320,12 +320,16 @@ def _index_lines(
 
 
 def load_chain_index(
-    client: FactusolClient, *, ejercicio: str,
+    client: FactusolClient, *, ejercicio: str, force_refresh: bool = False,
 ) -> ChainIndex:
-    """Índice del ciclo del ejercicio, cacheado 30 s por proceso."""
+    """Índice del ciclo del ejercicio, cacheado 30 s por proceso.
+
+    `force_refresh` (E3-B-fix1): salta el cache — lo pide el frontend justo
+    después de crear un documento para repintar el badge al momento, sin
+    esperar a que expire el TTL."""
     now = time.time()
     cached = _CHAIN_INDEX_CACHE.get(ejercicio)
-    if cached and cached[0] > now:
+    if cached and cached[0] > now and not force_refresh:
         return cached[1]
     alb = DOC_SPECS["albaranes"]
     fac = DOC_SPECS["facturas"]
@@ -421,12 +425,15 @@ def cycle_of(
 
 def cycle_annotator(
     client: FactusolClient, doc_type: str, *, ejercicio: str,
+    force_refresh: bool = False,
 ):
     """Callable para `list_documents(annotate=…)`: añade `ciclo` a cada doc.
 
     Se inyecta desde el endpoint (documents no importa chain — evita el
     import circular). El índice se carga UNA vez por llamada, cacheado."""
-    index = load_chain_index(client, ejercicio=ejercicio)
+    index = load_chain_index(
+        client, ejercicio=ejercicio, force_refresh=force_refresh,
+    )
 
     def annotate(docs: list[dict[str, Any]]) -> None:
         for doc in docs:

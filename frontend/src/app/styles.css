@@ -10958,3 +10958,14 @@ tr.is-inactive {
   cursor: pointer;
   text-decoration: underline;
 }
+
+/* E3-B-fix1 — aviso de la regla de negocio del ciclo («la factura se genera
+ * desde el albarán», «ya facturado en X»). */
+.erp-doc-ciclo-aviso {
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: #fffaeb;
+  color: #b54708;
+  font-size: 13px;
+}

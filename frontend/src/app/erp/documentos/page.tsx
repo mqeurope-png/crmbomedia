@@ -24,31 +24,33 @@ const TABS: { key: FactusolDocType; label: string }[] = [
   { key: "facturas", label: "Facturas" },
 ];
 
-/** E3-B — estados del ciclo por los que se puede filtrar en cada pestaña
- *  (una factura no tiene «siguiente paso», así que no filtra). */
+/** E3-B — estados del ciclo por los que se puede filtrar en cada pestaña,
+ *  con la semántica de CADA tipo (E3-B-fix1): un albarán «pendiente» está
+ *  «Sin facturar» — nunca «sin albarán». Una factura no tiene «siguiente
+ *  paso», así que su pestaña no ofrece este filtro. */
 const CICLO_OPTIONS: Partial<Record<
   FactusolDocType,
   { value: NonNullable<FactusolDocumentFilters["ciclo"]>; label: string }[]
 >> = {
   presupuestos: [
     { value: "pendiente", label: "Sin albarán ni factura" },
-    { value: "con_albaran", label: "Con albarán (sin factura)" },
-    { value: "facturado", label: "Facturados" },
+    { value: "con_albaran", label: "Con albarán" },
+    { value: "facturado", label: "Facturado" },
   ],
   pedidos: [
     { value: "pendiente", label: "Sin albarán ni factura" },
-    { value: "con_albaran", label: "Con albarán (sin factura)" },
-    { value: "facturado", label: "Facturados" },
+    { value: "con_albaran", label: "Con albarán" },
+    { value: "facturado", label: "Facturado" },
   ],
   albaranes: [
-    { value: "pendiente", label: "Sin factura" },
-    { value: "facturado", label: "Facturados" },
+    { value: "pendiente", label: "Sin facturar" },
+    { value: "facturado", label: "Facturado" },
   ],
 };
 
 /** Celda «Ciclo» (E3-B): las facturas enseñan su origen; el resto, el badge
- *  del estado del ciclo PRE→ALB→FAC. Sin anotación (el backend la sirve
- *  best-effort) → «—». */
+ *  del estado del ciclo PRE→ALB→FAC con la semántica de SU tipo
+ *  (E3-B-fix1). Sin anotación (el backend la sirve best-effort) → «—». */
 function renderCiclo(d: FactusolDocument) {
   const ciclo = d.ciclo;
   if (!ciclo) return <span className="muted">—</span>;
@@ -61,7 +63,7 @@ function renderCiclo(d: FactusolDocument) {
       <span className="muted">—</span>
     );
   }
-  const badge = cycleBadge(ciclo.estado);
+  const badge = cycleBadge(d.doc_type, ciclo);
   return badge ? (
     <span className={badge.className}>{badge.label}</span>
   ) : (
@@ -103,7 +105,7 @@ export default function FactusolDocumentosPage() {
       .catch(() => setSeries([]));
   }, []);
 
-  const load = useCallback(async (nextOffset: number) => {
+  const load = useCallback(async (nextOffset: number, fresh = false) => {
     setLoading(true);
     setError(null);
     try {
@@ -114,6 +116,9 @@ export default function FactusolDocumentosPage() {
         fecha_hasta: fechaHasta || undefined,
         q: q.trim() || undefined,
         ciclo: (ciclo || undefined) as FactusolDocumentFilters["ciclo"],
+        // E3-B-fix1: tras crear un documento se recarga saltando el cache
+        // del índice del ciclo, para que la columna CICLO no salga vieja.
+        fresh_ciclo: fresh || undefined,
         sort,
         dir,
         limit: PAGE_SIZE,
@@ -368,7 +373,7 @@ export default function FactusolDocumentosPage() {
           serie={detail.serie}
           codigo={detail.codigo}
           onClose={() => setDetail(null)}
-          onChanged={() => void load(offset)}
+          onChanged={() => void load(offset, true)}
         />
       ) : null}
     </main>

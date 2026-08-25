@@ -32,6 +32,47 @@ router = APIRouter(prefix="/api/erp/factusol", tags=["erp-factusol"])
 _FOP_CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 _FOP_CACHE_TTL_SECONDS = 300  # 5 min
 
+#: E3-B-fix1 — mapeo ESTALB VERIFICADO contra los datos vivos, por ejercicio.
+#: `{}` = la correlación no se sostuvo (se muestra el valor crudo).
+_ESTALB_LABELS_CACHE: dict[str, tuple[float, dict[str, str]]] = {}
+_ESTALB_LABELS_TTL_SECONDS = 3600  # 1 h
+
+
+def _estalb_labels(
+    client, ejercicio: str, *, force_refresh: bool = False,
+) -> dict[str, str]:
+    """`{"0": "Pendiente", "1": "Facturado"}` para ESTALB, SOLO si la
+    correlación ESTALB↔factura-hija se sostiene en TODOS los albaranes del
+    ejercicio (verificación en runtime, E3-B-fix1 Parte D). Best-effort: si
+    la verificación no se puede hacer, `{}` → valor crudo, nunca adivinar."""
+    from app.integrations.factusol.chain import load_chain_index  # noqa: PLC0415
+    from app.integrations.factusol.documents import (  # noqa: PLC0415
+        estalb_labels_if_verified,
+    )
+
+    now = time.time()
+    cached = _ESTALB_LABELS_CACHE.get(ejercicio)
+    if cached and cached[0] > now and not force_refresh:
+        return cached[1]
+    try:
+        index = load_chain_index(
+            client, ejercicio=ejercicio, force_refresh=force_refresh,
+        )
+        alb_rows = client.load_table("F_ALB", filtro="1=1", ejercicio=ejercicio)
+        facturados = {
+            (serie, codigo)
+            for (doc, serie, codigo) in index.children["facturas"]
+            if doc == "A"
+        }
+        labels = estalb_labels_if_verified(alb_rows, facturados)
+    except Exception as exc:  # noqa: BLE001 — la etiqueta nunca tumba la vista
+        logger.warning("factusol: verificación ESTALB no disponible: %s", exc)
+        return {}
+    _ESTALB_LABELS_CACHE[ejercicio] = (
+        now + _ESTALB_LABELS_TTL_SECONDS, labels,
+    )
+    return labels
+
 
 def _first(row: dict[str, Any], *cols: str) -> Any:
     for c in cols:
@@ -137,6 +178,7 @@ def list_factusol_documents(
     ciclo: str | None = Query(
         default=None, pattern="^(pendiente|con_albaran|facturado)$",
     ),
+    fresh_ciclo: bool = Query(default=False),
     sort: str = Query(default="numero", pattern="^(numero|cliente|fecha|total)$"),
     dir: str = Query(default="desc", pattern="^(asc|desc)$"),
     limit: int = Query(default=100, ge=1, le=200),
@@ -151,12 +193,20 @@ def list_factusol_documents(
     ciclo PRE→ALB→FAC, vía los enlaces `DOC/DTP/DCO` de las líneas), y
     `ciclo=` filtra por ese estado. La anotación es best-effort: si el índice
     no se puede cargar, el listado sale sin `ciclo` — salvo que se pidiera
-    filtrar por él, que entonces sí es un error."""
+    filtrar por él, que entonces sí es un error.
+
+    E3-B-fix1: `ciclo.estado_label` viene etiquetado POR TIPO (un albarán
+    «pendiente» es «Sin facturar», nunca «sin albarán»); `fresh_ciclo=1`
+    salta el cache del índice (lo manda la UI justo tras crear un documento
+    para repintar la columna al momento); y en la pestaña de albaranes el
+    ESTALB nativo sale como Pendiente/Facturado SOLO si la correlación con
+    las facturas hijas se verifica contra los datos vivos."""
     _ = current_user
     from app.integrations.factusol.chain import cycle_annotator  # noqa: PLC0415
     from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
     from app.integrations.factusol.documents import (  # noqa: PLC0415
         DOC_SPECS,
+        ciclo_estado_label,
         list_documents,
     )
 
@@ -168,12 +218,27 @@ def list_factusol_documents(
     client, ejercicio = _client_and_ejercicio(session)
     annotate = None
     try:
-        annotate = cycle_annotator(client, doc_type, ejercicio=ejercicio)
+        base_annotate = cycle_annotator(
+            client, doc_type, ejercicio=ejercicio, force_refresh=fresh_ciclo,
+        )
+
+        def annotate(docs: list[dict[str, Any]]) -> None:
+            base_annotate(docs)
+            for doc in docs:
+                doc_ciclo = doc.get("ciclo")
+                if doc_ciclo is not None:
+                    doc_ciclo["estado_label"] = ciclo_estado_label(
+                        doc_type, doc_ciclo.get("estado"),
+                    )
     except FactusolError as exc:
         if ciclo:
             raise _factusol_gateway_error(exc, "factusol_cycle_failed") from exc
         logger.warning("factusol ciclo no disponible (%s); listado sin "
                        "anotar: %s", doc_type, exc)
+    estado_labels = (
+        _estalb_labels(client, ejercicio, force_refresh=fresh_ciclo)
+        if doc_type == "albaranes" else None
+    )
     try:
         return list_documents(
             client, doc_type, ejercicio=ejercicio,
@@ -181,7 +246,7 @@ def list_factusol_documents(
             fecha_desde=fecha_desde, fecha_hasta=fecha_hasta,
             q=q, cliente_q=cliente_q, sort=sort, direction=dir,
             limit=limit, offset=offset,
-            annotate=annotate, ciclo=ciclo,
+            annotate=annotate, ciclo=ciclo, estado_labels=estado_labels,
         )
     except FactusolError as exc:
         logger.warning("factusol documents/%s KO: %s", doc_type, exc)
@@ -195,11 +260,16 @@ def get_factusol_document(
     doc_type: str,
     serie: int,
     codigo: int,
+    fresh_ciclo: bool = Query(default=False),
     session: Session = Depends(get_session),
     current_user: User = Depends(require_erp_view),
 ) -> dict[str, Any]:
     """Detalle read-only de un documento con sus líneas. La clave es
-    COMPUESTA (serie, código): el código solo es único por serie."""
+    COMPUESTA (serie, código): el código solo es único por serie.
+
+    `fresh_ciclo=1` (E3-B-fix1): re-lee el índice del ciclo saltando su
+    cache — lo manda la UI justo después de crear un documento para que el
+    badge/avisos se repinten al momento."""
     _ = current_user
     from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
     from app.integrations.factusol.documents import (  # noqa: PLC0415
@@ -213,9 +283,14 @@ def get_factusol_document(
             f"Tipo de documento desconocido: {doc_type!r}",
         )
     client, ejercicio = _client_and_ejercicio(session)
+    estado_labels = (
+        _estalb_labels(client, ejercicio, force_refresh=fresh_ciclo)
+        if doc_type == "albaranes" else None
+    )
     try:
         doc = get_document(
             client, doc_type, serie=serie, codigo=codigo, ejercicio=ejercicio,
+            estado_labels=estado_labels,
         )
     except FactusolError as exc:
         logger.warning("factusol documents/%s detalle KO: %s", doc_type, exc)
@@ -236,18 +311,29 @@ def get_factusol_document(
             names.get(fop) or names.get(fop.lstrip("0") or "0")
         )
     # E3-B — posición en el ciclo PRE→ALB→FAC (best-effort: el detalle sigue
-    # sirviendo aunque el índice del ciclo no cargue).
+    # sirviendo aunque el índice del ciclo no cargue). E3-B-fix1: la etiqueta
+    # del estado va con la semántica del TIPO (albarán «pendiente» = «Sin
+    # facturar»).
     doc["ciclo"] = None
     try:
         from app.integrations.factusol.chain import (  # noqa: PLC0415
             cycle_of,
             load_chain_index,
         )
+        from app.integrations.factusol.documents import (  # noqa: PLC0415
+            ciclo_estado_label,
+        )
 
         doc["ciclo"] = cycle_of(
-            load_chain_index(client, ejercicio=ejercicio),
+            load_chain_index(
+                client, ejercicio=ejercicio, force_refresh=fresh_ciclo,
+            ),
             doc_type, serie, codigo,
         )
+        if doc["ciclo"] is not None:
+            doc["ciclo"]["estado_label"] = ciclo_estado_label(
+                doc_type, doc["ciclo"].get("estado"),
+            )
     except FactusolError as exc:
         logger.warning("factusol ciclo del detalle %s %s-%s KO: %s",
                        doc_type, serie, codigo, exc)

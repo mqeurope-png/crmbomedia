@@ -20,10 +20,14 @@ def _clear_factusol_chain_caches():
     columnas vivas, índice del ciclo) sobrevivirían de un test a otro y
     envenenarían cualquier test que monte tablas FACTUSOL distintas con el
     mismo ejercicio."""
+    from app.erp.api import factusol as factusol_api
     from app.integrations.factusol import chain
 
-    chain._LIVE_COLUMNS_CACHE.clear()
-    chain._CHAIN_INDEX_CACHE.clear()
+    def _clear() -> None:
+        chain._LIVE_COLUMNS_CACHE.clear()
+        chain._CHAIN_INDEX_CACHE.clear()
+        factusol_api._ESTALB_LABELS_CACHE.clear()
+
+    _clear()
     yield
-    chain._LIVE_COLUMNS_CACHE.clear()
-    chain._CHAIN_INDEX_CACHE.clear()
+    _clear()
