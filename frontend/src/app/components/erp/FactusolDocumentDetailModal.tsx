@@ -9,6 +9,7 @@ import {
   getFactusolDocument,
   getFactusolSeries,
   type FactusolConvertTarget,
+  type FactusolCycle,
   type FactusolCycleRef,
   type FactusolDocType,
   type FactusolDocumentDetail,
@@ -34,18 +35,106 @@ const CONVERSIONS: Partial<Record<FactusolDocType, FactusolConvertTarget[]>> = {
   albaranes: ["facturas"],
 };
 
-export function cycleBadge(estado: string | null | undefined): {
-  label: string;
-  className: string;
-} | null {
-  if (estado === "facturado") return { label: "Facturado", className: "badge ok" };
-  if (estado === "con_albaran") {
-    return { label: "Con albarán", className: "badge warn" };
+/** E3-B-fix1 — etiquetas del ciclo POR TIPO, como fallback si el backend no
+ *  mandó `estado_label` (espejo de `documents.CICLO_ESTADO_LABELS`). Un
+ *  albarán «pendiente» está SIN FACTURAR — nunca «sin albarán». */
+const CYCLE_FALLBACK_LABELS: Partial<
+  Record<FactusolDocType, Record<string, string>>
+> = {
+  presupuestos: {
+    pendiente: "Sin albarán ni factura",
+    con_albaran: "Con albarán",
+    facturado: "Facturado",
+  },
+  pedidos: {
+    pendiente: "Sin albarán ni factura",
+    con_albaran: "Con albarán",
+    facturado: "Facturado",
+  },
+  albaranes: { pendiente: "Sin facturar", facturado: "Facturado" },
+};
+
+export function cycleBadge(
+  docType: FactusolDocType,
+  ciclo: FactusolCycle,
+): { label: string; className: string } | null {
+  if (!ciclo || !ciclo.estado) return null;
+  const label =
+    ciclo.estado_label ?? CYCLE_FALLBACK_LABELS[docType]?.[ciclo.estado];
+  if (!label) return null;
+  const className =
+    ciclo.estado === "facturado"
+      ? "badge ok"
+      : ciclo.estado === "con_albaran"
+        ? "badge warn"
+        : "badge muted";
+  return { label, className };
+}
+
+/** Disponibilidad de las acciones de conversión según el ciclo (E3-B-fix1):
+ *  - primary: el camino normal del flujo.
+ *  - secondary: posible pero requiere pasar por la confirmación explícita
+ *    (duplicado / ya facturado) del modal de confirmación.
+ *  - ausente: la regla de negocio lo prohíbe desde aquí (p. ej. facturar un
+ *    presupuesto que YA tiene albarán: la factura se genera desde el
+ *    albarán). */
+type CycleAction = {
+  target: FactusolConvertTarget;
+  primary: boolean;
+  contextWarning: string | null;
+};
+
+function availableActions(
+  docType: FactusolDocType,
+  ciclo: FactusolCycle,
+): CycleAction[] {
+  const targets = CONVERSIONS[docType] ?? [];
+  if (targets.length === 0) return [];
+  if (!ciclo) {
+    // Sin anotación del ciclo (best-effort del backend): se ofrecen las
+    // acciones normales — el anti-duplicado del backend sigue cubriendo.
+    return targets.map((target) => ({
+      target, primary: true, contextWarning: null,
+    }));
   }
-  if (estado === "pendiente") {
-    return { label: "Sin albarán ni factura", className: "badge muted" };
+  const albaranes = ciclo.albaranes;
+  const facturas = ciclo.facturas;
+  const tipo = TYPE_LABELS[docType].toLowerCase();
+  const out: CycleAction[] = [];
+  for (const target of targets) {
+    if (target === "albaranes") {
+      // Crear (otro) albarán: primario solo con el ciclo virgen; con
+      // albarán previo el confirm ya avisa del duplicado y exige «de todos
+      // modos»; con factura previa se avisa del facturado.
+      out.push({
+        target,
+        primary: albaranes.length === 0 && facturas.length === 0,
+        contextWarning:
+          albaranes.length === 0 && facturas.length > 0
+            ? `Este ${tipo} ya está facturado en ${facturas
+                .map((f) => f.numero).join(", ")}. ¿Crear un albarán ` +
+              "igualmente?"
+            : null,
+      });
+    } else {
+      // Crear factura.
+      if (docType !== "albaranes" && albaranes.length > 0) {
+        // Regla de negocio: con albarán, la factura SE GENERA DESDE EL
+        // ALBARÁN — aquí ni siquiera se ofrece (el aviso enlaza a él).
+        continue;
+      }
+      if (docType === "albaranes" && facturas.length > 0) {
+        // Albarán ya facturado: sin botón; el aviso enlaza a la factura.
+        continue;
+      }
+      out.push({
+        target,
+        primary: facturas.length === 0,
+        contextWarning: null,
+      });
+    }
   }
-  return null;
+  return out;
 }
 
 function today(): string {
@@ -94,11 +183,14 @@ export function FactusolDocumentDetailModal({
     getCurrentUser().then(setUser).catch(() => undefined);
   }, []);
 
-  const load = useCallback(() => {
+  const load = useCallback((fresh = false) => {
     setDoc(null);
     setError(null);
     let alive = true;
-    getFactusolDocument(current.docType, current.serie, current.codigo)
+    getFactusolDocument(
+      current.docType, current.serie, current.codigo,
+      fresh ? { fresh: true } : undefined,
+    )
       .then((d) => { if (alive) setDoc(d); })
       .catch((e) => {
         if (alive) setError(extractErrorMessage(e, "No se pudo cargar el documento."));
@@ -123,8 +215,10 @@ export function FactusolDocumentDetailModal({
             codigo: st.result.codigo,
             numero: st.result.numero,
           });
-          load();          // refresca el ciclo del documento abierto
-          onChanged?.();   // y el listado de fondo
+          // E3-B-fix1: recarga saltando el cache del índice del ciclo —
+          // badge, avisos y botones se repintan AL MOMENTO, sin reabrir.
+          load(true);
+          onChanged?.();   // y la fila del listado de fondo
         } else if (st.status === "failed") {
           setJobId(null);
           setCreateError(st.error || "La creación falló en FACTUSOL.");
@@ -138,13 +232,15 @@ export function FactusolDocumentDetailModal({
 
   const canEdit =
     !!user && (ERP_EDIT_ROLES as readonly string[]).includes(user.role);
-  const targets = CONVERSIONS[current.docType] ?? [];
   const ciclo = doc?.ciclo ?? null;
-  const badge = cycleBadge(ciclo?.estado);
+  const badge = cycleBadge(current.docType, ciclo);
+  const actions = doc ? availableActions(current.docType, ciclo) : [];
+  const isSourceType = current.docType !== "facturas";
 
   function navigate(ref: FactusolCycleRef) {
     setCreated(null);
     setCreateError(null);
+    setConvertTarget(null);
     setCurrent({ docType: ref.doc_type, serie: ref.serie, codigo: ref.codigo });
   }
 
@@ -152,6 +248,19 @@ export function FactusolDocumentDetailModal({
   function existingChildren(target: FactusolConvertTarget): FactusolCycleRef[] {
     if (!ciclo) return [];
     return target === "albaranes" ? ciclo.albaranes : ciclo.facturas;
+  }
+
+  function refLinks(refs: FactusolCycleRef[]) {
+    return refs.map((ref) => (
+      <button
+        key={`${ref.doc_type}-${ref.numero}`}
+        type="button"
+        className="erp-doc-ciclo-link"
+        onClick={() => navigate(ref)}
+      >
+        {ref.numero}
+      </button>
+    ));
   }
 
   return (
@@ -218,7 +327,7 @@ export function FactusolDocumentDetailModal({
                 {badge ? <span className={badge.className}>{badge.label}</span> : null}
                 {ciclo.origen.length > 0 ? (
                   <span>
-                    Creado desde{" "}
+                    {current.docType === "facturas" ? "Creada" : "Creado"} desde{" "}
                     {ciclo.origen.map((ref) => (
                       <button key={ref.numero} type="button"
                               className="erp-doc-ciclo-link"
@@ -228,31 +337,23 @@ export function FactusolDocumentDetailModal({
                     ))}
                   </span>
                 ) : null}
-                {ciclo.albaranes.length > 0 ? (
-                  <span>
-                    Albarán:{" "}
-                    {ciclo.albaranes.map((ref) => (
-                      <button key={ref.numero} type="button"
-                              className="erp-doc-ciclo-link"
-                              onClick={() => navigate(ref)}>
-                        {ref.numero}
-                      </button>
-                    ))}
-                  </span>
-                ) : null}
-                {ciclo.facturas.length > 0 ? (
-                  <span>
-                    Factura:{" "}
-                    {ciclo.facturas.map((ref) => (
-                      <button key={ref.numero} type="button"
-                              className="erp-doc-ciclo-link"
-                              onClick={() => navigate(ref)}>
-                        {ref.numero}
-                      </button>
-                    ))}
-                  </span>
-                ) : null}
               </div>
+            ) : null}
+
+            {/* Avisos de la regla de negocio (E3-B-fix1). */}
+            {ciclo && isSourceType &&
+             (current.docType === "presupuestos" || current.docType === "pedidos") &&
+             ciclo.albaranes.length > 0 ? (
+              <p className="erp-doc-ciclo-aviso">
+                Este {TYPE_LABELS[current.docType].toLowerCase()} ya tiene el
+                albarán {refLinks(ciclo.albaranes)}. La factura se genera
+                desde el albarán.
+              </p>
+            ) : null}
+            {ciclo && isSourceType && ciclo.facturas.length > 0 ? (
+              <p className="erp-doc-ciclo-aviso">
+                Ya facturado en {refLinks(ciclo.facturas)}.
+              </p>
             ) : null}
 
             {doc.lines.length > 0 ? (
@@ -291,15 +392,18 @@ export function FactusolDocumentDetailModal({
             Cerrar
           </button>
           {doc && canEdit
-            ? targets.map((target) => (
+            ? actions.map((action) => (
                 <button
-                  key={target}
+                  key={action.target}
                   type="button"
-                  className="button"
+                  className={action.primary ? "button" : "button secondary"}
                   disabled={!!jobId}
-                  onClick={() => { setCreateError(null); setConvertTarget(target); }}
+                  onClick={() => {
+                    setCreateError(null);
+                    setConvertTarget(action.target);
+                  }}
                 >
-                  Crear {TARGET_LABELS[target]}
+                  Crear {TARGET_LABELS[action.target]}
                 </button>
               ))
             : null}
@@ -312,6 +416,10 @@ export function FactusolDocumentDetailModal({
           docType={current.docType}
           target={convertTarget}
           existing={existingChildren(convertTarget)}
+          contextWarning={
+            actions.find((a) => a.target === convertTarget)?.contextWarning
+              ?? null
+          }
           submitting={!!jobId}
           onCancel={() => setConvertTarget(null)}
           onSubmit={async (opts) => {
@@ -341,12 +449,14 @@ export function FactusolDocumentDetailModal({
 /** Confirmación de conversión — mismo patrón que el modal de emisión E2:
  *  total, aviso de irreversibilidad, serie heredada con override y fecha.
  *  Si el origen YA tiene un hijo de ese tipo, avisa y exige «de todos
- *  modos» (`force`). */
+ *  modos» (`force`); `contextWarning` añade el aviso de negocio (p. ej.
+ *  «ya está facturado, ¿crear un albarán igualmente?»). */
 function ConvertConfirmModal({
   doc,
   docType,
   target,
   existing,
+  contextWarning,
   submitting,
   onCancel,
   onSubmit,
@@ -355,6 +465,7 @@ function ConvertConfirmModal({
   docType: FactusolDocType;
   target: FactusolConvertTarget;
   existing: FactusolCycleRef[];
+  contextWarning: string | null;
   submitting: boolean;
   onCancel: () => void;
   onSubmit: (opts: {
@@ -425,6 +536,9 @@ function ConvertConfirmModal({
             <strong>{existing.map((r) => r.numero).join(", ")}</strong>. Crear
             otro duplicará el documento en la contabilidad.
           </p>
+        ) : null}
+        {contextWarning ? (
+          <p className="form-error">{contextWarning}</p>
         ) : null}
         {error ? <p className="form-error">{error}</p> : null}
 

@@ -55,6 +55,192 @@ beforeEach(() => {
   mockUser.mockResolvedValue({ role: "pedidos" });
 });
 
+function albaran(over = {}) {
+  return {
+    doc_type: "albaranes", codigo: 500004, serie: 5, numero: "5-500004",
+    cliente_codigo: "2458", cliente_nombre: "DUPLICODER, S.L.",
+    fecha: "2026-08-20", total: 186.34, estado: "0",
+    estado_label: "Pendiente", referencia: null, forma_pago: null,
+    forma_pago_nombre: null, lines: [],
+    ciclo: {
+      albaranes: [], facturas: [],
+      origen: [{ doc_type: "presupuestos", serie: 5, codigo: 27,
+                 numero: "5-000027" }],
+      estado: "pendiente", estado_label: "Sin facturar",
+    },
+    ...over,
+  };
+}
+
+describe("FactusolDocumentDetailModal (E3-B-fix1)", () => {
+  it("presupuesto con albarán: sin «Crear factura» primaria y con aviso al albarán", async () => {
+    // test_quote_with_albaran_hides_primary_create_invoice
+    mockDetail.mockResolvedValue(presupuesto({
+      ciclo: {
+        albaranes: [{ doc_type: "albaranes", serie: 5, codigo: 500004,
+                      numero: "5-500004" }],
+        facturas: [], origen: [],
+        estado: "con_albaran", estado_label: "Con albarán",
+      },
+    }));
+    render(
+      <FactusolDocumentDetailModal
+        docType="presupuestos" serie={5} codigo={27} onClose={() => {}}
+      />,
+    );
+    // «Crear albarán» queda como acción SECUNDARIA (pasa por confirmación
+    // explícita de duplicado); «Crear factura» ni se ofrece.
+    const crearAlbaran = await screen.findByRole(
+      "button", { name: "Crear albarán" },
+    );
+    expect(crearAlbaran).toHaveClass("secondary");
+    expect(
+      screen.queryByRole("button", { name: "Crear factura" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByText(/La factura se genera\s+desde el albarán/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "5-500004" }),
+    ).toBeInTheDocument();
+  });
+
+  it("albarán con factura: sin «Crear factura» y aviso «Ya facturado»", async () => {
+    // test_albaran_with_invoice_hides_create_invoice
+    mockDetail.mockResolvedValue(albaran({
+      ciclo: {
+        albaranes: [],
+        facturas: [{ doc_type: "facturas", serie: 5, codigo: 260063,
+                     numero: "5-260063" }],
+        origen: [{ doc_type: "presupuestos", serie: 5, codigo: 27,
+                   numero: "5-000027" }],
+        estado: "facturado", estado_label: "Facturado",
+      },
+    }));
+    render(
+      <FactusolDocumentDetailModal
+        docType="albaranes" serie={5} codigo={500004} onClose={() => {}}
+      />,
+    );
+    expect(await screen.findByText("Facturado")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Crear factura" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText(/Ya facturado en/)).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "5-260063" }),
+    ).toBeInTheDocument();
+  });
+
+  it("badge del albarán dice «Sin facturar», nunca «sin albarán»", async () => {
+    // test_albaran_badge_says_sin_facturar_not_sin_albaran — incluso sin
+    // estado_label del backend, el fallback por tipo etiqueta bien.
+    mockDetail.mockResolvedValue(albaran({
+      ciclo: {
+        albaranes: [], facturas: [], origen: [],
+        estado: "pendiente", estado_label: undefined,
+      },
+    }));
+    render(
+      <FactusolDocumentDetailModal
+        docType="albaranes" serie={5} codigo={500004} onClose={() => {}}
+      />,
+    );
+    expect(await screen.findByText("Sin facturar")).toBeInTheDocument();
+    expect(screen.queryByText(/Sin albarán/)).not.toBeInTheDocument();
+  });
+
+  it("tras la conversión, badge y botones se repintan sin reabrir", async () => {
+    // test_cycle_refreshes_after_conversion
+    jest.useFakeTimers();
+    const user = userEvent.setup({
+      advanceTimers: jest.advanceTimersByTime,
+    });
+    try {
+      const onChanged = jest.fn();
+      mockDetail
+        .mockResolvedValueOnce(albaran())  // sin facturar
+        .mockResolvedValueOnce(albaran({   // recarga tras el job
+          ciclo: {
+            albaranes: [],
+            facturas: [{ doc_type: "facturas", serie: 5, codigo: 260064,
+                         numero: "5-260064" }],
+            origen: [{ doc_type: "presupuestos", serie: 5, codigo: 27,
+                       numero: "5-000027" }],
+            estado: "facturado", estado_label: "Facturado",
+          },
+        }));
+      mockConvert.mockResolvedValue({ job_id: "job-9", status: "queued" });
+      mockStatus.mockResolvedValue({
+        status: "finished",
+        result: { target_type: "facturas", serie: 5, codigo: 260064,
+                  numero: "5-260064", lines: 1 },
+      });
+      render(
+        <FactusolDocumentDetailModal
+          docType="albaranes" serie={5} codigo={500004}
+          onClose={() => {}} onChanged={onChanged}
+        />,
+      );
+      expect(await screen.findByText("Sin facturar")).toBeInTheDocument();
+      await user.click(
+        screen.getByRole("button", { name: "Crear factura" }),
+      );
+      const dialog = await screen.findByRole(
+        "dialog", { name: "Crear factura" },
+      );
+      await user.click(
+        within(dialog).getByRole("button", { name: "Crear factura" }),
+      );
+      await screen.findByText("Creando el documento en FACTUSOL…");
+      jest.advanceTimersByTime(1600);
+      // Badge y acciones repintados AL MOMENTO, sin cerrar el modal…
+      expect(await screen.findByText("Facturado")).toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: "Crear factura" }),
+      ).not.toBeInTheDocument();
+      expect(screen.getByText(/Ya facturado en/)).toBeInTheDocument();
+      // …la recarga saltó el cache del ciclo y el listado se refrescó.
+      expect(mockDetail).toHaveBeenLastCalledWith(
+        "albaranes", 5, 500004, { fresh: true },
+      );
+      expect(onChanged).toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it("presupuesto facturado sin albarán: acciones en secundario con aviso", async () => {
+    mockDetail.mockResolvedValue(presupuesto({
+      ciclo: {
+        albaranes: [],
+        facturas: [{ doc_type: "facturas", serie: 5, codigo: 260070,
+                     numero: "5-260070" }],
+        origen: [], estado: "facturado", estado_label: "Facturado",
+      },
+    }));
+    const user = userEvent.setup();
+    render(
+      <FactusolDocumentDetailModal
+        docType="presupuestos" serie={5} codigo={27} onClose={() => {}}
+      />,
+    );
+    const crearAlbaran = await screen.findByRole(
+      "button", { name: "Crear albarán" },
+    );
+    expect(crearAlbaran).toHaveClass("secondary");
+    expect(
+      screen.getByRole("button", { name: "Crear factura" }),
+    ).toHaveClass("secondary");
+    expect(screen.getByText(/Ya facturado en/)).toBeInTheDocument();
+    // La confirmación del albarán avisa del facturado (contexto explícito).
+    await user.click(crearAlbaran);
+    expect(
+      await screen.findByText(/ya está facturado en 5-260070/),
+    ).toBeInTheDocument();
+  });
+});
+
 describe("FactusolDocumentDetailModal (E3-B)", () => {
   it("un presupuesto ofrece «Crear albarán» y «Crear factura» al rol editor", async () => {
     render(
@@ -272,7 +458,9 @@ describe("FactusolDocumentDetailModal (E3-B)", () => {
     );
     await user.click(await screen.findByRole("button", { name: "5-500004" }));
     await waitFor(() =>
-      expect(mockDetail).toHaveBeenLastCalledWith("albaranes", 5, 500004),
+      expect(mockDetail).toHaveBeenLastCalledWith(
+        "albaranes", 5, 500004, undefined,
+      ),
     );
     expect(
       await screen.findByText(/Creado desde/),

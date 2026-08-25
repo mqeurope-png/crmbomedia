@@ -675,12 +675,15 @@ export type FactusolCycleRef = {
 
 /** E3-B — enlaces del documento en el ciclo PRE→ALB→FAC, leídos de los
  *  campos `DOC/DTP/DCO` de las líneas de F_LAL/F_LFA. `estado` solo aplica a
- *  presupuestos/pedidos (¿facturado?) y albaranes; en facturas es null. */
+ *  presupuestos/pedidos (¿facturado?) y albaranes; en facturas es null.
+ *  `estado_label` (E3-B-fix1): etiqueta con la semántica del TIPO — un
+ *  albarán «pendiente» es «Sin facturar», nunca «sin albarán». */
 export type FactusolCycle = {
   albaranes: FactusolCycleRef[];
   facturas: FactusolCycleRef[];
   origen: FactusolCycleRef[];
   estado: "pendiente" | "con_albaran" | "facturado" | null;
+  estado_label?: string | null;
 } | null;
 
 export type FactusolDocumentDetail = FactusolDocument & {
@@ -713,6 +716,9 @@ export type FactusolDocumentFilters = {
   q?: string;
   /** E3-B — filtra por el estado del ciclo (antes de paginar). */
   ciclo?: "pendiente" | "con_albaran" | "facturado";
+  /** E3-B-fix1 — salta el cache del índice del ciclo (tras crear un
+   *  documento, para que la columna CICLO se repinte al momento). */
+  fresh_ciclo?: boolean;
   limit?: number;
   offset?: number;
 };
@@ -720,15 +726,18 @@ export type FactusolDocumentFilters = {
 export async function listFactusolDocuments(
   docType: FactusolDocType, filters: FactusolDocumentFilters = {},
 ): Promise<{ items: FactusolDocument[]; total: number }> {
-  const query = qs({ ...filters });
+  const { fresh_ciclo, ...rest } = filters;
+  const query = qs({ ...rest, fresh_ciclo: fresh_ciclo ? "1" : undefined });
   return apiFetch(`/api/erp/factusol/documents/${docType}${query}`);
 }
 
 export async function getFactusolDocument(
   docType: FactusolDocType, serie: number, codigo: number | string,
+  opts?: { fresh?: boolean },
 ): Promise<FactusolDocumentDetail> {
+  const query = opts?.fresh ? "?fresh_ciclo=1" : "";
   return apiFetch(
-    `/api/erp/factusol/documents/${docType}/${serie}/${codigo}`,
+    `/api/erp/factusol/documents/${docType}/${serie}/${codigo}${query}`,
   );
 }
 

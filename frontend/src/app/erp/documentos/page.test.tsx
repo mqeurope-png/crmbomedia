@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import FactusolDocumentosPage from "./page";
 import {
@@ -156,7 +156,7 @@ describe("ERP · Documentos (E3-A)", () => {
     render(<FactusolDocumentosPage />);
     await user.click(await screen.findByText("5-260066"));
     expect(await screen.findByText("Tinta cyan")).toBeInTheDocument();
-    expect(mockDetail).toHaveBeenCalledWith("facturas", 5, 260066);
+    expect(mockDetail).toHaveBeenCalledWith("facturas", 5, 260066, undefined);
   });
 
   it("pinta el badge del ciclo y filtra por él (E3-B)", async () => {
@@ -176,7 +176,9 @@ describe("ERP · Documentos (E3-A)", () => {
     });
     render(<FactusolDocumentosPage />);
     await user.click(screen.getByRole("tab", { name: "Presupuestos" }));
-    expect(await screen.findByText("Facturado")).toBeInTheDocument();
+    // «Facturado» aparece también como opción del filtro: se aserta el BADGE.
+    const facturado = await screen.findAllByText("Facturado");
+    expect(facturado.some((el) => el.className.includes("badge"))).toBe(true);
     // El filtro de ciclo existe en presupuestos y viaja al backend.
     await user.selectOptions(
       screen.getByLabelText("Estado del ciclo"), "facturado",
@@ -203,6 +205,55 @@ describe("ERP · Documentos (E3-A)", () => {
     render(<FactusolDocumentosPage />);
     expect(await screen.findByText(/de 5-500004/)).toBeInTheDocument();
     expect(screen.queryByLabelText("Estado del ciclo")).not.toBeInTheDocument();
+  });
+
+  it("las opciones del filtro Ciclo dependen de la pestaña (E3-B-fix1)", async () => {
+    // test_cycle_filter_options_depend_on_tab
+    const user = userEvent.setup();
+    render(<FactusolDocumentosPage />);
+    await screen.findByText("5-260066");
+    // Facturas (pestaña por defecto): sin filtro de ciclo.
+    expect(screen.queryByLabelText("Estado del ciclo")).not.toBeInTheDocument();
+    // Albaranes: Sin facturar / Facturado — nunca «Sin albarán…».
+    await user.click(screen.getByRole("tab", { name: "Albaranes" }));
+    const filtroAlb = await screen.findByLabelText("Estado del ciclo");
+    expect(
+      within(filtroAlb).getByRole("option", { name: "Sin facturar" }),
+    ).toBeInTheDocument();
+    expect(
+      within(filtroAlb).getByRole("option", { name: "Facturado" }),
+    ).toBeInTheDocument();
+    expect(
+      within(filtroAlb).queryByRole("option", { name: /Sin albarán/ }),
+    ).not.toBeInTheDocument();
+    // Presupuestos: las tres fases del ciclo.
+    await user.click(screen.getByRole("tab", { name: "Presupuestos" }));
+    const filtroPre = await screen.findByLabelText("Estado del ciclo");
+    for (const name of ["Sin albarán ni factura", "Con albarán", "Facturado"]) {
+      expect(
+        within(filtroPre).getByRole("option", { name }),
+      ).toBeInTheDocument();
+    }
+  });
+
+  it("el badge del listado de albaranes dice «Sin facturar» (E3-B-fix1)", async () => {
+    mockList.mockResolvedValue({
+      items: [doc({
+        doc_type: "albaranes", codigo: 500005, numero: "5-500005",
+        ciclo: {
+          albaranes: [], facturas: [], origen: [],
+          estado: "pendiente", estado_label: "Sin facturar",
+        },
+      })],
+      total: 1,
+    });
+    const user = userEvent.setup();
+    render(<FactusolDocumentosPage />);
+    await user.click(screen.getByRole("tab", { name: "Albaranes" }));
+    // «Sin facturar» está también en el filtro: se aserta el BADGE de la fila.
+    const sinFacturar = await screen.findAllByText("Sin facturar");
+    expect(sinFacturar.some((el) => el.className.includes("badge"))).toBe(true);
+    expect(screen.queryByText(/Sin albarán ni factura/)).not.toBeInTheDocument();
   });
 
   it("«Limpiar filtros» resetea y re-consulta sin filtros", async () => {

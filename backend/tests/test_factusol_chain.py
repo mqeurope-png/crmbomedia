@@ -685,3 +685,171 @@ def test_allowed_conversions_shape() -> None:
         "presupuestos": ("albaranes", "facturas"),
         "albaranes": ("facturas",),
     }
+
+
+# ---------------------------------------------------------------------------
+# E3-B-fix1 — semántica del ciclo POR TIPO + ESTALB verificado en runtime
+# ---------------------------------------------------------------------------
+
+
+def test_cycle_badge_semantics_per_doc_type() -> None:
+    """Un albarán «pendiente» está SIN FACTURAR — su etiqueta jamás menciona
+    «albarán» (un albarán no puede tener albarán). El presupuesto sí."""
+    from app.integrations.factusol.documents import ciclo_estado_label
+
+    assert ciclo_estado_label("albaranes", "pendiente") == "Sin facturar"
+    assert ciclo_estado_label("albaranes", "facturado") == "Facturado"
+    for estado in ("pendiente", "facturado"):
+        assert "albarán" not in (ciclo_estado_label("albaranes", estado) or "")
+    assert ciclo_estado_label("presupuestos", "pendiente") == (
+        "Sin albarán ni factura"
+    )
+    assert ciclo_estado_label("presupuestos", "con_albaran") == "Con albarán"
+    assert ciclo_estado_label("pedidos", "facturado") == "Facturado"
+    # Facturas: sin badge de ciclo aguas abajo. Estados imposibles: sin
+    # etiqueta antes que inventarla.
+    assert ciclo_estado_label("facturas", "facturado") is None
+    assert ciclo_estado_label("albaranes", "con_albaran") is None
+    assert ciclo_estado_label("presupuestos", None) is None
+
+
+def test_documents_endpoint_ciclo_estado_label_por_tipo(
+    http, session_factory,
+) -> None:
+    """El listado etiqueta el ciclo con la semántica del TIPO de la pestaña:
+    el albarán sin factura sale «Sin facturar», nunca «Sin albarán…»."""
+    _ = session_factory
+    tables = {
+        "F_ALB": [
+            {"TIPALB": "5", "CODALB": 500004, "ESTALB": 1},
+            {"TIPALB": "5", "CODALB": 500005, "ESTALB": 0},
+        ],
+        "F_LAL": LAL_CICLO, "F_LFA": LFA_CICLO,
+        "F_PRE": [{"TIPPRE": "5", "CODPRE": 99, "CNOPRE": "C", "TOTPRE": 1.0}],
+        "F_LPS": [],
+    }
+    with _patched_factusol(FakeClient(tables)):
+        albs = http.get(
+            "/api/erp/factusol/documents/albaranes",
+            headers=auth_headers(http, "user"),
+        )
+        pres = http.get(
+            "/api/erp/factusol/documents/presupuestos",
+            headers=auth_headers(http, "user"),
+        )
+    assert albs.status_code == 200, albs.text
+    por_codigo = {d["codigo"]: d["ciclo"] for d in albs.json()["items"]}
+    assert por_codigo[500004]["estado_label"] == "Facturado"
+    assert por_codigo[500005]["estado_label"] == "Sin facturar"
+    assert "albarán" not in por_codigo[500005]["estado_label"]
+    assert pres.json()["items"][0]["ciclo"]["estado_label"] == (
+        "Sin albarán ni factura"
+    )
+
+
+def test_estalb_mapping_verified_against_children(http, session_factory) -> None:
+    """Con la correlación ESTALB↔factura-hija sostenida en TODOS los
+    albaranes, el estado nativo sale Pendiente/Facturado."""
+    _ = session_factory
+    tables = {
+        # 500004 facturado (ESTALB=1, factura hija en LFA_CICLO);
+        # 500005/500006 sin factura (ESTALB=0).
+        "F_ALB": [
+            {"TIPALB": "5", "CODALB": 500004, "ESTALB": 1},
+            {"TIPALB": "5", "CODALB": 500005, "ESTALB": 0},
+            {"TIPALB": "5", "CODALB": 500006, "ESTALB": "0.0"},
+        ],
+        "F_LAL": LAL_CICLO, "F_LFA": LFA_CICLO,
+    }
+    with _patched_factusol(FakeClient(tables)):
+        r = http.get(
+            "/api/erp/factusol/documents/albaranes",
+            headers=auth_headers(http, "user"),
+        )
+    labels = {d["codigo"]: d["estado_label"] for d in r.json()["items"]}
+    assert labels[500004] == "Facturado"
+    assert labels[500005] == "Pendiente"
+    assert labels[500006] == "Pendiente"  # "0.0" normalizado
+
+
+def test_estalb_mapping_not_applied_when_correlation_breaks(
+    http, session_factory,
+) -> None:
+    """UN solo albarán que rompe la correlación (ESTALB=1 sin factura hija)
+    desactiva el mapeo ENTERO: todo sale crudo — nunca adivinar."""
+    _ = session_factory
+    tables = {
+        "F_ALB": [
+            {"TIPALB": "5", "CODALB": 500004, "ESTALB": 1},  # ✓ facturado
+            {"TIPALB": "5", "CODALB": 500007, "ESTALB": 1},  # ✗ SIN factura
+        ],
+        "F_LAL": [], "F_LFA": LFA_CICLO,
+    }
+    with _patched_factusol(FakeClient(tables)):
+        r = http.get(
+            "/api/erp/factusol/documents/albaranes",
+            headers=auth_headers(http, "user"),
+        )
+    labels = {d["codigo"]: d["estado_label"] for d in r.json()["items"]}
+    assert labels[500004] == "Estado 1"
+    assert labels[500007] == "Estado 1"
+
+
+def test_estalb_labels_unit_cases() -> None:
+    from app.integrations.factusol.documents import (
+        ESTALB_CANDIDATE_LABELS,
+        estalb_labels_if_verified,
+    )
+
+    facturados = {(5, 500004)}
+    ok_rows = [
+        {"TIPALB": "5", "CODALB": 500004, "ESTALB": 1},
+        {"TIPALB": "5", "CODALB": 500005, "ESTALB": 0},
+    ]
+    assert estalb_labels_if_verified(ok_rows, facturados) == (
+        ESTALB_CANDIDATE_LABELS
+    )
+    # Un valor fuera de 0/1 (o vacío) impide verificar el modelo → crudo.
+    assert estalb_labels_if_verified(
+        ok_rows + [{"TIPALB": "5", "CODALB": 500008, "ESTALB": 7}], facturados,
+    ) == {}
+    assert estalb_labels_if_verified(
+        ok_rows + [{"TIPALB": "5", "CODALB": 500009, "ESTALB": ""}], facturados,
+    ) == {}
+    # ESTALB=0 con factura hija también rompe la correlación.
+    assert estalb_labels_if_verified(
+        [{"TIPALB": "5", "CODALB": 500004, "ESTALB": 0}], facturados,
+    ) == {}
+
+
+def test_load_chain_index_force_refresh_bypasses_cache() -> None:
+    """`fresh_ciclo` (Parte C): tras crear un documento la UI recarga con
+    force_refresh y ve el índice NUEVO sin esperar al TTL de 30 s."""
+    client = _ciclo_client()
+    index1 = load_chain_index(client, ejercicio="2026")
+    # Aparece una factura nueva para el albarán 5-500005…
+    client.tables["F_LFA"] = LFA_CICLO + [
+        {"TIPLFA": "5", "CODLFA": 260071, "POSLFA": 1,
+         "DOCLFA": "A", "DTPLFA": "5", "DCOLFA": 500005},
+    ]
+    # …el cache aún la esconde…
+    cached = load_chain_index(client, ejercicio="2026")
+    assert cached is index1
+    # …y force_refresh la ve al momento.
+    fresh = load_chain_index(client, ejercicio="2026", force_refresh=True)
+    assert ("A", 5, 500005) in fresh.children["facturas"]
+
+
+def test_document_detail_fresh_ciclo_param(http, session_factory) -> None:
+    _ = session_factory
+    tables = {
+        "F_PRE": [{"TIPPRE": "5", "CODPRE": 27, "CNOPRE": "A", "TOTPRE": 1.0}],
+        "F_LPS": [], "F_LAL": LAL_CICLO, "F_LFA": LFA_CICLO,
+    }
+    with _patched_factusol(FakeClient(tables)):
+        r = http.get(
+            "/api/erp/factusol/documents/presupuestos/5/27?fresh_ciclo=1",
+            headers=auth_headers(http, "user"),
+        )
+    assert r.status_code == 200, r.text
+    assert r.json()["ciclo"]["estado_label"] == "Facturado"
