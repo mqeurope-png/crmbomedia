@@ -133,6 +133,38 @@ export default function ErpSettingsPage() {
               («Enviado»). Por defecto 2. Vacío → el pedido no se marca.
             </span>
           </label>
+          <label className="field">
+            <span>Estado ESTPRE del presupuesto convertido</span>
+            <input
+              type="text" maxLength={10} placeholder="1"
+              value={cfg.factusol_estpre_accepted ?? ""}
+              aria-label="Estado ESTPRE del presupuesto convertido"
+              onChange={(e) => setCfg({
+                ...cfg, factusol_estpre_accepted: e.target.value,
+              })}
+            />
+            <span className="muted small">
+              Al crear un albarán o factura desde un presupuesto, BoHub lo
+              marca como «Aceptado» — igual que hace FACTUSOL escritorio al
+              convertir. Confirmado: 1. Vacío → no se marca.
+            </span>
+          </label>
+          <label className="field">
+            <span>Estado ESTALB del albarán facturado</span>
+            <input
+              type="text" maxLength={10} placeholder="1"
+              value={cfg.factusol_estalb_invoiced ?? ""}
+              aria-label="Estado ESTALB del albarán facturado"
+              onChange={(e) => setCfg({
+                ...cfg, factusol_estalb_invoiced: e.target.value,
+              })}
+            />
+            <span className="muted small">
+              Al crear la factura desde un albarán, BoHub lo marca como
+              «Facturado» (columna FACT. del escritorio). Confirmado: 1.
+              Vacío → no se marca.
+            </span>
+          </label>
           <table className="data-table">
             <thead>
               <tr><th>Origen del pedido</th><th>Serie (vacío = por defecto)</th></tr>

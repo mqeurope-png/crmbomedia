@@ -217,6 +217,111 @@ def estpcl_invoiced_value(session: Session) -> str | None:
     return value or None
 
 
+# --- marcado del documento de ORIGEN al convertir (E3-B-fix3) --------------
+#
+# FACTUSOL escritorio marca el documento de origen al convertirlo (el
+# presupuesto pasa a «Aceptado», el albarán a «Facturado» en la columna
+# FACT.); BoHub debe hacer lo mismo. Los valores de ESTPRE/ESTALB están
+# CONFIRMADOS en la interfaz del escritorio de Bart (26-ago-2026); el de
+# ESTPCL se confirmó en E2. Configurables en `factusol_series_json` por si
+# otro ejercicio/versión usara códigos distintos; un valor VACÍO explícito
+# desactiva el marcado de ese tipo (criterio E2).
+#
+# Por tipo de origen: (tabla, col. tipo, col. código, col. estado, clave de
+# configuración, default). `estpcl_invoiced` mantiene el contrato de E2 —
+# sin default: no configurado = no marcar (comportamiento ya validado).
+ORIGIN_MARK_SPECS: dict[str, tuple[str, str, str, str, str, str | None]] = {
+    "pedidos": ("F_PCL", "TIPPCL", "CODPCL", "ESTPCL", "estpcl_invoiced", None),
+    "presupuestos": (
+        "F_PRE", "TIPPRE", "CODPRE", "ESTPRE", "estpre_accepted", "1",
+    ),
+    "albaranes": (
+        "F_ALB", "TIPALB", "CODALB", "ESTALB", "estalb_invoiced", "1",
+    ),
+}
+
+
+def _estado_str(value: Any) -> str:
+    """Normaliza un estado para comparar ('1.0' → '1', None → '')."""
+    v = str(value).strip() if value is not None else ""
+    if v.endswith(".0") and v[:-2].isdigit():
+        v = v[:-2]
+    return v
+
+
+def origin_mark_value(session: Session, source_type: str) -> str | None:
+    """Valor de estado con el que marcar el origen `source_type`, o `None`
+    si no hay que marcar (clave EXPLÍCITAMENTE vacía en la config, o —solo
+    para pedidos, contrato E2— sin configurar)."""
+    _tabla, _tip, _cod, _est, key, default = ORIGIN_MARK_SPECS[source_type]
+    conf = series_config(session)
+    if key in conf:
+        raw = conf.get(key)
+        value = str(raw).strip() if raw is not None else ""
+        return value or None
+    return default
+
+
+def mark_origin_converted(
+    client: FactusolClient,
+    session: Session,
+    *,
+    source_type: str,
+    serie: Any,
+    codigo: Any,
+    ejercicio: str,
+    current_estado: Any = None,
+) -> tuple[bool, str | None]:
+    """Marca el documento de ORIGEN como consumido tras crear su hijo:
+    presupuesto → «Aceptado», albarán → «Facturado», pedido → «Enviado».
+
+    Es el ÚNICO punto de marcado — la emisión E2 (`mark_pcl_invoiced`) y las
+    conversiones de `chain.convert_document` pasan por aquí. Devuelve
+    `(marcado, motivo)`: `(True, None)` si se escribió o ya tenía el estado
+    (idempotente); `(False, motivo)` si se saltó o falló. **NUNCA lanza**:
+    el documento hijo ya existe legítimamente en la contabilidad y este
+    paso posterior no debe ponerlo en riesgo ni disparar compensaciones."""
+    tabla, tip_col, cod_col, est_col, key, _default = (
+        ORIGIN_MARK_SPECS[source_type]
+    )
+    estado = origin_mark_value(session, source_type)
+    if not estado:
+        motivo = (
+            f"falta `{key}` en /erp/settings — el {tabla} {serie}-{codigo} "
+            "se queda sin marcar"
+        )
+        logger.warning("factusol: %s", motivo)
+        return False, motivo
+    # Idempotencia: si el origen ya tiene el estado destino, no reescribir.
+    if current_estado is not None and _estado_str(current_estado) == estado:
+        logger.debug(
+            "factusol: %s %s-%s ya tenía %s=%s; no se reescribe",
+            tabla, serie, codigo, est_col, estado,
+        )
+        return True, None
+    try:
+        # `ActualizarRegistro` necesita la PK en el registro. La de un
+        # documento es COMPUESTA (tipo, código): mandar solo el código
+        # podría tocar el documento homónimo de OTRA serie.
+        client.update_record(
+            tabla,
+            {tip_col: serie, cod_col: codigo, est_col: estado},
+            ejercicio=ejercicio,
+        )
+    except Exception as exc:  # noqa: BLE001 — el hijo ya existe; solo aviso
+        motivo = (
+            f"no se pudo marcar el {tabla} {serie}-{codigo} "
+            f"({est_col}={estado}): {str(exc)[:200]}"
+        )
+        logger.warning("factusol: %s", motivo, exc_info=True)
+        return False, motivo
+    logger.info(
+        "factusol: %s %s-%s marcado como consumido (%s=%r)",
+        tabla, serie, codigo, est_col, estado,
+    )
+    return True, None
+
+
 def mark_pcl_invoiced(
     client: FactusolClient,
     session: Session,
@@ -225,33 +330,15 @@ def mark_pcl_invoiced(
     serie: int,
     ejercicio: str,
 ) -> bool:
-    """Marca el pedido de cliente como facturado en FACTUSOL. Devuelve `True`
-    si se escribió.
-
-    Sin el valor de estado configurado no toca nada y avisa: el pedido se
-    quedará como «Pendiente» hasta que Bart lo configure, que es un problema
-    visible y reversible, al revés que meter un código erróneo."""
-    estado = estpcl_invoiced_value(session)
-    if not estado:
-        logger.warning(
-            "factusol: no se marca el pedido %s como facturado — falta "
-            "`estpcl_invoiced` en /erp/settings (lo revela el discovery "
-            "--trace-order).", codpcl,
-        )
-        return False
-    # `ActualizarRegistro` necesita la PK en el registro. La de un documento
-    # es COMPUESTA (tipo, código): mandar solo CODPCL podría tocar el pedido
-    # con el mismo número de OTRA serie.
-    client.update_record(
-        "F_PCL",
-        {"TIPPCL": serie, "CODPCL": codpcl, "ESTPCL": estado},
+    """Marca el pedido de cliente como facturado en FACTUSOL (E2). Desde
+    E3-B-fix3 es un wrapper de compatibilidad sobre el helper ÚNICO
+    `mark_origin_converted` — la emisión desde pedido y las conversiones de
+    la cadena comparten implementación. Devuelve `True` si se escribió."""
+    marked, _motivo = mark_origin_converted(
+        client, session, source_type="pedidos", serie=serie, codigo=codpcl,
         ejercicio=ejercicio,
     )
-    logger.info(
-        "factusol: pedido %s-%s marcado como facturado (ESTPCL=%r)",
-        serie, codpcl, estado,
-    )
-    return True
+    return marked
 
 
 def next_codfac(

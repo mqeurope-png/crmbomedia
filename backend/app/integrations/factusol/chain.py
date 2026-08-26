@@ -49,7 +49,11 @@ from app.integrations.factusol.mapper import (
     filter_to_real_columns,
 )
 from app.integrations.factusol.quotes import _int_or_none
-from app.integrations.factusol.service import coerce_serie, serie_of_row
+from app.integrations.factusol.service import (
+    coerce_serie,
+    mark_origin_converted,
+    serie_of_row,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -609,11 +613,31 @@ def convert_document(
         raise
 
     numero = visible_number(serie, codigo)
+
+    # E3-B-fix3 — marcar el documento de ORIGEN como consumido (lo que hace
+    # el escritorio al convertir): ESTPRE→«Aceptado», ESTALB→«Facturado»,
+    # ESTPCL→«Enviado». Va DESPUÉS de escribir el hijo y NUNCA lo pone en
+    # riesgo: si falla, el hijo persiste (nada de compensación) y el fallo
+    # viaja como AVISO legible en el resultado, no como error del job.
+    origin_marked, mark_reason = mark_origin_converted(
+        client, session, source_type=source_type, serie=tip, codigo=cod,
+        ejercicio=ejercicio, current_estado=header.get(src.est),
+    )
+    origin_mark_warning = None
+    if not origin_marked:
+        origin_mark_warning = (
+            f"El {SINGULAR[target_type]} {numero} se creó, pero el "
+            f"{SINGULAR[source_type]} {visible_number(tip, cod)} no quedó "
+            f"marcado como convertido"
+            + (f": {mark_reason}" if mark_reason else ".")
+        )
+
     log_chain_sync(
         session,
         message=(
             f"{src.table} {tip}-{cod:06d} → {dst.table} {numero} "
             f"({len(lineas)} líneas, enlace DOC='{origin_code}')"
+            + ("" if origin_marked else f"; AVISO: {origin_mark_warning}")
         ),
     )
     session.commit()
@@ -628,6 +652,8 @@ def convert_document(
         "numero": numero,
         "lines": len(lineas),
         "source": {"doc_type": source_type, "serie": tip, "codigo": cod},
+        "origin_marked": origin_marked,
+        "origin_mark_warning": origin_mark_warning,
     }
 
 

@@ -458,6 +458,11 @@ export type ErpSettings = {
   /** ERP-E2-fix2 — valor de F_PCL.ESTPCL que marca el pedido como facturado
    *  («Enviado» en el escritorio). Confirmado en vivo: "2". */
   factusol_estpcl_invoiced?: string;
+  /** E3-B-fix3 — estados con los que se marca el documento de ORIGEN al
+   *  convertir (confirmados en el escritorio): ESTPRE 1 = «Aceptado»,
+   *  ESTALB 1 = «Facturado». Vacío = no marcar. */
+  factusol_estpre_accepted?: string;
+  factusol_estalb_invoiced?: string;
 };
 
 export async function getErpSettings(): Promise<ErpSettings> {
@@ -773,6 +778,12 @@ export type FactusolConvertStatus =
         codigo: number;
         numero: string;
         lines: number;
+        /** E3-B-fix3 — ¿quedó el documento de ORIGEN marcado como
+         *  convertido (ESTPRE aceptado / ESTALB facturado)? Si no,
+         *  `origin_mark_warning` trae el aviso legible: el hijo existe
+         *  igualmente, esto NO es un error de la conversión. */
+        origin_marked?: boolean;
+        origin_mark_warning?: string | null;
       };
     }
   | { status: "failed"; error?: string; code?: string };

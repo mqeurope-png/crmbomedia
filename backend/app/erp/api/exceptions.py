@@ -68,6 +68,11 @@ class SettingsIn(BaseModel):
     #: ERP-E2-fix2 — valor de F_PCL.ESTPCL que FACTUSOL usa para «Enviado»
     #: (= pedido facturado). Confirmado en vivo: "2".
     factusol_estpcl_invoiced: str | None = None
+    #: E3-B-fix3 — estados con los que se marca el documento de ORIGEN al
+    #: convertir (confirmados en el escritorio): ESTPRE «Aceptado» y ESTALB
+    #: «Facturado». Vacío explícito = no marcar.
+    factusol_estpre_accepted: str | None = None
+    factusol_estalb_invoiced: str | None = None
 
 
 # --- helpers -----------------------------------------------------------------
@@ -270,6 +275,10 @@ def _serialise_settings(cfg: ErpSettings) -> dict[str, Any]:
         "factusol_series_by_source": _series(cfg).get("by_source") or {},
         "factusol_series_names": _series(cfg).get("names") or {},
         "factusol_estpcl_invoiced": _series(cfg).get("estpcl_invoiced") or "",
+        # E3-B-fix3: sin configurar → el default efectivo ("1"), para que la
+        # UI enseñe lo que realmente se escribirá; "" = marcado desactivado.
+        "factusol_estpre_accepted": _series(cfg).get("estpre_accepted", "1"),
+        "factusol_estalb_invoiced": _series(cfg).get("estalb_invoiced", "1"),
     }
 
 
@@ -322,7 +331,9 @@ def update_settings(
     if (payload.factusol_series_default is not None
             or payload.factusol_series_by_source is not None
             or payload.factusol_series_names is not None
-            or payload.factusol_estpcl_invoiced is not None):
+            or payload.factusol_estpcl_invoiced is not None
+            or payload.factusol_estpre_accepted is not None
+            or payload.factusol_estalb_invoiced is not None):
         series = _series(cfg)
         if payload.factusol_series_default is not None:
             series["default"] = payload.factusol_series_default.strip()
@@ -335,6 +346,12 @@ def update_settings(
             }
         if payload.factusol_estpcl_invoiced is not None:
             series["estpcl_invoiced"] = payload.factusol_estpcl_invoiced.strip()
+        # E3-B-fix3: estados de marcado del origen al convertir. Guardar ""
+        # es una elección VÁLIDA (desactiva el marcado de ese tipo).
+        if payload.factusol_estpre_accepted is not None:
+            series["estpre_accepted"] = payload.factusol_estpre_accepted.strip()
+        if payload.factusol_estalb_invoiced is not None:
+            series["estalb_invoiced"] = payload.factusol_estalb_invoiced.strip()
         if payload.factusol_series_names is not None:
             # ERP-E2: {"5": "Streamtec", …}. Claves como string por JSON.
             series["names"] = {

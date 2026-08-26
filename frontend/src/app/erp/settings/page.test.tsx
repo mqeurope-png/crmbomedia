@@ -20,6 +20,8 @@ function settings(over: Partial<ErpSettings> = {}): ErpSettings {
     factusol_series_default: "",
     factusol_series_by_source: {},
     factusol_estpcl_invoiced: "",
+    factusol_estpre_accepted: "1",
+    factusol_estalb_invoiced: "1",
     ...over,
   };
 }
@@ -84,5 +86,24 @@ describe("ErpSettingsPage — serie de facturación (C-2)", () => {
     expect(
       await screen.findByLabelText("Estado ESTPCL del pedido facturado"),
     ).toHaveValue("2");
+  });
+
+  it("muestra y guarda los estados de conversión ESTPRE/ESTALB (E3-B-fix3)", async () => {
+    // test_settings_has_estalb_and_estpre_fields
+    const user = userEvent.setup();
+    render(<ErpSettingsPage />);
+    const estpre = await screen.findByLabelText(
+      "Estado ESTPRE del presupuesto convertido",
+    );
+    const estalb = screen.getByLabelText("Estado ESTALB del albarán facturado");
+    // Defaults confirmados en el escritorio: 1 y 1.
+    expect(estpre).toHaveValue("1");
+    expect(estalb).toHaveValue("1");
+    // Vaciar uno es válido (desactiva el marcado) y viaja en el PATCH.
+    await user.clear(estalb);
+    await user.click(screen.getByRole("button", { name: "Guardar" }));
+    await waitFor(() => expect(mockUpdate).toHaveBeenCalled());
+    expect(mockUpdate.mock.calls[0][0].factusol_estalb_invoiced).toBe("");
+    expect(mockUpdate.mock.calls[0][0].factusol_estpre_accepted).toBe("1");
   });
 });

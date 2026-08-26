@@ -129,32 +129,30 @@ DOC_SPECS: dict[str, DocSpec] = {
 #: Etiquetas de estado CONFIRMADAS. Cualquier valor fuera del mapeo se
 #: muestra crudo («Estado N») en vez de adivinar — mismo criterio que con
 #: ESTPCL en E2: un código mal interpretado en la contabilidad es peor que
-#: uno sin traducir. ESTALB/ESTFAC quedan sin mapear hasta que el discovery
-#: los confirme.
+#: uno sin traducir.
+#:
+#: E3-B-fix3: ESTALB 0/1 CONFIRMADO en la interfaz del escritorio de Bart
+#: (26-ago-2026, columna FACT. del listado de albaranes) — se mapea
+#: incondicionalmente; la correlación con las facturas hijas queda solo
+#: como diagnóstico en el log (`estalb_correlation_mismatches`). ESTFAC
+#: sigue SIN confirmar (hipótesis pendiente: estado de COBRO, no del
+#: documento) → crudo.
 ESTADO_LABELS: dict[str, dict[str, str]] = {
     "pedidos": {"0": "Pendiente", "2": "Enviado (facturado)"},  # ✅ E2
-    "presupuestos": {"0": "Pendiente", "1": "Aceptado"},  # ✅ gotcha nº 17
-    "albaranes": {},
+    "presupuestos": {"0": "Pendiente", "1": "Aceptado"},  # ✅ escritorio
+    "albaranes": {"0": "Pendiente", "1": "Facturado"},  # ✅ escritorio (FACT.)
     "facturas": {},
 }
 
 
-def estado_label(
-    doc_type: str, raw: Any, *, overrides: dict[str, str] | None = None,
-) -> str:
-    """`overrides` (E3-B-fix1): etiquetas verificadas EN RUNTIME (hoy solo
-    ESTALB, ver `estalb_labels_if_verified`) que se aplican por encima del
-    registro estático."""
+def estado_label(doc_type: str, raw: Any) -> str:
     value = str(raw).strip() if raw is not None else ""
     if not value:
         return "—"
     # "2.0" → "2": la API devuelve numéricos con tipos variables.
     if value.endswith(".0") and value[:-2].isdigit():
         value = value[:-2]
-    labels = ESTADO_LABELS.get(doc_type, {})
-    if overrides:
-        labels = {**labels, **overrides}
-    return labels.get(value, f"Estado {value}")
+    return ESTADO_LABELS.get(doc_type, {}).get(value, f"Estado {value}")
 
 
 # --- ciclo PRE→ALB→FAC: etiquetas POR TIPO de documento (E3-B-fix1) --------
@@ -191,17 +189,15 @@ def ciclo_estado_label(doc_type: str, estado: Any) -> str | None:
     return CICLO_ESTADO_LABELS.get(doc_type, {}).get(str(estado))
 
 
-# --- ESTALB verificado en runtime (E3-B-fix1, Parte D) ---------------------
+# --- diagnóstico ESTALB ↔ facturas hijas (E3-B-fix3) -----------------------
 #
-# Evidencia de producción (25-ago-2026): todos los albaranes con ESTALB=1
-# aparecen facturados y los de ESTALB=0 sin facturar (5-500004 → ESTALB=1 y
-# factura 5-260063; 1-100324 recién creado → ESTALB=0 y sin factura). El
-# mapeo NO se fija a ciegas: se re-verifica contra los datos VIVOS en cada
-# proceso (cacheado en la capa API) cruzando TODOS los albaranes del
-# ejercicio con si tienen factura hija (enlace DOC='A'). Si UN solo albarán
-# rompe la correlación, se sigue mostrando el valor crudo («Estado N») y se
-# loguea el desglose — el criterio de E2/gotcha nº 17: nunca adivinar.
-ESTALB_CANDIDATE_LABELS: dict[str, str] = {"0": "Pendiente", "1": "Facturado"}
+# El significado de ESTALB (0/1) está CONFIRMADO en el escritorio, así que
+# el mapeo ya NO depende de esta comprobación (en producción hay albaranes
+# marcados a mano cuya factura se escribió copiando líneas, sin enlace
+# DOC/DTP/DCO — 2 de 394 — y el propio bug que corrige la Parte A dejaba
+# albaranes facturados sin marcar). La correlación queda SOLO como
+# diagnóstico en el log: útil para detectar documentos descuadrados, nunca
+# como puerta que desactive las etiquetas.
 
 
 def _estado_norm(raw: Any) -> str:
@@ -211,15 +207,15 @@ def _estado_norm(raw: Any) -> str:
     return value
 
 
-def estalb_labels_if_verified(
+def estalb_correlation_mismatches(
     alb_rows: list[dict[str, Any]],
     facturado_keys: set[tuple[int, int]],
-) -> dict[str, str]:
-    """`{"0": "Pendiente", "1": "Facturado"}` SOLO si la correlación
-    ESTALB↔factura-hija se sostiene en TODAS las filas; `{}` si no.
+) -> list[str]:
+    """Albaranes cuyo `ESTALB` no cuadra con tener (o no) factura hija.
 
-    `facturado_keys`: claves `(serie, código)` de los albaranes que tienen
-    factura hija según el índice del ciclo (enlaces `DOC='A'` en F_LFA)."""
+    `facturado_keys`: claves `(serie, código)` de los albaranes con factura
+    hija según el índice del ciclo (enlaces `DOC='A'` en F_LFA). Devuelve
+    descripciones legibles; el caller decide loguearlas."""
     mismatches: list[str] = []
     for row in alb_rows:
         serie = coerce_serie(row.get("TIPALB"))
@@ -238,15 +234,7 @@ def estalb_labels_if_verified(
                 f"{visible_number(serie, codigo)}: ESTALB={estado} pero "
                 f"{'SÍ' if facturado else 'NO'} tiene factura hija"
             )
-    if mismatches:
-        logger.warning(
-            "factusol.documents: la correlación ESTALB↔factura NO se "
-            "sostiene en %d albarán(es) — se muestra el valor crudo. "
-            "Desglose: %s",
-            len(mismatches), "; ".join(mismatches[:20]),
-        )
-        return {}
-    return dict(ESTALB_CANDIDATE_LABELS)
+    return mismatches
 
 
 def visible_number(serie: Any, codigo: Any) -> str:
@@ -263,16 +251,10 @@ def _clean(value: Any) -> str | None:
     return text or None
 
 
-def normalize_header(
-    doc_type: str, row: dict[str, Any], *,
-    estado_labels: dict[str, str] | None = None,
-) -> dict[str, Any]:
+def normalize_header(doc_type: str, row: dict[str, Any]) -> dict[str, Any]:
     """Fila de cabecera → la forma que consume la UI. Tolera columnas
     ausentes (`.get`): en F_ALB los nombres son por convención hasta que el
-    discovery los confirme, y un None se pinta como «—».
-
-    `estado_labels`: etiquetas verificadas en runtime (E3-B-fix1) que se
-    superponen al registro estático — hoy solo ESTALB."""
+    discovery los confirme, y un None se pinta como «—»."""
     spec = DOC_SPECS[doc_type]
     serie = coerce_serie(row.get(spec.tip))
     codigo = _int_or_none(row.get(spec.cod))
@@ -287,7 +269,7 @@ def normalize_header(
         "fecha": _factusol_date(row.get(spec.fec)),
         "total": _num(row.get(spec.tot)) if row.get(spec.tot) is not None else None,
         "estado": estado_raw,
-        "estado_label": estado_label(doc_type, estado_raw, overrides=estado_labels),
+        "estado_label": estado_label(doc_type, estado_raw),
         "referencia": _clean(row.get(spec.ref)),
         "forma_pago": _clean(row.get(spec.fop)),
     }
@@ -410,7 +392,6 @@ def list_documents(
     offset: int = 0,
     annotate: Any = None,
     ciclo: str | None = None,
-    estado_labels: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Listado en vivo de un tipo de documento, filtrado, ordenado y paginado.
 
@@ -459,10 +440,7 @@ def list_documents(
             ejercicio=ejercicio,
         )
 
-    docs = [
-        normalize_header(doc_type, r, estado_labels=estado_labels)
-        for r in rows
-    ]
+    docs = [normalize_header(doc_type, r) for r in rows]
     docs = [
         d for d in docs
         if _matches(
@@ -516,7 +494,6 @@ def get_document(
     serie: int,
     codigo: int,
     ejercicio: str,
-    estado_labels: dict[str, str] | None = None,
 ) -> dict[str, Any] | None:
     """Cabecera + líneas de un documento por su clave COMPUESTA (serie,
     código) — el código solo es único por serie (ERP-E2-fix2).
@@ -552,6 +529,6 @@ def get_document(
         if coerce_serie(r.get(spec.line_tip)) in (serie, None)
     ]
     lines.sort(key=lambda ln: ln["position"])
-    header = normalize_header(doc_type, match, estado_labels=estado_labels)
+    header = normalize_header(doc_type, match)
     header["lines"] = lines
     return header

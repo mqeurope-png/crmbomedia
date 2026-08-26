@@ -60,8 +60,10 @@ class WriteFakeClient(FakeClient):
         super().__init__(tables, strict_columns=strict_columns)
         self.known_columns = known_columns or {}
         self.written: list[tuple[str, dict[str, Any]]] = []
+        self.updated: list[tuple[str, dict[str, Any]]] = []
         self.deleted: list[tuple[str, str]] = []
         self.fail_write_at: dict[str, int] = {}
+        self.fail_update = False
 
     def write_record(self, tabla: str, data: dict[str, Any], *,
                      ejercicio: str | None = None) -> dict[str, Any]:
@@ -77,6 +79,13 @@ class WriteFakeClient(FakeClient):
             raise FactusolError(f"KO simulado (escritura {n} de {tabla})")
         self.written.append((tabla, dict(data)))
         self.tables.setdefault(tabla, []).append(dict(data))
+        return {"respuesta": "OK"}
+
+    def update_record(self, tabla: str, data: dict[str, Any], *,
+                      ejercicio: str | None = None) -> dict[str, Any]:
+        if self.fail_update:
+            raise FactusolError("KO simulado en ActualizarRegistro")
+        self.updated.append((tabla, dict(data)))
         return {"respuesta": "OK"}
 
     def delete_records(self, tabla: str, filtro: str, *,
@@ -688,6 +697,137 @@ def test_allowed_conversions_shape() -> None:
 
 
 # ---------------------------------------------------------------------------
+# E3-B-fix3 — marcado del documento de ORIGEN al convertir
+# ---------------------------------------------------------------------------
+
+
+def _set_series_json(session, **payload: str) -> None:
+    import json  # noqa: PLC0415
+
+    from app.erp.models import (  # noqa: PLC0415
+        ERP_SETTINGS_SINGLETON_ID,
+        ErpSettings,
+    )
+
+    cfg = session.get(ErpSettings, ERP_SETTINGS_SINGLETON_ID)
+    if cfg is None:
+        cfg = ErpSettings(id=ERP_SETTINGS_SINGLETON_ID)
+        session.add(cfg)
+    cfg.factusol_series_json = json.dumps(payload)
+    session.commit()
+
+
+def test_convert_pre_to_alb_marks_quote_accepted(db) -> None:
+    """Tras crear el albarán, el presupuesto ORIGEN pasa a «Aceptado»
+    (ESTPRE=1) vía ActualizarRegistro con su clave COMPUESTA — lo que hace
+    el escritorio al convertir."""
+    tables = _chain_tables()
+    tables["F_PRE"][0]["ESTPRE"] = 0  # pendiente
+    client = _write_client(tables)
+    result = convert_document(
+        db, client, source_type="presupuestos", target_type="albaranes",
+        tip=5, cod=27, ejercicio="2026",
+    )
+    assert result["origin_marked"] is True
+    assert result["origin_mark_warning"] is None
+    assert ("F_PRE", {"TIPPRE": 5, "CODPRE": 27, "ESTPRE": "1"}) in client.updated
+
+
+def test_convert_pre_to_fac_marks_quote_accepted(db) -> None:
+    tables = _chain_tables()
+    tables["F_PRE"][0]["ESTPRE"] = 0
+    client = _write_client(tables)
+    result = convert_document(
+        db, client, source_type="presupuestos", target_type="facturas",
+        tip=5, cod=27, ejercicio="2026",
+    )
+    assert result["origin_marked"] is True
+    assert ("F_PRE", {"TIPPRE": 5, "CODPRE": 27, "ESTPRE": "1"}) in client.updated
+
+
+def test_convert_alb_to_fac_marks_albaran_invoiced(db) -> None:
+    """Tras facturar el albarán, este pasa a «Facturado» (ESTALB=1) — la
+    columna FACT. del escritorio."""
+    tables = _chain_tables()
+    tables["F_ALB"].append(_live_alb_row(500004, "5", ESTALB=0))
+    tables["F_LAL"].append(_live_lal_row(
+        500004, "5", ARTLAL="99cy", DESLAL="Tinta", CANLAL=2,
+        DOCLAL="P", DTPLAL="5", DCOLAL=27,
+    ))
+    client = _write_client(tables)
+    result = convert_document(
+        db, client, source_type="albaranes", target_type="facturas",
+        tip=5, cod=500004, ejercicio="2026",
+    )
+    assert result["origin_marked"] is True
+    assert (
+        "F_ALB", {"TIPALB": 5, "CODALB": 500004, "ESTALB": "1"},
+    ) in client.updated
+
+
+def test_origin_mark_is_idempotent(db) -> None:
+    """Si el origen YA tiene el estado destino (el fixture trae ESTPRE=1),
+    no se reescribe — y cuenta como marcado."""
+    client = _write_client()  # PRESUPUESTO con ESTPRE=1
+    result = convert_document(
+        db, client, source_type="presupuestos", target_type="albaranes",
+        tip=5, cod=27, ejercicio="2026",
+    )
+    assert result["origin_marked"] is True
+    assert client.updated == []
+
+
+def test_origin_mark_failure_does_not_rollback_child(db) -> None:
+    """El marcado es un paso POSTERIOR: si falla, el hijo NO se borra ni se
+    compensa (existe legítimamente) y el fallo viaja como aviso legible."""
+    tables = _chain_tables()
+    tables["F_PRE"][0]["ESTPRE"] = 0
+    client = _write_client(tables)
+    client.fail_update = True
+    result = convert_document(
+        db, client, source_type="presupuestos", target_type="albaranes",
+        tip=5, cod=27, ejercicio="2026",
+    )
+    assert result["numero"] == "5-500004"       # el hijo se creó…
+    assert client.deleted == []                 # …y nadie lo compensó
+    assert [r for r in client.tables["F_ALB"]
+            if str(r.get("CODALB")) == "500004"]
+    assert result["origin_marked"] is False
+    assert "5-500004 se creó" in result["origin_mark_warning"]
+    assert "5-000027" in result["origin_mark_warning"]
+
+
+def test_empty_state_config_skips_marking(db) -> None:
+    """Valor configurado VACÍO → no se marca (criterio E2), con aviso."""
+    _set_series_json(db, estpre_accepted="")
+    tables = _chain_tables()
+    tables["F_PRE"][0]["ESTPRE"] = 0
+    client = _write_client(tables)
+    result = convert_document(
+        db, client, source_type="presupuestos", target_type="albaranes",
+        tip=5, cod=27, ejercicio="2026",
+    )
+    assert result["origin_marked"] is False
+    assert client.updated == []
+    assert "estpre_accepted" in result["origin_mark_warning"]
+
+
+def test_origin_mark_value_defaults_and_overrides(db) -> None:
+    from app.integrations.factusol.service import origin_mark_value
+
+    # Sin configurar: presupuesto/albarán usan el default confirmado ("1");
+    # pedidos mantienen el contrato E2 (sin configurar = no marcar).
+    assert origin_mark_value(db, "presupuestos") == "1"
+    assert origin_mark_value(db, "albaranes") == "1"
+    assert origin_mark_value(db, "pedidos") is None
+    _set_series_json(db, estpre_accepted="9", estalb_invoiced="",
+                     estpcl_invoiced="2")
+    assert origin_mark_value(db, "presupuestos") == "9"
+    assert origin_mark_value(db, "albaranes") is None   # vacío explícito
+    assert origin_mark_value(db, "pedidos") == "2"
+
+
+# ---------------------------------------------------------------------------
 # E3-B-fix1 — semántica del ciclo POR TIPO + ESTALB verificado en runtime
 # ---------------------------------------------------------------------------
 
@@ -747,58 +887,44 @@ def test_documents_endpoint_ciclo_estado_label_por_tipo(
     )
 
 
-def test_estalb_mapping_verified_against_children(http, session_factory) -> None:
-    """Con la correlación ESTALB↔factura-hija sostenida en TODOS los
-    albaranes, el estado nativo sale Pendiente/Facturado."""
+def test_estalb_labels_always_applied(http, session_factory, caplog) -> None:
+    """E3-B-fix3: el significado de ESTALB está CONFIRMADO en el escritorio
+    (columna FACT.) — se mapea 0=Pendiente/1=Facturado aunque la correlación
+    con las facturas hijas NO cuadre. La correlación queda solo como
+    diagnóstico en el log; valores fuera de 0/1 siguen saliendo crudos."""
+    import logging
+
     _ = session_factory
     tables = {
-        # 500004 facturado (ESTALB=1, factura hija en LFA_CICLO);
-        # 500005/500006 sin factura (ESTALB=0).
         "F_ALB": [
-            {"TIPALB": "5", "CODALB": 500004, "ESTALB": 1},
-            {"TIPALB": "5", "CODALB": 500005, "ESTALB": 0},
-            {"TIPALB": "5", "CODALB": 500006, "ESTALB": "0.0"},
+            {"TIPALB": "5", "CODALB": 500004, "ESTALB": 1},  # ✓ facturado
+            {"TIPALB": "5", "CODALB": 500007, "ESTALB": 1},  # ✗ SIN factura
+            {"TIPALB": "5", "CODALB": 500008, "ESTALB": "0.0"},
+            {"TIPALB": "5", "CODALB": 500009, "ESTALB": 7},  # fuera de 0/1
         ],
-        "F_LAL": LAL_CICLO, "F_LFA": LFA_CICLO,
+        "F_LAL": [], "F_LFA": LFA_CICLO,
     }
-    with _patched_factusol(FakeClient(tables)):
+    with (
+        _patched_factusol(FakeClient(tables)),
+        caplog.at_level(logging.WARNING),
+    ):
         r = http.get(
             "/api/erp/factusol/documents/albaranes",
             headers=auth_headers(http, "user"),
         )
     labels = {d["codigo"]: d["estado_label"] for d in r.json()["items"]}
     assert labels[500004] == "Facturado"
-    assert labels[500005] == "Pendiente"
-    assert labels[500006] == "Pendiente"  # "0.0" normalizado
+    assert labels[500007] == "Facturado"      # descuadrado, pero SE MAPEA
+    assert labels[500008] == "Pendiente"      # "0.0" normalizado
+    assert labels[500009] == "Estado 7"       # fuera de 0/1 → crudo
+    # …y el descuadre quedó diagnosticado en el log.
+    assert "descuadrado" in caplog.text
+    assert "5-500007" in caplog.text
 
 
-def test_estalb_mapping_not_applied_when_correlation_breaks(
-    http, session_factory,
-) -> None:
-    """UN solo albarán que rompe la correlación (ESTALB=1 sin factura hija)
-    desactiva el mapeo ENTERO: todo sale crudo — nunca adivinar."""
-    _ = session_factory
-    tables = {
-        "F_ALB": [
-            {"TIPALB": "5", "CODALB": 500004, "ESTALB": 1},  # ✓ facturado
-            {"TIPALB": "5", "CODALB": 500007, "ESTALB": 1},  # ✗ SIN factura
-        ],
-        "F_LAL": [], "F_LFA": LFA_CICLO,
-    }
-    with _patched_factusol(FakeClient(tables)):
-        r = http.get(
-            "/api/erp/factusol/documents/albaranes",
-            headers=auth_headers(http, "user"),
-        )
-    labels = {d["codigo"]: d["estado_label"] for d in r.json()["items"]}
-    assert labels[500004] == "Estado 1"
-    assert labels[500007] == "Estado 1"
-
-
-def test_estalb_labels_unit_cases() -> None:
+def test_estalb_correlation_mismatches_unit() -> None:
     from app.integrations.factusol.documents import (
-        ESTALB_CANDIDATE_LABELS,
-        estalb_labels_if_verified,
+        estalb_correlation_mismatches,
     )
 
     facturados = {(5, 500004)}
@@ -806,20 +932,21 @@ def test_estalb_labels_unit_cases() -> None:
         {"TIPALB": "5", "CODALB": 500004, "ESTALB": 1},
         {"TIPALB": "5", "CODALB": 500005, "ESTALB": 0},
     ]
-    assert estalb_labels_if_verified(ok_rows, facturados) == (
-        ESTALB_CANDIDATE_LABELS
+    assert estalb_correlation_mismatches(ok_rows, facturados) == []
+    out = estalb_correlation_mismatches(
+        ok_rows + [
+            {"TIPALB": "5", "CODALB": 500007, "ESTALB": 1},   # sin factura
+            {"TIPALB": "5", "CODALB": 500009, "ESTALB": 7},   # fuera de 0/1
+        ],
+        facturados,
     )
-    # Un valor fuera de 0/1 (o vacío) impide verificar el modelo → crudo.
-    assert estalb_labels_if_verified(
-        ok_rows + [{"TIPALB": "5", "CODALB": 500008, "ESTALB": 7}], facturados,
-    ) == {}
-    assert estalb_labels_if_verified(
-        ok_rows + [{"TIPALB": "5", "CODALB": 500009, "ESTALB": ""}], facturados,
-    ) == {}
-    # ESTALB=0 con factura hija también rompe la correlación.
-    assert estalb_labels_if_verified(
+    assert len(out) == 2
+    assert any("5-500007" in m for m in out)
+    assert any("ESTALB=7" in m for m in out)
+    # ESTALB=0 con factura hija también es descuadre.
+    assert estalb_correlation_mismatches(
         [{"TIPALB": "5", "CODALB": 500004, "ESTALB": 0}], facturados,
-    ) == {}
+    ) != []
 
 
 def test_load_chain_index_force_refresh_bypasses_cache() -> None:
