@@ -32,28 +32,30 @@ router = APIRouter(prefix="/api/erp/factusol", tags=["erp-factusol"])
 _FOP_CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 _FOP_CACHE_TTL_SECONDS = 300  # 5 min
 
-#: E3-B-fix1 — mapeo ESTALB VERIFICADO contra los datos vivos, por ejercicio.
-#: `{}` = la correlación no se sostuvo (se muestra el valor crudo).
-_ESTALB_LABELS_CACHE: dict[str, tuple[float, dict[str, str]]] = {}
-_ESTALB_LABELS_TTL_SECONDS = 3600  # 1 h
+#: E3-B-fix3 — el mapeo ESTALB ya es incondicional (confirmado en el
+#: escritorio); la correlación ESTALB↔factura-hija queda SOLO como
+#: diagnóstico en el log. Cache: {ejercicio: expira_epoch} para no repetir
+#: el diagnóstico en cada listado.
+_ESTALB_DIAG_CACHE: dict[str, float] = {}
+_ESTALB_DIAG_TTL_SECONDS = 3600  # 1 h
 
 
-def _estalb_labels(
+def _log_estalb_diagnostic(
     client, ejercicio: str, *, force_refresh: bool = False,
-) -> dict[str, str]:
-    """`{"0": "Pendiente", "1": "Facturado"}` para ESTALB, SOLO si la
-    correlación ESTALB↔factura-hija se sostiene en TODOS los albaranes del
-    ejercicio (verificación en runtime, E3-B-fix1 Parte D). Best-effort: si
-    la verificación no se puede hacer, `{}` → valor crudo, nunca adivinar."""
+) -> None:
+    """Diagnóstico best-effort: loguea los albaranes cuyo ESTALB no cuadra
+    con tener (o no) factura hija — documentos descuadrados (marcados a
+    mano, facturas copiadas sin convertir…). NUNCA condiciona las etiquetas
+    ni tumba la vista."""
     from app.integrations.factusol.chain import load_chain_index  # noqa: PLC0415
     from app.integrations.factusol.documents import (  # noqa: PLC0415
-        estalb_labels_if_verified,
+        estalb_correlation_mismatches,
     )
 
     now = time.time()
-    cached = _ESTALB_LABELS_CACHE.get(ejercicio)
-    if cached and cached[0] > now and not force_refresh:
-        return cached[1]
+    if _ESTALB_DIAG_CACHE.get(ejercicio, 0) > now and not force_refresh:
+        return
+    _ESTALB_DIAG_CACHE[ejercicio] = now + _ESTALB_DIAG_TTL_SECONDS
     try:
         index = load_chain_index(
             client, ejercicio=ejercicio, force_refresh=force_refresh,
@@ -64,14 +66,16 @@ def _estalb_labels(
             for (doc, serie, codigo) in index.children["facturas"]
             if doc == "A"
         }
-        labels = estalb_labels_if_verified(alb_rows, facturados)
-    except Exception as exc:  # noqa: BLE001 — la etiqueta nunca tumba la vista
-        logger.warning("factusol: verificación ESTALB no disponible: %s", exc)
-        return {}
-    _ESTALB_LABELS_CACHE[ejercicio] = (
-        now + _ESTALB_LABELS_TTL_SECONDS, labels,
-    )
-    return labels
+        mismatches = estalb_correlation_mismatches(alb_rows, facturados)
+    except Exception as exc:  # noqa: BLE001 — el diagnóstico nunca estorba
+        logger.debug("factusol: diagnóstico ESTALB no disponible: %s", exc)
+        return
+    if mismatches:
+        logger.warning(
+            "factusol: diagnóstico ESTALB — %d albarán(es) descuadrado(s) "
+            "(el mapeo Pendiente/Facturado se aplica igualmente): %s",
+            len(mismatches), "; ".join(mismatches[:20]),
+        )
 
 
 def _first(row: dict[str, Any], *cols: str) -> Any:
@@ -198,9 +202,10 @@ def list_factusol_documents(
     E3-B-fix1: `ciclo.estado_label` viene etiquetado POR TIPO (un albarán
     «pendiente» es «Sin facturar», nunca «sin albarán»); `fresh_ciclo=1`
     salta el cache del índice (lo manda la UI justo tras crear un documento
-    para repintar la columna al momento); y en la pestaña de albaranes el
-    ESTALB nativo sale como Pendiente/Facturado SOLO si la correlación con
-    las facturas hijas se verifica contra los datos vivos."""
+    para repintar la columna al momento). E3-B-fix3: el ESTALB nativo sale
+    como Pendiente/Facturado incondicionalmente (confirmado en el
+    escritorio); la correlación con las facturas hijas queda como
+    diagnóstico en el log."""
     _ = current_user
     from app.integrations.factusol.chain import cycle_annotator  # noqa: PLC0415
     from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
@@ -235,10 +240,8 @@ def list_factusol_documents(
             raise _factusol_gateway_error(exc, "factusol_cycle_failed") from exc
         logger.warning("factusol ciclo no disponible (%s); listado sin "
                        "anotar: %s", doc_type, exc)
-    estado_labels = (
-        _estalb_labels(client, ejercicio, force_refresh=fresh_ciclo)
-        if doc_type == "albaranes" else None
-    )
+    if doc_type == "albaranes":
+        _log_estalb_diagnostic(client, ejercicio, force_refresh=fresh_ciclo)
     try:
         return list_documents(
             client, doc_type, ejercicio=ejercicio,
@@ -246,7 +249,7 @@ def list_factusol_documents(
             fecha_desde=fecha_desde, fecha_hasta=fecha_hasta,
             q=q, cliente_q=cliente_q, sort=sort, direction=dir,
             limit=limit, offset=offset,
-            annotate=annotate, ciclo=ciclo, estado_labels=estado_labels,
+            annotate=annotate, ciclo=ciclo,
         )
     except FactusolError as exc:
         logger.warning("factusol documents/%s KO: %s", doc_type, exc)
@@ -283,14 +286,11 @@ def get_factusol_document(
             f"Tipo de documento desconocido: {doc_type!r}",
         )
     client, ejercicio = _client_and_ejercicio(session)
-    estado_labels = (
-        _estalb_labels(client, ejercicio, force_refresh=fresh_ciclo)
-        if doc_type == "albaranes" else None
-    )
+    if doc_type == "albaranes":
+        _log_estalb_diagnostic(client, ejercicio, force_refresh=fresh_ciclo)
     try:
         doc = get_document(
             client, doc_type, serie=serie, codigo=codigo, ejercicio=ejercicio,
-            estado_labels=estado_labels,
         )
     except FactusolError as exc:
         logger.warning("factusol documents/%s detalle KO: %s", doc_type, exc)

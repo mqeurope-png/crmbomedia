@@ -26,7 +26,7 @@ def _clear_factusol_chain_caches():
     def _clear() -> None:
         chain._LIVE_COLUMNS_CACHE.clear()
         chain._CHAIN_INDEX_CACHE.clear()
-        factusol_api._ESTALB_LABELS_CACHE.clear()
+        factusol_api._ESTALB_DIAG_CACHE.clear()
 
     _clear()
     yield

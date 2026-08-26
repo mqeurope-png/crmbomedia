@@ -147,6 +147,9 @@ export function FactusolDocumentDetailModal({
   const [jobId, setJobId] = useState<string | null>(null);
   const [created, setCreated] = useState<FactusolCycleRef | null>(null);
   const [createError, setCreateError] = useState<string | null>(null);
+  // E3-B-fix3: el hijo se creó pero el ORIGEN no quedó marcado como
+  // convertido (ESTPRE/ESTALB) — es un AVISO, no un error de la conversión.
+  const [originWarning, setOriginWarning] = useState<string | null>(null);
 
   useEffect(() => {
     // Mantiene la referencia si las props no cambiaron: un objeto nuevo
@@ -194,6 +197,12 @@ export function FactusolDocumentDetailModal({
             codigo: st.result.codigo,
             numero: st.result.numero,
           });
+          setOriginWarning(
+            st.result.origin_marked === false
+              ? st.result.origin_mark_warning
+                ?? "El documento se creó, pero el origen no quedó marcado como convertido."
+              : null,
+          );
           // E3-B-fix1: recarga saltando el cache del índice del ciclo —
           // badge, avisos y botones se repintan AL MOMENTO, sin reabrir.
           load(true);
@@ -219,6 +228,7 @@ export function FactusolDocumentDetailModal({
   function navigate(ref: FactusolCycleRef) {
     setCreated(null);
     setCreateError(null);
+    setOriginWarning(null);
     setConvertTarget(null);
     setConvertPartial(false);
     setCurrent({ docType: ref.doc_type, serie: ref.serie, codigo: ref.codigo });
@@ -272,6 +282,9 @@ export function FactusolDocumentDetailModal({
           </p>
         ) : null}
         {createError ? <p className="form-error">{createError}</p> : null}
+        {originWarning ? (
+          <p className="erp-doc-ciclo-aviso">{originWarning}</p>
+        ) : null}
         {jobId ? <p className="muted">Creando el documento en FACTUSOL…</p> : null}
 
         {doc ? (

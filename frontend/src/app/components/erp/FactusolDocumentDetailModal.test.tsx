@@ -460,6 +460,55 @@ describe("FactusolDocumentDetailModal (E3-B)", () => {
     }
   });
 
+  it("avisa cuando el origen no quedó marcado como convertido (E3-B-fix3)", async () => {
+    // test_conversion_shows_warning_when_origin_not_marked
+    jest.useFakeTimers();
+    const user = userEvent.setup({
+      advanceTimers: jest.advanceTimersByTime,
+    });
+    try {
+      mockDetail.mockResolvedValue(albaran());  // sin facturar
+      mockConvert.mockResolvedValue({ job_id: "job-w1", status: "queued" });
+      mockStatus.mockResolvedValue({
+        status: "finished",
+        result: {
+          target_type: "facturas", serie: 5, codigo: 260064,
+          numero: "5-260064", lines: 1,
+          origin_marked: false,
+          origin_mark_warning:
+            "La factura 5-260064 se creó, pero el albarán 5-500004 no " +
+            "quedó marcado como convertido: KO simulado",
+        },
+      });
+      render(
+        <FactusolDocumentDetailModal
+          docType="albaranes" serie={5} codigo={500004} onClose={() => {}}
+        />,
+      );
+      await user.click(
+        await screen.findByRole("button", { name: "Crear factura" }),
+      );
+      const dialog = await screen.findByRole(
+        "dialog", { name: "Crear factura" },
+      );
+      await user.click(
+        within(dialog).getByRole("button", { name: "Crear factura" }),
+      );
+      await screen.findByText("Creando el documento en FACTUSOL…");
+      jest.advanceTimersByTime(1600);
+      // La creación se muestra como ÉXITO y el marcado como AVISO aparte.
+      expect(
+        await screen.findByText(/no\s+quedó marcado como convertido/),
+      ).toBeInTheDocument();
+      expect(screen.getByText(/Creado factura/)).toBeInTheDocument();
+      expect(
+        screen.queryByText("La creación falló en FACTUSOL."),
+      ).not.toBeInTheDocument();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it("los enlaces del ciclo navegan dentro del modal", async () => {
     const user = userEvent.setup();
     mockDetail
