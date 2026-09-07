@@ -19,6 +19,7 @@ import {
   getFactusolStatus,
   fireTransition,
   saveBlob,
+  updateOrderLanguage,
   ERP_EDIT_ROLES,
   type AvailableTransition,
   type FactusolPdfLang,
@@ -44,7 +45,11 @@ export default function ErpOrderDetailPage() {
 
   const load = useCallback(() => {
     getOrder(id)
-      .then(setOrder)
+      .then((o) => {
+        setOrder(o);
+        // E4-fix1: el idioma del PDF arranca en el del pedido si se conoce.
+        if (o.language) setPdfLang(o.language as FactusolPdfLang);
+      })
       .catch((e) => setError(extractErrorMessage(e, "No se pudo cargar el pedido.")));
     getOrderTimeline(id).then((r) => setTimeline(r.items)).catch(() => undefined);
     // C-2-fix2: consulta en vivo si ya hay factura/albarán en FACTUSOL. Si el
@@ -159,6 +164,35 @@ export default function ErpOrderDetailPage() {
             {pdfBusy ? "Generando…" : "PDF del pedido (FACTUSOL)"}
           </button>
         </span>
+        {/* E4-fix1 — idioma del pedido: dato persistente (detectado en la
+            importación Woo) editable a mano; alimenta la cascada de los PDF. */}
+        {canEmit ? (
+          <label className="erp-doc-pdf" style={{ marginLeft: 12 }}>
+            <span className="muted small">Idioma del pedido</span>
+            <select
+              aria-label="Idioma del pedido"
+              value={order.language ?? ""}
+              onChange={async (e) => {
+                const value = (e.target.value || null) as FactusolPdfLang | null;
+                setError(null);
+                try {
+                  await updateOrderLanguage(order.id, value);
+                  setOrder({ ...order, language: value });
+                  if (value) setPdfLang(value);
+                } catch (err) {
+                  setError(extractErrorMessage(
+                    err, "No se pudo guardar el idioma del pedido.",
+                  ));
+                }
+              }}
+            >
+              <option value="">— sin detectar —</option>
+              {PDF_LANGS.map((l) => (
+                <option key={l.value} value={l.value}>{l.label}</option>
+              ))}
+            </select>
+          </label>
+        ) : null}
       </div>
       {canEmit ? (
         <div className="erp-factusol-row" style={{ margin: "0 0 14px" }}>

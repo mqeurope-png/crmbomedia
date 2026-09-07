@@ -12,6 +12,7 @@ import { getCurrentUser } from "../../lib/api";
 jest.mock("../../lib/erpApi", () => ({
   getFactusolDocument: jest.fn(),
   getFactusolSeries: jest.fn(),
+  getErpSettings: jest.fn(),
   convertFactusolDocument: jest.fn(),
   getFactusolConvertStatus: jest.fn(),
   downloadFactusolDocumentPdf: jest.fn(),
@@ -27,6 +28,7 @@ const mockSeries = getFactusolSeries as jest.Mock;
 const mockConvert = convertFactusolDocument as jest.Mock;
 const mockStatus = getFactusolConvertStatus as jest.Mock;
 const mockUser = getCurrentUser as jest.Mock;
+const mockSettings = jest.requireMock("../../lib/erpApi").getErpSettings as jest.Mock;
 
 function presupuesto(over = {}) {
   return {
@@ -55,6 +57,19 @@ beforeEach(() => {
   mockStatus.mockReset();
   mockUser.mockReset();
   mockUser.mockResolvedValue({ role: "pedidos" });
+  mockSettings.mockReset();
+  mockSettings.mockResolvedValue({
+    factusol_companies: {
+      "5": {
+        nombre: "Streamtec SL", bancos: [
+          { nombre: "Banco de Sabadell", domicilio: "", iban: "ES11 SABADELL",
+            bic: "BSABESBB", defecto: true },
+          { nombre: "Open Bank", domicilio: "", iban: "ES23 OPENBANK",
+            bic: "OPENESMM", defecto: false },
+        ],
+      },
+    },
+  });
 });
 
 function albaran(over = {}) {
@@ -602,9 +617,110 @@ describe("FactusolDocumentDetailModal (E4 — PDF)", () => {
     await user.click(screen.getByRole("button", { name: "Descargar PDF" }));
     await waitFor(() =>
       expect(downloadFactusolDocumentPdf).toHaveBeenCalledWith(
-        "facturas", 2, 100001, "es",
+        "facturas", 2, 100001, "es", expect.any(Object),
       ),
     );
     expect(saveBlob).toHaveBeenCalled();
+  });
+});
+
+describe("FactusolDocumentDetailModal (E4-fix1 — variantes + banco + idioma)", () => {
+  const { downloadFactusolDocumentPdf, saveBlob } =
+    jest.requireMock("../../lib/erpApi");
+
+  function factura(over = {}) {
+    return presupuesto({
+      doc_type: "facturas", numero: "5-260063", codigo: 260063, serie: 5,
+      ciclo: { albaranes: [], facturas: [], origen: [], estado: null },
+      ...over,
+    });
+  }
+
+  it("el selector de banco cambia la cuenta enviada al PDF", async () => {
+    // test_bank_account_selector_changes_pdf_bank (frontend)
+    const user = userEvent.setup();
+    (downloadFactusolDocumentPdf as jest.Mock).mockResolvedValue(new Blob(["%PDF"]));
+    mockDetail.mockResolvedValue(factura());
+    render(
+      <FactusolDocumentDetailModal
+        docType="facturas" serie={5} codigo={260063} onClose={() => {}}
+      />,
+    );
+    // El selector de banco aparece (2 cuentas) y arranca en la por defecto.
+    const banco = await screen.findByLabelText("Cuenta bancaria");
+    expect(banco).toHaveValue("0");
+    await user.selectOptions(banco, "1");   // Open Bank
+    await user.click(screen.getByRole("button", { name: "Descargar PDF" }));
+    await waitFor(() =>
+      expect(downloadFactusolDocumentPdf).toHaveBeenCalledWith(
+        "facturas", 5, 260063, expect.any(String),
+        expect.objectContaining({ bank: 1 }),
+      ),
+    );
+  });
+
+  it("la factura ofrece la variante «de anticipo» y viaja en la descarga", async () => {
+    const user = userEvent.setup();
+    (downloadFactusolDocumentPdf as jest.Mock).mockResolvedValue(new Blob(["%PDF"]));
+    mockDetail.mockResolvedValue(factura());
+    render(
+      <FactusolDocumentDetailModal
+        docType="facturas" serie={5} codigo={260063} onClose={() => {}}
+      />,
+    );
+    const variante = await screen.findByLabelText("Variante del documento");
+    await user.selectOptions(variante, "anticipo");
+    await user.click(screen.getByRole("button", { name: "Descargar PDF" }));
+    await waitFor(() =>
+      expect(downloadFactusolDocumentPdf).toHaveBeenCalledWith(
+        "facturas", 5, 260063, expect.any(String),
+        expect.objectContaining({ variant: "anticipo" }),
+      ),
+    );
+  });
+
+  it("el albarán ofrece «valorado» y «de devolución»", async () => {
+    mockDetail.mockResolvedValue(factura({
+      doc_type: "albaranes", numero: "5-500004", codigo: 500004,
+    }));
+    render(
+      <FactusolDocumentDetailModal
+        docType="albaranes" serie={5} codigo={500004} onClose={() => {}}
+      />,
+    );
+    const variante = await screen.findByLabelText("Variante del documento");
+    expect(
+      within(variante).getByRole("option", { name: "Albarán valorado" }),
+    ).toBeInTheDocument();
+    expect(
+      within(variante).getByRole("option", { name: "Albarán de devolución" }),
+    ).toBeInTheDocument();
+  });
+
+  it("el presupuesto ofrece «Factura proforma»", async () => {
+    mockDetail.mockResolvedValue(presupuesto());
+    render(
+      <FactusolDocumentDetailModal
+        docType="presupuestos" serie={5} codigo={27} onClose={() => {}}
+      />,
+    );
+    const variante = await screen.findByLabelText("Variante del documento");
+    expect(
+      within(variante).getByRole("option", { name: "Factura proforma" }),
+    ).toBeInTheDocument();
+  });
+
+  it("el idioma llega preseleccionado por la cascada, indicando su origen", async () => {
+    mockDetail.mockResolvedValue(factura({
+      pdf_lang: { lang: "fr", source: "pedido" },
+    }));
+    render(
+      <FactusolDocumentDetailModal
+        docType="facturas" serie={5} codigo={260063} onClose={() => {}}
+      />,
+    );
+    const idioma = await screen.findByLabelText("Idioma del PDF");
+    expect(idioma).toHaveValue("fr");     // viene del pedido
+    expect(screen.getByText(/del pedido/)).toBeInTheDocument();
   });
 });

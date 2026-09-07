@@ -77,6 +77,9 @@ class SettingsIn(BaseModel):
     #: ({"1": {...}, "5": {...}}). Alimenta los PDF; editable para que Bart
     #: corrija un IBAN sin despliegue. Ver `factusol_pdf.COMPANY_DEFAULTS`.
     factusol_companies: dict[str, dict[str, Any]] | None = None
+    #: E4-fix1 — almacenes de recogida del albarán de devolución
+    #: ([{nombre, direccion}]).
+    factusol_pickup_warehouses: list[dict[str, str]] | None = None
 
 
 # --- helpers -----------------------------------------------------------------
@@ -286,7 +289,14 @@ def _serialise_settings(cfg: ErpSettings) -> dict[str, Any]:
         # ERP-E4: identidad fiscal por serie, ya fusionada con los defaults
         # extraídos de los modelos reales, + si esa serie tiene logo subido.
         "factusol_companies": _companies_with_logos(cfg),
+        "factusol_pickup_warehouses": _pickup_warehouses(cfg),
     }
+
+
+def _pickup_warehouses(cfg: ErpSettings) -> list[dict[str, str]]:
+    from app.erp.factusol_pdf import pickup_warehouses_config  # noqa: PLC0415
+
+    return pickup_warehouses_config(_series(cfg).get("pickup_warehouses"))
 
 
 def _companies_with_logos(cfg: ErpSettings) -> dict[str, Any]:
@@ -356,7 +366,8 @@ def update_settings(
             or payload.factusol_estpcl_invoiced is not None
             or payload.factusol_estpre_accepted is not None
             or payload.factusol_estalb_invoiced is not None
-            or payload.factusol_companies is not None):
+            or payload.factusol_companies is not None
+            or payload.factusol_pickup_warehouses is not None):
         series = _series(cfg)
         if payload.factusol_series_default is not None:
             series["default"] = payload.factusol_series_default.strip()
@@ -386,6 +397,14 @@ def update_settings(
                 }
                 for serie, comp in payload.factusol_companies.items()
             }
+        # E4-fix1: almacenes de recogida (albarán de devolución).
+        if payload.factusol_pickup_warehouses is not None:
+            series["pickup_warehouses"] = [
+                {"nombre": str(w.get("nombre") or "").strip(),
+                 "direccion": str(w.get("direccion") or "").strip()}
+                for w in payload.factusol_pickup_warehouses
+                if str(w.get("direccion") or "").strip()
+            ]
         if payload.factusol_series_names is not None:
             # ERP-E2: {"5": "Streamtec", …}. Claves como string por JSON.
             series["names"] = {

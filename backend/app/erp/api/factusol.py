@@ -345,6 +345,16 @@ def get_factusol_document(
     except FactusolError as exc:
         logger.warning("factusol ciclo del detalle %s %s-%s KO: %s",
                        doc_type, serie, codigo, exc)
+    # E4-fix1 — idioma sugerido para el PDF (cascada pedido → cliente →
+    # empresa emisora → español) con su procedencia, para preseleccionar el
+    # selector de la descarga. Best-effort.
+    try:
+        from app.erp.factusol_pdf import suggest_pdf_language  # noqa: PLC0415
+
+        doc["pdf_lang"] = suggest_pdf_language(session, doc_type, doc)
+    except Exception as exc:  # noqa: BLE001 — la sugerencia nunca tumba nada
+        logger.warning("factusol pdf_lang del detalle KO: %s", exc)
+        doc["pdf_lang"] = {"lang": "es", "source": "defecto"}
     return doc
 
 
@@ -354,30 +364,62 @@ def download_document_pdf(
     serie: int,
     codigo: int,
     lang: str = Query(default="es", pattern="^(es|en|de|fr|nl)$"),
+    variant: str | None = Query(
+        default=None, pattern="^(anticipo|proforma|valorado|devolucion)$",
+    ),
+    bank: int | None = Query(default=None, ge=0, le=20),
+    currency: str = Query(default="EUR", pattern="^[A-Z]{3}$"),
+    warehouse: int = Query(default=0, ge=0, le=20),
     session: Session = Depends(get_session),
     current_user: User = Depends(require_erp_view),
 ) -> Response:
     """ERP-E4 — PDF del documento (A4), generado por BoHub: la API de DELSOL
     no imprime. Identidad fiscal = la de la EMPRESA de la serie del documento
     (configurable en /erp/settings); `lang` cambia las etiquetas, nunca los
-    datos. Generación síncrona: solo compone un PDF, no escribe nada."""
+    datos. Generación síncrona: solo compone un PDF, no escribe nada.
+
+    E4-fix1: `variant` imprime el mismo documento de otra forma (anticipo /
+    proforma / valorado / devolución — validada contra el tipo), `bank`
+    elige la cuenta bancaria de la empresa (índice; default la marcada),
+    `currency` cambia solo la PRESENTACIÓN de los importes (nunca los
+    convierte) y `warehouse` es el almacén de recogida de la devolución."""
     _ = current_user
     from app.erp.factusol_pdf import (  # noqa: PLC0415
+        VARIANTS_BY_TYPE,
+        bank_accounts,
         company_for_serie,
         extract_document_data,
         generate_document_pdf,
         load_raw_document,
         logo_path_for_serie,
         pdf_filename,
+        pickup_warehouses_config,
     )
     from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
     from app.integrations.factusol.documents import DOC_SPECS  # noqa: PLC0415
+    from app.integrations.factusol.service import series_config  # noqa: PLC0415
 
     if doc_type not in DOC_SPECS:
         raise HTTPException(
             status.HTTP_404_NOT_FOUND,
             f"Tipo de documento desconocido: {doc_type!r}",
         )
+    if variant is not None and variant not in VARIANTS_BY_TYPE.get(doc_type, ()):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, {
+            "code": "variant_not_supported",
+            "detail": f"La variante {variant!r} no aplica a {doc_type}.",
+        })
+    company = company_for_serie(session, serie)
+    accounts = bank_accounts(company)
+    selected_bank = None
+    if bank is not None and accounts:
+        selected_bank = accounts[min(bank, len(accounts) - 1)]
+    selected_warehouse = None
+    if variant == "devolucion":
+        warehouses = pickup_warehouses_config(
+            series_config(session).get("pickup_warehouses"),
+        )
+        selected_warehouse = warehouses[min(warehouse, len(warehouses) - 1)]
     client, ejercicio = _client_and_ejercicio(session)
     try:
         raw = load_raw_document(
@@ -396,11 +438,15 @@ def download_document_pdf(
         raise _factusol_gateway_error(exc, "factusol_pdf_failed") from exc
     pdf = generate_document_pdf(
         data,
-        company=company_for_serie(session, serie),
+        company=company,
         lang=lang,
         logo=logo_path_for_serie(serie),
+        variant=variant,
+        bank=selected_bank,
+        currency=currency,
+        warehouse=selected_warehouse,
     )
-    filename = pdf_filename(doc_type, data, lang)
+    filename = pdf_filename(doc_type, data, lang, variant)
     return Response(
         content=pdf,
         media_type="application/pdf",

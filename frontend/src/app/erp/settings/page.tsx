@@ -14,7 +14,13 @@ import {
 /** ERP-E4 — campos de texto de la identidad fiscal de cada empresa emisora
  *  (alimentan los PDF; los valores iniciales salen de los modelos reales de
  *  FACTUSOL). */
-const COMPANY_FIELDS: { key: keyof FactusolCompany & string; label: string }[] = [
+const COMPANY_TEXT_KEYS = [
+  "nombre", "direccion", "cp_poblacion", "pais", "telefono", "email", "nif",
+  "idioma_defecto",
+] as const;
+type CompanyTextKey = (typeof COMPANY_TEXT_KEYS)[number];
+
+const COMPANY_FIELDS: { key: CompanyTextKey; label: string }[] = [
   { key: "nombre", label: "Nombre fiscal" },
   { key: "direccion", label: "Domicilio" },
   { key: "cp_poblacion", label: "CP y población" },
@@ -22,17 +28,20 @@ const COMPANY_FIELDS: { key: keyof FactusolCompany & string; label: string }[] =
   { key: "telefono", label: "Teléfono" },
   { key: "email", label: "Email" },
   { key: "nif", label: "NIF / VAT (tal como debe imprimirse)" },
-  { key: "banco", label: "Banco" },
-  { key: "iban", label: "IBAN" },
-  { key: "bic", label: "BIC / Swift" },
+  { key: "idioma_defecto", label: "Idioma por defecto (es/en/de/fr/nl)" },
 ];
 
-const COMPANY_TEXTS: { field: "legal" | "pie" | "intracom"; lang: string; label: string }[] = [
+const COMPANY_TEXTS: {
+  field: "legal" | "pie" | "intracom" | "titulo_albaran_valorado";
+  lang: string; label: string;
+}[] = [
   { field: "legal", lang: "es", label: "Reserva de dominio / texto legal (ES)" },
   { field: "legal", lang: "en", label: "Reserva de dominio / texto legal (EN)" },
   { field: "intracom", lang: "es", label: "Texto intracomunitario (ES)" },
   { field: "intracom", lang: "en", label: "Texto intracomunitario (EN)" },
   { field: "pie", lang: "es", label: "Pie de condiciones (ES)" },
+  { field: "titulo_albaran_valorado", lang: "es",
+    label: "Título del albarán valorado (ES) — p. ej. «ALBARÁN DE ENTREGA»" },
 ];
 
 /** Orígenes de pedido con serie de facturación propia opcional (C-2).
@@ -279,6 +288,94 @@ export default function ErpSettingsPage() {
                     />
                   </label>
                 ))}
+
+                {/* E4-fix1 — cuentas bancarias (N por empresa, una por
+                    defecto). El operador elige la cuenta al descargar. */}
+                <fieldset className="erp-bank-fieldset">
+                  <legend>Cuentas bancarias</legend>
+                  {(comp.bancos ?? []).map((cuenta, i) => (
+                    <div className="erp-bank-row" key={i}>
+                      {(["nombre", "domicilio", "iban", "bic"] as const).map((bk) => (
+                        <input
+                          key={bk}
+                          type="text"
+                          placeholder={bk}
+                          aria-label={`Banco ${i + 1} ${bk} (serie ${serie})`}
+                          value={cuenta[bk] ?? ""}
+                          onChange={(e) => {
+                            const bancos = [...(comp.bancos ?? [])];
+                            bancos[i] = { ...bancos[i], [bk]: e.target.value };
+                            setCfg({
+                              ...cfg,
+                              factusol_companies: {
+                                ...(cfg.factusol_companies ?? {}),
+                                [serie]: { ...comp, bancos },
+                              },
+                            });
+                          }}
+                        />
+                      ))}
+                      <label className="erp-bank-default">
+                        <input
+                          type="radio"
+                          name={`bank-default-${serie}`}
+                          aria-label={`Cuenta por defecto ${i + 1} (serie ${serie})`}
+                          checked={!!cuenta.defecto}
+                          onChange={() => {
+                            const bancos = (comp.bancos ?? []).map((b, j) => ({
+                              ...b, defecto: j === i,
+                            }));
+                            setCfg({
+                              ...cfg,
+                              factusol_companies: {
+                                ...(cfg.factusol_companies ?? {}),
+                                [serie]: { ...comp, bancos },
+                              },
+                            });
+                          }}
+                        />
+                        Por defecto
+                      </label>
+                      <button
+                        type="button"
+                        className="button small secondary"
+                        onClick={() => {
+                          const bancos = (comp.bancos ?? []).filter(
+                            (_, j) => j !== i,
+                          );
+                          setCfg({
+                            ...cfg,
+                            factusol_companies: {
+                              ...(cfg.factusol_companies ?? {}),
+                              [serie]: { ...comp, bancos },
+                            },
+                          });
+                        }}
+                      >
+                        Quitar
+                      </button>
+                    </div>
+                  ))}
+                  <button
+                    type="button"
+                    className="button small secondary"
+                    onClick={() => {
+                      const bancos = [...(comp.bancos ?? []), {
+                        nombre: "", domicilio: "", iban: "", bic: "",
+                        defecto: (comp.bancos ?? []).length === 0,
+                      }];
+                      setCfg({
+                        ...cfg,
+                        factusol_companies: {
+                          ...(cfg.factusol_companies ?? {}),
+                          [serie]: { ...comp, bancos },
+                        },
+                      });
+                    }}
+                  >
+                    + Añadir cuenta
+                  </button>
+                </fieldset>
                 <label className="field">
                   <span>Logo (PNG/JPG, se sube al elegirlo)</span>
                   <input
@@ -308,6 +405,67 @@ export default function ErpSettingsPage() {
                 </label>
               </details>
             ))}
+        </fieldset>
+
+        {/* E4-fix1 — almacenes de recogida del albarán de devolución. */}
+        <fieldset className="erp-series-fieldset">
+          <legend>Almacenes de recogida (albarán de devolución)</legend>
+          <p className="muted small">
+            Dirección de recogida que imprime el albarán de devolución. El
+            valor inicial sale del modelo A-321; puedes tener varios.
+          </p>
+          {(cfg.factusol_pickup_warehouses ?? []).map((w, i) => (
+            <div className="erp-bank-row" key={i}>
+              <input
+                type="text"
+                placeholder="Nombre"
+                aria-label={`Almacén ${i + 1} nombre`}
+                value={w.nombre ?? ""}
+                onChange={(e) => {
+                  const list = [...(cfg.factusol_pickup_warehouses ?? [])];
+                  list[i] = { ...list[i], nombre: e.target.value };
+                  setCfg({ ...cfg, factusol_pickup_warehouses: list });
+                }}
+              />
+              <textarea
+                rows={2}
+                placeholder="Dirección (varias líneas)"
+                aria-label={`Almacén ${i + 1} dirección`}
+                value={w.direccion ?? ""}
+                onChange={(e) => {
+                  const list = [...(cfg.factusol_pickup_warehouses ?? [])];
+                  list[i] = { ...list[i], direccion: e.target.value };
+                  setCfg({ ...cfg, factusol_pickup_warehouses: list });
+                }}
+              />
+              <button
+                type="button"
+                className="button small secondary"
+                onClick={() => setCfg({
+                  ...cfg,
+                  factusol_pickup_warehouses:
+                    (cfg.factusol_pickup_warehouses ?? []).filter(
+                      (_, j) => j !== i,
+                    ),
+                })}
+              >
+                Quitar
+              </button>
+            </div>
+          ))}
+          <button
+            type="button"
+            className="button small secondary"
+            onClick={() => setCfg({
+              ...cfg,
+              factusol_pickup_warehouses: [
+                ...(cfg.factusol_pickup_warehouses ?? []),
+                { nombre: "", direccion: "" },
+              ],
+            })}
+          >
+            + Añadir almacén
+          </button>
         </fieldset>
 
         <div>

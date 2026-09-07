@@ -174,7 +174,7 @@ def test_pdf_uses_company_identity_from_series() -> None:
     text2 = _texto(pdf2)
     assert "MQ Europe BV" in text2
     assert "VAT nr. BE 0883.002.183" in text2
-    assert "BE28068245312320" in text2 and "GKCCBEBB" in text2
+    assert "BE28 0682 4531 2320" in text2 and "GKCCBEBB" in text2
     assert "Streamtec" not in text2
 
 
@@ -321,12 +321,25 @@ def test_merge_companies_defaults_and_overrides() -> None:
     merged = merge_companies(None)
     assert merged["5"]["nombre"] == "Streamtec SL"
     assert merged["2"]["intracom"]["en"].startswith("INTRACOMMUNITY")
+    # E4-fix1: el banco es una LISTA de cuentas con una por defecto.
+    assert [b["nombre"] for b in merged["5"]["bancos"]] == [
+        "Banco de Sabadell, S.A.", "Open Bank, S.A.",
+    ]
+    assert merged["5"]["bancos"][0]["defecto"] is True
     edited = merge_companies({
-        "5": {"iban": "ES99 9999", "legal": {"en": "Ownership reserved."}},
+        "5": {"legal": {"en": "Ownership reserved."},
+              "bancos": [{"nombre": "Otro Banco", "iban": "ES99 9999",
+                          "bic": "XXX", "defecto": True}]},
     })
-    assert edited["5"]["iban"] == "ES99 9999"
+    assert edited["5"]["bancos"][0]["iban"] == "ES99 9999"  # reemplaza
     assert edited["5"]["nombre"] == "Streamtec SL"      # el resto, default
     assert edited["5"]["legal"]["en"] == "Ownership reserved."
+    # Compat E4: config guardada con el banco único → se pliega a 1 cuenta.
+    legacy = merge_companies({"5": {"iban": "ES00 LEGACY", "banco": "B"}})
+    assert legacy["5"]["bancos"] == [{
+        "nombre": "B", "domicilio": "", "iban": "ES00 LEGACY", "bic": "",
+        "defecto": True,
+    }]
 
 
 # ---------------------------------------------------------------------------
@@ -419,13 +432,15 @@ def test_settings_expose_and_save_companies(http, session_factory) -> None:
     assert companies["1"]["nif"] == "NIF B63609309"
     assert companies["5"]["logo"] is False
 
-    companies["5"]["iban"] = "ES00 TEST"
+    # E4-fix1: el banco es una lista de cuentas — se edita la por defecto.
+    companies["5"]["bancos"][0]["iban"] = "ES00 TEST"
     r2 = http.patch(
         "/api/erp/settings", json={"factusol_companies": companies},
         headers=headers,
     )
     assert r2.status_code == 200, r2.text
-    assert r2.json()["factusol_companies"]["5"]["iban"] == "ES00 TEST"
+    assert (r2.json()["factusol_companies"]["5"]["bancos"][0]["iban"]
+            == "ES00 TEST")
     # …y el PDF lo usa.
     with _patched_factusol(FakeClient(_tables())):
         pdf = http.get(
@@ -463,3 +478,189 @@ def test_logo_upload_endpoint(http, session_factory, tmp_path, monkeypatch) -> N
         headers=auth_headers(http, "user"),
     )
     assert forbidden.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# E4-fix1 — banco elegible, divisa, variantes de albarán/factura/presupuesto
+# ---------------------------------------------------------------------------
+
+
+def test_default_bank_account_per_company() -> None:
+    from app.erp.factusol_pdf import bank_accounts, default_bank
+
+    assert default_bank(COMPANY_DEFAULTS[1])["iban"] == (
+        "ES33 0081 0202 13 0001171918"
+    )
+    assert default_bank(COMPANY_DEFAULTS[5])["nombre"] == (
+        "Banco de Sabadell, S.A."
+    )
+    assert default_bank(COMPANY_DEFAULTS[2])["bic"] == "GKCCBEBB"
+    # Bomedia y Streamtec tienen DOS cuentas (Sabadell + Open Bank).
+    assert len(bank_accounts(COMPANY_DEFAULTS[1])) == 2
+    assert len(bank_accounts(COMPANY_DEFAULTS[5])) == 2
+
+
+def test_bank_account_selector_changes_pdf_bank() -> None:
+    from app.erp.factusol_pdf import bank_accounts
+
+    header, lines = _header("facturas"), [_linea("facturas", 1)]
+    cuentas = bank_accounts(COMPANY_DEFAULTS[5])
+    pdf_a, _ = _pdf("facturas", header, lines, bank=cuentas[0])
+    pdf_b, _ = _pdf("facturas", header, lines, bank=cuentas[1])
+    text_a, text_b = _texto(pdf_a), _texto(pdf_b)
+    assert "ES11 0081 0202 1700 0125 9030" in text_a
+    assert "Open Bank" not in text_a
+    assert "ES23 0073 0100 5404 4814 5865" in text_b
+    assert "Open Bank, S.A." in text_b
+    assert "ES11 0081 0202 1700 0125 9030" not in text_b
+
+
+def test_currency_from_document_not_converted() -> None:
+    """Los importes van TAL CUAL (convertir sería alterar la contabilidad):
+    solo cambian símbolo, formato y la nota de divisa."""
+    header, lines = _header("facturas"), [_linea("facturas", 1)]
+    pdf, _ = _pdf("facturas", header, lines, currency="SEK")
+    text = _texto(pdf)
+    assert "225,47" in text.replace(" ", " ")   # mismo importe
+    assert "kr" in text
+    assert "Importes en SEK" in text
+    assert "€" not in text
+    # CAMFAC relleno → tipo de cambio como referencia.
+    pdf2, _ = _pdf("facturas", _header("facturas", CAMFAC=11.31), lines,
+                   currency="SEK")
+    assert "Tipo de cambio: 11,31" in _texto(pdf2)
+
+
+def test_albaran_valued_shows_amounts_and_vat() -> None:
+    header, lines = _header("albaranes"), [_linea("albaranes", 1)]
+    pdf, _ = _pdf("albaranes", header, lines, serie=1, variant="valorado")
+    text = _texto(pdf)
+    # Título configurable de la variante valorada de Bomedia (A-115).
+    assert "ALBARÁN DE ENTREGA" in text
+    for needle in ["40,00", "87,12", "186,34", "21", "39,13", "225,47"]:
+        assert needle in text, f"albarán valorado sin {needle!r}"
+
+
+def test_albaran_plain_has_no_amounts() -> None:
+    header, lines = _header("albaranes"), [_linea("albaranes", 1)]
+    pdf, _ = _pdf("albaranes", header, lines, serie=1)
+    text = _texto(pdf)
+    assert "ALBARÁN" in text and "ALBARÁN DE ENTREGA" not in text
+    assert "40,00" not in text and "87,12" not in text
+    assert "225,47" not in text
+
+
+def test_return_note_shows_pickup_and_delivery_addresses() -> None:
+    from app.erp.factusol_pdf import DEFAULT_PICKUP_WAREHOUSES
+
+    header, lines = _header("albaranes"), [_linea("albaranes", 1)]
+    pdf, _ = _pdf("albaranes", header, lines, serie=2, variant="devolucion",
+                  warehouse=DEFAULT_PICKUP_WAREHOUSES[0])
+    text = _texto(pdf)
+    assert "ALBARÁN DE DEVOLUCIÓN" in text
+    assert "DIRECCIÓN DE RECOGIDA" in text
+    assert "TERLO 2000" in text and "Castellbisbal" in text
+    assert "DIRECCIÓN DE ENTREGA" in text
+    assert "DUPLICODER, S.L." in text
+    # «Barcelona a ___ de ___ de ___» rellenada con la fecha del documento
+    # (población de la empresa emisora — MQ: Leuven).
+    assert "Leuven, a 26 de agosto de 2026" in text
+    # Y en inglés, el título del modelo A-175 + Consignee.
+    pdf_en, _ = _pdf("albaranes", header, lines, serie=2,
+                     variant="devolucion",
+                     warehouse=DEFAULT_PICKUP_WAREHOUSES[0], lang="en")
+    text_en = _texto(pdf_en)
+    assert "TRANSPORT DOC for return of goods" in text_en
+    assert "Consignee:" in text_en
+
+
+def test_advance_invoice_title_per_language() -> None:
+    titulos = {
+        "es": "FACTURA DE ANTICIPO",
+        "en": "ADVANCE PAYMENT INVOICE",
+        "de": "ANZAHLUNGSRECHNUNG",
+        "fr": "FACTURE D'ACOMPTE",
+        "nl": "VOORSCHOTFACTUUR",
+    }
+    header, lines = _header("facturas"), [_linea("facturas", 1)]
+    for lang, titulo in titulos.items():
+        pdf, _ = _pdf("facturas", header, lines, lang=lang,
+                      variant="anticipo")
+        text = _texto(pdf)
+        assert titulo in text, f"{lang} sin {titulo!r}"
+        # Solo cambia el título/textos — los importes quedan intactos.
+        assert "225" in text
+
+
+def test_quote_title_presupuesto_vs_proforma_per_language() -> None:
+    titulos = {
+        "es": ("PRESUPUESTO", "FACTURA PROFORMA"),
+        "en": ("QUOTATION", "PROFORMA INVOICE"),
+        "de": ("ANGEBOT", "PROFORMARECHNUNG"),
+        "fr": ("DEVIS", "FACTURE PROFORMA"),
+        "nl": ("OFFERTE", "PROFORMAFACTUUR"),
+    }
+    header, lines = _header("presupuestos"), [_linea("presupuestos", 1)]
+    for lang, (base, proforma) in titulos.items():
+        text_base = _texto(_pdf("presupuestos", header, lines, lang=lang)[0])
+        text_pro = _texto(_pdf("presupuestos", header, lines, lang=lang,
+                               variant="proforma")[0])
+        assert base in text_base, f"{lang} sin {base!r}"
+        assert proforma in text_pro, f"{lang} sin {proforma!r}"
+
+
+def test_identity_comes_from_settings_not_model_literals() -> None:
+    """Los modelos llevan direcciones CADUCADAS (A-115: «c. Aribau, 171»;
+    A-170: «Koning Albertlaan, Lanaken» y «propiedad de Bomedia» en un
+    documento de MQ). La identidad sale SIEMPRE de la configuración."""
+    import json as _json
+
+    defaults = _json.dumps(COMPANY_DEFAULTS, ensure_ascii=False)
+    assert "Aribau" not in defaults
+    assert "Koning Albertlaan" not in defaults
+    assert "Lanaken" not in defaults
+    # Y una configuración editada gana a cualquier default:
+    edited = merge_companies({
+        "1": {"direccion": "Calle Nueva, 1"},
+    })
+    data = extract_document_data(
+        _alb_resolver(), "facturas", _header("facturas"),
+        [_linea("facturas", 1)], ejercicio="2026",
+    )
+    pdf = generate_document_pdf(data, company=edited["1"], lang="es")
+    text = _texto(pdf)
+    assert "Calle Nueva, 1" in text
+    assert "Via Augusta" not in text
+
+
+def test_variant_validation_in_engine_and_endpoint(http, session_factory) -> None:
+    _ = session_factory
+    with pytest.raises(ValueError, match="no aplica"):
+        data = extract_document_data(
+            _alb_resolver(), "facturas", _header("facturas"), [],
+            ejercicio="2026",
+        )
+        generate_document_pdf(data, company=dict(COMPANY_DEFAULTS[5]),
+                              variant="devolucion")
+    r = http.get(
+        "/api/erp/factusol/documents/facturas/5/260063/pdf?variant=devolucion",
+        headers=auth_headers(http, "user"),
+    )
+    assert r.status_code == 400
+    assert r.json()["detail"]["code"] == "variant_not_supported"
+
+
+def test_pdf_endpoint_bank_and_variant_params(http, session_factory) -> None:
+    _ = session_factory
+    with _patched_factusol(FakeClient(_tables())):
+        r = http.get(
+            "/api/erp/factusol/documents/facturas/5/260063/pdf"
+            "?variant=anticipo&bank=1&currency=SEK",
+            headers=auth_headers(http, "user"),
+        )
+    assert r.status_code == 200, r.text
+    text = _texto(r.content)
+    assert "FACTURA DE ANTICIPO" in text
+    assert "ES23 0073 0100 5404 4814 5865" in text   # Open Bank (índice 1)
+    assert "Importes en SEK" in text
+    assert "Factura-de-anticipo" in r.headers["content-disposition"]

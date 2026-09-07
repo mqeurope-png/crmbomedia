@@ -168,6 +168,12 @@ class Order(TimestampMixin, Base):
     # pedido con su factura contable. NULL hasta emitir.
     factusol_invoice_number: Mapped[str | None] = mapped_column(String(32))
 
+    # E4-fix1: idioma del pedido (ISO 639-1: es/en/de/fr/nl), detectado en la
+    # importación Woo (WPML/locale/país) o corregido a mano en la ficha.
+    # NULL = desconocido — la cascada de idioma del PDF cae al cliente o a la
+    # empresa emisora, nunca se inventa aquí.
+    language: Mapped[str | None] = mapped_column(String(5))
+
     lines: Mapped[list[OrderLine]] = relationship(
         back_populates="order", cascade="all, delete-orphan",
         order_by="OrderLine.position",

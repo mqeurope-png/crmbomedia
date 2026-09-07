@@ -10994,3 +10994,33 @@ tr.is-inactive {
 .erp-company-block .field {
   margin-top: 8px;
 }
+
+/* E4-fix1 — cuentas bancarias y almacenes de recogida en /erp/settings. */
+.erp-bank-fieldset {
+  margin-top: 10px;
+  border: 1px solid var(--line, #e2e8f0);
+  border-radius: 8px;
+  padding: 8px 12px;
+}
+.erp-bank-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.erp-bank-row input,
+.erp-bank-row textarea {
+  flex: 1 1 160px;
+  min-width: 120px;
+}
+.erp-bank-default {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+  font-size: 13px;
+}
+.erp-doc-pdf-langsrc {
+  white-space: nowrap;
+}

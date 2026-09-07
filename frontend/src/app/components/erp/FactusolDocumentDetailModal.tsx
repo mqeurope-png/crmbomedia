@@ -6,16 +6,19 @@ import {
   convertFactusolDocument,
   downloadFactusolDocumentPdf,
   ERP_EDIT_ROLES,
+  getErpSettings,
   getFactusolConvertStatus,
   getFactusolDocument,
   getFactusolSeries,
   saveBlob,
+  type FactusolBankAccount,
   type FactusolConvertTarget,
   type FactusolCycle,
   type FactusolCycleRef,
   type FactusolDocType,
   type FactusolDocumentDetail,
   type FactusolPdfLang,
+  type FactusolPdfOptions,
   type FactusolSerie,
 } from "../../lib/erpApi";
 import { extractErrorMessage } from "../../lib/errors";
@@ -139,6 +142,37 @@ export const PDF_LANGS: { value: FactusolPdfLang; label: string }[] = [
   { value: "nl", label: "NL" },
 ];
 
+/** E4-fix1 — de dónde viene el idioma propuesto, para que Bart sepa si es
+ *  dato real o suposición. */
+const PDF_LANG_SOURCE_LABELS: Record<string, string> = {
+  pedido: "del pedido",
+  cliente: "del cliente",
+  empresa: "de la empresa emisora",
+  defecto: "por defecto",
+};
+
+/** E4-fix1 — variantes de impresión por tipo (espejo de
+ *  `factusol_pdf.VARIANTS_BY_TYPE`). El valor "" es el documento normal. */
+const PDF_VARIANTS: Partial<Record<FactusolDocType, { value: string; label: string }[]>> = {
+  facturas: [
+    { value: "", label: "Factura" },
+    { value: "anticipo", label: "Factura de anticipo" },
+  ],
+  presupuestos: [
+    { value: "", label: "Presupuesto" },
+    { value: "proforma", label: "Factura proforma" },
+  ],
+  albaranes: [
+    { value: "", label: "Albarán (sin importes)" },
+    { value: "valorado", label: "Albarán valorado" },
+    { value: "devolucion", label: "Albarán de devolución" },
+  ],
+};
+
+/** Divisas que ofrece el selector de descarga (cambian la presentación, no
+ *  los importes). */
+const PDF_CURRENCIES = ["EUR", "SEK", "DKK", "NOK", "USD", "GBP", "CHF"];
+
 /** ERP-E3-A/E3-B — detalle de un documento FACTUSOL: cabecera + líneas +
  *  posición en el ciclo PRE→ALB→FAC, con las acciones de crear el siguiente
  *  documento de la cadena (albarán/factura). Los enlaces del ciclo navegan
@@ -173,9 +207,17 @@ export function FactusolDocumentDetailModal({
   // E3-B-fix3: el hijo se creó pero el ORIGEN no quedó marcado como
   // convertido (ESTPRE/ESTALB) — es un AVISO, no un error de la conversión.
   const [originWarning, setOriginWarning] = useState<string | null>(null);
-  // E4 — descarga de PDF: idioma (por defecto, el del país del cliente).
+  // E4 — descarga de PDF: idioma (preseleccionado por la cascada del
+  // backend) + su origen, variante, banco y divisa (E4-fix1).
   const [pdfLang, setPdfLang] = useState<FactusolPdfLang>("es");
+  const [pdfLangSource, setPdfLangSource] = useState<string | null>(null);
+  const [pdfVariant, setPdfVariant] = useState<string>("");
+  const [pdfBank, setPdfBank] = useState<number>(0);
+  const [pdfCurrency, setPdfCurrency] = useState<string>("EUR");
   const [pdfBusy, setPdfBusy] = useState(false);
+  // Cuentas bancarias de la empresa emisora (serie) — para el selector de
+  // banco de la descarga. Se cargan una vez de los ajustes del ERP.
+  const [banks, setBanks] = useState<FactusolBankAccount[]>([]);
 
   useEffect(() => {
     // Mantiene la referencia si las props no cambiaron: un objeto nuevo
@@ -191,6 +233,19 @@ export function FactusolDocumentDetailModal({
     getCurrentUser().then(setUser).catch(() => undefined);
   }, []);
 
+  // Cuentas bancarias de la empresa emisora de este documento (por serie).
+  useEffect(() => {
+    getErpSettings()
+      .then((cfg) => {
+        const cuentas = cfg.factusol_companies?.[String(current.serie)]?.bancos
+          ?? [];
+        setBanks(cuentas);
+        const def = cuentas.findIndex((b) => b.defecto);
+        setPdfBank(def >= 0 ? def : 0);
+      })
+      .catch(() => setBanks([]));
+  }, [current.serie]);
+
   const load = useCallback((fresh = false) => {
     setDoc(null);
     setError(null);
@@ -202,7 +257,19 @@ export function FactusolDocumentDetailModal({
       .then((d) => {
         if (!alive) return;
         setDoc(d);
-        setPdfLang(defaultPdfLang(d.cliente_pais));
+        // E4-fix1: el idioma llega preseleccionado por la cascada del
+        // backend (pedido → cliente → empresa → español), con su origen.
+        // Fallback al país del cliente si el backend no lo mandó.
+        if (d.pdf_lang) {
+          setPdfLang(d.pdf_lang.lang);
+          setPdfLangSource(d.pdf_lang.source);
+        } else {
+          setPdfLang(defaultPdfLang(d.cliente_pais));
+          setPdfLangSource(null);
+        }
+        setPdfVariant("");
+        setPdfBank(0);
+        setPdfCurrency("EUR");
       })
       .catch((e) => {
         if (alive) setError(extractErrorMessage(e, "No se pudo cargar el documento."));
@@ -254,6 +321,9 @@ export function FactusolDocumentDetailModal({
   const badge = cycleBadge(current.docType, ciclo);
   const actions = doc ? availableActions(current.docType, ciclo) : [];
   const isSourceType = current.docType !== "facturas";
+  // El selector de banco solo aparece si la empresa tiene más de una cuenta;
+  // el índice por defecto es la marcada (o la primera).
+  const pdfBankOptions = banks;
 
   function navigate(ref: FactusolCycleRef) {
     setCreated(null);
@@ -434,15 +504,58 @@ export function FactusolDocumentDetailModal({
           </button>
           {doc ? (
             <span className="erp-doc-pdf">
+              {(PDF_VARIANTS[current.docType]?.length ?? 0) > 1 ? (
+                <select
+                  value={pdfVariant}
+                  aria-label="Variante del documento"
+                  onChange={(e) => setPdfVariant(e.target.value)}
+                >
+                  {PDF_VARIANTS[current.docType]!.map((v) => (
+                    <option key={v.value} value={v.value}>{v.label}</option>
+                  ))}
+                </select>
+              ) : null}
+              {pdfBankOptions.length > 1 ? (
+                <select
+                  value={pdfBank}
+                  aria-label="Cuenta bancaria"
+                  onChange={(e) => setPdfBank(Number(e.target.value))}
+                >
+                  {pdfBankOptions.map((b, i) => (
+                    <option key={i} value={i}>{b.nombre || b.iban}</option>
+                  ))}
+                </select>
+              ) : null}
+              <select
+                value={pdfCurrency}
+                aria-label="Divisa"
+                onChange={(e) => setPdfCurrency(e.target.value)}
+              >
+                {PDF_CURRENCIES.map((c) => (
+                  <option key={c} value={c}>{c}</option>
+                ))}
+              </select>
               <select
                 value={pdfLang}
                 aria-label="Idioma del PDF"
-                onChange={(e) => setPdfLang(e.target.value as FactusolPdfLang)}
+                title={pdfLangSource
+                  ? `Idioma ${PDF_LANG_SOURCE_LABELS[pdfLangSource] ?? ""}`
+                  : undefined}
+                onChange={(e) => {
+                  setPdfLang(e.target.value as FactusolPdfLang);
+                  setPdfLangSource(null);  // elección manual: ya no es sugerido
+                }}
               >
                 {PDF_LANGS.map((l) => (
                   <option key={l.value} value={l.value}>{l.label}</option>
                 ))}
               </select>
+              {pdfLangSource ? (
+                <span className="muted small erp-doc-pdf-langsrc">
+                  {PDF_LANGS.find((l) => l.value === pdfLang)?.label}{" "}
+                  · {PDF_LANG_SOURCE_LABELS[pdfLangSource]}
+                </span>
+              ) : null}
               <button
                 type="button"
                 className="button secondary"
@@ -453,6 +566,12 @@ export function FactusolDocumentDetailModal({
                   try {
                     const blob = await downloadFactusolDocumentPdf(
                       current.docType, current.serie, current.codigo, pdfLang,
+                      {
+                        variant: (pdfVariant || undefined) as
+                          FactusolPdfOptions["variant"],
+                        bank: pdfBankOptions.length > 1 ? pdfBank : undefined,
+                        currency: pdfCurrency !== "EUR" ? pdfCurrency : undefined,
+                      },
                     );
                     saveBlob(
                       blob,

@@ -82,6 +82,32 @@ if (_DEJAVU_DIR / "DejaVuSans.ttf").exists():
 
 SUPPORTED_LANGS = ("es", "en", "de", "fr", "nl")
 
+#: E4-fix1 Parte B — divisas mostrables. DISCOVERY: en el volcado VIVO de
+#: F_FAC (167 columnas) NO existe columna de código de divisa; la única
+#: candidata es `CAMFAC` (tipo de CAMbio), y los modelos «NO EURO» usan el
+#: concepto legacy «Contramoneda» (campos *PS*/PTS* calculados al imprimir).
+#: Por tanto la divisa la ELIGE el operador al descargar; los importes se
+#: muestran tal cual (convertir sería alterar la contabilidad) y CAMFAC,
+#: si viene relleno, se imprime como referencia.
+CURRENCIES: dict[str, dict[str, str]] = {
+    "EUR": {"symbol": "€", "style": ""},
+    "SEK": {"symbol": "kr", "style": "sv"},
+    "DKK": {"symbol": "kr", "style": "sv"},
+    "NOK": {"symbol": "kr", "style": "sv"},
+    "USD": {"symbol": "$", "style": "en"},
+    "GBP": {"symbol": "£", "style": "en"},
+    "CHF": {"symbol": "CHF", "style": "en"},
+}
+
+#: Variantes de impresión por tipo de documento (E4-fix1). Todas son formas
+#: de IMPRIMIR un documento existente — nunca crean nada en FACTUSOL.
+VARIANTS_BY_TYPE: dict[str, tuple[str, ...]] = {
+    "facturas": ("anticipo",),
+    "presupuestos": ("proforma",),
+    "albaranes": ("valorado", "devolucion"),
+    "pedidos": (),
+}
+
 #: Etiquetas por idioma, transcritas de los modelos reales (F-555 es / F-560
 #: en, P-90/P-100, A-160/A-175). El fallback es SIEMPRE español: un idioma
 #: nuevo puede empezar parcial sin romper nada.
@@ -135,6 +161,12 @@ LABELS: dict[str, dict[str, str]] = {
             "Presupuesto válido durante 30 días, a partir de la fecha de "
             "emisión.",
         "sin_lineas": "(sin líneas)",
+        "title_facturas_anticipo": "FACTURA DE ANTICIPO",
+        "title_presupuestos_proforma": "FACTURA PROFORMA",
+        "title_albaranes_devolucion": "ALBARÁN DE DEVOLUCIÓN",
+        "direccion_recogida": "DIRECCIÓN DE RECOGIDA:",
+        "divisa_nota": "Importes en {code} — sin conversión",
+        "cambio_label": "Tipo de cambio: {rate}",
     },
     "en": {
         "title_facturas": "INVOICE",
@@ -184,6 +216,12 @@ LABELS: dict[str, dict[str, str]] = {
         "validez_presupuesto":
             "This quotation is valid for 30 days from the date of issue.",
         "sin_lineas": "(no lines)",
+        "title_facturas_anticipo": "ADVANCE PAYMENT INVOICE",
+        "title_presupuestos_proforma": "PROFORMA INVOICE",
+        "title_albaranes_devolucion": "TRANSPORT DOC for return of goods",
+        "direccion_recogida": "Consignee:",
+        "divisa_nota": "Amounts in {code} — no conversion applied",
+        "cambio_label": "Exchange rate: {rate}",
     },
     "de": {
         "title_facturas": "RECHNUNG",
@@ -233,6 +271,12 @@ LABELS: dict[str, dict[str, str]] = {
         "validez_presupuesto":
             "Dieses Angebot ist 30 Tage ab Ausstellungsdatum gültig.",
         "sin_lineas": "(keine Positionen)",
+        "title_facturas_anticipo": "ANZAHLUNGSRECHNUNG",
+        "title_presupuestos_proforma": "PROFORMARECHNUNG",
+        "title_albaranes_devolucion": "RÜCKLIEFERSCHEIN",
+        "direccion_recogida": "ABHOLADRESSE:",
+        "divisa_nota": "Beträge in {code} — ohne Umrechnung",
+        "cambio_label": "Wechselkurs: {rate}",
     },
     "fr": {
         "title_facturas": "FACTURE",
@@ -282,6 +326,12 @@ LABELS: dict[str, dict[str, str]] = {
         "validez_presupuesto":
             "Devis valable 30 jours à compter de la date d'émission.",
         "sin_lineas": "(aucune ligne)",
+        "title_facturas_anticipo": "FACTURE D'ACOMPTE",
+        "title_presupuestos_proforma": "FACTURE PROFORMA",
+        "title_albaranes_devolucion": "BON DE RETOUR",
+        "direccion_recogida": "ADRESSE D'ENLÈVEMENT :",
+        "divisa_nota": "Montants en {code} — sans conversion",
+        "cambio_label": "Taux de change : {rate}",
     },
     "nl": {
         "title_facturas": "FACTUUR",
@@ -331,6 +381,12 @@ LABELS: dict[str, dict[str, str]] = {
         "validez_presupuesto":
             "Deze offerte is 30 dagen geldig vanaf de uitgiftedatum.",
         "sin_lineas": "(geen regels)",
+        "title_facturas_anticipo": "VOORSCHOTFACTUUR",
+        "title_presupuestos_proforma": "PROFORMAFACTUUR",
+        "title_albaranes_devolucion": "RETOURBON",
+        "direccion_recogida": "OPHAALADRES:",
+        "divisa_nota": "Bedragen in {code} — zonder omrekening",
+        "cambio_label": "Wisselkoers: {rate}",
     },
 }
 
@@ -357,15 +413,29 @@ COMPANY_DEFAULTS: dict[int, dict[str, Any]] = {
         "telefono": "Tel. 932 010 793",
         "email": "bomedia@bomedia.net",
         "nif": "NIF B63609309",
-        "banco": "Banco de Sabadell, S.A., Avda. Óscar Esplá, 37, 03007 Alicante",
-        "iban": "ES33 0081 0202 13 0001171918",
-        "bic": "BSABESBB",
+        "idioma_defecto": "es",
+        # E4-fix1: el banco NO es fijo por empresa — Bomedia y Streamtec
+        # emiten con Sabadell o con Open Bank según el documento. Lista de
+        # cuentas; una por defecto; el operador elige al descargar.
+        "bancos": [
+            {"nombre": "Banco de Sabadell, S.A.",
+             "domicilio": "Avda. Óscar Esplá, 37, 03007 Alicante",
+             "iban": "ES33 0081 0202 13 0001171918", "bic": "BSABESBB",
+             "defecto": True},
+            {"nombre": "Open Bank, S.A.",
+             "domicilio": "Plaza Manuel Gómez Moreno, 2, 28020 Madrid",
+             "iban": "ES65 0073 0100 5704 3930 5449", "bic": "OPENESMM",
+             "defecto": False},
+        ],
         "legal": {
             "es": "El material suministrado es propiedad de BOMEDIA S.L. "
                   "hasta recibir la totalidad del pago correspondiente.",
         },
         "pie": {"es": "CONDICIONES GENERALES EN WWW.BOMEDIA.NET"},
         "intracom": {},
+        # E4-fix1 Parte C: la variante VALORADA del albarán de Bomedia se
+        # titula «ALBARÁN DE ENTREGA» (modelo A-115). Configurable.
+        "titulo_albaran_valorado": {"es": "ALBARÁN DE ENTREGA"},
     },
     5: {
         "nombre": "Streamtec SL",
@@ -375,14 +445,23 @@ COMPANY_DEFAULTS: dict[int, dict[str, Any]] = {
         "telefono": "Tel. 932022530",
         "email": "",
         "nif": "CIF B64154263",
-        "banco": "Banco de Sabadell, S.A., Avda. Óscar Esplá, 37, 03007 Alicante",
-        "iban": "ES11 0081 0202 1700 0125 9030",
-        "bic": "BSABESBB",
+        "idioma_defecto": "es",
+        "bancos": [
+            {"nombre": "Banco de Sabadell, S.A.",
+             "domicilio": "Avda. Óscar Esplá, 37, 03007 Alicante",
+             "iban": "ES11 0081 0202 1700 0125 9030", "bic": "BSABESBB",
+             "defecto": True},
+            {"nombre": "Open Bank, S.A.",
+             "domicilio": "Plaza de Santa Bárbara 2, 28004 Madrid",
+             "iban": "ES23 0073 0100 5404 4814 5865", "bic": "OPENESMM",
+             "defecto": False},
+        ],
         "legal": {},
         "pie": {},
         "intracom": {
             "es": "Entrega intracomunitaria, o exportación exenta de IVA",
         },
+        "titulo_albaran_valorado": {},
     },
     2: {
         "nombre": "MQ Europe BV",
@@ -392,9 +471,13 @@ COMPANY_DEFAULTS: dict[int, dict[str, Any]] = {
         "telefono": "",
         "email": "sales@mqeurope.com",
         "nif": "VAT nr. BE 0883.002.183 (RPR TONGEREN)",
-        "banco": "Belfius Bank Zaventem Belgium",
-        "iban": "BE28068245312320",
-        "bic": "GKCCBEBB",
+        "idioma_defecto": "en",
+        "bancos": [
+            {"nombre": "Belfius Bank",
+             "domicilio": "Zaventem, Belgium",
+             "iban": "BE28 0682 4531 2320", "bic": "GKCCBEBB",
+             "defecto": True},
+        ],
         "legal": {
             "es": "RESERVA DE DOMINIO: El material es propiedad de MQ Europe "
                   "BVBA hasta recibir la totalidad de su pago.",
@@ -410,16 +493,72 @@ COMPANY_DEFAULTS: dict[int, dict[str, Any]] = {
                   "be paid by the co-contractant - art. 25ter, §1er, al. 2, "
                   "3° of the Belgian VAT Code",
         },
+        "titulo_albaran_valorado": {},
     },
 }
 
 #: Campos de texto plano de la empresa (los editables simples de settings).
 COMPANY_TEXT_FIELDS = (
     "nombre", "direccion", "cp_poblacion", "pais", "telefono", "email",
-    "nif", "banco", "iban", "bic",
+    "nif", "idioma_defecto",
 )
 #: Campos por-idioma (dict {lang: texto}).
-COMPANY_LANG_FIELDS = ("legal", "pie", "intracom")
+COMPANY_LANG_FIELDS = ("legal", "pie", "intracom", "titulo_albaran_valorado")
+
+
+def bank_accounts(company: dict[str, Any]) -> list[dict[str, Any]]:
+    """Cuentas bancarias de la empresa (lista saneada, nunca None)."""
+    bancos = company.get("bancos")
+    if not isinstance(bancos, list):
+        return []
+    out = []
+    for b in bancos:
+        if isinstance(b, dict) and any(
+            str(b.get(k) or "").strip() for k in ("nombre", "iban", "bic")
+        ):
+            out.append({
+                "nombre": str(b.get("nombre") or "").strip(),
+                "domicilio": str(b.get("domicilio") or "").strip(),
+                "iban": str(b.get("iban") or "").strip(),
+                "bic": str(b.get("bic") or "").strip(),
+                "defecto": bool(b.get("defecto")),
+            })
+    return out
+
+
+def default_bank(company: dict[str, Any]) -> dict[str, Any] | None:
+    accounts = bank_accounts(company)
+    for account in accounts:
+        if account["defecto"]:
+            return account
+    return accounts[0] if accounts else None
+
+
+#: E4-fix1 Parte D — almacenes de recogida para el albarán de devolución.
+#: Valor inicial extraído del modelo A-321; lista configurable en
+#: /erp/settings (`factusol_series_json.pickup_warehouses`).
+DEFAULT_PICKUP_WAREHOUSES: list[dict[str, str]] = [
+    {
+        "nombre": "Almacén TERLO 2000",
+        "direccion": "C. Motors 12 – P.I. Comte de Sert\n"
+                     "08755 Castellbisbal (Barcelona), Spain\n"
+                     "Tel. 93 775 90 62 · Sr. Toni",
+    },
+]
+
+
+def pickup_warehouses_config(stored: Any) -> list[dict[str, str]]:
+    """Almacenes configurados (o el default del modelo si no hay ninguno)."""
+    if not isinstance(stored, list):
+        return [dict(w) for w in DEFAULT_PICKUP_WAREHOUSES]
+    out = []
+    for w in stored:
+        if isinstance(w, dict) and str(w.get("direccion") or "").strip():
+            out.append({
+                "nombre": str(w.get("nombre") or "").strip(),
+                "direccion": str(w.get("direccion") or "").strip(),
+            })
+    return out or [dict(w) for w in DEFAULT_PICKUP_WAREHOUSES]
 
 
 def merge_companies(stored: Any) -> dict[str, dict[str, Any]]:
@@ -439,6 +578,7 @@ def merge_companies(stored: Any) -> dict[str, dict[str, Any]]:
         }
         for f in COMPANY_LANG_FIELDS:
             merged[f] = dict(base.get(f, {}) or {})
+        merged["bancos"] = [dict(b) for b in base.get("bancos", []) or []]
         override = stored.get(str(serie))
         if isinstance(override, dict):
             for f in COMPANY_TEXT_FIELDS:
@@ -450,6 +590,22 @@ def merge_companies(stored: Any) -> dict[str, dict[str, Any]]:
                     merged[f].update({
                         str(k): str(v) for k, v in sub.items()
                     })
+            if isinstance(override.get("bancos"), list):
+                # La lista guardada REEMPLAZA a la de defaults (es la
+                # edición completa de Bart, no un parche por posición).
+                merged["bancos"] = [
+                    dict(b) for b in override["bancos"] if isinstance(b, dict)
+                ]
+            elif any(override.get(k) for k in ("banco", "iban", "bic")):
+                # Compat E4: config guardada con el banco único de la
+                # primera versión → se pliega como única cuenta.
+                merged["bancos"] = [{
+                    "nombre": str(override.get("banco") or ""),
+                    "domicilio": "",
+                    "iban": str(override.get("iban") or ""),
+                    "bic": str(override.get("bic") or ""),
+                    "defecto": True,
+                }]
         out[str(serie)] = merged
     return out
 
@@ -467,7 +623,7 @@ def company_for_serie(session: Session, serie: int) -> dict[str, Any]:
     # inventarse una (la serie ya identifica el documento).
     return {f: "" for f in COMPANY_TEXT_FIELDS} | {
         f: {} for f in COMPANY_LANG_FIELDS
-    }
+    } | {"bancos": []}
 
 
 def _lang_text(company: dict[str, Any], field: str, lang: str) -> str:
@@ -549,11 +705,17 @@ def _fmt_date(v: Any) -> str:
     return f"{d}-{m}-{y}"
 
 
-def _fmt_money(v: float, lang: str) -> str:
+def _fmt_money(v: float, lang: str, currency: str = "EUR") -> str:
+    """Formato del importe según divisa e idioma. Los importes NUNCA se
+    convierten — solo cambia la presentación (es/de/fr/nl 1.234,56;
+    en 1,234.56; estilo nórdico 1 234,56 para las coronas)."""
+    style = CURRENCIES.get(currency, {}).get("style", "")
     s = f"{v:,.2f}"
-    if lang != "en":
-        s = s.replace(",", " ").replace(".", ",").replace(" ", ".")
-    return s
+    if style == "en" or (not style and lang == "en"):
+        return s
+    if style == "sv":
+        return s.replace(",", "\u00a0").replace(".", ",")
+    return s.replace(",", "\u00a0").replace(".", ",").replace("\u00a0", ".")
 
 
 def _fmt_qty(v: float, lang: str) -> str:
@@ -693,6 +855,10 @@ def extract_document_data(
         "vencimiento": _fmt_date(h("VEN")) if h("VEN") else "",
         "bands": bands,
         "total": _num(h("TOT"), 0.0),
+        # E4-fix1: tipo de cambio del documento (CAMFAC — única columna
+        # ligada a divisa que existe en el volcado vivo de F_FAC).
+        # 0/1/vacío = sin cambio que enseñar.
+        "cambio": _num(h("CAM"), 0.0),
         "lines": out_lines,
     }
 
@@ -765,18 +931,37 @@ def generate_document_pdf(
     lang: str = "es",
     logo: Path | None = None,
     valued: bool | None = None,
+    variant: str | None = None,
+    bank: dict[str, Any] | None = None,
+    currency: str = "EUR",
+    warehouse: dict[str, Any] | None = None,
 ) -> bytes:
     """Estructura neutra + empresa + idioma → bytes del PDF A4.
 
     `valued=None` aplica el criterio de los modelos: factura, presupuesto y
-    pedido con importes; albarán SIN importes (el «albarán valorado» queda
-    previsto pasando `valued=True`)."""
+    pedido con importes; albarán SIN importes.
+
+    E4-fix1: `variant` imprime el MISMO documento de otra forma (nunca crea
+    nada en FACTUSOL): `anticipo` (factura de pago a cuenta), `proforma`
+    (presupuesto titulado FACTURA PROFORMA), `valorado` (albarán con
+    importes) y `devolucion` (albarán de retorno, con la dirección de
+    recogida del `warehouse`). `bank` es la cuenta elegida (default: la
+    marcada por defecto en la empresa). `currency` solo cambia la
+    presentación — los importes van tal cual están en el documento."""
     doc_type = data["doc_type"]
     lab = labels_for(lang)
+    if variant is not None and variant not in VARIANTS_BY_TYPE.get(doc_type, ()):
+        raise ValueError(f"Variante {variant!r} no aplica a {doc_type}")
     if valued is None:
-        valued = doc_type != "albaranes"
-    title = lab[f"title_{doc_type}"]
+        valued = doc_type != "albaranes" or variant == "valorado"
+    if variant == "valorado":
+        valued = True
+    elif variant == "devolucion":
+        valued = False
+    title = _title_for(doc_type, variant, lab, company, lang)
     doc_label = lab[f"doc_{doc_type}"]
+    if bank is None:
+        bank = default_bank(company)
 
     # ¿Aplica el texto intracomunitario? Criterio de los modelos «SIN IVA»:
     # documento valorado sin una sola banda con IVA.
@@ -788,7 +973,7 @@ def generate_document_pdf(
     legal = _lang_text(company, "legal", lang)
     pie = _lang_text(company, "pie", lang)
 
-    footer_lines = _footer_lines(company, lab, legal, intracom, pie,
+    footer_lines = _footer_lines(bank, lab, legal, intracom, pie,
                                  validez=(doc_type == "presupuestos"
                                           and lab["validez_presupuesto"]) or "")
     footer_h_mm = 6 + 4.2 * len(footer_lines)
@@ -802,7 +987,8 @@ def generate_document_pdf(
     )
 
     def on_page(cv: rl_canvas.Canvas, _doc: Any) -> None:
-        _draw_header(cv, data, company, lab, title, doc_label, logo)
+        _draw_header(cv, data, company, lab, title, doc_label, logo,
+                     variant=variant, warehouse=warehouse)
         _draw_footer(cv, footer_lines)
 
     buf = io.BytesIO()
@@ -815,9 +1001,21 @@ def generate_document_pdf(
 
     _NumberedCanvas._pagina_de = lab["pagina_de"]
 
-    story: list[Any] = [_lines_table(data, lab, lang, valued=valued)]
+    story: list[Any] = [
+        _lines_table(data, lab, lang, valued=valued, currency=currency),
+    ]
     story.append(Spacer(1, 4 * mm))
-    story.extend(_summary_flowables(data, lab, lang, valued=valued))
+    story.extend(_summary_flowables(
+        data, lab, lang, valued=valued, currency=currency,
+    ))
+    if variant == "devolucion":
+        # «Barcelona a ___ de ___ de ___» del modelo A-321 — rellenada con
+        # la fecha del documento, nunca en blanco.
+        story.append(Spacer(1, 6 * mm))
+        story.append(Paragraph(
+            _esc(_fecha_en_texto(company, data["fecha"], lang)),
+            _para_style(9),
+        ))
     doc.build(story, canvasmaker=_NumberedCanvas)
     return buf.getvalue()
 
@@ -830,6 +1028,9 @@ def _draw_header(
     title: str,
     doc_label: str,
     logo: Path | None,
+    *,
+    variant: str | None = None,
+    warehouse: dict[str, Any] | None = None,
 ) -> None:
     """Cabecera fija de TODAS las páginas (estructura de los modelos: logo a
     la izquierda, identidad fiscal a la derecha, franja del documento,
@@ -885,14 +1086,10 @@ def _draw_header(
     # el valor de PÁGINA lo estampa _NumberedCanvas (página X de Y)
     cv.drawString(182 * mm, sy - 9.2 * mm, data["fecha"] or "—")
 
-    # Bloque de cliente (izquierda).
+    # Bloque de cliente (izquierda). En el albarán de DEVOLUCIÓN (A-321)
+    # se apilan DOS direcciones: la de RECOGIDA (almacén configurado) y la
+    # de ENTREGA (el cliente), en compacto para caber en la cabecera.
     cli = data["cliente"]
-    cy = top - 34 * mm
-    cv.setFont(FONT_BOLD, 8)
-    cv.setFillColor(GREY)
-    cv.drawString(10 * mm, cy, lab["cliente"])
-    cv.setFillColor(colors.black)
-    cy -= 5 * mm
     cli_lines = [
         cli["nombre"],
         cli["domicilio"],
@@ -900,12 +1097,31 @@ def _draw_header(
         " ".join(x for x in (cli["provincia"], cli["pais"]) if x),
         cli["telefono"],
     ]
-    for text in cli_lines:
-        if not text:
-            continue
-        cv.setFont(FONT, 9)
-        cv.drawString(10 * mm, cy, text)
-        cy -= 4.4 * mm
+    cy = top - 32 * mm
+    if variant == "devolucion":
+        recogida = [
+            *(str((warehouse or {}).get("nombre") or "").splitlines()),
+            *(str((warehouse or {}).get("direccion") or "").splitlines()),
+        ]
+        cy = _draw_address_block(
+            cv, cy, lab["direccion_recogida"], recogida, size=7.6,
+        )
+        cy -= 2 * mm
+        _draw_address_block(
+            cv, cy, lab["direccion_entrega"], cli_lines, size=7.6,
+        )
+    else:
+        cv.setFont(FONT_BOLD, 8)
+        cv.setFillColor(GREY)
+        cv.drawString(10 * mm, cy - 2 * mm, lab["cliente"])
+        cv.setFillColor(colors.black)
+        cy -= 7 * mm
+        for text in cli_lines:
+            if not text:
+                continue
+            cv.setFont(FONT, 9)
+            cv.drawString(10 * mm, cy, text)
+            cy -= 4.4 * mm
 
     # N.I.F. + SU REFERENCIA + FORMA DE PAGO, y — si existe — el nº/fecha
     # del pedido del cliente en su propia línea (sin solapar columnas).
@@ -935,6 +1151,68 @@ def _draw_header(
     cv.line(7 * mm, top - 84 * mm, PAGE_W - 7 * mm, top - 84 * mm)
 
 
+def _draw_address_block(
+    cv: rl_canvas.Canvas, y: float, label: str, lines: list[str], *,
+    size: float,
+) -> float:
+    """Etiqueta gris + líneas compactas. Devuelve la Y tras el bloque."""
+    cv.setFont(FONT_BOLD, 7)
+    cv.setFillColor(GREY)
+    cv.drawString(10 * mm, y, label)
+    cv.setFillColor(colors.black)
+    y -= (size + 1) * 0.42 * mm * 1.2
+    for text in lines:
+        text = str(text or "").strip()
+        if not text:
+            continue
+        cv.setFont(FONT, size)
+        cv.drawString(10 * mm, y, _fit(text, size, 92))
+        y -= (size + 1.2) * 0.42 * mm
+    return y
+
+
+_MESES_ES = (
+    "enero", "febrero", "marzo", "abril", "mayo", "junio", "julio",
+    "agosto", "septiembre", "octubre", "noviembre", "diciembre",
+)
+
+
+def _fecha_en_texto(company: dict[str, Any], fecha: str, lang: str) -> str:
+    """«Barcelona, a 26 de agosto de 2026» (modelo A-321) — la población de
+    la empresa emisora + la fecha del documento, nunca en blanco."""
+    poblacion = re.sub(
+        r"^[0-9\s-]+", "", str(company.get("cp_poblacion") or ""),
+    ).strip() or "Barcelona"
+    try:
+        d, m, y = fecha.split("-")
+        if lang == "es":
+            return f"{poblacion}, a {int(d)} de {_MESES_ES[int(m) - 1]} de {y}"
+        return f"{poblacion}, {fecha}"
+    except (ValueError, IndexError):
+        return f"{poblacion}, {fecha}"
+
+
+def _title_for(
+    doc_type: str, variant: str | None, lab: dict[str, str],
+    company: dict[str, Any], lang: str,
+) -> str:
+    """Título del documento según variante. El del albarán VALORADO es
+    configurable por empresa (Bomedia: «ALBARÁN DE ENTREGA», modelo A-115);
+    sin configurar cae al título normal del tipo."""
+    if variant == "anticipo":
+        return lab["title_facturas_anticipo"]
+    if variant == "proforma":
+        return lab["title_presupuestos_proforma"]
+    if variant == "devolucion":
+        return lab["title_albaranes_devolucion"]
+    if variant == "valorado":
+        return (
+            _lang_text(company, "titulo_albaran_valorado", lang)
+            or lab["title_albaranes"]
+        )
+    return lab[f"title_{doc_type}"]
+
+
 def _fit(text: str, size: float, max_mm: float) -> str:
     """Recorta con «…» lo que no cabe en `max_mm` — un dato largo nunca debe
     solapar la columna vecina de la cabecera."""
@@ -947,7 +1225,7 @@ def _fit(text: str, size: float, max_mm: float) -> str:
 
 
 def _footer_lines(
-    company: dict[str, Any],
+    bank: dict[str, Any] | None,
     lab: dict[str, str],
     legal: str,
     intracom: str,
@@ -956,16 +1234,21 @@ def _footer_lines(
     validez: str,
 ) -> list[tuple[str, bool]]:
     """(texto, destacado) del pie fijo: validez del presupuesto, texto
-    intracomunitario, banco/IBAN/BIC, reserva de dominio y pie de
-    condiciones — en TODAS las páginas, como los modelos."""
+    intracomunitario, la CUENTA BANCARIA elegida (E4-fix1: el banco ya no
+    es fijo por empresa), reserva de dominio y pie de condiciones — en
+    TODAS las páginas, como los modelos."""
     out: list[tuple[str, bool]] = []
     if validez:
         out.append((validez, False))
     if intracom:
         out.append((intracom, True))
-    banco = str(company.get("banco") or "").strip()
-    iban = str(company.get("iban") or "").strip()
-    bic = str(company.get("bic") or "").strip()
+    bank = bank or {}
+    banco = " ".join(x for x in (
+        str(bank.get("nombre") or "").strip(),
+        str(bank.get("domicilio") or "").strip(),
+    ) if x).strip(", ")
+    iban = str(bank.get("iban") or "").strip()
+    bic = str(bank.get("bic") or "").strip()
     if banco or iban or bic:
         out.append((lab["cuenta"], True))
         if banco:
@@ -1006,6 +1289,7 @@ def _draw_footer(cv: rl_canvas.Canvas, lines: list[tuple[str, bool]]) -> None:
 
 def _lines_table(
     data: dict[str, Any], lab: dict[str, str], lang: str, *, valued: bool,
+    currency: str = "EUR",
 ) -> LongTable:
     """Tabla de líneas con cabecera repetida en cada página (repeatRows).
     Descripciones MULTILÍNEA como Paragraph: fluyen, no se cortan. En
@@ -1047,10 +1331,10 @@ def _lines_table(
         ]
         if valued:
             cells += [
-                _fmt_money(line["precio"], lang),
+                _fmt_money(line["precio"], lang, currency),
                 line["dto"] or "",
-                _fmt_money(line["subtotal"], lang),
-                _fmt_money(line["total"], lang),
+                _fmt_money(line["subtotal"], lang, currency),
+                _fmt_money(line["total"], lang, currency),
             ]
         rows.append(cells)
     if len(rows) == 1:
@@ -1081,6 +1365,7 @@ def _lines_table(
 
 def _summary_flowables(
     data: dict[str, Any], lab: dict[str, str], lang: str, *, valued: bool,
+    currency: str = "EUR",
 ) -> list[Any]:
     """Observaciones + bandas de IVA (incl. exenta) + TOTAL + vencimiento."""
     out: list[Any] = []
@@ -1118,10 +1403,11 @@ def _summary_flowables(
         for flag, key in ((show_neto, "neto"), (show_dto, "dto"),
                           (show_portes, "portes"), (show_fin, "fin")):
             if flag:
-                row.append(_fmt_money(b[key], lang))
-        row += [_fmt_money(b["base"], lang), _fmt_money(b["iva"], lang)]
+                row.append(_fmt_money(b[key], lang, currency))
+        row += [_fmt_money(b["base"], lang, currency),
+                _fmt_money(b["iva"], lang, currency)]
         if show_re:
-            row.append(_fmt_money(b["rec"], lang))
+            row.append(_fmt_money(b["rec"], lang, currency))
         band_rows.append(row)
     if len(band_rows) == 1:
         band_rows.append(["—"] + [""] * (len(headers) - 1))
@@ -1145,10 +1431,31 @@ def _summary_flowables(
         name="total", fontName=FONT_BOLD, fontSize=13, leading=16,
         alignment=2,  # derecha
     )
+    symbol = CURRENCIES.get(currency, {}).get("symbol", currency)
     out.append(Spacer(1, 3 * mm))
     out.append(Paragraph(
-        f"{lab['total']} {_fmt_money(data['total'], lang)} €", total_style,
+        f"{lab['total']} {_fmt_money(data['total'], lang, currency)} "
+        f"{symbol}",
+        total_style,
     ))
+    nota_style = ParagraphStyle(
+        name="nota", fontName=FONT, fontSize=8.2, leading=10.5, alignment=2,
+    )
+    if currency != "EUR":
+        # Los importes van TAL CUAL están en el documento — convertirlos
+        # sería alterar la contabilidad. Se hace explícito en el PDF.
+        out.append(Paragraph(
+            _esc(lab["divisa_nota"].format(code=currency)), nota_style,
+        ))
+    cambio = data.get("cambio") or 0.0
+    if cambio and abs(cambio - 1.0) > 0.0001:
+        # CAMFAC (tipo de cambio) — solo como referencia.
+        out.append(Paragraph(
+            _esc(lab["cambio_label"].format(
+                rate=_fmt_qty(cambio, lang),
+            )),
+            nota_style,
+        ))
     if data["vencimiento"]:
         out.append(Paragraph(
             f"<b>{lab['vencimiento']}</b> {data['vencimiento']}",
@@ -1161,13 +1468,117 @@ def _summary_flowables(
 # --- nombre de fichero ------------------------------------------------------
 
 
-def pdf_filename(doc_type: str, data: dict[str, Any], lang: str) -> str:
+def pdf_filename(
+    doc_type: str, data: dict[str, Any], lang: str,
+    variant: str | None = None,
+) -> str:
     """`Factura_5-260066_LABORATORIOS_PORTA.pdf` — legible y sin sorpresas
-    de encoding en cabeceras HTTP (ASCII, sin espacios)."""
-    doc_label = labels_for(lang)[f"doc_{doc_type}"].replace(" ", "-")
+    de encoding en cabeceras HTTP (ASCII, sin espacios). Las variantes
+    llevan su título («Factura-de-anticipo_…»)."""
+    lab = labels_for(lang)
+    if variant in ("anticipo", "proforma", "devolucion"):
+        key = {"anticipo": "title_facturas_anticipo",
+               "proforma": "title_presupuestos_proforma",
+               "devolucion": "title_albaranes_devolucion"}[variant]
+        doc_label = lab[key].capitalize().replace(" ", "-")
+    else:
+        doc_label = lab[f"doc_{doc_type}"].replace(" ", "-")
     cliente = data["cliente"]["nombre"] or data["cliente"]["codigo"] or ""
     cliente = unicodedata.normalize("NFKD", cliente)
     cliente = cliente.encode("ascii", "ignore").decode("ascii")
     cliente = re.sub(r"[^A-Za-z0-9]+", "_", cliente).strip("_").upper()[:40]
     parts = [doc_label, data["numero"]] + ([cliente] if cliente else [])
     return "_".join(parts) + ".pdf"
+
+
+# --- cascada de idioma (E4-fix1 Parte I) ------------------------------------
+#
+# El idioma es un DATO que el sistema conoce y arrastra, no una decisión
+# manual en cada descarga. Prioridad (de mayor a menor):
+#   1. selector de la descarga (lo aplica la UI — aquí no llega)
+#   2. idioma guardado en el pedido del CRM ligado al documento
+#   3. idioma del cliente (ficha de empresa CRM, vía su CODCLI vinculado)
+#   4. idioma por defecto de la empresa EMISORA (serie)
+#   5. español
+#
+# La «herencia por la cadena» (pedido → albarán → factura) no necesita
+# escribir nada en FACTUSOL: las conversiones de E3-B copian la referencia
+# común (REF*) por sufijo, así que cualquier documento de la cadena resuelve
+# a su pedido del CRM por esa referencia (y las facturas, además, por el
+# CODFAC vinculado al emitir).
+
+
+def _find_order_for_document(
+    session: Session, doc_type: str, doc: dict[str, Any],
+):
+    """Pedido del CRM ligado a un documento FACTUSOL: por el CODFAC
+    vinculado (facturas emitidas desde BoHub) o por la referencia común
+    `REF*` que comparte toda la cadena. None si no se puede ligar."""
+    from sqlalchemy import select  # noqa: PLC0415
+
+    from app.erp.models import Order  # noqa: PLC0415
+    from app.integrations.factusol.service import (  # noqa: PLC0415
+        _compose_ref,
+        _store_ref_prefix,
+    )
+
+    if doc_type == "facturas" and doc.get("codigo") is not None:
+        order = session.scalar(select(Order).where(
+            Order.factusol_invoice_number == str(doc["codigo"]),
+        ))
+        if order is not None:
+            return order
+    ref = str(doc.get("referencia") or "").strip()
+    parts = ref.split("-")
+    tail = parts[-1].lstrip("0") if parts else ""
+    if not ref or not tail.isdigit():
+        return None
+    candidates = session.scalars(
+        select(Order).where(Order.order_number.like(f"%{tail}")).limit(25)
+    ).all()
+    for order in candidates:
+        try:
+            composed = _compose_ref(
+                order.order_number, _store_ref_prefix(session, order),
+            )
+        except Exception:  # noqa: BLE001 — un candidato raro no rompe nada
+            continue
+        if composed == ref:
+            return order
+    return None
+
+
+def _find_company_by_codcli(session: Session, codcli: Any):
+    """Empresa del CRM vinculada al cliente FACTUSOL (CODCLI, enlace C-3)."""
+    from sqlalchemy import select  # noqa: PLC0415
+
+    from app.models.crm import Company  # noqa: PLC0415
+
+    code = str(codcli or "").strip()
+    if not code:
+        return None
+    return session.scalar(select(Company).where(
+        Company.factusol_company_id == code,
+    ))
+
+
+def suggest_pdf_language(
+    session: Session, doc_type: str, doc: dict[str, Any],
+) -> dict[str, str]:
+    """`{lang, source}` para preseleccionar el selector de idioma de la
+    descarga. `source` dice de dónde sale la propuesta («pedido»,
+    «cliente», «empresa», «defecto») para que el operador sepa si es un
+    dato real o el último recurso."""
+    order = _find_order_for_document(session, doc_type, doc)
+    if order is not None and (order.language or "") in SUPPORTED_LANGS:
+        return {"lang": order.language, "source": "pedido"}
+    company = _find_company_by_codcli(session, doc.get("cliente_codigo"))
+    if company is not None and (company.language or "") in SUPPORTED_LANGS:
+        return {"lang": company.language, "source": "cliente"}
+    serie = doc.get("serie")
+    if serie is not None:
+        emisora = company_for_serie(session, int(serie))
+        idioma = str(emisora.get("idioma_defecto") or "").strip().lower()
+        if idioma in SUPPORTED_LANGS:
+            return {"lang": idioma, "source": "empresa"}
+    return {"lang": "es", "source": "defecto"}

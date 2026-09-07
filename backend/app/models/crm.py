@@ -178,6 +178,9 @@ class Company(TimestampMixin, Base):
     sector: Mapped[str | None] = mapped_column(String(120))
     size_category: Mapped[str | None] = mapped_column(String(40))
     notes: Mapped[str | None] = mapped_column(Text)
+    # E4-fix1: idioma preferido del cliente para sus documentos (es/en/de/
+    # fr/nl). Nivel 3 de la cascada de idioma de los PDF del ERP.
+    language: Mapped[str | None] = mapped_column(String(5))
     source: Mapped[str] = mapped_column(
         String(40), default="manual", nullable=False
     )
