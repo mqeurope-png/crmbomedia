@@ -3,7 +3,37 @@
 import { useEffect, useState } from "react";
 import { PageHeader } from "../../components/PageHeader";
 import { extractErrorMessage } from "../../lib/errors";
-import { getErpSettings, updateErpSettings, type ErpSettings } from "../../lib/erpApi";
+import {
+  getErpSettings,
+  updateErpSettings,
+  uploadFactusolCompanyLogo,
+  type ErpSettings,
+  type FactusolCompany,
+} from "../../lib/erpApi";
+
+/** ERP-E4 — campos de texto de la identidad fiscal de cada empresa emisora
+ *  (alimentan los PDF; los valores iniciales salen de los modelos reales de
+ *  FACTUSOL). */
+const COMPANY_FIELDS: { key: keyof FactusolCompany & string; label: string }[] = [
+  { key: "nombre", label: "Nombre fiscal" },
+  { key: "direccion", label: "Domicilio" },
+  { key: "cp_poblacion", label: "CP y población" },
+  { key: "pais", label: "País" },
+  { key: "telefono", label: "Teléfono" },
+  { key: "email", label: "Email" },
+  { key: "nif", label: "NIF / VAT (tal como debe imprimirse)" },
+  { key: "banco", label: "Banco" },
+  { key: "iban", label: "IBAN" },
+  { key: "bic", label: "BIC / Swift" },
+];
+
+const COMPANY_TEXTS: { field: "legal" | "pie" | "intracom"; lang: string; label: string }[] = [
+  { field: "legal", lang: "es", label: "Reserva de dominio / texto legal (ES)" },
+  { field: "legal", lang: "en", label: "Reserva de dominio / texto legal (EN)" },
+  { field: "intracom", lang: "es", label: "Texto intracomunitario (ES)" },
+  { field: "intracom", lang: "en", label: "Texto intracomunitario (EN)" },
+  { field: "pie", lang: "es", label: "Pie de condiciones (ES)" },
+];
 
 /** Orígenes de pedido con serie de facturación propia opcional (C-2).
  *  Espejo del enum `OrderSource` del backend. */
@@ -191,6 +221,93 @@ export default function ErpSettingsPage() {
               ))}
             </tbody>
           </table>
+        </fieldset>
+
+        <fieldset className="erp-series-fieldset">
+          <legend>Empresas emisoras (PDF de documentos)</legend>
+          <p className="muted small">
+            Identidad fiscal que imprimen los PDF de presupuestos, pedidos,
+            albaranes y facturas, según la SERIE del documento. Los valores
+            iniciales salen de los modelos reales de FACTUSOL; corrígelos aquí
+            sin necesidad de despliegue. Los textos legales van por idioma.
+          </p>
+          {Object.entries(cfg.factusol_companies ?? {})
+            .sort(([a], [b]) => Number(a) - Number(b))
+            .map(([serie, comp]) => (
+              <details key={serie} className="erp-company-block">
+                <summary>
+                  Serie {serie} — {comp.nombre || "(sin nombre)"}
+                  {comp.logo ? " · logo ✓" : " · sin logo"}
+                </summary>
+                {COMPANY_FIELDS.map((f) => (
+                  <label className="field" key={f.key}>
+                    <span>{f.label}</span>
+                    <input
+                      type="text"
+                      value={String(comp[f.key] ?? "")}
+                      aria-label={`${f.label} (serie ${serie})`}
+                      onChange={(e) => setCfg({
+                        ...cfg,
+                        factusol_companies: {
+                          ...(cfg.factusol_companies ?? {}),
+                          [serie]: { ...comp, [f.key]: e.target.value },
+                        },
+                      })}
+                    />
+                  </label>
+                ))}
+                {COMPANY_TEXTS.map((t) => (
+                  <label className="field" key={`${t.field}-${t.lang}`}>
+                    <span>{t.label}</span>
+                    <textarea
+                      rows={2}
+                      value={comp[t.field]?.[t.lang] ?? ""}
+                      aria-label={`${t.label} (serie ${serie})`}
+                      onChange={(e) => setCfg({
+                        ...cfg,
+                        factusol_companies: {
+                          ...(cfg.factusol_companies ?? {}),
+                          [serie]: {
+                            ...comp,
+                            [t.field]: {
+                              ...(comp[t.field] ?? {}),
+                              [t.lang]: e.target.value,
+                            },
+                          },
+                        },
+                      })}
+                    />
+                  </label>
+                ))}
+                <label className="field">
+                  <span>Logo (PNG/JPG, se sube al elegirlo)</span>
+                  <input
+                    type="file"
+                    accept="image/png,image/jpeg"
+                    aria-label={`Logo serie ${serie}`}
+                    onChange={async (e) => {
+                      const file = e.target.files?.[0];
+                      if (!file) return;
+                      setError(null);
+                      try {
+                        await uploadFactusolCompanyLogo(serie, file);
+                        setCfg({
+                          ...cfg,
+                          factusol_companies: {
+                            ...(cfg.factusol_companies ?? {}),
+                            [serie]: { ...comp, logo: true },
+                          },
+                        });
+                      } catch (err) {
+                        setError(extractErrorMessage(
+                          err, "No se pudo subir el logo.",
+                        ));
+                      }
+                    }}
+                  />
+                </label>
+              </details>
+            ))}
         </fieldset>
 
         <div>

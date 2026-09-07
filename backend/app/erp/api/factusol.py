@@ -12,7 +12,15 @@ import logging
 import time
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Query,
+    Response,
+    UploadFile,
+    status,
+)
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -338,6 +346,106 @@ def get_factusol_document(
         logger.warning("factusol ciclo del detalle %s %s-%s KO: %s",
                        doc_type, serie, codigo, exc)
     return doc
+
+
+@router.get("/documents/{doc_type}/{serie}/{codigo}/pdf")
+def download_document_pdf(
+    doc_type: str,
+    serie: int,
+    codigo: int,
+    lang: str = Query(default="es", pattern="^(es|en|de|fr|nl)$"),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_view),
+) -> Response:
+    """ERP-E4 — PDF del documento (A4), generado por BoHub: la API de DELSOL
+    no imprime. Identidad fiscal = la de la EMPRESA de la serie del documento
+    (configurable en /erp/settings); `lang` cambia las etiquetas, nunca los
+    datos. Generación síncrona: solo compone un PDF, no escribe nada."""
+    _ = current_user
+    from app.erp.factusol_pdf import (  # noqa: PLC0415
+        company_for_serie,
+        extract_document_data,
+        generate_document_pdf,
+        load_raw_document,
+        logo_path_for_serie,
+        pdf_filename,
+    )
+    from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
+    from app.integrations.factusol.documents import DOC_SPECS  # noqa: PLC0415
+
+    if doc_type not in DOC_SPECS:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            f"Tipo de documento desconocido: {doc_type!r}",
+        )
+    client, ejercicio = _client_and_ejercicio(session)
+    try:
+        raw = load_raw_document(
+            client, doc_type, serie=serie, codigo=codigo, ejercicio=ejercicio,
+        )
+        if raw is None:
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND,
+                f"No existe el documento {serie}-{codigo} en {doc_type}",
+            )
+        data = extract_document_data(
+            client, doc_type, raw[0], raw[1], ejercicio=ejercicio,
+            fop_names=_fop_names(client, ejercicio),
+        )
+    except FactusolError as exc:
+        raise _factusol_gateway_error(exc, "factusol_pdf_failed") from exc
+    pdf = generate_document_pdf(
+        data,
+        company=company_for_serie(session, serie),
+        lang=lang,
+        logo=logo_path_for_serie(serie),
+    )
+    filename = pdf_filename(doc_type, data, lang)
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+#: ERP-E4 — logos de las empresas emisoras. Los modelos de FACTUSOL apuntan a
+#: rutas del PC de Bart, inaccesibles: se suben desde /erp/settings y viven
+#: bajo el directorio de assets (bind-mount persistente en producción). El
+#: PDF funciona sin logo.
+_LOGO_MAX_BYTES = 2 * 1024 * 1024
+_LOGO_TYPES = {"image/png": ".png", "image/jpeg": ".jpg"}
+
+
+@router.post("/companies/{serie}/logo", status_code=201)
+async def upload_company_logo(
+    serie: int,
+    file: UploadFile,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_admin),
+) -> dict[str, Any]:
+    _ = session, current_user
+    from app.erp.factusol_pdf import logos_dir  # noqa: PLC0415
+
+    ext = _LOGO_TYPES.get(str(file.content_type or "").lower())
+    if ext is None:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, {
+            "code": "logo_type", "detail": "El logo debe ser PNG o JPG.",
+        })
+    content = await file.read()
+    if not content or len(content) > _LOGO_MAX_BYTES:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, {
+            "code": "logo_size", "detail": "El logo debe pesar entre 1 byte y 2 MB.",
+        })
+    base = logos_dir()
+    base.mkdir(parents=True, exist_ok=True)
+    # Una sola variante por serie: borrar las otras extensiones evita servir
+    # un logo viejo con otra extensión.
+    for old_ext in (".png", ".jpg", ".jpeg"):
+        old = base / f"serie_{serie}{old_ext}"
+        if old.exists():
+            old.unlink()
+    (base / f"serie_{serie}{ext}").write_bytes(content)
+    return {"serie": serie, "logo": True}
 
 
 class ConvertDocumentPayload(BaseModel):

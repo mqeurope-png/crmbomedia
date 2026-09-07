@@ -14,6 +14,8 @@ jest.mock("../../lib/erpApi", () => ({
   getFactusolSeries: jest.fn(),
   convertFactusolDocument: jest.fn(),
   getFactusolConvertStatus: jest.fn(),
+  downloadFactusolDocumentPdf: jest.fn(),
+  saveBlob: jest.fn(),
   ERP_EDIT_ROLES: ["admin", "pedidos"],
 }));
 jest.mock("../../lib/api", () => ({
@@ -543,5 +545,66 @@ describe("FactusolDocumentDetailModal (E3-B)", () => {
     expect(
       await screen.findByText(/Creado desde/),
     ).toBeInTheDocument();
+  });
+});
+
+describe("FactusolDocumentDetailModal (E4 — PDF)", () => {
+  const { downloadFactusolDocumentPdf, saveBlob } =
+    jest.requireMock("../../lib/erpApi");
+
+  it.each(["presupuestos", "pedidos", "albaranes", "facturas"] as const)(
+    "el detalle de %s ofrece «Descargar PDF»",
+    async (docType) => {
+      // test_download_pdf_button_present_per_doc_type
+      mockDetail.mockResolvedValue(presupuesto({
+        doc_type: docType,
+        ciclo: { albaranes: [], facturas: [], origen: [], estado: null },
+      }));
+      const { unmount } = render(
+        <FactusolDocumentDetailModal
+          docType={docType} serie={5} codigo={27} onClose={() => {}}
+        />,
+      );
+      expect(
+        await screen.findByRole("button", { name: "Descargar PDF" }),
+      ).toBeInTheDocument();
+      expect(screen.getByLabelText("Idioma del PDF")).toBeInTheDocument();
+      unmount();
+    },
+  );
+
+  it("el selector de idioma viaja en la descarga y default por país", async () => {
+    // test_language_selector_on_download — cliente belga → EN por defecto;
+    // el usuario puede forzar ES y la petición lo lleva.
+    const user = userEvent.setup();
+    (downloadFactusolDocumentPdf as jest.Mock).mockResolvedValue(
+      new Blob(["%PDF"]),
+    );
+    mockDetail.mockResolvedValue(presupuesto({
+      doc_type: "facturas", numero: "2-100001", serie: 2, codigo: 100001,
+      cliente_pais: "Belgium",
+      ciclo: { albaranes: [], facturas: [], origen: [], estado: null },
+    }));
+    render(
+      <FactusolDocumentDetailModal
+        docType="facturas" serie={2} codigo={100001} onClose={() => {}}
+      />,
+    );
+    const selector = await screen.findByLabelText("Idioma del PDF");
+    expect(selector).toHaveValue("en");     // deducido del país del cliente
+    // E4-idiomas: los cinco idiomas disponibles en el selector.
+    for (const lang of ["ES", "EN", "DE", "FR", "NL"]) {
+      expect(
+        within(selector).getByRole("option", { name: lang }),
+      ).toBeInTheDocument();
+    }
+    await user.selectOptions(selector, "es");
+    await user.click(screen.getByRole("button", { name: "Descargar PDF" }));
+    await waitFor(() =>
+      expect(downloadFactusolDocumentPdf).toHaveBeenCalledWith(
+        "facturas", 2, 100001, "es",
+      ),
+    );
+    expect(saveBlob).toHaveBeenCalled();
   });
 });

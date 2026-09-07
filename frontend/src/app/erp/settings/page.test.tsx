@@ -22,6 +22,15 @@ function settings(over: Partial<ErpSettings> = {}): ErpSettings {
     factusol_estpcl_invoiced: "",
     factusol_estpre_accepted: "1",
     factusol_estalb_invoiced: "1",
+    factusol_companies: {
+      "5": {
+        nombre: "Streamtec SL", direccion: "C. Corsega 232, 5",
+        cp_poblacion: "08036 Barcelona", pais: "España",
+        telefono: "Tel. 932022530", email: "", nif: "CIF B64154263",
+        banco: "Banco de Sabadell", iban: "ES11 0081 0202 1700 0125 9030",
+        bic: "BSABESBB", legal: {}, pie: {}, intracom: {}, logo: false,
+      },
+    },
     ...over,
   };
 }
@@ -86,6 +95,20 @@ describe("ErpSettingsPage — serie de facturación (C-2)", () => {
     expect(
       await screen.findByLabelText("Estado ESTPCL del pedido facturado"),
     ).toHaveValue("2");
+  });
+
+  it("edita la identidad fiscal de las empresas emisoras (E4)", async () => {
+    const user = userEvent.setup();
+    render(<ErpSettingsPage />);
+    const iban = await screen.findByLabelText("IBAN (serie 5)");
+    expect(iban).toHaveValue("ES11 0081 0202 1700 0125 9030");
+    await user.clear(iban);
+    await user.type(iban, "ES00 TEST");
+    await user.click(screen.getByRole("button", { name: "Guardar" }));
+    await waitFor(() => expect(mockUpdate).toHaveBeenCalled());
+    expect(
+      mockUpdate.mock.calls[0][0].factusol_companies["5"].iban,
+    ).toBe("ES00 TEST");
   });
 
   it("muestra y guarda los estados de conversión ESTPRE/ESTALB (E3-B-fix3)", async () => {

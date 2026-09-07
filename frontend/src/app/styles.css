@@ -10969,3 +10969,28 @@ tr.is-inactive {
   color: #b54708;
   font-size: 13px;
 }
+
+/* ERP-E4 — descarga de PDF (selector de idioma + botón, en línea). */
+.erp-doc-pdf {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.erp-doc-pdf select {
+  padding: 6px 8px;
+}
+
+/* ERP-E4 — bloque plegable de cada empresa emisora en /erp/settings. */
+.erp-company-block {
+  border: 1px solid var(--line, #e2e8f0);
+  border-radius: 8px;
+  padding: 8px 12px;
+  margin: 0 0 10px;
+}
+.erp-company-block summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.erp-company-block .field {
+  margin-top: 8px;
+}

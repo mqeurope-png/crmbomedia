@@ -13,6 +13,8 @@ jest.mock("../../lib/erpApi", () => ({
   getFactusolSeries: jest.fn(),
   convertFactusolDocument: jest.fn(),
   getFactusolConvertStatus: jest.fn(),
+  downloadFactusolDocumentPdf: jest.fn(),
+  saveBlob: jest.fn(),
   ERP_EDIT_ROLES: ["admin", "pedidos"],
 }));
 jest.mock("../../lib/api", () => ({

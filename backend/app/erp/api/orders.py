@@ -728,6 +728,85 @@ def factusol_status(
         return {"status": "unknown", "reason": "factusol_unreachable"}
 
 
+@router.get("/{order_id}/factusol-pedido-pdf")
+def order_factusol_pedido_pdf(
+    order_id: str,
+    lang: str = Query(default="es", pattern="^(es|en|de|fr|nl)$"),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_view),
+):
+    """ERP-E4 — PDF del pedido de cliente (F_PCL) vinculado a este pedido del
+    CRM, localizado por su referencia común (REFPCL) igual que la emisión de
+    E2. 404 con código propio si el pedido aún no existe en FACTUSOL."""
+    _ = current_user
+    from fastapi import Response  # noqa: PLC0415
+
+    from app.erp.factusol_pdf import (  # noqa: PLC0415
+        company_for_serie,
+        extract_document_data,
+        generate_document_pdf,
+        load_raw_document,
+        logo_path_for_serie,
+        pdf_filename,
+    )
+    from app.integrations.factusol.client import (  # noqa: PLC0415
+        FactusolClient,
+        FactusolError,
+    )
+    from app.integrations.factusol.service import (  # noqa: PLC0415
+        _store_ref_prefix,
+        ejercicio_for,
+        find_pcl_by_order,
+        serie_of_row,
+    )
+
+    order = _get_order(session, order_id)
+    try:
+        client = FactusolClient.from_settings()
+        ejercicio = ejercicio_for(session)
+        pcl = find_pcl_by_order(
+            client, order, ejercicio,
+            ref_prefix=_store_ref_prefix(session, order),
+        )
+        if pcl is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, {
+                "code": "pedido_not_in_factusol",
+                "detail": "Este pedido aún no existe en FACTUSOL.",
+            })
+        serie = serie_of_row(pcl, "TIPPCL")
+        codigo = int(str(pcl.get("CODPCL")).strip())
+        if serie is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, {
+                "code": "pedido_sin_serie",
+                "detail": "El pedido en FACTUSOL no trae serie utilizable.",
+            })
+        raw = load_raw_document(
+            client, "pedidos", serie=serie, codigo=codigo, ejercicio=ejercicio,
+        )
+        if raw is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, {
+                "code": "pedido_not_in_factusol",
+                "detail": "Este pedido aún no existe en FACTUSOL.",
+            })
+        data = extract_document_data(
+            client, "pedidos", raw[0], raw[1], ejercicio=ejercicio,
+        )
+    except FactusolError as exc:
+        logger.warning("factusol pedido-pdf KO order=%s: %s", order_id, exc)
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, {
+            "code": "factusol_pdf_failed", "detail": str(exc)[:200],
+        }) from exc
+    pdf = generate_document_pdf(
+        data, company=company_for_serie(session, serie), lang=lang,
+        logo=logo_path_for_serie(serie),
+    )
+    return Response(
+        content=pdf, media_type="application/pdf",
+        headers={"Content-Disposition":
+                 f'attachment; filename="{pdf_filename("pedidos", data, lang)}"'},
+    )
+
+
 @router.get("/{order_id}/factusol-invoice-status")
 def factusol_invoice_status(
     order_id: str,

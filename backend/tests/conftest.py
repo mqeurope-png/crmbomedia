@@ -27,6 +27,9 @@ def _clear_factusol_chain_caches():
         chain._LIVE_COLUMNS_CACHE.clear()
         chain._CHAIN_INDEX_CACHE.clear()
         factusol_api._ESTALB_DIAG_CACHE.clear()
+        # E4: el catálogo de formas de pago también es cache en proceso — un
+        # test que lo llena (o lo deja vacío) no puede contaminar al resto.
+        factusol_api._FOP_CACHE.clear()
 
     _clear()
     yield
