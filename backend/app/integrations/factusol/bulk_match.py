@@ -618,7 +618,9 @@ def _new_company_from_factusol(
         city=str(row.get(columns["city"]) or "").strip() or None,
         postal_code=str(row.get(columns["postal_code"]) or "").strip() or None,
         state=str(row.get(columns["state"]) or "").strip() or None,
-        country="España",
+        # E4-fix3: país en ISO2 (uniforme con el resto y para la cascada de
+        # idioma). Estos clientes F_CLI son españoles por defecto.
+        country="ES",
         source="factusol",
         factusol_company_id=codcli,
         factusol_sync_source=BULK_SYNC_BY_EMAIL_SOURCE,

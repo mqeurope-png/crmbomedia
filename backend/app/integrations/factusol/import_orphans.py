@@ -85,12 +85,21 @@ def _text(row: dict[str, Any], column: str) -> str:
 def _country(row: dict[str, Any]) -> str:
     """`PAICLI` viene como ISO numérico («724»), a veces con ceros a la
     izquierda perdidos. Lo desconocido cae a España a propósito: el objetivo es
-    no dejar el campo vacío, no adivinar."""
+    no dejar el campo vacío, no adivinar.
+
+    E4-fix3: se devuelve el país YA en ISO2 (`normalize_country`) para que
+    el campo `companies.country` quede uniforme y la cascada de idioma lo
+    resuelva bien; si por lo que fuera no se reconociera el nombre, se
+    conserva el nombre original (no se pierde el dato)."""
+    from app.erp.language import normalize_country  # noqa: PLC0415
+
     code = _text(row, "PAICLI").lstrip("0") or "0"
-    for key, name in COUNTRY_BY_CODE.items():
+    name = DEFAULT_COUNTRY
+    for key, candidate in COUNTRY_BY_CODE.items():
         if key.lstrip("0") == code:
-            return name
-    return DEFAULT_COUNTRY
+            name = candidate
+            break
+    return normalize_country(name) or name
 
 
 def _orphan_view(row: dict[str, Any]) -> dict[str, Any]:
