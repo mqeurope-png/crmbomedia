@@ -5,6 +5,8 @@ import { AliasManager } from "../../components/AliasManager";
 import { ErrorState } from "../../components/ErrorState";
 import { PageHeader } from "../../components/PageHeader";
 import { ResetPasswordModal } from "../../components/ResetPasswordModal";
+import { RoleSelect } from "../../components/RoleSelect";
+import { scopeChangeWarning } from "../../lib/roles";
 import {
   isPasswordCompliant,
   PasswordRequirements,
@@ -23,8 +25,6 @@ import {
 } from "../../lib/api";
 import { extractErrorMessage } from "../../lib/errors";
 
-const roles: Role[] = ["admin", "manager", "user", "viewer"];
-
 export default function AdminUsersPage() {
   const [users, setUsers] = useState<User[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -32,6 +32,10 @@ export default function AdminUsersPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [createPassword, setCreatePassword] = useState("");
   const [createConfirm, setCreateConfirm] = useState("");
+  const [createRole, setCreateRole] = useState<Role>("viewer");
+  // ERP-F2-fix1 — rol elegido por fila de edición (controlado, para leer el
+  // aviso de cambio de ámbito y decidir el rol al guardar).
+  const [editRoles, setEditRoles] = useState<Record<string, Role>>({});
   const [editPasswords, setEditPasswords] = useState<Record<string, string>>({});
   const [resetUser, setResetUser] = useState<User | null>(null);
 
@@ -64,11 +68,12 @@ export default function AdminUsersPage() {
         email: form.get("email"),
         full_name: form.get("full_name"),
         password: form.get("password"),
-        role: form.get("role"),
+        role: createRole,
       });
       event.currentTarget.reset();
       setCreatePassword("");
       setCreateConfirm("");
+      setCreateRole("viewer");
       setMessage("Usuario creado");
       await loadUsers();
     } catch (err) {
@@ -80,10 +85,17 @@ export default function AdminUsersPage() {
     setError(null);
     setMessage(null);
     const data = new FormData(form);
+    const nextRole = editRoles[user.id] ?? user.role;
+    // ERP-F2-fix1 — el cambio de ámbito (CRM↔ERP) tiene consecuencias: se
+    // confirma antes de guardar, no es un ajuste menor.
+    const warning = scopeChangeWarning(user.role, nextRole);
+    if (warning && !window.confirm(`${warning}\n\n¿Guardar el cambio?`)) {
+      return;
+    }
     try {
       await updateUser(user.id, {
         full_name: data.get("full_name"),
-        role: data.get("role"),
+        role: nextRole,
         is_active: data.get("is_active") === "true",
       });
       const password = String(data.get("new_password") ?? "");
@@ -155,7 +167,9 @@ export default function AdminUsersPage() {
                   {createMatches ? " Las contraseñas coinciden" : " Las contraseñas no coinciden"}
                 </p>
               ) : null}
-              <label>Rol<select name="role" defaultValue="viewer">{roles.map((role) => <option key={role} value={role}>{role}</option>)}</select></label>
+              <label>Rol
+                <RoleSelect name="role" value={createRole} onChange={setCreateRole} />
+              </label>
               <button className="button" type="submit" disabled={!canCreate}>
                 Crear
               </button>
@@ -171,7 +185,14 @@ export default function AdminUsersPage() {
                     <form className="user-edit-row" onSubmit={(event) => { event.preventDefault(); saveUser(user, event.currentTarget); }}>
                       <strong>{user.email}</strong>
                       <input name="full_name" defaultValue={user.full_name} required />
-                      <select name="role" defaultValue={user.role}>{roles.map((role) => <option key={role} value={role}>{role}</option>)}</select>
+                      <RoleSelect
+                        name="role"
+                        value={editRoles[user.id] ?? user.role}
+                        originalRole={user.role}
+                        onChange={(role) =>
+                          setEditRoles((prev) => ({ ...prev, [user.id]: role }))
+                        }
+                      />
                       <select name="is_active" defaultValue={String(user.is_active)}><option value="true">Activo</option><option value="false">Inactivo</option></select>
                       <input
                         name="new_password"
