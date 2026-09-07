@@ -752,7 +752,9 @@ export type FactusolCycle = {
  *  preseleccionar el selector indicando si es dato real o suposición. */
 export type FactusolPdfLangSuggestion = {
   lang: FactusolPdfLang;
-  source: "pedido" | "cliente" | "empresa" | "defecto";
+  // E4-fix2: `pais_cliente` = idioma deducido del país de la empresa
+  // cliente (distinto de `cliente`, que es el idioma puesto a mano).
+  source: "pedido" | "cliente" | "pais_cliente" | "empresa" | "defecto";
 };
 
 export type FactusolDocumentDetail = FactusolDocument & {

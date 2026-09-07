@@ -45,6 +45,10 @@ from reportlab.platypus import (
 )
 from sqlalchemy.orm import Session
 
+from app.erp.language import (
+    SUPPORTED_LANGS,
+    language_for_country,
+)
 from app.integrations.factusol.client import FactusolClient, FactusolError
 from app.integrations.factusol.documents import DOC_SPECS, visible_number
 from app.integrations.factusol.quotes import (
@@ -79,8 +83,8 @@ if (_DEJAVU_DIR / "DejaVuSans.ttf").exists():
         logger.warning("factusol_pdf: no se pudo registrar DejaVu", exc_info=True)
 
 # --- idiomas ----------------------------------------------------------------
-
-SUPPORTED_LANGS = ("es", "en", "de", "fr", "nl")
+# El mapa país→idioma y la lista de soportados viven en `app.erp.language`
+# (módulo ligero compartido con el mapper de Woo — E4-fix2).
 
 #: E4-fix1 Parte B — divisas mostrables. DISCOVERY: en el volcado VIVO de
 #: F_FAC (167 columnas) NO existe columna de código de divisa; la única
@@ -1566,15 +1570,27 @@ def suggest_pdf_language(
     session: Session, doc_type: str, doc: dict[str, Any],
 ) -> dict[str, str]:
     """`{lang, source}` para preseleccionar el selector de idioma de la
-    descarga. `source` dice de dónde sale la propuesta («pedido»,
-    «cliente», «empresa», «defecto») para que el operador sepa si es un
-    dato real o el último recurso."""
+    descarga. `source` dice de dónde sale la propuesta para que el operador
+    distinga un dato confirmado de una deducción:
+      - `pedido`      idioma guardado en el pedido del CRM
+      - `cliente`     idioma explícito en la ficha de la empresa cliente
+      - `pais_cliente` derivado del PAÍS de la empresa cliente (E4-fix2)
+      - `empresa`     idioma por defecto de la empresa emisora (serie)
+      - `defecto`     español (último recurso)"""
     order = _find_order_for_document(session, doc_type, doc)
     if order is not None and (order.language or "") in SUPPORTED_LANGS:
         return {"lang": order.language, "source": "pedido"}
     company = _find_company_by_codcli(session, doc.get("cliente_codigo"))
-    if company is not None and (company.language or "") in SUPPORTED_LANGS:
-        return {"lang": company.language, "source": "cliente"}
+    if company is not None:
+        # 3. idioma EXPLÍCITO del cliente (alguien lo confirmó).
+        if (company.language or "") in SUPPORTED_LANGS:
+            return {"lang": company.language, "source": "cliente"}
+        # 4. derivado del PAÍS del cliente (E4-fix2): mejor un idioma
+        # razonable que caer a la empresa emisora. Es deducción — la UI lo
+        # marca «del país del cliente».
+        derived = language_for_country(company.country)
+        if derived in SUPPORTED_LANGS:
+            return {"lang": derived, "source": "pais_cliente"}
     serie = doc.get("serie")
     if serie is not None:
         emisora = company_for_serie(session, int(serie))
