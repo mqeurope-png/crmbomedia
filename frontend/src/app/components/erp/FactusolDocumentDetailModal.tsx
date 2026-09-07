@@ -147,6 +147,9 @@ export const PDF_LANGS: { value: FactusolPdfLang; label: string }[] = [
 const PDF_LANG_SOURCE_LABELS: Record<string, string> = {
   pedido: "del pedido",
   cliente: "del cliente",
+  // E4-fix2: deducción por el país del cliente — se distingue del idioma
+  // que el cliente tiene puesto a mano («del cliente»).
+  pais_cliente: "del país del cliente",
   empresa: "de la empresa emisora",
   defecto: "por defecto",
 };

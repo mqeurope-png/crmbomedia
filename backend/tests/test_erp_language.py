@@ -74,10 +74,10 @@ def _order(session: Session, *, order_number: str = "BOPRIN-99917",
 
 
 def _company(session: Session, *, codcli: str = "2458",
-             language: str | None = None) -> Company:
+             language: str | None = None, country: str | None = None) -> Company:
     company = Company(
         name="DUPLICODER, S.L.", source="manual",
-        factusol_company_id=codcli, language=language,
+        factusol_company_id=codcli, language=language, country=country,
     )
     session.add(company)
     session.commit()
@@ -122,14 +122,25 @@ def test_order_language_captured_on_woo_import() -> None:
         "fr", "billing.country:FR",
     )
     assert detect_order_language({"billing": {"country": "ES"}})[0] == "es"
-    # Bélgica es ambigua (fr/nl) → NO se inventa.
-    assert detect_order_language({"billing": {"country": "BE"}}) == (None, None)
+    # E4-fix2: BE→fr y CH→en dejan de quedar vacíos (decisión de Bart).
+    assert detect_order_language({"billing": {"country": "BE"}}) == (
+        "fr", "billing.country:BE",
+    )
+    assert detect_order_language({"billing": {"country": "CH"}}) == (
+        "en", "billing.country:CH",
+    )
+    # Un país con valor pero fuera del mapa → inglés (no vacío).
+    assert detect_order_language({"billing": {"country": "JP"}}) == (
+        "en", "billing.country:JP",
+    )
     # Idioma no soportado → se ignora y se sigue sondeando.
     assert detect_order_language({
         "meta_data": [{"key": "wpml_language", "value": "it"}],
         "billing": {"country": "DE"},
     }) == ("de", "billing.country:DE")
+    # Pedido SIN país → vacío (no hay nada de lo que deducir).
     assert detect_order_language({}) == (None, None)
+    assert detect_order_language({"billing": {"country": ""}}) == (None, None)
 
 
 def test_woo_import_sets_language_on_created_order(db) -> None:
@@ -210,6 +221,78 @@ def test_language_falls_back_to_company_default_then_spanish(db) -> None:
     # Un idioma no soportado guardado en el pedido no rompe la cascada.
     _order(db, language="it")
     assert suggest_pdf_language(db, "albaranes", _doc(serie=2))["lang"] == "en"
+
+
+# ---------------------------------------------------------------------------
+# E4-fix2 — idioma por país del cliente
+# ---------------------------------------------------------------------------
+
+
+def test_country_language_map_covers_ambiguous() -> None:
+    from app.erp.language import language_for_country
+
+    assert language_for_country("BE") == "fr"    # Bélgica → francés
+    assert language_for_country("CH") == "en"    # Suiza → inglés
+    assert language_for_country("ES") == "es"
+    assert language_for_country("AT") == "de"
+    # Cualquier país con valor pero no listado → inglés (no vacío).
+    assert language_for_country("JP") == "en"
+    assert language_for_country("us") == "en"    # tolera minúsculas
+
+
+def test_missing_country_leaves_language_empty() -> None:
+    from app.erp.language import language_for_country
+
+    # Sin país no hay nada de lo que deducir → None (la cascada sigue).
+    assert language_for_country(None) is None
+    assert language_for_country("") is None
+    assert language_for_country("   ") is None
+
+
+def test_cascade_includes_client_country_step(db) -> None:
+    """Empresa cliente SIN idioma pero CON país → idioma derivado del país,
+    con procedencia «país del cliente» (gana a la emisora)."""
+    _company(db, language=None, country="BE")
+    # serie 5 = Streamtec (emisora → es); el país del cliente (BE→fr) manda.
+    assert suggest_pdf_language(db, "facturas", _doc(serie=5)) == {
+        "lang": "fr", "source": "pais_cliente",
+    }
+
+
+def test_explicit_client_language_beats_country(db) -> None:
+    """Si el cliente tiene idioma puesto a mano, el país NO manda (validación
+    4 de Bart: suizo con «alemán» explícito → alemán, no inglés)."""
+    _company(db, language="de", country="CH")
+    assert suggest_pdf_language(db, "facturas", _doc(serie=2)) == {
+        "lang": "de", "source": "cliente",
+    }
+
+
+def test_backfill_dry_run_writes_nothing(db) -> None:
+    from scripts.backfill_company_language import run
+
+    _company(db, codcli="A", language=None, country="BE")
+    _company(db, codcli="B", language=None, country="CH")
+    _company(db, codcli="C", language=None, country=None)  # sin país
+    stats = run(apply=False, session=db)
+    assert stats["afectadas"] == 2 and stats["sin_pais"] == 1
+    # Nada escrito.
+    langs = {c.factusol_company_id: c.language
+             for c in db.query(Company).all()}
+    assert langs == {"A": None, "B": None, "C": None}
+
+
+def test_backfill_does_not_overwrite_existing(db) -> None:
+    from scripts.backfill_company_language import run
+
+    _company(db, codcli="A", language=None, country="BE")   # → fr
+    _company(db, codcli="B", language="nl", country="CH")   # ya tiene: intacto
+    stats = run(apply=True, session=db)
+    assert stats["afectadas"] == 1 and stats["ya_tenian"] == 1
+    db.expire_all()
+    langs = {c.factusol_company_id: c.language
+             for c in db.query(Company).all()}
+    assert langs == {"A": "fr", "B": "nl"}   # B no se pisó
 
 
 # ---------------------------------------------------------------------------

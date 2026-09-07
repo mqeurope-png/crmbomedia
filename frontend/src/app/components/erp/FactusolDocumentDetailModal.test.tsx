@@ -723,4 +723,30 @@ describe("FactusolDocumentDetailModal (E4-fix1 — variantes + banco + idioma)",
     expect(idioma).toHaveValue("fr");     // viene del pedido
     expect(screen.getByText(/del pedido/)).toBeInTheDocument();
   });
+
+  it("la procedencia distingue «del país del cliente» de «del cliente» (E4-fix2)", async () => {
+    mockDetail.mockResolvedValue(factura({
+      pdf_lang: { lang: "fr", source: "pais_cliente" },
+    }));
+    const { unmount } = render(
+      <FactusolDocumentDetailModal
+        docType="facturas" serie={5} codigo={260063} onClose={() => {}}
+      />,
+    );
+    expect(await screen.findByLabelText("Idioma del PDF")).toHaveValue("fr");
+    expect(screen.getByText(/del país del cliente/)).toBeInTheDocument();
+    unmount();
+    // Idioma puesto a mano → «del cliente», sin «país».
+    mockDetail.mockResolvedValue(factura({
+      pdf_lang: { lang: "de", source: "cliente" },
+    }));
+    render(
+      <FactusolDocumentDetailModal
+        docType="facturas" serie={5} codigo={260063} onClose={() => {}}
+      />,
+    );
+    await screen.findByLabelText("Idioma del PDF");
+    expect(screen.getByText(/del cliente/)).toBeInTheDocument();
+    expect(screen.queryByText(/del país del cliente/)).not.toBeInTheDocument();
+  });
 });

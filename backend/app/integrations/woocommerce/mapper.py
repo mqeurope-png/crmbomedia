@@ -29,6 +29,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.erp.language import language_for_country, normalize_language
 from app.erp.models import (
     Order,
     OrderLine,
@@ -207,43 +208,27 @@ _LANGUAGE_META_KEYS = (
     "pll_language", "_pll_language", "_locale", "locale", "language",
 )
 
-#: País de facturación → idioma, SOLO para países sin ambigüedad razonable.
-#: Bélgica (fr/nl) o Suiza (de/fr/it) NO están: antes vacío que inventado.
-_COUNTRY_LANGUAGE = {
-    "ES": "es", "FR": "fr", "DE": "de", "AT": "de", "NL": "nl",
-    "GB": "en", "IE": "en", "US": "en",
-}
-
-_SUPPORTED_LANGS = ("es", "en", "de", "fr", "nl")
-
-
-def _norm_lang(value: Any) -> str | None:
-    """`es_ES` / `fr-FR` / `NL` → subtag primario en minúscula, solo si es
-    uno de los idiomas que el ERP entiende."""
-    raw = str(value or "").strip().lower().replace("_", "-")
-    lang = raw.split("-")[0]
-    return lang if lang in _SUPPORTED_LANGS else None
-
-
 def detect_order_language(woo: dict[str, Any]) -> tuple[str | None, str | None]:
     """`(idioma, fuente)` del pedido Woo, o `(None, None)` si no se puede
-    deducir — nunca se inventa (el operador lo corrige en la ficha).
+    deducir (pedido SIN país — la cascada seguirá por el cliente).
 
     Orden de sondeo: meta_data de WPML/Polylang/locale → campos de primer
-    nivel (`customer_locale` y afines) → país de facturación (solo países
-    sin ambigüedad)."""
+    nivel (`customer_locale` y afines) → país de facturación. El discovery
+    (E4-fix2) confirmó que las tres tiendas solo traen el país; se resuelve
+    con el mapa compartido `language_for_country` — BE→fr, CH→en, resto→en,
+    sin dejar vacíos por ambigüedad. Solo un pedido SIN país queda vacío."""
     for md in woo.get("meta_data") or []:
         key = str(md.get("key") or "").strip().lower()
         if key in _LANGUAGE_META_KEYS or key.endswith("wpml_language"):
-            lang = _norm_lang(md.get("value"))
+            lang = normalize_language(md.get("value"))
             if lang:
                 return lang, f"meta:{key}"
     for key in ("customer_locale", "locale", "lang", "language"):
-        lang = _norm_lang(woo.get(key))
+        lang = normalize_language(woo.get(key))
         if lang:
             return lang, key
     country = str((woo.get("billing") or {}).get("country") or "").strip().upper()
-    lang = _COUNTRY_LANGUAGE.get(country)
+    lang = language_for_country(country)
     if lang:
         return lang, f"billing.country:{country}"
     return None, None
