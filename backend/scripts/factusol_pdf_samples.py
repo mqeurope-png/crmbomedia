@@ -176,7 +176,8 @@ def generate_live(doc_type: str, serie: int, codigo: int, lang: str,
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--live", nargs=3, metavar=("TIPO", "SERIE", "CODIGO"))
-    parser.add_argument("--lang", default="es", choices=("es", "en"))
+    parser.add_argument("--lang", default="es",
+                        choices=("es", "en", "de", "fr", "nl"))
     parser.add_argument("--out", default="documento.pdf")
     parser.add_argument(
         "--dir", default=str(Path(__file__).resolve().parents[2]

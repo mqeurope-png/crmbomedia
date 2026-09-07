@@ -5,6 +5,7 @@ import { useParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { PageHeader } from "../../../components/PageHeader";
 import { EmbalarModal } from "../../../components/erp/EmbalarModal";
+import { PDF_LANGS } from "../../../components/erp/FactusolDocumentDetailModal";
 import { EmitFactusolButton } from "../../../components/erp/EmitFactusolButton";
 import { OrderStatusMachine } from "../../../components/erp/OrderStatusMachine";
 import { ShippingFilesSection } from "../../../components/erp/ShippingFilesSection";
@@ -132,8 +133,9 @@ export default function ErpOrderDetailPage() {
             aria-label="Idioma del PDF"
             onChange={(e) => setPdfLang(e.target.value as FactusolPdfLang)}
           >
-            <option value="es">ES</option>
-            <option value="en">EN</option>
+            {PDF_LANGS.map((l) => (
+              <option key={l.value} value={l.value}>{l.label}</option>
+            ))}
           </select>
           <button
             type="button"

@@ -120,12 +120,24 @@ function today(): string {
 }
 
 /** E4 — idioma por defecto del PDF: el del país del cliente si se puede
- *  deducir; español si no. */
+ *  deducir; español si no; inglés para el resto de extranjeros. */
 export function defaultPdfLang(pais: string | null | undefined): FactusolPdfLang {
   const p = (pais ?? "").trim().toLowerCase();
   if (!p || /espa|spain|^es$/.test(p)) return "es";
+  if (/alem|german|deutsch|österreich|osterreich|austria/.test(p)) return "de";
+  if (/franc/.test(p)) return "fr";
+  if (/nederland|netherland|holanda|holland|pa[íi]ses bajos/.test(p)) return "nl";
   return "en";
 }
+
+/** Opciones del selector de idioma del PDF. */
+export const PDF_LANGS: { value: FactusolPdfLang; label: string }[] = [
+  { value: "es", label: "ES" },
+  { value: "en", label: "EN" },
+  { value: "de", label: "DE" },
+  { value: "fr", label: "FR" },
+  { value: "nl", label: "NL" },
+];
 
 /** ERP-E3-A/E3-B — detalle de un documento FACTUSOL: cabecera + líneas +
  *  posición en el ciclo PRE→ALB→FAC, con las acciones de crear el siguiente
@@ -427,8 +439,9 @@ export function FactusolDocumentDetailModal({
                 aria-label="Idioma del PDF"
                 onChange={(e) => setPdfLang(e.target.value as FactusolPdfLang)}
               >
-                <option value="es">ES</option>
-                <option value="en">EN</option>
+                {PDF_LANGS.map((l) => (
+                  <option key={l.value} value={l.value}>{l.label}</option>
+                ))}
               </select>
               <button
                 type="button"

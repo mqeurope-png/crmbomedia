@@ -731,7 +731,7 @@ def factusol_status(
 @router.get("/{order_id}/factusol-pedido-pdf")
 def order_factusol_pedido_pdf(
     order_id: str,
-    lang: str = Query(default="es", pattern="^(es|en)$"),
+    lang: str = Query(default="es", pattern="^(es|en|de|fr|nl)$"),
     session: Session = Depends(get_session),
     current_user: User = Depends(require_erp_view),
 ):

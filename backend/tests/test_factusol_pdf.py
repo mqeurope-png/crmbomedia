@@ -281,6 +281,32 @@ def test_language_switch_changes_labels_not_data() -> None:
     assert "225.47" in en
 
 
+def test_pdf_de_fr_nl_labels() -> None:
+    """Los tres idiomas nuevos etiquetan bien y no tocan los datos. El
+    fallback a español cubre cualquier clave que faltara en el futuro."""
+    header, lines = _header("facturas"), [_linea("facturas", 1)]
+    esperado = {
+        "de": ["RECHNUNG", "ZAHLUNGSBEDINGUNGEN", "MENGE", "GESAMT:",
+               "1 von 1"],
+        "fr": ["FACTURE", "CONDITIONS DE PAIEMENT", "QUANTITÉ", "TOTAL :",
+               "1 sur 1"],
+        "nl": ["FACTUUR", "BETALINGSVOORWAARDEN", "AANTAL", "TOTAAL:",
+               "1 van 1"],
+    }
+    for lang, needles in esperado.items():
+        pdf, _ = _pdf("facturas", header, lines, lang=lang)
+        text = _texto(pdf)
+        for needle in needles:
+            assert needle in text, f"{lang} sin {needle!r}"
+        # Datos intactos en cualquier idioma.
+        assert "DUPLICODER, S.L." in text
+        assert "5-260063" in text
+    # Presupuesto: texto de validez traducido.
+    pdf, _ = _pdf("presupuestos", _header("presupuestos"),
+                  [_linea("presupuestos", 1)], lang="de")
+    assert "30 Tage" in _texto(pdf)
+
+
 def test_pdf_filename_is_readable_ascii() -> None:
     data = extract_document_data(
         _alb_resolver(), "facturas", _header("facturas"),
@@ -374,6 +400,13 @@ def test_pdf_endpoint_404_and_lang_validation(http, session_factory) -> None:
         headers=auth_headers(http, "user"),
     )
     assert bad_lang.status_code == 422
+    with _patched_factusol(FakeClient(_tables())):
+        de = http.get(
+            "/api/erp/factusol/documents/facturas/5/260063/pdf?lang=de",
+            headers=auth_headers(http, "user"),
+        )
+    assert de.status_code == 200
+    assert "RECHNUNG" in _texto(de.content)
 
 
 def test_settings_expose_and_save_companies(http, session_factory) -> None:

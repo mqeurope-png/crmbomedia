@@ -592,6 +592,12 @@ describe("FactusolDocumentDetailModal (E4 — PDF)", () => {
     );
     const selector = await screen.findByLabelText("Idioma del PDF");
     expect(selector).toHaveValue("en");     // deducido del país del cliente
+    // E4-idiomas: los cinco idiomas disponibles en el selector.
+    for (const lang of ["ES", "EN", "DE", "FR", "NL"]) {
+      expect(
+        within(selector).getByRole("option", { name: lang }),
+      ).toBeInTheDocument();
+    }
     await user.selectOptions(selector, "es");
     await user.click(screen.getByRole("button", { name: "Descargar PDF" }));
     await waitFor(() =>

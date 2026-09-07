@@ -353,7 +353,7 @@ def download_document_pdf(
     doc_type: str,
     serie: int,
     codigo: int,
-    lang: str = Query(default="es", pattern="^(es|en)$"),
+    lang: str = Query(default="es", pattern="^(es|en|de|fr|nl)$"),
     session: Session = Depends(get_session),
     current_user: User = Depends(require_erp_view),
 ) -> Response:

@@ -823,7 +823,7 @@ export async function getFactusolConvertStatus(
 
 // --- PDF de documentos (ERP-E4) ---------------------------------------------
 
-export type FactusolPdfLang = "es" | "en";
+export type FactusolPdfLang = "es" | "en" | "de" | "fr" | "nl";
 
 /** PDF del documento, generado por BoHub (la API de DELSOL no imprime). */
 export async function downloadFactusolDocumentPdf(
