@@ -22,6 +22,7 @@ import {
   type FactusolSerie,
 } from "../../lib/erpApi";
 import { extractErrorMessage } from "../../lib/errors";
+import { InvoiceEmailModal } from "./InvoiceEmailModal";
 
 const TYPE_LABELS: Record<FactusolDocType, string> = {
   pedidos: "Pedido de cliente",
@@ -221,6 +222,8 @@ export function FactusolDocumentDetailModal({
   // Cuentas bancarias de la empresa emisora (serie) — para el selector de
   // banco de la descarga. Se cargan una vez de los ajustes del ERP.
   const [banks, setBanks] = useState<FactusolBankAccount[]>([]);
+  // ERP-F1 — modal de envío de la factura por email (solo facturas).
+  const [emailOpen, setEmailOpen] = useState(false);
 
   useEffect(() => {
     // Mantiene la referencia si las props no cambiaron: un objeto nuevo
@@ -591,6 +594,18 @@ export function FactusolDocumentDetailModal({
               >
                 {pdfBusy ? "Generando…" : "Descargar PDF"}
               </button>
+              {/* ERP-F1 — enviar la factura por email en el idioma del
+                  cliente (previsualización obligatoria en el modal). Solo
+                  facturas y con permiso de edición. */}
+              {current.docType === "facturas" && canEdit ? (
+                <button
+                  type="button"
+                  className="button"
+                  onClick={() => setEmailOpen(true)}
+                >
+                  Enviar factura por email
+                </button>
+              ) : null}
             </span>
           ) : null}
           {doc && canEdit
@@ -641,6 +656,17 @@ export function FactusolDocumentDetailModal({
               );
             }
           }}
+        />
+      ) : null}
+
+      {doc && emailOpen && current.docType === "facturas" ? (
+        <InvoiceEmailModal
+          serie={current.serie}
+          codigo={Number(current.codigo)}
+          numero={doc.numero}
+          bank={pdfBankOptions.length > 1 ? pdfBank : null}
+          variant={pdfVariant === "anticipo" ? "anticipo" : null}
+          onClose={() => setEmailOpen(false)}
         />
       ) : null}
     </div>

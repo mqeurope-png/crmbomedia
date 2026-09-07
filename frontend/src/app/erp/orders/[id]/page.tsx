@@ -6,6 +6,7 @@ import { useCallback, useEffect, useState } from "react";
 import { PageHeader } from "../../../components/PageHeader";
 import { EmbalarModal } from "../../../components/erp/EmbalarModal";
 import { PDF_LANGS } from "../../../components/erp/FactusolDocumentDetailModal";
+import { InvoiceEmailModal } from "../../../components/erp/InvoiceEmailModal";
 import { EmitFactusolButton } from "../../../components/erp/EmitFactusolButton";
 import { OrderStatusMachine } from "../../../components/erp/OrderStatusMachine";
 import { ShippingFilesSection } from "../../../components/erp/ShippingFilesSection";
@@ -15,6 +16,7 @@ import {
   customerLabel,
   downloadOrderFactusolPedidoPdf,
   getOrder,
+  getOrderFactusolInvoiceRef,
   getOrderTimeline,
   getFactusolStatus,
   fireTransition,
@@ -22,6 +24,7 @@ import {
   updateOrderLanguage,
   ERP_EDIT_ROLES,
   type AvailableTransition,
+  type FactusolInvoiceRef,
   type FactusolPdfLang,
   type FactusolStatus,
   type OrderDetail,
@@ -42,6 +45,10 @@ export default function ErpOrderDetailPage() {
   // E4 — PDF del pedido de cliente (F_PCL) vinculado en FACTUSOL.
   const [pdfLang, setPdfLang] = useState<FactusolPdfLang>("es");
   const [pdfBusy, setPdfBusy] = useState(false);
+  // ERP-F1 — envío de la factura por email: primero se resuelve la factura
+  // FACTUSOL del pedido (serie+número) y luego se abre el modal de preview.
+  const [invoiceRef, setInvoiceRef] = useState<FactusolInvoiceRef | null>(null);
+  const [emailBusy, setEmailBusy] = useState(false);
 
   const load = useCallback(() => {
     getOrder(id)
@@ -208,7 +215,45 @@ export default function ErpOrderDetailPage() {
             openSignal={emitSignal}
             onInvoiced={() => load()}
           />
+          {/* ERP-F1 — enviar la factura por email cuando el pedido ya está
+              facturado en FACTUSOL. Resuelve la factura (serie+número) y abre
+              la previsualización obligatoria. */}
+          {order.factusol_invoice_number
+           || factusolStatus?.status === "invoiced"
+           || order.invoice_status === "generated"
+           || order.invoice_status === "invoiced_by_erp" ? (
+            <button
+              type="button"
+              className="button small"
+              disabled={emailBusy}
+              onClick={async () => {
+                setEmailBusy(true);
+                setError(null);
+                try {
+                  const ref = await getOrderFactusolInvoiceRef(order.id);
+                  setInvoiceRef(ref);
+                } catch (e) {
+                  setError(extractErrorMessage(
+                    e, "No se pudo localizar la factura en FACTUSOL.",
+                  ));
+                } finally {
+                  setEmailBusy(false);
+                }
+              }}
+            >
+              {emailBusy ? "Localizando…" : "Enviar factura por email"}
+            </button>
+          ) : null}
         </div>
+      ) : null}
+      {invoiceRef ? (
+        <InvoiceEmailModal
+          serie={invoiceRef.serie}
+          codigo={invoiceRef.codigo}
+          numero={invoiceRef.numero}
+          onClose={() => setInvoiceRef(null)}
+          onSent={() => { setInvoiceRef(null); load(); }}
+        />
       ) : null}
       {order.externally_processed_at ? (
         <p className="form-info" role="status">

@@ -165,6 +165,9 @@ LABELS: dict[str, dict[str, str]] = {
             "Presupuesto válido durante 30 días, a partir de la fecha de "
             "emisión.",
         "sin_lineas": "(sin líneas)",
+        "charge_portes": "Portes",
+        "charge_financiacion": "Gastos de financiación",
+        "charge_iva": "IVA {piva}%",
         "title_facturas_anticipo": "FACTURA DE ANTICIPO",
         "title_presupuestos_proforma": "FACTURA PROFORMA",
         "title_albaranes_devolucion": "ALBARÁN DE DEVOLUCIÓN",
@@ -220,6 +223,9 @@ LABELS: dict[str, dict[str, str]] = {
         "validez_presupuesto":
             "This quotation is valid for 30 days from the date of issue.",
         "sin_lineas": "(no lines)",
+        "charge_portes": "Shipping",
+        "charge_financiacion": "Financing charges",
+        "charge_iva": "VAT {piva}%",
         "title_facturas_anticipo": "ADVANCE PAYMENT INVOICE",
         "title_presupuestos_proforma": "PROFORMA INVOICE",
         "title_albaranes_devolucion": "TRANSPORT DOC for return of goods",
@@ -275,6 +281,9 @@ LABELS: dict[str, dict[str, str]] = {
         "validez_presupuesto":
             "Dieses Angebot ist 30 Tage ab Ausstellungsdatum gültig.",
         "sin_lineas": "(keine Positionen)",
+        "charge_portes": "Versandkosten",
+        "charge_financiacion": "Finanzierungskosten",
+        "charge_iva": "MwSt. {piva}%",
         "title_facturas_anticipo": "ANZAHLUNGSRECHNUNG",
         "title_presupuestos_proforma": "PROFORMARECHNUNG",
         "title_albaranes_devolucion": "RÜCKLIEFERSCHEIN",
@@ -330,6 +339,9 @@ LABELS: dict[str, dict[str, str]] = {
         "validez_presupuesto":
             "Devis valable 30 jours à compter de la date d'émission.",
         "sin_lineas": "(aucune ligne)",
+        "charge_portes": "Frais de port",
+        "charge_financiacion": "Frais de financement",
+        "charge_iva": "TVA {piva}%",
         "title_facturas_anticipo": "FACTURE D'ACOMPTE",
         "title_presupuestos_proforma": "FACTURE PROFORMA",
         "title_albaranes_devolucion": "BON DE RETOUR",
@@ -385,6 +397,9 @@ LABELS: dict[str, dict[str, str]] = {
         "validez_presupuesto":
             "Deze offerte is 30 dagen geldig vanaf de uitgiftedatum.",
         "sin_lineas": "(geen regels)",
+        "charge_portes": "Verzendkosten",
+        "charge_financiacion": "Financieringskosten",
+        "charge_iva": "btw {piva}%",
         "title_facturas_anticipo": "VOORSCHOTFACTUUR",
         "title_presupuestos_proforma": "PROFORMAFACTUUR",
         "title_albaranes_devolucion": "RETOURBON",
@@ -829,6 +844,22 @@ def extract_document_data(
             "albaran": albaran,
         })
 
+    # ERP-F1 Parte 1 — cargos de cabecera (portes, financiación) que se
+    # pintan como LÍNEA sintética del documento en vez de en el bloque de
+    # totales. SOLO PRESENTACIÓN: ya están DENTRO de la base imponible que
+    # calcula FACTUSOL (no se recomputa el total). Se agrupan por tipo y por
+    # banda de IVA, para que la línea lleve el % que le corresponde.
+    charges: list[dict[str, Any]] = []
+    for kind, band_key in (("portes", "portes"), ("financiacion", "fin")):
+        by_piva: dict[float, float] = {}
+        for band in bands:
+            amount = band[band_key]
+            if abs(amount) > 0.004:
+                piva = 0.0 if band["exenta"] else band["piva"]
+                by_piva[piva] = by_piva.get(piva, 0.0) + amount
+        for piva, amount in by_piva.items():
+            charges.append({"kind": kind, "piva": piva, "amount": amount})
+
     fop_code = _clean(h("FOP"))
     fop = (fop_names or {}).get(fop_code) or (fop_names or {}).get(
         fop_code.lstrip("0") or "0"
@@ -858,6 +889,7 @@ def extract_document_data(
         "observaciones": [t for t in (_clean(h("OB1")), _clean(h("OB2"))) if t],
         "vencimiento": _fmt_date(h("VEN")) if h("VEN") else "",
         "bands": bands,
+        "charges": charges,
         "total": _num(h("TOT"), 0.0),
         # E4-fix1: tipo de cambio del documento (CAMFAC — única columna
         # ligada a divisa que existe en el volcado vivo de F_FAC).
@@ -1341,6 +1373,26 @@ def _lines_table(
                 _fmt_money(line["total"], lang, currency),
             ]
         rows.append(cells)
+
+    # ERP-F1 Parte 1 — cargos de cabecera (portes/financiación) como LÍNEA,
+    # tras los artículos reales. Sin código de artículo y en cursiva/gris
+    # para que se vean como cargo, no como mercancía. Solo en documentos
+    # valorados (el albarán sin importes no los muestra).
+    charge_rows: list[int] = []
+    if valued:
+        style_charge = _para_style(8.4)
+        for charge in data.get("charges", []):
+            label = lab[f"charge_{charge['kind']}"]
+            if charge["piva"]:
+                label += f" · {lab['charge_iva'].format(piva=_fmt_qty(charge['piva'], lang))}"
+            monto = _fmt_money(charge["amount"], lang, currency)
+            rows.append([
+                Paragraph("", style_charge),
+                Paragraph(_esc(label), style_charge),
+                "", "", "", monto, monto,
+            ])
+            charge_rows.append(len(rows) - 1)
+
     if len(rows) == 1:
         rows.append([Paragraph(lab["sin_lineas"], style_cell)]
                     + [""] * (len(headers) - 1))
@@ -1363,6 +1415,15 @@ def _lines_table(
             ("BACKGROUND", (0, r), (-1, r), colors.HexColor("#f7f7f7")),
             ("ALIGN", (0, r), (-1, r), "LEFT"),
         ]
+    for r in charge_rows:
+        # Cargo: texto en gris para distinguirlo de la mercancía.
+        styles.append(("TEXTCOLOR", (0, r), (-1, r), GREY))
+    if charge_rows:
+        # Regla sutil encima del primer cargo, separándolos de los artículos.
+        styles.append(
+            ("LINEABOVE", (0, charge_rows[0]), (-1, charge_rows[0]),
+             0.4, RULE),
+        )
     table.setStyle(TableStyle(styles))
     return table
 
@@ -1387,13 +1448,14 @@ def _summary_flowables(
     bands = data["bands"]
     show_neto = any(abs(b["neto"]) > 0.004 for b in bands)
     show_dto = any(abs(b["dto"]) > 0.004 for b in bands)
-    show_portes = any(abs(b["portes"]) > 0.004 for b in bands)
-    show_fin = any(abs(b["fin"]) > 0.004 for b in bands)
     show_re = any(abs(b["rec"]) > 0.004 for b in bands)
+    # ERP-F1 Parte 1: portes y financiación YA NO son columnas del bloque de
+    # totales — se pintan como línea del documento. La base imponible ya los
+    # incluye, así que el bloque queda con neto, descuento (donde estaban),
+    # base, IVA, R.E. y TOTAL. No se recomputa nada.
 
     headers = [lab["band_tipo"]]
-    for flag, key in ((show_neto, "band_neto"), (show_dto, "band_dto"),
-                      (show_portes, "band_portes"), (show_fin, "band_fin")):
+    for flag, key in ((show_neto, "band_neto"), (show_dto, "band_dto")):
         if flag:
             headers.append(lab[key])
     headers += [lab["band_base"], lab["band_iva"]]
@@ -1404,8 +1466,7 @@ def _summary_flowables(
     for b in bands:
         tipo = lab["band_exento"] if b["exenta"] else _fmt_qty(b["piva"], lang)
         row = [tipo]
-        for flag, key in ((show_neto, "neto"), (show_dto, "dto"),
-                          (show_portes, "portes"), (show_fin, "fin")):
+        for flag, key in ((show_neto, "neto"), (show_dto, "dto")):
             if flag:
                 row.append(_fmt_money(b[key], lang, currency))
         row += [_fmt_money(b["base"], lang, currency),

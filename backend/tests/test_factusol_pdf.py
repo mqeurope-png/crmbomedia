@@ -664,3 +664,113 @@ def test_pdf_endpoint_bank_and_variant_params(http, session_factory) -> None:
     assert "ES23 0073 0100 5404 4814 5865" in text   # Open Bank (índice 1)
     assert "Importes en SEK" in text
     assert "Factura-de-anticipo" in r.headers["content-disposition"]
+
+
+# ---------------------------------------------------------------------------
+# ERP-F1 Parte 1 — portes y cargos como LÍNEA (solo presentación)
+# ---------------------------------------------------------------------------
+
+
+def _totals_segment(text: str) -> str:
+    """El texto del bloque de totales (de las bandas al TOTAL)."""
+    # Todo lo que va tras la última cabecera de columnas de líneas.
+    return text.split("TOTAL", 1)[0]
+
+
+def test_shipping_rendered_as_line_not_in_totals() -> None:
+    header = _header("facturas", IPOR1FAC=7.0)
+    pdf, data = _pdf("facturas", header, [_linea("facturas", 1)])
+    assert data["charges"] == [{"kind": "portes", "piva": 21.0, "amount": 7.0}]
+    text = _texto(pdf)
+    assert "Portes" in text                    # como línea
+    assert "7,00" in text
+    # El bloque de totales ya NO lleva la COLUMNA de portes: su cabecera era
+    # «PORTES» en mayúsculas; la línea es «Portes» (case-sensitive).
+    assert "PORTES" not in text
+    assert "Shipping" not in text              # etiqueta EN, no aplica en ES
+
+
+def test_totals_block_only_has_vat_bands_and_total() -> None:
+    header = _header("facturas", IPOR1FAC=7.0, IFIN1FAC=3.0)
+    pdf, _ = _pdf("facturas", header, [_linea("facturas", 1)])
+    text = _texto(pdf)
+    # Cabeceras de banda que SÍ quedan.
+    assert "BASE" in text.upper() and "I.V.A." in text.upper()
+    # Las COLUMNAS de portes/financiación (cabeceras en MAYÚSCULAS)
+    # desaparecen del bloque de totales; la LÍNEA «Gastos de financiación»
+    # (minúsculas) sí está.
+    assert "FINANCIACIÓN" not in text          # header ES, mayúsculas
+    assert "PORTES" not in text                # header ES, mayúsculas
+    assert "Gastos de financiación" in text    # la línea sí
+    # El TOTAL sigue.
+    assert "TOTAL:" in text
+
+
+def test_total_unchanged_after_moving_charges_to_lines() -> None:
+    """Invariante crítico: el TOTAL del documento es idéntico con y sin
+    portes/financiación en cabecera — la base ya los incluye, no se suman
+    dos veces."""
+    line = [_linea("facturas", 1)]
+    sin_cargos, d0 = _pdf("facturas", _header("facturas"), line)
+    con_cargos, d1 = _pdf(
+        "facturas", _header("facturas", IPOR1FAC=7.0, IFIN1FAC=3.0), line,
+    )
+    # El TOTAL leído de TOTFAC no cambia (los cargos NO recomputan el total).
+    assert d0["total"] == d1["total"] == 225.47
+    assert "225,47" in _texto(sin_cargos)
+    assert "225,47" in _texto(con_cargos)
+    # Y el importe del total impreso es el mismo en ambos.
+    def _total_line(t: str) -> str:
+        return [ln for ln in t.splitlines() if "TOTAL:" in ln][-1]
+    assert _total_line(_texto(sin_cargos)) == _total_line(_texto(con_cargos))
+
+
+def test_charge_line_uses_correct_vat_band() -> None:
+    # Portes en banda 2 (10%): la línea debe reflejar el 10%, no el 21%.
+    header = _header(
+        "facturas",
+        NET1FAC=100, BAS1FAC=100, PIVA1FAC=21, IIVA1FAC=21,
+        NET2FAC=50, BAS2FAC=50, PIVA2FAC=10, IIVA2FAC=5, IPOR2FAC=4.0,
+        TOTFAC=180.0,
+    )
+    pdf, data = _pdf("facturas", header, [_linea("facturas", 1)])
+    assert {"kind": "portes", "piva": 10.0, "amount": 4.0} in data["charges"]
+    text = _texto(pdf)
+    assert "IVA 10%" in text
+
+
+def test_charge_labels_translated_five_languages() -> None:
+    esperado = {
+        "es": ("Portes", "Gastos de financiación"),
+        "en": ("Shipping", "Financing charges"),
+        "de": ("Versandkosten", "Finanzierungskosten"),
+        "fr": ("Frais de port", "Frais de financement"),
+        "nl": ("Verzendkosten", "Financieringskosten"),
+    }
+    header = _header("facturas", IPOR1FAC=7.0, IFIN1FAC=3.0)
+    for lang, (portes, fin) in esperado.items():
+        pdf, _ = _pdf("facturas", header, [_linea("facturas", 1)], lang=lang)
+        text = _texto(pdf)
+        assert portes in text, f"{lang} sin {portes!r}"
+        assert fin in text, f"{lang} sin {fin!r}"
+
+
+def test_plain_albaran_has_no_charge_lines() -> None:
+    # Los cargos del albarán van en su propio sufijo (IPOR1ALB, no …FAC).
+    header = _header("albaranes", IPOR1ALB=7.0)
+    pdf, data = _pdf("albaranes", header, [_linea("albaranes", 1)])  # sin importes
+    assert data["charges"] == [{"kind": "portes", "piva": 21.0, "amount": 7.0}]
+    text = _texto(pdf)
+    # El albarán estándar (sin importes) NO pinta la línea de cargo.
+    assert "Portes" not in text and "7,00" not in text
+    # Pero el albarán VALORADO sí los muestra.
+    pdf_v, _ = _pdf("albaranes", header, [_linea("albaranes", 1)], valued=True)
+    assert "Portes" in _texto(pdf_v)
+
+
+def test_zero_charges_produce_no_lines() -> None:
+    pdf, data = _pdf("facturas", _header("facturas"), [_linea("facturas", 1)])
+    assert data["charges"] == []
+    text = _texto(pdf)
+    assert "Portes" not in text
+    assert "Gastos de financiación" not in text
