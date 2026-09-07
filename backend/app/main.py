@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -26,6 +26,7 @@ from app.api.routes import router
 from app.api.tasks import router as tasks_router
 from app.api.user_aliases import router as user_aliases_router
 from app.api.workflows import router as workflows_router
+from app.core.auth import crm_scope_monolith, require_crm_access
 from app.core.config import get_settings
 from app.core.observability import setup_sentry
 from app.email_signatures.router import router as email_signatures_router
@@ -71,48 +72,58 @@ app.add_middleware(
 # original {id, name, tax_id, website, is_active} subset. The
 # legacy `/api/companies/count` stays accessible because it's a
 # different path, not shadowed by the prefix.
+# ERP-F2 — ÁMBITO CRM. Los routers de features del CRM llevan
+# `require_crm_access`: un usuario solo-ERP (PEDIDOS/SAT) recibe 403 en todos
+# sus endpoints (cerrar el agujero de permisos: hoy PEDIDOS/SAT alcanzan
+# contactos/emails/marketing/… porque están bajo en la escalera de roles).
+# NO se protegen: `companies_router` (dato de CLIENTE que el ERP necesita),
+# `google_router`/`user_aliases_router` (integración y alias de la propia
+# cuenta, que el ERP usa para enviar facturas) ni los webhooks. El monolito
+# lleva su propio guard de ámbito (`crm_scope_monolith`, deny-by-default).
+_CRM_SCOPE = [Depends(require_crm_access)]
+
 app.include_router(companies_router)
-app.include_router(contacts_assign_router)
-app.include_router(contact_channels_router)
-app.include_router(contact_notes_router)
-app.include_router(contact_assignments_router)
-app.include_router(assignment_rules_router)
-app.include_router(entities_router)
-app.include_router(entity_views_router)
-app.include_router(router, prefix="/api")
+app.include_router(contacts_assign_router, dependencies=_CRM_SCOPE)
+app.include_router(contact_channels_router, dependencies=_CRM_SCOPE)
+app.include_router(contact_notes_router, dependencies=_CRM_SCOPE)
+app.include_router(contact_assignments_router, dependencies=_CRM_SCOPE)
+app.include_router(assignment_rules_router, dependencies=_CRM_SCOPE)
+app.include_router(entities_router, dependencies=_CRM_SCOPE)
+app.include_router(entity_views_router, dependencies=_CRM_SCOPE)
+app.include_router(router, prefix="/api", dependencies=[Depends(crm_scope_monolith)])
 # Tasks router carries its own `/api/tasks` prefix and lives in its
 # own module — the routes.py monolith was already pushing 4k lines
 # before the productivity layer started.
-app.include_router(tasks_router)
+app.include_router(tasks_router, dependencies=_CRM_SCOPE)
 app.include_router(google_router)
-app.include_router(dashboard_router)
-app.include_router(bulk_router)
-app.include_router(emails_router)
-app.include_router(emails_mailbox_router)
-app.include_router(emails_scheduled_router)
-app.include_router(email_drafts_router)
+app.include_router(dashboard_router, dependencies=_CRM_SCOPE)
+app.include_router(bulk_router, dependencies=_CRM_SCOPE)
+app.include_router(emails_router, dependencies=_CRM_SCOPE)
+app.include_router(emails_mailbox_router, dependencies=_CRM_SCOPE)
+app.include_router(emails_scheduled_router, dependencies=_CRM_SCOPE)
+app.include_router(email_drafts_router, dependencies=_CRM_SCOPE)
 app.include_router(user_aliases_router)
 app.include_router(gmail_webhook_router)
 # Sprint-Backfill-Gmail. Endpoints admin para 3 años de Gmail
 # histórico — propio módulo porque el patrón estimate/execute/cancel
 # no encaja en `routes.py`.
-app.include_router(gmail_backfill_router)
-app.include_router(email_templates_router)
-app.include_router(email_signatures_router)
-app.include_router(email_tracking_router)
-app.include_router(admin_backups_router)
-app.include_router(admin_companies_dedupe_router)
+app.include_router(gmail_backfill_router, dependencies=_CRM_SCOPE)
+app.include_router(email_templates_router, dependencies=_CRM_SCOPE)
+app.include_router(email_signatures_router, dependencies=_CRM_SCOPE)
+app.include_router(email_tracking_router, dependencies=_CRM_SCOPE)
+app.include_router(admin_backups_router, dependencies=_CRM_SCOPE)
+app.include_router(admin_companies_dedupe_router, dependencies=_CRM_SCOPE)
 # Sprint Workflows Bloque 1 — motor de automatización.
 # `app.workflows.steps` se importa por side-effect: el decorador
 # `@register_step` rellena el registry sin necesidad de wiring extra.
 from app.workflows import steps as _wf_steps  # noqa: F401,E402,PLC0415
 
-app.include_router(workflows_router)
+app.include_router(workflows_router, dependencies=_CRM_SCOPE)
 from app.api.call_logs import router as call_logs_router  # noqa: E402
 from app.api.contact_timeline import router as timeline_router  # noqa: E402
 
-app.include_router(call_logs_router)
-app.include_router(timeline_router)
+app.include_router(call_logs_router, dependencies=_CRM_SCOPE)
+app.include_router(timeline_router, dependencies=_CRM_SCOPE)
 
 # Sprint Web-Forms — API pública + admin de formularios web.
 from app.api.web_forms_admin import aux_router as web_forms_aux_router  # noqa: E402
@@ -121,8 +132,8 @@ from app.api.web_forms_embed import router as web_forms_embed_router  # noqa: E4
 from app.api.web_forms_public import router as web_forms_public_router  # noqa: E402
 
 app.include_router(web_forms_public_router)
-app.include_router(web_forms_admin_router)
-app.include_router(web_forms_aux_router)
+app.include_router(web_forms_admin_router, dependencies=_CRM_SCOPE)
+app.include_router(web_forms_aux_router, dependencies=_CRM_SCOPE)
 app.include_router(web_forms_embed_router)
 
 # BoHub ERP Fase A: bandeja + Cola PEDIDOS + transiciones + timeline (PR 3);

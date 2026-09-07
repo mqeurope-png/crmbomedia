@@ -3,6 +3,7 @@
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { getCurrentUser, getStoredToken, logout, type User } from "../lib/api";
+import { pathAllowedInErpMode, resolveMode } from "../lib/appMode";
 import { useIdleTimeout } from "../lib/useIdleTimeout";
 import { Sidebar } from "./Sidebar";
 import { TopBar } from "./TopBar";
@@ -112,6 +113,19 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     });
   }
 
+  // ERP-F2 — modo efectivo (rol → forzado; admin → su preferencia). Un
+  // usuario en modo ERP no debe ver el CRM: si teclea una URL del CRM
+  // (`/contactos`, `/emails`…) se le devuelve a `/erp` con un aviso, en vez
+  // de una pantalla en blanco o un 403 feo. El backend ya lo bloquea de
+  // verdad; esto es la cara amable en el front.
+  const mode = user ? resolveMode(user) : "crm";
+  useEffect(() => {
+    if (!user || isAnonymous) return;
+    if (resolveMode(user) === "erp" && !pathAllowedInErpMode(pathname)) {
+      router.replace(`/erp?desde=${encodeURIComponent(pathname)}`);
+    }
+  }, [user, pathname, isAnonymous, router]);
+
   const isFullBleed = FULL_BLEED_ROUTES.some(
     (path) => pathname === path || pathname.startsWith(`${path}/`),
   );
@@ -128,6 +142,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     return null;
   }
 
+  // ERP-F2 — mientras el efecto de arriba redirige a un usuario de ERP fuera
+  // de una URL del CRM, no pintamos la página del CRM (evita el destello y las
+  // llamadas a la API que devolverían 403).
+  if (mode === "erp" && !pathAllowedInErpMode(pathname)) {
+    return null;
+  }
+
   return (
     <div
       className={`app-shell${collapsed ? " is-collapsed" : ""}${
@@ -137,10 +158,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <TopBar
         user={user}
         userLoaded={userLoaded}
+        mode={mode}
         onToggleDrawer={() => setDrawerOpen((value) => !value)}
       />
       <Sidebar
         user={user}
+        mode={mode}
         collapsed={collapsed}
         onToggleCollapsed={toggleCollapsed}
         onCloseDrawer={() => setDrawerOpen(false)}
