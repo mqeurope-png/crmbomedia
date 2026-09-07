@@ -1725,22 +1725,27 @@ def suggest_pdf_language(
     """`{lang, source}` para preseleccionar el selector de idioma de la
     descarga. `source` dice de dónde sale la propuesta para que el operador
     distinga un dato confirmado de una deducción:
-      - `pedido`      idioma guardado en el pedido del CRM
-      - `cliente`     idioma explícito en la ficha de la empresa cliente
-      - `pais_cliente` derivado del PAÍS de la empresa cliente (E4-fix2)
-      - `empresa`     idioma por defecto de la empresa emisora (serie)
-      - `defecto`     español (último recurso)"""
+      - `pedido`        idioma guardado en el pedido del CRM
+      - `cliente`       idioma explícito en la ficha de la empresa cliente
+      - `pais_documento` derivado del país del cliente EN EL DOCUMENTO (CPA*)
+      - `pais_cliente`  derivado del PAÍS de la empresa cliente en el CRM
+      - `empresa`       idioma por defecto de la empresa emisora (serie)
+      - `defecto`       español (último recurso)"""
     order = _find_order_for_document(session, doc_type, doc)
     if order is not None and (order.language or "") in SUPPORTED_LANGS:
         return {"lang": order.language, "source": "pedido"}
     company = _find_company_by_codcli(session, doc.get("cliente_codigo"))
+    # 3. idioma EXPLÍCITO del cliente (alguien lo confirmó a mano).
+    if company is not None and (company.language or "") in SUPPORTED_LANGS:
+        return {"lang": company.language, "source": "cliente"}
+    # 4. ERP-F1-fix2 — país del cliente EN EL DOCUMENTO (CPAFAC/CPAPRE/…): es
+    # el país con el que se imprimió, el dato más fiable tras el idioma
+    # explícito y por delante de la ficha del CRM (que puede estar mal).
+    derived_doc = language_for_country((doc.get("cliente") or {}).get("pais"))
+    if derived_doc in SUPPORTED_LANGS:
+        return {"lang": derived_doc, "source": "pais_documento"}
+    # 5. derivado del PAÍS de la empresa cliente en el CRM (E4-fix2).
     if company is not None:
-        # 3. idioma EXPLÍCITO del cliente (alguien lo confirmó).
-        if (company.language or "") in SUPPORTED_LANGS:
-            return {"lang": company.language, "source": "cliente"}
-        # 4. derivado del PAÍS del cliente (E4-fix2): mejor un idioma
-        # razonable que caer a la empresa emisora. Es deducción — la UI lo
-        # marca «del país del cliente».
         derived = language_for_country(company.country)
         if derived in SUPPORTED_LANGS:
             return {"lang": derived, "source": "pais_cliente"}

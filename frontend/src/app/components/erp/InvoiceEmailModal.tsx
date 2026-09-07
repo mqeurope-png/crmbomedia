@@ -26,6 +26,7 @@ const EMAIL_LANGS: { value: FactusolPdfLang; label: string }[] = [
 const LANG_SOURCE_LABELS: Record<InvoiceEmailLangSource, string> = {
   pedido: "del pedido",
   cliente: "del cliente",
+  pais_documento: "del país en el documento",
   pais_cliente: "del país del cliente",
   empresa: "de la empresa emisora",
   defecto: "por defecto",

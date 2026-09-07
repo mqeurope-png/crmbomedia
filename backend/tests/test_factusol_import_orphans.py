@@ -360,9 +360,11 @@ def test_import_orphans_apply_maps_country_from_paicli(session):
     # E4-fix3: el país se guarda YA normalizado a ISO2.
     assert paises["1"] == "PT"
     assert paises["2"] == "FR"
-    # Lo desconocido y lo vacío caen a España (ES): la inmensa mayoría lo es.
-    assert paises["3"] == "ES"
-    assert paises["4"] == "ES"
+    # ERP-F1-fix2: lo desconocido y lo vacío se dejan VACÍOS (None), NUNCA
+    # España por defecto — ese default era el origen de las ~600 empresas
+    # extranjeras marcadas como españolas.
+    assert paises["3"] is None
+    assert paises["4"] is None
 
 
 def test_import_orphans_apply_truncates_long_contact_name(session):

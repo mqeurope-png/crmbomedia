@@ -93,7 +93,7 @@ def _norm_key(value: Any) -> str:
 _COUNTRY_ALIASES: dict[str, str] = {
     # España / Andorra
     "ESPANA": "ES", "SPAIN": "ES", "ESPAGNE": "ES", "SPANIEN": "ES",
-    "SPANJE": "ES", "ANDORRA": "AD", "ANDORRE": "AD",
+    "SPANJE": "ES", "ESP": "ES", "ANDORRA": "AD", "ANDORRE": "AD",
     # Francia + francófonos con nombre no-inglés
     "FRANCIA": "FR", "FRANCE": "FR", "FRANKREICH": "FR", "FRANKRIJK": "FR",
     "BELGICA": "BE", "BELGIQUE": "BE", "BELGIUM": "BE", "BELGIE": "BE",
@@ -137,7 +137,7 @@ _COUNTRY_ALIASES: dict[str, str] = {
     "THE NETHERLANDS": "NL",
     # Suiza / Reino Unido / Irlanda (→ en)
     "SUIZA": "CH", "SWITZERLAND": "CH", "SUISSE": "CH", "SCHWEIZ": "CH",
-    "ZWITSERLAND": "CH",
+    "ZWITSERLAND": "CH", "SVIZZERA": "CH",
     "REINO UNIDO": "GB", "UNITED KINGDOM": "GB", "ROYAUME UNI": "GB",
     "GREAT BRITAIN": "GB", "UK": "GB", "INGLATERRA": "GB", "ENGLAND": "GB",
     "IRLANDA": "IE", "IRELAND": "IE", "IRLANDE": "IE",
@@ -147,17 +147,45 @@ _COUNTRY_ALIASES: dict[str, str] = {
     "ITALIA": "IT", "ITALY": "IT", "ITALIE": "IT", "ITALIEN": "IT",
     "ESTADOS UNIDOS": "US", "UNITED STATES": "US", "USA": "US",
     "EEUU": "US", "ETATS UNIS": "US",
+    # China / Taiwán — variantes largas que pycountry no casa por `name`
+    # (los pendientes de E4-fix3).
+    "CHINA": "CN", "PEOPLE S REPUBLIC OF CHINA": "CN",
+    "REPUBLICA POPULAR CHINA": "CN",
+    "TAIWAN": "TW", "TAIWAN CHINA": "TW", "TAIWAN PROVINCE OF CHINA": "TW",
 }
 
 #: ISO2 válidos (pycountry). Un valor de 2 letras solo se acepta como ISO2
 #: si de verdad existe — «XX» no es un país.
+#: `_NUMERIC_TO_ISO2`: código ISO 3166-1 numérico («724»→ES, «040»→AT) → ISO2.
+#: Se saca ENTERO de pycountry (no una tabla manual): F_CLI guarda el país en
+#: PAICLI como numérico y hasta ahora solo se entendían nombres.
 try:  # pragma: no cover - depende de pycountry
     import pycountry
 
     _ISO2_CODES: frozenset[str] = frozenset(c.alpha_2 for c in pycountry.countries)
+    _NUMERIC_TO_ISO2: dict[str, str] = {
+        c.numeric: c.alpha_2
+        for c in pycountry.countries if getattr(c, "numeric", None)
+    }
 except Exception:  # noqa: BLE001 — sin pycountry, solo alias + los del mapa
     pycountry = None  # type: ignore[assignment]
     _ISO2_CODES = frozenset(COUNTRY_LANGUAGE) | {"CH", "GB", "IE", "PT", "IT", "US"}
+    #: Respaldo mínimo con los numéricos vistos en producción (por si no hay
+    #: pycountry). La ruta normal usa el mapa completo de arriba.
+    _NUMERIC_TO_ISO2 = {
+        "724": "ES", "250": "FR", "276": "DE", "528": "NL", "756": "CH",
+        "040": "AT", "620": "PT", "380": "IT", "056": "BE", "826": "GB",
+        "372": "IE", "442": "LU", "492": "MC", "840": "US",
+    }
+
+
+def _numeric_lookup(key: str) -> str | None:
+    """Código ISO 3166-1 numérico → ISO2. Solo si el valor es ENTERAMENTE
+    numérico y de 1 a 3 dígitos (un código postal de 5 cifras NO es un país).
+    Acepta con y sin ceros a la izquierda («040» y «40» → AT)."""
+    if not (key.isdigit() and 1 <= len(key) <= 3):
+        return None
+    return _NUMERIC_TO_ISO2.get(key.zfill(3))
 
 
 def _pycountry_lookup(key: str) -> str | None:
@@ -198,6 +226,11 @@ def normalize_country(
     key = _norm_key(value)
     if not key:
         return None
+    # Código ISO numérico (PAICLI de F_CLI): antes que nada, porque «040» no
+    # es alfabético ni casa con ningún alias.
+    numeric = _numeric_lookup(key)
+    if numeric is not None:
+        return numeric
     if len(key) == 2 and key.isalpha() and key in _ISO2_CODES:
         return key
     alias = _COUNTRY_ALIASES.get(key)

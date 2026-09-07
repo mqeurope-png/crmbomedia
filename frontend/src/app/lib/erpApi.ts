@@ -754,7 +754,10 @@ export type FactusolPdfLangSuggestion = {
   lang: FactusolPdfLang;
   // E4-fix2: `pais_cliente` = idioma deducido del país de la empresa
   // cliente (distinto de `cliente`, que es el idioma puesto a mano).
-  source: "pedido" | "cliente" | "pais_cliente" | "empresa" | "defecto";
+  // F1-fix2: `pais_documento` = país del cliente EN EL DOCUMENTO (CPA*).
+  source:
+    | "pedido" | "cliente" | "pais_documento" | "pais_cliente"
+    | "empresa" | "defecto";
 };
 
 export type FactusolDocumentDetail = FactusolDocument & {
@@ -931,7 +934,8 @@ export function saveBlob(blob: Blob, filename: string): void {
 
 /** Origen del idioma sugerido para el email (misma cascada que el PDF, E4). */
 export type InvoiceEmailLangSource =
-  | "pedido" | "cliente" | "pais_cliente" | "empresa" | "defecto";
+  | "pedido" | "cliente" | "pais_documento" | "pais_cliente"
+  | "empresa" | "defecto";
 
 /** Datos de la PREVISUALIZACIÓN obligatoria antes de enviar la factura. Todo
  *  editable en el modal salvo el nombre del adjunto (se regenera al enviar). */
@@ -1086,6 +1090,9 @@ export async function createFactusolCustomerAndLink(payload: {
     provincia?: string;
     telefono?: string;
     email?: string;
+    /** F1-fix2: país del cliente en FACTUSOL (PAICLI, ISO numérico o nombre);
+     *  el backend lo normaliza a ISO2. Sin él el país queda vacío. */
+    pais?: string;
   };
 }): Promise<{ company_id: string; factusol_codcli: string; created: boolean }> {
   return apiFetch("/api/erp/factusol/customers/create-crm-and-link", {

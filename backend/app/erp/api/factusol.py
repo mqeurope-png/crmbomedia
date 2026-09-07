@@ -1221,6 +1221,10 @@ class CreateCrmAndLinkPayload(BaseModel):
     provincia: str = Field(default="", max_length=200)
     telefono: str | None = Field(default=None, max_length=40)
     email: str | None = Field(default=None, max_length=255)
+    # ERP-F1-fix2: país del cliente en FACTUSOL (PAICLI, ISO numérico o
+    # nombre). Se normaliza a ISO2; si no se reconoce, se deja vacío — nunca
+    # España por defecto.
+    pais: str | None = Field(default=None, max_length=64)
 
 
 class CreateCrmAndLinkIn(BaseModel):
@@ -1244,6 +1248,7 @@ def create_crm_and_link(
     vínculo ANTES de crear nada y todo va en una transacción: o hay empresa
     vinculada, o no hay empresa.
     """
+    from app.erp.language import normalize_country  # noqa: PLC0415
     from app.integrations.factusol.customers import crm_links_for  # noqa: PLC0415
     from app.models.crm import Company  # noqa: PLC0415
 
@@ -1268,7 +1273,9 @@ def create_crm_and_link(
         city=data.ciudad.strip() or None,
         postal_code=data.cp.strip() or None,
         state=data.provincia.strip() or None,
-        country="España",
+        # ERP-F1-fix2: país REAL normalizado a ISO2; None si no se reconoce o
+        # no viene (nunca España por defecto).
+        country=normalize_country(data.pais),
         source="factusol",
         factusol_company_id=codcli,
         factusol_sync_source="erp_link",
