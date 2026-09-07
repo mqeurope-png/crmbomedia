@@ -29,7 +29,11 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.erp.language import language_for_country, normalize_language
+from app.erp.language import (
+    language_for_country,
+    normalize_country,
+    normalize_language,
+)
 from app.erp.models import (
     Order,
     OrderLine,
@@ -157,7 +161,14 @@ def _resolve_company(
     ))
     if existing is not None:
         return existing, False
-    company = Company(name=name, tax_id=normalised_cif, source="woocommerce")
+    # E4-fix3: guardar el país YA normalizado a ISO2 (el billing de Woo ya
+    # viene en ISO2, pero se pasa por el normalizador por consistencia y
+    # para alimentar la cascada de idioma). None si el billing no lo trae.
+    country = normalize_country(billing.get("country"))
+    company = Company(
+        name=name, tax_id=normalised_cif, source="woocommerce",
+        country=country,
+    )
     session.add(company)
     session.flush()
     return company, True

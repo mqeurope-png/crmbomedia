@@ -170,7 +170,7 @@ def test_import_orphans_apply_creates_company_with_tag(session):
     assert company.city == "Barcelona"
     assert company.postal_code == "08001"
     assert company.state == "Barcelona"
-    assert company.country == "España"
+    assert company.country == "ES"  # E4-fix3: ISO2
     assert company.factusol_company_id == "1234"
     assert company.source == IMPORT_ORPHANS_SOURCE
     assert company.factusol_sync_source == IMPORT_ORPHANS_SYNC_SOURCE
@@ -357,11 +357,12 @@ def test_import_orphans_apply_maps_country_from_paicli(session):
     paises = {
         c.factusol_company_id: c.country for c in session.scalars(select(Company))
     }
-    assert paises["1"] == "Portugal"
-    assert paises["2"] == "Francia"
-    # Lo desconocido y lo vacío caen a España: la inmensa mayoría lo es.
-    assert paises["3"] == "España"
-    assert paises["4"] == "España"
+    # E4-fix3: el país se guarda YA normalizado a ISO2.
+    assert paises["1"] == "PT"
+    assert paises["2"] == "FR"
+    # Lo desconocido y lo vacío caen a España (ES): la inmensa mayoría lo es.
+    assert paises["3"] == "ES"
+    assert paises["4"] == "ES"
 
 
 def test_import_orphans_apply_truncates_long_contact_name(session):
@@ -408,7 +409,7 @@ def test_import_orphans_apply_accepts_factusol_data_in_payload_without_calling_f
     assert company.name == "ACME S.L."
     assert company.tax_id == "B12345678"
     assert company.city == "Barcelona"
-    assert company.country == "España"
+    assert company.country == "ES"  # E4-fix3: ISO2
     assert company.factusol_company_id == "1234"
     assert session.scalars(select(Contact)).one().email == "info@acme.example"
 

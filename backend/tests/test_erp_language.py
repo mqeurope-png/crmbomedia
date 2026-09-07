@@ -296,6 +296,115 @@ def test_backfill_does_not_overwrite_existing(db) -> None:
 
 
 # ---------------------------------------------------------------------------
+# E4-fix3 — normalización del país antes de derivar idioma
+# ---------------------------------------------------------------------------
+
+
+def test_normalize_country_iso_passthrough() -> None:
+    from app.erp.language import normalize_country
+
+    assert normalize_country("ES") == "ES"
+    assert normalize_country("fr") == "FR"     # minúsculas
+    assert normalize_country(" BE ") == "BE"   # espacios
+
+
+def test_normalize_country_names_multiple_languages() -> None:
+    from app.erp.language import normalize_country
+
+    for raw in ("ESPAÑA", "SPAIN", "España", " españa ", "Espagne"):
+        assert normalize_country(raw) == "ES", raw
+    assert normalize_country("FRANCE") == "FR"
+    assert normalize_country("FRANCIA") == "FR"
+    assert normalize_country("ALEMANIA") == "DE"
+    assert normalize_country("GERMANY") == "DE"
+    assert normalize_country("PAÍSES BAJOS") == "NL"
+    assert normalize_country("NETHERLANDS") == "NL"
+    assert normalize_country("HOLANDA") == "NL"
+    for raw in ("BÉLGICA", "BELGIQUE", "BELGIUM", "België"):
+        assert normalize_country(raw) == "BE", raw
+    assert normalize_country("SUISSE") == "CH"
+    assert normalize_country("SWITZERLAND") == "CH"
+
+
+def test_normalize_country_strips_accents() -> None:
+    from app.erp.language import normalize_country
+
+    assert normalize_country("ALGÉRIE") == "DZ"
+    assert normalize_country("RÉUNION, ÎLE DE LA") == "RE"
+    assert normalize_country("CÔTE D'IVOIRE") == "CI"
+    assert normalize_country("NOUVELLE-CALÉDONIE") == "NC"
+
+
+def test_unknown_country_returns_none() -> None:
+    from app.erp.language import language_for_country, normalize_country
+
+    assert normalize_country("Pepe no es un país") is None
+    assert normalize_country("XX") is None      # 2 letras pero no ISO2
+    # Y no se inventa idioma: la cascada seguirá hacia la empresa emisora.
+    assert language_for_country("valor basura") is None
+
+
+def test_francophone_territories_map_to_french() -> None:
+    from app.erp.language import language_for_country
+
+    for pais in ("MQ", "RE", "YT", "GP", "PF", "NC", "GF",
+                 "MA", "DZ", "TN", "CI", "SN", "MARTINIQUE", "RÉUNION",
+                 "MAYOTTE", "MOROCCO", "ALGÉRIE"):
+        assert language_for_country(pais) == "fr", pais
+
+
+def test_andorra_maps_to_spanish() -> None:
+    from app.erp.language import language_for_country
+
+    assert language_for_country("AD") == "es"
+    assert language_for_country("ANDORRA") == "es"
+
+
+def test_switzerland_maps_to_english() -> None:
+    from app.erp.language import language_for_country
+
+    assert language_for_country("CH") == "en"
+    assert language_for_country("SUISSE") == "en"
+
+
+def test_backfill_spanish_companies_get_spanish(db) -> None:
+    """Regresión del fallo de fix2: 3.000 empresas con país «ESPAÑA» (nombre,
+    no ISO2) deben quedar en `es`, NO en `en`."""
+    from scripts.backfill_company_language import run
+
+    for i in range(3000):
+        _company(db, codcli=f"ES{i}", language=None, country="ESPAÑA")
+    _company(db, codcli="FR1", language=None, country="FRANCE")
+    stats = run(apply=True, session=db)
+    db.expire_all()
+    por_idioma: dict[str, int] = {}
+    for c in db.query(Company).all():
+        por_idioma[c.language] = por_idioma.get(c.language, 0) + 1
+    assert por_idioma.get("es") == 3000     # NO en inglés
+    assert por_idioma.get("fr") == 1
+    assert "en" not in por_idioma
+    assert stats["afectadas"] == 3001 and stats["no_reconocidos"] == 0
+
+
+def test_backfill_reports_unrecognized_countries(db) -> None:
+    from scripts.backfill_company_language import run
+
+    _company(db, codcli="A", language=None, country="ESPAÑA")
+    _company(db, codcli="B", language=None, country="Marcianolandia")
+    _company(db, codcli="C", language=None, country="Marcianolandia")
+    _company(db, codcli="D", language=None, country=None)   # sin país
+    stats = run(apply=False, session=db)
+    # 2 con texto no reconocido (Marcianolandia x2) + 1 sin país = 3 «sin
+    # país reconocido»; el reporte cuenta los 2 no-reconocidos aparte.
+    assert stats["afectadas"] == 1        # solo ESPAÑA
+    assert stats["no_reconocidos"] == 2
+    assert stats["sin_pais"] == 3
+    # Dry-run no escribe.
+    db.expire_all()
+    assert all(c.language is None for c in db.query(Company).all())
+
+
+# ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
 
