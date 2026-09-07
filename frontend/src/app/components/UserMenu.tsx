@@ -4,7 +4,9 @@ import {
   ChevronDown,
   KeyRound,
   LogOut,
+  Package,
   ShieldCheck,
+  LayoutDashboard,
   User as UserIcon,
   UserCircle2,
 } from "lucide-react";
@@ -12,12 +14,16 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { logout as apiLogout, type User } from "../lib/api";
+import type { AppMode } from "../lib/appMode";
+import { canSwitchMode, homeForMode, storeMode } from "../lib/appMode";
 
 type Props = {
   user: User | null;
+  /** ERP-F2 — modo actual, para ofrecer al admin el conmutador al otro modo. */
+  mode?: AppMode;
 };
 
-export function UserMenu({ user }: Props) {
+export function UserMenu({ user, mode = "crm" }: Props) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const wrapper = useRef<HTMLDivElement>(null);
@@ -55,6 +61,15 @@ export function UserMenu({ user }: Props) {
   // que ocultamos el acceso directo para no ofrecer una acción que fallará.
   const isAdmin = user.role === "admin";
 
+  // ERP-F2 — solo el admin cambia de modo (los demás están atados por su rol).
+  const showModeSwitch = canSwitchMode(user.role);
+  const otherMode: AppMode = mode === "erp" ? "crm" : "erp";
+  function switchMode() {
+    setOpen(false);
+    storeMode(user!.id, otherMode);
+    router.push(homeForMode(otherMode));
+  }
+
   return (
     <div ref={wrapper} className="user-menu">
       <button
@@ -77,6 +92,21 @@ export function UserMenu({ user }: Props) {
             <span className="muted small">{user.email}</span>
             <span className="muted small">Rol: {user.role}</span>
           </div>
+          {showModeSwitch ? (
+            <button
+              type="button"
+              role="menuitem"
+              className="user-menu-item"
+              onClick={switchMode}
+            >
+              {otherMode === "erp" ? (
+                <Package size={14} aria-hidden />
+              ) : (
+                <LayoutDashboard size={14} aria-hidden />
+              )}{" "}
+              {otherMode === "erp" ? "Cambiar a modo ERP" : "Cambiar a modo CRM"}
+            </button>
+          ) : null}
           <Link
             href="/account"
             role="menuitem"

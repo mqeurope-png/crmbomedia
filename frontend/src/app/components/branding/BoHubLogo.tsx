@@ -26,6 +26,9 @@ type Props = {
   className?: string;
   title?: string;
   style?: CSSProperties;
+  /** ERP-F2 — palabra de la marca junto a «BoHub». "CRM" por defecto; en modo
+   *  ERP se pasa "ERP" (misma casa, mismo diseño, solo cambia la palabra). */
+  wordmark?: string;
 };
 
 const COLOR_PRIMARY = "#2563EB";
@@ -136,14 +139,16 @@ export function BoHubLogo({
   variant = "horizontal",
   size = 36,
   className,
-  title = "BoHub CRM",
+  title,
   style,
+  wordmark = "CRM",
 }: Props) {
   const monochrome = variant === "monochrome";
+  const label = title ?? `BoHub ${wordmark}`;
 
   if (variant === "icon") {
     return (
-      <IsotypeSvg monochrome={false} size={size} title={title} />
+      <IsotypeSvg monochrome={false} size={size} title={label} />
     );
   }
 
@@ -168,9 +173,9 @@ export function BoHubLogo({
         lineHeight: 1,
         ...style,
       }}
-      aria-label={title}
+      aria-label={label}
     >
-      <IsotypeSvg monochrome={monochrome} size={size} title={title} />
+      <IsotypeSvg monochrome={monochrome} size={size} title={label} />
       <span
         style={{
           display: "inline-flex",
@@ -191,7 +196,7 @@ export function BoHubLogo({
             fontWeight: 500,
           }}
         >
-          CRM
+          {wordmark}
         </span>
       </span>
     </span>

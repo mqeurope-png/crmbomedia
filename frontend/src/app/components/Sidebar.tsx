@@ -1,33 +1,12 @@
 "use client";
 
-import {
-  BarChart3,
-  BookOpen,
-  Building2,
-  ChevronsLeft,
-  ChevronsRight,
-  Database,
-  FileText,
-  Kanban,
-  Mail,
-  Package,
-  Plug,
-  ScrollText,
-  Shuffle,
-  Sliders,
-  CheckSquare,
-  Tag,
-  Target,
-  Users,
-  UserCog,
-  Workflow,
-  Wrench,
-  type LucideIcon,
-} from "lucide-react";
+import { ChevronsLeft, ChevronsRight } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import type { User } from "../lib/api";
+import type { AppMode } from "../lib/appMode";
+import { resolveVisibleNav } from "../lib/appNav";
 import { getMyBuckets } from "../lib/tasksApi";
 
 /** Poll `my-buckets` so the sidebar badge stays roughly fresh as
@@ -57,189 +36,11 @@ function useTasksBadge(user: User | null): number {
   return count;
 }
 
-type Item = {
-  href: string;
-  label: string;
-  icon: LucideIcon;
-  /** When true, the item shows for every role; otherwise only for
-   * roles listed in `allowedRoles`. */
-  public?: boolean;
-  allowedRoles?: ReadonlyArray<User["role"]>;
-  /** Sub-items rendered indented when the sidebar is expanded and the
-   * parent (or a child) route is active. */
-  children?: ReadonlyArray<{ href: string; label: string }>;
-};
-
-const NAV_ITEMS: ReadonlyArray<Item> = [
-  { href: "/", label: "Dashboard", icon: BarChart3, public: true },
-  { href: "/contacts", label: "Contactos", icon: Users, public: true },
-  { href: "/tasks", label: "Tareas", icon: CheckSquare, public: true },
-  {
-    href: "/emails",
-    label: "Emails",
-    icon: Mail,
-    public: true,
-    children: [
-      { href: "/emails", label: "Bandeja" },
-      { href: "/emails/plantillas", label: "Plantillas" },
-    ],
-  },
-  { href: "/companies", label: "Empresas", icon: Building2, public: true },
-  // BoHub ERP Fase A. Sección ERP visible por rol: admin/manager ven todo;
-  // PEDIDOS ve pedidos + cola de aprobación; SAT solo verá /erp/sat (PR 5);
-  // USER/comercial puede VER la bandeja (read-only en la API); VIEWER no
-  // accede al ERP. Las sub-rutas de SAT/excepciones/settings se añaden en
-  // sus PRs — aquí solo las que ya existen (PR 4).
-  {
-    href: "/erp/orders",
-    label: "ERP · Pedidos",
-    icon: Package,
-    allowedRoles: ["admin", "manager", "pedidos", "user"],
-    children: [
-      { href: "/erp/orders", label: "Bandeja" },
-      { href: "/erp/orders/pending-approval", label: "Cola PEDIDOS" },
-      { href: "/erp/exceptions", label: "Excepciones" },
-    ],
-  },
-  // ERP-E3-A — explorador de documentos FACTUSOL (solo lectura, en vivo).
-  // Mismos roles que la bandeja: cualquiera con vista ERP puede consultar.
-  {
-    href: "/erp/documentos",
-    label: "ERP · Documentos",
-    icon: FileText,
-    allowedRoles: ["admin", "manager", "pedidos", "user"],
-  },
-  // Cola SAT táctil (taller). Visible para el rol SAT + admin/manager que
-  // supervisan. Es una pantalla full-bleed (layout propio); el enlace del
-  // sidebar solo aplica cuando se navega desde el CRM normal.
-  {
-    href: "/erp/sat",
-    label: "ERP · Taller (SAT)",
-    icon: Wrench,
-    allowedRoles: ["admin", "manager", "sat"],
-  },
-  {
-    href: "/erp/settings",
-    label: "ERP · Configuración",
-    icon: Sliders,
-    allowedRoles: ["admin"],
-  },
-  {
-    href: "/admin/erp/integrations/woocommerce",
-    label: "ERP · Integraciones · Woo",
-    icon: Plug,
-    allowedRoles: ["admin"],
-  },
-  {
-    href: "/pipelines",
-    label: "Pipelines",
-    icon: Kanban,
-    // Mini-PR C Fase 3: pipelines, segments and tags are now visible
-    // to every signed-in user (including viewer, read-only). Creating
-    // and editing are gated separately at the route layer.
-    allowedRoles: ["admin", "manager", "user", "viewer"],
-  },
-  {
-    href: "/segments",
-    label: "Segmentos",
-    icon: Target,
-    allowedRoles: ["admin", "manager", "user", "viewer"],
-  },
-  {
-    href: "/marketing/campaigns",
-    label: "Marketing",
-    icon: Mail,
-    allowedRoles: ["admin", "manager", "user", "viewer"],
-    children: [
-      { href: "/marketing/campaigns", label: "Campañas" },
-      { href: "/marketing/templates", label: "Plantillas" },
-      { href: "/marketing/listas", label: "Listas Brevo" },
-    ],
-  },
-  {
-    href: "/admin/tags",
-    label: "Tags",
-    icon: Tag,
-    allowedRoles: ["admin", "manager", "user", "viewer"],
-  },
-  // PR-Manual-Tutorial-CRM. Manual de usuario embebido como iframe
-  // del HTML maquetado por Bart. Visible para todos los roles
-  // (incluido viewer) — no expone datos sensibles, solo documentación.
-  // Posición intencional: tras "Tags" y antes del bloque admin para
-  // que cualquier user lo encuentre cerca del final del menú.
-  {
-    href: "/tutorial",
-    label: "Tutorial",
-    icon: BookOpen,
-    public: true,
-  },
-  {
-    href: "/admin/integrations",
-    label: "Integraciones",
-    icon: Plug,
-    // Fase 3: integrations contain sensitive credentials — restrict
-    // to admin only.
-    allowedRoles: ["admin"],
-  },
-  {
-    href: "/admin/users",
-    label: "Usuarios",
-    icon: UserCog,
-    allowedRoles: ["admin"],
-  },
-  // Sprint Reglas-Assign PR-E. Visible para manager+ (la API permite
-  // que un manager configure reglas y las dispare manualmente sobre
-  // su cartera). El admin las gestiona como cualquier otro recurso.
-  {
-    href: "/admin/assignment-rules",
-    label: "Reglas de asignación",
-    icon: Shuffle,
-    allowedRoles: ["admin", "manager"],
-  },
-  // PR-Hotfix-Workflows-Pipelines-Permisos. Post #250 los workflows son
-  // per-user: cada user comercial puede tener los suyos + ver los del
-  // equipo (globales). El menú debe ser visible para todos los roles
-  // — el backend ya filtra la lista correctamente. Antes estaba
-  // restringido a admin+manager (sprint workflows bloque 1) cuando los
-  // workflows eran solo "del equipo".
-  {
-    href: "/admin/workflows",
-    label: "Workflows",
-    icon: Workflow,
-    allowedRoles: ["admin", "manager", "user", "viewer"],
-  },
-  // PR-Fixes-Pase-4 Bug 6. Custom fields manuales — admins-only;
-  // popula el dropdown del editor de workflows sin esperar a que
-  // ningún contacto use el field.
-  {
-    href: "/admin/custom-fields",
-    label: "Custom fields",
-    icon: Sliders,
-    allowedRoles: ["admin"],
-  },
-  // Sprint Backup. Inserción admin-only justo antes de Ajustes para
-  // agrupar el surface "infra" del CRM (Usuarios → Reglas → Backups
-  // → Ajustes). Lleva a la página de descarga + disparo manual.
-  {
-    href: "/admin/backups",
-    label: "Backups",
-    icon: Database,
-    allowedRoles: ["admin"],
-  },
-  {
-    // PR-TagPicker-Ficha-Contacto Feature C. Renombrado de "Ajustes" a
-    // "Auditoría" — la página `/admin/audit` es el log de actividad de
-    // users (login con IP, mutaciones, exports), no una pantalla de
-    // settings. El label antiguo confundía.
-    href: "/admin/audit",
-    label: "Auditoría",
-    icon: ScrollText,
-    allowedRoles: ["admin"],
-  },
-];
-
 type Props = {
   user: User | null;
+  /** ERP-F2 — el modo decide qué entradas se pintan (CRM completo vs solo
+   *  ERP). La definición del menú y su ámbito viven en `lib/appNav`. */
+  mode: AppMode;
   collapsed: boolean;
   onToggleCollapsed: () => void;
   onCloseDrawer: () => void;
@@ -247,18 +48,14 @@ type Props = {
 
 export function Sidebar({
   user,
+  mode,
   collapsed,
   onToggleCollapsed,
   onCloseDrawer,
 }: Props) {
   const pathname = usePathname() ?? "";
   const tasksBadge = useTasksBadge(user);
-
-  function isVisible(item: Item): boolean {
-    if (item.public) return true;
-    if (!user) return false;
-    return item.allowedRoles?.includes(user.role) ?? false;
-  }
+  const items = resolveVisibleNav(user, mode);
 
   function isActive(href: string): boolean {
     if (href === "/") return pathname === "/";
@@ -272,7 +69,7 @@ export function Sidebar({
     >
       <nav className="sidebar-nav">
         <ul>
-          {NAV_ITEMS.filter(isVisible).map((item) => {
+          {items.map((item) => {
             const Icon = item.icon;
             const sectionActive =
               isActive(item.href) ||

@@ -10638,6 +10638,22 @@ tr.is-inactive {
 .erp-detail-grid { display: grid; grid-template-columns: 1.3fr 1fr; gap: 18px; align-items: start; }
 .erp-card { border: 1px solid var(--line, #e5e7eb); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
 .erp-card h3 { margin: 0 0 10px; font-size: 14px; }
+/* ERP-F2 — inicio del ERP (/erp): contadores + tarjetas de acceso. Mismo
+   diseño que el resto del ERP (tokens compartidos). */
+.erp-home-widgets { display: flex; flex-wrap: wrap; gap: 12px; margin: 4px 0 18px; }
+.erp-home-stat { display: flex; flex-direction: column; gap: 2px; min-width: 200px;
+  border: 1px solid var(--line, #e5e7eb); border-radius: 12px; padding: 14px 16px;
+  text-decoration: none; color: inherit; }
+.erp-home-stat:hover { border-color: #93c5fd; background: #f5f9ff; }
+.erp-home-stat-value { font-size: 26px; font-weight: 700; line-height: 1.1; }
+.erp-home-stat-label { font-size: 13px; color: var(--muted, #64748b); }
+.erp-home-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px; }
+.erp-home-card { display: flex; align-items: center; gap: 10px;
+  border: 1px solid var(--line, #e5e7eb); border-radius: 12px; padding: 16px;
+  text-decoration: none; color: inherit; font-weight: 600; }
+.erp-home-card:hover { border-color: #93c5fd; background: #f5f9ff; }
+.erp-home-card-label { font-size: 14px; }
 .erp-timeline { list-style: none; margin: 0; padding: 0; }
 .erp-timeline-item { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; padding: 8px 0; border-bottom: 1px dashed var(--line, #e5e7eb); font-size: 13px; }
 .erp-timeline-item.is-exception .erp-timeline-title { color: #b42318; }
