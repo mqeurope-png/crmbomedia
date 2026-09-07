@@ -122,6 +122,15 @@ def test_admin_can_access_both(http) -> None:
     assert http.get("/api/companies", headers=headers).status_code == 200
 
 
+def test_crm_scope_guard_is_optional_bearer(http) -> None:
+    # El guard de ámbito NO fuerza autenticación: sin token, un endpoint del
+    # CRM responde 401 por su propio guard (no 403 del ámbito), y los endpoints
+    # PÚBLICOS (pixel de tracking, adjunto CID) siguen abiertos. Esto es lo que
+    # evita romper los públicos al colgar `require_crm_access` de su router.
+    r = http.get("/api/workflows")  # sin cabecera Authorization
+    assert r.status_code == 401
+
+
 def test_self_account_endpoints_stay_open_for_erp_user(http) -> None:
     # El perfil de ERP debe poder gestionar su propia cuenta (getCurrentUser,
     # alias de envío para la factura) — no queda encerrado fuera de /api/auth

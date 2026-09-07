@@ -139,21 +139,41 @@ def is_erp_only_role(role: UserRole | str) -> bool:
     return value in {r.value for r in ERP_ONLY_ROLES}
 
 
+def _block_erp_only(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None,
+    session: Session,
+) -> None:
+    """Núcleo del ámbito CRM: si el token (opcional) es de un rol solo-ERP,
+    403. Si no hay token, NO exige auth — deja pasar para que el guard propio
+    del endpoint responda (401 en los del CRM, 200 en los PÚBLICOS como el
+    pixel de tracking o el adjunto CID). El rol se comprueba contra la BD
+    (autoritativo, no el claim que podría estar desactualizado)."""
+    if credentials is None:
+        return
+    payload = decode_access_token(credentials.credentials)
+    if not payload or not payload.get("sub"):
+        return
+    user = session.get(User, payload["sub"])
+    if user is not None and is_erp_only_role(user.role):
+        _audit_forbidden(request, session, user, UserRole.USER)
+        raise forbidden()
+
+
 def require_crm_access(
     request: Request,
-    current_user: User = Depends(get_current_user),
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
     session: Session = Depends(get_session),
-) -> User:
+) -> None:
     """Ámbito CRM: cualquier rol del CRM (viewer..admin) pasa; un rol solo-ERP
     (PEDIDOS/SAT) recibe 403. El ERP es su aplicación — no ve la gestión del
     CRM (contactos, emails, marketing, pipelines, segmentos, tags, workflows,
     plantillas). El dato de CLIENTE que el ERP necesita (empresas) NO va por
-    aquí. Es un guard de ámbito; el nivel fino lo siguen aplicando
-    require_viewer/user/manager en cada endpoint."""
-    if is_erp_only_role(current_user.role):
-        _audit_forbidden(request, session, current_user, UserRole.USER)
-        raise forbidden()
-    return current_user
+    aquí. Es un guard de ÁMBITO con bearer OPCIONAL: no fuerza autenticación
+    (hay routers con endpoints públicos — tracking/adjuntos), solo AÑADE el 403
+    para el perfil de ERP. El nivel fino lo siguen aplicando require_viewer/
+    user/manager en cada endpoint."""
+    _block_erp_only(request, credentials, session)
 
 
 # ERP-F2 — el router MONOLÍTICO (`app/api/routes.py`, montado en /api) mezcla
@@ -192,15 +212,7 @@ def crm_scope_monolith(
     el claim del token que podría estar desactualizado tras un cambio de rol)."""
     if _monolith_path_exempt(request.url.path):
         return
-    if credentials is None:
-        return
-    payload = decode_access_token(credentials.credentials)
-    if not payload or not payload.get("sub"):
-        return
-    user = session.get(User, payload["sub"])
-    if user is not None and is_erp_only_role(user.role):
-        _audit_forbidden(request, session, user, UserRole.USER)
-        raise forbidden()
+    _block_erp_only(request, credentials, session)
 
 
 def require_admin(
