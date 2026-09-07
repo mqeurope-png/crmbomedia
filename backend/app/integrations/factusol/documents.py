@@ -266,6 +266,9 @@ def normalize_header(doc_type: str, row: dict[str, Any]) -> dict[str, Any]:
         "numero": visible_number(row.get(spec.tip), row.get(spec.cod)),
         "cliente_codigo": _clean(row.get(spec.cli)),
         "cliente_nombre": _clean(row.get(spec.cno)),
+        # E4: país del cliente (CPA*) — la UI deduce con él el idioma por
+        # defecto del PDF (cliente extranjero → inglés).
+        "cliente_pais": _clean(row.get(f"CPA{spec.suffix}")),
         "fecha": _factusol_date(row.get(spec.fec)),
         "total": _num(row.get(spec.tot)) if row.get(spec.tot) is not None else None,
         "estado": estado_raw,

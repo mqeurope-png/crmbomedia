@@ -463,6 +463,29 @@ export type ErpSettings = {
    *  ESTALB 1 = «Facturado». Vacío = no marcar. */
   factusol_estpre_accepted?: string;
   factusol_estalb_invoiced?: string;
+  /** ERP-E4 — identidad fiscal de las empresas emisoras por serie (alimenta
+   *  los PDF). Llega ya fusionada con los defaults de los modelos reales. */
+  factusol_companies?: Record<string, FactusolCompany>;
+};
+
+/** ERP-E4 — identidad fiscal de una empresa emisora (serie). Los textos
+ *  legales van por idioma ({es, en, …}). `logo` es de solo lectura (se sube
+ *  aparte). */
+export type FactusolCompany = {
+  nombre: string;
+  direccion: string;
+  cp_poblacion: string;
+  pais: string;
+  telefono: string;
+  email: string;
+  nif: string;
+  banco: string;
+  iban: string;
+  bic: string;
+  legal: Record<string, string>;
+  pie: Record<string, string>;
+  intracom: Record<string, string>;
+  logo?: boolean;
 };
 
 export async function getErpSettings(): Promise<ErpSettings> {
@@ -664,6 +687,8 @@ export type FactusolDocument = {
   referencia: string | null;
   /** Código de forma de pago (F_FOP), p. ej. "002". */
   forma_pago: string | null;
+  /** E4 — país del cliente (para deducir el idioma por defecto del PDF). */
+  cliente_pais?: string | null;
   /** E3-B — posición en el ciclo PRE→ALB→FAC. `null`/ausente = el backend
    *  no pudo cargar el índice (anotación best-effort). */
   ciclo?: FactusolCycle;
@@ -794,6 +819,47 @@ export async function getFactusolConvertStatus(
   return apiFetch(
     `/api/erp/factusol/documents/convert-status/${encodeURIComponent(jobId)}`,
   );
+}
+
+// --- PDF de documentos (ERP-E4) ---------------------------------------------
+
+export type FactusolPdfLang = "es" | "en";
+
+/** PDF del documento, generado por BoHub (la API de DELSOL no imprime). */
+export async function downloadFactusolDocumentPdf(
+  docType: FactusolDocType, serie: number, codigo: number | string,
+  lang: FactusolPdfLang = "es",
+): Promise<Blob> {
+  return apiDownloadBlob(
+    `/api/erp/factusol/documents/${docType}/${serie}/${codigo}/pdf?lang=${lang}`,
+  );
+}
+
+/** PDF del pedido de cliente (F_PCL) vinculado a un pedido del CRM. */
+export async function downloadOrderFactusolPedidoPdf(
+  orderId: string, lang: FactusolPdfLang = "es",
+): Promise<Blob> {
+  return apiDownloadBlob(
+    `/api/erp/orders/${orderId}/factusol-pedido-pdf?lang=${lang}`,
+  );
+}
+
+export async function uploadFactusolCompanyLogo(
+  serie: number | string, file: File,
+): Promise<{ serie: number; logo: boolean }> {
+  const form = new FormData();
+  form.append("file", file);
+  return apiUpload(`/api/erp/factusol/companies/${serie}/logo`, form);
+}
+
+/** Abre el diálogo «guardar» del navegador con el blob descargado. */
+export function saveBlob(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 // --- Clientes FACTUSOL ↔ CRM (Fase C · C-3) ---------------------------------

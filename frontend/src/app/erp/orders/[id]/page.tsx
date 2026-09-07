@@ -12,12 +12,15 @@ import { getCurrentUser, type User } from "../../../lib/api";
 import { extractErrorMessage } from "../../../lib/errors";
 import {
   customerLabel,
+  downloadOrderFactusolPedidoPdf,
   getOrder,
   getOrderTimeline,
   getFactusolStatus,
   fireTransition,
+  saveBlob,
   ERP_EDIT_ROLES,
   type AvailableTransition,
+  type FactusolPdfLang,
   type FactusolStatus,
   type OrderDetail,
   type StatusDomain,
@@ -34,6 +37,9 @@ export default function ErpOrderDetailPage() {
   const [embalarOpen, setEmbalarOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // E4 — PDF del pedido de cliente (F_PCL) vinculado en FACTUSOL.
+  const [pdfLang, setPdfLang] = useState<FactusolPdfLang>("es");
+  const [pdfBusy, setPdfBusy] = useState(false);
 
   const load = useCallback(() => {
     getOrder(id)
@@ -119,6 +125,39 @@ export default function ErpOrderDetailPage() {
         ]}
       />
       {error ? <p className="form-error">{error}</p> : null}
+      <div className="erp-factusol-row" style={{ margin: "0 0 14px" }}>
+        <span className="erp-doc-pdf">
+          <select
+            value={pdfLang}
+            aria-label="Idioma del PDF"
+            onChange={(e) => setPdfLang(e.target.value as FactusolPdfLang)}
+          >
+            <option value="es">ES</option>
+            <option value="en">EN</option>
+          </select>
+          <button
+            type="button"
+            className="button small secondary"
+            disabled={pdfBusy}
+            onClick={async () => {
+              setPdfBusy(true);
+              setError(null);
+              try {
+                const blob = await downloadOrderFactusolPedidoPdf(order.id, pdfLang);
+                saveBlob(blob, `Pedido_${order.order_number}.pdf`);
+              } catch (e) {
+                setError(extractErrorMessage(
+                  e, "No se pudo generar el PDF del pedido FACTUSOL.",
+                ));
+              } finally {
+                setPdfBusy(false);
+              }
+            }}
+          >
+            {pdfBusy ? "Generando…" : "PDF del pedido (FACTUSOL)"}
+          </button>
+        </span>
+      </div>
       {canEmit ? (
         <div className="erp-factusol-row" style={{ margin: "0 0 14px" }}>
           <EmitFactusolButton

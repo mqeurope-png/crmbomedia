@@ -9,9 +9,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # en la imagen, los backups manuales / cron desde el worker fallaban
 # silenciosamente — el hack post-deploy había sido `apt-get install`
 # a mano dentro del container, perdido al primer `--force-recreate`.
+# ERP-E4: `fonts-dejavu-core` da a reportlab una TTF con acentos, ñ y €
+# garantizados para los PDF de documentos (la imagen slim no trae fuentes;
+# sin ella se cae a Helvetica, que funciona pero no se incrusta).
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         default-mysql-client \
+        fonts-dejavu-core \
         gnupg \
     && rm -rf /var/lib/apt/lists/*
 

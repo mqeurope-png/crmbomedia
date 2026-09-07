@@ -73,6 +73,10 @@ class SettingsIn(BaseModel):
     #: «Facturado». Vacío explícito = no marcar.
     factusol_estpre_accepted: str | None = None
     factusol_estalb_invoiced: str | None = None
+    #: ERP-E4 — identidad fiscal de las empresas emisoras, por serie
+    #: ({"1": {...}, "5": {...}}). Alimenta los PDF; editable para que Bart
+    #: corrija un IBAN sin despliegue. Ver `factusol_pdf.COMPANY_DEFAULTS`.
+    factusol_companies: dict[str, dict[str, Any]] | None = None
 
 
 # --- helpers -----------------------------------------------------------------
@@ -279,7 +283,25 @@ def _serialise_settings(cfg: ErpSettings) -> dict[str, Any]:
         # UI enseñe lo que realmente se escribirá; "" = marcado desactivado.
         "factusol_estpre_accepted": _series(cfg).get("estpre_accepted", "1"),
         "factusol_estalb_invoiced": _series(cfg).get("estalb_invoiced", "1"),
+        # ERP-E4: identidad fiscal por serie, ya fusionada con los defaults
+        # extraídos de los modelos reales, + si esa serie tiene logo subido.
+        "factusol_companies": _companies_with_logos(cfg),
     }
+
+
+def _companies_with_logos(cfg: ErpSettings) -> dict[str, Any]:
+    from app.erp.factusol_pdf import (  # noqa: PLC0415
+        logo_path_for_serie,
+        merge_companies,
+    )
+
+    companies = merge_companies(_series(cfg).get("companies"))
+    for serie, comp in companies.items():
+        try:
+            comp["logo"] = logo_path_for_serie(int(serie)) is not None
+        except (TypeError, ValueError):
+            comp["logo"] = False
+    return companies
 
 
 def _series(cfg: ErpSettings) -> dict[str, Any]:
@@ -333,7 +355,8 @@ def update_settings(
             or payload.factusol_series_names is not None
             or payload.factusol_estpcl_invoiced is not None
             or payload.factusol_estpre_accepted is not None
-            or payload.factusol_estalb_invoiced is not None):
+            or payload.factusol_estalb_invoiced is not None
+            or payload.factusol_companies is not None):
         series = _series(cfg)
         if payload.factusol_series_default is not None:
             series["default"] = payload.factusol_series_default.strip()
@@ -352,6 +375,17 @@ def update_settings(
             series["estpre_accepted"] = payload.factusol_estpre_accepted.strip()
         if payload.factusol_estalb_invoiced is not None:
             series["estalb_invoiced"] = payload.factusol_estalb_invoiced.strip()
+        # ERP-E4: identidad fiscal de las empresas. El PATCH llega con el
+        # dict COMPLETO tal como lo sirvió el GET (ya fusionado con los
+        # defaults) — se guarda explícito, así los valores no cambian si un
+        # día cambiaran los defaults del código. `logo` es de solo lectura.
+        if payload.factusol_companies is not None:
+            series["companies"] = {
+                str(serie): {
+                    k: v for k, v in (comp or {}).items() if k != "logo"
+                }
+                for serie, comp in payload.factusol_companies.items()
+            }
         if payload.factusol_series_names is not None:
             # ERP-E2: {"5": "Streamtec", …}. Claves como string por JSON.
             series["names"] = {

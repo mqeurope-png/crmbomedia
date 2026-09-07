@@ -4,15 +4,18 @@ import { useCallback, useEffect, useState } from "react";
 import { getCurrentUser, type User } from "../../lib/api";
 import {
   convertFactusolDocument,
+  downloadFactusolDocumentPdf,
   ERP_EDIT_ROLES,
   getFactusolConvertStatus,
   getFactusolDocument,
   getFactusolSeries,
+  saveBlob,
   type FactusolConvertTarget,
   type FactusolCycle,
   type FactusolCycleRef,
   type FactusolDocType,
   type FactusolDocumentDetail,
+  type FactusolPdfLang,
   type FactusolSerie,
 } from "../../lib/erpApi";
 import { extractErrorMessage } from "../../lib/errors";
@@ -116,6 +119,14 @@ function today(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
+/** E4 — idioma por defecto del PDF: el del país del cliente si se puede
+ *  deducir; español si no. */
+export function defaultPdfLang(pais: string | null | undefined): FactusolPdfLang {
+  const p = (pais ?? "").trim().toLowerCase();
+  if (!p || /espa|spain|^es$/.test(p)) return "es";
+  return "en";
+}
+
 /** ERP-E3-A/E3-B — detalle de un documento FACTUSOL: cabecera + líneas +
  *  posición en el ciclo PRE→ALB→FAC, con las acciones de crear el siguiente
  *  documento de la cadena (albarán/factura). Los enlaces del ciclo navegan
@@ -150,6 +161,9 @@ export function FactusolDocumentDetailModal({
   // E3-B-fix3: el hijo se creó pero el ORIGEN no quedó marcado como
   // convertido (ESTPRE/ESTALB) — es un AVISO, no un error de la conversión.
   const [originWarning, setOriginWarning] = useState<string | null>(null);
+  // E4 — descarga de PDF: idioma (por defecto, el del país del cliente).
+  const [pdfLang, setPdfLang] = useState<FactusolPdfLang>("es");
+  const [pdfBusy, setPdfBusy] = useState(false);
 
   useEffect(() => {
     // Mantiene la referencia si las props no cambiaron: un objeto nuevo
@@ -173,7 +187,11 @@ export function FactusolDocumentDetailModal({
       current.docType, current.serie, current.codigo,
       fresh ? { fresh: true } : undefined,
     )
-      .then((d) => { if (alive) setDoc(d); })
+      .then((d) => {
+        if (!alive) return;
+        setDoc(d);
+        setPdfLang(defaultPdfLang(d.cliente_pais));
+      })
       .catch((e) => {
         if (alive) setError(extractErrorMessage(e, "No se pudo cargar el documento."));
       });
@@ -402,6 +420,44 @@ export function FactusolDocumentDetailModal({
           <button type="button" className="button secondary" onClick={onClose}>
             Cerrar
           </button>
+          {doc ? (
+            <span className="erp-doc-pdf">
+              <select
+                value={pdfLang}
+                aria-label="Idioma del PDF"
+                onChange={(e) => setPdfLang(e.target.value as FactusolPdfLang)}
+              >
+                <option value="es">ES</option>
+                <option value="en">EN</option>
+              </select>
+              <button
+                type="button"
+                className="button secondary"
+                disabled={pdfBusy}
+                onClick={async () => {
+                  setPdfBusy(true);
+                  setCreateError(null);
+                  try {
+                    const blob = await downloadFactusolDocumentPdf(
+                      current.docType, current.serie, current.codigo, pdfLang,
+                    );
+                    saveBlob(
+                      blob,
+                      `${TYPE_LABELS[current.docType].replace(/ /g, "_")}_${doc.numero}.pdf`,
+                    );
+                  } catch (e) {
+                    setCreateError(extractErrorMessage(
+                      e, "No se pudo generar el PDF.",
+                    ));
+                  } finally {
+                    setPdfBusy(false);
+                  }
+                }}
+              >
+                {pdfBusy ? "Generando…" : "Descargar PDF"}
+              </button>
+            </span>
+          ) : null}
           {doc && canEdit
             ? actions.map((target) => (
                 <button
