@@ -59,6 +59,7 @@ def _apply(row: Company, payload: CompanyWrite) -> None:
     row.sector = payload.sector
     row.size_category = payload.size_category
     row.notes = payload.notes
+    row.language = (payload.language or "").strip().lower() or None
     row.source = payload.source
     row.external_references_json = (
         json.dumps(payload.external_references)

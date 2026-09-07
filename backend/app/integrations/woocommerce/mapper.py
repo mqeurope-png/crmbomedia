@@ -197,6 +197,58 @@ def _parse_dt(value: str | None) -> datetime | None:
         return None
 
 
+#: E4-fix1 — claves de meta_data donde los plugins multiidioma de WordPress
+#: guardan el idioma del pedido. Se sondean TODAS porque cada tienda puede
+#: llevar un plugin distinto (WPML, Polylang) o ninguno; el discovery real
+#: por tienda se hace con `scripts/woo_language_discovery.py` sobre los
+#: payloads ya almacenados en integration_events.
+_LANGUAGE_META_KEYS = (
+    "wpml_language", "_wpml_language", "wpml_language_code",
+    "pll_language", "_pll_language", "_locale", "locale", "language",
+)
+
+#: País de facturación → idioma, SOLO para países sin ambigüedad razonable.
+#: Bélgica (fr/nl) o Suiza (de/fr/it) NO están: antes vacío que inventado.
+_COUNTRY_LANGUAGE = {
+    "ES": "es", "FR": "fr", "DE": "de", "AT": "de", "NL": "nl",
+    "GB": "en", "IE": "en", "US": "en",
+}
+
+_SUPPORTED_LANGS = ("es", "en", "de", "fr", "nl")
+
+
+def _norm_lang(value: Any) -> str | None:
+    """`es_ES` / `fr-FR` / `NL` → subtag primario en minúscula, solo si es
+    uno de los idiomas que el ERP entiende."""
+    raw = str(value or "").strip().lower().replace("_", "-")
+    lang = raw.split("-")[0]
+    return lang if lang in _SUPPORTED_LANGS else None
+
+
+def detect_order_language(woo: dict[str, Any]) -> tuple[str | None, str | None]:
+    """`(idioma, fuente)` del pedido Woo, o `(None, None)` si no se puede
+    deducir — nunca se inventa (el operador lo corrige en la ficha).
+
+    Orden de sondeo: meta_data de WPML/Polylang/locale → campos de primer
+    nivel (`customer_locale` y afines) → país de facturación (solo países
+    sin ambigüedad)."""
+    for md in woo.get("meta_data") or []:
+        key = str(md.get("key") or "").strip().lower()
+        if key in _LANGUAGE_META_KEYS or key.endswith("wpml_language"):
+            lang = _norm_lang(md.get("value"))
+            if lang:
+                return lang, f"meta:{key}"
+    for key in ("customer_locale", "locale", "lang", "language"):
+        lang = _norm_lang(woo.get(key))
+        if lang:
+            return lang, key
+    country = str((woo.get("billing") or {}).get("country") or "").strip().upper()
+    lang = _COUNTRY_LANGUAGE.get(country)
+    if lang:
+        return lang, f"billing.country:{country}"
+    return None, None
+
+
 def _order_number(woo: dict[str, Any]) -> str:
     """Prefijo con el nombre corto de la tienda para evitar colisiones con
     los manuales del CRM (MAN-N) — decisión operativa."""
@@ -221,6 +273,10 @@ def _create_order(
         payment_status=_payment_status(woo),
         preparation_status=PreparationStatus.PENDING_REVIEW,
         placed_at=_parse_dt(woo.get("date_created")) or datetime.now(UTC),
+        # E4-fix1: idioma detectado del payload (WPML/locale/país) — se
+        # arrastra a los PDF de toda la cadena del documento. None si no se
+        # puede deducir (editable en la ficha).
+        language=detect_order_language(woo)[0],
     )
     session.add(order)
     return order
@@ -246,6 +302,10 @@ def _refresh_existing(
         order.contact_id = contact.id
     if company is not None and order.company_id is None:
         order.company_id = company.id
+    # E4-fix1: idioma — solo si aún no se conocía (no pisa una corrección
+    # manual de Bart).
+    if not order.language:
+        order.language = detect_order_language(woo)[0]
 
 
 def _apply_lines(

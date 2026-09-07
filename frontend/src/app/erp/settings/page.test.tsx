@@ -27,10 +27,22 @@ function settings(over: Partial<ErpSettings> = {}): ErpSettings {
         nombre: "Streamtec SL", direccion: "C. Corsega 232, 5",
         cp_poblacion: "08036 Barcelona", pais: "España",
         telefono: "Tel. 932022530", email: "", nif: "CIF B64154263",
-        banco: "Banco de Sabadell", iban: "ES11 0081 0202 1700 0125 9030",
-        bic: "BSABESBB", legal: {}, pie: {}, intracom: {}, logo: false,
+        idioma_defecto: "es",
+        bancos: [
+          { nombre: "Banco de Sabadell", domicilio: "Alicante",
+            iban: "ES11 0081 0202 1700 0125 9030", bic: "BSABESBB",
+            defecto: true },
+          { nombre: "Open Bank", domicilio: "Madrid",
+            iban: "ES23 0073 0100 5404 4814 5865", bic: "OPENESMM",
+            defecto: false },
+        ],
+        legal: {}, pie: {}, intracom: {}, titulo_albaran_valorado: {},
+        logo: false,
       },
     },
+    factusol_pickup_warehouses: [
+      { nombre: "Almacén TERLO 2000", direccion: "Castellbisbal" },
+    ],
     ...over,
   };
 }
@@ -100,15 +112,46 @@ describe("ErpSettingsPage — serie de facturación (C-2)", () => {
   it("edita la identidad fiscal de las empresas emisoras (E4)", async () => {
     const user = userEvent.setup();
     render(<ErpSettingsPage />);
-    const iban = await screen.findByLabelText("IBAN (serie 5)");
-    expect(iban).toHaveValue("ES11 0081 0202 1700 0125 9030");
-    await user.clear(iban);
-    await user.type(iban, "ES00 TEST");
+    const nif = await screen.findByLabelText(
+      "NIF / VAT (tal como debe imprimirse) (serie 5)",
+    );
+    expect(nif).toHaveValue("CIF B64154263");
+    await user.clear(nif);
+    await user.type(nif, "CIF B00000000");
     await user.click(screen.getByRole("button", { name: "Guardar" }));
     await waitFor(() => expect(mockUpdate).toHaveBeenCalled());
     expect(
-      mockUpdate.mock.calls[0][0].factusol_companies["5"].iban,
-    ).toBe("ES00 TEST");
+      mockUpdate.mock.calls[0][0].factusol_companies["5"].nif,
+    ).toBe("CIF B00000000");
+  });
+
+  it("edita las cuentas bancarias de la empresa (E4-fix1)", async () => {
+    const user = userEvent.setup();
+    render(<ErpSettingsPage />);
+    // Dos cuentas ya cargadas; edito el IBAN de la segunda (Open Bank).
+    const iban2 = await screen.findByLabelText("Banco 2 iban (serie 5)");
+    expect(iban2).toHaveValue("ES23 0073 0100 5404 4814 5865");
+    await user.clear(iban2);
+    await user.type(iban2, "ES99 NUEVO");
+    await user.click(screen.getByRole("button", { name: "Guardar" }));
+    await waitFor(() => expect(mockUpdate).toHaveBeenCalled());
+    const bancos = mockUpdate.mock.calls[0][0].factusol_companies["5"].bancos;
+    expect(bancos[1].iban).toBe("ES99 NUEVO");
+    expect(bancos[0].defecto).toBe(true);
+  });
+
+  it("edita los almacenes de recogida (E4-fix1)", async () => {
+    const user = userEvent.setup();
+    render(<ErpSettingsPage />);
+    const dir = await screen.findByLabelText("Almacén 1 dirección");
+    expect(dir).toHaveValue("Castellbisbal");
+    await user.clear(dir);
+    await user.type(dir, "C/ Nueva 1");
+    await user.click(screen.getByRole("button", { name: "Guardar" }));
+    await waitFor(() => expect(mockUpdate).toHaveBeenCalled());
+    expect(
+      mockUpdate.mock.calls[0][0].factusol_pickup_warehouses[0].direccion,
+    ).toBe("C/ Nueva 1");
   });
 
   it("muestra y guarda los estados de conversión ESTPRE/ESTALB (E3-B-fix3)", async () => {

@@ -38,6 +38,9 @@ class CompanyWrite(BaseModel):
     sector: str | None = Field(default=None, max_length=120)
     size_category: str | None = Field(default=None, max_length=40)
     notes: str | None = None
+    #: E4-fix1 — idioma preferido del cliente para sus documentos ERP
+    #: (es/en/de/fr/nl). None/"" = desconocido.
+    language: str | None = Field(default=None, max_length=5)
     source: str = Field(default="manual", max_length=40)
     external_references: dict[str, Any] = Field(default_factory=dict)
     custom_fields: dict[str, Any] = Field(default_factory=dict)
@@ -59,6 +62,7 @@ class CompanyRead(BaseModel):
     sector: str | None
     size_category: str | None
     notes: str | None
+    language: str | None = None
     source: str
     is_active: bool
     #: C-3: CODCLI del cliente en FACTUSOL (None si aún no está vinculado).

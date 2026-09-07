@@ -34,6 +34,9 @@ export type OrderSummary = {
   tracking_number: string | null;
   /** Fase C: nº de factura FACTUSOL (CODFAC) si ya se emitió; null si no. */
   factusol_invoice_number: string | null;
+  /** E4-fix1: idioma del pedido (es/en/de/fr/nl) — detectado al importar de
+   *  Woo o corregido a mano; null = desconocido. */
+  language?: string | null;
   approved_at: string | null;
   placed_at: string | null;
   created_at: string;
@@ -174,6 +177,16 @@ export async function fireTransition(
 
 export async function approveOrder(id: string): Promise<OrderDetail> {
   return apiFetch<OrderDetail>(`/api/erp/orders/${id}/approve`, { method: "POST" });
+}
+
+/** E4-fix1 — corrige/persiste el idioma del pedido (null = desconocido). */
+export async function updateOrderLanguage(
+  id: string, language: FactusolPdfLang | null,
+): Promise<{ id: string; language: string | null }> {
+  return apiFetch(`/api/erp/orders/${id}/language`, {
+    method: "PATCH",
+    body: JSON.stringify({ language }),
+  });
 }
 
 // --- procesado externamente (B-2-fix4) --------------------------------------
@@ -466,11 +479,23 @@ export type ErpSettings = {
   /** ERP-E4 — identidad fiscal de las empresas emisoras por serie (alimenta
    *  los PDF). Llega ya fusionada con los defaults de los modelos reales. */
   factusol_companies?: Record<string, FactusolCompany>;
+  /** E4-fix1 — almacenes de recogida del albarán de devolución. */
+  factusol_pickup_warehouses?: FactusolPickupWarehouse[];
 };
 
 /** ERP-E4 — identidad fiscal de una empresa emisora (serie). Los textos
  *  legales van por idioma ({es, en, …}). `logo` es de solo lectura (se sube
  *  aparte). */
+/** E4-fix1 — cuenta bancaria de una empresa emisora. `defecto` marca la
+ *  preseleccionada al descargar. */
+export type FactusolBankAccount = {
+  nombre: string;
+  domicilio: string;
+  iban: string;
+  bic: string;
+  defecto: boolean;
+};
+
 export type FactusolCompany = {
   nombre: string;
   direccion: string;
@@ -479,14 +504,21 @@ export type FactusolCompany = {
   telefono: string;
   email: string;
   nif: string;
-  banco: string;
-  iban: string;
-  bic: string;
+  /** E4-fix1 — idioma por defecto de la empresa emisora (nivel 4 de la
+   *  cascada de idioma). */
+  idioma_defecto: string;
+  /** E4-fix1 — el banco ya no es fijo: lista de cuentas, una por defecto. */
+  bancos: FactusolBankAccount[];
   legal: Record<string, string>;
   pie: Record<string, string>;
   intracom: Record<string, string>;
+  /** E4-fix1 — título de la variante VALORADA del albarán, por idioma. */
+  titulo_albaran_valorado: Record<string, string>;
   logo?: boolean;
 };
+
+/** E4-fix1 — almacén de recogida del albarán de devolución. */
+export type FactusolPickupWarehouse = { nombre: string; direccion: string };
 
 export async function getErpSettings(): Promise<ErpSettings> {
   return apiFetch<ErpSettings>("/api/erp/settings");
@@ -716,10 +748,19 @@ export type FactusolCycle = {
   estado_label?: string | null;
 } | null;
 
+/** E4-fix1 — idioma sugerido para el PDF (cascada) con su procedencia, para
+ *  preseleccionar el selector indicando si es dato real o suposición. */
+export type FactusolPdfLangSuggestion = {
+  lang: FactusolPdfLang;
+  source: "pedido" | "cliente" | "empresa" | "defecto";
+};
+
 export type FactusolDocumentDetail = FactusolDocument & {
   /** Nombre de la forma de pago resuelto del catálogo F_FOP; null si el
    *  documento no la trae o el catálogo no la conoce. */
   forma_pago_nombre: string | null;
+  /** E4-fix1 — idioma propuesto para el PDF con su origen. */
+  pdf_lang?: FactusolPdfLangSuggestion;
   lines: {
     position: number;
     codart: string | null;
@@ -825,13 +866,35 @@ export async function getFactusolConvertStatus(
 
 export type FactusolPdfLang = "es" | "en" | "de" | "fr" | "nl";
 
+/** E4-fix1 — variantes de impresión del mismo documento (nunca crean nada
+ *  en FACTUSOL). */
+export type FactusolPdfVariant =
+  | "anticipo" | "proforma" | "valorado" | "devolucion";
+
+export type FactusolPdfOptions = {
+  variant?: FactusolPdfVariant;
+  /** Índice de la cuenta bancaria de la empresa (default: la marcada). */
+  bank?: number;
+  /** Código ISO de divisa (solo cambia la presentación; no convierte). */
+  currency?: string;
+  /** Índice del almacén de recogida (albarán de devolución). */
+  warehouse?: number;
+};
+
 /** PDF del documento, generado por BoHub (la API de DELSOL no imprime). */
 export async function downloadFactusolDocumentPdf(
   docType: FactusolDocType, serie: number, codigo: number | string,
-  lang: FactusolPdfLang = "es",
+  lang: FactusolPdfLang = "es", opts: FactusolPdfOptions = {},
 ): Promise<Blob> {
+  const query = qs({
+    lang,
+    variant: opts.variant,
+    bank: opts.bank,
+    currency: opts.currency,
+    warehouse: opts.warehouse,
+  });
   return apiDownloadBlob(
-    `/api/erp/factusol/documents/${docType}/${serie}/${codigo}/pdf?lang=${lang}`,
+    `/api/erp/factusol/documents/${docType}/${serie}/${codigo}/pdf${query}`,
   );
 }
 

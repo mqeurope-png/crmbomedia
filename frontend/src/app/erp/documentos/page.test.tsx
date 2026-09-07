@@ -14,6 +14,7 @@ jest.mock("../../lib/erpApi", () => ({
   convertFactusolDocument: jest.fn(),
   getFactusolConvertStatus: jest.fn(),
   downloadFactusolDocumentPdf: jest.fn(),
+  getErpSettings: jest.fn(() => Promise.resolve({ factusol_companies: {} })),
   saveBlob: jest.fn(),
   ERP_EDIT_ROLES: ["admin", "pedidos"],
 }));

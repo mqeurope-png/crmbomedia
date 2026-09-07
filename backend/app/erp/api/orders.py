@@ -192,6 +192,9 @@ def _serialise_summary(
         "invoice_status": _status_value(o.invoice_status),
         "tracking_number": o.tracking_number,
         "factusol_invoice_number": o.factusol_invoice_number,
+        # E4-fix1: idioma del pedido (detectado en la importación Woo o
+        # corregido a mano). Alimenta la cascada de idioma de los PDF.
+        "language": o.language,
         "approved_at": o.approved_at.isoformat() if o.approved_at else None,
         "placed_at": o.placed_at.isoformat() if o.placed_at else None,
         "created_at": o.created_at.isoformat(),
@@ -726,6 +729,27 @@ def factusol_status(
     except Exception as exc:  # noqa: BLE001 — FACTUSOL caído / sin credenciales
         logger.warning("factusol status check falló order=%s: %s", order_id, exc)
         return {"status": "unknown", "reason": "factusol_unreachable"}
+
+
+class OrderLanguageIn(BaseModel):
+    """E4-fix1 — idioma del pedido, editable en la ficha (corrige una
+    detección fallida y queda persistido)."""
+
+    language: str | None = Field(default=None, pattern="^(es|en|de|fr|nl)$")
+
+
+@router.patch("/{order_id}/language")
+def update_order_language(
+    order_id: str,
+    payload: OrderLanguageIn,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_edit),
+) -> dict[str, Any]:
+    _ = current_user
+    order = _get_order(session, order_id)
+    order.language = payload.language
+    session.commit()
+    return {"id": order.id, "language": order.language}
 
 
 @router.get("/{order_id}/factusol-pedido-pdf")
