@@ -152,6 +152,7 @@ LABELS: dict[str, dict[str, str]] = {
         "band_iva": "I.V.A.",
         "band_re": "R.E.",
         "band_exento": "Exento",
+        "band_base_unica": "Base imponible",
         "total": "TOTAL:",
         "observaciones": "OBSERVACIONES:",
         "vencimiento": "1er VENCIMIENTO:",
@@ -211,6 +212,7 @@ LABELS: dict[str, dict[str, str]] = {
         "band_iva": "V.A.T.",
         "band_re": "R.E.",
         "band_exento": "Exempt",
+        "band_base_unica": "Taxable amount",
         "total": "TOTAL:",
         "observaciones": "COMMENTS:",
         "vencimiento": "1st DUE DATE:",
@@ -269,6 +271,7 @@ LABELS: dict[str, dict[str, str]] = {
         "band_iva": "MwSt.",
         "band_re": "R.E.",
         "band_exento": "Befreit",
+        "band_base_unica": "Bemessungsgrundlage",
         "total": "GESAMT:",
         "observaciones": "ANMERKUNGEN:",
         "vencimiento": "1. FÄLLIGKEIT:",
@@ -327,6 +330,7 @@ LABELS: dict[str, dict[str, str]] = {
         "band_iva": "T.V.A.",
         "band_re": "R.E.",
         "band_exento": "Exonéré",
+        "band_base_unica": "Base imposable",
         "total": "TOTAL :",
         "observaciones": "OBSERVATIONS :",
         "vencimiento": "1ère ÉCHÉANCE :",
@@ -385,6 +389,7 @@ LABELS: dict[str, dict[str, str]] = {
         "band_iva": "B.T.W.",
         "band_re": "R.E.",
         "band_exento": "Vrijgesteld",
+        "band_base_unica": "Belastbaar bedrag",
         "total": "TOTAAL:",
         "observaciones": "OPMERKINGEN:",
         "vencimiento": "1e VERVALDATUM:",
@@ -1323,6 +1328,58 @@ def _draw_footer(cv: rl_canvas.Canvas, lines: list[tuple[str, bool]]) -> None:
         y -= 4.2 * mm
 
 
+#: ERP-F1-fix1 Parte D — abreviaturas de cabecera para las palabras largas que
+#: no caben en su columna ni al cuerpo mínimo (alemán y neerlandés, sobre todo).
+#: Reconocibles en su idioma, en mayúsculas como el resto de la cabecera. Se
+#: buscan por el texto EXACTO de la etiqueta. Preferimos abreviar antes que
+#: partir a media palabra («STÜCKPR.» en vez de «STÜCKPRE / IS»).
+_HEADER_ABBR: dict[str, str] = {
+    "STÜCKPREIS": "STÜCKPR.",       # de — precio unidad
+    "ZWISCHENSUMME": "ZW.-SUMME",   # de — subtotal
+    "STUKSPRIJS": "STUKSPR.",       # nl — precio unidad
+    "OMSCHRIJVING": "OMSCHR.",      # nl — descripción (columna ancha, respaldo)
+    "BESCHREIBUNG": "BESCHR.",      # de — descripción (columna ancha, respaldo)
+    "DESCRIPTION": "DESCR.",        # en/fr — respaldo
+    "DESCRIPCIÓN": "DESCR.",        # es — respaldo
+    "QUANTITÉ": "QTÉ",              # fr
+    "DISCOUNT %": "DISC. %",        # en
+    "CANTIDAD": "CANT.",            # es — respaldo
+}
+
+#: Padding L/R real de las celdas de la tabla de líneas (reportlab por defecto
+#: pone 6 pt a cada lado y no lo tocamos): el ancho útil de una columna es su
+#: anchura menos estos 12 pt. El ajustador de cabecera mide contra ese hueco.
+_CELL_PAD_LR = 6.0
+#: Margen de seguridad (pt) para no fiarlo todo al último punto: si la palabra
+#: llega justa al borde, reportlab podría partirla igualmente por redondeo.
+_HEADER_SAFETY = 1.5
+
+
+def _header_paragraph(text: str, col_width: float) -> Paragraph:
+    """Cabecera de columna que NUNCA se parte a media palabra. reportlab solo
+    rompe en los espacios, así que basta con que la PALABRA más larga quepa en
+    el hueco útil: se reduce el cuerpo hasta un mínimo y, si aún no cabe, se usa
+    una abreviatura del idioma. Verificado en los 5 idiomas por el test."""
+    usable = col_width - 2 * _CELL_PAD_LR - _HEADER_SAFETY
+
+    def longest_token(t: str, size: float) -> float:
+        # reportlab parte solo en los espacios (no en guiones): cada token es
+        # una unidad indivisible que debe caber entera.
+        return max(
+            (pdfmetrics.stringWidth(tok, FONT_BOLD, size) for tok in t.split()
+             if tok),
+            default=0.0,
+        )
+
+    for candidate in (text, _HEADER_ABBR.get(text, text)):
+        for size in (7.5, 7.0, 6.5, 6.0):
+            if longest_token(candidate, size) <= usable:
+                return Paragraph(candidate, _para_style(size, bold=True))
+    # Último recurso (no debería alcanzarse con las anchuras actuales): la
+    # abreviatura al cuerpo mínimo. Mejor apretada que partida.
+    return Paragraph(_HEADER_ABBR.get(text, text), _para_style(6.0, bold=True))
+
+
 def _lines_table(
     data: dict[str, Any], lab: dict[str, str], lang: str, *, valued: bool,
     currency: str = "EUR",
@@ -1330,7 +1387,6 @@ def _lines_table(
     """Tabla de líneas con cabecera repetida en cada página (repeatRows).
     Descripciones MULTILÍNEA como Paragraph: fluyen, no se cortan. En
     facturas, fila separadora por albarán de origen (agrupación E3-B)."""
-    style_head = _para_style(7.5, bold=True)
     style_cell = _para_style(8.4)
     style_group = _para_style(8, bold=True)
 
@@ -1338,14 +1394,19 @@ def _lines_table(
         headers = [lab["col_articulo"], lab["col_descripcion"],
                    lab["col_cantidad"], lab["col_precio"], lab["col_dto"],
                    lab["col_subtotal"], lab["col_total"]]
-        widths = [23 * mm, 72 * mm, 21 * mm, 20 * mm, 14 * mm,
-                  23 * mm, 23 * mm]
+        # ERP-F1-fix1 Parte D — se ensancha un pelín las columnas numéricas
+        # (a costa de la descripción, muy holgada) para que las palabras
+        # largas del alemán/neerlandés quepan sin partirse ni encoger tanto.
+        widths = [23 * mm, 64 * mm, 21 * mm, 24 * mm, 16 * mm,
+                  26 * mm, 22 * mm]
     else:
         headers = [lab["col_articulo"], lab["col_descripcion"],
                    lab["col_cantidad"]]
         widths = [30 * mm, 140 * mm, 26 * mm]
 
-    rows: list[list[Any]] = [[Paragraph(h, style_head) for h in headers]]
+    rows: list[list[Any]] = [
+        [_header_paragraph(h, w) for h, w in zip(headers, widths)]
+    ]
     group_rows: list[int] = []
     current_group: str | None = None
     for line in data["lines"]:
@@ -1446,51 +1507,82 @@ def _summary_flowables(
         return out
 
     bands = data["bands"]
-    show_neto = any(abs(b["neto"]) > 0.004 for b in bands)
-    show_dto = any(abs(b["dto"]) > 0.004 for b in bands)
-    show_re = any(abs(b["rec"]) > 0.004 for b in bands)
-    # ERP-F1 Parte 1: portes y financiación YA NO son columnas del bloque de
-    # totales — se pintan como línea del documento. La base imponible ya los
-    # incluye, así que el bloque queda con neto, descuento (donde estaban),
-    # base, IVA, R.E. y TOTAL. No se recomputa nada.
+    # ERP-F1-fix1 — criterio «sin IVA»: la SUMA de los importes de IVA es
+    # cero (intracomunitarias, exentas, exportaciones). No basta mirar el
+    # porcentaje: el caso real tiene banda al 21 % con importe 0.
+    total_iva = sum(b["iva"] for b in bands)
+    no_vat = abs(total_iva) < 0.005
 
-    headers = [lab["band_tipo"]]
-    for flag, key in ((show_neto, "band_neto"), (show_dto, "band_dto")):
-        if flag:
-            headers.append(lab[key])
-    headers += [lab["band_base"], lab["band_iva"]]
-    if show_re:
-        headers.append(lab["band_re"])
-
-    band_rows: list[list[str]] = [headers]
-    for b in bands:
-        tipo = lab["band_exento"] if b["exenta"] else _fmt_qty(b["piva"], lang)
-        row = [tipo]
-        for flag, key in ((show_neto, "neto"), (show_dto, "dto")):
-            if flag:
-                row.append(_fmt_money(b[key], lang, currency))
-        row += [_fmt_money(b["base"], lang, currency),
-                _fmt_money(b["iva"], lang, currency)]
-        if show_re:
-            row.append(_fmt_money(b["rec"], lang, currency))
-        band_rows.append(row)
-    if len(band_rows) == 1:
-        band_rows.append(["—"] + [""] * (len(headers) - 1))
-
-    col_w = [20 * mm] + [24 * mm] * (len(headers) - 1)
-    bands_table = Table(band_rows, colWidths=col_w, hAlign="RIGHT")
-    bands_table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), LIGHT),
-        ("FONTNAME", (0, 0), (-1, 0), FONT_BOLD),
-        ("FONTNAME", (0, 1), (-1, -1), FONT),
-        ("FONTSIZE", (0, 0), (-1, -1), 8),
-        ("ALIGN", (0, 0), (-1, -1), "RIGHT"),
-        ("GRID", (0, 0), (-1, -1), 0.25, RULE),
-        ("TOPPADDING", (0, 0), (-1, -1), 1.5),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 1.5),
-    ]))
     out.append(Spacer(1, 3 * mm))
-    out.append(bands_table)
+    if no_vat:
+        # ERP-F1-fix1 Parte B — documentos sin IVA: NO se desglosa por bandas
+        # (un «21 %» con IVA 0,00 confunde). Una sola base imponible = suma de
+        # las bases = total (no hay IVA que añadir). El texto legal que lo
+        # justifica (entrega intracomunitaria, art. 25ter…) se imprime aparte
+        # en el pie, no aquí.
+        base_total = sum(b["base"] for b in bands)
+        base_style = ParagraphStyle(
+            name="base_unica", fontName=FONT, fontSize=9.5, leading=13,
+            alignment=2,
+        )
+        out.append(Paragraph(
+            f"{lab['band_base_unica']}&nbsp;&nbsp;&nbsp;"
+            f"{_fmt_money(base_total, lang, currency)}",
+            base_style,
+        ))
+    else:
+        # ERP-F1-fix1 Parte A — fuera la columna NETO (BASE y NETO confunden y
+        # en la práctica coinciden): el bloque queda con % de IVA, base, IVA y
+        # R.E. (esta solo si algún valor ≠ 0). El descuento se conserva como
+        # columna solo cuando existe (dato distinto de la base).
+        show_dto = any(abs(b["dto"]) > 0.004 for b in bands)
+        show_re = any(abs(b["rec"]) > 0.004 for b in bands)
+        # ERP-F1-fix1 Parte C — se ocultan las bandas cuya base e importe de
+        # IVA son ambos cero (ruido). Si tras el filtro queda una sola banda,
+        # se imprime igualmente como tabla (no se colapsa a la vista de la
+        # Parte B, exclusiva de los documentos sin IVA).
+        visible = [
+            b for b in bands
+            if abs(b["base"]) > 0.004 or abs(b["iva"]) > 0.004
+        ]
+        if not visible:  # red de seguridad: nunca dejar el bloque vacío
+            visible = bands[:1]
+
+        headers = [lab["band_tipo"]]
+        if show_dto:
+            headers.append(lab["band_dto"])
+        headers += [lab["band_base"], lab["band_iva"]]
+        if show_re:
+            headers.append(lab["band_re"])
+
+        band_rows: list[list[str]] = [headers]
+        for b in visible:
+            tipo = (lab["band_exento"] if b["exenta"]
+                    else _fmt_qty(b["piva"], lang))
+            row = [tipo]
+            if show_dto:
+                row.append(_fmt_money(b["dto"], lang, currency))
+            row += [_fmt_money(b["base"], lang, currency),
+                    _fmt_money(b["iva"], lang, currency)]
+            if show_re:
+                row.append(_fmt_money(b["rec"], lang, currency))
+            band_rows.append(row)
+
+        # Parte A — anchos: repartir el espacio liberado por la columna NETO
+        # para que las cifras respiren (la primera columna, el %, más estrecha).
+        col_w = [20 * mm] + [28 * mm] * (len(headers) - 1)
+        bands_table = Table(band_rows, colWidths=col_w, hAlign="RIGHT")
+        bands_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), LIGHT),
+            ("FONTNAME", (0, 0), (-1, 0), FONT_BOLD),
+            ("FONTNAME", (0, 1), (-1, -1), FONT),
+            ("FONTSIZE", (0, 0), (-1, -1), 8),
+            ("ALIGN", (0, 0), (-1, -1), "RIGHT"),
+            ("GRID", (0, 0), (-1, -1), 0.25, RULE),
+            ("TOPPADDING", (0, 0), (-1, -1), 1.5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 1.5),
+        ]))
+        out.append(bands_table)
 
     total_style = ParagraphStyle(
         name="total", fontName=FONT_BOLD, fontSize=13, leading=16,
