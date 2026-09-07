@@ -14,6 +14,9 @@ from unittest.mock import patch
 import pytest
 from fastapi.testclient import TestClient
 from pypdf import PdfReader
+from reportlab.lib.units import mm
+from reportlab.pdfbase import pdfmetrics
+from reportlab.platypus import Paragraph, Table
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -22,9 +25,14 @@ import app.main  # noqa: F401 — registra los modelos
 from app.db.base import Base
 from app.db.session import get_session
 from app.erp.factusol_pdf import (
+    _CELL_PAD_LR,
     COMPANY_DEFAULTS,
+    FONT_BOLD,
+    _header_paragraph,
+    _summary_flowables,
     extract_document_data,
     generate_document_pdf,
+    labels_for,
     merge_companies,
     pdf_filename,
 )
@@ -101,6 +109,19 @@ def _pdf(doc_type: str, header: dict, lines: list[dict], *,
     )
     company = dict(COMPANY_DEFAULTS[serie])
     return generate_document_pdf(data, company=company, lang=lang, **kwargs), data
+
+
+def _summary_table_rows(data: dict, lang: str = "es") -> list[list[str]] | None:
+    """Filas (texto) de la TABLA de bandas del bloque de totales, o None si el
+    documento se pintó como base única (sin tabla — caso sin IVA)."""
+    flow = _summary_flowables(data, labels_for(lang), lang, valued=True)
+    for f in flow:
+        if isinstance(f, Table):
+            return [
+                [c.text if isinstance(c, Paragraph) else c for c in row]
+                for row in f._cellvalues
+            ]
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -774,3 +795,152 @@ def test_zero_charges_produce_no_lines() -> None:
     text = _texto(pdf)
     assert "Portes" not in text
     assert "Gastos de financiación" not in text
+
+
+# ===========================================================================
+# ERP-F1-fix1 — bloque de totales: sin columna NETO, base única en documentos
+# sin IVA, bandas vacías ocultas y cabeceras que no se parten a media palabra
+# ===========================================================================
+
+
+def test_totals_block_has_no_net_column() -> None:
+    # Factura normal con IVA → tabla de bandas SIN la columna NETO (BASE y
+    # NETO confunden y coinciden en la práctica; se deja solo BASE).
+    pdf, data = _pdf("facturas", _header("facturas"), [_linea("facturas", 1)])
+    rows = _summary_table_rows(data)
+    assert rows is not None
+    header_row = rows[0]
+    assert "NETO" not in header_row          # la columna de neto desaparece
+    assert "BASE" in header_row and "I.V.A." in header_row
+    assert "NETO" not in _texto(pdf)
+
+
+def test_no_vat_document_shows_single_base() -> None:
+    # Intracomunitaria: banda 21 % con IVA 0 + banda 0 % con base → SUMA de
+    # IVA = 0 → una sola base imponible, sin tabla de bandas.
+    header = _header(
+        "facturas", BAS1FAC=627, NET1FAC=627, PIVA1FAC=21, IIVA1FAC=0,
+        BAS3FAC=19, PIVA3FAC=0, IIVA3FAC=0, TOTFAC=646,
+    )
+    pdf, data = _pdf("facturas", header, [_linea("facturas", 1)])
+    # No hay tabla de bandas…
+    assert _summary_table_rows(data) is None
+    text = _texto(pdf)
+    # …sino una única base imponible; y el texto legal que la justifica sigue.
+    assert "Base imponible" in text
+    assert "TIPO" not in text and "I.V.A." not in text
+    assert "Entrega intracomunitaria" in text
+
+
+def test_no_vat_detection_uses_vat_amount_not_rate() -> None:
+    # Banda al 21 % pero con importe de IVA 0 → se considera SIN IVA. No basta
+    # mirar el porcentaje (el caso real tiene 21 % con importe 0).
+    header = _header(
+        "facturas", BAS1FAC=200, NET1FAC=200, PIVA1FAC=21, IIVA1FAC=0,
+        TOTFAC=200,
+    )
+    pdf, data = _pdf("facturas", header, [_linea("facturas", 1)])
+    assert _summary_table_rows(data) is None          # base única, no desglose
+    assert "Base imponible" in _texto(pdf)
+
+
+def test_single_base_equals_total_when_no_vat() -> None:
+    header = _header(
+        "facturas", BAS1FAC=627, NET1FAC=627, PIVA1FAC=21, IIVA1FAC=0,
+        BAS3FAC=19, PIVA3FAC=0, IIVA3FAC=0, TOTFAC=646,
+    )
+    pdf, data = _pdf("facturas", header, [_linea("facturas", 1)])
+    # La base única = suma de las bases = total (no hay IVA que sumar).
+    assert sum(b["base"] for b in data["bands"]) == data["total"] == 646
+    text = _texto(pdf)
+    # base imponible y TOTAL imprimen el MISMO importe.
+    assert "Base imponible" in text
+    assert text.count("646,00") >= 2
+
+
+def test_zero_bands_hidden_when_vat_present() -> None:
+    # Banda 21 % real + banda 10 % enteramente a cero (PIVA=10, base/IVA 0):
+    # la vacía es ruido y no debe imprimirse.
+    header = _header(
+        "facturas", BAS1FAC=100, NET1FAC=100, PIVA1FAC=21, IIVA1FAC=21,
+        PIVA2FAC=10, BAS2FAC=0, IIVA2FAC=0, TOTFAC=121,
+    )
+    _, data = _pdf("facturas", header, [_linea("facturas", 1)])
+    assert len(data["bands"]) == 2                    # en los datos hay 2…
+    rows = _summary_table_rows(data)
+    assert rows is not None
+    data_rows = rows[1:]                              # …pero solo se pinta 1
+    assert len(data_rows) == 1
+    assert data_rows[0][0] == "21"
+
+
+def test_single_remaining_band_still_rendered_as_table() -> None:
+    # Tras ocultar la banda vacía queda UNA con IVA: sigue siendo tabla, NO se
+    # colapsa a la base única (exclusiva de los documentos sin IVA).
+    header = _header(
+        "facturas", BAS1FAC=100, NET1FAC=100, PIVA1FAC=21, IIVA1FAC=21,
+        PIVA2FAC=10, BAS2FAC=0, IIVA2FAC=0, TOTFAC=121,
+    )
+    pdf, data = _pdf("facturas", header, [_linea("facturas", 1)])
+    rows = _summary_table_rows(data)
+    assert rows is not None                           # es tabla, no base única
+    assert rows[0] == ["TIPO", "BASE", "I.V.A."]
+    assert len(rows) == 2                             # cabecera + 1 banda
+    assert "Base imponible" not in _texto(pdf)        # no es la vista Parte B
+
+
+def test_total_unchanged_after_totals_block_changes() -> None:
+    """Invariante ERP-F1: el TOTAL impreso no varía con los cambios del bloque
+    de totales, ni con IVA ni sin IVA (se lee de TOTFAC)."""
+    def total_line(t: str) -> str:
+        return [ln for ln in t.splitlines() if "TOTAL:" in ln][-1]
+
+    pdf_vat, d_vat = _pdf(
+        "facturas", _header("facturas"), [_linea("facturas", 1)],
+    )
+    assert d_vat["total"] == 225.47
+    assert "225,47" in total_line(_texto(pdf_vat))
+
+    pdf_novat, d_novat = _pdf(
+        "facturas",
+        _header("facturas", BAS1FAC=225.47, NET1FAC=225.47, IIVA1FAC=0,
+                TOTFAC=225.47),
+        [_linea("facturas", 1)],
+    )
+    assert d_novat["total"] == 225.47
+    assert "225,47" in total_line(_texto(pdf_novat))
+
+
+def test_column_headers_do_not_wrap_mid_word_in_all_languages() -> None:
+    # Anchos de las columnas VALORADAS (espejo de _lines_table).
+    widths = [23 * mm, 64 * mm, 21 * mm, 24 * mm, 16 * mm, 26 * mm, 22 * mm]
+    keys = ["col_articulo", "col_descripcion", "col_cantidad", "col_precio",
+            "col_dto", "col_subtotal", "col_total"]
+    for lang in ("es", "en", "de", "fr", "nl"):
+        lab = labels_for(lang)
+        for key, width in zip(keys, widths):
+            para = _header_paragraph(lab[key], width)
+            size = para.style.fontSize
+            usable = width - 2 * _CELL_PAD_LR
+            # reportlab parte solo en los espacios: cada palabra debe caber.
+            for token in para.text.split():
+                w = pdfmetrics.stringWidth(token, FONT_BOLD, size)
+                assert w <= usable, (
+                    f"{lang}/{key}: {token!r} ({w:.1f}pt) no cabe en "
+                    f"{usable:.1f}pt → se partiría a media palabra"
+                )
+
+
+def test_taxable_amount_label_translated_five_languages() -> None:
+    esperado = {
+        "es": "Base imponible", "en": "Taxable amount",
+        "de": "Bemessungsgrundlage", "fr": "Base imposable",
+        "nl": "Belastbaar bedrag",
+    }
+    header = _header(
+        "facturas", BAS1FAC=500, NET1FAC=500, PIVA1FAC=21, IIVA1FAC=0,
+        TOTFAC=500,
+    )
+    for lang, label in esperado.items():
+        pdf, _ = _pdf("facturas", header, [_linea("facturas", 1)], lang=lang)
+        assert label in _texto(pdf), f"{lang} sin {label!r}"
