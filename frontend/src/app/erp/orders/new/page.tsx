@@ -318,6 +318,9 @@ export default function NewManualOrderPage() {
           provincia: cust.procli ?? "",
           telefono: cust.telcli?.trim() || undefined,
           email: cust.emacli ?? undefined,
+          // F1-fix2: el país REAL del cliente (PAICLI); el backend lo
+          // normaliza a ISO2 en vez de asumir España.
+          pais: cust.paicli ?? undefined,
         },
       });
       setCompanyId(r.company_id);

@@ -68,38 +68,22 @@ CONTACT_NAME_MAX_LENGTH = 120
 #: hay forma de saber dónde lo corta DELSOL.
 CODCLI_BATCH_SIZE = 500
 
-#: ISO 3166-1 numérico → nombre de país, para `companies.country` (String(120)).
-#: Solo los habituales; el resto cae a España, que es la inmensa mayoría.
-COUNTRY_BY_CODE = {
-    "724": "España", "620": "Portugal", "250": "Francia", "380": "Italia",
-    "276": "Alemania", "826": "Reino Unido", "528": "Países Bajos",
-    "056": "Bélgica", "840": "Estados Unidos",
-}
-DEFAULT_COUNTRY = "España"
-
-
 def _text(row: dict[str, Any], column: str) -> str:
     return str(row.get(column) or "").strip()
 
 
-def _country(row: dict[str, Any]) -> str:
-    """`PAICLI` viene como ISO numérico («724»), a veces con ceros a la
-    izquierda perdidos. Lo desconocido cae a España a propósito: el objetivo es
-    no dejar el campo vacío, no adivinar.
+def _country(row: dict[str, Any]) -> str | None:
+    """`PAICLI` de F_CLI (ISO 3166-1 numérico: «724», a veces sin los ceros a
+    la izquierda) → ISO2 para `companies.country`.
 
-    E4-fix3: se devuelve el país YA en ISO2 (`normalize_country`) para que
-    el campo `companies.country` quede uniforme y la cascada de idioma lo
-    resuelva bien; si por lo que fuera no se reconociera el nombre, se
-    conserva el nombre original (no se pierde el dato)."""
+    ERP-F1-fix2: se normaliza el numérico directamente (ya lo entiende
+    `normalize_country`) y, si NO se reconoce, se devuelve None y el campo se
+    deja VACÍO. NUNCA se cae a España por defecto — esa tabla parcial +
+    default a España era el origen de ~600 empresas extranjeras (Austria,
+    Suiza, etc., cuyo código no estaba en la lista) marcadas como españolas."""
     from app.erp.language import normalize_country  # noqa: PLC0415
 
-    code = _text(row, "PAICLI").lstrip("0") or "0"
-    name = DEFAULT_COUNTRY
-    for key, candidate in COUNTRY_BY_CODE.items():
-        if key.lstrip("0") == code:
-            name = candidate
-            break
-    return normalize_country(name) or name
+    return normalize_country(_text(row, "PAICLI"))
 
 
 def _orphan_view(row: dict[str, Any]) -> dict[str, Any]:

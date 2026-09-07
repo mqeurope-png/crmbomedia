@@ -489,3 +489,125 @@ def test_pickup_warehouses_settings_roundtrip(http, session_factory) -> None:
     assert [w["nombre"] for w in r2.json()["factusol_pickup_warehouses"]] == [
         "Almacén TERLO 2000", "Almacén Madrid",
     ]
+
+
+# ---------------------------------------------------------------------------
+# ERP-F1-fix2 — país real del cliente: ISO numérico + alias, país del
+# documento en la cascada, sync sin default a España, script de corrección
+# ---------------------------------------------------------------------------
+
+
+def test_normalize_iso_numeric_codes() -> None:
+    from app.erp.language import normalize_country
+
+    assert normalize_country("724") == "ES"
+    assert normalize_country("250") == "FR"
+    assert normalize_country("276") == "DE"
+    assert normalize_country("040") == "AT"
+    assert normalize_country("40") == "AT"      # sin el cero a la izquierda
+    assert normalize_country("528") == "NL"
+    assert normalize_country("756") == "CH"
+
+
+def test_numeric_only_and_max_three_digits() -> None:
+    from app.erp.language import normalize_country
+
+    # Un código postal de 5 cifras NO es un país.
+    assert normalize_country("08006") is None
+    assert normalize_country("1234") is None
+    assert normalize_country("999") is None     # numérico pero no asignado
+
+
+def test_normalize_new_aliases() -> None:
+    from app.erp.language import normalize_country
+
+    assert normalize_country("NEDERLAND") == "NL"
+    assert normalize_country("België") == "BE"
+    assert normalize_country("Belgie") == "BE"
+    assert normalize_country("Deutschland") == "DE"
+    assert normalize_country("ESP") == "ES"
+    assert normalize_country("Österreich") == "AT"
+    assert normalize_country("Suisse") == "CH"
+    assert normalize_country("Svizzera") == "CH"
+
+
+def test_china_taiwan_aliases() -> None:
+    from app.erp.language import normalize_country
+
+    assert normalize_country("People's Republic of China") == "CN"
+    assert normalize_country("China") == "CN"
+    assert normalize_country("Taiwan, China") == "TW"
+    assert normalize_country("Taiwan") == "TW"
+
+
+def test_cascade_uses_document_country_before_crm_country(db) -> None:
+    """La ficha del CRM dice España (mal); el documento dice 276 (Alemania).
+    Gana el país del DOCUMENTO, con procedencia «pais_documento»."""
+    _company(db, language=None, country="ES")
+    out = suggest_pdf_language(
+        db, "facturas", _doc(serie=5, cliente={"pais": "276"}),
+    )
+    assert out == {"lang": "de", "source": "pais_documento"}
+
+
+def test_explicit_client_language_still_wins_over_document_country(db) -> None:
+    """Un idioma puesto a mano en el cliente gana al país del documento."""
+    _company(db, language="nl", country="ES")
+    out = suggest_pdf_language(
+        db, "facturas", _doc(serie=5, cliente={"pais": "276"}),
+    )
+    assert out == {"lang": "nl", "source": "cliente"}
+
+
+def test_sync_writes_iso2_from_paicli() -> None:
+    from app.integrations.factusol.import_orphans import _country
+
+    assert _country({"PAICLI": "276"}) == "DE"
+    assert _country({"PAICLI": "40"}) == "AT"    # sin cero a la izquierda
+    assert _country({"PAICLI": "724"}) == "ES"
+
+
+def test_sync_never_defaults_country_to_spain() -> None:
+    from app.integrations.factusol.import_orphans import _country
+
+    # PAICLI desconocido/ausente → None; NUNCA España/ES por defecto (era el
+    # origen de las ~600 empresas extranjeras marcadas como españolas).
+    assert _country({"PAICLI": "999"}) is None
+    assert _country({"PAICLI": ""}) is None
+    assert _country({}) is None
+
+
+def test_fix_script_dry_run_writes_nothing(db) -> None:
+    from scripts.fix_company_country_from_factusol import run
+    from tests.test_factusol_documents import FakeClient
+
+    _company(db, codcli="100", language="es", country="ES")  # es alemana (mal)
+    client = FakeClient({"F_CLI": [{"CODCLI": 100, "PAICLI": "276"}]})
+    stats = run(apply=False, session=db, client=client, ejercicio="2026")
+    assert stats["pais_corregidos"] == 1
+    db.expire_all()
+    c = db.query(Company).filter_by(factusol_company_id="100").one()
+    assert c.country == "ES" and c.language == "es"          # nada escrito
+
+
+def test_fix_script_only_rederives_derived_languages(db) -> None:
+    from scripts.fix_company_country_from_factusol import run
+    from tests.test_factusol_documents import FakeClient
+
+    # A: país ES (mal) + idioma "es" DEDUCIDO del ES → se recalcula a "de".
+    _company(db, codcli="A", language="es", country="ES")
+    # B: país ES (mal) + idioma "fr" puesto A MANO → país se corrige, idioma NO.
+    _company(db, codcli="B", language="fr", country="ES")
+    client = FakeClient({"F_CLI": [
+        {"CODCLI": "A", "PAICLI": "276"},
+        {"CODCLI": "B", "PAICLI": "276"},
+    ]})
+    stats = run(apply=True, session=db, client=client, ejercicio="2026")
+    db.expire_all()
+    got = {c.factusol_company_id: (c.country, c.language)
+           for c in db.query(Company).all()}
+    assert got["A"] == ("DE", "de")      # país e idioma corregidos
+    assert got["B"] == ("DE", "fr")      # país sí; idioma a mano intacto
+    assert stats["pais_corregidos"] == 2
+    assert stats["idiomas_cambiados"] == 1
+    assert stats["idiomas_respetados"] == 1

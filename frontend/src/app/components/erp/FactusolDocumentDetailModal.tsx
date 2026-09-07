@@ -148,6 +148,9 @@ export const PDF_LANGS: { value: FactusolPdfLang; label: string }[] = [
 const PDF_LANG_SOURCE_LABELS: Record<string, string> = {
   pedido: "del pedido",
   cliente: "del cliente",
+  // F1-fix2: país del cliente EN EL DOCUMENTO (CPA*) — el dato más fiable
+  // tras el idioma explícito.
+  pais_documento: "del país en el documento",
   // E4-fix2: deducción por el país del cliente — se distingue del idioma
   // que el cliente tiene puesto a mano («del cliente»).
   pais_cliente: "del país del cliente",

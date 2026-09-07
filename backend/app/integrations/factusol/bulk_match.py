@@ -609,6 +609,7 @@ def _new_company_from_factusol(
     Nace completa, no solo con los campos marcados: no hay nada previo que
     preservar. Compartido por la creación para un contacto huérfano y por la
     reasignación, para que las dos no puedan divergir."""
+    from app.erp.language import normalize_country  # noqa: PLC0415
     from app.models.crm import Company  # noqa: PLC0415
 
     company = Company(
@@ -618,9 +619,10 @@ def _new_company_from_factusol(
         city=str(row.get(columns["city"]) or "").strip() or None,
         postal_code=str(row.get(columns["postal_code"]) or "").strip() or None,
         state=str(row.get(columns["state"]) or "").strip() or None,
-        # E4-fix3: país en ISO2 (uniforme con el resto y para la cascada de
-        # idioma). Estos clientes F_CLI son españoles por defecto.
-        country="ES",
+        # ERP-F1-fix2: país REAL del cliente (PAICLI, ISO numérico) → ISO2. Si
+        # no se reconoce, None (campo vacío): NUNCA España por defecto (era el
+        # origen de las empresas extranjeras marcadas como españolas).
+        country=normalize_country(row.get("PAICLI")),
         source="factusol",
         factusol_company_id=codcli,
         factusol_sync_source=BULK_SYNC_BY_EMAIL_SOURCE,
