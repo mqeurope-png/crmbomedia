@@ -724,6 +724,26 @@ def update_user(
         raise not_found("User")
     changes = payload.model_dump(exclude_unset=True)
     role_before = user.role
+    # ERP-F2-fix1 — un admin no puede quitarse a sí mismo el rol de admin y
+    # dejarse fuera. Es aún más crítico con los roles de ERP: demotarse a
+    # `pedidos`/`sat` lo encerraría en el modo ERP, SIN acceso a esta pantalla
+    # para deshacerlo. Cambiar el rol de OTROS admins sigue permitido.
+    new_role = changes.get("role")
+    if (
+        user.id == current_user.id
+        and new_role is not None
+        and new_role != UserRole.ADMIN
+    ):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            {
+                "code": "cannot_self_demote",
+                "detail": (
+                    "No puedes quitarte a ti mismo el rol de administrador. "
+                    "Pídeselo a otro administrador."
+                ),
+            },
+        )
     for field, value in changes.items():
         if field == "full_name" and value is not None:
             value = value.strip()
