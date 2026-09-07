@@ -752,6 +752,68 @@ def update_order_language(
     return {"id": order.id, "language": order.language}
 
 
+@router.get("/{order_id}/factusol-invoice-ref")
+def order_factusol_invoice_ref(
+    order_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_view),
+) -> dict[str, Any]:
+    """ERP-F1 — localiza en FACTUSOL la factura del pedido y devuelve su
+    clave compuesta `{serie, codigo}`, para que la ficha del pedido use el
+    MISMO flujo de email que el detalle de la factura (sin duplicarlo). El
+    pedido solo guarda el CODFAC; la serie (TIPFAC) sale de F_FAC por REFFAC.
+    404 si el pedido aún no tiene factura en FACTUSOL."""
+    _ = current_user
+    from app.integrations.factusol.client import (  # noqa: PLC0415
+        FactusolClient,
+        FactusolError,
+    )
+    from app.integrations.factusol.service import (  # noqa: PLC0415
+        _store_ref_prefix,
+        check_factusol_status,
+        coerce_serie,
+        ejercicio_for,
+    )
+
+    order = _get_order(session, order_id)
+    try:
+        client = FactusolClient.from_settings()
+        ejercicio = ejercicio_for(session)
+        status_info = check_factusol_status(
+            client, order, ejercicio, ref_prefix=_store_ref_prefix(session, order),
+        )
+    except FactusolError as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, {
+            "code": "factusol_unreachable", "detail": str(exc)[:200],
+        }) from exc
+    except Exception as exc:  # noqa: BLE001 — sin credenciales / config
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, {
+            "code": "factusol_unavailable", "detail": str(exc)[:200],
+        }) from exc
+    factura = status_info.get("factura")
+    if not factura:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, {
+            "code": "invoice_not_in_factusol",
+            "detail": "Este pedido aún no tiene factura en FACTUSOL.",
+        })
+    serie = coerce_serie(factura.get("TIPFAC"))
+    codigo = _int_or_none_local(factura.get("CODFAC"))
+    if serie is None or codigo is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, {
+            "code": "invoice_key_unresolved",
+            "detail": "La factura en FACTUSOL no trae serie/número utilizables.",
+        })
+    return {"serie": serie, "codigo": codigo,
+            "numero": f"{serie}-{codigo:06d}"}
+
+
+def _int_or_none_local(value: Any) -> int | None:
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
 @router.get("/{order_id}/factusol-pedido-pdf")
 def order_factusol_pedido_pdf(
     order_id: str,

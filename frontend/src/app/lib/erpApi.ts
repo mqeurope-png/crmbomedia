@@ -927,6 +927,89 @@ export function saveBlob(blob: Blob, filename: string): void {
   URL.revokeObjectURL(url);
 }
 
+// --- ERP-F1 · enviar la factura por email en el idioma del cliente ----------
+
+/** Origen del idioma sugerido para el email (misma cascada que el PDF, E4). */
+export type InvoiceEmailLangSource =
+  | "pedido" | "cliente" | "pais_cliente" | "empresa" | "defecto";
+
+/** Datos de la PREVISUALIZACIÓN obligatoria antes de enviar la factura. Todo
+ *  editable en el modal salvo el nombre del adjunto (se regenera al enviar). */
+export type InvoiceEmailPreview = {
+  serie: number;
+  codigo: number;
+  numero: string;
+  /** Destinatario propuesto (email del cliente); vacío si no se conoce. */
+  to: string;
+  lang: FactusolPdfLang;
+  lang_source: InvoiceEmailLangSource;
+  subject: string;
+  body_text: string;
+  /** Alias emisor por defecto (primera preferencia permitida del usuario). */
+  from_alias: string;
+  attachment_filename: string;
+  /** Si hay un hilo del pedido al que responder, su message-id; si no null. */
+  reply_to_message_id: string | null;
+  replies_to_thread: boolean;
+  /** Pedido del CRM al que se registrará el envío (null si no se localizó). */
+  order_id: string | null;
+};
+
+export type InvoiceEmailSendPayload = {
+  /** OBLIGATORIO true: enviar es irreversible, nunca un clic accidental. */
+  confirm: boolean;
+  to: string[];
+  subject: string;
+  body_text: string;
+  lang: FactusolPdfLang;
+  from_alias: string;
+  reply_to_message_id?: string | null;
+  /** Índice de cuenta bancaria (mismo criterio que la descarga del PDF). */
+  bank?: number | null;
+  /** Solo "anticipo" cambia el PDF; el resto de variantes no aplican aquí. */
+  variant?: "anticipo" | null;
+};
+
+export type InvoiceEmailSendResult = {
+  sent: boolean;
+  message_id: string;
+  thread_id: string;
+  to: string[];
+  lang: FactusolPdfLang;
+  numero: string;
+  attachment_filename: string;
+};
+
+/** Factura de FACTUSOL vinculada a un pedido del CRM (serie + número). */
+export type FactusolInvoiceRef = { serie: number; codigo: number; numero: string };
+
+export async function getInvoiceEmailPreview(
+  serie: number, codigo: number | string, lang?: FactusolPdfLang,
+): Promise<InvoiceEmailPreview> {
+  const query = lang ? `?lang=${lang}` : "";
+  return apiFetch(
+    `/api/erp/factusol/documents/facturas/${serie}/${codigo}/email-preview${query}`,
+  );
+}
+
+export async function sendInvoiceEmail(
+  serie: number, codigo: number | string, payload: InvoiceEmailSendPayload,
+): Promise<InvoiceEmailSendResult> {
+  return apiFetch(
+    `/api/erp/factusol/documents/facturas/${serie}/${codigo}/email`,
+    { method: "POST", body: JSON.stringify(payload) },
+  );
+}
+
+/** ERP-F1 — localiza la factura FACTUSOL del pedido (serie + número) para que
+ *  la ficha del pedido reutilice el mismo flujo de email que el detalle de la
+ *  factura. 404 si el pedido aún no tiene factura en FACTUSOL. */
+export async function getOrderFactusolInvoiceRef(
+  orderId: string,
+): Promise<FactusolInvoiceRef> {
+  return apiFetch(`/api/erp/orders/${orderId}/factusol-invoice-ref`);
+}
+
 // --- Clientes FACTUSOL ↔ CRM (Fase C · C-3) ---------------------------------
 
 /** Columnas REALES de F_CLI (verificadas contra la base de Bomedia, C-3-fix1):

@@ -80,6 +80,10 @@ class SettingsIn(BaseModel):
     #: E4-fix1 — almacenes de recogida del albarán de devolución
     #: ([{nombre, direccion}]).
     factusol_pickup_warehouses: list[dict[str, str]] | None = None
+    #: F1 — plantillas del email de factura por idioma
+    #: ({"es": {"subject","body"}, ...}). Placeholders {cliente}/{numero}/
+    #: {referencia}. Vacío = defaults del código.
+    factusol_invoice_email_templates: dict[str, dict[str, str]] | None = None
 
 
 # --- helpers -----------------------------------------------------------------
@@ -290,7 +294,25 @@ def _serialise_settings(cfg: ErpSettings) -> dict[str, Any]:
         # extraídos de los modelos reales, + si esa serie tiene logo subido.
         "factusol_companies": _companies_with_logos(cfg),
         "factusol_pickup_warehouses": _pickup_warehouses(cfg),
+        "factusol_invoice_email_templates": _invoice_email_templates(cfg),
     }
+
+
+def _invoice_email_templates(cfg: ErpSettings) -> dict[str, Any]:
+    from app.erp.invoice_email import INVOICE_EMAIL_DEFAULTS  # noqa: PLC0415
+
+    stored = _series(cfg).get("invoice_email_templates")
+    stored = stored if isinstance(stored, dict) else {}
+    out: dict[str, dict[str, str]] = {}
+    for lang, base in INVOICE_EMAIL_DEFAULTS.items():
+        merged = dict(base)
+        over = stored.get(lang)
+        if isinstance(over, dict):
+            for k in ("subject", "body"):
+                if str(over.get(k) or "").strip():
+                    merged[k] = str(over[k])
+        out[lang] = merged
+    return out
 
 
 def _pickup_warehouses(cfg: ErpSettings) -> list[dict[str, str]]:
@@ -367,7 +389,8 @@ def update_settings(
             or payload.factusol_estpre_accepted is not None
             or payload.factusol_estalb_invoiced is not None
             or payload.factusol_companies is not None
-            or payload.factusol_pickup_warehouses is not None):
+            or payload.factusol_pickup_warehouses is not None
+            or payload.factusol_invoice_email_templates is not None):
         series = _series(cfg)
         if payload.factusol_series_default is not None:
             series["default"] = payload.factusol_series_default.strip()
@@ -405,6 +428,15 @@ def update_settings(
                 for w in payload.factusol_pickup_warehouses
                 if str(w.get("direccion") or "").strip()
             ]
+        # F1: plantillas del email de factura por idioma (solo subject/body).
+        if payload.factusol_invoice_email_templates is not None:
+            series["invoice_email_templates"] = {
+                str(lang): {
+                    "subject": str((tpl or {}).get("subject") or "").strip(),
+                    "body": str((tpl or {}).get("body") or "").strip(),
+                }
+                for lang, tpl in payload.factusol_invoice_email_templates.items()
+            }
         if payload.factusol_series_names is not None:
             # ERP-E2: {"5": "Streamtec", …}. Claves como string por JSON.
             series["names"] = {

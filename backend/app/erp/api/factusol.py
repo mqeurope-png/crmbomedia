@@ -454,6 +454,125 @@ def download_document_pdf(
     )
 
 
+# --- ERP-F1 Parte 2 — enviar la factura por email -------------------------
+
+
+@router.get("/documents/facturas/{serie}/{codigo}/email-preview")
+def invoice_email_preview(
+    serie: int,
+    codigo: int,
+    lang: str | None = Query(default=None, pattern="^(es|en|de|fr|nl)$"),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_edit),
+) -> dict[str, Any]:
+    """Datos para la PREVISUALIZACIÓN obligatoria antes de enviar la factura
+    por email: destinatario, asunto, idioma (+ procedencia), cuerpo editable
+    y nombre del adjunto. No envía nada ni genera el PDF."""
+    from app.erp.invoice_email import build_invoice_email_preview  # noqa: PLC0415
+
+    client, ejercicio = _client_and_ejercicio(session)
+    preview = build_invoice_email_preview(
+        session, client, serie=serie, codigo=codigo, ejercicio=ejercicio,
+        current_user=current_user, lang_override=lang,
+        fop_names=_fop_names(client, ejercicio),
+    )
+    if preview.get("error") == "not_found":
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            f"No existe la factura {serie}-{codigo}",
+        )
+    return preview
+
+
+class InvoiceEmailPayload(BaseModel):
+    """Envío de la factura por email. `confirm` OBLIGATORIO: enviar un correo
+    a un cliente es irreversible, no puede ser un clic accidental."""
+
+    confirm: bool = False
+    to: list[str] = Field(default_factory=list)
+    subject: str = Field(min_length=1, max_length=500)
+    body_text: str = Field(min_length=1)
+    lang: str = Field(pattern="^(es|en|de|fr|nl)$")
+    from_alias: str = Field(min_length=3, max_length=255)
+    reply_to_message_id: str | None = None
+    bank: int | None = Field(default=None, ge=0, le=20)
+    variant: str | None = Field(default=None, pattern="^(anticipo)$")
+
+
+@router.post("/documents/facturas/{serie}/{codigo}/email", status_code=201)
+def send_invoice_email_endpoint(
+    serie: int,
+    codigo: int,
+    payload: InvoiceEmailPayload,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_edit),
+) -> dict[str, Any]:
+    """Envía la factura por email (síncrono, como el resto de la app). El
+    idioma vale para el PDF adjunto y el cuerpo; se responde al hilo del
+    pedido si `reply_to_message_id` viene, si no correo nuevo. Registra el
+    envío en el timeline del pedido; si falla, NO marca como enviada."""
+    from app.erp.factusol_pdf import bank_accounts, company_for_serie  # noqa: PLC0415
+    from app.erp.invoice_email import send_invoice_email  # noqa: PLC0415
+    from app.integrations.gmail.service import (  # noqa: PLC0415
+        GmailNotConnectedError,
+        GmailScopeMissingError,
+    )
+
+    if not payload.confirm:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, {
+            "code": "confirmation_required",
+            "detail": "El envío requiere confirmación explícita.",
+        })
+    to = [t.strip() for t in payload.to if t and t.strip()]
+    if not to:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, {
+            "code": "no_recipient", "detail": "Falta el destinatario.",
+        })
+    # El alias debe estar en las preferencias permitidas del usuario (mismo
+    # criterio que el envío normal de la app — no suplantar un alias ajeno).
+    from sqlalchemy import select  # noqa: PLC0415
+
+    from app.models.crm import UserEmailAliasPref  # noqa: PLC0415
+    pref = session.scalar(
+        select(UserEmailAliasPref).where(
+            UserEmailAliasPref.user_id == current_user.id,
+            UserEmailAliasPref.alias_email == payload.from_alias,
+            UserEmailAliasPref.is_allowed.is_(True),
+        )
+    )
+    if pref is None:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, {
+            "code": "alias_not_allowed",
+            "detail": "El alias no está en tus preferencias (config. en /account).",
+        })
+
+    client, ejercicio = _client_and_ejercicio(session)
+    company = company_for_serie(session, serie)
+    accounts = bank_accounts(company)
+    selected_bank = None
+    if payload.bank is not None and accounts:
+        selected_bank = accounts[min(payload.bank, len(accounts) - 1)]
+    try:
+        return send_invoice_email(
+            session, client, serie=serie, codigo=codigo, ejercicio=ejercicio,
+            current_user=current_user, to=to, subject=payload.subject,
+            body_text=payload.body_text, lang=payload.lang,
+            from_alias=payload.from_alias,
+            reply_to_message_id=payload.reply_to_message_id,
+            bank=selected_bank, variant=payload.variant,
+            fop_names=_fop_names(client, ejercicio), company=company,
+        )
+    except (GmailNotConnectedError, GmailScopeMissingError) as exc:
+        # Gmail no conectado / sin scope: NO se marca como enviada.
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, {
+            "code": "gmail_unavailable", "detail": str(exc)[:200],
+        }) from exc
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, {
+            "code": "invoice_not_found", "detail": str(exc)[:200],
+        }) from exc
+
+
 #: ERP-E4 — logos de las empresas emisoras. Los modelos de FACTUSOL apuntan a
 #: rutas del PC de Bart, inaccesibles: se suben desde /erp/settings y viven
 #: bajo el directorio de assets (bind-mount persistente en producción). El
