@@ -11,7 +11,7 @@ import {
   listSeguimiento,
   saveBlob,
   syncSeguimientoDrive,
-  type DriveSyncConflict,
+  type DriveSyncReviewGroup,
   type DriveSyncSummary,
   type SeguimientoFilters,
   type SeguimientoPage,
@@ -305,12 +305,12 @@ export default function SeguimientoPage() {
           <ul className="item-list">
             <li><strong>{previewSummary.appended_rows}</strong> filas a añadir (pedidos que no estaban).</li>
             <li><strong>{previewSummary.updated_rows}</strong> filas a actualizar (ya estaban; se rellenan celdas vacías).</li>
-            <li><strong>{previewSummary.conflicts.length}</strong> conflictos sin tocar (coincidencia dudosa o celda manual distinta).</li>
+            <li><strong>{previewSummary.orders_to_review}</strong> pedidos a revisar (contradicciones o coincidencias probables).</li>
             {previewSummary.omitted_columns.length > 0 ? (
               <li>Columnas omitidas (no están en la hoja): {previewSummary.omitted_columns.join(", ")}.</li>
             ) : null}
           </ul>
-          <ConflictList conflicts={previewSummary.conflicts} />
+          <ReviewGroups groups={previewSummary.review_groups} />
           <div className="modal-actions">
             <button type="button" className="button secondary" disabled={busy}
               onClick={() => setPreviewSummary(null)}>
@@ -324,14 +324,14 @@ export default function SeguimientoPage() {
         </section>
       ) : null}
 
-      {syncSummary && syncSummary.conflicts.length > 0 ? (
+      {syncSummary && syncSummary.review_groups.length > 0 ? (
         <section className="erp-card">
-          <h3>Conflictos sin tocar ({syncSummary.conflicts.length})</h3>
+          <h3>A revisar ({syncSummary.orders_to_review} pedidos)</h3>
           <p className="muted small">
-            Coincidencias dudosas o celdas con contenido manual distinto de lo
-            que BoHub escribiría; no se han modificado.
+            Contradicciones o coincidencias probables; no se ha modificado nada
+            de ellas.
           </p>
-          <ConflictList conflicts={syncSummary.conflicts} />
+          <ReviewGroups groups={syncSummary.review_groups} />
         </section>
       ) : null}
 
@@ -401,20 +401,34 @@ export default function SeguimientoPage() {
   );
 }
 
-/** ERP-F6-fix2 — lista de conflictos: celda manual distinta o coincidencia de
- *  número sin confirmar. Ninguno se toca; Bart decide. */
-function ConflictList({ conflicts }: { conflicts: DriveSyncConflict[] }) {
-  if (conflicts.length === 0) return null;
+const REVIEW_KIND_LABEL: Record<string, string> = {
+  manual_cell: "celda manual distinta",
+  contradicted: "contradicción",
+  ambiguous: "coincidencia ambigua",
+  probable_match: "coincidencia probable",
+};
+
+/** ERP-F6-fix4 — a revisar, agrupado POR PEDIDO (Parte G). Cada pedido lista
+ *  sus celdas/motivos; nada se toca, Bart decide. */
+function ReviewGroups({ groups }: { groups: DriveSyncReviewGroup[] }) {
+  if (groups.length === 0) return null;
   return (
     <ul className="item-list">
-      {conflicts.map((c, i) => (
-        <li key={i}>
-          <strong>{c.order_number}</strong>
-          {c.kind === "manual_cell" ? (
-            <> · {c.column}: la hoja dice «{c.sheet_value}», BoHub tiene «{c.bohub_value}».</>
-          ) : (
-            <> · {c.detail}</>
-          )}
+      {groups.map((g, gi) => (
+        <li key={gi}>
+          <strong>{g.order_number ?? "(sin nº)"}</strong>
+          <ul>
+            {g.items.map((c, i) => (
+              <li key={i} className="muted small">
+                <span className="badge muted">{REVIEW_KIND_LABEL[c.kind] ?? c.kind}</span>{" "}
+                {c.kind === "manual_cell" ? (
+                  <>{c.column}: la hoja dice «{c.sheet_value}», BoHub tiene «{c.bohub_value}».</>
+                ) : (
+                  <>{c.detail}</>
+                )}
+              </li>
+            ))}
+          </ul>
         </li>
       ))}
     </ul>

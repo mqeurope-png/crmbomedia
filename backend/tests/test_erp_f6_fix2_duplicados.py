@@ -188,7 +188,9 @@ def test_match_requires_secondary_confirmation(session_factory) -> None:
     assert summary["appended_rows"] == 0
     assert summary["updated_rows"] == 0
     assert len(summary["conflicts"]) == 1
-    assert summary["conflicts"][0]["kind"] == "ambiguous_match"
+    # ERP-F6-fix4: cliente y fecha existen en ambos lados y difieren → es una
+    # CONTRADICCIÓN (antes se llamaba «ambiguous_match»).
+    assert summary["conflicts"][0]["kind"] == "contradicted"
     # La fila de la hoja no se ha modificado.
     assert sheet.grid[1][2] == "FLUXCLIENTE"
     assert len(sheet.grid) == 2
@@ -251,11 +253,11 @@ def test_preview_reports_added_updated_and_conflicts_without_writing(
     assert preview["preview"] is True
     assert preview["appended_rows"] == 1
     assert preview["updated_rows"] == 1
-    # El 5742 dudoso sale como conflicto de coincidencia; puede haber además
-    # conflictos de celda manual (BoHub no pisa lo que Bart puso a mano).
-    ambiguous = [c for c in preview["conflicts"] if c["kind"] == "ambiguous_match"]
-    assert len(ambiguous) == 1
-    assert ambiguous[0]["order_number"] == "BOPRIN-5742"
+    # El 5742 dudoso sale como CONTRADICCIÓN (cliente y fecha difieren); puede
+    # haber además conflictos de celda manual (BoHub no pisa lo manual).
+    contradicted = [c for c in preview["conflicts"] if c["kind"] == "contradicted"]
+    assert len(contradicted) == 1
+    assert contradicted[0]["order_number"] == "BOPRIN-5742"
     # NADA se ha escrito ni añadido en la previsualización.
     assert sheet.grid == before
     # Y no se ha guardado ninguna foto de sincronización.

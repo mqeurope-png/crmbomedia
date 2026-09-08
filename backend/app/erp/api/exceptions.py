@@ -46,7 +46,11 @@ from app.erp.models import (
     ExceptionStatus,
     InvoiceMode,
 )
-from app.erp.seguimiento import series_abbreviations_config, shipping_origins_config
+from app.erp.seguimiento import (
+    abbr_variants_config,
+    series_abbreviations_config,
+    shipping_origins_config,
+)
 from app.integrations.factusol.catalogs import normalize_code
 from app.models.crm import User
 
@@ -125,6 +129,10 @@ class SettingsIn(BaseModel):
     #: ERP-F6-fix3 — abreviaturas de empresa por serie ({"1": "BO", "2": "MQ",
     #: "5": "ST"}) que se escriben en la columna Empresa del seguimiento.
     factusol_series_abbreviations: dict[str, str] | None = None
+    #: ERP-F6-fix4 — variantes históricas aceptadas por serie
+    #: ({"5": ["STR","STREAMTEC"]}); al comparar valen, al escribir se usa la
+    #: canónica. Los defaults (STR/BOM…) van cableados; esto añade más.
+    factusol_series_abbr_variants: dict[str, list[str]] | None = None
 
 
 # --- helpers -----------------------------------------------------------------
@@ -385,6 +393,12 @@ def _serialise_settings(cfg: ErpSettings, session: Session) -> dict[str, Any]:
             ).items()
         },
         "woocommerce_stores": _woocommerce_stores(session),
+        "factusol_series_abbr_variants": {
+            str(k): v
+            for k, v in abbr_variants_config(
+                _series(cfg).get("series_abbr_variants")
+            ).items()
+        },
     }
 
 
@@ -493,7 +507,8 @@ def update_settings(
             or payload.paypal_contrapartidas_by_store is not None
             or payload.shipping_origins is not None
             or payload.drive_reference_prefer_albaran is not None
-            or payload.factusol_series_abbreviations is not None):
+            or payload.factusol_series_abbreviations is not None
+            or payload.factusol_series_abbr_variants is not None):
         series = _series(cfg)
         # ERP-F6: lista configurable de orígenes del envío (OFI-TER-SAT).
         if payload.shipping_origins is not None:
@@ -512,6 +527,13 @@ def update_settings(
                 str(int(str(k).strip())): str(v).strip()
                 for k, v in payload.factusol_series_abbreviations.items()
                 if str(k).strip().lstrip("-").isdigit() and str(v).strip()
+            }
+        # ERP-F6-fix4: variantes históricas por serie ({"5": ["STR", …]}).
+        if payload.factusol_series_abbr_variants is not None:
+            series["series_abbr_variants"] = {
+                str(int(str(k).strip())): [str(x).strip() for x in v if str(x).strip()]
+                for k, v in payload.factusol_series_abbr_variants.items()
+                if str(k).strip().lstrip("-").isdigit() and isinstance(v, list)
             }
         # ERP-F5: contrapartidas de cobro (código numérico único + descripción)
         # y contrapartida PayPal por tienda. Se guardan explícitas.

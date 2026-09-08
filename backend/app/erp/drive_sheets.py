@@ -39,17 +39,20 @@ from app.erp.seguimiento import (
     SEG_COLUMNS,
     SEGUIMIENTO_COLUMNS,
     UNMANAGED_COLUMN_INDEXES,
+    clients_match,
     extract_order_number,
     is_structure_row,
     match_header_columns,
+    match_number,
     normalize_abbr,
-    normalize_client,
     order_match_numbers,
     parse_sheet_date,
     reference_for_row,
     row_to_sheet_values,
+    same_day,
     snapshot_dump,
     snapshot_load,
+    split_client_parts,
 )
 
 logger = logging.getLogger(__name__)
@@ -234,6 +237,23 @@ def _col_a1(idx: int) -> str:
 _EMPRESA_INDEX = SEGUIMIENTO_COLUMNS.index("Empresa")
 
 
+def _abbr_aliases(session: Session) -> dict[str, str]:
+    """`{forma normalizada → canónica}` de las abreviaturas de empresa y sus
+    variantes históricas (ERP-F6-fix4): `STR`/`STREAMTEC`→`ST`, `BOM`→`BO`."""
+    from app.erp.seguimiento import (  # noqa: PLC0415
+        abbr_alias_to_canonical,
+        abbr_variants_config,
+        series_abbreviations_config,
+    )
+    from app.integrations.factusol.service import series_config  # noqa: PLC0415
+
+    cfg = series_config(session)
+    return abbr_alias_to_canonical(
+        series_abbreviations_config(cfg.get("series_abbreviations")),
+        abbr_variants_config(cfg.get("series_abbr_variants")),
+    )
+
+
 def _norm_key(value: Any) -> str:
     return str(value or "").strip().upper()
 
@@ -271,18 +291,30 @@ def _locate_header(values: list[list[str]]) -> tuple[int, dict[int, int]]:
     )
 
 
+_PRODUCTOS_INDEX = SEGUIMIENTO_COLUMNS.index("Productos")
+_CLIENTE_INDEX = SEGUIMIENTO_COLUMNS.index("Cliente")
+#: Columnas de fecha: se comparan como fechas (mismo día), no como texto.
+_DATE_INDEXES = {
+    SEGUIMIENTO_COLUMNS.index("Fecha entrada albarán"),
+    SEGUIMIENTO_COLUMNS.index("Preparado"),
+    SEGUIMIENTO_COLUMNS.index("Recogido"),
+    SEGUIMIENTO_COLUMNS.index("F Envío Factura"),
+}
+#: Columnas que NUNCA generan conflicto y solo se rellenan si están vacías:
+#: Productos (texto libre, nunca coincide) y Cliente (Bart lo escribe más rico).
+_FILL_ONLY_IF_EMPTY = {_PRODUCTOS_INDEX, _CLIENTE_INDEX}
+
+
 def _sheet_row_meta(
     values: list[list[str]], header_row: int, col_map: dict[int, int],
 ) -> list[dict[str, Any]]:
     """Datos de cada fila de PEDIDO de la hoja para el emparejamiento por
-    número + confirmación secundaria: nº, nº de factura, cliente normalizado y
-    fecha. Se saltan cabecera, separadores y la cabecera repetida."""
-    from app.erp.seguimiento import SEGUIMIENTO_COLUMNS as _COLS  # noqa: PLC0415
-
+    número + confirmación secundaria. Se saltan cabecera, separadores y la
+    cabecera repetida. El número exige ≥4 dígitos (ERP-F6-fix4)."""
     key_col = col_map[KEY_COLUMN_INDEX]
-    fac_col = col_map.get(_COLS.index("Nº de Factura"))
-    cli_col = col_map.get(_COLS.index("Cliente"))
-    fec_col = col_map.get(_COLS.index("Fecha entrada albarán"))
+    fac_col = col_map.get(SEGUIMIENTO_COLUMNS.index("Nº de Factura"))
+    cli_col = col_map.get(_CLIENTE_INDEX)
+    fec_col = col_map.get(SEGUIMIENTO_COLUMNS.index("Fecha entrada albarán"))
 
     def cell(row: list[str], col: int | None) -> str:
         return str(row[col]).strip() if col is not None and col < len(row) else ""
@@ -291,64 +323,102 @@ def _sheet_row_meta(
     for i, row in enumerate(values):
         if i + 1 <= header_row or is_structure_row(row):
             continue
-        number = extract_order_number(cell(row, key_col))
+        number = match_number(cell(row, key_col))
         if number is None:
             continue
         meta.append({
             "rownum": i + 1,
             "number": number,
             "factura": extract_order_number(cell(row, fac_col)),
-            "cliente": normalize_client(cell(row, cli_col)),
+            "cliente_raw": cell(row, cli_col),
             "fecha": parse_sheet_date(cell(row, fec_col)),
         })
     return meta
 
 
-def _confirms(row: dict[str, Any], entry: dict[str, Any]) -> bool:
-    """¿Un segundo dato confirma que la fila de la hoja es este pedido? Factura
-    (el más fuerte), cliente tolerante o fecha. El número por sí solo no basta
-    (dos tiendas pueden repetir número)."""
+def _secondary_signals(row: dict[str, Any], entry: dict[str, Any]) -> dict[str, str]:
+    """Estado de cada dato secundario entre el pedido y la fila de la hoja:
+    'agree' (coincide), 'contradict' (ambos existen y difieren) o 'missing'
+    (falta en un lado, no contradice nada). Distingue «contradicho» de «sin
+    confirmar» (ERP-F6-fix4, Parte E)."""
+    out: dict[str, str] = {}
+
     fac = extract_order_number(row.get("factura"))
-    if fac and entry["factura"] and fac == entry["factura"]:
-        return True
-    cli = normalize_client(row.get("cliente"))
-    if cli and entry["cliente"] and cli == entry["cliente"]:
-        return True
+    if fac and entry["factura"]:
+        out["factura"] = "agree" if fac == entry["factura"] else "contradict"
+    else:
+        out["factura"] = "missing"
+
+    bohub_clients = [c for c in (row.get("cliente_company"), row.get("cliente_person"))
+                     if str(c or "").strip()]
+    sheet_clients = split_client_parts(entry["cliente_raw"])
+    if bohub_clients and sheet_clients:
+        matched = any(clients_match(a, b) for a in bohub_clients for b in sheet_clients)
+        out["cliente"] = "agree" if matched else "contradict"
+    else:
+        out["cliente"] = "missing"
+
     fecha = row.get("fecha")
     if fecha and entry["fecha"]:
         try:
-            if date.fromisoformat(str(fecha)[:10]) == entry["fecha"]:
-                return True
+            same = date.fromisoformat(str(fecha)[:10]) == entry["fecha"]
         except ValueError:
-            pass
-    return False
+            same = False
+        out["fecha"] = "agree" if same else "contradict"
+    else:
+        out["fecha"] = "missing"
+    return out
 
 
 def _locate_existing(
     row: dict[str, Any], meta: list[dict[str, Any]], used: set[int],
-) -> tuple[int | None, str | None]:
-    """Localiza la fila de la hoja de este pedido. Devuelve (rownum, motivo de
-    conflicto). rownum None + motivo None → es nuevo. rownum None + motivo →
-    coincidencia dudosa que Bart debe revisar (no insertar ni actualizar)."""
+) -> tuple[int | None, str, dict[str, Any] | None]:
+    """Localiza la fila de la hoja del pedido. Devuelve (rownum, estado, info):
+      - (rownum, "found", None)      → confirmado: se actualiza.
+      - (None, "new", None)          → no está en la hoja: se añade.
+      - (None, "contradicted", info) → el número casa pero un dato lo CONTRADICE.
+      - (None, "probable", info)     → el número casa, nada contradice pero falta
+                                        confirmación (dato ausente en un lado).
+      - (None, "ambiguous", info)    → el número casa con varias filas."""
     nums = order_match_numbers(row)
     if not nums:
-        return None, None
+        return None, "new", None
     candidates = [e for e in meta if e["number"] in nums and e["rownum"] not in used]
     if not candidates:
-        return None, None
-    confirmed = [e for e in candidates if _confirms(row, e)]
+        return None, "new", None
+
+    scored = [(e, _secondary_signals(row, e)) for e in candidates]
+    confirmed = [(e, s) for e, s in scored if "agree" in s.values()]
     if len(confirmed) == 1:
-        return confirmed[0]["rownum"], None
-    if not confirmed:
-        return None, (
-            f"el número {sorted(nums)} coincide con la fila "
-            f"{candidates[0]['rownum']} pero ni factura, ni cliente, ni fecha "
-            "lo confirman"
-        )
-    return None, (
-        f"el número {sorted(nums)} coincide con varias filas "
-        f"({', '.join(str(e['rownum']) for e in confirmed)}): ambiguo"
-    )
+        return confirmed[0][0]["rownum"], "found", None
+    if len(confirmed) > 1:
+        return None, "ambiguous", {
+            "rows": [e["rownum"] for e, _ in confirmed],
+            "detail": (
+                f"el número {sorted(nums)} casa con varias filas confirmadas "
+                f"({', '.join(str(e['rownum']) for e, _ in confirmed)})"
+            ),
+        }
+    # Ninguno confirmado: ¿alguien CONTRADICE, o solo falta el dato?
+    contradicted = [(e, s) for e, s in scored if "contradict" in s.values()]
+    if contradicted:
+        e, s = contradicted[0]
+        diffs = [k for k, v in s.items() if v == "contradict"]
+        return None, "contradicted", {
+            "rows": [e["rownum"] for e, _ in contradicted],
+            "detail": (
+                f"el número {sorted(nums)} casa con la fila {e['rownum']} pero "
+                f"{', '.join(diffs)} no coinciden"
+            ),
+        }
+    e = candidates[0]
+    return None, "probable", {
+        "rows": [c["rownum"] for c in candidates],
+        "detail": (
+            f"el número {sorted(nums)} casa con la fila {e['rownum']}; falta un "
+            "segundo dato para confirmarlo (revisar)"
+        ),
+    }
 
 
 def sync_to_sheet(
@@ -372,6 +442,7 @@ def sync_to_sheet(
         if c not in col_map and c not in UNMANAGED_COLUMN_INDEXES
     ]
     meta = _sheet_row_meta(values, header_row, col_map)
+    abbr_aliases = _abbr_aliases(session)
 
     snapshots = {
         s.order_id: s for s in session.scalars(select(ErpDriveSyncRow)).all()
@@ -379,10 +450,17 @@ def sync_to_sheet(
 
     updates: list[tuple[int, int, str]] = []
     conflicts: list[dict[str, Any]] = []
+    probable_matches: list[dict[str, Any]] = []
     new_rows: list[tuple[dict[str, Any], list[str]]] = []
     touched: list[tuple[dict[str, Any], list[str]]] = []
     updated_row_nums: set[int] = set()
     used: set[int] = set()
+
+    def _abbr_equal(a: str, b: str) -> bool:
+        na, nb = normalize_abbr(a), normalize_abbr(b)
+        if na == nb:
+            return True
+        return abbr_aliases.get(na, na) == abbr_aliases.get(nb, nb)
 
     for row in rows:
         # `new_values` va en el orden CANÓNICO; el mapa lleva cada columna a su
@@ -391,17 +469,27 @@ def sync_to_sheet(
         new_values[KEY_COLUMN_INDEX] = reference_for_row(
             row, prefer_albaran=prefer_albaran,
         )
-        rownum, conflict_reason = _locate_existing(row, meta, used)
-        if rownum is None and conflict_reason is not None:
+        rownum, status, info = _locate_existing(row, meta, used)
+        if status in ("contradicted", "ambiguous"):
             conflicts.append({
-                "kind": "ambiguous_match",
+                "kind": status,
                 "order_number": row.get("albaran_pedido"),
-                "detail": conflict_reason,
+                "rows": (info or {}).get("rows"),
+                "detail": (info or {}).get("detail"),
             })
             continue
-        if rownum is None:
+        if status == "probable":
+            probable_matches.append({
+                "kind": "probable_match",
+                "order_number": row.get("albaran_pedido"),
+                "rows": (info or {}).get("rows"),
+                "detail": (info or {}).get("detail"),
+            })
+            continue
+        if status == "new":
             new_rows.append((row, new_values))
             continue
+        # status == "found": actualizar la fila, sin pisar nada manual.
         used.add(rownum)
         existing_raw = values[rownum - 1]
         snap = snapshots.get(row["id"])
@@ -424,12 +512,41 @@ def sync_to_sheet(
                 if sheet_col < len(existing_raw) else ""
             )
             new_s = new.strip()
+
+            # ERP-F6-fix4 — Productos y Cliente: nunca se comparan; se rellenan
+            # solo si la celda está vacía. Nunca conflicto, nunca se pisan.
+            if canon in _FILL_ONLY_IF_EMPTY:
+                if not current and new_s:
+                    updates.append((rownum, sheet_col, new_s))
+                    written[canon] = new_s
+                continue
+
+            # ERP-F6-fix4 — fechas: mismo día, no misma cadena. BoHub sin fecha
+            # (o estampada en la importación → ya viene vacía) nunca escribe ni
+            # entra en conflicto.
+            if canon in _DATE_INDEXES:
+                if not new_s:
+                    continue
+                if current and same_day(current, new_s):
+                    written[canon] = new_s
+                    continue
+                if not current:
+                    updates.append((rownum, sheet_col, new_s))
+                    written[canon] = new_s
+                    continue
+                conflicts.append({
+                    "kind": "manual_cell",
+                    "order_number": row.get("albaran_pedido"),
+                    "row": rownum, "column": SEG_COLUMNS[canon].header,
+                    "sheet_value": current, "bohub_value": new_s,
+                })
+                continue
+
             same = current == new_s
-            # ERP-F6-fix3: la abreviatura de Empresa se compara normalizada
-            # (mayúsculas, sin tildes): `st` y `ST` no son distintas, así no se
-            # pisa la forma que Bart escribió a mano ni se marca conflicto.
+            # ERP-F6-fix3/fix4 — Empresa: se compara la abreviatura aceptando
+            # variantes históricas (`STR`≡`ST`); la variante manual no se pisa.
             if not same and canon == _EMPRESA_INDEX and current and new_s:
-                same = normalize_abbr(current) == normalize_abbr(new_s)
+                same = _abbr_equal(current, new_s)
             if same:
                 written[canon] = new_s  # la hoja ya dice lo mismo que BoHub
                 continue
@@ -487,6 +604,17 @@ def sync_to_sheet(
             snap.synced_at = now
         session.commit()
 
+    # ERP-F6-fix4 — «a revisar» agrupado POR PEDIDO (Parte G): conflictos de
+    # celda + contradicciones + coincidencias probables, cada uno con lo suyo.
+    review_by_order: dict[str, dict[str, Any]] = {}
+    for c in [*conflicts, *probable_matches]:
+        key = c.get("order_number") or "(sin nº)"
+        group = review_by_order.setdefault(
+            key, {"order_number": c.get("order_number"), "items": []},
+        )
+        group["items"].append(c)
+    review_groups = list(review_by_order.values())
+
     summary = {
         "ok": True,
         "preview": dry_run,
@@ -495,16 +623,23 @@ def sync_to_sheet(
         "updated_rows": len(updated_row_nums),
         "updated_cells": len(updates),
         "appended_rows": len(new_rows),
+        # Conflictos «duros» (celda manual distinta, contradicción, ambigüedad).
         "conflicts": conflicts,
+        # ERP-F6-fix4: coincidencias probables (falta un dato para confirmar).
+        "probable_matches": probable_matches,
+        # ERP-F6-fix4: «a revisar» agrupado por pedido (Parte G).
+        "review_groups": review_groups,
+        "orders_to_review": len(review_groups),
         "sheet_rows": len(values),
         # ERP-F6-fix1: columnas opcionales ausentes en la hoja (Tracking,
         # Nº de serie, WhiteRIP…): se sincroniza el resto y se avisa.
         "omitted_columns": omitted_columns,
     }
     logger.info(
-        "drive sync%s: +%s filas, ~%s filas (%s celdas), %s conflictos, "
-        "columnas omitidas: %s",
+        "drive sync%s: +%s filas, ~%s filas (%s celdas), %s pedidos a revisar "
+        "(%s conflictos, %s probables), columnas omitidas: %s",
         " (preview)" if dry_run else "", len(new_rows), len(updated_row_nums),
-        len(updates), len(conflicts), omitted_columns or "ninguna",
+        len(updates), len(review_groups), len(conflicts), len(probable_matches),
+        omitted_columns or "ninguna",
     )
     return summary

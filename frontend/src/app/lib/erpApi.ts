@@ -271,16 +271,23 @@ export async function exportSeguimientoXlsx(
   return apiDownloadBlob(`/api/erp/seguimiento/export${seguimientoQs(filters)}`);
 }
 
-/** ERP-F6-fix2 — un conflicto es o una celda con contenido manual distinto de
- *  lo que BoHub escribiría, o una coincidencia de número sin confirmar. */
+/** ERP-F6-fix4 — un item a revisar: celda manual distinta, contradicción,
+ *  ambigüedad o coincidencia probable (falta un dato para confirmar). */
 export type DriveSyncConflict = {
-  kind: "manual_cell" | "ambiguous_match";
+  kind: "manual_cell" | "contradicted" | "ambiguous" | "probable_match";
   order_number: string | null;
   row?: number;
+  rows?: number[];
   column?: string;
   sheet_value?: string;
   bohub_value?: string;
   detail?: string;
+};
+
+/** ERP-F6-fix4 — items a revisar agrupados por pedido (Parte G). */
+export type DriveSyncReviewGroup = {
+  order_number: string | null;
+  items: DriveSyncConflict[];
 };
 
 export type DriveSyncSummary = {
@@ -292,6 +299,11 @@ export type DriveSyncSummary = {
   updated_cells: number;
   appended_rows: number;
   conflicts: DriveSyncConflict[];
+  /** ERP-F6-fix4: coincidencias probables (falta un dato para confirmar). */
+  probable_matches: DriveSyncConflict[];
+  /** ERP-F6-fix4: a revisar, agrupado por pedido. */
+  review_groups: DriveSyncReviewGroup[];
+  orders_to_review: number;
   sheet_rows: number;
   omitted_columns: string[];
 };
