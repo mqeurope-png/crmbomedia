@@ -734,6 +734,22 @@ export type FactusolDocument = {
   /** E3-B — posición en el ciclo PRE→ALB→FAC. `null`/ausente = el backend
    *  no pudo cargar el índice (anotación best-effort). */
   ciclo?: FactusolCycle;
+  /** F3-fix1 — solo facturas: saldo pendiente de cobro (total − cobrado),
+   *  leído de F_LCO. `undefined` si el backend no pudo anotar los cobros. */
+  saldo_pendiente?: number | null;
+  total_cobrado?: number | null;
+};
+
+/** F3-fix1 — un cobro de la factura (F_LCO), solo lectura. */
+export type FactusolCobro = {
+  linea: number | null;
+  fecha: string | null;
+  importe: number | null;
+  /** Código de forma de pago (F_FOP). */
+  forma_pago: string | null;
+  /** Nombre de la forma de pago resuelto del catálogo (o null). */
+  forma_pago_nombre?: string | null;
+  concepto: string | null;
 };
 
 /** Referencia a otro documento del ciclo (hijo u origen), con lo justo para
@@ -776,6 +792,8 @@ export type FactusolDocumentDetail = FactusolDocument & {
   forma_pago_nombre: string | null;
   /** E4-fix1 — idioma propuesto para el PDF con su origen. */
   pdf_lang?: FactusolPdfLangSuggestion;
+  /** F3-fix1 — solo facturas: lista de cobros registrados en F_LCO. */
+  cobros?: FactusolCobro[];
   lines: {
     position: number;
     codart: string | null;
@@ -786,7 +804,8 @@ export type FactusolDocumentDetail = FactusolDocument & {
   }[];
 };
 
-export type FactusolDocumentSort = "numero" | "cliente" | "fecha" | "total";
+export type FactusolDocumentSort =
+  | "numero" | "cliente" | "fecha" | "total" | "saldo";
 
 export type FactusolDocumentFilters = {
   codcli?: string;

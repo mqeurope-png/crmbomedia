@@ -107,11 +107,12 @@ def test_estado_labels_confirmed_and_raw() -> None:
     assert estado_label("presupuestos", 1) == "Aceptado"
     # Sin confirmar → crudo neutro, nunca adivinar (criterio E2/gotcha 17).
     assert estado_label("albaranes", 3) == "Estado 3"
-    # ERP-F3: ESTFAC confirmado (estado de COBRO): 0 pendiente, 2 cobrada; el
-    # resto (1, sin identificar) sigue crudo.
+    # ERP-F3/F3-fix1: ESTFAC confirmado (estado de COBRO): 0 pendiente, 1 cobro
+    # parcial, 2 cobrada; el resto sigue crudo.
     assert estado_label("facturas", 0) == "Pendiente de cobro"
+    assert estado_label("facturas", 1) == "Cobro parcial"
     assert estado_label("facturas", 2) == "Cobrada"
-    assert estado_label("facturas", 1) == "Estado 1"
+    assert estado_label("facturas", 3) == "Estado 3"
 
 
 # ---------------------------------------------------------------------------

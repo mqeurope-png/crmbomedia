@@ -138,14 +138,19 @@ DOC_SPECS: dict[str, DocSpec] = {
 #:
 #: ERP-F3: ESTFAC CONFIRMADO por Bart (facturas del 31-jul: 1-260720 SOLITIUM
 #: en 0 = le debe; sus vecinas en 2 = cobradas). Es el estado de COBRO, no del
-#: documento: 0 = pendiente de cobro, 2 = cobrada. El valor 1 (13 facturas en
-#: el sondeo) sigue SIN identificar → crudo, como cualquier otro (no se
-#: adivina; ver el script de discovery `--estfac 1`).
+#: documento.
+#: ERP-F3-fix1: el valor 1 ya está CONFIRMADO con datos reales (cruce de F_FAC
+#: con la tabla de cobros F_LCO): la factura 5-260004 en ESTFAC=1 tiene un
+#: cobro de 408,48 € de 420,74 € → COBRO PARCIAL. Mapa completo 0/1/2. Cualquier
+#: otro valor sigue crudo (no se adivina). Etiquetas del explorador interno en
+#: español (mismo criterio que el resto de `estado_label`).
 ESTADO_LABELS: dict[str, dict[str, str]] = {
     "pedidos": {"0": "Pendiente", "2": "Enviado (facturado)"},  # ✅ E2
     "presupuestos": {"0": "Pendiente", "1": "Aceptado"},  # ✅ escritorio
     "albaranes": {"0": "Pendiente", "1": "Facturado"},  # ✅ escritorio (FACT.)
-    "facturas": {"0": "Pendiente de cobro", "2": "Cobrada"},  # ✅ ERP-F3
+    "facturas": {  # ✅ ERP-F3 (0/2) + ERP-F3-fix1 (1)
+        "0": "Pendiente de cobro", "1": "Cobro parcial", "2": "Cobrada",
+    },
 }
 
 
@@ -312,8 +317,9 @@ def matching_codclis(
 
 
 #: Claves de ordenación del listado. None / no-numérico se van al final en
-#: ambas direcciones.
-SORT_FIELDS = ("numero", "cliente", "fecha", "total")
+#: ambas direcciones. ERP-F3-fix1: `saldo` (pendiente de cobro) ordena por el
+#: dato anotado en las facturas — para ver de un vistazo lo que más se debe.
+SORT_FIELDS = ("numero", "cliente", "fecha", "total", "saldo")
 
 
 def _sort_key(sort: str):
@@ -324,6 +330,8 @@ def _sort_key(sort: str):
             value = doc.get("fecha")
         elif sort == "total":
             value = doc.get("total")
+        elif sort == "saldo":
+            value = doc.get("saldo_pendiente")
         else:  # numero
             value = doc["codigo"] if isinstance(doc["codigo"], int) else None
         return (value is None, value if value is not None else "")
