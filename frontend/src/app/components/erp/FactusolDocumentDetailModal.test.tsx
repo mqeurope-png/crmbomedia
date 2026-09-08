@@ -802,4 +802,36 @@ describe("FactusolDocumentDetailModal — marcar cobro (ERP-F3)", () => {
     render(<FactusolDocumentDetailModal docType="facturas" serie={1} codigo={260719} onClose={() => {}} />);
     expect(await screen.findByRole("button", { name: "Marcar como pendiente" })).toBeInTheDocument();
   });
+
+  // F3-fix1 — cobros y saldo pendiente.
+  it("muestra los cobros y el saldo pendiente de una factura parcial", async () => {
+    mockDetail.mockResolvedValue(factura({
+      codigo: 260004, numero: "5-260004", cliente_nombre: "Maria Elena",
+      total: 420.74, estado: "1", estado_label: "Cobro parcial",
+      total_cobrado: 408.48, saldo_pendiente: 12.26,
+      cobros: [{
+        linea: 1, fecha: "2026-01-02", importe: 408.48,
+        forma_pago: "002", forma_pago_nombre: "Transferencia",
+        concepto: "COBRO FACTURA",
+      }],
+    }));
+    render(<FactusolDocumentDetailModal docType="facturas" serie={5} codigo={260004} onClose={() => {}} />);
+    expect(await screen.findByText("Cobros")).toBeInTheDocument();
+    // 408.48 aparece en la fila del cobro y en «Total cobrado».
+    expect(screen.getAllByText("408.48 €").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText("Transferencia").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText("Saldo pendiente")).toBeInTheDocument();
+    // 12,26 € de saldo pendiente (JS toFixed usa punto decimal).
+    expect(screen.getByText("12.26 €")).toBeInTheDocument();
+  });
+
+  it("si no hay cobros lo dice explícitamente", async () => {
+    mockDetail.mockResolvedValue(factura({
+      total_cobrado: 0, saldo_pendiente: 3623.95, cobros: [],
+    }));
+    render(<FactusolDocumentDetailModal docType="facturas" serie={1} codigo={260720} onClose={() => {}} />);
+    expect(await screen.findByText("Sin cobros registrados.")).toBeInTheDocument();
+    // 3623.95 aparece como total del documento y como saldo pendiente.
+    expect(screen.getAllByText("3623.95 €").length).toBeGreaterThanOrEqual(1);
+  });
 });

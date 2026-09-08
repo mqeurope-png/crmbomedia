@@ -287,6 +287,7 @@ export default function FactusolDocumentosPage() {
             >
               <option value="">Todas</option>
               <option value="0">Pendientes de cobro</option>
+              <option value="1">Parciales</option>
               <option value="2">Cobradas</option>
             </select>
           </label>
@@ -318,6 +319,11 @@ export default function FactusolDocumentosPage() {
                   ["cliente", "Cliente"],
                   ["fecha", "Fecha"],
                   ["total", "Total"],
+                  // F3-fix1 — saldo pendiente de cobro, ordenable, solo en la
+                  // pestaña de facturas.
+                  ...(tab === "facturas"
+                    ? [["saldo", "Saldo pend."] as [FactusolDocumentSort, string]]
+                    : []),
                 ] as [FactusolDocumentSort, string][]).map(([col, label]) => (
                   <th
                     key={col}
@@ -356,6 +362,15 @@ export default function FactusolDocumentosPage() {
                     {d.total !== null && d.total !== undefined
                       ? `${d.total.toFixed(2)} €` : "—"}
                   </td>
+                  {tab === "facturas" ? (
+                    <td className={
+                      d.saldo_pendiente && d.saldo_pendiente > 0.005
+                        ? "erp-doc-saldo-due" : undefined
+                    }>
+                      {d.saldo_pendiente !== null && d.saldo_pendiente !== undefined
+                        ? `${d.saldo_pendiente.toFixed(2)} €` : "—"}
+                    </td>
+                  ) : null}
                   <td>{d.estado_label}</td>
                   <td>{renderCiclo(d)}</td>
                   <td className="muted small">{d.referencia ?? "—"}</td>

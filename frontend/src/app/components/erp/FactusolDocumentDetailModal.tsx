@@ -569,6 +569,62 @@ export function FactusolDocumentDetailModal({
             ) : (
               <p className="muted">Sin líneas.</p>
             )}
+
+            {/* F3-fix1 — cobros y saldo pendiente (F_LCO, solo lectura). Solo
+                en facturas; el saldo es lo que Bart necesita de un vistazo. */}
+            {current.docType === "facturas" ? (
+              <section className="erp-doc-cobros">
+                <h3>Cobros</h3>
+                {doc.cobros && doc.cobros.length > 0 ? (
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        <th>Fecha</th>
+                        <th>Importe</th>
+                        <th>Forma de pago</th>
+                        <th>Concepto</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {doc.cobros.map((c, i) => (
+                        <tr key={`${c.linea ?? i}`}>
+                          <td>{c.fecha ?? "—"}</td>
+                          <td>
+                            {c.importe !== null && c.importe !== undefined
+                              ? `${c.importe.toFixed(2)} €` : "—"}
+                          </td>
+                          <td>
+                            {c.forma_pago_nombre
+                              ?? (c.forma_pago ? `Código ${c.forma_pago}` : "—")}
+                          </td>
+                          <td className="muted small">{c.concepto ?? "—"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                ) : (
+                  <p className="muted">Sin cobros registrados.</p>
+                )}
+                <dl className="erp-doc-cobros-resumen">
+                  <dt>Total cobrado</dt>
+                  <dd>
+                    {doc.total_cobrado !== null && doc.total_cobrado !== undefined
+                      ? `${doc.total_cobrado.toFixed(2)} €` : "—"}
+                  </dd>
+                  <dt>Saldo pendiente</dt>
+                  <dd className={
+                    doc.saldo_pendiente && doc.saldo_pendiente > 0.005
+                      ? "erp-doc-saldo-due" : undefined
+                  }>
+                    <strong>
+                      {doc.saldo_pendiente !== null
+                        && doc.saldo_pendiente !== undefined
+                        ? `${doc.saldo_pendiente.toFixed(2)} €` : "—"}
+                    </strong>
+                  </dd>
+                </dl>
+              </section>
+            ) : null}
           </>
         ) : null}
 

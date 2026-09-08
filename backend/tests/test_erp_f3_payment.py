@@ -98,8 +98,8 @@ def test_estfac_labels_pending_and_paid() -> None:
     assert estado_label("facturas", 0) == "Pendiente de cobro"
     assert estado_label("facturas", 2) == "Cobrada"
     assert estado_label("facturas", "2.0") == "Cobrada"
-    # 1 y cualquier otro valor: crudo/neutro, no se adivina.
-    assert estado_label("facturas", 1) == "Estado 1"
+    # F3-fix1: 1 ya está confirmado (cobro parcial); el resto sigue crudo.
+    assert estado_label("facturas", 1) == "Cobro parcial"
     assert estado_label("facturas", 9) == "Estado 9"
     assert estado_label("facturas", None) == "—"
 

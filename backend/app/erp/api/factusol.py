@@ -121,6 +121,45 @@ def _fop_names(client, ejercicio: str) -> dict[str, str]:
     return out
 
 
+def _attach_invoice_collections(
+    client, ejercicio: str, doc: dict[str, Any], serie: int, codigo: int,
+) -> None:
+    """ERP-F3-fix1 — añade al detalle de una factura sus COBROS (F_LCO), el
+    total cobrado y el saldo pendiente. Solo lectura. Best-effort: un fallo de
+    F_LCO no tumba el detalle (cobros vacíos). Registra un aviso si el saldo no
+    cuadra con el ESTFAC, pero enseña SIEMPRE el dato real."""
+    from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
+    from app.integrations.factusol.collections import (  # noqa: PLC0415
+        balance_mismatch,
+        invoice_collections,
+        load_collections_index,
+    )
+
+    doc["cobros"] = []
+    doc["total_cobrado"] = 0.0
+    doc["saldo_pendiente"] = doc.get("total")
+    try:
+        index = load_collections_index(client, ejercicio=ejercicio)
+    except FactusolError as exc:
+        logger.warning("factusol cobros F_LCO %s-%s KO: %s", serie, codigo, exc)
+        return
+    summary = invoice_collections(index, serie, codigo, doc.get("total"))
+    names = _fop_names(client, ejercicio)
+    for cobro in summary["cobros"]:
+        fop = str(cobro.get("forma_pago") or "").strip()
+        cobro["forma_pago_nombre"] = (
+            (names.get(fop) or names.get(fop.lstrip("0") or "0")) if fop else None
+        )
+    doc["cobros"] = summary["cobros"]
+    doc["total_cobrado"] = summary["total_cobrado"]
+    doc["saldo_pendiente"] = summary["saldo_pendiente"]
+    warn = balance_mismatch(
+        doc.get("estado"), summary["saldo_pendiente"], doc.get("total"),
+    )
+    if warn:
+        logger.warning("factusol cobros %s: %s", doc.get("numero"), warn)
+
+
 def _normalise_fop(row: dict[str, Any]) -> dict[str, Any]:
     """F_FOP → {codigo, nombre}. Los nombres exactos de columna se confirman
     con la validación de Bart; se prueban varios candidatos habituales."""
@@ -191,7 +230,9 @@ def list_factusol_documents(
         default=None, pattern="^(pendiente|con_albaran|facturado)$",
     ),
     fresh_ciclo: bool = Query(default=False),
-    sort: str = Query(default="numero", pattern="^(numero|cliente|fecha|total)$"),
+    sort: str = Query(
+        default="numero", pattern="^(numero|cliente|fecha|total|saldo)$",
+    ),
     dir: str = Query(default="desc", pattern="^(asc|desc)$"),
     limit: int = Query(default=100, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
@@ -248,6 +289,25 @@ def list_factusol_documents(
             raise _factusol_gateway_error(exc, "factusol_cycle_failed") from exc
         logger.warning("factusol ciclo no disponible (%s); listado sin "
                        "anotar: %s", doc_type, exc)
+    # ERP-F3-fix1 — en facturas, anotar además el saldo pendiente (F_LCO leída
+    # UNA vez, sin N+1). Se COMPONE con el anotador del ciclo. Best-effort: si
+    # F_LCO no carga, el listado sale sin saldo (nunca tumba la lista).
+    if doc_type == "facturas":
+        try:
+            from app.integrations.factusol.collections import (  # noqa: PLC0415
+                payment_annotator,
+            )
+
+            pay_annotate = payment_annotator(client, ejercicio=ejercicio)
+            prev_annotate = annotate
+
+            def annotate(docs: list[dict[str, Any]]) -> None:
+                if prev_annotate is not None:
+                    prev_annotate(docs)
+                pay_annotate(docs)
+        except FactusolError as exc:
+            logger.warning("factusol cobros no disponibles; listado de "
+                           "facturas sin saldo: %s", exc)
     if doc_type == "albaranes":
         _log_estalb_diagnostic(client, ejercicio, force_refresh=fresh_ciclo)
     try:
@@ -318,6 +378,10 @@ def get_factusol_document(
         doc["forma_pago_nombre"] = (
             names.get(fop) or names.get(fop.lstrip("0") or "0")
         )
+    # ERP-F3-fix1 — COBROS y saldo pendiente de la factura (F_LCO, solo
+    # lectura). Best-effort: si F_LCO no carga, el detalle sigue sirviendo.
+    if doc_type == "facturas":
+        _attach_invoice_collections(client, ejercicio, doc, serie, codigo)
     # E3-B — posición en el ciclo PRE→ALB→FAC (best-effort: el detalle sigue
     # sirviendo aunque el índice del ciclo no cargue). E3-B-fix1: la etiqueta
     # del estado va con la semántica del TIPO (albarán «pendiente» = «Sin

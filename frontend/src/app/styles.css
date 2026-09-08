@@ -10950,6 +10950,17 @@ tr.is-inactive {
 .erp-doc-detail-head dd {
   margin: 0;
 }
+/* F3-fix1 — sección de cobros + saldo pendiente en el detalle de la factura. */
+.erp-doc-cobros { margin-top: 14px; }
+.erp-doc-cobros h3 { font-size: 14px; margin: 0 0 8px; }
+.erp-doc-cobros-resumen {
+  display: grid; grid-template-columns: auto auto; gap: 2px 14px;
+  justify-content: end; margin: 8px 0 0; text-align: right;
+}
+.erp-doc-cobros-resumen dt { color: #64748b; font-size: 13px; }
+.erp-doc-cobros-resumen dd { margin: 0; }
+/* Saldo por cobrar → en rojo suave, tanto en el listado como en el detalle. */
+.erp-doc-saldo-due { color: #b42318; font-weight: 600; }
 
 /* ERP-E3-A-fix1 — cabeceras ordenables del explorador. */
 .erp-doc-sort {
