@@ -10,7 +10,9 @@ import {
   getFactusolConvertStatus,
   getFactusolDocument,
   getFactusolSeries,
+  markInvoicePayment,
   saveBlob,
+  waitForInvoicePaymentJob,
   type FactusolBankAccount,
   type FactusolConvertTarget,
   type FactusolCycle,
@@ -227,6 +229,11 @@ export function FactusolDocumentDetailModal({
   const [banks, setBanks] = useState<FactusolBankAccount[]>([]);
   // ERP-F1 — modal de envío de la factura por email (solo facturas).
   const [emailOpen, setEmailOpen] = useState(false);
+  // ERP-F3 — marcado del cobro: confirmación (paid) + estado de la operación.
+  const [payConfirm, setPayConfirm] = useState<boolean | null>(null);
+  const [payBusy, setPayBusy] = useState(false);
+  const [payError, setPayError] = useState<string | null>(null);
+  const [payMsg, setPayMsg] = useState<string | null>(null);
 
   useEffect(() => {
     // Mantiene la referencia si las props no cambiaron: un objeto nuevo
@@ -343,6 +350,40 @@ export function FactusolDocumentDetailModal({
     setCurrent({ docType: ref.doc_type, serie: ref.serie, codigo: ref.codigo });
   }
 
+  /** ERP-F3 — marca la factura como cobrada/pendiente (tras confirmar). */
+  async function doMarkPayment(paid: boolean) {
+    setPayBusy(true);
+    setPayError(null);
+    setPayMsg(null);
+    setPayConfirm(null);
+    try {
+      const res = await markInvoicePayment(current.serie, current.codigo, {
+        confirm: true, paid,
+      });
+      if (res.status === "already") {
+        setPayMsg(`La factura ya estaba ${paid ? "cobrada" : "pendiente"}.`);
+      } else if (res.job_id) {
+        const st = await waitForInvoicePaymentJob(res.job_id);
+        if (st.status === "failed" || (st.status === "finished" && !st.result.marked)) {
+          const motivo = st.status === "finished"
+            ? (st.result.motivo ?? "")
+            : (st.error ?? "");
+          setPayError(
+            `No se pudo marcar el cobro en FACTUSOL. ${motivo}`.trim(),
+          );
+        } else {
+          setPayMsg(`Factura marcada como ${paid ? "cobrada" : "pendiente"}.`);
+          load(true);           // repinta el estado desde FACTUSOL
+          onChanged?.();
+        }
+      }
+    } catch (e) {
+      setPayError(extractErrorMessage(e, "No se pudo marcar el cobro."));
+    } finally {
+      setPayBusy(false);
+    }
+  }
+
   /** Hijos que ya existen del tipo destino — el aviso anti-duplicado. */
   function existingChildren(target: FactusolConvertTarget): FactusolCycleRef[] {
     if (!ciclo) return [];
@@ -391,6 +432,9 @@ export function FactusolDocumentDetailModal({
           </p>
         ) : null}
         {createError ? <p className="form-error">{createError}</p> : null}
+        {payError ? <p className="form-error">{payError}</p> : null}
+        {payMsg ? <p className="form-success" role="status">{payMsg}</p> : null}
+        {payBusy ? <p className="muted">Marcando el cobro en FACTUSOL…</p> : null}
         {originWarning ? (
           <p className="erp-doc-ciclo-aviso">{originWarning}</p>
         ) : null}
@@ -404,7 +448,28 @@ export function FactusolDocumentDetailModal({
               <dt>Fecha</dt>
               <dd>{doc.fecha ?? "—"}</dd>
               <dt>Estado</dt>
-              <dd>{doc.estado_label}</dd>
+              <dd>
+                {doc.estado_label}
+                {current.docType === "facturas" && canEdit ? (
+                  <button
+                    type="button"
+                    className="button secondary small"
+                    style={{ marginLeft: 8 }}
+                    disabled={payBusy}
+                    onClick={() => {
+                      setPayError(null);
+                      setPayMsg(null);
+                      // Cobrada (estado 2) → ofrecer marcar pendiente; en
+                      // cualquier otro caso → marcar cobrada.
+                      setPayConfirm(String(doc.estado) !== "2");
+                    }}
+                  >
+                    {String(doc.estado) === "2"
+                      ? "Marcar como pendiente"
+                      : "Marcar como cobrada"}
+                  </button>
+                ) : null}
+              </dd>
               <dt>Forma de pago</dt>
               <dd>
                 {doc.forma_pago_nombre
@@ -671,6 +736,40 @@ export function FactusolDocumentDetailModal({
           variant={pdfVariant === "anticipo" ? "anticipo" : null}
           onClose={() => setEmailOpen(false)}
         />
+      ) : null}
+
+      {doc && payConfirm !== null ? (
+        <div className="modal-overlay" role="dialog" aria-modal="true"
+             aria-label="Confirmar marcado de cobro">
+          <div className="modal-dialog erp-emit-modal">
+            <h2>
+              Marcar como {payConfirm ? "cobrada" : "pendiente"}
+            </h2>
+            <p className="form-error">
+              Marcar una factura como {payConfirm ? "cobrada" : "pendiente"} es
+              una afirmación contable. Revisa los datos antes de confirmar.
+            </p>
+            <dl className="erp-doc-detail-head">
+              <dt>Factura</dt><dd><strong>{doc.numero}</strong></dd>
+              <dt>Cliente</dt>
+              <dd>{doc.cliente_nombre ?? doc.cliente_codigo ?? "—"}</dd>
+              <dt>Importe</dt>
+              <dd>{doc.total !== null ? `${doc.total.toFixed(2)} €` : "—"}</dd>
+            </dl>
+            <div className="modal-actions">
+              <button type="button" className="button secondary"
+                      onClick={() => setPayConfirm(null)} disabled={payBusy}>
+                Cancelar
+              </button>
+              <button type="button" className="button"
+                      onClick={() => doMarkPayment(payConfirm)} disabled={payBusy}>
+                {payBusy
+                  ? "Marcando…"
+                  : `Confirmar ${payConfirm ? "cobrada" : "pendiente"}`}
+              </button>
+            </div>
+          </div>
+        </div>
       ) : null}
     </div>
   );

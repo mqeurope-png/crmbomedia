@@ -1,9 +1,11 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { CompanyLogoThumbnail } from "../../components/erp/CompanyLogoThumbnail";
 import { PageHeader } from "../../components/PageHeader";
 import { extractErrorMessage } from "../../lib/errors";
 import {
+  deleteFactusolCompanyLogo,
   getErpSettings,
   updateErpSettings,
   uploadFactusolCompanyLogo,
@@ -57,6 +59,8 @@ export default function ErpSettingsPage() {
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const [busy, setBusy] = useState(false);
+  // ERP-F3 — se bumpea tras subir/quitar un logo para refrescar la miniatura.
+  const [logoRefresh, setLogoRefresh] = useState(0);
 
   useEffect(() => {
     getErpSettings()
@@ -202,6 +206,56 @@ export default function ErpSettingsPage() {
               Al crear la factura desde un albarán, BoHub lo marca como
               «Facturado» (columna FACT. del escritorio). Confirmado: 1.
               Vacío → no se marca.
+            </span>
+          </label>
+          {/* ERP-F3 — estado de COBRO de las facturas + auto-marcado. */}
+          <label className="field">
+            <span>Estado ESTFAC de factura cobrada</span>
+            <input
+              type="text" maxLength={10} placeholder="2"
+              value={cfg.factusol_estfac_cobrada ?? ""}
+              aria-label="Estado ESTFAC de factura cobrada"
+              onChange={(e) => setCfg({
+                ...cfg, factusol_estfac_cobrada: e.target.value,
+              })}
+            />
+            <span className="muted small">
+              Valor de ESTFAC al marcar una factura como cobrada. Confirmado: 2.
+              Vacío → desactiva el marcado de cobro.
+            </span>
+          </label>
+          <label className="field">
+            <span>Estado ESTFAC de factura pendiente</span>
+            <input
+              type="text" maxLength={10} placeholder="0"
+              value={cfg.factusol_estfac_pendiente ?? ""}
+              aria-label="Estado ESTFAC de factura pendiente"
+              onChange={(e) => setCfg({
+                ...cfg, factusol_estfac_pendiente: e.target.value,
+              })}
+            />
+            <span className="muted small">
+              Valor de ESTFAC al marcar «pendiente de cobro». Confirmado: 0.
+            </span>
+          </label>
+          <label className="field erp-check-field">
+            <input
+              type="checkbox"
+              checked={cfg.factusol_auto_mark_paid_when_order_paid ?? false}
+              aria-label="Marcar la factura como cobrada al emitirla si el pedido ya estaba pagado"
+              onChange={(e) => setCfg({
+                ...cfg,
+                factusol_auto_mark_paid_when_order_paid: e.target.checked,
+              })}
+            />
+            <span>
+              Marcar la factura como cobrada al emitirla si el pedido ya estaba
+              pagado
+            </span>
+            <span className="muted small">
+              Solo para pedidos que constan pagados en el CRM (web con pago al
+              comprar); nunca para manuales o pendientes. Desactivado por
+              defecto: es una afirmación contable automática.
             </span>
           </label>
           <table className="data-table">
@@ -378,6 +432,31 @@ export default function ErpSettingsPage() {
                 </fieldset>
                 <label className="field">
                   <span>Logo (PNG/JPG, se sube al elegirlo)</span>
+                  {/* ERP-F3 — miniatura del logo actual + nombre + quitar. */}
+                  <CompanyLogoThumbnail
+                    serie={serie}
+                    hasLogo={!!comp.logo}
+                    filename={comp.logo_filename}
+                    refreshToken={logoRefresh}
+                    onRemove={async () => {
+                      setError(null);
+                      try {
+                        await deleteFactusolCompanyLogo(serie);
+                        setCfg({
+                          ...cfg,
+                          factusol_companies: {
+                            ...(cfg.factusol_companies ?? {}),
+                            [serie]: { ...comp, logo: false, logo_filename: null },
+                          },
+                        });
+                        setLogoRefresh((n) => n + 1);
+                      } catch (err) {
+                        setError(extractErrorMessage(
+                          err, "No se pudo quitar el logo.",
+                        ));
+                      }
+                    }}
+                  />
                   <input
                     type="file"
                     accept="image/png,image/jpeg"
@@ -392,9 +471,12 @@ export default function ErpSettingsPage() {
                           ...cfg,
                           factusol_companies: {
                             ...(cfg.factusol_companies ?? {}),
-                            [serie]: { ...comp, logo: true },
+                            [serie]: {
+                              ...comp, logo: true, logo_filename: file.name,
+                            },
                           },
                         });
+                        setLogoRefresh((n) => n + 1);
                       } catch (err) {
                         setError(extractErrorMessage(
                           err, "No se pudo subir el logo.",

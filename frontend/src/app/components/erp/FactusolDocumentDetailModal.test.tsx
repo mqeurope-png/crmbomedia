@@ -17,6 +17,8 @@ jest.mock("../../lib/erpApi", () => ({
   getFactusolConvertStatus: jest.fn(),
   downloadFactusolDocumentPdf: jest.fn(),
   saveBlob: jest.fn(),
+  markInvoicePayment: jest.fn(),
+  waitForInvoicePaymentJob: jest.fn(),
   ERP_EDIT_ROLES: ["admin", "pedidos"],
 }));
 jest.mock("../../lib/api", () => ({
@@ -748,5 +750,56 @@ describe("FactusolDocumentDetailModal (E4-fix1 — variantes + banco + idioma)",
     await screen.findByLabelText("Idioma del PDF");
     expect(screen.getByText(/del cliente/)).toBeInTheDocument();
     expect(screen.queryByText(/del país del cliente/)).not.toBeInTheDocument();
+  });
+});
+
+describe("FactusolDocumentDetailModal — marcar cobro (ERP-F3)", () => {
+  const {
+    markInvoicePayment,
+    waitForInvoicePaymentJob,
+  } = jest.requireMock("../../lib/erpApi");
+
+  function factura(over = {}) {
+    return {
+      doc_type: "facturas", codigo: 260720, serie: 1, numero: "1-260720",
+      cliente_codigo: "2458", cliente_nombre: "SOLITIUM SL",
+      fecha: "2026-07-31", total: 3623.95, estado: "0",
+      estado_label: "Pendiente de cobro", referencia: "BOP-1", forma_pago: "002",
+      forma_pago_nombre: "Transferencia", lines: [],
+      ciclo: { albaranes: [], facturas: [], origen: [], estado: null },
+      ...over,
+    };
+  }
+
+  it("una factura pendiente ofrece «Marcar como cobrada» y confirma con datos", async () => {
+    mockDetail.mockResolvedValue(factura());
+    markInvoicePayment.mockResolvedValue({
+      status: "queued", job_id: "j1", paid: true, numero: "1-260720",
+      cliente: "SOLITIUM SL", importe: 3623.95,
+    });
+    waitForInvoicePaymentJob.mockResolvedValue({
+      status: "finished",
+      result: { marked: true, motivo: null, numero: "1-260720", paid: true, serie: 1, codigo: 260720 },
+    });
+    const user = userEvent.setup();
+    render(<FactusolDocumentDetailModal docType="facturas" serie={1} codigo={260720} onClose={() => {}} />);
+
+    await user.click(await screen.findByRole("button", { name: "Marcar como cobrada" }));
+    // El diálogo de confirmación muestra número, cliente e importe.
+    const dialog = screen.getByRole("dialog", { name: /Confirmar marcado de cobro/i });
+    expect(within(dialog).getByText("1-260720")).toBeInTheDocument();
+    expect(within(dialog).getByText("SOLITIUM SL")).toBeInTheDocument();
+    expect(within(dialog).getByText("3623.95 €")).toBeInTheDocument();
+
+    await user.click(within(dialog).getByRole("button", { name: /Confirmar cobrada/i }));
+    await waitFor(() =>
+      expect(markInvoicePayment).toHaveBeenCalledWith(1, 260720, { confirm: true, paid: true }));
+    expect(await screen.findByText(/marcada como cobrada/i)).toBeInTheDocument();
+  });
+
+  it("una factura cobrada ofrece la acción inversa «Marcar como pendiente»", async () => {
+    mockDetail.mockResolvedValue(factura({ estado: "2", estado_label: "Cobrada" }));
+    render(<FactusolDocumentDetailModal docType="facturas" serie={1} codigo={260719} onClose={() => {}} />);
+    expect(await screen.findByRole("button", { name: "Marcar como pendiente" })).toBeInTheDocument();
   });
 });

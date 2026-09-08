@@ -476,6 +476,13 @@ export type ErpSettings = {
    *  ESTALB 1 = «Facturado». Vacío = no marcar. */
   factusol_estpre_accepted?: string;
   factusol_estalb_invoiced?: string;
+  /** ERP-F3 — estado de COBRO de las facturas (F_FAC.ESTFAC). Confirmado:
+   *  2 = cobrada, 0 = pendiente. Vacío = no marcar. */
+  factusol_estfac_cobrada?: string;
+  factusol_estfac_pendiente?: string;
+  /** ERP-F3 — marcar la factura como cobrada al emitirla si el pedido ya
+   *  constaba pagado (web). Desactivado por defecto (afirmación contable). */
+  factusol_auto_mark_paid_when_order_paid?: boolean;
   /** ERP-E4 — identidad fiscal de las empresas emisoras por serie (alimenta
    *  los PDF). Llega ya fusionada con los defaults de los modelos reales. */
   factusol_companies?: Record<string, FactusolCompany>;
@@ -515,6 +522,9 @@ export type FactusolCompany = {
   /** E4-fix1 — título de la variante VALORADA del albarán, por idioma. */
   titulo_albaran_valorado: Record<string, string>;
   logo?: boolean;
+  /** ERP-F3 — nombre del fichero de logo actual (para la miniatura); null si
+   *  no hay logo. Solo lectura. */
+  logo_filename?: string | null;
 };
 
 /** E4-fix1 — almacén de recogida del albarán de devolución. */
@@ -918,6 +928,81 @@ export async function uploadFactusolCompanyLogo(
   const form = new FormData();
   form.append("file", file);
   return apiUpload(`/api/erp/factusol/companies/${serie}/logo`, form);
+}
+
+/** ERP-F3 — descarga el logo actual de la empresa (para la miniatura). */
+export async function downloadFactusolCompanyLogo(
+  serie: number | string,
+): Promise<Blob> {
+  return apiDownloadBlob(`/api/erp/factusol/companies/${serie}/logo`);
+}
+
+/** ERP-F3 — quita el logo de la empresa. */
+export async function deleteFactusolCompanyLogo(
+  serie: number | string,
+): Promise<{ serie: number; logo: boolean }> {
+  return apiFetch(`/api/erp/factusol/companies/${serie}/logo`, {
+    method: "DELETE",
+  });
+}
+
+// --- ERP-F3 · estado de cobro de facturas -----------------------------------
+
+/** Respuesta del POST de marcado: `already` (ya estaba en ese estado, sin
+ *  encolar) o `queued` (job en marcha). Trae cliente/importe para el aviso. */
+export type InvoicePaymentResponse = {
+  status: "already" | "queued";
+  paid: boolean;
+  numero: string;
+  cliente: string;
+  importe: number | null;
+  referencia?: string;
+  job_id?: string;
+  estfac?: string;
+};
+
+export type InvoicePaymentJobStatus =
+  | { status: "pending" }
+  | {
+      status: "finished";
+      result: {
+        marked: boolean; motivo: string | null; numero: string;
+        paid: boolean; serie: number; codigo: number;
+      };
+    }
+  | { status: "failed"; error?: string; code?: string };
+
+/** Marca la factura como cobrada (`paid: true`) o pendiente (`paid: false`).
+ *  `confirm` OBLIGATORIO — el backend lo exige (afirmación contable). */
+export async function markInvoicePayment(
+  serie: number, codigo: number | string,
+  body: { confirm: boolean; paid: boolean },
+): Promise<InvoicePaymentResponse> {
+  return apiFetch(
+    `/api/erp/factusol/documents/facturas/${serie}/${codigo}/payment`,
+    { method: "POST", body: JSON.stringify(body) },
+  );
+}
+
+export async function getInvoicePaymentStatus(
+  jobId: string,
+): Promise<InvoicePaymentJobStatus> {
+  return apiFetch(
+    `/api/erp/factusol/documents/facturas/payment-status/${encodeURIComponent(jobId)}`,
+  );
+}
+
+/** Espera a que el job de marcado termine (o `pending` si se agota el margen). */
+export async function waitForInvoicePaymentJob(
+  jobId: string, { tries = 20, delayMs = 1500 } = {},
+): Promise<InvoicePaymentJobStatus> {
+  let last: InvoicePaymentJobStatus = { status: "pending" };
+  for (let i = 0; i < tries; i++) {
+    last = await getInvoicePaymentStatus(jobId);
+    if (last.status !== "pending") return last;
+    await new Promise((r) => setTimeout(r, delayMs));
+  }
+  return last;
 }
 
 /** Abre el diálogo «guardar» del navegador con el blob descargado. */

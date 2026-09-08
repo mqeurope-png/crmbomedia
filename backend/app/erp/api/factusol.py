@@ -573,6 +573,129 @@ def send_invoice_email_endpoint(
         }) from exc
 
 
+# --- ERP-F3: marcar la factura como cobrada / pendiente ---------------------
+
+
+class InvoicePaymentPayload(BaseModel):
+    """Marcar el cobro de una factura. `confirm` OBLIGATORIO: marcar una
+    factura como cobrada es una afirmación contable, no un clic accidental."""
+
+    confirm: bool = False
+    #: True = «cobrada»; False = «pendiente de cobro» (la inversa).
+    paid: bool
+
+
+@router.get("/documents/facturas/payment-status/{job_id}")
+def invoice_payment_status(
+    job_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_view),
+) -> dict[str, Any]:
+    """Polling del job de marcado de cobro (mismo contrato: pending / finished
+    (+result) / failed (+error))."""
+    _ = current_user, session
+    return _rq_quote_status(job_id)
+
+
+@router.post("/documents/facturas/{serie}/{codigo}/payment", status_code=202)
+def mark_invoice_payment_endpoint(
+    serie: int,
+    codigo: int,
+    payload: InvoicePaymentPayload,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_edit),
+) -> dict[str, Any]:
+    """Encola escribir `ESTFAC` (cobrada/pendiente) por clave COMPUESTA en
+    `factusol:writes` (202 + job_id). Pre-chequeo EN VIVO: confirma que la
+    factura existe, lee su ESTFAC actual (idempotencia: si ya está en el
+    estado destino no encola) y devuelve cliente/importe para el aviso.
+    Requiere permiso de EDICIÓN de ERP (marcar cobros es contable)."""
+    from app.core.audit import record_event  # noqa: PLC0415
+    from app.integrations.factusol.client import (  # noqa: PLC0415
+        FactusolClient,
+        FactusolError,
+    )
+    from app.integrations.factusol.jobs import (  # noqa: PLC0415
+        enqueue_mark_invoice_paid,
+    )
+    from app.integrations.factusol.service import (  # noqa: PLC0415
+        _estado_str,
+        ejercicio_for,
+        invoice_payment_value,
+        serie_of_row,
+    )
+
+    if not payload.confirm:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, {
+            "code": "confirmation_required",
+            "detail": "Marcar el cobro requiere confirmación explícita.",
+        })
+    # Config del estado destino: si está vacía, no marcar (aviso claro).
+    target = invoice_payment_value(session, paid=payload.paid)
+    if target is None:
+        key = "estfac_cobrada" if payload.paid else "estfac_pendiente"
+        raise HTTPException(status.HTTP_409_CONFLICT, {
+            "code": "payment_config_missing",
+            "detail": (
+                f"Falta `{key}` en /erp/settings: el marcado de cobro está "
+                "desactivado."
+            ),
+        })
+    try:
+        client = FactusolClient.from_settings()
+        ejercicio = ejercicio_for(session)
+        rows = client.load_table(
+            "F_FAC", filtro=f"CODFAC={int(codigo)}", ejercicio=ejercicio,
+        )
+    except FactusolError as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, {
+            "code": "factusol_unreachable", "detail": str(exc)[:200],
+        }) from exc
+    except Exception as exc:  # noqa: BLE001 — sin credenciales / config
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, {
+            "code": "factusol_unavailable", "detail": str(exc)[:200],
+        }) from exc
+    row = next(
+        (r for r in rows if serie_of_row(r, "TIPFAC") == serie), None,
+    )
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, {
+            "code": "invoice_not_found",
+            "detail": f"No existe la factura {serie}-{codigo}.",
+        })
+    current = _estado_str(row.get("ESTFAC"))
+    numero = f"{serie}-{int(codigo):06d}"
+    meta = {
+        "numero": numero,
+        "referencia": str(row.get("REFFAC") or "").strip(),
+        "cliente": str(row.get("CNOFAC") or "").strip(),
+        "importe": row.get("TOTFAC"),
+    }
+    # Idempotente: si ya está en el estado destino, no se encola nada.
+    if current == _estado_str(target):
+        return {
+            "status": "already", "estfac": current,
+            "paid": payload.paid, **meta,
+        }
+    job_id = enqueue_mark_invoice_paid(
+        serie, int(codigo), payload.paid,
+        actor_user_id=current_user.id, current_estado=current, meta=meta,
+    )
+    record_event(
+        session,
+        action="erp.invoice_payment_mark_requested",
+        target_type="document", target_id=numero,
+        actor=current_user,
+        metadata={"job_id": job_id, "paid": payload.paid, **meta},
+        message=(
+            f"Solicitado marcar {numero} como "
+            f"{'cobrada' if payload.paid else 'pendiente'}"
+        ),
+    )
+    session.commit()
+    return {"status": "queued", "job_id": job_id, "paid": payload.paid, **meta}
+
+
 #: ERP-E4 — logos de las empresas emisoras. Los modelos de FACTUSOL apuntan a
 #: rutas del PC de Bart, inaccesibles: se suben desde /erp/settings y viven
 #: bajo el directorio de assets (bind-mount persistente en producción). El
@@ -611,6 +734,48 @@ async def upload_company_logo(
             old.unlink()
     (base / f"serie_{serie}{ext}").write_bytes(content)
     return {"serie": serie, "logo": True}
+
+
+@router.get("/companies/{serie}/logo")
+def get_company_logo(
+    serie: int,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_view),
+):
+    """ERP-F3 — sirve el logo actual de la empresa (miniatura en /erp/settings).
+    Con auth (se descarga como blob desde el front), no como `<img src>` a
+    pelo. 404 si esa serie no tiene logo."""
+    _ = session, current_user
+    from fastapi.responses import FileResponse  # noqa: PLC0415
+
+    from app.erp.factusol_pdf import logo_path_for_serie  # noqa: PLC0415
+
+    path = logo_path_for_serie(serie)
+    if path is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, {
+            "code": "no_logo", "detail": f"La serie {serie} no tiene logo.",
+        })
+    media = "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
+    return FileResponse(path, media_type=media, filename=path.name)
+
+
+@router.delete("/companies/{serie}/logo")
+def delete_company_logo(
+    serie: int,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_admin),
+) -> dict[str, Any]:
+    """ERP-F3 — quita el logo de la empresa (botón «Quitar» en /erp/settings).
+    Idempotente: si no había logo, responde igual (`logo: False`)."""
+    _ = session, current_user
+    from app.erp.factusol_pdf import logos_dir  # noqa: PLC0415
+
+    base = logos_dir()
+    for ext in (".png", ".jpg", ".jpeg"):
+        candidate = base / f"serie_{serie}{ext}"
+        if candidate.exists():
+            candidate.unlink()
+    return {"serie": serie, "logo": False}
 
 
 class ConvertDocumentPayload(BaseModel):

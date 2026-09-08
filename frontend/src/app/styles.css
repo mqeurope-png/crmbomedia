@@ -10660,6 +10660,12 @@ tr.is-inactive {
 .role-scope-warn { margin: 2px 0 0; padding: 6px 8px; border-radius: 8px;
   font-size: 12px; color: #92400e; background: #fffbeb;
   border: 1px solid #fcd34d; }
+/* ERP-F3 — miniatura del logo de la empresa emisora en /erp/settings. */
+.erp-logo-thumb { display: flex; align-items: center; gap: 10px;
+  margin: 2px 0 6px; }
+.erp-logo-thumb img { height: 40px; width: auto; max-width: 140px;
+  object-fit: contain; border: 1px solid var(--line, #e5e7eb);
+  border-radius: 6px; background: #fff; padding: 2px; }
 .erp-timeline { list-style: none; margin: 0; padding: 0; }
 .erp-timeline-item { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; padding: 8px 0; border-bottom: 1px dashed var(--line, #e5e7eb); font-size: 13px; }
 .erp-timeline-item.is-exception .erp-timeline-title { color: #b42318; }
