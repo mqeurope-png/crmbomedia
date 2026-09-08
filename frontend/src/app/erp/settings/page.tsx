@@ -82,7 +82,13 @@ export default function ErpSettingsPage() {
     setError(null);
     setSaved(false);
     try {
-      const next = await updateErpSettings(cfg);
+      // ERP-F6: el JSON de la cuenta de servicio es write-only. Vacío = no
+      // tocar las credenciales guardadas (no se envía el campo).
+      const payload = { ...cfg };
+      if (!payload.drive_service_account_json?.trim()) {
+        delete payload.drive_service_account_json;
+      }
+      const next = await updateErpSettings(payload);
       setCfg(next);
       setSaved(true);
     } catch (e) {
@@ -650,6 +656,84 @@ export default function ErpSettingsPage() {
               ))}
             </tbody>
           </table>
+        </fieldset>
+
+        {/* ERP-F6 — orígenes del envío (OFI-TER-SAT del Excel de seguimiento). */}
+        <fieldset className="erp-series-fieldset">
+          <legend>Orígenes del envío (seguimiento)</legend>
+          <p className="muted small">
+            La columna OFI-TER-SAT del Excel: desde dónde sale la mercancía.
+            Añade los que uses; se ofrecen en la ficha del pedido.
+          </p>
+          {(cfg.shipping_origins ?? []).map((o, i) => (
+            <div className="erp-bank-row" key={i}>
+              <input
+                type="text"
+                aria-label={`Origen del envío ${i + 1}`}
+                value={o}
+                onChange={(e) => {
+                  const list = [...(cfg.shipping_origins ?? [])];
+                  list[i] = e.target.value;
+                  setCfg({ ...cfg, shipping_origins: list });
+                }}
+              />
+              <button
+                type="button" className="button small secondary"
+                onClick={() => setCfg({
+                  ...cfg,
+                  shipping_origins: (cfg.shipping_origins ?? []).filter((_, j) => j !== i),
+                })}
+              >
+                Quitar
+              </button>
+            </div>
+          ))}
+          <button
+            type="button" className="button small secondary"
+            onClick={() => setCfg({
+              ...cfg, shipping_origins: [...(cfg.shipping_origins ?? []), ""],
+            })}
+          >
+            + Añadir origen
+          </button>
+        </fieldset>
+
+        {/* ERP-F6 — hoja de seguimiento en Drive (cuenta de SERVICIO, no el
+            OAuth de Gmail: sus tokens caducan cada 7 días). */}
+        <fieldset className="erp-series-fieldset">
+          <legend>Hoja de seguimiento en Drive</legend>
+          <p className="muted small">
+            {cfg.drive_configured
+              ? `Configurada. Comparte la hoja con ${cfg.drive_service_account_email ?? "la cuenta de servicio"} (como editor).`
+              : "Pega el JSON de una cuenta de servicio de Google y el ID de la hoja. Después comparte la hoja con el email de esa cuenta (como editor)."}
+          </p>
+          <label className="field">
+            <span>ID de la hoja (de su URL de Drive)</span>
+            <input
+              type="text"
+              aria-label="ID de la hoja de Drive"
+              placeholder="1AbCdEfGhIjKlMnOpQrStUvWxYz…"
+              value={cfg.drive_spreadsheet_id ?? ""}
+              onChange={(e) => setCfg({ ...cfg, drive_spreadsheet_id: e.target.value || null })}
+            />
+          </label>
+          <label className="field">
+            <span>
+              Credenciales de la cuenta de servicio (JSON)
+              {cfg.drive_configured ? " — ya guardadas; pega otras para sustituirlas" : ""}
+            </span>
+            <textarea
+              rows={3}
+              aria-label="JSON de la cuenta de servicio"
+              placeholder='{"type": "service_account", "client_email": "…", "private_key": "…"}'
+              value={cfg.drive_service_account_json ?? ""}
+              onChange={(e) => setCfg({ ...cfg, drive_service_account_json: e.target.value })}
+            />
+            <span className="muted small">
+              Se guardan cifradas y no vuelven a mostrarse. Deja el campo vacío
+              para no cambiarlas.
+            </span>
+          </label>
         </fieldset>
 
         <div>

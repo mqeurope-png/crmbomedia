@@ -34,6 +34,11 @@ export type OrderSummary = {
   tracking_number: string | null;
   /** Fase C: nº de factura FACTUSOL (CODFAC) si ya se emitió; null si no. */
   factusol_invoice_number: string | null;
+  /** ERP-F6 — campos del Excel de seguimiento: nº de serie (texto libre,
+   *  también notas), licencia WhiteRIP y origen del envío (OFI-TER-SAT). */
+  serial_number?: string | null;
+  whiterip_license?: string | null;
+  shipping_origin?: string | null;
   /** E4-fix1: idioma del pedido (es/en/de/fr/nl) — detectado al importar de
    *  Woo o corregido a mano; null = desconocido. */
   language?: string | null;
@@ -186,6 +191,125 @@ export async function updateOrderLanguage(
   return apiFetch(`/api/erp/orders/${id}/language`, {
     method: "PATCH",
     body: JSON.stringify({ language }),
+  });
+}
+
+// --- ERP-F6 · seguimiento de pedidos -----------------------------------------
+
+/** Fila de la vista de seguimiento (las columnas del Excel de Bart). */
+export type SeguimientoRow = {
+  id: string;
+  order_number: string;
+  serie: number | null;
+  empresa: string | null;
+  empresa_corta: string;
+  fecha: string | null;
+  cliente: string | null;
+  vendedor: string;
+  origen: string | null;
+  transportista: string | null;
+  preparado: string | null;
+  recogido: string | null;
+  fecha_envio_factura: string | null;
+  productos: string;
+  proforma: string | null;
+  albaran_pedido: string;
+  factura: string | null;
+  tracking: string | null;
+  num_serie: string | null;
+  whiterip: string | null;
+  orden: string | null;
+  estado: "pendiente" | "enviado" | "facturado";
+  en_curso: boolean;
+};
+
+export type SeguimientoFilters = {
+  serie?: number;
+  vendedor?: string;
+  transportista?: string;
+  origen?: string;
+  desde?: string;
+  hasta?: string;
+  estado?: "pendiente" | "enviado" | "facturado";
+  q?: string;
+  en_curso?: boolean;
+  sort?: string;
+  dir?: "asc" | "desc";
+  limit?: number;
+  offset?: number;
+};
+
+export type SeguimientoPage = {
+  items: SeguimientoRow[];
+  total: number;
+  columns: string[];
+  drive: {
+    configured: boolean;
+    service_account_email: string | null;
+    spreadsheet_id: string | null;
+  };
+};
+
+function seguimientoQs(filters: SeguimientoFilters): string {
+  // `qs` solo admite string/number: en_curso (boolean) va como "true"/"false".
+  const { en_curso, ...rest } = filters;
+  return qs({
+    ...rest,
+    ...(en_curso === undefined ? {} : { en_curso: String(en_curso) }),
+  });
+}
+
+export async function listSeguimiento(
+  filters: SeguimientoFilters = {},
+): Promise<SeguimientoPage> {
+  return apiFetch<SeguimientoPage>(`/api/erp/seguimiento${seguimientoQs(filters)}`);
+}
+
+export async function exportSeguimientoXlsx(
+  filters: SeguimientoFilters = {},
+): Promise<Blob> {
+  return apiDownloadBlob(`/api/erp/seguimiento/export${seguimientoQs(filters)}`);
+}
+
+export type DriveSyncSummary = {
+  ok: boolean;
+  orders_considered: number;
+  updated_cells: number;
+  appended_rows: number;
+  conflicts: {
+    order_number: string;
+    row: number;
+    column: string;
+    sheet_value: string;
+    bohub_value: string;
+  }[];
+  sheet_rows: number;
+};
+
+export async function syncSeguimientoDrive(): Promise<DriveSyncSummary> {
+  return apiFetch<DriveSyncSummary>("/api/erp/seguimiento/drive-sync", { method: "POST" });
+}
+
+/** ERP-F6 — campos de seguimiento del pedido. `orden` se AÑADE a las
+ *  observaciones (no existe como campo). */
+export async function updateOrderSeguimiento(
+  id: string,
+  patch: {
+    serial_number?: string;
+    whiterip_license?: string;
+    shipping_origin?: string;
+    orden?: string;
+  },
+): Promise<{
+  id: string;
+  serial_number: string | null;
+  whiterip_license: string | null;
+  shipping_origin: string | null;
+  notes: string | null;
+}> {
+  return apiFetch(`/api/erp/orders/${id}/seguimiento`, {
+    method: "PATCH",
+    body: JSON.stringify(patch),
   });
 }
 
@@ -491,6 +615,15 @@ export type ErpSettings = {
   contrapartidas?: Contrapartida[];
   /** ERP-F5 — contrapartida PayPal por tienda (artisjet / boprint / fluxlasers). */
   paypal_contrapartidas_by_store?: Record<string, string>;
+  /** ERP-F6 — orígenes del envío configurables (OFI-TER-SAT del Excel). */
+  shipping_origins?: string[];
+  /** ERP-F6 — hoja de seguimiento en Drive. El JSON de la cuenta de servicio
+   *  es WRITE-ONLY: se envía en el PATCH y nunca vuelve; solo se expone el
+   *  client_email para que Bart comparta la hoja con él. */
+  drive_spreadsheet_id?: string | null;
+  drive_configured?: boolean;
+  drive_service_account_email?: string | null;
+  drive_service_account_json?: string;
   /** E4-fix1 — almacenes de recogida del albarán de devolución. */
   factusol_pickup_warehouses?: FactusolPickupWarehouse[];
 };

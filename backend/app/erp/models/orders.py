@@ -174,6 +174,17 @@ class Order(TimestampMixin, Base):
     # empresa emisora, nunca se inventa aquí.
     language: Mapped[str | None] = mapped_column(String(5))
 
+    # ERP-F6 — campos del Excel de seguimiento que BoHub no tenía.
+    # Nº de serie del equipo: texto LIBRE — en el Excel real también se usa
+    # para notas («FINALIZADO, + RMA TRANSPORTE»), así que no se valida.
+    serial_number: Mapped[str | None] = mapped_column(Text)
+    # Licencia de WhiteRIP (software que Bart vende a veces con el equipo).
+    whiterip_license: Mapped[str | None] = mapped_column(String(64))
+    # Origen del envío — el «OFI-TER-SAT» del Excel: de dónde sale la
+    # mercancía (SAT, OFI, TER, directo, INSITU…). Lista configurable en
+    # /erp/settings; aquí no se valida (el Excel tampoco lo hacía).
+    shipping_origin: Mapped[str | None] = mapped_column(String(40))
+
     lines: Mapped[list[OrderLine]] = relationship(
         back_populates="order", cascade="all, delete-orphan",
         order_by="OrderLine.position",

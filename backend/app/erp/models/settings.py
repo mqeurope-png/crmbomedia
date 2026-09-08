@@ -50,3 +50,11 @@ class ErpSettings(TimestampMixin, Base):
     # añadir una columna por origen; el service resuelve
     # by_source[origen] → default → "A". Ver `resolve_serfac`.
     factusol_series_json: Mapped[str | None] = mapped_column(Text)
+
+    # ERP-F6 — sincronización del seguimiento con la hoja de Drive de Bart.
+    # Cuenta de SERVICIO de Google (no el OAuth de Gmail: esos tokens caducan
+    # cada 7 días por ser app sin verificar). El JSON completo de credenciales
+    # se guarda CIFRADO (Fernet) y jamás se devuelve ni se loguea; solo se
+    # expone el client_email para que Bart comparta la hoja con él.
+    drive_service_account_json_encrypted: Mapped[str | None] = mapped_column(Text)
+    drive_spreadsheet_id: Mapped[str | None] = mapped_column(String(128))

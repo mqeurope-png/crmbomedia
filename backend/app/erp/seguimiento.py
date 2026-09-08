@@ -1,0 +1,349 @@
+"""ERP-F6 — seguimiento de pedidos: la vista que sustituye el Excel manual.
+
+Bart mantiene a mano `seguimiento pedidos.xls` (7.743 filas) duplicando datos
+que BoHub ya tiene. Este módulo construye esas mismas filas desde la base de
+datos del ERP: mismas columnas, mismo orden. El histórico del Excel NO se
+importa (proyecto aparte que Bart debe decidir); BoHub enseña lo suyo.
+
+Columnas del Excel real (el orden importa: la exportación y la hoja de Drive
+lo respetan):
+
+    Empresa · Fecha entrada albarán · Cliente · Vendedor · OFI-TER-SAT ·
+    Transport · Preparado · Recogido · F Envío Factura · Productos · Proforma ·
+    Albarán / Nº Pedido Web · Nº de Factura · Tracking · Nº de Serie ·
+    WhiteRIP · Orden
+
+«Orden» NO es un campo: en 7.743 filas solo hay 37 valores y son comentarios
+(«EL PRIMER ENVÍO HA LLEGADO ROTO»). Su contenido vive en las observaciones
+del pedido y en la hoja de Drive esa columna no se toca nunca.
+"""
+
+from __future__ import annotations
+
+import json
+from datetime import date, datetime
+from typing import Any
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session, selectinload
+
+from app.erp.models import (
+    Carrier,
+    InvoiceStatus,
+    Order,
+    OrderSource,
+    TransportStatus,
+)
+
+#: Cabecera EXACTA del Excel de Bart (y de la hoja de Drive).
+SEGUIMIENTO_COLUMNS: list[str] = [
+    "Empresa",
+    "Fecha entrada albarán",
+    "Cliente",
+    "Vendedor",
+    "OFI-TER-SAT",
+    "Transport",
+    "Preparado",
+    "Recogido",
+    "F Envío Factura",
+    "Productos",
+    "Proforma",
+    "Albarán / Nº Pedido Web",
+    "Nº de Factura",
+    "Tracking",
+    "Nº de Serie",
+    "WhiteRIP",
+    "Orden",
+]
+#: Columna que identifica la fila de un pedido en la hoja.
+KEY_COLUMN = "Albarán / Nº Pedido Web"
+KEY_COLUMN_INDEX = SEGUIMIENTO_COLUMNS.index(KEY_COLUMN)
+#: «Orden» es la columna de notas manuales de Bart: JAMÁS se escribe en Drive.
+UNMANAGED_COLUMN_INDEXES = {SEGUIMIENTO_COLUMNS.index("Orden")}
+
+#: Códigos cortos de empresa que usa el Excel (BO 6.916 · MQ 498 · ST 58…).
+SERIES_SHORT: dict[int, str] = {1: "BO", 2: "MQ", 4: "LAM", 5: "ST"}
+
+#: Orígenes del envío vistos en el Excel real (OFI-TER-SAT). Valor INICIAL de
+#: la lista configurable de /erp/settings; se pueden añadir más.
+DEFAULT_SHIPPING_ORIGINS: list[str] = [
+    "SAT", "OFI", "TER", "directo", "INSITU", "ADR", "MAD",
+]
+
+_INVOICED_STATUSES = {
+    InvoiceStatus.GENERATED,
+    InvoiceStatus.INVOICED_BY_ERP,
+    InvoiceStatus.ALREADY_INVOICED_EXTERNALLY,
+}
+_SHIPPED_STATUSES = {
+    TransportStatus.IN_TRANSIT,
+    TransportStatus.DELIVERED,
+    TransportStatus.ALREADY_SHIPPED_EXTERNALLY,
+}
+
+
+def shipping_origins_config(raw: Any) -> list[str]:
+    """Lista configurada de orígenes del envío; defaults si no hay nada."""
+    out: list[str] = []
+    if isinstance(raw, list):
+        seen: set[str] = set()
+        for v in raw:
+            text = str(v or "").strip()
+            if text and text.casefold() not in seen:
+                seen.add(text.casefold())
+                out.append(text)
+    return out or list(DEFAULT_SHIPPING_ORIGINS)
+
+
+def _serie_of(order: Order, series_cfg: dict[str, Any]) -> int | None:
+    """Serie (empresa emisora) del pedido: del número de factura FACTUSOL
+    (`5-260123` → 5) si ya está facturado; si no, de la config por origen."""
+    num = str(order.factusol_invoice_number or "")
+    if "-" in num and num.split("-", 1)[0].isdigit():
+        return int(num.split("-", 1)[0])
+    by_source = series_cfg.get("by_source") or {}
+    raw = by_source.get(getattr(order.external_source, "value", order.external_source))
+    if raw is not None and str(raw).strip().isdigit():
+        return int(str(raw).strip())
+    default = series_cfg.get("default")
+    if default is not None and str(default).strip().isdigit():
+        return int(str(default).strip())
+    return None
+
+
+def _first_transition(order: Order, domain: str, to_statuses: set[str]) -> datetime | None:
+    for h in order.status_history:
+        if getattr(h.domain, "value", h.domain) == domain and h.to_status in to_statuses:
+            return h.changed_at
+    return None
+
+
+def _iso_date(value: datetime | None) -> str | None:
+    return value.date().isoformat() if value else None
+
+
+def _estado(order: Order) -> str:
+    """pendiente / enviado / facturado — el filtro de estado de la vista."""
+    if order.invoice_status in _INVOICED_STATUSES or order.factusol_invoice_number:
+        return "facturado"
+    if order.transport_status in _SHIPPED_STATUSES:
+        return "enviado"
+    return "pendiente"
+
+
+def _en_curso(order: Order, estado: str) -> bool:
+    """La sección de arriba del Excel: lo que Bart mira a diario. Un pedido
+    sale de «en curso» cuando está entregado Y facturado, o cuando se marcó
+    como gestionado fuera del sistema."""
+    if order.externally_processed_at is not None:
+        return False
+    return not (
+        estado == "facturado" and order.transport_status == TransportStatus.DELIVERED
+    )
+
+
+def build_rows(
+    session: Session,
+    *,
+    customer_names: dict[str, dict[str, str | None]],
+) -> list[dict[str, Any]]:
+    """Todas las filas del seguimiento (sin filtrar). Carga pedidos, líneas e
+    historial en 3 queries y los transportistas en 1 — sin N+1."""
+    from app.erp.api.factusol import FALLBACK_SERIES_NAMES  # noqa: PLC0415
+    from app.integrations.factusol.service import series_config  # noqa: PLC0415
+
+    orders = list(session.scalars(
+        select(Order).options(
+            selectinload(Order.lines), selectinload(Order.status_history)
+        )
+    ))
+    carriers = {c.id: c.name for c in session.scalars(select(Carrier))}
+    series_cfg = series_config(session)
+    series_names = {
+        int(k): str(v).strip()
+        for k, v in (series_cfg.get("names") or {}).items()
+        if str(k).strip().isdigit() and str(v).strip()
+    }
+    rows: list[dict[str, Any]] = []
+    for o in orders:
+        names = customer_names.get(o.id) or {}
+        cliente = names.get("company_name") or names.get("contact_name")
+        serie = _serie_of(o, series_cfg)
+        estado = _estado(o)
+        productos = " · ".join(
+            f"{float(line.quantity):g}× {line.description or line.product_sku}"
+            for line in o.lines
+        )
+        rows.append({
+            "id": o.id,
+            "order_number": o.order_number,
+            "serie": serie,
+            "empresa": (
+                series_names.get(serie) or FALLBACK_SERIES_NAMES.get(serie)
+                or (f"Serie {serie}" if serie else None)
+            ),
+            "empresa_corta": SERIES_SHORT.get(serie, str(serie) if serie else ""),
+            "fecha": _iso_date(o.placed_at or o.created_at),
+            "cliente": cliente,
+            # Sin campo de agente en el pedido (fuera del alcance de F6): los
+            # pedidos web son «WEB» (3.605 de 7.743 en el Excel); el resto
+            # queda vacío hasta que Bart decida añadir el agente al modelo.
+            "vendedor": "WEB" if o.external_source == OrderSource.WOOCOMMERCE else "",
+            "origen": o.shipping_origin,
+            "transportista": carriers.get(o.carrier_id) if o.carrier_id else None,
+            "preparado": _iso_date(_first_transition(o, "preparation", {"packed"})),
+            "recogido": _iso_date(_first_transition(
+                o, "transport", {"in_transit", "delivered"},
+            )),
+            "fecha_envio_factura": _iso_date(_first_transition(
+                o, "invoice", {"generated", "invoiced_by_erp"},
+            )),
+            "productos": productos,
+            "proforma": (
+                o.external_id
+                if o.external_source == OrderSource.FACTUSOL_PROFORMA else None
+            ),
+            "albaran_pedido": o.order_number,
+            "factura": o.factusol_invoice_number,
+            "tracking": o.tracking_number,
+            "num_serie": o.serial_number,
+            "whiterip": o.whiterip_license,
+            "orden": o.notes,
+            "estado": estado,
+            "en_curso": _en_curso(o, estado),
+        })
+    return rows
+
+
+#: Claves de fila por las que se puede ordenar (E3-A-fix1: misma idea).
+SORT_KEYS = {
+    "fecha", "cliente", "empresa", "vendedor", "transportista", "origen",
+    "estado", "factura", "albaran_pedido",
+}
+_SEARCH_FIELDS = (
+    "cliente", "albaran_pedido", "proforma", "factura", "tracking", "num_serie",
+)
+
+
+def filter_rows(
+    rows: list[dict[str, Any]],
+    *,
+    serie: int | None = None,
+    vendedor: str | None = None,
+    transportista: str | None = None,
+    origen: str | None = None,
+    desde: date | None = None,
+    hasta: date | None = None,
+    estado: str | None = None,
+    q: str | None = None,
+    en_curso: bool = True,
+    sort: str = "fecha",
+    direction: str = "desc",
+) -> list[dict[str, Any]]:
+    """Filtros + búsqueda + orden de la vista, en Python (mismo patrón que el
+    explorador de documentos). Por defecto: solo pedidos EN CURSO — la parte
+    de arriba del Excel, lo que Bart mira a diario."""
+    out = rows
+    if en_curso:
+        out = [r for r in out if r["en_curso"]]
+    if serie is not None:
+        out = [r for r in out if r["serie"] == serie]
+    if vendedor:
+        out = [r for r in out if (r["vendedor"] or "").casefold() == vendedor.casefold()]
+    if transportista:
+        out = [
+            r for r in out
+            if (r["transportista"] or "").casefold() == transportista.casefold()
+        ]
+    if origen:
+        out = [r for r in out if (r["origen"] or "").casefold() == origen.casefold()]
+    if desde:
+        out = [r for r in out if r["fecha"] and date.fromisoformat(r["fecha"]) >= desde]
+    if hasta:
+        out = [r for r in out if r["fecha"] and date.fromisoformat(r["fecha"]) <= hasta]
+    if estado:
+        out = [r for r in out if r["estado"] == estado]
+    if q:
+        needle = q.casefold().strip()
+        out = [
+            r for r in out
+            if any(needle in str(r[f] or "").casefold() for f in _SEARCH_FIELDS)
+        ]
+    key = sort if sort in SORT_KEYS else "fecha"
+    reverse = direction != "asc"
+    out = sorted(
+        out,
+        key=lambda r: (r[key] is None, str(r[key] or "").casefold()),
+        reverse=reverse,
+    )
+    if reverse:
+        # los None siempre al final, también en descendente
+        out = [r for r in out if r[key] is not None] + [r for r in out if r[key] is None]
+    return out
+
+
+# --- forma «hoja» (Drive + exportación) ----------------------------------------
+
+
+def _sheet_date(iso: str | None) -> str:
+    if not iso:
+        return ""
+    d = date.fromisoformat(iso)
+    return f"{d.day}/{d.month}/{d.year}"
+
+
+def row_to_sheet_values(row: dict[str, Any], *, include_orden: bool = False) -> list[str]:
+    """Fila de la vista → los 17 valores en el ORDEN del Excel de Bart. En la
+    hoja de Drive «Orden» nunca se escribe (columna manual); en la exportación
+    local sí va (con las observaciones del pedido)."""
+    return [
+        row.get("empresa_corta") or "",
+        _sheet_date(row.get("fecha")),
+        row.get("cliente") or "",
+        row.get("vendedor") or "",
+        row.get("origen") or "",
+        row.get("transportista") or "",
+        _sheet_date(row.get("preparado")),
+        _sheet_date(row.get("recogido")),
+        _sheet_date(row.get("fecha_envio_factura")),
+        (row.get("productos") or "")[:300],
+        row.get("proforma") or "",
+        row.get("albaran_pedido") or "",
+        row.get("factura") or "",
+        row.get("tracking") or "",
+        row.get("num_serie") or "",
+        row.get("whiterip") or "",
+        (row.get("orden") or "")[:300] if include_orden else "",
+    ]
+
+
+def export_xlsx(rows: list[dict[str, Any]]) -> bytes:
+    """Exportación local a .xlsx: mismas columnas y orden que el Excel de
+    Bart, respetando los filtros ya aplicados. Funciona sin Drive."""
+    import io  # noqa: PLC0415
+
+    from openpyxl import Workbook  # noqa: PLC0415
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Seguimiento"
+    ws.append(SEGUIMIENTO_COLUMNS)
+    for row in rows:
+        ws.append(row_to_sheet_values(row, include_orden=True))
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def snapshot_dump(values: list[str]) -> str:
+    return json.dumps(values, ensure_ascii=False)
+
+
+def snapshot_load(raw: str | None) -> list[str] | None:
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    return [str(v) for v in data] if isinstance(data, list) else None

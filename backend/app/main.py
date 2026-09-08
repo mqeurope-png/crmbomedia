@@ -145,6 +145,7 @@ from app.erp.api import factusol_router as erp_factusol_router  # noqa: E402
 from app.erp.api import order_timeline_router as erp_order_timeline_router  # noqa: E402
 from app.erp.api import orders_router as erp_orders_router  # noqa: E402
 from app.erp.api import sat_router as erp_sat_router  # noqa: E402
+from app.erp.api import seguimiento_router as erp_seguimiento_router  # noqa: E402
 from app.erp.api import shipping_router as erp_shipping_router  # noqa: E402
 from app.erp.api import (  # noqa: E402
     woocommerce_admin_router as erp_woocommerce_admin_router,
@@ -160,6 +161,7 @@ app.include_router(erp_shipping_router)
 # ERP-F4-A — conciliación bancaria (importación, casado, revisión, export).
 app.include_router(erp_bank_router)
 app.include_router(erp_catalogs_router)
+app.include_router(erp_seguimiento_router)
 
 # Webhooks entrantes (fuera de `/api/*`; auth = firma HMAC, no sesión CRM).
 from app.webhooks.woocommerce import router as woocommerce_webhook_router  # noqa: E402

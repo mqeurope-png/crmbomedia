@@ -15,6 +15,7 @@ import { extractErrorMessage } from "../../../lib/errors";
 import {
   customerLabel,
   downloadOrderFactusolPedidoPdf,
+  getErpSettings,
   getOrder,
   getOrderFactusolInvoiceRef,
   getOrderTimeline,
@@ -22,6 +23,7 @@ import {
   fireTransition,
   saveBlob,
   updateOrderLanguage,
+  updateOrderSeguimiento,
   ERP_EDIT_ROLES,
   type AvailableTransition,
   type FactusolInvoiceRef,
@@ -297,6 +299,14 @@ export default function ErpOrderDetailPage() {
         />
       ) : null}
 
+      {/* ERP-F6 — campos del Excel de seguimiento, editables desde la ficha. */}
+      <SeguimientoFieldsCard
+        order={order}
+        canEdit={canEmit}
+        onSaved={(patch) => setOrder({ ...order, ...patch })}
+        onError={setError}
+      />
+
       <div className="erp-detail-grid">
         <section className="erp-card">
           <h3>Líneas</h3>
@@ -357,5 +367,121 @@ export default function ErpOrderDetailPage() {
         </section>
       ) : null}
     </main>
+  );
+}
+
+/** ERP-F6 — nº de serie, licencia WhiteRIP y origen del envío (OFI-TER-SAT),
+ *  editables desde la ficha. El campo «orden» del Excel no existe como campo:
+ *  lo que se escriba ahí se AÑADE a las observaciones del pedido. */
+function SeguimientoFieldsCard({
+  order, canEdit, onSaved, onError,
+}: {
+  order: OrderDetail;
+  canEdit: boolean;
+  onSaved: (patch: Partial<OrderDetail>) => void;
+  onError: (msg: string | null) => void;
+}) {
+  const [serial, setSerial] = useState(order.serial_number ?? "");
+  const [whiterip, setWhiterip] = useState(order.whiterip_license ?? "");
+  const [origin, setOrigin] = useState(order.shipping_origin ?? "");
+  const [orden, setOrden] = useState("");
+  const [origins, setOrigins] = useState<string[]>([]);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    getErpSettings()
+      .then((cfg) => setOrigins(cfg.shipping_origins ?? []))
+      .catch(() => setOrigins([]));
+  }, []);
+
+  async function save() {
+    setSaving(true);
+    setSaved(false);
+    onError(null);
+    try {
+      const r = await updateOrderSeguimiento(order.id, {
+        serial_number: serial,
+        whiterip_license: whiterip,
+        shipping_origin: origin,
+        ...(orden.trim() ? { orden: orden.trim() } : {}),
+      });
+      onSaved({
+        serial_number: r.serial_number,
+        whiterip_license: r.whiterip_license,
+        shipping_origin: r.shipping_origin,
+        notes: r.notes,
+      });
+      setOrden("");
+      setSaved(true);
+    } catch (e) {
+      onError(extractErrorMessage(e, "No se pudieron guardar los datos de seguimiento."));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <section className="erp-card">
+      <h3>Seguimiento</h3>
+      <div className="erp-doc-filters">
+        <label className="field">
+          <span>Nº de serie</span>
+          <input
+            aria-label="Número de serie"
+            value={serial}
+            disabled={!canEdit}
+            placeholder="FBAP12613200249 (texto libre)"
+            onChange={(e) => setSerial(e.target.value)}
+          />
+        </label>
+        <label className="field">
+          <span>Licencia WhiteRIP</span>
+          <input
+            aria-label="Licencia WhiteRIP"
+            value={whiterip}
+            disabled={!canEdit}
+            placeholder="4829"
+            onChange={(e) => setWhiterip(e.target.value)}
+          />
+        </label>
+        <label className="field">
+          <span>Origen del envío (OFI-TER-SAT)</span>
+          <input
+            aria-label="Origen del envío"
+            value={origin}
+            disabled={!canEdit}
+            list="erp-shipping-origins"
+            placeholder="SAT"
+            onChange={(e) => setOrigin(e.target.value)}
+          />
+          <datalist id="erp-shipping-origins">
+            {origins.map((o) => <option key={o} value={o} />)}
+          </datalist>
+        </label>
+        {canEdit ? (
+          <label className="field">
+            <span>Añadir a observaciones (columna «Orden» del Excel)</span>
+            <input
+              aria-label="Añadir a observaciones"
+              value={orden}
+              placeholder="RECOGE EL CLIENTE - SIN ENVÍO"
+              onChange={(e) => setOrden(e.target.value)}
+            />
+          </label>
+        ) : null}
+        {canEdit ? (
+          <button type="button" className="button small" disabled={saving} onClick={save}>
+            {saving ? "Guardando…" : "Guardar seguimiento"}
+          </button>
+        ) : null}
+        {saved ? <span className="muted small" role="status">Guardado.</span> : null}
+      </div>
+      {order.notes ? (
+        <p className="muted small" style={{ whiteSpace: "pre-wrap" }}>
+          <strong>Observaciones:</strong> {order.notes}
+        </p>
+      ) : null}
+    </section>
   );
 }
