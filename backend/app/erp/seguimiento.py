@@ -166,6 +166,101 @@ def is_structure_row(row: list[Any]) -> bool:
         return True
     return header_score(row) >= HEADER_MIN_MATCHES
 
+
+# --- identificación del pedido en la hoja (ERP-F6-fix2) -------------------------
+#
+# Bart escribe el número de pedido DESNUDO (`99866`); BoHub escribía su
+# referencia con prefijo de tienda (`BOPRIN-99866`). Al buscar su propia
+# referencia no encontraba nada y duplicaba filas que ya existían. Ahora el
+# pedido se identifica por el NÚMERO (ignorando el prefijo), confirmado con un
+# segundo dato (factura, cliente o fecha) para no confundir dos pedidos con el
+# mismo número entre tiendas.
+
+_TRAILING_DECIMAL = re.compile(r"\.0+$")
+_DIGIT_RUN = re.compile(r"\d+")
+#: Formas societarias que se ignoran al comparar clientes (concatenadas, sin
+#: separadores: «S.L.» → «sl»). La más larga primero.
+_CLIENT_LEGAL_SUFFIXES = (
+    "sociedadlimitada", "slne", "sarl", "sccl", "scoop", "coop",
+    "slu", "sau", "sas", "srl", "sll", "scp", "sl", "sa", "sc", "cb",
+)
+
+
+def extract_order_number(value: Any) -> str | None:
+    """Número «desnudo» y canónico de una referencia: quita el prefijo de
+    tienda (`BOPRIN-99866` → `99866`), la serie de una factura (`5-260695` →
+    `260695`) y el `.0` que Excel añade a los numéricos (`99866.0` → `99866`);
+    sin ceros a la izquierda (`000001` → `1`). None si no hay dígitos.
+
+    Se queda con el ÚLTIMO grupo de dígitos: cubre prefijos alfabéticos
+    (`BOPRIN-`) y numéricos (`5-`) sin confundirlos con el número real."""
+    s = _TRAILING_DECIMAL.sub("", str(value or "").strip())
+    groups = _DIGIT_RUN.findall(s)
+    if not groups:
+        return None
+    return str(int(groups[-1]))
+
+
+def numbers_match(a: Any, b: Any) -> bool:
+    """Coincidencia ESTRICTA del número completo (no «contiene»): `5742` no
+    casa con `15742` ni con `57420`."""
+    na, nb = extract_order_number(a), extract_order_number(b)
+    return na is not None and na == nb
+
+
+def normalize_client(value: Any) -> str:
+    """Nombre de cliente comparable: sin tildes, minúsculas, sin signos ni
+    espacios, y sin la forma societaria final. `DUPLICODER, S.L.` y
+    `DUPLICODER` → `duplicoder`."""
+    s = unicodedata.normalize("NFKD", str(value or ""))
+    s = "".join(c for c in s if not unicodedata.combining(c)).casefold()
+    s = re.sub(r"[^a-z0-9]", "", s)
+    for suffix in _CLIENT_LEGAL_SUFFIXES:
+        if s.endswith(suffix) and len(s) > len(suffix) + 2:
+            return s[: -len(suffix)]
+    return s
+
+
+_SHEET_DATE_FORMATS = ("%d/%m/%Y", "%d/%m/%y", "%Y-%m-%d", "%d-%m-%Y")
+
+
+def parse_sheet_date(value: Any) -> date | None:
+    """Fecha de una celda de la hoja (`24/07/2026`, `24/7/2026`, ISO…) → date,
+    o None si no se reconoce."""
+    s = _TRAILING_DECIMAL.sub("", str(value or "").strip())
+    if not s:
+        return None
+    for fmt in _SHEET_DATE_FORMATS:
+        try:
+            return datetime.strptime(s, fmt).date()  # noqa: DTZ007 — fecha civil
+        except ValueError:
+            continue
+    return None
+
+
+def order_match_numbers(row: dict[str, Any]) -> set[str]:
+    """Números por los que un pedido puede localizarse en la hoja: el del
+    pedido web/albarán propio y, si se conoce, el de albarán de FACTUSOL."""
+    out: set[str] = set()
+    for candidate in (row.get("order_number"), row.get("albaran_pedido"),
+                      row.get("albaran_number")):
+        num = extract_order_number(candidate)
+        if num:
+            out.add(num)
+    return out
+
+
+def reference_for_row(row: dict[str, Any], *, prefer_albaran: bool = True) -> str:
+    """Valor a escribir en «Albarán / Núm Pedido WEb»: el número DESNUDO, en el
+    formato de Bart. Si `prefer_albaran` y el pedido tiene número de albarán, se
+    escribe ese (sus filas antiguas usan el albarán); si no, el del pedido web.
+    """
+    if prefer_albaran and row.get("albaran_number"):
+        base = row["albaran_number"]
+    else:
+        base = row.get("order_number") or row.get("albaran_pedido")
+    return extract_order_number(base) or str(base or "").strip()
+
 #: Códigos cortos de empresa que usa el Excel (BO 6.916 · MQ 498 · ST 58…).
 SERIES_SHORT: dict[int, str] = {1: "BO", 2: "MQ", 4: "LAM", 5: "ST"}
 
@@ -309,6 +404,9 @@ def build_rows(
                 if o.external_source == OrderSource.FACTUSOL_PROFORMA else None
             ),
             "albaran_pedido": o.order_number,
+            # ERP-F6-fix2: nº de albarán de FACTUSOL, si algún día se conoce.
+            # Hoy BoHub no lo rastrea (queda None → se usa el nº de pedido web).
+            "albaran_number": None,
             "factura": o.factusol_invoice_number,
             "tracking": o.tracking_number,
             "num_serie": o.serial_number,

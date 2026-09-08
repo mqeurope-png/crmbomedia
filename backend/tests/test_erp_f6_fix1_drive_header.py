@@ -176,9 +176,10 @@ def test_second_header_row_is_treated_as_structure_not_order(session_factory) ->
         _order(s, "BOP-900001", cliente="Nuevo SL")
         s.commit()
         summary = sync_to_sheet(s, sheet, _rows_for_sync(s))
-    # El pedido nuevo entra bajo la cabecera SUPERIOR (sección en curso).
+    # El pedido nuevo entra bajo la cabecera SUPERIOR (sección en curso), con
+    # su número desnudo (ERP-F6-fix2).
     assert summary["appended_rows"] == 1
-    assert sheet.grid[1][11] == "BOP-900001"
+    assert sheet.grid[1][11] == "900001"
     # La cabecera intermedia y el separador siguen intactos: no se
     # interpretaron como pedidos ni se sobrescribieron.
     assert sheet.grid[2][0].startswith("^^^^")

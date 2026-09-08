@@ -133,13 +133,18 @@ def export_seguimiento(
 
 @router.post("/drive-sync")
 def drive_sync(
+    dry_run: bool = Query(default=False),
     session: Session = Depends(get_session),
     current_user: User = Depends(require_erp_edit),
 ) -> dict[str, Any]:
-    """«Actualizar hoja de Drive»: sincronización MANUAL (Bart ve qué se
-    escribe antes de automatizar nada). Incremental, sin borrar filas ajenas
-    y sin pisar celdas editadas a mano (los conflictos se devuelven)."""
+    """«Actualizar hoja de Drive»: sincronización MANUAL. Identifica cada
+    pedido por su número desnudo (ERP-F6-fix2): actualiza el que ya está,
+    añade el que no. Incremental, sin borrar filas ajenas ni pisar celdas
+    manuales. `dry_run=true` PREVISUALIZA (cuántas añade/actualiza/conflictos)
+    sin escribir nada — para que Bart lo vea antes de confirmar."""
     _ = current_user
+    from sqlalchemy import select  # noqa: PLC0415
+
     from app.erp.drive_sheets import (  # noqa: PLC0415
         DriveConfigError,
         DriveSyncError,
@@ -147,6 +152,8 @@ def drive_sync(
         drive_config,
         sync_to_sheet,
     )
+    from app.erp.models import ErpDriveSyncRow  # noqa: PLC0415
+    from app.integrations.factusol.service import series_config  # noqa: PLC0415
 
     cfg = session.get(ErpSettings, ERP_SETTINGS_SINGLETON_ID)
     try:
@@ -165,14 +172,11 @@ def drive_sync(
             ),
         })
     info, spreadsheet_id = conf
+    prefer_albaran = bool(series_config(session).get("drive_reference_prefer_albaran", True))
     # Se sincronizan los pedidos EN CURSO + los ya presentes en la hoja
     # (cualquier pedido con foto previa se sigue actualizando).
     rows = core.filter_rows(_rows(session), en_curso=True, sort="fecha", direction="asc")
     known = {r["id"] for r in rows}
-    from sqlalchemy import select  # noqa: PLC0415
-
-    from app.erp.models import ErpDriveSyncRow  # noqa: PLC0415
-
     tracked_ids = set(session.scalars(select(ErpDriveSyncRow.order_id)).all())
     if tracked_ids - known:
         extra = [
@@ -183,7 +187,10 @@ def drive_sync(
         ]
         rows = rows + extra
     try:
-        return sync_to_sheet(session, GoogleSheetsClient(info, spreadsheet_id), rows)
+        return sync_to_sheet(
+            session, GoogleSheetsClient(info, spreadsheet_id), rows,
+            prefer_albaran=prefer_albaran, dry_run=dry_run,
+        )
     except DriveSyncError as exc:
         raise HTTPException(
             status.HTTP_502_BAD_GATEWAY,

@@ -11,6 +11,7 @@ import {
   listSeguimiento,
   saveBlob,
   syncSeguimientoDrive,
+  type DriveSyncConflict,
   type DriveSyncSummary,
   type SeguimientoFilters,
   type SeguimientoPage,
@@ -63,6 +64,8 @@ export default function SeguimientoPage() {
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [syncSummary, setSyncSummary] = useState<DriveSyncSummary | null>(null);
+  // ERP-F6-fix2 — previsualización pendiente de confirmar (dry-run).
+  const [previewSummary, setPreviewSummary] = useState<DriveSyncSummary | null>(null);
 
   const canEdit = !!user && (ERP_EDIT_ROLES as readonly string[]).includes(user.role);
 
@@ -105,23 +108,42 @@ export default function SeguimientoPage() {
     }
   }
 
-  async function onDriveSync() {
+  // ERP-F6-fix2 — paso 1: previsualizar (no escribe nada). Bart ve qué hará
+  // sobre un fichero que mantiene desde hace años ANTES de confirmar.
+  async function onPreview() {
     setBusy(true);
     setError(null);
     setNotice(null);
     setSyncSummary(null);
+    setPreviewSummary(null);
+    try {
+      setPreviewSummary(await syncSeguimientoDrive({ preview: true }));
+    } catch (e) {
+      setError(extractErrorMessage(
+        e,
+        "No se pudo previsualizar la hoja de Drive. ¿Está configurada la cuenta de servicio?",
+      ));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Paso 2: confirmar la escritura.
+  async function onConfirmSync() {
+    setBusy(true);
+    setError(null);
     try {
       const summary = await syncSeguimientoDrive();
       setSyncSummary(summary);
+      setPreviewSummary(null);
       setNotice(
-        `Hoja actualizada: ${summary.updated_cells} celdas, `
-        + `${summary.appended_rows} filas nuevas, `
+        `Hoja actualizada: ${summary.appended_rows} filas añadidas, `
+        + `${summary.updated_rows} actualizadas (${summary.updated_cells} celdas), `
         + `${summary.conflicts.length} conflictos sin tocar.`,
       );
     } catch (e) {
       setError(extractErrorMessage(
-        e,
-        "No se pudo actualizar la hoja de Drive. ¿Está configurada la cuenta de servicio?",
+        e, "No se pudo actualizar la hoja de Drive.",
       ));
     } finally {
       setBusy(false);
@@ -252,9 +274,9 @@ export default function SeguimientoPage() {
               title={drive && !drive.configured
                 ? "Falta configurar la cuenta de servicio y la hoja en Configuración ERP"
                 : undefined}
-              onClick={onDriveSync}
+              onClick={onPreview}
             >
-              {busy ? "Trabajando…" : "Actualizar hoja de Drive"}
+              {busy ? "Trabajando…" : "Actualizar hoja de Drive…"}
             </button>
           ) : null}
         </div>
@@ -273,21 +295,43 @@ export default function SeguimientoPage() {
         ) : null}
       </section>
 
+      {previewSummary ? (
+        <section className="erp-card">
+          <h3>Previsualización — revisa antes de escribir</h3>
+          <p className="muted small">
+            Sobre una hoja de {previewSummary.sheet_rows} filas. Nada se ha
+            escrito todavía.
+          </p>
+          <ul className="item-list">
+            <li><strong>{previewSummary.appended_rows}</strong> filas a añadir (pedidos que no estaban).</li>
+            <li><strong>{previewSummary.updated_rows}</strong> filas a actualizar (ya estaban; se rellenan celdas vacías).</li>
+            <li><strong>{previewSummary.conflicts.length}</strong> conflictos sin tocar (coincidencia dudosa o celda manual distinta).</li>
+            {previewSummary.omitted_columns.length > 0 ? (
+              <li>Columnas omitidas (no están en la hoja): {previewSummary.omitted_columns.join(", ")}.</li>
+            ) : null}
+          </ul>
+          <ConflictList conflicts={previewSummary.conflicts} />
+          <div className="modal-actions">
+            <button type="button" className="button secondary" disabled={busy}
+              onClick={() => setPreviewSummary(null)}>
+              Cancelar
+            </button>
+            <button type="button" className="button" disabled={busy}
+              onClick={onConfirmSync}>
+              {busy ? "Escribiendo…" : "Confirmar y escribir en la hoja"}
+            </button>
+          </div>
+        </section>
+      ) : null}
+
       {syncSummary && syncSummary.conflicts.length > 0 ? (
         <section className="erp-card">
           <h3>Conflictos sin tocar ({syncSummary.conflicts.length})</h3>
           <p className="muted small">
-            Estas celdas tienen contenido manual distinto de lo que BoHub
-            escribiría; no se han modificado.
+            Coincidencias dudosas o celdas con contenido manual distinto de lo
+            que BoHub escribiría; no se han modificado.
           </p>
-          <ul className="item-list">
-            {syncSummary.conflicts.map((c, i) => (
-              <li key={i}>
-                <strong>{c.order_number}</strong> · {c.column}: la hoja dice
-                «{c.sheet_value}», BoHub tiene «{c.bohub_value}».
-              </li>
-            ))}
-          </ul>
+          <ConflictList conflicts={syncSummary.conflicts} />
         </section>
       ) : null}
 
@@ -354,5 +398,25 @@ export default function SeguimientoPage() {
         </div>
       </section>
     </main>
+  );
+}
+
+/** ERP-F6-fix2 — lista de conflictos: celda manual distinta o coincidencia de
+ *  número sin confirmar. Ninguno se toca; Bart decide. */
+function ConflictList({ conflicts }: { conflicts: DriveSyncConflict[] }) {
+  if (conflicts.length === 0) return null;
+  return (
+    <ul className="item-list">
+      {conflicts.map((c, i) => (
+        <li key={i}>
+          <strong>{c.order_number}</strong>
+          {c.kind === "manual_cell" ? (
+            <> · {c.column}: la hoja dice «{c.sheet_value}», BoHub tiene «{c.bohub_value}».</>
+          ) : (
+            <> · {c.detail}</>
+          )}
+        </li>
+      ))}
+    </ul>
   );
 }
