@@ -11063,3 +11063,51 @@ tr.is-inactive {
 .erp-doc-pdf-langsrc {
   white-space: nowrap;
 }
+
+/* ERP-F4-A — conciliación bancaria (/erp/conciliacion). */
+.erp-tabs {
+  display: flex;
+  gap: 6px;
+  margin: 8px 0 14px;
+  border-bottom: 1px solid var(--line, #e2e8f0);
+}
+.erp-tabs button {
+  border: none;
+  background: transparent;
+  padding: 8px 12px;
+  font: inherit;
+  font-weight: 600;
+  color: var(--muted, #64748b);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+.erp-tabs button:hover { color: var(--ink, #0f172a); }
+.erp-tabs button.active {
+  color: var(--brand, #2563eb);
+  border-bottom-color: var(--brand, #2563eb);
+}
+.erp-bank-proposals {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+}
+.erp-bank-proposals li { line-height: 1.3; }
+.erp-bank-proposals .badge { margin-right: 6px; }
+.erp-bank-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  justify-content: flex-end;
+}
+.erp-bank-actions .button { padding: 3px 8px; font-size: 12px; white-space: nowrap; }
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+}

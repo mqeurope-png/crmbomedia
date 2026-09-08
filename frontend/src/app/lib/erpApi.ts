@@ -1768,3 +1768,222 @@ export async function openShippingFile(file: ShipmentFile): Promise<void> {
   // un margen para no cortar la apertura.
   setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }
+
+// --- ERP-F4-A · conciliación bancaria (sin escribir en FACTUSOL) -------------
+
+export type BankAccount = {
+  id: string;
+  name: string;
+  bank_name: string | null;
+  iban: string;
+  bic: string | null;
+  currency: string;
+  serie: number | null;
+  column_mapping: Record<string, string> | null;
+  has_statement_header: boolean;
+};
+
+export type BankAccountSuggestion = Omit<BankAccount, "id" | "column_mapping" | "has_statement_header" | "serie">;
+
+export type BankConfidence = "alta" | "media" | "baja";
+
+/** Propuesta (o conciliación confirmada) movimiento → factura. */
+export type BankProposal = {
+  id: string;
+  serie: number;
+  codigo: number;
+  numero: string;
+  cliente_nombre: string | null;
+  importe: number;
+  confidence: BankConfidence | null;
+  reason: string | null;
+  status: "proposed" | "confirmed";
+};
+
+export type BankMovement = {
+  id: string;
+  account_id: string;
+  fecha_oper: string;
+  concepto: string;
+  importe: number;
+  saldo: number | null;
+  referencia1: string | null;
+  referencia2: string | null;
+  payer_name: string | null;
+  status: "pending" | "reconciled" | "discarded";
+  discard_reason: string | null;
+  confidence: BankConfidence | null;
+  proposals: BankProposal[];
+  reconciled: BankProposal[];
+};
+
+export type BankCounters = {
+  pending: number;
+  reconciled: number;
+  discarded: number;
+  pending_amount: number;
+};
+
+export type BankMovementsPage = {
+  items: BankMovement[];
+  total: number;
+  counters: BankCounters;
+};
+
+export type BankMatchStats = {
+  ok: boolean;
+  detail?: string;
+  candidates?: number;
+  excluded?: number;
+  proposed?: number;
+  no_proposal?: number;
+  pending_invoices?: number;
+  by_confidence?: Record<BankConfidence, number>;
+};
+
+export type BankImportSummary = {
+  ok: boolean;
+  code: string;
+  account_id?: string;
+  account_name?: string;
+  iban?: string | null;
+  detail?: string;
+  total_rows: number;
+  imported: number;
+  duplicates: number;
+  matching?: BankMatchStats;
+};
+
+export type BankRule = {
+  id: string;
+  kind: "exclude_pattern" | "payer_to_client";
+  pattern: string;
+  client_codcli: string | null;
+  client_nombre: string | null;
+  note: string | null;
+};
+
+export async function listBankAccounts(): Promise<BankAccount[]> {
+  const r = await apiFetch<{ items: BankAccount[] }>("/api/erp/bank/accounts");
+  return r.items;
+}
+
+/** Las cuentas que conoce FACTUSOL (F_BAN) como sugerencia de alta. */
+export async function listSuggestedBankAccounts(): Promise<BankAccountSuggestion[]> {
+  const r = await apiFetch<{ items: BankAccountSuggestion[] }>("/api/erp/bank/accounts/suggested");
+  return r.items;
+}
+
+export async function createBankAccount(
+  payload: Omit<BankAccountSuggestion, "bank_name" | "bic"> & Partial<Pick<BankAccount, "bank_name" | "bic" | "serie">>,
+): Promise<BankAccount> {
+  return apiFetch("/api/erp/bank/accounts", { method: "POST", body: JSON.stringify(payload) });
+}
+
+export async function updateBankAccount(
+  id: string, patch: Partial<Omit<BankAccount, "id" | "has_statement_header">>,
+): Promise<BankAccount> {
+  return apiFetch(`/api/erp/bank/accounts/${id}`, { method: "PATCH", body: JSON.stringify(patch) });
+}
+
+export async function deleteBankAccount(id: string): Promise<void> {
+  await apiFetch(`/api/erp/bank/accounts/${id}`, { method: "DELETE" });
+}
+
+/** Sube el extracto (.xlsx/.csv). Identifica la cuenta por el IBAN de la
+ *  cabecera; si no está dada de alta el backend responde 409 (no importa a
+ *  ciegas). Nunca concilia nada por sí solo: solo propone. */
+export async function importBankStatement(
+  file: File, opts: { accountId?: string; runMatch?: boolean } = {},
+): Promise<BankImportSummary> {
+  const form = new FormData();
+  form.append("file", file);
+  if (opts.accountId) form.append("account_id", opts.accountId);
+  form.append("run_match", String(opts.runMatch ?? true));
+  return apiUpload("/api/erp/bank/import", form);
+}
+
+export async function runBankMatch(accountId?: string): Promise<BankMatchStats> {
+  const q = accountId ? `?account_id=${encodeURIComponent(accountId)}` : "";
+  return apiFetch(`/api/erp/bank/match${q}`, { method: "POST" });
+}
+
+export type BankMovementFilters = {
+  account_id?: string;
+  desde?: string;
+  hasta?: string;
+  confidence?: BankConfidence | "none";
+  status?: BankMovement["status"];
+  limit?: number;
+  offset?: number;
+};
+
+export async function listBankMovements(filters: BankMovementFilters = {}): Promise<BankMovementsPage> {
+  return apiFetch(`/api/erp/bank/movements${qs(filters)}`);
+}
+
+export async function confirmBankMovement(id: string): Promise<BankMovement> {
+  return apiFetch(`/api/erp/bank/movements/${id}/confirm`, { method: "POST" });
+}
+
+export type BankReassignTarget = {
+  serie: number;
+  codigo: number;
+  numero?: string;
+  importe: number;
+  cliente_nombre?: string | null;
+  cliente_codigo?: string | null;
+};
+
+/** Elegir otra factura o repartir entre varias (queda confirmado: es una
+ *  decisión explícita). `learnPayer` recuerda pagador → cliente. */
+export async function reassignBankMovement(
+  id: string, targets: BankReassignTarget[], learnPayer = false,
+): Promise<BankMovement> {
+  return apiFetch(`/api/erp/bank/movements/${id}/reassign`, {
+    method: "POST", body: JSON.stringify({ targets, learn_payer: learnPayer }),
+  });
+}
+
+/** «No es un cobro de cliente» (con motivo). `learn` recuerda el pagador
+ *  como exclusión para importaciones futuras. */
+export async function discardBankMovement(
+  id: string, reason: string, learn = false,
+): Promise<BankMovement> {
+  return apiFetch(`/api/erp/bank/movements/${id}/discard`, {
+    method: "POST", body: JSON.stringify({ reason, learn }),
+  });
+}
+
+export async function reopenBankMovement(id: string): Promise<BankMovement> {
+  return apiFetch(`/api/erp/bank/movements/${id}/reopen`, { method: "POST" });
+}
+
+/** Acción en bloque (un clic): confirma las propuestas de confianza alta. */
+export async function confirmAllHighBank(accountId?: string): Promise<{ confirmed: number }> {
+  const q = accountId ? `?account_id=${encodeURIComponent(accountId)}` : "";
+  return apiFetch(`/api/erp/bank/movements/confirm-high${q}`, { method: "POST" });
+}
+
+export async function listBankRules(): Promise<BankRule[]> {
+  const r = await apiFetch<{ items: BankRule[] }>("/api/erp/bank/rules");
+  return r.items;
+}
+
+export async function createBankRule(
+  payload: Pick<BankRule, "kind" | "pattern"> & Partial<Pick<BankRule, "client_codcli" | "client_nombre" | "note">>,
+): Promise<{ id: string }> {
+  return apiFetch("/api/erp/bank/rules", { method: "POST", body: JSON.stringify(payload) });
+}
+
+export async function deleteBankRule(id: string): Promise<void> {
+  await apiFetch(`/api/erp/bank/rules/${id}`, { method: "DELETE" });
+}
+
+/** Excel NUEVO con el formato del extracto y FACTURA/PRESUPUESTO/PEDIDO
+ *  rellenas con lo confirmado. El original no se toca. */
+export async function downloadBankExport(
+  accountId: string, opts: { desde?: string; hasta?: string } = {},
+): Promise<Blob> {
+  return apiDownloadBlob(`/api/erp/bank/export${qs({ account_id: accountId, ...opts })}`);
+}

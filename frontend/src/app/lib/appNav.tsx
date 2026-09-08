@@ -5,6 +5,7 @@ import {
   Database,
   FileText,
   Kanban,
+  Landmark,
   Mail,
   Package,
   Plug,
@@ -77,6 +78,14 @@ export const NAV_ITEMS: ReadonlyArray<NavItem> = [
     icon: FileText,
     scope: "erp",
     allowedRoles: ["admin", "manager", "pedidos", "user"],
+  },
+  {
+    // ERP-F4-A — conciliación bancaria (revisión humana de propuestas).
+    href: "/erp/conciliacion",
+    label: "ERP · Conciliación",
+    icon: Landmark,
+    scope: "erp",
+    allowedRoles: ["admin", "manager", "pedidos"],
   },
   {
     href: "/erp/sat",
