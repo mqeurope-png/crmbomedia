@@ -104,6 +104,94 @@ def _enqueue(func_path: str, *args: Any) -> str:
     return job.id
 
 
+# --- ERP-F3: marcar la factura como cobrada/pendiente (ESTFAC) ---------------
+
+
+def mark_invoice_paid_job(
+    serie: int, codigo: int, paid: bool,
+    actor_user_id: str | None = None,
+    current_estado: Any = None,
+    meta: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Escribe `ESTFAC` de la factura (cobrada/pendiente) por clave COMPUESTA
+    `(TIPFAC, CODFAC)`. Corre en `factusol:writes` (serial). Idempotente (no
+    reescribe si ya estaba). Registra el cambio en el timeline del pedido/
+    documento. Si la escritura falla, el resultado del job lo refleja
+    (`marked: False`) y el frontend NO cambia su estado."""
+    from sqlalchemy.orm import Session  # noqa: PLC0415
+
+    from app.db.session import get_engine  # noqa: PLC0415
+    from app.integrations.factusol.service import (  # noqa: PLC0415
+        ejercicio_for,
+        mark_invoice_payment,
+    )
+
+    info = meta or {}
+    with Session(get_engine()) as session:
+        client = FactusolClient.from_settings()
+        ejercicio = ejercicio_for(session)
+        marked, motivo = mark_invoice_payment(
+            client, session, serie=serie, codigo=codigo, paid=paid,
+            ejercicio=ejercicio, current_estado=current_estado,
+        )
+        if marked:
+            _record_invoice_payment_event(
+                session, serie=serie, codigo=codigo, paid=paid,
+                actor_user_id=actor_user_id, meta=info,
+            )
+            session.commit()
+    return {
+        "marked": marked, "motivo": motivo,
+        "serie": serie, "codigo": codigo, "paid": paid,
+        "numero": info.get("numero") or f"{serie}-{int(codigo):06d}",
+    }
+
+
+def _record_invoice_payment_event(
+    session: Any, *, serie: int, codigo: int, paid: bool,
+    actor_user_id: str | None, meta: dict[str, Any],
+) -> None:
+    """Timeline «Factura X marcada como cobrada por …». Se cuelga del pedido si
+    se localiza; si no, queda como evento de documento (siempre auditable)."""
+    from app.core.audit import record_event  # noqa: PLC0415
+    from app.erp.factusol_pdf import _find_order_for_document  # noqa: PLC0415
+    from app.models.crm import User  # noqa: PLC0415
+
+    actor = session.get(User, actor_user_id) if actor_user_id else None
+    numero = meta.get("numero") or f"{serie}-{int(codigo):06d}"
+    estado_txt = "cobrada" if paid else "pendiente"
+    quien = f" por {actor.full_name}" if actor is not None else ""
+    order = _find_order_for_document(
+        session, "facturas",
+        {"codigo": codigo, "referencia": meta.get("referencia") or ""},
+    )
+    record_event(
+        session,
+        action="erp.invoice_payment_marked",
+        target_type="order" if order is not None else "document",
+        target_id=order.id if order is not None else numero,
+        actor=actor,
+        metadata={
+            "numero": numero, "paid": paid,
+            "cliente": meta.get("cliente"), "importe": meta.get("importe"),
+        },
+        message=f"Factura {numero} marcada como {estado_txt}{quien}",
+    )
+
+
+def enqueue_mark_invoice_paid(
+    serie: int, codigo: int, paid: bool,
+    actor_user_id: str | None = None,
+    current_estado: Any = None,
+    meta: dict[str, Any] | None = None,
+) -> str:
+    """Encola `mark_invoice_paid_job` en `factusol:writes`; devuelve el job_id."""
+    return _enqueue(
+        "app.integrations.factusol.jobs.mark_invoice_paid_job",
+        serie, codigo, paid, actor_user_id, current_estado, meta,
+    )
+
+
 # --- cadena de documentos (ERP-E3-B) -----------------------------------------
 
 

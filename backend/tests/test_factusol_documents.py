@@ -107,7 +107,11 @@ def test_estado_labels_confirmed_and_raw() -> None:
     assert estado_label("presupuestos", 1) == "Aceptado"
     # Sin confirmar → crudo neutro, nunca adivinar (criterio E2/gotcha 17).
     assert estado_label("albaranes", 3) == "Estado 3"
-    assert estado_label("facturas", 0) == "Estado 0"
+    # ERP-F3: ESTFAC confirmado (estado de COBRO): 0 pendiente, 2 cobrada; el
+    # resto (1, sin identificar) sigue crudo.
+    assert estado_label("facturas", 0) == "Pendiente de cobro"
+    assert estado_label("facturas", 2) == "Cobrada"
+    assert estado_label("facturas", 1) == "Estado 1"
 
 
 # ---------------------------------------------------------------------------
@@ -275,7 +279,8 @@ def test_documents_endpoint_lists_with_filters(client, session_factory) -> None:
     body = r.json()
     assert body["total"] == 2
     assert [d["numero"] for d in body["items"]] == ["5-260066", "5-260065"]
-    assert body["items"][0]["estado_label"] == "Estado 0"
+    # ERP-F3: ESTFAC=0 → «Pendiente de cobro».
+    assert body["items"][0]["estado_label"] == "Pendiente de cobro"
 
 
 def test_documents_endpoint_rejects_unknown_type(client) -> None:

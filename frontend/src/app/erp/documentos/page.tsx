@@ -95,6 +95,9 @@ export default function FactusolDocumentosPage() {
   const [q, setQ] = useState("");
   // E3-B — filtro por estado del ciclo PRE→ALB→FAC.
   const [ciclo, setCiclo] = useState<string>("");
+  // ERP-F3 — filtro por estado de COBRO (solo facturas): ""=todas, "0"=
+  // pendientes de cobro, "2"=cobradas. Se manda por el filtro `estado`.
+  const [pago, setPago] = useState<string>("");
   // Orden (E3-A-fix1): sobre el conjunto completo filtrado, en el backend.
   const [sort, setSort] = useState<FactusolDocumentSort>("numero");
   const [dir, setDir] = useState<"asc" | "desc">("desc");
@@ -116,6 +119,8 @@ export default function FactusolDocumentosPage() {
         fecha_hasta: fechaHasta || undefined,
         q: q.trim() || undefined,
         ciclo: (ciclo || undefined) as FactusolDocumentFilters["ciclo"],
+        // ERP-F3: filtro de cobro (solo facturas) sobre la columna `estado`.
+        estado: tab === "facturas" && pago ? pago : undefined,
         // E3-B-fix1: tras crear un documento se recarga saltando el cache
         // del índice del ciclo, para que la columna CICLO no salga vieja.
         fresh_ciclo: fresh || undefined,
@@ -134,7 +139,7 @@ export default function FactusolDocumentosPage() {
     } finally {
       setLoading(false);
     }
-  }, [tab, serie, clienteQ, fechaDesde, fechaHasta, q, ciclo, sort, dir]);
+  }, [tab, serie, clienteQ, fechaDesde, fechaHasta, q, ciclo, pago, sort, dir]);
 
   useEffect(() => {
     void load(0);
@@ -159,11 +164,12 @@ export default function FactusolDocumentosPage() {
     setFechaHasta("");
     setQ("");
     setCiclo("");
+    setPago("");
   }
 
   const hasFilters =
     serie !== "" || clienteQ !== "" || fechaDesde !== "" ||
-    fechaHasta !== "" || q.trim() !== "" || ciclo !== "";
+    fechaHasta !== "" || q.trim() !== "" || ciclo !== "" || pago !== "";
   const cicloOptions = CICLO_OPTIONS[tab];
 
   return (
@@ -181,7 +187,7 @@ export default function FactusolDocumentosPage() {
             role="tab"
             aria-selected={tab === t.key}
             className={`pill-toggle ${tab === t.key ? "is-active" : ""}`}
-            onClick={() => { setTab(t.key); setDetail(null); setCiclo(""); }}
+            onClick={() => { setTab(t.key); setDetail(null); setCiclo(""); setPago(""); }}
           >
             {t.label}
           </button>
@@ -268,6 +274,20 @@ export default function FactusolDocumentosPage() {
               {cicloOptions.map((opt) => (
                 <option key={opt.value} value={opt.value}>{opt.label}</option>
               ))}
+            </select>
+          </label>
+        ) : null}
+        {tab === "facturas" ? (
+          <label className="field">
+            <span>Cobro</span>
+            <select
+              value={pago}
+              aria-label="Estado de cobro"
+              onChange={(e) => setPago(e.target.value)}
+            >
+              <option value="">Todas</option>
+              <option value="0">Pendientes de cobro</option>
+              <option value="2">Cobradas</option>
             </select>
           </label>
         ) : null}

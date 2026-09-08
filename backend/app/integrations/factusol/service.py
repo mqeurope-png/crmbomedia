@@ -33,6 +33,7 @@ from app.erp.models import (
     InvoiceStatus,
     Order,
     OrderStatusHistory,
+    PaymentStatus,
     StatusDomain,
 )
 from app.integrations.factusol.client import FactusolClient, FactusolError
@@ -292,11 +293,38 @@ def mark_origin_converted(
         )
         logger.warning("factusol: %s", motivo)
         return False, motivo
-    # Idempotencia: si el origen ya tiene el estado destino, no reescribir.
-    if current_estado is not None and _estado_str(current_estado) == estado:
+    return _write_document_estado(
+        client, tabla=tabla, tip_col=tip_col, cod_col=cod_col, est_col=est_col,
+        serie=serie, codigo=codigo, estado=estado, ejercicio=ejercicio,
+        current_estado=current_estado, what=tabla,
+    )
+
+
+def _write_document_estado(
+    client: FactusolClient,
+    *,
+    tabla: str,
+    tip_col: str,
+    cod_col: str,
+    est_col: str,
+    serie: Any,
+    codigo: Any,
+    estado: str,
+    ejercicio: str,
+    current_estado: Any = None,
+    what: str = "documento",
+) -> tuple[bool, str | None]:
+    """Escritura ÚNICA de un estado en FACTUSOL por clave COMPUESTA
+    (tipo, código). Idempotente y **nunca lanza**. Es el punto compartido por
+    el marcado de ORIGEN (`mark_origin_converted`) y el de COBRO de facturas
+    (`mark_invoice_payment`): no hay dos implementaciones distintas escribiendo
+    estados. Devuelve `(True, None)` si escribió o ya tenía el estado;
+    `(False, motivo)` si falló."""
+    # Idempotencia: si ya tiene el estado destino, no reescribir.
+    if current_estado is not None and _estado_str(current_estado) == _estado_str(estado):
         logger.debug(
             "factusol: %s %s-%s ya tenía %s=%s; no se reescribe",
-            tabla, serie, codigo, est_col, estado,
+            what, serie, codigo, est_col, estado,
         )
         return True, None
     try:
@@ -308,18 +336,89 @@ def mark_origin_converted(
             {tip_col: serie, cod_col: codigo, est_col: estado},
             ejercicio=ejercicio,
         )
-    except Exception as exc:  # noqa: BLE001 — el hijo ya existe; solo aviso
+    except Exception as exc:  # noqa: BLE001 — solo aviso, nunca romper
         motivo = (
-            f"no se pudo marcar el {tabla} {serie}-{codigo} "
+            f"no se pudo marcar el/la {what} {serie}-{codigo} "
             f"({est_col}={estado}): {str(exc)[:200]}"
         )
         logger.warning("factusol: %s", motivo, exc_info=True)
         return False, motivo
     logger.info(
-        "factusol: %s %s-%s marcado como consumido (%s=%r)",
-        tabla, serie, codigo, est_col, estado,
+        "factusol: %s %s-%s → %s=%r", what, serie, codigo, est_col, estado,
     )
     return True, None
+
+
+# --- ERP-F3: estado de COBRO de las facturas (F_FAC.ESTFAC) -----------------
+#
+# Confirmado por Bart: 0 = pendiente de cobro, 2 = cobrada. Configurable en
+# /erp/settings por si otro ejercicio/versión usara códigos distintos; un
+# valor VACÍO explícito desactiva el marcado (mismo criterio que el origen).
+_INVOICE_PAYMENT_SPEC = ("F_FAC", "TIPFAC", "CODFAC", "ESTFAC")
+INVOICE_PAID_KEY = "estfac_cobrada"
+INVOICE_PENDING_KEY = "estfac_pendiente"
+INVOICE_PAID_DEFAULT = "2"
+INVOICE_PENDING_DEFAULT = "0"
+
+
+def invoice_payment_value(session: Session, *, paid: bool) -> str | None:
+    """Valor de `ESTFAC` con el que marcar «cobrada» (paid=True) o
+    «pendiente» (paid=False), leído de /erp/settings con el default
+    confirmado. `None` si la clave está EXPLÍCITAMENTE vacía (no marcar)."""
+    conf = series_config(session)
+    key = INVOICE_PAID_KEY if paid else INVOICE_PENDING_KEY
+    default = INVOICE_PAID_DEFAULT if paid else INVOICE_PENDING_DEFAULT
+    if key in conf:
+        raw = conf.get(key)
+        value = str(raw).strip() if raw is not None else ""
+        return value or None
+    return default
+
+
+def mark_invoice_payment(
+    client: FactusolClient,
+    session: Session,
+    *,
+    serie: Any,
+    codigo: Any,
+    paid: bool,
+    ejercicio: str,
+    current_estado: Any = None,
+) -> tuple[bool, str | None]:
+    """Marca la factura (F_FAC) como cobrada/pendiente escribiendo `ESTFAC`
+    por clave COMPUESTA `(TIPFAC, CODFAC)` — nunca solo por número. Reutiliza
+    el escritor ÚNICO `_write_document_estado`: idempotente y nunca lanza.
+    Devuelve `(marcada, motivo)`; `(False, motivo)` si la config está vacía o
+    falló la escritura."""
+    tabla, tip_col, cod_col, est_col = _INVOICE_PAYMENT_SPEC
+    estado = invoice_payment_value(session, paid=paid)
+    if not estado:
+        key = INVOICE_PAID_KEY if paid else INVOICE_PENDING_KEY
+        motivo = (
+            f"falta `{key}` en /erp/settings — la factura {serie}-{codigo} "
+            "se queda sin marcar"
+        )
+        logger.warning("factusol: %s", motivo)
+        return False, motivo
+    return _write_document_estado(
+        client, tabla=tabla, tip_col=tip_col, cod_col=cod_col, est_col=est_col,
+        serie=serie, codigo=codigo, estado=estado, ejercicio=ejercicio,
+        current_estado=current_estado, what="factura",
+    )
+
+
+def _auto_mark_paid_enabled(session: Session) -> bool:
+    """ERP-F3 — ¿está activado el auto-marcado de cobro al emitir? (off por
+    defecto: es una afirmación contable automática)."""
+    return bool(
+        series_config(session).get("auto_mark_paid_when_order_paid", False)
+    )
+
+
+def _order_is_paid(order: Order) -> bool:
+    """El pedido «consta como pagado» — estrictamente PAID (un pago parcial o
+    un crédito aprobado NO se auto-marcan como cobrados)."""
+    return _status_value(order.payment_status) == PaymentStatus.PAID.value
 
 
 def mark_pcl_invoiced(
@@ -643,6 +742,22 @@ def emit_invoice(
             "factusol: factura %s emitida pero el pedido %s no se pudo marcar "
             "como facturado", codfac, codpcl, exc_info=True,
         )
+
+    # ERP-F3 (Parte D): auto-marcar la factura como COBRADA al emitirla SI el
+    # pedido ya constaba pagado (web con pago al comprar) y el ajuste está
+    # activado. Nunca para pedidos manuales o pendientes de pago; desactivado
+    # por defecto. `mark_invoice_payment` no lanza — no arriesga la factura.
+    if _auto_mark_paid_enabled(session) and _order_is_paid(order):
+        marked, motivo = mark_invoice_payment(
+            client, session, serie=serie, codigo=codfac, paid=True,
+            ejercicio=ejercicio,
+        )
+        if marked:
+            logger.info("factusol: factura %s auto-marcada cobrada (pedido "
+                        "%s ya pagado)", codfac, order.order_number)
+        else:
+            logger.warning("factusol: no se pudo auto-marcar cobrada la "
+                           "factura %s: %s", codfac, motivo)
 
     now = datetime.now(UTC)
     order.invoice_status = InvoiceStatus.INVOICED_BY_ERP.value

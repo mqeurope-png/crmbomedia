@@ -134,14 +134,18 @@ DOC_SPECS: dict[str, DocSpec] = {
 #: E3-B-fix3: ESTALB 0/1 CONFIRMADO en la interfaz del escritorio de Bart
 #: (26-ago-2026, columna FACT. del listado de albaranes) — se mapea
 #: incondicionalmente; la correlación con las facturas hijas queda solo
-#: como diagnóstico en el log (`estalb_correlation_mismatches`). ESTFAC
-#: sigue SIN confirmar (hipótesis pendiente: estado de COBRO, no del
-#: documento) → crudo.
+#: como diagnóstico en el log (`estalb_correlation_mismatches`).
+#:
+#: ERP-F3: ESTFAC CONFIRMADO por Bart (facturas del 31-jul: 1-260720 SOLITIUM
+#: en 0 = le debe; sus vecinas en 2 = cobradas). Es el estado de COBRO, no del
+#: documento: 0 = pendiente de cobro, 2 = cobrada. El valor 1 (13 facturas en
+#: el sondeo) sigue SIN identificar → crudo, como cualquier otro (no se
+#: adivina; ver el script de discovery `--estfac 1`).
 ESTADO_LABELS: dict[str, dict[str, str]] = {
     "pedidos": {"0": "Pendiente", "2": "Enviado (facturado)"},  # ✅ E2
     "presupuestos": {"0": "Pendiente", "1": "Aceptado"},  # ✅ escritorio
     "albaranes": {"0": "Pendiente", "1": "Facturado"},  # ✅ escritorio (FACT.)
-    "facturas": {},
+    "facturas": {"0": "Pendiente de cobro", "2": "Cobrada"},  # ✅ ERP-F3
 }
 
 

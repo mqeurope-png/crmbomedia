@@ -73,6 +73,14 @@ class SettingsIn(BaseModel):
     #: «Facturado». Vacío explícito = no marcar.
     factusol_estpre_accepted: str | None = None
     factusol_estalb_invoiced: str | None = None
+    #: ERP-F3 — estado de COBRO de las facturas (F_FAC.ESTFAC). Confirmado por
+    #: Bart: 2 = cobrada, 0 = pendiente. Vacío explícito = no marcar.
+    factusol_estfac_cobrada: str | None = None
+    factusol_estfac_pendiente: str | None = None
+    #: ERP-F3 — marcar la factura como cobrada al emitirla SI el pedido ya
+    #: constaba pagado (web con pago al comprar). Desactivado por defecto: es
+    #: una afirmación contable automática y Bart debe activarla a conciencia.
+    factusol_auto_mark_paid_when_order_paid: bool | None = None
     #: ERP-E4 — identidad fiscal de las empresas emisoras, por serie
     #: ({"1": {...}, "5": {...}}). Alimenta los PDF; editable para que Bart
     #: corrija un IBAN sin despliegue. Ver `factusol_pdf.COMPANY_DEFAULTS`.
@@ -290,6 +298,12 @@ def _serialise_settings(cfg: ErpSettings) -> dict[str, Any]:
         # UI enseñe lo que realmente se escribirá; "" = marcado desactivado.
         "factusol_estpre_accepted": _series(cfg).get("estpre_accepted", "1"),
         "factusol_estalb_invoiced": _series(cfg).get("estalb_invoiced", "1"),
+        # ERP-F3: estado de cobro (defaults confirmados 2/0) + auto-marcado.
+        "factusol_estfac_cobrada": _series(cfg).get("estfac_cobrada", "2"),
+        "factusol_estfac_pendiente": _series(cfg).get("estfac_pendiente", "0"),
+        "factusol_auto_mark_paid_when_order_paid": bool(
+            _series(cfg).get("auto_mark_paid_when_order_paid", False)
+        ),
         # ERP-E4: identidad fiscal por serie, ya fusionada con los defaults
         # extraídos de los modelos reales, + si esa serie tiene logo subido.
         "factusol_companies": _companies_with_logos(cfg),
@@ -330,9 +344,14 @@ def _companies_with_logos(cfg: ErpSettings) -> dict[str, Any]:
     companies = merge_companies(_series(cfg).get("companies"))
     for serie, comp in companies.items():
         try:
-            comp["logo"] = logo_path_for_serie(int(serie)) is not None
+            path = logo_path_for_serie(int(serie))
         except (TypeError, ValueError):
-            comp["logo"] = False
+            path = None
+        comp["logo"] = path is not None
+        # ERP-F3: el nombre de fichero, para enseñarlo junto a la miniatura
+        # (el input de archivo aparece vacío al recargar — comportamiento del
+        # navegador — y parecía que no se hubiera guardado).
+        comp["logo_filename"] = path.name if path is not None else None
     return companies
 
 
@@ -388,6 +407,9 @@ def update_settings(
             or payload.factusol_estpcl_invoiced is not None
             or payload.factusol_estpre_accepted is not None
             or payload.factusol_estalb_invoiced is not None
+            or payload.factusol_estfac_cobrada is not None
+            or payload.factusol_estfac_pendiente is not None
+            or payload.factusol_auto_mark_paid_when_order_paid is not None
             or payload.factusol_companies is not None
             or payload.factusol_pickup_warehouses is not None
             or payload.factusol_invoice_email_templates is not None):
@@ -409,6 +431,16 @@ def update_settings(
             series["estpre_accepted"] = payload.factusol_estpre_accepted.strip()
         if payload.factusol_estalb_invoiced is not None:
             series["estalb_invoiced"] = payload.factusol_estalb_invoiced.strip()
+        # ERP-F3: estado de cobro de facturas (guardar "" desactiva el marcado)
+        # + auto-marcado al emitir un pedido ya pagado.
+        if payload.factusol_estfac_cobrada is not None:
+            series["estfac_cobrada"] = payload.factusol_estfac_cobrada.strip()
+        if payload.factusol_estfac_pendiente is not None:
+            series["estfac_pendiente"] = payload.factusol_estfac_pendiente.strip()
+        if payload.factusol_auto_mark_paid_when_order_paid is not None:
+            series["auto_mark_paid_when_order_paid"] = bool(
+                payload.factusol_auto_mark_paid_when_order_paid
+            )
         # ERP-E4: identidad fiscal de las empresas. El PATCH llega con el
         # dict COMPLETO tal como lo sirvió el GET (ya fusionado con los
         # defaults) — se guarda explícito, así los valores no cambian si un
