@@ -43,8 +43,11 @@ def normalize_collection(row: dict[str, Any]) -> dict[str, Any]:
             if row.get("FECLCO") is not None else None
         ),
         "importe": _num(row.get("IMPLCO")),
-        # CPALCO = forma de pago (código F_FOP); el caller resuelve su nombre.
-        "forma_pago": _clean(row.get("CPALCO")),
+        # ERP-F5: CPALCO = CONTRAPARTIDA de cobro (destino del dinero: «6 Bomedia
+        # Sabadell», «8 Streamtec Sabadell»…), NO la forma de pago — F3-fix1 lo
+        # resolvía contra F_FOP y era incorrecto. El caller pone el nombre con
+        # el catálogo configurable (`app/erp/contrapartidas.py`).
+        "contrapartida": _clean(row.get("CPALCO")),
         "concepto": _clean(row.get("CPTLCO")),
     }
 

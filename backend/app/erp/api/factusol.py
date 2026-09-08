@@ -37,8 +37,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/erp/factusol", tags=["erp-factusol"])
 
 #: Cache en proceso {ejercicio: (expira_epoch, items)} de formas de pago.
-_FOP_CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
-_FOP_CACHE_TTL_SECONDS = 300  # 5 min
 
 #: E3-B-fix3 — el mapeo ESTALB ya es incondicional (confirmado en el
 #: escritorio); la correlación ESTALB↔factura-hija queda SOLO como
@@ -95,39 +93,32 @@ def _first(row: dict[str, Any], *cols: str) -> Any:
 
 
 def _fop_names(client, ejercicio: str) -> dict[str, str]:
-    """`{codigo → nombre}` de F_FOP, reutilizando la cache de /formas-pago.
-    Best-effort: si FACTUSOL no responde, dict vacío (el caller pinta el
-    código crudo). Indexa también el código sin ceros a la izquierda: el
-    documento guarda `'002'` y el catálogo puede servir `2`."""
-    now = time.time()
-    cached = _FOP_CACHE.get(ejercicio)
-    if cached and cached[0] > now:
-        items = cached[1]
-    else:
-        try:
-            rows = client.load_table("F_FOP", ejercicio=ejercicio)
-            items = [_normalise_fop(r) for r in rows]
-            _FOP_CACHE[ejercicio] = (now + _FOP_CACHE_TTL_SECONDS, items)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("factusol F_FOP para nombres falló: %s", exc)
-            return {}
-    out: dict[str, str] = {}
-    for item in items:
-        codigo = str(item.get("codigo") or "").strip()
-        nombre = str(item.get("nombre") or "").strip()
-        if codigo and nombre:
-            out[codigo] = nombre
-            out[codigo.lstrip("0") or "0"] = nombre
-    return out
+    """`{codigo → nombre}` de formas de pago. ERP-F5: se lee de **F_FPA**
+    (`CODFPA` → `DESFPA`). La tabla que se usaba desde C-2-fix2, F_FOP, está
+    VACÍA en producción — por eso el detalle decía «Código 002». Indexa el
+    código tal cual y sin ceros a la izquierda (`'002'` y `'2'`). Best-effort:
+    dict vacío si FACTUSOL no responde (el caller pinta el código crudo)."""
+    from app.integrations.factusol.catalogs import payment_method_names  # noqa: PLC0415
+
+    try:
+        return payment_method_names(client, ejercicio=ejercicio)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("factusol F_FPA (formas de pago) falló: %s", exc)
+        return {}
 
 
 def _attach_invoice_collections(
     client, ejercicio: str, doc: dict[str, Any], serie: int, codigo: int,
+    *, contrapartidas: dict[str, str] | None = None,
 ) -> None:
     """ERP-F3-fix1 — añade al detalle de una factura sus COBROS (F_LCO), el
     total cobrado y el saldo pendiente. Solo lectura. Best-effort: un fallo de
     F_LCO no tumba el detalle (cobros vacíos). Registra un aviso si el saldo no
-    cuadra con el ESTFAC, pero enseña SIEMPRE el dato real."""
+    cuadra con el ESTFAC, pero enseña SIEMPRE el dato real.
+
+    ERP-F5: `CPALCO` es la CONTRAPARTIDA de cobro (no la forma de pago); se
+    resuelve con el catálogo configurable que llega en `contrapartidas`."""
+    from app.integrations.factusol.catalogs import resolve_name  # noqa: PLC0415
     from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
     from app.integrations.factusol.collections import (  # noqa: PLC0415
         balance_mismatch,
@@ -144,12 +135,9 @@ def _attach_invoice_collections(
         logger.warning("factusol cobros F_LCO %s-%s KO: %s", serie, codigo, exc)
         return
     summary = invoice_collections(index, serie, codigo, doc.get("total"))
-    names = _fop_names(client, ejercicio)
+    names = contrapartidas or {}
     for cobro in summary["cobros"]:
-        fop = str(cobro.get("forma_pago") or "").strip()
-        cobro["forma_pago_nombre"] = (
-            (names.get(fop) or names.get(fop.lstrip("0") or "0")) if fop else None
-        )
+        cobro["contrapartida_nombre"] = resolve_name(names, cobro.get("contrapartida"))
     doc["cobros"] = summary["cobros"]
     doc["total_cobrado"] = summary["total_cobrado"]
     doc["saldo_pendiente"] = summary["saldo_pendiente"]
@@ -160,21 +148,15 @@ def _attach_invoice_collections(
         logger.warning("factusol cobros %s: %s", doc.get("numero"), warn)
 
 
-def _normalise_fop(row: dict[str, Any]) -> dict[str, Any]:
-    """F_FOP → {codigo, nombre}. Los nombres exactos de columna se confirman
-    con la validación de Bart; se prueban varios candidatos habituales."""
-    codigo = _first(row, "CODFOP", "COFOP")
-    nombre = _first(row, "DESFOP", "NOMFOP", "TITFOP", "NORFOP")
-    return {"codigo": str(codigo) if codigo is not None else None,
-            "nombre": nombre or (str(codigo) if codigo is not None else "")}
-
-
 #: Nombres de serie por defecto si aún no se han configurado en /erp/settings.
 #: Confirmados por Bart (ERP-E2). Hay más series en uso para otras cosas; el
 #: selector las lista igualmente como «Serie N» para no bloquear al operador.
+#: ERP-F5: la serie 4 es Lambert — identificada por la contrapartida de sus
+#: cobros (4-260004 → «3 Lambert Open Bank»).
 FALLBACK_SERIES_NAMES: dict[int, str] = {
     1: "Bomedia",
     2: "MQ Europe",
+    4: "Lambert",
     5: "Streamtec",
 }
 
@@ -370,18 +352,24 @@ def get_factusol_document(
             status.HTTP_404_NOT_FOUND,
             f"No existe el documento {serie}-{codigo} en {doc_type}",
         )
-    # E3-A-fix1 — forma de pago con nombre (catálogo F_FOP de C-2-fix2).
-    fop = str(doc.get("forma_pago") or "").strip()
-    doc["forma_pago_nombre"] = None
-    if fop:
-        names = _fop_names(client, ejercicio)
-        doc["forma_pago_nombre"] = (
-            names.get(fop) or names.get(fop.lstrip("0") or "0")
-        )
+    # E3-A-fix1 / ERP-F5 — forma de pago con nombre (catálogo F_FPA; '11' y
+    # '011' resuelven igual).
+    from app.integrations.factusol.catalogs import resolve_name  # noqa: PLC0415
+
+    doc["forma_pago_nombre"] = (
+        resolve_name(_fop_names(client, ejercicio), doc.get("forma_pago"))
+        if str(doc.get("forma_pago") or "").strip() else None
+    )
     # ERP-F3-fix1 — COBROS y saldo pendiente de la factura (F_LCO, solo
     # lectura). Best-effort: si F_LCO no carga, el detalle sigue sirviendo.
+    # ERP-F5: cada cobro lleva su CONTRAPARTIDA (catálogo configurable).
     if doc_type == "facturas":
-        _attach_invoice_collections(client, ejercicio, doc, serie, codigo)
+        from app.erp.contrapartidas import contrapartida_names  # noqa: PLC0415
+
+        _attach_invoice_collections(
+            client, ejercicio, doc, serie, codigo,
+            contrapartidas=contrapartida_names(session),
+        )
     # E3-B — posición en el ciclo PRE→ALB→FAC (best-effort: el detalle sigue
     # sirviendo aunque el índice del ciclo no cargue). E3-B-fix1: la etiqueta
     # del estado va con la semántica del TIPO (albarán «pendiente» = «Sin
@@ -967,30 +955,26 @@ def formas_pago(
     session: Session = Depends(get_session),
     current_user: User = Depends(require_erp_view),
 ) -> dict[str, Any]:
-    """Catálogo de formas de pago (F_FOP) para el desplegable del modal de
-    emisión. Best-effort: si FACTUSOL no responde, devuelve lista vacía (el
-    modal permite entonces dejarlo en blanco). Cache en proceso de 5 min."""
+    """Catálogo de formas de pago para el desplegable del modal de emisión.
+    ERP-F5: se lee de **F_FPA** (`CODFPA` → `DESFPA`, 77 filas); F_FOP, la
+    tabla que se leía desde C-2-fix2, está VACÍA en producción. Best-effort:
+    si FACTUSOL no responde, lista vacía (el modal permite dejarlo en blanco).
+    Cache en proceso de 5 min (`integrations/factusol/catalogs`)."""
     _ = current_user
+    from app.integrations.factusol.catalogs import is_cached, payment_methods  # noqa: PLC0415
+    from app.integrations.factusol.client import FactusolClient  # noqa: PLC0415
     from app.integrations.factusol.service import ejercicio_for  # noqa: PLC0415
 
     ejercicio = ejercicio_for(session)
-    cached = _FOP_CACHE.get(ejercicio)
-    now = time.time()
-    if cached and cached[0] > now:
-        return {"items": cached[1], "ejercicio": ejercicio, "cached": True}
-
-    from app.integrations.factusol.client import FactusolClient  # noqa: PLC0415
-
+    cached = is_cached("formas_pago", ejercicio=ejercicio)
     try:
         client = FactusolClient.from_settings()
-        rows = client.load_table("F_FOP", ejercicio=ejercicio)
-        items = [_normalise_fop(r) for r in rows]
+        items = payment_methods(client, ejercicio=ejercicio)
     except Exception as exc:  # noqa: BLE001 — FACTUSOL caído / sin credenciales
-        logger.warning("factusol formas-pago falló: %s", exc)
-        return {"items": [], "ejercicio": ejercicio, "error": "factusol_unreachable"}
-
-    _FOP_CACHE[ejercicio] = (now + _FOP_CACHE_TTL_SECONDS, items)
-    return {"items": items, "ejercicio": ejercicio, "cached": False}
+        logger.warning("factusol formas-pago (F_FPA) falló: %s", exc)
+        return {"items": [], "ejercicio": ejercicio, "source": "F_FPA",
+                "error": "factusol_unreachable"}
+    return {"items": items, "ejercicio": ejercicio, "source": "F_FPA", "cached": cached}
 
 
 # --- clientes: búsqueda / vínculo / alta (Fase C · C-3) ----------------------

@@ -173,3 +173,37 @@ describe("ErpSettingsPage — serie de facturación (C-2)", () => {
     expect(mockUpdate.mock.calls[0][0].factusol_estpre_accepted).toBe("1");
   });
 });
+
+// ERP-F5 — contrapartidas de cobro (catálogo configurable) + PayPal por tienda.
+describe("ErpSettingsPage — contrapartidas de cobro (F5)", () => {
+  it("lista las contrapartidas, permite editarlas y guarda el PayPal por tienda", async () => {
+    mockGet.mockResolvedValue(settings({
+      contrapartidas: [
+        { codigo: "6", nombre: "Bomedia Sabadell" },
+        { codigo: "14", nombre: "Paypal Streamtec" },
+      ],
+      paypal_contrapartidas_by_store: { artisjet: "12", boprint: "14", fluxlasers: "14" },
+    }));
+    const user = userEvent.setup();
+    render(<ErpSettingsPage />);
+    const desc = await screen.findByLabelText("Contrapartida 1 descripción");
+    expect(desc).toHaveValue("Bomedia Sabadell");
+    expect(screen.getByLabelText("Contrapartida 1 código")).toHaveValue("6");
+    // El selector PayPal de boprint apunta a la 14 y ofrece las del catálogo.
+    const boprint = screen.getByLabelText("Contrapartida PayPal boprint") as HTMLSelectElement;
+    expect(boprint.value).toBe("14");
+    expect(screen.getAllByRole("option", { name: "6 · Bomedia Sabadell" }).length).toBe(3);
+    await user.clear(desc);
+    await user.type(desc, "Bomedia Sabadell (ES33…1918)");
+    await user.selectOptions(boprint, "6");
+    await user.click(screen.getByRole("button", { name: "+ Añadir contrapartida" }));
+    expect(screen.getByLabelText("Contrapartida 3 código")).toHaveValue("");
+    await user.click(screen.getByRole("button", { name: "Guardar" }));
+    await waitFor(() => expect(mockUpdate).toHaveBeenCalled());
+    const sent = mockUpdate.mock.calls[0][0];
+    expect(sent.contrapartidas[0]).toEqual({ codigo: "6", nombre: "Bomedia Sabadell (ES33…1918)" });
+    expect(sent.contrapartidas).toHaveLength(3);
+    expect(sent.paypal_contrapartidas_by_store.boprint).toBe("6");
+    expect(sent.paypal_contrapartidas_by_store.artisjet).toBe("12");
+  });
+});

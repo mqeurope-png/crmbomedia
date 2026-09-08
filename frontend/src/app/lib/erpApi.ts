@@ -486,6 +486,11 @@ export type ErpSettings = {
   /** ERP-E4 — identidad fiscal de las empresas emisoras por serie (alimenta
    *  los PDF). Llega ya fusionada con los defaults de los modelos reales. */
   factusol_companies?: Record<string, FactusolCompany>;
+  /** ERP-F5 — contrapartidas de cobro (destino del dinero en FACTUSOL;
+   *  código → descripción). La tabla no existe en FACTUSOL: vive aquí. */
+  contrapartidas?: Contrapartida[];
+  /** ERP-F5 — contrapartida PayPal por tienda (artisjet / boprint / fluxlasers). */
+  paypal_contrapartidas_by_store?: Record<string, string>;
   /** E4-fix1 — almacenes de recogida del albarán de devolución. */
   factusol_pickup_warehouses?: FactusolPickupWarehouse[];
 };
@@ -539,6 +544,14 @@ export async function updateErpSettings(patch: Partial<ErpSettings>): Promise<Er
     method: "PATCH",
     body: JSON.stringify(patch),
   });
+}
+
+/** ERP-F5 — contrapartida de cobro de FACTUSOL (destino del dinero). */
+export type Contrapartida = { codigo: string; nombre: string };
+
+export async function getContrapartidas(): Promise<Contrapartida[]> {
+  const r = await apiFetch<{ items: Contrapartida[] }>("/api/erp/catalogs/contrapartidas");
+  return r.items;
 }
 
 // --- WooCommerce multi-tienda admin (Fase B PR B-2) --------------------------
@@ -745,10 +758,11 @@ export type FactusolCobro = {
   linea: number | null;
   fecha: string | null;
   importe: number | null;
-  /** Código de forma de pago (F_FOP). */
-  forma_pago: string | null;
-  /** Nombre de la forma de pago resuelto del catálogo (o null). */
-  forma_pago_nombre?: string | null;
+  /** ERP-F5 — código de CONTRAPARTIDA de cobro (F_LCO.CPALCO: destino del
+   *  dinero, p. ej. 8 = Streamtec Sabadell). No es la forma de pago. */
+  contrapartida: string | null;
+  /** Nombre de la contrapartida resuelto del catálogo configurable. */
+  contrapartida_nombre?: string | null;
   concepto: string | null;
 };
 
@@ -1779,11 +1793,18 @@ export type BankAccount = {
   bic: string | null;
   currency: string;
   serie: number | null;
+  /** ERP-F5 — contrapartida de cobro de FACTUSOL enlazada (código del
+   *  catálogo configurable) y su nombre resuelto. */
+  contrapartida_codigo: string | null;
+  contrapartida_nombre?: string | null;
   column_mapping: Record<string, string> | null;
   has_statement_header: boolean;
 };
 
-export type BankAccountSuggestion = Omit<BankAccount, "id" | "column_mapping" | "has_statement_header" | "serie">;
+export type BankAccountSuggestion = Omit<
+  BankAccount,
+  "id" | "column_mapping" | "has_statement_header" | "serie" | "contrapartida_codigo" | "contrapartida_nombre"
+>;
 
 export type BankConfidence = "alta" | "media" | "baja";
 
@@ -1875,7 +1896,8 @@ export async function listSuggestedBankAccounts(): Promise<BankAccountSuggestion
 }
 
 export async function createBankAccount(
-  payload: Omit<BankAccountSuggestion, "bank_name" | "bic"> & Partial<Pick<BankAccount, "bank_name" | "bic" | "serie">>,
+  payload: Omit<BankAccountSuggestion, "bank_name" | "bic">
+    & Partial<Pick<BankAccount, "bank_name" | "bic" | "serie" | "contrapartida_codigo">>,
 ): Promise<BankAccount> {
   return apiFetch("/api/erp/bank/accounts", { method: "POST", body: JSON.stringify(payload) });
 }

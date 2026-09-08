@@ -41,6 +41,9 @@ class AccountIn(BaseModel):
     bic: str | None = Field(default=None, max_length=11)
     currency: str = Field(default="EUR", max_length=3)
     serie: int | None = Field(default=None, ge=1, le=9)
+    #: ERP-F5 — contrapartida de cobro de FACTUSOL enlazada (código del
+    #: catálogo configurable; vacío = sin enlazar).
+    contrapartida_codigo: str | None = Field(default=None, max_length=10)
     column_mapping: dict[str, str] | None = None
 
 
@@ -51,6 +54,7 @@ class AccountPatch(BaseModel):
     bic: str | None = Field(default=None, max_length=11)
     currency: str | None = Field(default=None, max_length=3)
     serie: int | None = Field(default=None, ge=1, le=9)
+    contrapartida_codigo: str | None = Field(default=None, max_length=10)
     column_mapping: dict[str, str] | None = None
 
 
@@ -89,7 +93,7 @@ def create_account(
 ) -> dict[str, Any]:
     _ = current_user
     try:
-        return service.account_to_dict(service.create_account(session, payload.model_dump()))
+        return service.account_dict(session, service.create_account(session, payload.model_dump()))
     except ValueError as exc:
         raise HTTPException(
             status.HTTP_409_CONFLICT, {"code": "account_invalid", "detail": str(exc)}
@@ -105,11 +109,16 @@ def update_account(
 ) -> dict[str, Any]:
     _ = current_user
     try:
-        return service.account_to_dict(
+        return service.account_dict(
+            session,
             service.update_account(session, account_id, payload.model_dump(exclude_unset=True)),
         )
     except LookupError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, {"code": "account_invalid", "detail": str(exc)}
+        ) from exc
 
 
 @router.delete("/accounts/{account_id}", status_code=204)

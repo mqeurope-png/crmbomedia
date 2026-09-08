@@ -408,15 +408,16 @@ def test_customer_filter_no_match_returns_empty_not_all() -> None:
 
 def test_forma_pago_in_header_and_resolved_in_detail(client, session_factory) -> None:
     """El listado expone el código FOP*; el detalle lo resuelve a nombre con
-    el catálogo F_FOP (C-2-fix2). Vacío → null (la UI pinta «—»)."""
+    el catálogo F_FPA (ERP-F5; F_FOP está vacía). Vacío → null (la UI pinta
+    «—»)."""
     _ = session_factory
     facturas = [
         _fac(260066, "5", FOPFAC="002"),
         _fac(260065, "5"),  # sin forma de pago
     ]
-    fop = [{"CODFOP": "002", "DESFOP": "Transferencia 30 días"}]
+    fpa = [{"CODFPA": "002", "DESFPA": "Transferencia 30 días"}]
     with _patched_factusol(FakeClient({
-        "F_FAC": facturas, "F_LFA": [], "F_FOP": fop,
+        "F_FAC": facturas, "F_LFA": [], "F_FOP": [], "F_FPA": fpa,
     })):
         detail = client.get(
             "/api/erp/factusol/documents/facturas/5/260066",

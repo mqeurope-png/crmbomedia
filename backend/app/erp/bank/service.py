@@ -30,19 +30,21 @@ from app.erp.bank.parsing import (
     normalize_iban,
     read_statement,
 )
+from app.erp.contrapartidas import contrapartida_names
 from app.erp.models import (
     BankAccount,
     BankLearnedRule,
     BankMovement,
     BankReconciliation,
 )
+from app.integrations.factusol.catalogs import normalize_code, resolve_name
 
 logger = logging.getLogger(__name__)
 
 # --- cuentas ------------------------------------------------------------------
 
 
-def account_to_dict(a: BankAccount) -> dict[str, Any]:
+def account_to_dict(a: BankAccount, contrapartidas: dict[str, str] | None = None) -> dict[str, Any]:
     return {
         "id": a.id,
         "name": a.name,
@@ -51,14 +53,35 @@ def account_to_dict(a: BankAccount) -> dict[str, Any]:
         "bic": a.bic,
         "currency": a.currency,
         "serie": a.serie,
+        # ERP-F5: contrapartida de cobro enlazada (código + nombre del catálogo).
+        "contrapartida_codigo": a.contrapartida_codigo,
+        "contrapartida_nombre": resolve_name(contrapartidas or {}, a.contrapartida_codigo),
         "column_mapping": json.loads(a.column_mapping_json) if a.column_mapping_json else None,
         "has_statement_header": bool(a.statement_header_json),
     }
 
 
+def account_dict(session: Session, a: BankAccount) -> dict[str, Any]:
+    """`account_to_dict` con el nombre de la contrapartida ya resuelto."""
+    return account_to_dict(a, contrapartida_names(session))
+
+
 def list_accounts(session: Session) -> list[dict[str, Any]]:
     rows = session.scalars(select(BankAccount).order_by(BankAccount.name)).all()
-    return [account_to_dict(a) for a in rows]
+    names = contrapartida_names(session)
+    return [account_to_dict(a, names) for a in rows]
+
+
+def _contrapartida_code(session: Session, value: Any) -> str | None:
+    """Código de contrapartida validado contra el catálogo configurable
+    (vacío → None; desconocido → ValueError, no se guarda a ciegas)."""
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    names = contrapartida_names(session)
+    if resolve_name(names, raw) is None:
+        raise ValueError(f"Contrapartida desconocida: {raw}. Dala de alta en /erp/settings.")
+    return normalize_code(raw)
 
 
 def create_account(session: Session, data: dict[str, Any]) -> BankAccount:
@@ -74,6 +97,7 @@ def create_account(session: Session, data: dict[str, Any]) -> BankAccount:
         bic=(data.get("bic") or None),
         currency=str(data.get("currency") or "EUR").upper()[:3],
         serie=data.get("serie"),
+        contrapartida_codigo=_contrapartida_code(session, data.get("contrapartida_codigo")),
         column_mapping_json=json.dumps(data["column_mapping"])
         if data.get("column_mapping")
         else None,
@@ -95,6 +119,8 @@ def update_account(session: Session, account_id: str, data: dict[str, Any]) -> B
         acc.currency = str(data["currency"]).upper()[:3]
     if "iban" in data and data["iban"]:
         acc.iban = normalize_iban(data["iban"])
+    if "contrapartida_codigo" in data:
+        acc.contrapartida_codigo = _contrapartida_code(session, data["contrapartida_codigo"])
     if "column_mapping" in data:
         acc.column_mapping_json = (
             json.dumps(data["column_mapping"]) if data["column_mapping"] else None
@@ -778,6 +804,7 @@ def export_statement_xlsx(
 __all__ = [
     "FILLED_COLUMNS",
     "ParseError",
+    "account_dict",
     "account_to_dict",
     "confirm_all_high",
     "confirm_movement",

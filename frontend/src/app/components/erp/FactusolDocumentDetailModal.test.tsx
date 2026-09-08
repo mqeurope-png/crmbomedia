@@ -811,7 +811,8 @@ describe("FactusolDocumentDetailModal — marcar cobro (ERP-F3)", () => {
       total_cobrado: 408.48, saldo_pendiente: 12.26,
       cobros: [{
         linea: 1, fecha: "2026-01-02", importe: 408.48,
-        forma_pago: "002", forma_pago_nombre: "Transferencia",
+        // ERP-F5: CPALCO = contrapartida (8 = Streamtec Sabadell), no forma de pago.
+        contrapartida: "8", contrapartida_nombre: "Streamtec Sabadell",
         concepto: "COBRO FACTURA",
       }],
     }));
@@ -819,7 +820,9 @@ describe("FactusolDocumentDetailModal — marcar cobro (ERP-F3)", () => {
     expect(await screen.findByText("Cobros")).toBeInTheDocument();
     // 408.48 aparece en la fila del cobro y en «Total cobrado».
     expect(screen.getAllByText("408.48 €").length).toBeGreaterThanOrEqual(1);
-    expect(screen.getAllByText("Transferencia").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText("Contrapartida")).toBeInTheDocument();
+    expect(screen.getByText("Streamtec Sabadell")).toBeInTheDocument();
+    expect(screen.queryByText("Código 8")).not.toBeInTheDocument();
     expect(screen.getByText("Saldo pendiente")).toBeInTheDocument();
     // 12,26 € de saldo pendiente (JS toFixed usa punto decimal).
     expect(screen.getByText("12.26 €")).toBeInTheDocument();

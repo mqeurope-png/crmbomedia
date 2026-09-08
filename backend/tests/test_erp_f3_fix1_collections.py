@@ -184,8 +184,8 @@ def test_detail_endpoint_includes_collections(http) -> None:
     tables = {
         "F_FAC": [_fac(5, 260004, 420.74, "1")],
         "F_LFA": [], "F_ALB": [], "F_LAL": [],
-        "F_LCO": [_cobro(5, 260004, 1, 408.48)],
-        "F_FOP": [{"CODFOP": "002", "NOMFOP": "Transferencia"}],
+        "F_LCO": [_cobro(5, 260004, 1, 408.48, CPALCO=8)],
+        "F_FOP": [],  # ERP-F5: vacía en producción; el nombre ya no sale de aquí
     }
     with patch(
         "app.integrations.factusol.client.FactusolClient.from_settings",
@@ -201,4 +201,8 @@ def test_detail_endpoint_includes_collections(http) -> None:
     assert body["saldo_pendiente"] == 12.26
     assert body["total_cobrado"] == 408.48
     assert len(body["cobros"]) == 1
-    assert body["cobros"][0]["forma_pago_nombre"] == "Transferencia"
+    # ERP-F5: CPALCO es la CONTRAPARTIDA (8 = Streamtec Sabadell, serie 5),
+    # no la forma de pago.
+    assert body["cobros"][0]["contrapartida"] == "8"
+    assert body["cobros"][0]["contrapartida_nombre"] == "Streamtec Sabadell"
+    assert "forma_pago" not in body["cobros"][0]
