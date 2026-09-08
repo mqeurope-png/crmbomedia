@@ -35,8 +35,12 @@ from sqlalchemy.orm import Session
 from app.erp.models import ErpDriveSyncRow, ErpSettings
 from app.erp.seguimiento import (
     KEY_COLUMN,
+    KEY_COLUMN_INDEX,
+    SEG_COLUMNS,
     SEGUIMIENTO_COLUMNS,
     UNMANAGED_COLUMN_INDEXES,
+    is_structure_row,
+    match_header_columns,
     row_to_sheet_values,
     snapshot_dump,
     snapshot_load,
@@ -172,7 +176,7 @@ class GoogleSheetsClient:
         _, title = self._sheet()
         data = [
             {
-                "range": f"{title}!{chr(ord('A') + col)}{row}",
+                "range": f"{title}!{_col_a1(col)}{row}",
                 "values": [[value]],
             }
             for row, col, value in updates
@@ -198,7 +202,8 @@ class GoogleSheetsClient:
         if not rows:
             return
         _, title = self._sheet()
-        end_col = chr(ord("A") + len(SEGUIMIENTO_COLUMNS) - 1)
+        width = max((len(r) for r in rows), default=len(SEGUIMIENTO_COLUMNS))
+        end_col = _col_a1(width - 1)
         rng = f"{title}!A{start_row}:{end_col}{start_row + len(rows) - 1}"
         self._request(
             "PUT", f"/values/{rng}?valueInputOption=RAW",
@@ -206,28 +211,53 @@ class GoogleSheetsClient:
         )
 
 
-def _norm_header(value: Any) -> str:
-    return " ".join(str(value or "").split()).casefold()
+def _col_a1(idx: int) -> str:
+    """Índice de columna 0-based → letra(s) A1 (0→A, 25→Z, 26→AA)."""
+    out = ""
+    n = idx
+    while True:
+        n, rem = divmod(n, 26)
+        out = chr(ord("A") + rem) + out
+        if n == 0:
+            break
+        n -= 1
+    return out
 
 
 def _norm_key(value: Any) -> str:
     return str(value or "").strip().upper()
 
 
-def _locate_header(values: list[list[str]]) -> tuple[int, int]:
-    """(fila de cabecera 1-based, índice de la columna clave). La cabecera es
-    la PRIMERA fila cuya primera celda es «Empresa»; la columna clave se busca
-    por nombre en esa fila (no se asume posición)."""
+def _render_header(row: list[Any]) -> str:
+    """La cabecera leída, tal cual, con índices — para que Bart vea con qué se
+    está comparando (Parte D)."""
+    return " · ".join(f"[{i}] «{str(c).strip()}»" for i, c in enumerate(row))
+
+
+def _locate_header(values: list[list[str]]) -> tuple[int, dict[int, int]]:
+    """(fila de cabecera 1-based, mapa columna lógica → columna de la hoja).
+
+    La cabecera es la PRIMERA fila que reconoce la columna clave y al menos
+    HEADER_MIN_MATCHES columnas por sus alias (ERP-F6-fix1): así se detecta
+    aunque los nombres difieran (tildes, mayúsculas, `Nº`/`Núm`, `f` por
+    Empresa…) y sin confundirla con una fila de datos. Si no aparece, el error
+    dice qué columna falta y ENSEÑA la cabecera leída con sus índices."""
+    from app.erp.seguimiento import HEADER_MIN_MATCHES  # noqa: PLC0415
+
+    best_row: list[Any] = []
+    best_score = -1
     for i, row in enumerate(values):
-        if row and _norm_header(row[0]) == "empresa":
-            for j, cell in enumerate(row):
-                if _norm_header(cell) == _norm_header(KEY_COLUMN):
-                    return i + 1, j
-            raise DriveSyncError(
-                f"la cabecera de la hoja no tiene la columna «{KEY_COLUMN}»"
-            )
+        col_map = match_header_columns(row)
+        if len(col_map) > best_score:
+            best_score, best_row = len(col_map), row
+        if KEY_COLUMN_INDEX in col_map and len(col_map) >= HEADER_MIN_MATCHES:
+            return i + 1, col_map
+    read = _render_header(best_row) if best_row else "(hoja vacía)"
     raise DriveSyncError(
-        "no se encontró la cabecera («Empresa …») en la hoja: no se escribe nada"
+        f"no se reconoció la cabecera de la hoja: falta la columna «{KEY_COLUMN}» "
+        "(imprescindible para localizar cada pedido). Cabecera leída — "
+        f"{read}. Añade esa columna a la hoja, o si ya existe con otro nombre, "
+        "avisa para incluirlo entre los nombres reconocidos. No se ha escrito nada."
     )
 
 
@@ -240,16 +270,20 @@ def sync_to_sheet(
     (celdas actualizadas, filas añadidas y conflictos NO tocados) para que
     Bart vea exactamente qué se escribió."""
     values = sheets.get_values()
-    header_row, key_col = _locate_header(values)
+    header_row, col_map = _locate_header(values)
+    key_col = col_map[KEY_COLUMN_INDEX]
+    # Columnas opcionales que la hoja NO trae: se omiten (no rompen la sync).
+    omitted_columns = [
+        SEG_COLUMNS[c].header
+        for c in range(len(SEG_COLUMNS))
+        if c not in col_map and c not in UNMANAGED_COLUMN_INDEXES
+    ]
 
     # clave → nº de fila (1-based) en la hoja; se saltan separadores («^^^^»)
-    # y cabeceras repetidas de la sección de en-curso/histórico.
+    # y la cabecera repetida a media hoja (estructura, no pedidos).
     sheet_index: dict[str, int] = {}
     for i, row in enumerate(values):
-        if i + 1 <= header_row:
-            continue
-        first = str(row[0] if row else "").strip()
-        if first.startswith("^^^^") or _norm_header(first) == "empresa":
+        if i + 1 <= header_row or is_structure_row(row):
             continue
         key = _norm_key(row[key_col] if len(row) > key_col else "")
         if key and key not in sheet_index:
@@ -268,44 +302,48 @@ def sync_to_sheet(
         key = _norm_key(row.get("albaran_pedido"))
         if not key:
             continue
+        # `new_values` va en el orden CANÓNICO; el mapa lleva cada columna a su
+        # sitio real en la hoja (que puede diferir en nombre y posición).
         new_values = row_to_sheet_values(row)
         if key not in sheet_index:
             new_rows.append((row, new_values))
             continue
         rownum = sheet_index[key]
         existing_raw = values[rownum - 1]
-        existing = [
-            str(existing_raw[c]).strip() if c < len(existing_raw) else ""
-            for c in range(len(SEGUIMIENTO_COLUMNS))
-        ]
         snap = snapshots.get(row["id"])
         last = snapshot_load(snap.last_values_json if snap else None) or []
         # `written` = lo que BoHub HA escrito (nunca el estado de la hoja):
         # si la foto incluyera ediciones manuales, el siguiente sincronizado
-        # las tomaría por propias y las pisaría.
+        # las tomaría por propias y las pisaría. Sigue en orden canónico.
         written = [
             (last[c].strip() if c < len(last) else "")
             for c in range(len(SEGUIMIENTO_COLUMNS))
         ]
-        for col, new in enumerate(new_values):
-            if col in UNMANAGED_COLUMN_INDEXES:
+        for canon, new in enumerate(new_values):
+            if canon in UNMANAGED_COLUMN_INDEXES:
                 continue  # «Orden» es de Bart: no se escribe jamás
-            current = existing[col]
+            sheet_col = col_map.get(canon)
+            if sheet_col is None:
+                continue  # esa columna no existe en la hoja: se omite
+            current = (
+                str(existing_raw[sheet_col]).strip()
+                if sheet_col < len(existing_raw) else ""
+            )
             new_s = new.strip()
             if current == new_s:
-                written[col] = new_s  # la hoja ya dice lo mismo que BoHub
+                written[canon] = new_s  # la hoja ya dice lo mismo que BoHub
                 continue
             if not new_s:
                 continue  # BoHub sin dato nunca borra lo que haya escrito
-            if current == "" or current == written[col]:
-                updates.append((rownum, col, new_s))
-                written[col] = new_s
+            if current == "" or current == written[canon]:
+                updates.append((rownum, sheet_col, new_s))
+                written[canon] = new_s
             else:
                 # Contenido manual distinto de lo que BoHub dejó: no tocar.
                 conflicts.append({
                     "order_number": row.get("albaran_pedido"),
                     "row": rownum,
-                    "column": SEGUIMIENTO_COLUMNS[col],
+                    "column": SEG_COLUMNS[canon].header,
                     "sheet_value": current,
                     "bohub_value": new_s,
                 })
@@ -315,8 +353,19 @@ def sync_to_sheet(
     # nuevas bajo la cabecera — así la inserción no desplaza nada ya escrito.
     sheets.update_cells(updates)
     if new_rows:
+        width = max(len(values[header_row - 1]), max(col_map.values()) + 1)
+        lines = []
+        for _row, new_values in new_rows:
+            line = [""] * width
+            for canon, val in enumerate(new_values):
+                if canon in UNMANAGED_COLUMN_INDEXES:
+                    continue
+                sheet_col = col_map.get(canon)
+                if sheet_col is not None:
+                    line[sheet_col] = val
+            lines.append(line)
         sheets.insert_rows_at(header_row + 1, len(new_rows))
-        sheets.write_rows(header_row + 1, [v for _, v in new_rows])
+        sheets.write_rows(header_row + 1, lines)
         touched.extend(new_rows)
 
     now = datetime.now(UTC).replace(tzinfo=None)
@@ -338,9 +387,13 @@ def sync_to_sheet(
         "appended_rows": len(new_rows),
         "conflicts": conflicts,
         "sheet_rows": len(values),
+        # ERP-F6-fix1: columnas opcionales ausentes en la hoja (Tracking,
+        # Nº de serie, WhiteRIP…): se sincroniza el resto y se avisa.
+        "omitted_columns": omitted_columns,
     }
     logger.info(
-        "drive sync: %s celdas actualizadas, %s filas nuevas, %s conflictos",
-        len(updates), len(new_rows), len(conflicts),
+        "drive sync: %s celdas actualizadas, %s filas nuevas, %s conflictos, "
+        "columnas omitidas: %s",
+        len(updates), len(new_rows), len(conflicts), omitted_columns or "ninguna",
     )
     return summary
