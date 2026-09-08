@@ -21,6 +21,9 @@ del pedido y en la hoja de Drive esa columna no se toca nunca.
 from __future__ import annotations
 
 import json
+import re
+import unicodedata
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any
 
@@ -35,31 +38,133 @@ from app.erp.models import (
     TransportStatus,
 )
 
-#: Cabecera EXACTA del Excel de Bart (y de la hoja de Drive).
-SEGUIMIENTO_COLUMNS: list[str] = [
-    "Empresa",
-    "Fecha entrada albarán",
-    "Cliente",
-    "Vendedor",
-    "OFI-TER-SAT",
-    "Transport",
-    "Preparado",
-    "Recogido",
-    "F Envío Factura",
-    "Productos",
-    "Proforma",
-    "Albarán / Nº Pedido Web",
-    "Nº de Factura",
-    "Tracking",
-    "Nº de Serie",
-    "WhiteRIP",
-    "Orden",
+# --- columnas del seguimiento (DEFINICIÓN ÚNICA) --------------------------------
+#
+# ERP-F6-fix1 — la hoja real de Bart no usa los nombres canónicos: `Nº` frente a
+# `Núm`, mayúsculas cambiantes (`TRACKING`, `FACTURA`), tildes ausentes
+# (`Fecha entrada albaran`, `F Envio Factura`) y, en la cabecera repetida a
+# media hoja, nombres realmente distintos (`f` por Empresa, `Albarán` por
+# `Albarán / Nº Pedido Web`, `FACTURA` por `Núm de Factura`). Por eso cada
+# columna declara AQUÍ, en un solo sitio, sus nombres aceptados, y la
+# comparación se hace SIEMPRE sobre la forma normalizada (sin tildes, en
+# minúsculas, con las variantes de «número» unificadas).
+
+
+@dataclass(frozen=True)
+class SegColumn:
+    #: Nombre canónico (el del Excel de Bart) — cabecera de export y filas nuevas.
+    header: str
+    #: Nombres aceptados en la hoja (se normalizan al compararlos).
+    aliases: tuple[str, ...] = ()
+    #: Imprescindible para identificar la fila del pedido: si falta, no se
+    #: sincroniza (Parte D). El resto son opcionales: si falta una, se omite
+    #: esa columna y se avisa, pero se sincroniza lo demás.
+    required: bool = False
+    #: Columna de notas manuales de Bart («Orden»): JAMÁS se escribe.
+    unmanaged: bool = False
+    #: Alias ya normalizados (se rellena en __post_init__-equivalente abajo).
+    norm_aliases: frozenset[str] = field(default_factory=frozenset)
+
+
+def _num_variants_unified(text: str) -> str:
+    """Unifica las variantes de «número» a un único token `num`: `nº`, `n°`,
+    `no.`, `núm`, `num`, `numero` y hasta la `n` suelta (`n factura`)."""
+    return re.sub(r"\bn(?:o|um|umero)?\b\.?", "num", text)
+
+
+def normalize_header(text: Any) -> str:
+    """Forma comparable de un nombre de columna: sin tildes ni diacríticos, en
+    minúsculas, espacios colapsados y variantes de «número» unificadas. Es la
+    ÚNICA vía por la que se comparan cabeceras y alias."""
+    s = unicodedata.normalize("NFKD", str(text or ""))
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    # º (ordinal) ya cae a «o» en NFKD; ° (grados) no descompone, se fuerza.
+    s = s.replace("°", "o").replace("º", "o")
+    s = s.casefold()
+    s = re.sub(r"\s+", " ", s).strip()
+    return _num_variants_unified(s)
+
+
+def _col(header: str, *aliases: str, required: bool = False,
+         unmanaged: bool = False) -> SegColumn:
+    # El propio nombre canónico siempre cuenta como alias.
+    all_aliases = (header, *aliases)
+    return SegColumn(
+        header=header, aliases=all_aliases, required=required, unmanaged=unmanaged,
+        norm_aliases=frozenset(normalize_header(a) for a in all_aliases),
+    )
+
+
+#: Columnas del seguimiento, en el ORDEN del Excel de Bart. Los alias se listan
+#: en su forma simple; se normalizan al construir la columna.
+SEG_COLUMNS: list[SegColumn] = [
+    _col("Empresa", "f"),
+    _col("Fecha entrada albarán", "fecha entrada albaran", "fecha"),
+    _col("Cliente"),
+    _col("Vendedor"),
+    _col("OFI-TER-SAT", "ofi ter sat"),
+    _col("Transport", "transporte", "transportista"),
+    _col("Preparado"),
+    _col("Recogido"),
+    _col("F Envío Factura", "f envio factura", "fecha envio factura"),
+    _col("Productos"),
+    _col("Proforma"),
+    _col("Albarán / Nº Pedido Web", "albaran / num pedido web", "albaran",
+         "albaran / pedido web", required=True),
+    _col("Nº de Factura", "num de factura", "factura", "n factura"),
+    _col("Tracking"),
+    _col("Nº de Serie", "numero de serie", "n de serie", "serie"),
+    _col("WhiteRIP", "white rip"),
+    _col("Orden", unmanaged=True),
 ]
+
+#: Cabecera canónica (export + filas nuevas) — derivada de la definición única.
+SEGUIMIENTO_COLUMNS: list[str] = [c.header for c in SEG_COLUMNS]
 #: Columna que identifica la fila de un pedido en la hoja.
-KEY_COLUMN = "Albarán / Nº Pedido Web"
-KEY_COLUMN_INDEX = SEGUIMIENTO_COLUMNS.index(KEY_COLUMN)
+KEY_COLUMN_INDEX = next(i for i, c in enumerate(SEG_COLUMNS) if c.required)
+KEY_COLUMN = SEG_COLUMNS[KEY_COLUMN_INDEX].header
 #: «Orden» es la columna de notas manuales de Bart: JAMÁS se escribe en Drive.
-UNMANAGED_COLUMN_INDEXES = {SEGUIMIENTO_COLUMNS.index("Orden")}
+UNMANAGED_COLUMN_INDEXES = {i for i, c in enumerate(SEG_COLUMNS) if c.unmanaged}
+
+#: Mínimo de columnas que debe casar una fila para considerarla una CABECERA
+#: (y no una fila de datos). La cabecera superior casa las 17; la repetida a
+#: media hoja casa ~12; una fila de datos, casi ninguna.
+HEADER_MIN_MATCHES = 5
+
+
+def match_header_columns(header_row: list[Any]) -> dict[int, int]:
+    """`{índice de columna lógica → índice de columna en la hoja}` para una
+    fila de cabecera, comparando por alias normalizados. Asignación 1:1 de
+    izquierda a derecha (una celda no reclama dos columnas)."""
+    mapping: dict[int, int] = {}
+    for sheet_col, cell in enumerate(header_row):
+        norm = normalize_header(cell)
+        if not norm:
+            continue
+        for canon, col in enumerate(SEG_COLUMNS):
+            if canon in mapping:
+                continue
+            if norm in col.norm_aliases:
+                mapping[canon] = sheet_col
+                break
+    return mapping
+
+
+def header_score(header_row: list[Any]) -> int:
+    """Cuántas columnas lógicas reconoce una fila (para distinguir cabecera de
+    fila de datos, y la cabecera repetida)."""
+    return len(match_header_columns(header_row))
+
+
+def is_structure_row(row: list[Any]) -> bool:
+    """¿La fila es ESTRUCTURA (separador «^^^^», cabecera repetida) y no un
+    pedido? No se interpreta ni se sobrescribe."""
+    first = str(row[0] if row else "").strip()
+    if not any(str(c).strip() for c in row):
+        return True
+    if first.startswith("^^^^"):
+        return True
+    return header_score(row) >= HEADER_MIN_MATCHES
 
 #: Códigos cortos de empresa que usa el Excel (BO 6.916 · MQ 498 · ST 58…).
 SERIES_SHORT: dict[int, str] = {1: "BO", 2: "MQ", 4: "LAM", 5: "ST"}
