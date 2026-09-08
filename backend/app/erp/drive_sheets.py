@@ -42,6 +42,7 @@ from app.erp.seguimiento import (
     extract_order_number,
     is_structure_row,
     match_header_columns,
+    normalize_abbr,
     normalize_client,
     order_match_numbers,
     parse_sheet_date,
@@ -227,6 +228,10 @@ def _col_a1(idx: int) -> str:
             break
         n -= 1
     return out
+
+
+#: Índice de la columna Empresa (abreviatura), que se compara normalizada.
+_EMPRESA_INDEX = SEGUIMIENTO_COLUMNS.index("Empresa")
 
 
 def _norm_key(value: Any) -> str:
@@ -419,7 +424,13 @@ def sync_to_sheet(
                 if sheet_col < len(existing_raw) else ""
             )
             new_s = new.strip()
-            if current == new_s:
+            same = current == new_s
+            # ERP-F6-fix3: la abreviatura de Empresa se compara normalizada
+            # (mayúsculas, sin tildes): `st` y `ST` no son distintas, así no se
+            # pisa la forma que Bart escribió a mano ni se marca conflicto.
+            if not same and canon == _EMPRESA_INDEX and current and new_s:
+                same = normalize_abbr(current) == normalize_abbr(new_s)
+            if same:
                 written[canon] = new_s  # la hoja ya dice lo mismo que BoHub
                 continue
             if not new_s:

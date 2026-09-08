@@ -46,7 +46,7 @@ from app.erp.models import (
     ExceptionStatus,
     InvoiceMode,
 )
-from app.erp.seguimiento import shipping_origins_config
+from app.erp.seguimiento import series_abbreviations_config, shipping_origins_config
 from app.integrations.factusol.catalogs import normalize_code
 from app.models.crm import User
 
@@ -122,6 +122,9 @@ class SettingsIn(BaseModel):
     #: cuando exista (coherente con las filas antiguas de Bart) o el de pedido
     #: web si no. Configurable; por defecto True.
     drive_reference_prefer_albaran: bool | None = None
+    #: ERP-F6-fix3 — abreviaturas de empresa por serie ({"1": "BO", "2": "MQ",
+    #: "5": "ST"}) que se escriben en la columna Empresa del seguimiento.
+    factusol_series_abbreviations: dict[str, str] | None = None
 
 
 # --- helpers -----------------------------------------------------------------
@@ -306,7 +309,23 @@ def _get_or_create_settings(session: Session) -> ErpSettings:
     return cfg
 
 
-def _serialise_settings(cfg: ErpSettings) -> dict[str, Any]:
+def _woocommerce_stores(session: Session) -> list[dict[str, str]]:
+    """ERP-F6-fix3 — tiendas Woo dadas de alta ({slug, label}), para poder
+    configurar la serie de cada una (no un único «WooCommerce» para las tres)."""
+    from app.models.integration_settings import (  # noqa: PLC0415
+        ExternalSystem,
+        IntegrationAccount,
+    )
+
+    rows = session.scalars(
+        select(IntegrationAccount)
+        .where(IntegrationAccount.system == ExternalSystem.WOOCOMMERCE)
+        .order_by(IntegrationAccount.account_id)
+    ).all()
+    return [{"slug": a.account_id, "label": a.display_name or a.account_id} for a in rows]
+
+
+def _serialise_settings(cfg: ErpSettings, session: Session) -> dict[str, Any]:
     mode = getattr(cfg.default_invoice_mode, "value", cfg.default_invoice_mode)
     return {
         "default_invoice_mode": mode,
@@ -357,6 +376,15 @@ def _serialise_settings(cfg: ErpSettings) -> dict[str, Any]:
         "drive_reference_prefer_albaran": bool(
             _series(cfg).get("drive_reference_prefer_albaran", True)
         ),
+        # ERP-F6-fix3: abreviaturas de empresa (serie→abrev) y las tiendas Woo
+        # para poder configurar la serie de cada una (no un único WooCommerce).
+        "factusol_series_abbreviations": {
+            str(k): v
+            for k, v in series_abbreviations_config(
+                _series(cfg).get("series_abbreviations")
+            ).items()
+        },
+        "woocommerce_stores": _woocommerce_stores(session),
     }
 
 
@@ -422,7 +450,7 @@ def get_settings_endpoint(
     _ = current_user
     cfg = _get_or_create_settings(session)
     session.commit()
-    return _serialise_settings(cfg)
+    return _serialise_settings(cfg, session)
 
 
 @router.patch("/settings")
@@ -464,7 +492,8 @@ def update_settings(
             or payload.contrapartidas is not None
             or payload.paypal_contrapartidas_by_store is not None
             or payload.shipping_origins is not None
-            or payload.drive_reference_prefer_albaran is not None):
+            or payload.drive_reference_prefer_albaran is not None
+            or payload.factusol_series_abbreviations is not None):
         series = _series(cfg)
         # ERP-F6: lista configurable de orígenes del envío (OFI-TER-SAT).
         if payload.shipping_origins is not None:
@@ -476,6 +505,14 @@ def update_settings(
             series["drive_reference_prefer_albaran"] = bool(
                 payload.drive_reference_prefer_albaran
             )
+        # ERP-F6-fix3: abreviaturas de empresa por serie ({"2": "MQ", …}). Solo
+        # se guardan las claves numéricas con valor no vacío.
+        if payload.factusol_series_abbreviations is not None:
+            series["series_abbreviations"] = {
+                str(int(str(k).strip())): str(v).strip()
+                for k, v in payload.factusol_series_abbreviations.items()
+                if str(k).strip().lstrip("-").isdigit() and str(v).strip()
+            }
         # ERP-F5: contrapartidas de cobro (código numérico único + descripción)
         # y contrapartida PayPal por tienda. Se guardan explícitas.
         if payload.contrapartidas is not None:
@@ -573,7 +610,7 @@ def update_settings(
         cfg.drive_spreadsheet_id = payload.drive_spreadsheet_id.strip() or None
     _audit_settings(session, current_user)
     session.commit()
-    return _serialise_settings(cfg)
+    return _serialise_settings(cfg, session)
 
 
 def _audit_settings(session: Session, actor: User) -> None:

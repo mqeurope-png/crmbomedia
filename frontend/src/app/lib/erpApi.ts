@@ -641,6 +641,12 @@ export type ErpSettings = {
   /** ERP-F6-fix2 — preferir el nº de albarán (si existe) sobre el de pedido
    *  web en la columna de referencia de la hoja. Por defecto true. */
   drive_reference_prefer_albaran?: boolean;
+  /** ERP-F6-fix3 — abreviaturas de empresa por serie ({"1":"BO","2":"MQ",
+   *  "5":"ST"}) para la columna Empresa del seguimiento. */
+  factusol_series_abbreviations?: Record<string, string>;
+  /** ERP-F6-fix3 — tiendas Woo dadas de alta, para configurar la serie de
+   *  cada una (solo lectura; se rellena en el GET). */
+  woocommerce_stores?: { slug: string; label: string }[];
   /** E4-fix1 — almacenes de recogida del albarán de devolución. */
   factusol_pickup_warehouses?: FactusolPickupWarehouse[];
 };
