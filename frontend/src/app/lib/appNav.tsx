@@ -2,6 +2,7 @@ import {
   BarChart3,
   BookOpen,
   Building2,
+  ClipboardList,
   Database,
   FileText,
   Kanban,
@@ -78,6 +79,14 @@ export const NAV_ITEMS: ReadonlyArray<NavItem> = [
     icon: FileText,
     scope: "erp",
     allowedRoles: ["admin", "manager", "pedidos", "user"],
+  },
+  {
+    // ERP-F6 — seguimiento de pedidos (sustituye el Excel manual de Bart).
+    href: "/erp/seguimiento",
+    label: "ERP · Seguimiento",
+    icon: ClipboardList,
+    scope: "erp",
+    allowedRoles: ["admin", "manager", "pedidos", "sat", "user"],
   },
   {
     // ERP-F4-A — conciliación bancaria (revisión humana de propuestas).

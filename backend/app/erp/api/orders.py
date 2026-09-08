@@ -192,6 +192,11 @@ def _serialise_summary(
         "invoice_status": _status_value(o.invoice_status),
         "tracking_number": o.tracking_number,
         "factusol_invoice_number": o.factusol_invoice_number,
+        # ERP-F6 — campos del seguimiento (Excel de Bart): nº de serie (texto
+        # libre, también notas), licencia WhiteRIP y origen del envío.
+        "serial_number": o.serial_number,
+        "whiterip_license": o.whiterip_license,
+        "shipping_origin": o.shipping_origin,
         # E4-fix1: idioma del pedido (detectado en la importación Woo o
         # corregido a mano). Alimenta la cascada de idioma de los PDF.
         "language": o.language,
@@ -750,6 +755,44 @@ def update_order_language(
     order.language = payload.language
     session.commit()
     return {"id": order.id, "language": order.language}
+
+
+class SeguimientoFieldsIn(BaseModel):
+    """ERP-F6 — campos del seguimiento editables desde la ficha. `orden` NO
+    es un campo del modelo: su contenido (los comentarios de la columna
+    «Orden» del Excel) se AÑADE a las observaciones del pedido."""
+
+    serial_number: str | None = Field(default=None, max_length=2000)
+    whiterip_license: str | None = Field(default=None, max_length=64)
+    shipping_origin: str | None = Field(default=None, max_length=40)
+    orden: str | None = Field(default=None, max_length=2000)
+
+
+@router.patch("/{order_id}/seguimiento")
+def update_seguimiento_fields(
+    order_id: str,
+    payload: SeguimientoFieldsIn,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_edit),
+) -> dict[str, Any]:
+    _ = current_user
+    order = _get_order(session, order_id)
+    data = payload.model_dump(exclude_unset=True)
+    for field in ("serial_number", "whiterip_license", "shipping_origin"):
+        if field in data:
+            value = (data[field] or "").strip()
+            setattr(order, field, value or None)
+    if "orden" in data and (data["orden"] or "").strip():
+        nota = data["orden"].strip()
+        order.notes = f"{order.notes}\n{nota}" if order.notes else nota
+    session.commit()
+    return {
+        "id": order.id,
+        "serial_number": order.serial_number,
+        "whiterip_license": order.whiterip_license,
+        "shipping_origin": order.shipping_origin,
+        "notes": order.notes,
+    }
 
 
 @router.get("/{order_id}/factusol-invoice-ref")

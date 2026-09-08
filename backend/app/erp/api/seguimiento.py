@@ -1,0 +1,191 @@
+"""ERP-F6 — API del seguimiento de pedidos (la vista que sustituye el Excel).
+
+La vista y la exportación funcionan SIEMPRE, con o sin Drive configurado; el
+sincronizado con la hoja es un extra que avisa si falta configuración.
+"""
+
+from __future__ import annotations
+
+from datetime import date
+from typing import Any
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import Response
+from sqlalchemy.orm import Session
+
+from app.db.session import get_session
+from app.erp import seguimiento as core
+from app.erp.api.deps import require_erp_edit, require_erp_view
+from app.erp.models import ERP_SETTINGS_SINGLETON_ID, ErpSettings, Order
+from app.models.crm import User
+
+router = APIRouter(prefix="/api/erp/seguimiento", tags=["erp-seguimiento"])
+
+
+def _rows(session: Session) -> list[dict[str, Any]]:
+    from sqlalchemy import select  # noqa: PLC0415
+
+    from app.erp.api.orders import customer_names  # noqa: PLC0415
+
+    orders = list(session.scalars(select(Order)))
+    return core.build_rows(session, customer_names=customer_names(session, orders))
+
+
+def _filtered(
+    session: Session,
+    *,
+    serie: int | None,
+    vendedor: str | None,
+    transportista: str | None,
+    origen: str | None,
+    desde: date | None,
+    hasta: date | None,
+    estado: str | None,
+    q: str | None,
+    en_curso: bool,
+    sort: str,
+    direction: str,
+) -> list[dict[str, Any]]:
+    return core.filter_rows(
+        _rows(session),
+        serie=serie, vendedor=vendedor, transportista=transportista,
+        origen=origen, desde=desde, hasta=hasta, estado=estado, q=q,
+        en_curso=en_curso, sort=sort, direction=direction,
+    )
+
+
+@router.get("")
+def list_seguimiento(
+    serie: int | None = Query(default=None, ge=1, le=9),
+    vendedor: str | None = Query(default=None),
+    transportista: str | None = Query(default=None),
+    origen: str | None = Query(default=None),
+    desde: date | None = Query(default=None),
+    hasta: date | None = Query(default=None),
+    estado: str | None = Query(default=None, pattern="^(pendiente|enviado|facturado)$"),
+    q: str | None = Query(default=None, max_length=120),
+    en_curso: bool = Query(default=True),
+    sort: str = Query(default="fecha"),
+    dir: str = Query(default="desc", pattern="^(asc|desc)$"),  # noqa: A002
+    limit: int = Query(default=200, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_view),
+) -> dict[str, Any]:
+    """Vista de seguimiento. Por defecto: pedidos EN CURSO (la parte de
+    arriba del Excel, lo que Bart mira a diario)."""
+    _ = current_user
+    rows = _filtered(
+        session, serie=serie, vendedor=vendedor, transportista=transportista,
+        origen=origen, desde=desde, hasta=hasta, estado=estado, q=q,
+        en_curso=en_curso, sort=sort, direction=dir,
+    )
+    cfg = session.get(ErpSettings, ERP_SETTINGS_SINGLETON_ID)
+    from app.erp.drive_sheets import service_account_email  # noqa: PLC0415
+
+    return {
+        "items": rows[offset:offset + limit],
+        "total": len(rows),
+        "columns": core.SEGUIMIENTO_COLUMNS,
+        "drive": {
+            "configured": bool(
+                cfg and cfg.drive_service_account_json_encrypted
+                and cfg.drive_spreadsheet_id
+            ),
+            "service_account_email": service_account_email(cfg),
+            "spreadsheet_id": cfg.drive_spreadsheet_id if cfg else None,
+        },
+    }
+
+
+@router.get("/export")
+def export_seguimiento(
+    serie: int | None = Query(default=None, ge=1, le=9),
+    vendedor: str | None = Query(default=None),
+    transportista: str | None = Query(default=None),
+    origen: str | None = Query(default=None),
+    desde: date | None = Query(default=None),
+    hasta: date | None = Query(default=None),
+    estado: str | None = Query(default=None, pattern="^(pendiente|enviado|facturado)$"),
+    q: str | None = Query(default=None, max_length=120),
+    en_curso: bool = Query(default=True),
+    sort: str = Query(default="fecha"),
+    dir: str = Query(default="desc", pattern="^(asc|desc)$"),  # noqa: A002
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_view),
+) -> Response:
+    """Descarga .xlsx con las MISMAS columnas del Excel de Bart, respetando
+    los filtros aplicados. No necesita Drive."""
+    _ = current_user
+    rows = _filtered(
+        session, serie=serie, vendedor=vendedor, transportista=transportista,
+        origen=origen, desde=desde, hasta=hasta, estado=estado, q=q,
+        en_curso=en_curso, sort=sort, direction=dir,
+    )
+    content = core.export_xlsx(rows)
+    filename = f"seguimiento_pedidos_{date.today().isoformat()}.xlsx"
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.post("/drive-sync")
+def drive_sync(
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_edit),
+) -> dict[str, Any]:
+    """«Actualizar hoja de Drive»: sincronización MANUAL (Bart ve qué se
+    escribe antes de automatizar nada). Incremental, sin borrar filas ajenas
+    y sin pisar celdas editadas a mano (los conflictos se devuelven)."""
+    _ = current_user
+    from app.erp.drive_sheets import (  # noqa: PLC0415
+        DriveConfigError,
+        DriveSyncError,
+        GoogleSheetsClient,
+        drive_config,
+        sync_to_sheet,
+    )
+
+    cfg = session.get(ErpSettings, ERP_SETTINGS_SINGLETON_ID)
+    try:
+        conf = drive_config(cfg)
+    except DriveConfigError as exc:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            {"code": "drive_not_configured", "detail": str(exc)},
+        ) from exc
+    if conf is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, {
+            "code": "drive_not_configured",
+            "detail": (
+                "Falta configurar la cuenta de servicio de Google y el ID de la "
+                "hoja en Configuración ERP. La vista funciona igualmente."
+            ),
+        })
+    info, spreadsheet_id = conf
+    # Se sincronizan los pedidos EN CURSO + los ya presentes en la hoja
+    # (cualquier pedido con foto previa se sigue actualizando).
+    rows = core.filter_rows(_rows(session), en_curso=True, sort="fecha", direction="asc")
+    known = {r["id"] for r in rows}
+    from sqlalchemy import select  # noqa: PLC0415
+
+    from app.erp.models import ErpDriveSyncRow  # noqa: PLC0415
+
+    tracked_ids = set(session.scalars(select(ErpDriveSyncRow.order_id)).all())
+    if tracked_ids - known:
+        extra = [
+            r for r in core.filter_rows(
+                _rows(session), en_curso=False, sort="fecha", direction="asc",
+            )
+            if r["id"] in tracked_ids - known
+        ]
+        rows = rows + extra
+    try:
+        return sync_to_sheet(session, GoogleSheetsClient(info, spreadsheet_id), rows)
+    except DriveSyncError as exc:
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY,
+            {"code": "drive_sync_failed", "detail": str(exc)[:300]},
+        ) from exc

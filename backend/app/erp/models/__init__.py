@@ -7,6 +7,7 @@ from app.erp.models.bank import (
     BankReconciliation,
 )
 from app.erp.models.carriers import Carrier
+from app.erp.models.drive_sync import ErpDriveSyncRow
 from app.erp.models.exceptions import (
     EXCEPTION_SUBTYPES,
     ErpException,
@@ -52,6 +53,7 @@ __all__ = [
     "BankReconciliation",
     "EXCEPTION_SUBTYPES",
     "ERP_SETTINGS_SINGLETON_ID",
+    "ErpDriveSyncRow",
     "KIND_ALBARAN",
     "KIND_ETIQUETA",
     "MAX_RETRIES",

@@ -24,6 +24,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.audit import record_event
+from app.core.crypto import encrypt
 from app.core.errors import not_found
 from app.db.session import get_session
 from app.erp.api.deps import require_erp_admin, require_erp_edit, require_erp_view
@@ -33,6 +34,11 @@ from app.erp.contrapartidas import (
     paypal_by_store_config,
     validate_contrapartidas,
 )
+from app.erp.drive_sheets import (
+    DriveConfigError,
+    parse_service_account_json,
+    service_account_email,
+)
 from app.erp.models import (
     ERP_SETTINGS_SINGLETON_ID,
     ErpException,
@@ -40,6 +46,7 @@ from app.erp.models import (
     ExceptionStatus,
     InvoiceMode,
 )
+from app.erp.seguimiento import shipping_origins_config
 from app.integrations.factusol.catalogs import normalize_code
 from app.models.crm import User
 
@@ -104,6 +111,13 @@ class SettingsIn(BaseModel):
     #: contrapartida PayPal por tienda ({"artisjet": "12", …}).
     contrapartidas: list[dict[str, Any]] | None = None
     paypal_contrapartidas_by_store: dict[str, str] | None = None
+    #: ERP-F6 — orígenes del envío (el «OFI-TER-SAT» del Excel), configurables.
+    shipping_origins: list[str] | None = None
+    #: ERP-F6 — sincronizado del seguimiento con la hoja de Drive: JSON de la
+    #: cuenta de SERVICIO (write-only: se cifra y JAMÁS se devuelve ni se
+    #: loguea; "" lo borra) e ID de la hoja destino.
+    drive_service_account_json: str | None = None
+    drive_spreadsheet_id: str | None = None
 
 
 # --- helpers -----------------------------------------------------------------
@@ -327,6 +341,15 @@ def _serialise_settings(cfg: ErpSettings) -> dict[str, Any]:
         "paypal_contrapartidas_by_store": paypal_by_store_config(
             _series(cfg).get("paypal_contrapartidas_by_store")
         ),
+        # ERP-F6: orígenes del envío + estado del Drive. De las credenciales
+        # SOLO sale el client_email (para que Bart comparta la hoja con él);
+        # el JSON cifrado no se devuelve nunca.
+        "shipping_origins": shipping_origins_config(_series(cfg).get("shipping_origins")),
+        "drive_spreadsheet_id": cfg.drive_spreadsheet_id,
+        "drive_configured": bool(
+            cfg.drive_service_account_json_encrypted and cfg.drive_spreadsheet_id
+        ),
+        "drive_service_account_email": service_account_email(cfg),
     }
 
 
@@ -432,8 +455,14 @@ def update_settings(
             or payload.factusol_pickup_warehouses is not None
             or payload.factusol_invoice_email_templates is not None
             or payload.contrapartidas is not None
-            or payload.paypal_contrapartidas_by_store is not None):
+            or payload.paypal_contrapartidas_by_store is not None
+            or payload.shipping_origins is not None):
         series = _series(cfg)
+        # ERP-F6: lista configurable de orígenes del envío (OFI-TER-SAT).
+        if payload.shipping_origins is not None:
+            series["shipping_origins"] = [
+                str(v).strip() for v in payload.shipping_origins if str(v).strip()
+            ]
         # ERP-F5: contrapartidas de cobro (código numérico único + descripción)
         # y contrapartida PayPal por tienda. Se guardan explícitas.
         if payload.contrapartidas is not None:
@@ -515,6 +544,20 @@ def update_settings(
                 if v and v.strip()
             }
         cfg.factusol_series_json = json.dumps(series)
+    # ERP-F6: credenciales de la cuenta de servicio de Drive. Se validan y se
+    # CIFRAN; el contenido no aparece en logs, errores ni respuestas. "" borra.
+    if payload.drive_service_account_json is not None:
+        raw = payload.drive_service_account_json.strip()
+        if not raw:
+            cfg.drive_service_account_json_encrypted = None
+        else:
+            try:
+                parse_service_account_json(raw)
+            except DriveConfigError as e:
+                raise HTTPException(400, str(e)) from e
+            cfg.drive_service_account_json_encrypted = encrypt(raw)
+    if payload.drive_spreadsheet_id is not None:
+        cfg.drive_spreadsheet_id = payload.drive_spreadsheet_id.strip() or None
     _audit_settings(session, current_user)
     session.commit()
     return _serialise_settings(cfg)
