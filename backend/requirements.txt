@@ -25,3 +25,4 @@ reportlab==4.2.5
 # CRM-COMPOSITOR-V2.2 — sanitize HTML del compositor + fallback text/plain
 bleach[css]==6.4.0
 html2text==2025.4.15
+openpyxl==3.1.5

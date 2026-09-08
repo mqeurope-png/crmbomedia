@@ -1,5 +1,11 @@
 """BoHub ERP — modelos (Fase A). Importar este paquete registra todas las
 tablas ERP en Base.metadata (app/db/base.py lo importa)."""
+from app.erp.models.bank import (
+    BankAccount,
+    BankLearnedRule,
+    BankMovement,
+    BankReconciliation,
+)
 from app.erp.models.carriers import Carrier
 from app.erp.models.exceptions import (
     EXCEPTION_SUBTYPES,
@@ -40,6 +46,10 @@ from app.erp.models.shipping import (
 from app.erp.models.sku_mapping import ProductSkuMapping, SkuMatchedBy
 
 __all__ = [
+    "BankAccount",
+    "BankLearnedRule",
+    "BankMovement",
+    "BankReconciliation",
     "EXCEPTION_SUBTYPES",
     "ERP_SETTINGS_SINGLETON_ID",
     "KIND_ALBARAN",
