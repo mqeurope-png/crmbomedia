@@ -271,23 +271,37 @@ export async function exportSeguimientoXlsx(
   return apiDownloadBlob(`/api/erp/seguimiento/export${seguimientoQs(filters)}`);
 }
 
-export type DriveSyncSummary = {
-  ok: boolean;
-  orders_considered: number;
-  updated_cells: number;
-  appended_rows: number;
-  conflicts: {
-    order_number: string;
-    row: number;
-    column: string;
-    sheet_value: string;
-    bohub_value: string;
-  }[];
-  sheet_rows: number;
+/** ERP-F6-fix2 — un conflicto es o una celda con contenido manual distinto de
+ *  lo que BoHub escribiría, o una coincidencia de número sin confirmar. */
+export type DriveSyncConflict = {
+  kind: "manual_cell" | "ambiguous_match";
+  order_number: string | null;
+  row?: number;
+  column?: string;
+  sheet_value?: string;
+  bohub_value?: string;
+  detail?: string;
 };
 
-export async function syncSeguimientoDrive(): Promise<DriveSyncSummary> {
-  return apiFetch<DriveSyncSummary>("/api/erp/seguimiento/drive-sync", { method: "POST" });
+export type DriveSyncSummary = {
+  ok: boolean;
+  preview: boolean;
+  orders_considered: number;
+  /** ERP-F6-fix2: filas que ya estaban y se actualizan (no se duplican). */
+  updated_rows: number;
+  updated_cells: number;
+  appended_rows: number;
+  conflicts: DriveSyncConflict[];
+  sheet_rows: number;
+  omitted_columns: string[];
+};
+
+/** Previsualiza (dry_run) o ejecuta la sincronización con la hoja de Drive. */
+export async function syncSeguimientoDrive(
+  opts: { preview?: boolean } = {},
+): Promise<DriveSyncSummary> {
+  const q = opts.preview ? "?dry_run=true" : "";
+  return apiFetch<DriveSyncSummary>(`/api/erp/seguimiento/drive-sync${q}`, { method: "POST" });
 }
 
 /** ERP-F6 — campos de seguimiento del pedido. `orden` se AÑADE a las
@@ -624,6 +638,9 @@ export type ErpSettings = {
   drive_configured?: boolean;
   drive_service_account_email?: string | null;
   drive_service_account_json?: string;
+  /** ERP-F6-fix2 — preferir el nº de albarán (si existe) sobre el de pedido
+   *  web en la columna de referencia de la hoja. Por defecto true. */
+  drive_reference_prefer_albaran?: boolean;
   /** E4-fix1 — almacenes de recogida del albarán de devolución. */
   factusol_pickup_warehouses?: FactusolPickupWarehouse[];
 };

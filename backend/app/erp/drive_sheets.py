@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any, Protocol
 
 from sqlalchemy import select
@@ -39,8 +39,13 @@ from app.erp.seguimiento import (
     SEG_COLUMNS,
     SEGUIMIENTO_COLUMNS,
     UNMANAGED_COLUMN_INDEXES,
+    extract_order_number,
     is_structure_row,
     match_header_columns,
+    normalize_client,
+    order_match_numbers,
+    parse_sheet_date,
+    reference_for_row,
     row_to_sheet_values,
     snapshot_dump,
     snapshot_load,
@@ -261,33 +266,107 @@ def _locate_header(values: list[list[str]]) -> tuple[int, dict[int, int]]:
     )
 
 
+def _sheet_row_meta(
+    values: list[list[str]], header_row: int, col_map: dict[int, int],
+) -> list[dict[str, Any]]:
+    """Datos de cada fila de PEDIDO de la hoja para el emparejamiento por
+    número + confirmación secundaria: nº, nº de factura, cliente normalizado y
+    fecha. Se saltan cabecera, separadores y la cabecera repetida."""
+    from app.erp.seguimiento import SEGUIMIENTO_COLUMNS as _COLS  # noqa: PLC0415
+
+    key_col = col_map[KEY_COLUMN_INDEX]
+    fac_col = col_map.get(_COLS.index("Nº de Factura"))
+    cli_col = col_map.get(_COLS.index("Cliente"))
+    fec_col = col_map.get(_COLS.index("Fecha entrada albarán"))
+
+    def cell(row: list[str], col: int | None) -> str:
+        return str(row[col]).strip() if col is not None and col < len(row) else ""
+
+    meta: list[dict[str, Any]] = []
+    for i, row in enumerate(values):
+        if i + 1 <= header_row or is_structure_row(row):
+            continue
+        number = extract_order_number(cell(row, key_col))
+        if number is None:
+            continue
+        meta.append({
+            "rownum": i + 1,
+            "number": number,
+            "factura": extract_order_number(cell(row, fac_col)),
+            "cliente": normalize_client(cell(row, cli_col)),
+            "fecha": parse_sheet_date(cell(row, fec_col)),
+        })
+    return meta
+
+
+def _confirms(row: dict[str, Any], entry: dict[str, Any]) -> bool:
+    """¿Un segundo dato confirma que la fila de la hoja es este pedido? Factura
+    (el más fuerte), cliente tolerante o fecha. El número por sí solo no basta
+    (dos tiendas pueden repetir número)."""
+    fac = extract_order_number(row.get("factura"))
+    if fac and entry["factura"] and fac == entry["factura"]:
+        return True
+    cli = normalize_client(row.get("cliente"))
+    if cli and entry["cliente"] and cli == entry["cliente"]:
+        return True
+    fecha = row.get("fecha")
+    if fecha and entry["fecha"]:
+        try:
+            if date.fromisoformat(str(fecha)[:10]) == entry["fecha"]:
+                return True
+        except ValueError:
+            pass
+    return False
+
+
+def _locate_existing(
+    row: dict[str, Any], meta: list[dict[str, Any]], used: set[int],
+) -> tuple[int | None, str | None]:
+    """Localiza la fila de la hoja de este pedido. Devuelve (rownum, motivo de
+    conflicto). rownum None + motivo None → es nuevo. rownum None + motivo →
+    coincidencia dudosa que Bart debe revisar (no insertar ni actualizar)."""
+    nums = order_match_numbers(row)
+    if not nums:
+        return None, None
+    candidates = [e for e in meta if e["number"] in nums and e["rownum"] not in used]
+    if not candidates:
+        return None, None
+    confirmed = [e for e in candidates if _confirms(row, e)]
+    if len(confirmed) == 1:
+        return confirmed[0]["rownum"], None
+    if not confirmed:
+        return None, (
+            f"el número {sorted(nums)} coincide con la fila "
+            f"{candidates[0]['rownum']} pero ni factura, ni cliente, ni fecha "
+            "lo confirman"
+        )
+    return None, (
+        f"el número {sorted(nums)} coincide con varias filas "
+        f"({', '.join(str(e['rownum']) for e in confirmed)}): ambiguo"
+    )
+
+
 def sync_to_sheet(
     session: Session,
     sheets: SheetsTransport,
     rows: list[dict[str, Any]],
+    *,
+    prefer_albaran: bool = True,
+    dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Sincroniza las filas del seguimiento con la hoja. Devuelve el resumen
-    (celdas actualizadas, filas añadidas y conflictos NO tocados) para que
-    Bart vea exactamente qué se escribió."""
+    """Sincroniza las filas del seguimiento con la hoja. Identifica cada pedido
+    por su NÚMERO desnudo confirmado con un segundo dato (ERP-F6-fix2): si ya
+    está, ACTUALIZA su fila; si no, la añade. Nunca pisa contenido manual.
+    `dry_run` calcula y devuelve el resumen SIN escribir (previsualización)."""
     values = sheets.get_values()
     header_row, col_map = _locate_header(values)
-    key_col = col_map[KEY_COLUMN_INDEX]
     # Columnas opcionales que la hoja NO trae: se omiten (no rompen la sync).
     omitted_columns = [
         SEG_COLUMNS[c].header
         for c in range(len(SEG_COLUMNS))
         if c not in col_map and c not in UNMANAGED_COLUMN_INDEXES
     ]
-
-    # clave → nº de fila (1-based) en la hoja; se saltan separadores («^^^^»)
-    # y la cabecera repetida a media hoja (estructura, no pedidos).
-    sheet_index: dict[str, int] = {}
-    for i, row in enumerate(values):
-        if i + 1 <= header_row or is_structure_row(row):
-            continue
-        key = _norm_key(row[key_col] if len(row) > key_col else "")
-        if key and key not in sheet_index:
-            sheet_index[key] = i + 1
+    meta = _sheet_row_meta(values, header_row, col_map)
 
     snapshots = {
         s.order_id: s for s in session.scalars(select(ErpDriveSyncRow)).all()
@@ -297,18 +376,28 @@ def sync_to_sheet(
     conflicts: list[dict[str, Any]] = []
     new_rows: list[tuple[dict[str, Any], list[str]]] = []
     touched: list[tuple[dict[str, Any], list[str]]] = []
+    updated_row_nums: set[int] = set()
+    used: set[int] = set()
 
     for row in rows:
-        key = _norm_key(row.get("albaran_pedido"))
-        if not key:
-            continue
         # `new_values` va en el orden CANÓNICO; el mapa lleva cada columna a su
-        # sitio real en la hoja (que puede diferir en nombre y posición).
+        # sitio real. La referencia se escribe DESNUDA, en el formato de Bart.
         new_values = row_to_sheet_values(row)
-        if key not in sheet_index:
+        new_values[KEY_COLUMN_INDEX] = reference_for_row(
+            row, prefer_albaran=prefer_albaran,
+        )
+        rownum, conflict_reason = _locate_existing(row, meta, used)
+        if rownum is None and conflict_reason is not None:
+            conflicts.append({
+                "kind": "ambiguous_match",
+                "order_number": row.get("albaran_pedido"),
+                "detail": conflict_reason,
+            })
+            continue
+        if rownum is None:
             new_rows.append((row, new_values))
             continue
-        rownum = sheet_index[key]
+        used.add(rownum)
         existing_raw = values[rownum - 1]
         snap = snapshots.get(row["id"])
         last = snapshot_load(snap.last_values_json if snap else None) or []
@@ -341,48 +430,58 @@ def sync_to_sheet(
             else:
                 # Contenido manual distinto de lo que BoHub dejó: no tocar.
                 conflicts.append({
+                    "kind": "manual_cell",
                     "order_number": row.get("albaran_pedido"),
                     "row": rownum,
                     "column": SEG_COLUMNS[canon].header,
                     "sheet_value": current,
                     "bohub_value": new_s,
                 })
+        updated_row_nums.add(rownum)
         touched.append((row, written))
 
-    # 1º las actualizaciones (índices originales), 2º la inserción de filas
-    # nuevas bajo la cabecera — así la inserción no desplaza nada ya escrito.
-    sheets.update_cells(updates)
-    if new_rows:
-        width = max(len(values[header_row - 1]), max(col_map.values()) + 1)
-        lines = []
-        for _row, new_values in new_rows:
-            line = [""] * width
-            for canon, val in enumerate(new_values):
-                if canon in UNMANAGED_COLUMN_INDEXES:
-                    continue
-                sheet_col = col_map.get(canon)
-                if sheet_col is not None:
-                    line[sheet_col] = val
-            lines.append(line)
-        sheets.insert_rows_at(header_row + 1, len(new_rows))
-        sheets.write_rows(header_row + 1, lines)
-        touched.extend(new_rows)
+    if not dry_run:
+        # 1º las actualizaciones (índices originales), 2º la inserción de filas
+        # nuevas bajo la cabecera — así la inserción no desplaza lo ya escrito.
+        sheets.update_cells(updates)
+        if new_rows:
+            width = max(len(values[header_row - 1]), max(col_map.values()) + 1)
+            lines = []
+            for _row, new_values in new_rows:
+                line = [""] * width
+                for canon, val in enumerate(new_values):
+                    if canon in UNMANAGED_COLUMN_INDEXES:
+                        continue
+                    sheet_col = col_map.get(canon)
+                    if sheet_col is not None:
+                        line[sheet_col] = val
+                lines.append(line)
+            sheets.insert_rows_at(header_row + 1, len(new_rows))
+            sheets.write_rows(header_row + 1, lines)
+            touched.extend(new_rows)
 
-    now = datetime.now(UTC).replace(tzinfo=None)
-    for row, written in touched:
-        snap = snapshots.get(row["id"])
-        if snap is None:
-            snap = ErpDriveSyncRow(order_id=row["id"], row_key=_norm_key(row["albaran_pedido"]))
-            session.add(snap)
-            snapshots[row["id"]] = snap
-        snap.row_key = _norm_key(row["albaran_pedido"])
-        snap.last_values_json = snapshot_dump(written)
-        snap.synced_at = now
-    session.commit()
+        now = datetime.now(UTC).replace(tzinfo=None)
+        for row, written in touched:
+            snap = snapshots.get(row["id"])
+            if snap is None:
+                snap = ErpDriveSyncRow(
+                    order_id=row["id"], row_key=reference_for_row(
+                        row, prefer_albaran=prefer_albaran,
+                    ),
+                )
+                session.add(snap)
+                snapshots[row["id"]] = snap
+            snap.row_key = reference_for_row(row, prefer_albaran=prefer_albaran)
+            snap.last_values_json = snapshot_dump(written)
+            snap.synced_at = now
+        session.commit()
 
     summary = {
         "ok": True,
+        "preview": dry_run,
         "orders_considered": len(rows),
+        # ERP-F6-fix2: filas que ya estaban (se actualizan) frente a nuevas.
+        "updated_rows": len(updated_row_nums),
         "updated_cells": len(updates),
         "appended_rows": len(new_rows),
         "conflicts": conflicts,
@@ -392,8 +491,9 @@ def sync_to_sheet(
         "omitted_columns": omitted_columns,
     }
     logger.info(
-        "drive sync: %s celdas actualizadas, %s filas nuevas, %s conflictos, "
+        "drive sync%s: +%s filas, ~%s filas (%s celdas), %s conflictos, "
         "columnas omitidas: %s",
-        len(updates), len(new_rows), len(conflicts), omitted_columns or "ninguna",
+        " (preview)" if dry_run else "", len(new_rows), len(updated_row_nums),
+        len(updates), len(conflicts), omitted_columns or "ninguna",
     )
     return summary

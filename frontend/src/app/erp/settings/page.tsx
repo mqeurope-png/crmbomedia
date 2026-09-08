@@ -734,6 +734,23 @@ export default function ErpSettingsPage() {
               para no cambiarlas.
             </span>
           </label>
+          {/* ERP-F6-fix2 — qué número escribir en «Albarán / Núm Pedido WEb». */}
+          <label className="field erp-check-field">
+            <input
+              type="checkbox"
+              aria-label="Preferir el número de albarán en la columna de referencia"
+              checked={cfg.drive_reference_prefer_albaran ?? true}
+              onChange={(e) => setCfg({
+                ...cfg, drive_reference_prefer_albaran: e.target.checked,
+              })}
+            />
+            <span>Escribir el nº de albarán cuando exista (si no, el de pedido web)</span>
+            <span className="muted small">
+              La columna «Albarán / Núm Pedido WEb» de Bart usa el número de
+              albarán en sus filas antiguas. Siempre se escribe el número
+              desnudo, nunca la referencia con prefijo.
+            </span>
+          </label>
         </fieldset>
 
         <div>

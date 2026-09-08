@@ -118,6 +118,10 @@ class SettingsIn(BaseModel):
     #: loguea; "" lo borra) e ID de la hoja destino.
     drive_service_account_json: str | None = None
     drive_spreadsheet_id: str | None = None
+    #: ERP-F6-fix2 — en «Albarán / Núm Pedido WEb» escribir el nº de albarán
+    #: cuando exista (coherente con las filas antiguas de Bart) o el de pedido
+    #: web si no. Configurable; por defecto True.
+    drive_reference_prefer_albaran: bool | None = None
 
 
 # --- helpers -----------------------------------------------------------------
@@ -350,6 +354,9 @@ def _serialise_settings(cfg: ErpSettings) -> dict[str, Any]:
             cfg.drive_service_account_json_encrypted and cfg.drive_spreadsheet_id
         ),
         "drive_service_account_email": service_account_email(cfg),
+        "drive_reference_prefer_albaran": bool(
+            _series(cfg).get("drive_reference_prefer_albaran", True)
+        ),
     }
 
 
@@ -456,13 +463,19 @@ def update_settings(
             or payload.factusol_invoice_email_templates is not None
             or payload.contrapartidas is not None
             or payload.paypal_contrapartidas_by_store is not None
-            or payload.shipping_origins is not None):
+            or payload.shipping_origins is not None
+            or payload.drive_reference_prefer_albaran is not None):
         series = _series(cfg)
         # ERP-F6: lista configurable de orígenes del envío (OFI-TER-SAT).
         if payload.shipping_origins is not None:
             series["shipping_origins"] = [
                 str(v).strip() for v in payload.shipping_origins if str(v).strip()
             ]
+        # ERP-F6-fix2: formato de la referencia en la hoja (albarán vs web).
+        if payload.drive_reference_prefer_albaran is not None:
+            series["drive_reference_prefer_albaran"] = bool(
+                payload.drive_reference_prefer_albaran
+            )
         # ERP-F5: contrapartidas de cobro (código numérico único + descripción)
         # y contrapartida PayPal por tienda. Se guardan explícitas.
         if payload.contrapartidas is not None:

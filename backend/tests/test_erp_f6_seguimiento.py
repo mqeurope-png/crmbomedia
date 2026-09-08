@@ -315,7 +315,9 @@ def test_drive_sync_updates_only_changed_rows(session_factory) -> None:
     with session_factory() as s:
         summary = sync_to_sheet(s, sheet, _rows_for_sync(s))
     assert summary["appended_rows"] == 1
-    assert sheet.grid[1][11] == "BOP-500001"          # bajo la cabecera
+    # ERP-F6-fix2: se escribe el número DESNUDO (formato de Bart), no la
+    # referencia con prefijo.
+    assert sheet.grid[1][11] == "500001"              # bajo la cabecera
     assert sheet.grid[1][4] == "SAT"
     # Sin cambios → NO se escribe nada (incremental de verdad).
     with session_factory() as s:
@@ -357,8 +359,9 @@ def test_drive_sync_never_deletes_unknown_rows(session_factory) -> None:
         s.commit()
         summary = sync_to_sheet(s, sheet, _rows_for_sync(s))
     assert summary["appended_rows"] == 1
-    # El pedido nuevo entra justo bajo la PRIMERA cabecera (sección en curso).
-    assert sheet.grid[1][11] == "BOP-500010"
+    # El pedido nuevo entra justo bajo la PRIMERA cabecera (sección en curso),
+    # con su número desnudo (ERP-F6-fix2).
+    assert sheet.grid[1][11] == "500010"
     # Y todo lo que ya había sigue exactamente donde estaba, sin borrar nada.
     assert sheet.grid[2] == manual_top
     assert sheet.grid[3][0].startswith("^^^^")
