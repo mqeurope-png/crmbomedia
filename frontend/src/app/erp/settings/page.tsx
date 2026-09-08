@@ -13,6 +13,14 @@ import {
   type FactusolCompany,
 } from "../../lib/erpApi";
 
+/** ERP-F5 — tiendas con contrapartida PayPal propia (la clave es la que
+ *  guarda el backend; `flux` de Woo se normaliza a `fluxlasers`). */
+const PAYPAL_STORES: ReadonlyArray<{ key: string; label: string }> = [
+  { key: "artisjet", label: "artisJet" },
+  { key: "boprint", label: "boprint" },
+  { key: "fluxlasers", label: "fluxlasers" },
+];
+
 /** ERP-E4 — campos de texto de la identidad fiscal de cada empresa emisora
  *  (alimentan los PDF; los valores iniciales salen de los modelos reales de
  *  FACTUSOL). */
@@ -548,6 +556,100 @@ export default function ErpSettingsPage() {
           >
             + Añadir almacén
           </button>
+        </fieldset>
+
+        {/* ERP-F5 — contrapartidas de cobro (destino del dinero en FACTUSOL). */}
+        <fieldset className="erp-series-fieldset">
+          <legend>Contrapartidas de cobro (FACTUSOL)</legend>
+          <p className="muted small">
+            Destino donde entra el dinero al registrar un cobro (el «Apunte de
+            cobro» de FACTUSOL). No es la forma de pago. FACTUSOL no expone
+            esta tabla, así que el catálogo vive aquí: código → descripción.
+            Cada cuenta bancaria de la conciliación se enlaza con una de ellas.
+          </p>
+          {(cfg.contrapartidas ?? []).map((c, i) => (
+            <div className="erp-bank-row" key={i}>
+              <input
+                type="text" inputMode="numeric" placeholder="Código"
+                aria-label={`Contrapartida ${i + 1} código`}
+                value={c.codigo}
+                style={{ flex: "0 0 90px", minWidth: 70 }}
+                onChange={(e) => {
+                  const list = [...(cfg.contrapartidas ?? [])];
+                  list[i] = { ...list[i], codigo: e.target.value };
+                  setCfg({ ...cfg, contrapartidas: list });
+                }}
+              />
+              <input
+                type="text" placeholder="Descripción (p. ej. Bomedia Sabadell)"
+                aria-label={`Contrapartida ${i + 1} descripción`}
+                value={c.nombre}
+                onChange={(e) => {
+                  const list = [...(cfg.contrapartidas ?? [])];
+                  list[i] = { ...list[i], nombre: e.target.value };
+                  setCfg({ ...cfg, contrapartidas: list });
+                }}
+              />
+              <button
+                type="button"
+                className="button small secondary"
+                onClick={() => setCfg({
+                  ...cfg,
+                  contrapartidas: (cfg.contrapartidas ?? []).filter((_, j) => j !== i),
+                })}
+              >
+                Quitar
+              </button>
+            </div>
+          ))}
+          <button
+            type="button"
+            className="button small secondary"
+            onClick={() => setCfg({
+              ...cfg,
+              contrapartidas: [...(cfg.contrapartidas ?? []), { codigo: "", nombre: "" }],
+            })}
+          >
+            + Añadir contrapartida
+          </button>
+
+          <h4>PayPal por tienda</h4>
+          <p className="muted small">
+            La contrapartida de un cobro PayPal no viene de ningún extracto: se
+            deduce de la tienda del pedido.
+          </p>
+          <table className="data-table">
+            <thead>
+              <tr><th>Tienda</th><th>Contrapartida</th></tr>
+            </thead>
+            <tbody>
+              {PAYPAL_STORES.map((s) => (
+                <tr key={s.key}>
+                  <td>{s.label}</td>
+                  <td>
+                    <select
+                      aria-label={`Contrapartida PayPal ${s.label}`}
+                      value={cfg.paypal_contrapartidas_by_store?.[s.key] ?? ""}
+                      onChange={(e) => setCfg({
+                        ...cfg,
+                        paypal_contrapartidas_by_store: {
+                          ...(cfg.paypal_contrapartidas_by_store ?? {}),
+                          [s.key]: e.target.value,
+                        },
+                      })}
+                    >
+                      <option value="">—</option>
+                      {(cfg.contrapartidas ?? []).map((c, i) => (
+                        <option key={`${c.codigo}-${i}`} value={c.codigo}>
+                          {c.codigo} · {c.nombre}
+                        </option>
+                      ))}
+                    </select>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </fieldset>
 
         <div>

@@ -27,6 +27,12 @@ from app.core.audit import record_event
 from app.core.errors import not_found
 from app.db.session import get_session
 from app.erp.api.deps import require_erp_admin, require_erp_edit, require_erp_view
+from app.erp.contrapartidas import (
+    contrapartidas_config,
+    normalize_store,
+    paypal_by_store_config,
+    validate_contrapartidas,
+)
 from app.erp.models import (
     ERP_SETTINGS_SINGLETON_ID,
     ErpException,
@@ -34,6 +40,7 @@ from app.erp.models import (
     ExceptionStatus,
     InvoiceMode,
 )
+from app.integrations.factusol.catalogs import normalize_code
 from app.models.crm import User
 
 router = APIRouter(prefix="/api/erp", tags=["erp-exceptions"])
@@ -92,6 +99,11 @@ class SettingsIn(BaseModel):
     #: ({"es": {"subject","body"}, ...}). Placeholders {cliente}/{numero}/
     #: {referencia}. Vacío = defaults del código.
     factusol_invoice_email_templates: dict[str, dict[str, str]] | None = None
+    #: ERP-F5 — contrapartidas de cobro ([{codigo, nombre}]; la tabla de
+    #: FACTUSOL no se ha localizado, así que el catálogo vive aquí) y la
+    #: contrapartida PayPal por tienda ({"artisjet": "12", …}).
+    contrapartidas: list[dict[str, Any]] | None = None
+    paypal_contrapartidas_by_store: dict[str, str] | None = None
 
 
 # --- helpers -----------------------------------------------------------------
@@ -309,6 +321,12 @@ def _serialise_settings(cfg: ErpSettings) -> dict[str, Any]:
         "factusol_companies": _companies_with_logos(cfg),
         "factusol_pickup_warehouses": _pickup_warehouses(cfg),
         "factusol_invoice_email_templates": _invoice_email_templates(cfg),
+        # ERP-F5: contrapartidas de cobro (defaults = las 14 de Bart) y PayPal
+        # por tienda, ya completados con los valores iniciales.
+        "contrapartidas": contrapartidas_config(_series(cfg).get("contrapartidas")),
+        "paypal_contrapartidas_by_store": paypal_by_store_config(
+            _series(cfg).get("paypal_contrapartidas_by_store")
+        ),
     }
 
 
@@ -412,8 +430,28 @@ def update_settings(
             or payload.factusol_auto_mark_paid_when_order_paid is not None
             or payload.factusol_companies is not None
             or payload.factusol_pickup_warehouses is not None
-            or payload.factusol_invoice_email_templates is not None):
+            or payload.factusol_invoice_email_templates is not None
+            or payload.contrapartidas is not None
+            or payload.paypal_contrapartidas_by_store is not None):
         series = _series(cfg)
+        # ERP-F5: contrapartidas de cobro (código numérico único + descripción)
+        # y contrapartida PayPal por tienda. Se guardan explícitas.
+        if payload.contrapartidas is not None:
+            try:
+                series["contrapartidas"] = validate_contrapartidas(payload.contrapartidas)
+            except ValueError as e:
+                raise HTTPException(400, str(e)) from e
+        if payload.paypal_contrapartidas_by_store is not None:
+            mapping: dict[str, str] = {}
+            for store, code in payload.paypal_contrapartidas_by_store.items():
+                key = normalize_store(store)
+                value = str(code or "").strip()
+                if not key or not value:
+                    continue
+                if not value.isdigit():
+                    raise HTTPException(400, f"contrapartida PayPal inválida para {key}: {value!r}")
+                mapping[key] = normalize_code(value)
+            series["paypal_contrapartidas_by_store"] = mapping
         if payload.factusol_series_default is not None:
             series["default"] = payload.factusol_series_default.strip()
         if payload.factusol_series_by_source is not None:

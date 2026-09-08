@@ -35,6 +35,10 @@ class BankAccount(TimestampMixin, Base):
     currency: Mapped[str] = mapped_column(String(3), nullable=False, default="EUR")
     #: Empresa emisora (serie FACTUSOL) a la que pertenece la cuenta.
     serie: Mapped[int | None] = mapped_column(Integer)
+    # ERP-F5: contrapartida de cobro de FACTUSOL (destino del dinero) a la
+    # que se enlaza esta cuenta: Sabadell Bomedia → 6, Belfius MQ → 2,
+    # Sabadell Streamtec → 8. Es lo que F-4-B usará al registrar el cobro.
+    contrapartida_codigo: Mapped[str | None] = mapped_column(String(10))
     #: Mapeo de columnas del extracto de ESTE banco (JSON): se guarda la
     #: primera vez y se reutiliza. Vacío → autodetección (Sabadell por
     #: defecto).

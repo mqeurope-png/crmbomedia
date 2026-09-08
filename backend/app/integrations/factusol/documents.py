@@ -106,7 +106,8 @@ class DocSpec:
 
     @property
     def fop(self) -> str:
-        """Forma de pago (código F_FOP). FOPPRE/FOPFAC confirmadas en el
+        """Forma de pago (código del catálogo F_FPA; F_FOP está vacía — ERP-F5).
+        FOPPRE/FOPFAC confirmadas en el
         schema; FOPPCL vista en vivo ('002'); FOPALB por convención."""
         return f"FOP{self.suffix}"
 

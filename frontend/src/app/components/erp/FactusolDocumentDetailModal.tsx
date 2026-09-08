@@ -581,7 +581,9 @@ export function FactusolDocumentDetailModal({
                       <tr>
                         <th>Fecha</th>
                         <th>Importe</th>
-                        <th>Forma de pago</th>
+                        {/* ERP-F5: CPALCO es la CONTRAPARTIDA (destino del
+                            dinero), no la forma de pago. */}
+                        <th>Contrapartida</th>
                         <th>Concepto</th>
                       </tr>
                     </thead>
@@ -594,8 +596,8 @@ export function FactusolDocumentDetailModal({
                               ? `${c.importe.toFixed(2)} €` : "—"}
                           </td>
                           <td>
-                            {c.forma_pago_nombre
-                              ?? (c.forma_pago ? `Código ${c.forma_pago}` : "—")}
+                            {c.contrapartida_nombre
+                              ?? (c.contrapartida ? `Código ${c.contrapartida}` : "—")}
                           </td>
                           <td className="muted small">{c.concepto ?? "—"}</td>
                         </tr>

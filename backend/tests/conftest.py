@@ -21,15 +21,16 @@ def _clear_factusol_chain_caches():
     envenenarían cualquier test que monte tablas FACTUSOL distintas con el
     mismo ejercicio."""
     from app.erp.api import factusol as factusol_api
-    from app.integrations.factusol import chain
+    from app.integrations.factusol import catalogs, chain
 
     def _clear() -> None:
         chain._LIVE_COLUMNS_CACHE.clear()
         chain._CHAIN_INDEX_CACHE.clear()
         factusol_api._ESTALB_DIAG_CACHE.clear()
-        # E4: el catálogo de formas de pago también es cache en proceso — un
-        # test que lo llena (o lo deja vacío) no puede contaminar al resto.
-        factusol_api._FOP_CACHE.clear()
+        # E4/F5: los catálogos (formas de pago F_FPA, agentes…) también son
+        # cache en proceso — un test que los llena (o los deja vacíos) no
+        # puede contaminar al resto.
+        catalogs.clear_cache()
 
     _clear()
     yield

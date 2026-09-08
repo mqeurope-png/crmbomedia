@@ -165,7 +165,7 @@ class FacturaOptions:
       pedido → override por origen → default de ajustes).
     - `fecfac`: fecha de emisión ISO (`YYYY-MM-DD`); `None` → la calcula el
       service (hoy).
-    - `fopfac`: código de forma de pago (F_FOP).
+    - `fopfac`: código de forma de pago (catálogo F_FPA — F_FOP está vacía).
     - `comfac`: observaciones / comentario de la factura.
     """
 

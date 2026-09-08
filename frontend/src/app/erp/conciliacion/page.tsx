@@ -13,6 +13,7 @@ import {
   discardBankMovement,
   downloadBankExport,
   ERP_EDIT_ROLES,
+  getContrapartidas,
   importBankStatement,
   listBankAccounts,
   listBankMovements,
@@ -23,6 +24,7 @@ import {
   reopenBankMovement,
   runBankMatch,
   saveBlob,
+  updateBankAccount,
   type BankAccount,
   type BankAccountSuggestion,
   type BankConfidence,
@@ -32,6 +34,7 @@ import {
   type BankMovementsPage,
   type BankReassignTarget,
   type BankRule,
+  type Contrapartida,
   type FactusolDocument,
 } from "../../lib/erpApi";
 import { extractErrorMessage } from "../../lib/errors";
@@ -458,26 +461,70 @@ function AccountsPanel({
   const [iban, setIban] = useState("");
   const [bank, setBank] = useState("");
   const [serie, setSerie] = useState("");
+  const [contrapartida, setContrapartida] = useState("");
+  // ERP-F5 — catálogo de contrapartidas de cobro (configurable en /erp/settings).
+  const [contrapartidas, setContrapartidas] = useState<Contrapartida[]>([]);
 
-  async function add(payload: { name: string; iban: string; bank_name?: string | null; bic?: string | null; currency?: string; serie?: number | null }) {
+  useEffect(() => {
+    getContrapartidas().then(setContrapartidas).catch(() => setContrapartidas([]));
+  }, []);
+
+  async function add(payload: {
+    name: string; iban: string; bank_name?: string | null; bic?: string | null;
+    currency?: string; serie?: number | null; contrapartida_codigo?: string | null;
+  }) {
     try {
       await createBankAccount({ currency: "EUR", ...payload });
-      setName(""); setIban(""); setBank(""); setSerie("");
+      setName(""); setIban(""); setBank(""); setSerie(""); setContrapartida("");
       await onChanged();
     } catch (e) {
       onError(extractErrorMessage(e, "No se pudo dar de alta la cuenta."));
     }
   }
 
+  async function link(accountId: string, codigo: string) {
+    try {
+      await updateBankAccount(accountId, { contrapartida_codigo: codigo || null });
+      await onChanged();
+    } catch (e) {
+      onError(extractErrorMessage(e, "No se pudo enlazar la contrapartida."));
+    }
+  }
+
+  const contrapartidaSelect = (value: string, onChange: (v: string) => void, label: string) => (
+    <select aria-label={label} value={value} onChange={(e) => onChange(e.target.value)}>
+      <option value="">Sin contrapartida</option>
+      {contrapartidas.map((c) => (
+        <option key={c.codigo} value={c.codigo}>{c.codigo} · {c.nombre}</option>
+      ))}
+    </select>
+  );
+
   return (
     <section className="erp-card">
       <h3>Cuentas bancarias</h3>
+      <p className="muted small">
+        Cada cuenta se enlaza con su <strong>contrapartida de cobro</strong> de
+        FACTUSOL (el destino donde entra el dinero: «6 Bomedia Sabadell», «2 MQ
+        Europe Belfius», «8 Streamtec Sabadell»…). Es lo que usará el registro
+        del cobro. El catálogo se edita en Configuración ERP.
+      </p>
       {accounts.length === 0 ? <p className="muted">Sin cuentas dadas de alta.</p> : (
         <ul className="item-list">
           {accounts.map((a) => (
             <li key={a.id}>
               <strong>{a.name}</strong> · {a.iban}{a.bank_name ? ` · ${a.bank_name}` : ""}
               {a.serie ? ` · serie ${a.serie}` : ""}
+              {" · contrapartida: "}
+              {isAdmin
+                ? contrapartidaSelect(
+                  a.contrapartida_codigo ?? "",
+                  (v) => { void link(a.id, v); },
+                  `Contrapartida de ${a.name}`,
+                )
+                : (a.contrapartida_nombre
+                  ? `${a.contrapartida_codigo} · ${a.contrapartida_nombre}`
+                  : (a.contrapartida_codigo ?? "sin enlazar"))}
               {isAdmin ? (
                 <button type="button" className="button small secondary" style={{ marginLeft: 8 }}
                   onClick={async () => {
@@ -511,13 +558,20 @@ function AccountsPanel({
       {isAdmin ? (
         <form className="form-card embedded" onSubmit={(e) => {
           e.preventDefault();
-          void add({ name, iban, bank_name: bank || null, serie: serie ? Number(serie) : null });
+          void add({
+            name, iban, bank_name: bank || null, serie: serie ? Number(serie) : null,
+            contrapartida_codigo: contrapartida || null,
+          });
         }}>
           <h4>Nueva cuenta</h4>
           <label>Nombre<input value={name} onChange={(e) => setName(e.target.value)} required /></label>
           <label>IBAN<input value={iban} onChange={(e) => setIban(e.target.value)} required /></label>
           <label>Banco<input value={bank} onChange={(e) => setBank(e.target.value)} /></label>
           <label>Serie (empresa emisora)<input value={serie} onChange={(e) => setSerie(e.target.value)} inputMode="numeric" /></label>
+          <label>
+            Contrapartida de cobro (FACTUSOL)
+            {contrapartidaSelect(contrapartida, setContrapartida, "Contrapartida de la nueva cuenta")}
+          </label>
           <button className="button" type="submit">Dar de alta</button>
         </form>
       ) : null}
