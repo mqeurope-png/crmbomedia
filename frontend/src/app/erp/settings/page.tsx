@@ -296,8 +296,74 @@ export default function ErpSettingsPage() {
                   </td>
                 </tr>
               ))}
+              {/* ERP-F6-fix3 — serie POR TIENDA Woo (no un único WooCommerce).
+                  Solo afecta a la EMPRESA prevista del seguimiento; la emisión
+                  sigue heredando del pedido en FACTUSOL. */}
+              {(cfg.woocommerce_stores ?? []).map((store) => (
+                <tr key={store.slug}>
+                  <td>WooCommerce · {store.label}</td>
+                  <td>
+                    <input
+                      type="text" maxLength={10}
+                      aria-label={`Serie tienda ${store.label}`}
+                      placeholder="hereda de WooCommerce"
+                      value={cfg.factusol_series_by_source?.[store.slug] ?? ""}
+                      onChange={(e) => setCfg({
+                        ...cfg,
+                        factusol_series_by_source: {
+                          ...(cfg.factusol_series_by_source ?? {}),
+                          [store.slug]: e.target.value,
+                        },
+                      })}
+                    />
+                  </td>
+                </tr>
+              ))}
             </tbody>
           </table>
+          <p className="muted small">
+            La serie por tienda solo decide la EMPRESA prevista del seguimiento
+            mientras no haya factura. Al emitir, la serie la manda siempre el
+            pedido en FACTUSOL.
+          </p>
+        </fieldset>
+
+        {/* ERP-F6-fix3 — abreviaturas de empresa por serie (columna Empresa). */}
+        <fieldset className="erp-series-fieldset">
+          <legend>Abreviaturas de empresa (seguimiento)</legend>
+          <p className="muted small">
+            La forma corta que se escribe en la columna «Empresa» del
+            seguimiento (BO, MQ, ST…). Añade la de una serie nueva escribiendo
+            su número y su abreviatura.
+          </p>
+          {Object.entries(cfg.factusol_series_abbreviations ?? {})
+            .sort(([a], [b]) => Number(a) - Number(b))
+            .map(([serie, abbr]) => (
+              <div className="erp-bank-row" key={serie}>
+                <span style={{ flex: "0 0 90px" }}>Serie {serie}</span>
+                <input
+                  type="text" maxLength={10}
+                  aria-label={`Abreviatura serie ${serie}`}
+                  value={abbr}
+                  onChange={(e) => setCfg({
+                    ...cfg,
+                    factusol_series_abbreviations: {
+                      ...(cfg.factusol_series_abbreviations ?? {}),
+                      [serie]: e.target.value,
+                    },
+                  })}
+                />
+              </div>
+            ))}
+          <AddAbbreviation
+            onAdd={(serie, abbr) => setCfg({
+              ...cfg,
+              factusol_series_abbreviations: {
+                ...(cfg.factusol_series_abbreviations ?? {}),
+                [serie]: abbr,
+              },
+            })}
+          />
         </fieldset>
 
         <fieldset className="erp-series-fieldset">
@@ -760,5 +826,35 @@ export default function ErpSettingsPage() {
         </div>
       </div>
     </main>
+  );
+}
+
+/** ERP-F6-fix3 — alta de una abreviatura para una serie que aún no la tiene
+ *  (p. ej. la 4, Lambert, cuando Bart la confirme). */
+function AddAbbreviation({ onAdd }: { onAdd: (serie: string, abbr: string) => void }) {
+  const [serie, setSerie] = useState("");
+  const [abbr, setAbbr] = useState("");
+  return (
+    <div className="erp-bank-row">
+      <input
+        type="text" inputMode="numeric" placeholder="Serie" aria-label="Serie nueva"
+        style={{ flex: "0 0 90px" }}
+        value={serie} onChange={(e) => setSerie(e.target.value)}
+      />
+      <input
+        type="text" maxLength={10} placeholder="Abreviatura" aria-label="Abreviatura nueva"
+        value={abbr} onChange={(e) => setAbbr(e.target.value)}
+      />
+      <button
+        type="button" className="button small secondary"
+        disabled={!serie.trim() || !abbr.trim()}
+        onClick={() => {
+          onAdd(serie.trim(), abbr.trim());
+          setSerie(""); setAbbr("");
+        }}
+      >
+        + Añadir
+      </button>
+    </div>
   );
 }

@@ -261,8 +261,71 @@ def reference_for_row(row: dict[str, Any], *, prefer_albaran: bool = True) -> st
         base = row.get("order_number") or row.get("albaran_pedido")
     return extract_order_number(base) or str(base or "").strip()
 
-#: Códigos cortos de empresa que usa el Excel (BO 6.916 · MQ 498 · ST 58…).
-SERIES_SHORT: dict[int, str] = {1: "BO", 2: "MQ", 4: "LAM", 5: "ST"}
+#: Abreviaturas de empresa por serie que usa Bart en su hoja. ERP-F6-fix3: son
+#: CONFIGURABLES en /erp/settings (junto a series_names) y se precargan solo
+#: con las confirmadas — la de la serie 4 (Lambert) NO se inventa: queda vacía
+#: hasta que Bart la confirme.
+DEFAULT_SERIES_ABBREVIATIONS: dict[int, str] = {1: "BO", 2: "MQ", 5: "ST"}
+
+
+def series_abbreviations_config(raw: Any) -> dict[int, str]:
+    """`{serie → abreviatura}` configurado, partiendo de las confirmadas. Solo
+    se conservan las no vacías."""
+    out = dict(DEFAULT_SERIES_ABBREVIATIONS)
+    if isinstance(raw, dict):
+        for key, value in raw.items():
+            try:
+                serie = int(str(key).strip())
+            except (TypeError, ValueError):
+                continue
+            text = str(value or "").strip()
+            if text:
+                out[serie] = text
+            else:
+                out.pop(serie, None)
+    return out
+
+
+def normalize_abbr(value: Any) -> str:
+    """Forma comparable de una abreviatura de empresa: mayúsculas, sin tildes.
+    Así `st`, `ST` y `St` (o `BOM`/`bom`) no se tratan como distintas al
+    comparar para detectar duplicados."""
+    s = unicodedata.normalize("NFKD", str(value or ""))
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    return re.sub(r"\s+", " ", s).strip().upper()
+
+
+def _serie_of_invoice(invoice_number: Any) -> int | None:
+    """Serie del número de factura de FACTUSOL (`5-260123` → 5)."""
+    num = str(invoice_number or "")
+    head = num.split("-", 1)[0].strip() if "-" in num else ""
+    return int(head) if head.isdigit() else None
+
+
+def resolve_empresa_serie(
+    *,
+    invoice_number: Any,
+    store_slug: str | None,
+    store_id: str | None,
+    source: str | None,
+    by_source: dict[str, Any],
+) -> int | None:
+    """Serie (empresa emisora) para la columna Empresa del seguimiento
+    (ERP-F6-fix3), por ORDEN de prioridad:
+      1. la serie de la FACTURA, si ya está facturado (dato real, manda);
+      2. la serie configurada para su TIENDA (por slug; o por store_id, o el
+         valor global de WooCommerce como respaldo);
+      3. None → la celda queda VACÍA (nunca un valor por defecto)."""
+    inv = _serie_of_invoice(invoice_number)
+    if inv is not None:
+        return inv
+    for key in (store_slug, store_id, source):
+        if not key:
+            continue
+        raw = by_source.get(key)
+        if raw is not None and str(raw).strip().isdigit():
+            return int(str(raw).strip())
+    return None
 
 #: Orígenes del envío vistos en el Excel real (OFI-TER-SAT). Valor INICIAL de
 #: la lista configurable de /erp/settings; se pueden añadir más.
@@ -293,22 +356,6 @@ def shipping_origins_config(raw: Any) -> list[str]:
                 seen.add(text.casefold())
                 out.append(text)
     return out or list(DEFAULT_SHIPPING_ORIGINS)
-
-
-def _serie_of(order: Order, series_cfg: dict[str, Any]) -> int | None:
-    """Serie (empresa emisora) del pedido: del número de factura FACTUSOL
-    (`5-260123` → 5) si ya está facturado; si no, de la config por origen."""
-    num = str(order.factusol_invoice_number or "")
-    if "-" in num and num.split("-", 1)[0].isdigit():
-        return int(num.split("-", 1)[0])
-    by_source = series_cfg.get("by_source") or {}
-    raw = by_source.get(getattr(order.external_source, "value", order.external_source))
-    if raw is not None and str(raw).strip().isdigit():
-        return int(str(raw).strip())
-    default = series_cfg.get("default")
-    if default is not None and str(default).strip().isdigit():
-        return int(str(default).strip())
-    return None
 
 
 def _first_transition(order: Order, domain: str, to_statuses: set[str]) -> datetime | None:
@@ -351,6 +398,7 @@ def build_rows(
     historial en 3 queries y los transportistas en 1 — sin N+1."""
     from app.erp.api.factusol import FALLBACK_SERIES_NAMES  # noqa: PLC0415
     from app.integrations.factusol.service import series_config  # noqa: PLC0415
+    from app.models.integration_settings import IntegrationAccount  # noqa: PLC0415
 
     orders = list(session.scalars(
         select(Order).options(
@@ -359,16 +407,36 @@ def build_rows(
     ))
     carriers = {c.id: c.name for c in session.scalars(select(Carrier))}
     series_cfg = series_config(session)
+    by_source = series_cfg.get("by_source") if isinstance(series_cfg.get("by_source"), dict) else {}
     series_names = {
         int(k): str(v).strip()
         for k, v in (series_cfg.get("names") or {}).items()
         if str(k).strip().isdigit() and str(v).strip()
     }
+    abbreviations = series_abbreviations_config(series_cfg.get("series_abbreviations"))
+    # ERP-F6-fix3: slug de la tienda (IntegrationAccount.account_id) de cada
+    # pedido, en 1 query — la config de serie por tienda va por slug.
+    store_ids = {o.store_id for o in orders if o.store_id}
+    store_slugs: dict[str, str] = {}
+    if store_ids:
+        store_slugs = {
+            a.id: a.account_id
+            for a in session.scalars(
+                select(IntegrationAccount).where(IntegrationAccount.id.in_(store_ids))
+            )
+        }
     rows: list[dict[str, Any]] = []
     for o in orders:
         names = customer_names.get(o.id) or {}
         cliente = names.get("company_name") or names.get("contact_name")
-        serie = _serie_of(o, series_cfg)
+        source = getattr(o.external_source, "value", o.external_source)
+        serie = resolve_empresa_serie(
+            invoice_number=o.factusol_invoice_number,
+            store_slug=store_slugs.get(o.store_id) if o.store_id else None,
+            store_id=o.store_id,
+            source=source,
+            by_source=by_source,
+        )
         estado = _estado(o)
         productos = " · ".join(
             f"{float(line.quantity):g}× {line.description or line.product_sku}"
@@ -382,7 +450,10 @@ def build_rows(
                 series_names.get(serie) or FALLBACK_SERIES_NAMES.get(serie)
                 or (f"Serie {serie}" if serie else None)
             ),
-            "empresa_corta": SERIES_SHORT.get(serie, str(serie) if serie else ""),
+            # ERP-F6-fix3: la abreviatura que usa Bart en su hoja (BO/MQ/ST…).
+            # Vacía si no hay serie o esa serie no tiene abreviatura configurada
+            # — nunca un valor por defecto.
+            "empresa_corta": abbreviations.get(serie, "") if serie else "",
             "fecha": _iso_date(o.placed_at or o.created_at),
             "cliente": cliente,
             # Sin campo de agente en el pedido (fuera del alcance de F6): los
