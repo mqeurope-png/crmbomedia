@@ -359,13 +359,13 @@ def test_drive_sync_never_deletes_unknown_rows(session_factory) -> None:
         s.commit()
         summary = sync_to_sheet(s, sheet, _rows_for_sync(s))
     assert summary["appended_rows"] == 1
-    # El pedido nuevo entra justo bajo la PRIMERA cabecera (sección en curso),
-    # con su número desnudo (ERP-F6-fix2).
-    assert sheet.grid[1][11] == "500010"
+    # ERP-F6-fix5: el pedido nuevo entra bajo el SEGUNDO encabezado (la sección
+    # en curso), no en la de arriba (pedidos con incidencia, de Bart).
+    assert sheet.grid[4][11] == "500010"
     # Y todo lo que ya había sigue exactamente donde estaba, sin borrar nada.
-    assert sheet.grid[2] == manual_top
-    assert sheet.grid[3][0].startswith("^^^^")
-    assert sheet.grid[4] == list(HEADER)
+    assert sheet.grid[1] == manual_top
+    assert sheet.grid[2][0].startswith("^^^^")
+    assert sheet.grid[3] == list(HEADER)
     assert sheet.grid[5] == hist
     assert len(sheet.grid) == 6
 

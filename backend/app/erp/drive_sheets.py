@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 from datetime import UTC, date, datetime
 from typing import Any, Protocol
 
@@ -44,12 +45,12 @@ from app.erp.seguimiento import (
     is_structure_row,
     match_header_columns,
     match_number,
-    normalize_abbr,
     order_match_numbers,
     parse_sheet_date,
     reference_for_row,
     row_to_sheet_values,
     same_day,
+    serie_of_invoice,
     snapshot_dump,
     snapshot_load,
     split_client_parts,
@@ -254,6 +255,14 @@ def _abbr_aliases(session: Session) -> dict[str, str]:
     )
 
 
+def _abbreviations(session: Session) -> dict[int, str]:
+    """`{serie → abreviatura canónica}` de la configuración."""
+    from app.erp.seguimiento import series_abbreviations_config  # noqa: PLC0415
+    from app.integrations.factusol.service import series_config  # noqa: PLC0415
+
+    return series_abbreviations_config(series_config(session).get("series_abbreviations"))
+
+
 def _norm_key(value: Any) -> str:
     return str(value or "").strip().upper()
 
@@ -291,8 +300,55 @@ def _locate_header(values: list[list[str]]) -> tuple[int, dict[int, int]]:
     )
 
 
+#: Fila separadora entre la sección de arriba (pedidos con incidencia, de Bart)
+#: y la de pedidos en curso (ERP-F6-fix5).
+_SECTION_SEPARATOR_PREFIX = "^^^^"
+
+
+def _row_is_blank(row: list[Any]) -> bool:
+    return not any(str(c).strip() for c in row)
+
+
+def _locate_sections(values: list[list[str]], top_header_row: int) -> tuple[int, bool]:
+    """ERP-F6-fix5 — dónde empieza la sección de pedidos EN CURSO.
+
+    La hoja real de Bart tiene DOS secciones: arriba los pedidos con incidencia
+    (que Bart mantiene a mano, entre la cabecera superior y la fila «^^^^»), y
+    debajo, tras una segunda cabecera, los pedidos en curso. Los pedidos nuevos
+    van bajo esa SEGUNDA cabecera, nunca en la sección de arriba.
+
+    Devuelve (fila del encabezado bajo el que insertar 1-based, hay_dos_secciones).
+    Si hay «^^^^» pero no aparece el segundo encabezado, NO se escribe (error).
+    Si no hay «^^^^», la hoja tiene una sola sección: se inserta bajo la única
+    cabecera (comportamiento de las hojas simples)."""
+    sep = None
+    for i in range(top_header_row, len(values)):
+        first = str(values[i][0] if values[i] else "").strip()
+        if first.startswith(_SECTION_SEPARATOR_PREFIX):
+            sep = i
+            break
+    if sep is None:
+        return top_header_row, False
+    for i in range(sep + 1, len(values)):
+        cmap = match_header_columns(values[i])
+        if KEY_COLUMN_INDEX in cmap and len(cmap) >= _min_matches():
+            return i + 1, True
+    raise DriveSyncError(
+        "la hoja tiene la fila separadora «^^^^» (pedidos con incidencia arriba) "
+        "pero no se encontró debajo el segundo encabezado de «ARRIBA EN PROCESO»; "
+        "no se escribe nada para no insertar en el sitio equivocado."
+    )
+
+
+def _min_matches() -> int:
+    from app.erp.seguimiento import HEADER_MIN_MATCHES  # noqa: PLC0415
+
+    return HEADER_MIN_MATCHES
+
+
 _PRODUCTOS_INDEX = SEGUIMIENTO_COLUMNS.index("Productos")
 _CLIENTE_INDEX = SEGUIMIENTO_COLUMNS.index("Cliente")
+_FACTURA_INDEX = SEGUIMIENTO_COLUMNS.index("Nº de Factura")
 #: Columnas de fecha: se comparan como fechas (mismo día), no como texto.
 _DATE_INDEXES = {
     SEGUIMIENTO_COLUMNS.index("Fecha entrada albarán"),
@@ -330,6 +386,7 @@ def _sheet_row_meta(
             "rownum": i + 1,
             "number": number,
             "factura": extract_order_number(cell(row, fac_col)),
+            "factura_raw": cell(row, fac_col),
             "cliente_raw": cell(row, cli_col),
             "fecha": parse_sheet_date(cell(row, fec_col)),
         })
@@ -421,6 +478,26 @@ def _locate_existing(
     }
 
 
+def _sheet_invoice_serie(
+    factura_raw: str,
+    resolver: Callable[[str], int | None] | None,
+) -> int | None:
+    """Serie de una factura escrita EN LA HOJA (ERP-F6-fix5):
+      - con serie explícita (`1-260737`) → esa serie, el dato más fiable;
+      - número desnudo (`260731`) → se resuelve contra FACTUSOL por CODFAC;
+        si el mismo CODFAC vive en varias series (gotcha) → None (no tocar)."""
+    raw = str(factura_raw or "").strip()
+    if not raw:
+        return None
+    explicit = serie_of_invoice(raw)
+    if explicit is not None:
+        return explicit
+    num = extract_order_number(raw)
+    if num is None or resolver is None:
+        return None
+    return resolver(num)
+
+
 def sync_to_sheet(
     session: Session,
     sheets: SheetsTransport,
@@ -428,21 +505,27 @@ def sync_to_sheet(
     *,
     prefer_albaran: bool = True,
     dry_run: bool = False,
+    invoice_serie_resolver: Callable[[str], int | None] | None = None,
 ) -> dict[str, Any]:
     """Sincroniza las filas del seguimiento con la hoja. Identifica cada pedido
     por su NÚMERO desnudo confirmado con un segundo dato (ERP-F6-fix2): si ya
-    está, ACTUALIZA su fila; si no, la añade. Nunca pisa contenido manual.
-    `dry_run` calcula y devuelve el resumen SIN escribir (previsualización)."""
+    está, ACTUALIZA su fila; si no, la añade BAJO EL SEGUNDO ENCABEZADO
+    (ERP-F6-fix5). Nunca pisa contenido manual. `dry_run` calcula y devuelve el
+    resumen SIN escribir (previsualización)."""
     values = sheets.get_values()
     header_row, col_map = _locate_header(values)
+    # ERP-F6-fix5: bajo qué encabezado se insertan los pedidos EN CURSO y desde
+    # dónde se leen (la sección de arriba, de incidencias, se ignora).
+    insert_header_row, _two_sections = _locate_sections(values, header_row)
     # Columnas opcionales que la hoja NO trae: se omiten (no rompen la sync).
     omitted_columns = [
         SEG_COLUMNS[c].header
         for c in range(len(SEG_COLUMNS))
         if c not in col_map and c not in UNMANAGED_COLUMN_INDEXES
     ]
-    meta = _sheet_row_meta(values, header_row, col_map)
-    abbr_aliases = _abbr_aliases(session)
+    meta = _sheet_row_meta(values, insert_header_row, col_map)
+    meta_by_row = {e["rownum"]: e for e in meta}
+    abbreviations = _abbreviations(session)
 
     snapshots = {
         s.order_id: s for s in session.scalars(select(ErpDriveSyncRow)).all()
@@ -455,12 +538,6 @@ def sync_to_sheet(
     touched: list[tuple[dict[str, Any], list[str]]] = []
     updated_row_nums: set[int] = set()
     used: set[int] = set()
-
-    def _abbr_equal(a: str, b: str) -> bool:
-        na, nb = normalize_abbr(a), normalize_abbr(b)
-        if na == nb:
-            return True
-        return abbr_aliases.get(na, na) == abbr_aliases.get(nb, nb)
 
     for row in rows:
         # `new_values` va en el orden CANÓNICO; el mapa lleva cada columna a su
@@ -491,6 +568,20 @@ def sync_to_sheet(
             continue
         # status == "found": actualizar la fila, sin pisar nada manual.
         used.add(rownum)
+        entry = meta_by_row.get(rownum, {})
+        # ERP-F6-fix5: si la hoja trae una factura que BoHub no tiene
+        # registrada, es info útil (qué facturas le faltan a BoHub) → coincidencia
+        # probable, sin escribirla en la base.
+        if row.get("serie_invoice") is None and entry.get("factura_raw"):
+            probable_matches.append({
+                "kind": "sheet_invoice_unknown",
+                "order_number": row.get("albaran_pedido"),
+                "rows": [rownum],
+                "detail": (
+                    f"la hoja tiene la factura «{entry['factura_raw']}» que BoHub "
+                    "no tiene registrada"
+                ),
+            })
         existing_raw = values[rownum - 1]
         snap = snapshots.get(row["id"])
         last = snapshot_load(snap.last_values_json if snap else None) or []
@@ -542,11 +633,29 @@ def sync_to_sheet(
                 })
                 continue
 
+            # ERP-F6-fix5 — Empresa de una fila EXISTENTE: NUNCA se sobrescribe
+            # con un valor deducido de la tienda. Solo se rellena si está vacía,
+            # y entonces la serie sale de: factura de BoHub → factura de la HOJA
+            # (serie explícita o resuelta en FACTUSOL) → serie de la tienda (solo
+            # si la hoja no trae factura). Una discrepancia con la tienda NO es
+            # conflicto: manda la hoja.
+            if canon == _EMPRESA_INDEX:
+                if current:
+                    continue  # lo que puso Bart manda; no se toca ni se reporta
+                serie = row.get("serie_invoice")
+                if serie is None and entry.get("factura_raw"):
+                    serie = _sheet_invoice_serie(
+                        entry["factura_raw"], invoice_serie_resolver,
+                    )  # factura ambigua/desconocida → None → celda vacía
+                elif serie is None:
+                    serie = row.get("serie_store")
+                abbr = abbreviations.get(serie, "") if serie else ""
+                if abbr:
+                    updates.append((rownum, sheet_col, abbr))
+                    written[canon] = abbr
+                continue
+
             same = current == new_s
-            # ERP-F6-fix3/fix4 — Empresa: se compara la abreviatura aceptando
-            # variantes históricas (`STR`≡`ST`); la variante manual no se pisa.
-            if not same and canon == _EMPRESA_INDEX and current and new_s:
-                same = _abbr_equal(current, new_s)
             if same:
                 written[canon] = new_s  # la hoja ya dice lo mismo que BoHub
                 continue
@@ -568,9 +677,13 @@ def sync_to_sheet(
         updated_row_nums.add(rownum)
         touched.append((row, written))
 
+    # ERP-F6-fix5 — dónde van las filas nuevas: bajo el SEGUNDO encabezado,
+    # aprovechando las filas vacías reservadas y, al agotarse, insertando más
+    # (nunca al final de la hoja, nunca en la sección de arriba).
+    appended_row_nums: list[int] = []
     if not dry_run:
-        # 1º las actualizaciones (índices originales), 2º la inserción de filas
-        # nuevas bajo la cabecera — así la inserción no desplaza lo ya escrito.
+        # 1º las actualizaciones (índices originales), 2º la escritura/inserción
+        # de filas nuevas — así no se desplaza lo ya escrito.
         sheets.update_cells(updates)
         if new_rows:
             width = max(len(values[header_row - 1]), max(col_map.values()) + 1)
@@ -584,8 +697,23 @@ def sync_to_sheet(
                     if sheet_col is not None:
                         line[sheet_col] = val
                 lines.append(line)
-            sheets.insert_rows_at(header_row + 1, len(new_rows))
-            sheets.write_rows(header_row + 1, lines)
+            # Filas vacías reservadas justo debajo del segundo encabezado.
+            reserved = 0
+            r0 = insert_header_row  # 0-based índice de la primera fila candidata
+            while r0 < len(values) and _row_is_blank(values[r0]):
+                reserved += 1
+                r0 += 1
+            fill, overflow = lines[:reserved], lines[reserved:]
+            if fill:
+                sheets.write_rows(insert_header_row + 1, fill)
+                appended_row_nums += list(range(
+                    insert_header_row + 1, insert_header_row + 1 + len(fill),
+                ))
+            if overflow:
+                at = insert_header_row + 1 + reserved
+                sheets.insert_rows_at(at, len(overflow))
+                sheets.write_rows(at, overflow)
+                appended_row_nums += list(range(at, at + len(overflow)))
             touched.extend(new_rows)
 
         now = datetime.now(UTC).replace(tzinfo=None)

@@ -176,14 +176,14 @@ def test_second_header_row_is_treated_as_structure_not_order(session_factory) ->
         _order(s, "BOP-900001", cliente="Nuevo SL")
         s.commit()
         summary = sync_to_sheet(s, sheet, _rows_for_sync(s))
-    # El pedido nuevo entra bajo la cabecera SUPERIOR (sección en curso), con
-    # su número desnudo (ERP-F6-fix2).
+    # ERP-F6-fix5: el pedido nuevo entra bajo el SEGUNDO encabezado (la sección
+    # en curso), con su número desnudo — no en la sección de arriba.
     assert summary["appended_rows"] == 1
-    assert sheet.grid[1][11] == "900001"
-    # La cabecera intermedia y el separador siguen intactos: no se
+    assert sheet.grid[3][11] == "900001"
+    # El separador y la cabecera intermedia siguen intactos: no se
     # interpretaron como pedidos ni se sobrescribieron.
-    assert sheet.grid[2][0].startswith("^^^^")
-    assert sheet.grid[3] == BART_MIDDLE_HEADER
+    assert sheet.grid[1][0].startswith("^^^^")
+    assert sheet.grid[2] == BART_MIDDLE_HEADER
     assert sheet.grid[4] == hist
     # «Albarán» de la cabecera intermedia no generó un pedido fantasma.
     assert summary["updated_cells"] == 0
