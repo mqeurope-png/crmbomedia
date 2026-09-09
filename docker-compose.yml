@@ -157,6 +157,9 @@ services:
       - worker
       - --url
       - redis://redis:6379/0
+      # ERP-jobs-interactivos: cola de los trabajos que un usuario lanza y
+      # espera (reconciliación de estados Woo). Prioridad sobre factusol:writes.
+      - erp:interactive
       - factusol:writes
     depends_on:
       db:
