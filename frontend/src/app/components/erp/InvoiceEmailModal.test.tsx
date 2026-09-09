@@ -27,6 +27,7 @@ function preview(over: Partial<InvoiceEmailPreview> = {}): InvoiceEmailPreview {
     subject: "Facture 5-000063",
     body_text: "Bonjour,\n\nVeuillez trouver ci-joint votre facture.",
     from_alias: "ventas@bomedia.es",
+    from_alias_source: "usuario",
     attachment_filename: "Factura_5-000063.pdf",
     reply_to_message_id: null,
     replies_to_thread: false,

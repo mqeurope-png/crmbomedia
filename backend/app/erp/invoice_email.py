@@ -132,6 +132,45 @@ def default_from_alias(session: Session, user: Any) -> str:
     return pref.alias_email if pref is not None else user.email
 
 
+#: Remitente (alias de envío) por SERIE = empresa emisora. Precarga: serie 2
+#: (MQ Europe / artisJet) → info@artisjet-printers.eu; serie 5 (Streamtec:
+#: boprint, flux) → pedidos@streamtec.es. Serie 1 (Bomedia) sin definir. Es
+#: CONFIGURABLE en /erp/settings (blob `factusol_series_json.series_email_from`,
+#: sin migración); un valor vacío en la config BORRA el default de esa serie.
+DEFAULT_SERIES_EMAIL_FROM: dict[int, str] = {
+    2: "info@artisjet-printers.eu",
+    5: "pedidos@streamtec.es",
+}
+
+
+def series_email_from_config(raw: Any) -> dict[int, str]:
+    """`{serie → alias remitente}` configurado, partiendo de los precargados."""
+    out = dict(DEFAULT_SERIES_EMAIL_FROM)
+    if isinstance(raw, dict):
+        for key, value in raw.items():
+            try:
+                serie = int(str(key).strip())
+            except (TypeError, ValueError):
+                continue
+            text = str(value or "").strip()
+            if text:
+                out[serie] = text
+            else:
+                out.pop(serie, None)  # vacío = sin remitente propio para esa serie
+    return out
+
+
+def series_from_alias(session: Session, serie: int | None) -> str | None:
+    """Alias de envío de la EMPRESA EMISORA de esa serie (o None si la serie no
+    tiene remitente configurado → el caller cae al alias del usuario)."""
+    if serie is None:
+        return None
+    from app.integrations.factusol.service import series_config  # noqa: PLC0415
+
+    mapping = series_email_from_config(series_config(session).get("series_email_from"))
+    return mapping.get(int(serie))
+
+
 def find_reply_target(session: Session, order: Any) -> str | None:
     """Id de nuestro `EmailMessage` al que responder para agrupar el correo
     de la factura en el hilo del pedido, o None si no hay uno fiable.
@@ -209,6 +248,11 @@ def build_invoice_email_preview(
         numero=data["numero"], referencia=data["referencia"],
     )
     reply_to = find_reply_target(session, order)
+    # Remitente: el alias de la EMPRESA EMISORA de esta serie si está
+    # configurado; si no, el alias por defecto del usuario (comportamiento
+    # anterior). El envío valida luego que sea un send-as del usuario.
+    serie_alias = series_from_alias(session, serie)
+    from_alias = serie_alias or default_from_alias(session, current_user)
     return {
         "serie": serie, "codigo": codigo,
         "numero": data["numero"],
@@ -216,7 +260,9 @@ def build_invoice_email_preview(
         "lang": lang, "lang_source": source,
         "subject": subject,
         "body_text": body_text,
-        "from_alias": default_from_alias(session, current_user),
+        "from_alias": from_alias,
+        # De dónde sale el remitente: "serie" (empresa emisora) o "usuario".
+        "from_alias_source": "serie" if serie_alias else "usuario",
         "attachment_filename": pdf_filename("facturas", data, lang),
         "reply_to_message_id": reply_to,
         "replies_to_thread": reply_to is not None,

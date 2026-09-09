@@ -832,6 +832,12 @@ export type ErpSettings = {
   /** ERP-F6-fix3 — abreviaturas de empresa por serie ({"1":"BO","2":"MQ",
    *  "5":"ST"}) para la columna Empresa del seguimiento. */
   factusol_series_abbreviations?: Record<string, string>;
+  /** ERP — remitente (alias de envío) del email de factura por serie = empresa
+   *  emisora ({"2":"info@artisjet-printers.eu","5":"pedidos@streamtec.es"}).
+   *  Un valor vacío borra el default precargado de esa serie. El envío de la
+   *  factura (F-1) usa este alias según la serie; si la serie no lo tiene, cae
+   *  al alias por defecto del usuario. */
+  factusol_series_email_from?: Record<string, string>;
   /** ERP-F6-fix3 — tiendas Woo dadas de alta, para configurar la serie de
    *  cada una (solo lectura; se rellena en el GET). */
   woocommerce_stores?: { slug: string; label: string }[];
@@ -1411,8 +1417,11 @@ export type InvoiceEmailPreview = {
   lang_source: InvoiceEmailLangSource;
   subject: string;
   body_text: string;
-  /** Alias emisor por defecto (primera preferencia permitida del usuario). */
+  /** Alias emisor: el de la empresa emisora de esta serie si está configurado
+   *  (`from_alias_source: "serie"`); si no, el alias por defecto del usuario
+   *  (`"usuario"`). */
   from_alias: string;
+  from_alias_source: "serie" | "usuario";
   attachment_filename: string;
   /** Si hay un hilo del pedido al que responder, su message-id; si no null. */
   reply_to_message_id: string | null;
