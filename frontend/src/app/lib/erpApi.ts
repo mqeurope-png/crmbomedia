@@ -229,6 +229,14 @@ export type SeguimientoRow = {
   /** ERP-F6-fix7 — ya escrito en la hoja de Drive vs pendiente de escribir. */
   escrito_drive: boolean;
   pendiente_escribir: boolean;
+  /** ERP-Woo — estado crudo de WooCommerce y su efecto en el seguimiento. */
+  woo_status: string | null;
+  /** Oculto por estado (cancelado/fallido/reembolso no cumplido). Distinto de
+   *  la exclusión manual. */
+  oculto_por_estado: boolean;
+  estado_woo_motivo: string | null;
+  /** Reembolsado ya cumplido: se queda visible, marcado. */
+  reembolsado: boolean;
 };
 
 export type SeguimientoFilters = {
@@ -244,6 +252,8 @@ export type SeguimientoFilters = {
   /** ERP-F6-fix7 — ver SOLO los excluidos; ver SOLO los pendientes de escribir. */
   ver_excluidos?: boolean;
   pendiente_escribir?: boolean;
+  /** ERP-Woo — ver SOLO los ocultados por estado (cancelado/reembolsado/fallido). */
+  ver_ocultos_estado?: boolean;
   sort?: string;
   dir?: "asc" | "desc";
   limit?: number;
@@ -263,11 +273,14 @@ export type SeguimientoPage = {
 
 function seguimientoQs(filters: SeguimientoFilters): string {
   // `qs` solo admite string/number: los booleanos van como "true"/"false".
-  const { en_curso, ver_excluidos, pendiente_escribir, ...rest } = filters;
+  const {
+    en_curso, ver_excluidos, ver_ocultos_estado, pendiente_escribir, ...rest
+  } = filters;
   return qs({
     ...rest,
     ...(en_curso === undefined ? {} : { en_curso: String(en_curso) }),
     ...(ver_excluidos ? { ver_excluidos: "true" } : {}),
+    ...(ver_ocultos_estado ? { ver_ocultos_estado: "true" } : {}),
     ...(pendiente_escribir ? { pendiente_escribir: "true" } : {}),
   });
 }
@@ -360,6 +373,35 @@ export async function includeSeguimiento(
   return apiFetch("/api/erp/seguimiento/include", {
     method: "POST",
     body: JSON.stringify({ order_ids: orderIds }),
+  });
+}
+
+/** ERP-Woo — resultado de la puesta al día de estados de WooCommerce. */
+export type WooReconcileSummary = {
+  ok: boolean;
+  preview: boolean;
+  scanned: number;
+  capped: boolean;
+  limit: number;
+  to_cancel: number;
+  to_fail: number;
+  to_trash: number;
+  to_refund_out: number;
+  removed_total: number;
+  to_refund_kept: number;
+  unchanged: number;
+  errors: { order_number: string | null; error: string }[];
+  samples: Record<string, string[]>;
+};
+
+/** ERP-Woo — re-consulta WooCommerce el estado de los pedidos activos y aplica
+ *  la regla. `preview` (por defecto) no escribe: solo cuenta qué cambiaría. */
+export async function reconcileWooStatuses(
+  opts: { preview?: boolean } = {},
+): Promise<WooReconcileSummary> {
+  const q = opts.preview === false ? "?dry_run=false" : "?dry_run=true";
+  return apiFetch<WooReconcileSummary>(`/api/erp/seguimiento/reconcile-woo${q}`, {
+    method: "POST",
   });
 }
 

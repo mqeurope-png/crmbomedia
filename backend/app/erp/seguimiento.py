@@ -575,6 +575,51 @@ def _en_curso(order: Order, estado: str) -> bool:
     )
 
 
+#: ERP-Woo — estados de WooCommerce que SIEMPRE sacan el pedido del seguimiento
+#: (`trash`/`deleted` = pedido enviado a la papelera en la tienda).
+_WOO_STATUS_ALWAYS_OUT = {"cancelled", "failed", "trash", "deleted"}
+
+
+def _is_fulfilled(order: Order, estado: str) -> bool:
+    """¿El pedido se CUMPLIÓ (se envió o se facturó)? Señales de BoHub que se
+    usan (informe): enviado (transporte in_transit / delivered /
+    already_shipped_externally), facturado (factura FACTUSOL emitida o
+    invoice_status facturado), o con número de tracking. Sirve para la regla del
+    reembolso: solo se ocultan los reembolsos de pedidos que NUNCA se cumplieron.
+    """
+    if estado in ("enviado", "facturado"):
+        return True
+    if order.transport_status in _SHIPPED_STATUSES:
+        return True
+    return bool(order.tracking_number)
+
+
+def visibility_for_status(
+    order: Order, estado: str, woo_status: str | None,
+) -> tuple[bool, str | None, bool]:
+    """(oculto_por_estado, motivo, reembolsado_visible) para un estado de
+    WooCommerce dado, según la regla de Bart:
+      - cancelled / failed (y trash) → FUERA, siempre.
+      - refunded sin cumplir (ni enviado ni facturado) → FUERA (como cancelado).
+      - refunded ya cumplido → se QUEDA, marcado «reembolsado».
+      - pending / processing / completed / on-hold / None → normal, se queda.
+    Es INDEPENDIENTE de la exclusión manual de F6-fix7 (que va por su flag).
+    La reconciliación la usa con el estado RECIÉN consultado en la tienda."""
+    st = (woo_status or "").strip().lower()
+    if st in _WOO_STATUS_ALWAYS_OUT:
+        return True, st, False
+    if st == "refunded":
+        if _is_fulfilled(order, estado):
+            return False, "refunded", True
+        return True, "refunded_sin_cumplir", False
+    return False, None, False
+
+
+def woo_status_visibility(order: Order, estado: str) -> tuple[bool, str | None, bool]:
+    """Visibilidad según el estado de WooCommerce ALMACENADO en el pedido."""
+    return visibility_for_status(order, estado, order.woo_status)
+
+
 def build_rows(
     session: Session,
     *,
@@ -635,6 +680,9 @@ def build_rows(
         )
         serie = serie_invoice if serie_invoice is not None else serie_store
         estado = _estado(o)
+        # ERP-Woo — regla de cancelado/reembolsado/fallido (independiente de la
+        # exclusión manual de F6-fix7).
+        oculto_estado, estado_woo_motivo, reembolsado = woo_status_visibility(o, estado)
         productos = " · ".join(
             f"{float(line.quantity):g}× {line.description or line.product_sku}"
             for line in o.lines
@@ -705,8 +753,14 @@ def build_rows(
             "pendiente_escribir": (
                 _en_curso(o, estado)
                 and o.seguimiento_excluded_at is None
+                and not oculto_estado
                 and o.id not in written_ids
             ),
+            # ERP-Woo — estado de WooCommerce y su efecto en el seguimiento.
+            "woo_status": o.woo_status,
+            "oculto_por_estado": oculto_estado,
+            "estado_woo_motivo": estado_woo_motivo,
+            "reembolsado": reembolsado,
         })
     return rows
 
@@ -734,6 +788,7 @@ def filter_rows(
     q: str | None = None,
     en_curso: bool = True,
     ver_excluidos: bool = False,
+    ver_ocultos_estado: bool = False,
     pendiente_escribir: bool | None = None,
     sort: str = "fecha",
     direction: str = "desc",
@@ -742,17 +797,23 @@ def filter_rows(
     explorador de documentos). Por defecto: solo pedidos EN CURSO — la parte
     de arriba del Excel, lo que Bart mira a diario.
 
-    ERP-F6-fix7 — los pedidos EXCLUIDOS del seguimiento quedan FUERA por defecto
-    (no se listan ni se cuentan). Con `ver_excluidos` se listan SOLO los
-    excluidos (ignorando «en curso», para poder revisarlos y reincluirlos).
+    ERP-F6-fix7 — los pedidos EXCLUIDOS a mano quedan FUERA por defecto. Con
+    `ver_excluidos` se listan SOLO los excluidos.
+    ERP-Woo — los OCULTOS POR ESTADO (cancelado/fallido/reembolso no cumplido)
+    también quedan FUERA por defecto; con `ver_ocultos_estado` se listan SOLO
+    esos (para revisarlos). Son cosas DISTINTAS y con vistas distintas.
     `pendiente_escribir=True` deja solo los que aún no están en la hoja de
     Drive."""
     out = rows
     if ver_excluidos:
-        # Vista de excluidos: solo ellos, sin el filtro de «en curso».
+        # Vista de excluidos MANUALMENTE: solo ellos, sin el filtro de «en curso».
         return _sort_rows([r for r in out if r["excluido"]], sort, direction)
-    # En cualquier otra vista, los excluidos NUNCA aparecen.
-    out = [r for r in out if not r["excluido"]]
+    if ver_ocultos_estado:
+        # Vista de ocultados por ESTADO de WooCommerce: solo esos.
+        return _sort_rows([r for r in out if r["oculto_por_estado"]], sort, direction)
+    # En cualquier otra vista, ni los excluidos ni los ocultados por estado
+    # aparecen (ni cuentan como pendientes).
+    out = [r for r in out if not r["excluido"] and not r["oculto_por_estado"]]
     if pendiente_escribir:
         out = [r for r in out if r["pendiente_escribir"]]
     if en_curso:
