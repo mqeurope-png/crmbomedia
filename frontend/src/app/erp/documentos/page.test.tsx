@@ -2,9 +2,12 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import FactusolDocumentosPage from "./page";
 import {
+  downloadFacturasPdfZip,
+  downloadFactusolDocumentPdf,
   getFactusolDocument,
   getFactusolSeries,
   listFactusolDocuments,
+  saveBlob,
 } from "../../lib/erpApi";
 
 jest.mock("../../lib/erpApi", () => ({
@@ -14,6 +17,7 @@ jest.mock("../../lib/erpApi", () => ({
   convertFactusolDocument: jest.fn(),
   getFactusolConvertStatus: jest.fn(),
   downloadFactusolDocumentPdf: jest.fn(),
+  downloadFacturasPdfZip: jest.fn(),
   getErpSettings: jest.fn(() => Promise.resolve({ factusol_companies: {} })),
   saveBlob: jest.fn(),
   ERP_EDIT_ROLES: ["admin", "pedidos"],
@@ -271,5 +275,34 @@ describe("ERP · Documentos (E3-A)", () => {
       const last = mockList.mock.calls.at(-1);
       expect(last?.[1].serie).toBeUndefined();
     });
+  });
+
+  it("el botón PDF de una factura descarga su PDF por serie+número", async () => {
+    const user = userEvent.setup();
+    (downloadFactusolDocumentPdf as jest.Mock).mockResolvedValue(new Blob());
+    render(<FactusolDocumentosPage />);
+    await screen.findByText("5-260066");
+    await user.click(screen.getByRole("button", { name: "PDF" }));
+    await waitFor(() =>
+      expect(downloadFactusolDocumentPdf).toHaveBeenCalledWith("facturas", 5, 260066),
+    );
+    expect(saveBlob).toHaveBeenCalled();
+  });
+
+  it("la selección múltiple descarga las facturas en un ZIP", async () => {
+    const user = userEvent.setup();
+    (downloadFacturasPdfZip as jest.Mock).mockResolvedValue(new Blob());
+    render(<FactusolDocumentosPage />);
+    await screen.findByText("5-260066");
+    await user.click(
+      screen.getByRole("checkbox", { name: "Seleccionar factura 5-260066" }),
+    );
+    await user.click(
+      await screen.findByRole("button", { name: /Descargar PDF \(ZIP\)/ }),
+    );
+    await waitFor(() =>
+      expect(downloadFacturasPdfZip).toHaveBeenCalledWith([{ serie: 5, codigo: 260066 }]),
+    );
+    expect(saveBlob).toHaveBeenCalledWith(expect.anything(), "facturas_pdf.zip");
   });
 });

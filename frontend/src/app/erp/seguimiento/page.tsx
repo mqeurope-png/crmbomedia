@@ -5,10 +5,13 @@ import { useCallback, useEffect, useState } from "react";
 import { PageHeader } from "../../components/PageHeader";
 import { getCurrentUser, type User } from "../../lib/api";
 import {
+  downloadFacturasPdfZip,
+  downloadFactusolDocumentPdf,
   ERP_EDIT_ROLES,
   excludeSeguimiento,
   exportSeguimientoXlsx,
   getErpSettings,
+  getOrderFactusolInvoiceRef,
   includeSeguimiento,
   listSeguimiento,
   reconcileFactusolInvoices,
@@ -23,6 +26,7 @@ import {
   type DriveSyncUnknownInvoice,
   type SeguimientoFilters,
   type SeguimientoPage,
+  type SeguimientoRow,
   type WooReconcileSummary,
 } from "../../lib/erpApi";
 import { extractErrorMessage } from "../../lib/errors";
@@ -183,6 +187,65 @@ export default function SeguimientoPage() {
       await load();
     } catch (e) {
       setError(extractErrorMessage(e, "No se pudieron reincluir los pedidos."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // ERP — descargar el PDF de la factura de una fila (solo lectura). El pedido
+  // solo guarda el CODFAC; la serie real (empresa emisora) la resuelve
+  // FACTUSOL vía la clave {serie, código}. No marca ni envía nada.
+  async function onDownloadRowPdf(row: SeguimientoRow) {
+    if (!row.factura) return;
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const ref = await getOrderFactusolInvoiceRef(row.id);
+      const blob = await downloadFactusolDocumentPdf("facturas", ref.serie, ref.codigo);
+      saveBlob(blob, `Factura_${ref.numero}.pdf`);
+    } catch (e) {
+      setError(extractErrorMessage(e, "No se pudo descargar el PDF de la factura."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // ERP — descargar en ZIP las facturas de los pedidos seleccionados que ya
+  // tengan factura. Reutiliza las casillas de fix7. Solo lectura.
+  async function onDownloadSelectedPdf() {
+    const items = page?.items ?? [];
+    const chosen = items.filter((r) => selected.has(r.id) && r.factura);
+    if (chosen.length === 0) {
+      setError("Ninguno de los pedidos seleccionados tiene factura.");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      // Resuelve serie+código real de cada factura; los que no se puedan
+      // localizar en FACTUSOL se omiten.
+      const refs = await Promise.all(chosen.map(async (r) => {
+        try { return await getOrderFactusolInvoiceRef(r.id); }
+        catch { return null; }
+      }));
+      const facturas = refs
+        .filter((x): x is NonNullable<typeof x> => x !== null)
+        .map((ref) => ({ serie: ref.serie, codigo: ref.codigo }));
+      if (facturas.length === 0) {
+        setError("No se pudo localizar ninguna factura en FACTUSOL.");
+        return;
+      }
+      const blob = await downloadFacturasPdfZip(facturas);
+      saveBlob(blob, "facturas_pdf.zip");
+      const faltan = chosen.length - facturas.length;
+      setNotice(
+        `Descargadas ${facturas.length} factura(s) en ZIP`
+        + (faltan > 0 ? ` (${faltan} sin factura localizable, omitidas).` : "."),
+      );
+    } catch (e) {
+      setError(extractErrorMessage(e, "No se pudieron descargar las facturas."));
     } finally {
       setBusy(false);
     }
@@ -514,17 +577,23 @@ export default function SeguimientoPage() {
             </button>
           ) : null}
           {canEdit && selected.size > 0 ? (
-            viewExcluded ? (
+            <>
               <button type="button" className="button small" disabled={busy}
-                onClick={onIncludeSelected}>
-                Reincluir ({selected.size})
+                onClick={onDownloadSelectedPdf}>
+                Descargar facturas (PDF) ({selected.size})
               </button>
-            ) : (
-              <button type="button" className="button small danger" disabled={busy}
-                onClick={onExcludeSelected}>
-                Excluir del seguimiento ({selected.size})
-              </button>
-            )
+              {viewExcluded ? (
+                <button type="button" className="button small" disabled={busy}
+                  onClick={onIncludeSelected}>
+                  Reincluir ({selected.size})
+                </button>
+              ) : (
+                <button type="button" className="button small danger" disabled={busy}
+                  onClick={onExcludeSelected}>
+                  Excluir del seguimiento ({selected.size})
+                </button>
+              )}
+            </>
           ) : null}
         </div>
         {drive && !drive.configured ? (
@@ -766,7 +835,22 @@ export default function SeguimientoPage() {
                     {/* Cada fila enlaza a la ficha del pedido. */}
                     <Link href={`/erp/orders/${r.id}`}>{r.albaran_pedido}</Link>
                   </td>
-                  <td>{r.factura ?? "—"}</td>
+                  <td>
+                    {r.factura ? (
+                      <span className="erp-factura-cell">
+                        {r.factura}{" "}
+                        <button
+                          type="button"
+                          className="button small secondary"
+                          disabled={busy}
+                          title="Descargar el PDF de la factura"
+                          onClick={() => void onDownloadRowPdf(r)}
+                        >
+                          PDF
+                        </button>
+                      </span>
+                    ) : "—"}
+                  </td>
                   <td className="muted small">{r.tracking ?? "—"}</td>
                   <td className="muted small">{r.num_serie ?? "—"}</td>
                   <td>

@@ -7,9 +7,11 @@ serializada `factusol:writes`).
 """
 from __future__ import annotations
 
+import io
 import json
 import logging
 import time
+import zipfile
 from typing import Any
 
 from fastapi import (
@@ -503,6 +505,136 @@ def download_document_pdf(
         content=pdf,
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+# --- Descarga de facturas en LOTE (ZIP), por serie+número ------------------
+#
+# Reutiliza el MISMO motor E4 que la descarga individual (identidad fiscal por
+# serie, `lang` cambia etiquetas, nunca datos). Solo lectura: genera y empaqueta
+# PDFs, no marca ni envía ni escribe en FACTUSOL. Funciona por serie+código
+# aunque la factura NO esté enlazada a ningún pedido de BoHub (facturas de flux
+# hechas a mano): el PDF sale de FACTUSOL, no del pedido.
+
+
+class InvoicePdfZipItem(BaseModel):
+    serie: int = Field(..., ge=0, le=99)
+    codigo: int = Field(..., ge=0)
+    #: Idioma opcional por factura; si falta, cae al `lang` del lote o, si
+    #: tampoco, a la cascada de idioma de esa factura.
+    lang: str | None = Field(default=None, pattern="^(es|en|de|fr|nl)$")
+
+
+class InvoicePdfZipIn(BaseModel):
+    items: list[InvoicePdfZipItem] = Field(..., min_length=1, max_length=200)
+    #: Idioma común del lote (si un item no trae el suyo). Sin él → cascada.
+    lang: str | None = Field(default=None, pattern="^(es|en|de|fr|nl)$")
+
+
+def _factura_pdf_bytes(
+    session: Session, client: Any, ejercicio: str, *,
+    serie: int, codigo: int, lang: str | None, fop_names: dict[str, str],
+) -> tuple[bytes, str] | None:
+    """(bytes del PDF, nombre legible) de una factura por serie+código con el
+    motor E4, o None si esa factura no existe en FACTUSOL. `lang=None` usa la
+    cascada de idioma de la factura. No escribe nada."""
+    from app.erp.factusol_pdf import (  # noqa: PLC0415
+        company_for_serie,
+        extract_document_data,
+        generate_document_pdf,
+        load_raw_document,
+        logo_path_for_serie,
+        pdf_filename,
+        suggest_pdf_language,
+    )
+
+    raw = load_raw_document(
+        client, "facturas", serie=serie, codigo=codigo, ejercicio=ejercicio,
+    )
+    if raw is None:
+        return None
+    data = extract_document_data(
+        client, "facturas", raw[0], raw[1], ejercicio=ejercicio,
+        fop_names=fop_names,
+    )
+    resolved = lang or suggest_pdf_language(session, "facturas", data)["lang"]
+    pdf = generate_document_pdf(
+        data,
+        company=company_for_serie(session, serie),
+        lang=resolved,
+        logo=logo_path_for_serie(serie),
+    )
+    return pdf, pdf_filename("facturas", data, resolved)
+
+
+@router.post("/documents/facturas/pdf-zip")
+def download_facturas_pdf_zip(
+    payload: InvoicePdfZipIn,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_view),
+) -> Response:
+    """ZIP con los PDF de varias facturas (selección múltiple), por serie+número.
+    Mismo motor E4 que la descarga individual; solo lectura (no marca, no envía,
+    no escribe en FACTUSOL). Las facturas que no existen se saltan y se listan en
+    `_no_encontradas.txt` dentro del ZIP; si NINGUNA existe, 404."""
+    _ = current_user
+    from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
+
+    client, ejercicio = _client_and_ejercicio(session)
+    try:
+        fop_names = _fop_names(client, ejercicio)
+    except FactusolError as exc:
+        raise _factusol_gateway_error(exc, "factusol_pdf_failed") from exc
+
+    buffer = io.BytesIO()
+    added = 0
+    missing: list[str] = []
+    used_names: set[str] = set()
+    seen: set[tuple[int, int]] = set()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        for item in payload.items:
+            key = (item.serie, item.codigo)
+            if key in seen:
+                continue  # deduplica serie+código repetidos en la selección
+            seen.add(key)
+            try:
+                result = _factura_pdf_bytes(
+                    session, client, ejercicio,
+                    serie=item.serie, codigo=item.codigo,
+                    lang=item.lang or payload.lang, fop_names=fop_names,
+                )
+            except FactusolError as exc:
+                raise _factusol_gateway_error(exc, "factusol_pdf_failed") from exc
+            if result is None:
+                missing.append(f"{item.serie}-{item.codigo}")
+                continue
+            pdf, filename = result
+            # Evita colisiones de nombre (dos facturas del mismo cliente): el
+            # número serie-código ya es único, pero por si acaso desempata.
+            unique = filename
+            n = 2
+            while unique in used_names:
+                unique = filename[:-4] + f"_{n}.pdf"
+                n += 1
+            used_names.add(unique)
+            zf.writestr(unique, pdf)
+            added += 1
+        if missing:
+            zf.writestr(
+                "_no_encontradas.txt",
+                "Facturas no encontradas en FACTUSOL (se omiten):\n"
+                + "\n".join(missing) + "\n",
+            )
+    if added == 0:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, {
+            "code": "no_invoices_found",
+            "detail": "Ninguna de las facturas seleccionadas existe en FACTUSOL.",
+            "no_encontradas": missing,
+        })
+    return Response(
+        content=buffer.getvalue(),
+        media_type="application/zip",
+        headers={"Content-Disposition": 'attachment; filename="facturas_pdf.zip"'},
     )
 
 
