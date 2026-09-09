@@ -273,6 +273,12 @@ services:
       - worker
       - --url
       - redis://redis:6379/0
+      # ERP-jobs-interactivos: los trabajos que un usuario lanza y espera
+      # mirando (reconciliación de estados Woo) van AQUÍ, no en worker-sync
+      # (saturado con los batch horarios). Va PRIMERO = prioridad sobre las
+      # escrituras FACTUSOL (que son breves y poco frecuentes). worker-factusol
+      # está ocioso salvo al emitir, así que el job se coge enseguida.
+      - erp:interactive
       - factusol:writes
     depends_on:
       api:

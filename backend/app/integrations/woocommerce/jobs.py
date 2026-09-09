@@ -41,6 +41,13 @@ WOO_QUEUE_IMPORT = "woocommerce:import"
 WOO_QUEUE_BACKFILL = "woocommerce:backfill"
 WOO_QUEUE_WEBHOOKS = "woocommerce:webhooks"
 
+#: Cola de los trabajos INTERACTIVOS del ERP (los que un usuario lanza y espera
+#: mirando: la reconciliación de estados Woo). La consume `worker-factusol`
+#: —ocioso salvo al emitir facturas— con prioridad, NO `worker-sync`, que está
+#: saturado con los batch horarios de AgileCRM/Gmail/Brevo. Así la
+#: reconciliación se coge enseguida en vez de esperar detrás de un batch.
+ERP_INTERACTIVE_QUEUE = "erp:interactive"
+
 #: Backoff RQ nativo del receptor de webhooks (B-3): 30s → 2min → 10min →
 #: 1h → 4h. `len(interval)` intentos totales; tras el último → failed.
 WEBHOOK_RETRY_INTERVALS = [30, 120, 600, 3600, 14400]
@@ -361,16 +368,17 @@ def run_woo_reconcile(
 def enqueue_woo_reconcile(
     dry_run: bool = True, store_account_id: str | None = None,
 ) -> str:
-    """Encola `run_woo_reconcile` en `woocommerce:backfill` (worker-sync) y
-    devuelve el job_id. La API responde 202 al instante; el frontend hace
-    polling del estado — así la reconciliación NO corre dentro de la petición
-    (era lo que provocaba el 504)."""
+    """Encola `run_woo_reconcile` en la cola INTERACTIVA (`erp:interactive`,
+    que atiende `worker-factusol`, ocioso) y devuelve el job_id. NO va por
+    `worker-sync`: ahí la reconciliación esperaba detrás de los batch horarios
+    de AgileCRM/Gmail y nunca volvía. La API responde 202 al instante; el
+    frontend hace polling del estado."""
     from rq import Queue  # noqa: PLC0415
 
     from app.workers.queues import redis_connection  # noqa: PLC0415
 
     conn = redis_connection()
-    job = Queue(WOO_QUEUE_BACKFILL, connection=conn).enqueue(
+    job = Queue(ERP_INTERACTIVE_QUEUE, connection=conn).enqueue(
         run_woo_reconcile, dry_run, store_account_id,
         job_timeout=RECONCILE_JOB_TIMEOUT, result_ttl=RECONCILE_RESULT_TTL,
     )
