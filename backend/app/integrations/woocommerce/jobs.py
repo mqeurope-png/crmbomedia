@@ -337,6 +337,46 @@ def process_webhook_event(event_id: str) -> dict[str, Any]:
             return {"ok": False, "error": "bad_payload"}
 
 
+#: Timeout y TTL del job de reconciliación (listados a 3 tiendas; generoso).
+RECONCILE_JOB_TIMEOUT = 600
+RECONCILE_RESULT_TTL = 3600
+
+
+def run_woo_reconcile(
+    dry_run: bool = True, store_account_id: str | None = None,
+) -> dict[str, Any]:
+    """Job de la puesta al día de estados Woo. Abre su propia sesión y delega
+    en el núcleo (`reconcile_open_order_statuses`), que lista por estado y cruza
+    con los activos. Devuelve el resumen (lo recoge RQ como `job.result`)."""
+    from app.integrations.woocommerce.reconcile import (  # noqa: PLC0415
+        reconcile_open_order_statuses,
+    )
+
+    with _session_factory()() as session:
+        return reconcile_open_order_statuses(
+            session, dry_run=dry_run, store_account_id=store_account_id,
+        )
+
+
+def enqueue_woo_reconcile(
+    dry_run: bool = True, store_account_id: str | None = None,
+) -> str:
+    """Encola `run_woo_reconcile` en `woocommerce:backfill` (worker-sync) y
+    devuelve el job_id. La API responde 202 al instante; el frontend hace
+    polling del estado — así la reconciliación NO corre dentro de la petición
+    (era lo que provocaba el 504)."""
+    from rq import Queue  # noqa: PLC0415
+
+    from app.workers.queues import redis_connection  # noqa: PLC0415
+
+    conn = redis_connection()
+    job = Queue(WOO_QUEUE_BACKFILL, connection=conn).enqueue(
+        run_woo_reconcile, dry_run, store_account_id,
+        job_timeout=RECONCILE_JOB_TIMEOUT, result_ttl=RECONCILE_RESULT_TTL,
+    )
+    return job.id
+
+
 def _process_order_deleted(session, event: IntegrationEvent) -> dict[str, Any]:
     """`order.deleted` — el pedido se envió a la papelera en la tienda. No se
     re-consulta (ya no existe): se marca el pedido local `woo_status='trash'`

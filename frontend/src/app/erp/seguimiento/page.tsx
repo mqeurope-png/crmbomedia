@@ -13,6 +13,7 @@ import {
   listSeguimiento,
   reconcileWooStatuses,
   saveBlob,
+  waitForReconcileWoo,
   syncSeguimientoDrive,
   type DriveSyncReviewGroup,
   type DriveSyncSummary,
@@ -224,14 +225,25 @@ export default function SeguimientoPage() {
     }
   }
 
-  // ERP-Woo — puesta al día de estados: paso 1 previsualizar (no escribe).
+  // ERP-Woo — puesta al día de estados: corre en SEGUNDO PLANO. Se encola y se
+  // hace polling del estado; nada de peticiones colgadas (evita el 504).
+  // Paso 1: previsualizar (no escribe).
   async function onReconcilePreview() {
     setBusy(true);
     setError(null);
     setNotice(null);
     setReconcile(null);
     try {
-      setReconcile(await reconcileWooStatuses({ preview: true }));
+      const { job_id } = await reconcileWooStatuses({ preview: true });
+      setNotice("Consultando WooCommerce… (en segundo plano)");
+      const res = await waitForReconcileWoo(job_id);
+      setNotice(null);
+      if (res.status === "finished") setReconcile(res.result);
+      else if (res.status === "error") {
+        setError(res.error || "La puesta al día falló.");
+      } else {
+        setError("La puesta al día tardó demasiado; vuelve a intentarlo en un momento.");
+      }
     } catch (e) {
       setError(extractErrorMessage(e, "No se pudo consultar WooCommerce."));
     } finally {
@@ -239,21 +251,32 @@ export default function SeguimientoPage() {
     }
   }
 
-  // Paso 2: aplicar los cambios de estado.
+  // Paso 2: aplicar los cambios de estado (también en segundo plano).
   async function onReconcileApply() {
     setBusy(true);
     setError(null);
+    setNotice("Aplicando… (en segundo plano)");
     try {
-      const r = await reconcileWooStatuses({ preview: false });
-      setReconcile(null);
-      setNotice(
-        `Puesta al día aplicada: ${r.removed_total} pedidos salieron del `
-        + `seguimiento (${r.to_cancel} cancelados, ${r.to_fail} fallidos, `
-        + `${r.to_refund_out} reembolsos no cumplidos, ${r.to_trash} en papelera); `
-        + `${r.to_refund_kept} reembolsos ya cumplidos quedaron marcados.`,
-      );
-      await load();
+      const { job_id } = await reconcileWooStatuses({ preview: false });
+      const res = await waitForReconcileWoo(job_id);
+      if (res.status === "finished") {
+        const r = res.result;
+        setReconcile(null);
+        setNotice(
+          `Puesta al día aplicada: ${r.removed_total} pedidos salieron del `
+          + `seguimiento (${r.to_cancel} cancelados, ${r.to_fail} fallidos, `
+          + `${r.to_refund_out} reembolsos no cumplidos, ${r.to_trash} en papelera); `
+          + `${r.to_refund_kept} reembolsos ya cumplidos quedaron marcados.`,
+        );
+        await load();
+      } else {
+        setNotice(null);
+        setError(res.status === "error"
+          ? (res.error || "No se pudo aplicar la puesta al día.")
+          : "La puesta al día tardó demasiado; vuelve a intentarlo.");
+      }
     } catch (e) {
+      setNotice(null);
       setError(extractErrorMessage(e, "No se pudo aplicar la puesta al día."));
     } finally {
       setBusy(false);

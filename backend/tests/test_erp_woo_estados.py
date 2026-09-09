@@ -32,9 +32,7 @@ from app.erp.models import (
     OrderSource,
     TransportStatus,
 )
-from app.integrations.woocommerce.client import WooError
 from app.integrations.woocommerce.mapper import import_woo_order
-from app.integrations.woocommerce.reconcile import reconcile_open_order_statuses
 from app.main import app
 from app.models.crm import Company, ExternalSystem
 from app.models.integration_settings import (
@@ -260,89 +258,7 @@ def test_order_deleted_webhook_marks_trash(session_factory) -> None:
         assert "BOPRIN-800" not in _numbers(_rows_for(s, en_curso=True))
 
 
-# --- Parte C: reconciliación de los ya importados ----------------------------------
-
-
-def _factory(status_by_id: dict[int, str], fetched: list[int]):
-    def factory(store):
-        class _C:
-            def get_order(self, oid: int):
-                fetched.append(oid)
-                if oid not in status_by_id:
-                    raise WooError("gone", status=404)
-                return {"id": oid, "status": status_by_id[oid]}
-        return _C()
-    return factory
-
-
-def test_reconciliation_catches_already_imported_status_change(session_factory) -> None:
-    with session_factory() as s:
-        st = _store(s)
-        _order(s, woo_id="900", number="BOPRIN-900", woo_status="processing", store=st)
-        s.commit()
-        fetched: list[int] = []
-        summary = reconcile_open_order_statuses(
-            s, dry_run=False, client_factory=_factory({900: "cancelled"}, fetched),
-        )
-        assert fetched == [900]
-        assert summary["to_cancel"] == 1
-        assert summary["removed_total"] == 1
-        o = s.scalar(select(Order).where(Order.external_id == "900"))
-        assert o.woo_status == "cancelled"
-        assert "BOPRIN-900" not in _numbers(_rows_for(s, en_curso=True))
-
-
-def test_reconciliation_previews_before_applying(session_factory) -> None:
-    with session_factory() as s:
-        st = _store(s)
-        _order(s, woo_id="901", number="BOPRIN-901", woo_status="processing", store=st)
-        s.commit()
-        fetched: list[int] = []
-        preview = reconcile_open_order_statuses(
-            s, dry_run=True, client_factory=_factory({901: "cancelled"}, fetched),
-        )
-        assert preview["preview"] is True
-        assert preview["to_cancel"] == 1
-        # NO se ha escrito: el pedido sigue processing y visible.
-        o = s.scalar(select(Order).where(Order.external_id == "901"))
-        assert o.woo_status == "processing"
-        assert "BOPRIN-901" in _numbers(_rows_for(s, en_curso=True))
-
-
-def test_reconciliation_only_scans_open_orders_not_history(session_factory) -> None:
-    with session_factory() as s:
-        st = _store(s)
-        # Abierto (se re-consulta).
-        _order(s, woo_id="1000", number="BOPRIN-1000", woo_status="processing", store=st)
-        # Cerrado: facturado + entregado → NO en curso → NO se re-consulta.
-        _order(s, woo_id="1001", number="BOPRIN-1001", woo_status="completed",
-               store=st, delivered=True, invoiced=True)
-        # Ya cancelado (oculto) → NO se re-consulta.
-        _order(s, woo_id="1002", number="BOPRIN-1002", woo_status="cancelled", store=st)
-        s.commit()
-        fetched: list[int] = []
-        summary = reconcile_open_order_statuses(
-            s, dry_run=True,
-            client_factory=_factory({1000: "processing", 1001: "processing",
-                                     1002: "processing"}, fetched),
-        )
-        assert fetched == [1000]          # solo el abierto
-        assert summary["scanned"] == 1
-
-
-def test_reconciliation_refunded_fulfilled_is_marked_not_removed(session_factory) -> None:
-    with session_factory() as s:
-        st = _store(s)
-        _order(s, woo_id="1100", number="BOPRIN-1100", woo_status="processing",
-               store=st, tracking="1Z-X")   # ya enviado
-        s.commit()
-        summary = reconcile_open_order_statuses(
-            s, dry_run=False, client_factory=_factory({1100: "refunded"}, []),
-        )
-        assert summary["to_refund_kept"] == 1
-        assert summary["removed_total"] == 0
-        row = next(r for r in _rows_for(s, en_curso=True) if r["order_number"] == "BOPRIN-1100")
-        assert row["reembolsado"] is True
+# --- Parte C: reconciliación — ver test_erp_reconcile_woo.py (async + listado).
 
 
 # --- Parte E: Drive ----------------------------------------------------------------
