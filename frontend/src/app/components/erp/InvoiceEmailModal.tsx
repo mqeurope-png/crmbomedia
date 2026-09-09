@@ -255,7 +255,12 @@ export function InvoiceEmailModal({
               Adjunto: <strong>{preview.attachment_filename}</strong>
             </p>
             <p className="muted small">
-              Se envía desde <strong>{preview.from_alias || "—"}</strong>.
+              Se envía desde <strong>{preview.from_alias || "—"}</strong>
+              {preview.from_alias
+                ? preview.from_alias_source === "serie"
+                  ? " (empresa emisora de la serie)"
+                  : " (alias por defecto del usuario)"
+                : ""}.
               {preview.replies_to_thread
                 ? " Se responderá al hilo del pedido."
                 : ""}

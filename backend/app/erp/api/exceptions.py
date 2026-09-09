@@ -133,6 +133,10 @@ class SettingsIn(BaseModel):
     #: ({"5": ["STR","STREAMTEC"]}); al comparar valen, al escribir se usa la
     #: canónica. Los defaults (STR/BOM…) van cableados; esto añade más.
     factusol_series_abbr_variants: dict[str, list[str]] | None = None
+    #: ERP · remitente (alias de envío) del email de factura por serie = empresa
+    #: emisora ({"2": "info@artisjet-printers.eu", "5": "pedidos@streamtec.es"}).
+    #: Un valor vacío borra el default de esa serie.
+    factusol_series_email_from: dict[str, str] | None = None
 
 
 # --- helpers -----------------------------------------------------------------
@@ -334,6 +338,8 @@ def _woocommerce_stores(session: Session) -> list[dict[str, str]]:
 
 
 def _serialise_settings(cfg: ErpSettings, session: Session) -> dict[str, Any]:
+    from app.erp.invoice_email import series_email_from_config  # noqa: PLC0415
+
     mode = getattr(cfg.default_invoice_mode, "value", cfg.default_invoice_mode)
     return {
         "default_invoice_mode": mode,
@@ -390,6 +396,13 @@ def _serialise_settings(cfg: ErpSettings, session: Session) -> dict[str, Any]:
             str(k): v
             for k, v in series_abbreviations_config(
                 _series(cfg).get("series_abbreviations")
+            ).items()
+        },
+        # ERP · remitente del email de factura por serie (empresa emisora).
+        "factusol_series_email_from": {
+            str(k): v
+            for k, v in series_email_from_config(
+                _series(cfg).get("series_email_from")
             ).items()
         },
         "woocommerce_stores": _woocommerce_stores(session),
@@ -508,7 +521,8 @@ def update_settings(
             or payload.shipping_origins is not None
             or payload.drive_reference_prefer_albaran is not None
             or payload.factusol_series_abbreviations is not None
-            or payload.factusol_series_abbr_variants is not None):
+            or payload.factusol_series_abbr_variants is not None
+            or payload.factusol_series_email_from is not None):
         series = _series(cfg)
         # ERP-F6: lista configurable de orígenes del envío (OFI-TER-SAT).
         if payload.shipping_origins is not None:
@@ -534,6 +548,16 @@ def update_settings(
                 str(int(str(k).strip())): [str(x).strip() for x in v if str(x).strip()]
                 for k, v in payload.factusol_series_abbr_variants.items()
                 if str(k).strip().lstrip("-").isdigit() and isinstance(v, list)
+            }
+        # ERP · remitente del email de factura por serie = empresa emisora
+        # ({"2": "info@artisjet-printers.eu"}). Se guardan las claves numéricas
+        # CON el valor vacío incluido: "" borra el default precargado de esa
+        # serie (a diferencia de las abreviaturas, donde vacío se descarta).
+        if payload.factusol_series_email_from is not None:
+            series["series_email_from"] = {
+                str(int(str(k).strip())): str(v or "").strip()
+                for k, v in payload.factusol_series_email_from.items()
+                if str(k).strip().lstrip("-").isdigit()
             }
         # ERP-F5: contrapartidas de cobro (código numérico único + descripción)
         # y contrapartida PayPal por tienda. Se guardan explícitas.

@@ -369,6 +369,118 @@ def test_send_invoice_rejects_alias_not_in_prefs(http, session_factory) -> None:
     mock_send.assert_not_called()
 
 
+# ---------------------------------------------------------------------------
+# Remitente por SERIE = empresa emisora (que la factura salga del alias de la
+# empresa que emite, no del alias por defecto del usuario).
+# ---------------------------------------------------------------------------
+
+
+def test_invoice_email_sender_by_serie(http, session_factory) -> None:
+    """El remitente del preview sale del alias de la EMPRESA EMISORA según la
+    serie de la factura: serie 5 (Streamtec) → pedidos@streamtec.es; serie 2
+    (MQ Europe / artisJet) → info@artisjet-printers.eu."""
+    _ = session_factory
+    tables = {
+        "F_FAC": [_fac_row(),
+                  _fac_row(TIPFAC="2", CODFAC=120001, REFFAC="ART-000200")],
+        "F_LFA": [], "F_ALB": [], "F_FOP": [],
+    }
+    with _patched_factusol(tables):
+        s5 = http.get(
+            "/api/erp/factusol/documents/facturas/5/260063/email-preview",
+            headers=auth_headers(http, "pedidos"),
+        ).json()
+        s2 = http.get(
+            "/api/erp/factusol/documents/facturas/2/120001/email-preview",
+            headers=auth_headers(http, "pedidos"),
+        ).json()
+    assert s5["from_alias"] == "pedidos@streamtec.es"
+    assert s5["from_alias_source"] == "serie"
+    assert s2["from_alias"] == "info@artisjet-printers.eu"
+    assert s2["from_alias_source"] == "serie"
+
+
+def test_sender_falls_back_when_serie_unconfigured(http, session_factory) -> None:
+    """Si la serie no tiene remitente configurado (aquí se BORRA el default de
+    la serie 5 poniéndolo vacío en /erp/settings), el preview cae al alias por
+    defecto del usuario que envía — el comportamiento anterior."""
+    with session_factory() as s:
+        _seed_order(s)
+        _seed_alias(s, alias="ventas@bomedia.net")
+    # Un valor vacío en la config borra el default precargado de esa serie.
+    http.patch("/api/erp/settings",
+               json={"factusol_series_email_from": {"5": ""}},
+               headers=auth_headers(http, "admin"))
+    with _patched_factusol():
+        pre = http.get(
+            "/api/erp/factusol/documents/facturas/5/260063/email-preview",
+            headers=auth_headers(http, "pedidos"),
+        ).json()
+    assert pre["from_alias"] == "ventas@bomedia.net"
+    assert pre["from_alias_source"] == "usuario"
+
+
+def test_sender_must_be_valid_sendas_alias(http, session_factory) -> None:
+    """El alias de la serie DEBE ser un «enviar como» válido del usuario que
+    envía: si no lo es, el envío se rechaza (nunca se envía desde una dirección
+    no autorizada). En cuanto se da de alta como send-as del usuario, envía."""
+    with session_factory() as s:
+        _seed_order(s)
+        _seed_alias(s, alias="ventas@bomedia.net")  # NO es pedidos@streamtec.es
+    # El preview propone el alias de la serie 5 (empresa emisora).
+    with _patched_factusol():
+        pre = http.get(
+            "/api/erp/factusol/documents/facturas/5/260063/email-preview",
+            headers=auth_headers(http, "pedidos"),
+        ).json()
+    assert pre["from_alias"] == "pedidos@streamtec.es"
+    assert pre["from_alias_source"] == "serie"
+    # Enviar con ese alias, que NO es send-as del usuario → 403, no envía.
+    send_patch, _ = _patch_send()
+    with _patched_factusol(), send_patch as mock_send:
+        r = http.post(
+            "/api/erp/factusol/documents/facturas/5/260063/email",
+            json={"confirm": True, "to": ["client@example.fr"],
+                  "subject": "s", "body_text": "b", "lang": "fr",
+                  "from_alias": pre["from_alias"]},
+            headers=auth_headers(http, "pedidos"),
+        )
+    assert r.status_code == 403
+    assert r.json()["detail"]["code"] == "alias_not_allowed"
+    mock_send.assert_not_called()
+    # Dado de alta el alias de la serie como send-as del usuario → sí envía.
+    with session_factory() as s:
+        _seed_alias(s, alias="pedidos@streamtec.es")
+    ok_patch, _ = _patch_send()
+    with _patched_factusol(), ok_patch as mock_ok:
+        r2 = http.post(
+            "/api/erp/factusol/documents/facturas/5/260063/email",
+            json={"confirm": True, "to": ["client@example.fr"],
+                  "subject": "s", "body_text": "b", "lang": "fr",
+                  "from_alias": "pedidos@streamtec.es"},
+            headers=auth_headers(http, "pedidos"),
+        )
+    assert r2.status_code == 201, r2.text
+    mock_ok.assert_called_once()
+    assert mock_ok.call_args.kwargs["from_alias"] == "pedidos@streamtec.es"
+
+
+def test_preview_exposes_sender(http, session_factory) -> None:
+    """El preview EXPONE el remitente que se usará (from_alias) y su
+    procedencia (from_alias_source), para que la UI y el script de lote lo
+    muestren antes de enviar."""
+    _ = session_factory
+    with _patched_factusol():
+        pre = http.get(
+            "/api/erp/factusol/documents/facturas/5/260063/email-preview",
+            headers=auth_headers(http, "pedidos"),
+        ).json()
+    assert "from_alias" in pre
+    assert "from_alias_source" in pre
+    assert pre["from_alias"] == "pedidos@streamtec.es"
+    assert pre["from_alias_source"] == "serie"
+
+
 def test_invoice_email_settings_roundtrip(http, session_factory) -> None:
     _ = session_factory
     headers = auth_headers(http, "admin")

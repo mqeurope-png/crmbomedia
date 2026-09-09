@@ -366,6 +366,43 @@ export default function ErpSettingsPage() {
           />
         </fieldset>
 
+        {/* ERP — remitente (alias de envío) del email de factura por serie. */}
+        <fieldset className="erp-series-fieldset">
+          <legend>Remitente del email de factura (por serie)</legend>
+          <p className="muted small">
+            Desde qué dirección sale la factura por email según la SERIE = empresa
+            emisora. Serie 2 (MQ Europe / artisJet) →
+            {" "}info@artisjet-printers.eu; serie 5 (Streamtec) →
+            {" "}pedidos@streamtec.es. Déjalo vacío para usar el alias por
+            defecto del usuario que envía. El alias debe ser un «enviar como»
+            válido de la cuenta de Gmail que envía; si no, el envío falla.
+          </p>
+          {Array.from(new Set([
+            ...Object.keys(cfg.factusol_companies ?? {}),
+            ...Object.keys(cfg.factusol_series_email_from ?? {}),
+          ]))
+            .sort((a, b) => Number(a) - Number(b))
+            .map((serie) => (
+              <div className="erp-bank-row" key={serie}>
+                <span style={{ flex: "0 0 90px" }}>Serie {serie}</span>
+                <input
+                  type="email"
+                  style={{ flex: 1 }}
+                  placeholder="(alias por defecto del usuario)"
+                  aria-label={`Remitente serie ${serie}`}
+                  value={cfg.factusol_series_email_from?.[serie] ?? ""}
+                  onChange={(e) => setCfg({
+                    ...cfg,
+                    factusol_series_email_from: {
+                      ...(cfg.factusol_series_email_from ?? {}),
+                      [serie]: e.target.value,
+                    },
+                  })}
+                />
+              </div>
+            ))}
+        </fieldset>
+
         <fieldset className="erp-series-fieldset">
           <legend>Empresas emisoras (PDF de documentos)</legend>
           <p className="muted small">
