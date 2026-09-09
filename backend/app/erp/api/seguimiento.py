@@ -308,7 +308,7 @@ def include_orders(
     return {"ok": True, "included": included}
 
 
-@router.post("/reconcile-woo")
+@router.post("/reconcile-woo", status_code=status.HTTP_202_ACCEPTED)
 def reconcile_woo(
     dry_run: bool = Query(default=True),
     store: str | None = Query(default=None),
@@ -316,16 +316,54 @@ def reconcile_woo(
     current_user: User = Depends(require_erp_edit),
 ) -> dict[str, Any]:
     """ERP-Woo — «poner al día» los estados de WooCommerce de los pedidos que
-    BoHub tiene como activos: re-consulta la tienda y aplica la regla
-    (cancelado/fallido/reembolso-no-cumplido → fuera del seguimiento;
-    reembolso-cumplido → marcado). `dry_run=true` (por defecto) PREVISUALIZA
-    (cuántos cambiarían) sin escribir. Nunca toca la hoja de Drive ni el
-    histórico; solo actualiza `woo_status`."""
-    _ = current_user
-    from app.integrations.woocommerce.reconcile import (  # noqa: PLC0415
-        reconcile_open_order_statuses,
-    )
+    BoHub tiene como activos: lista por estado en cada tienda y cruza con los
+    activos, aplicando la regla (cancelado/fallido/reembolso-no-cumplido → fuera
+    del seguimiento; reembolso-cumplido → marcado). `dry_run=true` (por defecto)
+    PREVISUALIZA. Corre en SEGUNDO PLANO (worker-sync): responde al instante con
+    un `job_id`; el estado se consulta en `reconcile-woo-status/{job_id}`. Así
+    no se bloquea la petición (era lo que daba 504). Nunca toca Drive ni el
+    histórico; solo `woo_status`."""
+    _ = session, current_user
+    from app.integrations.woocommerce.jobs import enqueue_woo_reconcile  # noqa: PLC0415
 
-    return reconcile_open_order_statuses(
-        session, dry_run=dry_run, store_account_id=store,
-    )
+    job_id = enqueue_woo_reconcile(dry_run=dry_run, store_account_id=store)
+    return {"job_id": job_id, "status": "queued", "preview": dry_run}
+
+
+@router.get("/reconcile-woo-status/{job_id}")
+def reconcile_woo_status(
+    job_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_edit),
+) -> dict[str, Any]:
+    """Polling del job de reconciliación: `pending` / `finished` (+`result` con
+    el recuento por categoría) / `error` (+`error` legible)."""
+    _ = session, current_user
+    return _rq_reconcile_status(job_id)
+
+
+def _rq_reconcile_status(job_id: str) -> dict[str, Any]:
+    """Estado del job RQ (best-effort). Sin Redis (local/tests) → `pending`."""
+    import logging  # noqa: PLC0415
+
+    try:
+        from redis import Redis  # noqa: PLC0415
+        from rq.job import Job  # noqa: PLC0415
+
+        from app.core.config import get_settings  # noqa: PLC0415
+
+        conn = Redis.from_url(get_settings().redis_url)
+        job = Job.fetch(job_id, connection=conn)
+        rq_status = job.get_status(refresh=True)
+        if rq_status == "failed":
+            return {
+                "status": "error",
+                "error": "La puesta al día falló (una tienda no respondió). "
+                         "Revisa la conexión con WooCommerce y vuelve a intentarlo.",
+            }
+        if rq_status == "finished":
+            return {"status": "finished", "result": job.result}
+        return {"status": "pending"}
+    except Exception as exc:  # noqa: BLE001 — sin Redis o job caducado
+        logging.getLogger(__name__).debug("reconcile job %s no consultable: %s", job_id, exc)
+        return {"status": "pending"}

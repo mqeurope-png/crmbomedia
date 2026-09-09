@@ -381,28 +381,51 @@ export type WooReconcileSummary = {
   ok: boolean;
   preview: boolean;
   scanned: number;
+  unchanged: number;
   capped: boolean;
   limit: number;
+  /** nº de llamadas a WooCommerce (listados) que hizo la reconciliación. */
+  woo_calls?: number;
   to_cancel: number;
   to_fail: number;
   to_trash: number;
   to_refund_out: number;
   removed_total: number;
   to_refund_kept: number;
-  unchanged: number;
-  errors: { order_number: string | null; error: string }[];
+  errors: { order_number?: string | null; store?: string; status?: string; error: string }[];
   samples: Record<string, string[]>;
 };
 
-/** ERP-Woo — re-consulta WooCommerce el estado de los pedidos activos y aplica
- *  la regla. `preview` (por defecto) no escribe: solo cuenta qué cambiaría. */
+/** Estado del job de reconciliación (polling). */
+export type WooReconcileStatus =
+  | { status: "pending" }
+  | { status: "finished"; result: WooReconcileSummary }
+  | { status: "error"; error?: string };
+
+/** ERP-Woo — ENCOLA la puesta al día (corre en segundo plano en worker-sync)
+ *  y devuelve un `job_id`. `preview` (por defecto) no escribe. */
 export async function reconcileWooStatuses(
   opts: { preview?: boolean } = {},
-): Promise<WooReconcileSummary> {
+): Promise<{ job_id: string; status: string; preview: boolean }> {
   const q = opts.preview === false ? "?dry_run=false" : "?dry_run=true";
-  return apiFetch<WooReconcileSummary>(`/api/erp/seguimiento/reconcile-woo${q}`, {
-    method: "POST",
-  });
+  return apiFetch(`/api/erp/seguimiento/reconcile-woo${q}`, { method: "POST" });
+}
+
+export async function getReconcileWooStatus(jobId: string): Promise<WooReconcileStatus> {
+  return apiFetch(`/api/erp/seguimiento/reconcile-woo-status/${encodeURIComponent(jobId)}`);
+}
+
+/** Espera a que el job termine (o error). Hace polling del estado. */
+export async function waitForReconcileWoo(
+  jobId: string, { tries = 40, delayMs = 2000 } = {},
+): Promise<WooReconcileStatus> {
+  let last: WooReconcileStatus = { status: "pending" };
+  for (let i = 0; i < tries; i++) {
+    last = await getReconcileWooStatus(jobId);
+    if (last.status !== "pending") return last;
+    await new Promise((r) => setTimeout(r, delayMs));
+  }
+  return last;
 }
 
 /** ERP-F6 — campos de seguimiento del pedido. `orden` se AÑADE a las
