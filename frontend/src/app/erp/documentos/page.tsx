@@ -5,8 +5,11 @@ import { PageHeader } from "../../components/PageHeader";
 import { cycleBadge, FactusolDocumentDetailModal } from
   "../../components/erp/FactusolDocumentDetailModal";
 import {
+  downloadFacturasPdfZip,
+  downloadFactusolDocumentPdf,
   getFactusolSeries,
   listFactusolDocuments,
+  saveBlob,
   type FactusolDocType,
   type FactusolDocument,
   type FactusolDocumentFilters,
@@ -84,6 +87,10 @@ export default function FactusolDocumentosPage() {
   const [error, setError] = useState<string | null>(null);
   const [series, setSeries] = useState<FactusolSerie[]>([]);
   const [detail, setDetail] = useState<FactusolDocument | null>(null);
+  // Descarga de PDF (solo facturas): selección múltiple → ZIP, y por fila.
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [downloading, setDownloading] = useState(false);
+  const [dlError, setDlError] = useState<string | null>(null);
 
   // Filtros. `clienteQ` viaja tal cual: el backend lo resuelve contra
   // F_CLI por nombre, CIF o email (E3-A-fix1).
@@ -132,6 +139,7 @@ export default function FactusolDocumentosPage() {
       setItems(r.items);
       setTotal(r.total);
       setOffset(nextOffset);
+      setSelected(new Set());  // la selección no sobrevive a un recargado
     } catch (e) {
       setError(extractErrorMessage(e, "No se pudo consultar FACTUSOL."));
       setItems([]);
@@ -165,6 +173,57 @@ export default function FactusolDocumentosPage() {
     setQ("");
     setCiclo("");
     setPago("");
+  }
+
+  // --- Descarga de PDF de facturas (solo lectura) -------------------------
+  const rowKey = (d: FactusolDocument) => `${d.serie}-${d.codigo}`;
+
+  function toggleRow(key: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  }
+  function toggleAll() {
+    setSelected((prev) =>
+      prev.size === items.length ? new Set() : new Set(items.map(rowKey)),
+    );
+  }
+
+  async function downloadOne(d: FactusolDocument) {
+    if (d.serie === null || d.codigo === null) return;
+    setDlError(null);
+    setDownloading(true);
+    try {
+      const blob = await downloadFactusolDocumentPdf(
+        "facturas", d.serie, d.codigo,
+      );
+      saveBlob(blob, `Factura_${d.serie}-${d.codigo}.pdf`);
+    } catch (e) {
+      setDlError(extractErrorMessage(e, "No se pudo descargar el PDF."));
+    } finally {
+      setDownloading(false);
+    }
+  }
+
+  async function downloadSelectedZip() {
+    const chosen = items.filter(
+      (d) => selected.has(rowKey(d)) && d.serie !== null && d.codigo !== null,
+    );
+    if (chosen.length === 0) return;
+    setDlError(null);
+    setDownloading(true);
+    try {
+      const blob = await downloadFacturasPdfZip(
+        chosen.map((d) => ({ serie: d.serie as number, codigo: Number(d.codigo) })),
+      );
+      saveBlob(blob, "facturas_pdf.zip");
+    } catch (e) {
+      setDlError(extractErrorMessage(e, "No se pudieron descargar los PDF."));
+    } finally {
+      setDownloading(false);
+    }
   }
 
   const hasFilters =
@@ -301,9 +360,22 @@ export default function FactusolDocumentosPage() {
             Limpiar filtros
           </button>
         ) : null}
+        {tab === "facturas" && selected.size > 0 ? (
+          <button
+            type="button"
+            className="button small"
+            disabled={downloading}
+            onClick={() => void downloadSelectedZip()}
+          >
+            {downloading
+              ? "Descargando…"
+              : `Descargar PDF (ZIP) (${selected.size})`}
+          </button>
+        ) : null}
       </div>
 
       {error ? <p className="form-error">{error}</p> : null}
+      {dlError ? <p className="form-error">{dlError}</p> : null}
 
       {loading ? (
         <p className="muted">Consultando FACTUSOL…</p>
@@ -314,6 +386,16 @@ export default function FactusolDocumentosPage() {
           <table className="data-table erp-doc-table">
             <thead>
               <tr>
+                {tab === "facturas" ? (
+                  <th className="erp-doc-check">
+                    <input
+                      type="checkbox"
+                      aria-label="Seleccionar todas las facturas"
+                      checked={items.length > 0 && selected.size === items.length}
+                      onChange={toggleAll}
+                    />
+                  </th>
+                ) : null}
                 {([
                   ["numero", "Número"],
                   ["cliente", "Cliente"],
@@ -346,6 +428,7 @@ export default function FactusolDocumentosPage() {
                 <th>Estado</th>
                 <th>Ciclo</th>
                 <th>Referencia</th>
+                {tab === "facturas" ? <th>PDF</th> : null}
               </tr>
             </thead>
             <tbody>
@@ -355,6 +438,19 @@ export default function FactusolDocumentosPage() {
                   className="erp-doc-row"
                   onClick={() => setDetail(d)}
                 >
+                  {tab === "facturas" ? (
+                    <td
+                      className="erp-doc-check"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <input
+                        type="checkbox"
+                        aria-label={`Seleccionar factura ${d.numero}`}
+                        checked={selected.has(rowKey(d))}
+                        onChange={() => toggleRow(rowKey(d))}
+                      />
+                    </td>
+                  ) : null}
                   <td><strong>{d.numero}</strong></td>
                   <td>{d.cliente_nombre ?? d.cliente_codigo ?? "—"}</td>
                   <td>{d.fecha ?? "—"}</td>
@@ -374,6 +470,18 @@ export default function FactusolDocumentosPage() {
                   <td>{d.estado_label}</td>
                   <td>{renderCiclo(d)}</td>
                   <td className="muted small">{d.referencia ?? "—"}</td>
+                  {tab === "facturas" ? (
+                    <td onClick={(e) => e.stopPropagation()}>
+                      <button
+                        type="button"
+                        className="button small secondary"
+                        disabled={downloading || d.serie === null || d.codigo === null}
+                        onClick={() => void downloadOne(d)}
+                      >
+                        PDF
+                      </button>
+                    </td>
+                  ) : null}
                 </tr>
               ))}
             </tbody>

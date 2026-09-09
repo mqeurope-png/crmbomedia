@@ -7,6 +7,7 @@ garantía de NO perder información respecto a lo que emite el escritorio.
 from __future__ import annotations
 
 import io
+import zipfile
 from collections.abc import Generator
 from typing import Any
 from unittest.mock import patch
@@ -36,6 +37,7 @@ from app.erp.factusol_pdf import (
     merge_companies,
     pdf_filename,
 )
+from app.erp.models import Order
 from app.main import app
 from tests._test_helpers import auth_headers, seed_test_users
 from tests.test_factusol_documents import FakeClient
@@ -441,6 +443,138 @@ def test_pdf_endpoint_404_and_lang_validation(http, session_factory) -> None:
         )
     assert de.status_code == 200
     assert "RECHNUNG" in _texto(de.content)
+
+
+def _tables_two_series() -> dict[str, list[dict[str, Any]]]:
+    """Serie 5 (Streamtec, 5-260063) + serie 2 (MQ Europe, 2-260064)."""
+    return {
+        "F_FAC": [
+            _header("facturas"),
+            _header("facturas", TIPFAC="2", CODFAC=260064,
+                    CNOFAC="ARTIS CLIENT SL"),
+        ],
+        "F_LFA": [
+            _linea("facturas", 1),
+            _linea("facturas", 1, TIPLFA="2", CODLFA=260064),
+        ],
+        "F_ALB": [], "F_FOP": [],
+    }
+
+
+def test_pdf_endpoint_by_serie_codigo(http, session_factory) -> None:
+    """Descarga el PDF de una factura por serie+número: 200, application/pdf,
+    %PDF y nombre legible con el número (sin pasar por ningún pedido)."""
+    _ = session_factory
+    with _patched_factusol(FakeClient(_tables())):
+        r = http.get(
+            "/api/erp/factusol/documents/facturas/5/260063/pdf",
+            headers=auth_headers(http, "user"),
+        )
+    assert r.status_code == 200, r.text
+    assert r.headers["content-type"] == "application/pdf"
+    assert r.content.startswith(b"%PDF")
+    assert "5-260063" in r.headers["content-disposition"]
+
+
+def test_pdf_endpoint_works_for_unlinked_invoice(http, session_factory) -> None:
+    """El PDF sale de FACTUSOL, no del pedido: funciona aunque NO haya ningún
+    pedido del CRM enlazado (caso facturas de flux hechas a mano)."""
+    with session_factory() as s:
+        assert s.query(Order).count() == 0  # no hay pedidos en la BD
+    with _patched_factusol(FakeClient(_tables())):
+        r = http.get(
+            "/api/erp/factusol/documents/facturas/5/260063/pdf",
+            headers=auth_headers(http, "user"),
+        )
+    assert r.status_code == 200, r.text
+    assert r.content.startswith(b"%PDF")
+
+
+def test_pdf_endpoint_readonly(http, session_factory) -> None:
+    """Solo lectura: genera el PDF sin marcar, enviar ni escribir. No toca
+    Gmail y es idempotente (se puede repetir sin consumir estado)."""
+    _ = session_factory
+    fake = FakeClient(_tables())
+    send = patch("app.integrations.gmail.service.send_email")
+    with _patched_factusol(fake), send as mock_send:
+        r1 = http.get(
+            "/api/erp/factusol/documents/facturas/5/260063/pdf",
+            headers=auth_headers(http, "user"),
+        )
+        r2 = http.get(
+            "/api/erp/factusol/documents/facturas/5/260063/pdf",
+            headers=auth_headers(http, "user"),
+        )
+    assert r1.status_code == 200 and r2.status_code == 200
+    assert r1.content.startswith(b"%PDF") and r2.content.startswith(b"%PDF")
+    mock_send.assert_not_called()          # no envía nada
+
+
+def test_pdf_sender_identity_by_serie(http, session_factory) -> None:
+    """La identidad fiscal del PDF es la de la EMPRESA de la serie: serie 2 →
+    MQ Europe, nunca Streamtec."""
+    _ = session_factory
+    with _patched_factusol(FakeClient(_tables_two_series())):
+        r = http.get(
+            "/api/erp/factusol/documents/facturas/2/260064/pdf?lang=en",
+            headers=auth_headers(http, "user"),
+        )
+    assert r.status_code == 200, r.text
+    text = _texto(r.content)
+    assert "MQ Europe BV" in text
+    assert "Streamtec" not in text
+
+
+def test_pdf_zip_multiple_invoices(http, session_factory) -> None:
+    """POST pdf-zip devuelve un ZIP con un PDF por factura seleccionada, con la
+    empresa emisora correcta según la serie de cada una."""
+    _ = session_factory
+    with _patched_factusol(FakeClient(_tables_two_series())):
+        r = http.post(
+            "/api/erp/factusol/documents/facturas/pdf-zip",
+            json={"lang": "en", "items": [
+                {"serie": 5, "codigo": 260063},
+                {"serie": 2, "codigo": 260064},
+            ]},
+            headers=auth_headers(http, "user"),
+        )
+    assert r.status_code == 200, r.text
+    assert r.headers["content-type"] == "application/zip"
+    zf = zipfile.ZipFile(io.BytesIO(r.content))
+    names = zf.namelist()
+    assert sum(1 for n in names if n.endswith(".pdf")) == 2
+    assert all(zf.read(n).startswith(b"%PDF") for n in names if n.endswith(".pdf"))
+    assert any("5-260063" in n for n in names)
+    assert any("2-260064" in n for n in names)
+
+
+def test_pdf_zip_skips_missing_and_404_when_all_missing(http, session_factory) -> None:
+    """Las facturas inexistentes se saltan y se listan en _no_encontradas.txt;
+    si NINGUNA de las seleccionadas existe → 404."""
+    _ = session_factory
+    with _patched_factusol(FakeClient(_tables())):
+        partial = http.post(
+            "/api/erp/factusol/documents/facturas/pdf-zip",
+            json={"items": [
+                {"serie": 5, "codigo": 260063},
+                {"serie": 5, "codigo": 999999},   # no existe
+            ]},
+            headers=auth_headers(http, "user"),
+        )
+    assert partial.status_code == 200, partial.text
+    zf = zipfile.ZipFile(io.BytesIO(partial.content))
+    assert "_no_encontradas.txt" in zf.namelist()
+    assert "5-999999" in zf.read("_no_encontradas.txt").decode("utf-8")
+    assert sum(1 for n in zf.namelist() if n.endswith(".pdf")) == 1
+
+    with _patched_factusol(FakeClient({"F_FAC": [], "F_LFA": [], "F_FOP": []})):
+        none = http.post(
+            "/api/erp/factusol/documents/facturas/pdf-zip",
+            json={"items": [{"serie": 5, "codigo": 1}]},
+            headers=auth_headers(http, "user"),
+        )
+    assert none.status_code == 404
+    assert none.json()["detail"]["code"] == "no_invoices_found"
 
 
 def test_settings_expose_and_save_companies(http, session_factory) -> None:

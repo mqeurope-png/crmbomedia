@@ -1296,6 +1296,20 @@ export async function downloadFactusolDocumentPdf(
   );
 }
 
+/** ZIP con los PDF de varias facturas (selección múltiple), por serie+número.
+ *  Solo lectura: genera y empaqueta, no marca ni envía. Las que no existen se
+ *  omiten (van en `_no_encontradas.txt` dentro del ZIP). */
+export async function downloadFacturasPdfZip(
+  items: { serie: number; codigo: number; lang?: FactusolPdfLang }[],
+  lang?: FactusolPdfLang,
+): Promise<Blob> {
+  return apiDownloadBlob("/api/erp/factusol/documents/facturas/pdf-zip", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ items, lang }),
+  });
+}
+
 /** PDF del pedido de cliente (F_PCL) vinculado a un pedido del CRM. */
 export async function downloadOrderFactusolPedidoPdf(
   orderId: string, lang: FactusolPdfLang = "es",
