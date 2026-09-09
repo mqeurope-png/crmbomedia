@@ -443,6 +443,21 @@ def _serie_of_invoice(invoice_number: Any) -> int | None:
     return int(head) if head.isdigit() else None
 
 
+def store_serie_for(
+    *, store_slug: str | None, store_id: str | None, source: str | None,
+    by_source: dict[str, Any],
+) -> int | None:
+    """Serie configurada para la TIENDA (por slug; o por store_id; o el valor
+    global de WooCommerce como respaldo). None si no hay ninguna."""
+    for key in (store_slug, store_id, source):
+        if not key:
+            continue
+        raw = by_source.get(key)
+        if raw is not None and str(raw).strip().isdigit():
+            return int(str(raw).strip())
+    return None
+
+
 def resolve_empresa_serie(
     *,
     invoice_number: Any,
@@ -460,13 +475,15 @@ def resolve_empresa_serie(
     inv = _serie_of_invoice(invoice_number)
     if inv is not None:
         return inv
-    for key in (store_slug, store_id, source):
-        if not key:
-            continue
-        raw = by_source.get(key)
-        if raw is not None and str(raw).strip().isdigit():
-            return int(str(raw).strip())
-    return None
+    return store_serie_for(
+        store_slug=store_slug, store_id=store_id, source=source, by_source=by_source,
+    )
+
+
+def serie_of_invoice(invoice_number: Any) -> int | None:
+    """Serie explícita de un número de factura (`1-260737` → 1). Público para
+    la resolución de empresa de una fila de la hoja (ERP-F6-fix5)."""
+    return _serie_of_invoice(invoice_number)
 
 #: Orígenes del envío vistos en el Excel real (OFI-TER-SAT). Valor INICIAL de
 #: la lista configurable de /erp/settings; se pueden añadir más.
@@ -602,13 +619,14 @@ def build_rows(
         # ERP-F6-fix4: formato de Bart «Empresa (Persona)» cuando hay ambos.
         cliente = compose_client(cliente_company, cliente_person)
         source = getattr(o.external_source, "value", o.external_source)
-        serie = resolve_empresa_serie(
-            invoice_number=o.factusol_invoice_number,
+        # ERP-F6-fix5: serie de FACTURA (real) y serie de TIENDA (deducida) por
+        # separado — el sync las trata distinto en filas ya existentes.
+        serie_invoice = _serie_of_invoice(o.factusol_invoice_number)
+        serie_store = store_serie_for(
             store_slug=store_slugs.get(o.store_id) if o.store_id else None,
-            store_id=o.store_id,
-            source=source,
-            by_source=by_source,
+            store_id=o.store_id, source=source, by_source=by_source,
         )
+        serie = serie_invoice if serie_invoice is not None else serie_store
         estado = _estado(o)
         productos = " · ".join(
             f"{float(line.quantity):g}× {line.description or line.product_sku}"
@@ -618,6 +636,10 @@ def build_rows(
             "id": o.id,
             "order_number": o.order_number,
             "serie": serie,
+            # ERP-F6-fix5: serie de factura registrada en BoHub (real) y serie
+            # deducida de la tienda, para la resolución de Empresa del sync.
+            "serie_invoice": serie_invoice,
+            "serie_store": serie_store,
             "empresa": (
                 series_names.get(serie) or FALLBACK_SERIES_NAMES.get(serie)
                 or (f"Serie {serie}" if serie else None)

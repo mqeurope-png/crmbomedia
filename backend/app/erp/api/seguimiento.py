@@ -131,6 +131,45 @@ def export_seguimiento(
     )
 
 
+def _factusol_invoice_serie_resolver(session: Session):
+    """ERP-F6-fix5 — resolutor perezoso `CODFAC → serie` contra FACTUSOL para
+    las facturas escritas en la hoja como número desnudo. Carga F_FAC UNA sola
+    vez (con `1=1`, gotcha nº1) y solo si de verdad se necesita; si el mismo
+    CODFAC vive en varias series, devuelve None (ambiguo, no tocar)."""
+    import logging  # noqa: PLC0415
+
+    index: dict[str, set[int]] = {}
+    state = {"loaded": False}
+    log = logging.getLogger(__name__)
+
+    def resolve(codfac: str) -> int | None:
+        if not state["loaded"]:
+            state["loaded"] = True
+            try:
+                from app.erp.api.factusol import _client_and_ejercicio  # noqa: PLC0415
+                from app.integrations.factusol.service import coerce_serie  # noqa: PLC0415
+
+                client, ejercicio = _client_and_ejercicio(session)
+                for r in client.load_table("F_FAC", filtro="1=1", ejercicio=ejercicio):
+                    try:
+                        cod = str(int(float(str(r.get("CODFAC")).strip())))
+                    except (TypeError, ValueError):
+                        continue
+                    serie = coerce_serie(r.get("TIPFAC"))
+                    if serie is not None:
+                        index.setdefault(cod, set()).add(serie)
+            except Exception as exc:  # noqa: BLE001 — best-effort
+                log.warning("F6-fix5: no se pudo cargar F_FAC para resolver series: %s", exc)
+        try:
+            key = str(int(float(str(codfac).strip())))
+        except (TypeError, ValueError):
+            return None
+        series = index.get(key)
+        return next(iter(series)) if series and len(series) == 1 else None
+
+    return resolve
+
+
 @router.post("/drive-sync")
 def drive_sync(
     dry_run: bool = Query(default=False),
@@ -190,6 +229,7 @@ def drive_sync(
         return sync_to_sheet(
             session, GoogleSheetsClient(info, spreadsheet_id), rows,
             prefer_albaran=prefer_albaran, dry_run=dry_run,
+            invoice_serie_resolver=_factusol_invoice_serie_resolver(session),
         )
     except DriveSyncError as exc:
         raise HTTPException(
