@@ -6,11 +6,12 @@ sincronizado con la hoja es un extra que avisa si falta configuración.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date, datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import Response
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.db.session import get_session
@@ -43,6 +44,8 @@ def _filtered(
     estado: str | None,
     q: str | None,
     en_curso: bool,
+    ver_excluidos: bool = False,
+    pendiente_escribir: bool | None = None,
     sort: str,
     direction: str,
 ) -> list[dict[str, Any]]:
@@ -50,7 +53,8 @@ def _filtered(
         _rows(session),
         serie=serie, vendedor=vendedor, transportista=transportista,
         origen=origen, desde=desde, hasta=hasta, estado=estado, q=q,
-        en_curso=en_curso, sort=sort, direction=direction,
+        en_curso=en_curso, ver_excluidos=ver_excluidos,
+        pendiente_escribir=pendiente_escribir, sort=sort, direction=direction,
     )
 
 
@@ -65,6 +69,10 @@ def list_seguimiento(
     estado: str | None = Query(default=None, pattern="^(pendiente|enviado|facturado)$"),
     q: str | None = Query(default=None, max_length=120),
     en_curso: bool = Query(default=True),
+    # ERP-F6-fix7 — ver SOLO los excluidos (para revisarlos/reincluirlos), o
+    # solo los que faltan por escribir en la hoja de Drive.
+    ver_excluidos: bool = Query(default=False),
+    pendiente_escribir: bool = Query(default=False),
     sort: str = Query(default="fecha"),
     dir: str = Query(default="desc", pattern="^(asc|desc)$"),  # noqa: A002
     limit: int = Query(default=200, ge=1, le=1000),
@@ -73,12 +81,14 @@ def list_seguimiento(
     current_user: User = Depends(require_erp_view),
 ) -> dict[str, Any]:
     """Vista de seguimiento. Por defecto: pedidos EN CURSO (la parte de
-    arriba del Excel, lo que Bart mira a diario)."""
+    arriba del Excel, lo que Bart mira a diario). Los excluidos quedan fuera
+    salvo con `ver_excluidos`."""
     _ = current_user
     rows = _filtered(
         session, serie=serie, vendedor=vendedor, transportista=transportista,
         origen=origen, desde=desde, hasta=hasta, estado=estado, q=q,
-        en_curso=en_curso, sort=sort, direction=dir,
+        en_curso=en_curso, ver_excluidos=ver_excluidos,
+        pendiente_escribir=pendiente_escribir or None, sort=sort, direction=dir,
     )
     cfg = session.get(ErpSettings, ERP_SETTINGS_SINGLETON_ID)
     from app.erp.drive_sheets import service_account_email  # noqa: PLC0415
@@ -176,14 +186,12 @@ def drive_sync(
     session: Session = Depends(get_session),
     current_user: User = Depends(require_erp_edit),
 ) -> dict[str, Any]:
-    """«Actualizar hoja de Drive»: sincronización MANUAL. Identifica cada
-    pedido por su número desnudo (ERP-F6-fix2): actualiza el que ya está,
-    añade el que no. Incremental, sin borrar filas ajenas ni pisar celdas
-    manuales. `dry_run=true` PREVISUALIZA (cuántas añade/actualiza/conflictos)
-    sin escribir nada — para que Bart lo vea antes de confirmar."""
+    """«Actualizar hoja de Drive»: sincronización MANUAL. ERP-F6-fix7 — SOLO
+    AÑADE: identifica cada pedido por su número desnudo (ERP-F6-fix2) para no
+    duplicar; el que ya está en la hoja no se toca. Sin borrar filas ajenas ni
+    pisar celdas manuales. `dry_run=true` PREVISUALIZA (cuántas añade / a
+    revisar / info) sin escribir nada — para que Bart lo vea antes de confirmar."""
     _ = current_user
-    from sqlalchemy import select  # noqa: PLC0415
-
     from app.erp.drive_sheets import (  # noqa: PLC0415
         DriveConfigError,
         DriveSyncError,
@@ -191,7 +199,6 @@ def drive_sync(
         drive_config,
         sync_to_sheet,
     )
-    from app.erp.models import ErpDriveSyncRow  # noqa: PLC0415
     from app.integrations.factusol.service import series_config  # noqa: PLC0415
 
     cfg = session.get(ErpSettings, ERP_SETTINGS_SINGLETON_ID)
@@ -212,19 +219,7 @@ def drive_sync(
         })
     info, spreadsheet_id = conf
     prefer_albaran = bool(series_config(session).get("drive_reference_prefer_albaran", True))
-    # Se sincronizan los pedidos EN CURSO + los ya presentes en la hoja
-    # (cualquier pedido con foto previa se sigue actualizando).
-    rows = core.filter_rows(_rows(session), en_curso=True, sort="fecha", direction="asc")
-    known = {r["id"] for r in rows}
-    tracked_ids = set(session.scalars(select(ErpDriveSyncRow.order_id)).all())
-    if tracked_ids - known:
-        extra = [
-            r for r in core.filter_rows(
-                _rows(session), en_curso=False, sort="fecha", direction="asc",
-            )
-            if r["id"] in tracked_ids - known
-        ]
-        rows = rows + extra
+    rows = build_drive_sync_rows(session)
     try:
         return sync_to_sheet(
             session, GoogleSheetsClient(info, spreadsheet_id), rows,
@@ -236,3 +231,73 @@ def drive_sync(
             status.HTTP_502_BAD_GATEWAY,
             {"code": "drive_sync_failed", "detail": str(exc)[:300]},
         ) from exc
+
+
+def build_drive_sync_rows(session: Session) -> list[dict[str, Any]]:
+    """Pedidos candidatos a escribirse en la hoja: los EN CURSO, excluidos
+    fuera (ERP-F6-fix7). El emparejamiento evita duplicar los que ya están; los
+    excluidos no se listan ni se insertan. Reutilizado por el endpoint y por el
+    script de medición `scripts.erp_f6_verify_sheet_format`."""
+    return core.filter_rows(
+        _rows(session), en_curso=True, sort="fecha", direction="asc",
+    )
+
+
+class ExcludeIn(BaseModel):
+    order_ids: list[str] = Field(min_length=1)
+    reason: str | None = Field(default=None, max_length=2000)
+
+
+@router.post("/exclude")
+def exclude_orders(
+    payload: ExcludeIn,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_edit),
+) -> dict[str, Any]:
+    """ERP-F6-fix7 — EXCLUIR pedidos del seguimiento (varios a la vez). Un
+    pedido excluido no se lista, no se inserta en la hoja, no se actualiza ni se
+    cuenta. NO borra ni modifica el pedido en BoHub ni en FACTUSOL; su fila en
+    la hoja (si la hay) se queda intacta y la gestiona Bart. Registra quién y
+    cuándo, con motivo opcional. Es reversible (`/include`)."""
+    from sqlalchemy import select  # noqa: PLC0415
+
+    now = datetime.now(UTC).replace(tzinfo=None)
+    excluded = 0
+    for order in session.scalars(
+        select(Order).where(Order.id.in_(payload.order_ids))
+    ):
+        if order.seguimiento_excluded_at is None:
+            excluded += 1
+        order.seguimiento_excluded_at = now
+        order.seguimiento_excluded_by_user_id = current_user.id
+        order.seguimiento_excluded_reason = (payload.reason or "").strip() or None
+    session.commit()
+    return {"ok": True, "excluded": excluded}
+
+
+class IncludeIn(BaseModel):
+    order_ids: list[str] = Field(min_length=1)
+
+
+@router.post("/include")
+def include_orders(
+    payload: IncludeIn,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_edit),
+) -> dict[str, Any]:
+    """ERP-F6-fix7 — reincluir en el seguimiento pedidos antes excluidos
+    (revierte `/exclude`). Limpia quién/cuándo/motivo de exclusión."""
+    _ = current_user
+    from sqlalchemy import select  # noqa: PLC0415
+
+    included = 0
+    for order in session.scalars(
+        select(Order).where(Order.id.in_(payload.order_ids))
+    ):
+        if order.seguimiento_excluded_at is not None:
+            included += 1
+        order.seguimiento_excluded_at = None
+        order.seguimiento_excluded_by_user_id = None
+        order.seguimiento_excluded_reason = None
+    session.commit()
+    return {"ok": True, "included": included}

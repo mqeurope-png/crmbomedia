@@ -49,10 +49,8 @@ from app.erp.seguimiento import (
     parse_sheet_date,
     reference_for_row,
     row_to_sheet_values,
-    same_day,
     serie_of_invoice,
     snapshot_dump,
-    snapshot_load,
     split_client_parts,
 )
 
@@ -542,11 +540,13 @@ def sync_to_sheet(
     dry_run: bool = False,
     invoice_serie_resolver: Callable[[str], int | None] | None = None,
 ) -> dict[str, Any]:
-    """Sincroniza las filas del seguimiento con la hoja. Identifica cada pedido
-    por su NÚMERO desnudo confirmado con un segundo dato (ERP-F6-fix2): si ya
-    está, ACTUALIZA su fila; si no, la añade BAJO EL SEGUNDO ENCABEZADO
-    (ERP-F6-fix5). Nunca pisa contenido manual. `dry_run` calcula y devuelve el
-    resumen SIN escribir (previsualización)."""
+    """Sincroniza las filas del seguimiento con la hoja. ERP-F6-fix7 — SOLO
+    INSERTA: identifica cada pedido por su NÚMERO desnudo confirmado con un
+    segundo dato (ERP-F6-fix2) para saber si YA está en la hoja; si está, no lo
+    toca (ni una celda, ni la Empresa, ni nada); si no está, lo AÑADE bajo el
+    segundo encabezado (ERP-F6-fix5), con el bloque ordenado del más reciente al
+    más antiguo (ERP-F6-fix7 Parte B-bis). Nunca borra filas ni pisa contenido
+    manual. `dry_run` calcula y devuelve el resumen SIN escribir."""
     values = sheets.get_values()
     header_row, col_map = _locate_header(values)
     # ERP-F6-fix5: bajo qué encabezado se insertan los pedidos EN CURSO y desde
@@ -560,27 +560,22 @@ def sync_to_sheet(
     ]
     meta = _sheet_row_meta(values, insert_header_row, col_map)
     meta_by_row = {e["rownum"]: e for e in meta}
-    abbreviations = _abbreviations(session)
 
     snapshots = {
         s.order_id: s for s in session.scalars(select(ErpDriveSyncRow)).all()
     }
 
-    updates: list[tuple[int, int, str]] = []
     conflicts: list[dict[str, Any]] = []
     probable_matches: list[dict[str, Any]] = []
+    # ERP-F6-fix7 — «facturas de tu hoja que BoHub no conoce»: es INFORMACIÓN,
+    # NO requiere decisión de Bart, así que va en su propia sección (fuera de
+    # «a revisar»).
+    unknown_invoices: list[dict[str, Any]] = []
     new_rows: list[tuple[dict[str, Any], list[str]]] = []
-    touched: list[tuple[dict[str, Any], list[str]]] = []
-    updated_row_nums: set[int] = set()
+    present_rows: list[dict[str, Any]] = []  # ya están en la hoja: no se tocan
     used: set[int] = set()
 
     for row in rows:
-        # `new_values` va en el orden CANÓNICO; el mapa lleva cada columna a su
-        # sitio real. La referencia se escribe DESNUDA, en el formato de Bart.
-        new_values = row_to_sheet_values(row)
-        new_values[KEY_COLUMN_INDEX] = reference_for_row(
-            row, prefer_albaran=prefer_albaran,
-        )
         rownum, status, info = _locate_existing(row, meta, used)
         if status in ("contradicted", "ambiguous"):
             conflicts.append({
@@ -599,16 +594,23 @@ def sync_to_sheet(
             })
             continue
         if status == "new":
+            # `new_values` va en el orden CANÓNICO; el mapa lleva cada columna a
+            # su sitio real. La referencia se escribe DESNUDA (formato de Bart).
+            new_values = row_to_sheet_values(row)
+            new_values[KEY_COLUMN_INDEX] = reference_for_row(
+                row, prefer_albaran=prefer_albaran,
+            )
             new_rows.append((row, new_values))
             continue
-        # status == "found": actualizar la fila, sin pisar nada manual.
+        # status == "found": el pedido YA está en la hoja. ERP-F6-fix7 — no se
+        # actualiza NADA (ni celdas vacías, ni Empresa). El emparejamiento solo
+        # sirve para NO volver a insertarlo (evita duplicados).
         used.add(rownum)
         entry = meta_by_row.get(rownum, {})
-        # ERP-F6-fix5: si la hoja trae una factura que BoHub no tiene
-        # registrada, es info útil (qué facturas le faltan a BoHub) → coincidencia
-        # probable, sin escribirla en la base.
+        # La hoja trae una factura que BoHub no tiene registrada: INFO útil (qué
+        # facturas le faltan a BoHub), fuera de «a revisar» — no se escribe nada.
         if row.get("serie_invoice") is None and entry.get("factura_raw"):
-            probable_matches.append({
+            unknown_invoices.append({
                 "kind": "sheet_invoice_unknown",
                 "order_number": row.get("albaran_pedido"),
                 "rows": [rownum],
@@ -617,113 +619,22 @@ def sync_to_sheet(
                     "no tiene registrada"
                 ),
             })
-        existing_raw = values[rownum - 1]
-        snap = snapshots.get(row["id"])
-        last = snapshot_load(snap.last_values_json if snap else None) or []
-        # `written` = lo que BoHub HA escrito (nunca el estado de la hoja):
-        # si la foto incluyera ediciones manuales, el siguiente sincronizado
-        # las tomaría por propias y las pisaría. Sigue en orden canónico.
-        written = [
-            (last[c].strip() if c < len(last) else "")
-            for c in range(len(SEGUIMIENTO_COLUMNS))
-        ]
-        for canon, new in enumerate(new_values):
-            if canon in UNMANAGED_COLUMN_INDEXES:
-                continue  # «Orden» es de Bart: no se escribe jamás
-            sheet_col = col_map.get(canon)
-            if sheet_col is None:
-                continue  # esa columna no existe en la hoja: se omite
-            current = (
-                str(existing_raw[sheet_col]).strip()
-                if sheet_col < len(existing_raw) else ""
-            )
-            new_s = new.strip()
+        present_rows.append(row)
 
-            # ERP-F6-fix4 — Productos y Cliente: nunca se comparan; se rellenan
-            # solo si la celda está vacía. Nunca conflicto, nunca se pisan.
-            if canon in _FILL_ONLY_IF_EMPTY:
-                if not current and new_s:
-                    updates.append((rownum, sheet_col, new_s))
-                    written[canon] = new_s
-                continue
+    # ERP-F6-fix7 Parte B-bis — el bloque a insertar va del MÁS RECIENTE (arriba,
+    # justo bajo el segundo encabezado) al más antiguo. Orden estable: fecha de
+    # entrada DESCENDENTE y, a igualdad de fecha, la referencia ASCENDENTE (para
+    # que dos sincronizaciones seguidas no barajen el bloque). Y como siempre se
+    # inserta bajo el encabezado, un pedido nuevo de mañana entra ENCIMA de los
+    # de hoy.
+    new_rows.sort(key=lambda rv: reference_for_row(rv[0], prefer_albaran=prefer_albaran))
+    new_rows.sort(key=lambda rv: rv[0].get("fecha") or "", reverse=True)
 
-            # ERP-F6-fix4 — fechas: mismo día, no misma cadena. BoHub sin fecha
-            # (o estampada en la importación → ya viene vacía) nunca escribe ni
-            # entra en conflicto.
-            if canon in _DATE_INDEXES:
-                if not new_s:
-                    continue
-                if current and same_day(current, new_s):
-                    written[canon] = new_s
-                    continue
-                if not current:
-                    updates.append((rownum, sheet_col, new_s))
-                    written[canon] = new_s
-                    continue
-                conflicts.append({
-                    "kind": "manual_cell",
-                    "order_number": row.get("albaran_pedido"),
-                    "row": rownum, "column": SEG_COLUMNS[canon].header,
-                    "sheet_value": current, "bohub_value": new_s,
-                })
-                continue
-
-            # ERP-F6-fix5 — Empresa de una fila EXISTENTE: NUNCA se sobrescribe
-            # con un valor deducido de la tienda. Solo se rellena si está vacía,
-            # y entonces la serie sale de: factura de BoHub → factura de la HOJA
-            # (serie explícita o resuelta en FACTUSOL) → serie de la tienda (solo
-            # si la hoja no trae factura). Una discrepancia con la tienda NO es
-            # conflicto: manda la hoja.
-            if canon == _EMPRESA_INDEX:
-                if current:
-                    continue  # lo que puso Bart manda; no se toca ni se reporta
-                serie = row.get("serie_invoice")
-                if serie is None and entry.get("factura_raw"):
-                    serie = _sheet_invoice_serie(
-                        entry["factura_raw"], invoice_serie_resolver,
-                    )  # factura ambigua/desconocida → None → celda vacía
-                elif serie is None:
-                    serie = row.get("serie_store")
-                abbr = abbreviations.get(serie, "") if serie else ""
-                if abbr:
-                    updates.append((rownum, sheet_col, abbr))
-                    written[canon] = abbr
-                continue
-
-            same = current == new_s
-            if same:
-                written[canon] = new_s  # la hoja ya dice lo mismo que BoHub
-                continue
-            if not new_s:
-                continue  # BoHub sin dato nunca borra lo que haya escrito
-            if current == "" or current == written[canon]:
-                updates.append((rownum, sheet_col, new_s))
-                written[canon] = new_s
-            else:
-                # Contenido manual distinto de lo que BoHub dejó: no tocar.
-                conflicts.append({
-                    "kind": "manual_cell",
-                    "order_number": row.get("albaran_pedido"),
-                    "row": rownum,
-                    "column": SEG_COLUMNS[canon].header,
-                    "sheet_value": current,
-                    "bohub_value": new_s,
-                })
-        updated_row_nums.add(rownum)
-        touched.append((row, written))
-
-    # ERP-F6-fix5 — dónde van las filas nuevas: bajo el SEGUNDO encabezado,
-    # aprovechando las filas vacías reservadas y, al agotarse, insertando más
-    # (nunca al final de la hoja, nunca en la sección de arriba).
-    #
-    # ERP-F6-fix6 — CÓMO se escriben: celda a celda, SOLO las celdas con dato,
-    # vía `update_cells` (rangos de una celda). NUNCA se manda una fila/columna
-    # completa ni se reenvían celdas que no cambian: así Sheets no reinfiere el
-    # formato del histórico ni corrompe los números escritos a mano.
     if not dry_run:
         # Cada fila nueva → lista de (columna_hoja, valor) solo para sus celdas
         # con contenido (las vacías no se tocan: no se reformatean celdas en
-        # blanco de las filas reservadas de Bart).
+        # blanco de las filas reservadas de Bart). ERP-F6-fix6: celda a celda,
+        # NUNCA una fila/columna completa.
         new_cells_per_row: list[list[tuple[int, str]]] = []
         for _row, new_values in new_rows:
             cells: list[tuple[int, str]] = []
@@ -743,12 +654,9 @@ def sync_to_sheet(
             r0 += 1
         fill, overflow = new_cells_per_row[:reserved], new_cells_per_row[reserved:]
 
-        # FASE 1 — todo lo que va en coordenadas PREVIAS a la inserción, en una
-        # sola llamada: las actualizaciones de filas existentes + el relleno de
-        # las filas reservadas (que están POR ENCIMA del punto de inserción, así
-        # que su número no se desplaza). Se hace antes de insertar para que los
-        # índices de las filas existentes sigan siendo válidos.
-        phase1 = list(updates)
+        # FASE 1 — relleno de las filas reservadas (por ENCIMA del punto de
+        # inserción, su número no se desplaza), en una sola llamada de celdas.
+        phase1: list[tuple[int, int, str]] = []
         for offset, cells in enumerate(fill):
             rownum = insert_header_row + 1 + offset
             phase1 += [(rownum, col, val) for col, val in cells]
@@ -766,27 +674,20 @@ def sync_to_sheet(
                 phase2 += [(rownum, col, val) for col, val in cells]
             sheets.update_cells(phase2)
 
-        if new_rows:
-            touched.extend(new_rows)
-
+        # Marcar como «escrito en Drive» los pedidos insertados Y los que ya
+        # estaban en la hoja (así salen de «pendiente de escribir» sin haber
+        # tocado la hoja). NO es exclusión: siguen en la vista diaria.
         now = datetime.now(UTC).replace(tzinfo=None)
-        for row, written in touched:
-            snap = snapshots.get(row["id"])
-            if snap is None:
-                snap = ErpDriveSyncRow(
-                    order_id=row["id"], row_key=reference_for_row(
-                        row, prefer_albaran=prefer_albaran,
-                    ),
-                )
-                session.add(snap)
-                snapshots[row["id"]] = snap
-            snap.row_key = reference_for_row(row, prefer_albaran=prefer_albaran)
-            snap.last_values_json = snapshot_dump(written)
-            snap.synced_at = now
+        for row, new_values in new_rows:
+            _mark_written(session, snapshots, row, prefer_albaran, now,
+                          snapshot_dump(new_values))
+        for row in present_rows:
+            _mark_written(session, snapshots, row, prefer_albaran, now, None)
         session.commit()
 
-    # ERP-F6-fix4 — «a revisar» agrupado POR PEDIDO (Parte G): conflictos de
-    # celda + contradicciones + coincidencias probables, cada uno con lo suyo.
+    # ERP-F6-fix4/fix7 — «a revisar» agrupado POR PEDIDO: contradicciones,
+    # ambigüedades y coincidencias probables (lo que EXIGE una decisión de Bart).
+    # Las facturas desconocidas NO entran aquí: son información.
     review_by_order: dict[str, dict[str, Any]] = {}
     for c in [*conflicts, *probable_matches]:
         key = c.get("order_number") or "(sin nº)"
@@ -797,41 +698,70 @@ def sync_to_sheet(
     review_groups = list(review_by_order.values())
 
     # ERP-F6-fix6 — traza COMPACTA de las llamadas a la API de Sheets (método,
-    # endpoint, tamaño del payload). Sirve para comprobar que solo se tocan las
-    # celdas que cambian y que ninguna llamada lleva formato. No lleva valores
-    # de celda ni credenciales. Las hojas en memoria (tests) no la exponen.
+    # endpoint, tamaño del payload). Las hojas en memoria (tests) no la exponen.
     api_trace = _compact_trace(getattr(sheets, "calls", None))
 
     summary = {
         "ok": True,
         "preview": dry_run,
         "orders_considered": len(rows),
-        # ERP-F6-fix2: filas que ya estaban (se actualizan) frente a nuevas.
-        "updated_rows": len(updated_row_nums),
-        "updated_cells": len(updates),
+        # ERP-F6-fix7: SOLO se añaden filas; nunca se actualiza una ya escrita.
         "appended_rows": len(new_rows),
-        # Conflictos «duros» (celda manual distinta, contradicción, ambigüedad).
+        # Pedidos que ya estaban en la hoja (no se tocan): info de la preview.
+        "already_present": len(present_rows),
+        # Compat: la sincronización ya no actualiza nada (siempre 0).
+        "updated_rows": 0,
+        "updated_cells": 0,
+        # Conflictos «duros» (contradicción, ambigüedad). Ya NO hay «celda
+        # manual distinta»: al no actualizar, no hay nada que contrastar.
         "conflicts": conflicts,
-        # ERP-F6-fix4: coincidencias probables (falta un dato para confirmar).
+        # Coincidencias probables (falta un dato para confirmar) — a revisar.
         "probable_matches": probable_matches,
-        # ERP-F6-fix4: «a revisar» agrupado por pedido (Parte G).
+        # ERP-F6-fix7 — facturas de la hoja que BoHub no conoce: INFORMACIÓN,
+        # sección aparte, NO «a revisar».
+        "unknown_invoices": unknown_invoices,
+        # «A revisar» agrupado por pedido (contradicciones + probables).
         "review_groups": review_groups,
         "orders_to_review": len(review_groups),
         "sheet_rows": len(values),
-        # ERP-F6-fix1: columnas opcionales ausentes en la hoja (Tracking,
-        # Nº de serie, WhiteRIP…): se sincroniza el resto y se avisa.
+        # ERP-F6-fix1: columnas opcionales ausentes en la hoja: se avisa.
         "omitted_columns": omitted_columns,
         # ERP-F6-fix6: qué llamadas se hicieron a la API (diagnóstico).
         "api_trace": api_trace,
     }
     logger.info(
-        "drive sync%s: +%s filas, ~%s filas (%s celdas), %s pedidos a revisar "
-        "(%s conflictos, %s probables), columnas omitidas: %s; API: %s",
-        " (preview)" if dry_run else "", len(new_rows), len(updated_row_nums),
-        len(updates), len(review_groups), len(conflicts), len(probable_matches),
-        omitted_columns or "ninguna", api_trace or "sin llamadas (memoria)",
+        "drive sync%s: +%s filas nuevas, %s ya presentes, %s a revisar "
+        "(%s conflictos, %s probables), %s facturas desconocidas, columnas "
+        "omitidas: %s; API: %s",
+        " (preview)" if dry_run else "", len(new_rows), len(present_rows),
+        len(review_groups), len(conflicts), len(probable_matches),
+        len(unknown_invoices), omitted_columns or "ninguna",
+        api_trace or "sin llamadas (memoria)",
     )
     return summary
+
+
+def _mark_written(
+    session: Session,
+    snapshots: dict[str, ErpDriveSyncRow],
+    row: dict[str, Any],
+    prefer_albaran: bool,
+    now: datetime,
+    last_values_json: str | None,
+) -> None:
+    """Marca un pedido como «escrito en Drive» (presente en la hoja). No escribe
+    en la hoja: solo registra la foto de sincronización para que salga de
+    «pendiente de escribir»."""
+    key = reference_for_row(row, prefer_albaran=prefer_albaran)
+    snap = snapshots.get(row["id"])
+    if snap is None:
+        snap = ErpDriveSyncRow(order_id=row["id"], row_key=key)
+        session.add(snap)
+        snapshots[row["id"]] = snap
+    snap.row_key = key
+    if last_values_json is not None:
+        snap.last_values_json = last_values_json
+    snap.synced_at = now
 
 
 def _compact_trace(calls: list[dict[str, Any]] | None) -> list[dict[str, Any]]:

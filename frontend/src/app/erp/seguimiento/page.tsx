@@ -6,13 +6,16 @@ import { PageHeader } from "../../components/PageHeader";
 import { getCurrentUser, type User } from "../../lib/api";
 import {
   ERP_EDIT_ROLES,
+  excludeSeguimiento,
   exportSeguimientoXlsx,
   getErpSettings,
+  includeSeguimiento,
   listSeguimiento,
   saveBlob,
   syncSeguimientoDrive,
   type DriveSyncReviewGroup,
   type DriveSyncSummary,
+  type DriveSyncUnknownInvoice,
   type SeguimientoFilters,
   type SeguimientoPage,
 } from "../../lib/erpApi";
@@ -42,6 +45,7 @@ const HEADERS: { label: string; sort: string | null }[] = [
   { label: "Tracking", sort: null },
   { label: "Nº de Serie", sort: null },
   { label: "WhiteRIP", sort: null },
+  { label: "Drive", sort: null },
   { label: "Estado", sort: "estado" },
 ];
 
@@ -53,7 +57,10 @@ function d(iso: string | null): string {
 
 /** ERP-F6 — Seguimiento de pedidos: la vista que sustituye el Excel manual de
  *  Bart. Por defecto enseña los pedidos EN CURSO (la parte de arriba del
- *  Excel); el histórico de 7.743 filas se queda en su fichero. */
+ *  Excel); el histórico de 7.743 filas se queda en su fichero.
+ *  ERP-F6-fix7: casillas para excluir del seguimiento, filtros de pendientes /
+ *  excluidos, y previsualización que separa lo que hay que decidir de lo que
+ *  solo informa. */
 export default function SeguimientoPage() {
   const [user, setUser] = useState<User | null>(null);
   const [page, setPage] = useState<SeguimientoPage | null>(null);
@@ -66,8 +73,11 @@ export default function SeguimientoPage() {
   const [syncSummary, setSyncSummary] = useState<DriveSyncSummary | null>(null);
   // ERP-F6-fix2 — previsualización pendiente de confirmar (dry-run).
   const [previewSummary, setPreviewSummary] = useState<DriveSyncSummary | null>(null);
+  // ERP-F6-fix7 — selección de filas para excluir/reincluir en bloque.
+  const [selected, setSelected] = useState<Set<string>>(new Set());
 
   const canEdit = !!user && (ERP_EDIT_ROLES as readonly string[]).includes(user.role);
+  const viewExcluded = filters.ver_excluidos === true;
 
   const load = useCallback(async () => {
     try {
@@ -85,6 +95,8 @@ export default function SeguimientoPage() {
   }, []);
 
   useEffect(() => { void load(); }, [load]);
+  // Al cambiar de vista/filtros, la selección deja de tener sentido.
+  useEffect(() => { setSelected(new Set()); }, [filters]);
 
   function toggleSort(key: string | null) {
     if (!key) return;
@@ -95,6 +107,21 @@ export default function SeguimientoPage() {
     }));
   }
 
+  function toggleRow(id: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleAll() {
+    const items = page?.items ?? [];
+    setSelected((prev) =>
+      prev.size === items.length ? new Set() : new Set(items.map((r) => r.id)),
+    );
+  }
+
   async function onExport() {
     setBusy(true);
     setError(null);
@@ -103,6 +130,48 @@ export default function SeguimientoPage() {
       saveBlob(blob, `seguimiento_pedidos_${new Date().toISOString().slice(0, 10)}.xlsx`);
     } catch (e) {
       setError(extractErrorMessage(e, "No se pudo exportar el Excel."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // ERP-F6-fix7 — excluir del seguimiento los pedidos seleccionados.
+  async function onExcludeSelected() {
+    if (selected.size === 0) return;
+    const reason = window.prompt(
+      `Vas a excluir ${selected.size} pedido(s) del seguimiento. `
+      + "No se borra ni cambia nada del pedido; solo dejan de listarse y de "
+      + "escribirse en la hoja. Motivo (opcional):",
+      "",
+    );
+    if (reason === null) return;   // cancelado
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const r = await excludeSeguimiento([...selected], reason.trim() || undefined);
+      setNotice(`${r.excluded} pedido(s) excluido(s) del seguimiento.`);
+      setSelected(new Set());
+      await load();
+    } catch (e) {
+      setError(extractErrorMessage(e, "No se pudieron excluir los pedidos."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onIncludeSelected() {
+    if (selected.size === 0) return;
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const r = await includeSeguimiento([...selected]);
+      setNotice(`${r.included} pedido(s) reincluido(s) en el seguimiento.`);
+      setSelected(new Set());
+      await load();
+    } catch (e) {
+      setError(extractErrorMessage(e, "No se pudieron reincluir los pedidos."));
     } finally {
       setBusy(false);
     }
@@ -137,10 +206,10 @@ export default function SeguimientoPage() {
       setSyncSummary(summary);
       setPreviewSummary(null);
       setNotice(
-        `Hoja actualizada: ${summary.appended_rows} filas añadidas, `
-        + `${summary.updated_rows} actualizadas (${summary.updated_cells} celdas), `
-        + `${summary.conflicts.length} conflictos sin tocar.`,
+        `Hoja actualizada: ${summary.appended_rows} filas añadidas. `
+        + `${summary.orders_to_review} pedidos a revisar.`,
       );
+      await load();
     } catch (e) {
       setError(extractErrorMessage(
         e, "No se pudo actualizar la hoja de Drive.",
@@ -151,6 +220,7 @@ export default function SeguimientoPage() {
   }
 
   const drive = page?.drive;
+  const items = page?.items ?? [];
 
   return (
     <main className="shell shell-wide">
@@ -258,17 +328,42 @@ export default function SeguimientoPage() {
               type="checkbox"
               aria-label="Solo pedidos en curso"
               checked={filters.en_curso !== false}
+              disabled={viewExcluded}
               onChange={(e) => setFilters({
                 ...filters, en_curso: e.target.checked ? undefined : false,
               })}
             />
             <span>Solo en curso</span>
           </label>
+          {/* ERP-F6-fix7 — pendientes de escribir en Drive vs excluidos. */}
+          <label className="field erp-check-field">
+            <input
+              type="checkbox"
+              aria-label="Solo pendientes de escribir en Drive"
+              checked={filters.pendiente_escribir === true}
+              disabled={viewExcluded}
+              onChange={(e) => setFilters({
+                ...filters, pendiente_escribir: e.target.checked ? true : undefined,
+              })}
+            />
+            <span>Solo pendientes de escribir</span>
+          </label>
+          <label className="field erp-check-field">
+            <input
+              type="checkbox"
+              aria-label="Ver pedidos excluidos del seguimiento"
+              checked={viewExcluded}
+              onChange={(e) => setFilters({
+                ...filters, ver_excluidos: e.target.checked ? true : undefined,
+              })}
+            />
+            <span>Ver excluidos</span>
+          </label>
           <button type="button" className="button small secondary" disabled={busy}
             onClick={onExport}>
             Descargar Excel
           </button>
-          {canEdit ? (
+          {canEdit && !viewExcluded ? (
             <button
               type="button" className="button small" disabled={busy}
               title={drive && !drive.configured
@@ -278,6 +373,19 @@ export default function SeguimientoPage() {
             >
               {busy ? "Trabajando…" : "Actualizar hoja de Drive…"}
             </button>
+          ) : null}
+          {canEdit && selected.size > 0 ? (
+            viewExcluded ? (
+              <button type="button" className="button small" disabled={busy}
+                onClick={onIncludeSelected}>
+                Reincluir ({selected.size})
+              </button>
+            ) : (
+              <button type="button" className="button small danger" disabled={busy}
+                onClick={onExcludeSelected}>
+                Excluir del seguimiento ({selected.size})
+              </button>
+            )
           ) : null}
         </div>
         {drive && !drive.configured ? (
@@ -290,7 +398,8 @@ export default function SeguimientoPage() {
         {drive?.configured && drive.service_account_email ? (
           <p className="muted small">
             Hoja de Drive conectada con {drive.service_account_email}. La
-            sincronización nunca borra filas ni pisa celdas editadas a mano.
+            sincronización solo AÑADE pedidos nuevos: nunca borra filas, nunca
+            reescribe una fila ya escrita ni pisa celdas editadas a mano.
           </p>
         ) : null}
       </section>
@@ -300,17 +409,31 @@ export default function SeguimientoPage() {
           <h3>Previsualización — revisa antes de escribir</h3>
           <p className="muted small">
             Sobre una hoja de {previewSummary.sheet_rows} filas. Nada se ha
-            escrito todavía.
+            escrito todavía. La sincronización solo AÑADE.
           </p>
+          {/* 1) A AÑADIR */}
           <ul className="item-list">
             <li><strong>{previewSummary.appended_rows}</strong> filas a añadir (pedidos que no estaban).</li>
-            <li><strong>{previewSummary.updated_rows}</strong> filas a actualizar (ya estaban; se rellenan celdas vacías).</li>
-            <li><strong>{previewSummary.orders_to_review}</strong> pedidos a revisar (contradicciones o coincidencias probables).</li>
+            <li className="muted small">
+              {previewSummary.already_present} pedidos ya estaban en la hoja: no se tocan.
+            </li>
             {previewSummary.omitted_columns.length > 0 ? (
               <li>Columnas omitidas (no están en la hoja): {previewSummary.omitted_columns.join(", ")}.</li>
             ) : null}
           </ul>
-          <ReviewGroups groups={previewSummary.review_groups} />
+          {/* 2) PARA TU INFORMACIÓN (no requiere decisión) */}
+          <UnknownInvoices items={previewSummary.unknown_invoices} />
+          {/* 3) CONFLICTOS REALES (a revisar) */}
+          {previewSummary.review_groups.length > 0 ? (
+            <>
+              <h4>Conflictos reales — a revisar ({previewSummary.orders_to_review})</h4>
+              <p className="muted small">
+                Contradicciones o coincidencias probables; no se añadirán ni se
+                tocarán hasta que lo resuelvas.
+              </p>
+              <ReviewGroups groups={previewSummary.review_groups} />
+            </>
+          ) : null}
           <div className="modal-actions">
             <button type="button" className="button secondary" disabled={busy}
               onClick={() => setPreviewSummary(null)}>
@@ -318,32 +441,50 @@ export default function SeguimientoPage() {
             </button>
             <button type="button" className="button" disabled={busy}
               onClick={onConfirmSync}>
-              {busy ? "Escribiendo…" : "Confirmar y escribir en la hoja"}
+              {busy ? "Escribiendo…" : `Confirmar y añadir ${previewSummary.appended_rows} filas`}
             </button>
           </div>
         </section>
       ) : null}
 
-      {syncSummary && syncSummary.review_groups.length > 0 ? (
+      {syncSummary ? (
         <section className="erp-card">
-          <h3>A revisar ({syncSummary.orders_to_review} pedidos)</h3>
+          <h3>Hoja actualizada</h3>
           <p className="muted small">
-            Contradicciones o coincidencias probables; no se ha modificado nada
-            de ellas.
+            {syncSummary.appended_rows} filas añadidas · {syncSummary.already_present} ya
+            estaban.
           </p>
-          <ReviewGroups groups={syncSummary.review_groups} />
+          <UnknownInvoices items={syncSummary.unknown_invoices} />
+          {syncSummary.review_groups.length > 0 ? (
+            <>
+              <h4>A revisar ({syncSummary.orders_to_review} pedidos)</h4>
+              <ReviewGroups groups={syncSummary.review_groups} />
+            </>
+          ) : null}
         </section>
       ) : null}
 
       <section className="erp-card">
         <p className="muted small" role="status">
           {page ? `${page.total} pedidos` : "Cargando…"}
-          {filters.en_curso === false ? " (todos)" : " en curso"}
+          {viewExcluded
+            ? " excluidos"
+            : filters.en_curso === false ? " (todos)" : " en curso"}
         </p>
         <div style={{ overflowX: "auto" }}>
           <table className="data-table erp-seguimiento-table">
             <thead>
               <tr>
+                {canEdit ? (
+                  <th>
+                    <input
+                      type="checkbox"
+                      aria-label="Seleccionar todo"
+                      checked={items.length > 0 && selected.size === items.length}
+                      onChange={toggleAll}
+                    />
+                  </th>
+                ) : null}
                 {HEADERS.map((h) => (
                   <th
                     key={h.label}
@@ -360,8 +501,18 @@ export default function SeguimientoPage() {
               </tr>
             </thead>
             <tbody>
-              {(page?.items ?? []).map((r) => (
-                <tr key={r.id}>
+              {items.map((r) => (
+                <tr key={r.id} className={r.excluido ? "muted" : undefined}>
+                  {canEdit ? (
+                    <td>
+                      <input
+                        type="checkbox"
+                        aria-label={`Seleccionar ${r.albaran_pedido}`}
+                        checked={selected.has(r.id)}
+                        onChange={() => toggleRow(r.id)}
+                      />
+                    </td>
+                  ) : null}
                   <td title={r.empresa ?? undefined}>{r.empresa_corta || "—"}</td>
                   <td>{d(r.fecha)}</td>
                   <td>{r.cliente ?? "—"}</td>
@@ -382,7 +533,11 @@ export default function SeguimientoPage() {
                   <td>{r.factura ?? "—"}</td>
                   <td className="muted small">{r.tracking ?? "—"}</td>
                   <td className="muted small">{r.num_serie ?? "—"}</td>
-                  <td>{r.whiterip ?? "—"}</td>
+                  <td>
+                    <span className={`badge ${r.escrito_drive ? "ok" : "muted"}`}>
+                      {r.escrito_drive ? "escrito" : "pendiente"}
+                    </span>
+                  </td>
                   <td>
                     <span className={`badge ${ESTADO_TONE[r.estado] ?? "muted"}`}>
                       {r.estado}
@@ -390,8 +545,12 @@ export default function SeguimientoPage() {
                   </td>
                 </tr>
               ))}
-              {page && page.items.length === 0 ? (
-                <tr><td colSpan={HEADERS.length} className="muted">Sin pedidos.</td></tr>
+              {page && items.length === 0 ? (
+                <tr>
+                  <td colSpan={HEADERS.length + (canEdit ? 1 : 0)} className="muted">
+                    {viewExcluded ? "No hay pedidos excluidos." : "Sin pedidos."}
+                  </td>
+                </tr>
               ) : null}
             </tbody>
           </table>
@@ -402,14 +561,13 @@ export default function SeguimientoPage() {
 }
 
 const REVIEW_KIND_LABEL: Record<string, string> = {
-  manual_cell: "celda manual distinta",
   contradicted: "contradicción",
   ambiguous: "coincidencia ambigua",
   probable_match: "coincidencia probable",
 };
 
 /** ERP-F6-fix4 — a revisar, agrupado POR PEDIDO (Parte G). Cada pedido lista
- *  sus celdas/motivos; nada se toca, Bart decide. */
+ *  sus motivos; nada se toca, Bart decide. */
 function ReviewGroups({ groups }: { groups: DriveSyncReviewGroup[] }) {
   if (groups.length === 0) return null;
   return (
@@ -421,16 +579,32 @@ function ReviewGroups({ groups }: { groups: DriveSyncReviewGroup[] }) {
             {g.items.map((c, i) => (
               <li key={i} className="muted small">
                 <span className="badge muted">{REVIEW_KIND_LABEL[c.kind] ?? c.kind}</span>{" "}
-                {c.kind === "manual_cell" ? (
-                  <>{c.column}: la hoja dice «{c.sheet_value}», BoHub tiene «{c.bohub_value}».</>
-                ) : (
-                  <>{c.detail}</>
-                )}
+                {c.detail}
               </li>
             ))}
           </ul>
         </li>
       ))}
     </ul>
+  );
+}
+
+/** ERP-F6-fix7 — «facturas de tu hoja que BoHub no conoce»: es INFORMACIÓN, no
+ *  requiere decisión. Va plegada, aparte de «a revisar». */
+function UnknownInvoices({ items }: { items: DriveSyncUnknownInvoice[] }) {
+  if (!items || items.length === 0) return null;
+  return (
+    <details className="erp-info-block">
+      <summary>
+        Para tu información — facturas de tu hoja que BoHub no conoce ({items.length})
+      </summary>
+      <ul className="item-list">
+        {items.map((c, i) => (
+          <li key={i} className="muted small">
+            <strong>{c.order_number ?? "(sin nº)"}</strong> · {c.detail}
+          </li>
+        ))}
+      </ul>
+    </details>
   );
 }

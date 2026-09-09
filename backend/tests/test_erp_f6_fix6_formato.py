@@ -192,10 +192,10 @@ def _used_full_range(sheet: RecordingSheet) -> bool:
 # --- test 1: solo se envían las celdas que cambian --------------------------------
 
 
-def test_only_changed_cells_are_sent(session_factory, http) -> None:
-    """Hoja con 100 filas de histórico; cambian exactamente 3 celdas de UNA
-    fila. El payload contiene esas 3 celdas y ninguna más — nunca la fila ni el
-    rango completo, ni las otras 99 filas."""
+def test_only_inserted_row_cells_are_sent(session_factory, http) -> None:
+    """ERP-F6-fix7 + fix6: con 100 filas de histórico que no cambian y UN pedido
+    nuevo, el payload solo lleva las celdas con dato de la fila insertada —
+    nunca la fila entera, nunca un rango completo, nunca las 100 de histórico."""
     _store_series(http, {"boprint": "5"})
     # 100 filas de histórico que NO casan con ningún pedido de BoHub.
     noise = []
@@ -203,35 +203,25 @@ def test_only_changed_cells_are_sent(session_factory, http) -> None:
         r = _sheet_row(Cliente=f"Historico {i}", Preparado="15/01/2020")
         r[_IDX["Albarán / Nº Pedido Web"]] = str(700000 + i)
         noise.append(r)
-    # Una fila que SÍ casa (número + cliente), con Empresa/Tracking/Serie vacíos.
-    target = _sheet_row(Cliente="Cliente Uno")
-    target[_IDX["Albarán / Nº Pedido Web"]] = "99895"
-    sheet = RecordingSheet(_real_sheet(existing=[*noise, target]))
+    # Reserva una fila bajo el 2º encabezado para que el nuevo entre ahí.
+    sheet = RecordingSheet(_real_sheet(reserved=1, existing=noise))
 
     with session_factory() as s:
         store = _store(s, "boprint")
         _order(s, "BOPRIN-99895", cliente="Cliente Uno", store_id=store,
                tracking="1Z-TRACK", serial="FBAP-SERIE")
         s.commit()
-
-        # 1ª sincronización: rellena las celdas vacías de la fila que casa.
-        sync_to_sheet(s, sheet, _rows_for_sync(s))
-        first = [(r, c) for r, c, _ in sheet.cell_writes]
-        assert len(first) >= 3, first
-        # Ninguna de las 100 filas de ruido se tocó.
-        noise_rows = set(range(7, 7 + 100))  # 1-based, tras la estructura
-        assert not (set(r for r, _ in first) & noise_rows)
-
-        # Vaciamos 3 de esas celdas y volvemos a sincronizar.
-        chosen = first[:3]
-        for r, c in chosen:
-            sheet.grid[r - 1][c] = ""
-        sheet.reset_recorder()
         sync_to_sheet(s, sheet, _rows_for_sync(s))
 
-    # Exactamente esas 3 celdas, ni una más; y NUNCA por rango completo.
-    assert sorted((r, c) for r, c, _ in sheet.cell_writes) == sorted(chosen)
-    assert _batch_cell_total(sheet) == 3
+    # Todas las escrituras caen en UNA sola fila (la reservada, bajo el 2º
+    # encabezado), y ninguna toca las 100 filas de histórico.
+    written_rows = {r for r, _, _ in sheet.cell_writes}
+    assert len(written_rows) == 1
+    noise_rows = set(range(8, 8 + 100))  # 1-based, tras estructura + reservada
+    assert not (written_rows & noise_rows)
+    # Celdas puntuales (empresa, cliente, fecha, referencia, tracking, serie…),
+    # nunca un volcado de fila/columna completa.
+    assert _batch_cell_total(sheet) >= 3
     assert not _used_full_range(sheet)
 
 
@@ -358,13 +348,12 @@ def test_no_trailing_empty_rows_appended(session_factory) -> None:
 def test_api_trace_is_recorded_in_summary(session_factory) -> None:
     """El resumen incluye la traza compacta de llamadas a la API (método +
     endpoint + tamaño) para poder auditar qué se envió."""
-    row = _sheet_row(Cliente="Cliente Uno")
-    row[_IDX["Albarán / Nº Pedido Web"]] = "99895"
-
+    # Pedido NUEVO (no está en la hoja) → se INSERTA en la fila reservada, así
+    # que la traza incluye el values:batchUpdate de esa inserción.
     captured: list[dict] = []
     client = GoogleSheetsClient({"client_email": "x", "private_key": "y"}, "sid")
     client._sheet_id, client._sheet_title = 0, "Hoja"
-    grid = _real_sheet(existing=[row])
+    grid = _real_sheet(reserved=1)
 
     def fake_request(method, path, **kwargs):
         captured.append({"method": method, "path": path})

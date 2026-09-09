@@ -235,7 +235,9 @@ def test_import_stamped_dates_are_never_written(session_factory) -> None:
     assert not any(c.get("column") in date_cols for c in summary["conflicts"])
 
 
-def test_products_written_only_when_cell_empty(session_factory) -> None:
+def test_products_never_touched_on_existing_row(session_factory) -> None:
+    # ERP-F6-fix7: la fila existente NO se actualiza — ni la celda de Productos
+    # con contenido ni la vacía. Y nunca hay conflicto de Productos.
     with session_factory() as s:
         o = _order(s, "BOPRIN-99870", company="Cliente SL", factura="1-260700")
         from app.erp.models import OrderLine
@@ -251,11 +253,11 @@ def test_products_written_only_when_cell_empty(session_factory) -> None:
         summary = sync_to_sheet(s, sheet, _rows_for_sync(s))
     assert sheet.grid[1][_IDX["Productos"]] == "CMY, 250ML."     # intacto
     assert not any(c.get("column") == "Productos" for c in summary["conflicts"])
-    # 2) Celda de productos vacía → BoHub la rellena.
+    # 2) Celda de productos vacía → tampoco se rellena (no se toca la fila).
     sheet.grid[1][_IDX["Productos"]] = ""
     with session_factory() as s:
         sync_to_sheet(s, sheet, _rows_for_sync(s))
-    assert "Tinta UV" in sheet.grid[1][_IDX["Productos"]]
+    assert sheet.grid[1][_IDX["Productos"]] == ""
 
 
 # --- Parte E: contradicho vs probable ---------------------------------------------

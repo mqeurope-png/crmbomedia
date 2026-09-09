@@ -221,6 +221,14 @@ export type SeguimientoRow = {
   orden: string | null;
   estado: "pendiente" | "enviado" | "facturado";
   en_curso: boolean;
+  /** ERP-F6-fix7 — excluido del seguimiento (reversible; no toca el pedido). */
+  excluido: boolean;
+  excluido_en: string | null;
+  excluido_por: string | null;
+  excluido_motivo: string | null;
+  /** ERP-F6-fix7 — ya escrito en la hoja de Drive vs pendiente de escribir. */
+  escrito_drive: boolean;
+  pendiente_escribir: boolean;
 };
 
 export type SeguimientoFilters = {
@@ -233,6 +241,9 @@ export type SeguimientoFilters = {
   estado?: "pendiente" | "enviado" | "facturado";
   q?: string;
   en_curso?: boolean;
+  /** ERP-F6-fix7 — ver SOLO los excluidos; ver SOLO los pendientes de escribir. */
+  ver_excluidos?: boolean;
+  pendiente_escribir?: boolean;
   sort?: string;
   dir?: "asc" | "desc";
   limit?: number;
@@ -251,11 +262,13 @@ export type SeguimientoPage = {
 };
 
 function seguimientoQs(filters: SeguimientoFilters): string {
-  // `qs` solo admite string/number: en_curso (boolean) va como "true"/"false".
-  const { en_curso, ...rest } = filters;
+  // `qs` solo admite string/number: los booleanos van como "true"/"false".
+  const { en_curso, ver_excluidos, pendiente_escribir, ...rest } = filters;
   return qs({
     ...rest,
     ...(en_curso === undefined ? {} : { en_curso: String(en_curso) }),
+    ...(ver_excluidos ? { ver_excluidos: "true" } : {}),
+    ...(pendiente_escribir ? { pendiente_escribir: "true" } : {}),
   });
 }
 
@@ -271,16 +284,24 @@ export async function exportSeguimientoXlsx(
   return apiDownloadBlob(`/api/erp/seguimiento/export${seguimientoQs(filters)}`);
 }
 
-/** ERP-F6-fix4 — un item a revisar: celda manual distinta, contradicción,
- *  ambigüedad o coincidencia probable (falta un dato para confirmar). */
+/** ERP-F6-fix4/fix7 — un item a revisar: contradicción, ambigüedad o
+ *  coincidencia probable. (Ya NO hay «celda manual distinta»: fix7 no
+ *  actualiza filas existentes, así que no hay nada que contrastar.) */
 export type DriveSyncConflict = {
-  kind: "manual_cell" | "contradicted" | "ambiguous" | "probable_match";
+  kind: "contradicted" | "ambiguous" | "probable_match";
   order_number: string | null;
   row?: number;
   rows?: number[];
   column?: string;
-  sheet_value?: string;
-  bohub_value?: string;
+  detail?: string;
+};
+
+/** ERP-F6-fix7 — factura escrita en la hoja que BoHub no conoce. Es
+ *  INFORMACIÓN, no requiere decisión: va en su propia sección. */
+export type DriveSyncUnknownInvoice = {
+  kind: "sheet_invoice_unknown";
+  order_number: string | null;
+  rows?: number[];
   detail?: string;
 };
 
@@ -294,13 +315,18 @@ export type DriveSyncSummary = {
   ok: boolean;
   preview: boolean;
   orders_considered: number;
-  /** ERP-F6-fix2: filas que ya estaban y se actualizan (no se duplican). */
+  /** ERP-F6-fix7: SOLO se añaden filas; nunca se actualiza una ya escrita. */
+  appended_rows: number;
+  /** ERP-F6-fix7: pedidos que ya estaban en la hoja (no se tocan). */
+  already_present: number;
+  /** Compat: la sincronización ya no actualiza nada (siempre 0). */
   updated_rows: number;
   updated_cells: number;
-  appended_rows: number;
   conflicts: DriveSyncConflict[];
   /** ERP-F6-fix4: coincidencias probables (falta un dato para confirmar). */
   probable_matches: DriveSyncConflict[];
+  /** ERP-F6-fix7: facturas de tu hoja que BoHub no conoce (información). */
+  unknown_invoices: DriveSyncUnknownInvoice[];
   /** ERP-F6-fix4: a revisar, agrupado por pedido. */
   review_groups: DriveSyncReviewGroup[];
   orders_to_review: number;
@@ -314,6 +340,27 @@ export async function syncSeguimientoDrive(
 ): Promise<DriveSyncSummary> {
   const q = opts.preview ? "?dry_run=true" : "";
   return apiFetch<DriveSyncSummary>(`/api/erp/seguimiento/drive-sync${q}`, { method: "POST" });
+}
+
+/** ERP-F6-fix7 — excluir pedidos del seguimiento (varios a la vez). No borra
+ *  ni modifica el pedido; solo lo saca del seguimiento. Reversible. */
+export async function excludeSeguimiento(
+  orderIds: string[], reason?: string,
+): Promise<{ ok: boolean; excluded: number }> {
+  return apiFetch("/api/erp/seguimiento/exclude", {
+    method: "POST",
+    body: JSON.stringify({ order_ids: orderIds, reason: reason || null }),
+  });
+}
+
+/** ERP-F6-fix7 — reincluir pedidos antes excluidos. */
+export async function includeSeguimiento(
+  orderIds: string[],
+): Promise<{ ok: boolean; included: number }> {
+  return apiFetch("/api/erp/seguimiento/include", {
+    method: "POST",
+    body: JSON.stringify({ order_ids: orderIds }),
+  });
 }
 
 /** ERP-F6 — campos de seguimiento del pedido. `orden` se AÑADE a las
