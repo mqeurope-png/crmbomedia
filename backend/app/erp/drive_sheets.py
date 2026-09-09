@@ -132,6 +132,14 @@ class GoogleSheetsClient:
         self._token: str | None = None
         self._sheet_id: int | None = None
         self._sheet_title: str | None = None
+        # ERP-F6-fix6 — traza de las llamadas a la API (método, rango, tamaño
+        # del payload). Se vuelca en el log tras cada sincronización para poder
+        # comprobar que NUNCA se manda un rango mayor que las celdas que cambian
+        # ni formato alguno. No contiene credenciales ni valores de celda.
+        self.calls: list[dict[str, Any]] = []
+
+    def _record(self, entry: dict[str, Any]) -> None:
+        self.calls.append(entry)
 
     def _headers(self) -> dict[str, str]:
         if self._token is None:
@@ -177,10 +185,19 @@ class GoogleSheetsClient:
 
     def get_values(self) -> list[list[str]]:
         _, title = self._sheet()
-        data = self._request("GET", f"/values/{title}!A1:Q100000")
-        return data.get("values") or []
+        rng = f"{title}!A1:Q100000"
+        data = self._request("GET", f"/values/{rng}")
+        values = data.get("values") or []
+        self._record({"method": "GET", "api": "values.get", "range": rng,
+                      "rows_read": len(values)})
+        return values
 
     def update_cells(self, updates: list[tuple[int, int, str]]) -> None:
+        """Escribe SOLO las celdas indicadas, cada una como un rango de UNA
+        celda, en una única llamada `values:batchUpdate` con `RAW`. Nunca manda
+        una fila entera, una columna ni la hoja: el payload son exactamente las
+        celdas que cambian. No lleva formato (ni `userEnteredFormat` ni
+        `repeatCell`): el formato de la hoja es de Bart y no se toca."""
         if not updates:
             return
         _, title = self._sheet()
@@ -191,13 +208,22 @@ class GoogleSheetsClient:
             }
             for row, col, value in updates
         ]
+        self._record({"method": "POST", "api": "values:batchUpdate",
+                      "valueInputOption": "RAW", "cells": len(data),
+                      "ranges": [d["range"] for d in data]})
         self._request(
             "POST", "/values:batchUpdate",
             json={"valueInputOption": "RAW", "data": data},
         )
 
     def insert_rows_at(self, row: int, count: int) -> None:
+        """Inserta `count` filas SIN heredar el formato de la fila anterior
+        (`inheritFromBefore=False`): las filas nuevas no arrastran el formato de
+        una fila del histórico. Solo mueve filas; no escribe valor ni formato."""
         sheet_id, _ = self._sheet()
+        self._record({"method": "POST", "api": "batchUpdate:insertDimension",
+                      "range": f"ROWS {row}..{row + count - 1}",
+                      "inheritFromBefore": False})
         self._request("POST", ":batchUpdate", json={"requests": [{
             "insertDimension": {
                 "range": {
@@ -209,12 +235,21 @@ class GoogleSheetsClient:
         }]})
 
     def write_rows(self, start_row: int, rows: list[list[str]]) -> None:
+        """ERP-F6-fix6 — DESUSO en la sincronización: escribía un rango de filas
+        COMPLETO (`A{fila}:Q…`), lo que hacía que Sheets reinfiriera el formato
+        de cada celda reenviada y corrompiera números del histórico. La
+        sincronización ya no lo llama: las filas nuevas se escriben celda a
+        celda con `update_cells`. Se conserva por compatibilidad del transporte
+        (y con `RAW`), pero no debe usarse para tocar el histórico."""
         if not rows:
             return
         _, title = self._sheet()
         width = max((len(r) for r in rows), default=len(SEGUIMIENTO_COLUMNS))
         end_col = _col_a1(width - 1)
         rng = f"{title}!A{start_row}:{end_col}{start_row + len(rows) - 1}"
+        self._record({"method": "PUT", "api": "values.update",
+                      "valueInputOption": "RAW", "range": rng,
+                      "rows": len(rows)})
         self._request(
             "PUT", f"/values/{rng}?valueInputOption=RAW",
             json={"values": rows},
@@ -680,40 +715,58 @@ def sync_to_sheet(
     # ERP-F6-fix5 — dónde van las filas nuevas: bajo el SEGUNDO encabezado,
     # aprovechando las filas vacías reservadas y, al agotarse, insertando más
     # (nunca al final de la hoja, nunca en la sección de arriba).
-    appended_row_nums: list[int] = []
+    #
+    # ERP-F6-fix6 — CÓMO se escriben: celda a celda, SOLO las celdas con dato,
+    # vía `update_cells` (rangos de una celda). NUNCA se manda una fila/columna
+    # completa ni se reenvían celdas que no cambian: así Sheets no reinfiere el
+    # formato del histórico ni corrompe los números escritos a mano.
     if not dry_run:
-        # 1º las actualizaciones (índices originales), 2º la escritura/inserción
-        # de filas nuevas — así no se desplaza lo ya escrito.
-        sheets.update_cells(updates)
+        # Cada fila nueva → lista de (columna_hoja, valor) solo para sus celdas
+        # con contenido (las vacías no se tocan: no se reformatean celdas en
+        # blanco de las filas reservadas de Bart).
+        new_cells_per_row: list[list[tuple[int, str]]] = []
+        for _row, new_values in new_rows:
+            cells: list[tuple[int, str]] = []
+            for canon, val in enumerate(new_values):
+                if canon in UNMANAGED_COLUMN_INDEXES:
+                    continue
+                sheet_col = col_map.get(canon)
+                if sheet_col is not None and str(val).strip():
+                    cells.append((sheet_col, val))
+            new_cells_per_row.append(cells)
+
+        # Filas vacías reservadas justo debajo del segundo encabezado.
+        reserved = 0
+        r0 = insert_header_row  # 0-based índice de la primera fila candidata
+        while r0 < len(values) and _row_is_blank(values[r0]):
+            reserved += 1
+            r0 += 1
+        fill, overflow = new_cells_per_row[:reserved], new_cells_per_row[reserved:]
+
+        # FASE 1 — todo lo que va en coordenadas PREVIAS a la inserción, en una
+        # sola llamada: las actualizaciones de filas existentes + el relleno de
+        # las filas reservadas (que están POR ENCIMA del punto de inserción, así
+        # que su número no se desplaza). Se hace antes de insertar para que los
+        # índices de las filas existentes sigan siendo válidos.
+        phase1 = list(updates)
+        for offset, cells in enumerate(fill):
+            rownum = insert_header_row + 1 + offset
+            phase1 += [(rownum, col, val) for col, val in cells]
+        sheets.update_cells(phase1)
+
+        # FASE 2 — desbordamiento: insertar exactamente las filas que faltan (sin
+        # heredar formato) y escribir SOLO sus celdas con dato. No se añade
+        # ninguna fila vacía al final ni se envía rango más allá de esas filas.
+        if overflow:
+            at = insert_header_row + 1 + reserved
+            sheets.insert_rows_at(at, len(overflow))
+            phase2: list[tuple[int, int, str]] = []
+            for offset, cells in enumerate(overflow):
+                rownum = at + offset
+                phase2 += [(rownum, col, val) for col, val in cells]
+            sheets.update_cells(phase2)
+
         if new_rows:
-            width = max(len(values[header_row - 1]), max(col_map.values()) + 1)
-            lines = []
-            for _row, new_values in new_rows:
-                line = [""] * width
-                for canon, val in enumerate(new_values):
-                    if canon in UNMANAGED_COLUMN_INDEXES:
-                        continue
-                    sheet_col = col_map.get(canon)
-                    if sheet_col is not None:
-                        line[sheet_col] = val
-                lines.append(line)
-            # Filas vacías reservadas justo debajo del segundo encabezado.
-            reserved = 0
-            r0 = insert_header_row  # 0-based índice de la primera fila candidata
-            while r0 < len(values) and _row_is_blank(values[r0]):
-                reserved += 1
-                r0 += 1
-            fill, overflow = lines[:reserved], lines[reserved:]
-            if fill:
-                sheets.write_rows(insert_header_row + 1, fill)
-                appended_row_nums += list(range(
-                    insert_header_row + 1, insert_header_row + 1 + len(fill),
-                ))
-            if overflow:
-                at = insert_header_row + 1 + reserved
-                sheets.insert_rows_at(at, len(overflow))
-                sheets.write_rows(at, overflow)
-                appended_row_nums += list(range(at, at + len(overflow)))
             touched.extend(new_rows)
 
         now = datetime.now(UTC).replace(tzinfo=None)
@@ -743,6 +796,12 @@ def sync_to_sheet(
         group["items"].append(c)
     review_groups = list(review_by_order.values())
 
+    # ERP-F6-fix6 — traza COMPACTA de las llamadas a la API de Sheets (método,
+    # endpoint, tamaño del payload). Sirve para comprobar que solo se tocan las
+    # celdas que cambian y que ninguna llamada lleva formato. No lleva valores
+    # de celda ni credenciales. Las hojas en memoria (tests) no la exponen.
+    api_trace = _compact_trace(getattr(sheets, "calls", None))
+
     summary = {
         "ok": True,
         "preview": dry_run,
@@ -762,12 +821,29 @@ def sync_to_sheet(
         # ERP-F6-fix1: columnas opcionales ausentes en la hoja (Tracking,
         # Nº de serie, WhiteRIP…): se sincroniza el resto y se avisa.
         "omitted_columns": omitted_columns,
+        # ERP-F6-fix6: qué llamadas se hicieron a la API (diagnóstico).
+        "api_trace": api_trace,
     }
     logger.info(
         "drive sync%s: +%s filas, ~%s filas (%s celdas), %s pedidos a revisar "
-        "(%s conflictos, %s probables), columnas omitidas: %s",
+        "(%s conflictos, %s probables), columnas omitidas: %s; API: %s",
         " (preview)" if dry_run else "", len(new_rows), len(updated_row_nums),
         len(updates), len(review_groups), len(conflicts), len(probable_matches),
-        omitted_columns or "ninguna",
+        omitted_columns or "ninguna", api_trace or "sin llamadas (memoria)",
     )
     return summary
+
+
+def _compact_trace(calls: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """Resume las llamadas a la API en (método, endpoint, tamaño) para el log y
+    el resumen, sin arrastrar los miles de rangos de celda individuales."""
+    if not calls:
+        return []
+    out: list[dict[str, Any]] = []
+    for c in calls:
+        entry = {k: v for k, v in c.items() if k != "ranges"}
+        ranges = c.get("ranges")
+        if ranges:
+            entry["sample_ranges"] = ranges[:3]
+        out.append(entry)
+    return out
