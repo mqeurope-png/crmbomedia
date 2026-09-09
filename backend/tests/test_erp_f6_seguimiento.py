@@ -25,7 +25,6 @@ from app.erp.api.seguimiento import _rows
 from app.erp.drive_sheets import DriveSyncError, sync_to_sheet
 from app.erp.models import (
     Carrier,
-    ErpDriveSyncRow,
     InvoiceStatus,
     Order,
     OrderSource,
@@ -307,7 +306,9 @@ class FakeSheet:
 HEADER = list(core.SEGUIMIENTO_COLUMNS)
 
 
-def test_drive_sync_updates_only_changed_rows(session_factory) -> None:
+def test_drive_sync_only_inserts_never_updates_existing(session_factory) -> None:
+    # ERP-F6-fix7: SOLO se inserta. Un pedido ya escrito NO se vuelve a tocar
+    # aunque cambien sus datos en BoHub.
     with session_factory() as s:
         _order(s, "BOP-500001", cliente="Uno SL", origin="SAT")
         s.commit()
@@ -319,13 +320,13 @@ def test_drive_sync_updates_only_changed_rows(session_factory) -> None:
     # referencia con prefijo.
     assert sheet.grid[1][11] == "500001"              # bajo la cabecera
     assert sheet.grid[1][4] == "SAT"
-    # Sin cambios → NO se escribe nada (incremental de verdad).
+    # Sin cambios → NO se escribe nada, y NO se vuelve a insertar (0 duplicados).
     with session_factory() as s:
         summary = sync_to_sheet(s, sheet, _rows_for_sync(s))
-    assert summary["updated_cells"] == 0
     assert summary["appended_rows"] == 0
+    assert summary["updated_rows"] == 0
     assert summary["conflicts"] == []
-    # Cambia SOLO el tracking en BoHub → se actualiza SOLO esa celda.
+    # Cambia el tracking en BoHub → el pedido YA está en la hoja: no se toca.
     with session_factory() as s:
         o = s.scalar(select(Order).where(Order.order_number == "BOP-500001"))
         o.tracking_number = "1Z999AA10123456784"
@@ -333,15 +334,11 @@ def test_drive_sync_updates_only_changed_rows(session_factory) -> None:
     before = [list(r) for r in sheet.grid]
     with session_factory() as s:
         summary = sync_to_sheet(s, sheet, _rows_for_sync(s))
-    assert summary["updated_cells"] == 1
-    assert sheet.grid[1][13] == "1Z999AA10123456784"
-    for col in range(len(HEADER)):
-        if col != 13:
-            assert sheet.grid[1][col] == before[1][col]
-    # La foto guardada refleja lo escrito (base del siguiente incremental).
-    with session_factory() as s:
-        snap = s.scalar(select(ErpDriveSyncRow))
-        assert json.loads(snap.last_values_json)[13] == "1Z999AA10123456784"
+    assert summary["appended_rows"] == 0
+    assert summary["updated_cells"] == 0
+    # La celda de tracking sigue vacía: BoHub no reescribe una fila existente.
+    assert sheet.grid == before
+    assert sheet.grid[1][13] == ""
 
 
 def test_drive_sync_never_deletes_unknown_rows(session_factory) -> None:
@@ -371,6 +368,8 @@ def test_drive_sync_never_deletes_unknown_rows(session_factory) -> None:
 
 
 def test_drive_sync_does_not_overwrite_manual_cell(session_factory) -> None:
+    # ERP-F6-fix7: al no actualizar NUNCA una fila existente, jamás se pisa una
+    # celda manual — y no hay avisos de «celda manual distinta» que dar.
     with session_factory() as s:
         _order(s, "BOP-500020", cliente="Uno SL", origin="SAT",
                tracking="TRACK-1")
@@ -381,7 +380,8 @@ def test_drive_sync_does_not_overwrite_manual_cell(session_factory) -> None:
     sheet.grid[1][13] = "CORREGIDO A MANO"
     # …y además escribe una nota en «Orden» (columna que BoHub jamás toca).
     sheet.grid[1][16] = "OJO: RECOGE EL CLIENTE"
-    # BoHub también cambia el tracking → conflicto: NO se pisa y se avisa.
+    before = [list(r) for r in sheet.grid]
+    # BoHub cambia el tracking → el pedido YA está: no se toca, no hay conflicto.
     with session_factory() as s:
         o = s.scalar(select(Order).where(Order.order_number == "BOP-500020"))
         o.tracking_number = "TRACK-2"
@@ -389,21 +389,17 @@ def test_drive_sync_does_not_overwrite_manual_cell(session_factory) -> None:
         s.commit()
         summary = sync_to_sheet(s, sheet, _rows_for_sync(s))
     assert sheet.grid[1][13] == "CORREGIDO A MANO"
-    assert len(summary["conflicts"]) == 1
-    conflict = summary["conflicts"][0]
-    assert conflict["order_number"] == "BOP-500020"
-    assert conflict["column"] == "Tracking"
-    assert conflict["sheet_value"] == "CORREGIDO A MANO"
-    assert conflict["bohub_value"] == "TRACK-2"
+    assert summary["conflicts"] == []
     # «Orden» intacta aunque el pedido tenga observaciones.
     assert sheet.grid[1][16] == "OJO: RECOGE EL CLIENTE"
-    # Una celda vacía sí se rellena (no es contenido manual).
+    # Una celda vacía tampoco se rellena: la fila existente no se toca en absoluto.
     with session_factory() as s:
         o = s.scalar(select(Order).where(Order.order_number == "BOP-500020"))
         o.serial_number = "FBAP12613200249"
         s.commit()
         summary = sync_to_sheet(s, sheet, _rows_for_sync(s))
-    assert sheet.grid[1][14] == "FBAP12613200249"
+    assert sheet.grid == before
+    assert sheet.grid[1][14] == ""
     # Si la hoja no tiene la cabecera esperada, no se escribe NADA.
     with session_factory() as s, pytest.raises(DriveSyncError):
         sync_to_sheet(s, FakeSheet([["cualquier", "cosa"]]), _rows_for_sync(s))

@@ -287,7 +287,9 @@ def test_empresa_not_overwritten_when_sheet_has_invoice(session_factory, http) -
     assert not any(c.get("column") == "Empresa" for c in summary["conflicts"])
 
 
-def test_empresa_from_explicit_series_prefix_in_sheet(session_factory, http) -> None:
+def test_empresa_of_existing_row_never_filled(session_factory, http) -> None:
+    # ERP-F6-fix7: la fila EXISTENTE no se actualiza — su Empresa vacía se queda
+    # vacía aunque la hoja traiga una factura con serie explícita.
     _store_series(http, {"boprint": "5"})
     row = _existing_row(albaran="99895", empresa="", factura="1-260737")  # celda vacía
     sheet = FakeSheet(_real_sheet(reserved=0, existing=[row]))
@@ -297,11 +299,12 @@ def test_empresa_from_explicit_series_prefix_in_sheet(session_factory, http) -> 
         s.commit()
         sync_to_sheet(s, sheet, _rows_for_sync(s))
     idx = _find_row(sheet, "99895")
-    # Celda vacía + factura 1-260737 en la hoja → BO (serie 1), no ST (tienda).
-    assert sheet.grid[idx][_IDX["Empresa"]] == "BO"
+    assert sheet.grid[idx][_IDX["Empresa"]] == ""      # NO se rellena
 
 
-def test_bare_invoice_number_resolved_against_factusol(session_factory) -> None:
+def test_existing_row_empresa_not_resolved_against_factusol(session_factory) -> None:
+    # ERP-F6-fix7: aunque la factura desnuda de la hoja se pudiera resolver, la
+    # fila existente no se toca.
     row = _existing_row(albaran="99887", empresa="", factura="260731", cliente="ARSA")
     sheet = FakeSheet(_real_sheet(reserved=0, existing=[row]))
     with session_factory() as s:
@@ -310,7 +313,7 @@ def test_bare_invoice_number_resolved_against_factusol(session_factory) -> None:
         sync_to_sheet(s, sheet, _rows_for_sync(s),
                       invoice_serie_resolver=lambda cod: 1 if cod == "260731" else None)
     idx = _find_row(sheet, "99887")
-    assert sheet.grid[idx][_IDX["Empresa"]] == "BO"   # 260731 → serie 1
+    assert sheet.grid[idx][_IDX["Empresa"]] == ""     # NO se rellena
 
 
 def test_ambiguous_bare_invoice_number_leaves_cell_untouched(session_factory, http) -> None:
@@ -324,11 +327,13 @@ def test_ambiguous_bare_invoice_number_leaves_cell_untouched(session_factory, ht
         sync_to_sheet(s, sheet, _rows_for_sync(s),
                       invoice_serie_resolver=lambda _cod: None)   # ambiguo
     idx = _find_row(sheet, "99887")
-    # Factura presente pero ambigua → NO se toca, y NO cae a la serie de tienda.
+    # Fila existente → nunca se toca (ni con la serie de la tienda).
     assert sheet.grid[idx][_IDX["Empresa"]] == ""
 
 
-def test_empresa_from_store_only_when_cell_empty(session_factory, http) -> None:
+def test_store_serie_not_applied_to_existing_row(session_factory, http) -> None:
+    # ERP-F6-fix7: la serie de la tienda tampoco se escribe en una fila que ya
+    # está en la hoja (solo se usa al INSERTAR filas nuevas).
     _store_series(http, {"boprint": "5"})
     row = _existing_row(albaran="99999", empresa="", factura="", cliente="Cliente")
     sheet = FakeSheet(_real_sheet(reserved=0, existing=[row]))
@@ -338,11 +343,12 @@ def test_empresa_from_store_only_when_cell_empty(session_factory, http) -> None:
         s.commit()
         sync_to_sheet(s, sheet, _rows_for_sync(s))
     idx = _find_row(sheet, "99999")
-    # Sin factura en ningún lado y celda vacía → serie de la tienda (ST).
-    assert sheet.grid[idx][_IDX["Empresa"]] == "ST"
+    assert sheet.grid[idx][_IDX["Empresa"]] == ""     # NO se rellena
 
 
-def test_sheet_invoice_unknown_to_bohub_is_reported_as_probable(session_factory) -> None:
+def test_sheet_invoice_unknown_to_bohub_is_informational(session_factory) -> None:
+    # ERP-F6-fix7: «factura de la hoja que BoHub no conoce» es INFORMACIÓN, va
+    # en `unknown_invoices` (sección aparte), no en «a revisar».
     row = _existing_row(albaran="99887", empresa="BO", factura="260731", cliente="ARSA")
     sheet = FakeSheet(_real_sheet(reserved=0, existing=[row]))
     with session_factory() as s:
@@ -351,8 +357,11 @@ def test_sheet_invoice_unknown_to_bohub_is_reported_as_probable(session_factory)
         summary = sync_to_sheet(s, sheet, _rows_for_sync(s))
     assert any(
         p["kind"] == "sheet_invoice_unknown" and "260731" in (p["detail"] or "")
-        for p in summary["probable_matches"]
+        for p in summary["unknown_invoices"]
     )
+    # No entra en «a revisar» ni en conflictos.
+    assert summary["orders_to_review"] == 0
+    assert summary["probable_matches"] == []
 
 
 # --- Parte C: números no reinterpretados como fechas ------------------------------

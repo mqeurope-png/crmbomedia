@@ -583,6 +583,7 @@ def build_rows(
     """Todas las filas del seguimiento (sin filtrar). Carga pedidos, líneas e
     historial en 3 queries y los transportistas en 1 — sin N+1."""
     from app.erp.api.factusol import FALLBACK_SERIES_NAMES  # noqa: PLC0415
+    from app.erp.models import ErpDriveSyncRow  # noqa: PLC0415
     from app.integrations.factusol.service import series_config  # noqa: PLC0415
     from app.models.integration_settings import IntegrationAccount  # noqa: PLC0415
 
@@ -592,6 +593,12 @@ def build_rows(
         )
     ))
     carriers = {c.id: c.name for c in session.scalars(select(Carrier))}
+    # ERP-F6-fix7 — «escrito en Drive» = tiene fila sincronizada con la hoja.
+    # Es DISTINTO de «excluido»: se usa para separar en la vista «pendiente de
+    # escribir» de lo ya escrito, sin sacar nada de la vista diaria.
+    written_ids = set(session.scalars(
+        select(ErpDriveSyncRow.order_id).where(ErpDriveSyncRow.synced_at.isnot(None))
+    ))
     series_cfg = series_config(session)
     by_source = series_cfg.get("by_source") if isinstance(series_cfg.get("by_source"), dict) else {}
     series_names = {
@@ -685,6 +692,21 @@ def build_rows(
             "orden": o.notes,
             "estado": estado,
             "en_curso": _en_curso(o, estado),
+            # ERP-F6-fix7 — excluido del seguimiento (reversible; no toca el
+            # pedido ni FACTUSOL). Quién/cuándo/motivo para la trazabilidad.
+            "excluido": o.seguimiento_excluded_at is not None,
+            "excluido_en": _iso_date(o.seguimiento_excluded_at),
+            "excluido_por": o.seguimiento_excluded_by_user_id,
+            "excluido_motivo": o.seguimiento_excluded_reason,
+            # ERP-F6-fix7 — «escrito en Drive» vs «pendiente de escribir». La
+            # vista diaria enseña ambos; el pendiente es lo que aún no está en
+            # la hoja (y no está excluido).
+            "escrito_drive": o.id in written_ids,
+            "pendiente_escribir": (
+                _en_curso(o, estado)
+                and o.seguimiento_excluded_at is None
+                and o.id not in written_ids
+            ),
         })
     return rows
 
@@ -711,13 +733,28 @@ def filter_rows(
     estado: str | None = None,
     q: str | None = None,
     en_curso: bool = True,
+    ver_excluidos: bool = False,
+    pendiente_escribir: bool | None = None,
     sort: str = "fecha",
     direction: str = "desc",
 ) -> list[dict[str, Any]]:
     """Filtros + búsqueda + orden de la vista, en Python (mismo patrón que el
     explorador de documentos). Por defecto: solo pedidos EN CURSO — la parte
-    de arriba del Excel, lo que Bart mira a diario."""
+    de arriba del Excel, lo que Bart mira a diario.
+
+    ERP-F6-fix7 — los pedidos EXCLUIDOS del seguimiento quedan FUERA por defecto
+    (no se listan ni se cuentan). Con `ver_excluidos` se listan SOLO los
+    excluidos (ignorando «en curso», para poder revisarlos y reincluirlos).
+    `pendiente_escribir=True` deja solo los que aún no están en la hoja de
+    Drive."""
     out = rows
+    if ver_excluidos:
+        # Vista de excluidos: solo ellos, sin el filtro de «en curso».
+        return _sort_rows([r for r in out if r["excluido"]], sort, direction)
+    # En cualquier otra vista, los excluidos NUNCA aparecen.
+    out = [r for r in out if not r["excluido"]]
+    if pendiente_escribir:
+        out = [r for r in out if r["pendiente_escribir"]]
     if en_curso:
         out = [r for r in out if r["en_curso"]]
     if serie is not None:
@@ -743,6 +780,12 @@ def filter_rows(
             r for r in out
             if any(needle in str(r[f] or "").casefold() for f in _SEARCH_FIELDS)
         ]
+    return _sort_rows(out, sort, direction)
+
+
+def _sort_rows(
+    out: list[dict[str, Any]], sort: str, direction: str,
+) -> list[dict[str, Any]]:
     key = sort if sort in SORT_KEYS else "fecha"
     reverse = direction != "asc"
     out = sorted(

@@ -168,6 +168,21 @@ class Order(TimestampMixin, Base):
     # pedido con su factura contable. NULL hasta emitir.
     factusol_invoice_number: Mapped[str | None] = mapped_column(String(32))
 
+    # ERP-F6-fix7 — EXCLUIR del seguimiento (decisión de Bart). Un pedido
+    # excluido no se lista en el seguimiento, no se inserta en la hoja de Drive,
+    # no se actualiza y no se cuenta. Es REVERSIBLE (volver a incluir) y NO borra
+    # ni modifica el pedido en BoHub ni en FACTUSOL: solo lo saca del
+    # seguimiento. Se registra quién y cuándo, con un motivo opcional.
+    # OJO: «excluido» es distinto de «escrito en Drive» (esto último vive en
+    # `erp_drive_sync_rows.synced_at`): escribirse en la hoja NO excluye.
+    seguimiento_excluded_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    seguimiento_excluded_by_user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    seguimiento_excluded_reason: Mapped[str | None] = mapped_column(Text)
+
     # E4-fix1: idioma del pedido (ISO 639-1: es/en/de/fr/nl), detectado en la
     # importación Woo (WPML/locale/país) o corregido a mano en la ficha.
     # NULL = desconocido — la cascada de idioma del PDF cae al cliente o a la

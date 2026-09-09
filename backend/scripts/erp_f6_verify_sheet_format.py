@@ -157,6 +157,91 @@ def cmd_compare(args: argparse.Namespace) -> None:
     print("✅ Ningún formato ni valor del histórico cambió tras sincronizar.")
 
 
+def _fmt_call(call: dict[str, Any]) -> str:
+    """Una llamada a la API de Sheets, tal cual salió, para el informe: método,
+    endpoint, y el rango o el número de celdas."""
+    api = call.get("api", "?")
+    if api == "values:batchUpdate":
+        ranges = call.get("ranges") or []
+        return (f"{call.get('method')} {api}  celdas={call.get('cells')}  "
+                f"rangos={ranges}")
+    if api == "batchUpdate:insertDimension":
+        return (f"{call.get('method')} {api}  {call.get('range')}  "
+                f"inheritFromBefore={call.get('inheritFromBefore')}")
+    if api == "values.get":
+        return (f"{call.get('method')} {api}  range={call.get('range')}  "
+                f"filas={call.get('rows_read')}")
+    if api == "values.update":
+        return (f"{call.get('method')} {api}  range={call.get('range')}  "
+                f"filas_completas={call.get('rows')}")
+    return f"{call.get('method')} {api}"
+
+
+def cmd_trace(args: argparse.Namespace) -> None:
+    """ERP-F6-fix7 Parte A — mide contra la hoja REAL: lee valor+formato de las
+    celdas testigo, ejecuta UNA sincronización de verdad y vuelve a leerlas,
+    volcando además la TRAZA EXACTA de las llamadas a la API de Google (método,
+    rango y nº de celdas). Escribe en la hoja → exige --spreadsheet-id de una
+    COPIA."""
+    if not args.spreadsheet_id:
+        sys.exit("Para 'trace' indica --spreadsheet-id con el ID de una COPIA de "
+                 "la hoja: este comando ESCRIBE en ella.")
+    info, spreadsheet_id = _load_credentials(args)
+
+    from app.db.session import SessionLocal  # noqa: PLC0415
+    from app.erp.api.seguimiento import (  # noqa: PLC0415
+        _factusol_invoice_serie_resolver,
+        build_drive_sync_rows,
+    )
+    from app.erp.drive_sheets import GoogleSheetsClient, sync_to_sheet  # noqa: PLC0415
+    from app.integrations.factusol.service import series_config  # noqa: PLC0415
+
+    witness = args.cells or DEFAULT_CELLS
+    before = _read_grid(info, spreadsheet_id, witness)
+
+    client = GoogleSheetsClient(info, spreadsheet_id)
+    with SessionLocal() as session:
+        prefer = bool(series_config(session).get("drive_reference_prefer_albaran", True))
+        rows = build_drive_sync_rows(session)
+        summary = sync_to_sheet(
+            session, client, rows, prefer_albaran=prefer, dry_run=args.dry_run,
+            invoice_serie_resolver=_factusol_invoice_serie_resolver(session),
+        )
+    after = _read_grid(info, spreadsheet_id, witness)
+
+    print("\n===== TRAZA de las llamadas a la API de Sheets (en orden) =====")
+    for call in client.calls:
+        print("  " + _fmt_call(call))
+    print(f"\n  resumen: +{summary['appended_rows']} filas nuevas, "
+          f"{summary['already_present']} ya presentes, "
+          f"{summary['orders_to_review']} a revisar, "
+          f"{len(summary.get('unknown_invoices', []))} facturas desconocidas"
+          + ("  (DRY-RUN: no se escribió)" if args.dry_run else ""))
+
+    print("\n===== Celdas testigo — ANTES vs DESPUÉS (por API, no export) =====")
+    changed = 0
+    for a1 in witness:
+        b, a = before.get(a1), after.get(a1)
+        bt = f"valor={b['value']!r} fmt={b['numberFormat']!r}" if b else "(no leída)"
+        at = f"valor={a['value']!r} fmt={a['numberFormat']!r}" if a else "(no leída)"
+        mark = ""
+        if b and a and (b["value"] != a["value"] or b["numberFormat"] != a["numberFormat"]):
+            mark, changed = "  ⚠ CAMBIÓ", changed + 1
+        print(f"  {a1}:\n    antes:   {bt}\n    después: {at}{mark}")
+    print(f"\n  {'❌' if changed else '✅'} {changed} celda(s) testigo cambiaron "
+          "de valor o formato.")
+
+    if args.out:
+        with open(args.out, "w", encoding="utf-8") as fh:
+            json.dump({"spreadsheet_id": spreadsheet_id, "calls": client.calls,
+                       "before": before, "after": after,
+                       "summary": {k: summary[k] for k in
+                                   ("appended_rows", "already_present",
+                                    "orders_to_review")}},
+                      fh, ensure_ascii=False, indent=2)
+        print(f"\nTraza completa guardada en {args.out}.")
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -174,6 +259,15 @@ def main() -> None:
     c.add_argument("before")
     c.add_argument("after")
     c.set_defaults(func=cmd_compare)
+
+    t = sub.add_parser(
+        "trace", parents=[common],
+        help="sincroniza una COPIA y vuelca la traza de llamadas + testigos",
+    )
+    t.add_argument("--out", help="fichero JSON de salida (opcional)")
+    t.add_argument("--dry-run", action="store_true",
+                   help="no escribe: solo lee y muestra qué llamaría")
+    t.set_defaults(func=cmd_trace)
 
     args = p.parse_args()
     args.func(args)

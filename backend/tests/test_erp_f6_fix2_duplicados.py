@@ -156,8 +156,11 @@ def _dup_row(**over: str) -> list[str]:
 # --- Parte C: actualizar en lugar de duplicar --------------------------------------
 
 
-def test_existing_order_is_updated_not_duplicated(session_factory) -> None:
+def test_existing_order_still_prevents_duplicate_insert(session_factory) -> None:
+    # ERP-F6-fix7: el emparejamiento sigue evitando el duplicado, pero ahora NO
+    # se actualiza la fila existente (solo se inserta lo que falta).
     sheet = FakeSheet([HEADER, _dup_row()])
+    before = [list(r) for r in sheet.grid]
     with session_factory() as s:
         # Mismo pedido: DUPLICODER, 24/07, factura 260695, pero referencia
         # BOPRIN-99866 (con prefijo) — antes duplicaba.
@@ -165,11 +168,12 @@ def test_existing_order_is_updated_not_duplicated(session_factory) -> None:
                source=OrderSource.WOOCOMMERCE, factura="5-260695")
         s.commit()
         summary = sync_to_sheet(s, sheet, _rows_for_sync(s))
-    # NO se inserta otra fila: se reconoce y se actualiza la 87.
+    # NO se inserta otra fila (0 duplicados) y NO se actualiza nada.
     assert summary["appended_rows"] == 0
-    assert summary["updated_rows"] == 1
+    assert summary["updated_rows"] == 0
+    assert summary["already_present"] == 1
     assert len(sheet.grid) == 2                       # cabecera + la única fila
-    assert sheet.grid[1][2] == "DUPLICODER"           # sigue siendo DUPLICODER
+    assert sheet.grid == before                       # la fila 87 intacta
 
 
 def test_match_requires_secondary_confirmation(session_factory) -> None:
@@ -196,24 +200,21 @@ def test_match_requires_secondary_confirmation(session_factory) -> None:
     assert len(sheet.grid) == 2
 
 
-def test_update_never_overwrites_manual_cells(session_factory) -> None:
-    # La fila de Bart ya tiene transportista, fechas y tracking propios.
+def test_existing_row_untouched_and_no_manual_cell_conflict(session_factory) -> None:
+    # ERP-F6-fix7: al no actualizar filas existentes, la fila de Bart queda
+    # intacta y NO se emite ningún aviso de «celda manual distinta».
     sheet = FakeSheet([HEADER, _dup_row()])
+    before = [list(r) for r in sheet.grid]
     with session_factory() as s:
         _order(s, "BOPRIN-99866", cliente="DUPLICODER, S.L.",
                source=OrderSource.WOOCOMMERCE, factura="5-260695",
                tracking="TRACK-BOHUB")   # BoHub tiene otro tracking
         s.commit()
         summary = sync_to_sheet(s, sheet, _rows_for_sync(s))
-    # Transportista, fechas y tracking de Bart intactos.
-    assert sheet.grid[1][5] == "CTT EXP"
-    assert sheet.grid[1][6] == "27/07/2026"
-    assert sheet.grid[1][13] == "TRACK-BART"
-    # El tracking distinto de BoHub se registra como conflicto, no se pisa.
-    assert any(
-        c.get("kind") == "manual_cell" and c["column"] == "Tracking"
-        for c in summary["conflicts"]
-    )
+    # Transportista, fechas y tracking de Bart intactos (nada se tocó).
+    assert sheet.grid == before
+    # Ya NO existe el aviso de «celda manual distinta».
+    assert not any(c.get("kind") == "manual_cell" for c in summary["conflicts"])
 
 
 def test_reference_stays_bare_number_on_update(session_factory) -> None:
@@ -251,13 +252,17 @@ def test_preview_reports_added_updated_and_conflicts_without_writing(
         s.commit()
         preview = sync_to_sheet(s, sheet, _rows_for_sync(s), dry_run=True)
     assert preview["preview"] is True
+    # ERP-F6-fix7: solo se AÑADE (ARTISJ-9999); DUPLICODER ya está (no se toca);
+    # nada se actualiza.
     assert preview["appended_rows"] == 1
-    assert preview["updated_rows"] == 1
-    # El 5742 dudoso sale como CONTRADICCIÓN (cliente y fecha difieren); puede
-    # haber además conflictos de celda manual (BoHub no pisa lo manual).
+    assert preview["updated_rows"] == 0
+    assert preview["already_present"] == 1
+    # El 5742 dudoso sale como CONTRADICCIÓN (cliente y fecha difieren).
     contradicted = [c for c in preview["conflicts"] if c["kind"] == "contradicted"]
     assert len(contradicted) == 1
     assert contradicted[0]["order_number"] == "BOPRIN-5742"
+    # Ya no hay avisos de «celda manual distinta».
+    assert not any(c.get("kind") == "manual_cell" for c in preview["conflicts"])
     # NADA se ha escrito ni añadido en la previsualización.
     assert sheet.grid == before
     # Y no se ha guardado ninguna foto de sincronización.
@@ -265,12 +270,12 @@ def test_preview_reports_added_updated_and_conflicts_without_writing(
         from app.erp.models import ErpDriveSyncRow
         assert s.scalar(select(ErpDriveSyncRow)) is None
 
-    # Al confirmar (sin dry_run) sí escribe: añade 1, actualiza 1.
+    # Al confirmar (sin dry_run) sí escribe: añade 1, no actualiza ninguna.
     with session_factory() as s:
         summary = sync_to_sheet(s, sheet, _rows_for_sync(s))
     assert summary["appended_rows"] == 1
-    assert summary["updated_rows"] == 1
-    # Reejecutar sin cambios: ni añade ni actualiza celdas (idempotente).
+    assert summary["updated_rows"] == 0
+    # Reejecutar sin cambios: no añade nada (idempotente, 0 duplicados).
     with session_factory() as s:
         again = sync_to_sheet(s, sheet, _rows_for_sync(s))
     assert again["appended_rows"] == 0
