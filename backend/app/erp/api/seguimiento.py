@@ -339,10 +339,51 @@ def reconcile_woo_status(
     """Polling del job de reconciliación: `pending` / `finished` (+`result` con
     el recuento por categoría) / `error` (+`error` legible)."""
     _ = session, current_user
-    return _rq_reconcile_status(job_id)
+    return _rq_reconcile_status(
+        job_id,
+        error_msg="La puesta al día falló (una tienda no respondió). "
+                  "Revisa la conexión con WooCommerce y vuelve a intentarlo.",
+    )
 
 
-def _rq_reconcile_status(job_id: str) -> dict[str, Any]:
+@router.post("/reconcile-factusol", status_code=status.HTTP_202_ACCEPTED)
+def reconcile_factusol(
+    dry_run: bool = Query(default=True),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_edit),
+) -> dict[str, Any]:
+    """ERP — enlaza a los pedidos las facturas que YA existen en FACTUSOL (las
+    creadas a mano incluidas), por REFFAC. Pasa el pedido a «facturado» y lo
+    deja emailable. Escribe SOLO en BoHub (nunca en FACTUSOL). `dry_run=true`
+    (por defecto) PREVISUALIZA (qué se enlazaría, y conflictos de pedidos con
+    más de una factura) sin escribir. Corre en segundo plano (worker-factusol);
+    responde con `job_id`, el estado en `reconcile-factusol-status/{job_id}`."""
+    _ = session, current_user
+    from app.integrations.factusol.jobs import (  # noqa: PLC0415
+        enqueue_factusol_invoice_reconcile,
+    )
+
+    job_id = enqueue_factusol_invoice_reconcile(dry_run=dry_run)
+    return {"job_id": job_id, "status": "queued", "preview": dry_run}
+
+
+@router.get("/reconcile-factusol-status/{job_id}")
+def reconcile_factusol_status(
+    job_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_edit),
+) -> dict[str, Any]:
+    """Polling del job de vinculación de facturas: `pending` / `finished`
+    (+`result` con lo enlazado y los conflictos) / `error`."""
+    _ = session, current_user
+    return _rq_reconcile_status(
+        job_id,
+        error_msg="La vinculación de facturas falló. Revisa la conexión con "
+                  "FACTUSOL y vuelve a intentarlo.",
+    )
+
+
+def _rq_reconcile_status(job_id: str, *, error_msg: str) -> dict[str, Any]:
     """Estado del job RQ (best-effort). Sin Redis (local/tests) → `pending`."""
     import logging  # noqa: PLC0415
 
@@ -356,11 +397,7 @@ def _rq_reconcile_status(job_id: str) -> dict[str, Any]:
         job = Job.fetch(job_id, connection=conn)
         rq_status = job.get_status(refresh=True)
         if rq_status == "failed":
-            return {
-                "status": "error",
-                "error": "La puesta al día falló (una tienda no respondió). "
-                         "Revisa la conexión con WooCommerce y vuelve a intentarlo.",
-            }
+            return {"status": "error", "error": error_msg}
         if rq_status == "finished":
             return {"status": "finished", "result": job.result}
         return {"status": "pending"}

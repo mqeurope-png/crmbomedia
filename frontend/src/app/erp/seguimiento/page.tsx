@@ -11,9 +11,12 @@ import {
   getErpSettings,
   includeSeguimiento,
   listSeguimiento,
+  reconcileFactusolInvoices,
   reconcileWooStatuses,
   saveBlob,
+  waitForFactusolReconcile,
   waitForReconcileWoo,
+  type FactusolLinkSummary,
   syncSeguimientoDrive,
   type DriveSyncReviewGroup,
   type DriveSyncSummary,
@@ -80,6 +83,8 @@ export default function SeguimientoPage() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   // ERP-Woo — previsualización de la puesta al día de estados de WooCommerce.
   const [reconcile, setReconcile] = useState<WooReconcileSummary | null>(null);
+  // ERP — previsualización de la vinculación de facturas de FACTUSOL.
+  const [facturaLink, setFacturaLink] = useState<FactusolLinkSummary | null>(null);
 
   const canEdit = !!user && (ERP_EDIT_ROLES as readonly string[]).includes(user.role);
   const viewExcluded = filters.ver_excluidos === true;
@@ -283,6 +288,46 @@ export default function SeguimientoPage() {
     }
   }
 
+  // ERP — vincular facturas creadas a mano en FACTUSOL (segundo plano).
+  async function onFacturaLinkPreview() {
+    setBusy(true); setError(null); setNotice(null); setFacturaLink(null);
+    try {
+      const { job_id } = await reconcileFactusolInvoices({ preview: true });
+      setNotice("Buscando facturas en FACTUSOL… (en segundo plano)");
+      const res = await waitForFactusolReconcile(job_id);
+      setNotice(null);
+      if (res.status === "finished") setFacturaLink(res.result);
+      else if (res.status === "error") setError(res.error || "La vinculación falló.");
+      else setError("La vinculación tardó demasiado; vuelve a intentarlo.");
+    } catch (e) {
+      setError(extractErrorMessage(e, "No se pudo consultar FACTUSOL."));
+    } finally { setBusy(false); }
+  }
+
+  async function onFacturaLinkApply() {
+    setBusy(true); setError(null); setNotice("Enlazando… (en segundo plano)");
+    try {
+      const { job_id } = await reconcileFactusolInvoices({ preview: false });
+      const res = await waitForFactusolReconcile(job_id);
+      if (res.status === "finished") {
+        setFacturaLink(null);
+        setNotice(
+          `Facturas enlazadas: ${res.result.linked}. `
+          + `${res.result.conflicts.length} conflictos sin enlazar (revísalos).`,
+        );
+        await load();
+      } else {
+        setNotice(null);
+        setError(res.status === "error"
+          ? (res.error || "No se pudo aplicar la vinculación.")
+          : "La vinculación tardó demasiado; vuelve a intentarlo.");
+      }
+    } catch (e) {
+      setNotice(null);
+      setError(extractErrorMessage(e, "No se pudo aplicar la vinculación."));
+    } finally { setBusy(false); }
+  }
+
   const drive = page?.drive;
   const items = page?.items ?? [];
 
@@ -459,6 +504,15 @@ export default function SeguimientoPage() {
               {busy ? "Trabajando…" : "Poner al día estados Woo…"}
             </button>
           ) : null}
+          {canEdit ? (
+            <button
+              type="button" className="button small secondary" disabled={busy}
+              title="Enlaza a los pedidos las facturas creadas a mano en FACTUSOL (por referencia)"
+              onClick={onFacturaLinkPreview}
+            >
+              {busy ? "Trabajando…" : "Vincular facturas de FACTUSOL…"}
+            </button>
+          ) : null}
           {canEdit && selected.size > 0 ? (
             viewExcluded ? (
               <button type="button" className="button small" disabled={busy}
@@ -488,6 +542,61 @@ export default function SeguimientoPage() {
           </p>
         ) : null}
       </section>
+
+      {facturaLink ? (
+        <section className="erp-card">
+          <h3>Vincular facturas de FACTUSOL — previsualización</h3>
+          <p className="muted small">
+            Pedidos no facturados en BoHub que ya tienen factura en FACTUSOL
+            (por referencia). Nada se ha escrito todavía; solo se enlaza en BoHub.
+          </p>
+          <ul className="item-list">
+            <li><strong>{facturaLink.to_link.length}</strong> facturas a enlazar.</li>
+            <li className="muted small">
+              {facturaLink.no_match} pedidos sin factura en FACTUSOL (se dejan como están).
+            </li>
+          </ul>
+          {facturaLink.to_link.length > 0 ? (
+            <ul className="item-list">
+              {facturaLink.to_link.map((it) => (
+                <li key={it.order_id} className="small">
+                  <strong>{it.order_number}</strong> → factura {it.numero}
+                  <span className="muted"> (ref {it.ref}
+                    {it.total != null ? `, ${it.total} €` : ""}
+                    {it.fecha ? `, ${it.fecha}` : ""})</span>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          {facturaLink.conflicts.length > 0 ? (
+            <>
+              <h4>Conflictos — NO se enlazan (decide tú)</h4>
+              <p className="muted small">
+                Pedidos con MÁS de una factura para la misma referencia: hay que
+                anular una. No se enlaza ninguna automáticamente.
+              </p>
+              <ul className="item-list">
+                {facturaLink.conflicts.map((c, i) => (
+                  <li key={i} className="small">
+                    <strong>{c.order_number}</strong> (ref {c.ref}):{" "}
+                    {c.facturas.map((f) => f.numero).join(" · ")}
+                  </li>
+                ))}
+              </ul>
+            </>
+          ) : null}
+          <div className="modal-actions">
+            <button type="button" className="button secondary" disabled={busy}
+              onClick={() => setFacturaLink(null)}>
+              Cancelar
+            </button>
+            <button type="button" className="button" disabled={busy || facturaLink.to_link.length === 0}
+              onClick={onFacturaLinkApply}>
+              {busy ? "Enlazando…" : `Enlazar ${facturaLink.to_link.length} facturas`}
+            </button>
+          </div>
+        </section>
+      ) : null}
 
       {reconcile ? (
         <section className="erp-card">

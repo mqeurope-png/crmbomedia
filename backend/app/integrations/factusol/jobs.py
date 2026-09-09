@@ -396,3 +396,46 @@ def enqueue_convert_quote_to_order(
         "app.integrations.factusol.jobs.convert_quote_to_order_job",
         codpre, actor_user_id,
     )
+
+
+# --- Reconciliación FACTUSOL → pedidos (vincular facturas manuales) ----------
+#: Cola INTERACTIVA (la consume `worker-factusol` con prioridad, igual que la
+#: reconciliación de estados Woo). NO va por `worker-sync` (saturado de batch).
+ERP_INTERACTIVE_QUEUE = "erp:interactive"
+INVOICE_RECONCILE_TIMEOUT = 300
+INVOICE_RECONCILE_RESULT_TTL = 3600
+
+
+def run_factusol_invoice_reconcile(dry_run: bool = True) -> dict[str, Any]:
+    """Job: enlaza a los pedidos las facturas que ya existen en FACTUSOL (las
+    creadas a mano incluidas), por REFFAC. Abre su propia sesión y delega en el
+    núcleo. Devuelve el resumen (lo recoge RQ como `job.result`)."""
+    from sqlalchemy.orm import Session  # noqa: PLC0415
+
+    from app.db.session import get_engine  # noqa: PLC0415
+    from app.integrations.factusol.invoice_reconcile import (  # noqa: PLC0415
+        reconcile_factusol_invoices,
+    )
+    from app.integrations.factusol.service import ejercicio_for  # noqa: PLC0415
+
+    with Session(get_engine()) as session:
+        client = FactusolClient.from_settings()
+        ejercicio = ejercicio_for(session)
+        return reconcile_factusol_invoices(session, client, ejercicio, dry_run=dry_run)
+
+
+def enqueue_factusol_invoice_reconcile(dry_run: bool = True) -> str:
+    """Encola `run_factusol_invoice_reconcile` en `erp:interactive`
+    (worker-factusol) y devuelve el job_id. La API responde al instante; el
+    frontend hace polling del estado."""
+    from redis import Redis  # noqa: PLC0415
+    from rq import Queue  # noqa: PLC0415
+
+    from app.core.config import get_settings  # noqa: PLC0415
+
+    conn = Redis.from_url(get_settings().redis_url)
+    job = Queue(ERP_INTERACTIVE_QUEUE, connection=conn).enqueue(
+        run_factusol_invoice_reconcile, dry_run,
+        job_timeout=INVOICE_RECONCILE_TIMEOUT, result_ttl=INVOICE_RECONCILE_RESULT_TTL,
+    )
+    return job.id
