@@ -109,6 +109,14 @@ class Order(TimestampMixin, Base):
     store_id: Mapped[str | None] = mapped_column(
         ForeignKey("integration_accounts.id", ondelete="SET NULL")
     )
+    # WooCommerce: estado CRUDO del pedido en el origen ("processing",
+    # "completed", "cancelled", "refunded", "failed", "pending", "on-hold",
+    # "trash"…). Se refresca SIEMPRE desde la fuente (webhook/reconciliación):
+    # es la base para sacar del seguimiento los cancelados/fallidos y los
+    # reembolsos no cumplidos. Es INDEPENDIENTE de la exclusión manual (F6-fix7)
+    # y de las máquinas de estado propias de BoHub. NULL = aún no se conoce
+    # (pedidos importados antes de este cambio, o pedidos no-Woo).
+    woo_status: Mapped[str | None] = mapped_column(String(20))
     order_number: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     contact_id: Mapped[str | None] = mapped_column(
         ForeignKey("contacts.id", ondelete="SET NULL")

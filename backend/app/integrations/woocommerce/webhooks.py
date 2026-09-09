@@ -23,9 +23,17 @@ WEBHOOK_SECRET_KEY = "webhook_secret"
 
 #: Topics de WooCommerce que disparan un import. Cualquier otro (product.*,
 #: el ping de alta, etc.) se marca `ignored`.
+#: `order.updated` cubre los cambios de estado (a `cancelled`/`refunded`/
+#: `failed`): al procesarlo se refresca `woo_status` y el pedido sale del
+#: seguimiento (antes llegaba pero el mapper ignoraba el estado).
+#: `order.deleted` (pedido a la papelera en la tienda) se maneja aparte: marca
+#: el pedido como `trash` sin re-consultarlo (ya no existiría en la tienda).
 SUPPORTED_TOPICS = frozenset({
     "order.created", "order.updated", "order.payment_complete",
 })
+#: Topic que NO refetch-ea (el pedido ya no está en la tienda); se maneja como
+#: baja (marca `woo_status='trash'` → fuera del seguimiento).
+DELETED_TOPIC = "order.deleted"
 
 
 def _metadata(store: IntegrationAccount) -> dict[str, Any]:

@@ -198,6 +198,13 @@ def _payment_status(woo: dict[str, Any]) -> PaymentStatus:
     return PaymentStatus.PENDING
 
 
+def _woo_status(woo: dict[str, Any]) -> str | None:
+    """Estado crudo de WooCommerce, normalizado a minúsculas. WC lo entrega
+    sin el prefijo `wc-` en la REST API. None si el payload no lo trae."""
+    raw = str(woo.get("status") or "").strip().lower()
+    return raw or None
+
+
 def _parse_dt(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -267,6 +274,9 @@ def _create_order(
         total_amount=float(woo.get("total") or 0),
         currency=(woo.get("currency") or "EUR")[:3],
         payment_status=_payment_status(woo),
+        # Estado CRUDO de WooCommerce — base para la regla de seguimiento
+        # (cancelado/fallido/reembolsado). Se refresca siempre desde la fuente.
+        woo_status=_woo_status(woo),
         preparation_status=PreparationStatus.PENDING_REVIEW,
         placed_at=_parse_dt(woo.get("date_created")) or datetime.now(UTC),
         # E4-fix1: idioma detectado del payload (WPML/locale/país) — se
@@ -288,6 +298,13 @@ def _refresh_existing(
     _ = store  # firma incluye store para simetría con _create_order
     order.total_amount = float(woo.get("total") or order.total_amount)
     order.currency = (woo.get("currency") or order.currency)[:3]
+    # El estado de WooCommerce SÍ se refresca siempre (a diferencia de los
+    # estados propios de BoHub): es la fuente de verdad para cancelado /
+    # reembolsado / fallido. Aquí es donde un `order.updated` con `cancelled`
+    # (que antes se ignoraba) hace que el pedido salga del seguimiento.
+    new_woo_status = _woo_status(woo)
+    if new_woo_status is not None:
+        order.woo_status = new_woo_status
     # Detección de pago: si Woo ya tiene date_paid y el ERP seguía pending
     # → promociona a paid (el estado avanzará en la máquina en su momento).
     new_payment = _payment_status(woo)

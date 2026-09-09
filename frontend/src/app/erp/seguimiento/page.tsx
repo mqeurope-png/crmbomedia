@@ -11,6 +11,7 @@ import {
   getErpSettings,
   includeSeguimiento,
   listSeguimiento,
+  reconcileWooStatuses,
   saveBlob,
   syncSeguimientoDrive,
   type DriveSyncReviewGroup,
@@ -18,6 +19,7 @@ import {
   type DriveSyncUnknownInvoice,
   type SeguimientoFilters,
   type SeguimientoPage,
+  type WooReconcileSummary,
 } from "../../lib/erpApi";
 import { extractErrorMessage } from "../../lib/errors";
 
@@ -75,9 +77,12 @@ export default function SeguimientoPage() {
   const [previewSummary, setPreviewSummary] = useState<DriveSyncSummary | null>(null);
   // ERP-F6-fix7 — selección de filas para excluir/reincluir en bloque.
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  // ERP-Woo — previsualización de la puesta al día de estados de WooCommerce.
+  const [reconcile, setReconcile] = useState<WooReconcileSummary | null>(null);
 
   const canEdit = !!user && (ERP_EDIT_ROLES as readonly string[]).includes(user.role);
   const viewExcluded = filters.ver_excluidos === true;
+  const viewOcultos = filters.ver_ocultos_estado === true;
 
   const load = useCallback(async () => {
     try {
@@ -214,6 +219,42 @@ export default function SeguimientoPage() {
       setError(extractErrorMessage(
         e, "No se pudo actualizar la hoja de Drive.",
       ));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // ERP-Woo — puesta al día de estados: paso 1 previsualizar (no escribe).
+  async function onReconcilePreview() {
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    setReconcile(null);
+    try {
+      setReconcile(await reconcileWooStatuses({ preview: true }));
+    } catch (e) {
+      setError(extractErrorMessage(e, "No se pudo consultar WooCommerce."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Paso 2: aplicar los cambios de estado.
+  async function onReconcileApply() {
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await reconcileWooStatuses({ preview: false });
+      setReconcile(null);
+      setNotice(
+        `Puesta al día aplicada: ${r.removed_total} pedidos salieron del `
+        + `seguimiento (${r.to_cancel} cancelados, ${r.to_fail} fallidos, `
+        + `${r.to_refund_out} reembolsos no cumplidos, ${r.to_trash} en papelera); `
+        + `${r.to_refund_kept} reembolsos ya cumplidos quedaron marcados.`,
+      );
+      await load();
+    } catch (e) {
+      setError(extractErrorMessage(e, "No se pudo aplicar la puesta al día."));
     } finally {
       setBusy(false);
     }
@@ -359,11 +400,23 @@ export default function SeguimientoPage() {
             />
             <span>Ver excluidos</span>
           </label>
+          {/* ERP-Woo — ocultados por estado (cancelado/reembolsado/fallido). */}
+          <label className="field erp-check-field">
+            <input
+              type="checkbox"
+              aria-label="Ver pedidos ocultados por estado de WooCommerce"
+              checked={viewOcultos}
+              onChange={(e) => setFilters({
+                ...filters, ver_ocultos_estado: e.target.checked ? true : undefined,
+              })}
+            />
+            <span>Ver ocultados por estado</span>
+          </label>
           <button type="button" className="button small secondary" disabled={busy}
             onClick={onExport}>
             Descargar Excel
           </button>
-          {canEdit && !viewExcluded ? (
+          {canEdit && !viewExcluded && !viewOcultos ? (
             <button
               type="button" className="button small" disabled={busy}
               title={drive && !drive.configured
@@ -372,6 +425,15 @@ export default function SeguimientoPage() {
               onClick={onPreview}
             >
               {busy ? "Trabajando…" : "Actualizar hoja de Drive…"}
+            </button>
+          ) : null}
+          {canEdit ? (
+            <button
+              type="button" className="button small secondary" disabled={busy}
+              title="Re-consulta WooCommerce y saca del seguimiento los cancelados / reembolsados / fallidos"
+              onClick={onReconcilePreview}
+            >
+              {busy ? "Trabajando…" : "Poner al día estados Woo…"}
             </button>
           ) : null}
           {canEdit && selected.size > 0 ? (
@@ -403,6 +465,46 @@ export default function SeguimientoPage() {
           </p>
         ) : null}
       </section>
+
+      {reconcile ? (
+        <section className="erp-card">
+          <h3>Puesta al día de estados WooCommerce — previsualización</h3>
+          <p className="muted small">
+            Re-consultados {reconcile.scanned} pedidos activos. Nada se ha
+            cambiado todavía.{reconcile.capped
+              ? ` (Tope ${reconcile.limit}: vuelve a ejecutar para el resto.)`
+              : ""}
+          </p>
+          <ul className="item-list">
+            <li>
+              <strong>{reconcile.removed_total}</strong> saldrían del seguimiento:{" "}
+              {reconcile.to_cancel} cancelados · {reconcile.to_fail} fallidos ·{" "}
+              {reconcile.to_refund_out} reembolsos no cumplidos ·{" "}
+              {reconcile.to_trash} en papelera.
+            </li>
+            <li>
+              <strong>{reconcile.to_refund_kept}</strong> reembolsos ya cumplidos
+              se quedarían, marcados «reembolsado».
+            </li>
+            <li className="muted small">
+              {reconcile.unchanged} siguen activos.
+              {reconcile.errors.length > 0
+                ? ` ${reconcile.errors.length} no se pudieron consultar.`
+                : ""}
+            </li>
+          </ul>
+          <div className="modal-actions">
+            <button type="button" className="button secondary" disabled={busy}
+              onClick={() => setReconcile(null)}>
+              Cancelar
+            </button>
+            <button type="button" className="button" disabled={busy}
+              onClick={onReconcileApply}>
+              {busy ? "Aplicando…" : `Aplicar (${reconcile.removed_total + reconcile.to_refund_kept} cambios)`}
+            </button>
+          </div>
+        </section>
+      ) : null}
 
       {previewSummary ? (
         <section className="erp-card">
@@ -469,7 +571,9 @@ export default function SeguimientoPage() {
           {page ? `${page.total} pedidos` : "Cargando…"}
           {viewExcluded
             ? " excluidos"
-            : filters.en_curso === false ? " (todos)" : " en curso"}
+            : viewOcultos
+              ? " ocultados por estado (cancelado/reembolsado/fallido)"
+              : filters.en_curso === false ? " (todos)" : " en curso"}
         </p>
         <div style={{ overflowX: "auto" }}>
           <table className="data-table erp-seguimiento-table">
@@ -542,13 +646,27 @@ export default function SeguimientoPage() {
                     <span className={`badge ${ESTADO_TONE[r.estado] ?? "muted"}`}>
                       {r.estado}
                     </span>
+                    {r.reembolsado ? (
+                      <span className="badge warn" title="Reembolsado en WooCommerce (ya enviado/facturado)">
+                        {" "}reembolsado
+                      </span>
+                    ) : null}
+                    {r.oculto_por_estado && r.estado_woo_motivo ? (
+                      <span className="badge bad" title={`Oculto por estado de WooCommerce: ${r.woo_status ?? ""}`}>
+                        {" "}{r.estado_woo_motivo}
+                      </span>
+                    ) : null}
                   </td>
                 </tr>
               ))}
               {page && items.length === 0 ? (
                 <tr>
                   <td colSpan={HEADERS.length + (canEdit ? 1 : 0)} className="muted">
-                    {viewExcluded ? "No hay pedidos excluidos." : "Sin pedidos."}
+                    {viewExcluded
+                      ? "No hay pedidos excluidos."
+                      : viewOcultos
+                        ? "No hay pedidos ocultados por estado."
+                        : "Sin pedidos."}
                   </td>
                 </tr>
               ) : null}

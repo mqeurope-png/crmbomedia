@@ -45,6 +45,7 @@ def _filtered(
     q: str | None,
     en_curso: bool,
     ver_excluidos: bool = False,
+    ver_ocultos_estado: bool = False,
     pendiente_escribir: bool | None = None,
     sort: str,
     direction: str,
@@ -54,6 +55,7 @@ def _filtered(
         serie=serie, vendedor=vendedor, transportista=transportista,
         origen=origen, desde=desde, hasta=hasta, estado=estado, q=q,
         en_curso=en_curso, ver_excluidos=ver_excluidos,
+        ver_ocultos_estado=ver_ocultos_estado,
         pendiente_escribir=pendiente_escribir, sort=sort, direction=direction,
     )
 
@@ -72,6 +74,8 @@ def list_seguimiento(
     # ERP-F6-fix7 — ver SOLO los excluidos (para revisarlos/reincluirlos), o
     # solo los que faltan por escribir en la hoja de Drive.
     ver_excluidos: bool = Query(default=False),
+    # ERP-Woo — ver SOLO los ocultados por estado (cancelado/reembolsado/fallido).
+    ver_ocultos_estado: bool = Query(default=False),
     pendiente_escribir: bool = Query(default=False),
     sort: str = Query(default="fecha"),
     dir: str = Query(default="desc", pattern="^(asc|desc)$"),  # noqa: A002
@@ -88,6 +92,7 @@ def list_seguimiento(
         session, serie=serie, vendedor=vendedor, transportista=transportista,
         origen=origen, desde=desde, hasta=hasta, estado=estado, q=q,
         en_curso=en_curso, ver_excluidos=ver_excluidos,
+        ver_ocultos_estado=ver_ocultos_estado,
         pendiente_escribir=pendiente_escribir or None, sort=sort, direction=dir,
     )
     cfg = session.get(ErpSettings, ERP_SETTINGS_SINGLETON_ID)
@@ -301,3 +306,26 @@ def include_orders(
         order.seguimiento_excluded_reason = None
     session.commit()
     return {"ok": True, "included": included}
+
+
+@router.post("/reconcile-woo")
+def reconcile_woo(
+    dry_run: bool = Query(default=True),
+    store: str | None = Query(default=None),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_edit),
+) -> dict[str, Any]:
+    """ERP-Woo — «poner al día» los estados de WooCommerce de los pedidos que
+    BoHub tiene como activos: re-consulta la tienda y aplica la regla
+    (cancelado/fallido/reembolso-no-cumplido → fuera del seguimiento;
+    reembolso-cumplido → marcado). `dry_run=true` (por defecto) PREVISUALIZA
+    (cuántos cambiarían) sin escribir. Nunca toca la hoja de Drive ni el
+    histórico; solo actualiza `woo_status`."""
+    _ = current_user
+    from app.integrations.woocommerce.reconcile import (  # noqa: PLC0415
+        reconcile_open_order_statuses,
+    )
+
+    return reconcile_open_order_statuses(
+        session, dry_run=dry_run, store_account_id=store,
+    )

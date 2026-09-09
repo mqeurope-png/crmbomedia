@@ -274,7 +274,10 @@ def process_webhook_event(event_id: str) -> dict[str, Any]:
     - 4xx de Woo (pedido borrado) → `failed` sin reintento.
     - 5xx / red → raise para que RQ reintente con backoff.
     """
-    from app.integrations.woocommerce.webhooks import SUPPORTED_TOPICS  # noqa: PLC0415
+    from app.integrations.woocommerce.webhooks import (  # noqa: PLC0415
+        DELETED_TOPIC,
+        SUPPORTED_TOPICS,
+    )
 
     with _session_factory()() as session:
         event = session.get(IntegrationEvent, event_id)
@@ -285,6 +288,8 @@ def process_webhook_event(event_id: str) -> dict[str, Any]:
             return {"skipped": True, "reason": "already_processed"}
 
         topic = event.event_type or "unknown"
+        if topic == DELETED_TOPIC:
+            return _process_order_deleted(session, event)
         if topic not in SUPPORTED_TOPICS:
             event.status = IntegrationEventStatus.IGNORED
             session.commit()
@@ -330,6 +335,35 @@ def process_webhook_event(event_id: str) -> dict[str, Any]:
         except ValueError as exc:
             _mark_failed(session, event, f"payload inválido: {exc}")
             return {"ok": False, "error": "bad_payload"}
+
+
+def _process_order_deleted(session, event: IntegrationEvent) -> dict[str, Any]:
+    """`order.deleted` — el pedido se envió a la papelera en la tienda. No se
+    re-consulta (ya no existe): se marca el pedido local `woo_status='trash'`
+    para que salga del seguimiento. Si no hay pedido local, se ignora. BoHub
+    NUNCA borra la fila del pedido (solo marca el estado)."""
+    from app.erp.models import Order, OrderSource  # noqa: PLC0415
+
+    store = _get_store(session, event.account_id)
+    external_id = None
+    try:
+        external_id = str((json.loads(event.payload_json) or {}).get("id") or "")
+    except (TypeError, ValueError):
+        external_id = ""
+    order = None
+    if store is not None and external_id:
+        order = session.scalar(select(Order).where(
+            Order.external_source == OrderSource.WOOCOMMERCE,
+            Order.external_id == external_id,
+            Order.store_id == store.id,
+        ))
+    if order is not None:
+        order.woo_status = "trash"
+    event.status = IntegrationEventStatus.PROCESSED
+    event.processed_at = datetime.now(UTC)
+    event.error_message = None
+    session.commit()
+    return {"ok": True, "topic": "order.deleted", "matched": order is not None}
 
 
 def _log_webhook_sync(session, store, outcome, topic, error: str | None = None) -> None:
