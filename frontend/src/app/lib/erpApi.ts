@@ -428,6 +428,70 @@ export async function waitForReconcileWoo(
   return last;
 }
 
+// --- ERP · vincular facturas creadas a mano en FACTUSOL ----------------------
+
+/** Una factura de FACTUSOL localizada por REFFAC. */
+export type FactusolFacturaRef = {
+  codfac: string | null;
+  serie: number | null;
+  numero: string;
+  cliente_codigo: string | null;
+  total: number | null;
+  fecha: string | null;
+};
+
+export type FactusolLinkItem = FactusolFacturaRef & {
+  order_id: string;
+  order_number: string;
+  ref: string;
+};
+
+/** Pedido con MÁS de una factura por la misma referencia → no se enlaza solo. */
+export type FactusolLinkConflict = {
+  order_number: string;
+  ref: string;
+  facturas: FactusolFacturaRef[];
+};
+
+export type FactusolLinkSummary = {
+  ok: boolean;
+  preview: boolean;
+  scanned: number;
+  linked: number;
+  to_link: FactusolLinkItem[];
+  conflicts: FactusolLinkConflict[];
+  no_match: number;
+};
+
+export type FactusolLinkStatus =
+  | { status: "pending" }
+  | { status: "finished"; result: FactusolLinkSummary }
+  | { status: "error"; error?: string };
+
+/** ENCOLA la vinculación de facturas FACTUSOL→pedidos (segundo plano). */
+export async function reconcileFactusolInvoices(
+  opts: { preview?: boolean } = {},
+): Promise<{ job_id: string; status: string; preview: boolean }> {
+  const q = opts.preview === false ? "?dry_run=false" : "?dry_run=true";
+  return apiFetch(`/api/erp/seguimiento/reconcile-factusol${q}`, { method: "POST" });
+}
+
+export async function getFactusolReconcileStatus(jobId: string): Promise<FactusolLinkStatus> {
+  return apiFetch(`/api/erp/seguimiento/reconcile-factusol-status/${encodeURIComponent(jobId)}`);
+}
+
+export async function waitForFactusolReconcile(
+  jobId: string, { tries = 60, delayMs = 2000 } = {},
+): Promise<FactusolLinkStatus> {
+  let last: FactusolLinkStatus = { status: "pending" };
+  for (let i = 0; i < tries; i++) {
+    last = await getFactusolReconcileStatus(jobId);
+    if (last.status !== "pending") return last;
+    await new Promise((r) => setTimeout(r, delayMs));
+  }
+  return last;
+}
+
 /** ERP-F6 — campos de seguimiento del pedido. `orden` se AÑADE a las
  *  observaciones (no existe como campo). */
 export async function updateOrderSeguimiento(
