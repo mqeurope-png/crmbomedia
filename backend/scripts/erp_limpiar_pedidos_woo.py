@@ -48,8 +48,13 @@ def _print_summary(summary: dict[str, Any], *, applied: bool) -> None:
     if summary["candidates"]:
         print(f"\n  {'PEDIDO':<16} {'ESTADO WOO':<12} {'IMPORTE':>10}  CLIENTE")
         for c in summary["candidates"]:
+            avisos = c.get("avisos") or []
             print(f"  {c['order_number']:<16} {c['woo_status'] or '':<12} "
-                  f"{c['importe']:>10.2f}  {c['cliente']}")
+                  f"{c['importe']:>10.2f}  {c['cliente']}"
+                  + (f"  (aviso: {', '.join(avisos)})" if avisos else ""))
+        if any(c.get("avisos") for c in summary["candidates"]):
+            print("  «escrito en Drive» es solo un aviso (tiene falsos positivos): "
+                  "ya no protege; decide tú.")
     print(f"\n  Protegidos (NO se tocan, tienen algo aguas abajo): {len(summary['protected'])}")
     for motivo, n in summary["protegidos_por_motivo"].items():
         print(f"    · {motivo:<28} {n}")

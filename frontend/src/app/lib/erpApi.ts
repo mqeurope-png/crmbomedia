@@ -226,6 +226,8 @@ export type SeguimientoRow = {
   excluido_en: string | null;
   excluido_por: string | null;
   excluido_motivo: string | null;
+  /** Control manual — nombre de quien lo quitó (vista de excluidos). */
+  excluido_por_nombre?: string | null;
   /** ERP-F6-fix7 — ya escrito en la hoja de Drive vs pendiente de escribir. */
   escrito_drive: boolean;
   pendiente_escribir: boolean;
@@ -355,21 +357,69 @@ export async function syncSeguimientoDrive(
   return apiFetch<DriveSyncSummary>(`/api/erp/seguimiento/drive-sync${q}`, { method: "POST" });
 }
 
-/** ERP-F6-fix7 — excluir pedidos del seguimiento (varios a la vez). No borra
- *  ni modifica el pedido; solo lo saca del seguimiento. Reversible. */
-export async function excludeSeguimiento(
-  orderIds: string[], reason?: string,
-): Promise<{ ok: boolean; excluded: number }> {
-  return apiFetch("/api/erp/seguimiento/exclude", {
+/** Control manual — motivos rápidos de «Quitar del seguimiento». */
+export const EXCLUSION_REASON_CODES = [
+  "cancelado", "duplicado", "prueba", "reembolsado", "otro",
+] as const;
+export type ExclusionReasonCode = (typeof EXCLUSION_REASON_CODES)[number];
+
+/** Control manual — un pedido en la previsualización de «Quitar»: sus AVISOS
+ *  aguas abajo (factura, cobro, albarán, SAT, Drive…). Solo avisa. */
+export type ExcludePreviewItem = {
+  order_id: string;
+  order_number: string;
+  cliente: string | null;
+  woo_status: string | null;
+  excluido: boolean;
+  excluido_motivo: string | null;
+  avisos: string[];
+};
+
+export type ExcludePreview = {
+  ok: boolean;
+  items: ExcludePreviewItem[];
+  con_avisos: number;
+  ya_excluidos: number;
+};
+
+/** Control manual — qué tiene cada pedido aguas abajo antes de quitarlo. No
+ *  escribe nada; no bloquea. */
+export async function previewExcludeSeguimiento(
+  orderIds: string[],
+): Promise<ExcludePreview> {
+  return apiFetch("/api/erp/seguimiento/exclude-preview", {
     method: "POST",
-    body: JSON.stringify({ order_ids: orderIds, reason: reason || null }),
+    body: JSON.stringify({ order_ids: orderIds }),
   });
 }
 
-/** ERP-F6-fix7 — reincluir pedidos antes excluidos. */
+export type ExcludeResult = {
+  ok: boolean;
+  excluded: number;
+  already_excluded: number;
+  reason: string | null;
+  avisos: Record<string, string[]>;
+  con_avisos: number;
+};
+
+/** ERP-F6-fix7 + control manual — quitar pedidos del seguimiento (uno o
+ *  varios), en cualquier estado. No borra ni modifica el pedido; solo lo saca
+ *  del seguimiento. Reversible con `includeSeguimiento`. */
+export async function excludeSeguimiento(
+  orderIds: string[], reason?: string, reasonCode?: ExclusionReasonCode,
+): Promise<ExcludeResult> {
+  return apiFetch("/api/erp/seguimiento/exclude", {
+    method: "POST",
+    body: JSON.stringify({
+      order_ids: orderIds, reason: reason || null, reason_code: reasonCode || null,
+    }),
+  });
+}
+
+/** ERP-F6-fix7 — reincluir pedidos antes excluidos (deshace «Quitar»). */
 export async function includeSeguimiento(
   orderIds: string[],
-): Promise<{ ok: boolean; included: number }> {
+): Promise<{ ok: boolean; included: number; already_included: number }> {
   return apiFetch("/api/erp/seguimiento/include", {
     method: "POST",
     body: JSON.stringify({ order_ids: orderIds }),
