@@ -500,6 +500,14 @@ def normalize_line(doc_type: str, row: dict[str, Any]) -> dict[str, Any]:
         "quantity": _num(row.get(f"CAN{suffix}")),
         "unit_price": _num(row.get(f"PRE{suffix}")),
         "line_total": _num(row.get(f"TOT{suffix}")),
+        # Fase 1 (pedido BoHub desde el documento): descuento e IVA de línea.
+        # DT1LPS/IVALPS verificados en F_LPS; DT1LPC/IVALPC por la misma
+        # convención. 0 / None si la columna no viene.
+        "discount_pct": _num(row.get(f"DT1{suffix}")),
+        "iva_pct": (
+            _num(row.get(f"IVA{suffix}"))
+            if row.get(f"IVA{suffix}") is not None else None
+        ),
     }
 
 

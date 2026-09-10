@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field, model_validator
@@ -78,6 +78,18 @@ class AddressIn(BaseModel):
         return not any([self.address_line, self.city, self.postal_code, self.state])
 
 
+class FactusolSourceIn(BaseModel):
+    """Fase 1 — el pedido se crea a mano PERO a partir de un documento de
+    FACTUSOL (el alta lo precargó): queda marcado con ese origen y nº."""
+
+    doc_type: Literal["presupuestos", "pedidos"]
+    serie: int = Field(ge=1, le=9)
+    codigo: int = Field(ge=1)
+    referencia: str | None = Field(default=None, max_length=250)
+    forma_pago: str | None = Field(default=None, max_length=10)
+    forma_pago_nombre: str | None = Field(default=None, max_length=120)
+
+
 class OrderCreate(BaseModel):
     # D-2: opcional — si no llega, se genera `MANUAL-000001` (secuencial).
     order_number: str | None = Field(default=None, max_length=32)
@@ -92,6 +104,8 @@ class OrderCreate(BaseModel):
     pickup_in_store: bool = False
     shipping_address: AddressIn | None = None
     billing_address: AddressIn | None = None
+    # Fase 1: origen FACTUSOL (presupuesto / pedido de cliente) del alta manual.
+    factusol_source: FactusolSourceIn | None = None
 
     @model_validator(mode="after")
     def _require_customer(self) -> OrderCreate:
@@ -373,7 +387,31 @@ def create_order(
 
     D-2: `order_number` es opcional (se genera `MANUAL-000001`); la dirección
     de envío/facturación y el NIF viven en `packing_json` (sin migración)."""
-    number = (payload.order_number or "").strip() or _next_manual_number(session)
+    # Fase 1: si el alta parte de un documento FACTUSOL, el pedido lleva ese
+    # origen (nunca `woocommerce`), su nº como external_id (dedup) y un nº de
+    # pedido PRO-/PCL- con el nº del documento.
+    fs = payload.factusol_source
+    if fs is not None:
+        from app.erp.orders_from_factusol import (  # noqa: PLC0415
+            SOURCE_BY_DOC_TYPE,
+            AlreadyImported,
+            external_id_for,
+            find_existing,
+            order_number_for,
+        )
+
+        source = SOURCE_BY_DOC_TYPE[fs.doc_type]
+        external_id = external_id_for(fs.doc_type, fs.serie, fs.codigo)
+        existing = find_existing(session, source, external_id)
+        if existing is not None:
+            raise _factusol_order_http_error(AlreadyImported(existing))
+        default_number = order_number_for(fs.doc_type, fs.serie, fs.codigo)
+    else:
+        source, external_id, default_number = OrderSource.MANUAL, None, None
+    number = (
+        (payload.order_number or "").strip() or default_number
+        or _next_manual_number(session)
+    )
     if session.scalar(select(Order.id).where(Order.order_number == number)):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -381,7 +419,8 @@ def create_order(
         )
     total = 0.0
     order = Order(
-        external_source=OrderSource.MANUAL,
+        external_source=source,
+        external_id=external_id,
         order_number=number,
         contact_id=payload.contact_id,
         company_id=payload.company_id,
@@ -409,10 +448,15 @@ def create_order(
         from_status=None,
         to_status=_status_value(order.preparation_status),
         changed_at=datetime.now(UTC), changed_by_user_id=current_user.id,
-        reason="Pedido manual creado desde el ERP",
+        reason=(
+            "Pedido manual creado desde el ERP" if fs is None else
+            f"Pedido creado desde el "
+            f"{'presupuesto' if fs.doc_type == 'presupuestos' else 'pedido de cliente'} "
+            f"FACTUSOL {fs.serie}-{fs.codigo:06d} (alta manual)"
+        ),
         metadata_json=json.dumps({
             "event": "order_created_manual",
-            "origin_source": "manual",
+            "origin_source": source.value,
             "created_by_user_id": current_user.id,
         }),
     ))
@@ -453,6 +497,15 @@ def _manual_packing_json(payload: OrderCreate) -> str | None:
         data["shipping_address"] = payload.shipping_address.model_dump()
     if payload.billing_address and not payload.billing_address.is_empty():
         data["billing_address"] = payload.billing_address.model_dump()
+    if payload.factusol_source is not None:
+        from app.erp.orders_from_factusol import factusol_source_block  # noqa: PLC0415
+
+        fs = payload.factusol_source
+        data["factusol_source"] = factusol_source_block(
+            doc_type=fs.doc_type, serie=fs.serie, codigo=fs.codigo,
+            referencia=fs.referencia, forma_pago=fs.forma_pago,
+            forma_pago_nombre=fs.forma_pago_nombre,
+        )
     return json.dumps(data) if data else None
 
 
@@ -536,6 +589,141 @@ def pending_approval(
             for o in rows
         ],
     }
+
+
+# --- Fase 1: pedido desde un documento de FACTUSOL (solo lectura allí) --------
+
+
+class OrderFromFactusolIn(BaseModel):
+    doc_type: Literal["presupuestos", "pedidos"]
+    serie: int = Field(ge=1, le=9)
+    codigo: int = Field(ge=1)
+    #: Empresa/contacto explícitos (si el cliente FACTUSOL no está vinculado o
+    #: se quiere otro). Sin ellos, se resuelve por el vínculo CODCLI ↔ CRM.
+    company_id: str | None = None
+    contact_id: str | None = None
+
+
+def _factusol_order_http_error(exc: Exception) -> HTTPException:
+    from app.erp.orders_from_factusol import (  # noqa: PLC0415
+        AlreadyImported,
+        CustomerUnlinked,
+        DocumentNotFound,
+        UnsupportedDocumentType,
+    )
+
+    if isinstance(exc, DocumentNotFound):
+        return HTTPException(status.HTTP_404_NOT_FOUND,
+                             {"code": exc.code, "detail": str(exc)})
+    if isinstance(exc, UnsupportedDocumentType):
+        return HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                             {"code": exc.code, "detail": str(exc)})
+    if isinstance(exc, CustomerUnlinked):
+        return HTTPException(status.HTTP_409_CONFLICT, {
+            "code": exc.code, "detail": str(exc),
+            "codcli": exc.codcli, "cliente_nombre": exc.nombre,
+        })
+    if isinstance(exc, AlreadyImported):
+        return HTTPException(status.HTTP_409_CONFLICT, {
+            "code": exc.code, "detail": str(exc),
+            "order_id": exc.order_id, "order_number": exc.order_number,
+        })
+    return HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, str(exc)[:200])
+
+
+def _forma_pago_nombre(client, ejercicio: str, codigo: Any) -> str | None:  # noqa: ANN001
+    """Nombre de la forma de pago (catálogo F_FPA), best-effort."""
+    if not str(codigo or "").strip():
+        return None
+    try:
+        from app.erp.api.factusol import _fop_names  # noqa: PLC0415
+        from app.integrations.factusol.catalogs import resolve_name  # noqa: PLC0415
+
+        return resolve_name(_fop_names(client, ejercicio), codigo)
+    except Exception:  # noqa: BLE001 — informativo, nunca tumba el alta
+        return None
+
+
+@router.get("/from-factusol/preview")
+def preview_order_from_factusol(
+    doc_type: str = Query(pattern="^(presupuestos|pedidos)$"),
+    serie: int = Query(ge=1, le=9),
+    codigo: int = Query(ge=1),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_edit),
+) -> dict[str, Any]:
+    """Fase 1 — lee el presupuesto / pedido de cliente de FACTUSOL y devuelve
+    cómo quedaría el pedido (cliente resuelto contra el CRM, líneas, importes,
+    forma de pago, nº de pedido, si ya se importó). No escribe nada."""
+    _ = current_user
+    from app.erp.api.factusol import _client_and_ejercicio  # noqa: PLC0415
+    from app.erp.orders_from_factusol import (  # noqa: PLC0415
+        FactusolOrderError,
+        preview_factusol_document,
+    )
+    from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
+
+    client, ejercicio = _client_and_ejercicio(session)
+    try:
+        preview = preview_factusol_document(
+            session, client, doc_type=doc_type, serie=serie, codigo=codigo,
+            ejercicio=ejercicio,
+        )
+    except FactusolOrderError as exc:
+        raise _factusol_order_http_error(exc) from exc
+    except FactusolError as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, {
+            "code": "factusol_detail_failed", "detail": str(exc)[:200],
+        }) from exc
+    preview["forma_pago_nombre"] = _forma_pago_nombre(
+        client, ejercicio, preview.get("forma_pago"),
+    )
+    return preview
+
+
+@router.post("/from-factusol", status_code=201)
+def create_order_from_factusol(
+    payload: OrderFromFactusolIn,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_edit),
+) -> dict[str, Any]:
+    """Fase 1 — crea el pedido de BoHub a partir de un presupuesto o pedido de
+    cliente que YA existe en FACTUSOL: cliente (por el vínculo CODCLI ↔ CRM o
+    `company_id`), líneas con artículo/descripción/cantidad/precio/dto,
+    importes y forma de pago (informativa). Origen `factusol_proforma` /
+    `factusol_pedido` (nunca Woo). SOLO LECTURA en FACTUSOL: ni albarán ni
+    pedido ni pago (Fase 2). Dedup por nº de documento (409)."""
+    from app.erp.api.factusol import _client_and_ejercicio  # noqa: PLC0415
+    from app.erp.orders_from_factusol import (  # noqa: PLC0415
+        FactusolOrderError,
+        create_order_from_factusol_document,
+        preview_factusol_document,
+    )
+    from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
+
+    client, ejercicio = _client_and_ejercicio(session)
+    try:
+        header = preview_factusol_document(
+            session, client, doc_type=payload.doc_type, serie=payload.serie,
+            codigo=payload.codigo, ejercicio=ejercicio,
+        )
+        order = create_order_from_factusol_document(
+            session, client, doc_type=payload.doc_type, serie=payload.serie,
+            codigo=payload.codigo, ejercicio=ejercicio,
+            actor_user_id=current_user.id, company_id=payload.company_id,
+            contact_id=payload.contact_id,
+            forma_pago_nombre=_forma_pago_nombre(
+                client, ejercicio, header.get("forma_pago"),
+            ),
+        )
+    except FactusolOrderError as exc:
+        raise _factusol_order_http_error(exc) from exc
+    except FactusolError as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, {
+            "code": "factusol_detail_failed", "detail": str(exc)[:200],
+        }) from exc
+    session.commit()
+    return _serialise_detail(session, _get_order(session, order.id), current_user)
 
 
 @router.get("/{order_id}")

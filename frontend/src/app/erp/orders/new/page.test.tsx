@@ -17,6 +17,7 @@ const push = jest.fn();
 const refresh = jest.fn();
 jest.mock("next/navigation", () => ({
   useRouter: () => ({ push, refresh }),
+  useSearchParams: () => new URLSearchParams(""),
 }));
 jest.mock("next/link", () => ({
   __esModule: true,
@@ -28,6 +29,7 @@ jest.mock("../../../lib/api", () => ({ listContacts: jest.fn() }));
 jest.mock("../../../lib/companiesApi", () => ({
   listCompanies: jest.fn(),
   createCompany: jest.fn(),
+  getCompany: jest.fn(),
 }));
 jest.mock("../../../lib/erpApi", () => ({
   createOrder: jest.fn(),
@@ -40,6 +42,8 @@ jest.mock("../../../lib/erpApi", () => ({
   getFactusolQuote: jest.fn(),
   // C-4-fix2: autocomplete F_ART en las líneas del pedido manual.
   searchFactusolArticles: jest.fn(),
+  // Fase 1: importar presupuesto / pedido de cliente de FACTUSOL.
+  previewOrderFromFactusol: jest.fn(),
 }));
 
 const mockCompanies = listCompanies as jest.Mock;

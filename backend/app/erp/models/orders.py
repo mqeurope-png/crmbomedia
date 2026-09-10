@@ -33,6 +33,9 @@ from app.models.crm import Base, TimestampMixin, enum_values
 class OrderSource(StrEnum):
     WOOCOMMERCE = "woocommerce"
     FACTUSOL_PROFORMA = "factusol_proforma"
+    # Fase 1: pedido creado desde un PEDIDO DE CLIENTE de FACTUSOL (F_PCL).
+    # Enum no nativo (texto, length=40): sin migración.
+    FACTUSOL_PEDIDO = "factusol_pedido"
     MANUAL = "manual"
 
 

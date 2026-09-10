@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { PageHeader } from "../../../components/PageHeader";
 import { ArticleAutocompleteInput } from "../../../components/erp/ArticleAutocompleteInput";
@@ -10,7 +10,7 @@ import {
   type CustomerChoice,
 } from "../../../components/erp/CustomerAutocomplete";
 import { listContacts, type Contact } from "../../../lib/api";
-import { listCompanies, type Company } from "../../../lib/companiesApi";
+import { getCompany, listCompanies, type Company } from "../../../lib/companiesApi";
 import { extractErrorMessage } from "../../../lib/errors";
 import {
   createFactusolCustomer,
@@ -19,8 +19,11 @@ import {
   getFactusolQuote,
   linkFactusolCustomer,
   listFactusolQuotes,
+  previewOrderFromFactusol,
   type FactusolArticle,
   type FactusolCustomer,
+  type FactusolOrderDocType,
+  type FactusolOrderPreview,
   type FactusolQuote,
   type OrderAddress,
 } from "../../../lib/erpApi";
@@ -56,8 +59,14 @@ function addressFilled(a: OrderAddress): boolean {
 /** Alta de pedido manual (Fase D · D-2): encargos por teléfono, muestras y
  *  reparaciones sin ticket Woo. El origen es fijo `manual` y el número lo
  *  genera el backend (`MANUAL-000001`). */
+const DOC_TYPE_LABEL: Record<FactusolOrderDocType, string> = {
+  presupuestos: "presupuesto",
+  pedidos: "pedido de cliente",
+};
+
 export default function NewManualOrderPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [companyQuery, setCompanyQuery] = useState("");
   const [companies, setCompanies] = useState<Company[]>([]);
   const [companyId, setCompanyId] = useState<string | null>(null);
@@ -97,6 +106,36 @@ export default function NewManualOrderPage() {
   const [companyLinked, setCompanyLinked] = useState(false);
   const [loadingQuote, setLoadingQuote] = useState<string | null>(null);
   const [quoteNotice, setQuoteNotice] = useState<string | null>(null);
+  // Fase 1 — importar un presupuesto / pedido de cliente de FACTUSOL por nº
+  // (solo lectura allí): precarga cliente, líneas, fecha y forma de pago.
+  const [facDocType, setFacDocType] = useState<FactusolOrderDocType>("presupuestos");
+  const [facSerie, setFacSerie] = useState("1");
+  const [facCodigo, setFacCodigo] = useState("");
+  const [facLoading, setFacLoading] = useState(false);
+  const [facPreview, setFacPreview] = useState<FactusolOrderPreview | null>(null);
+  const [facNotice, setFacNotice] =
+    useState<{ tone: "info" | "error"; text: string } | null>(null);
+  // Fase 1 — «Nuevo pedido» desde la ficha de empresa: ?company_id= precarga.
+  const presetCompanyId = searchParams?.get("company_id") ?? null;
+
+  useEffect(() => {
+    if (!presetCompanyId) return;
+    let alive = true;
+    getCompany(presetCompanyId)
+      .then((c) => {
+        if (!alive) return;
+        setCompanyId(c.id);
+        setCompanyQuery(c.name);
+        setTaxId((prev) => prev || c.tax_id || "");
+        setShipping((prev) => (addressFilled(prev) ? prev : {
+          address_line: c.address_line ?? "", city: c.city ?? "",
+          postal_code: c.postal_code ?? "", state: c.state ?? "",
+          country: c.country ?? "España",
+        }));
+      })
+      .catch(() => undefined);
+    return () => { alive = false; };
+  }, [presetCompanyId]);
 
   // Autocomplete de empresas (patrón datalist debounced del CRM).
   useEffect(() => {
@@ -403,6 +442,71 @@ export default function NewManualOrderPage() {
     }
   }
 
+  /** Fase 1: lee el documento de FACTUSOL y vuelca cliente, líneas, fecha y
+   *  notas al formulario. Bart revisa y pulsa «Crear pedido»: el pedido queda
+   *  con origen FACTUSOL (nunca Woo). No se escribe nada en FACTUSOL. */
+  async function loadFactusolDocument() {
+    const serie = Number(facSerie);
+    const codigo = Number(facCodigo);
+    if (!Number.isInteger(serie) || serie <= 0 || !Number.isInteger(codigo) || codigo <= 0) {
+      setFacNotice({ tone: "error", text: "Indica la serie y el número del documento." });
+      return;
+    }
+    const label = DOC_TYPE_LABEL[facDocType];
+    setFacLoading(true);
+    setFacNotice(null);
+    try {
+      const p = await previewOrderFromFactusol(facDocType, serie, codigo);
+      setFacPreview(p);
+      const rows: LineRow[] = p.lines.map((l) => ({
+        product_sku: l.codart ?? "",
+        description: l.description || l.codart || "",
+        quantity: String(l.quantity),
+        unit_price: String(l.unit_price),
+      }));
+      const fallback: LineRow[] = [{
+        product_sku: "",
+        description: p.referencia || `${label} ${p.numero}`,
+        quantity: "1",
+        unit_price: String(p.total ?? 0),
+      }];
+      const next = rows.length > 0 ? rows : fallback;
+      setLines((prev) => {
+        const kept = prev.filter((l) => l.description.trim() || l.product_sku.trim());
+        return [...kept, ...next];
+      });
+      if (p.fecha) setPlacedAt(p.fecha);
+      setNotes((prev) => prev || (
+        `Creado desde el ${label} FACTUSOL ${p.numero}`
+        + (p.referencia ? ` · ref. ${p.referencia}` : "")
+      ));
+      if (p.company_id && p.company_name) {
+        setCompanyId(p.company_id);
+        setCompanyQuery(p.company_name);
+      }
+      const parts = [
+        `${label} ${p.numero} cargado: ${next.length} línea(s)`,
+        p.total != null ? `${p.total.toFixed(2)} €` : null,
+        p.forma_pago_nombre ? `forma de pago ${p.forma_pago_nombre}` : null,
+        p.company_linked
+          ? `cliente «${p.company_name}»`
+          : `cliente FACTUSOL «${p.cliente_nombre ?? "?"}» (nº ${p.cliente_codigo ?? "?"}) sin vincular: búscalo arriba para vincularlo o elige la empresa`,
+      ].filter(Boolean);
+      setFacNotice(p.already_imported
+        ? { tone: "error",
+            text: `Este ${label} ya se importó como el pedido ${p.already_imported.order_number}.` }
+        : { tone: "info", text: `${parts.join(" · ")}.` });
+    } catch (e) {
+      setFacPreview(null);
+      setFacNotice({
+        tone: "error",
+        text: extractErrorMessage(e, "No se pudo leer el documento de FACTUSOL."),
+      });
+    } finally {
+      setFacLoading(false);
+    }
+  }
+
   function updateLine(i: number, key: keyof LineRow, value: string) {
     setLines((rs) => rs.map((r, j) => (j === i ? { ...r, [key]: value } : r)));
   }
@@ -421,7 +525,7 @@ export default function NewManualOrderPage() {
   const customerOk = Boolean(companyId || contactId);
   const addressOk = pickup || addressFilled(shipping);
   const valid = customerOk && addressOk && lines.length > 0
-    && lineErrors.every((e) => e === null);
+    && lineErrors.every((e) => e === null) && !facPreview?.already_imported;
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -438,6 +542,16 @@ export default function NewManualOrderPage() {
         pickup_in_store: pickup,
         shipping_address: pickup ? null : shipping,
         billing_address: billingSame ? (pickup ? null : shipping) : billing,
+        // Fase 1: si el alta partió de un documento FACTUSOL, el pedido lo lleva
+        // como origen (nunca `woocommerce`) con su nº y forma de pago.
+        factusol_source: facPreview ? {
+          doc_type: facPreview.doc_type,
+          serie: facPreview.serie,
+          codigo: facPreview.codigo,
+          referencia: facPreview.referencia,
+          forma_pago: facPreview.forma_pago,
+          forma_pago_nombre: facPreview.forma_pago_nombre,
+        } : undefined,
         lines: lines.map((l) => ({
           product_sku: l.product_sku.trim(),
           description: l.description.trim() || l.product_sku.trim(),
@@ -469,10 +583,70 @@ export default function NewManualOrderPage() {
       <form className="erp-manual-form" onSubmit={submit}>
         {error ? <p className="form-error">{error}</p> : null}
 
+        {/* Fase 1 — crear el pedido desde un documento que ya existe en FACTUSOL. */}
+        <section className="erp-card">
+          <h3>Importar de FACTUSOL</h3>
+          <p className="muted small">
+            Crea el pedido a partir de un presupuesto o de un pedido de cliente
+            que ya existe en FACTUSOL. Solo se lee: no se escribe nada allí.
+          </p>
+          <div className="form-row">
+            <label className="field">
+              <span>Documento</span>
+              <select
+                aria-label="Tipo de documento FACTUSOL"
+                value={facDocType}
+                onChange={(e) => setFacDocType(e.target.value as FactusolOrderDocType)}
+              >
+                <option value="presupuestos">Presupuesto / proforma</option>
+                <option value="pedidos">Pedido de cliente</option>
+              </select>
+            </label>
+            <label className="field">
+              <span>Serie</span>
+              <input type="number" min="1" max="9" value={facSerie}
+                     aria-label="Serie del documento FACTUSOL"
+                     onChange={(e) => setFacSerie(e.target.value)} />
+            </label>
+            <label className="field">
+              <span>Número</span>
+              <input type="number" min="1" value={facCodigo}
+                     aria-label="Número del documento FACTUSOL"
+                     onChange={(e) => setFacCodigo(e.target.value)} />
+            </label>
+            <button type="button" className="button small"
+                    disabled={facLoading || !facCodigo}
+                    onClick={loadFactusolDocument}>
+              {facLoading ? "Leyendo…" : "Cargar documento"}
+            </button>
+          </div>
+          {facNotice ? (
+            <p className={facNotice.tone === "error" ? "form-error" : "form-info"}
+               role="status">
+              {facNotice.text}
+            </p>
+          ) : null}
+          {facPreview?.already_imported ? (
+            <p className="small">
+              <Link href={`/erp/orders/${facPreview.already_imported.order_id}`}>
+                Abrir el pedido {facPreview.already_imported.order_number}
+              </Link>
+            </p>
+          ) : null}
+        </section>
+
         <section className="erp-card">
           <h3>Cliente</h3>
           <p className="muted small">
-            Origen: <strong>manual</strong> · el número de pedido se genera solo.
+            Origen:{" "}
+            <strong>
+              {facPreview
+                ? `${DOC_TYPE_LABEL[facPreview.doc_type]} FACTUSOL ${facPreview.numero}`
+                : "manual"}
+            </strong>
+            {facPreview
+              ? ` · nº de pedido ${facPreview.order_number}.`
+              : " · el número de pedido se genera solo."}
           </p>
           {/* C-3: busca primero en FACTUSOL (fuente contable) y luego en CRM. */}
           <CustomerAutocomplete key={customerSearchKey} onPick={onPickCustomer} />
