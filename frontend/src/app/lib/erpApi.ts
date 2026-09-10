@@ -47,6 +47,13 @@ export type OrderSummary = {
   created_at: string;
   /** B-2-fix4: seteado si el pedido se gestionó fuera del ERP. */
   externally_processed_at: string | null;
+  /** Control manual (#388 + bandeja): quitado de las listas de trabajo
+   *  (bandeja, Cola PEDIDOS, seguimiento/Drive). Reversible. */
+  excluded?: boolean;
+  seguimiento_excluded_at?: string | null;
+  seguimiento_excluded_reason?: string | null;
+  seguimiento_excluded_by_user_id?: string | null;
+  seguimiento_excluded_by_name?: string | null;
 };
 
 export type Blocker = { code: string; detail: string };
@@ -143,13 +150,19 @@ export type OrderFilters = {
   store?: string;
   /** B-2-fix4: incluir los pedidos procesados externamente (por defecto ocultos). */
   show_external?: boolean;
+  /** Control manual — ver SOLO los quitados a mano («Ver ocultados»). */
+  show_excluded?: boolean;
   sort?: string;
   limit?: number;
 };
 
 export async function listOrders(filters: OrderFilters = {}): Promise<OrderSummary[]> {
-  const { show_external, ...rest } = filters;
-  const query = qs({ ...rest, show_external: show_external ? "true" : undefined });
+  const { show_external, show_excluded, ...rest } = filters;
+  const query = qs({
+    ...rest,
+    show_external: show_external ? "true" : undefined,
+    show_excluded: show_excluded ? "true" : undefined,
+  });
   const r = await apiFetch<{ items: OrderSummary[] }>(`/api/erp/orders${query}`);
   return r.items;
 }

@@ -161,10 +161,24 @@ def customer_names(
                 select(Company).where(Company.id.in_(company_ids))
             )
         }
+    # Control manual (#388 + bandeja): nombre de quien QUITÓ el pedido de las
+    # listas de trabajo (para la vista «Ver ocultados»), en 1 query.
+    excluded_by_ids = {
+        o.seguimiento_excluded_by_user_id for o in orders
+        if o.seguimiento_excluded_by_user_id
+    }
+    excluded_by: dict[str, str] = {}
+    if excluded_by_ids:
+        excluded_by = {
+            u.id: u.full_name for u in session.scalars(
+                select(User).where(User.id.in_(excluded_by_ids))
+            )
+        }
     return {
         o.id: {
             "contact_name": _contact_label(contacts.get(o.contact_id)),
             "company_name": companies.get(o.company_id) if o.company_id else None,
+            "excluded_by_name": excluded_by.get(o.seguimiento_excluded_by_user_id or ""),
         }
         for o in orders
     }
@@ -207,6 +221,18 @@ def _serialise_summary(
             o.externally_processed_at.isoformat()
             if o.externally_processed_at else None
         ),
+        # Control manual (#388 + bandeja): QUITADO de las listas de trabajo
+        # (bandeja, Cola PEDIDOS, colas SAT y seguimiento/Drive) con el mismo
+        # flag reversible de F6-fix7. Quién, cuándo y motivo para la vista
+        # «Ver ocultados».
+        "excluded": o.seguimiento_excluded_at is not None,
+        "seguimiento_excluded_at": (
+            o.seguimiento_excluded_at.isoformat()
+            if o.seguimiento_excluded_at else None
+        ),
+        "seguimiento_excluded_reason": o.seguimiento_excluded_reason,
+        "seguimiento_excluded_by_user_id": o.seguimiento_excluded_by_user_id,
+        "seguimiento_excluded_by_name": names.get("excluded_by_name"),
     }
 
 
@@ -316,6 +342,15 @@ def _warnings(session: Session, o: Order) -> list[dict[str, str]]:
     return []
 
 
+def worklist_visible(stmt):  # noqa: ANN001, ANN201 — Select[Order]
+    """Control manual (#388 + bandeja): los pedidos QUITADOS a mano
+    (`seguimiento_excluded_at`) salen de TODAS las listas de trabajo — bandeja,
+    Cola PEDIDOS, colas SAT y seguimiento/Drive — con un solo flag. «Quitar»
+    significa «este pedido fuera de mis listas»; «Reincluir» lo devuelve a
+    todas. La ficha del pedido (`/{order_id}`) sigue accesible."""
+    return stmt.where(Order.seguimiento_excluded_at.is_(None))
+
+
 # --- endpoints ---------------------------------------------------------------
 
 
@@ -421,6 +456,9 @@ def list_orders(
     invoice: str | None = Query(default=None),
     store: str | None = Query(default=None),
     show_external: bool = Query(default=False),
+    # Control manual — «Ver ocultados»: SOLO los quitados a mano (para
+    # revisarlos y reincluirlos). Por defecto la bandeja los esconde.
+    show_excluded: bool = Query(default=False),
     sort: str = Query(default="placed_desc"),
     limit: int = Query(default=100, ge=1, le=500),
     session: Session = Depends(get_session),
@@ -438,9 +476,15 @@ def list_orders(
         stmt = stmt.where(Order.invoice_status == invoice)
     if store:
         stmt = stmt.where(Order.store_id == store)
-    # B-2-fix4: por defecto la bandeja esconde los procesados externamente.
-    if not show_external:
-        stmt = stmt.where(Order.externally_processed_at.is_(None))
+    if show_excluded:
+        # Vista de revisión: solo los quitados a mano (con motivo y quién).
+        stmt = stmt.where(Order.seguimiento_excluded_at.isnot(None))
+    else:
+        # Control manual: los quitados no aparecen en la bandeja.
+        stmt = worklist_visible(stmt)
+        # B-2-fix4: por defecto la bandeja esconde los procesados externamente.
+        if not show_external:
+            stmt = stmt.where(Order.externally_processed_at.is_(None))
     order_by = {
         "placed_desc": Order.placed_at.desc(),
         "placed_asc": Order.placed_at.asc(),
@@ -462,7 +506,7 @@ def pending_approval(
     """Cola PEDIDOS: pendientes de revisión con sus bloqueos calculados."""
     _ = current_user
     rows = list(session.scalars(
-        select(Order).where(Order.preparation_status == "pending_review")
+        worklist_visible(select(Order).where(Order.preparation_status == "pending_review"))
         .options(selectinload(Order.lines))
         .order_by(Order.placed_at.asc())
     ))
