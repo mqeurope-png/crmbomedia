@@ -3,52 +3,43 @@
 Registra en FACTUSOL, **en lote**, los cobros conciliados a mano en el Excel
 «Listado de facturas - cuenta y forma de pago», conduciendo el registro de cobro
 de BoHub (**F-4-B**). No reinventa nada: por cada factura BoHub **inserta la
-línea de cobro en `F_LCO`** (importe, fecha, contrapartida, concepto) y después
-**marca la factura cobrada** (`ESTFAC=2`, el escritor de F-3).
+línea de cobro en `F_LCO`** y después **marca la factura cobrada** (`ESTFAC=2`,
+el escritor de F-3).
 
 **Solo escribe cobros.** No toca líneas, totales ni nada más de la factura.
 Idempotente: si la factura ya está cobrada (saldo 0 / cobrada) la salta.
 
 ## Qué escribe en FACTUSOL (contrato)
 
-Diseño basado en el discovery `--collections` ejecutado en producción
-(2026-09-10): `F_LCO` son las líneas de cobro por factura, clave compuesta
-`(TFALCO, CFALCO, LINLCO)`; `F_LCO` **no referencia** a `F_COB` (por eso no se
-toca `F_COB`); `LINLCO` es correlativo 1..N por factura; `FALLCO` es el
-vencimiento.
+Modelo confirmado con una factura **real** cobrada (`--lco-row 5-260001`): el cobro
+vive **solo en `F_LCO`** (clave compuesta `(TFALCO, CFALCO, LINLCO)`, `LINLCO`
+correlativo 1..N por factura). **`F_COB` no se escribe**: no lleva clave de factura
+(es cartera/tesorería), no es una cabecera por factura.
+
+El registro se construye **copiando una fila real de `F_LCO`** (misma serie y, si la
+hay, misma contrapartida) y sobrescribiendo **solo lo imprescindible**:
 
 | Columna `F_LCO` | Valor |
 |---|---|
-| `TFALCO`, `CFALCO` | serie y número de la factura |
+| `TFALCO`, `CFALCO` | serie y número de **esta** factura |
 | `LINLCO` | siguiente correlativo de esa factura (max+1, o 1) |
-| `FECLCO` | fecha del cobro (col. O FECHA COBRO) |
-| `FALLCO` | = fecha del cobro (vencimiento de un cobro ya recibido) |
+| `FECLCO`, `FALLCO` | fecha del cobro (col. O), **en el mismo formato string que la fila real** (`2026-08-24T00:00:00`) |
 | `IMPLCO` | **saldo pendiente = total de la factura** (no el importe del banco) |
 | `CPALCO` | **contrapartida** = cuenta (col. M) resuelta contra el catálogo de `/erp/settings` |
-| `CPTLCO` | `COBRO FACTURA Nº: {serie} - {codigo} ({forma})` — la col. N va aquí |
-| `FPALCO` | forma de pago de la propia factura (`FOPFAC`) |
-| `OBSLCO` | col. P OBSERVACIONES (opcional) |
+| `CPTLCO` | `COBRO FACTURA Nº: {serie} - {codigo}` — **el mismo patrón que la fila real, sin sufijo** |
 
-**Orden que exige DELSOL: cabecera `F_COB` → línea `F_LCO` → `ESTFAC=2`.** `F_COB`
-es la cabecera del cobro de la factura y `F_LCO` sus líneas; el enlace es la
-**clave de la factura** (`TFACOB/CFACOB` ↔ `TFALCO/CFALCO`), no un `CODCOB`.
-DELSOL rechaza (`BDEscribirRegistroError`) una línea cuya cabecera no existe —
-por eso fallaba aunque se mandaran las 23 columnas. Si la factura ya tiene
-cabecera (cobro parcial previo) solo se añade la línea. La cabecera se construye
-sobre una fila real de `F_COB` con las columnas del cobro retagadas `LCO→COB`
-(`IMPCOB`, `FECCOB`, `CPACOB`, `CPTCOB`…), solo las que esa fila trae.
-
-Solo se envían columnas reales de `F_LCO` (23, volcadas en vivo). **El registro se
-construye sobre una fila REAL de `F_LCO`** (misma serie y contrapartida si la hay):
-solo se sobreescriben las columnas de la tabla de arriba y el resto (`TIPLCO`,
-`UALLCO`, `UUMLCO`, `FUMLCO`…) se hereda de esa fila, respetando el tipo con el
-que DELSOL devuelve cada una — mandar solo las 10 del cobro dejaba vacías las
-demás y DELSOL rechazaba el insert (`BDEscribirRegistroError`). El registro exacto
-que se envía queda en el log del `worker-factusol` (`EscribirRegistro F_LCO …`).
+**Todo lo demás se hereda tal cual de la fila real** — incluidos `FPALCO` (que en las
+filas reales va **vacío**), `MULLCO`, `TIPLCO`, `UALLCO`, `OBSLCO`… — respetando el
+tipo con el que DELSOL devuelve cada columna. Fijar de más (`FPALCO='002'`, un
+sufijo de forma en el concepto, otro formato de fecha) es lo que DELSOL rechazaba
+con `BDEscribirRegistroError`. Por eso la col. N (forma) y la col. P
+(observaciones) **no se escriben en la fila**; quedan en el resultado/auditoría.
 Después: `F_FAC.ESTFAC = 2` por clave compuesta.
 
-Para contrastar con una fila real (solo lectura):
-`docker exec crmbo-api-1 python -m scripts.factusol_discover_invoice_payment --lco-row 5-260004`
+El registro exacto que se envía queda en el log del `worker-factusol`
+(`EscribirRegistro F_LCO …`). Para contrastarlo campo a campo con una fila real
+(solo lectura):
+`docker exec crmbo-api-1 python -m scripts.factusol_discover_invoice_payment --lco-row 5-260001`
 
 Endpoint que conduce el script (permiso de EDICIÓN de ERP):
 
@@ -89,7 +80,7 @@ Exporta/copia a un CSV UTF-8 con cabecera y estas columnas:
 ```
 serie,codigo,cuenta,forma,fecha,observaciones
 1,260729,Bomedia (Sabadell),Transferencia,2026-09-05,
-5,260082,Streamtec (Sabadell),Transferencia,2026-09-06,
+5,260082,Streamtec (Sabadell),Transferencia,2026-08-24,
 ```
 
 También vale una columna `numero` (`1-260729`) en vez de `serie,codigo`. La
