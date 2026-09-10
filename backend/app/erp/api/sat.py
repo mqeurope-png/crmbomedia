@@ -101,19 +101,24 @@ def sat_queue(
       albarán/etiqueta y marcar recogido.
     """
     _ = current_user
+    from app.erp.api.orders import worklist_visible  # noqa: PLC0415
+
+    # Control manual (#388 + bandeja): los quitados a mano tampoco entran en el
+    # taller (mismo flag que la bandeja y el seguimiento).
     prep_rows = list(session.scalars(
-        select(Order).where(Order.preparation_status.in_(list(_QUEUE_ORDER)))
-        .options(selectinload(Order.lines))
+        worklist_visible(
+            select(Order).where(Order.preparation_status.in_(list(_QUEUE_ORDER)))
+        ).options(selectinload(Order.lines))
     ))
     prep_rows.sort(key=lambda o: (
         _QUEUE_ORDER.get(getattr(o.preparation_status, "value", o.preparation_status), 9),
         o.placed_at or o.created_at,
     ))
     ready_rows = list(session.scalars(
-        select(Order).where(
+        worklist_visible(select(Order).where(
             Order.preparation_status == PreparationStatus.PACKED.value,
             Order.transport_status.notin_(_SHIPPED_TRANSPORT),
-        ).options(selectinload(Order.lines))
+        )).options(selectinload(Order.lines))
         .order_by(Order.placed_at.asc())
     ))
 

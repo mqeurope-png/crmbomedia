@@ -22,6 +22,10 @@ export type ExcludeTargetRow = {
   cliente: string | null;
 };
 
+/** Desde qué vista se abre: solo cambia el texto del título/botón. La
+ *  exclusión es la MISMA (un solo flag) y saca el pedido de todas las listas. */
+export type ExcludeContext = "seguimiento" | "bandeja";
+
 /** Control manual — «Quitar del seguimiento» para una fila o una selección.
  *  Pide un motivo (rápidos + texto libre), consulta qué tiene cada pedido
  *  aguas abajo (factura, cobro, albarán, SAT, Drive…) y AVISA; nunca bloquea:
@@ -31,11 +35,13 @@ export function ExcludeSeguimientoModal({
   onConfirm,
   onCancel,
   busy,
+  context = "seguimiento",
 }: {
   rows: ExcludeTargetRow[];
   onConfirm: (reason: string, reasonCode?: ExclusionReasonCode) => void;
   onCancel: () => void;
   busy?: boolean;
+  context?: ExcludeContext;
 }) {
   const [code, setCode] = useState<ExclusionReasonCode | null>(null);
   const [text, setText] = useState("");
@@ -58,9 +64,10 @@ export function ExcludeSeguimientoModal({
     return () => { alive = false; };
   }, [ids]);
 
+  const where = context === "bandeja" ? "de la bandeja" : "del seguimiento";
   const title = rows.length === 1
-    ? `Quitar ${rows[0].order_number} del seguimiento`
-    : `Quitar ${rows.length} pedidos del seguimiento`;
+    ? `Quitar ${rows[0].order_number} ${where}`
+    : `Quitar ${rows.length} pedidos ${where}`;
   const warned = (preview ?? []).filter((it) => it.avisos.length > 0);
   const alreadyOut = (preview ?? []).filter((it) => it.excluido).length;
   const loading = preview === null && previewError === null;
@@ -70,9 +77,11 @@ export function ExcludeSeguimientoModal({
       <div className="modal-dialog">
         <h2>{title}</h2>
         <p className="muted small">
-          Deja de listarse y de escribirse en la hoja de Drive. No se borra ni
-          se cambia nada del pedido, ni en FACTUSOL. Se deshace cuando quieras
-          con «Reincluir» (en «Ver excluidos»).
+          Sale de TODAS tus listas de trabajo a la vez: la bandeja de Pedidos,
+          la Cola PEDIDOS, la cola del taller y el seguimiento (y no se escribe
+          en la hoja de Drive). No se borra ni se cambia nada del pedido, ni en
+          FACTUSOL; su ficha sigue abriéndose. Se deshace cuando quieras con
+          «Reincluir» (en «Ver ocultados» / «Ver excluidos»).
         </p>
         {rows.length > 1 ? (
           <ul className="item-list small">
@@ -150,7 +159,7 @@ export function ExcludeSeguimientoModal({
               ? "Quitando…"
               : warned.length > 0
                 ? `Quitar igualmente (${rows.length})`
-                : `Quitar del seguimiento (${rows.length})`}
+                : `Quitar ${where} (${rows.length})`}
           </button>
         </div>
       </div>
