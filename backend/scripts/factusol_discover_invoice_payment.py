@@ -214,25 +214,13 @@ def dump_lco_rows(client: Any, ejercicio: str, numeros: list[str]) -> int:
                 v = r[col]
                 print(f"  {col:<10} {type(v).__name__:<6} {v!r}")
             print("  " + "-" * 40)
-        # Cabecera F_COB de ESA factura: el enlace es la clave de la factura
-        # (TFACOB, CFACOB), no un CODCOB. Se vuelca ENTERA (valor y tipo): es
-        # la plantilla que usa `build_cob_payload` y lo que DELSOL exige antes
-        # de aceptar la línea. Si la convención no casa, se enseñan las
-        # columnas reales de F_COB para ajustar el mapeo.
-        headers = [
-            c for c in cob
-            if coerce_serie(c.get("TFACOB")) == serie
-            and str(c.get("CFACOB") or "").split(".")[0].lstrip("0") == codigo
-        ]
-        print(f"== F_COB de {numero} (clave TFACOB/CFACOB): {len(headers)} cabecera(s) ==")
-        for c in headers:
-            for col in sorted(c):
-                v = c[col]
-                print(f"  {col:<10} {type(v).__name__:<6} {v!r}")
-            print("  " + "-" * 40)
-        if not headers and cob:
-            print("  (ninguna por TFACOB/CFACOB — columnas reales de F_COB:)")
-            print("  ", ", ".join(sorted(cob[0].keys())))
+        # F_COB NO es la cabecera por factura (no lleva clave de factura: sus
+        # columnas son CODCOB, CPACOB, CPTCOB, FECCOB, IMPCOB, OBSCOB, TIPCOB,
+        # TRACOB — cartera/tesorería). Se enseñan solo como referencia; el cobro
+        # de una factura vive ÚNICAMENTE en su línea de F_LCO.
+        if cob:
+            print("  (referencia) columnas reales de F_COB, que NO se escribe: "
+                  + ", ".join(sorted(cob[0].keys())))
         print()
     print("SOLO LECTURA — no se ha escrito nada.")
     return 0

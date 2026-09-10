@@ -1,12 +1,12 @@
-"""ERP-F4-B — registrar cobros en FACTUSOL (F_COB + F_LCO + ESTFAC) en lote.
+"""ERP-F4-B — registrar cobros en FACTUSOL (F_LCO + ESTFAC) en lote.
 
-Diseño basado en el discovery `--collections` en producción y en dos intentos
-fallidos en producción (PR #383/#384): DELSOL exige la CABECERA `F_COB` antes de
-aceptar la línea `F_LCO`; el enlace es la clave de la factura (TFACOB/CFACOB ↔
-TFALCO/CFALCO). LINLCO 1..N por factura, FALLCO = vencimiento, CPALCO/CPACOB =
-contrapartida, FPALCO = forma de pago. Aquí se prueba el ORDEN de escritura, que
-se escribe SOLO eso con los campos correctos, que es idempotente, que nunca se
-escribe a ciegas y que el nombre de cuenta del Excel casa con la contrapartida.
+Modelo confirmado con una factura REAL cobrada (`--lco-row 5-260001`): el cobro
+vive SOLO en `F_LCO` (clave compuesta TFALCO/CFALCO/LINLCO, LINLCO 1..N por
+factura); `F_COB` no es cabecera por factura y NO se escribe. La fila real fija
+qué se puede sobrescribir: solo la clave, línea, fechas (mismo formato string),
+importe, contrapartida y el concepto con el patrón real — `FPALCO` (real `''`),
+`MULLCO`, `TIPLCO`, `UALLCO`, `OBSLCO`… se heredan tal cual. Aquí se prueba eso,
+la idempotencia, que nunca se escribe F_COB y el mapping de cuentas del Excel.
 """
 from __future__ import annotations
 
@@ -80,26 +80,24 @@ def _set_cfg(s: Session, **payload: Any) -> None:
 
 
 class FakeCobroClient:
-    """FACTUSOL simulado: sirve F_FAC, F_LCO y F_COB, registra escrituras (en
-    ORDEN) y actualizaciones (F_FAC.ESTFAC). `fail_write` hace fallar el
-    `EscribirRegistro` de ESA tabla."""
+    """FACTUSOL simulado: sirve F_FAC y F_LCO, registra escrituras (en orden)
+    y actualizaciones (F_FAC.ESTFAC). `fail_write` hace fallar ESA tabla."""
 
-    def __init__(self, *, f_fac=None, f_lco=None, f_cob=None, fail_write=None):
+    def __init__(self, *, f_fac=None, f_lco=None, fail_write=None):
         self.default_ejercicio = "2026"
         self._f_fac = f_fac or []
         self._f_lco = f_lco or []
-        self._f_cob = f_cob or []
         self._fail_write = fail_write
         self.writes: list[tuple[str, dict]] = []
         self.updates: list[tuple[str, dict]] = []
+        self.loaded: list[str] = []
 
     def load_table(self, tabla, *, filtro="1=1", ejercicio=None):
+        self.loaded.append(tabla)
         if tabla == "F_FAC":
             return list(self._f_fac)
         if tabla == "F_LCO":
             return list(self._f_lco)
-        if tabla == "F_COB":
-            return list(self._f_cob)
         return []
 
     def write_record(self, tabla, data, *, ejercicio=None):
@@ -132,38 +130,20 @@ def _cobro(serie, codigo, linea, importe):
 
 
 def _lco_real(serie, codigo, linea, importe, **over):
-    """Fila REAL de F_LCO con las 23 columnas (como las devuelve DELSOL),
-    incluidas las que no describen el cobro (TIPLCO, UALLCO…) y que dejan de
-    estar vacías al usarla de plantilla."""
+    """Fila REAL de F_LCO tal como la devolvió `--lco-row 5-260001` (valor y
+    tipo por columna): TFALCO str, CPALCO/UALLCO int, FPALCO VACÍO, concepto
+    sin sufijo, fechas '…T00:00:00', FUMLCO con el vacío de FACTUSOL."""
     row = {
-        "ANTLCO": 0, "CAJLCO": "", "CFALCO": codigo, "CPALCO": "8",
+        "ANTLCO": 0, "CAJLCO": 0, "CFALCO": codigo, "CPALCO": 8,
         "CPTLCO": f"COBRO FACTURA Nº: {serie} - {codigo}",
-        "FALLCO": "2026-08-14T00:00:00", "FECLCO": "2026-08-12T00:00:00",
-        "FPALCO": "002", "FUMLCO": "2026-08-12T10:15:00", "IMPLCO": importe,
-        "LINLCO": linea, "MULLCO": 0, "OBSLCO": "", "PCALCO": 0, "PROLCO": 0,
-        "TERLCO": "", "TFALCO": serie, "TIDLCO": 0, "TIPLCO": 1,
-        "TPVIDLCO": "", "TRALCO": 0, "UALLCO": "BART", "UUMLCO": "BART",
+        "FALLCO": "2026-01-21T00:00:00", "FECLCO": "2026-01-20T00:00:00",
+        "FPALCO": "", "FUMLCO": "1900-01-01T00:00:00", "IMPLCO": importe,
+        "LINLCO": linea, "MULLCO": 51, "OBSLCO": "", "PCALCO": 0, "PROLCO": "",
+        "TERLCO": 0, "TFALCO": str(serie), "TIDLCO": "", "TIPLCO": 0,
+        "TPVIDLCO": "", "TRALCO": 0, "UALLCO": 8, "UUMLCO": 0,
     }
     row.update(over)
     return row
-
-
-def _cob_real(serie, codigo, importe, **over):
-    """Cabecera REAL de F_COB (convención DELSOL: mismo campo que F_LCO con
-    sufijo COB). Sin LINCOB: la cabecera no tiene nº de línea."""
-    row = {
-        "TFACOB": serie, "CFACOB": codigo, "IMPCOB": importe,
-        "FECCOB": "2026-08-12T00:00:00", "FALCOB": "2026-08-14T00:00:00",
-        "CPACOB": "8", "CPTCOB": f"COBRO FACTURA Nº: {serie} - {codigo}",
-        "FPACOB": "002", "OBSCOB": "", "TIPCOB": 1,
-        "FUMCOB": "2026-08-12T10:15:00", "UALCOB": "BART", "UUMCOB": "BART",
-    }
-    row.update(over)
-    return row
-
-
-def _writes(client, tabla):
-    return [rec for t, rec in client.writes if t == tabla]
 
 
 # --- mapping cuenta (Excel) → contrapartida ----------------------------------
@@ -190,183 +170,106 @@ def test_mapping_cuenta_a_banco(db) -> None:
     assert resolve_contrapartida_code(db, "") is None
 
 
-# --- registro del cobro: ORDEN F_COB → F_LCO → ESTFAC ------------------------
+# --- registro del cobro: SOLO F_LCO, sobrescribiendo lo mínimo ----------------
 
 
-def test_registro_cobro_escribe_cabecera_f_cob_antes_de_la_linea(db) -> None:
-    """BUGFIX (BDEscribirRegistroError con las 23 columnas): DELSOL exige la
-    CABECERA F_COB de la factura antes de aceptar la línea F_LCO. Caso real
-    5-260082 (Rocío Bueno, 70,18 €, contrapartida 8, 24/08/2026): se escribe
-    F_COB (clave de la factura, importe, fecha, contrapartida, concepto) y
-    DESPUÉS la línea; ambas sobre una fila real, y al final ESTFAC=2."""
+def test_registro_cobro_sobrescribe_solo_lo_minimo(db) -> None:
+    """BUGFIX (BDEscribirRegistroError): el cobro vive SOLO en F_LCO y hay que
+    sobrescribir SOLO lo imprescindible sobre la fila real. Caso 5-260082
+    (Rocío Bueno, 70,18 €, contrapartida 8, 24/08/2026) con plantilla la fila
+    real de 5-260001: clave/línea/fechas/importe/contrapartida/concepto
+    cambian; `FPALCO` sigue VACÍO (no '002'), el concepto NO lleva sufijo de
+    forma, las fechas van en el mismo formato string que la fila real, y
+    MULLCO/TIPLCO/UALLCO/OBSLCO… se heredan tal cual. Nada de F_COB."""
     _set_cfg(db)
     client = FakeCobroClient(
         f_fac=[_fac(5, 260082, 70.18, CNOFAC="ROCIO BUENO")],
-        f_lco=[_lco_real(5, 260001, 1, 100.0)],
-        f_cob=[_cob_real(1, 260004, 50.0, CPACOB="6"),   # otra serie
-               _cob_real(5, 260001, 100.0)],             # misma serie+cpa ← plantilla
+        f_lco=[
+            _lco_real(1, 260004, 1, 100.0, CPALCO=6),   # otra serie/cpa
+            _lco_real(5, 260001, 1, 411.28),            # misma serie + cpa 8 ← plantilla
+        ],
     )
     result = register_invoice_collection(
         client, db, serie=5, codigo=260082, contrapartida="8",
         fecha="24/08/2026", forma="Transferencia", ejercicio="2026",
     )
-    assert result["registered"] is True and result["cob_written"] is True
-    # ORDEN: primero la cabecera, luego la línea.
-    assert [t for t, _ in client.writes] == ["F_COB", "F_LCO"]
-    cob, = _writes(client, "F_COB")
-    # Clave de la FACTURA (retag TFALCO→TFACOB…), con el tipo de la plantilla.
-    assert cob["TFACOB"] == 5 and isinstance(cob["TFACOB"], int)
-    assert cob["CFACOB"] == 260082
-    assert cob["IMPCOB"] == 70.18 and cob["CPACOB"] == "8"
-    assert cob["FECCOB"] == "2026-08-24" == cob["FALCOB"]
-    assert cob["CPTCOB"] == "COBRO FACTURA Nº: 5 - 260082 (Transferencia)"
-    assert cob["FPACOB"] == "002" and cob["OBSCOB"] == ""
-    # Hereda lo que no describe el cobro y NUNCA inventa columnas (sin LINCOB).
-    assert cob["TIPCOB"] == 1 and cob["UALCOB"] == "BART"
-    assert "LINCOB" not in cob and set(cob) == set(_cob_real(5, 260001, 100.0))
-    # Nunca hereda la clave de la plantilla.
-    assert (cob["TFACOB"], cob["CFACOB"]) != (5, 260001)
-    lco, = _writes(client, "F_LCO")
-    assert (lco["TFALCO"], lco["CFALCO"], lco["LINLCO"]) == (5, 260082, 1)
-    assert lco["IMPLCO"] == 70.18 and lco["FECLCO"] == "2026-08-24"
+    assert result["registered"] is True and result["status"] == "registered"
+    # SOLO F_LCO, nunca F_COB (ni se escribe ni hace falta leerla).
+    assert [t for t, _ in client.writes] == ["F_LCO"]
+    assert "F_COB" not in client.loaded
+    (_, rec), = client.writes
+    # Lo imprescindible, con el tipo de la fila real.
+    assert rec["TFALCO"] == "5" and isinstance(rec["TFALCO"], str)
+    assert rec["CFALCO"] == 260082 and rec["LINLCO"] == 1
+    assert rec["FECLCO"] == "2026-08-24T00:00:00" == rec["FALLCO"]
+    assert rec["IMPLCO"] == 70.18
+    assert rec["CPALCO"] == 8 and isinstance(rec["CPALCO"], int)
+    assert rec["CPTLCO"] == "COBRO FACTURA Nº: 5 - 260082"     # sin «(Transferencia)»
+    # Lo que DELSOL rechazaba por fijarlo de más: ahora se hereda de la real.
+    assert rec["FPALCO"] == ""                                 # NO '002'
+    assert rec["OBSLCO"] == "" and rec["MULLCO"] == 51 and rec["TIPLCO"] == 0
+    assert rec["UALLCO"] == 8 and rec["FUMLCO"] == "1900-01-01T00:00:00"
+    # Las 23 columnas, ni una inventada, y nunca la clave de la plantilla.
+    assert set(rec) == LCO_COLUMNS
+    assert (rec["TFALCO"], rec["CFALCO"], rec["LINLCO"]) != ("5", 260001, 1)
+    # Todo lo que NO es override es idéntico a la plantilla.
+    tpl = _lco_real(5, 260001, 1, 411.28)
+    overrides = {"TFALCO", "CFALCO", "LINLCO", "FECLCO", "FALLCO", "IMPLCO",
+                 "CPALCO", "CPTLCO"}
+    assert {k: v for k, v in rec.items() if k not in overrides} == \
+        {k: v for k, v in tpl.items() if k not in overrides}
+    # La forma queda en el resultado (auditoría), no en la fila.
+    assert result["forma"] == "Transferencia"
+    # Y después el flag, con el escritor único de F-3 (clave compuesta).
     assert client.updates == [("F_FAC", {"TIPFAC": 5, "CODFAC": 260082, "ESTFAC": "2"})]
 
 
-def test_registro_cobro_no_duplica_cabecera_si_ya_existe(db) -> None:
-    """Cobro parcial previo: la factura ya tiene cabecera F_COB → solo se
-    añade la línea (LINLCO=2, importe = saldo), sin segunda cabecera."""
-    _set_cfg(db)
-    client = FakeCobroClient(
-        f_fac=[_fac(5, 260082, 100.0, estfac="1")],
-        f_lco=[_lco_real(5, 260082, 1, 40.0)],
-        f_cob=[_cob_real(5, 260082, 40.0)],
-    )
-    result = register_invoice_collection(
-        client, db, serie=5, codigo=260082, contrapartida="8",
-        fecha="2026-09-10", ejercicio="2026",
-    )
-    assert result["registered"] is True and result["cob_written"] is False
-    assert [t for t, _ in client.writes] == ["F_LCO"]
-    assert result["linlco"] == 2 and result["importe"] == 60.0
-
-
-def test_registro_cobro_sin_esquema_f_cob_no_escribe_nada(db) -> None:
-    """Si la fila real de F_COB no trae la clave de factura (TFACOB/CFACOB), la
-    convención no casa → NO se escribe NADA (ni cabecera, ni línea, ni flag) y
-    se devuelve un diagnóstico con las columnas vistas."""
-    _set_cfg(db)
-    raro = FakeCobroClient(
-        f_fac=[_fac(5, 260082, 70.18)], f_lco=[_lco_real(5, 260001, 1, 100.0)],
-        f_cob=[{"CODCOB": 1, "IMPCOB": 100.0, "CPACOB": "8"}],
-    )
-    r = register_invoice_collection(
-        raro, db, serie=5, codigo=260082, contrapartida="8",
-        fecha="2026-09-10", ejercicio="2026",
-    )
-    assert r["registered"] is False and r["status"] == "cob_schema_unknown"
-    assert "TFACOB" in r["motivo"] and "CODCOB" in r["motivo"]
-    assert raro.writes == [] and raro.updates == []
-    # F_COB vacía: tampoco se escribe a ciegas.
-    vacio = FakeCobroClient(f_fac=[_fac(5, 260082, 70.18)])
-    r = register_invoice_collection(
-        vacio, db, serie=5, codigo=260082, contrapartida="8",
-        fecha="2026-09-10", ejercicio="2026",
-    )
-    assert r["status"] == "cob_schema_unknown" and vacio.writes == []
-
-
-def test_registro_cobro_fallo_cabecera_no_escribe_linea(db) -> None:
-    """Si falla F_COB no se escribe la línea ni se marca; si falla F_LCO se
-    informa de que la cabecera SÍ quedó y tampoco se marca."""
-    _set_cfg(db)
-    base = dict(
-        f_fac=[_fac(5, 260082, 70.18)], f_lco=[_lco_real(5, 260001, 1, 100.0)],
-        f_cob=[_cob_real(5, 260001, 100.0)],
-    )
-    cob_ko = FakeCobroClient(**base, fail_write="F_COB")
-    r = register_invoice_collection(
-        cob_ko, db, serie=5, codigo=260082, contrapartida="8",
-        fecha="2026-09-10", ejercicio="2026",
-    )
-    assert r["status"] == "cob_write_failed" and cob_ko.writes == []
-    assert cob_ko.updates == []
-    lco_ko = FakeCobroClient(**base, fail_write="F_LCO")
-    r = register_invoice_collection(
-        lco_ko, db, serie=5, codigo=260082, contrapartida="8",
-        fecha="2026-09-10", ejercicio="2026",
-    )
-    assert r["status"] == "write_failed" and r["cob_written"] is True
-    assert "cabecera F_COB SÍ quedó" in r["motivo"]
-    assert [t for t, _ in lco_ko.writes] == ["F_COB"] and lco_ko.updates == []
-
-
 def test_registro_cobro_factusol(db) -> None:
-    """Caso de prueba de Bart: 1-260729 Neonled 72,60 € por transferencia a
-    Bomedia Sabadell. Sin plantilla de línea (F_LCO vacía) la línea va con el
-    mínimo; la cabecera siempre sobre una fila real; después ESTFAC=2."""
+    """Caso de prueba de Bart: 1-260729 Neonled 72,60 € a Bomedia Sabadell.
+    Sin plantilla (F_LCO vacía) se manda SOLO el mínimo — sin FPALCO ni OBSLCO
+    inventados — y después ESTFAC=2."""
     _set_cfg(db)
-    client = FakeCobroClient(
-        f_fac=[_fac(1, 260729, 72.60)], f_cob=[_cob_real(1, 260004, 50.0, CPACOB="6")],
-    )
+    client = FakeCobroClient(f_fac=[_fac(1, 260729, 72.60)])
     result = register_invoice_collection(
         client, db, serie=1, codigo=260729, contrapartida="6",
         fecha="10/09/2026", forma="Transferencia", ejercicio="2026",
     )
-    assert result["registered"] is True and result["status"] == "registered"
-    assert result["importe"] == 72.60            # = total de la factura
+    assert result["registered"] is True and result["importe"] == 72.60
     assert result["estfac_marked"] is True
-    assert [t for t, _ in client.writes] == ["F_COB", "F_LCO"]
-    lco, = _writes(client, "F_LCO")
-    assert lco == {
+    assert client.writes == [("F_LCO", {
         "TFALCO": "1", "CFALCO": 260729, "LINLCO": 1,
-        "FECLCO": "2026-09-10", "FALLCO": "2026-09-10",
+        "FECLCO": "2026-09-10T00:00:00", "FALLCO": "2026-09-10T00:00:00",
         "IMPLCO": 72.60, "CPALCO": "6",
-        "CPTLCO": "COBRO FACTURA Nº: 1 - 260729 (Transferencia)",
-        "FPALCO": "002",                         # forma de pago de la factura
-        "OBSLCO": "",
-    }
-    assert set(lco) <= LCO_COLUMNS
+        "CPTLCO": "COBRO FACTURA Nº: 1 - 260729",
+    })]
+    assert "FPALCO" not in client.writes[0][1] and "OBSLCO" not in client.writes[0][1]
+    assert set(client.writes[0][1]) <= LCO_COLUMNS
     assert client.updates == [
         ("F_FAC", {"TIPFAC": 1, "CODFAC": 260729, "ESTFAC": "2"}),
     ]
 
 
-def test_registro_cobro_usa_plantilla_de_fila_real(db) -> None:
-    """La línea se construye sobre una fila REAL de F_LCO (misma serie y
-    contrapartida) para no dejar vacía ninguna columna, respetando el tipo con
-    el que DELSOL devuelve cada una (PR #384)."""
+def test_registro_cobro_linlco_correlativo_y_saldo(db) -> None:
+    """Con un cobro parcial previo, la nueva línea es LINLCO=2 y el importe por
+    defecto es el SALDO (nunca se sobrepaga)."""
     _set_cfg(db)
     client = FakeCobroClient(
-        f_fac=[_fac(5, 260082, 70.18, CNOFAC="ROCIO BUENO")],
-        f_lco=[
-            _lco_real(1, 260004, 1, 100.0, CPALCO="6"),   # otra serie
-            _lco_real(5, 260004, 1, 420.74),               # misma serie+cpa 8 ← plantilla
-        ],
-        f_cob=[_cob_real(5, 260004, 420.74)],
+        f_fac=[_fac(5, 260082, 100.0, estfac="1")],
+        f_lco=[_lco_real(5, 260082, 1, 40.0)],
     )
     result = register_invoice_collection(
         client, db, serie=5, codigo=260082, contrapartida="8",
-        fecha="24/08/2026", forma="Transferencia", ejercicio="2026",
+        fecha="2026-09-10", ejercicio="2026",
     )
     assert result["registered"] is True
-    rec, = _writes(client, "F_LCO")
-    assert set(rec) == LCO_COLUMNS
-    assert rec["TIPLCO"] == 1 and rec["UALLCO"] == "BART" and rec["TIDLCO"] == 0
-    assert rec["TFALCO"] == 5 and isinstance(rec["TFALCO"], int)
-    assert rec["CFALCO"] == 260082 and rec["LINLCO"] == 1
-    assert rec["FECLCO"] == "2026-08-24" == rec["FALLCO"]
-    assert rec["IMPLCO"] == 70.18 and rec["CPALCO"] == "8"
-    assert rec["CPTLCO"] == "COBRO FACTURA Nº: 5 - 260082 (Transferencia)"
-    assert rec["FPALCO"] == "002" and rec["OBSLCO"] == ""
-    assert (rec["TFALCO"], rec["CFALCO"], rec["LINLCO"]) != (5, 260004, 1)
-    assert client.updates == [("F_FAC", {"TIPFAC": 5, "CODFAC": 260082, "ESTFAC": "2"})]
+    assert result["linlco"] == 2 and result["importe"] == 60.0
 
 
 def test_plantilla_prefiere_misma_serie_y_contrapartida() -> None:
     rows = [
-        _lco_real(1, 1, 1, 1.0, CPALCO="6"),
-        _lco_real(5, 2, 1, 1.0, CPALCO="14"),
-        _lco_real(5, 3, 1, 1.0, CPALCO="8"),
+        _lco_real(1, 1, 1, 1.0, CPALCO=6),
+        _lco_real(5, 2, 1, 1.0, CPALCO=14),
+        _lco_real(5, 3, 1, 1.0, CPALCO=8),
     ]
     assert pick_template_row(rows, serie=5, contrapartida="8")["CFALCO"] == 3
     assert pick_template_row(rows, serie=5, contrapartida="99")["CFALCO"] == 2
@@ -379,7 +282,6 @@ def test_cobro_idempotente(db) -> None:
     _set_cfg(db)
     saldada = FakeCobroClient(
         f_fac=[_fac(1, 260729, 72.60)], f_lco=[_cobro(1, 260729, 1, 72.60)],
-        f_cob=[_cob_real(1, 260729, 72.60)],
     )
     r1 = register_invoice_collection(
         saldada, db, serie=1, codigo=260729, contrapartida="6",
@@ -396,7 +298,9 @@ def test_cobro_idempotente(db) -> None:
     assert marcada.writes == [] and marcada.updates == []
 
 
-def test_cobro_no_existe_no_escribe(db) -> None:
+def test_cobro_no_existe_o_falla_no_marca(db) -> None:
+    """Factura inexistente → no se escribe; fallo al escribir F_LCO → NO se
+    marca ESTFAC (nunca queda «cobrada» sin cobro)."""
     _set_cfg(db)
     vacio = FakeCobroClient()
     r = register_invoice_collection(
@@ -404,19 +308,25 @@ def test_cobro_no_existe_no_escribe(db) -> None:
         fecha="2026-09-10", ejercicio="2026",
     )
     assert r["status"] == "invoice_not_found" and vacio.writes == []
+    roto = FakeCobroClient(f_fac=[_fac(1, 260729, 72.60)], fail_write="F_LCO")
+    r = register_invoice_collection(
+        roto, db, serie=1, codigo=260729, contrapartida="6",
+        fecha="2026-09-10", ejercicio="2026",
+    )
+    assert r["registered"] is False and r["status"] == "write_failed"
+    assert roto.updates == []          # ESTFAC intacto
 
 
 def test_fecha_y_concepto() -> None:
-    """Las fechas que fijamos van en YYYY-MM-DD: el formato con el que la
-    emisión escribe FECFAC (inserts probados en DELSOL)."""
-    assert factusol_datetime("2026-09-10") == "2026-09-10"
-    assert factusol_datetime("2026-09-10T00:00:00") == "2026-09-10"
-    assert factusol_datetime("10/09/2026") == "2026-09-10"
-    assert factusol_datetime("10-09-2026") == "2026-09-10"
+    """Las fechas van en el MISMO formato string que la fila real de F_LCO
+    ('…T00:00:00'); el concepto sigue el patrón real, sin sufijo de forma."""
+    assert factusol_datetime("2026-09-10") == "2026-09-10T00:00:00"
+    assert factusol_datetime("2026-09-10T00:00:00") == "2026-09-10T00:00:00"
+    assert factusol_datetime("24/08/2026") == "2026-08-24T00:00:00"
+    assert factusol_datetime("24-08-2026") == "2026-08-24T00:00:00"
     with pytest.raises(ValueError):
         factusol_datetime("ayer")
-    assert concepto_cobro(5, 260082, "TPV") == "COBRO FACTURA Nº: 5 - 260082 (TPV)"
-    assert concepto_cobro(5, 260082, None) == "COBRO FACTURA Nº: 5 - 260082"
+    assert concepto_cobro(5, 260082) == "COBRO FACTURA Nº: 5 - 260082"
 
 
 def test_collection_status_en_vivo(db) -> None:
@@ -426,7 +336,7 @@ def test_collection_status_en_vivo(db) -> None:
     st = collection_status(client, serie=5, codigo=260082, ejercicio="2026")
     assert st["total"] == 70.18 and st["total_cobrado"] == 20.0
     assert st["saldo_pendiente"] == 50.18 and st["next_linlco"] == 2
-    assert st["ya_cobrada"] is False and st["fopfac"] == "002"
+    assert st["ya_cobrada"] is False
     assert collection_status(client, serie=2, codigo=260082, ejercicio="2026") is None
 
 
@@ -477,7 +387,7 @@ def test_endpoint_rejects_unknown_account(http, session_factory) -> None:
 
 def test_endpoint_queues_or_reports_already(http, session_factory) -> None:
     """Pre-chequeo en vivo: factura pendiente → encola (202 + job_id) con el
-    importe previsto = total y la fecha ya normalizada (YYYY-MM-DD); ya
+    importe previsto = total y la fecha en el formato de la fila real; ya
     cobrada → `already` sin encolar."""
     _ = session_factory
     pendiente = FakeCobroClient(f_fac=[_fac(1, 260729, 72.60)])
@@ -496,7 +406,7 @@ def test_endpoint_queues_or_reports_already(http, session_factory) -> None:
     assert body["status"] == "queued" and body["job_id"] == "job-1"
     assert body["importe"] == 72.60 and body["contrapartida"]["codigo"] == "6"
     assert body["contrapartida"]["nombre"] == "Bomedia Sabadell"
-    assert enq.call_args.args[:4] == (1, 260729, "6", "2026-09-10")
+    assert enq.call_args.args[:4] == (1, 260729, "6", "2026-09-10T00:00:00")
 
     cobrada = FakeCobroClient(f_fac=[_fac(1, 260729, 72.60, estfac="2")])
     with _patched_client(cobrada), patch(
