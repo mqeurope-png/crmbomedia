@@ -678,9 +678,24 @@ def emit_invoice(
             "WooCommerce→FACTUSOL debe importarlo antes de facturar."
         )
     codpcl = pcl.get("CODPCL")
+    # BUGFIX: la línea de pedido solo es única por la pareja (TIPLPC, CODLPC) —
+    # el join documentado es `F_LPC.TIPLPC = F_PCL.TIPPCL AND F_LPC.CODLPC =
+    # F_PCL.CODPCL`. Filtrar por CODLPC a secas arrastraba las líneas del pedido
+    # HOMÓNIMO de otra serie (mismo «Nº de su pedido»/CODLPC, distinta empresa):
+    # esas líneas ajenas se copiaban a la F_LFA de la factura emitida, de modo
+    # que el detalle salía cruzado (la cabecera sí era correcta, porque se copia
+    # del pedido concreto). Se acota por la serie del propio pedido. El `None`
+    # es defensivo: nunca descarta la línea legítima si no trae TIPLPC, solo las
+    # de OTRA serie (que sí lo traen).
+    pedido_serie = serie_of_row(pcl, "TIPPCL")
     lpc_rows = client.load_table(
         "F_LPC", filtro=f"CODLPC={codpcl}", ejercicio=ejercicio,
     )
+    if pedido_serie is not None:
+        lpc_rows = [
+            row for row in lpc_rows
+            if serie_of_row(row, "TIPLPC") in (pedido_serie, None)
+        ]
 
     # ERP-E2-fix1: la serie se HEREDA del pedido que ya existe en FACTUSOL
     # (`TIPPCL`); la config solo actúa si el pedido no está allí. El modal
