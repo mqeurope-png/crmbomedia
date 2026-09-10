@@ -214,13 +214,25 @@ def dump_lco_rows(client: Any, ejercicio: str, numeros: list[str]) -> int:
                 v = r[col]
                 print(f"  {col:<10} {type(v).__name__:<6} {v!r}")
             print("  " + "-" * 40)
-            imp = r.get("IMPLCO")
-            matches = [c for c in cob if c.get("IMPCOB") == imp or c.get("IMPLCO") == imp]
-            print(f"  F_COB con el mismo importe ({imp!r}): {len(matches)}")
-            for c in matches[:3]:
-                keys = [k for k in sorted(c)
-                        if k.upper().startswith(("COD", "CPA", "FEC", "IMP"))]
-                print("   ", {k: c[k] for k in keys})
+        # Cabecera F_COB de ESA factura: el enlace es la clave de la factura
+        # (TFACOB, CFACOB), no un CODCOB. Se vuelca ENTERA (valor y tipo): es
+        # la plantilla que usa `build_cob_payload` y lo que DELSOL exige antes
+        # de aceptar la línea. Si la convención no casa, se enseñan las
+        # columnas reales de F_COB para ajustar el mapeo.
+        headers = [
+            c for c in cob
+            if coerce_serie(c.get("TFACOB")) == serie
+            and str(c.get("CFACOB") or "").split(".")[0].lstrip("0") == codigo
+        ]
+        print(f"== F_COB de {numero} (clave TFACOB/CFACOB): {len(headers)} cabecera(s) ==")
+        for c in headers:
+            for col in sorted(c):
+                v = c[col]
+                print(f"  {col:<10} {type(v).__name__:<6} {v!r}")
+            print("  " + "-" * 40)
+        if not headers and cob:
+            print("  (ninguna por TFACOB/CFACOB — columnas reales de F_COB:)")
+            print("  ", ", ".join(sorted(cob[0].keys())))
         print()
     print("SOLO LECTURA — no se ha escrito nada.")
     return 0

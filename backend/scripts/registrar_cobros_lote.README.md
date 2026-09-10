@@ -29,6 +29,15 @@ vencimiento.
 | `FPALCO` | forma de pago de la propia factura (`FOPFAC`) |
 | `OBSLCO` | col. P OBSERVACIONES (opcional) |
 
+**Orden que exige DELSOL: cabecera `F_COB` → línea `F_LCO` → `ESTFAC=2`.** `F_COB`
+es la cabecera del cobro de la factura y `F_LCO` sus líneas; el enlace es la
+**clave de la factura** (`TFACOB/CFACOB` ↔ `TFALCO/CFALCO`), no un `CODCOB`.
+DELSOL rechaza (`BDEscribirRegistroError`) una línea cuya cabecera no existe —
+por eso fallaba aunque se mandaran las 23 columnas. Si la factura ya tiene
+cabecera (cobro parcial previo) solo se añade la línea. La cabecera se construye
+sobre una fila real de `F_COB` con las columnas del cobro retagadas `LCO→COB`
+(`IMPCOB`, `FECCOB`, `CPACOB`, `CPTCOB`…), solo las que esa fila trae.
+
 Solo se envían columnas reales de `F_LCO` (23, volcadas en vivo). **El registro se
 construye sobre una fila REAL de `F_LCO`** (misma serie y contrapartida si la hay):
 solo se sobreescriben las columnas de la tabla de arriba y el resto (`TIPLCO`,
