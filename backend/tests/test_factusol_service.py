@@ -401,6 +401,83 @@ def test_emit_invoice_still_sends_required_fields(session_factory):
     assert linea["ARTLFA"] == "A1" and linea["TOTLFA"] == 100
 
 
+# --- BUG GRAVE: la emisión arrastraba líneas del pedido homónimo de otra -----
+# --- serie (mismo «Nº de pedido»/CODLPC) a la F_LFA de la factura emitida. ---
+#
+# La línea de pedido solo es única por la pareja (TIPLPC, CODLPC) — join
+# documentado `F_LPC.TIPLPC = F_PCL.TIPPCL AND CODLPC = CODPCL`. Leer F_LPC por
+# CODLPC a secas copiaba a la factura las líneas del pedido HOMÓNIMO de otra
+# empresa. La cabecera (base/total) era correcta porque se copia del pedido
+# concreto; solo el detalle quedaba contaminado (suma de líneas ≠ base).
+
+
+def _lpc(art, tot, serie, **over):
+    return {"ARTLPC": art, "CANLPC": 1, "TOTLPC": tot, "CODLPC": 2765,
+            "TIPLPC": str(serie), **over}
+
+
+def test_emision_no_arrastra_lineas_de_otro_pedido(session_factory):
+    """Caso real del pedido 17: el pedido serie 5 trae `Cabezal`; el pedido
+    serie 2 con el mismo CODLPC trae `Printhead`+`White`. La factura de serie 5
+    NO debe llevar las líneas de la serie 2."""
+    lpc_rows = [
+        _lpc("CABEZAL", 250, 5),
+        _lpc("PRINTHEAD", 1350, 2),   # pedido homónimo, otra empresa
+        _lpc("WHITE", 110, 2),
+    ]
+    with session_factory() as s:
+        oid = _order(s)
+        client = FakeFactusol(pcl_row=_pcl_row(), lpc_rows=lpc_rows,
+                              f_fac_last=526066)
+        emit_invoice(s, oid, client)
+    arts = [rec.get("ARTLFA") for t, rec in client.writes if t == "F_LFA"]
+    assert arts == ["CABEZAL"], f"se colaron líneas de otra serie: {arts}"
+
+
+def test_emision_lineas_suman_base(session_factory):
+    """La suma de los renglones escritos en la factura = la base del pedido
+    (sin inflarse con líneas ajenas). El pedido serie 5 suma 280; el homónimo
+    serie 2 (que antes se colaba) sumaría 1.460 de más."""
+    pcl = _pcl_row(NET1PCL=280.0, PIVA1PCL=21.0, IIVA1PCL=58.8,
+                   NET2PCL=0.0, PIVA2PCL=0.0, IIVA2PCL=0.0,
+                   NET3PCL=0.0, PIVA3PCL=0.0, IIVA3PCL=0.0, TOTPCL=338.8)
+    lpc_rows = [
+        _lpc("CABEZAL", 250, 5), _lpc("CABLES", 30, 5),
+        _lpc("PRINTHEAD", 1350, 2), _lpc("WHITE", 110, 2),
+    ]
+    with session_factory() as s:
+        oid = _order(s)
+        client = FakeFactusol(pcl_row=pcl, lpc_rows=lpc_rows, f_fac_last=526066)
+        emit_invoice(s, oid, client)
+    cabecera = next(rec for t, rec in client.writes if t == "F_FAC")
+    lineas = [rec for t, rec in client.writes if t == "F_LFA"]
+    assert sum(r["TOTLFA"] for r in lineas) == 280    # = base del pedido
+    assert cabecera["NET1FAC"] == 280.0               # base, intacta
+
+
+def test_pedido_factusol_identificador_unico(session_factory):
+    """Simétrico: con DOS pedidos que comparten el «Nº de pedido» (CODLPC) en
+    distinta serie, cada factura emitida queda solo con las líneas de SU pedido
+    — la clave que aísla es la pareja (serie, número), no el número suelto."""
+    lpc_rows = [_lpc("CABEZAL", 250, 5), _lpc("PRINTHEAD", 1350, 2)]
+    # Factura de la serie 5 → solo Cabezal.
+    with session_factory() as s:
+        oid = _order(s)
+        client5 = FakeFactusol(pcl_row=_pcl_row(TIPPCL="5"), lpc_rows=lpc_rows,
+                               f_fac_last=526066)
+        emit_invoice(s, oid, client5)
+    arts5 = [rec.get("ARTLFA") for t, rec in client5.writes if t == "F_LFA"]
+    assert arts5 == ["CABEZAL"]
+    # Factura de la serie 2 (mismo CODLPC) → solo Printhead.
+    with session_factory() as s:
+        oid = _order(s, number="BOPRIN-99867")
+        client2 = FakeFactusol(pcl_row=_pcl_row(TIPPCL="2"), lpc_rows=lpc_rows,
+                               f_fac_last=526066, f_fac_serie="2")
+        emit_invoice(s, oid, client2)
+    arts2 = [rec.get("ARTLFA") for t, rec in client2.writes if t == "F_LFA"]
+    assert arts2 == ["PRINTHEAD"]
+
+
 def test_ejercicio_passed_as_parameter_not_column(session_factory):
     """El ejercicio viaja como argumento de `write_record`, nunca en el
     payload de cabecera."""
