@@ -310,6 +310,40 @@ def list_factusol_documents(
         }) from exc
 
 
+# --- rutas de ESTADO de jobs (literal) — DECLARADAS ANTES de la genérica ---
+#
+# BUG: `/documents/facturas/payment-status/{job_id}` y `…/collection-status/
+# {job_id}` tienen la misma forma que `/documents/{doc_type}/{serie}/{codigo}`
+# (serie:int). Starlette casa en orden de declaración: si la genérica va antes,
+# «payment-status» se intenta parsear como serie → 422 y el polling del cobro
+# (F-3) y del registro de cobro (F-4-B) nunca llega a su ruta. Se declaran aquí,
+# antes, manteniendo las URL (sin tocar frontend ni scripts).
+
+
+@router.get("/documents/facturas/payment-status/{job_id}")
+def invoice_payment_status(
+    job_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_view),
+) -> dict[str, Any]:
+    """Polling del job de marcado de cobro (mismo contrato: pending / finished
+    (+result) / failed (+error))."""
+    _ = current_user, session
+    return _rq_quote_status(job_id)
+
+
+@router.get("/documents/facturas/collection-status/{job_id}")
+def invoice_collection_status(
+    job_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_view),
+) -> dict[str, Any]:
+    """Polling del job de registro de cobro (pending / finished (+result) /
+    failed (+error))."""
+    _ = current_user, session
+    return _rq_quote_status(job_id)
+
+
 @router.get("/documents/{doc_type}/{serie}/{codigo}")
 def get_factusol_document(
     doc_type: str,
@@ -769,18 +803,6 @@ class InvoicePaymentPayload(BaseModel):
     paid: bool
 
 
-@router.get("/documents/facturas/payment-status/{job_id}")
-def invoice_payment_status(
-    job_id: str,
-    session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_view),
-) -> dict[str, Any]:
-    """Polling del job de marcado de cobro (mismo contrato: pending / finished
-    (+result) / failed (+error))."""
-    _ = current_user, session
-    return _rq_quote_status(job_id)
-
-
 @router.post("/documents/facturas/{serie}/{codigo}/payment", status_code=202)
 def mark_invoice_payment_endpoint(
     serie: int,
@@ -902,18 +924,6 @@ class InvoiceCollectionPayload(BaseModel):
     observaciones: str | None = Field(default=None, max_length=255)
     #: Importe; por defecto el SALDO pendiente (= total si no había cobros).
     importe: float | None = Field(default=None, gt=0)
-
-
-@router.get("/documents/facturas/collection-status/{job_id}")
-def invoice_collection_status(
-    job_id: str,
-    session: Session = Depends(get_session),
-    current_user: User = Depends(require_erp_view),
-) -> dict[str, Any]:
-    """Polling del job de registro de cobro (pending / finished (+result) /
-    failed (+error))."""
-    _ = current_user, session
-    return _rq_quote_status(job_id)
 
 
 @router.post("/documents/facturas/{serie}/{codigo}/collection", status_code=202)

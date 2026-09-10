@@ -181,6 +181,77 @@ def test_registro_cobro_factusol(db) -> None:
     ]
 
 
+def _lco_real(serie, codigo, linea, importe, **over):
+    """Fila REAL de F_LCO con las 23 columnas (como las devuelve DELSOL),
+    incluidas las que no describen el cobro (TIPLCO, UALLCO…) y que dejan de
+    estar vacías al usarla de plantilla."""
+    row = {
+        "ANTLCO": 0, "CAJLCO": "", "CFALCO": codigo, "CPALCO": "8",
+        "CPTLCO": f"COBRO FACTURA Nº: {serie} - {codigo}",
+        "FALLCO": "2026-08-14T00:00:00", "FECLCO": "2026-08-12T00:00:00",
+        "FPALCO": "002", "FUMLCO": "2026-08-12T10:15:00", "IMPLCO": importe,
+        "LINLCO": linea, "MULLCO": 0, "OBSLCO": "", "PCALCO": 0, "PROLCO": 0,
+        "TERLCO": "", "TFALCO": serie, "TIDLCO": 0, "TIPLCO": 1,
+        "TPVIDLCO": "", "TRALCO": 0, "UALLCO": "BART", "UUMLCO": "BART",
+    }
+    row.update(over)
+    return row
+
+
+def test_registro_cobro_usa_plantilla_de_fila_real(db) -> None:
+    """BUGFIX BDEscribirRegistroError: el registro se construye sobre una fila
+    REAL de F_LCO (misma serie y contrapartida) para no dejar vacía ninguna
+    columna obligatoria (TIPLCO, UALLCO, UUMLCO, FUMLCO…), como hace la
+    emisión al copiar F_LPC→F_LFA. Solo se sobreescribe lo que identifica
+    ESTE cobro, respetando el tipo con el que DELSOL devuelve cada columna."""
+    _set_cfg(db)
+    # Plantilla de OTRA factura de la serie 5 cobrada en la 8 (TFALCO como int,
+    # como lo devuelve esta instalación) + un ruido de otra serie/contrapartida.
+    client = FakeCobroClient(
+        f_fac=[_fac(5, 260082, 70.18, CNOFAC="ROCIO BUENO")],
+        f_lco=[
+            _lco_real(1, 260004, 1, 100.0, CPALCO="6"),   # otra serie
+            _lco_real(5, 260004, 1, 420.74),               # misma serie+cpa 8 ← plantilla
+        ],
+    )
+    result = register_invoice_collection(
+        client, db, serie=5, codigo=260082, contrapartida="8",
+        fecha="24/08/2026", forma="Transferencia", ejercicio="2026",
+    )
+    assert result["registered"] is True
+    (tabla, rec), = client.writes
+    assert tabla == "F_LCO"
+    # Las 23 columnas van rellenas (heredadas de la plantilla)…
+    assert set(rec) == LCO_COLUMNS
+    assert rec["TIPLCO"] == 1 and rec["UALLCO"] == "BART" and rec["TIDLCO"] == 0
+    # …y las de ESTE cobro sobreescritas, con el tipo de la plantilla
+    # (TFALCO int porque la plantilla lo trae int; CFALCO int; IMPLCO float).
+    assert rec["TFALCO"] == 5 and isinstance(rec["TFALCO"], int)
+    assert rec["CFALCO"] == 260082 and rec["LINLCO"] == 1
+    assert rec["FECLCO"] == "2026-08-24T00:00:00" == rec["FALLCO"]
+    assert rec["IMPLCO"] == 70.18 and rec["CPALCO"] == "8"
+    assert rec["CPTLCO"] == "COBRO FACTURA Nº: 5 - 260082 (Transferencia)"
+    assert rec["FPALCO"] == "002" and rec["OBSLCO"] == ""
+    # Nunca hereda la clave de la plantilla (sería un duplicado 5-260004/L1).
+    assert (rec["TFALCO"], rec["CFALCO"], rec["LINLCO"]) != (5, 260004, 1)
+    # Y marca cobrada después.
+    assert client.updates == [("F_FAC", {"TIPFAC": 5, "CODFAC": 260082, "ESTFAC": "2"})]
+
+
+def test_plantilla_prefiere_misma_serie_y_contrapartida() -> None:
+    from app.integrations.factusol.collections_write import pick_template_row
+
+    rows = [
+        _lco_real(1, 1, 1, 1.0, CPALCO="6"),
+        _lco_real(5, 2, 1, 1.0, CPALCO="14"),
+        _lco_real(5, 3, 1, 1.0, CPALCO="8"),
+    ]
+    assert pick_template_row(rows, serie=5, contrapartida="8")["CFALCO"] == 3
+    assert pick_template_row(rows, serie=5, contrapartida="99")["CFALCO"] == 2   # misma serie
+    assert pick_template_row(rows, serie=2, contrapartida="2")["CFALCO"] == 1    # cualquiera
+    assert pick_template_row([], serie=5, contrapartida="8") is None
+
+
 def test_registro_cobro_linlco_correlativo_y_saldo(db) -> None:
     """Con un cobro parcial previo, la nueva línea es LINLCO=2 y el importe por
     defecto es el SALDO (nunca se sobrepaga)."""
@@ -268,6 +339,19 @@ def _patched_client(client):
         "app.integrations.factusol.client.FactusolClient.from_settings",
         return_value=client,
     )
+
+
+def test_status_routes_no_colisionan_con_el_detalle(http, session_factory) -> None:
+    """BUG secundario: `/documents/facturas/collection-status/{job_id}` (y el
+    `payment-status` de F-3, misma forma) caían en la ruta genérica
+    `/documents/{doc_type}/{serie}/{codigo}` (serie:int) declarada antes →
+    422. Deben resolverse como rutas de estado (200, `pending` sin Redis)."""
+    _ = session_factory
+    for path in ("collection-status/job-x", "payment-status/job-x"):
+        r = http.get(f"/api/erp/factusol/documents/facturas/{path}",
+                     headers=auth_headers(http, "admin"))
+        assert r.status_code == 200, f"{path} → {r.status_code} {r.text[:120]}"
+        assert r.json()["status"] == "pending"
 
 
 def test_endpoint_requires_confirmation_and_edit(http, session_factory) -> None:

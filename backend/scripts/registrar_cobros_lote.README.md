@@ -29,8 +29,17 @@ vencimiento.
 | `FPALCO` | forma de pago de la propia factura (`FOPFAC`) |
 | `OBSLCO` | col. P OBSERVACIONES (opcional) |
 
-Solo se envían columnas reales de `F_LCO` (23, volcadas en vivo). Después:
-`F_FAC.ESTFAC = 2` por clave compuesta.
+Solo se envían columnas reales de `F_LCO` (23, volcadas en vivo). **El registro se
+construye sobre una fila REAL de `F_LCO`** (misma serie y contrapartida si la hay):
+solo se sobreescriben las columnas de la tabla de arriba y el resto (`TIPLCO`,
+`UALLCO`, `UUMLCO`, `FUMLCO`…) se hereda de esa fila, respetando el tipo con el
+que DELSOL devuelve cada una — mandar solo las 10 del cobro dejaba vacías las
+demás y DELSOL rechazaba el insert (`BDEscribirRegistroError`). El registro exacto
+que se envía queda en el log del `worker-factusol` (`EscribirRegistro F_LCO …`).
+Después: `F_FAC.ESTFAC = 2` por clave compuesta.
+
+Para contrastar con una fila real (solo lectura):
+`docker exec crmbo-api-1 python -m scripts.factusol_discover_invoice_payment --lco-row 5-260004`
 
 Endpoint que conduce el script (permiso de EDICIÓN de ERP):
 
