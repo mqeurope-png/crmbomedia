@@ -187,6 +187,45 @@ def discover_collections(client: Any, ejercicio: str) -> int:
     return 0
 
 
+def dump_lco_rows(client: Any, ejercicio: str, numeros: list[str]) -> int:
+    """F-4-B-fix: vuelca las filas REALES de F_LCO de facturas ya cobradas
+    (todas las columnas, con valor y TIPO tal como los devuelve DELSOL) para
+    contrastarlas con el registro que manda `register_invoice_collection`
+    cuando `EscribirRegistro` responde `BDEscribirRegistroError`. Enseña
+    también las filas de F_COB con el mismo importe (por si hubiera enlace
+    implícito). SOLO LECTURA."""
+    from app.integrations.factusol.service import coerce_serie  # noqa: PLC0415
+
+    lco = client.load_table("F_LCO", filtro="1=1", ejercicio=ejercicio)
+    cob = client.load_table("F_COB", filtro="1=1", ejercicio=ejercicio)
+    print(f"F_LCO: {len(lco)} filas · F_COB: {len(cob)} filas · ejercicio {ejercicio}\n")
+    for numero in numeros:
+        head, _, tail = numero.partition("-")
+        serie = coerce_serie(head)
+        codigo = tail.strip().lstrip("0") or "0"
+        rows = [
+            r for r in lco
+            if coerce_serie(r.get("TFALCO")) == serie
+            and str(r.get("CFALCO") or "").split(".")[0].lstrip("0") == codigo
+        ]
+        print(f"== F_LCO de {numero}: {len(rows)} línea(s) ==")
+        for r in rows:
+            for col in sorted(r):
+                v = r[col]
+                print(f"  {col:<10} {type(v).__name__:<6} {v!r}")
+            print("  " + "-" * 40)
+            imp = r.get("IMPLCO")
+            matches = [c for c in cob if c.get("IMPCOB") == imp or c.get("IMPLCO") == imp]
+            print(f"  F_COB con el mismo importe ({imp!r}): {len(matches)}")
+            for c in matches[:3]:
+                keys = [k for k in sorted(c)
+                        if k.upper().startswith(("COD", "CPA", "FEC", "IMP"))]
+                print("   ", {k: c[k] for k in keys})
+        print()
+    print("SOLO LECTURA — no se ha escrito nada.")
+    return 0
+
+
 def _resolve_ejercicio(arg: str | None) -> tuple[Any, str]:
     from sqlalchemy.orm import Session  # noqa: PLC0415
 
@@ -211,6 +250,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="Vuelca las columnas de fecha candidatas.")
     parser.add_argument("--collections", action="store_true",
                         help="Documenta F_LCO/F_COB/F_BAN (conciliación).")
+    parser.add_argument("--lco-row", nargs="+", default=None, metavar="NUMERO",
+                        help="Vuelca las filas REALES de F_LCO de esas facturas "
+                             "(valor y tipo por columna), p. ej. 5-260004.")
     args = parser.parse_args(argv)
 
     client, ejercicio = _resolve_ejercicio(args.ejercicio)
@@ -220,6 +262,8 @@ def main(argv: list[str] | None = None) -> int:
         return show_payment_dates(client, ejercicio, args.payment_date)
     if args.collections:
         return discover_collections(client, ejercicio)
+    if args.lco_row:
+        return dump_lco_rows(client, ejercicio, args.lco_row)
     parser.print_help()
     return 0
 

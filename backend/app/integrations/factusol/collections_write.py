@@ -58,6 +58,85 @@ LCO_COLUMNS: frozenset[str] = frozenset({
 #: Tolerancia para considerar una factura ya cobrada (saldo ≈ 0).
 _EPS = 0.005
 
+#: Columnas que identifican ESTE cobro y se sobreescriben siempre sobre la
+#: plantilla; el resto (TIPLCO, TIDLCO, UALLCO, UUMLCO, FUMLCO, ANTLCO, CAJLCO…)
+#: se hereda de una fila REAL para no dejar vacía ninguna columna obligatoria.
+_OVERRIDE_COLUMNS = (
+    "TFALCO", "CFALCO", "LINLCO", "FECLCO", "FALLCO", "IMPLCO", "CPALCO",
+    "CPTLCO", "FPALCO", "OBSLCO",
+)
+
+
+def _like(template_value: Any, new_value: Any) -> Any:
+    """Devuelve `new_value` con el MISMO tipo JSON que trae la plantilla
+    (DELSOL devuelve `TFALCO` como '5' o 5 según la instalación; se le manda
+    de vuelta exactamente como él lo da). Sin plantilla, se deja tal cual."""
+    if template_value is None or isinstance(template_value, bool):
+        return new_value
+    try:
+        if isinstance(template_value, int):
+            return int(float(str(new_value).strip()))
+        if isinstance(template_value, float):
+            return round(float(new_value), 2)
+        if isinstance(template_value, str):
+            return str(new_value)
+    except (TypeError, ValueError):
+        return new_value
+    return new_value
+
+
+def pick_template_row(
+    rows: list[dict[str, Any]], *, serie: int, contrapartida: str,
+) -> dict[str, Any] | None:
+    """Fila REAL de F_LCO que sirve de plantilla: misma serie y misma
+    contrapartida si la hay (mismo tipo de cobro), si no misma serie, si no
+    cualquiera. `None` solo si la tabla está vacía."""
+    from app.integrations.factusol.catalogs import normalize_code  # noqa: PLC0415
+    from app.integrations.factusol.service import coerce_serie  # noqa: PLC0415
+
+    def score(r: dict[str, Any]) -> tuple[int, int]:
+        same_serie = coerce_serie(r.get("TFALCO")) == serie
+        same_cpa = normalize_code(r.get("CPALCO")) == normalize_code(contrapartida)
+        return (int(same_serie and same_cpa), int(same_serie))
+
+    best: dict[str, Any] | None = None
+    best_score = (-1, -1)
+    for r in rows:
+        s = score(r)
+        if s > best_score:
+            best, best_score = r, s
+            if s == (1, 1):
+                break
+    return best
+
+
+def build_lco_payload(
+    *, template: dict[str, Any] | None, serie: int, codigo: int, linlco: int,
+    fecha_iso: str, importe: float, contrapartida: str, concepto: str,
+    fopfac: str, observaciones: str,
+) -> dict[str, Any]:
+    """Registro para `EscribirRegistro` en F_LCO.
+
+    BUGFIX (BDEscribirRegistroError en producción): mandar solo las 10
+    columnas del cobro dejaba vacías las demás y DELSOL rechazaba el insert
+    (columna obligatoria vacía). La emisión de facturas nunca falla por esto
+    porque COPIA una fila completa (F_LPC→F_LFA). Aquí se hace lo mismo: se
+    parte de una fila REAL de F_LCO (misma serie/contrapartida) y solo se
+    sobreescriben las columnas de ESTE cobro, respetando el tipo con el que
+    DELSOL devuelve cada una. Sin plantilla (tabla vacía) se manda el mínimo."""
+    tpl = dict(template or {})
+    overrides: dict[str, Any] = {
+        "TFALCO": str(serie), "CFALCO": int(codigo), "LINLCO": int(linlco),
+        "FECLCO": fecha_iso, "FALLCO": fecha_iso, "IMPLCO": round(importe, 2),
+        "CPALCO": str(contrapartida), "CPTLCO": concepto, "FPALCO": fopfac,
+        "OBSLCO": observaciones,
+    }
+    payload = dict(tpl)
+    for col in _OVERRIDE_COLUMNS:
+        payload[col] = _like(tpl.get(col), overrides[col])
+    allowed = LCO_COLUMNS | frozenset(k.upper() for k in tpl)
+    return filter_to_real_columns(payload, allowed, tabla="F_LCO")
+
 _DATE_FORMATS = ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%Y/%m/%d", "%d.%m.%Y")
 
 
@@ -179,18 +258,29 @@ def register_invoice_collection(
             "registered": False, "status": "nothing_to_collect", **status,
             "motivo": "El importe a cobrar es 0.",
         }
-    payload = filter_to_real_columns({
-        "TFALCO": str(serie),
-        "CFALCO": int(codigo),
-        "LINLCO": status["next_linlco"],
-        "FECLCO": fecha_iso,
-        "FALLCO": fecha_iso,           # vencimiento = fecha del cobro recibido
-        "IMPLCO": amount,
-        "CPALCO": str(contrapartida),
-        "CPTLCO": concepto_cobro(serie, codigo, forma),
-        "FPALCO": status["fopfac"],    # forma de pago de la propia factura
-        "OBSLCO": str(observaciones or "").strip(),
-    }, LCO_COLUMNS, tabla="F_LCO")
+    # Plantilla = fila REAL de F_LCO del mismo ejercicio (ver build_lco_payload).
+    template = pick_template_row(
+        client.load_table("F_LCO", filtro="1=1", ejercicio=ejercicio),
+        serie=serie, contrapartida=str(contrapartida),
+    )
+    payload = build_lco_payload(
+        template=template, serie=serie, codigo=codigo,
+        linlco=status["next_linlco"], fecha_iso=fecha_iso, importe=amount,
+        contrapartida=str(contrapartida),
+        concepto=concepto_cobro(serie, codigo, forma),
+        fopfac=status["fopfac"],
+        observaciones=str(observaciones or "").strip(),
+    )
+    # Diagnóstico: el registro EXACTO que va a EscribirRegistro (nombres,
+    # valores y tipos), para contrastar con una fila real si DELSOL lo rechaza.
+    logger.info(
+        "factusol cobro %s-%s: EscribirRegistro F_LCO ejercicio=%s plantilla=%s "
+        "registro=%s",
+        serie, codigo, ejercicio,
+        (f"{template.get('TFALCO')}-{template.get('CFALCO')}/L{template.get('LINLCO')}"
+         if template else "ninguna (tabla vacía)"),
+        {k: (v, type(v).__name__) for k, v in payload.items()},
+    )
     try:
         client.write_record("F_LCO", payload, ejercicio=ejercicio)
     except Exception as exc:  # noqa: BLE001 — se informa, nunca se rompe
