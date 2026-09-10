@@ -132,6 +132,9 @@ def _outcome_dict(outcome: ImportOutcome, event_id: str) -> dict[str, Any]:
         "contact_created": outcome.contact_created,
         "company_created": outcome.company_created,
         "unmapped_skus_count": len(outcome.unmapped_skus),
+        # Regla «solo processing»: estado Woo por el que NO se creó (None si
+        # se creó o se actualizó).
+        "skipped_status": outcome.skipped_status,
     }
 
 
@@ -427,6 +430,11 @@ def _log_webhook_sync(session, store, outcome, topic, error: str | None = None) 
         message = None
     elif outcome is not None and outcome.created:
         message = f"webhook {topic}: order created"
+    elif outcome is not None and outcome.skipped_status:
+        message = (
+            f"webhook {topic}: order ignored "
+            f"(status={outcome.skipped_status}, not processing)"
+        )
     else:
         message = f"webhook {topic}: order updated"
     session.add(SyncLog(
