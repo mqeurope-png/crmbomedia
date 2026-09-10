@@ -52,20 +52,58 @@ _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 @dataclass
 class ImportOutcome:
-    order_id: str
+    order_id: str | None
     created: bool          # True si es alta, False si update
     contact_created: bool
     company_created: bool
     unmapped_skus: list[str]
+    #: Estado Woo por el que NO se creó el pedido (regla «solo processing»);
+    #: None si se creó o se actualizó.
+    skipped_status: str | None = None
+
+
+#: Regla de creación (pedida por Bart): un pedido de WooCommerce solo se CREA en
+#: BoHub cuando su estado es `processing`. Un pedido no llega a `completed` sin
+#: pasar antes por `processing`, así que importando en `processing` se capturan
+#: todos; `pending`/`on-hold` (aún sin pagar) o `completed`/`cancelled`/
+#: `refunded`/`failed` de un pedido que BoHub no conoce se IGNORAN. Solo
+#: gobierna la creación: los pedidos ya importados se siguen actualizando
+#: (`woo_status`) con cualquier cambio de estado, como hace #376.
+CREATE_ON_STATUSES: frozenset[str] = frozenset({"processing"})
+
+
+def should_create_order(woo_order: dict[str, Any]) -> bool:
+    return (_woo_status(woo_order) or "") in CREATE_ON_STATUSES
 
 
 def import_woo_order(
     session: Session, *, store: IntegrationAccount, woo_order: dict[str, Any],
 ) -> ImportOutcome:
-    """Idempotente + dedup por (external_source, external_id, store_id)."""
+    """Idempotente + dedup por (external_source, external_id, store_id).
+
+    Punto ÚNICO de ingesta (lo usan el webhook y el sync/backfill): aquí vive
+    la regla «solo se crea en `processing`». Un pedido desconocido en otro
+    estado devuelve `skipped_status` sin tocar nada — ni siquiera crea el
+    contacto/empresa (se resuelven DESPUÉS del filtro a propósito)."""
     external_id = str(woo_order.get("id") or "")
     if not external_id:
         raise ValueError("payload sin id de pedido Woo")
+
+    existing = session.scalar(select(Order).where(
+        Order.external_source == OrderSource.WOOCOMMERCE,
+        Order.external_id == external_id,
+        Order.store_id == store.id,
+    ))
+    if existing is None and not should_create_order(woo_order):
+        status = _woo_status(woo_order) or "?"
+        logger.info(
+            "woo import: pedido %s (%s) ignorado: estado %r, solo se crea en %s",
+            external_id, store.account_id, status, sorted(CREATE_ON_STATUSES),
+        )
+        return ImportOutcome(
+            order_id=None, created=False, contact_created=False,
+            company_created=False, unmapped_skus=[], skipped_status=status,
+        )
 
     email = _pick_email(woo_order)
     contact, contact_created = _resolve_contact(session, email, woo_order)
@@ -75,11 +113,6 @@ def import_woo_order(
         contact.company_id = company.id
         session.flush()
 
-    existing = session.scalar(select(Order).where(
-        Order.external_source == OrderSource.WOOCOMMERCE,
-        Order.external_id == external_id,
-        Order.store_id == store.id,
-    ))
     if existing is not None:
         _refresh_existing(session, existing, woo_order, contact, company, store)
         return ImportOutcome(
