@@ -161,24 +161,26 @@ def customer_names(
                 select(Company).where(Company.id.in_(company_ids))
             )
         }
-    # Control manual (#388 + bandeja): nombre de quien QUITÓ el pedido de las
-    # listas de trabajo (para la vista «Ver ocultados»), en 1 query.
-    excluded_by_ids = {
-        o.seguimiento_excluded_by_user_id for o in orders
-        if o.seguimiento_excluded_by_user_id
+    # Control manual (#388 + bandeja) y «Completado»: nombres de quien QUITÓ o
+    # COMPLETÓ el pedido (vista «Ver ocultados», badge «Completado»), en 1 query.
+    user_ids = {
+        uid for o in orders
+        for uid in (o.seguimiento_excluded_by_user_id, o.completed_by_user_id)
+        if uid
     }
-    excluded_by: dict[str, str] = {}
-    if excluded_by_ids:
-        excluded_by = {
+    user_names: dict[str, str] = {}
+    if user_ids:
+        user_names = {
             u.id: u.full_name for u in session.scalars(
-                select(User).where(User.id.in_(excluded_by_ids))
+                select(User).where(User.id.in_(user_ids))
             )
         }
     return {
         o.id: {
             "contact_name": _contact_label(contacts.get(o.contact_id)),
             "company_name": companies.get(o.company_id) if o.company_id else None,
-            "excluded_by_name": excluded_by.get(o.seguimiento_excluded_by_user_id or ""),
+            "excluded_by_name": user_names.get(o.seguimiento_excluded_by_user_id or ""),
+            "completed_by_name": user_names.get(o.completed_by_user_id or ""),
         }
         for o in orders
     }
@@ -233,6 +235,12 @@ def _serialise_summary(
         "seguimiento_excluded_reason": o.seguimiento_excluded_reason,
         "seguimiento_excluded_by_user_id": o.seguimiento_excluded_by_user_id,
         "seguimiento_excluded_by_name": names.get("excluded_by_name"),
+        # «Marcar completado» (solo BoHub, reversible): estado FINAL manual.
+        # Quién y cuándo; nunca se propaga a WooCommerce.
+        "completed": o.completed_at is not None,
+        "completed_at": o.completed_at.isoformat() if o.completed_at else None,
+        "completed_by_user_id": o.completed_by_user_id,
+        "completed_by_name": names.get("completed_by_name"),
     }
 
 
@@ -459,6 +467,9 @@ def list_orders(
     # Control manual — «Ver ocultados»: SOLO los quitados a mano (para
     # revisarlos y reincluirlos). Por defecto la bandeja los esconde.
     show_excluded: bool = Query(default=False),
+    # «Completado»: true = solo completados, false = solo sin completar,
+    # ausente = todos (el badge distingue).
+    completed: bool | None = Query(default=None),
     sort: str = Query(default="placed_desc"),
     limit: int = Query(default=100, ge=1, le=500),
     session: Session = Depends(get_session),
@@ -476,6 +487,10 @@ def list_orders(
         stmt = stmt.where(Order.invoice_status == invoice)
     if store:
         stmt = stmt.where(Order.store_id == store)
+    if completed is True:
+        stmt = stmt.where(Order.completed_at.isnot(None))
+    elif completed is False:
+        stmt = stmt.where(Order.completed_at.is_(None))
     if show_excluded:
         # Vista de revisión: solo los quitados a mano (con motivo y quién).
         stmt = stmt.where(Order.seguimiento_excluded_at.isnot(None))
@@ -592,6 +607,72 @@ def approve_order(
     order.approved_by_user_id = current_user.id
     session.commit()
     return _serialise_detail(session, _get_order(session, order_id), current_user)
+
+
+# --- completado (solo BoHub, reversible) --------------------------------------
+
+#: Estados que cuentan como «facturado» / «enviado» para los AVISOS de completar.
+_COMPLETION_INVOICED = {"generated", "invoiced_by_erp", "already_invoiced_externally"}
+_COMPLETION_SHIPPED = {"in_transit", "delivered", "already_shipped_externally"}
+
+
+def completion_avisos(order: Order) -> list[str]:
+    """Avisos NO bloqueantes al marcar completado (Bart manda): no se exige que
+    Transporte esté «enviado» en BoHub (el envío puede tramitarse fuera) ni que
+    haya factura; solo se avisa para que no sea por error."""
+    avisos: list[str] = []
+    if not (
+        _status_value(order.invoice_status) in _COMPLETION_INVOICED
+        or order.factusol_invoice_number
+    ):
+        avisos.append("aún sin facturar")
+    if _status_value(order.transport_status) not in _COMPLETION_SHIPPED:
+        avisos.append("el envío no consta como enviado en BoHub")
+    return avisos
+
+
+@router.post("/{order_id}/complete")
+def complete_order(
+    order_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_edit),
+) -> dict[str, Any]:
+    """«Marcar completado»: estado FINAL del pedido (ya facturado y enviado,
+    aunque el envío se tramite fuera de BoHub). SOLO BoHub: no toca WooCommerce
+    ni FACTUSOL ni los 4 estados. Manual, reversible (`/uncomplete`) e
+    idempotente: el ya completado conserva fecha y quién. Devuelve la ficha +
+    `completion_avisos` (no bloqueantes)."""
+    order = _get_order(session, order_id)
+    already = order.completed_at is not None
+    if not already:
+        order.completed_at = datetime.now(UTC)
+        order.completed_by_user_id = current_user.id
+        session.commit()
+    order = _get_order(session, order_id)
+    return {
+        **_serialise_detail(session, order, current_user),
+        "already_completed": already,
+        "completion_avisos": completion_avisos(order),
+    }
+
+
+@router.post("/{order_id}/uncomplete")
+def uncomplete_order(
+    order_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_edit),
+) -> dict[str, Any]:
+    """«Desmarcar completado»: revierte `/complete`. Idempotente. Solo BoHub."""
+    order = _get_order(session, order_id)
+    already = order.completed_at is None
+    if not already:
+        order.completed_at = None
+        order.completed_by_user_id = None
+        session.commit()
+    return {
+        **_serialise_detail(session, _get_order(session, order_id), current_user),
+        "already_uncompleted": already,
+    }
 
 
 # --- procesado externamente (B-2-fix4) --------------------------------------

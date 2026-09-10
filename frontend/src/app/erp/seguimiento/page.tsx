@@ -502,6 +502,7 @@ export default function SeguimientoPage() {
               <option value="pendiente">Pendiente</option>
               <option value="enviado">Enviado</option>
               <option value="facturado">Facturado</option>
+              <option value="completado">Completado</option>
             </select>
           </label>
           <label className="field">
@@ -889,6 +890,11 @@ export default function SeguimientoPage() {
                     <span className={`badge ${ESTADO_TONE[r.estado] ?? "muted"}`}>
                       {r.estado}
                     </span>
+                    {r.completado ? (
+                      <span className="badge ok" title={`Completado${r.completado_en ? ` el ${d(r.completado_en)}` : ""}${r.completado_por_nombre ? ` por ${r.completado_por_nombre}` : ""} (solo BoHub)`}>
+                        {" "}completado
+                      </span>
+                    ) : null}
                     {r.reembolsado ? (
                       <span className="badge warn" title="Reembolsado en WooCommerce (ya enviado/facturado)">
                         {" "}reembolsado

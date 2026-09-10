@@ -13,6 +13,7 @@ import { ShippingFilesSection } from "../../../components/erp/ShippingFilesSecti
 import { getCurrentUser, type User } from "../../../lib/api";
 import { extractErrorMessage } from "../../../lib/errors";
 import {
+  completeOrder,
   customerLabel,
   downloadOrderFactusolPedidoPdf,
   getErpSettings,
@@ -22,6 +23,7 @@ import {
   getFactusolStatus,
   fireTransition,
   saveBlob,
+  uncompleteOrder,
   updateOrderLanguage,
   updateOrderSeguimiento,
   ERP_EDIT_ROLES,
@@ -33,6 +35,11 @@ import {
   type StatusDomain,
   type TimelineEvent,
 } from "../../../lib/erpApi";
+
+const INVOICED_STATUSES = new Set(["generated", "invoiced_by_erp", "already_invoiced_externally"]);
+function isInvoiced(o: { invoice_status: string; factusol_invoice_number: string | null }): boolean {
+  return INVOICED_STATUSES.has(o.invoice_status) || !!o.factusol_invoice_number;
+}
 
 export default function ErpOrderDetailPage() {
   const params = useParams<{ id: string }>();
@@ -51,6 +58,9 @@ export default function ErpOrderDetailPage() {
   // FACTUSOL del pedido (serie+número) y luego se abre el modal de preview.
   const [invoiceRef, setInvoiceRef] = useState<FactusolInvoiceRef | null>(null);
   const [emailBusy, setEmailBusy] = useState(false);
+  // «Marcar completado» (solo BoHub, reversible).
+  const [completeBusy, setCompleteBusy] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const load = useCallback(() => {
     getOrder(id)
@@ -120,6 +130,39 @@ export default function ErpOrderDetailPage() {
     }
   }
 
+  // «Marcar completado» / «Desmarcar» (solo BoHub, reversible): estado final
+  // del pedido. No exige envío ni factura (si no está facturado, avisa y deja
+  // continuar). Nunca toca WooCommerce.
+  async function onToggleComplete() {
+    if (!order) return;
+    if (
+      !order.completed && !isInvoiced(order)
+      && !window.confirm("Este pedido aún no está facturado. ¿Marcarlo completado igualmente?")
+    ) {
+      return;
+    }
+    setCompleteBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      if (order.completed) {
+        setOrder(await uncompleteOrder(order.id));
+        setNotice("Ya no está marcado como completado.");
+      } else {
+        const r = await completeOrder(order.id);
+        setOrder(r);
+        setNotice(
+          "Marcado como completado (solo en BoHub; WooCommerce no cambia)."
+          + (r.completion_avisos.length ? ` Aviso: ${r.completion_avisos.join("; ")}.` : ""),
+        );
+      }
+    } catch (e) {
+      setError(extractErrorMessage(e, "No se pudo cambiar el estado de completado."));
+    } finally {
+      setCompleteBusy(false);
+    }
+  }
+
   if (!order) {
     return <main className="shell"><p className="muted">{error ?? "Cargando…"}</p></main>;
   }
@@ -140,6 +183,7 @@ export default function ErpOrderDetailPage() {
         ]}
       />
       {error ? <p className="form-error">{error}</p> : null}
+      {notice ? <p className="form-success" role="status">{notice}</p> : null}
       <div className="erp-factusol-row" style={{ margin: "0 0 14px" }}>
         <span className="erp-doc-pdf">
           <select
@@ -246,6 +290,20 @@ export default function ErpOrderDetailPage() {
               {emailBusy ? "Localizando…" : "Enviar factura por email"}
             </button>
           ) : null}
+          {/* «Marcar completado»: estado final del pedido, solo en BoHub. */}
+          <button
+            type="button"
+            className={`button small ${order.completed ? "secondary" : ""}`}
+            disabled={completeBusy}
+            title={order.completed
+              ? "Quitar la marca de completado (solo BoHub)"
+              : "Estado final del pedido (facturado y enviado), solo en BoHub; no toca WooCommerce"}
+            onClick={() => void onToggleComplete()}
+          >
+            {completeBusy
+              ? "Guardando…"
+              : order.completed ? "Desmarcar completado" : "Marcar completado"}
+          </button>
         </div>
       ) : null}
       {invoiceRef ? (
@@ -256,6 +314,15 @@ export default function ErpOrderDetailPage() {
           onClose={() => setInvoiceRef(null)}
           onSent={() => { setInvoiceRef(null); load(); }}
         />
+      ) : null}
+      {order.completed ? (
+        <p className="form-info">
+          <span className="badge ok">Completado</span>{" "}
+          Marcado como completado el{" "}
+          {order.completed_at ? new Date(order.completed_at).toLocaleString("es-ES") : "—"}
+          {order.completed_by_name ? ` por ${order.completed_by_name}` : ""} (solo BoHub;
+          WooCommerce no cambia).
+        </p>
       ) : null}
       {order.externally_processed_at ? (
         <p className="form-info" role="status">
