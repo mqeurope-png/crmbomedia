@@ -644,6 +644,20 @@ def build_rows(
     written_ids = set(session.scalars(
         select(ErpDriveSyncRow.order_id).where(ErpDriveSyncRow.synced_at.isnot(None))
     ))
+    # Control manual — nombre de quien quitó el pedido del seguimiento (para
+    # la vista de excluidos), en 1 query.
+    excluded_by_ids = {
+        o.seguimiento_excluded_by_user_id for o in orders
+        if o.seguimiento_excluded_by_user_id
+    }
+    excluded_by_names: dict[str, str] = {}
+    if excluded_by_ids:
+        from app.models.crm import User  # noqa: PLC0415
+
+        excluded_by_names = {
+            u.id: u.full_name
+            for u in session.scalars(select(User).where(User.id.in_(excluded_by_ids)))
+        }
     series_cfg = series_config(session)
     by_source = series_cfg.get("by_source") if isinstance(series_cfg.get("by_source"), dict) else {}
     series_names = {
@@ -746,6 +760,9 @@ def build_rows(
             "excluido_en": _iso_date(o.seguimiento_excluded_at),
             "excluido_por": o.seguimiento_excluded_by_user_id,
             "excluido_motivo": o.seguimiento_excluded_reason,
+            "excluido_por_nombre": excluded_by_names.get(
+                o.seguimiento_excluded_by_user_id or "",
+            ),
             # ERP-F6-fix7 — «escrito en Drive» vs «pendiente de escribir». La
             # vista diaria enseña ambos; el pendiente es lo que aún no está en
             # la hoja (y no está excluido).

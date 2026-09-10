@@ -7,7 +7,7 @@ sincronizado con la hoja es un extra que avisa si falta configuración.
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import Response
@@ -248,9 +248,87 @@ def build_drive_sync_rows(session: Session) -> list[dict[str, Any]]:
     )
 
 
+#: Motivos rápidos del botón «Quitar del seguimiento» (control manual). El
+#: motivo se guarda en el campo de texto de F6-fix7 (`seguimiento_excluded_reason`)
+#: como «etiqueta: texto libre»; no hace falta migración.
+EXCLUSION_REASON_CODES: dict[str, str] = {
+    "cancelado": "cancelado",
+    "duplicado": "duplicado",
+    "prueba": "prueba",
+    "reembolsado": "reembolsado",
+    "otro": "otro",
+}
+
+ExclusionReasonCode = Literal["cancelado", "duplicado", "prueba", "reembolsado", "otro"]
+
+
+def compose_exclusion_reason(code: str | None, text: str | None) -> str | None:
+    """Motivo que se guarda: `cancelado`, `duplicado: era el 5782`, o el texto
+    libre tal cual. Con «otro» + texto se guarda solo el texto."""
+    label = EXCLUSION_REASON_CODES.get((code or "").strip().lower())
+    free = " ".join((text or "").split())
+    if label and free:
+        return free if label == "otro" else f"{label}: {free}"
+    return label or free or None
+
+
+def _exclusion_items(
+    session: Session, order_ids: list[str],
+) -> list[dict[str, Any]]:
+    """Por cada pedido pedido: número, cliente, si ya está excluido y sus
+    AVISOS aguas abajo (factura, cobro, albarán, SAT, Drive…). Solo avisa: no
+    bloquea nada."""
+    from sqlalchemy import select  # noqa: PLC0415
+
+    from app.erp.api.orders import customer_names  # noqa: PLC0415
+    from app.erp.downstream import downstream_reasons  # noqa: PLC0415
+
+    orders = list(session.scalars(select(Order).where(Order.id.in_(order_ids))))
+    names = customer_names(session, orders)
+    items: list[dict[str, Any]] = []
+    for o in orders:
+        n = names.get(o.id) or {}
+        items.append({
+            "order_id": o.id,
+            "order_number": o.order_number,
+            "cliente": core.compose_client(n.get("company_name"), n.get("contact_name")),
+            "woo_status": o.woo_status,
+            "excluido": o.seguimiento_excluded_at is not None,
+            "excluido_motivo": o.seguimiento_excluded_reason,
+            "avisos": downstream_reasons(session, o),
+        })
+    items.sort(key=lambda it: it["order_number"] or "")
+    return items
+
+
+class ExcludePreviewIn(BaseModel):
+    order_ids: list[str] = Field(min_length=1, max_length=500)
+
+
+@router.post("/exclude-preview")
+def exclude_preview(
+    payload: ExcludePreviewIn,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_edit),
+) -> dict[str, Any]:
+    """Control manual — antes de «Quitar del seguimiento»: qué tiene cada pedido
+    aguas abajo (factura, cobro, albarán, SAT, Drive…) para AVISAR. No escribe
+    nada y no bloquea: Bart decide."""
+    _ = current_user
+    items = _exclusion_items(session, payload.order_ids)
+    return {
+        "ok": True,
+        "items": items,
+        "con_avisos": sum(1 for it in items if it["avisos"]),
+        "ya_excluidos": sum(1 for it in items if it["excluido"]),
+    }
+
+
 class ExcludeIn(BaseModel):
-    order_ids: list[str] = Field(min_length=1)
+    order_ids: list[str] = Field(min_length=1, max_length=500)
     reason: str | None = Field(default=None, max_length=2000)
+    #: Motivo rápido (opcional): cancelado / duplicado / prueba / reembolsado / otro.
+    reason_code: ExclusionReasonCode | None = None
 
 
 @router.post("/exclude")
@@ -259,29 +337,44 @@ def exclude_orders(
     session: Session = Depends(get_session),
     current_user: User = Depends(require_erp_edit),
 ) -> dict[str, Any]:
-    """ERP-F6-fix7 — EXCLUIR pedidos del seguimiento (varios a la vez). Un
-    pedido excluido no se lista, no se inserta en la hoja, no se actualiza ni se
-    cuenta. NO borra ni modifica el pedido en BoHub ni en FACTUSOL; su fila en
-    la hoja (si la hay) se queda intacta y la gestiona Bart. Registra quién y
-    cuándo, con motivo opcional. Es reversible (`/include`)."""
+    """ERP-F6-fix7 + control manual — QUITAR pedidos del seguimiento (uno o
+    varios), en CUALQUIER estado, aunque tengan factura, cobro o albarán (se
+    devuelven como `avisos`, nunca se bloquea). Un pedido excluido no se lista,
+    no se inserta en la hoja, no se actualiza ni se cuenta. NO borra ni modifica
+    el pedido en BoHub ni en FACTUSOL; su fila en la hoja (si la hay) se queda
+    intacta. Registra quién, cuándo y el motivo (rápido + texto). Idempotente:
+    el ya excluido no se vuelve a sellar (conserva su fecha y motivo). Es
+    reversible (`/include`)."""
     from sqlalchemy import select  # noqa: PLC0415
 
+    items = _exclusion_items(session, payload.order_ids)
     now = datetime.now(UTC).replace(tzinfo=None)
+    reason = compose_exclusion_reason(payload.reason_code, payload.reason)
     excluded = 0
+    already = 0
     for order in session.scalars(
         select(Order).where(Order.id.in_(payload.order_ids))
     ):
-        if order.seguimiento_excluded_at is None:
-            excluded += 1
+        if order.seguimiento_excluded_at is not None:
+            already += 1
+            continue
         order.seguimiento_excluded_at = now
         order.seguimiento_excluded_by_user_id = current_user.id
-        order.seguimiento_excluded_reason = (payload.reason or "").strip() or None
+        order.seguimiento_excluded_reason = reason
+        excluded += 1
     session.commit()
-    return {"ok": True, "excluded": excluded}
+    return {
+        "ok": True,
+        "excluded": excluded,
+        "already_excluded": already,
+        "reason": reason,
+        "avisos": {it["order_number"]: it["avisos"] for it in items if it["avisos"]},
+        "con_avisos": sum(1 for it in items if it["avisos"]),
+    }
 
 
 class IncludeIn(BaseModel):
-    order_ids: list[str] = Field(min_length=1)
+    order_ids: list[str] = Field(min_length=1, max_length=500)
 
 
 @router.post("/include")
@@ -290,22 +383,26 @@ def include_orders(
     session: Session = Depends(get_session),
     current_user: User = Depends(require_erp_edit),
 ) -> dict[str, Any]:
-    """ERP-F6-fix7 — reincluir en el seguimiento pedidos antes excluidos
-    (revierte `/exclude`). Limpia quién/cuándo/motivo de exclusión."""
+    """ERP-F6-fix7 — REINCLUIR en el seguimiento pedidos antes excluidos
+    (revierte `/exclude`). Limpia quién/cuándo/motivo de exclusión. Idempotente:
+    reincluir lo que ya estaba incluido no hace nada (se cuenta aparte)."""
     _ = current_user
     from sqlalchemy import select  # noqa: PLC0415
 
     included = 0
+    already = 0
     for order in session.scalars(
         select(Order).where(Order.id.in_(payload.order_ids))
     ):
-        if order.seguimiento_excluded_at is not None:
-            included += 1
+        if order.seguimiento_excluded_at is None:
+            already += 1
+            continue
         order.seguimiento_excluded_at = None
         order.seguimiento_excluded_by_user_id = None
         order.seguimiento_excluded_reason = None
+        included += 1
     session.commit()
-    return {"ok": True, "included": included}
+    return {"ok": True, "included": included, "already_included": already}
 
 
 @router.post("/reconcile-woo", status_code=status.HTTP_202_ACCEPTED)

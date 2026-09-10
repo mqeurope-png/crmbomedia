@@ -3,12 +3,14 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { PageHeader } from "../../components/PageHeader";
+import { ExcludeSeguimientoModal } from "../../components/erp/ExcludeSeguimientoModal";
 import { getCurrentUser, type User } from "../../lib/api";
 import {
   downloadFacturasPdfZip,
   downloadFactusolDocumentPdf,
   ERP_EDIT_ROLES,
   excludeSeguimiento,
+  type ExclusionReasonCode,
   exportSeguimientoXlsx,
   getErpSettings,
   getOrderFactusolInvoiceRef,
@@ -85,6 +87,9 @@ export default function SeguimientoPage() {
   const [previewSummary, setPreviewSummary] = useState<DriveSyncSummary | null>(null);
   // ERP-F6-fix7 — selección de filas para excluir/reincluir en bloque.
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  // Control manual — pedidos a QUITAR del seguimiento (abre el diálogo de
+  // motivo + avisos). Una fila o la selección.
+  const [excludeTarget, setExcludeTarget] = useState<SeguimientoRow[] | null>(null);
   // ERP-Woo — previsualización de la puesta al día de estados de WooCommerce.
   const [reconcile, setReconcile] = useState<WooReconcileSummary | null>(null);
   // ERP — previsualización de la vinculación de facturas de FACTUSOL.
@@ -150,38 +155,52 @@ export default function SeguimientoPage() {
     }
   }
 
-  // ERP-F6-fix7 — excluir del seguimiento los pedidos seleccionados.
-  async function onExcludeSelected() {
-    if (selected.size === 0) return;
-    const reason = window.prompt(
-      `Vas a excluir ${selected.size} pedido(s) del seguimiento. `
-      + "No se borra ni cambia nada del pedido; solo dejan de listarse y de "
-      + "escribirse en la hoja. Motivo (opcional):",
-      "",
-    );
-    if (reason === null) return;   // cancelado
-    setBusy(true);
+  // Control manual — «Quitar del seguimiento»: abre el diálogo (motivo +
+  // avisos) para una fila o para la selección (casillas de fix7). Cualquier
+  // pedido, cualquier estado; con factura/cobro/albarán se AVISA, no se bloquea.
+  function openExclude(rows: SeguimientoRow[]) {
+    if (rows.length === 0) return;
     setError(null);
     setNotice(null);
+    setExcludeTarget(rows);
+  }
+
+  function onExcludeSelected() {
+    const items = page?.items ?? [];
+    openExclude(items.filter((r) => selected.has(r.id)));
+  }
+
+  async function onConfirmExclude(reason: string, reasonCode?: ExclusionReasonCode) {
+    if (!excludeTarget) return;
+    setBusy(true);
+    setError(null);
     try {
-      const r = await excludeSeguimiento([...selected], reason.trim() || undefined);
-      setNotice(`${r.excluded} pedido(s) excluido(s) del seguimiento.`);
+      const r = await excludeSeguimiento(
+        excludeTarget.map((x) => x.id), reason || undefined, reasonCode,
+      );
+      setExcludeTarget(null);
+      setNotice(
+        `${r.excluded} pedido(s) quitado(s) del seguimiento`
+        + (r.already_excluded > 0 ? ` (${r.already_excluded} ya estaban fuera)` : "")
+        + ". Se deshace con «Reincluir» en «Ver excluidos».",
+      );
       setSelected(new Set());
       await load();
     } catch (e) {
-      setError(extractErrorMessage(e, "No se pudieron excluir los pedidos."));
+      setError(extractErrorMessage(e, "No se pudieron quitar los pedidos del seguimiento."));
     } finally {
       setBusy(false);
     }
   }
 
-  async function onIncludeSelected() {
-    if (selected.size === 0) return;
+  // «Reincluir»: deshace la exclusión (una fila o la selección). Idempotente.
+  async function onIncludeRows(ids: string[]) {
+    if (ids.length === 0) return;
     setBusy(true);
     setError(null);
     setNotice(null);
     try {
-      const r = await includeSeguimiento([...selected]);
+      const r = await includeSeguimiento(ids);
       setNotice(`${r.included} pedido(s) reincluido(s) en el seguimiento.`);
       setSelected(new Set());
       await load();
@@ -190,6 +209,10 @@ export default function SeguimientoPage() {
     } finally {
       setBusy(false);
     }
+  }
+
+  function onIncludeSelected() {
+    void onIncludeRows([...selected]);
   }
 
   // ERP — descargar el PDF de la factura de una fila (solo lectura). El pedido
@@ -589,8 +612,9 @@ export default function SeguimientoPage() {
                 </button>
               ) : (
                 <button type="button" className="button small danger" disabled={busy}
+                  title="Quita los seleccionados del seguimiento (reversible; no borra nada)"
                   onClick={onExcludeSelected}>
-                  Excluir del seguimiento ({selected.size})
+                  Quitar del seguimiento ({selected.size})
                 </button>
               )}
             </>
@@ -803,6 +827,9 @@ export default function SeguimientoPage() {
                     {filters.sort === h.sort ? (filters.dir === "asc" ? " ↑" : " ↓") : ""}
                   </th>
                 ))}
+                {/* Control manual — en «Ver excluidos»: cuándo, quién y por qué. */}
+                {viewExcluded ? <th>Quitado</th> : null}
+                {canEdit ? <th aria-label="Acciones" /> : null}
               </tr>
             </thead>
             <tbody>
@@ -873,11 +900,41 @@ export default function SeguimientoPage() {
                       </span>
                     ) : null}
                   </td>
+                  {viewExcluded ? (
+                    <td className="small">
+                      {d(r.excluido_en)}{r.excluido_por_nombre ? ` · ${r.excluido_por_nombre}` : ""}
+                      <br />
+                      <span className="muted">{r.excluido_motivo || "sin motivo"}</span>
+                    </td>
+                  ) : null}
+                  {canEdit ? (
+                    <td>
+                      {r.excluido ? (
+                        <button
+                          type="button" className="button small secondary" disabled={busy}
+                          title="Vuelve a incluir este pedido en el seguimiento"
+                          aria-label={`Reincluir ${r.albaran_pedido} en el seguimiento`}
+                          onClick={() => void onIncludeRows([r.id])}
+                        >
+                          Reincluir
+                        </button>
+                      ) : (
+                        <button
+                          type="button" className="button small secondary" disabled={busy}
+                          title="Quitar del seguimiento (reversible; no borra nada)"
+                          aria-label={`Quitar ${r.albaran_pedido} del seguimiento`}
+                          onClick={() => openExclude([r])}
+                        >
+                          Quitar
+                        </button>
+                      )}
+                    </td>
+                  ) : null}
                 </tr>
               ))}
               {page && items.length === 0 ? (
                 <tr>
-                  <td colSpan={HEADERS.length + (canEdit ? 1 : 0)} className="muted">
+                  <td colSpan={HEADERS.length + (canEdit ? 2 : 0) + (viewExcluded ? 1 : 0)} className="muted">
                     {viewExcluded
                       ? "No hay pedidos excluidos."
                       : viewOcultos
@@ -890,6 +947,17 @@ export default function SeguimientoPage() {
           </table>
         </div>
       </section>
+
+      {excludeTarget ? (
+        <ExcludeSeguimientoModal
+          rows={excludeTarget.map((r) => ({
+            id: r.id, order_number: r.albaran_pedido, cliente: r.cliente,
+          }))}
+          busy={busy}
+          onConfirm={onConfirmExclude}
+          onCancel={() => setExcludeTarget(null)}
+        />
+      ) : null}
     </main>
   );
 }

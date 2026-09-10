@@ -4,12 +4,18 @@ Hasta la regla «solo se crea en `processing`», BoHub creaba el pedido en
 CUALQUIER estado de WooCommerce (`pending`, `on-hold`…). Esto localiza los ya
 importados cuyo `woo_status` NO es `processing` ni `completed` y los saca del
 seguimiento con la exclusión reversible de F6-fix7 (`seguimiento_excluded_*`,
-misma que el botón «Excluir»; se deshace con «Reincluir»). NO borra nada.
+misma que el botón «Quitar del seguimiento»; se deshace con «Reincluir»). NO
+borra nada.
 
-Red de seguridad — NUNCA se toca un pedido con algo aguas abajo, aunque su
-estado sea raro: facturado, cobrado/pagado, con albarán/envío o etiquetas, con
-excepción/tarea SAT, ya escrito en la hoja de Drive, o ya trabajado en
-preparación. Esos se listan aparte con su motivo.
+Red de seguridad — NUNCA se toca un pedido con algo REAL aguas abajo, aunque
+su estado sea raro: facturado, cobrado/pagado, con albarán/envío o etiquetas,
+con excepción/tarea SAT, o ya trabajado en preparación. Esos se listan aparte
+con su motivo.
+
+«Escrito en Drive» YA NO protege (es un dato informativo, con falsos positivos:
+ver `app.erp.downstream`); se enseña como `avisos` en cada candidato para que
+Bart decida. El control manual de la vista de seguimiento sustituye ese
+chequeo automático.
 
 Los pedidos SIN `woo_status` (importados antes de #376) no se conocen: no son
 candidatos; se cuentan aparte para reconciliarlos primero.
@@ -22,22 +28,18 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import exists, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.erp.models import (
-    ErpDriveSyncRow,
-    ErpException,
-    InvoiceStatus,
-    Order,
-    OrderSource,
-    PaymentStatus,
-    PreparationStatus,
-    ShipmentFile,
-    ShipmentPackage,
-)
+from app.erp.downstream import downstream_reasons, hard_reasons
+from app.erp.models import Order, OrderSource
 from app.models.crm import Company, Contact
 from app.models.integration_settings import IntegrationAccount
+
+__all__ = [
+    "EXCLUSION_REASON_PREFIX", "KEEP_STATUSES", "cleanup_non_processing_orders",
+    "downstream_reasons",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -48,39 +50,9 @@ KEEP_STATUSES: frozenset[str] = frozenset({"processing", "completed"})
 #: reincluirlos en bloque si hiciera falta).
 EXCLUSION_REASON_PREFIX = "limpieza woo no-processing"
 
-_INVOICED = {
-    InvoiceStatus.GENERATED.value, InvoiceStatus.INVOICED_BY_ERP.value,
-    InvoiceStatus.ALREADY_INVOICED_EXTERNALLY.value, InvoiceStatus.CREDIT_NOTE.value,
-}
-_PAID = {PaymentStatus.PAID.value, PaymentStatus.PARTIAL_PAID.value}
-_WORKED = {
-    PreparationStatus.IN_QUEUE.value, PreparationStatus.PREPARING.value,
-    PreparationStatus.PACKED.value, PreparationStatus.BLOCKED.value,
-}
-
 
 def _val(v: Any) -> str:
     return str(getattr(v, "value", v) or "")
-
-
-def downstream_reasons(session: Session, order: Order) -> list[str]:
-    """Por qué NO se puede tocar este pedido (vacío = limpio aguas abajo)."""
-    reasons: list[str] = []
-    if order.factusol_invoice_number or _val(order.invoice_status) in _INVOICED:
-        reasons.append("facturado")
-    if _val(order.payment_status) in _PAID:
-        reasons.append("cobrado/pagado")
-    if session.scalar(select(exists().where(ShipmentPackage.order_id == order.id))):
-        reasons.append("albarán/envío")
-    if session.scalar(select(exists().where(ShipmentFile.order_id == order.id))):
-        reasons.append("albarán/etiqueta guardada")
-    if session.scalar(select(exists().where(ErpException.order_id == order.id))):
-        reasons.append("excepción/tarea SAT")
-    if session.scalar(select(exists().where(ErpDriveSyncRow.order_id == order.id))):
-        reasons.append("escrito en Drive")
-    if _val(order.preparation_status) in _WORKED:
-        reasons.append(f"en preparación ({_val(order.preparation_status)})")
-    return reasons
 
 
 def _client_name(session: Session, order: Order) -> str:
@@ -95,7 +67,9 @@ def _client_name(session: Session, order: Order) -> str:
     return ""
 
 
-def _row(session: Session, order: Order, reasons: list[str]) -> dict[str, Any]:
+def _row(
+    session: Session, order: Order, reasons: list[str], avisos: list[str],
+) -> dict[str, Any]:
     return {
         "order_id": order.id,
         "order_number": order.order_number,
@@ -103,7 +77,10 @@ def _row(session: Session, order: Order, reasons: list[str]) -> dict[str, Any]:
         "woo_status": order.woo_status,
         "importe": float(order.total_amount or 0),
         "preparation_status": _val(order.preparation_status),
+        # Motivos REALES por los que no se toca (vacío = candidato).
         "motivos": reasons,
+        # Informativo (p. ej. «escrito en Drive»): no protege, solo se enseña.
+        "avisos": avisos,
     }
 
 
@@ -112,8 +89,9 @@ def cleanup_non_processing_orders(
     actor_user_id: str | None = None,
 ) -> dict[str, Any]:
     """Localiza (y con `dry_run=False` EXCLUYE del seguimiento) los pedidos Woo
-    importados que no están en `processing`/`completed` y no tienen nada aguas
-    abajo. Idempotente: los ya excluidos no se cuentan ni se vuelven a tocar."""
+    importados que no están en `processing`/`completed` y no tienen nada REAL
+    aguas abajo. Idempotente: los ya excluidos no se cuentan ni se vuelven a
+    tocar."""
     stmt = select(Order).where(
         Order.external_source == OrderSource.WOOCOMMERCE,
         Order.seguimiento_excluded_at.is_(None),
@@ -139,8 +117,10 @@ def cleanup_non_processing_orders(
             continue
         if st in KEEP_STATUSES:
             continue
-        reasons = downstream_reasons(session, o)
-        row = _row(session, o, reasons)
+        all_reasons = downstream_reasons(session, o)
+        reasons = hard_reasons(all_reasons)
+        avisos = [r for r in all_reasons if r not in reasons]
+        row = _row(session, o, reasons, avisos)
         if reasons:
             protected.append(row)
             for r in reasons:
