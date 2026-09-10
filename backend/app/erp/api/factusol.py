@@ -880,6 +880,150 @@ def mark_invoice_payment_endpoint(
     return {"status": "queued", "job_id": job_id, "paid": payload.paid, **meta}
 
 
+# --- ERP-F4-B: registrar un COBRO en FACTUSOL (F_LCO + ESTFAC) --------------
+#
+# Es lo que F-3 NO hacía (solo ponía el flag ESTFAC): aquí se inserta la línea
+# de cobro real en `F_LCO` (importe, fecha, contrapartida, concepto) y después
+# se marca ESTFAC=2. Lo conduce en lote `scripts/registrar_cobros_lote.ps1`.
+
+
+class InvoiceCollectionPayload(BaseModel):
+    """Registrar un cobro. `confirm` OBLIGATORIO: escribir en la contabilidad
+    no es un clic accidental."""
+
+    confirm: bool = False
+    #: Contrapartida (cuenta donde entra el dinero): CÓDIGO («6») o NOMBRE tal
+    #: como viene en el Excel («Bomedia (Sabadell)», «Paypal MQ Europe»).
+    cuenta: str = Field(min_length=1, max_length=80)
+    #: Fecha del cobro (ISO o dd/mm/yyyy).
+    fecha: str = Field(min_length=6, max_length=25)
+    #: Forma de pago (texto del Excel: Transferencia/TPV/Paypal…) → concepto.
+    forma: str | None = Field(default=None, max_length=80)
+    observaciones: str | None = Field(default=None, max_length=255)
+    #: Importe; por defecto el SALDO pendiente (= total si no había cobros).
+    importe: float | None = Field(default=None, gt=0)
+
+
+@router.get("/documents/facturas/collection-status/{job_id}")
+def invoice_collection_status(
+    job_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_view),
+) -> dict[str, Any]:
+    """Polling del job de registro de cobro (pending / finished (+result) /
+    failed (+error))."""
+    _ = current_user, session
+    return _rq_quote_status(job_id)
+
+
+@router.post("/documents/facturas/{serie}/{codigo}/collection", status_code=202)
+def register_invoice_collection_endpoint(
+    serie: int,
+    codigo: int,
+    payload: InvoiceCollectionPayload,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_edit),
+) -> dict[str, Any]:
+    """Encola registrar el cobro de la factura en `factusol:writes` (202 +
+    job_id). Pre-chequeo EN VIVO: resuelve la contrapartida (400 si no está en
+    el catálogo), valida la fecha (400), confirma que la factura existe (404) y
+    lee su saldo/ESTFAC (idempotencia: ya cobrada → `already`, no encola).
+    Devuelve cliente/total/importe previsto para el aviso. Permiso de EDICIÓN."""
+    from app.core.audit import record_event  # noqa: PLC0415
+    from app.erp.contrapartidas import (  # noqa: PLC0415
+        resolve_contrapartida,
+        resolve_contrapartida_code,
+    )
+    from app.integrations.factusol.client import (  # noqa: PLC0415
+        FactusolClient,
+        FactusolError,
+    )
+    from app.integrations.factusol.collections_write import (  # noqa: PLC0415
+        collection_status,
+        factusol_datetime,
+    )
+    from app.integrations.factusol.jobs import (  # noqa: PLC0415
+        enqueue_register_invoice_collection,
+    )
+    from app.integrations.factusol.service import ejercicio_for  # noqa: PLC0415
+
+    if not payload.confirm:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, {
+            "code": "confirmation_required",
+            "detail": "Registrar un cobro requiere confirmación explícita.",
+        })
+    contrapartida = resolve_contrapartida_code(session, payload.cuenta)
+    if contrapartida is None:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, {
+            "code": "unknown_account",
+            "detail": (
+                f"La cuenta {payload.cuenta!r} no casa con ninguna contrapartida "
+                "del catálogo (/erp/settings)."
+            ),
+        })
+    try:
+        fecha_iso = factusol_datetime(payload.fecha)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, {
+            "code": "invalid_date", "detail": str(exc),
+        }) from exc
+    try:
+        client = FactusolClient.from_settings()
+        ejercicio = ejercicio_for(session)
+        status_info = collection_status(
+            client, serie=serie, codigo=codigo, ejercicio=ejercicio,
+        )
+    except FactusolError as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, {
+            "code": "factusol_unreachable", "detail": str(exc)[:200],
+        }) from exc
+    except Exception as exc:  # noqa: BLE001 — sin credenciales / config
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, {
+            "code": "factusol_unavailable", "detail": str(exc)[:200],
+        }) from exc
+    if status_info is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, {
+            "code": "invoice_not_found",
+            "detail": f"No existe la factura {serie}-{codigo}.",
+        })
+    cuenta_info = {
+        "codigo": contrapartida,
+        "nombre": resolve_contrapartida(session, contrapartida) or contrapartida,
+    }
+    importe = round(
+        payload.importe if payload.importe is not None
+        else status_info["saldo_pendiente"], 2,
+    )
+    meta = {
+        "numero": status_info["numero"], "cliente": status_info["cliente"],
+        "referencia": status_info["referencia"], "total": status_info["total"],
+        "saldo_pendiente": status_info["saldo_pendiente"],
+        "importe": importe, "contrapartida": cuenta_info,
+        "fecha": fecha_iso[:10], "forma": payload.forma,
+    }
+    # Idempotente: ya cobrada (saldo 0 / ESTFAC=2) → no se encola nada.
+    if status_info["ya_cobrada"]:
+        return {"status": "already", "estfac": status_info["estfac"], **meta}
+    job_id = enqueue_register_invoice_collection(
+        serie, int(codigo), contrapartida, fecha_iso,
+        importe, payload.forma, payload.observaciones,
+        actor_user_id=current_user.id, meta=meta,
+    )
+    record_event(
+        session,
+        action="erp.invoice_collection_requested",
+        target_type="document", target_id=status_info["numero"],
+        actor=current_user,
+        metadata={"job_id": job_id, **meta},
+        message=(
+            f"Solicitado registrar cobro de {importe} € de "
+            f"{status_info['numero']} en {cuenta_info['nombre']}"
+        ),
+    )
+    session.commit()
+    return {"status": "queued", "job_id": job_id, **meta}
+
+
 #: ERP-E4 — logos de las empresas emisoras. Los modelos de FACTUSOL apuntan a
 #: rutas del PC de Bart, inaccesibles: se suben desde /erp/settings y viven
 #: bajo el directorio de assets (bind-mount persistente en producción). El

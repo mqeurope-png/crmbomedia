@@ -125,6 +125,41 @@ def resolve_contrapartida(session: Session, code: Any) -> str | None:
     return resolve_name(contrapartida_names(session), code)
 
 
+def _norm_account_name(text: Any) -> str:
+    """«Bomedia (Sabadell)» → «bomedia sabadell»: minúsculas, sin paréntesis
+    ni puntuación, espacios colapsados — para casar el nombre tal como viene
+    en el Excel de conciliación con el del catálogo."""
+    import re  # noqa: PLC0415
+
+    lowered = str(text or "").lower()
+    lowered = re.sub(r"[()\[\]{},;:/\\\-_·.]+", " ", lowered)
+    return " ".join(lowered.split())
+
+
+def resolve_contrapartida_code(session: Session, cuenta: Any) -> str | None:
+    """ERP-F4-B — código de contrapartida a partir de un CÓDIGO («6», «006»)
+    o de un NOMBRE de cuenta tal como aparece en el Excel de conciliación
+    («Bomedia (Sabadell)», «Paypal MQ Europe»). Tolera paréntesis y el orden
+    de las palabras. `None` si no casa con ninguna del catálogo: nunca se
+    registra un cobro contra una cuenta adivinada."""
+    raw = str(cuenta or "").strip()
+    if not raw:
+        return None
+    items = contrapartidas(session)
+    code = normalize_code(raw)
+    if code.isdigit():
+        return code if any(normalize_code(it["codigo"]) == code for it in items) else None
+    wanted = _norm_account_name(raw)
+    for it in items:
+        if _norm_account_name(it["nombre"]) == wanted:
+            return normalize_code(it["codigo"])
+    wanted_tokens = set(wanted.split())
+    for it in items:
+        if set(_norm_account_name(it["nombre"]).split()) == wanted_tokens:
+            return normalize_code(it["codigo"])
+    return None
+
+
 def paypal_by_store_config(raw: Any) -> dict[str, str]:
     """`{tienda → código}` guardado, completado con los valores iniciales para
     las tiendas que no tengan nada."""
@@ -162,5 +197,6 @@ __all__ = [
     "paypal_by_store_config",
     "paypal_contrapartida_for_store",
     "resolve_contrapartida",
+    "resolve_contrapartida_code",
     "validate_contrapartidas",
 ]

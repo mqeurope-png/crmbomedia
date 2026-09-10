@@ -192,6 +192,97 @@ def enqueue_mark_invoice_paid(
     )
 
 
+# --- ERP-F4-B: registrar un COBRO (F_LCO + ESTFAC) ----------------------------
+
+
+def register_invoice_collection_job(
+    serie: int, codigo: int, contrapartida: str, fecha: str,
+    importe: float | None = None, forma: str | None = None,
+    observaciones: str | None = None,
+    actor_user_id: str | None = None,
+    meta: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Inserta la línea de cobro en `F_LCO` y marca `ESTFAC=2`. Corre en
+    `factusol:writes` (serial: el LINLCO = max+1 necesita concurrency=1).
+    Idempotente (ya cobrada → `already`, sin escribir). El resultado refleja
+    lo que pasó de verdad (`registered`, `estfac_marked`, `motivo`)."""
+    from sqlalchemy.orm import Session  # noqa: PLC0415
+
+    from app.db.session import get_engine  # noqa: PLC0415
+    from app.integrations.factusol.collections_write import (  # noqa: PLC0415
+        register_invoice_collection,
+    )
+    from app.integrations.factusol.service import ejercicio_for  # noqa: PLC0415
+
+    info = meta or {}
+    with Session(get_engine()) as session:
+        client = FactusolClient.from_settings()
+        ejercicio = ejercicio_for(session)
+        result = register_invoice_collection(
+            client, session, serie=serie, codigo=codigo,
+            contrapartida=contrapartida, fecha=fecha, importe=importe,
+            forma=forma, observaciones=observaciones, ejercicio=ejercicio,
+        )
+        if result.get("registered"):
+            _record_invoice_collection_event(
+                session, serie=serie, codigo=codigo, result=result,
+                actor_user_id=actor_user_id, meta=info,
+            )
+            session.commit()
+    result.setdefault("numero", info.get("numero") or f"{serie}-{int(codigo):06d}")
+    return result
+
+
+def _record_invoice_collection_event(
+    session: Any, *, serie: int, codigo: int, result: dict[str, Any],
+    actor_user_id: str | None, meta: dict[str, Any],
+) -> None:
+    """Timeline «Cobro de X € registrado en FACTUSOL para la factura N»."""
+    from app.core.audit import record_event  # noqa: PLC0415
+    from app.erp.factusol_pdf import _find_order_for_document  # noqa: PLC0415
+    from app.models.crm import User  # noqa: PLC0415
+
+    actor = session.get(User, actor_user_id) if actor_user_id else None
+    numero = result.get("numero") or f"{serie}-{int(codigo):06d}"
+    quien = f" por {actor.full_name}" if actor is not None else ""
+    order = _find_order_for_document(
+        session, "facturas",
+        {"codigo": codigo, "referencia": meta.get("referencia") or ""},
+    )
+    record_event(
+        session,
+        action="erp.invoice_collection_registered",
+        target_type="order" if order is not None else "document",
+        target_id=order.id if order is not None else numero,
+        actor=actor,
+        metadata={
+            "numero": numero, "importe": result.get("importe"),
+            "contrapartida": result.get("contrapartida"),
+            "fecha": result.get("fecha"), "linlco": result.get("linlco"),
+            "estfac_marked": result.get("estfac_marked"),
+        },
+        message=(
+            f"Cobro de {result.get('importe')} € registrado en FACTUSOL para "
+            f"la factura {numero}{quien}"
+        ),
+    )
+
+
+def enqueue_register_invoice_collection(
+    serie: int, codigo: int, contrapartida: str, fecha: str,
+    importe: float | None = None, forma: str | None = None,
+    observaciones: str | None = None,
+    actor_user_id: str | None = None,
+    meta: dict[str, Any] | None = None,
+) -> str:
+    """Encola `register_invoice_collection_job` en `factusol:writes`."""
+    return _enqueue(
+        "app.integrations.factusol.jobs.register_invoice_collection_job",
+        serie, codigo, contrapartida, fecha, importe, forma, observaciones,
+        actor_user_id, meta,
+    )
+
+
 # --- cadena de documentos (ERP-E3-B) -----------------------------------------
 
 
