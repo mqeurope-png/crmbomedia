@@ -22,7 +22,7 @@ from sqlalchemy.pool import StaticPool
 
 import app.main  # noqa: F401  — registra todos los modelos en Base.metadata
 from app.db.base import Base
-from app.erp.models import Order, OrderLine
+from app.erp.models import Order, OrderLine, OrderSource
 from app.integrations.factusol.client import FactusolError
 from app.integrations.factusol.quotes import (
     ARTICLE_SEARCH_LIMIT,
@@ -844,7 +844,12 @@ def test_convert_to_order_populates_lines(session):
     result = convert_quote_to_order(fake, session, "80", ejercicio="2026")
 
     order = session.get(Order, result["order_id"])
-    assert order.order_number.startswith("MANUAL-")
+    # Fase 1: origen proforma + nº del documento (la columna «Proforma» del
+    # seguimiento lo enseña) y nº de pedido PRO-.
+    assert order.order_number == "PRO-000080"
+    assert order.external_source == OrderSource.FACTUSOL_PROFORMA
+    assert order.external_id == "80"
+    assert result["already_existed"] is False
     assert order.company_id == company.id  # resuelto por el vínculo CODCLI
     assert float(order.total_amount) == 80.0
     lines = list(session.scalars(

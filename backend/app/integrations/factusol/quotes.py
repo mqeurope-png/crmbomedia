@@ -37,10 +37,8 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, date, datetime
-from json import dumps as json_dumps
 from typing import Any
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.integrations.factusol.client import FactusolClient, FactusolError
@@ -859,7 +857,7 @@ def convert_quote_to_order(
     client: FactusolClient, session: Session, codpre: str, *, ejercicio: str,
     actor_user_id: str | None = None,
 ) -> dict[str, Any]:
-    """Convierte la proforma en un **pedido manual del CRM** (`Order`).
+    """Convierte la proforma en un pedido de BoHub (`Order`).
 
     Deliberadamente **no escribe un F_PCL en FACTUSOL**. Dos razones:
 
@@ -875,80 +873,69 @@ def convert_quote_to_order(
     El pedido creado sigue el circuito normal del ERP (preparar → embalar →
     enviar → `emit_invoice`), que es lo que Bart necesita de «convertir».
 
-    C-4-fix3: las líneas ya son las reales de `F_LPS`, con su SKU, cantidad y
-    precio. Antes, sin caché, el pedido salía con una única línea genérica.
+    Fase 1: el pedido queda marcado con origen `factusol_proforma` y
+    `external_id` = CODPRE (la columna «Proforma» del seguimiento lo enseña),
+    nº `PRO-nnnnnn`, y la conversión es IDEMPOTENTE: la segunda vez devuelve el
+    pedido ya creado (`already_existed`) en vez de duplicarlo. Comparte el
+    constructor con el alta desde documento (`app.erp.orders_from_factusol`).
     """
-    from app.erp.api.orders import _next_manual_number  # noqa: PLC0415
-    from app.erp.models import (  # noqa: PLC0415
-        Order,
-        OrderLine,
-        OrderSource,
-        OrderStatusHistory,
-        StatusDomain,
+    from app.erp.models import OrderSource  # noqa: PLC0415
+    from app.erp.orders_from_factusol import (  # noqa: PLC0415
+        build_order,
+        external_id_for,
+        factusol_source_block,
+        find_existing,
+        order_number_for,
+        resolve_company_id,
     )
-    from app.models.crm import Company  # noqa: PLC0415
 
     data = quote_lines_for_order(client, session, codpre, ejercicio=ejercicio)
     codpre = data["codpre"]
+    serie = int(DEFAULT_TIPPRE)
+    external_id = external_id_for("presupuestos", serie, int(codpre))
+    existing = find_existing(session, OrderSource.FACTUSOL_PROFORMA, external_id)
+    if existing is not None:
+        logger.info("factusol: la proforma %s ya era el pedido %s (no se duplica)",
+                    codpre, existing.order_number)
+        return {
+            "order_id": existing.id, "order_number": existing.order_number,
+            "codpre": codpre, "lines": len(data["lines"]),
+            "total": float(existing.total_amount or 0),
+            "company_id": existing.company_id, "already_existed": True,
+        }
 
     # El cliente del pedido se resuelve por el vínculo CRM ↔ CODCLI que ya
     # mantiene C-3. Sin vínculo el pedido se crea igualmente (sin empresa) y el
     # operador la asigna: es preferible a perder la conversión.
-    company_id = None
-    if data["clipre"]:
-        company_id = session.scalar(
-            select(Company.id).where(Company.factusol_company_id == data["clipre"])
-        )
-
-    order = Order(
-        external_source=OrderSource.MANUAL,
-        order_number=_next_manual_number(session),
+    company_id = resolve_company_id(session, data["clipre"])
+    referencia = data["referencia"]
+    order = build_order(
+        session,
+        source=OrderSource.FACTUSOL_PROFORMA,
+        external_id=external_id,
+        order_number=order_number_for("presupuestos", serie, int(codpre)),
         company_id=company_id,
+        contact_id=None,
         placed_at=datetime.now(UTC),
+        lines=data["lines"],
+        notes=f"Creado desde la proforma FACTUSOL {codpre}" + (
+            f" · ref. {referencia}" if referencia else ""
+        ),
+        packing_extra={"factusol_source": factusol_source_block(
+            doc_type="presupuestos", serie=serie, codigo=int(codpre),
+            referencia=referencia, forma_pago=None, forma_pago_nombre=None,
+            cliente_codigo=data["clipre"], total=data["total"],
+        )},
+        actor_user_id=actor_user_id,
+        history_reason=f"Pedido creado desde la proforma FACTUSOL {codpre}",
     )
-    session.add(order)
-    session.flush()
-
-    total = 0.0
-    for i, line in enumerate(data["lines"]):
-        line_total = round(
-            _num(line["quantity"], 1.0) * _num(line["unit_price"])
-            * (1 - _num(line.get("discount_pct")) / 100),
-            2,
-        )
-        total += line_total
-        session.add(OrderLine(
-            order_id=order.id, position=i,
-            # C-4-fix3: con las líneas reales de F_LPS ya hay SKU que copiar.
-            product_sku=str(line.get("codart") or "")[:128],
-            product_codart=line.get("codart"),
-            description=line["description"],
-            quantity=_num(line["quantity"], 1.0),
-            unit_price=_num(line["unit_price"]),
-            tax_rate=_num(line.get("iva_pct"), DEFAULT_IVA_PCT),
-            line_total=line_total,
-        ))
-    order.total_amount = round(total, 2)
-
-    session.add(OrderStatusHistory(
-        order_id=order.id, domain=StatusDomain.PREPARATION,
-        from_status=None,
-        to_status=getattr(order.preparation_status, "value", order.preparation_status),
-        changed_at=datetime.now(UTC), changed_by_user_id=actor_user_id,
-        reason=f"Pedido creado desde la proforma FACTUSOL {codpre}",
-        metadata_json=json_dumps({
-            "event": "order_created_from_quote",
-            "factusol_codpre": codpre,
-            "factusol_ejercicio": ejercicio,
-            "line_source": data["line_source"],
-        }),
-    ))
     session.commit()
-    logger.info("factusol: proforma %s → pedido %s (%d líneas)",
-                codpre, order.order_number, len(data["lines"]))
+    logger.info("factusol: proforma %s → pedido %s (%d líneas, %.2f €)",
+                codpre, order.order_number, len(data["lines"]),
+                float(order.total_amount))
     return {
-        "codpre": codpre, "ejercicio": ejercicio,
         "order_id": order.id, "order_number": order.order_number,
-        "line_source": data["line_source"], "lines": len(data["lines"]),
-        "total": order.total_amount,
+        "codpre": codpre, "lines": len(data["lines"]),
+        "total": float(order.total_amount), "company_id": company_id,
+        "already_existed": False,
     }

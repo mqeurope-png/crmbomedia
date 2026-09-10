@@ -647,6 +647,8 @@ export type OrderCreatePayload = {
   pickup_in_store?: boolean;
   shipping_address?: OrderAddress | null;
   billing_address?: OrderAddress | null;
+  /** Fase 1: el alta parte de un presupuesto / pedido de cliente de FACTUSOL. */
+  factusol_source?: FactusolSourceInput | null;
   lines: {
     product_sku: string;
     product_codart?: string | null;
@@ -661,6 +663,77 @@ export async function createOrder(payload: OrderCreatePayload): Promise<OrderDet
   return apiFetch<OrderDetail>("/api/erp/orders", {
     method: "POST",
     body: JSON.stringify(payload),
+  });
+}
+
+// --- Fase 1 · pedido desde un documento de FACTUSOL (solo lectura allí) -------
+
+export type FactusolOrderDocType = "presupuestos" | "pedidos";
+
+/** Origen FACTUSOL de un pedido creado a mano desde un documento. */
+export type FactusolSourceInput = {
+  doc_type: FactusolOrderDocType;
+  serie: number;
+  codigo: number;
+  referencia?: string | null;
+  forma_pago?: string | null;
+  forma_pago_nombre?: string | null;
+};
+
+export type FactusolOrderPreviewLine = {
+  position: number;
+  codart: string | null;
+  description: string;
+  quantity: number;
+  unit_price: number;
+  line_total: number;
+  discount_pct: number;
+  iva_pct: number | null;
+};
+
+/** Cómo quedaría el pedido: cliente resuelto contra el CRM, líneas, nº. */
+export type FactusolOrderPreview = {
+  doc_type: FactusolOrderDocType;
+  serie: number;
+  codigo: number;
+  numero: string;
+  fecha: string | null;
+  total: number | null;
+  referencia: string | null;
+  estado: string | null;
+  estado_label: string | null;
+  forma_pago: string | null;
+  forma_pago_nombre: string | null;
+  cliente_codigo: string | null;
+  cliente_nombre: string | null;
+  company_id: string | null;
+  company_name: string | null;
+  company_linked: boolean;
+  lines: FactusolOrderPreviewLine[];
+  order_number: string;
+  external_id: string;
+  already_imported: { order_id: string; order_number: string } | null;
+};
+
+export async function previewOrderFromFactusol(
+  docType: FactusolOrderDocType, serie: number, codigo: number,
+): Promise<FactusolOrderPreview> {
+  return apiFetch(
+    `/api/erp/orders/from-factusol/preview?doc_type=${docType}&serie=${serie}&codigo=${codigo}`,
+  );
+}
+
+/** Crea el pedido directamente desde el documento (sin pasar por el formulario). */
+export async function createOrderFromFactusol(body: {
+  doc_type: FactusolOrderDocType;
+  serie: number;
+  codigo: number;
+  company_id?: string | null;
+  contact_id?: string | null;
+}): Promise<OrderDetail> {
+  return apiFetch<OrderDetail>("/api/erp/orders/from-factusol", {
+    method: "POST",
+    body: JSON.stringify(body),
   });
 }
 

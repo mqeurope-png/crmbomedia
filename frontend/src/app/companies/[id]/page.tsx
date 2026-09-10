@@ -124,6 +124,13 @@ export default function CompanyDetailPage() {
         ]}
         actions={
           <>
+            {/* Fase 1 — alta de pedido con esta empresa precargada. */}
+            <Link
+              href={`/erp/orders/new?company_id=${company.id}`}
+              className="button small"
+            >
+              + Nuevo pedido
+            </Link>
             <button
               type="button"
               className="button small secondary"
