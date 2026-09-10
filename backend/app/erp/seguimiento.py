@@ -570,6 +570,9 @@ def _en_curso(order: Order, estado: str) -> bool:
     como gestionado fuera del sistema."""
     if order.externally_processed_at is not None:
         return False
+    # «Marcar completado» (decisión de Bart): estado FINAL → sale de «en curso».
+    if order.completed_at is not None:
+        return False
     return not (
         estado == "facturado" and order.transport_status == TransportStatus.DELIVERED
     )
@@ -647,8 +650,9 @@ def build_rows(
     # Control manual — nombre de quien quitó el pedido del seguimiento (para
     # la vista de excluidos), en 1 query.
     excluded_by_ids = {
-        o.seguimiento_excluded_by_user_id for o in orders
-        if o.seguimiento_excluded_by_user_id
+        uid for o in orders
+        for uid in (o.seguimiento_excluded_by_user_id, o.completed_by_user_id)
+        if uid
     }
     excluded_by_names: dict[str, str] = {}
     if excluded_by_ids:
@@ -763,6 +767,12 @@ def build_rows(
             "excluido_por_nombre": excluded_by_names.get(
                 o.seguimiento_excluded_by_user_id or "",
             ),
+            # «Marcar completado» (solo BoHub, reversible): estado FINAL manual;
+            # se enseña como badge junto al estado y se filtra con
+            # `estado=completado`.
+            "completado": o.completed_at is not None,
+            "completado_en": _iso_date(o.completed_at),
+            "completado_por_nombre": excluded_by_names.get(o.completed_by_user_id or ""),
             # ERP-F6-fix7 — «escrito en Drive» vs «pendiente de escribir». La
             # vista diaria enseña ambos; el pendiente es lo que aún no está en
             # la hoja (y no está excluido).
@@ -833,7 +843,11 @@ def filter_rows(
     out = [r for r in out if not r["excluido"] and not r["oculto_por_estado"]]
     if pendiente_escribir:
         out = [r for r in out if r["pendiente_escribir"]]
-    if en_curso:
+    if estado == "completado":
+        # «Completado» es final (nunca «en curso»): se lista aparte, con los
+        # demás filtros de la vista.
+        out = [r for r in out if r["completado"]]
+    elif en_curso:
         out = [r for r in out if r["en_curso"]]
     if serie is not None:
         out = [r for r in out if r["serie"] == serie]
@@ -850,7 +864,7 @@ def filter_rows(
         out = [r for r in out if r["fecha"] and date.fromisoformat(r["fecha"]) >= desde]
     if hasta:
         out = [r for r in out if r["fecha"] and date.fromisoformat(r["fecha"]) <= hasta]
-    if estado:
+    if estado and estado != "completado":
         out = [r for r in out if r["estado"] == estado]
     if q:
         needle = q.casefold().strip()

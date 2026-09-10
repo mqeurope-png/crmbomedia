@@ -54,6 +54,11 @@ export type OrderSummary = {
   seguimiento_excluded_reason?: string | null;
   seguimiento_excluded_by_user_id?: string | null;
   seguimiento_excluded_by_name?: string | null;
+  /** «Marcar completado» (solo BoHub, reversible): estado final manual. */
+  completed?: boolean;
+  completed_at?: string | null;
+  completed_by_user_id?: string | null;
+  completed_by_name?: string | null;
 };
 
 export type Blocker = { code: string; detail: string };
@@ -152,16 +157,19 @@ export type OrderFilters = {
   show_external?: boolean;
   /** Control manual — ver SOLO los quitados a mano («Ver ocultados»). */
   show_excluded?: boolean;
+  /** «Completado»: true = solo completados, false = solo sin completar. */
+  completed?: boolean;
   sort?: string;
   limit?: number;
 };
 
 export async function listOrders(filters: OrderFilters = {}): Promise<OrderSummary[]> {
-  const { show_external, show_excluded, ...rest } = filters;
+  const { show_external, show_excluded, completed, ...rest } = filters;
   const query = qs({
     ...rest,
     show_external: show_external ? "true" : undefined,
     show_excluded: show_excluded ? "true" : undefined,
+    completed: completed === undefined ? undefined : String(completed),
   });
   const r = await apiFetch<{ items: OrderSummary[] }>(`/api/erp/orders${query}`);
   return r.items;
@@ -195,6 +203,22 @@ export async function fireTransition(
 
 export async function approveOrder(id: string): Promise<OrderDetail> {
   return apiFetch<OrderDetail>(`/api/erp/orders/${id}/approve`, { method: "POST" });
+}
+
+/** «Marcar completado» (solo BoHub, reversible): estado final del pedido.
+ *  Devuelve la ficha + avisos NO bloqueantes («aún sin facturar»…). Nunca
+ *  toca WooCommerce. */
+export async function completeOrder(
+  id: string,
+): Promise<OrderDetail & { already_completed: boolean; completion_avisos: string[] }> {
+  return apiFetch(`/api/erp/orders/${id}/complete`, { method: "POST" });
+}
+
+/** «Desmarcar completado»: revierte completeOrder. Idempotente. */
+export async function uncompleteOrder(
+  id: string,
+): Promise<OrderDetail & { already_uncompleted: boolean }> {
+  return apiFetch(`/api/erp/orders/${id}/uncomplete`, { method: "POST" });
 }
 
 /** E4-fix1 — corrige/persiste el idioma del pedido (null = desconocido). */
@@ -241,6 +265,10 @@ export type SeguimientoRow = {
   excluido_motivo: string | null;
   /** Control manual — nombre de quien lo quitó (vista de excluidos). */
   excluido_por_nombre?: string | null;
+  /** «Marcar completado» (solo BoHub, reversible): estado final manual. */
+  completado?: boolean;
+  completado_en?: string | null;
+  completado_por_nombre?: string | null;
   /** ERP-F6-fix7 — ya escrito en la hoja de Drive vs pendiente de escribir. */
   escrito_drive: boolean;
   pendiente_escribir: boolean;
@@ -261,7 +289,7 @@ export type SeguimientoFilters = {
   origen?: string;
   desde?: string;
   hasta?: string;
-  estado?: "pendiente" | "enviado" | "facturado";
+  estado?: "pendiente" | "enviado" | "facturado" | "completado";
   q?: string;
   en_curso?: boolean;
   /** ERP-F6-fix7 — ver SOLO los excluidos; ver SOLO los pendientes de escribir. */

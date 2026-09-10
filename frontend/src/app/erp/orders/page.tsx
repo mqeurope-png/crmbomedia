@@ -8,6 +8,7 @@ import { OrderStatusBadge } from "../../components/erp/OrderStatusBadge";
 import { getCurrentUser, type User } from "../../lib/api";
 import { extractErrorMessage } from "../../lib/errors";
 import {
+  completeOrder,
   customerLabel,
   ERP_EDIT_ROLES,
   excludeSeguimiento,
@@ -15,11 +16,17 @@ import {
   includeSeguimiento,
   listOrders,
   type OrderSummary,
+  uncompleteOrder,
 } from "../../lib/erpApi";
 
 const STORES = [
   { value: "", label: "Todas las tiendas" },
 ];
+
+const INVOICED_STATUSES = new Set(["generated", "invoiced_by_erp", "already_invoiced_externally"]);
+function isInvoiced(o: { invoice_status: string; factusol_invoice_number: string | null }): boolean {
+  return INVOICED_STATUSES.has(o.invoice_status) || !!o.factusol_invoice_number;
+}
 
 function d(iso: string | null | undefined): string {
   if (!iso) return "—";
@@ -37,6 +44,8 @@ export default function ErpOrdersPage() {
   const [rows, setRows] = useState<OrderSummary[]>([]);
   const [prep, setPrep] = useState("");
   const [payment, setPayment] = useState("");
+  // «Completado»: "" = todos, "yes" = solo completados, "no" = sin completar.
+  const [completedFilter, setCompletedFilter] = useState("");
   // B-2-fix4: por defecto la bandeja esconde los procesados externamente.
   const [showExternal, setShowExternal] = useState(false);
   // Control manual — «Ver ocultados»: SOLO los quitados a mano.
@@ -60,6 +69,7 @@ export default function ErpOrdersPage() {
         payment: payment || undefined,
         show_external: showExternal,
         show_excluded: showExcluded,
+        completed: completedFilter === "" ? undefined : completedFilter === "yes",
       }));
       // Al cambiar de vista/filtros o tras una acción, la selección deja de tener sentido.
       setSelected(new Set());
@@ -68,7 +78,7 @@ export default function ErpOrdersPage() {
     } finally {
       setLoading(false);
     }
-  }, [prep, payment, showExternal, showExcluded]);
+  }, [prep, payment, showExternal, showExcluded, completedFilter]);
 
   useEffect(() => {
     getCurrentUser().then(setUser).catch(() => undefined);
@@ -148,6 +158,38 @@ export default function ErpOrdersPage() {
     void onIncludeRows([...selected]);
   }
 
+  // «Marcar completado» / «Desmarcar» (solo BoHub, reversible). No exige envío
+  // ni factura: si no está facturado, avisa y deja continuar. Nunca toca
+  // WooCommerce.
+  async function onToggleComplete(o: OrderSummary) {
+    if (
+      !o.completed && !isInvoiced(o)
+      && !window.confirm(`${o.order_number} aún no está facturado. ¿Marcarlo completado igualmente?`)
+    ) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      if (o.completed) {
+        await uncompleteOrder(o.id);
+        setNotice(`${o.order_number} ya no está marcado como completado.`);
+      } else {
+        const r = await completeOrder(o.id);
+        setNotice(
+          `${o.order_number} marcado como completado (solo en BoHub; WooCommerce no cambia).`
+          + (r.completion_avisos.length ? ` Aviso: ${r.completion_avisos.join("; ")}.` : ""),
+        );
+      }
+      await load();
+    } catch (e) {
+      setError(extractErrorMessage(e, "No se pudo cambiar el estado de completado."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <main className="shell shell-wide">
       <PageHeader
@@ -181,6 +223,11 @@ export default function ErpOrdersPage() {
           <option value="paid">Pagado</option>
           <option value="failed">Fallido</option>
           <option value="refunded">Reembolsado</option>
+        </select>
+        <select value={completedFilter} onChange={(e) => setCompletedFilter(e.target.value)} aria-label="Filtro completado">
+          <option value="">Completado: todos</option>
+          <option value="yes">Solo completados</option>
+          <option value="no">Sin completar</option>
         </select>
         <label className="checkbox-inline" style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <input
@@ -275,6 +322,12 @@ export default function ErpOrdersPage() {
                       Oculto
                     </span>
                   ) : null}
+                  {o.completed ? (
+                    <span className="badge ok" style={{ marginLeft: 6 }}
+                      title={`Completado${o.completed_at ? ` el ${d(o.completed_at)}` : ""}${o.completed_by_name ? ` por ${o.completed_by_name}` : ""} (solo BoHub)`}>
+                      Completado
+                    </span>
+                  ) : null}
                   <div className="muted small">{o.external_source} · {o.placed_at?.slice(0, 10) ?? "—"}</div>
                 </td>
                 <td>{customerLabel(o) || <span className="muted">—</span>}</td>
@@ -293,6 +346,18 @@ export default function ErpOrdersPage() {
                 ) : null}
                 {canEdit ? (
                   <td>
+                    <button
+                      type="button" className="button small secondary" disabled={busy}
+                      title={o.completed
+                        ? "Quitar la marca de completado (solo BoHub)"
+                        : "Marcar como completado: estado final, solo en BoHub (no toca WooCommerce)"}
+                      aria-label={o.completed
+                        ? `Desmarcar completado ${o.order_number}`
+                        : `Marcar completado ${o.order_number}`}
+                      onClick={() => void onToggleComplete(o)}
+                    >
+                      {o.completed ? "Desmarcar" : "Completar"}
+                    </button>{" "}
                     {o.excluded ? (
                       <button
                         type="button" className="button small secondary" disabled={busy}

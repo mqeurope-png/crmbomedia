@@ -68,7 +68,7 @@ def list_seguimiento(
     origen: str | None = Query(default=None),
     desde: date | None = Query(default=None),
     hasta: date | None = Query(default=None),
-    estado: str | None = Query(default=None, pattern="^(pendiente|enviado|facturado)$"),
+    estado: str | None = Query(default=None, pattern="^(pendiente|enviado|facturado|completado)$"),
     q: str | None = Query(default=None, max_length=120),
     en_curso: bool = Query(default=True),
     # ERP-F6-fix7 — ver SOLO los excluidos (para revisarlos/reincluirlos), o
@@ -121,7 +121,7 @@ def export_seguimiento(
     origen: str | None = Query(default=None),
     desde: date | None = Query(default=None),
     hasta: date | None = Query(default=None),
-    estado: str | None = Query(default=None, pattern="^(pendiente|enviado|facturado)$"),
+    estado: str | None = Query(default=None, pattern="^(pendiente|enviado|facturado|completado)$"),
     q: str | None = Query(default=None, max_length=120),
     en_curso: bool = Query(default=True),
     sort: str = Query(default="fecha"),

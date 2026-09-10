@@ -191,6 +191,16 @@ class Order(TimestampMixin, Base):
     )
     seguimiento_excluded_reason: Mapped[str | None] = mapped_column(Text)
 
+    # «Marcar completado» (decisión de Bart, SOLO BoHub): estado FINAL del
+    # pedido — ya facturado y enviado, aunque el envío se tramite fuera de
+    # BoHub. Manual y reversible («Desmarcar»); no exige que Transporte esté
+    # «enviado» ni que haya factura (solo se avisa). NUNCA se propaga a
+    # WooCommerce: el estado de la tienda no cambia.
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_by_user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+
     # E4-fix1: idioma del pedido (ISO 639-1: es/en/de/fr/nl), detectado en la
     # importación Woo (WPML/locale/país) o corregido a mano en la ficha.
     # NULL = desconocido — la cascada de idioma del PDF cae al cliente o a la
