@@ -47,6 +47,9 @@ jest.mock("../../../lib/erpApi", () => ({
   // Buscador de proformas del alta (mismo listado que la ficha) y de pedidos.
   searchFactusolQuotes: jest.fn(() => Promise.resolve([])),
   listFactusolDocuments: jest.fn(() => Promise.resolve({ items: [], total: 0 })),
+  // Fase 2: catálogos del paso de pago (PaymentStep), inertes.
+  getContrapartidas: jest.fn(() => Promise.resolve([])),
+  getFactusolFormasPago: jest.fn(() => Promise.resolve([])),
 }));
 
 const mockCompanies = listCompanies as jest.Mock;

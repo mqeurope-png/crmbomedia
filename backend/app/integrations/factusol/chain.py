@@ -71,6 +71,11 @@ ORIGIN_CODES: dict[str, str] = {
 ALLOWED_CONVERSIONS: dict[str, tuple[str, ...]] = {
     "presupuestos": ("albaranes", "facturas"),
     "albaranes": ("facturas",),
+    # Fase 2: pedido de cliente NO-web → albarán, con la misma maquinaria
+    # (`*PCL→*ALB` / `*LPC→*LAL`). El guardarraíl web (un F_PCL que sea un
+    # pedido de WooCommerce NO recibe albarán de BoHub) vive en
+    # `convert_document`, y no lo salta `force`.
+    "pedidos": ("albaranes",),
 }
 
 #: Singular legible para mensajes («ya tiene albarán 5-500004»).
@@ -128,6 +133,20 @@ _REFERENCE_FALLBACKS: dict[str, frozenset[str]] = {
     "F_LFA": LFA_COLUMNS,
 }
 
+#: Estado INICIAL del documento recién creado, por tipo destino (Fase 2). El
+#: estado NO se hereda del origen: un presupuesto aceptado (`ESTPRE=1`) creaba
+#: un albarán que nacía «Facturado» (`ESTALB=1`, confirmado por el dry-run del
+#: 2026-09-11), y un pedido «Enviado» (`ESTPCL=2`) daría un valor que no existe
+#: en `ESTALB` (0/1 confirmados en el escritorio). Las facturas nacen
+#: «pendiente de cobro» (`ESTFAC=0`, confirmado en F-3): heredar `ESTPRE=1` las
+#: mostraba como «cobro parcial». Enteros, como la fila real.
+INITIAL_ESTADO_BY_TARGET: dict[str, int] = {"albaranes": 0, "facturas": 0}
+
+#: Guard de esquema estricto (no escribir si no cuadra) por tipo destino. Los
+#: albaranes son la Fase 2 (contraste hecho contra filas reales); las facturas
+#: siguen el comportamiento de E3-B (aviso en el log, sin bloquear).
+STRICT_SCHEMA_TARGETS: frozenset[str] = frozenset({"albaranes"})
+
 #: Cache en proceso de columnas vivas: {tabla: (expira_epoch, columnas)}.
 #: TTL largo — el schema de FACTUSOL no cambia entre deploys.
 _LIVE_COLUMNS_CACHE: dict[str, tuple[float, frozenset[str]]] = {}
@@ -163,6 +182,101 @@ def live_columns(
         f"No hay fila viva ni referencia de columnas para {tabla}: "
         "no se puede escribir con seguridad."
     )
+
+
+def type_mismatches(
+    payload: dict[str, Any], template: dict[str, Any],
+) -> list[tuple[str, str, str]]:
+    """Columnas del payload cuyo TIPO JSON no coincide con el de la fila REAL:
+    `'5'` vs `5`, `''` vs `0`. Es la trampa que costó los cobros (DELSOL quiere
+    de vuelta el mismo tipo que devuelve) y la que cazó `CODALB` como texto en
+    el dry-run de la Fase 2. `int` y `float` se consideran equivalentes (la
+    API devuelve 5 y 5.0 según la fila); `None` no se juzga."""
+    out: list[tuple[str, str, str]] = []
+    for col, val in payload.items():
+        if col not in template:
+            continue
+        real = template[col]
+        if val is None or real is None:
+            continue
+        if isinstance(val, bool) or isinstance(real, bool):
+            if type(val) is not type(real):
+                out.append((col, type(val).__name__, type(real).__name__))
+            continue
+        if type(val) is type(real):
+            continue
+        if isinstance(val, int | float) and isinstance(real, int | float):
+            continue
+        out.append((col, type(val).__name__, type(real).__name__))
+    return out
+
+
+def pick_template_row(
+    rows: list[dict[str, Any]], *, tip_col: str, cod_col: str, serie: int,
+) -> dict[str, Any] | None:
+    """Fila REAL más reciente (mayor código) de la MISMA serie: la plantilla
+    contra la que se contrastan los tipos del registro. Sin ninguna de esa
+    serie, la más reciente de cualquiera; `None` con la tabla vacía."""
+    def cod(r: dict[str, Any]) -> int:
+        n = _int_or_none(r.get(cod_col))
+        return n if n is not None else -1
+
+    same = [r for r in rows if coerce_serie(r.get(tip_col)) == serie]
+    pool = same or rows
+    return max(pool, key=cod) if pool else None
+
+
+def format_record(payload: dict[str, Any]) -> dict[str, tuple[Any, str]]:
+    """`{col: (valor, tipo)}` — el registro EXACTO que va a EscribirRegistro,
+    para contrastarlo campo a campo con `--alb-row` si DELSOL lo rechaza."""
+    return {k: (v, type(v).__name__) for k, v in payload.items()}
+
+
+def schema_problems(
+    client: FactusolClient, *, dst: DocSpec, cabecera: dict[str, Any],
+    lineas: list[dict[str, Any]], serie: int, ejercicio: str,
+) -> list[str]:
+    """El guard del dry-run (Fase 2), antes de escribir: columnas fuera de las
+    vivas y tipos distintos a la fila REAL más reciente de la misma serie, en
+    cabecera y líneas. Lista vacía = el esquema cuadra."""
+    problems: list[str] = []
+    allowed_h = live_columns(client, dst.table, ejercicio=ejercicio)
+    allowed_l = live_columns(client, dst.lines_table, ejercicio=ejercicio)
+    unknown_h = sorted(set(cabecera) - allowed_h)
+    if unknown_h:
+        problems.append(f"{dst.table}: columnas desconocidas {', '.join(unknown_h)}")
+    header_rows = client.load_table(dst.table, filtro="1=1", ejercicio=ejercicio)
+    template = pick_template_row(
+        header_rows, tip_col=dst.tip, cod_col=dst.cod, serie=serie,
+    )
+    if template is not None:
+        for col, got, real in type_mismatches(cabecera, template):
+            problems.append(
+                f"{dst.table}.{col}: payload {got} ({cabecera.get(col)!r}), "
+                f"fila real {real} ({template.get(col)!r})"
+            )
+    line_rows = client.load_table(dst.lines_table, filtro="1=1", ejercicio=ejercicio)
+    line_template = pick_template_row(
+        line_rows, tip_col=dst.line_tip, cod_col=dst.line_fk, serie=serie,
+    )
+    seen: set[str] = set()
+    for linea in lineas:
+        for col in sorted(set(linea) - allowed_l):
+            if col not in seen:
+                seen.add(col)
+                problems.append(f"{dst.lines_table}: columna desconocida {col}")
+        if line_template is None:
+            continue
+        for col, got, real in type_mismatches(linea, line_template):
+            key = f"L:{col}"
+            if key in seen:
+                continue
+            seen.add(key)
+            problems.append(
+                f"{dst.lines_table}.{col}: payload {got} ({linea.get(col)!r}), "
+                f"fila real {real} ({line_template.get(col)!r})"
+            )
+    return problems
 
 
 def next_doc_code(
@@ -459,12 +573,15 @@ def build_target_header(
     codigo: str,
     fecha: str,
     allowed: frozenset[str],
+    overrides: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Cabecera destino: copia por sufijo `src→dst` (arrastra cliente,
-    dirección, bandas de IVA, totales, forma de pago Y estado — los estados
-    se propagan así, confirmado en el albarán real), menos la auditoría; e
-    inyecta la clave `(TIP, COD)` + fecha. Todo filtrado por la allowlist
-    viva."""
+    dirección, bandas de IVA, totales y forma de pago), menos la auditoría; e
+    inyecta la clave `(TIP, COD)` + fecha + el estado INICIAL del tipo
+    destino (Fase 2: el estado NO se hereda — ver `INITIAL_ESTADO_BY_TARGET`).
+    `COD*` va como ENTERO, como en la fila real (dry-run 2026-09-11: DELSOL
+    quiere de vuelta el tipo que devuelve). `overrides` (p. ej. `FOPALB` del
+    paso de pago) pisa lo copiado. Todo filtrado por la allowlist viva."""
     payload: dict[str, Any] = {}
     for col, val in source_row.items():
         if not col.endswith(src.suffix):
@@ -474,8 +591,13 @@ def build_target_header(
             continue
         payload[_retag(col, src.suffix, dst.suffix)] = val
     payload[dst.tip] = str(serie)
-    payload[dst.cod] = codigo
+    payload[dst.cod] = int(codigo)
     payload[f"FEC{dst.suffix}"] = fecha
+    if dst.key in INITIAL_ESTADO_BY_TARGET:
+        payload[dst.est] = INITIAL_ESTADO_BY_TARGET[dst.key]
+    for col, val in (overrides or {}).items():
+        if val is not None:
+            payload[col] = val
     return filter_to_real_columns(payload, allowed, tabla=dst.table)
 
 
@@ -506,7 +628,7 @@ def build_target_line(
         payload[_retag(col, src.lines_suffix, dst.lines_suffix)] = val
     suffix = dst.lines_suffix
     payload[dst.line_tip] = str(serie)
-    payload[dst.line_fk] = codigo
+    payload[dst.line_fk] = int(codigo)   # entero, como CODLAL en la fila real
     payload[f"POS{suffix}"] = posicion
     payload[f"DOC{suffix}"] = origin_code
     payload[f"DTP{suffix}"] = str(origin_tip)
@@ -526,8 +648,18 @@ def convert_document(
     serie_override: int | None = None,
     fecha: str | None = None,
     force: bool = False,
+    header_overrides: dict[str, Any] | None = None,
+    actor_user_id: str | None = None,
 ) -> dict[str, Any]:
     """Crea el documento DESTINO a partir del ORIGEN, enlazado por línea.
+
+    Fase 2: (a) guardarraíl web para `pedidos` (no lo salta `force`); (b) guard
+    de esquema del dry-run ANTES de escribir — si las columnas vivas o los
+    tipos de la fila real no cuadran, no se escribe nada (estricto para
+    albaranes, aviso para facturas); (c) el registro EXACTO de cabecera y
+    líneas va al log; (d) `header_overrides` (forma de pago elegida) pisa la
+    cabecera; (e) al crear una FACTURA se vincula al pedido de BoHub que haya
+    detrás y se registra su cobro apuntado (`on_invoice_created`).
 
     Atómico con compensación: si falla una línea se borra lo escrito
     filtrando por la clave COMPUESTA `(TIP, COD)` — borrar por número a
@@ -546,6 +678,15 @@ def convert_document(
     header, lines = load_source_document(
         client, src, tip=tip, cod=cod, ejercicio=ejercicio,
     )
+
+    # Guardarraíl web (Fase 2): el albarán de un pedido WEB lo crea WooCommerce
+    # (mu-plugin Fase D). BoHub no lo duplica, ni con `force`.
+    if source_type == "pedidos":
+        from app.erp.factusol_albaran import web_pedido_reason  # noqa: PLC0415
+
+        web_reason = web_pedido_reason(session, header)
+        if web_reason:
+            raise FactusolError(web_reason)
 
     # Anti-duplicado (re-chequeado aquí, dentro del worker serial, además del
     # aviso previo del endpoint — cubre la carrera). `force` = el operador vio
@@ -578,7 +719,7 @@ def convert_document(
 
     cabecera = build_target_header(
         header, src=src, dst=dst, serie=serie, codigo=codigo,
-        fecha=fecha_doc, allowed=allowed_header,
+        fecha=fecha_doc, allowed=allowed_header, overrides=header_overrides,
     )
     lineas = [
         build_target_line(
@@ -588,6 +729,37 @@ def convert_document(
         )
         for i, row in enumerate(lines)
     ]
+
+    # Guard de esquema (el del dry-run de la Fase 2), ANTES de escribir nada:
+    # columnas fuera de las vivas o tipos distintos a la fila real → con los
+    # albaranes no se escribe y se avisa; con las facturas, aviso en el log.
+    problems = schema_problems(
+        client, dst=dst, cabecera=cabecera, lineas=lineas, serie=serie,
+        ejercicio=ejercicio,
+    )
+    if problems:
+        detail = (
+            f"El esquema real de {dst.table}/{dst.lines_table} no cuadra con el "
+            f"registro de {SINGULAR[target_type]} {visible_number(serie, codigo)}: "
+            + "; ".join(problems)
+        )
+        if target_type in STRICT_SCHEMA_TARGETS:
+            logger.error("factusol.chain: NO se escribe nada — %s", detail)
+            raise FactusolError(detail + ". No se ha escrito nada.")
+        logger.warning("factusol.chain: %s (se escribe igualmente)", detail)
+
+    # Diagnóstico: el registro EXACTO (nombres, valores y tipos) que va a
+    # EscribirRegistro, para contrastarlo con `--alb-row` si DELSOL lo rechaza.
+    logger.info(
+        "factusol.chain: EscribirRegistro %s %s ejercicio=%s registro=%s",
+        dst.table, visible_number(serie, codigo), ejercicio, format_record(cabecera),
+    )
+    for linea in lineas:
+        logger.info(
+            "factusol.chain: EscribirRegistro %s %s POS=%s registro=%s",
+            dst.lines_table, visible_number(serie, codigo),
+            linea.get(f"POS{dst.lines_suffix}"), format_record(linea),
+        )
 
     client.write_record(dst.table, cabecera, ejercicio=ejercicio)
     try:
@@ -619,10 +791,18 @@ def convert_document(
     # ESTPCL→«Enviado». Va DESPUÉS de escribir el hijo y NUNCA lo pone en
     # riesgo: si falla, el hijo persiste (nada de compensación) y el fallo
     # viaja como AVISO legible en el resultado, no como error del job.
-    origin_marked, mark_reason = mark_origin_converted(
-        client, session, source_type=source_type, serie=tip, codigo=cod,
-        ejercicio=ejercicio, current_estado=header.get(src.est),
-    )
+    if source_type == "pedidos" and target_type == "albaranes":
+        # El valor de ESTPCL «con albarán / servido» NO está confirmado (solo
+        # `estpcl_invoiced` = «Enviado», que es facturado): no se inventa.
+        origin_marked, mark_reason = False, (
+            "el valor de ESTPCL «con albarán» no está confirmado; el pedido de "
+            "cliente se queda sin marcar (se marcará al facturar)"
+        )
+    else:
+        origin_marked, mark_reason = mark_origin_converted(
+            client, session, source_type=source_type, serie=tip, codigo=cod,
+            ejercicio=ejercicio, current_estado=header.get(src.est),
+        )
     origin_mark_warning = None
     if not origin_marked:
         origin_mark_warning = (
@@ -631,6 +811,26 @@ def convert_document(
             f"marcado como convertido"
             + (f": {mark_reason}" if mark_reason else ".")
         )
+
+    # Fase 2 (opción B): si acaba de nacer una FACTURA y detrás hay un pedido
+    # de BoHub (por su albarán o por su documento origen), se vincula y se
+    # registra el cobro apuntado al convertir. Nunca pone en riesgo la factura.
+    order_link: dict[str, Any] | None = None
+    if target_type == "facturas":
+        try:
+            from app.erp.factusol_albaran import on_invoice_created  # noqa: PLC0415
+
+            order_link = on_invoice_created(
+                session, client, source_type=source_type, source_serie=tip,
+                source_codigo=cod, serie=serie, codigo=int(codigo),
+                ejercicio=ejercicio, actor_user_id=actor_user_id,
+            )
+        except Exception as exc:  # noqa: BLE001 — la factura ya existe
+            logger.warning(
+                "factusol.chain: factura %s creada, pero no se pudo vincular al "
+                "pedido / registrar su cobro: %s", numero, exc, exc_info=True,
+            )
+            order_link = {"error": str(exc)[:300]}
 
     log_chain_sync(
         session,
@@ -654,6 +854,7 @@ def convert_document(
         "source": {"doc_type": source_type, "serie": tip, "codigo": cod},
         "origin_marked": origin_marked,
         "origin_mark_warning": origin_mark_warning,
+        "order": order_link,
     }
 
 

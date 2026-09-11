@@ -110,9 +110,20 @@ class WriteFakeClient(FakeClient):
 
 def _live_alb_row(codigo: int, serie: str = "5", **over: Any) -> dict[str, Any]:
     """Fila «viva» de F_ALB: TODAS las columnas de la referencia, como las
-    devuelve CargaTabla (la API siempre sirve la tabla completa)."""
+    devuelve CargaTabla (la API siempre sirve la tabla completa), con los
+    TIPOS de la fila real (Fase 2, `--alb-row`): `COD*`/cliente/estado como
+    entero, importes como float, fechas con hora — el guard de esquema
+    contrasta el registro contra esta fila."""
     row: dict[str, Any] = {c: "" for c in ALB_REFERENCE_COLUMNS}
-    row.update({"TIPALB": serie, "CODALB": codigo})
+    # Bandas de importes (NET/BAS/IVA/DTO/…): numéricas en la fila real.
+    for col in ALB_REFERENCE_COLUMNS:
+        if col[0] in "NBPIT" and col[-4:-3].isdigit():
+            row[col] = 0.0
+    row.update({
+        "TIPALB": serie, "CODALB": codigo, "FECALB": "2026-08-20T00:00:00",
+        "ESTALB": 0, "CLIALB": 1, "CNOALB": "", "REFALB": "", "TOTALB": 0.0,
+        "FOPALB": "",
+    })
     row.update(over)
     return row
 
@@ -120,7 +131,11 @@ def _live_alb_row(codigo: int, serie: str = "5", **over: Any) -> dict[str, Any]:
 def _live_lal_row(codigo: int, serie: str = "5", pos: int = 1,
                   **over: Any) -> dict[str, Any]:
     row: dict[str, Any] = {c: "" for c in LAL_REFERENCE_COLUMNS}
-    row.update({"TIPLAL": serie, "CODLAL": codigo, "POSLAL": pos})
+    row.update({
+        "TIPLAL": serie, "CODLAL": codigo, "POSLAL": pos, "ARTLAL": "",
+        "DESLAL": "", "CANLAL": 0, "PRELAL": 0.0, "TOTLAL": 0.0, "IVALAL": 0,
+        "DOCLAL": "", "DTPLAL": "", "DCOLAL": 0,
+    })
     row.update(over)
     return row
 
@@ -254,10 +269,11 @@ def test_build_target_header_retags_filters_and_injects() -> None:
         PRESUPUESTO, src=src, dst=dst, serie=5, codigo="500004",
         fecha="2026-08-21", allowed=ALB_REFERENCE_COLUMNS,
     )
-    assert payload["TIPALB"] == "5" and payload["CODALB"] == "500004"
+    assert payload["TIPALB"] == "5" and payload["CODALB"] == 500004  # entero
     assert payload["FECALB"] == "2026-08-21"
     assert payload["CNOALB"] == "DUPLICODER, S.L."
-    assert payload["ESTALB"] == 1        # estado propagado por sufijo
+    # Fase 2: el estado NO se hereda (ESTPRE=1 daría «Facturado»): nace 0.
+    assert payload["ESTALB"] == 0
     assert payload["TOTALB"] == 186.34
     assert payload["FOPALB"] == "002"
     # Auditoría e impreso del ORIGEN excluidos; nada fuera de la allowlist.
@@ -283,7 +299,7 @@ def test_build_target_line_injects_link_and_overwrites_stale_doc() -> None:
     )
     assert payload["DOCLFA"] == "A"
     assert payload["DTPLFA"] == "5" and payload["DCOLFA"] == 500004
-    assert payload["TIPLFA"] == "5" and payload["CODLFA"] == "260064"
+    assert payload["TIPLFA"] == "5" and payload["CODLFA"] == 260064   # entero
     assert payload["POSLFA"] == 1 and payload["ARTLFA"] == "99cy"
 
 
@@ -303,14 +319,14 @@ def test_convert_pre_to_alb_inherits_serie_and_links_lines(db) -> None:
     assert result["lines"] == 2                # la de serie 2 NO se copió
 
     header = next(p for t, p in client.written if t == "F_ALB")
-    assert header["TIPALB"] == "5" and header["CODALB"] == "500004"
-    assert header["ESTALB"] == 1 and header["CNOALB"] == "DUPLICODER, S.L."
+    assert header["TIPALB"] == "5" and header["CODALB"] == 500004   # COD* entero
+    assert header["ESTALB"] == 0 and header["CNOALB"] == "DUPLICODER, S.L."
     assert header["FECALB"] == "2026-08-21"
 
     lineas = [p for t, p in client.written if t == "F_LAL"]
     assert [ln["POSLAL"] for ln in lineas] == [1, 2]
     for ln in lineas:
-        assert ln["TIPLAL"] == "5" and ln["CODLAL"] == "500004"
+        assert ln["TIPLAL"] == "5" and ln["CODLAL"] == 500004
         # EL ENLACE: vive en la línea, no en la cabecera.
         assert ln["DOCLAL"] == "P"      # origen presupuesto
         assert ln["DTPLAL"] == "5"      # serie del origen
@@ -616,13 +632,21 @@ def test_convert_endpoint_validates_conversion(http, session_factory) -> None:
     )
     assert r.status_code == 400
     assert r.json()["detail"]["code"] == "conversion_not_supported"
-    # pedidos → albaranes tampoco está soportado (fuera de scope E3-B).
+    # pedidos → facturas sigue sin soportarse; pedidos → albaranes SÍ (Fase 2)
+    # — con el documento ausente responde 404, no «no soportado».
     r2 = http.post(
         "/api/erp/factusol/documents/pedidos/5/1/convert",
-        json={"target": "albaranes"},
+        json={"target": "facturas"},
         headers=headers,
     )
     assert r2.status_code == 400
+    with _patched_factusol(FakeClient({"F_PCL": [], "F_LPC": []})):
+        r3 = http.post(
+            "/api/erp/factusol/documents/pedidos/5/1/convert",
+            json={"target": "albaranes"},
+            headers=headers,
+        )
+    assert r3.status_code == 404
 
 
 def test_convert_endpoint_404_when_source_missing(http, session_factory) -> None:
@@ -693,6 +717,7 @@ def test_allowed_conversions_shape() -> None:
     assert ALLOWED_CONVERSIONS == {
         "presupuestos": ("albaranes", "facturas"),
         "albaranes": ("facturas",),
+        "pedidos": ("albaranes",),   # Fase 2
     }
 
 

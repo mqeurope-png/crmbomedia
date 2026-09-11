@@ -179,6 +179,16 @@ class Order(TimestampMixin, Base):
     # pedido con su factura contable. NULL hasta emitir.
     factusol_invoice_number: Mapped[str | None] = mapped_column(String(32))
 
+    # Fase 2: nº del albarán FACTUSOL (`serie-código`, p. ej. `5-500008`) que
+    # BoHub creó en F_ALB al convertir la proforma / pedido de cliente en
+    # pedido. NULL si no hay albarán. Los pedidos web NUNCA lo llevan (el
+    # albarán lo crea WooCommerce). Indexado: al facturar ese albarán desde el
+    # explorador se localiza el pedido para vincular la factura y registrar el
+    # cobro apuntado (opción B).
+    factusol_albaran_number: Mapped[str | None] = mapped_column(
+        String(32), index=True,
+    )
+
     # ERP-F6-fix7 — EXCLUIR del seguimiento (decisión de Bart). Un pedido
     # excluido no se lista en el seguimiento, no se inserta en la hoja de Drive,
     # no se actualiza y no se cuenta. Es REVERSIBLE (volver a incluir) y NO borra

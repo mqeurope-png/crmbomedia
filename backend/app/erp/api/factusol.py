@@ -16,6 +16,7 @@ from typing import Any
 
 from fastapi import (
     APIRouter,
+    Body,
     Depends,
     HTTPException,
     Query,
@@ -32,6 +33,7 @@ from app.erp.api.deps import (
     require_erp_edit,
     require_erp_view,
 )
+from app.erp.factusol_albaran import PaymentIn
 from app.models.crm import User
 
 logger = logging.getLogger(__name__)
@@ -1198,6 +1200,19 @@ def convert_factusol_document(
                 status.HTTP_404_NOT_FOUND,
                 f"No existe el documento {serie}-{codigo} en {doc_type}",
             )
+        # Fase 2 — guardarraíl web: un pedido de cliente que sea un pedido de
+        # WooCommerce NO recibe albarán de BoHub (lo crea WooCommerce). El
+        # worker lo re-chequea; aquí se avisa con 409 antes de encolar.
+        if doc_type == "pedidos":
+            from app.erp.factusol_albaran import web_pedido_reason  # noqa: PLC0415
+
+            web_reason = web_pedido_reason(
+                session, {"REFPCL": doc.get("referencia") or ""},
+            )
+            if web_reason:
+                raise HTTPException(status.HTTP_409_CONFLICT, {
+                    "code": "web_pedido_no_albaran", "detail": web_reason,
+                })
         if not payload.force:
             existing = find_existing_children(
                 client, doc_type, payload.target,
@@ -2250,23 +2265,46 @@ def duplicate_quote_endpoint(
     return {"job_id": job_id, "status": "queued", "source_codpre": codpre}
 
 
+class ConvertQuotePayload(BaseModel):
+    """Fase 2 — paso de pago (opción B) + albarán al convertir la proforma."""
+
+    payment: PaymentIn | None = None
+    create_albaran: bool = True
+
+
 @router.post("/quotes/{codpre}/convert-to-order", status_code=202)
 def convert_quote_endpoint(
     codpre: str,
+    payload: ConvertQuotePayload | None = Body(default=None),
     session: Session = Depends(get_session),
     current_user: User = Depends(require_erp_edit),
 ) -> dict[str, Any]:
-    """Encola la conversión de la proforma en pedido manual del CRM.
-
-    No escribe nada nuevo en FACTUSOL — ver el docstring de
-    `quotes.convert_quote_to_order` para el porqué."""
+    """Encola la conversión de la proforma en pedido de BoHub y, Fase 2, en el
+    mismo job del worker serial: apunta el pago (opción B: sin emitir
+    factura; el cobro F-4-B se registra cuando exista) y crea el ALBARÁN en
+    FACTUSOL (idempotente, guard de esquema). El paso de pago se valida aquí
+    (400 si la cuenta no está en el catálogo)."""
+    from app.erp.factusol_albaran import PaymentError, resolve_payment  # noqa: PLC0415
     from app.integrations.factusol.jobs import (  # noqa: PLC0415
         enqueue_convert_quote_to_order,
     )
 
-    job_id = enqueue_convert_quote_to_order(codpre, current_user.id)
+    opts = payload or ConvertQuotePayload()
+    resolved = None
+    if opts.payment is not None:
+        try:
+            resolved = resolve_payment(session, opts.payment)
+        except PaymentError as exc:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, {
+                "code": exc.code, "detail": str(exc),
+            }) from exc
+    job_id = enqueue_convert_quote_to_order(
+        codpre, current_user.id, payment=resolved,
+        create_albaran=opts.create_albaran,
+    )
     _audit_quote(session, current_user, "erp.factusol_quote_convert",
-                 codpre, {"job_id": job_id})
+                 codpre, {"job_id": job_id, "payment": resolved,
+                          "create_albaran": opts.create_albaran})
     session.commit()
     return {"job_id": job_id, "status": "queued", "codpre": codpre}
 

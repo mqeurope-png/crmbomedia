@@ -14,6 +14,7 @@ import { getCurrentUser, type User } from "../../../lib/api";
 import { extractErrorMessage } from "../../../lib/errors";
 import {
   completeOrder,
+  createOrderAlbaran,
   customerLabel,
   downloadOrderFactusolPedidoPdf,
   getErpSettings,
@@ -21,6 +22,7 @@ import {
   getOrderFactusolInvoiceRef,
   getOrderTimeline,
   getFactusolStatus,
+  getQuoteJobStatus,
   fireTransition,
   saveBlob,
   uncompleteOrder,
@@ -366,6 +368,17 @@ export default function ErpOrderDetailPage() {
         />
       ) : null}
 
+      {/* Fase 2 — albarán FACTUSOL creado al convertir + pago apuntado (opción B). */}
+      {order.external_source.startsWith("factusol_")
+       || order.factusol_albaran_number || order.factusol_payment ? (
+        <AlbaranPagoCard
+          order={order}
+          canEdit={canEmit}
+          onChanged={() => load()}
+          onError={setError}
+        />
+      ) : null}
+
       {/* ERP-F6 — campos del Excel de seguimiento, editables desde la ficha. */}
       <SeguimientoFieldsCard
         order={order}
@@ -548,6 +561,178 @@ function SeguimientoFieldsCard({
         <p className="muted small" style={{ whiteSpace: "pre-wrap" }}>
           <strong>Observaciones:</strong> {order.notes}
         </p>
+      ) : null}
+    </section>
+  );
+}
+
+const ALBARAN_POLL_MS = 2000;
+const ALBARAN_POLL_MAX_TRIES = 30;  // ~60 s: el worker es serie
+
+/** Job del albarán con el que llega el alta (`?albaran_job=`), sin depender de
+ *  `useSearchParams` (la ficha no lo usa). */
+function albaranJobFromLocation(): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return new URLSearchParams(window.location.search).get("albaran_job");
+  } catch {
+    return null;
+  }
+}
+
+/** Fase 2 — «Albarán y pago FACTUSOL» del pedido creado desde una proforma /
+ *  pedido de cliente de FACTUSOL:
+ *
+ *  - Albarán: el nº creado por BoHub al convertir (`F_ALB`+`F_LAL`, idempotente);
+ *    si aún no lo tiene, botón para (re)crearlo. Los pedidos web nunca lo
+ *    tienen aquí: su albarán lo crea WooCommerce.
+ *  - Pago (opción B): «pagado» queda APUNTADO (cuenta, fecha) sin emitir
+ *    factura; el cobro F-4-B se registra solo cuando exista la factura del
+ *    pedido. «Sin pago» → pendiente, sin cobro. */
+function AlbaranPagoCard({
+  order, canEdit, onChanged, onError,
+}: {
+  order: OrderDetail;
+  canEdit: boolean;
+  onChanged: () => void;
+  onError: (msg: string | null) => void;
+}) {
+  // El alta redirige aquí con el job del albarán recién encolado (solo
+  // importa si el pedido aún no tiene su nº). Estado inicial perezoso: la
+  // tarjeta se monta tras cargar el pedido, ya en el cliente.
+  const [jobId, setJobId] = useState<string | null>(
+    () => (order.factusol_albaran_number ? null : albaranJobFromLocation()),
+  );
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  // Polling del job hasta que termine; al terminar se recarga el pedido.
+  useEffect(() => {
+    if (!jobId) return;
+    let alive = true;
+    let tries = 0;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const tick = () => {
+      getQuoteJobStatus(jobId)
+        .then((st) => {
+          if (!alive) return;
+          if (st.status === "finished") {
+            const numero = (st.result as { numero?: string } | undefined)?.numero;
+            setNotice(numero ? `Albarán FACTUSOL ${numero} creado.` : "Albarán creado.");
+            setJobId(null);
+            onChanged();
+          } else if (st.status === "failed") {
+            setJobId(null);
+            onError(`El albarán no se creó en FACTUSOL: ${st.error ?? "error"}`);
+          } else if (++tries >= ALBARAN_POLL_MAX_TRIES) {
+            setJobId(null);
+            setNotice("El albarán sigue en cola; recarga la ficha en unos segundos.");
+          } else {
+            timer = setTimeout(tick, ALBARAN_POLL_MS);
+          }
+        })
+        .catch(() => {
+          if (!alive) return;
+          if (++tries >= ALBARAN_POLL_MAX_TRIES) setJobId(null);
+          else timer = setTimeout(tick, ALBARAN_POLL_MS);
+        });
+    };
+    tick();
+    return () => { alive = false; if (timer) clearTimeout(timer); };
+    // onChanged/onError son estables a efectos prácticos (setters / load).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jobId]);
+
+  async function crearAlbaran() {
+    setBusy(true);
+    onError(null);
+    setNotice(null);
+    try {
+      const r = await createOrderAlbaran(order.id);
+      setNotice("Creando el albarán en FACTUSOL…");
+      setJobId(r.job_id);
+    } catch (e) {
+      onError(extractErrorMessage(e, "No se pudo encolar el albarán en FACTUSOL."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const pago = order.factusol_payment ?? null;
+  const isWeb = order.external_source === "woocommerce";
+
+  return (
+    <section className="erp-card" aria-label="Albarán y pago FACTUSOL">
+      <h3>Albarán y pago FACTUSOL</h3>
+      {notice ? <p className="form-info" role="status">{notice}</p> : null}
+      <p>
+        {order.factusol_albaran_number ? (
+          <span className="badge ok">Albarán FACTUSOL {order.factusol_albaran_number}</span>
+        ) : jobId ? (
+          <span className="badge warn">Creando el albarán en FACTUSOL…</span>
+        ) : isWeb ? (
+          <span className="muted small">
+            Pedido web: el albarán lo crea WooCommerce, no BoHub.
+          </span>
+        ) : (
+          <>
+            <span className="badge muted">Sin albarán en FACTUSOL</span>
+            {canEdit ? (
+              <>
+                {" "}
+                <button type="button" className="button small" disabled={busy}
+                        title="Crea el albarán (F_ALB + líneas) a partir del documento de origen; idempotente"
+                        onClick={() => void crearAlbaran()}>
+                  {busy ? "Encolando…" : "Crear albarán en FACTUSOL"}
+                </button>
+              </>
+            ) : null}
+          </>
+        )}
+      </p>
+      {pago ? (
+        <div className="erp-payment-summary">
+          {pago.paid ? (
+            <>
+              <p>
+                <span className="badge ok">Pagado (apuntado)</span>{" "}
+                {pago.forma_pago_nombre || pago.forma_pago
+                  ? `forma de pago ${pago.forma_pago_nombre ?? pago.forma_pago} · ` : ""}
+                cuenta {pago.contrapartida_nombre ?? pago.contrapartida ?? "—"}
+                {pago.fecha ? ` · fecha ${pago.fecha}` : ""}.
+              </p>
+              <p className="muted small">
+                {pago.cobro?.registered ? (
+                  <>
+                    Cobro registrado en FACTUSOL para la factura {pago.cobro.numero}
+                    {pago.cobro.linlco != null ? ` (línea ${pago.cobro.linlco}` : ""}
+                    {pago.cobro.importe != null ? `${pago.cobro.linlco != null ? ", " : " ("}${pago.cobro.importe.toFixed(2)} €)` : (pago.cobro.linlco != null ? ")" : "")}.
+                  </>
+                ) : pago.cobro && !pago.cobro.registered ? (
+                  <>
+                    Cobro FACTUSOL <strong>pendiente</strong>: no se pudo registrar
+                    {pago.cobro.motivo ? ` (${pago.cobro.motivo})` : ""}. Regístralo desde
+                    ERP · Documentos o el script de cobros.
+                  </>
+                ) : (
+                  <>
+                    Cobro FACTUSOL <strong>pendiente de factura</strong>: se registrará
+                    solo (F-4-B) al emitir la factura del pedido. No se ha emitido
+                    ninguna factura.
+                  </>
+                )}
+              </p>
+            </>
+          ) : (
+            <p>
+              <span className="badge muted">Sin pago</span>{" "}
+              pendiente
+              {pago.forma_pago_nombre || pago.forma_pago
+                ? ` · forma de pago ${pago.forma_pago_nombre ?? pago.forma_pago}` : ""}.
+              No se registra ningún cobro.
+            </p>
+          )}
+        </div>
       ) : null}
     </section>
   );

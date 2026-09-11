@@ -9,6 +9,7 @@ import {
   CustomerAutocomplete,
   type CustomerChoice,
 } from "../../../components/erp/CustomerAutocomplete";
+import { initialPayment, paymentReady, PaymentStep } from "../../../components/erp/PaymentStep";
 import { QuotePicker } from "../../../components/erp/QuotePicker";
 import { listContacts, type Contact } from "../../../lib/api";
 import { getCompany, listCompanies, type Company } from "../../../lib/companiesApi";
@@ -30,6 +31,7 @@ import {
   type FactusolOrderPreview,
   type FactusolQuote,
   type OrderAddress,
+  type PaymentIntentInput,
 } from "../../../lib/erpApi";
 
 type LineRow = {
@@ -130,6 +132,9 @@ export default function NewManualOrderPage() {
   const [facPreview, setFacPreview] = useState<FactusolOrderPreview | null>(null);
   const [facNotice, setFacNotice] =
     useState<{ tone: "info" | "error"; text: string } | null>(null);
+  // Fase 2 — paso de confirmación de pago (opción B) del pedido creado desde
+  // un documento FACTUSOL; por defecto «sin pago» con la forma del documento.
+  const [payment, setPayment] = useState<PaymentIntentInput>(initialPayment());
   // Fase 1 — «Nuevo pedido» desde la ficha de empresa: ?company_id= precarga.
   const presetCompanyId = searchParams?.get("company_id") ?? null;
 
@@ -490,6 +495,7 @@ export default function NewManualOrderPage() {
     try {
       const p = await previewOrderFromFactusol(docType, serie, codigo);
       setFacPreview(p);
+      setPayment(initialPayment(p.forma_pago, p.forma_pago_nombre));
       const rows: LineRow[] = p.lines.map((l) => ({
         product_sku: l.codart ?? "",
         description: l.description || l.codart || "",
@@ -582,7 +588,8 @@ export default function NewManualOrderPage() {
   const customerOk = Boolean(companyId || contactId);
   const addressOk = pickup || addressFilled(shipping);
   const valid = customerOk && addressOk && lines.length > 0
-    && lineErrors.every((e) => e === null) && !facPreview?.already_imported;
+    && lineErrors.every((e) => e === null) && !facPreview?.already_imported
+    && (!facPreview || paymentReady(payment));
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -606,9 +613,13 @@ export default function NewManualOrderPage() {
           serie: facPreview.serie,
           codigo: facPreview.codigo,
           referencia: facPreview.referencia,
-          forma_pago: facPreview.forma_pago,
-          forma_pago_nombre: facPreview.forma_pago_nombre,
+          forma_pago: payment.forma_pago ?? facPreview.forma_pago,
+          forma_pago_nombre: payment.forma_pago_nombre ?? facPreview.forma_pago_nombre,
         } : undefined,
+        // Fase 2: paso de pago (opción B) + albarán en FACTUSOL, solo si el
+        // pedido parte de un documento de FACTUSOL.
+        payment: facPreview ? payment : undefined,
+        create_albaran: facPreview ? true : undefined,
         lines: lines.map((l) => ({
           product_sku: l.product_sku.trim(),
           description: l.description.trim() || l.product_sku.trim(),
@@ -616,7 +627,11 @@ export default function NewManualOrderPage() {
           unit_price: num(l.unit_price),
         })),
       });
-      router.push(`/erp/orders/${order.id}`);
+      // La ficha hace polling del job del albarán y enseña su nº al terminar.
+      const albaranJob = order.albaran_job_id
+        ? `?albaran_job=${encodeURIComponent(order.albaran_job_id)}`
+        : "";
+      router.push(`/erp/orders/${order.id}${albaranJob}`);
       router.refresh();
     } catch (err) {
       setError(extractErrorMessage(err, "No se pudo crear el pedido."));
@@ -717,6 +732,18 @@ export default function NewManualOrderPage() {
                 Abrir el pedido {facPreview.already_imported.order_number}
               </Link>
             </p>
+          ) : null}
+          {facPreview && !facPreview.already_imported ? (
+            /* Fase 2: al crear el pedido se crea su albarán en FACTUSOL (sin
+               factura) y se confirma el pago: sin pago, o pagado (el cobro se
+               registra cuando exista la factura). */
+            <>
+              <p className="muted small">
+                Al crear el pedido se creará su <strong>albarán en FACTUSOL</strong>
+                {" "}(sin factura). Confirma el pago:
+              </p>
+              <PaymentStep value={payment} onChange={setPayment} />
+            </>
           ) : null}
         </section>
 

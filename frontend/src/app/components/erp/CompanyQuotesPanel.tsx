@@ -7,18 +7,38 @@ import {
   getQuoteJobStatus,
   listFactusolQuotes,
   type FactusolQuote,
+  type PaymentIntentInput,
 } from "../../lib/erpApi";
 import { CreateQuoteModal } from "./CreateQuoteModal";
+import { initialPayment, paymentReady, PaymentStep } from "./PaymentStep";
 import { QuotesTable } from "./QuotesTable";
 
 const POLL_MS = 2000;
 const POLL_MAX_TRIES = 30;  // ~60 s: el worker es serie, puede haber cola
 
+/** Texto del albarán tal como lo devuelve el job de conversión (Fase 2). */
+export function albaranSummary(result: Record<string, unknown>): string {
+  const alb = result.albaran as { numero?: string; status?: string } | null | undefined;
+  if (alb?.numero) {
+    return alb.status === "already" || alb.status === "linked"
+      ? `Albarán FACTUSOL ${alb.numero} (ya existía).`
+      : `Albarán FACTUSOL ${alb.numero} creado.`;
+  }
+  if (typeof result.albaran_error === "string" && result.albaran_error) {
+    return `El albarán NO se creó: ${result.albaran_error} Reintenta desde la ficha del pedido.`;
+  }
+  if (typeof result.albaran_skipped === "string" && result.albaran_skipped) {
+    return `Sin albarán: ${result.albaran_skipped}`;
+  }
+  return "";
+}
+
 /** Pestaña «Proformas FACTUSOL» de la ficha de empresa (C-4).
  *
  *  Las escrituras van por la cola serializada, así que aquí se encola y se
  *  hace polling del job hasta que termina — el mismo contrato que la emisión
- *  de facturas. */
+ *  de facturas. Fase 2: «Convertir en pedido» pasa por el paso de pago
+ *  (opción B) y crea el albarán en FACTUSOL en el mismo job. */
 export function CompanyQuotesPanel({
   companyId,
   companyName,
@@ -39,6 +59,9 @@ export function CompanyQuotesPanel({
   // CODPRE de la proforma que se está editando (C-4-fix6).
   const [editing, setEditing] = useState<string | null>(null);
   const [busyJob, setBusyJob] = useState(false);
+  // Fase 2: proforma pendiente de confirmar el pago antes de convertir.
+  const [converting, setConverting] = useState<FactusolQuote | null>(null);
+  const [payment, setPayment] = useState<PaymentIntentInput>(initialPayment());
 
   const load = useCallback(() => {
     setLoading(true);
@@ -81,15 +104,27 @@ export function CompanyQuotesPanel({
     load();
   }
 
+  function openConvert(q: FactusolQuote) {
+    setPayment(initialPayment());
+    setConverting(q);
+  }
+
   async function convert(codpre: string) {
+    setConverting(null);
     setBusyJob(true);
     setError(null);
-    setNotice("Creando el pedido…");
+    setNotice("Creando el pedido y el albarán en FACTUSOL…");
     try {
-      const r = await convertFactusolQuoteToOrder(codpre);
+      const r = await convertFactusolQuoteToOrder(codpre, { payment, create_albaran: true });
       const result = await waitForJob(r.job_id);
       if (result) {
-        setNotice(`Pedido ${result.order_number} creado desde la proforma ${codpre}.`);
+        const pago = payment.paid
+          ? " Pago apuntado (el cobro se registra al emitir la factura)."
+          : " Sin pago: pendiente.";
+        setNotice(
+          `Pedido ${result.order_number} creado desde la proforma ${codpre}. `
+          + albaranSummary(result) + pago,
+        );
         if (typeof result.order_id === "string") onOrderCreated?.(result.order_id);
       }
     } catch (e) {
@@ -139,7 +174,7 @@ export function CompanyQuotesPanel({
               </button>
               <button type="button" className="button small secondary"
                       disabled={busyJob}
-                      onClick={() => convert(q.codpre ?? "")}>
+                      onClick={() => openConvert(q)}>
                 Convertir en pedido
               </button>
             </>
@@ -156,6 +191,32 @@ export function CompanyQuotesPanel({
           onCreated={onCreated}
           onCancel={() => { setCreating(false); setEditing(null); }}
         />
+      ) : null}
+
+      {converting ? (
+        <div className="modal-overlay" role="dialog" aria-modal="true"
+             aria-label="Convertir proforma en pedido">
+          <div className="modal-dialog">
+            <h2>Convertir la proforma {converting.codpre} en pedido</h2>
+            <p className="muted small">
+              {converting.referencia || "Sin referencia"} · {converting.total.toFixed(2)} €.
+              Se creará el pedido en BoHub y su <strong>albarán en FACTUSOL</strong>
+              {" "}(sin factura).
+            </p>
+            <PaymentStep value={payment} onChange={setPayment} />
+            <div className="modal-actions">
+              <button type="button" className="button secondary"
+                      onClick={() => setConverting(null)}>
+                Cancelar
+              </button>
+              <button type="button" className="button"
+                      disabled={!paymentReady(payment)}
+                      onClick={() => convert(converting.codpre ?? "")}>
+                Crear pedido y albarán
+              </button>
+            </div>
+          </div>
+        </div>
       ) : null}
     </section>
   );

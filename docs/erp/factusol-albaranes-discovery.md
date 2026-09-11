@@ -519,3 +519,77 @@ así que «Pagado» al convertir admite dos lecturas, y son trabajo distinto:
 
 «Sin pago» es igual en las dos: solo se apunta la forma de pago (`FOPALB`
 heredada u override), sin `F_LCO`.
+
+### 10.5 Parte 2 — construida (decisiones: opción B; `COD*` entero; `ESTALB=0`)
+
+Resultado del discovery real (albarán `5-500006` + dry-run de
+`presupuestos 5-000037`, 2026-09-11): el veredicto fue ❌ por **dos** cosas
+que el builder de E3-B hacía mal, y nada más:
+
+1. `CODALB` / `CODLAL` iban como TEXTO (`'500008'`); la fila real los lleva
+   como ENTERO. Ahora `build_target_header`/`build_target_line` los escriben
+   `int` (para cualquier destino: en F_FAC la fila real también es numérica).
+2. `ESTALB` se heredaba del origen (`ESTPRE=1` → nacía «Facturado»). Ahora el
+   estado NO se hereda: `INITIAL_ESTADO_BY_TARGET` fija `ESTALB=0`
+   (Pendiente) y, por el mismo motivo, `ESTFAC=0` (pendiente de cobro) en las
+   facturas de la cadena — heredar `ESTPRE=1` las mostraba como «cobro parcial».
+
+Informativos, sin cambio: `FEC*` sin hora (E3-B lo escribe así y funciona) y
+las columnas del origen sin equivalente (`CARPRE`, `IMGPRE`, `I1HPRE`…), que
+la allowlist descarta.
+
+**Qué hace ahora «convertir» (proforma / pedido de cliente NO-web → pedido):**
+
+- **Albarán** (`app/erp/factusol_albaran.py` → `chain.convert_document`):
+  cabecera + líneas copiadas del origen real, allowlist viva, enlace
+  `DOC/DTP/DCO` por línea (`P` presupuesto, `C` pedido de cliente), serie
+  heredada, `FOPALB` = la forma de pago del paso de pago. Nº guardado en
+  `orders.factusol_albaran_number` (migración `20260914_0104`). Idempotente:
+  con nº → `already`; con albarán ya enlazado en FACTUSOL → `linked`. Corre
+  en `factusol:writes` (`create_order_albaran_job`; la proforma → pedido lo
+  hace en el mismo job `convert_quote_to_order_job`).
+- **Guard de esquema** (`chain.schema_problems`, el del dry-run) ANTES de
+  escribir: columnas fuera de las vivas o tipos distintos a la fila real más
+  reciente de la misma serie → con albaranes NO se escribe nada y el error
+  nombra la columna (queda en el historial del pedido; «Crear albarán en
+  FACTUSOL» reintenta). El registro EXACTO (valor y tipo) va al log del
+  worker (`EscribirRegistro F_ALB … registro={…}`), para contrastarlo con
+  `--alb-row`.
+- **Guardarraíl web**: un pedido `woocommerce` nunca genera albarán en BoHub
+  (409 `web_order_no_albaran`), y un F_PCL que sea un pedido web (`REFPCL`
+  `BOP-099917` = un pedido Woo de BoHub, o prefijo de tienda) tampoco — ni
+  desde el explorador (409 `web_pedido_no_albaran`), ni con `force`.
+  `pedidos → albaranes` queda habilitado en `ALLOWED_CONVERSIONS` solo para
+  pedidos de cliente manuales; el F_PCL origen NO se marca (el valor de
+  `ESTPCL` «con albarán» no está confirmado).
+- **Pago, opción B** (`PaymentIn`: `paid`, `forma_pago`, `contrapartida`,
+  `fecha`): «pagado» NO emite factura; deja `payment_status=paid` y el bloque
+  `packing_json.factusol_payment` (cuenta resuelta contra el catálogo de
+  contrapartidas, fecha). El cobro F-4-B (`register_invoice_collection`, solo
+  `F_LCO` + `ESTFAC=2`) se registra solo cuando EXISTE la factura del pedido:
+  al emitirla desde la ficha (`emit_invoice` → ahora factura ESE albarán con
+  la cadena) o al facturar el albarán / presupuesto desde ERP · Documentos
+  (`chain.convert_document` → `on_invoice_created`, que además vincula la
+  factura al pedido). «Sin pago» solo apunta la forma de pago.
+- **UI**: paso de pago (`PaymentStep`) en el alta desde FACTUSOL y en el
+  modal de «Convertir en pedido» de la ficha de empresa; tarjeta «Albarán y
+  pago FACTUSOL» en la ficha del pedido (nº, estado del pago y del cobro,
+  botón de reintento, polling del job al llegar del alta).
+
+**Verificación en producción (Bart):**
+
+```bash
+docker compose -f /opt/crmbo/docker-compose.prod.yml build api frontend
+docker compose -f /opt/crmbo/docker-compose.prod.yml up -d --force-recreate api frontend worker-factusol
+docker exec crmbo-api-1 alembic upgrade head          # orders.factusol_albaran_number
+# 1) Convertir un presupuesto de prueba (alta desde FACTUSOL o «Convertir en pedido»)
+#    → ERP · Documentos · albaranes: cabecera + líneas, ESTALB=0, CODALB numérico,
+#    líneas con DOCLAL='P'/DTPLAL/DCOLAL del presupuesto. Volcarlo:
+docker exec crmbo-api-1 python -m scripts.factusol_discover_albaranes --alb-row 5-5000NN
+# 2) «Pagado» (B): NO hay factura; la ficha enseña «Pagado (apuntado) · cobro pendiente
+#    de factura». Al emitir la factura (ficha o explorador): F_LCO línea 1, saldo 0,
+#    ESTFAC=2, y la ficha pasa a «Cobro registrado».
+# 3) «Sin pago»: sin cobro, pendiente.
+# 4) Log del worker con el registro exacto:
+docker logs crmbo-worker-factusol-1 --since 1h 2>&1 | grep -E "EscribirRegistro F_(ALB|LAL)|no cuadra"
+```

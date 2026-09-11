@@ -59,6 +59,9 @@ export type OrderSummary = {
   completed_at?: string | null;
   completed_by_user_id?: string | null;
   completed_by_name?: string | null;
+  /** Fase 2: nº del albarán FACTUSOL (`5-500008`) creado por BoHub al
+   *  convertir la proforma / pedido de cliente. Los pedidos web no lo llevan. */
+  factusol_albaran_number?: string | null;
 };
 
 export type Blocker = { code: string; detail: string };
@@ -115,6 +118,52 @@ export type OrderDetail = OrderSummary & {
   warnings: Warning[];
   externally_processed_note: string | null;
   externally_processed_by_user_id: string | null;
+  /** Fase 2: paso de pago apuntado al convertir (opción B) y su cobro. */
+  factusol_payment?: FactusolPaymentInfo | null;
+};
+
+/** Fase 2 · paso de confirmación de pago al convertir (opción B). `paid=false`
+ *  = «sin pago» (solo se apunta la forma de pago). `paid=true` exige la
+ *  contrapartida (código «6» o nombre «Bomedia (Sabadell)»); fecha opcional
+ *  (hoy por defecto). Nunca emite factura: el cobro F-4-B se registra cuando
+ *  exista la factura del pedido. */
+export type PaymentIntentInput = {
+  paid: boolean;
+  forma_pago?: string | null;
+  forma_pago_nombre?: string | null;
+  contrapartida?: string | null;
+  fecha?: string | null;
+};
+
+export type FactusolCollectionInfo = {
+  registered: boolean;
+  status: string | null;
+  numero: string | null;
+  linlco: number | null;
+  importe: number | null;
+  fecha: string | null;
+  motivo: string | null;
+  at: string | null;
+};
+
+/** Lo apuntado en el pedido (`packing_json.factusol_payment`). */
+export type FactusolPaymentInfo = {
+  paid: boolean;
+  forma_pago: string | null;
+  forma_pago_nombre: string | null;
+  contrapartida: string | null;
+  contrapartida_nombre: string | null;
+  fecha: string | null;
+  recorded_at?: string | null;
+  cobro: FactusolCollectionInfo | null;
+};
+
+/** Lo que añade el alta al detalle cuando parte de un documento FACTUSOL:
+ *  el job del albarán encolado en `factusol:writes` (o por qué no). */
+export type AlbaranJobExtra = {
+  albaran_job_id?: string | null;
+  albaran_error?: string | null;
+  albaran_skipped?: string | null;
 };
 
 export type PendingOrder = OrderSummary & {
@@ -649,6 +698,9 @@ export type OrderCreatePayload = {
   billing_address?: OrderAddress | null;
   /** Fase 1: el alta parte de un presupuesto / pedido de cliente de FACTUSOL. */
   factusol_source?: FactusolSourceInput | null;
+  /** Fase 2 (solo con `factusol_source`): paso de pago y albarán en FACTUSOL. */
+  payment?: PaymentIntentInput | null;
+  create_albaran?: boolean;
   lines: {
     product_sku: string;
     product_codart?: string | null;
@@ -659,11 +711,22 @@ export type OrderCreatePayload = {
   }[];
 };
 
-export async function createOrder(payload: OrderCreatePayload): Promise<OrderDetail> {
-  return apiFetch<OrderDetail>("/api/erp/orders", {
+export async function createOrder(
+  payload: OrderCreatePayload,
+): Promise<OrderDetail & AlbaranJobExtra> {
+  return apiFetch<OrderDetail & AlbaranJobExtra>("/api/erp/orders", {
     method: "POST",
     body: JSON.stringify(payload),
   });
+}
+
+/** Fase 2 — (re)encola la creación del albarán FACTUSOL del pedido (202 +
+ *  job_id; estado con `getQuoteJobStatus`). 409 si ya lo tiene, si es un
+ *  pedido web o si no procede de un documento de FACTUSOL. */
+export async function createOrderAlbaran(
+  orderId: string,
+): Promise<{ job_id: string; order_id: string; status: string }> {
+  return apiFetch(`/api/erp/orders/${orderId}/albaran`, { method: "POST" });
 }
 
 // --- Fase 1 · pedido desde un documento de FACTUSOL (solo lectura allí) -------
@@ -730,8 +793,11 @@ export async function createOrderFromFactusol(body: {
   codigo: number;
   company_id?: string | null;
   contact_id?: string | null;
-}): Promise<OrderDetail> {
-  return apiFetch<OrderDetail>("/api/erp/orders/from-factusol", {
+  /** Fase 2: paso de pago (opción B) y albarán en FACTUSOL. */
+  payment?: PaymentIntentInput | null;
+  create_albaran?: boolean;
+}): Promise<OrderDetail & AlbaranJobExtra> {
+  return apiFetch<OrderDetail & AlbaranJobExtra>("/api/erp/orders/from-factusol", {
     method: "POST",
     body: JSON.stringify(body),
   });
@@ -2226,12 +2292,16 @@ export async function duplicateFactusolQuote(
   );
 }
 
+/** Convierte la proforma en pedido de BoHub y, Fase 2, en el mismo job:
+ *  apunta el pago (opción B) y crea el ALBARÁN en FACTUSOL. El resultado del
+ *  job trae `albaran` ({numero, status}) o `albaran_error` / `albaran_skipped`. */
 export async function convertFactusolQuoteToOrder(
   codpre: string,
+  opts?: { payment?: PaymentIntentInput | null; create_albaran?: boolean },
 ): Promise<{ job_id: string; status: string; codpre: string }> {
   return apiFetch(
     `/api/erp/factusol/quotes/${encodeURIComponent(codpre)}/convert-to-order`,
-    { method: "POST" },
+    { method: "POST", body: JSON.stringify(opts ?? {}) },
   );
 }
 
