@@ -438,3 +438,84 @@ El `--trace-quote-chain` sobre la cadena real que Bart creó en el escritorio
   pendiente/con_albaran/facturado); el explorador lo pinta y filtra por él.
 - Endpoints: `POST /api/erp/factusol/documents/{tipo}/{serie}/{codigo}/convert`
   (202 + job_id) y `GET .../documents/convert-status/{job_id}`.
+
+---
+
+## 10. Fase 2 — albarán al convertir proforma / pedido de cliente en pedido BoHub
+
+### 10.1 Parte 1 — lo que ya está confirmado (respuesta a las 4 preguntas)
+
+Todo sale del `--trace-quote-chain` en vivo del 2026-08-20 (§9) y de que
+**E3-B crea albaranes en producción con ese modelo** desde entonces (fix1 y
+fix3 son correcciones sobre albaranes reales creados por BoHub).
+
+| Pregunta | Respuesta confirmada |
+|---|---|
+| Cabecera | **`F_ALB`** (136 columnas vivas; `chain.ALB_REFERENCE_COLUMNS` transcribe 84 como fallback — con datos manda la fila real) |
+| Líneas | **`F_LAL`** (36 columnas; `LAL_REFERENCE_COLUMNS` completa). No `F_ALV`/`F_LAV`. |
+| Clave | **Compuesta `(TIPALB, CODALB)`** — el mismo `CODALB` convive en varias series. |
+| Numeración | **`max(CODALB WHERE TIPALB=serie) + 1`, por tabla y serie** (albaranes serie 5 en 500xxx, facturas serie 5 en 260xxx). `chain.next_doc_code`, con guarda anti-colisión. |
+| Cabecera↔líneas | **Join compuesto** `F_LAL.TIPLAL = F_ALB.TIPALB AND F_LAL.CODLAL = F_ALB.CODALB`, orden `POSLAL`. Nunca por número desnudo (`CODLPS=27` devolvió líneas de 3 series). |
+| ¿Documento PADRE? | **No.** El albarán es autónomo: `PEDALB` va vacío y no existe `PREALB`. El **enlace vive en cada LÍNEA**: `DOCLAL` (`'P'` presupuesto, `'C'` pedido de cliente, `'A'` albarán), `DTPLAL` (serie origen), `DCOLAL` (nº origen). Sin padre no hay `BDEscribirRegistroError` por FK — lo que pasó en cobros era otra cosa (sobrescribir de más). |
+| Cadena del escritorio | presupuesto → albarán → factura (`5-000027 → 5-500004 → 5-260063`), presupuesto → factura directa, y pedido de cliente → albarán/factura (`DOC*='C'`). El origen se marca al convertir: `ESTPRE=1` (Aceptado), `ESTALB=1` (Facturado), `ESTPCL` según `estpcl_invoiced`. |
+| Serie / empresa | **La serie ES la empresa emisora y vive en `TIP*`** (1 Bomedia · 2 MQ Europe · 4 Lambert · 5 Streamtec; nombres en `/erp/settings`). El albarán **hereda la serie del documento origen** (`TIPPRE`/`TIPPCL`), con override opcional — igual que la emisión (`resolve_serie`). |
+| Cobros (F-4-B) | `collections_write.register_invoice_collection`: **solo `F_LCO`** (clave `(TFALCO, CFALCO, LINLCO)`), copiando una fila real de la misma serie y sobrescribiendo 8 columnas; después `ESTFAC=2`. Endpoint `POST /documents/facturas/{serie}/{codigo}/collection` + job en `factusol:writes`. **La clave es la FACTURA**: no existe cobro de albarán. |
+
+Lo que E3-B hace HOY al crear un albarán (y funciona): copia por sufijo la
+cabecera y las líneas del documento **origen real** (`*PRE→*ALB`,
+`*LPS→*LAL`) — es decir, «fila real de plantilla» = el propio origen, que es
+lo que copia el escritorio —, excluye auditoría (`USU/USM/HOR/FUM/IMP/PAS/
+FEC/CID/PDF`), inyecta `(TIP, COD)` + `FEC*` + `DOC/DTP/DCO` por línea y
+**filtra contra las columnas vivas** (`live_columns`, fila real cacheada 1 h).
+
+### 10.2 Dos avisos que salen del análisis (a decidir con el volcado)
+
+1. **`ESTALB` se hereda del origen.** Con un presupuesto ya aceptado
+   (`ESTPRE=1`) el albarán nace con `ESTALB=1` = «Facturado» sin factura; con
+   un pedido «Enviado» (`ESTPCL=2`) nacería con un `2` que no existe en
+   `ESTALB` (0/1 confirmados). La Fase 2 debe fijar **`ESTALB='0'`** al crear.
+   El dry-run lo señala.
+2. **`pedidos → albaranes` no está habilitado** en `chain.ALLOWED_CONVERSIONS`
+   (E3-B lo dejó fuera de alcance): la copia `*PCL→*ALB` / `*LPC→*LAL` usa la
+   misma maquinaria, pero nadie la ha contrastado con una fila real. Para eso
+   está el dry-run: `PENPCL`/`PENLPC` se descartan (no existen en F_ALB/F_LAL),
+   `REFPCL→REFALB` arrastra la referencia común (`BOP-099917`), `FOPPCL→FOPALB`
+   la forma de pago.
+
+### 10.3 Cómo se cierra (Bart, solo lectura)
+
+```bash
+# a) Un albarán REAL creado en el escritorio, columna a columna con valor y
+#    tipo + qué cambió el escritorio respecto a su origen:
+docker exec crmbo-api-1 python -m scripts.factusol_discover_albaranes --alb-row 5-500004
+# (y uno creado desde un PEDIDO de cliente, si lo hay: busca en ERP · Documentos
+#  un albarán cuyo origen sea «pedido» y pasa su número)
+
+# b) El registro EXACTO que BoHub escribiría — NO escribe — contrastado con la
+#    fila real más reciente de la misma serie (tipos, formato de fecha, ESTALB):
+docker exec crmbo-api-1 python -m scripts.factusol_discover_albaranes \
+    --albaran-dry-run presupuestos 5-000027
+docker exec crmbo-api-1 python -m scripts.factusol_discover_albaranes \
+    --albaran-dry-run pedidos 5-000123
+```
+
+Pega las salidas en el PR de la Fase 2. El veredicto final del dry-run
+(«✅ el esquema cuadra» / «❌ NO cuadra») es exactamente el guard que la
+escritura de la Fase 2 ejecuta antes de escribir: si no cuadra, no escribe.
+
+> _Pendiente: pegar aquí las salidas de a) y b)._
+
+### 10.4 Decisión abierta — «pagado» al convertir
+
+`F_LCO` cuelga de la **factura** (`TFALCO/CFALCO`). Un albarán no tiene cobro,
+así que «Pagado» al convertir admite dos lecturas, y son trabajo distinto:
+
+- **A) Facturar ahora y cobrar:** el mismo job crea albarán → factura
+  (`chain.convert_document`, probado) → cobro F-4-B contra esa factura.
+- **B) Apuntar el pago en BoHub y cobrar al facturar:** el pedido guarda
+  forma de pago + contrapartida + fecha (`payment_status=paid`), y el cobro
+  F-4-B se registra solo cuando esa factura exista (al convertir el albarán
+  en factura desde BoHub). No se crea ninguna factura que nadie pidió.
+
+«Sin pago» es igual en las dos: solo se apunta la forma de pago (`FOPALB`
+heredada u override), sin `F_LCO`.

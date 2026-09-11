@@ -31,6 +31,19 @@ Uso (desde el VPS):
     # tablas candidatas extra / otro ejercicio:
     ... --ejercicio 2026 F_LAL F_LIA
 
+    # 4. Fase 2 (albarán al convertir) — volcado REAL de un albarán, columna
+    #    a columna con valor y tipo (como `--lco-row` en los cobros):
+    docker exec crmbo-api-1 python -m scripts.factusol_discover_albaranes \\
+        --alb-row 5-500004
+
+    # 5. Fase 2 — registro EXACTO que BoHub escribiría al convertir un
+    #    presupuesto / pedido de cliente en albarán, contrastado con una fila
+    #    real de la misma serie (dry-run, NO escribe):
+    docker exec crmbo-api-1 python -m scripts.factusol_discover_albaranes \\
+        --albaran-dry-run presupuestos 5-000027
+    docker exec crmbo-api-1 python -m scripts.factusol_discover_albaranes \\
+        --albaran-dry-run pedidos 5-000123
+
 Pega las salidas en el PR de ERP-E1 y en
 `docs/erp/factusol-albaranes-discovery.md`.
 """
@@ -849,6 +862,458 @@ def check_invoice_pipeline(client: Any, ejercicio: str) -> None:
 
 
 # --------------------------------------------------------------------------
+# Fase 2 — albarán al convertir: volcado REAL columna a columna + dry-run
+#
+# Lección de los cobros (F-4-B, `--lco-row`): DELSOL rechaza el registro con
+# un `BDEscribirRegistroError` genérico si se sobrescribe de más, si un valor
+# no lleva el tipo/formato de la fila real o si falta algo que el escritorio
+# siempre rellena. Lo que funcionó fue contrastar campo a campo el registro
+# que mandamos con una fila REAL (valor y tipo). Estos dos modos hacen
+# exactamente eso para el albarán, SIN escribir nada:
+#
+#   --alb-row 5-500004            vuelca F_ALB + F_LAL del albarán real, columna
+#                                 a columna con su valor y tipo, y compara la
+#                                 cabecera con su documento ORIGEN (qué cambió
+#                                 el escritorio al convertir).
+#   --albaran-dry-run pedidos 5-000123
+#                                 construye el registro EXACTO que BoHub
+#                                 escribiría (mismos builders que E3-B) y lo
+#                                 contrasta con una fila real de la misma
+#                                 serie: columnas desconocidas, desajustes de
+#                                 tipo, formato de fechas, ESTALB heredado.
+# --------------------------------------------------------------------------
+
+#: Etiqueta legible del código de enlace `DOC*` de las líneas (chain.ORIGIN_CODES).
+ORIGIN_LABELS: dict[str, str] = {
+    "P": "presupuesto", "A": "albarán", "C": "pedido de cliente",
+}
+#: Tipo de documento (DOC_SPECS) por código de enlace.
+ORIGIN_DOC_TYPES: dict[str, str] = {
+    "P": "presupuestos", "A": "albaranes", "C": "pedidos",
+}
+#: Prefijos de columna que se comparan con el ORIGEN pero que el escritorio
+#: cambia siempre (clave, fecha, auditoría): se listan aparte para no taparlo
+#: como «diferencia» interesante.
+EXPECTED_CHANGED_PREFIXES: tuple[str, ...] = (
+    "TIP", "COD", "FEC", "USU", "USM", "HOR", "FUM", "IMP", "PAS", "CID", "PDF",
+)
+_DATE_WITH_TIME = ("T00:00:00", "T0")
+
+
+def parse_document_number(numero: str) -> tuple[int, int]:
+    """`'5-500004'` → `(5, 500004)`. La clave de un documento es COMPUESTA
+    (serie, código): un número sin serie es ambiguo (el mismo CODALB convive
+    en varias series), así que se exige el formato del escritorio."""
+    head, sep, tail = str(numero or "").strip().partition("-")
+    if not sep or not head.strip().isdigit() or not tail.strip().isdigit():
+        raise ValueError(
+            f"número de documento inválido: {numero!r} (formato serie-número, "
+            "p. ej. 5-500004)"
+        )
+    return int(head), int(tail)
+
+
+def type_name(value: Any) -> str:
+    return type(value).__name__
+
+
+def type_mismatches(
+    payload: dict[str, Any], template: dict[str, Any],
+) -> list[tuple[str, str, str]]:
+    """Columnas del payload cuyo TIPO JSON no coincide con el de la fila REAL:
+    `'5'` vs `5`, `''` vs `0`, `'1'` vs `1`. Es la trampa que nos costó los
+    cobros (DELSOL quiere de vuelta el mismo tipo que él devuelve). `int` y
+    `float` se consideran equivalentes (la API devuelve 5 y 5.0 según la
+    fila); `None` no se juzga."""
+    out: list[tuple[str, str, str]] = []
+    for col, val in payload.items():
+        if col not in template:
+            continue
+        real = template[col]
+        if val is None or real is None:
+            continue
+        if isinstance(val, bool) or isinstance(real, bool):
+            if type(val) is not type(real):
+                out.append((col, type_name(val), type_name(real)))
+            continue
+        if type(val) is type(real):
+            continue
+        if isinstance(val, int | float) and isinstance(real, int | float):
+            continue
+        out.append((col, type_name(val), type_name(real)))
+    return out
+
+
+def date_format_hints(
+    payload: dict[str, Any], template: dict[str, Any],
+) -> list[tuple[str, str, str]]:
+    """Columnas donde la fila real lleva fecha CON hora (`'2026-08-01T00:00:00'`)
+    y el payload la manda sin ella (`'2026-08-01'`). E3-B escribe `FEC*` así y
+    los albaranes se crean, pero en F_LCO el formato fue parte del rechazo: se
+    enseña para decidirlo con datos, no se corrige a ciegas."""
+    hints: list[tuple[str, str, str]] = []
+    for col, val in payload.items():
+        real = template.get(col)
+        if not isinstance(val, str) or not isinstance(real, str):
+            continue
+        if len(val) == 10 and val[4] == "-" and val[7] == "-" and any(
+            real.startswith(val[:4]) and t in real for t in _DATE_WITH_TIME
+        ):
+            hints.append((col, val, real))
+    return hints
+
+
+def compare_with_origin(
+    child: dict[str, Any], origin: dict[str, Any],
+    *, child_suffix: str, origin_suffix: str,
+) -> dict[str, list[Any]]:
+    """Cabecera del HIJO real frente a su ORIGEN real, columna a columna
+    por sufijo (`CLIALB` ↔ `CLIPRE`): qué copió tal cual el escritorio y qué
+    CAMBIÓ al convertir. Lo que cambia fuera de clave/fecha/auditoría es lo
+    que BoHub tiene que sobrescribir además de lo mínimo. Devuelve
+    `{"iguales": [col], "cambiadas": [(col, origen, hijo)],
+    "esperadas": [(col, origen, hijo)], "solo_hijo": [col]}`."""
+    iguales: list[str] = []
+    cambiadas: list[tuple[str, Any, Any]] = []
+    esperadas: list[tuple[str, Any, Any]] = []
+    solo_hijo: list[str] = []
+    for col, val in child.items():
+        if not col.endswith(child_suffix):
+            continue
+        prefix = col[: -len(child_suffix)]
+        origin_col = prefix + origin_suffix
+        if origin_col not in origin:
+            solo_hijo.append(col)
+            continue
+        if normalize(val) == normalize(origin.get(origin_col)):
+            iguales.append(col)
+        elif any(prefix.startswith(p) for p in EXPECTED_CHANGED_PREFIXES):
+            esperadas.append((col, origin.get(origin_col), val))
+        else:
+            cambiadas.append((col, origin.get(origin_col), val))
+    return {
+        "iguales": iguales, "cambiadas": cambiadas,
+        "esperadas": esperadas, "solo_hijo": solo_hijo,
+    }
+
+
+def pick_template_document(
+    rows: list[dict[str, Any]], *, tip_col: str, cod_col: str, serie: int,
+) -> dict[str, Any] | None:
+    """Fila REAL más reciente (mayor código) de la MISMA serie — la plantilla
+    contra la que se contrasta el registro. Sin ninguna de esa serie, la más
+    reciente de cualquiera; `None` con la tabla vacía."""
+    from app.integrations.factusol.service import coerce_serie  # noqa: PLC0415
+
+    def cod(r: dict[str, Any]) -> int:
+        raw = normalize(r.get(cod_col))
+        return int(raw) if raw.lstrip("-").isdigit() else -1
+
+    same = [r for r in rows if coerce_serie(r.get(tip_col)) == serie]
+    pool = same or rows
+    return max(pool, key=cod) if pool else None
+
+
+def _print_record(row: dict[str, Any], *, indent: str = "  ") -> None:
+    """Columna · tipo · valor, ordenado por nombre — el mismo formato que
+    `--lco-row`, para contrastar a ojo con el log del worker."""
+    for col in sorted(row):
+        val = row[col]
+        print(f"{indent}{col:<10} {type_name(val):<6} {val!r}")
+
+
+def _line_pos(row: dict[str, Any], pos_col: str) -> int:
+    raw = normalize(row.get(pos_col))
+    return int(raw) if raw.lstrip("-").isdigit() else 0
+
+
+def _line_link(row: dict[str, Any], suffix: str) -> tuple[str, str, str]:
+    return (
+        normalize(row.get(f"DOC{suffix}")).upper(),
+        normalize(row.get(f"DTP{suffix}")),
+        normalize(row.get(f"DCO{suffix}")),
+    )
+
+
+def dump_albaran(client: Any, ejercicio: str, numero: str) -> dict[str, Any] | None:
+    """`--alb-row`: F_ALB + F_LAL de un albarán REAL, columna a columna con
+    valor y tipo, cuadre de importes, enlace de las líneas y comparación con
+    el documento ORIGEN. SOLO LECTURA."""
+    from app.integrations.factusol.chain import load_source_document  # noqa: PLC0415
+    from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
+    from app.integrations.factusol.documents import (  # noqa: PLC0415
+        DOC_SPECS,
+        estado_label,
+        visible_number,
+    )
+    from app.integrations.factusol.quotes import _num  # noqa: PLC0415
+
+    serie, codigo = parse_document_number(numero)
+    spec = DOC_SPECS["albaranes"]
+    print("=" * 74)
+    print(f"ALBARÁN REAL {visible_number(serie, codigo)} · ejercicio {ejercicio}")
+    print("=" * 74)
+    try:
+        header, lines = load_source_document(
+            client, spec, tip=serie, cod=codigo, ejercicio=ejercicio,
+        )
+    except FactusolError as exc:
+        print(f"  ❌ {exc}")
+        return None
+    lines = sorted(lines, key=lambda r: _line_pos(r, "POSLAL"))
+
+    print(f"\n  F_ALB — cabecera ({len(header)} columnas, valor y tipo):")
+    _print_record(header, indent="      ")
+    print(f"\n  F_LAL — {len(lines)} línea(s):")
+    for row in lines:
+        print(f"    -- POSLAL={row.get('POSLAL')!r} --")
+        _print_record(row, indent="      ")
+
+    # Cuadre + estado + enlace.
+    print("\n  Cuadre:")
+    total = _num(header.get("TOTALB"))
+    suma = round(sum(_num(r.get("TOTLAL")) for r in lines), 2)
+    print(f"      TOTALB={total} · suma TOTLAL={suma} "
+          f"{'✓' if abs(total - suma) < 0.005 else '≠ (IVA/portes en cabecera)'}")
+    print(f"      ESTALB={header.get('ESTALB')!r} → "
+          f"{estado_label('albaranes', header.get('ESTALB'))}")
+    print(f"      PEDALB={header.get('PEDALB')!r} · REFALB={header.get('REFALB')!r} "
+          f"· FOPALB={header.get('FOPALB')!r}")
+    links = {_line_link(r, "LAL") for r in lines}
+    origin: tuple[str, str, str] | None = None
+    for doc, dtp, dco in sorted(links):
+        if not doc and not dco:
+            print("      enlace: línea(s) SIN origen (albarán creado suelto)")
+            continue
+        label = ORIGIN_LABELS.get(doc, f"DOC={doc!r}")
+        print(f"      enlace: DOCLAL={doc!r} DTPLAL={dtp!r} DCOLAL={dco!r} "
+              f"→ {label} {dtp}-{int(dco):06d}" if dco.isdigit()
+              else f"      enlace: DOCLAL={doc!r} DTPLAL={dtp!r} DCOLAL={dco!r}")
+        if origin is None and doc in ORIGIN_DOC_TYPES and dco.isdigit():
+            origin = (doc, dtp, dco)
+
+    # Comparación con el ORIGEN: qué cambió el escritorio al convertir.
+    result: dict[str, Any] = {
+        "header": header, "lines": lines, "origin": None, "comparison": None,
+    }
+    if origin is not None:
+        doc, dtp, dco = origin
+        src = DOC_SPECS[ORIGIN_DOC_TYPES[doc]]
+        try:
+            origin_header, _origin_lines = load_source_document(
+                client, src, tip=int(dtp or serie), cod=int(dco),
+                ejercicio=ejercicio,
+            )
+        except FactusolError as exc:
+            print(f"\n  Origen {ORIGIN_LABELS[doc]} {dtp}-{dco}: ❌ {exc}")
+        else:
+            cmp = compare_with_origin(
+                header, origin_header,
+                child_suffix=spec.suffix, origin_suffix=src.suffix,
+            )
+            result["origin"] = origin_header
+            result["comparison"] = cmp
+            print(f"\n  Comparación con el ORIGEN ({src.table} "
+                  f"{visible_number(dtp or serie, dco)}), columna a columna:")
+            print(f"      copiadas tal cual por el escritorio: {len(cmp['iguales'])} "
+                  f"({', '.join(cmp['iguales'][:40])}{'…' if len(cmp['iguales']) > 40 else ''})")
+            print(f"      cambiadas de forma esperada (clave/fecha/auditoría): "
+                  f"{len(cmp['esperadas'])}")
+            for col, o, h in cmp["esperadas"]:
+                print(f"          {col:<10} origen={o!r} → albarán={h!r}")
+            print(f"      ⭐ CAMBIADAS por el escritorio al convertir: "
+                  f"{len(cmp['cambiadas'])} — esto es lo que BoHub debe "
+                  "sobrescribir además de lo mínimo")
+            for col, o, h in cmp["cambiadas"]:
+                print(f"          {col:<10} origen={o!r} → albarán={h!r}")
+            print(f"      solo en F_ALB (sin equivalente en el origen): "
+                  f"{len(cmp['solo_hijo'])} → {', '.join(cmp['solo_hijo'])}")
+    print("\n  SOLO LECTURA — no se ha escrito nada.")
+    return result
+
+
+def albaran_dry_run(
+    client: Any, ejercicio: str, source_type: str, numero: str,
+    *, serie_override: int | None = None,
+) -> dict[str, Any] | None:
+    """`--albaran-dry-run`: el registro EXACTO (F_ALB + F_LAL) que BoHub
+    escribiría al convertir el documento, construido con los MISMOS builders
+    que crean albaranes en producción (E3-B: copia por sufijo del origen +
+    allowlist de columnas vivas + enlace DOC/DTP/DCO), contrastado con una
+    fila REAL de la misma serie. NO escribe: es el guard de esquema de la
+    Fase 2 ejecutado a mano."""
+    from app.integrations.factusol.chain import (  # noqa: PLC0415
+        ALLOWED_CONVERSIONS,
+        ORIGIN_CODES,
+        build_target_header,
+        build_target_line,
+        live_columns,
+        load_source_document,
+        next_doc_code,
+    )
+    from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
+    from app.integrations.factusol.documents import (  # noqa: PLC0415
+        DOC_SPECS,
+        estado_label,
+        visible_number,
+    )
+    from app.integrations.factusol.service import serie_of_row  # noqa: PLC0415
+
+    if source_type not in ORIGIN_CODES or source_type == "albaranes":
+        print(f"  ❌ origen no soportado para un albarán: {source_type!r} "
+              "(presupuestos | pedidos)")
+        return None
+    tip, cod = parse_document_number(numero)
+    src, dst = DOC_SPECS[source_type], DOC_SPECS["albaranes"]
+    print("=" * 74)
+    print(f"DRY-RUN albarán desde {source_type} {visible_number(tip, cod)} · "
+          f"ejercicio {ejercicio} (NO escribe)")
+    print("=" * 74)
+    if "albaranes" not in ALLOWED_CONVERSIONS.get(source_type, ()):
+        print(f"  ℹ️  {source_type} → albaranes aún NO está habilitado en "
+              "chain.ALLOWED_CONVERSIONS (se habilita en la Fase 2 con este "
+              "volcado); aquí se construye igualmente para verlo.")
+    try:
+        header, lines = load_source_document(
+            client, src, tip=tip, cod=cod, ejercicio=ejercicio,
+        )
+    except FactusolError as exc:
+        print(f"  ❌ {exc}")
+        return None
+    lines = sorted(lines, key=lambda r: _line_pos(r, f"POS{src.lines_suffix}"))
+
+    allowed_h = live_columns(client, dst.table, ejercicio=ejercicio)
+    allowed_l = live_columns(client, dst.lines_table, ejercicio=ejercicio)
+    serie = serie_override if serie_override is not None else (
+        serie_of_row(header, src.tip) or tip
+    )
+    codigo = next_doc_code(
+        client, dst.table, tip_col=dst.tip, cod_col=dst.cod,
+        serie=serie, ejercicio=ejercicio,
+    )
+    fecha = datetime.now(UTC).date().isoformat()
+    cabecera = build_target_header(
+        header, src=src, dst=dst, serie=serie, codigo=codigo, fecha=fecha,
+        allowed=allowed_h,
+    )
+    lineas = [
+        build_target_line(
+            row, src=src, dst=dst, serie=serie, codigo=codigo, posicion=i + 1,
+            origin_code=ORIGIN_CODES[source_type], origin_tip=tip,
+            origin_cod=cod, allowed=allowed_l,
+        )
+        for i, row in enumerate(lines)
+    ]
+
+    print(f"\n  Origen: {src.table} {visible_number(tip, cod)} · "
+          f"{len(lines)} línea(s) · {src.est}={header.get(src.est)!r} · "
+          f"serie heredada={serie_of_row(header, src.tip)!r}")
+    print(f"  Destino: {dst.table} {visible_number(serie, codigo)} "
+          f"(siguiente de la serie {serie}) · fecha {fecha}")
+
+    print(f"\n  REGISTRO F_ALB que se enviaría ({len(cabecera)} columnas):")
+    _print_record(cabecera, indent="      ")
+    for linea in lineas:
+        print(f"\n  REGISTRO F_LAL POS{dst.lines_suffix}={linea.get('POSLAL')} "
+              f"({len(linea)} columnas):")
+        _print_record(linea, indent="      ")
+
+    # --- contraste con la realidad -----------------------------------------
+    print("\n  CONTRASTE:")
+    unknown_h, unused_h = payload_column_diff(cabecera, sorted(allowed_h))
+    dropped_h = sorted(
+        col for col in header
+        if col.endswith(src.suffix)
+        and col[: -len(src.suffix)] + dst.suffix not in allowed_h
+    )
+    print(f"      F_ALB: {len(allowed_h)} columnas vivas · "
+          f"{len(unknown_h)} desconocidas en el payload · "
+          f"{len(unused_h)} que no mandamos (las rellena FACTUSOL)")
+    if unknown_h:
+        print(f"      ❌ DESCONOCIDAS en F_ALB: {', '.join(unknown_h)}")
+    print(f"      columnas del origen sin equivalente en F_ALB (se descartan): "
+          f"{', '.join(dropped_h) or '—'}")
+
+    alb_rows = client.load_table(dst.table, filtro="1=1", ejercicio=ejercicio)
+    template = pick_template_document(
+        alb_rows, tip_col=dst.tip, cod_col=dst.cod, serie=serie,
+    )
+    mismatches: list[tuple[str, str, str]] = []
+    hints: list[tuple[str, str, str]] = []
+    if template is None:
+        print("      (F_ALB sin filas: no hay plantilla real con la que "
+              "contrastar tipos)")
+    else:
+        print(f"      plantilla real: {dst.table} "
+              f"{visible_number(template.get(dst.tip), template.get(dst.cod))}")
+        mismatches = type_mismatches(cabecera, template)
+        hints = date_format_hints(cabecera, template)
+        if mismatches:
+            print(f"      ⚠️  TIPO distinto al de la fila real ({len(mismatches)}):")
+            for col, got, real in mismatches:
+                print(f"          {col:<10} payload={got:<5} real={real:<5} "
+                      f"(real={template.get(col)!r}, payload={cabecera.get(col)!r})")
+        else:
+            print("      ✅ todos los tipos coinciden con la fila real")
+        for col, got, real in hints:
+            print(f"      ℹ️  {col}: payload {got!r} vs real {real!r} "
+                  "(sin hora; E3-B lo escribe así y funciona)")
+
+    estalb = normalize(cabecera.get("ESTALB"))
+    if estalb not in ("0", "1"):
+        print(f"      ⚠️  ESTALB heredado del origen = {estalb!r}: fuera de "
+              "0/1 (Pendiente/Facturado) — hay que fijarlo a '0' al crear")
+    elif estalb == "1":
+        print("      ⚠️  ESTALB heredado = 1 → el albarán nacería como "
+              f"«{estado_label('albaranes', 1)}» sin tener factura — hay que "
+              "fijarlo a '0' al crear")
+    else:
+        print("      ✅ ESTALB=0 (Pendiente)")
+
+    lal_rows = client.load_table(dst.lines_table, filtro="1=1", ejercicio=ejercicio)
+    line_template = pick_template_document(
+        lal_rows, tip_col=dst.line_tip, cod_col=dst.line_fk, serie=serie,
+    )
+    line_mismatches: list[tuple[str, str, str]] = []
+    unknown_l_all: list[str] = []
+    for linea in lineas:
+        unknown_l, _ = payload_column_diff(linea, sorted(allowed_l))
+        unknown_l_all += [c for c in unknown_l if c not in unknown_l_all]
+        if line_template is not None:
+            for m in type_mismatches(linea, line_template):
+                if m not in line_mismatches:
+                    line_mismatches.append(m)
+    print(f"      F_LAL: {len(allowed_l)} columnas vivas · "
+          f"{len(unknown_l_all)} desconocidas en las líneas")
+    if unknown_l_all:
+        print(f"      ❌ DESCONOCIDAS en F_LAL: {', '.join(unknown_l_all)}")
+    if line_mismatches:
+        print(f"      ⚠️  TIPO distinto en líneas ({len(line_mismatches)}):")
+        for col, got, real in line_mismatches:
+            print(f"          {col:<10} payload={got:<5} real={real:<5}")
+    elif line_template is not None:
+        print("      ✅ tipos de las líneas como la fila real")
+    art_vacios = [ln.get("POSLAL") for ln in lineas if not normalize(ln.get("ARTLAL"))]
+    if art_vacios:
+        print(f"      ℹ️  líneas de texto libre (ARTLAL vacío): POSLAL {art_vacios}")
+
+    ok = not unknown_h and not unknown_l_all and not mismatches and not line_mismatches
+    print("\n  VEREDICTO: " + (
+        "✅ el esquema cuadra — con este volcado se puede habilitar la escritura"
+        if ok else
+        "❌ NO cuadra — el guard de la Fase 2 no escribiría nada; pega esta "
+        "salida en el PR"
+    ))
+    print("  SOLO LECTURA — no se ha escrito nada.")
+    return {
+        "cabecera": cabecera, "lineas": lineas, "template": template,
+        "unknown": unknown_h + unknown_l_all,
+        "type_mismatches": mismatches + line_mismatches,
+        "date_hints": hints, "ok": ok,
+    }
+
+
+# --------------------------------------------------------------------------
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -873,6 +1338,20 @@ def main(argv: list[str] | None = None) -> int:
                         help="diagnóstico del bug de emisión de facturas")
     parser.add_argument("--skip-print-probe", action="store_true",
                         help="omite el sondeo A4 de endpoints de impresión")
+    parser.add_argument("--alb-row", nargs="+", default=None, metavar="NUMERO",
+                        help="Fase 2: vuelca F_ALB + F_LAL de esos albaranes "
+                             "REALES columna a columna con valor y tipo, y "
+                             "los compara con su documento origen "
+                             "(p. ej. 5-500004)")
+    parser.add_argument("--albaran-dry-run", nargs=2, default=None,
+                        metavar=("ORIGEN", "NUMERO"),
+                        help="Fase 2: registro EXACTO (F_ALB + F_LAL) que "
+                             "BoHub escribiría al convertir ese documento "
+                             "(presupuestos|pedidos serie-número), "
+                             "contrastado con una fila real; NO escribe")
+    parser.add_argument("--serie", type=int, default=None,
+                        help="serie destino del dry-run (por defecto la "
+                             "heredada del origen)")
     args = parser.parse_args(argv)
 
     from app.integrations.factusol.client import FactusolClient  # noqa: PLC0415
@@ -881,6 +1360,19 @@ def main(argv: list[str] | None = None) -> int:
     ejercicio = args.ejercicio or client.default_ejercicio
     print(f"FACTUSOL — discovery de albaranes (ERP-E1) · ejercicio {ejercicio}")
     print("SOLO LECTURA: este script no escribe nada en FACTUSOL.\n")
+
+    if args.alb_row:
+        for numero in args.alb_row:
+            dump_albaran(client, ejercicio, numero)
+            print()
+        return 0
+
+    if args.albaran_dry_run:
+        source_type, numero = args.albaran_dry_run
+        albaran_dry_run(
+            client, ejercicio, source_type, numero, serie_override=args.serie,
+        )
+        return 0
 
     if args.check_invoice_pipeline:
         check_invoice_pipeline(client, ejercicio)
