@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from app.integrations.factusol.client import FactusolClient
+from app.integrations.factusol.client import FactusolClient, FactusolError
 from app.integrations.factusol.service import emit_invoice
 
 logger = logging.getLogger(__name__)
@@ -362,6 +362,66 @@ def enqueue_create_document(
     )
 
 
+# --- Fase 2: albarán FACTUSOL del pedido creado desde un documento ----------
+
+
+def create_order_albaran_job(
+    order_id: str, actor_user_id: str | None = None,
+) -> dict[str, Any]:
+    """Crea (o vincula) el albarán FACTUSOL del pedido de BoHub. Corre en
+    `factusol:writes` (serial: contador MAX+1 + guard de esquema). Idempotente
+    (`already` / `linked` / `created`). Un fallo (guard de esquema, FACTUSOL
+    caído, pedido web) queda en el historial del pedido ANTES de propagarse:
+    la ficha lo enseña y ofrece reintentar."""
+    from sqlalchemy.orm import Session  # noqa: PLC0415
+
+    from app.db.session import get_engine  # noqa: PLC0415
+    from app.erp.factusol_albaran import (  # noqa: PLC0415
+        create_albaran_for_order,
+        record_albaran_failure,
+    )
+    from app.erp.models import Order  # noqa: PLC0415
+    from app.integrations.factusol.service import ejercicio_for  # noqa: PLC0415
+
+    try:
+        with Session(get_engine()) as session:
+            order = session.get(Order, order_id)
+            if order is None:
+                raise FactusolError(f"Order {order_id!r} no existe")
+            client = FactusolClient.from_settings()
+            result = create_albaran_for_order(
+                session, client, order, ejercicio=ejercicio_for(session),
+                actor_user_id=actor_user_id,
+            )
+    except Exception as exc:  # noqa: BLE001 — se re-lanza tras registrarlo
+        logger.warning("factusol: albarán fallido order=%s", order_id, exc_info=True)
+        try:
+            with Session(get_engine()) as fail_session:
+                failed = fail_session.get(Order, order_id)
+                if failed is not None:
+                    record_albaran_failure(
+                        fail_session, failed, str(exc), actor_user_id=actor_user_id,
+                    )
+                    fail_session.commit()
+        except Exception:  # noqa: BLE001 — el fallo original manda
+            logger.warning("factusol: no se pudo registrar el fallo del albarán "
+                           "order=%s", order_id, exc_info=True)
+        raise
+    logger.info("factusol: albarán %s order=%s (%s)",
+                result.get("numero"), order_id, result.get("status"))
+    return result
+
+
+def enqueue_create_order_albaran(
+    order_id: str, actor_user_id: str | None = None,
+) -> str:
+    """Encola `create_order_albaran_job` en `factusol:writes`; devuelve el job_id."""
+    return _enqueue(
+        "app.integrations.factusol.jobs.create_order_albaran_job",
+        order_id, actor_user_id,
+    )
+
+
 # --- proformas (Fase C · C-4) ------------------------------------------------
 #
 # Las tres van a la MISMA cola serializada que la emisión de facturas. Crear y
@@ -434,22 +494,35 @@ def duplicate_quote_job(codpre: str, fecha: str | None = None) -> dict[str, Any]
 
 def convert_quote_to_order_job(
     codpre: str, actor_user_id: str | None = None,
+    payment: dict[str, Any] | None = None, create_albaran: bool = True,
 ) -> dict[str, Any]:
-    """Crea el pedido manual del CRM a partir de la proforma."""
+    """Crea el pedido de BoHub a partir de la proforma y, Fase 2, en el MISMO
+    job del worker serial: apunta el pago (opción B, ya resuelto por el
+    endpoint) y crea el albarán en FACTUSOL (idempotente; un fallo del
+    albarán viaja en el resultado, no tumba el job — el pedido existe)."""
     from sqlalchemy.orm import Session  # noqa: PLC0415
 
     from app.db.session import get_engine  # noqa: PLC0415
+    from app.erp.factusol_albaran import apply_conversion_extras  # noqa: PLC0415
     from app.integrations.factusol.quotes import convert_quote_to_order  # noqa: PLC0415
     from app.integrations.factusol.service import ejercicio_for  # noqa: PLC0415
 
     with Session(get_engine()) as session:
         client = FactusolClient.from_settings()
+        ejercicio = ejercicio_for(session)
         result = convert_quote_to_order(
-            client, session, codpre, ejercicio=ejercicio_for(session),
+            client, session, codpre, ejercicio=ejercicio,
             actor_user_id=actor_user_id,
         )
-    logger.info("factusol: proforma %s → pedido %s",
-                codpre, result.get("order_number"))
+        result.update(apply_conversion_extras(
+            session, client, order_id=result["order_id"], payment=payment,
+            create_albaran=create_albaran, ejercicio=ejercicio,
+            actor_user_id=actor_user_id,
+        ))
+    logger.info("factusol: proforma %s → pedido %s (albarán: %s)",
+                codpre, result.get("order_number"),
+                (result.get("albaran") or {}).get("numero")
+                or result.get("albaran_error") or result.get("albaran_skipped"))
     return result
 
 
@@ -482,10 +555,11 @@ def enqueue_duplicate_quote(codpre: str, fecha: str | None = None) -> str:
 
 def enqueue_convert_quote_to_order(
     codpre: str, actor_user_id: str | None = None,
+    payment: dict[str, Any] | None = None, create_albaran: bool = True,
 ) -> str:
     return _enqueue(
         "app.integrations.factusol.jobs.convert_quote_to_order_job",
-        codpre, actor_user_id,
+        codpre, actor_user_id, payment, create_albaran,
     )
 
 

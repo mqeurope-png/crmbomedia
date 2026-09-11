@@ -42,6 +42,9 @@ jest.mock("../../../lib/erpApi", () => ({
   previewOrderFromFactusol: jest.fn(),
   searchFactusolQuotes: jest.fn(() => Promise.resolve([])),
   listFactusolDocuments: jest.fn(() => Promise.resolve({ items: [], total: 0 })),
+  // Fase 2: catálogos del paso de pago (PaymentStep), inertes.
+  getContrapartidas: jest.fn(() => Promise.resolve([])),
+  getFactusolFormasPago: jest.fn(() => Promise.resolve([])),
 }));
 
 const COMPANY = {

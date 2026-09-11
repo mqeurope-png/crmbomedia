@@ -54,6 +54,17 @@ import sys
 from datetime import UTC, datetime
 from typing import Any
 
+# `type_mismatches` y `pick_template_document` viven en `chain` (Fase 2): son el
+# guard que la escritura ejecuta antes de escribir — una sola implementación.
+from app.integrations.factusol.chain import (
+    pick_template_row as pick_template_document,
+)
+from app.integrations.factusol.chain import (
+    type_mismatches,
+)
+
+__all__ = ["pick_template_document", "type_mismatches"]
+
 # --------------------------------------------------------------------------
 # Candidatas
 # --------------------------------------------------------------------------
@@ -917,33 +928,6 @@ def type_name(value: Any) -> str:
     return type(value).__name__
 
 
-def type_mismatches(
-    payload: dict[str, Any], template: dict[str, Any],
-) -> list[tuple[str, str, str]]:
-    """Columnas del payload cuyo TIPO JSON no coincide con el de la fila REAL:
-    `'5'` vs `5`, `''` vs `0`, `'1'` vs `1`. Es la trampa que nos costó los
-    cobros (DELSOL quiere de vuelta el mismo tipo que él devuelve). `int` y
-    `float` se consideran equivalentes (la API devuelve 5 y 5.0 según la
-    fila); `None` no se juzga."""
-    out: list[tuple[str, str, str]] = []
-    for col, val in payload.items():
-        if col not in template:
-            continue
-        real = template[col]
-        if val is None or real is None:
-            continue
-        if isinstance(val, bool) or isinstance(real, bool):
-            if type(val) is not type(real):
-                out.append((col, type_name(val), type_name(real)))
-            continue
-        if type(val) is type(real):
-            continue
-        if isinstance(val, int | float) and isinstance(real, int | float):
-            continue
-        out.append((col, type_name(val), type_name(real)))
-    return out
-
-
 def date_format_hints(
     payload: dict[str, Any], template: dict[str, Any],
 ) -> list[tuple[str, str, str]]:
@@ -995,23 +979,6 @@ def compare_with_origin(
         "iguales": iguales, "cambiadas": cambiadas,
         "esperadas": esperadas, "solo_hijo": solo_hijo,
     }
-
-
-def pick_template_document(
-    rows: list[dict[str, Any]], *, tip_col: str, cod_col: str, serie: int,
-) -> dict[str, Any] | None:
-    """Fila REAL más reciente (mayor código) de la MISMA serie — la plantilla
-    contra la que se contrasta el registro. Sin ninguna de esa serie, la más
-    reciente de cualquiera; `None` con la tabla vacía."""
-    from app.integrations.factusol.service import coerce_serie  # noqa: PLC0415
-
-    def cod(r: dict[str, Any]) -> int:
-        raw = normalize(r.get(cod_col))
-        return int(raw) if raw.lstrip("-").isdigit() else -1
-
-    same = [r for r in rows if coerce_serie(r.get(tip_col)) == serie]
-    pool = same or rows
-    return max(pool, key=cod) if pool else None
 
 
 def _print_record(row: dict[str, Any], *, indent: str = "  ") -> None:
@@ -1261,14 +1228,13 @@ def albaran_dry_run(
 
     estalb = normalize(cabecera.get("ESTALB"))
     if estalb not in ("0", "1"):
-        print(f"      ⚠️  ESTALB heredado del origen = {estalb!r}: fuera de "
-              "0/1 (Pendiente/Facturado) — hay que fijarlo a '0' al crear")
+        print(f"      ⚠️  ESTALB = {estalb!r}: fuera de 0/1 (Pendiente/Facturado)")
     elif estalb == "1":
-        print("      ⚠️  ESTALB heredado = 1 → el albarán nacería como "
-              f"«{estado_label('albaranes', 1)}» sin tener factura — hay que "
-              "fijarlo a '0' al crear")
+        print("      ⚠️  ESTALB = 1 → el albarán nacería como "
+              f"«{estado_label('albaranes', 1)}» sin tener factura")
     else:
-        print("      ✅ ESTALB=0 (Pendiente)")
+        print(f"      ✅ ESTALB=0 (Pendiente) — fijado por el builder, no "
+              f"heredado del origen ({src.est}={header.get(src.est)!r})")
 
     lal_rows = client.load_table(dst.lines_table, filtro="1=1", ejercicio=ejercicio)
     line_template = pick_template_document(

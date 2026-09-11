@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.core.errors import not_found
 from app.db.session import get_session
 from app.erp.api.deps import require_erp_approve, require_erp_edit, require_erp_view
+from app.erp.factusol_albaran import PaymentIn
 from app.erp.models import (
     ErpException,
     ExceptionStatus,
@@ -106,6 +107,11 @@ class OrderCreate(BaseModel):
     billing_address: AddressIn | None = None
     # Fase 1: origen FACTUSOL (presupuesto / pedido de cliente) del alta manual.
     factusol_source: FactusolSourceIn | None = None
+    # Fase 2 (solo con `factusol_source`): paso de confirmación de pago
+    # (opción B: se apunta; el cobro F-4-B se registra al existir la factura)
+    # y creación del albarán en FACTUSOL (encolada en `factusol:writes`).
+    payment: PaymentIn | None = None
+    create_albaran: bool = True
 
     @model_validator(mode="after")
     def _require_customer(self) -> OrderCreate:
@@ -222,6 +228,8 @@ def _serialise_summary(
         "invoice_status": _status_value(o.invoice_status),
         "tracking_number": o.tracking_number,
         "factusol_invoice_number": o.factusol_invoice_number,
+        # Fase 2: nº del albarán FACTUSOL creado por BoHub al convertir.
+        "factusol_albaran_number": o.factusol_albaran_number,
         # ERP-F6 — campos del seguimiento (Excel de Bart): nº de serie (texto
         # libre, también notas), licencia WhiteRIP y origen del envío.
         "serial_number": o.serial_number,
@@ -267,6 +275,8 @@ def _serialise_detail(session: Session, o: Order, actor: User) -> dict[str, Any]
         **_serialise_summary(o, customer_names(session, [o]).get(o.id)),
         "notes": o.notes,
         "packing": json.loads(o.packing_json) if o.packing_json else None,
+        # Fase 2: paso de pago apuntado al convertir (opción B) y su cobro.
+        "factusol_payment": _factusol_payment(o),
         "lines": [
             {
                 "id": line.id, "position": line.position,
@@ -314,6 +324,12 @@ def _serialise_detail(session: Session, o: Order, actor: User) -> dict[str, Any]
         "externally_processed_note": o.externally_processed_note,
         "externally_processed_by_user_id": o.externally_processed_by_user_id,
     }
+
+
+def _factusol_payment(o: Order) -> dict[str, Any] | None:
+    from app.erp.factusol_albaran import payment_intent  # noqa: PLC0415
+
+    return payment_intent(o)
 
 
 def _factusol_live(session: Session) -> bool:
@@ -391,6 +407,11 @@ def create_order(
     # origen (nunca `woocommerce`), su nº como external_id (dedup) y un nº de
     # pedido PRO-/PCL- con el nº del documento.
     fs = payload.factusol_source
+    # Fase 2: el paso de pago se valida ANTES de crear nada (400 si la cuenta
+    # no está en el catálogo). Solo tiene sentido con origen FACTUSOL.
+    resolved_payment = (
+        _resolve_payment_or_400(session, payload.payment) if fs is not None else None
+    )
     if fs is not None:
         from app.erp.orders_from_factusol import (  # noqa: PLC0415
             SOURCE_BY_DOC_TYPE,
@@ -461,7 +482,17 @@ def create_order(
         }),
     ))
     session.commit()
-    return _serialise_detail(session, _get_order(session, order.id), current_user)
+    extra: dict[str, Any] = {}
+    if fs is not None:
+        extra = _fase2_after_create(
+            session, order, resolved_payment=resolved_payment,
+            create_albaran=payload.create_albaran, actor=current_user,
+        )
+        session.commit()
+    return {
+        **_serialise_detail(session, _get_order(session, order.id), current_user),
+        **extra,
+    }
 
 
 #: Prefijo + ancho del secuencial de los pedidos manuales (D-2).
@@ -602,6 +633,93 @@ class OrderFromFactusolIn(BaseModel):
     #: se quiere otro). Sin ellos, se resuelve por el vínculo CODCLI ↔ CRM.
     company_id: str | None = None
     contact_id: str | None = None
+    # Fase 2: paso de pago (opción B) + albarán en FACTUSOL.
+    payment: PaymentIn | None = None
+    create_albaran: bool = True
+
+
+def _resolve_payment_or_400(
+    session: Session, payment: PaymentIn | None,
+) -> dict[str, Any] | None:
+    """Valida el paso de pago ANTES de crear nada: cuenta desconocida o fecha
+    ilegible → 400 (nunca se apunta un cobro contra una cuenta adivinada)."""
+    if payment is None:
+        return None
+    from app.erp.factusol_albaran import PaymentError, resolve_payment  # noqa: PLC0415
+
+    try:
+        return resolve_payment(session, payment)
+    except PaymentError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, {
+            "code": exc.code, "detail": str(exc),
+        }) from exc
+
+
+def _fase2_after_create(
+    session: Session, order: Order, *, resolved_payment: dict[str, Any] | None,
+    create_albaran: bool, actor: User,
+) -> dict[str, Any]:
+    """Fase 2, tras crear el pedido desde un documento FACTUSOL: apunta el
+    pago (opción B) y encola el albarán en `factusol:writes`. Nada de esto
+    escribe en FACTUSOL desde la API; el worker serial lo hace y la ficha
+    hace polling del job. Un fallo al encolar no deshace el pedido."""
+    from app.erp.factusol_albaran import albaran_blocker, record_payment_intent  # noqa: PLC0415
+
+    extra: dict[str, Any] = {
+        "albaran_job_id": None, "albaran_error": None, "albaran_skipped": None,
+    }
+    if resolved_payment is not None:
+        record_payment_intent(session, order, resolved_payment, actor_user_id=actor.id)
+    if create_albaran:
+        blocker = albaran_blocker(order)
+        if blocker is not None:
+            extra["albaran_skipped"] = blocker[1]
+        else:
+            from app.integrations.factusol.jobs import (  # noqa: PLC0415
+                enqueue_create_order_albaran,
+            )
+
+            try:
+                extra["albaran_job_id"] = enqueue_create_order_albaran(
+                    order.id, actor.id,
+                )
+            except Exception as exc:  # noqa: BLE001 — Redis caído, etc.
+                extra["albaran_error"] = (
+                    "No se pudo encolar el albarán en FACTUSOL "
+                    f"(reintenta desde la ficha): {str(exc)[:200]}"
+                )
+                logger.warning("fase2: no se pudo encolar el albarán del pedido %s",
+                               order.order_number, exc_info=True)
+    _audit_fase2(session, order, actor, extra, resolved_payment)
+    return extra
+
+
+def _audit_fase2(
+    session: Session, order: Order, actor: User, extra: dict[str, Any],
+    resolved_payment: dict[str, Any] | None,
+) -> None:
+    from app.core.audit import record_event  # noqa: PLC0415
+
+    record_event(
+        session, action="erp.factusol_albaran_requested", target_type="order",
+        target_id=order.id, actor=actor,
+        metadata={
+            "order_number": order.order_number,
+            "albaran_job_id": extra.get("albaran_job_id"),
+            "albaran_skipped": extra.get("albaran_skipped"),
+            "albaran_error": extra.get("albaran_error"),
+            "payment": resolved_payment,
+        },
+        message=(
+            f"Pedido {order.order_number}: "
+            + ("albarán FACTUSOL encolado" if extra.get("albaran_job_id")
+               else "sin albarán")
+            + (
+                "; pago apuntado" if resolved_payment and resolved_payment.get("paid")
+                else "; sin pago" if resolved_payment else ""
+            )
+        ),
+    )
 
 
 def _factusol_order_http_error(exc: Exception) -> HTTPException:
@@ -702,6 +820,7 @@ def create_order_from_factusol(
     from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
 
     client, ejercicio = _client_and_ejercicio(session)
+    resolved_payment = _resolve_payment_or_400(session, payload.payment)
     try:
         header = preview_factusol_document(
             session, client, doc_type=payload.doc_type, serie=payload.serie,
@@ -723,7 +842,55 @@ def create_order_from_factusol(
             "code": "factusol_detail_failed", "detail": str(exc)[:200],
         }) from exc
     session.commit()
-    return _serialise_detail(session, _get_order(session, order.id), current_user)
+    extra = _fase2_after_create(
+        session, order, resolved_payment=resolved_payment,
+        create_albaran=payload.create_albaran, actor=current_user,
+    )
+    session.commit()
+    return {
+        **_serialise_detail(session, _get_order(session, order.id), current_user),
+        **extra,
+    }
+
+
+@router.post("/{order_id}/albaran", status_code=202)
+def create_order_albaran(
+    order_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_edit),
+) -> dict[str, Any]:
+    """Fase 2 — (re)encola la creación del albarán FACTUSOL del pedido en
+    `factusol:writes` (202 + job_id; estado por `/factusol/quotes/status/`).
+    Idempotente: 409 si ya tiene albarán; 409 si es un pedido web (el albarán
+    lo crea WooCommerce) o no procede de un documento de FACTUSOL."""
+    from app.erp.factusol_albaran import albaran_blocker  # noqa: PLC0415
+    from app.integrations.factusol.jobs import enqueue_create_order_albaran  # noqa: PLC0415
+
+    order = _get_order(session, order_id)
+    blocker = albaran_blocker(order)
+    if blocker is not None:
+        raise HTTPException(status.HTTP_409_CONFLICT, {
+            "code": blocker[0], "detail": blocker[1],
+        })
+    if order.factusol_albaran_number:
+        raise HTTPException(status.HTTP_409_CONFLICT, {
+            "code": "already_has_albaran",
+            "detail": f"El pedido ya tiene el albarán {order.factusol_albaran_number}.",
+            "numero": order.factusol_albaran_number,
+        })
+    try:
+        job_id = enqueue_create_order_albaran(order.id, current_user.id)
+    except Exception as exc:  # noqa: BLE001 — Redis caído, etc.
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, {
+            "code": "queue_unavailable", "detail": str(exc)[:200],
+        }) from exc
+    _audit_fase2(
+        session, order, current_user,
+        {"albaran_job_id": job_id, "albaran_skipped": None, "albaran_error": None},
+        None,
+    )
+    session.commit()
+    return {"job_id": job_id, "order_id": order.id, "status": "queued"}
 
 
 @router.get("/{order_id}")

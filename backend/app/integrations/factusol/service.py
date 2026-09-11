@@ -656,6 +656,17 @@ def emit_invoice(
         raise FactusolError("El pedido está marcado como facturado fuera del ERP")
 
     ejercicio = ejercicio_for(session)
+
+    # Fase 2: el pedido tiene el albarán que BoHub creó al convertir → la
+    # factura sale de ESE albarán con la cadena E3-B (no hay F_PCL por REFPCL
+    # para un PRO-/PCL-). La factura queda vinculada y, si el pago se apuntó
+    # al convertir (opción B), se registra el cobro F-4-B.
+    if order.factusol_albaran_number:
+        return _emit_from_albaran(
+            session, order, client, ejercicio=ejercicio, actor=actor,
+            options=options,
+        )
+
     ref_prefix = _store_ref_prefix(session, order)
 
     # Anti-duplicado: ¿existe ya la factura en FACTUSOL? (creada a mano o carrera)
@@ -791,10 +802,87 @@ def emit_invoice(
             "factusol_pcl_marked": pcl_marked,
         }),
     ))
+    # Fase 2 (opción B): pago apuntado al convertir → ahora que existe la
+    # factura, cobro F-4-B (solo F_LCO + ESTFAC=2). Nunca lanza.
+    cobro = None
+    try:
+        from app.erp.factusol_albaran import register_pending_collection  # noqa: PLC0415
+
+        cobro = register_pending_collection(
+            session, client, order, serie=serie, codigo=int(codfac),
+            ejercicio=ejercicio, actor_user_id=(actor.id if actor else None),
+        )
+    except Exception:  # noqa: BLE001 — la factura ya está emitida
+        logger.warning("factusol: cobro apuntado del pedido %s no registrado",
+                       order.order_number, exc_info=True)
+
     _log_sync(session, order, codfac, str(codpcl), ejercicio, len(lineas))
     session.commit()
     return {"codfac": codfac, "codpcl": str(codpcl), "ejercicio": ejercicio,
-            "lines": len(lineas), "serie": serie, "pcl_marked": pcl_marked}
+            "lines": len(lineas), "serie": serie, "pcl_marked": pcl_marked,
+            "cobro": cobro}
+
+
+def _emit_from_albaran(
+    session: Session, order: Order, client: FactusolClient,
+    *, ejercicio: str, actor: User | None, options: FacturaOptions | None,
+) -> dict[str, Any]:
+    """Fase 2 — factura del pedido a partir de SU albarán (`albaranes →
+    facturas` de la cadena E3-B, probada en producción). Las opciones del
+    modal (serie, fecha, forma de pago, observaciones) pisan lo copiado. La
+    cadena vincula la factura al pedido y registra el cobro apuntado
+    (`on_invoice_created`); si ese enganche fallara, se vincula aquí."""
+    from app.integrations.factusol.chain import convert_document  # noqa: PLC0415
+    from app.integrations.factusol.documents import visible_number  # noqa: PLC0415
+
+    head, _, tail = str(order.factusol_albaran_number).partition("-")
+    serie_alb, codigo_alb = coerce_serie(head), _int_or_none(tail)
+    if serie_alb is None or codigo_alb is None:
+        raise FactusolError(
+            f"El nº de albarán del pedido no es válido: {order.factusol_albaran_number!r}"
+        )
+    overrides: dict[str, Any] = {}
+    if options is not None:
+        if options.fopfac:
+            overrides["FOPFAC"] = options.fopfac
+        if options.comfac:
+            overrides["COMFAC"] = options.comfac
+    result = convert_document(
+        session, client, source_type="albaranes", target_type="facturas",
+        tip=serie_alb, cod=codigo_alb, ejercicio=ejercicio,
+        serie_override=(options.serie if options is not None else None),
+        fecha=(options.fecfac if options is not None else None),
+        header_overrides=overrides or None,
+        actor_user_id=(actor.id if actor else None),
+    )
+    session.refresh(order)
+    codfac = str(result["codigo"])
+    if not order.factusol_invoice_number:
+        from app.erp.factusol_albaran import attach_invoice  # noqa: PLC0415
+
+        attach_invoice(
+            session, order, serie=result["serie"], codigo=result["codigo"],
+            ejercicio=ejercicio, how=f"desde el albarán {order.factusol_albaran_number}",
+            actor_user_id=(actor.id if actor else None),
+        )
+        session.commit()
+    _log_sync(
+        session, order, codfac, "-", ejercicio, result["lines"],
+        message=(
+            f"Albarán {order.factusol_albaran_number} → F_FAC "
+            f"{visible_number(result['serie'], result['codigo'])} "
+            f"(ej. {ejercicio}, {result['lines']} líneas)"
+        ),
+    )
+    session.commit()
+    link = result.get("order") or {}
+    return {
+        "codfac": codfac, "ejercicio": ejercicio, "lines": result["lines"],
+        "serie": result["serie"], "from_albaran": order.factusol_albaran_number,
+        "numero": visible_number(result["serie"], result["codigo"]),
+        "cobro": link.get("cobro") if isinstance(link, dict) else None,
+        "origin_mark_warning": result.get("origin_mark_warning"),
+    }
 
 
 def _auto_link_factura(

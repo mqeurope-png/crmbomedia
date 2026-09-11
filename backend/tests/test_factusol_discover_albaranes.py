@@ -372,7 +372,7 @@ def _fase2_tables() -> dict[str, list[dict[str, Any]]]:
             _lal_real(500004, 2, "5", ARTLAL="", DESLAL="Portes", CANLAL=1,
                       PRELAL=74.0, TOTLAL=74.0),
             _lal_real(500004, 1, "1", DESLAL="ajena", TOTLAL=1.0),
-            _lal_real(500005, 1, "5", DOCLAL="", DTPLAL="", DCOLAL=""),
+            _lal_real(500005, 1, "5", DOCLAL="", DTPLAL="", DCOLAL=0),
         ],
     }
 
@@ -486,7 +486,8 @@ def test_dry_run_presupuesto_builds_exact_record_without_writing(capsys: Any) ->
     out = capsys.readouterr().out
     assert result is not None
     cab = result["cabecera"]
-    assert cab["TIPALB"] == "5" and cab["CODALB"] == "500006"
+    assert cab["TIPALB"] == "5" and cab["CODALB"] == 500006      # entero
+    assert cab["ESTALB"] == 0                                    # no heredado
     assert cab["CNOALB"] == "DUPLICODER, S.L." and cab["FOPALB"] == "002"
     assert "USUALB" not in cab and "IMPALB" not in cab   # auditoría fuera
     assert len(result["lineas"]) == 2                    # sin la línea de la serie 2
@@ -496,15 +497,15 @@ def test_dry_run_presupuesto_builds_exact_record_without_writing(capsys: Any) ->
     assert "Destino: F_ALB 5-500006" in out
     assert "REGISTRO F_ALB que se enviaría" in out
     assert "plantilla real: F_ALB 5-500005" in out
-    assert "ESTALB heredado = 1" in out                  # nacería «Facturado»
+    assert "✅ ESTALB=0 (Pendiente)" in out               # fijado por el builder
     assert "FECALB: payload '" in out                    # fecha sin hora (aviso)
+    assert "✅ todos los tipos coinciden" in out and result["ok"] is True
     assert "SOLO LECTURA" in out
 
 
 def test_dry_run_pedido_uses_origin_c_and_flags_estpcl(capsys: Any) -> None:
     """Desde un pedido de cliente: enlace DOC='C', las columnas que F_ALB no
-    tiene (PENPCL/PENLPC) se descartan y ESTPCL=2 heredado queda señalado
-    como fuera de 0/1 — el guard de la Fase 2 lo fijará a '0'."""
+    tiene (PENPCL/PENLPC) se descartan y ESTPCL=2 NO se hereda (nace 0)."""
     from scripts.factusol_discover_albaranes import albaran_dry_run
 
     client = _ReadOnlyClient(_fase2_tables())
@@ -517,10 +518,9 @@ def test_dry_run_pedido_uses_origin_c_and_flags_estpcl(capsys: Any) -> None:
     assert result["lineas"][0]["DOCLAL"] == "C"
     assert result["lineas"][0]["DCOLAL"] == 123
     assert "PENLAL" not in result["lineas"][0]
-    assert "aún NO está habilitado" in out
+    assert cab["ESTALB"] == 0 and "✅ ESTALB=0" in out
     assert "sin equivalente en F_ALB (se descartan): PENPCL" in out
-    assert "ESTALB heredado del origen = '2'" in out
-    assert result["unknown"] == []
+    assert result["unknown"] == [] and result["ok"] is True
 
 
 def test_dry_run_rejects_bad_source_or_missing_document(capsys: Any) -> None:
@@ -542,7 +542,7 @@ def test_dry_run_serie_override_changes_counter(capsys: Any) -> None:
     )
     _ = capsys.readouterr()
     assert result["cabecera"]["TIPALB"] == "1"
-    assert result["cabecera"]["CODALB"] == "500005"   # siguiente de la serie 1
+    assert result["cabecera"]["CODALB"] == 500005     # siguiente de la serie 1
     # El enlace sigue apuntando al ORIGEN real (serie 5), no a la serie destino.
     assert result["lineas"][0]["DTPLAL"] == "5"
 
