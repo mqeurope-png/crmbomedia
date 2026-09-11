@@ -268,3 +268,281 @@ def test_trace_chain_reports_missing_proforma(capsys: Any) -> None:
     trace_chain(_FakeClient({"F_PRE": []}), "2026", "999")
     assert "No existe F_PRE con CODPRE=999" in capsys.readouterr().out
 
+
+# ---------------------------------------------------------------------------
+# Fase 2 — `--alb-row` (volcado real) y `--albaran-dry-run` (registro exacto)
+#
+# Cliente falso con el filtro de igualdad del lector real (clave compuesta:
+# `CODALB=500004` devuelve también el homónimo de otra serie y el caller lo
+# casa por TIP*) y SIN `write_record`: cualquier intento de escribir revienta.
+# ---------------------------------------------------------------------------
+
+
+class _ReadOnlyClient(_FakeClient):
+    def load_table(
+        self, tabla: str, *, filtro: str = "1=1", ejercicio: str = "2026"
+    ) -> list[dict[str, Any]]:
+        rows = super().load_table(tabla, filtro=filtro, ejercicio=ejercicio)
+        predicate = filtro.split(" ORDER BY ")[0].strip()
+        if predicate == "1=1":
+            return rows
+        column, _, wanted = predicate.partition("=")
+        column, wanted = column.strip(), wanted.strip().strip("'")
+        if rows and column not in rows[0]:
+            return []  # gotcha nº 1
+        return [r for r in rows if str(r.get(column)) == wanted]
+
+    def write_record(self, *_a: Any, **_k: Any) -> None:  # pragma: no cover
+        raise AssertionError("el discovery NO escribe en FACTUSOL")
+
+    update_record = delete_records = write_record
+
+
+def _alb_real(codigo: int, serie: str = "5", **over: Any) -> dict[str, Any]:
+    """Fila real de F_ALB tal como la devuelve CargaTabla (tipos mezclados:
+    TIPALB str, CLIALB int, fechas con hora, ESTALB int)."""
+    from app.integrations.factusol.chain import ALB_REFERENCE_COLUMNS
+
+    row: dict[str, Any] = {c: "" for c in ALB_REFERENCE_COLUMNS}
+    row.update({
+        "TIPALB": serie, "CODALB": codigo, "FECALB": "2026-08-20T00:00:00",
+        "ESTALB": 1, "CLIALB": 2458, "CNOALB": "DUPLICODER, S.L.",
+        "TOTALB": 186.34, "NET1ALB": 154.0, "PIVA1ALB": 21.0, "FOPALB": "002",
+        "PEDALB": "", "REFALB": "Obra X", "ALMALB": "GEN", "USUALB": "BART",
+    })
+    row.update(over)
+    return row
+
+
+def _lal_real(codigo: int, pos: int, serie: str = "5", **over: Any) -> dict[str, Any]:
+    from app.integrations.factusol.chain import LAL_REFERENCE_COLUMNS
+
+    row: dict[str, Any] = {c: "" for c in LAL_REFERENCE_COLUMNS}
+    row.update({
+        "TIPLAL": serie, "CODLAL": codigo, "POSLAL": pos, "ARTLAL": "99cy",
+        "DESLAL": "Tinta cyan", "CANLAL": 2, "PRELAL": 40.0, "TOTLAL": 80.0,
+        "IVALAL": 21, "DOCLAL": "P", "DTPLAL": "5", "DCOLAL": 27, "EJELAL": 2026,
+    })
+    row.update(over)
+    return row
+
+
+def _fase2_tables() -> dict[str, list[dict[str, Any]]]:
+    return {
+        # Presupuesto 5-27 (aceptado) y su homónimo de otra serie.
+        "F_PRE": [
+            {"TIPPRE": "5", "CODPRE": 27, "CLIPRE": 2458, "CNOPRE": "DUPLICODER, S.L.",
+             "FECPRE": "2026-08-01T00:00:00", "ESTPRE": 1, "REFPRE": "Obra X",
+             "TOTPRE": 186.34, "NET1PRE": 154.0, "PIVA1PRE": 21.0, "FOPPRE": "002",
+             "ALMPRE": "GEN", "USUPRE": "BART", "IMPPRE": 1},
+            {"TIPPRE": "2", "CODPRE": 27, "CLIPRE": 7, "CNOPRE": "OTRA SL",
+             "ESTPRE": 0, "TOTPRE": 1.0},
+        ],
+        "F_LPS": [
+            {"TIPLPS": "5", "CODLPS": 27, "POSLPS": 1, "ARTLPS": "99cy",
+             "DESLPS": "Tinta cyan", "CANLPS": 2, "PRELPS": 40.0, "TOTLPS": 80.0,
+             "IVALPS": 21},
+            {"TIPLPS": "5", "CODLPS": 27, "POSLPS": 2, "ARTLPS": "",
+             "DESLPS": "Portes", "CANLPS": 1, "PRELPS": 74.0, "TOTLPS": 74.0},
+            {"TIPLPS": "2", "CODLPS": 27, "POSLPS": 1, "ARTLPS": "XX",
+             "DESLPS": "De otra serie", "CANLPS": 9, "PRELPS": 1.0, "TOTLPS": 9.0},
+        ],
+        # Pedido de cliente 5-123 «Enviado» (ESTPCL=2) con una columna que
+        # F_ALB no tiene (PENPCL) y sus líneas.
+        "F_PCL": [
+            {"TIPPCL": "5", "CODPCL": 123, "CLIPCL": 2458, "CNOPCL": "DUPLICODER, S.L.",
+             "FECPCL": "2026-09-02T00:00:00", "ESTPCL": 2, "REFPCL": "BOP-099917",
+             "TOTPCL": 60.5, "NET1PCL": 50.0, "FOPPCL": "011", "PENPCL": 0,
+             "ALMPCL": "GEN"},
+        ],
+        "F_LPC": [
+            {"TIPLPC": "5", "CODLPC": 123, "POSLPC": 1, "ARTLPC": "CDR80WPT",
+             "DESLPC": "CD TQ 700 MB", "CANLPC": 100, "PRELPC": 0.5,
+             "TOTLPC": 50.0, "PENLPC": 0},
+        ],
+        # Albarán REAL 5-500004 (hijo del presupuesto 5-27, facturado) + el
+        # homónimo de la serie 1 + uno más reciente de la serie 5.
+        "F_ALB": [
+            _alb_real(500004, "5"),
+            _alb_real(500004, "1", CNOALB="AJENO SL", TOTALB=1.0),
+            _alb_real(500005, "5", ESTALB=0, TOTALB=9.0),
+        ],
+        "F_LAL": [
+            _lal_real(500004, 1, "5"),
+            _lal_real(500004, 2, "5", ARTLAL="", DESLAL="Portes", CANLAL=1,
+                      PRELAL=74.0, TOTLAL=74.0),
+            _lal_real(500004, 1, "1", DESLAL="ajena", TOTLAL=1.0),
+            _lal_real(500005, 1, "5", DOCLAL="", DTPLAL="", DCOLAL=""),
+        ],
+    }
+
+
+def test_parse_document_number_requires_series() -> None:
+    from scripts.factusol_discover_albaranes import parse_document_number
+
+    assert parse_document_number("5-500004") == (5, 500004)
+    assert parse_document_number(" 1-000027 ") == (1, 27)
+    import pytest
+
+    for bad in ("500004", "5-", "-5", "A-1", ""):
+        with pytest.raises(ValueError):
+            parse_document_number(bad)
+
+
+def test_type_mismatches_flags_json_type_drift() -> None:
+    """La lección F-4-B: DELSOL quiere de vuelta el MISMO tipo que devuelve.
+    '5' vs 5 y '' vs 0 son desajustes; int vs float y None no."""
+    from scripts.factusol_discover_albaranes import type_mismatches
+
+    template = {"TIPALB": "5", "CLIALB": 2458, "ESTALB": 1, "TOTALB": 186.34,
+                "PEDALB": "", "REQALB": 0, "FECALB": "2026-08-20T00:00:00"}
+    payload = {"TIPALB": "5", "CLIALB": "2458", "ESTALB": 1, "TOTALB": 186,
+               "PEDALB": "", "REQALB": "", "FECALB": "2026-09-11", "NUEVA": 1}
+    out = type_mismatches(payload, template)
+    assert out == [("CLIALB", "str", "int"), ("REQALB", "str", "int")]
+
+
+def test_date_format_hints_detects_missing_time_part() -> None:
+    from scripts.factusol_discover_albaranes import date_format_hints
+
+    template = {"FECALB": "2026-08-20T00:00:00", "REFALB": "2026-01"}
+    assert date_format_hints({"FECALB": "2026-09-11"}, template) == [
+        ("FECALB", "2026-09-11", "2026-08-20T00:00:00"),
+    ]
+    assert date_format_hints({"FECALB": "2026-09-11T00:00:00"}, template) == []
+    assert date_format_hints({"REFALB": "2026-01-01"}, template) == []
+
+
+def test_compare_with_origin_separates_expected_and_real_changes() -> None:
+    """Lo que el escritorio cambia FUERA de clave/fecha/auditoría es lo que
+    BoHub tiene que sobrescribir además de lo mínimo."""
+    from scripts.factusol_discover_albaranes import compare_with_origin
+
+    origin = {"TIPPRE": "5", "CODPRE": 27, "CLIPRE": 2458, "ESTPRE": 0,
+              "FECPRE": "2026-08-01T00:00:00", "USUPRE": "BART", "TOTPRE": 186.34}
+    child = {"TIPALB": "5", "CODALB": 500004, "CLIALB": 2458, "ESTALB": 1,
+             "FECALB": "2026-08-20T00:00:00", "USUALB": "API", "TOTALB": 186.34,
+             "PEDALB": ""}
+    cmp = compare_with_origin(child, origin, child_suffix="ALB", origin_suffix="PRE")
+    assert cmp["iguales"] == ["TIPALB", "CLIALB", "TOTALB"]
+    assert [c for c, _, _ in cmp["esperadas"]] == ["CODALB", "FECALB", "USUALB"]
+    assert cmp["cambiadas"] == [("ESTALB", 0, 1)]
+    assert cmp["solo_hijo"] == ["PEDALB"]
+
+
+def test_pick_template_document_prefers_latest_of_same_series() -> None:
+    from scripts.factusol_discover_albaranes import pick_template_document
+
+    rows = _fase2_tables()["F_ALB"]
+    tpl = pick_template_document(rows, tip_col="TIPALB", cod_col="CODALB", serie=5)
+    assert (tpl["TIPALB"], tpl["CODALB"]) == ("5", 500005)
+    other = pick_template_document(rows, tip_col="TIPALB", cod_col="CODALB", serie=9)
+    assert other is not None  # sin filas de esa serie: la más reciente de todas
+    assert pick_template_document([], tip_col="TIPALB", cod_col="CODALB", serie=5) is None
+
+
+def test_alb_row_dumps_header_lines_and_origin_diff(capsys: Any) -> None:
+    """`--alb-row 5-500004`: cabecera y líneas columna a columna CON tipo,
+    solo las de la serie 5 (no la línea ajena del 1-500004), el enlace de las
+    líneas al presupuesto y qué cambió el escritorio al convertir."""
+    from scripts.factusol_discover_albaranes import dump_albaran
+
+    client = _ReadOnlyClient(_fase2_tables())
+    result = dump_albaran(client, "2026", "5-500004")
+    out = capsys.readouterr().out
+    assert result is not None
+    assert "ALBARÁN REAL 5-500004" in out
+    assert "TIPALB     str    '5'" in out
+    assert "CLIALB     int    2458" in out
+    assert "F_LAL — 2 línea(s)" in out
+    assert "ajena" not in out                      # homónimo de la serie 1 fuera
+    assert "TOTALB=186.34 · suma TOTLAL=154.0" in out
+    assert "ESTALB=1 → Facturado" in out
+    assert "DOCLAL='P' DTPLAL='5' DCOLAL='27' → presupuesto 5-000027" in out
+    # Comparación con el origen: ESTALB cambió (0→1 no: aquí origen 1, hijo 1
+    # → igual); FOPALB copiado tal cual; FECALB cambio esperado.
+    cmp = result["comparison"]
+    assert "FOPALB" in cmp["iguales"] and "CLIALB" in cmp["iguales"]
+    assert any(c == "FECALB" for c, _, _ in cmp["esperadas"])
+    assert "SOLO LECTURA" in out
+
+
+def test_alb_row_reports_missing_document(capsys: Any) -> None:
+    from scripts.factusol_discover_albaranes import dump_albaran
+
+    assert dump_albaran(_ReadOnlyClient(_fase2_tables()), "2026", "5-999999") is None
+    assert "No existe el documento 5-999999" in capsys.readouterr().out
+
+
+def test_dry_run_presupuesto_builds_exact_record_without_writing(capsys: Any) -> None:
+    """El registro que BoHub enviaría desde el presupuesto 5-27: clave nueva
+    (siguiente de la serie 5 → 500006), enlace DOC='P' por línea, columnas
+    solo vivas, contraste de tipos con la fila real y aviso de ESTALB
+    heredado = 1. Nada escrito (el cliente revienta si se intenta)."""
+    from scripts.factusol_discover_albaranes import albaran_dry_run
+
+    client = _ReadOnlyClient(_fase2_tables())
+    result = albaran_dry_run(client, "2026", "presupuestos", "5-000027")
+    out = capsys.readouterr().out
+    assert result is not None
+    cab = result["cabecera"]
+    assert cab["TIPALB"] == "5" and cab["CODALB"] == "500006"
+    assert cab["CNOALB"] == "DUPLICODER, S.L." and cab["FOPALB"] == "002"
+    assert "USUALB" not in cab and "IMPALB" not in cab   # auditoría fuera
+    assert len(result["lineas"]) == 2                    # sin la línea de la serie 2
+    assert all(ln["DOCLAL"] == "P" and ln["DTPLAL"] == "5" and ln["DCOLAL"] == 27
+               for ln in result["lineas"])
+    assert result["unknown"] == []
+    assert "Destino: F_ALB 5-500006" in out
+    assert "REGISTRO F_ALB que se enviaría" in out
+    assert "plantilla real: F_ALB 5-500005" in out
+    assert "ESTALB heredado = 1" in out                  # nacería «Facturado»
+    assert "FECALB: payload '" in out                    # fecha sin hora (aviso)
+    assert "SOLO LECTURA" in out
+
+
+def test_dry_run_pedido_uses_origin_c_and_flags_estpcl(capsys: Any) -> None:
+    """Desde un pedido de cliente: enlace DOC='C', las columnas que F_ALB no
+    tiene (PENPCL/PENLPC) se descartan y ESTPCL=2 heredado queda señalado
+    como fuera de 0/1 — el guard de la Fase 2 lo fijará a '0'."""
+    from scripts.factusol_discover_albaranes import albaran_dry_run
+
+    client = _ReadOnlyClient(_fase2_tables())
+    result = albaran_dry_run(client, "2026", "pedidos", "5-000123")
+    out = capsys.readouterr().out
+    assert result is not None
+    cab = result["cabecera"]
+    assert cab["REFALB"] == "BOP-099917" and cab["FOPALB"] == "011"
+    assert "PENALB" not in cab
+    assert result["lineas"][0]["DOCLAL"] == "C"
+    assert result["lineas"][0]["DCOLAL"] == 123
+    assert "PENLAL" not in result["lineas"][0]
+    assert "aún NO está habilitado" in out
+    assert "sin equivalente en F_ALB (se descartan): PENPCL" in out
+    assert "ESTALB heredado del origen = '2'" in out
+    assert result["unknown"] == []
+
+
+def test_dry_run_rejects_bad_source_or_missing_document(capsys: Any) -> None:
+    from scripts.factusol_discover_albaranes import albaran_dry_run
+
+    client = _ReadOnlyClient(_fase2_tables())
+    assert albaran_dry_run(client, "2026", "albaranes", "5-500004") is None
+    assert albaran_dry_run(client, "2026", "presupuestos", "5-000999") is None
+    out = capsys.readouterr().out
+    assert "origen no soportado" in out and "No existe el documento 5-999" in out
+
+
+def test_dry_run_serie_override_changes_counter(capsys: Any) -> None:
+    from scripts.factusol_discover_albaranes import albaran_dry_run
+
+    client = _ReadOnlyClient(_fase2_tables())
+    result = albaran_dry_run(
+        client, "2026", "presupuestos", "5-000027", serie_override=1,
+    )
+    _ = capsys.readouterr()
+    assert result["cabecera"]["TIPALB"] == "1"
+    assert result["cabecera"]["CODALB"] == "500005"   # siguiente de la serie 1
+    # El enlace sigue apuntando al ORIGEN real (serie 5), no a la serie destino.
+    assert result["lineas"][0]["DTPLAL"] == "5"
+
