@@ -347,6 +347,7 @@ export default function CompanyDetailPage() {
       {/* C-3: vínculo con el cliente FACTUSOL (solo link, sin auto-sync). */}
       <CompanyFactusolPanel
         company={company}
+        onPulled={() => void load()}
         onLinked={(codcli) =>
           setCompany((prev) => (prev ? { ...prev, factusol_company_id: codcli } : prev))
         }

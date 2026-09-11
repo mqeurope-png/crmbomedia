@@ -1282,7 +1282,7 @@ def _client_and_ejercicio(session: Session):
 @router.get("/customers/search")
 def search_customers_endpoint(
     q: str = Query(..., min_length=1),
-    by: str = Query(default="nif", pattern="^(nif|email|name)$"),
+    by: str = Query(default="nif", pattern="^(nif|email|name|codcli)$"),
     session: Session = Depends(get_session),
     current_user: User = Depends(require_erp_view),
 ) -> dict[str, Any]:
@@ -1310,6 +1310,99 @@ def search_customers_endpoint(
         # Compat con el nombre que pedía el spec de C-3.
         cust["factusol_matches_crm_id"] = link["id"] if link else None
     return {"items": found, "ejercicio": ejercicio}
+
+
+# --- «Traer datos de FACTUSOL» (ficha de empresa): FACTUSOL → CRM, a demanda ---
+
+
+class PullIntoCrmIn(BaseModel):
+    company_id: str = Field(min_length=1, max_length=36)
+
+
+def _pull_context(session: Session, company_id: str):
+    """Empresa vinculada + su cliente F_CLI (lectura). 404/409 con código."""
+    from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
+    from app.integrations.factusol.customers import get_customer  # noqa: PLC0415
+    from app.models.crm import Company  # noqa: PLC0415
+
+    company = session.get(Company, company_id)
+    if company is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, {
+            "code": "company_not_found", "detail": "La empresa no existe.",
+        })
+    codcli = str(company.factusol_company_id or "").strip()
+    if not codcli:
+        raise HTTPException(status.HTTP_409_CONFLICT, {
+            "code": "company_unlinked",
+            "detail": "La empresa no está vinculada a ningún cliente de FACTUSOL.",
+        })
+    client, ejercicio = _client_and_ejercicio(session)
+    try:
+        customer = get_customer(client, codcli, ejercicio=ejercicio)
+    except FactusolError as exc:
+        raise _factusol_gateway_error(exc, "factusol_customer_failed") from exc
+    if customer is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, {
+            "code": "factusol_customer_not_found",
+            "detail": f"El cliente FACTUSOL nº {codcli} no existe (ejercicio {ejercicio}).",
+        })
+    return company, codcli, customer
+
+
+@router.get("/customers/pull-preview")
+def pull_preview_endpoint(
+    company_id: str = Query(min_length=1, max_length=36),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_edit),
+) -> dict[str, Any]:
+    """Qué cambiaría «Traer datos de FACTUSOL» en la empresa (campo a campo, con
+    el valor CRM y el de FACTUSOL). No escribe nada."""
+    _ = current_user
+    from app.integrations.factusol.customers import pull_changes  # noqa: PLC0415
+
+    company, codcli, customer = _pull_context(session, company_id)
+    return {
+        "company_id": company.id, "codcli": codcli, "customer": customer,
+        "changes": pull_changes(company, customer),
+    }
+
+
+@router.post("/customers/pull-into-crm")
+def pull_into_crm_endpoint(
+    payload: PullIntoCrmIn,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_edit),
+) -> dict[str, Any]:
+    """«Traer datos de FACTUSOL»: sobrescribe en la empresa CRM los campos del
+    mapping de la diff (nombre, NIF, dirección, ciudad, CP, provincia) y el país
+    con los del cliente F_CLI vinculado. FACTUSOL = fuente de verdad (decisión
+    de Bart). Solo a demanda, solo escribe en el CRM (nunca en FACTUSOL), con
+    auditoría «datos traídos de FACTUSOL cliente nº …»."""
+    from datetime import UTC, datetime  # noqa: PLC0415
+
+    from app.integrations.factusol.customers import apply_pull  # noqa: PLC0415
+    from app.models.crm import AuditLog  # noqa: PLC0415
+
+    company, codcli, customer = _pull_context(session, payload.company_id)
+    changes = apply_pull(company, customer)
+    company.factusol_synced_at = datetime.now(UTC)
+    company.factusol_sync_source = "factusol_pull"
+    session.add(AuditLog(
+        actor_user_id=current_user.id,
+        action="erp.factusol_customer_pull",
+        target_type="company",
+        target_id=company.id,
+        metadata_json=json.dumps({
+            "factusol_codcli": codcli,
+            "summary": f"datos traídos de FACTUSOL cliente nº {codcli}",
+            "changes": changes,
+        }),
+    ))
+    session.commit()
+    logger.info("factusol pull → CRM: empresa %s ← cliente %s (%d cambios)",
+                company.id, codcli, len(changes))
+    return {"ok": True, "company_id": company.id, "codcli": codcli,
+            "changes": changes, "applied": len(changes)}
 
 
 @router.get("/customers/{codcli}/addresses")

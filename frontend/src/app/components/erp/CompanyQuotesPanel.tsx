@@ -9,6 +9,7 @@ import {
   type FactusolQuote,
 } from "../../lib/erpApi";
 import { CreateQuoteModal } from "./CreateQuoteModal";
+import { QuotesTable } from "./QuotesTable";
 
 const POLL_MS = 2000;
 const POLL_MAX_TRIES = 30;  // ~60 s: el worker es serie, puede haber cola
@@ -124,39 +125,26 @@ export function CompanyQuotesPanel({
 
       {loading ? (
         <p className="muted">Cargando…</p>
-      ) : quotes.length === 0 ? (
-        <p className="muted small">Sin proformas en el último año.</p>
       ) : (
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th>Nº</th><th>Fecha</th><th>Referencia</th>
-              <th>Total</th><th />
-            </tr>
-          </thead>
-          <tbody>
-            {quotes.map((q) => (
-              <tr key={q.codpre ?? ""}>
-                <td>{q.codpre}</td>
-                <td className="muted small">{q.fecha ?? "—"}</td>
-                <td>{q.referencia || "—"}</td>
-                <td>{q.total.toFixed(2)} €</td>
-                <td className="erp-quote-row-actions">
-                  <button type="button" className="button small secondary"
-                          disabled={busyJob}
-                          onClick={() => setEditing(q.codpre ?? "")}>
-                    Editar
-                  </button>
-                  <button type="button" className="button small secondary"
-                          disabled={busyJob}
-                          onClick={() => convert(q.codpre ?? "")}>
-                    Convertir en pedido
-                  </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        /* La misma tabla que usa el buscador de proformas del alta de pedido. */
+        <QuotesTable
+          quotes={quotes}
+          emptyText="Sin proformas en el último año."
+          actions={(q) => (
+            <>
+              <button type="button" className="button small secondary"
+                      disabled={busyJob}
+                      onClick={() => setEditing(q.codpre ?? "")}>
+                Editar
+              </button>
+              <button type="button" className="button small secondary"
+                      disabled={busyJob}
+                      onClick={() => convert(q.codpre ?? "")}>
+                Convertir en pedido
+              </button>
+            </>
+          )}
+        />
       )}
 
       {creating || editing ? (

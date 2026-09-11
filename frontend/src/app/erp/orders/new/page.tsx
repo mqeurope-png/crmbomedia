@@ -9,6 +9,7 @@ import {
   CustomerAutocomplete,
   type CustomerChoice,
 } from "../../../components/erp/CustomerAutocomplete";
+import { QuotePicker } from "../../../components/erp/QuotePicker";
 import { listContacts, type Contact } from "../../../lib/api";
 import { getCompany, listCompanies, type Company } from "../../../lib/companiesApi";
 import { extractErrorMessage } from "../../../lib/errors";
@@ -18,10 +19,13 @@ import {
   createOrder,
   getFactusolQuote,
   linkFactusolCustomer,
+  listFactusolDocuments,
   listFactusolQuotes,
   previewOrderFromFactusol,
+  searchFactusolCustomers,
   type FactusolArticle,
   type FactusolCustomer,
+  type FactusolDocument,
   type FactusolOrderDocType,
   type FactusolOrderPreview,
   type FactusolQuote,
@@ -63,6 +67,17 @@ const DOC_TYPE_LABEL: Record<FactusolOrderDocType, string> = {
   presupuestos: "presupuesto",
   pedidos: "pedido de cliente",
 };
+
+/** ISO2 (lo que devuelve el backend para PAICLI) → etiqueta del formulario. */
+const COUNTRY_NAMES_ES: Record<string, string> = {
+  ES: "España", PT: "Portugal", FR: "Francia", IT: "Italia", DE: "Alemania",
+  GB: "Reino Unido", NL: "Países Bajos", BE: "Bélgica", US: "Estados Unidos",
+  AD: "Andorra", CH: "Suiza", AT: "Austria", IE: "Irlanda", MX: "México",
+};
+
+function countryName(iso2: string | null | undefined): string {
+  return iso2 ? (COUNTRY_NAMES_ES[iso2] ?? iso2) : "España";
+}
 
 export default function NewManualOrderPage() {
   const router = useRouter();
@@ -132,9 +147,13 @@ export default function NewManualOrderPage() {
           postal_code: c.postal_code ?? "", state: c.state ?? "",
           country: c.country ?? "España",
         }));
+        // B) Empresa vinculada: FACTUSOL manda sobre NIF y direcciones.
+        if (c.factusol_company_id) void prefillFromFactusol(c.factusol_company_id);
       })
       .catch(() => undefined);
     return () => { alive = false; };
+    // prefillFromFactusol solo usa setters: estable.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [presetCompanyId]);
 
   // Autocomplete de empresas (patrón datalist debounced del CRM).
@@ -268,6 +287,8 @@ export default function NewManualOrderPage() {
       postal_code: hit.postal_code ?? "", state: hit.state ?? "",
       country: hit.country ?? "España",
     }));
+    // B) Empresa vinculada: FACTUSOL manda sobre NIF y direcciones.
+    if (hit.factusol_company_id) void prefillFromFactusol(hit.factusol_company_id);
   }
 
   function pickContact(value: string) {
@@ -300,12 +321,15 @@ export default function NewManualOrderPage() {
       return;
     }
     const cust = choice.customer;
-    setTaxId((prev) => prev || cust.nif || "");
-    setShipping((prev) => (addressFilled(prev) ? prev : {
+    // B) FACTUSOL manda: NIF y dirección del cliente F_CLI al formulario.
+    if (cust.nif) setTaxId(cust.nif);
+    const fromFactusol: OrderAddress = {
       address_line: cust.domcli ?? "", city: cust.pobcli ?? "",
       postal_code: cust.cpocli ?? "", state: cust.procli ?? "",
-      country: "España",  // PAICLI es ISO numérico, no sirve de etiqueta
-    }));
+      country: countryName(cust.pais_iso2),
+    };
+    setShipping(fromFactusol);
+    setBilling(fromFactusol);
     if (cust.crm_link?.type === "company") {
       setCompanyId(cust.crm_link.id);
       setCompanyQuery(cust.crm_link.name);
@@ -332,6 +356,8 @@ export default function NewManualOrderPage() {
       postal_code: c.postal_code ?? "", state: c.state ?? "",
       country: c.country ?? "España",
     }));
+    // B) Empresa vinculada: FACTUSOL manda sobre NIF y direcciones.
+    if (c.factusol_company_id) void prefillFromFactusol(c.factusol_company_id);
   }
 
   /** C-3-fix2: crea la empresa CRM con los datos que vienen de F_CLI y la
@@ -445,18 +471,24 @@ export default function NewManualOrderPage() {
   /** Fase 1: lee el documento de FACTUSOL y vuelca cliente, líneas, fecha y
    *  notas al formulario. Bart revisa y pulsa «Crear pedido»: el pedido queda
    *  con origen FACTUSOL (nunca Woo). No se escribe nada en FACTUSOL. */
-  async function loadFactusolDocument() {
+  function loadFromInputs() {
     const serie = Number(facSerie);
     const codigo = Number(facCodigo);
     if (!Number.isInteger(serie) || serie <= 0 || !Number.isInteger(codigo) || codigo <= 0) {
       setFacNotice({ tone: "error", text: "Indica la serie y el número del documento." });
       return;
     }
-    const label = DOC_TYPE_LABEL[facDocType];
+    void loadFactusolDocument(facDocType, serie, codigo);
+  }
+
+  async function loadFactusolDocument(
+    docType: FactusolOrderDocType, serie: number, codigo: number,
+  ) {
+    const label = DOC_TYPE_LABEL[docType];
     setFacLoading(true);
     setFacNotice(null);
     try {
-      const p = await previewOrderFromFactusol(facDocType, serie, codigo);
+      const p = await previewOrderFromFactusol(docType, serie, codigo);
       setFacPreview(p);
       const rows: LineRow[] = p.lines.map((l) => ({
         product_sku: l.codart ?? "",
@@ -504,6 +536,31 @@ export default function NewManualOrderPage() {
       });
     } finally {
       setFacLoading(false);
+    }
+  }
+
+  /** B) Empresa vinculada a FACTUSOL → NIF y direcciones del cliente F_CLI
+   *  (solo lectura de FACTUSOL; sus datos mandan sobre lo que tuviera el
+   *  formulario). Best-effort: si falla, el formulario se queda como estaba. */
+  async function prefillFromFactusol(codcli: string) {
+    try {
+      const hits = await searchFactusolCustomers(codcli, "codcli");
+      const cust = hits.find((h) => h.codcli === codcli) ?? hits[0];
+      if (!cust) return;
+      const fromFactusol: OrderAddress = {
+        address_line: cust.domcli ?? "", city: cust.pobcli ?? "",
+        postal_code: cust.cpocli ?? "", state: cust.procli ?? "",
+        country: countryName(cust.pais_iso2),
+      };
+      if (cust.nif) setTaxId(cust.nif);
+      setShipping(fromFactusol);
+      setBilling(fromFactusol);
+      setFactusolNotice({
+        tone: "info",
+        text: `Datos del cliente FACTUSOL nº ${codcli} cargados en el pedido (NIF y dirección).`,
+      });
+    } catch {
+      // Precarga best-effort: sin FACTUSOL, valen los datos del CRM.
     }
   }
 
@@ -602,24 +659,52 @@ export default function NewManualOrderPage() {
                 <option value="pedidos">Pedido de cliente</option>
               </select>
             </label>
-            <label className="field">
-              <span>Serie</span>
-              <input type="number" min="1" max="9" value={facSerie}
-                     aria-label="Serie del documento FACTUSOL"
-                     onChange={(e) => setFacSerie(e.target.value)} />
-            </label>
-            <label className="field">
-              <span>Número</span>
-              <input type="number" min="1" value={facCodigo}
-                     aria-label="Número del documento FACTUSOL"
-                     onChange={(e) => setFacCodigo(e.target.value)} />
-            </label>
-            <button type="button" className="button small"
-                    disabled={facLoading || !facCodigo}
-                    onClick={loadFactusolDocument}>
-              {facLoading ? "Leyendo…" : "Cargar documento"}
-            </button>
+            {facDocType === "pedidos" ? (
+              <>
+                <label className="field">
+                  <span>Serie</span>
+                  <input type="number" min="1" max="9" value={facSerie}
+                         aria-label="Serie del documento FACTUSOL"
+                         onChange={(e) => setFacSerie(e.target.value)} />
+                </label>
+                <label className="field">
+                  <span>Número</span>
+                  <input type="number" min="1" value={facCodigo}
+                         aria-label="Número del documento FACTUSOL"
+                         onChange={(e) => setFacCodigo(e.target.value)} />
+                </label>
+                <button type="button" className="button small"
+                        disabled={facLoading || !facCodigo}
+                        onClick={loadFromInputs}>
+                  {facLoading ? "Leyendo…" : "Cargar documento"}
+                </button>
+              </>
+            ) : null}
           </div>
+          {facDocType === "presupuestos" ? (
+            /* A) El mismo buscador/listado de proformas de la ficha de empresa:
+               sin teclear serie y número. */
+            <QuotePicker
+              companyId={companyId}
+              busy={facLoading}
+              onPick={(q) => {
+                if (q.codpre) void loadFactusolDocument("presupuestos", 1, Number(q.codpre));
+              }}
+            />
+          ) : (
+            <PedidoClientePicker
+              busy={facLoading}
+              onPick={(d) => {
+                const serie = d.serie ?? 0;
+                const codigo = Number(d.codigo);
+                setFacSerie(String(serie || ""));
+                setFacCodigo(Number.isInteger(codigo) && codigo > 0 ? String(codigo) : "");
+                if (serie > 0 && Number.isInteger(codigo) && codigo > 0) {
+                  void loadFactusolDocument("pedidos", serie, codigo);
+                }
+              }}
+            />
+          )}
           {facNotice ? (
             <p className={facNotice.tone === "error" ? "form-error" : "form-info"}
                role="status">
@@ -899,6 +984,63 @@ export default function NewManualOrderPage() {
 
 function contactName(c: Contact): string {
   return [c.first_name, c.last_name].filter(Boolean).join(" ").trim();
+}
+
+/** Buscador de pedidos de cliente (F_PCL) por nº, referencia o cliente, sobre
+ *  el explorador de documentos de E3 (solo lectura). No hay un listado por
+ *  empresa como el de proformas, así que serie+número siguen disponibles. */
+function PedidoClientePicker({
+  onPick, busy,
+}: {
+  onPick: (d: FactusolDocument) => void;
+  busy?: boolean;
+}) {
+  const [query, setQuery] = useState("");
+  const [items, setItems] = useState<FactusolDocument[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    const q = query.trim();
+    if (!q) { setItems([]); return; }
+    let alive = true;
+    const handle = window.setTimeout(() => {
+      setLoading(true);
+      listFactusolDocuments("pedidos", { q, limit: 10 })
+        .then((r) => { if (alive) setItems(r.items); })
+        .catch(() => { if (alive) setItems([]); })
+        .finally(() => { if (alive) setLoading(false); });
+    }, 300);
+    return () => { alive = false; window.clearTimeout(handle); };
+  }, [query]);
+
+  return (
+    <div className="erp-quote-picker">
+      <label className="field">
+        <span>O buscar pedido de cliente</span>
+        <input type="text" value={query} aria-label="Buscar pedido de cliente"
+               placeholder="nº, referencia o cliente…"
+               onChange={(e) => setQuery(e.target.value)} />
+      </label>
+      {loading ? <p className="muted small" role="status">Buscando pedidos…</p> : null}
+      {!loading && items.length > 0 ? (
+        <ul className="erp-quote-list">
+          {items.map((d) => (
+            <li key={`${d.serie}-${d.codigo}`}>
+              <span>
+                {d.numero} · {d.fecha ?? "—"} · {d.cliente_nombre ?? "—"}
+                {d.total != null ? ` · ${d.total.toFixed(2)} €` : ""}
+                {d.referencia ? ` · ${d.referencia}` : ""}
+              </span>
+              <button type="button" className="button small" disabled={busy}
+                      onClick={() => onPick(d)}>
+                Cargar en el pedido
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  );
 }
 
 function AddressFields({

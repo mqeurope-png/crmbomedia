@@ -1,17 +1,24 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
+import { getCurrentUser, type User } from "../../lib/api";
 import type { Company } from "../../lib/companiesApi";
 import { extractErrorMessage } from "../../lib/errors";
 import {
   createFactusolCustomer,
+  ERP_EDIT_ROLES,
+  getFactusolPullPreview,
   linkFactusolCustomer,
+  pullFactusolIntoCompany,
   searchFactusolCustomers,
   type FactusolCustomer,
+  type FactusolPullPreview,
 } from "../../lib/erpApi";
 
 type Diff = { field: string; crm: string; factusol: string };
 
+/** Mismo mapping que `customers.DIFF_FIELDS` del backend (la fuente de verdad
+ *  del detector de divergencias); «Traer datos» añade además el país. */
 const DIFF_FIELDS: { label: string; crm: keyof Company; fac: keyof FactusolCustomer }[] = [
   { label: "Nombre", crm: "name", fac: "nofcli" },
   { label: "NIF", crm: "tax_id", fac: "nifcli" },
@@ -33,48 +40,53 @@ function diffOf(company: Company, cust: FactusolCustomer): Diff[] {
 
 /** Sección «FACTUSOL» de la ficha de empresa (C-3).
  *
- *  Solo vínculo: si los datos difieren se muestran las diferencias, pero
- *  **nunca se auto-sincroniza** — ambas versiones pueden ser legítimas y pisar
- *  una perdería información. */
+ *  Solo vínculo: si los datos difieren se muestran las diferencias y **nunca se
+ *  auto-sincroniza**. Lo que sí hay es «Traer datos de FACTUSOL»: a demanda,
+ *  con confirmación (enseña qué cambia), sobrescribe la empresa CRM con los
+ *  datos de FACTUSOL (fuente de verdad, decisión de Bart) y deja historial.
+ *  Solo escribe en el CRM, jamás en FACTUSOL. */
 export function CompanyFactusolPanel({
   company,
   onLinked,
+  onPulled,
 }: {
   company: Company;
   onLinked?: (codcli: string) => void;
+  /** Tras «Traer datos»: el padre recarga la empresa. */
+  onPulled?: () => void;
 }) {
+  const [user, setUser] = useState<User | null>(null);
   const [customer, setCustomer] = useState<FactusolCustomer | null>(null);
   const [diffs, setDiffs] = useState<Diff[] | null>(null);
   const [showDiff, setShowDiff] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // «Traer datos»: previsualización pendiente de confirmar.
+  const [pullPreview, setPullPreview] = useState<FactusolPullPreview | null>(null);
 
   const code = company.factusol_company_id;
+  const canEdit = !!user && (ERP_EDIT_ROLES as readonly string[]).includes(user.role);
 
-  // Con vínculo: carga el cliente para detectar divergencias.
-  const load = useCallback(() => {
+  useEffect(() => {
+    getCurrentUser().then(setUser).catch(() => undefined);
+  }, []);
+
+  // Con vínculo: lee el cliente F_CLI por su CÓDIGO (el vínculo) para
+  // detectar divergencias.
+  useEffect(() => {
     if (!code) return;
-    searchFactusolCustomers(code, "nif")
+    let alive = true;
+    searchFactusolCustomers(code, "codcli")
       .then((hits) => {
+        if (!alive) return;
         const hit = hits.find((h) => h.codcli === code) ?? hits[0] ?? null;
         setCustomer(hit);
         setDiffs(hit ? diffOf(company, hit) : null);
       })
       .catch(() => undefined);
+    return () => { alive = false; };
   }, [code, company]);
-
-  useEffect(() => {
-    if (!code || !company.tax_id) return;
-    // El vínculo se busca por NIF (match primario de C-3).
-    searchFactusolCustomers(company.tax_id, "nif")
-      .then((hits) => {
-        const hit = hits.find((h) => h.codcli === code) ?? null;
-        setCustomer(hit);
-        setDiffs(hit ? diffOf(company, hit) : null);
-      })
-      .catch(() => undefined);
-  }, [code, company, load]);
 
   async function buscarEnFactusol() {
     if (!company.tax_id) {
@@ -126,6 +138,41 @@ export function CompanyFactusolPanel({
     }
   }
 
+  /** Paso 1: qué cambiaría (el backend calcula la diff con el mapping real). */
+  async function abrirTraerDatos() {
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      setPullPreview(await getFactusolPullPreview(company.id));
+    } catch (e) {
+      setError(extractErrorMessage(e, "No se pudo leer el cliente en FACTUSOL."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** Paso 2: confirmar y sobrescribir (solo CRM). */
+  async function confirmarTraerDatos() {
+    if (!pullPreview) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await pullFactusolIntoCompany(company.id);
+      setPullPreview(null);
+      setShowDiff(false);
+      setNotice(
+        `Datos traídos de FACTUSOL cliente nº ${r.codcli}: `
+        + `${r.applied} campo(s) actualizado(s). FACTUSOL no cambia.`,
+      );
+      onPulled?.();
+    } catch (e) {
+      setError(extractErrorMessage(e, "No se pudieron traer los datos de FACTUSOL."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <section className="erp-card" aria-label="FACTUSOL">
       <h3>FACTUSOL</h3>
@@ -145,6 +192,16 @@ export function CompanyFactusolPanel({
                         onClick={() => setShowDiff((v) => !v)}>
                   {showDiff ? "Ocultar diferencias" : "Ver diferencias"}
                 </button>
+                {canEdit ? (
+                  <>
+                    {" "}
+                    <button type="button" className="button small" disabled={busy}
+                            title="Sobrescribe los datos de la empresa CRM con los de FACTUSOL (pide confirmación; no toca FACTUSOL)"
+                            onClick={abrirTraerDatos}>
+                      Traer datos de FACTUSOL
+                    </button>
+                  </>
+                ) : null}
               </p>
               {showDiff ? (
                 <table className="data-table">
@@ -164,12 +221,24 @@ export function CompanyFactusolPanel({
               ) : null}
               <p className="muted small">
                 El ERP <strong>no sincroniza automáticamente</strong>: ambas
-                versiones pueden ser correctas. Corrige la que proceda en su
-                sistema de origen.
+                versiones pueden ser correctas. «Traer datos de FACTUSOL» pisa
+                la del CRM con la de FACTUSOL solo cuando tú lo pidas.
               </p>
             </>
           ) : customer ? (
-            <p className="muted small">Los datos coinciden con FACTUSOL.</p>
+            <p className="muted small">
+              Los datos coinciden con FACTUSOL.
+              {canEdit ? (
+                <>
+                  {" "}
+                  <button type="button" className="button small secondary" disabled={busy}
+                          title="Vuelve a leer el cliente en FACTUSOL y sobrescribe la empresa CRM (pide confirmación)"
+                          onClick={abrirTraerDatos}>
+                    Traer datos de FACTUSOL
+                  </button>
+                </>
+              ) : null}
+            </p>
           ) : null}
         </>
       ) : (
@@ -187,6 +256,50 @@ export function CompanyFactusolPanel({
           </div>
         </>
       )}
+
+      {pullPreview ? (
+        <div className="modal-overlay" role="dialog" aria-modal="true"
+             aria-label="Traer datos de FACTUSOL">
+          <div className="modal-dialog">
+            <h2>Traer datos de FACTUSOL</h2>
+            <p className="form-error" role="alert">
+              Esto sobrescribirá los datos de la empresa con los de FACTUSOL
+              (cliente nº {pullPreview.codcli}). FACTUSOL es la fuente de verdad:
+              se pisan todos los campos del mapping, no solo los vacíos. No se
+              cambia nada en FACTUSOL.
+            </p>
+            {pullPreview.changes.length === 0 ? (
+              <p className="muted small">No hay diferencias: nada que traer.</p>
+            ) : (
+              <table className="data-table">
+                <thead>
+                  <tr><th>Campo</th><th>CRM (ahora)</th><th>FACTUSOL (quedará)</th></tr>
+                </thead>
+                <tbody>
+                  {pullPreview.changes.map((c) => (
+                    <tr key={c.field}>
+                      <td>{c.label}</td>
+                      <td>{c.crm || "—"}</td>
+                      <td><strong>{c.factusol || "—"}</strong></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+            <div className="modal-actions">
+              <button type="button" className="button secondary" disabled={busy}
+                      onClick={() => setPullPreview(null)}>
+                Cancelar
+              </button>
+              <button type="button" className="button danger"
+                      disabled={busy || pullPreview.changes.length === 0}
+                      onClick={confirmarTraerDatos}>
+                {busy ? "Trayendo…" : `Sobrescribir con FACTUSOL (${pullPreview.changes.length})`}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 }

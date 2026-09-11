@@ -75,6 +75,12 @@ def _row_to_customer(row: dict[str, Any]) -> dict[str, Any]:
         str(out.get("noccli") or out.get("nofcli") or "").strip() or None
     )
     out["nif"] = out.get("nifcli")
+    # País en ISO2 (PAICLI es ISO 3166-1 numérico), con el normalizador de
+    # F1-fix2: listo para el CRM y para el formulario del pedido. None si no se
+    # reconoce (nunca España por defecto).
+    from app.erp.language import normalize_country  # noqa: PLC0415
+
+    out["pais_iso2"] = normalize_country(out.get("paicli"))
     return out
 
 
@@ -99,6 +105,12 @@ def search_customers(
             f"UPPER(NOFCLI) LIKE UPPER('%{safe}%') "
             f"OR UPPER(NOCCLI) LIKE UPPER('%{safe}%')"
         )
+    elif by == "codcli":
+        # Lectura por CÓDIGO (el vínculo CRM ↔ FACTUSOL): igualdad trivial,
+        # columna confirmada. Un código no numérico no puede existir → [].
+        if not q.isdigit():
+            return []
+        filtro = f"CODCLI={int(q)}"
     else:
         raise ValueError(f"criterio de búsqueda inválido: {by!r}")
     rows = client.load_table("F_CLI", filtro=filtro, ejercicio=ejercicio)
@@ -278,6 +290,59 @@ def diff_company(company: Any, customer: dict[str, Any]) -> list[dict[str, Any]]
         if crm_value.casefold() != fac_value.casefold():
             out.append({"field": label, "crm": crm_value, "factusol": fac_value})
     return out
+
+
+def get_customer(
+    client: FactusolClient, codcli: Any, *, ejercicio: str,
+) -> dict[str, Any] | None:
+    """Cliente F_CLI por su CODCLI (el vínculo), normalizado. None si no existe."""
+    hits = search_customers(
+        client, str(codcli or "").strip(), by="codcli", ejercicio=ejercicio,
+    )
+    return hits[0] if hits else None
+
+
+#: «Traer datos de FACTUSOL» (ficha de empresa): los campos de la diff más el
+#: país (PAICLI → ISO2 con el normalizador de F1-fix2). FACTUSOL es la fuente
+#: de verdad (decisión de Bart): se pisa TODO el mapping, no solo lo vacío. El
+#: nombre cae a NOCCLI si NOFCLI viene vacío (la columna del CRM es NOT NULL).
+PULL_FIELDS = (*DIFF_FIELDS, ("pais", "country", "pais_iso2"))
+PULL_LABELS = {
+    "nombre": "Nombre", "nif": "NIF", "direccion": "Dirección", "ciudad": "Ciudad",
+    "cp": "CP", "provincia": "Provincia", "pais": "País",
+}
+
+
+def _pull_value(customer: dict[str, Any], label: str, fac_key: str) -> str:
+    value = str(customer.get(fac_key) or "").strip()
+    if label == "nombre" and not value:
+        value = str(customer.get("noccli") or "").strip()
+    return value
+
+
+def pull_changes(company: Any, customer: dict[str, Any]) -> list[dict[str, Any]]:
+    """Qué cambiaría «Traer datos de FACTUSOL», campo a campo (previsualización
+    para la confirmación). Sin nombre en FACTUSOL, el nombre no se toca."""
+    out: list[dict[str, Any]] = []
+    for label, crm_attr, fac_key in PULL_FIELDS:
+        crm_value = str(getattr(company, crm_attr, None) or "").strip()
+        fac_value = _pull_value(customer, label, fac_key)
+        if label == "nombre" and not fac_value:
+            continue
+        if crm_value != fac_value:
+            out.append({"field": label, "label": PULL_LABELS[label],
+                        "crm": crm_value, "factusol": fac_value})
+    return out
+
+
+def apply_pull(company: Any, customer: dict[str, Any]) -> list[dict[str, Any]]:
+    """Sobrescribe la empresa CRM con los datos del cliente FACTUSOL y devuelve
+    los cambios aplicados. Solo toca el objeto CRM: NUNCA escribe en FACTUSOL."""
+    changes = pull_changes(company, customer)
+    attrs = {label: crm_attr for label, crm_attr, _ in PULL_FIELDS}
+    for change in changes:
+        setattr(company, attrs[change["field"]], change["factusol"] or None)
+    return changes
 
 
 def link_to_crm(

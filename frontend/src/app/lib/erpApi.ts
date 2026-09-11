@@ -1686,13 +1686,15 @@ export type FactusolCustomer = {
   paicli: string | null;
   emacli: string | null;
   telcli: string | null;
+  /** País en ISO2 (PAICLI normalizado por el backend); null si no se reconoce. */
+  pais_iso2?: string | null;
   /** Vínculo CRM existente (null si el cliente aún no está en el CRM). */
   crm_link: { type: "company" | "contact"; id: string; name: string } | null;
   factusol_matches_crm_id: string | null;
 };
 
 export async function searchFactusolCustomers(
-  q: string, by: "nif" | "email" | "name" = "nif",
+  q: string, by: "nif" | "email" | "name" | "codcli" = "nif",
 ): Promise<FactusolCustomer[]> {
   const r = await apiFetch<{ items: FactusolCustomer[] }>(
     `/api/erp/factusol/customers/search?q=${encodeURIComponent(q)}&by=${by}`,
@@ -1708,6 +1710,40 @@ export async function linkFactusolCustomer(body: {
   return apiFetch("/api/erp/factusol/customers/link", {
     method: "POST",
     body: JSON.stringify(body),
+  });
+}
+
+/** «Traer datos de FACTUSOL» (ficha de empresa): un campo que cambiaría. */
+export type FactusolPullChange = {
+  field: string;
+  label: string;
+  crm: string;
+  factusol: string;
+};
+
+export type FactusolPullPreview = {
+  company_id: string;
+  codcli: string;
+  customer: FactusolCustomer;
+  changes: FactusolPullChange[];
+};
+
+/** Qué cambiaría «Traer datos de FACTUSOL» (no escribe nada). */
+export async function getFactusolPullPreview(companyId: string): Promise<FactusolPullPreview> {
+  return apiFetch(
+    `/api/erp/factusol/customers/pull-preview?company_id=${encodeURIComponent(companyId)}`,
+  );
+}
+
+/** Sobrescribe la empresa CRM con los datos del cliente FACTUSOL vinculado
+ *  (FACTUSOL = fuente de verdad). Solo CRM; deja auditoría. */
+export async function pullFactusolIntoCompany(companyId: string): Promise<{
+  ok: boolean; company_id: string; codcli: string;
+  changes: FactusolPullChange[]; applied: number;
+}> {
+  return apiFetch("/api/erp/factusol/customers/pull-into-crm", {
+    method: "POST",
+    body: JSON.stringify({ company_id: companyId }),
   });
 }
 
