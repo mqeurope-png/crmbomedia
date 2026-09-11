@@ -54,6 +54,15 @@ import sys
 from datetime import UTC, datetime
 from typing import Any
 
+# `type_mismatches` y `pick_template_document` viven en `chain` (Fase 2): son el
+# guard que la escritura ejecuta antes de escribir — una sola implementación.
+from app.integrations.factusol.chain import (
+    pick_template_row as pick_template_document,
+    type_mismatches,
+)
+
+__all__ = ["pick_template_document", "type_mismatches"]
+
 # --------------------------------------------------------------------------
 # Candidatas
 # --------------------------------------------------------------------------
@@ -915,18 +924,6 @@ def parse_document_number(numero: str) -> tuple[int, int]:
 
 def type_name(value: Any) -> str:
     return type(value).__name__
-
-
-# `type_mismatches` y `pick_template_document` viven en `chain` (Fase 2): son el
-# guard que la escritura ejecuta antes de escribir — una sola implementación.
-from app.integrations.factusol.chain import (  # noqa: E402
-    pick_template_row as pick_template_document,
-)
-from app.integrations.factusol.chain import (
-    type_mismatches,
-)
-
-__all__ = ["pick_template_document", "type_mismatches"]
 
 
 def date_format_hints(
