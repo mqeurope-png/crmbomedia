@@ -58,6 +58,8 @@ from typing import Any
 # guard que la escritura ejecuta antes de escribir — una sola implementación.
 from app.integrations.factusol.chain import (
     pick_template_row as pick_template_document,
+)
+from app.integrations.factusol.chain import (
     type_mismatches,
 )
 
