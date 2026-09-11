@@ -40,6 +40,8 @@ jest.mock("../../../lib/erpApi", () => ({
   getFactusolQuote: jest.fn(),
   searchFactusolArticles: jest.fn(),
   previewOrderFromFactusol: jest.fn(),
+  searchFactusolQuotes: jest.fn(() => Promise.resolve([])),
+  listFactusolDocuments: jest.fn(() => Promise.resolve({ items: [], total: 0 })),
 }));
 
 const COMPANY = {
@@ -146,10 +148,19 @@ describe("Fase 1 · alta de pedido desde FACTUSOL y desde la ficha de empresa", 
       company_id: null, company_name: null, company_linked: false,
       order_number: "PRO-000575",
     }));
+    const { searchFactusolQuotes } = jest.requireMock("../../../lib/erpApi");
+    (searchFactusolQuotes as jest.Mock).mockResolvedValue([{
+      codpre: "575", referencia: "Tinta", fecha: "2026-09-01", clipre: "99999",
+      cliente_nombre: "Nuevo Cliente", base: 100, iva: 21, total: 121,
+    }]);
     const user = userEvent.setup();
     render(<NewManualOrderPage />);
-    await user.type(screen.getByLabelText("Número del documento FACTUSOL"), "575");
-    await user.click(screen.getByRole("button", { name: "Cargar documento" }));
+    // Proformas: se busca (nº, referencia o cliente) y se elige, sin serie+número.
+    await user.type(screen.getByLabelText("Buscar proforma"), "575");
+    await user.click(await screen.findByRole("button", { name: "Cargar en el pedido" }));
+    await waitFor(() =>
+      expect(previewOrderFromFactusol).toHaveBeenCalledWith("presupuestos", 1, 575),
+    );
     const status = await screen.findByText(/presupuesto 1-000575 cargado/);
     expect(status).toHaveTextContent("«Nuevo Cliente» (nº 99999) sin vincular");
     // Sin empresa el alta sigue deshabilitada hasta que Bart la elija.

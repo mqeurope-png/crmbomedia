@@ -44,6 +44,9 @@ jest.mock("../../../lib/erpApi", () => ({
   searchFactusolArticles: jest.fn(),
   // Fase 1: importar presupuesto / pedido de cliente de FACTUSOL.
   previewOrderFromFactusol: jest.fn(),
+  // Buscador de proformas del alta (mismo listado que la ficha) y de pedidos.
+  searchFactusolQuotes: jest.fn(() => Promise.resolve([])),
+  listFactusolDocuments: jest.fn(() => Promise.resolve({ items: [], total: 0 })),
 }));
 
 const mockCompanies = listCompanies as jest.Mock;
