@@ -41,17 +41,18 @@ import {
 
 const INVOICED_STATUSES = new Set(["generated", "invoiced_by_erp", "already_invoiced_externally"]);
 
-/** Etiqueta del botón de PDF según el documento de ORIGEN del pedido en
- *  FACTUSOL (presupuesto para los creados desde proforma; pedido de cliente
- *  para el resto). Sin documento, la etiqueta genérica y el botón deshabilitado. */
-function pdfDocumentLabel(doc: OrderDetail["factusol_document"] | undefined): string {
-  return doc?.doc_type === "presupuestos"
-    ? "PDF del presupuesto (FACTUSOL)"
-    : "PDF del pedido (FACTUSOL)";
-}
-
-function pdfFilePrefix(doc: OrderDetail["factusol_document"] | undefined): string {
-  return doc?.doc_type === "presupuestos" ? "Presupuesto" : "Pedido";
+/** Tooltip del botón «PDF del pedido (FACTUSOL)» — la ETIQUETA es siempre
+ *  la misma (decisión de Bart), aunque por debajo el documento de origen sea
+ *  un presupuesto (creado desde proforma) o un pedido de cliente. Sin
+ *  documento, el botón se deshabilita con el motivo. */
+function pdfDocumentTitle(doc: OrderDetail["factusol_document"] | undefined): string {
+  if (!doc) {
+    return "Sin documento en FACTUSOL: este pedido no procede de un presupuesto ni de un pedido de cliente";
+  }
+  const where = doc.by_ref
+    ? ` (pedido web: se localiza por su referencia ${doc.ref ?? "REFPCL"})`
+    : doc.numero ? ` ${doc.numero}` : "";
+  return `Genera el PDF del ${doc.label} de origen en FACTUSOL${where}`;
 }
 function isInvoiced(o: { invoice_status: string; factusol_invoice_number: string | null }): boolean {
   return INVOICED_STATUSES.has(o.invoice_status) || !!o.factusol_invoice_number;
@@ -218,9 +219,7 @@ export default function ErpOrderDetailPage() {
             type="button"
             className="button small secondary"
             disabled={pdfBusy || !order.factusol_document}
-            title={order.factusol_document
-              ? `Genera el PDF del ${order.factusol_document.label} de origen en FACTUSOL`
-              : "Sin documento en FACTUSOL: este pedido no procede de un presupuesto ni de un pedido de cliente"}
+            title={pdfDocumentTitle(order.factusol_document)}
             onClick={async () => {
               if (!order.factusol_document) return;
               setPdfBusy(true);
@@ -228,10 +227,12 @@ export default function ErpOrderDetailPage() {
               setPdfNotice(null);
               try {
                 const blob = await downloadOrderFactusolPedidoPdf(order.id, pdfLang);
-                saveBlob(blob, `${pdfFilePrefix(order.factusol_document)}_${order.order_number}.pdf`);
+                saveBlob(blob, `Pedido_${order.order_number}.pdf`);
               } catch (e) {
-                // 404 controlado (el documento no está en FACTUSOL) → aviso
-                // discreto; cualquier otra cosa sí es un error.
+                // 404 controlado (el documento no está en FACTUSOL: pedido
+                // web aún no replicado, o prefijo de referencia de la tienda
+                // sin configurar — el aviso lo dice) → aviso discreto;
+                // cualquier otra cosa sí es un error.
                 if ((e as { status?: number } | null)?.status === 404) {
                   setPdfNotice(extractErrorMessage(e, "Sin documento en FACTUSOL."));
                 } else {
@@ -244,7 +245,7 @@ export default function ErpOrderDetailPage() {
               }
             }}
           >
-            {pdfBusy ? "Generando…" : pdfDocumentLabel(order.factusol_document)}
+            {pdfBusy ? "Generando…" : "PDF del pedido (FACTUSOL)"}
           </button>
           {pdfNotice ? (
             <span className="muted small" role="status">{pdfNotice}</span>

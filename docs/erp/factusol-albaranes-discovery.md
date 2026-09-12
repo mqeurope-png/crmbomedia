@@ -632,3 +632,43 @@ junto al FK (allí donde esté `Order` está su tabla referenciada), y
 `app/db/base.py` (registro de alembic / `create_all`) incorpora los modelos de
 plantillas de email que le faltaban. Sin migración. Tests en subproceso con
 la cadena de import del worker: `tests/test_order_mapper_registry.py`.
+
+### 10.7 «PDF del pedido (FACTUSOL)» en pedidos WEB (tras #397) + etiqueta fija
+
+Síntoma: en FLUXLA-5789 (Persoregala SL) el botón avisaba «Este pedido aún no
+existe en FACTUSOL» aunque su F_PCL `5-000026` existe con «Su referencia»
+`FLE-005789`.
+
+Qué pasa de verdad: el camino web de #397 es el de siempre (`find_pcl_by_order`
+por `REFPCL`; un pedido web no tiene `factusol_source`, ese es su único
+enlace). La referencia se compone con el **prefijo de la tienda**
+(`IntegrationAccount.metadata_json.factusol_ref_prefix`, sin UI) y, si no
+está, con las 3 primeras letras del nº de pedido: `FLUXLA-5789` → `FLU-005789`
+≠ `FLE-005789` → `[]` → 404. Antes de #397 ese mismo 404 se veía como el rojo
+genérico «No se pudo generar el PDF…» (`apiDownloadBlob` lanzaba
+`[object Object]`), por eso parecía otra cosa. BOPRIN sí casa porque `BOP` se
+deriva solo.
+
+Fix (sin migración):
+
+- **Prefijo por tienda en Ajustes ERP** (`factusol_ref_prefix_by_store`, en
+  el blob `factusol_series_json.ref_prefix_by_store`; columna nueva en la
+  tabla «Serie de facturación» de `/erp/settings`, con el derivado como
+  placeholder y el de la cuenta —si lo hay— en solo lectura porque manda).
+  Lo usa `_store_ref_prefix` (PDF, emisión, factusol-status, vincular
+  facturas) y el guardarraíl web de la Fase 2 (`store_ref_prefixes`).
+- **404 con diagnóstico** (`_web_pcl_missing_detail`): dice qué referencia
+  se buscó y en qué ejercicio; si en F_PCL existe el mismo nº Woo con otro
+  prefijo (`REFPCL LIKE '%-005789'`, solo lectura, best-effort), dice cuál y
+  qué prefijo configurar. **Nunca elige ese documento**: un homónimo de otra
+  tienda comparte número (lección de #382). La ficha no consulta FACTUSOL al
+  cargar (`factusol_document.by_ref` + `ref`): el botón siempre intenta la
+  descarga y solo un 404 controlado enseña el aviso discreto.
+- **Etiqueta fija** «PDF del pedido (FACTUSOL)» (decisión de Bart) aunque el
+  documento de origen sea un presupuesto; el tooltip sí dice qué se imprime.
+  Fichero siempre `Pedido_<nº>.pdf`.
+
+Tests: `tests/test_erp_pedido_pdf_origen.py` (`test_pdf_pedido_web_usa_fpcl_por_ref`,
+`test_pdf_pedido_web_sin_fpcl_aviso_controlado`,
+`test_prefijo_referencia_por_tienda_en_ajustes` + los de #397) y
+`orders/[id]/pedido-pdf.test.tsx`.

@@ -6,6 +6,7 @@ paginación, el detalle con join compuesto y los endpoints HTTP.
 """
 from __future__ import annotations
 
+import re
 from collections.abc import Generator
 from typing import Any
 from unittest.mock import patch
@@ -54,6 +55,22 @@ class FakeClient:
         predicate = filtro.split(" ORDER BY ")[0].strip()
         if predicate == "1=1":
             return rows
+        if " LIKE " in predicate:
+            # `COL LIKE '%-005789'` (comodines SQL `%`/`_`, sin distinguir
+            # mayúsculas, como el servidor real).
+            column, _, raw = predicate.partition(" LIKE ")
+            column = column.strip()
+            pattern = raw.strip().strip("'")
+            if self.strict and rows and column not in rows[0]:
+                return []
+            regex = "^" + "".join(
+                ".*" if ch == "%" else "." if ch == "_" else re.escape(ch)
+                for ch in pattern
+            ) + "$"
+            return [
+                r for r in rows
+                if re.match(regex, str(r.get(column) or ""), flags=re.IGNORECASE)
+            ]
         column, _, raw = predicate.partition("=")
         column = column.strip()
         wanted = raw.strip().strip("'")

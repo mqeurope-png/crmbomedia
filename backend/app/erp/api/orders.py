@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any, Literal
 
@@ -279,7 +280,7 @@ def _serialise_detail(session: Session, o: Order, actor: User) -> dict[str, Any]
         "factusol_payment": _factusol_payment(o),
         # Documento de ORIGEN imprimible en FACTUSOL («PDF del pedido
         # (FACTUSOL)»); None = sin documento → la ficha deshabilita el botón.
-        "factusol_document": _factusol_document(o),
+        "factusol_document": _factusol_document(session, o),
         "lines": [
             {
                 "id": line.id, "position": line.position,
@@ -341,7 +342,7 @@ FACTUSOL_DOC_LABEL: dict[str, str] = {
 }
 
 
-def _factusol_document(o: Order) -> dict[str, Any] | None:
+def _factusol_document(session: Session, o: Order) -> dict[str, Any] | None:
     """Documento de ORIGEN del pedido en FACTUSOL, el que imprime «PDF del
     pedido (FACTUSOL)»:
 
@@ -349,11 +350,15 @@ def _factusol_document(o: Order) -> dict[str, Any] | None:
       documento, con tipo, serie y número guardados en
       `packing_json.factusol_source` (`by_ref=False`);
     - pedido web: el F_PCL que crea la app Woo→FACTUSOL, que solo se puede
-      localizar por su referencia común `REFPCL` al descargar (`by_ref=True`);
+      localizar por su referencia común `REFPCL` al descargar (`by_ref=True`,
+      con la referencia `ref` que se buscará — sin consultar FACTUSOL en cada
+      carga de la ficha: el botón siempre intenta la descarga y solo un 404
+      controlado enseña el aviso);
     - alta manual sin origen: `None` — no hay nada que imprimir y la ficha
       deshabilita el botón en vez de fallar."""
     from app.erp.factusol_albaran import is_web_order, order_source  # noqa: PLC0415
     from app.integrations.factusol.documents import visible_number  # noqa: PLC0415
+    from app.integrations.factusol.service import pcl_ref_for_order  # noqa: PLC0415
 
     src = order_source(o)
     if src is not None:
@@ -362,11 +367,13 @@ def _factusol_document(o: Order) -> dict[str, Any] | None:
             "doc_type": src["doc_type"], "serie": serie, "codigo": codigo,
             "numero": visible_number(serie, codigo),
             "label": FACTUSOL_DOC_LABEL[src["doc_type"]], "by_ref": False,
+            "ref": None,
         }
     if is_web_order(o):
         return {
             "doc_type": "pedidos", "serie": None, "codigo": None, "numero": None,
             "label": FACTUSOL_DOC_LABEL["pedidos"], "by_ref": True,
+            "ref": pcl_ref_for_order(session, o),
         }
     return None
 
@@ -1376,6 +1383,40 @@ def _int_or_none_local(value: Any) -> int | None:
         return None
 
 
+def _web_pcl_missing_detail(
+    session: Session, client: Any, order: Order, *, ref: str, ejercicio: str,
+    probe: Callable[[Any, str, str], list[str]],
+) -> dict[str, Any]:
+    """Cuerpo del 404 `pedido_not_in_factusol` de un pedido WEB cuyo F_PCL no
+    aparece por `REFPCL`. Dice QUÉ referencia se buscó (el prefijo de tienda
+    o el derivado del número: `FLU-005789`) y, si en F_PCL hay ese mismo nº
+    Woo bajo otro prefijo (`FLE-005789`), qué prefijo configurar. El sondeo
+    es solo diagnóstico: nunca elige el documento por el operador."""
+    from app.models.integration_settings import IntegrationAccount  # noqa: PLC0415
+
+    candidates = probe(client, order.order_number, ejercicio)
+    detail = (
+        f"Este pedido aún no existe en FACTUSOL: ningún pedido de cliente con "
+        f"referencia {ref} (ejercicio {ejercicio})."
+    )
+    if candidates:
+        store = session.get(IntegrationAccount, order.store_id) if order.store_id else None
+        store_label = (
+            store.display_name or store.account_id if store is not None
+            else (order.order_number or "").split("-")[0]
+        )
+        prefix = candidates[0].rpartition("-")[0]
+        detail += (
+            f" Sí existe {', '.join(candidates)}: si es este pedido, configura el "
+            f"prefijo de referencia «{prefix}» de la tienda {store_label} en "
+            "Ajustes ERP (Serie de facturación → Prefijo referencia FACTUSOL)."
+        )
+    return {
+        "code": "pedido_not_in_factusol", "detail": detail,
+        "ref": ref, "ejercicio": ejercicio, "candidates": candidates,
+    }
+
+
 @router.get("/{order_id}/factusol-pedido-pdf")
 def order_factusol_pedido_pdf(
     order_id: str,
@@ -1390,7 +1431,12 @@ def order_factusol_pedido_pdf(
       pedido al crearlo, Fase 1);
     - origen pedido de cliente → el F_PCL (serie + nº guardados);
     - pedido web → el F_PCL que crea la app Woo→FACTUSOL, localizado por su
-      referencia común `REFPCL` (comportamiento de E2/E4);
+      referencia común `REFPCL` (`find_pcl_by_order`, como en E2/E4): el
+      pedido web NO guarda `factusol_source`, ese es su único enlace. Si no
+      aparece, el 404 dice QUÉ referencia se buscó y, si en F_PCL existe el
+      mismo número bajo otro prefijo (`FLE-005789` vs `FLU-005789`), qué
+      prefijo hay que configurar para la tienda — nunca se adivina el
+      documento (un homónimo de otra tienda comparte número);
     - sin documento de origen (alta manual) → 404 `pedido_not_in_factusol`
       sin consultar FACTUSOL (la ficha ya deshabilita el botón).
 
@@ -1417,11 +1463,12 @@ def order_factusol_pedido_pdf(
         _store_ref_prefix,
         ejercicio_for,
         find_pcl_by_order,
+        probe_pcl_refs_by_number,
         serie_of_row,
     )
 
     order = _get_order(session, order_id)
-    document = _factusol_document(order)
+    document = _factusol_document(session, order)
     if document is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, {
             "code": "pedido_not_in_factusol",
@@ -1440,10 +1487,10 @@ def order_factusol_pedido_pdf(
                 ref_prefix=_store_ref_prefix(session, order),
             )
             if pcl is None:
-                raise HTTPException(status.HTTP_404_NOT_FOUND, {
-                    "code": "pedido_not_in_factusol",
-                    "detail": "Este pedido aún no existe en FACTUSOL.",
-                })
+                raise HTTPException(status.HTTP_404_NOT_FOUND, _web_pcl_missing_detail(
+                    session, client, order, ref=document["ref"], ejercicio=ejercicio,
+                    probe=probe_pcl_refs_by_number,
+                ))
             serie = serie_of_row(pcl, "TIPPCL")
             codigo = int(str(pcl.get("CODPCL")).strip())
             if serie is None:
