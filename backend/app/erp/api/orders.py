@@ -943,7 +943,9 @@ def create_order_albaran(
     from app.integrations.factusol.jobs import enqueue_create_order_albaran  # noqa: PLC0415
 
     order = _get_order(session, order_id)
-    blocker = albaran_blocker(order)
+    # Tarea A: un pedido MANUAL también puede tenerlo (desde sus líneas) si
+    # tiene líneas y una empresa vinculada a F_CLI; los web nunca.
+    blocker = albaran_blocker(order, session)
     if blocker is not None:
         raise HTTPException(status.HTTP_409_CONFLICT, {
             "code": blocker[0], "detail": blocker[1],
