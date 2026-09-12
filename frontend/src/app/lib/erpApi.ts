@@ -120,6 +120,20 @@ export type OrderDetail = OrderSummary & {
   externally_processed_by_user_id: string | null;
   /** Fase 2: paso de pago apuntado al convertir (opción B) y su cobro. */
   factusol_payment?: FactusolPaymentInfo | null;
+  /** Documento de ORIGEN imprimible en FACTUSOL («PDF del pedido
+   *  (FACTUSOL)»): presupuesto / pedido de cliente del que se creó (Fase 1),
+   *  o el F_PCL de un pedido web (`by_ref`: se localiza por REFPCL al
+   *  descargar). `null` = sin documento → el botón se deshabilita. */
+  factusol_document?: FactusolOriginDocument | null;
+};
+
+export type FactusolOriginDocument = {
+  doc_type: "presupuestos" | "pedidos";
+  serie: number | null;
+  codigo: number | null;
+  numero: string | null;
+  label: string;
+  by_ref: boolean;
 };
 
 /** Fase 2 · paso de confirmación de pago al convertir (opción B). `paid=false`
