@@ -474,6 +474,76 @@ def test_alb_row_reports_missing_document(capsys: Any) -> None:
     assert "No existe el documento 5-999999" in capsys.readouterr().out
 
 
+# ---------------------------------------------------------------------------
+# Tarea C — `--cli-row`: fila real de F_CLI (tipo de documento / régimen IVA)
+# ---------------------------------------------------------------------------
+
+
+def _cli_tables() -> dict[str, list[dict[str, Any]]]:
+    """Dos clientes con TODAS las columnas que devolvería CargaTabla, incluidas
+    las que BoHub no conoce (nombres inventados solo para el test: manda el
+    volcado real)."""
+    base = {
+        "CODCLI": 2458, "NIFCLI": "B12345678", "NOFCLI": "DUPLICODER, S.L.",
+        "NOCCLI": "Duplicoder", "DOMCLI": "C/ Mayor 1", "POBCLI": "Girona",
+        "CPOCLI": "17001", "PROCLI": "Girona", "PAICLI": "724", "EMACLI": "",
+        "TELCLI": "", "TPDCLI": 0, "TIVCLI": 0, "REQCLI": 0, "TARCLI": 1,
+        "FPACLI": "002", "WEBCLI": "",
+    }
+    intra = {**base, "CODCLI": 3101, "NIFCLI": "BE0123456789", "NOFCLI": "ACME BV",
+             "NOCCLI": "Acme", "POBCLI": "Antwerpen", "PAICLI": "056",
+             "TPDCLI": 1, "TIVCLI": 2}
+    return {"F_CLI": [base, intra]}
+
+
+def test_cli_row_dumps_customer_marking_known_and_candidate_columns(capsys: Any) -> None:
+    """`--cli-row 2458`: fila completa columna · tipo · valor, marcando lo que
+    BoHub escribe (11 columnas) y las candidatas por prefijo a tipo de
+    documento / régimen de IVA / recargo. Solo lectura y sin adivinar: el
+    volcado real manda."""
+    from scripts.factusol_discover_albaranes import dump_customer
+
+    client = _FakeClient(_cli_tables())
+    result = dump_customer(client, "2026", "2458")
+    out = capsys.readouterr().out
+    assert result is not None and result["codcli"] == "2458"
+    assert client.calls == [("F_CLI", "CODCLI=2458")]
+    assert "CLIENTE REAL F_CLI · CODCLI=2458" in out
+    assert "BoHub escribe 11 (" in out
+    assert "NIFCLI     str    'B12345678'  ← BoHub escribe" in out
+    assert "TPDCLI     int    0  ← candidata: tipo de documento del identificador" in out
+    assert "TIVCLI     int    0  ← candidata: régimen de IVA" in out
+    assert "REQCLI     int    0  ← candidata: recargo de equivalencia" in out
+    tarcli_line = out.split("TARCLI")[1].split("\n")[0]
+    assert "int    1" in tarcli_line and "← candidata" not in tarcli_line
+    assert result["candidates"]["régimen de IVA"] == ["TIVCLI"]
+    assert "SOLO LECTURA" in out
+
+
+def test_cli_row_compares_customers_and_reports_missing(capsys: Any) -> None:
+    """Con 2+ clientes: qué columnas difieren fuera de las que BoHub escribe
+    (ahí están el tipo de documento y el régimen). CODCLI inexistente o no
+    numérico → aviso, sin excepción."""
+    from scripts.factusol_discover_albaranes import (
+        compare_customer_dumps,
+        dump_customer,
+    )
+
+    client = _FakeClient(_cli_tables())
+    dumps = [dump_customer(client, "2026", "2458"), dump_customer(client, "2026", "3101")]
+    differing = compare_customer_dumps([d for d in dumps if d])
+    out = capsys.readouterr().out
+    assert set(differing) == {"TPDCLI", "TIVCLI"}   # nombre/dirección no cuentan
+    assert differing["TIVCLI"] == [0, 2]
+    assert "COLUMNAS QUE DIFIEREN ENTRE LOS CLIENTES VOLCADOS (CODCLI=2458 · CODCLI=3101)" in out
+    assert "TIVCLI     0 | 2  ← régimen de IVA" in out
+    assert dump_customer(client, "2026", "9999") is None
+    assert dump_customer(client, "2026", "abc") is None
+    out = capsys.readouterr().out
+    assert "No existe el cliente CODCLI=9999" in out and "CODCLI inválido" in out
+    assert compare_customer_dumps([dumps[0]]) == {}
+
+
 def test_dry_run_presupuesto_builds_exact_record_without_writing(capsys: Any) -> None:
     """El registro que BoHub enviaría desde el presupuesto 5-27: clave nueva
     (siguiente de la serie 5 → 500006), enlace DOC='P' por línea, columnas

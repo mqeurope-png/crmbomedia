@@ -31,6 +31,13 @@ Uso (desde el VPS):
     # tablas candidatas extra / otro ejercicio:
     ... --ejercicio 2026 F_LAL F_LIA
 
+    # 3-bis. Tarea C (cliente FACTUSOL: tipo de documento del NIF/CIF y
+    #    régimen de IVA) — volcado REAL de F_CLI de 3-4 clientes
+    #    representativos (nacional con NIF, UE con NIF-IVA, exportación fuera
+    #    UE) columna a columna con valor y tipo + qué columnas difieren:
+    docker exec crmbo-api-1 python -m scripts.factusol_discover_albaranes \\
+        --cli-row 2458 3101 4020
+
     # 4. Fase 2 (albarán al convertir) — volcado REAL de un albarán, columna
     #    a columna con valor y tipo (como `--lco-row` en los cobros):
     docker exec crmbo-api-1 python -m scripts.factusol_discover_albaranes \\
@@ -1002,6 +1009,127 @@ def _line_link(row: dict[str, Any], suffix: str) -> tuple[str, str, str]:
     )
 
 
+#: Columnas de `F_CLI` que BoHub escribe hoy al crear un cliente
+#: (`customers.build_customer_payload`, C-3-fix1). TODO lo demás lo deja
+#: FACTUSOL con sus defaults de `EscribirRegistro` — ahí viven el tipo de
+#: documento del identificador (N.I.F. / NIF-IVA intracomunitario / pasaporte…)
+#: y el régimen de IVA (Sí / No / Intracomunitario / Exportación, RE) que
+#: Bart ve mal en las fichas creadas por BoHub (Tarea C).
+KNOWN_CLI_COLUMNS: tuple[str, ...] = (
+    "CODCLI", "NOFCLI", "NOCCLI", "NIFCLI", "DOMCLI", "POBCLI", "CPOCLI",
+    "PROCLI", "PAICLI", "EMACLI", "TELCLI",
+)
+
+#: Prefijos CANDIDATOS a esas columnas, por la convención de sufijos de las
+#: tablas hermanas ya volcadas en vivo (`TPDFAC`/`TIDFAC` en F_FAC,
+#: `TIVFAC`/`REQFAC`, `TIVALB`/`REQALB`, `PREC*`/`IREC*` de recargo). Son solo
+#: PISTAS para leer el volcado: manda lo que devuelva la fila real y la
+#: comparación entre un cliente nacional, uno intracomunitario y uno de
+#: exportación.
+CLI_CANDIDATE_PREFIXES: dict[str, tuple[str, ...]] = {
+    "tipo de documento del identificador": ("TPD", "TID", "TDO", "TDI", "DOC"),
+    "régimen de IVA": ("TIV", "REG", "RGI", "IVA", "EXE", "INT", "RIV"),
+    "recargo de equivalencia": ("REQ", "REC", "RE1", "PRE"),
+}
+
+
+def cli_candidate_category(column: str) -> str | None:
+    """Categoría candidata de una columna de F_CLI por su prefijo (o None)."""
+    name = column.upper()
+    if not name.endswith("CLI") or name in KNOWN_CLI_COLUMNS:
+        return None
+    prefix = name[:-3]
+    for category, prefixes in CLI_CANDIDATE_PREFIXES.items():
+        if any(prefix.startswith(p) for p in prefixes):
+            return category
+    return None
+
+
+def dump_customer(client: Any, ejercicio: str, codcli: str) -> dict[str, Any] | None:
+    """`--cli-row 2458`: la fila REAL de `F_CLI` del cliente, columna a
+    columna con valor y tipo (el mismo formato que `--lco-row`/`--alb-row`),
+    marcando las que BoHub escribe hoy y las CANDIDATAS a tipo de documento /
+    régimen de IVA / recargo de equivalencia, que BoHub no escribe. SOLO
+    LECTURA. `CargaTabla` devuelve la tabla completa, así que el volcado
+    enseña TODAS las columnas vivas de F_CLI."""
+    code = str(codcli or "").strip()
+    print("=" * 74)
+    print(f"CLIENTE REAL F_CLI · CODCLI={code} · ejercicio {ejercicio}")
+    print("=" * 74)
+    if not code.isdigit():
+        print(f"  ❌ CODCLI inválido: {codcli!r} (se espera el código numérico)")
+        return None
+    try:
+        rows = client.load_table("F_CLI", filtro=f"CODCLI={int(code)}", ejercicio=ejercicio)
+    except Exception as exc:  # noqa: BLE001 — se informa, nunca se rompe el volcado
+        print(f"  ❌ {exc}")
+        return None
+    # Defensivo (gotcha nº 1): el filtro puede ignorarse en silencio.
+    rows = [r for r in rows if normalize(r.get("CODCLI")) == code]
+    if not rows:
+        print(f"  ❌ No existe el cliente CODCLI={code} en el ejercicio {ejercicio}")
+        return None
+    row = rows[0]
+    known = [c for c in KNOWN_CLI_COLUMNS if c in row]
+    unknown = sorted(c for c in row if c not in KNOWN_CLI_COLUMNS)
+    print(
+        f"  {len(row)} columnas vivas · BoHub escribe {len(known)} "
+        f"({', '.join(known)}) · las otras {len(unknown)} las deja FACTUSOL "
+        "con sus defaults"
+    )
+    print(f"  Nombre: {row.get('NOFCLI')!r} · NIF: {row.get('NIFCLI')!r} · "
+          f"país (PAICLI): {row.get('PAICLI')!r}")
+    print("  --- fila completa (columna · tipo · valor) ---")
+    candidates: dict[str, list[str]] = {}
+    for col in sorted(row):
+        val = row[col]
+        category = cli_candidate_category(col)
+        tag = "  ← BoHub escribe" if col in KNOWN_CLI_COLUMNS else ""
+        if category:
+            candidates.setdefault(category, []).append(col)
+            tag = f"  ← candidata: {category}"
+        print(f"  {col:<10} {type_name(val):<6} {val!r}{tag}")
+    print("  --- candidatas por prefijo (confirmar con el volcado, no adivinar) ---")
+    for category in CLI_CANDIDATE_PREFIXES:
+        cols = candidates.get(category, [])
+        if cols:
+            print(f"  {category}: " + ", ".join(
+                f"{c}={row[c]!r} ({type_name(row[c])})" for c in cols
+            ))
+        else:
+            print(f"  {category}: ninguna columna con esos prefijos")
+    print("  SOLO LECTURA: no se ha escrito nada.")
+    return {"codcli": code, "row": row, "known": known, "candidates": candidates}
+
+
+def compare_customer_dumps(dumps: list[dict[str, Any]]) -> dict[str, list[Any]]:
+    """Con 2+ clientes volcados (nacional / intracomunitario / exportación):
+    columnas que DIFIEREN entre ellos fuera de las que BoHub escribe (nombre,
+    dirección…) — el tipo de documento y el régimen de IVA tienen que estar
+    ahí. Imprime y devuelve `{col: [valor por cliente]}`."""
+    if len(dumps) < 2:
+        return {}
+    columns = sorted({c for d in dumps for c in d["row"]} - set(KNOWN_CLI_COLUMNS))
+    differing: dict[str, list[Any]] = {}
+    for col in columns:
+        values = [d["row"].get(col) for d in dumps]
+        if len({normalize(v) for v in values}) > 1:
+            differing[col] = values
+    labels = " · ".join(f"CODCLI={d['codcli']}" for d in dumps)
+    print("=" * 74)
+    print(f"COLUMNAS QUE DIFIEREN ENTRE LOS CLIENTES VOLCADOS ({labels})")
+    print("  (fuera de las que BoHub escribe: ahí están el tipo de documento y el régimen de IVA)")
+    print("=" * 74)
+    if not differing:
+        print("  Ninguna: los clientes volcados tienen las mismas columnas de "
+              "tipo/régimen; vuelca uno nacional, uno UE con NIF-IVA y uno fuera de la UE.")
+    for col, values in differing.items():
+        category = cli_candidate_category(col)
+        hint = f"  ← {category}" if category else ""
+        print(f"  {col:<10} " + " | ".join(f"{v!r}" for v in values) + hint)
+    return differing
+
+
 def dump_albaran(client: Any, ejercicio: str, numero: str) -> dict[str, Any] | None:
     """`--alb-row`: F_ALB + F_LAL de un albarán REAL, columna a columna con
     valor y tipo, cuadre de importes, enlace de las líneas y comparación con
@@ -1318,6 +1446,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--serie", type=int, default=None,
                         help="serie destino del dry-run (por defecto la "
                              "heredada del origen)")
+    parser.add_argument("--cli-row", nargs="+", default=None, metavar="CODCLI",
+                        help="Tarea C: vuelca la fila REAL de F_CLI de esos "
+                             "clientes columna a columna con valor y tipo, "
+                             "marcando lo que BoHub escribe y las candidatas "
+                             "a tipo de documento / régimen de IVA / RE; con "
+                             "2+ clientes, qué columnas difieren (p. ej. "
+                             "uno nacional, uno UE con NIF-IVA, uno fuera UE)")
     args = parser.parse_args(argv)
 
     from app.integrations.factusol.client import FactusolClient  # noqa: PLC0415
@@ -1326,6 +1461,16 @@ def main(argv: list[str] | None = None) -> int:
     ejercicio = args.ejercicio or client.default_ejercicio
     print(f"FACTUSOL — discovery de albaranes (ERP-E1) · ejercicio {ejercicio}")
     print("SOLO LECTURA: este script no escribe nada en FACTUSOL.\n")
+
+    if args.cli_row:
+        dumps = []
+        for codcli in args.cli_row:
+            dump = dump_customer(client, ejercicio, codcli)
+            if dump is not None:
+                dumps.append(dump)
+            print()
+        compare_customer_dumps(dumps)
+        return 0
 
     if args.alb_row:
         for numero in args.alb_row:
