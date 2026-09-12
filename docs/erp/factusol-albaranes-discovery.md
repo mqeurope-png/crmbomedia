@@ -593,3 +593,25 @@ docker exec crmbo-api-1 python -m scripts.factusol_discover_albaranes --alb-row 
 # 4) Log del worker con el registro exacto:
 docker logs crmbo-worker-factusol-1 --since 1h 2>&1 | grep -E "EscribirRegistro F_(ALB|LAL)|no cuadra"
 ```
+
+### 10.6 Regresión al desplegar (#391, expuesta por #394): `NoReferencedTableError` en el worker
+
+Síntoma: al convertir una proforma en pedido (y al crear el albarán / apuntar
+el pago), el job de `worker-factusol` moría con
+`Foreign key associated with column 'orders.store_id' could not find table
+'integration_accounts'`. No es la BD ni el nombre del FK (el FK apunta a
+`integration_accounts.id` desde Fase D #300 y `IntegrationAccount.__tablename__`
+es exactamente ese): es el **registro del modelo en el `MetaData` del
+proceso**. `rq` importa solo el módulo del job (`app.integrations.factusol.jobs`),
+que registra `Order` (vía `service.py`) pero no `app.models.integration_settings`;
+`configure_mappers()` tolera el FK sin resolver, pero el unit of work lo resuelve
+al ordenar tablas en cada **flush de `orders`** (`Mapper._sorted_tables`).
+Hasta #391 se registraba por casualidad (el antiguo `convert_quote_to_order`
+importaba `app.erp.api.orders`); `create_quote_job` («Nueva proforma») no
+escribe `orders` y por eso no fallaba.
+
+Fix: `app/erp/models/orders.py` importa `app.models.integration_settings`
+junto al FK (allí donde esté `Order` está su tabla referenciada), y
+`app/db/base.py` (registro de alembic / `create_all`) incorpora los modelos de
+plantillas de email que le faltaban. Sin migración. Tests en subproceso con
+la cadena de import del worker: `tests/test_order_mapper_registry.py`.
