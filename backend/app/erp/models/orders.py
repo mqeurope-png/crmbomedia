@@ -27,6 +27,16 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+# `orders.store_id` referencia `integration_accounts` (modelo en
+# `app.models.integration_settings`). Se importa AQUÍ, junto al FK, para que
+# esa tabla esté siempre en el MetaData allí donde esté `Order`: el unit of
+# work resuelve el FK al ordenar tablas en CADA flush de `orders`
+# (`Mapper._sorted_tables` → `NoReferencedTableError` si falta), y en el
+# worker RQ —que no importa `app.main`— nadie más la registraba. Hasta #391
+# lo hacía por casualidad `quotes.convert_quote_to_order` (importaba
+# `app.erp.api.orders`); al reescribirlo, convertir una proforma en pedido
+# (y el albarán / pago de la Fase 2) reventaba en `worker-factusol`.
+from app.models import integration_settings as _integration_settings  # noqa: F401
 from app.models.crm import Base, TimestampMixin, enum_values
 
 
