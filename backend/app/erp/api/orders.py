@@ -277,6 +277,9 @@ def _serialise_detail(session: Session, o: Order, actor: User) -> dict[str, Any]
         "packing": json.loads(o.packing_json) if o.packing_json else None,
         # Fase 2: paso de pago apuntado al convertir (opción B) y su cobro.
         "factusol_payment": _factusol_payment(o),
+        # Documento de ORIGEN imprimible en FACTUSOL («PDF del pedido
+        # (FACTUSOL)»); None = sin documento → la ficha deshabilita el botón.
+        "factusol_document": _factusol_document(o),
         "lines": [
             {
                 "id": line.id, "position": line.position,
@@ -330,6 +333,42 @@ def _factusol_payment(o: Order) -> dict[str, Any] | None:
     from app.erp.factusol_albaran import payment_intent  # noqa: PLC0415
 
     return payment_intent(o)
+
+
+#: Etiqueta del documento de origen (para la UI y los mensajes).
+FACTUSOL_DOC_LABEL: dict[str, str] = {
+    "presupuestos": "presupuesto", "pedidos": "pedido de cliente",
+}
+
+
+def _factusol_document(o: Order) -> dict[str, Any] | None:
+    """Documento de ORIGEN del pedido en FACTUSOL, el que imprime «PDF del
+    pedido (FACTUSOL)»:
+
+    - creado desde un presupuesto / pedido de cliente (Fase 1): el propio
+      documento, con tipo, serie y número guardados en
+      `packing_json.factusol_source` (`by_ref=False`);
+    - pedido web: el F_PCL que crea la app Woo→FACTUSOL, que solo se puede
+      localizar por su referencia común `REFPCL` al descargar (`by_ref=True`);
+    - alta manual sin origen: `None` — no hay nada que imprimir y la ficha
+      deshabilita el botón en vez de fallar."""
+    from app.erp.factusol_albaran import is_web_order, order_source  # noqa: PLC0415
+    from app.integrations.factusol.documents import visible_number  # noqa: PLC0415
+
+    src = order_source(o)
+    if src is not None:
+        serie, codigo = int(src["serie"]), int(src["codigo"])
+        return {
+            "doc_type": src["doc_type"], "serie": serie, "codigo": codigo,
+            "numero": visible_number(serie, codigo),
+            "label": FACTUSOL_DOC_LABEL[src["doc_type"]], "by_ref": False,
+        }
+    if is_web_order(o):
+        return {
+            "doc_type": "pedidos", "serie": None, "codigo": None, "numero": None,
+            "label": FACTUSOL_DOC_LABEL["pedidos"], "by_ref": True,
+        }
+    return None
 
 
 def _factusol_live(session: Session) -> bool:
@@ -1344,12 +1383,23 @@ def order_factusol_pedido_pdf(
     session: Session = Depends(get_session),
     current_user: User = Depends(require_erp_view),
 ):
-    """ERP-E4 — PDF del pedido de cliente (F_PCL) vinculado a este pedido del
-    CRM, localizado por su referencia común (REFPCL) igual que la emisión de
-    E2. 404 con código propio si el pedido aún no existe en FACTUSOL."""
+    """ERP-E4 / Fase 2 — PDF del documento de ORIGEN del pedido en FACTUSOL,
+    con el motor E4 genérico por tipo (solo lectura):
+
+    - origen proforma → el presupuesto F_PRE (serie + nº guardados en el
+      pedido al crearlo, Fase 1);
+    - origen pedido de cliente → el F_PCL (serie + nº guardados);
+    - pedido web → el F_PCL que crea la app Woo→FACTUSOL, localizado por su
+      referencia común `REFPCL` (comportamiento de E2/E4);
+    - sin documento de origen (alta manual) → 404 `pedido_not_in_factusol`
+      sin consultar FACTUSOL (la ficha ya deshabilita el botón).
+
+    Un pedido creado desde proforma NO tiene F_PCL: buscarlo por REFPCL era
+    lo que fallaba con «No se pudo generar el PDF del pedido FACTUSOL»."""
     _ = current_user
     from fastapi import Response  # noqa: PLC0415
 
+    from app.erp.api.factusol import _fop_names  # noqa: PLC0415
     from app.erp.factusol_pdf import (  # noqa: PLC0415
         company_for_serie,
         extract_document_data,
@@ -1362,6 +1412,7 @@ def order_factusol_pedido_pdf(
         FactusolClient,
         FactusolError,
     )
+    from app.integrations.factusol.documents import visible_number  # noqa: PLC0415
     from app.integrations.factusol.service import (  # noqa: PLC0415
         _store_ref_prefix,
         ejercicio_for,
@@ -1370,35 +1421,52 @@ def order_factusol_pedido_pdf(
     )
 
     order = _get_order(session, order_id)
+    document = _factusol_document(order)
+    if document is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, {
+            "code": "pedido_not_in_factusol",
+            "detail": (
+                "Este pedido no procede de ningún documento de FACTUSOL: "
+                "no hay PDF que generar."
+            ),
+        })
+    doc_type = document["doc_type"]
     try:
         client = FactusolClient.from_settings()
         ejercicio = ejercicio_for(session)
-        pcl = find_pcl_by_order(
-            client, order, ejercicio,
-            ref_prefix=_store_ref_prefix(session, order),
-        )
-        if pcl is None:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, {
-                "code": "pedido_not_in_factusol",
-                "detail": "Este pedido aún no existe en FACTUSOL.",
-            })
-        serie = serie_of_row(pcl, "TIPPCL")
-        codigo = int(str(pcl.get("CODPCL")).strip())
-        if serie is None:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, {
-                "code": "pedido_sin_serie",
-                "detail": "El pedido en FACTUSOL no trae serie utilizable.",
-            })
+        if document["by_ref"]:
+            pcl = find_pcl_by_order(
+                client, order, ejercicio,
+                ref_prefix=_store_ref_prefix(session, order),
+            )
+            if pcl is None:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, {
+                    "code": "pedido_not_in_factusol",
+                    "detail": "Este pedido aún no existe en FACTUSOL.",
+                })
+            serie = serie_of_row(pcl, "TIPPCL")
+            codigo = int(str(pcl.get("CODPCL")).strip())
+            if serie is None:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, {
+                    "code": "pedido_sin_serie",
+                    "detail": "El pedido en FACTUSOL no trae serie utilizable.",
+                })
+        else:
+            serie, codigo = int(document["serie"]), int(document["codigo"])
         raw = load_raw_document(
-            client, "pedidos", serie=serie, codigo=codigo, ejercicio=ejercicio,
+            client, doc_type, serie=serie, codigo=codigo, ejercicio=ejercicio,
         )
         if raw is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, {
-                "code": "pedido_not_in_factusol",
-                "detail": "Este pedido aún no existe en FACTUSOL.",
+                "code": "document_not_in_factusol",
+                "detail": (
+                    f"El {document['label']} {visible_number(serie, codigo)} ya "
+                    f"no existe en FACTUSOL (ejercicio {ejercicio})."
+                ),
             })
         data = extract_document_data(
-            client, "pedidos", raw[0], raw[1], ejercicio=ejercicio,
+            client, doc_type, raw[0], raw[1], ejercicio=ejercicio,
+            fop_names=_fop_names(client, ejercicio),
         )
     except FactusolError as exc:
         logger.warning("factusol pedido-pdf KO order=%s: %s", order_id, exc)
@@ -1409,10 +1477,10 @@ def order_factusol_pedido_pdf(
         data, company=company_for_serie(session, serie), lang=lang,
         logo=logo_path_for_serie(serie),
     )
+    filename = pdf_filename(doc_type, data, lang)
     return Response(
         content=pdf, media_type="application/pdf",
-        headers={"Content-Disposition":
-                 f'attachment; filename="{pdf_filename("pedidos", data, lang)}"'},
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 

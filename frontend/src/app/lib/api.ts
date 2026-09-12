@@ -492,6 +492,24 @@ export async function apiUpload<T>(
 /** Descarga un binario autenticado (PDF de albarán/etiqueta) como Blob. Igual
  *  que `exportAuditLogs`: manda cookie + Bearer y NO parsea JSON. El llamante
  *  crea el object URL y lo abre en una pestaña. */
+/** Error de una descarga (blob). Conserva el `status` HTTP y el `code` del
+ *  ERP (`HTTPException(status, {"code", "detail"})`) para que la UI pueda
+ *  distinguir un 404 controlado («sin documento en FACTUSOL») de un fallo
+ *  real, y su `message` es siempre legible (antes se lanzaba `new
+ *  Error(detail)` con `detail` OBJETO → «[object Object]» → la UI caía al
+ *  texto genérico «No se pudo generar el PDF…»). */
+export class DownloadError extends Error {
+  status: number;
+  code: string | null;
+
+  constructor(message: string, status: number, code: string | null = null) {
+    super(message);
+    this.name = "DownloadError";
+    this.status = status;
+    this.code = code;
+  }
+}
+
 export async function apiDownloadBlob(
   path: string, init?: { method?: string; body?: string; headers?: Record<string, string> },
 ): Promise<Blob> {
@@ -507,14 +525,21 @@ export async function apiDownloadBlob(
     cache: "no-store",
   });
   if (!response.ok) {
-    let detail = `Descarga fallida (${response.status})`;
+    const fallback = `Descarga fallida (${response.status})`;
+    let message = fallback;
+    let code: string | null = null;
     try {
       const body = await response.json();
-      detail = body.detail ?? detail;
+      const detail = (body as { detail?: unknown } | null)?.detail;
+      message = formatFastApiDetail(detail, fallback);
+      if (detail && typeof detail === "object" && !Array.isArray(detail)) {
+        const c = (detail as { code?: unknown }).code;
+        if (typeof c === "string") code = c;
+      }
     } catch {
       // cuerpo vacío / no-JSON: mensaje solo-status
     }
-    throw new Error(detail);
+    throw new DownloadError(message, response.status, code);
   }
   return response.blob();
 }

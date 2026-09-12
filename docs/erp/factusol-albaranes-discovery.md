@@ -583,6 +583,15 @@ la allowlist descarta.
   `PDFALB=1` solo marca que el escritorio guardó su PDF en el PC de Bart. El
   botón vive en «Documentos de envío → Albarán» y en la tarjeta; «Subir
   albarán» sigue disponible (albaranes externos / SAT).
+- **PDF del pedido (FACTUSOL)** imprime el documento de ORIGEN real del pedido
+  (`GET /api/erp/orders/{id}/factusol-pedido-pdf`): presupuesto F_PRE para los
+  creados desde proforma, F_PCL por serie + nº para los creados desde un
+  pedido de cliente (ambos guardados en `packing_json.factusol_source`), y
+  F_PCL por `REFPCL` para los pedidos web. Antes buscaba siempre un F_PCL por
+  referencia y un pedido desde proforma (sin F_PCL) fallaba con «No se pudo
+  generar el PDF». El detalle expone `factusol_document` (tipo, serie, nº,
+  `by_ref`); sin documento (alta manual sin origen) es `null` y la ficha
+  deshabilita el botón en vez de pintar un error.
 
 **Verificación en producción (Bart):**
 

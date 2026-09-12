@@ -40,6 +40,19 @@ import {
 } from "../../../lib/erpApi";
 
 const INVOICED_STATUSES = new Set(["generated", "invoiced_by_erp", "already_invoiced_externally"]);
+
+/** Etiqueta del botón de PDF según el documento de ORIGEN del pedido en
+ *  FACTUSOL (presupuesto para los creados desde proforma; pedido de cliente
+ *  para el resto). Sin documento, la etiqueta genérica y el botón deshabilitado. */
+function pdfDocumentLabel(doc: OrderDetail["factusol_document"] | undefined): string {
+  return doc?.doc_type === "presupuestos"
+    ? "PDF del presupuesto (FACTUSOL)"
+    : "PDF del pedido (FACTUSOL)";
+}
+
+function pdfFilePrefix(doc: OrderDetail["factusol_document"] | undefined): string {
+  return doc?.doc_type === "presupuestos" ? "Presupuesto" : "Pedido";
+}
 function isInvoiced(o: { invoice_status: string; factusol_invoice_number: string | null }): boolean {
   return INVOICED_STATUSES.has(o.invoice_status) || !!o.factusol_invoice_number;
 }
@@ -57,6 +70,9 @@ export default function ErpOrderDetailPage() {
   // E4 — PDF del pedido de cliente (F_PCL) vinculado en FACTUSOL.
   const [pdfLang, setPdfLang] = useState<FactusolPdfLang>("es");
   const [pdfBusy, setPdfBusy] = useState(false);
+  // Aviso DISCRETO del PDF (404 controlado: «aún no existe en FACTUSOL»);
+  // nunca el banner rojo por un caso esperado.
+  const [pdfNotice, setPdfNotice] = useState<string | null>(null);
   // ERP-F1 — envío de la factura por email: primero se resuelve la factura
   // FACTUSOL del pedido (serie+número) y luego se abre el modal de preview.
   const [invoiceRef, setInvoiceRef] = useState<FactusolInvoiceRef | null>(null);
@@ -201,24 +217,38 @@ export default function ErpOrderDetailPage() {
           <button
             type="button"
             className="button small secondary"
-            disabled={pdfBusy}
+            disabled={pdfBusy || !order.factusol_document}
+            title={order.factusol_document
+              ? `Genera el PDF del ${order.factusol_document.label} de origen en FACTUSOL`
+              : "Sin documento en FACTUSOL: este pedido no procede de un presupuesto ni de un pedido de cliente"}
             onClick={async () => {
+              if (!order.factusol_document) return;
               setPdfBusy(true);
               setError(null);
+              setPdfNotice(null);
               try {
                 const blob = await downloadOrderFactusolPedidoPdf(order.id, pdfLang);
-                saveBlob(blob, `Pedido_${order.order_number}.pdf`);
+                saveBlob(blob, `${pdfFilePrefix(order.factusol_document)}_${order.order_number}.pdf`);
               } catch (e) {
-                setError(extractErrorMessage(
-                  e, "No se pudo generar el PDF del pedido FACTUSOL.",
-                ));
+                // 404 controlado (el documento no está en FACTUSOL) → aviso
+                // discreto; cualquier otra cosa sí es un error.
+                if ((e as { status?: number } | null)?.status === 404) {
+                  setPdfNotice(extractErrorMessage(e, "Sin documento en FACTUSOL."));
+                } else {
+                  setError(extractErrorMessage(
+                    e, "No se pudo generar el PDF del documento FACTUSOL.",
+                  ));
+                }
               } finally {
                 setPdfBusy(false);
               }
             }}
           >
-            {pdfBusy ? "Generando…" : "PDF del pedido (FACTUSOL)"}
+            {pdfBusy ? "Generando…" : pdfDocumentLabel(order.factusol_document)}
           </button>
+          {pdfNotice ? (
+            <span className="muted small" role="status">{pdfNotice}</span>
+          ) : null}
         </span>
         {/* E4-fix1 — idioma del pedido: dato persistente (detectado en la
             importación Woo) editable a mano; alimenta la cascada de los PDF. */}
