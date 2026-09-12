@@ -114,16 +114,20 @@ def invoice_row(
 def collection_status(
     client: FactusolClient, *, serie: int, codigo: int, ejercicio: str,
     row: dict[str, Any] | None = None,
+    index: dict[tuple[int, int], list[dict[str, Any]]] | None = None,
 ) -> dict[str, Any] | None:
     """Estado de cobro EN VIVO de la factura: total, cobrado, saldo, ESTFAC,
-    nº de cobros y el siguiente LINLCO. `None` si la factura no existe."""
+    nº de cobros y el siguiente LINLCO. `None` si la factura no existe.
+    `row` / `index` ya cargados (fila de F_FAC / índice de F_LCO) evitan
+    releer las tablas cuando se comprueban muchas facturas de una vez."""
     fac = row if row is not None else invoice_row(
         client, serie=serie, codigo=codigo, ejercicio=ejercicio,
     )
     if fac is None:
         return None
     total = _num(fac.get("TOTFAC"), 0.0)
-    index = load_collections_index(client, ejercicio=ejercicio)
+    if index is None:
+        index = load_collections_index(client, ejercicio=ejercicio)
     summary = invoice_collections(index, serie, codigo, total)
     lineas = [c["linea"] for c in summary["cobros"] if c["linea"] is not None]
     estfac = _estado_str(fac.get("ESTFAC"))

@@ -384,6 +384,14 @@ def register_pending_collection(
     packing = packing_of(order)
     packing.setdefault(PAYMENT_KEY, {})["cobro"] = cobro
     save_packing(order, packing)
+    if registered:
+        # Estado de cobro FACTUSOL persistido (bandeja / ficha), sin releer.
+        from app.erp.factusol_cobro import mark_order_from_result  # noqa: PLC0415
+
+        mark_order_from_result(
+            session, order, serie=int(serie), codigo=int(codigo), result=result,
+            source="fase2", actor_user_id=actor_user_id,
+        )
     paid = PaymentStatus.PAID.value
     if result.get("registered"):
         reason = (

@@ -95,7 +95,8 @@ def _fire(client, oid, domain, to, role="admin", **kw):
 def test_pedidos_creates_manual_order_with_computed_total(client):
     body = _create(client)
     assert body["external_source"] == "manual"
-    assert body["total_amount"] == pytest.approx(4890.0)
+    # Importe FINAL con IVA (21 % por defecto): base 4890 → 5916.90.
+    assert body["total_amount"] == pytest.approx(5916.9)
     assert body["preparation_status"] == "pending_review"
     assert len(body["lines"]) == 2
     assert body["blockers"] == []  # todo mapeado, sin empresa
@@ -130,7 +131,7 @@ def test_erp_orders_create_manual_success(client, session_factory):
     # Número autogenerado con el patrón MANUAL-000001.
     assert body["order_number"].startswith("MANUAL-")
     assert body["order_number"][len("MANUAL-"):].isdigit()
-    assert body["total_amount"] == pytest.approx(4890.0)
+    assert body["total_amount"] == pytest.approx(5916.9)   # con IVA
     assert body["company_name"] == "Cliente Demo SL"
     # Direcciones + NIF guardados sin migración (packing_json).
     packing = body["packing"]
@@ -175,7 +176,7 @@ def test_line_without_sku_accepted_if_description_present(client):
     line = body["lines"][0]
     assert line["product_sku"] == ""
     assert line["description"] == "Reparación láser (mano de obra)"
-    assert body["total_amount"] == pytest.approx(90.0)
+    assert body["total_amount"] == pytest.approx(108.9)   # 90 + 21 % IVA
 
 
 def test_line_without_sku_nor_description_rejected(client):

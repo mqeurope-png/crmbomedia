@@ -231,6 +231,16 @@ def _serialise_summary(
         "factusol_invoice_number": o.factusol_invoice_number,
         # Fase 2: nº del albarán FACTUSOL creado por BoHub al convertir.
         "factusol_albaran_number": o.factusol_albaran_number,
+        # Cobro manual: estado de cobro EN FACTUSOL de la factura del pedido
+        # («cobrada» / «pendiente» / null = sin factura o sin comprobar),
+        # distinto del «Pagado» del CRM, + serie resuelta y último detalle.
+        "factusol_invoice_serie": o.factusol_invoice_serie,
+        "factusol_cobro_status": o.factusol_cobro_status,
+        "factusol_cobro_checked_at": (
+            o.factusol_cobro_checked_at.isoformat()
+            if o.factusol_cobro_checked_at else None
+        ),
+        "factusol_cobro": _factusol_cobro(o),
         # ERP-F6 — campos del seguimiento (Excel de Bart): nº de serie (texto
         # libre, también notas), licencia WhiteRIP y origen del envío.
         "serial_number": o.serial_number,
@@ -334,6 +344,12 @@ def _factusol_payment(o: Order) -> dict[str, Any] | None:
     from app.erp.factusol_albaran import payment_intent  # noqa: PLC0415
 
     return payment_intent(o)
+
+
+def _factusol_cobro(o: Order) -> dict[str, Any] | None:
+    from app.erp.factusol_cobro import cobro_info  # noqa: PLC0415
+
+    return cobro_info(o)
 
 
 #: Etiqueta del documento de origen (para la UI y los mensajes).
@@ -500,7 +516,10 @@ def create_order(
     session.flush()
     for i, line in enumerate(payload.lines):
         line_total = round(line.quantity * line.unit_price, 2)
-        total += line_total
+        # `total_amount` = importe FINAL (con el IVA de cada línea); la suma
+        # de líneas a secas era la base y la bandeja enseñaba el importe sin
+        # impuestos.
+        total += line_total * (1 + float(line.tax_rate or 0) / 100)
         session.add(OrderLine(
             order_id=order.id, position=i,
             product_sku=line.product_sku, product_codart=line.product_codart,
@@ -600,6 +619,10 @@ def list_orders(
     # «Completado»: true = solo completados, false = solo sin completar,
     # ausente = todos (el badge distingue).
     completed: bool | None = Query(default=None),
+    # Cobro FACTUSOL (estado contable, no el «Pagado» del CRM): «cobrada»,
+    # «pendiente» (factura sin cobro completo) o «sin_comprobar» (con factura
+    # pero aún sin consultar FACTUSOL).
+    cobro: str | None = Query(default=None, pattern="^(cobrada|pendiente|sin_comprobar)$"),
     sort: str = Query(default="placed_desc"),
     limit: int = Query(default=100, ge=1, le=500),
     session: Session = Depends(get_session),
@@ -609,6 +632,13 @@ def list_orders(
     stmt = select(Order)
     if payment:
         stmt = stmt.where(Order.payment_status == payment)
+    if cobro == "sin_comprobar":
+        stmt = stmt.where(
+            Order.factusol_invoice_number.isnot(None),
+            Order.factusol_cobro_status.is_(None),
+        )
+    elif cobro:
+        stmt = stmt.where(Order.factusol_cobro_status == cobro)
     if preparation:
         stmt = stmt.where(Order.preparation_status == preparation)
     if transport:
@@ -1217,6 +1247,109 @@ def emit_factusol_invoice(
     _audit_factusol(session, order, current_user, job_id)
     session.commit()
     return {"job_id": job_id, "order_id": order.id, "status": "queued"}
+
+
+# --- cobro manual (F-4-B desde la app): ficha y bandeja ---------------------------
+
+
+class CobrosRefreshIn(BaseModel):
+    """«Actualizar cobros FACTUSOL» de la bandeja: pedidos a comprobar. Vacío
+    = todos los visibles con factura (hasta 500)."""
+
+    ids: list[str] = Field(default_factory=list, max_length=500)
+
+
+def _factusol_cobro_client(session: Session):  # noqa: ANN202
+    from app.erp.api.factusol import _fop_names  # noqa: PLC0415
+    from app.integrations.factusol.client import FactusolClient  # noqa: PLC0415
+    from app.integrations.factusol.service import ejercicio_for  # noqa: PLC0415
+
+    client = FactusolClient.from_settings()
+    ejercicio = ejercicio_for(session)
+    return client, ejercicio, _fop_names(client, ejercicio)
+
+
+@router.post("/factusol-cobros/refresh")
+def refresh_factusol_cobros(
+    payload: CobrosRefreshIn,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_view),
+) -> dict[str, Any]:
+    """Comprueba EN VIVO el estado de cobro FACTUSOL (ESTFAC / saldo en F_LCO)
+    de los pedidos con factura y lo deja persistido para la bandeja
+    («Cobrado FACTUSOL» / «Pendiente de cobro»). F_FAC y F_LCO se leen UNA
+    sola vez para todos. Solo lectura en FACTUSOL."""
+    _ = current_user
+    from app.erp.factusol_cobro import refresh_orders_cobro  # noqa: PLC0415
+    from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
+
+    stmt = select(Order).where(Order.factusol_invoice_number.isnot(None))
+    if payload.ids:
+        stmt = stmt.where(Order.id.in_(payload.ids))
+    else:
+        stmt = worklist_visible(stmt).where(Order.externally_processed_at.is_(None))
+    orders = list(session.scalars(stmt.order_by(Order.placed_at.desc()).limit(500)))
+    try:
+        client, ejercicio, fop_names = _factusol_cobro_client(session)
+        results = refresh_orders_cobro(
+            session, client, orders, ejercicio, fop_names=fop_names,
+        )
+    except FactusolError as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, {
+            "code": "factusol_unreachable", "detail": str(exc)[:200],
+        }) from exc
+    except Exception as exc:  # noqa: BLE001 — sin credenciales / config
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, {
+            "code": "factusol_unavailable", "detail": str(exc)[:200],
+        }) from exc
+    session.commit()
+    names = customer_names(session, orders)
+    return {
+        "checked": len(results),
+        "items": [
+            {**_serialise_summary(o, names.get(o.id)), "cobro": results.get(o.id)}
+            for o in orders
+        ],
+    }
+
+
+@router.get("/{order_id}/factusol-cobro")
+def order_factusol_cobro(
+    order_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_view),
+) -> dict[str, Any]:
+    """Estado de cobro EN VIVO de la factura del pedido, para la ficha y el
+    modal «Registrar cobro en FACTUSOL»: clave compuesta de la factura,
+    total / cobrado / saldo / ESTFAC, nº de líneas de cobro (aviso de posible
+    doble cobro), forma de pago y cuenta sugerida. Queda persistido en el
+    pedido (bandeja). Sin factura → 200 `sin_factura` (el botón se
+    deshabilita, sin error). El cobro en sí se registra con el endpoint F-4-B
+    de la factura (`POST /factusol/documents/facturas/{serie}/{codigo}/collection`)."""
+    _ = current_user
+    from app.erp.factusol_cobro import order_cobro_info  # noqa: PLC0415
+    from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
+
+    order = _get_order(session, order_id)
+    base = {"order_id": order.id, "order_number": order.order_number}
+    if not order.factusol_invoice_number:
+        return {
+            **base, "status": "sin_factura", "invoice": None,
+            "detail": "El pedido aún no tiene factura en FACTUSOL: emite la factura primero.",
+        }
+    try:
+        client, ejercicio, fop_names = _factusol_cobro_client(session)
+        info = order_cobro_info(session, client, order, ejercicio, fop_names=fop_names)
+    except FactusolError as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, {
+            "code": "factusol_unreachable", "detail": str(exc)[:200],
+        }) from exc
+    except Exception as exc:  # noqa: BLE001 — sin credenciales / config
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, {
+            "code": "factusol_unavailable", "detail": str(exc)[:200],
+        }) from exc
+    session.commit()
+    return {**base, **info, "persisted_status": order.factusol_cobro_status}
 
 
 @router.get("/{order_id}/factusol-status")

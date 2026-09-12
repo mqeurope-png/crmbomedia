@@ -160,6 +160,59 @@ def resolve_contrapartida_code(session: Session, cuenta: Any) -> str | None:
     return None
 
 
+#: Palabra de la empresa emisora por serie, para sugerir la cuenta del cobro
+#: (serie 5 → «Streamtec Sabadell», 1 → «Bomedia Sabadell», 2 → «MQ Europe
+#: Belfius»). Los nombres configurados en Ajustes (`series_names`) mandan.
+_SERIE_COMPANY_WORDS: dict[int, str] = {1: "bomedia", 5: "streamtec", 2: "mq europe"}
+_BANK_PREFERENCE = ("sabadell", "belfius", "open bank", "open banc", "santander")
+
+
+def suggest_contrapartida(
+    session: Session, *, serie: int | None, forma_nombre: Any = None,
+    store: Any = None,
+) -> dict[str, str] | None:
+    """Cuenta SUGERIDA por defecto para el modal de cobro (solo una sugerencia:
+    el operador la cambia si quiere). PayPal → la contrapartida PayPal de la
+    tienda (o la de la empresa emisora); si no, la cuenta bancaria de la
+    empresa emisora de la serie (Sabadell / Belfius antes que el resto)."""
+    from app.integrations.factusol.service import series_names  # noqa: PLC0415
+
+    items = contrapartidas(session)
+    if not items:
+        return None
+    word = None
+    if serie is not None:
+        configured = series_names(session).get(int(serie))
+        word = (
+            _norm_account_name(configured).split(" ")[0] if configured
+            else _SERIE_COMPANY_WORDS.get(int(serie))
+        )
+    forma = _norm_account_name(forma_nombre)
+    if "paypal" in forma:
+        hit = paypal_contrapartida_for_store(session, store) if store else None
+        if hit:
+            return hit
+        for it in items:
+            name = _norm_account_name(it["nombre"])
+            if "paypal" in name and word and word in name:
+                return {"codigo": normalize_code(it["codigo"]), "nombre": it["nombre"]}
+    if not word:
+        return None
+    candidates = [
+        it for it in items
+        if word in _norm_account_name(it["nombre"])
+        and "paypal" not in _norm_account_name(it["nombre"])
+    ]
+    for bank in _BANK_PREFERENCE:
+        for it in candidates:
+            if bank in _norm_account_name(it["nombre"]):
+                return {"codigo": normalize_code(it["codigo"]), "nombre": it["nombre"]}
+    if candidates:
+        it = candidates[0]
+        return {"codigo": normalize_code(it["codigo"]), "nombre": it["nombre"]}
+    return None
+
+
 def paypal_by_store_config(raw: Any) -> dict[str, str]:
     """`{tienda → código}` guardado, completado con los valores iniciales para
     las tiendas que no tengan nada."""

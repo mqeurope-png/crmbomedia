@@ -7,7 +7,9 @@ import { PageHeader } from "../../../components/PageHeader";
 import { EmbalarModal } from "../../../components/erp/EmbalarModal";
 import { PDF_LANGS } from "../../../components/erp/FactusolDocumentDetailModal";
 import { InvoiceEmailModal } from "../../../components/erp/InvoiceEmailModal";
+import { CobroFactusolBadge } from "../../../components/erp/CobroFactusolBadge";
 import { EmitFactusolButton } from "../../../components/erp/EmitFactusolButton";
+import { RegistrarCobroModal } from "../../../components/erp/RegistrarCobroModal";
 import { FactusolAlbaranPdfButton } from "../../../components/erp/FactusolAlbaranPdfButton";
 import { OrderStatusMachine } from "../../../components/erp/OrderStatusMachine";
 import { ShippingFilesSection } from "../../../components/erp/ShippingFilesSection";
@@ -23,6 +25,8 @@ import {
   getOrderFactusolInvoiceRef,
   getOrderTimeline,
   getFactusolStatus,
+  getOrderFactusolCobro,
+  type OrderCobroInfo,
   getQuoteJobStatus,
   fireTransition,
   saveBlob,
@@ -81,6 +85,11 @@ export default function ErpOrderDetailPage() {
   // «Marcar completado» (solo BoHub, reversible).
   const [completeBusy, setCompleteBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  // Cobro manual (F-4-B desde la app): estado de cobro EN VIVO de la factura
+  // del pedido (best-effort al cargar; el persistido viene en `order`) y el
+  // modal compartido «Registrar cobro en FACTUSOL».
+  const [cobroLive, setCobroLive] = useState<OrderCobroInfo | null>(null);
+  const [cobroOpen, setCobroOpen] = useState(false);
 
   const load = useCallback(() => {
     getOrder(id)
@@ -88,6 +97,14 @@ export default function ErpOrderDetailPage() {
         setOrder(o);
         // E4-fix1: el idioma del PDF arranca en el del pedido si se conoce.
         if (o.language) setPdfLang(o.language as FactusolPdfLang);
+        // Cobro FACTUSOL en vivo solo si hay factura (best-effort: sin
+        // FACTUSOL se queda el estado persistido del pedido).
+        if (o.factusol_invoice_number) {
+          Promise.resolve()
+            .then(() => getOrderFactusolCobro(o.id))
+            .then(setCobroLive)
+            .catch(() => undefined);
+        }
       })
       .catch((e) => setError(extractErrorMessage(e, "No se pudo cargar el pedido.")));
     getOrderTimeline(id).then((r) => setTimeline(r.items)).catch(() => undefined);
@@ -339,6 +356,57 @@ export default function ErpOrderDetailPage() {
               : order.completed ? "Desmarcar completado" : "Marcar completado"}
           </button>
         </div>
+      ) : null}
+      {/* Cobro manual (F-4-B desde la app): estado de cobro EN FACTUSOL de la
+          factura del pedido (contable, distinto del «Pagado» del CRM) y el
+          botón que abre el modal compartido. Sin factura → deshabilitado con
+          tooltip, nunca un error rojo; ya cobrada → «Cobrado», sin doble cobro. */}
+      {(() => {
+        const hasInvoice = !!order.factusol_invoice_number;
+        const liveStatus = cobroLive?.status === "cobrada" || cobroLive?.status === "pendiente"
+          ? cobroLive.status : null;
+        const cobroStatus = liveStatus ?? order.factusol_cobro_status ?? null;
+        const title = !hasInvoice
+          ? "Emite la factura primero: el cobro se registra sobre la factura del pedido en FACTUSOL"
+          : cobroStatus === "cobrada"
+            ? "La factura ya consta cobrada en FACTUSOL (no se registra un segundo cobro)"
+            : "Registra el cobro de la factura en FACTUSOL (F_LCO + ESTFAC=2) con cuenta, fecha y forma de pago";
+        return (
+          <div className="erp-factusol-row erp-cobro-row" style={{ margin: "0 0 14px" }}>
+            <span className="small muted">Cobro FACTUSOL:</span>{" "}
+            {hasInvoice ? (
+              <CobroFactusolBadge
+                hasInvoice
+                status={cobroStatus}
+                cobro={order.factusol_cobro}
+              />
+            ) : (
+              <span className="muted small">sin factura</span>
+            )}
+            {cobroLive?.status === "pendiente" && cobroLive.saldo_pendiente != null ? (
+              <span className="muted small"> saldo {cobroLive.saldo_pendiente.toFixed(2)} €</span>
+            ) : null}
+            {canEmit ? (
+              <button
+                type="button"
+                className="button small"
+                disabled={!hasInvoice || cobroStatus === "cobrada"}
+                title={title}
+                onClick={() => setCobroOpen(true)}
+              >
+                {cobroStatus === "cobrada" ? "Cobrado en FACTUSOL" : "Registrar cobro en FACTUSOL"}
+              </button>
+            ) : null}
+          </div>
+        );
+      })()}
+      {cobroOpen ? (
+        <RegistrarCobroModal
+          orderId={order.id}
+          orderNumber={order.order_number}
+          onClose={() => setCobroOpen(false)}
+          onDone={(info) => { setCobroLive(info); load(); }}
+        />
       ) : null}
       {invoiceRef ? (
         <InvoiceEmailModal

@@ -228,7 +228,17 @@ def register_invoice_collection_job(
                 session, serie=serie, codigo=codigo, result=result,
                 actor_user_id=actor_user_id, meta=info,
             )
-            session.commit()
+        # Cobro manual desde la app: los pedidos con esa factura quedan
+        # «cobrada» en la bandeja (también si ya lo estaba), aunque el
+        # operador cierre el modal antes de que termine el job.
+        from app.erp.factusol_cobro import mark_orders_after_collection  # noqa: PLC0415
+
+        updated = mark_orders_after_collection(
+            session, serie=serie, codigo=codigo, result=result,
+            actor_user_id=actor_user_id,
+        )
+        result["orders_updated"] = [o.id for o in updated]
+        session.commit()
     result.setdefault("numero", info.get("numero") or f"{serie}-{int(codigo):06d}")
     return result
 
