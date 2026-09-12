@@ -21,6 +21,7 @@ from sqlalchemy import (
     Enum,
     ForeignKey,
     Index,
+    Integer,
     Numeric,
     String,
     Text,
@@ -197,6 +198,21 @@ class Order(TimestampMixin, Base):
     # cobro apuntado (opción B).
     factusol_albaran_number: Mapped[str | None] = mapped_column(
         String(32), index=True,
+    )
+
+    # Cobro manual (F-4-B desde la app). El pedido solo guarda el CODFAC de su
+    # factura; la SERIE (TIPFAC, clave compuesta) se resuelve una vez y se
+    # guarda aquí. El estado de cobro EN FACTUSOL («cobrada» = ESTFAC=2 /
+    # saldo 0 en F_LCO; «pendiente» = factura emitida sin cobro completo) se
+    # persiste para verlo fila a fila en la bandeja y filtrar, y se refresca
+    # en vivo desde la ficha, el modal, el job de cobro y «Actualizar cobros».
+    # Es el estado CONTABLE, distinto del «Pagado» del CRM (`payment_status`).
+    # NULL = sin factura o aún sin comprobar. Detalle en `packing_json.
+    # factusol_cobro` (nº, total, cobrado, saldo, ESTFAC, nº de líneas).
+    factusol_invoice_serie: Mapped[int | None] = mapped_column(Integer)
+    factusol_cobro_status: Mapped[str | None] = mapped_column(String(16), index=True)
+    factusol_cobro_checked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
     )
 
     # ERP-F6-fix7 — EXCLUIR del seguimiento (decisión de Bart). Un pedido

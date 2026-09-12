@@ -41,6 +41,7 @@ jest.mock("../../../lib/erpApi", () => ({
   getFactusolStatus: jest.fn(() => Promise.resolve({ status: "pending" })),
   getErpSettings: jest.fn(() => Promise.resolve({ shipping_origins: [] })),
   getOrderFactusolInvoiceRef: jest.fn(),
+  getOrderFactusolCobro: jest.fn(() => Promise.resolve({ status: "sin_factura", invoice: null })),
   downloadOrderFactusolPedidoPdf: jest.fn(),
   fireTransition: jest.fn(),
   saveBlob: jest.fn(),

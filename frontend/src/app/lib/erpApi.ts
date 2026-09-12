@@ -34,6 +34,16 @@ export type OrderSummary = {
   tracking_number: string | null;
   /** Fase C: nº de factura FACTUSOL (CODFAC) si ya se emitió; null si no. */
   factusol_invoice_number: string | null;
+  /** Cobro manual — estado de cobro EN FACTUSOL de la factura del pedido
+   *  («cobrada» = ESTFAC=2 / saldo 0; «pendiente» = factura emitida sin
+   *  cobro completo; null = sin factura o sin comprobar). Es el estado
+   *  CONTABLE, distinto del «Pagado» del CRM (`payment_status`). */
+  factusol_cobro_status?: FactusolCobroStatus | null;
+  factusol_cobro_checked_at?: string | null;
+  /** Serie (TIPFAC) de la factura, resuelta una vez (clave compuesta). */
+  factusol_invoice_serie?: number | null;
+  /** Último detalle comprobado (nº, total, cobrado, saldo, ESTFAC, líneas). */
+  factusol_cobro?: FactusolCobroBlock | null;
   /** ERP-F6 — campos del Excel de seguimiento: nº de serie (texto libre,
    *  también notas), licencia WhiteRIP y origen del envío (OFI-TER-SAT). */
   serial_number?: string | null;
@@ -226,6 +236,8 @@ export type OrderFilters = {
   show_excluded?: boolean;
   /** «Completado»: true = solo completados, false = solo sin completar. */
   completed?: boolean;
+  /** Cobro FACTUSOL (estado contable): cobrada / pendiente / sin_comprobar. */
+  cobro?: "cobrada" | "pendiente" | "sin_comprobar";
   sort?: string;
   limit?: number;
 };
@@ -1669,6 +1681,141 @@ export async function waitForInvoicePaymentJob(
   let last: InvoicePaymentJobStatus = { status: "pending" };
   for (let i = 0; i < tries; i++) {
     last = await getInvoicePaymentStatus(jobId);
+    if (last.status !== "pending") return last;
+    await new Promise((r) => setTimeout(r, delayMs));
+  }
+  return last;
+}
+
+// --- Cobro MANUAL desde la app (ficha + bandeja) — motor F-4-B tal cual -------
+
+export type FactusolCobroStatus = "cobrada" | "pendiente";
+
+/** Último estado de cobro comprobado, persistido en el pedido. */
+export type FactusolCobroBlock = {
+  numero: string;
+  serie: number;
+  codigo: number;
+  total: number | null;
+  total_cobrado: number | null;
+  saldo_pendiente: number | null;
+  estfac: string | null;
+  cobros: number | null;
+  fopfac?: string | null;
+  cobrada: boolean;
+  checked_at: string;
+  source: string;
+};
+
+/** `GET /orders/{id}/factusol-cobro` — estado EN VIVO de la factura del
+ *  pedido para la ficha y el modal. `sin_factura` = el botón se deshabilita
+ *  («emite la factura primero»); `unresolved` / `not_found` = hay CODFAC pero
+ *  no se localiza su fila (no se escribe nada). */
+export type OrderCobroInfo = {
+  order_id: string;
+  order_number: string;
+  status: FactusolCobroStatus | "sin_factura" | "unresolved" | "not_found";
+  invoice: { serie: number | null; codigo: number | null; numero: string } | null;
+  detail?: string;
+  cliente?: string;
+  referencia?: string;
+  total?: number;
+  total_cobrado?: number;
+  saldo_pendiente?: number;
+  estfac?: string;
+  /** Líneas de cobro que YA tiene la factura (aviso de posible doble cobro). */
+  cobros?: number;
+  fopfac?: string;
+  forma_pago_nombre?: string | null;
+  /** Cuenta sugerida por defecto (serie / empresa emisora, PayPal por tienda). */
+  suggested_cuenta?: Contrapartida | null;
+  warnings?: string[];
+  checked_at?: string;
+  persisted_status?: FactusolCobroStatus | null;
+};
+
+export async function getOrderFactusolCobro(orderId: string): Promise<OrderCobroInfo> {
+  return apiFetch(`/api/erp/orders/${encodeURIComponent(orderId)}/factusol-cobro`);
+}
+
+/** «Actualizar cobros FACTUSOL» de la bandeja: comprueba de una vez los
+ *  pedidos con factura (todos los visibles, o solo `ids`) y devuelve las
+ *  filas ya con su estado persistido. Solo lectura en FACTUSOL. */
+export async function refreshOrdersFactusolCobro(
+  ids: string[] = [],
+): Promise<{ checked: number; items: (OrderSummary & { cobro: OrderCobroInfo | null })[] }> {
+  return apiFetch("/api/erp/orders/factusol-cobros/refresh", {
+    method: "POST", body: JSON.stringify({ ids }),
+  });
+}
+
+/** Respuesta del POST de registro de cobro (F-4-B): `already` (ya cobrada,
+ *  nada encolado) o `queued` (job en `factusol:writes`). */
+export type InvoiceCollectionResponse = {
+  status: "already" | "queued";
+  job_id?: string;
+  estfac?: string;
+  numero: string;
+  cliente: string;
+  referencia: string;
+  total: number;
+  saldo_pendiente: number;
+  importe: number;
+  contrapartida: Contrapartida;
+  fecha: string;
+  forma: string | null;
+};
+
+export type InvoiceCollectionJobStatus =
+  | { status: "pending" }
+  | {
+      status: "finished";
+      result: {
+        registered: boolean;
+        status: string;
+        motivo?: string | null;
+        numero?: string;
+        linlco?: number;
+        importe?: number;
+        contrapartida?: string;
+        fecha?: string;
+        estfac_marked?: boolean;
+        orders_updated?: string[];
+      };
+    }
+  | { status: "failed"; error?: string; code?: string };
+
+/** Registra UN cobro de la factura (motor F-4-B: solo F_LCO + ESTFAC=2,
+ *  idempotente). `confirm` OBLIGATORIO (escritura contable). `importe`
+ *  omitido = el saldo pendiente. */
+export async function registerInvoiceCollection(
+  serie: number, codigo: number | string,
+  body: {
+    confirm: boolean; cuenta: string; fecha: string;
+    forma?: string | null; observaciones?: string | null; importe?: number | null;
+  },
+): Promise<InvoiceCollectionResponse> {
+  return apiFetch(
+    `/api/erp/factusol/documents/facturas/${serie}/${codigo}/collection`,
+    { method: "POST", body: JSON.stringify(body) },
+  );
+}
+
+export async function getInvoiceCollectionStatus(
+  jobId: string,
+): Promise<InvoiceCollectionJobStatus> {
+  return apiFetch(
+    `/api/erp/factusol/documents/facturas/collection-status/${encodeURIComponent(jobId)}`,
+  );
+}
+
+/** Espera a que el job de cobro termine (o `pending` si se agota el margen). */
+export async function waitForInvoiceCollectionJob(
+  jobId: string, { tries = 20, delayMs = 1500 } = {},
+): Promise<InvoiceCollectionJobStatus> {
+  let last: InvoiceCollectionJobStatus = { status: "pending" };
+  for (let i = 0; i < tries; i++) {
+    last = await getInvoiceCollectionStatus(jobId);
     if (last.status !== "pending") return last;
     await new Promise((r) => setTimeout(r, delayMs));
   }

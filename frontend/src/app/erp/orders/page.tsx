@@ -3,8 +3,10 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { PageHeader } from "../../components/PageHeader";
+import { CobroFactusolBadge } from "../../components/erp/CobroFactusolBadge";
 import { ExcludeSeguimientoModal } from "../../components/erp/ExcludeSeguimientoModal";
 import { OrderStatusBadge } from "../../components/erp/OrderStatusBadge";
+import { RegistrarCobroModal } from "../../components/erp/RegistrarCobroModal";
 import { getCurrentUser, type User } from "../../lib/api";
 import { extractErrorMessage } from "../../lib/errors";
 import {
@@ -15,7 +17,9 @@ import {
   type ExclusionReasonCode,
   includeSeguimiento,
   listOrders,
+  type OrderCobroInfo,
   type OrderSummary,
+  refreshOrdersFactusolCobro,
   uncompleteOrder,
 } from "../../lib/erpApi";
 
@@ -58,6 +62,12 @@ export default function ErpOrdersPage() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   // Pedidos a QUITAR (abre el diálogo de motivo + avisos): una fila o la selección.
   const [excludeTarget, setExcludeTarget] = useState<OrderSummary[] | null>(null);
+  // Cobro FACTUSOL (estado contable, no el «Pagado» del CRM): filtro
+  // cobrada / pendiente / sin comprobar, la fila con el modal «Registrar
+  // cobro» abierto y el refresco en bloque «Actualizar cobros FACTUSOL».
+  const [cobroFilter, setCobroFilter] = useState("");
+  const [cobroTarget, setCobroTarget] = useState<OrderSummary | null>(null);
+  const [refreshingCobros, setRefreshingCobros] = useState(false);
 
   const canEdit = !!user && (ERP_EDIT_ROLES as readonly string[]).includes(user.role);
 
@@ -70,6 +80,7 @@ export default function ErpOrdersPage() {
         show_external: showExternal,
         show_excluded: showExcluded,
         completed: completedFilter === "" ? undefined : completedFilter === "yes",
+        cobro: (cobroFilter || undefined) as "cobrada" | "pendiente" | "sin_comprobar" | undefined,
       }));
       // Al cambiar de vista/filtros o tras una acción, la selección deja de tener sentido.
       setSelected(new Set());
@@ -78,7 +89,7 @@ export default function ErpOrdersPage() {
     } finally {
       setLoading(false);
     }
-  }, [prep, payment, showExternal, showExcluded, completedFilter]);
+  }, [prep, payment, showExternal, showExcluded, completedFilter, cobroFilter]);
 
   useEffect(() => {
     getCurrentUser().then(setUser).catch(() => undefined);
@@ -190,6 +201,54 @@ export default function ErpOrdersPage() {
     }
   }
 
+  // «Actualizar cobros FACTUSOL»: comprueba en bloque (solo lectura) y
+  // repinta las filas en su sitio, sin recargar la bandeja.
+  async function onRefreshCobros() {
+    setRefreshingCobros(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const r = await refreshOrdersFactusolCobro();
+      const byId = new Map(r.items.map((it) => [it.id, it]));
+      setRows((prev) => prev.map((row) => {
+        const fresh = byId.get(row.id);
+        return fresh ? { ...row, ...fresh } : row;
+      }));
+      setNotice(
+        r.checked === 0
+          ? "Ningún pedido con factura que comprobar."
+          : `Cobro FACTUSOL comprobado en ${r.checked} pedido(s) con factura.`,
+      );
+    } catch (e) {
+      setError(extractErrorMessage(e, "No se pudo comprobar el cobro en FACTUSOL."));
+    } finally {
+      setRefreshingCobros(false);
+    }
+  }
+
+  // Tras registrar (o comprobar) el cobro desde el modal: solo esa fila.
+  function onCobroDone(info: OrderCobroInfo) {
+    const status = info.status === "cobrada" || info.status === "pendiente" ? info.status : null;
+    setRows((prev) => prev.map((row) => (
+      row.id !== info.order_id ? row : {
+        ...row,
+        factusol_cobro_status: status ?? row.factusol_cobro_status ?? null,
+        factusol_cobro_checked_at: info.checked_at ?? row.factusol_cobro_checked_at ?? null,
+        factusol_invoice_serie: info.invoice?.serie ?? row.factusol_invoice_serie ?? null,
+        factusol_cobro: status && info.invoice?.serie != null && info.invoice.codigo != null ? {
+          numero: info.invoice.numero, serie: info.invoice.serie, codigo: info.invoice.codigo,
+          total: info.total ?? null, total_cobrado: info.total_cobrado ?? null,
+          saldo_pendiente: info.saldo_pendiente ?? null, estfac: info.estfac ?? null,
+          cobros: info.cobros ?? null, cobrada: status === "cobrada",
+          checked_at: info.checked_at ?? new Date().toISOString(), source: "modal",
+        } : row.factusol_cobro ?? null,
+      }
+    )));
+    if (status === "cobrada") {
+      setNotice(`${info.order_number}: cobro registrado en FACTUSOL (factura ${info.invoice?.numero ?? ""}).`);
+    }
+  }
+
   return (
     <main className="shell shell-wide">
       <PageHeader
@@ -229,6 +288,20 @@ export default function ErpOrdersPage() {
           <option value="yes">Solo completados</option>
           <option value="no">Sin completar</option>
         </select>
+        {/* Cobro FACTUSOL (contable): distinto del filtro «Pago» del CRM. */}
+        <select value={cobroFilter} onChange={(e) => setCobroFilter(e.target.value)} aria-label="Filtro cobro FACTUSOL">
+          <option value="">Cobro FACTUSOL: todos</option>
+          <option value="cobrada">Cobrado en FACTUSOL</option>
+          <option value="pendiente">Pendiente de cobro</option>
+          <option value="sin_comprobar">Con factura, sin comprobar</option>
+        </select>
+        <button
+          type="button" className="button small secondary" disabled={busy || refreshingCobros || loading}
+          title="Comprueba en FACTUSOL (solo lectura) el estado de cobro de los pedidos con factura y lo deja guardado en cada fila"
+          onClick={() => void onRefreshCobros()}
+        >
+          {refreshingCobros ? "Comprobando cobros…" : "Actualizar cobros FACTUSOL"}
+        </button>
         <label className="checkbox-inline" style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <input
             type="checkbox"
@@ -335,7 +408,20 @@ export default function ErpOrdersPage() {
                 <td><OrderStatusBadge status={o.payment_status} /></td>
                 <td><OrderStatusBadge status={o.preparation_status} /></td>
                 <td><OrderStatusBadge status={o.transport_status} /></td>
-                <td><OrderStatusBadge status={o.invoice_status} /></td>
+                <td>
+                  <OrderStatusBadge status={o.invoice_status} />
+                  {/* Estado de cobro EN FACTUSOL (contable), separado del
+                      «Pagado» de la columna PAGO (estado del CRM). */}
+                  {o.factusol_invoice_number ? (
+                    <div style={{ marginTop: 4 }}>
+                      <CobroFactusolBadge
+                        hasInvoice
+                        status={o.factusol_cobro_status ?? null}
+                        cobro={o.factusol_cobro ?? null}
+                      />
+                    </div>
+                  ) : null}
+                </td>
                 {showExcluded ? (
                   <td className="small">
                     {d(o.seguimiento_excluded_at)}
@@ -357,6 +443,21 @@ export default function ErpOrdersPage() {
                       onClick={() => void onToggleComplete(o)}
                     >
                       {o.completed ? "Desmarcar" : "Completar"}
+                    </button>{" "}
+                    {/* Cobro manual sin entrar al pedido: mismo modal que la
+                        ficha. Solo con factura pendiente de cobro. */}
+                    <button
+                      type="button" className="button small secondary"
+                      disabled={busy || !o.factusol_invoice_number || o.factusol_cobro_status === "cobrada"}
+                      title={!o.factusol_invoice_number
+                        ? "Emite la factura primero: el cobro se registra sobre la factura del pedido"
+                        : o.factusol_cobro_status === "cobrada"
+                          ? "La factura ya consta cobrada en FACTUSOL"
+                          : "Registrar el cobro de la factura en FACTUSOL (F_LCO + ESTFAC=2)"}
+                      aria-label={`Registrar cobro ${o.order_number}`}
+                      onClick={() => { setError(null); setNotice(null); setCobroTarget(o); }}
+                    >
+                      {o.factusol_cobro_status === "cobrada" ? "Cobrado" : "Registrar cobro"}
                     </button>{" "}
                     {o.excluded ? (
                       <button
@@ -385,6 +486,14 @@ export default function ErpOrdersPage() {
         </table>
       )}
 
+      {cobroTarget ? (
+        <RegistrarCobroModal
+          orderId={cobroTarget.id}
+          orderNumber={cobroTarget.order_number}
+          onClose={() => setCobroTarget(null)}
+          onDone={onCobroDone}
+        />
+      ) : null}
       {excludeTarget ? (
         <ExcludeSeguimientoModal
           context="bandeja"
