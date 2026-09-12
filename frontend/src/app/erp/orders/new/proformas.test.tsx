@@ -149,8 +149,11 @@ describe("Alta de pedido — buscador de proformas y precarga desde FACTUSOL", (
     await waitFor(() =>
       expect(searchFactusolCustomers).toHaveBeenCalledWith("55555", "codcli"),
     );
-    // FACTUSOL manda: pisa el NIF y la dirección viejos del CRM.
-    expect(await screen.findByDisplayValue("B12345678")).toBeInTheDocument();
+    // FACTUSOL manda: pisa el NIF y la dirección viejos del CRM (el NIF sale
+    // también en el campo de solo lectura «NIF FACTUSOL»).
+    await waitFor(() => expect(screen.getByLabelText("NIF / CIF")).toHaveValue("B12345678"));
+    expect(screen.getByLabelText("NIF FACTUSOL")).toHaveValue("B12345678");
+    expect(screen.getByLabelText("Nombre fiscal FACTUSOL")).toHaveValue("ACME SL");
     expect(screen.getByLabelText("Dirección de envío")).toHaveValue("C/ Mayor 1");
     expect(screen.getByLabelText("Ciudad de envío")).toHaveValue("Madrid");
     expect(screen.getByLabelText("Código postal de envío")).toHaveValue("28001");
