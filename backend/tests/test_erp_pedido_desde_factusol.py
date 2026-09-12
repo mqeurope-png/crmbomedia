@@ -185,6 +185,24 @@ def test_numeros_y_external_id() -> None:
 # --- 1) desde un presupuesto ---------------------------------------------------
 
 
+def test_crear_pedido_desde_presupuesto_sin_iva(session_factory, http) -> None:
+    """Tarea C: una proforma intracomunitaria / de exportación (`PIVA1PRE=0`
+    con base > 0, hecha en el escritorio o por BoHub) deja las líneas del
+    pedido al 0 % — la cabecera manda sobre el `IVALPS` de línea, que es un
+    código — y el importe final es la base."""
+    tables = _tables()
+    tables["F_PRE"].append({**_pre(576, total=100.0), "PIVA1PRE": 0.0, "IIVA1PRE": 0.0})
+    tables["F_LPS"].append(_lps(576, 1, art="MBO", desc="Cabezal", cant=1, precio=100))
+    fake = FakeClient(tables)
+    with _patched(fake):
+        r = _post_from_factusol(http, {"doc_type": "presupuestos", "serie": 1, "codigo": 576})
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["lines"][0]["tax_rate"] == 0
+    assert body["total_amount"] == 100.0
+    assert fake.writes == []
+
+
 def test_crear_pedido_desde_presupuesto_factusol(session_factory, http) -> None:
     fake = FakeClient(_tables())
     with _patched(fake):

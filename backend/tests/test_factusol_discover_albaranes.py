@@ -509,14 +509,16 @@ def test_cli_row_dumps_customer_marking_known_and_candidate_columns(capsys: Any)
     assert result is not None and result["codcli"] == "2458"
     assert client.calls == [("F_CLI", "CODCLI=2458")]
     assert "CLIENTE REAL F_CLI · CODCLI=2458" in out
-    assert "BoHub escribe 11 (" in out
+    # 11 de siempre + TIVCLI, que desde la Parte 2 BoHub escribe (la fila del
+    # test no trae IFICLI/IVACLI).
+    assert "BoHub escribe 12 (" in out
     assert "NIFCLI     str    'B12345678'  ← BoHub escribe" in out
     assert "TPDCLI     int    0  ← candidata: tipo de documento del identificador" in out
-    assert "TIVCLI     int    0  ← candidata: régimen de IVA" in out
+    assert "TIVCLI     int    0  ← BoHub escribe" in out
     assert "REQCLI     int    0  ← candidata: recargo de equivalencia" in out
     tarcli_line = out.split("TARCLI")[1].split("\n")[0]
     assert "int    1" in tarcli_line and "← candidata" not in tarcli_line
-    assert result["candidates"]["régimen de IVA"] == ["TIVCLI"]
+    assert "régimen de IVA" not in result["candidates"]   # ya confirmada: TIVCLI
     assert "SOLO LECTURA" in out
 
 
@@ -533,15 +535,68 @@ def test_cli_row_compares_customers_and_reports_missing(capsys: Any) -> None:
     dumps = [dump_customer(client, "2026", "2458"), dump_customer(client, "2026", "3101")]
     differing = compare_customer_dumps([d for d in dumps if d])
     out = capsys.readouterr().out
-    assert set(differing) == {"TPDCLI", "TIVCLI"}   # nombre/dirección no cuentan
-    assert differing["TIVCLI"] == [0, 2]
+    # Nombre/dirección no cuentan, y TIVCLI tampoco desde que BoHub la escribe.
+    assert set(differing) == {"TPDCLI"}
+    assert differing["TPDCLI"] == [0, 1]
     assert "COLUMNAS QUE DIFIEREN ENTRE LOS CLIENTES VOLCADOS (CODCLI=2458 · CODCLI=3101)" in out
-    assert "TIVCLI     0 | 2  ← régimen de IVA" in out
+    assert "TPDCLI     0 | 1  ← tipo de documento del identificador" in out
     assert dump_customer(client, "2026", "9999") is None
     assert dump_customer(client, "2026", "abc") is None
     out = capsys.readouterr().out
     assert "No existe el cliente CODCLI=9999" in out and "CODCLI inválido" in out
     assert compare_customer_dumps([dumps[0]]) == {}
+
+
+def test_regimen_iva_report_flags_customers_and_invoices(capsys: Any) -> None:
+    """`--regimen-iva` (Tarea C · Parte 2): clientes con `PAICLI` no numérico,
+    régimen incoherente con el país + NIF-IVA o `IFICLI` incoherente, y
+    facturas del ejercicio con IVA a clientes intracomunitarios / de
+    exportación. Solo lectura (el cliente falso no sabe escribir)."""
+    from scripts.factusol_discover_albaranes import regime_report
+
+    def cli(codcli: int, nif: str, pais: str, ifi: int, iva: int, tiv: int) -> dict[str, Any]:
+        return {"CODCLI": codcli, "NIFCLI": nif, "NOFCLI": f"Cliente {codcli}",
+                "NOCCLI": "", "PAICLI": pais, "IFICLI": ifi, "IVACLI": iva,
+                "TIVCLI": tiv}
+
+    def fac(tip: str, cod: int, cli: int, iva: float) -> dict[str, Any]:
+        return {"TIPFAC": tip, "CODFAC": cod, "CLIFAC": cli, "FECFAC": "2026-08-01T00:00:00",
+                "REFFAC": f"REF-{cod}", "PIVA1FAC": 21.0 if iva else 0.0,
+                "IIVA1FAC": iva, "TOTFAC": 100.0 + iva}
+
+    client = _FakeClient({
+        "F_CLI": [
+            cli(3011, "48288265H", "724", 0, 0, 1),        # nacional bien
+            cli(3392, "BE0812240188", "056", 0, 0, 1),     # intracom. como nacional
+            cli(525, "NO 976 029 100", "Norway", 0, 3, 3),  # PAICLI literal
+            cli(4279, "DE455128445", "276", 2, 2, 4),      # bien (a mano)
+            cli(7, "X", "", 0, 0, 1),                      # sin país
+        ],
+        "F_FAC": [
+            fac("1", 260001, 3392, 21.0),    # IVA a un intracomunitario → sale
+            fac("1", 260002, 3011, 21.0),    # nacional → no
+            fac("5", 500001, 4279, 0.0),     # intracomunitario sin IVA → no
+            fac("5", 500002, 525, 4.0),      # exportación con IVA → sale
+        ],
+    })
+    result = regime_report(client, "2026")
+    out = capsys.readouterr().out
+    flagged = {c["codcli"]: c for c in result["customers"]}
+    assert set(flagged) == {"3392", "525", "7"}
+    assert flagged["3392"]["problems"] == [
+        "régimen Nacional (con IVA) pero por país / NIF debería ser Intracomunitario (exento)",
+        "IFICLI=0 (tipo de documento) pero Intracomunitario (exento) lleva 2",
+    ]
+    assert flagged["525"]["problems"] == ["PAICLI no numérico ('Norway')"]
+    assert flagged["7"]["problems"] == ["sin país (PAICLI vacío)"]
+    assert [i["numero"] for i in result["invoices"]] == ["1-260001", "5-500002"]
+    assert result["invoices"][0]["regime"] == "intracomunitario"
+    assert "5 clientes · 3 con el dato mal" in out
+    assert "3392   BE0812240188     Cliente 3392" in out
+    assert ("FACTURAS DEL EJERCICIO CON IVA A CLIENTES INTRACOMUNITARIOS / DE EXPORTACIÓN "
+            "(2 de 4)") in out
+    assert "NO se reescribe ninguna factura" in out
+    assert "SOLO LECTURA" in out
 
 
 def test_dry_run_presupuesto_builds_exact_record_without_writing(capsys: Any) -> None:

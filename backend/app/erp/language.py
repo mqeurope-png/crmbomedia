@@ -179,6 +179,13 @@ except Exception:  # noqa: BLE001 — sin pycountry, solo alias + los del mapa
     }
 
 
+#: ISO2 → ISO 3166-1 numérico («ES»→«724», «NO»→«578»): la inversa del mapa
+#: de arriba, para ESCRIBIR `PAICLI`/`CPAPRE` (Tarea C · Parte 2). Antes el
+#: escritor de F_CLI tenía una tabla de 10 países y caía a 724 (España) para
+#: todo lo demás — o dejaba pasar el nombre literal («Norway»).
+_ISO2_TO_NUMERIC: dict[str, str] = {iso2: num for num, iso2 in _NUMERIC_TO_ISO2.items()}
+
+
 def _numeric_lookup(key: str) -> str | None:
     """Código ISO 3166-1 numérico → ISO2. Solo si el valor es ENTERAMENTE
     numérico y de 1 a 3 dígitos (un código postal de 5 cifras NO es un país).
@@ -186,6 +193,17 @@ def _numeric_lookup(key: str) -> str | None:
     if not (key.isdigit() and 1 <= len(key) <= 3):
         return None
     return _NUMERIC_TO_ISO2.get(key.zfill(3))
+
+
+def country_numeric(value: Any) -> str | None:
+    """Cualquier valor de país (ISO2, nombre, numérico con o sin ceros) → código
+    ISO 3166-1 numérico de 3 cifras («724»), o `None` si no se reconoce. Es lo
+    que FACTUSOL guarda en `PAICLI` / `CPAPRE`. Tabla ISO COMPLETA (pycountry),
+    no los 10 países de antes; nunca cae a España."""
+    iso2 = normalize_country(value)
+    if iso2 is None:
+        return None
+    return _ISO2_TO_NUMERIC.get(iso2)
 
 
 def _pycountry_lookup(key: str) -> str | None:

@@ -146,6 +146,24 @@ def manual_albaran_codcli(session: Session, order: Order) -> str | None:
     return str(company.factusol_company_id)
 
 
+def company_regime(session: Session, company_id: str | None) -> str | None:
+    """Régimen de IVA de la empresa del pedido por su país + NIF-IVA (Tarea
+    C), o None si la empresa no tiene país en el CRM (entonces manda la ficha
+    F_CLI del cliente)."""
+    if not company_id:
+        return None
+    from app.erp.language import normalize_country  # noqa: PLC0415
+    from app.integrations.factusol.vat_regime import regime_for  # noqa: PLC0415
+    from app.models.crm import Company  # noqa: PLC0415
+
+    company = session.get(Company, company_id)
+    if company is None or not company.country:
+        return None
+    return regime_for(
+        normalize_country(company.country), vat=company.vat, nif=company.tax_id,
+    )
+
+
 #: Código del 409 cuando el pedido manual no tiene empresa vinculada a F_CLI.
 COMPANY_NOT_LINKED = "company_not_linked"
 
@@ -579,6 +597,7 @@ def _create_albaran_from_lines(
         session, client, order=order, codcli=codcli,
         serie=resolve_serie(session, order), ejercicio=ejercicio,
         fopalb=intent.get("forma_pago") or None, actor_user_id=actor_user_id,
+        regime=company_regime(session, order.company_id),
     )
     _attach_albaran(
         session, order, result["numero"],
@@ -588,6 +607,7 @@ def _create_albaran_from_lines(
             "serie": result["serie"], "codigo": result["codigo"],
             "lines": result["lines"], "source": None, "standalone": True,
             "codcli": codcli, "free_text_lines": result["free_text_lines"],
+            "regime": result["regime"], "regime_warning": result["regime_warning"],
         },
     )
     session.commit()

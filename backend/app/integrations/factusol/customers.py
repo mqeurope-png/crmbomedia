@@ -18,6 +18,18 @@ C-2-fix1. Por eso `create_customer`:
    app externa; el CRM solo vincula.
 2. **Deduplica** antes de escribir: consulta `NIFCLI` y, si ya existe, devuelve
    el CODCLI existente en vez de crear un duplicado.
+
+### Tipo de documento, régimen de IVA y país (Tarea C · Parte 2)
+
+Al crear el cliente BoHub fija también `IFICLI` / `IVACLI` / `TIVCLI` según el
+régimen (nacional / intracomunitario / exportación, decidido por el país del
+CRM y el NIF-IVA — ver `vat_regime.py`, mapeo confirmado con volcados reales)
+y `PAICLI` con el ISO numérico REAL del país (tabla ISO completa, no 10
+países con default España). Guard antes de escribir: las columnas de régimen
+tienen que existir en la fila viva de F_CLI con el mismo tipo (entero); si el
+esquema no cuadra, **no se escribe nada**. Para un cliente que YA existe,
+`update_customer_regime` corrige SOLO esas columnas con `ActualizarRegistro`
+(la clave + lo que cambia, nada más), previa vista previa.
 """
 from __future__ import annotations
 
@@ -27,7 +39,18 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.erp.language import country_numeric, normalize_country
 from app.integrations.factusol.client import FactusolClient, FactusolError
+from app.integrations.factusol.vat_regime import (
+    FCLI_REGIME_COLUMN_NAMES,
+    REGIME_LABELS,
+    fcli_changes,
+    proposed_fcli_values,
+    regime_columns,
+    regime_for,
+    regime_from_fcli_row,
+    regime_reason,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -42,22 +65,33 @@ SEARCH_NAME_LIMIT = 50
 CUSTOMER_FIELDS = (
     "CODCLI", "NIFCLI", "NOFCLI", "NOCCLI", "DOMCLI", "POBCLI",
     "CPOCLI", "PROCLI", "PAICLI", "EMACLI", "TELCLI",
+    # Tarea C: tipo de documento / aplicar IVA / tipo impositivo (confirmadas
+    # con volcado real; ver `vat_regime.py`).
+    *FCLI_REGIME_COLUMN_NAMES,
 )
 
-#: ISO 3166-1 numérico de los países habituales; el resto cae a 724 (España).
-_COUNTRY_CODES = {
-    "ES": "724", "PT": "620", "FR": "250", "IT": "380", "DE": "276",
-    "GB": "826", "UK": "826", "NL": "528", "BE": "056", "US": "840",
-}
+#: `PAICLI` cuando el país no viene o no se reconoce: España, que es lo que
+#: FACTUSOL pone por defecto en el escritorio. Solo para el ALTA sin país; un
+#: país reconocido va SIEMPRE con su código real (tabla ISO completa).
+DEFAULT_PAICLI = "724"
 
 
 def _country_code(pais: str) -> str:
-    """Alfa-2 → numérico ISO para `PAICLI`. Un valor ya numérico pasa tal cual.
-    Default 724 (España)."""
-    value = (pais or "ES").upper().strip()
+    """Cualquier valor de país (ISO2, nombre, numérico) → ISO 3166-1 numérico
+    para `PAICLI`, con la tabla ISO COMPLETA (`language.country_numeric`). Un
+    valor ya numérico de 3 cifras pasa tal cual. Solo lo vacío o lo que no se
+    reconoce cae a 724 (con aviso en el log): antes caían ahí Noruega,
+    Austria, Suiza… y el escritorio los enseñaba como España."""
+    value = (pais or "").strip()
     if value.isdigit() and len(value) == 3:
         return value
-    return _COUNTRY_CODES.get(value, "724")
+    numeric = country_numeric(value) if value else None
+    if numeric is not None:
+        return numeric
+    if value:
+        logger.warning("factusol: país %r no reconocido; PAICLI=%s (España) por defecto",
+                       value, DEFAULT_PAICLI)
+    return DEFAULT_PAICLI
 
 
 def _sql_escape(value: str) -> str:
@@ -78,9 +112,12 @@ def _row_to_customer(row: dict[str, Any]) -> dict[str, Any]:
     # País en ISO2 (PAICLI es ISO 3166-1 numérico), con el normalizador de
     # F1-fix2: listo para el CRM y para el formulario del pedido. None si no se
     # reconoce (nunca España por defecto).
-    from app.erp.language import normalize_country  # noqa: PLC0415
-
     out["pais_iso2"] = normalize_country(out.get("paicli"))
+    # Régimen que codifica la ficha (IVACLI 0/2/3), o None si no es ninguno de
+    # los confirmados: lo consumen la ficha de empresa y el albarán manual.
+    regime = regime_from_fcli_row(row)
+    out["regime"] = regime
+    out["regime_label"] = REGIME_LABELS.get(regime) if regime else None
     return out
 
 
@@ -198,25 +235,52 @@ def crm_links_for(session: Session, codclis: list[str]) -> dict[str, dict[str, s
     return out
 
 
+def latest_customer_row(client: FactusolClient, ejercicio: str) -> dict[str, Any] | None:
+    """La fila REAL de F_CLI con mayor CODCLI (la API no soporta LIMIT: se pide
+    ordenado DESC y se toma la primera). Sirve de contador (`next_codcli`) y
+    de PLANTILLA para el guard de esquema del alta. None con la tabla vacía."""
+    rows = client.load_table(
+        "F_CLI", filtro="1=1 ORDER BY CODCLI DESC", ejercicio=ejercicio,
+    )
+    return rows[0] if rows else None
+
+
 def next_codcli(client: FactusolClient, ejercicio: str) -> str:
     """Siguiente CODCLI = max + 1. Misma estrategia que `next_codfac`: la API
     no soporta LIMIT, así que se pide ordenado DESC y se toma la primera fila.
     La race la evita el worker serializado (cola `factusol:writes`)."""
-    rows = client.load_table(
-        "F_CLI", filtro="1=1 ORDER BY CODCLI DESC", ejercicio=ejercicio,
-    )
-    if not rows:
+    return _next_codcli_from(latest_customer_row(client, ejercicio))
+
+
+def _next_codcli_from(latest: dict[str, Any] | None) -> str:
+    if latest is None:
         return "1"
     try:
-        last = int(str(rows[0].get("CODCLI")).strip())
+        last = int(str(latest.get("CODCLI")).strip())
     except (TypeError, ValueError):
         last = 0
     return str(last + 1)
 
 
+def customer_regime(data: dict[str, Any]) -> str:
+    """Régimen del cliente a partir de los datos del alta: el explícito
+    (`regime`) o el que sale del país + NIF-IVA (`pais`, `vat`, `nif`)."""
+    explicit = str(data.get("regime") or "").strip()
+    if explicit:
+        return explicit
+    return regime_for(
+        normalize_country(data.get("pais")), vat=data.get("vat"), nif=data.get("nif"),
+    )
+
+
 def build_customer_payload(data: dict[str, Any], codcli: str) -> dict[str, Any]:
     """Datos mínimos → registro F_CLI. El resto de columnas las deja FACTUSOL
-    con sus defaults (no inventamos valores)."""
+    con sus defaults (no inventamos valores).
+
+    Tarea C: además del país REAL (`PAICLI`, tabla ISO completa) fija el tipo
+    de documento y el régimen de IVA (`IFICLI`/`IVACLI`/`TIVCLI`) según el
+    régimen del cliente — antes se quedaban en el default de FACTUSOL y el
+    escritorio enseñaba «N.I.F.» + IVA nacional para un belga con NIF-IVA."""
     nombre = (data.get("nombre") or "").strip()
     payload = {
         "CODCLI": codcli,
@@ -227,13 +291,45 @@ def build_customer_payload(data: dict[str, Any], codcli: str) -> dict[str, Any]:
         "POBCLI": data.get("ciudad") or "",
         "CPOCLI": data.get("cp") or "",
         "PROCLI": data.get("provincia") or "",
-        "PAICLI": _country_code(data.get("pais") or "ES"),
+        "PAICLI": _country_code(data.get("pais") or ""),
     }
     if data.get("email"):
         payload["EMACLI"] = data["email"]
     if data.get("telefono"):
         payload["TELCLI"] = data["telefono"]
+    payload.update(regime_columns(customer_regime(data)))
     return payload
+
+
+def regime_schema_problems(
+    payload: dict[str, Any], template: dict[str, Any] | None,
+) -> list[str]:
+    """Guard del alta (Tarea C): cada columna de régimen del payload tiene que
+    EXISTIR en la fila viva de F_CLI y ser del mismo tipo JSON (entero, como
+    en los volcados reales). Una columna inexistente tumba el registro ENTERO
+    en `EscribirRegistro` (gotcha nº 13) y un tipo distinto lo rechaza DELSOL:
+    en ambos casos no se escribe nada. Sin fila viva no hay contra qué
+    contrastar → se informa como problema (nada a ciegas)."""
+    problems: list[str] = []
+    wanted = [c for c in FCLI_REGIME_COLUMN_NAMES if c in payload]
+    if not wanted:
+        return problems
+    if not template:
+        return ["F_CLI sin fila viva: no se puede contrastar el esquema de "
+                + ", ".join(wanted)]
+    for column in wanted:
+        if column not in template:
+            problems.append(f"F_CLI: columna desconocida {column}")
+            continue
+        real = template[column]
+        if real is None:
+            continue
+        if isinstance(real, bool) or not isinstance(real, int | float):
+            problems.append(
+                f"F_CLI.{column}: payload int ({payload[column]!r}), fila real "
+                f"{type(real).__name__} ({real!r})"
+            )
+    return problems
 
 
 def find_by_nif(
@@ -261,11 +357,123 @@ def create_customer(
             logger.info("factusol: cliente con NIF %s ya existe (CODCLI %s)",
                         nif, existing["codcli"])
             return str(existing["codcli"]), False
-    codcli = next_codcli(client, ejercicio)
-    client.write_record("F_CLI", build_customer_payload(data, codcli),
-                        ejercicio=ejercicio)
+    # La fila real más reciente es a la vez el contador y la plantilla del
+    # guard (una sola lectura de la tabla).
+    template = latest_customer_row(client, ejercicio)
+    codcli = _next_codcli_from(template)
+    payload = build_customer_payload(data, codcli)
+    problems = regime_schema_problems(payload, template)
+    if problems:
+        detail = (
+            f"El esquema real de F_CLI no cuadra con el registro del cliente "
+            f"{payload.get('NOFCLI')!r} ({', '.join(problems)})"
+        )
+        logger.error("factusol cliente: NO se escribe nada — %s", detail)
+        raise FactusolError(detail + ". No se ha escrito nada.")
+    logger.info(
+        "factusol cliente: EscribirRegistro F_CLI CODCLI=%s régimen=%s "
+        "ejercicio=%s registro=%s",
+        codcli, customer_regime(data), ejercicio,
+        {k: (v, type(v).__name__) for k, v in payload.items()},
+    )
+    client.write_record("F_CLI", payload, ejercicio=ejercicio)
     logger.info("factusol: cliente creado CODCLI %s (NIF %s)", codcli, nif or "—")
     return codcli, True
+
+
+def customer_row(
+    client: FactusolClient, codcli: Any, *, ejercicio: str,
+) -> dict[str, Any] | None:
+    """Fila REAL (sin normalizar) de F_CLI por CODCLI, o None. Re-filtra en
+    Python por si la API ignorase el filtro en silencio (gotcha nº 1)."""
+    code = str(codcli or "").strip()
+    if not code.isdigit():
+        return None
+    rows = client.load_table("F_CLI", filtro=f"CODCLI={int(code)}", ejercicio=ejercicio)
+    for row in rows:
+        if str(row.get("CODCLI") or "").strip() == code:
+            return row
+    return None
+
+
+def regime_preview(
+    row: dict[str, Any], *, country_iso2: str | None, vat: Any = None,
+    nif: Any = None,
+) -> dict[str, Any]:
+    """Qué régimen le corresponde al cliente (por el país del CRM + NIF-IVA),
+    qué codifica hoy su ficha F_CLI y qué columnas cambiarían. No escribe."""
+    regime, proposed = proposed_fcli_values(country_iso2, vat=vat, nif=nif)
+    current_regime = regime_from_fcli_row(row)
+    changes = fcli_changes(row, proposed)
+    return {
+        "codcli": str(row.get("CODCLI")),
+        "country_iso2": normalize_country(country_iso2) if country_iso2 else None,
+        "regime": regime,
+        "regime_label": REGIME_LABELS[regime],
+        "reason": regime_reason(country_iso2, vat=vat, nif=nif),
+        "current": {
+            **{c: row.get(c) for c in (*FCLI_REGIME_COLUMN_NAMES, "PAICLI")},
+            "regime": current_regime,
+            "regime_label": REGIME_LABELS.get(current_regime) if current_regime else None,
+        },
+        "proposed": proposed,
+        "changes": changes,
+        "coherent": not changes,
+    }
+
+
+def update_customer_regime(
+    client: FactusolClient, *, codcli: Any, ejercicio: str,
+    country_iso2: str | None, vat: Any = None, nif: Any = None,
+) -> dict[str, Any]:
+    """Corrige en F_CLI el tipo de documento / régimen de IVA / país del
+    cliente: lee la fila REAL, calcula lo propuesto y escribe con
+    `ActualizarRegistro` SOLO la clave y las columnas que cambian (patrón
+    «sobrescribir lo mínimo» de los cobros). Guard: cada columna a escribir
+    existe en la fila real con el mismo tipo; si no, `FactusolError` y no se
+    escribe nada. Sin cambios → `changed=False` sin escribir."""
+    row = customer_row(client, codcli, ejercicio=ejercicio)
+    if row is None:
+        raise FactusolError(
+            f"El cliente FACTUSOL nº {codcli} no existe (ejercicio {ejercicio})."
+        )
+    preview = regime_preview(row, country_iso2=country_iso2, vat=vat, nif=nif)
+    if not preview["changes"]:
+        return {**preview, "changed": False, "written": {}}
+    payload: dict[str, Any] = {"CODCLI": row["CODCLI"]}
+    problems: list[str] = []
+    for change in preview["changes"]:
+        column, value = change["column"], change["proposed"]
+        if column not in row:
+            problems.append(f"F_CLI: columna desconocida {column}")
+            continue
+        real = row[column]
+        if real is not None and not isinstance(real, bool) and (
+            isinstance(value, str) != isinstance(real, str)
+        ):
+            problems.append(
+                f"F_CLI.{column}: payload {type(value).__name__} ({value!r}), "
+                f"fila real {type(real).__name__} ({real!r})"
+            )
+            continue
+        payload[column] = value
+    if problems:
+        detail = (
+            f"El esquema real de F_CLI no cuadra con la corrección del cliente "
+            f"{row.get('CODCLI')} ({', '.join(problems)})"
+        )
+        logger.error("factusol cliente: NO se escribe nada — %s", detail)
+        raise FactusolError(detail + ". No se ha escrito nada.")
+    logger.info(
+        "factusol cliente %s: ActualizarRegistro F_CLI régimen=%s ejercicio=%s "
+        "registro=%s", row.get("CODCLI"), preview["regime"], ejercicio,
+        {k: (v, type(v).__name__) for k, v in payload.items()},
+    )
+    client.update_record("F_CLI", payload, ejercicio=ejercicio)
+    written = {k: v for k, v in payload.items() if k != "CODCLI"}
+    logger.info("factusol cliente %s: régimen corregido a %s (%s)",
+                row.get("CODCLI"), preview["regime"], written)
+    return {**preview, "changed": True, "written": written}
 
 
 #: Campos comparables CRM ↔ FACTUSOL para el detector de divergencias.

@@ -1,8 +1,11 @@
 # Cliente FACTUSOL · tipo de documento del NIF/CIF y régimen de IVA (Tarea C)
 
-**Estado: Parte 1 (investigación) — PARADA obligatoria.** Nada de esto escribe
-en FACTUSOL. La Parte 2 (arreglo) solo arranca cuando Bart pegue el volcado
-real de 3-4 clientes (`--cli-row`) y confirme el mapeo de columnas.
+**Estado: Parte 2 hecha (mapeo confirmado con volcados reales, 2026-09-12).**
+BoHub escribe el tipo de documento, el régimen de IVA y el país real en `F_CLI`
+al crear un cliente, corrige a demanda los que ya existen (con vista previa y
+guard), y los documentos que calcula (proformas, albarán manual) salen sin IVA
+para intracomunitario / exportación. Las facturas ya emitidas **nunca** se
+reescriben: hay un informe de solo lectura para corregirlas a mano.
 
 ## Síntoma (Bart)
 
@@ -12,87 +15,144 @@ Documento oficial / Certificado de residencia fiscal / Otro) no queda bien, y
 el régimen de IVA (Sí / No / Intracomunitario / Exportación, y RE) hay que
 revisarlo: los intracomunitarios / exportación deben quedar como tal.
 
-## 1. Columnas de `F_CLI` → DESCONOCIDAS: hace falta el volcado
+## 1. Mapeo de `F_CLI` — CONFIRMADO con volcado real
 
-- BoHub escribe **exactamente 11 columnas** de `F_CLI` y solo en UN sitio,
-  `customers.build_customer_payload` (`create_customer`, C-3-fix1): `CODCLI`,
-  `NOFCLI`, `NOCCLI`, `NIFCLI`, `DOMCLI`, `POBCLI`, `CPOCLI`, `PROCLI`,
-  `PAICLI` (+ `EMACLI`/`TELCLI` si vienen). **No copia ninguna fila real** y
-  deja todo lo demás a los defaults de `EscribirRegistro`: ahí viven el tipo
-  de documento y el régimen de IVA → el escritorio enseña el default.
-- Ninguna columna de tipo de documento / régimen / RE aparece en el código,
-  los docs ni ningún volcado del repo (nunca se ha volcado una fila real de
-  `F_CLI`). Pistas por la convención de sufijos de las tablas ya volcadas:
-  `TPDFAC`/`TIDFAC` (F_FAC), `TIVFAC`/`REQFAC`, `TIVALB`/`REQALB`,
-  `TIVPRE` («tipo de IVA del documento»), `PREC*`/`IREC*` (recargo) → en
-  `F_CLI` serían del estilo `TPDCLI`/`TIDCLI`, `TIVCLI`, `REQCLI`. **Son
-  hipótesis**: manda el volcado.
-- Nuevo modo del discovery (solo lectura):
+Volcados: `--cli-row 3392 3011 525` y `--cli-row 4279 3392` (2026-09-12).
+Cuatro clientes: nacional 3011 (ES, `48288265H`), intracomunitarios 3392 (BE,
+`BE0812240188`) y 4279 (DE, `DE455128445`, **configurado a mano en el
+escritorio** = referencia), exportación 525 (NO, `NO 976 029 100`).
 
-      docker exec crmbo-api-1 python -m scripts.factusol_discover_albaranes \
-          --cli-row <CODCLI nacional> <CODCLI UE con NIF-IVA> <CODCLI fuera UE>
+| Régimen | `IFICLI` (tipo de documento) | `IVACLI` (aplicar IVA) | `TIVCLI` (tipo impositivo) |
+|---|---|---|---|
+| Nacional (España) | `0` = N.I.F. | `0` | `1` = 21 % |
+| Intracomunitario (UE con NIF-IVA) | `2` = NIF/IVA operador intracomunitario | `2` | `4` = Exento |
+| Exportación (fuera UE) | *sin forzar* (ver nota) | `3` | `3` = 0 % |
 
-  Vuelca cada fila completa (columna · tipo · valor) marcando las 11 que
-  BoHub escribe y las candidatas por prefijo, y con 2+ clientes lista las
-  columnas que DIFIEREN fuera de las que BoHub escribe: el tipo de documento y
-  el régimen tienen que estar ahí. `CargaTabla` devuelve la tabla completa,
-  así que salen TODAS las columnas vivas.
+Evidencia y notas:
 
-## 2. Cómo escribe hoy BoHub el cliente y de dónde sale el país
+- **`IFICLI` es el tipo de documento**, no `DOCCLI` (que vale `0` hasta en el
+  4279 bien configurado). 4279 y 3392 → `IFICLI=2`; los nacionales / no
+  configurados → `0`.
+- **`IVACLI`** es el «Aplicarlo» del escritorio: 0 nacional / 2
+  intracomunitario / 3 exportación. **`TIVCLI`** es el tipo impositivo del
+  cliente: 1 = 21 %, 3 = 0 %, 4 = Exento.
+- **Exportación · `IFICLI`**: el único cliente de exportación volcado (525,
+  Noruega) estaba a `0`, sin referencia de cómo lo deja el escritorio bien
+  configurado. Decisión de Bart: se fija el IVA (`IVACLI=3`, `TIVCLI=3`) y
+  **`IFICLI` no se toca** hasta tener otro volcado. Cuando haya un cliente de
+  exportación bien configurado a mano: `--cli-row <CODCLI>` y se añade el
+  valor a `vat_regime.FCLI_REGIME_COLUMNS`.
+- **`PAICLI`** estaba inconsistente: 724 / 056 / 276 (ISO numérico, bien) pero
+  `'Norway'` literal en el 525. Causa: `_country_code()` mapeaba 10 países y
+  caía a 724 o dejaba pasar el nombre.
+- El recargo de equivalencia (`REQCLI`, `PRECLI`) vale 0 en los cuatro: no se
+  toca.
 
-- Alta: `POST /api/erp/factusol/customers/create` (Fase C) → `create_customer`
-  (dedupe por NIF, `MAX(CODCLI)+1`, 11 columnas). Sync/dedupe/«Traer datos»
-  (`bulk_match`, `import_orphans`, `pull_into_crm`, `link`) NO escriben
-  `F_CLI`: solo el CRM. La emisión de factura no toca `F_CLI`.
-- País: `_country_code()` mapea ISO-2 → numérico con **10 países** y cae a
-  **724 (España) para todo lo demás**; el payload del endpoint tiene
-  `pais="ES"` por defecto y el botón «Crear en FACTUSOL» de la ficha de
-  empresa **no envía `pais`**. Consecuencia: un cliente belga/alemán creado
-  desde la ficha nace en FACTUSOL como España → aunque existiera la columna
-  de régimen, el país ya está mal. `Company.vat` («VAT intracomunitario»)
-  existe en el CRM pero ningún escritor de FACTUSOL lo lee.
+## 2. Qué hace BoHub ahora
 
-## 3. Impacto real: ¿IVA de las facturas o solo metadato?
+Todo en `app/integrations/factusol/vat_regime.py` (lógica pura) y
+`customers.py` (escritura), con el patrón de siempre: fila real + sobrescribir
+lo mínimo + guard + registro exacto en el log.
 
-- **Facturas de pedidos web (F_PCL → F_FAC)**: copia por sufijo de TODAS las
-  bandas (`NET/BAS/PIVA/IIVA/PREC/IREC/TIVA`, `TIVPCL→TIVFAC`,
-  `REQPCL→REQFAC`). BoHub transcribe lo que ya calculó la app Woo→FACTUSOL:
-  el IVA no lo decide BoHub.
-- **Fase 2 (albarán → factura)** y **presupuesto → albarán/factura**: misma
-  copia por sufijo (`chain.build_target_header`, sin excluir prefijos de IVA).
-- **Proformas creadas por BoHub** (`quotes._totals`): el ÚNICO sitio donde
-  BoHub calcula IVA — **banda 1 al 21 % por defecto**, sin escribir `TIVPRE`
-  ni `IVALPS`, y con `CPAPRE=724` porque `_customer_from_company` no pasa
-  `pais`. Un cliente UE/exportación con proforma → albarán → factura de BoHub
-  sale con IVA 21 % **en los importes**, no solo en la ficha.
-- Manuales: hasta la Tarea A no tenían factura; ahora la cadena albarán →
-  factura hereda el IVA de las líneas (21 % por defecto en `tax_rate`).
-- Lo que sí distingue intracomunitario hoy es solo **cosmético**: el PDF
-  imprime el texto legal cuando la suma de IVA del documento es ≈ 0.
-- **Lista de afectados**: se obtiene comparando `PAICLI` ≠ 724 (o
-  `Company.country` ≠ ES) con las facturas emitidas por BoHub cuyo
-  `PIVA1FAC` > 0 — se saca con datos reales en la Parte 2 (lectura), nunca se
-  reescriben facturas ya emitidas.
+### Cómo se decide el régimen (país del CRM + NIF-IVA)
 
-## 4. ¿Existe la lógica nacional / intracomunitario / exportación?
+- España → **nacional**.
+- País de la **UE** (lista de 27 en `vat_regime.EU_ISO2`; Grecia con prefijo
+  `EL`) con **NIF-IVA válido** — `Company.vat` (que hasta ahora nadie leía) o
+  el NIF con el prefijo del país (`BE0812240188`, `DE455128445`) →
+  **intracomunitario**. UE sin NIF-IVA → nacional (consumidor final, IVA
+  español). Un NIF-IVA con prefijo de OTRO país no cuenta.
+- Fuera de la UE → **exportación**.
+- Sin país en el CRM → nacional, sin tocar `PAICLI`.
+- Fuera de alcance: Canarias / Ceuta / Melilla (IGIC / IPSI), que el CRM no
+  distingue de la Península.
 
-**No.** No hay lista de países UE ni `is_eu` en el backend; `language.py`
-agrupa países solo por idioma. Ni la emisión ni las proformas deciden el
-régimen por país/registro. Hay que introducirla en la Parte 2.
+### Alta (`POST /customers/create` → `create_customer`)
 
-## Parte 2 (solo tras el volcado y el OK de Bart) — plan
+- El país y el NIF-IVA salen de la empresa CRM (`country`, `vat`) si el
+  payload no los trae («Crear en FACTUSOL» de la ficha ya los manda).
+- Se escriben las 11 columnas de siempre **más** `IFICLI` / `IVACLI` /
+  `TIVCLI` según el régimen y `PAICLI` con el ISO numérico REAL (tabla ISO
+  completa vía `language.country_numeric`: Noruega → 578, Austria → 040…;
+  solo lo vacío / no reconocido cae a 724 con aviso en el log).
+- **Guard**: la fila real más reciente de `F_CLI` (la misma lectura que el
+  contador `MAX+1`) tiene que tener esas columnas con tipo entero. Si no
+  cuadra → `FactusolError` («No se ha escrito nada»), 502 en la API, y la
+  empresa no queda vinculada.
+- Respuesta: `regime` / `regime_label` de la ficha creada.
 
-1. Con las columnas reales: al crear/actualizar `F_CLI`, fijar tipo de
-   documento (nacional con NIF/CIF → N.I.F.; UE operador → NIF/IVA; resto el
-   que toque) y régimen (nacional → IVA normal; UE con NIF-IVA →
-   intracomunitario; fuera UE → exportación) en las columnas reales, copiando
-   una fila real y sobrescribiendo lo mínimo con guard (como cobros/albaranes),
-   y arreglando `PAICLI` (país real, no 724 por defecto).
-2. Que la emisión / proformas respeten el régimen (intracomunitario y
-   exportación sin IVA): lista UE + NIF-IVA.
-3. Informe de clientes/facturas ya emitidos con el dato mal para corrección
-   manual (no se reescriben facturas).
+### Corrección de un cliente existente (ficha de empresa → «Régimen de IVA en FACTUSOL»)
 
-Tests previstos: `test_cliente_factusol_tipo_documento_nif`,
-`test_cliente_factusol_regimen_intracomunitario` / `_exportacion` /
-`_nacional`, `test_emision_respeta_regimen_iva`, `test_escritura_fcli_guard_minimo`.
+- `GET /customers/regime-preview?company_id=`: régimen por país + NIF-IVA, lo
+  que codifica hoy la ficha (`IFICLI`/`IVACLI`/`TIVCLI`/`PAICLI` reales) y qué
+  columnas cambiarían, con etiquetas legibles. No escribe.
+- `POST /customers/fix-regime {company_id}` → `update_customer_regime`: lee
+  la fila REAL por `CODCLI`, y manda a **`ActualizarRegistro` SOLO la clave +
+  las columnas que cambian**, cada una con el tipo de la fila real (guard: si
+  una columna no existe o el tipo no cuadra, no se escribe nada). Sin cambios
+  → `changed=false` y nada escrito. Auditoría
+  `erp.factusol_customer_regime` con lo escrito.
+- Frontend: `CompanyFactusolPanel` — «Comprobar régimen de IVA» abre el modal
+  con «por la empresa: X (motivo)», el estado de la ficha y la tabla
+  FACTUSOL (ahora) → quedará; «Corregir en FACTUSOL (n)» solo tras confirmar;
+  una ficha coherente no ofrece corregir.
+
+### Documentos que CALCULA BoHub: sin IVA para intracomunitario / exportación
+
+- **Proformas** (`quotes._totals` + `build_quote_payload`): el cliente que
+  llega de la empresa CRM (`_customer_from_company`) trae `pais` (ISO2),
+  `vat` y `regime`; con intracomunitario / exportación la banda 1 va a
+  `PIVA1PRE=0`, `IIVA1PRE=0`, `TOTPRE=NET1PRE`. `CPAPRE` es el ISO numérico
+  real del país (empresa o dirección alternativa), no 724 fijo.
+- **Albarán manual desde las líneas** (Tarea A, `albaran_manual.apply_regime`):
+  manda el régimen de la empresa CRM (país + NIF-IVA); sin país en el CRM, el
+  de la ficha `F_CLI` (`IVACLI`); si tampoco, nacional. Intracomunitario /
+  exportación → todas las líneas al 0 % y cabecera coherente. Si la ficha
+  `F_CLI` dice otra cosa que el CRM se guarda un aviso
+  (`packing_json.factusol_albaran.regime_warning`) — la ficha se corrige desde
+  la empresa, nunca desde el albarán.
+- **Cadena** albarán → factura, presupuesto → albarán: copia por sufijo, así
+  que hereda el 0 %.
+- **Proforma → pedido** (Fase 1): si la cabecera lleva `PIVA1PRE=0` (proforma
+  sin IVA, del escritorio o de BoHub) las líneas del pedido salen al 0 % (las
+  líneas `F_LPS` no son fiables: `IVALPS` es un código) y `build_order`
+  respeta un 0 % explícito (solo la línea sin dato cae al 21 %).
+- **Factura de pedido web** (`emit_invoice`, copia del `F_PCL`): **no se
+  recalcula** — son los importes que el cliente pagó en la tienda. Si la
+  empresa es intracomunitaria / exportación y el pedido lleva IVA se deja
+  `regime_warning` en el resultado, el historial del pedido y el SyncLog, para
+  revisarlo a mano en FACTUSOL.
+- No se escribe `TIV*` en las cabeceras de documento (no hay volcado de una
+  proforma / albarán intracomunitario hecho en el escritorio que confirme el
+  código); los importes a 0 son columnas ya verificadas.
+
+## 3. Informe de clientes / facturas con el dato mal (solo lectura)
+
+    docker exec crmbo-api-1 python -m scripts.factusol_discover_albaranes --regimen-iva
+
+Lista (1) los clientes `F_CLI` con `PAICLI` no numérico / no reconocido / vacío,
+régimen (`IVACLI`/`TIVCLI`) incoherente con el país + NIF-IVA o `IFICLI`
+incoherente, con el motivo; y (2) las facturas `F_FAC` del ejercicio con IVA > 0
+a clientes que por país / ficha son intracomunitarios o de exportación. Las
+fichas se corrigen desde la empresa en BoHub («Régimen de IVA en FACTUSOL») o
+en el escritorio; **las facturas solo a mano en FACTUSOL** (BoHub no reescribe
+ninguna).
+
+## 4. Volcados de referencia (resumen)
+
+| CODCLI | País | NIF | `IFICLI` | `IVACLI` | `TIVCLI` | `PAICLI` | Estado |
+|---|---|---|---|---|---|---|---|
+| 3011 | ES | 48288265H | 0 | 0 | 1 | 724 | nacional, bien |
+| 3392 | BE | BE0812240188 | 2 | 2 | 4 | 056 | intracomunitario, bien |
+| 4279 | DE | DE455128445 | 2 | 2 | 4 | 276 | intracomunitario, bien (a mano) |
+| 525 | NO | NO 976 029 100 | 0 | 3 | 3 | `'Norway'` | exportación con IVA bien; `PAICLI` mal; `IFICLI` sin referencia |
+
+Tests: `test_factusol_cliente_regimen.py` (régimen por país + NIF-IVA,
+`test_cliente_factusol_ifi_nacional` / `_intracomunitario` / `_exportacion`,
+`test_pais_paicli_iso_numerico`, `test_escritura_fcli_guard_minimo`, preview /
+fix con auditoría y guards), `test_factusol_factura_regimen.py`
+(`test_emision_intracomunitario_sin_iva` / `_exportacion_sin_iva` /
+`_nacional_con_iva`, conversión con 0 % explícito, aviso en la factura web),
+`test_factusol_discover_albaranes.py::test_regimen_iva_report_flags_customers_and_invoices`,
+`CompanyFactusolPanel.test.tsx` (modal, confirmación, ficha coherente, alta con
+país + NIF-IVA).

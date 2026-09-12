@@ -43,6 +43,7 @@ from app.integrations.factusol.quotes import (
     build_quote_payload,
     resolve_codarts,
 )
+from app.integrations.factusol.vat_regime import REGIME_LABELS, REGIME_NACIONAL
 
 logger = logging.getLogger(__name__)
 
@@ -104,7 +105,40 @@ def customer_for_albaran(
         "pais": str(row.get("paicli") or "").strip(),
         "telefono": row.get("telcli") or "",
         "email": row.get("emacli") or "",
+        # Régimen que codifica la ficha F_CLI (IVACLI), o None si no es
+        # ninguno de los confirmados (Tarea C).
+        "regime": row.get("regime"),
     }
+
+
+def apply_regime(
+    customer: dict[str, Any], lines: list[dict[str, Any]], *,
+    regime: str | None, numero: str,
+) -> tuple[str, list[dict[str, Any]], str | None]:
+    """Régimen EFECTIVO del albarán y las líneas con el IVA que toca.
+
+    Manda el régimen que sale de la empresa CRM (país + NIF-IVA, `regime`);
+    sin país en el CRM, el que codifica la ficha F_CLI; y si tampoco, nacional.
+    Intracomunitario / exportación → todas las líneas al 0 %. Si la ficha
+    F_CLI dice otra cosa que el CRM se avisa (la ficha se corrige desde la
+    empresa, «Régimen de IVA en FACTUSOL»); nunca se escribe F_CLI desde aquí.
+    Devuelve `(régimen, líneas, aviso)`."""
+    fcli_regime = customer.get("regime")
+    effective = regime or fcli_regime or REGIME_NACIONAL
+    warning = None
+    if regime and fcli_regime and fcli_regime != regime:
+        warning = (
+            f"La ficha F_CLI del cliente {customer.get('codcli')} está como "
+            f"{REGIME_LABELS.get(fcli_regime, fcli_regime)} y BoHub aplica "
+            f"{REGIME_LABELS.get(effective, effective)} por el país / NIF-IVA de la "
+            "empresa. Corrige la ficha desde la empresa («Régimen de IVA en FACTUSOL»)."
+        )
+        logger.warning("factusol albarán %s: %s", numero, warning)
+    if effective != REGIME_NACIONAL:
+        logger.info("factusol albarán %s: régimen %s → líneas al 0 %% de IVA",
+                    numero, effective)
+        lines = [{**line, "iva_pct": 0.0} for line in lines]
+    return effective, lines, warning
 
 
 def _coerce(real: Any, val: Any) -> Any:
@@ -208,14 +242,18 @@ def create_standalone_albaran(
     session: Session, client: FactusolClient, *, order: Order,
     codcli: Any, serie: int, ejercicio: str, fecha: str | None = None,
     fopalb: str | None = None, actor_user_id: str | None = None,
+    regime: str | None = None,
 ) -> dict[str, Any]:
     """Crea en FACTUSOL el albarán del pedido manual desde sus líneas.
 
-    Orden: cliente de F_CLI → líneas con CODART resuelto → cabecera/líneas
+    Orden: cliente de F_CLI → régimen de IVA (Tarea C: intracomunitario /
+    exportación → líneas al 0 %) → líneas con CODART resuelto → cabecera/líneas
     retagadas → tipos como la fila real → guard de esquema ESTRICTO (no
     cuadra ⇒ no se escribe nada, error legible) → log del registro exacto →
     `F_ALB` y después `F_LAL` (compensación por clave compuesta si falla una
-    línea). No hace commit: lo hace el caller junto con el vínculo al pedido."""
+    línea). No hace commit: lo hace el caller junto con el vínculo al pedido.
+    `regime` es el que sale de la empresa CRM (país + NIF-IVA), o None para
+    usar el de la ficha F_CLI."""
     _ = actor_user_id
     dst = DOC_SPECS["albaranes"]
     lines = order_lines_for_document(order)
@@ -233,6 +271,11 @@ def create_standalone_albaran(
     )
     numero = visible_number(serie, int(codigo))
     fecha_doc = fecha or datetime.now(UTC).date().isoformat()
+    effective_regime, lines, regime_warning = apply_regime(
+        customer, lines, regime=regime, numero=numero,
+    )
+    # Cabecera coherente con las líneas: `_totals` también aplica el régimen.
+    customer = {**customer, "regime": effective_regime}
     resolved, free_text = resolve_line_articles(
         client, lines, ejercicio=ejercicio, numero=numero,
     )
@@ -305,7 +348,7 @@ def create_standalone_albaran(
         message=(
             f"pedido manual {order.order_number} → {dst.table} {numero} "
             f"({len(lineas)} líneas desde BoHub, enlace DOC='{SELF_LINK_CODE}' "
-            "a sí mismo"
+            f"a sí mismo, régimen {effective_regime}"
             + (f"; texto libre: {', '.join(free_text)}" if free_text else "")
             + ")"
         ),
@@ -318,5 +361,6 @@ def create_standalone_albaran(
         "target_type": "albaranes", "serie": serie, "codigo": int(codigo),
         "numero": numero, "lines": len(lineas), "source": None,
         "standalone": True, "free_text_lines": free_text,
+        "regime": effective_regime, "regime_warning": regime_warning,
         "origin_marked": True, "origin_mark_warning": None, "order": None,
     }

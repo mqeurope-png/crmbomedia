@@ -41,7 +41,9 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from app.erp.language import country_numeric
 from app.integrations.factusol.client import FactusolClient, FactusolError
+from app.integrations.factusol.vat_regime import REGIME_NACIONAL, iva_pct_for
 
 logger = logging.getLogger(__name__)
 
@@ -426,13 +428,19 @@ def next_codpre(client: FactusolClient, ejercicio: str) -> str:
     return str((_int_or_none(rows[0].get("CODPRE")) or 0) + 1)
 
 
-def _totals(lines: list[dict[str, Any]]) -> dict[str, float]:
+def _totals(
+    lines: list[dict[str, Any]], *, regime: str | None = None,
+) -> dict[str, float]:
     """Base, IVA y total del conjunto de líneas.
 
     Solo se usa la banda 1 de IVA (`NET1PRE`/`IIVA1PRE`): mezclar tipos en una
     misma proforma exigiría repartir en las bandas 2/3/4, y las proformas de
     Bomedia son de un solo tipo. Si llegan varios, se aplica el tipo de la
-    primera línea al total y se deja constancia en el log."""
+    primera línea al total y se deja constancia en el log.
+
+    Tarea C: `regime` intracomunitario / exportación → IVA 0 en los importes,
+    diga lo que diga la línea (era el bug del dinero: banda 1 al 21 % para
+    cualquier cliente)."""
     base = 0.0
     for line in lines:
         qty = _num(line.get("quantity"), 1.0)
@@ -446,10 +454,33 @@ def _totals(lines: list[dict[str, Any]]) -> dict[str, float]:
             "factusol: proforma con varios tipos de IVA %s; se aplica %.2f a "
             "toda la base (F_PRE solo usa la banda 1)", sorted(rates), iva_pct,
         )
+    if regime and regime != REGIME_NACIONAL and iva_pct:
+        logger.info("factusol: régimen %s → IVA 0 en vez de %.2f %%", regime, iva_pct)
+    iva_pct = iva_pct_for(regime, iva_pct)
     base = round(base, 2)
     iva = round(base * iva_pct / 100, 2)
     return {"base": base, "iva_pct": iva_pct, "iva": iva,
             "total": round(base + iva, 2)}
+
+
+def header_says_no_iva(piva1: Any, base: Any) -> bool:
+    """La cabecera de un documento lleva un 0 % EXPLÍCITO en la banda 1
+    (`PIVA1PRE`/`PIVA1PCL` presente y a 0) con base > 0: proforma / pedido
+    intracomunitario o de exportación. `None` (columna ausente) NO es un 0 %."""
+    if piva1 is None or str(piva1).strip() == "":
+        return False
+    return _num(piva1) == 0 and _num(base) > 0
+
+
+def _cpapre(pais: Any) -> str:
+    """`CPAPRE` (ISO numérico) desde lo que traiga el cliente: ISO2 de la
+    empresa CRM («BE»), el `PAICLI` de una dirección alternativa («056») o un
+    nombre («ESPAÑA» en `APAxCLI`). Lo que no se reconoce cae a España, como
+    hasta ahora."""
+    value = str(pais or "").strip()
+    if value.isdigit() and len(value) == 3:
+        return value
+    return (country_numeric(value) if value else None) or DEFAULT_CPAPRE
 
 
 def build_quote_payload(
@@ -462,7 +493,7 @@ def build_quote_payload(
     Solo columnas verificadas contra la base real. Las que no ponemos las deja
     FACTUSOL con sus defaults — no inventamos valores (la lección de C-3-fix1).
     """
-    totals = _totals(lines)
+    totals = _totals(lines, regime=customer.get("regime"))
     payload: dict[str, Any] = {
         "CODPRE": codpre,
         "TIPPRE": DEFAULT_TIPPRE,
@@ -474,9 +505,9 @@ def build_quote_payload(
         "CCPPRE": str(customer.get("cp") or "")[:20],
         "CPRPRE": str(customer.get("provincia") or "")[:255],
         "CNIPRE": str(customer.get("nif") or "")[:64],
-        # El país puede venir de una dirección alternativa del cliente; si no,
-        # España (todas las proformas de la base real llevan 724).
-        "CPAPRE": str(customer.get("pais") or "").strip() or DEFAULT_CPAPRE,
+        # País REAL del cliente (ISO numérico): el de la empresa CRM o el de la
+        # dirección alternativa elegida; España solo si no hay ninguno.
+        "CPAPRE": _cpapre(customer.get("pais")),
         "ALMPRE": DEFAULT_ALMPRE,
         "NET1PRE": totals["base"],
         "PIVA1PRE": totals["iva_pct"],
@@ -829,6 +860,12 @@ def quote_lines_for_order(
     if quote is None:
         raise FactusolError(f"La proforma {codpre} no existe en el ejercicio {ejercicio}")
     lines = quote["lines"]
+    # Tarea C: una proforma SIN IVA (intracomunitario / exportación, hecha en
+    # el escritorio o por BoHub) lleva `PIVA1PRE=0` en la cabecera; las líneas
+    # F_LPS no dicen nada fiable (`IVALPS` es un código) y caerían al 21 %.
+    # La cabecera manda: las líneas del pedido salen al 0 %.
+    if lines and header_says_no_iva(quote.get("piva1pre"), quote.get("base")):
+        lines = [{**line, "iva_pct": 0.0, "iva_explicit": True} for line in lines]
     if not lines:
         logger.warning("factusol: la proforma %s no tiene líneas en %s",
                        codpre, TABLE_QUOTE_LINES)

@@ -1963,6 +1963,13 @@ export type FactusolCustomer = {
   telcli: string | null;
   /** País en ISO2 (PAICLI normalizado por el backend); null si no se reconoce. */
   pais_iso2?: string | null;
+  /** Tarea C: tipo de documento / aplicar IVA / tipo impositivo de la ficha y
+   *  el régimen que codifican (null si no es ninguno de los confirmados). */
+  ificli?: number | null;
+  ivacli?: number | null;
+  tivcli?: number | null;
+  regime?: FactusolRegime | null;
+  regime_label?: string | null;
   /** Vínculo CRM existente (null si el cliente aún no está en el CRM). */
   crm_link: { type: "company" | "contact"; id: string; name: string } | null;
   factusol_matches_crm_id: string | null;
@@ -2022,6 +2029,68 @@ export async function pullFactusolIntoCompany(companyId: string): Promise<{
   });
 }
 
+/** Tarea C · régimen de IVA / tipo de documento del cliente F_CLI, decidido
+ *  por el país + NIF-IVA de la empresa CRM (mapeo confirmado con volcados
+ *  reales: `IFICLI` tipo de documento, `IVACLI` aplicar IVA, `TIVCLI` tipo
+ *  impositivo, `PAICLI` país ISO numérico). */
+export type FactusolRegime = "nacional" | "intracomunitario" | "exportacion";
+
+export type FactusolRegimeChange = {
+  column: string;
+  label: string;
+  current: string | number | null;
+  current_label: string;
+  proposed: string | number;
+  proposed_label: string;
+};
+
+export type FactusolRegimePreview = {
+  company_id: string;
+  codcli: string;
+  company_country: string | null;
+  company_vat: string | null;
+  country_iso2: string | null;
+  regime: FactusolRegime;
+  regime_label: string;
+  /** Por qué sale ese régimen («BE (UE) con NIF-IVA … → intracomunitario»). */
+  reason: string;
+  current: {
+    IFICLI: number | null;
+    IVACLI: number | null;
+    TIVCLI: number | null;
+    PAICLI: string | null;
+    regime: FactusolRegime | null;
+    regime_label: string | null;
+  };
+  proposed: Record<string, string | number>;
+  changes: FactusolRegimeChange[];
+  /** true = la ficha F_CLI ya coincide: nada que corregir. */
+  coherent: boolean;
+};
+
+/** Qué régimen le corresponde al cliente y qué cambiaría en F_CLI (no escribe). */
+export async function getFactusolRegimePreview(companyId: string): Promise<FactusolRegimePreview> {
+  return apiFetch(
+    `/api/erp/factusol/customers/regime-preview?company_id=${encodeURIComponent(companyId)}`,
+  );
+}
+
+/** Corrige en FACTUSOL (ActualizarRegistro de F_CLI, SOLO las columnas que
+ *  cambian) el tipo de documento / régimen / país del cliente vinculado.
+ *  A demanda, con auditoría. */
+export async function fixFactusolCustomerRegime(companyId: string): Promise<
+  FactusolRegimePreview & {
+    ok: boolean;
+    changed: boolean;
+    written: Record<string, string | number>;
+  }
+> {
+  return apiFetch("/api/erp/factusol/customers/fix-regime", {
+    method: "POST",
+    body: JSON.stringify({ company_id: companyId }),
+  });
+}
+
 export type CreateFactusolCustomerPayload = {
   crm_type: "company" | "contact";
   crm_id: string;
@@ -2031,7 +2100,10 @@ export type CreateFactusolCustomerPayload = {
   ciudad?: string;
   cp?: string;
   provincia?: string;
+  /** País (ISO2, nombre o numérico) y NIF-IVA: si no vienen, el backend los
+   *  toma de la empresa CRM. Deciden `PAICLI` y el régimen de IVA. */
   pais?: string;
+  vat?: string;
   email?: string | null;
   telefono?: string | null;
 };
@@ -2063,7 +2135,13 @@ export async function createFactusolCustomerAndLink(payload: {
 
 export async function createFactusolCustomer(
   payload: CreateFactusolCustomerPayload,
-): Promise<{ factusol_codcli: string; created: boolean }> {
+): Promise<{
+  factusol_codcli: string;
+  created: boolean;
+  /** Régimen con el que se creó la ficha (null si ya existía y solo se vinculó). */
+  regime?: FactusolRegime | null;
+  regime_label?: string | null;
+}> {
   return apiFetch("/api/erp/factusol/customers/create", {
     method: "POST",
     body: JSON.stringify(payload),

@@ -7,12 +7,15 @@ import { extractErrorMessage } from "../../lib/errors";
 import {
   createFactusolCustomer,
   ERP_EDIT_ROLES,
+  fixFactusolCustomerRegime,
   getFactusolPullPreview,
+  getFactusolRegimePreview,
   linkFactusolCustomer,
   pullFactusolIntoCompany,
   searchFactusolCustomers,
   type FactusolCustomer,
   type FactusolPullPreview,
+  type FactusolRegimePreview,
 } from "../../lib/erpApi";
 
 type Diff = { field: string; crm: string; factusol: string };
@@ -64,6 +67,9 @@ export function CompanyFactusolPanel({
   const [notice, setNotice] = useState<string | null>(null);
   // «Traer datos»: previsualización pendiente de confirmar.
   const [pullPreview, setPullPreview] = useState<FactusolPullPreview | null>(null);
+  // Tarea C: régimen de IVA / tipo de documento de la ficha F_CLI, pendiente
+  // de confirmar su corrección.
+  const [regimePreview, setRegimePreview] = useState<FactusolRegimePreview | null>(null);
 
   const code = company.factusol_company_id;
   const canEdit = !!user && (ERP_EDIT_ROLES as readonly string[]).includes(user.role);
@@ -126,13 +132,50 @@ export function CompanyFactusolPanel({
         nif: company.tax_id ?? "", direccion: company.address_line ?? "",
         ciudad: company.city ?? "", cp: company.postal_code ?? "",
         provincia: company.state ?? "",
+        // Tarea C: país real y NIF-IVA → PAICLI + régimen de IVA de la ficha.
+        pais: company.country ?? undefined, vat: company.vat ?? undefined,
       });
       setNotice(r.created
-        ? `Creado en FACTUSOL con el nº ${r.factusol_codcli}.`
+        ? `Creado en FACTUSOL con el nº ${r.factusol_codcli}`
+          + (r.regime_label ? ` (régimen de IVA: ${r.regime_label}).` : ".")
         : `Ya existía en FACTUSOL (nº ${r.factusol_codcli}) — vinculado.`);
       onLinked?.(r.factusol_codcli);
     } catch (e) {
       setError(extractErrorMessage(e, "No se pudo crear en FACTUSOL."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** Tarea C · paso 1: régimen que le toca por país + NIF-IVA vs la ficha F_CLI. */
+  async function abrirRegimen() {
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      setRegimePreview(await getFactusolRegimePreview(company.id));
+    } catch (e) {
+      setError(extractErrorMessage(e, "No se pudo comprobar el régimen de IVA en FACTUSOL."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** Tarea C · paso 2: confirmar y corregir SOLO las columnas que cambian. */
+  async function confirmarRegimen() {
+    if (!regimePreview) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await fixFactusolCustomerRegime(company.id);
+      setRegimePreview(null);
+      const cols = Object.keys(r.written).join(", ");
+      setNotice(r.changed
+        ? `Régimen corregido en FACTUSOL cliente nº ${r.codcli}: ${r.regime_label}`
+          + ` (${cols}). Las facturas ya emitidas no cambian.`
+        : `La ficha de FACTUSOL nº ${r.codcli} ya estaba bien (${r.regime_label}).`);
+    } catch (e) {
+      setError(extractErrorMessage(e, "No se pudo corregir el régimen en FACTUSOL."));
     } finally {
       setBusy(false);
     }
@@ -240,6 +283,18 @@ export function CompanyFactusolPanel({
               ) : null}
             </p>
           ) : null}
+          {canEdit ? (
+            <p className="muted small">
+              Régimen de IVA en FACTUSOL
+              {customer?.regime_label ? <>: <strong>{customer.regime_label}</strong></> : null}
+              .{" "}
+              <button type="button" className="button small secondary" disabled={busy}
+                      title="Comprueba el tipo de documento, el régimen de IVA y el país de la ficha F_CLI frente al país y NIF-IVA de la empresa; pide confirmación antes de corregir en FACTUSOL"
+                      onClick={abrirRegimen}>
+                Comprobar régimen de IVA
+              </button>
+            </p>
+          ) : null}
         </>
       ) : (
         <>
@@ -296,6 +351,63 @@ export function CompanyFactusolPanel({
                       onClick={confirmarTraerDatos}>
                 {busy ? "Trayendo…" : `Sobrescribir con FACTUSOL (${pullPreview.changes.length})`}
               </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {regimePreview ? (
+        <div className="modal-overlay" role="dialog" aria-modal="true"
+             aria-label="Régimen de IVA en FACTUSOL">
+          <div className="modal-dialog">
+            <h2>Régimen de IVA en FACTUSOL</h2>
+            <p>
+              Por la empresa: <strong>{regimePreview.regime_label}</strong>{" "}
+              <span className="muted small">({regimePreview.reason})</span>
+            </p>
+            <p className="muted small">
+              Ficha F_CLI nº {regimePreview.codcli} ahora:{" "}
+              {regimePreview.current.regime_label ?? "régimen desconocido"} · tipo de
+              documento {regimePreview.current.IFICLI ?? "—"} · país{" "}
+              {regimePreview.current.PAICLI || "—"}.
+            </p>
+            {regimePreview.coherent ? (
+              <p className="form-info" role="status">
+                La ficha de FACTUSOL ya está bien: nada que corregir.
+              </p>
+            ) : (
+              <>
+                <p className="form-error" role="alert">
+                  Esto escribirá en FACTUSOL (cliente nº {regimePreview.codcli}) SOLO las
+                  columnas de abajo. Las facturas ya emitidas no cambian.
+                </p>
+                <table className="data-table">
+                  <thead>
+                    <tr><th>Campo</th><th>FACTUSOL (ahora)</th><th>Quedará</th></tr>
+                  </thead>
+                  <tbody>
+                    {regimePreview.changes.map((c) => (
+                      <tr key={c.column}>
+                        <td>{c.label} <code>{c.column}</code></td>
+                        <td>{c.current_label || "—"}</td>
+                        <td><strong>{c.proposed_label}</strong></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </>
+            )}
+            <div className="modal-actions">
+              <button type="button" className="button secondary" disabled={busy}
+                      onClick={() => setRegimePreview(null)}>
+                {regimePreview.coherent ? "Cerrar" : "Cancelar"}
+              </button>
+              {!regimePreview.coherent ? (
+                <button type="button" className="button danger" disabled={busy}
+                        onClick={confirmarRegimen}>
+                  {busy ? "Corrigiendo…" : `Corregir en FACTUSOL (${regimePreview.changes.length})`}
+                </button>
+              ) : null}
             </div>
           </div>
         </div>

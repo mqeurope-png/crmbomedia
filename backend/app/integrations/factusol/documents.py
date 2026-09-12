@@ -281,6 +281,14 @@ def normalize_header(doc_type: str, row: dict[str, Any]) -> dict[str, Any]:
         "cliente_pais": _clean(row.get(f"CPA{spec.suffix}")),
         "fecha": _factusol_date(row.get(spec.fec)),
         "total": _num(row.get(spec.tot)) if row.get(spec.tot) is not None else None,
+        # Tarea C: base y % de IVA de la banda 1 de la CABECERA (`NET1*` /
+        # `PIVA1*`): un 0 % aquí (documento intracomunitario / exportación)
+        # es explícito, al contrario que el `IVAL**` de línea, que es un código.
+        "base": _num(row.get(f"NET1{spec.suffix}")),
+        "iva_pct": (
+            _num(row.get(f"PIVA1{spec.suffix}"))
+            if row.get(f"PIVA1{spec.suffix}") is not None else None
+        ),
         "estado": estado_raw,
         "estado_label": estado_label(doc_type, estado_raw),
         "referencia": _clean(row.get(spec.ref)),

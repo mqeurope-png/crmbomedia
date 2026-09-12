@@ -65,7 +65,9 @@ class FakeFactusol:
             return []
         self.filters.append(filtro)
         if "ORDER BY CODCLI DESC" in filtro:
-            return [{"CODCLI": self._max}] if self._max is not None else []
+            # La fila REAL más reciente (CargaTabla devuelve la fila entera):
+            # es el contador Y la plantilla del guard de esquema del alta.
+            return [_cli(self._max)] if self._max is not None else []
         return list(self._rows)
 
     def write_record(self, tabla, data, *, ejercicio=None):
@@ -74,11 +76,14 @@ class FakeFactusol:
 
 
 def _cli(codcli, nombre="LABORATORIOS PORTA S.L.", nif="B64113590", **over):
-    """Fila F_CLI con los nombres de columna REALES (C-3-fix1)."""
+    """Fila F_CLI con los nombres de columna REALES (C-3-fix1) y, desde la
+    Tarea C, las tres del régimen con su tipo real (entero, volcado
+    2026-09-12): un cliente nacional por defecto."""
     base = {"CODCLI": codcli, "NIFCLI": nif, "NOFCLI": nombre, "NOCCLI": nombre,
             "DOMCLI": "c. Fígols, 19-21", "POBCLI": "Barcelona",
             "CPOCLI": "08028", "PROCLI": "Barcelona", "PAICLI": "724",
-            "EMACLI": "info@porta.example", "TELCLI": "600000000"}
+            "EMACLI": "info@porta.example", "TELCLI": "600000000",
+            "IFICLI": 0, "IVACLI": 0, "TIVCLI": 1}
     base.update(over)
     return base
 
@@ -326,6 +331,12 @@ def test_country_code_maps_iso_alpha2_to_numeric():
     assert _country_code("724") == "724"     # ya numérico → tal cual
     assert _country_code("XX") == "724"      # desconocido → fallback ES
     assert _country_code("") == "724"
+    # Tarea C: tabla ISO completa — antes Noruega, Austria o Suiza caían a 724.
+    assert _country_code("NO") == "578"
+    assert _country_code("Norway") == "578"  # nombre literal (el caso real del 525)
+    assert _country_code("AT") == "040"
+    assert _country_code("CH") == "756"
+    assert _country_code("56") == "056"      # numérico sin ceros → con ceros
 
 
 def test_search_exposes_aliases_for_frontend(client):

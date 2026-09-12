@@ -38,6 +38,7 @@ from app.erp.models import (
 )
 from app.integrations.factusol.client import FactusolClient
 from app.integrations.factusol.documents import get_document, visible_number
+from app.integrations.factusol.quotes import header_says_no_iva
 from app.models.crm import Company
 
 logger = logging.getLogger(__name__)
@@ -173,8 +174,12 @@ def build_order(
         line_total = round(quantity * unit_price * (1 - discount / 100), 2)
         codart = str(line.get("codart") or "").strip() or None
         description = str(line.get("description") or "").strip() or codart or "Línea"
+        # `IVALPS` / `IVALPC` es un CÓDIGO (0 = tipo general): un 0 de línea
+        # NO es un 0 % y cae al 21 %. Solo cuando la CABECERA del documento
+        # dice 0 % (proforma intracomunitaria / exportación) el lector marca
+        # `iva_explicit` y el 0 se respeta (Tarea C).
         iva = _f(line.get("iva_pct"))
-        tax_rate = iva if iva > 0 else DEFAULT_IVA_PCT
+        tax_rate = iva if iva > 0 or line.get("iva_explicit") else DEFAULT_IVA_PCT
         total_tax += line_total * (1 + tax_rate / 100)
         session.add(OrderLine(
             order_id=order.id, position=i,
@@ -238,6 +243,12 @@ def preview_factusol_document(
         session.scalar(select(Company.name).where(Company.id == company_id))
         if company_id else None
     )
+    lines = list(doc.get("lines") or [])
+    # Tarea C: la cabecera manda. Un documento SIN IVA (intracomunitario /
+    # exportación: `PIVA1*=0` con base > 0) deja las líneas del pedido al 0 %
+    # explícito; el `IVAL**` de línea es un código y no sirve para saberlo.
+    if lines and header_says_no_iva(doc.get("iva_pct"), doc.get("base")):
+        lines = [{**line, "iva_pct": 0.0, "iva_explicit": True} for line in lines]
     return {
         "doc_type": doc_type,
         "serie": int(serie),
@@ -254,7 +265,7 @@ def preview_factusol_document(
         "company_id": company_id,
         "company_name": company_name,
         "company_linked": company_id is not None,
-        "lines": doc.get("lines") or [],
+        "lines": lines,
         "order_number": order_number_for(doc_type, serie, codigo),
         "external_id": external_id,
         "already_imported": (
