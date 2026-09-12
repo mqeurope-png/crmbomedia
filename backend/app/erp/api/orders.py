@@ -1062,6 +1062,19 @@ def completion_avisos(order: Order) -> list[str]:
     return avisos
 
 
+def mark_order_completed(session: Session, order: Order, actor: User) -> bool:
+    """La lógica de «Marcar completado» (#390), compartida por el botón
+    individual y el masivo: sella `completed_at` + `completed_by_user_id`
+    SOLO en BoHub (no toca WooCommerce ni FACTUSOL ni los 4 estados).
+    Idempotente: el ya completado conserva fecha y quién. Devuelve si YA lo
+    estaba. No hace commit (lo decide el caller)."""
+    if order.completed_at is not None:
+        return True
+    order.completed_at = datetime.now(UTC)
+    order.completed_by_user_id = actor.id
+    return False
+
+
 @router.post("/{order_id}/complete")
 def complete_order(
     order_id: str,
@@ -1074,16 +1087,72 @@ def complete_order(
     idempotente: el ya completado conserva fecha y quién. Devuelve la ficha +
     `completion_avisos` (no bloqueantes)."""
     order = _get_order(session, order_id)
-    already = order.completed_at is not None
+    already = mark_order_completed(session, order, current_user)
     if not already:
-        order.completed_at = datetime.now(UTC)
-        order.completed_by_user_id = current_user.id
         session.commit()
     order = _get_order(session, order_id)
     return {
         **_serialise_detail(session, order, current_user),
         "already_completed": already,
         "completion_avisos": completion_avisos(order),
+    }
+
+
+class BulkCompleteIn(BaseModel):
+    order_ids: list[str] = Field(min_length=1, max_length=500)
+
+
+@router.post("/bulk-complete")
+def bulk_complete_orders(
+    payload: BulkCompleteIn,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_edit),
+) -> dict[str, Any]:
+    """«Completar seleccionados» de la bandeja: la MISMA lógica que
+    `/complete` (`mark_order_completed`) aplicada a cada pedido seleccionado.
+    Solo BoHub, reversible (`/uncomplete` uno a uno), idempotente (los ya
+    completados se cuentan aparte y conservan fecha y quién). No exige factura
+    ni envío: cada fila trae sus `completion_avisos` («aún sin facturar»…).
+    Cada pedido se confirma por separado: si uno falla (no existe, error al
+    guardar) se informa en `failed` y se sigue con el resto — nunca se aborta
+    todo por uno."""
+    completed: list[str] = []
+    already: list[str] = []
+    failed: list[dict[str, str]] = []
+    items: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for order_id in payload.order_ids:
+        if order_id in seen:
+            continue
+        seen.add(order_id)
+        try:
+            order = session.get(Order, order_id)
+            if order is None:
+                failed.append({"order_id": order_id, "error": "El pedido no existe."})
+                continue
+            was_already = mark_order_completed(session, order, current_user)
+            session.commit()
+        except Exception as exc:  # noqa: BLE001 — se informa y se sigue
+            session.rollback()
+            logger.warning("bulk-complete: pedido %s KO: %s", order_id, exc)
+            failed.append({"order_id": order_id, "error": str(exc)[:200]})
+            continue
+        order = _get_order(session, order_id)
+        (already if was_already else completed).append(order.id)
+        items.append({
+            **_serialise_summary(order, customer_names(session, [order]).get(order.id)),
+            "already_completed": was_already,
+            "completion_avisos": completion_avisos(order),
+        })
+    return {
+        "ok": not failed,
+        "completed": len(completed),
+        "already_completed": len(already),
+        "failed": failed,
+        "sin_facturar": sum(
+            1 for it in items if "aún sin facturar" in it["completion_avisos"]
+        ),
+        "items": items,
     }
 
 
