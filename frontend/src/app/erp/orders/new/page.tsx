@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { PageHeader } from "../../../components/PageHeader";
 import { ArticleAutocompleteInput } from "../../../components/erp/ArticleAutocompleteInput";
 import {
@@ -81,6 +81,59 @@ function countryName(iso2: string | null | undefined): string {
   return iso2 ? (COUNTRY_NAMES_ES[iso2] ?? iso2) : "España";
 }
 
+/** Dirección de F_CLI en una línea legible para el aviso de precarga. */
+function formatAddress(a: OrderAddress): string {
+  const town = [a.postal_code?.trim(), a.city?.trim()].filter(Boolean).join(" ");
+  const parts = [
+    a.address_line?.trim(),
+    town + (a.state?.trim() && a.state.trim() !== a.city?.trim() ? ` (${a.state.trim()})` : ""),
+    a.country?.trim(),
+  ].filter(Boolean);
+  return parts.join(", ");
+}
+
+/** Nombre fiscal del cliente F_CLI (NOFCLI; el comercial si el fiscal está vacío). */
+function fiscalName(cust: FactusolCustomer): string {
+  return (cust.nofcli ?? "").trim() || (cust.nombre ?? "").trim();
+}
+
+/** Lo que la precarga ha escrito DE VERDAD en el formulario. */
+type FactusolLoaded = { nif: string | null; address: OrderAddress | null };
+
+/** Aviso de precarga que no miente: enumera exactamente lo volcado (NIF y/o
+ *  dirección), avisa de lo que FACTUSOL no tiene, y enseña el nombre fiscal
+ *  si no coincide con el de la empresa CRM. `prefix` es lo que pasó antes
+ *  («Creado en FACTUSOL con el nº …»), para no perderlo. */
+function loadedNotice(
+  cust: FactusolCustomer, loaded: FactusolLoaded,
+  opts: { crmName?: string | null; prefix?: string } = {},
+): { tone: "info" | "error"; text: string } {
+  const codcli = cust.codcli ?? "";
+  const parts: string[] = [];
+  if (loaded.nif) parts.push(`NIF ${loaded.nif}`);
+  if (loaded.address) parts.push(`dirección ${formatAddress(loaded.address)}`);
+  const fiscal = fiscalName(cust);
+  const crm = (opts.crmName ?? "").trim();
+  const nameNote = fiscal && crm && fiscal.toLowerCase() !== crm.toLowerCase()
+    ? ` Nombre fiscal en FACTUSOL: «${fiscal}» (empresa del CRM: «${crm}»).`
+    : "";
+  const prefix = opts.prefix ? `${opts.prefix} ` : "";
+  if (parts.length === 0) {
+    return {
+      tone: "info",
+      text: `${prefix}El cliente FACTUSOL nº ${codcli} no tiene NIF ni dirección: `
+        + "no se ha cargado nada en el pedido (se mantienen los datos del formulario)."
+        + nameNote,
+    };
+  }
+  const missing = loaded.nif ? "" : " Sin NIF en FACTUSOL: se mantiene el del formulario.";
+  return {
+    tone: "info",
+    text: `${prefix}Datos del cliente FACTUSOL nº ${codcli} cargados en el pedido: `
+      + `${parts.join(" · ")}.${missing}${nameNote}`,
+  };
+}
+
 export default function NewManualOrderPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -103,6 +156,12 @@ export default function NewManualOrderPage() {
   // empresa VINCULADA a FACTUSOL — sin CODCLI no se puede crear el pedido
   // (se ofrece «Crear en FACTUSOL»). null = sin empresa o sin vincular.
   const [companyCodcli, setCompanyCodcli] = useState<string | null>(null);
+  // Cliente F_CLI cuyos datos se han volcado al formulario (nombre fiscal
+  // visible, solo lectura). null = nada precargado desde FACTUSOL.
+  const [factusolCustomer, setFactusolCustomer] = useState<FactusolCustomer | null>(null);
+  // Nº de secuencia de la precarga en vuelo: una respuesta que llegue después
+  // de elegir OTRA empresa se descarta (no pisa lo último elegido).
+  const prefillSeq = useRef(0);
   // C-3-fix2: cliente FACTUSOL elegido que aún NO tiene empresa en el CRM.
   const [pendingFactusolCustomer, setPendingFactusolCustomer] =
     useState<FactusolCustomer | null>(null);
@@ -159,7 +218,8 @@ export default function NewManualOrderPage() {
           country: c.country ?? "España",
         }));
         // B) Empresa vinculada: FACTUSOL manda sobre NIF y direcciones.
-        if (c.factusol_company_id) void prefillFromFactusol(c.factusol_company_id);
+        setFactusolCustomer(null);
+        if (c.factusol_company_id) void prefillFromFactusol(c.factusol_company_id, c.name);
       })
       .catch(() => undefined);
     return () => { alive = false; };
@@ -293,6 +353,10 @@ export default function NewManualOrderPage() {
     // Tarea B: empresa vinculada → CODCLI; sin vincular → «créala primero».
     setCompanyCodcli(hit?.factusol_company_id ?? null);
     setPendingCrmCompany(hit && !hit.factusol_company_id ? hit : null);
+    // Otra empresa (o ninguna): lo precargado de la anterior ya no vale, y una
+    // respuesta tardía de su precarga se descarta.
+    prefillSeq.current += 1;
+    setFactusolCustomer(null);
     if (!hit) return;
     setTaxId((prev) => prev || hit.tax_id || "");
     // Autocompleta la dirección desde la empresa si aún está vacía.
@@ -302,7 +366,7 @@ export default function NewManualOrderPage() {
       country: hit.country ?? "España",
     }));
     // B) Empresa vinculada: FACTUSOL manda sobre NIF y direcciones.
-    if (hit.factusol_company_id) void prefillFromFactusol(hit.factusol_company_id);
+    if (hit.factusol_company_id) void prefillFromFactusol(hit.factusol_company_id, hit.name);
   }
 
   function pickContact(value: string) {
@@ -339,30 +403,24 @@ export default function NewManualOrderPage() {
       return;
     }
     const cust = choice.customer;
-    // B) FACTUSOL manda: NIF y dirección del cliente F_CLI al formulario.
-    if (cust.nif) setTaxId(cust.nif);
-    const fromFactusol: OrderAddress = {
-      address_line: cust.domcli ?? "", city: cust.pobcli ?? "",
-      postal_code: cust.cpocli ?? "", state: cust.procli ?? "",
-      country: countryName(cust.pais_iso2),
-    };
-    setShipping(fromFactusol);
-    setBilling(fromFactusol);
+    // B) FACTUSOL manda: NIF y dirección del cliente F_CLI al formulario (el
+    // hit del buscador ya trae la fila, no hace falta releer).
+    prefillSeq.current += 1;
+    const loaded = applyFactusolCustomer(cust);
     if (cust.crm_link?.type === "company") {
       setCompanyId(cust.crm_link.id);
       setCompanyQuery(cust.crm_link.name);
       setCompanyCodcli(cust.codcli);
-      setFactusolNotice({
-        tone: "info",
-        text: `Cliente FACTUSOL nº ${cust.codcli} — ya vinculado a «${cust.crm_link.name}».`,
-      });
+      setFactusolNotice(loadedNotice(cust, loaded, {
+        crmName: cust.crm_link.name,
+        prefix: `Cliente FACTUSOL nº ${cust.codcli} — ya vinculado a «${cust.crm_link.name}».`,
+      }));
     } else {
       setCompanyQuery(cust.nombre ?? "");
       setPendingFactusolCustomer(cust);
-      setFactusolNotice({
-        tone: "info",
-        text: `Cliente FACTUSOL nº ${cust.codcli} sin empresa en el CRM. Elige debajo qué hacer.`,
-      });
+      setFactusolNotice(loadedNotice(cust, loaded, {
+        prefix: `Cliente FACTUSOL nº ${cust.codcli} sin empresa en el CRM. Elige debajo qué hacer.`,
+      }));
     }
   }
 
@@ -377,7 +435,30 @@ export default function NewManualOrderPage() {
       country: c.country ?? "España",
     }));
     // B) Empresa vinculada: FACTUSOL manda sobre NIF y direcciones.
-    if (c.factusol_company_id) void prefillFromFactusol(c.factusol_company_id);
+    prefillSeq.current += 1;
+    setFactusolCustomer(null);
+    if (c.factusol_company_id) void prefillFromFactusol(c.factusol_company_id, c.name);
+  }
+
+  /** Vuelca en los campos VISIBLES del formulario los datos del cliente F_CLI
+   *  (FACTUSOL manda sobre lo que hubiera: del CRM o tecleado). El NIF solo
+   *  si FACTUSOL lo tiene; la dirección solo si tiene alguna (no se borra lo
+   *  tecleado con vacíos). Devuelve qué se ha escrito de verdad. */
+  function applyFactusolCustomer(cust: FactusolCustomer): FactusolLoaded {
+    const nif = (cust.nif ?? "").trim() || null;
+    if (nif) setTaxId(nif);
+    const fromFactusol: OrderAddress = {
+      address_line: cust.domcli ?? "", city: cust.pobcli ?? "",
+      postal_code: cust.cpocli ?? "", state: cust.procli ?? "",
+      country: countryName(cust.pais_iso2),
+    };
+    const hasAddress = addressFilled(fromFactusol);
+    if (hasAddress) {
+      setShipping(fromFactusol);
+      setBilling(fromFactusol);
+    }
+    setFactusolCustomer(cust);
+    return { nif, address: hasAddress ? fromFactusol : null };
   }
 
   /** C-3-fix2: crea la empresa CRM con los datos que vienen de F_CLI y la
@@ -442,8 +523,10 @@ export default function NewManualOrderPage() {
       });
       const comp = linkCompanies.find((c) => c.id === linkCompanyId);
       if (comp) applyCompany(comp);
-      // Recién vinculada: el CODCLI es el del cliente FACTUSOL elegido.
+      // Recién vinculada: el CODCLI es el del cliente FACTUSOL elegido, cuyos
+      // datos ya están en el formulario (los volcó el buscador).
       setCompanyCodcli(cust.codcli);
+      setFactusolCustomer(cust);
       setPendingCrmCompany(null);
       setPendingFactusolCustomer(null);
       setLinkingExisting(false);
@@ -478,15 +561,14 @@ export default function NewManualOrderPage() {
       });
       setPendingCrmCompany(null);
       // Tarea B: ya vinculada → se puede crear el pedido; y se precargan
-      // los datos del cliente FACTUSOL (NIF y dirección), como en #392.
+      // los datos del cliente FACTUSOL (NIF y dirección), como en #392. El
+      // aviso de la precarga conserva este texto delante.
       setCompanyCodcli(r.factusol_codcli);
-      void prefillFromFactusol(r.factusol_codcli);
-      setFactusolNotice({
-        tone: "info",
-        text: r.created
-          ? `Creado en FACTUSOL con el nº ${r.factusol_codcli}.`
-          : `Ya existía en FACTUSOL (nº ${r.factusol_codcli}) — vinculado.`,
-      });
+      const created = r.created
+        ? `Creado en FACTUSOL con el nº ${r.factusol_codcli}.`
+        : `Ya existía en FACTUSOL (nº ${r.factusol_codcli}) — vinculado.`;
+      setFactusolNotice({ tone: "info", text: created });
+      void prefillFromFactusol(r.factusol_codcli, pendingCrmCompany.name, created);
     } catch (e) {
       setFactusolNotice({
         tone: "error",
@@ -569,28 +651,39 @@ export default function NewManualOrderPage() {
     }
   }
 
-  /** B) Empresa vinculada a FACTUSOL → NIF y direcciones del cliente F_CLI
-   *  (solo lectura de FACTUSOL; sus datos mandan sobre lo que tuviera el
-   *  formulario). Best-effort: si falla, el formulario se queda como estaba. */
-  async function prefillFromFactusol(codcli: string) {
+  /** B) Empresa vinculada a FACTUSOL → NIF, dirección y nombre fiscal del
+   *  cliente F_CLI (solo lectura de FACTUSOL; sus datos mandan sobre lo que
+   *  tuviera el formulario, del CRM o tecleado). El aviso dice exactamente
+   *  qué se ha volcado; si no se encuentra el cliente o falla la lectura, lo
+   *  dice y el formulario se queda como estaba. Una respuesta que llegue
+   *  después de elegir otra empresa se ignora. */
+  async function prefillFromFactusol(codcli: string, crmName?: string, prefix?: string) {
+    const seq = ++prefillSeq.current;
     try {
       const hits = await searchFactusolCustomers(codcli, "codcli");
-      const cust = hits.find((h) => h.codcli === codcli) ?? hits[0];
-      if (!cust) return;
-      const fromFactusol: OrderAddress = {
-        address_line: cust.domcli ?? "", city: cust.pobcli ?? "",
-        postal_code: cust.cpocli ?? "", state: cust.procli ?? "",
-        country: countryName(cust.pais_iso2),
-      };
-      if (cust.nif) setTaxId(cust.nif);
-      setShipping(fromFactusol);
-      setBilling(fromFactusol);
+      if (seq !== prefillSeq.current) return;
+      const cust = hits.find((h) => h.codcli === codcli)
+        ?? (hits.length === 1 ? hits[0] : null);
+      if (!cust) {
+        setFactusolCustomer(null);
+        setFactusolNotice({
+          tone: "error",
+          text: `${prefix ? `${prefix} ` : ""}No se encontró el cliente FACTUSOL nº ${codcli}: `
+            + "no se ha cargado nada en el pedido.",
+        });
+        return;
+      }
+      const loaded = applyFactusolCustomer(cust);
+      setFactusolNotice(loadedNotice(cust, loaded, { crmName, prefix }));
+    } catch (e) {
+      if (seq !== prefillSeq.current) return;
+      setFactusolCustomer(null);
       setFactusolNotice({
-        tone: "info",
-        text: `Datos del cliente FACTUSOL nº ${codcli} cargados en el pedido (NIF y dirección).`,
+        tone: "error",
+        text: `${prefix ? `${prefix} ` : ""}${extractErrorMessage(
+          e, `No se pudo leer el cliente FACTUSOL nº ${codcli}`,
+        )}: no se ha cargado nada en el pedido (se mantienen los datos del CRM).`,
       });
-    } catch {
-      // Precarga best-effort: sin FACTUSOL, valen los datos del CRM.
     }
   }
 
@@ -878,6 +971,26 @@ export default function NewManualOrderPage() {
               </datalist>
             </label>
           </div>
+          {factusolCustomer ? (
+            /* Lo que se ha cargado de FACTUSOL, a la vista: el nombre fiscal
+               del cliente F_CLI (los documentos van a este nombre). La
+               «Empresa» de arriba sigue siendo la del CRM, a la que queda el
+               pedido. */
+            <div className="form-row">
+              <label className="field">
+                <span>Nombre fiscal (FACTUSOL nº {factusolCustomer.codcli})</span>
+                <input type="text" readOnly value={fiscalName(factusolCustomer)}
+                       aria-label="Nombre fiscal FACTUSOL"
+                       title="Nombre fiscal del cliente en FACTUSOL (solo lectura). Las facturas y albaranes van a este nombre." />
+              </label>
+              <label className="field">
+                <span>NIF en FACTUSOL</span>
+                <input type="text" readOnly value={factusolCustomer.nif ?? ""}
+                       aria-label="NIF FACTUSOL"
+                       placeholder="(sin NIF en FACTUSOL)" />
+              </label>
+            </div>
+          ) : null}
           {!customerOk ? (
             <p className="muted small" role="note">
               {facPreview
