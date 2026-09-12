@@ -99,6 +99,10 @@ export default function NewManualOrderPage() {
   const [billingSame, setBillingSame] = useState(true);
   const [billing, setBilling] = useState<OrderAddress>({ ...EMPTY_ADDRESS });
   const [pendingCrmCompany, setPendingCrmCompany] = useState<Company | null>(null);
+  // Tarea B: CODCLI (F_CLI) de la empresa elegida. El alta manual exige
+  // empresa VINCULADA a FACTUSOL — sin CODCLI no se puede crear el pedido
+  // (se ofrece «Crear en FACTUSOL»). null = sin empresa o sin vincular.
+  const [companyCodcli, setCompanyCodcli] = useState<string | null>(null);
   // C-3-fix2: cliente FACTUSOL elegido que aún NO tiene empresa en el CRM.
   const [pendingFactusolCustomer, setPendingFactusolCustomer] =
     useState<FactusolCustomer | null>(null);
@@ -146,6 +150,8 @@ export default function NewManualOrderPage() {
         if (!alive) return;
         setCompanyId(c.id);
         setCompanyQuery(c.name);
+        setCompanyCodcli(c.factusol_company_id ?? null);
+        setPendingCrmCompany(c.factusol_company_id ? null : c);
         setTaxId((prev) => prev || c.tax_id || "");
         setShipping((prev) => (addressFilled(prev) ? prev : {
           address_line: c.address_line ?? "", city: c.city ?? "",
@@ -284,6 +290,9 @@ export default function NewManualOrderPage() {
     setCompanyQuery(value);
     const hit = companies.find((c) => c.name === value);
     setCompanyId(hit?.id ?? null);
+    // Tarea B: empresa vinculada → CODCLI; sin vincular → «créala primero».
+    setCompanyCodcli(hit?.factusol_company_id ?? null);
+    setPendingCrmCompany(hit && !hit.factusol_company_id ? hit : null);
     if (!hit) return;
     setTaxId((prev) => prev || hit.tax_id || "");
     // Autocompleta la dirección desde la empresa si aún está vacía.
@@ -304,7 +313,11 @@ export default function NewManualOrderPage() {
     if (hit?.company_id && !companyId) {
       setCompanyId(hit.company_id);
       const comp = companies.find((c) => c.id === hit.company_id);
-      if (comp) setCompanyQuery(comp.name);
+      if (comp) {
+        setCompanyQuery(comp.name);
+        setCompanyCodcli(comp.factusol_company_id ?? null);
+        setPendingCrmCompany(comp.factusol_company_id ? null : comp);
+      }
     }
   }
 
@@ -322,7 +335,7 @@ export default function NewManualOrderPage() {
     if (choice.kind === "crm") {
       const c = choice.company;
       applyCompany(c);
-      setPendingCrmCompany(c);
+      setPendingCrmCompany(c.factusol_company_id ? null : c);
       return;
     }
     const cust = choice.customer;
@@ -338,6 +351,7 @@ export default function NewManualOrderPage() {
     if (cust.crm_link?.type === "company") {
       setCompanyId(cust.crm_link.id);
       setCompanyQuery(cust.crm_link.name);
+      setCompanyCodcli(cust.codcli);
       setFactusolNotice({
         tone: "info",
         text: `Cliente FACTUSOL nº ${cust.codcli} — ya vinculado a «${cust.crm_link.name}».`,
@@ -355,6 +369,7 @@ export default function NewManualOrderPage() {
   function applyCompany(c: Company) {
     setCompanyId(c.id);
     setCompanyQuery(c.name);
+    setCompanyCodcli(c.factusol_company_id ?? null);
     setTaxId((prev) => prev || c.tax_id || "");
     setShipping((prev) => (addressFilled(prev) ? prev : {
       address_line: c.address_line ?? "", city: c.city ?? "",
@@ -395,6 +410,8 @@ export default function NewManualOrderPage() {
       });
       setCompanyId(r.company_id);
       setCompanyQuery(name);
+      setCompanyCodcli(cust.codcli);
+      setPendingCrmCompany(null);
       setPendingFactusolCustomer(null);
       // Limpia el buscador: la próxima búsqueda debe ver el cliente ya «En CRM».
       setCustomerSearchKey((k) => k + 1);
@@ -425,6 +442,9 @@ export default function NewManualOrderPage() {
       });
       const comp = linkCompanies.find((c) => c.id === linkCompanyId);
       if (comp) applyCompany(comp);
+      // Recién vinculada: el CODCLI es el del cliente FACTUSOL elegido.
+      setCompanyCodcli(cust.codcli);
+      setPendingCrmCompany(null);
       setPendingFactusolCustomer(null);
       setLinkingExisting(false);
       setCustomerSearchKey((k) => k + 1);
@@ -457,6 +477,10 @@ export default function NewManualOrderPage() {
         provincia: pendingCrmCompany.state ?? "",
       });
       setPendingCrmCompany(null);
+      // Tarea B: ya vinculada → se puede crear el pedido; y se precargan
+      // los datos del cliente FACTUSOL (NIF y dirección), como en #392.
+      setCompanyCodcli(r.factusol_codcli);
+      void prefillFromFactusol(r.factusol_codcli);
       setFactusolNotice({
         tone: "info",
         text: r.created
@@ -585,7 +609,11 @@ export default function NewManualOrderPage() {
           ? "El precio no puede ser negativo."
           : null,
   );
-  const customerOk = Boolean(companyId || contactId);
+  // Tarea B: el alta MANUAL exige EMPRESA vinculada a FACTUSOL (un contacto
+  // solo no basta: la factura y el albarán se hacen al cliente F_CLI). Con
+  // un documento FACTUSOL de origen (Fase 1) el cliente viene del documento.
+  const companyHasCodcli = Boolean(companyId && companyCodcli);
+  const customerOk = facPreview ? Boolean(companyId || contactId) : companyHasCodcli;
   const addressOk = pickup || addressFilled(shipping);
   const valid = customerOk && addressOk && lines.length > 0
     && lineErrors.every((e) => e === null) && !facPreview?.already_imported
@@ -815,7 +843,8 @@ export default function NewManualOrderPage() {
 
           {pendingCrmCompany ? (
             <p className="form-info" role="status">
-              «{pendingCrmCompany.name}» aún no está en FACTUSOL.{" "}
+              «{pendingCrmCompany.name}» aún no existe en FACTUSOL: créala primero
+              (el pedido se factura y se le crea el albarán a ese cliente).{" "}
               <button type="button" className="button small"
                       disabled={creatingCustomer}
                       onClick={createInFactusol}>
@@ -850,10 +879,14 @@ export default function NewManualOrderPage() {
             </label>
           </div>
           {!customerOk ? (
-            <p className="muted small">
-              Elige una empresa o un contacto de la lista.{" "}
-              <a href="/contacts/new" target="_blank" rel="noreferrer">
-                ¿No existe? Créalo primero en Contactos
+            <p className="muted small" role="note">
+              {facPreview
+                ? "Elige una empresa o un contacto de la lista."
+                : !companyId
+                  ? "Elige una empresa de la lista (obligatoria: el pedido se factura y se le crea el albarán en FACTUSOL). Un contacto solo no basta."
+                  : "La empresa tiene que estar vinculada a un cliente de FACTUSOL antes de crear el pedido."}{" "}
+              <a href="/companies/new" target="_blank" rel="noreferrer">
+                ¿No existe? Créala primero en Empresas
               </a>
             </p>
           ) : null}

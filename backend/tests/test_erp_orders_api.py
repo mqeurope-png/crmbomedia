@@ -38,7 +38,9 @@ def session_factory() -> Generator[sessionmaker, None, None]:
     with factory() as seed:
         seed_test_users(seed)
         # D-2: todo pedido necesita cliente — empresa fija para los payloads.
-        seed.add(Company(id=SEED_COMPANY_ID, name="Cliente Demo SL"))
+        # Tarea B: el alta manual exige empresa VINCULADA a FACTUSOL (F_CLI).
+        seed.add(Company(id=SEED_COMPANY_ID, name="Cliente Demo SL",
+                         factusol_company_id="55555"))
         seed.commit()
     yield factory
     Base.metadata.drop_all(engine)
@@ -251,7 +253,8 @@ def test_pending_approval_only_real_exceptions_block(client, session_factory):
     sin vincular a FACTUSOL NO generan bloqueos ni warnings. Solo una
     excepción operativa abierta (SAT/transporte/facturación) bloquea."""
     with session_factory() as s:
-        company = Company(name="Sin Factusol SL")  # sin factusol_company_id
+        # Tarea B: el alta exige empresa vinculada; el SKU sigue sin mapear.
+        company = Company(name="Sin mapear SL", factusol_company_id="77")
         s.add(company)
         s.commit()
         cid = company.id
@@ -274,10 +277,11 @@ def test_pending_approval_only_real_exceptions_block(client, session_factory):
 def test_pending_approval_no_blockers_without_real_exceptions(
     client, session_factory
 ):
-    """SKU sin mapear + empresa sin FACTUSOL pero SIN excepciones operativas
-    → sin bloqueos ni warnings (aprobable). El ERP confía en la fuente."""
+    """SKU sin mapear pero SIN excepciones operativas → sin bloqueos ni
+    warnings (aprobable). El ERP confía en la fuente. (Tarea B: la empresa
+    del alta manual tiene que estar vinculada a FACTUSOL.)"""
     with session_factory() as s:
-        company = Company(name="Sin Factusol SL")
+        company = Company(name="Sin mapear SL", factusol_company_id="77")
         s.add(company)
         s.commit()
         cid = company.id
@@ -609,7 +613,8 @@ def test_factusol_live_does_not_add_sku_or_company_blockers(client, session_fact
     ya NO generan bloqueos ni warnings. El ERP confía en la fuente; solo una
     excepción operativa abierta bloquea."""
     with session_factory() as s:
-        company = Company(name="Sin Factusol SL")  # sin factusol_company_id
+        # Tarea B: el alta exige empresa vinculada; el SKU sigue sin mapear.
+        company = Company(name="Sin mapear SL", factusol_company_id="77")
         s.add(company)
         s.commit()
         cid = company.id
