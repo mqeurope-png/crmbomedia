@@ -293,6 +293,25 @@ export async function completeOrder(
   return apiFetch(`/api/erp/orders/${id}/complete`, { method: "POST" });
 }
 
+/** «Completar seleccionados» (bandeja): la misma lógica que `completeOrder`
+ *  aplicada a cada pedido (solo BoHub, reversible, idempotente). Cada fila
+ *  vuelve con sus `completion_avisos`; los fallos van en `failed` y el resto
+ *  se completa igualmente. */
+export type BulkCompleteResult = {
+  ok: boolean;
+  completed: number;
+  already_completed: number;
+  failed: { order_id: string; error: string }[];
+  sin_facturar: number;
+  items: (OrderSummary & { already_completed: boolean; completion_avisos: string[] })[];
+};
+
+export async function completeOrdersBulk(orderIds: string[]): Promise<BulkCompleteResult> {
+  return apiFetch("/api/erp/orders/bulk-complete", {
+    method: "POST", body: JSON.stringify({ order_ids: orderIds }),
+  });
+}
+
 /** «Desmarcar completado»: revierte completeOrder. Idempotente. */
 export async function uncompleteOrder(
   id: string,

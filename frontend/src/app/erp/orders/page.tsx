@@ -11,6 +11,7 @@ import { getCurrentUser, type User } from "../../lib/api";
 import { extractErrorMessage } from "../../lib/errors";
 import {
   completeOrder,
+  completeOrdersBulk,
   customerLabel,
   ERP_EDIT_ROLES,
   excludeSeguimiento,
@@ -201,6 +202,48 @@ export default function ErpOrdersPage() {
     }
   }
 
+  // «Completar seleccionados»: la misma semántica que «Marcar completado»
+  // (solo BoHub, reversible, idempotente) aplicada a la selección de una vez.
+  // Confirma con el recuento (y cuántos van sin factura: avisa, no bloquea);
+  // repinta las filas afectadas sin recargar; los fallos se informan y el
+  // resto se completa igualmente.
+  async function onCompleteSelected() {
+    const target = rows.filter((r) => selected.has(r.id));
+    if (target.length === 0) return;
+    const pendientes = target.filter((r) => !r.completed);
+    const sinFactura = pendientes.filter((r) => !isInvoiced(r)).length;
+    const yaCompletados = target.length - pendientes.length;
+    const msg = `¿Marcar ${target.length} pedido(s) como completados? Solo en BoHub; WooCommerce no cambia.`
+      + (sinFactura ? ` Aviso: ${sinFactura} aún sin facturar.` : "")
+      + (yaCompletados ? ` (${yaCompletados} ya estaba(n) completado(s).)` : "");
+    if (!window.confirm(msg)) return;
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const r = await completeOrdersBulk(target.map((x) => x.id));
+      const byId = new Map(r.items.map((it) => [it.id, it]));
+      setRows((prev) => prev.map((row) => {
+        const fresh = byId.get(row.id);
+        return fresh ? { ...row, ...fresh } : row;
+      }));
+      const numero = (id: string) => target.find((x) => x.id === id)?.order_number ?? id;
+      const fallos = r.failed.map((f) => `${numero(f.order_id)}: ${f.error}`);
+      setNotice(
+        `${r.completed} pedido(s) marcado(s) como completado(s) (solo en BoHub; WooCommerce no cambia)`
+        + (r.already_completed ? `, ${r.already_completed} ya lo estaba(n)` : "")
+        + (r.sin_facturar ? `. Aviso: ${r.sin_facturar} sin facturar` : "")
+        + (fallos.length ? `. No se pudo completar ${fallos.length}: ${fallos.join("; ")}` : "")
+        + ".",
+      );
+      setSelected(new Set());
+    } catch (e) {
+      setError(extractErrorMessage(e, "No se pudieron completar los pedidos seleccionados."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   // «Actualizar cobros FACTUSOL»: comprueba en bloque (solo lectura) y
   // repinta las filas en su sitio, sin recargar la bandeja.
   async function onRefreshCobros() {
@@ -329,11 +372,18 @@ export default function ErpOrdersPage() {
               Reincluir ({selected.size})
             </button>
           ) : (
-            <button type="button" className="button small danger" disabled={busy}
-              title="Quita los seleccionados de la bandeja y del seguimiento (reversible; no borra nada)"
-              onClick={onExcludeSelected}>
-              Quitar de la bandeja ({selected.size})
-            </button>
+            <>
+              <button type="button" className="button small" disabled={busy}
+                title="Marca los seleccionados como completados (estado final, solo en BoHub; no toca WooCommerce; reversible uno a uno con «Desmarcar»)"
+                onClick={() => void onCompleteSelected()}>
+                Completar seleccionados ({selected.size})
+              </button>
+              <button type="button" className="button small danger" disabled={busy}
+                title="Quita los seleccionados de la bandeja y del seguimiento (reversible; no borra nada)"
+                onClick={onExcludeSelected}>
+                Quitar de la bandeja ({selected.size})
+              </button>
+            </>
           )
         ) : null}
         {stores.length > 1 ? <span /> : null}
