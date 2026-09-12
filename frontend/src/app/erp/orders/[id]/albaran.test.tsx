@@ -161,4 +161,31 @@ describe("ERP · Ficha del pedido — albarán FACTUSOL y pago (Fase 2)", () => 
     expect(screen.queryByText("Albarán y pago FACTUSOL")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Crear albarán en FACTUSOL" })).not.toBeInTheDocument();
   });
+
+  it("test_crear_albaran_manual: un pedido MANUAL sin albarán ofrece crearlo desde sus líneas y recarga con el nº", async () => {
+    (getOrder as jest.Mock)
+      .mockResolvedValueOnce(detail({
+        external_source: "manual", order_number: "MANUAL-000010",
+        factusol_albaran_number: null, factusol_payment: null, factusol_document: null,
+      }))
+      .mockResolvedValue(detail({
+        external_source: "manual", order_number: "MANUAL-000010",
+        factusol_albaran_number: "5-500004", factusol_payment: null, factusol_document: null,
+      }));
+    (createOrderAlbaran as jest.Mock).mockResolvedValue({ job_id: "job-m", order_id: "o-1", status: "queued" });
+    (getQuoteJobStatus as jest.Mock).mockResolvedValue({
+      status: "finished", result: { numero: "5-500004", status: "created", standalone: true },
+    });
+    const user = userEvent.setup();
+    render(<ErpOrderDetailPage />);
+    expect(await screen.findByText("Sin albarán en FACTUSOL")).toBeInTheDocument();
+    const btn = screen.getByRole("button", { name: "Crear albarán en FACTUSOL" });
+    expect(btn).toHaveAttribute("title", expect.stringMatching(/desde las líneas de este pedido manual/));
+    await user.click(btn);
+    await waitFor(() => expect(createOrderAlbaran).toHaveBeenCalledWith("o-1"));
+    expect(await screen.findByText("Albarán FACTUSOL 5-500004 creado.")).toBeInTheDocument();
+    expect(await screen.findByText("Albarán FACTUSOL 5-500004")).toBeInTheDocument();
+    // Ya con nº: el PDF del albarán (#396) está disponible y no se ofrece crear otro.
+    expect(screen.queryByRole("button", { name: "Crear albarán en FACTUSOL" })).not.toBeInTheDocument();
+  });
 });

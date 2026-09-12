@@ -470,8 +470,12 @@ export default function ErpOrderDetailPage() {
         />
       ) : null}
 
-      {/* Fase 2 — albarán FACTUSOL creado al convertir + pago apuntado (opción B). */}
+      {/* Fase 2 — albarán FACTUSOL creado al convertir + pago apuntado (opción B).
+          Tarea A — un pedido MANUAL (sin documento en FACTUSOL) también: el
+          albarán se crea a demanda desde las líneas del pedido. Los web no
+          (lo crea WooCommerce). */}
       {order.external_source.startsWith("factusol_")
+       || order.external_source === "manual"
        || order.factusol_albaran_number || order.factusol_payment ? (
         <AlbaranPagoCard
           order={order}
@@ -794,7 +798,9 @@ function AlbaranPagoCard({
               <>
                 {" "}
                 <button type="button" className="button small" disabled={busy}
-                        title="Crea el albarán (F_ALB + líneas) a partir del documento de origen; idempotente"
+                        title={order.external_source === "manual"
+                          ? "Crea el albarán en FACTUSOL (F_ALB + líneas) desde las líneas de este pedido manual (empresa vinculada a F_CLI); idempotente"
+                          : "Crea el albarán (F_ALB + líneas) a partir del documento de origen; idempotente"}
                         onClick={() => void crearAlbaran()}>
                   {busy ? "Encolando…" : "Crear albarán en FACTUSOL"}
                 </button>

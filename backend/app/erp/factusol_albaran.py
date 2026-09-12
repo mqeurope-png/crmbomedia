@@ -132,18 +132,52 @@ def order_source(order: Order) -> dict[str, Any] | None:
     return src
 
 
-def albaran_blocker(order: Order) -> tuple[str, str] | None:
-    """`(code, detail)` si el pedido NO puede tener albarán de BoHub."""
+def manual_albaran_codcli(session: Session, order: Order) -> str | None:
+    """CODCLI (F_CLI) de la empresa del pedido: el cliente al que se le hace
+    el albarán de un pedido MANUAL. None si no hay empresa o no está
+    vinculada a FACTUSOL."""
+    if not order.company_id:
+        return None
+    from app.models.crm import Company  # noqa: PLC0415
+
+    company = session.get(Company, order.company_id)
+    if company is None or not company.factusol_company_id:
+        return None
+    return str(company.factusol_company_id)
+
+
+#: Código del 409 cuando el pedido manual no tiene empresa vinculada a F_CLI.
+COMPANY_NOT_LINKED = "company_not_linked"
+
+
+def albaran_blocker(
+    order: Order, session: Session | None = None,
+) -> tuple[str, str] | None:
+    """`(code, detail)` si el pedido NO puede tener albarán de BoHub.
+
+    - web → nunca (lo crea WooCommerce);
+    - con documento de origen (Fase 1) → se convierte ese documento;
+    - MANUAL (sin documento en FACTUSOL) → el albarán se crea desde las
+      LÍNEAS del pedido (Tarea A): hace falta al menos una línea y, con
+      `session`, una empresa vinculada a un cliente de F_CLI."""
     if is_web_order(order):
         return (
             WebOrderNoAlbaran.code,
             "Los pedidos web no generan albarán en BoHub: lo crea WooCommerce.",
         )
-    if order_source(order) is None:
+    if order_source(order) is not None:
+        return None
+    if not order.lines:
         return (
             AlbaranNotApplicable.code,
-            "El pedido no procede de un presupuesto / pedido de cliente de "
-            "FACTUSOL: no hay documento del que crear el albarán.",
+            f"El pedido {order.order_number} no tiene líneas: no hay nada que "
+            "poner en el albarán.",
+        )
+    if session is not None and not manual_albaran_codcli(session, order):
+        return (
+            COMPANY_NOT_LINKED,
+            "El pedido no tiene una empresa vinculada a un cliente de FACTUSOL "
+            "(F_CLI): vincúlala o créala en FACTUSOL antes de crear el albarán.",
         )
     return None
 
@@ -457,7 +491,7 @@ def create_albaran_for_order(
         find_existing_children,
     )
 
-    blocker = albaran_blocker(order)
+    blocker = albaran_blocker(order, session)
     if blocker is not None:
         code, detail = blocker
         exc_cls = WebOrderNoAlbaran if code == WebOrderNoAlbaran.code else AlbaranNotApplicable
@@ -467,7 +501,11 @@ def create_albaran_for_order(
             "status": "already", "numero": order.factusol_albaran_number,
             "order_id": order.id, "order_number": order.order_number,
         }
-    src = order_source(order) or {}
+    src = order_source(order)
+    if src is None:
+        return _create_albaran_from_lines(
+            session, client, order, ejercicio=ejercicio, actor_user_id=actor_user_id,
+        )
     doc_type, tip, cod = src["doc_type"], int(src["serie"]), int(src["codigo"])
     existing = find_existing_children(
         client, doc_type, "albaranes", tip=tip, cod=cod, ejercicio=ejercicio,
@@ -506,6 +544,55 @@ def create_albaran_for_order(
     session.commit()
     logger.info(
         "fase2 albarán: pedido %s → albarán %s (%d líneas)",
+        order.order_number, result["numero"], result["lines"],
+    )
+    return {
+        "status": "created", **result,
+        "order_id": order.id, "order_number": order.order_number,
+    }
+
+
+def _create_albaran_from_lines(
+    session: Session, client: FactusolClient, order: Order,
+    *, ejercicio: str, actor_user_id: str | None,
+) -> dict[str, Any]:
+    """Tarea A — pedido MANUAL (sin documento en FACTUSOL): albarán autónomo
+    desde las líneas del pedido, con los builders de «Nueva proforma» y la
+    maquinaria de la Fase 2 (`COD*` entero, `ESTALB=0`, tipos como la fila
+    real, guard de esquema estricto, registro exacto en el log). Serie como
+    en la emisión (`resolve_serie`); la forma de pago apuntada pisa `FOPALB`.
+    Con el nº guardado en el pedido, el «PDF del albarán» y «Emitir factura»
+    (cadena albarán → factura) funcionan como en la Fase 2."""
+    from app.integrations.factusol.albaran_manual import (  # noqa: PLC0415
+        create_standalone_albaran,
+    )
+    from app.integrations.factusol.service import resolve_serie  # noqa: PLC0415
+
+    codcli = manual_albaran_codcli(session, order)
+    if not codcli:
+        raise AlbaranNotApplicable(
+            "El pedido no tiene una empresa vinculada a un cliente de FACTUSOL "
+            "(F_CLI): vincúlala o créala en FACTUSOL antes de crear el albarán."
+        )
+    intent = payment_intent(order) or {}
+    result = create_standalone_albaran(
+        session, client, order=order, codcli=codcli,
+        serie=resolve_serie(session, order), ejercicio=ejercicio,
+        fopalb=intent.get("forma_pago") or None, actor_user_id=actor_user_id,
+    )
+    _attach_albaran(
+        session, order, result["numero"],
+        how="creado por BoHub desde las líneas del pedido",
+        actor_user_id=actor_user_id,
+        extra={
+            "serie": result["serie"], "codigo": result["codigo"],
+            "lines": result["lines"], "source": None, "standalone": True,
+            "codcli": codcli, "free_text_lines": result["free_text_lines"],
+        },
+    )
+    session.commit()
+    logger.info(
+        "albarán manual: pedido %s → albarán %s (%d líneas desde BoHub)",
         order.order_number, result["numero"], result["lines"],
     )
     return {

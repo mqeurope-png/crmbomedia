@@ -672,3 +672,44 @@ Tests: `tests/test_erp_pedido_pdf_origen.py` (`test_pdf_pedido_web_usa_fpcl_por_
 `test_pdf_pedido_web_sin_fpcl_aviso_controlado`,
 `test_prefijo_referencia_por_tienda_en_ajustes` + los de #397) y
 `orders/[id]/pedido-pdf.test.tsx`.
+
+### 10.8 «Crear albarán en FACTUSOL» a demanda para pedidos MANUALES (Tarea A)
+
+Un pedido tecleado en BoHub (origen `manual`) no tiene documento en FACTUSOL.
+Ojo con la premisa: «Emitir factura» tampoco funcionaba para ellos — `emit_invoice`
+busca el F_PCL por `REFPCL` y sin él (y sin albarán) falla con «aún no está en
+FACTUSOL»; solo `_emit_from_albaran` (Fase 2) factura sin F_PCL. Así que el
+albarán desde las líneas es también lo que desbloquea la factura del pedido
+manual (cadena albarán → factura).
+
+Cómo se construye (`app/integrations/factusol/albaran_manual.py`):
+
+- **«Origen» virtual** con los builders de «Nueva proforma» (C-4):
+  `build_quote_payload` (cliente de `F_CLI` por el CODCLI de la empresa,
+  `NET1/PIVA1/IIVA1/TOT` de banda 1, `ALM`, `CPA`, `REF` = nº de pedido,
+  `FOP` = forma de pago apuntada) y `build_quote_line_payload` (SKU → CODART
+  interno por `CODART`/`EQUART` de `F_ART`, como `_write_quote_lines`; el que
+  no casa va como texto libre `ART*=''`; descuento de la nota «dto. X%»).
+- **Retag por sufijo** `PRE→ALB` / `LPS→LAL` con `build_target_header` /
+  `build_target_line` de la Fase 2: `COD*` entero, `ESTALB=0`, fecha de hoy,
+  allowlist viva. Enlace **autónomo** en cada línea: `DOCLAL='A'`,
+  `DTPLAL`/`DCOLAL` = su propia serie/número (`'A'` = albarán está confirmado
+  en vivo como código de origen en las líneas hijas, §F_LAL; el auto-enlace de
+  un albarán sin origen es la decisión de Bart — un `--alb-row` de un albarán
+  creado a mano en el escritorio confirma qué llevan `DOC/DTP/DCO`).
+- **Tipos como la fila real** (`coerce_like_template`): `CLIALB` entero,
+  `CPAALB` texto…, sin truncar decimales; lo que no encaja lo caza el **guard
+  de esquema estricto** (`schema_problems`) y NO se escribe nada. El registro
+  exacto va al log. `F_ALB` y después `F_LAL` con compensación por clave
+  compuesta. Serie como en la emisión (`resolve_serie`).
+- Servicio: `create_albaran_for_order` → sin `factusol_source` y no web →
+  `_create_albaran_from_lines`; `albaran_blocker(order, session)` exige líneas
+  y empresa vinculada a `F_CLI` (`company_not_linked`); web → nunca. Mismo
+  endpoint `POST /orders/{id}/albaran`, mismo job y mismo nº guardado
+  (`factusol_albaran_number`) → «PDF del albarán» (#396) y «Emitir factura».
+- Ficha: la tarjeta «Albarán y pago FACTUSOL» también en pedidos manuales.
+
+Tests: `tests/test_erp_albaran_manual.py` (`test_crear_albaran_manual_desde_lineas`,
+`_linea_texto_libre`, `test_crear_albaran_idempotente`,
+`test_crear_albaran_web_no_permitido`, `test_guard_esquema_no_cuadra_no_escribe`)
+y `orders/[id]/albaran.test.tsx`.
