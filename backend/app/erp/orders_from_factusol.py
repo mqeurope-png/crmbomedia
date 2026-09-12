@@ -146,7 +146,7 @@ def build_order(
     company_id: str | None, contact_id: str | None, placed_at: datetime | None,
     lines: list[dict[str, Any]], notes: str | None,
     packing_extra: dict[str, Any] | None, actor_user_id: str | None,
-    history_reason: str,
+    history_reason: str, total_with_tax: float | None = None,
 ) -> Order:
     """Crea el `Order` + líneas + historial (sin commit). Las líneas vienen en
     la forma del lector de documentos / `quote_lines_for_order`: `codart`,
@@ -165,27 +165,36 @@ def build_order(
     session.add(order)
     session.flush()
 
-    total = 0.0
+    total_tax = 0.0
     for i, line in enumerate(lines):
         quantity = _f(line.get("quantity"), 1.0) or 1.0
         unit_price = _f(line.get("unit_price"))
         discount = _f(line.get("discount_pct"))
         line_total = round(quantity * unit_price * (1 - discount / 100), 2)
-        total += line_total
         codart = str(line.get("codart") or "").strip() or None
         description = str(line.get("description") or "").strip() or codart or "Línea"
         iva = _f(line.get("iva_pct"))
+        tax_rate = iva if iva > 0 else DEFAULT_IVA_PCT
+        total_tax += line_total * (1 + tax_rate / 100)
         session.add(OrderLine(
             order_id=order.id, position=i,
             product_sku=(codart or "")[:128],
             product_codart=(codart or None) and codart[:13],
             description=description[:255],
             quantity=quantity, unit_price=unit_price,
-            tax_rate=iva if iva > 0 else DEFAULT_IVA_PCT,
+            tax_rate=tax_rate,
             line_total=line_total,
             notes=f"dto. {discount:g}%" if discount else None,
         ))
-    order.total_amount = round(total, 2)
+    # `total_amount` es el importe FINAL del pedido (con IVA): el total del
+    # documento de origen (TOTPRE / TOTPCL) si lo trae, y si no la suma de
+    # líneas con su IVA. La suma de líneas a secas era la BASE y la bandeja
+    # enseñaba el importe sin impuestos.
+    order.total_amount = round(
+        total_with_tax if total_with_tax is not None and total_with_tax > 0
+        else total_tax,
+        2,
+    )
 
     session.add(OrderStatusHistory(
         order_id=order.id, domain=StatusDomain.PREPARATION,
@@ -342,6 +351,7 @@ def create_order_from_factusol_document(
         )},
         actor_user_id=actor_user_id,
         history_reason=f"Pedido creado desde el {label} FACTUSOL {numero}",
+        total_with_tax=preview["total"],
     )
     logger.info(
         "erp: pedido %s creado desde %s FACTUSOL %s (%d líneas, %.2f €)",

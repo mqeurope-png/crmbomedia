@@ -516,7 +516,10 @@ def create_order(
     session.flush()
     for i, line in enumerate(payload.lines):
         line_total = round(line.quantity * line.unit_price, 2)
-        total += line_total
+        # `total_amount` = importe FINAL (con el IVA de cada línea); la suma
+        # de líneas a secas era la base y la bandeja enseñaba el importe sin
+        # impuestos.
+        total += line_total * (1 + float(line.tax_rate or 0) / 100)
         session.add(OrderLine(
             order_id=order.id, position=i,
             product_sku=line.product_sku, product_codart=line.product_codart,

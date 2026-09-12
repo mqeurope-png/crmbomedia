@@ -204,7 +204,8 @@ def test_crear_pedido_desde_presupuesto_factusol(session_factory, http) -> None:
     assert lines[1]["line_total"] == 60.0      # 2 × 60 con 50 % de dto
     assert lines[1]["notes"] == "dto. 50%"
     assert lines[0]["tax_rate"] == 21          # IVALPS=0 → IVA por defecto
-    assert body["total_amount"] == 310.0
+    # Importe FINAL = TOTPRE (con IVA) del presupuesto, no la suma de líneas.
+    assert body["total_amount"] == 121.0
     # Origen + forma de pago (informativa, Fase 2) + referencia en packing.
     src = body["packing"]["factusol_source"]
     assert src["doc_type"] == "presupuestos" and src["numero"] == "1-000574"
@@ -339,7 +340,7 @@ def test_convertir_proforma_en_pedido(session_factory) -> None:
         o = s.get(Order, first["order_id"])
         assert o.external_source == OrderSource.FACTUSOL_PROFORMA
         assert o.external_id == "574" and o.company_id == "acme"
-        assert float(o.total_amount) == 310.0
+        assert float(o.total_amount) == 121.0      # TOTPRE (con IVA)
         lines = list(s.scalars(select(OrderLine).where(OrderLine.order_id == o.id)
                                .order_by(OrderLine.position)))
         assert [ln.product_codart for ln in lines] == ["MBO", "SAT"]

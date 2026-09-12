@@ -928,6 +928,7 @@ def convert_quote_to_order(
         )},
         actor_user_id=actor_user_id,
         history_reason=f"Pedido creado desde la proforma FACTUSOL {codpre}",
+        total_with_tax=data["total"],
     )
     session.commit()
     logger.info("factusol: proforma %s → pedido %s (%d líneas, %.2f €)",

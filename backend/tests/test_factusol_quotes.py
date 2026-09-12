@@ -851,7 +851,7 @@ def test_convert_to_order_populates_lines(session):
     assert order.external_id == "80"
     assert result["already_existed"] is False
     assert order.company_id == company.id  # resuelto por el vínculo CODCLI
-    assert float(order.total_amount) == 80.0
+    assert float(order.total_amount) == 121.0     # TOTPRE de la proforma (con IVA)
     lines = list(session.scalars(
         select(OrderLine).where(OrderLine.order_id == order.id)
         .order_by(OrderLine.position)
