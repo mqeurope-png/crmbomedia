@@ -154,10 +154,15 @@ def albaran_blocker(order: Order) -> tuple[str, str] | None:
 def store_ref_prefixes(session: Session) -> set[str]:
     """Prefijos de referencia (`BOP`, `ART`…) configurados en las tiendas
     WooCommerce (`IntegrationAccount.metadata_json.factusol_ref_prefix`)."""
+    from app.integrations.factusol.service import (  # noqa: PLC0415
+        configured_ref_prefixes,
+    )
     from app.models.crm import ExternalSystem  # noqa: PLC0415
     from app.models.integration_settings import IntegrationAccount  # noqa: PLC0415
 
-    out: set[str] = set()
+    # Los configurados por tienda en Ajustes ERP (misma fuente que
+    # `_store_ref_prefix`) cuentan igual que los del metadata_json.
+    out: set[str] = set(configured_ref_prefixes(session).values())
     for acc in session.scalars(
         select(IntegrationAccount).where(
             IntegrationAccount.system == ExternalSystem.WOOCOMMERCE,

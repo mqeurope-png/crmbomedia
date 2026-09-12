@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
@@ -540,28 +541,75 @@ def _compose_ref(order_number: str, ref_prefix: str | None) -> str:
     inicial del order_number."""
     parts = (order_number or "").split("-")
     number = parts[-1] if parts else ""
-    prefix = (ref_prefix or (parts[0][:3] if parts and parts[0] else "")).upper()
+    prefix = (ref_prefix or derived_ref_prefix(order_number)).upper()
     n = _int_or_none(number)
     num_str = f"{n:06d}" if n is not None else number
     return f"{prefix}-{num_str}"
 
 
+#: Prefijo de referencia válido (`BOP`, `FLE`, `ART`…): letras/dígitos, 1-6.
+REF_PREFIX_RE = re.compile(r"^[A-Z0-9]{1,6}$")
+
+
+def derived_ref_prefix(order_number: str) -> str:
+    """Prefijo que se DERIVA del número de pedido cuando la tienda no tiene
+    ninguno configurado (`FLUXLA-5789` → `FLU`). Ojo: la app Woo→FACTUSOL
+    puede usar otro (`FLE`), y entonces hay que configurarlo."""
+    parts = (order_number or "").split("-")
+    return (parts[0][:3] if parts and parts[0] else "").upper()
+
+
+def configured_ref_prefixes(session: Session) -> dict[str, str]:
+    """`{slug_tienda: PREFIJO}` configurado en Ajustes ERP
+    (`factusol_series_json.ref_prefix_by_store`, editable en `/erp/settings`).
+    Complementa a `IntegrationAccount.metadata_json['factusol_ref_prefix']`,
+    que no tiene UI (solo se podía fijar a mano en la BD)."""
+    raw = series_config(session).get("ref_prefix_by_store")
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, str] = {}
+    for slug, prefix in raw.items():
+        key = str(slug or "").strip().lower()
+        value = str(prefix or "").strip().upper()
+        if key and REF_PREFIX_RE.match(value):
+            out[key] = value
+    return out
+
+
 def _store_ref_prefix(session: Session, order: Order) -> str | None:
-    """Prefijo de referencia configurado en la tienda (IntegrationAccount.
-    metadata_json['factusol_ref_prefix']); None si no está configurado."""
+    """Prefijo de referencia de la tienda del pedido: el de
+    `IntegrationAccount.metadata_json['factusol_ref_prefix']` y, si no lo
+    tiene, el configurado por tienda en Ajustes ERP. None si no hay ninguno
+    (se derivará del número de pedido)."""
     if not order.store_id:
         return None
     from app.models.integration_settings import IntegrationAccount  # noqa: PLC0415
 
     store = session.get(IntegrationAccount, order.store_id)
-    if store is None or not store.metadata_json:
+    if store is None:
+        return None
+    prefix = store_metadata_ref_prefix(store)
+    if prefix:
+        return prefix
+    return configured_ref_prefixes(session).get(str(store.account_id or "").lower())
+
+
+def store_metadata_ref_prefix(store: Any) -> str | None:
+    """`factusol_ref_prefix` del `metadata_json` de la cuenta de tienda."""
+    if store is None or not getattr(store, "metadata_json", None):
         return None
     try:
         meta = json.loads(store.metadata_json)
     except (TypeError, ValueError):
         return None
     prefix = meta.get("factusol_ref_prefix") if isinstance(meta, dict) else None
-    return str(prefix).upper() if prefix else None
+    return str(prefix).strip().upper() if prefix else None
+
+
+def pcl_ref_for_order(session: Session, order: Order) -> str:
+    """Referencia común (`REFPCL`) con la que se busca el F_PCL de este pedido
+    web: prefijo de la tienda (o derivado) + nº Woo con padding a 6."""
+    return _compose_ref(order.order_number, _store_ref_prefix(session, order))
 
 
 def find_pcl_by_order(
@@ -573,6 +621,35 @@ def find_pcl_by_order(
     ref = _compose_ref(order.order_number, ref_prefix)
     rows = client.load_table("F_PCL", filtro=f"REFPCL='{ref}'", ejercicio=ejercicio)
     return rows[0] if rows else None
+
+
+def probe_pcl_refs_by_number(
+    client: FactusolClient, order_number: str, ejercicio: str,
+) -> list[str]:
+    """Diagnóstico cuando `find_pcl_by_order` no encuentra nada: referencias
+    `REFPCL` que existen en F_PCL con el MISMO número Woo bajo OTRO prefijo
+    (`FLE-005789` cuando se buscó `FLU-005789`). Solo lectura y best-effort
+    (un fallo del sondeo no oculta el 404 de siempre). Nunca se usa para
+    elegir un documento — un pedido HOMÓNIMO de otra tienda comparte número —
+    solo para decirle al operador qué prefijo tiene que configurar."""
+    parts = (order_number or "").split("-")
+    n = _int_or_none(parts[-1] if parts else "")
+    if n is None:
+        return []
+    suffix = f"-{n:06d}"
+    try:
+        rows = client.load_table(
+            "F_PCL", filtro=f"REFPCL LIKE '%{suffix}'", ejercicio=ejercicio,
+        )
+    except FactusolError as exc:
+        logger.warning("factusol: sondeo REFPCL LIKE '%%%s' KO: %s", suffix, exc)
+        return []
+    refs: list[str] = []
+    for row in rows:
+        ref = str(row.get("REFPCL") or "").strip().upper()
+        if ref.endswith(suffix) and ref not in refs:
+            refs.append(ref)
+    return refs
 
 
 def check_factusol_status(

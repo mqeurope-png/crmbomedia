@@ -274,7 +274,11 @@ export default function ErpSettingsPage() {
           </label>
           <table className="data-table">
             <thead>
-              <tr><th>Origen del pedido</th><th>Serie (vacío = por defecto)</th></tr>
+              <tr>
+                <th>Origen del pedido</th>
+                <th>Serie (vacío = por defecto)</th>
+                <th>Prefijo referencia FACTUSOL</th>
+              </tr>
             </thead>
             <tbody>
               {ORDER_SOURCES.map((src) => (
@@ -294,6 +298,7 @@ export default function ErpSettingsPage() {
                       })}
                     />
                   </td>
+                  <td className="muted small">—</td>
                 </tr>
               ))}
               {/* ERP-F6-fix3 — serie POR TIENDA Woo (no un único WooCommerce).
@@ -317,6 +322,33 @@ export default function ErpSettingsPage() {
                       })}
                     />
                   </td>
+                  <td>
+                    {/* Prefijo de la referencia común (REFPCL/REFALB/REFFAC)
+                        que la app Woo→FACTUSOL pone a los documentos de esta
+                        tienda. Es el ÚNICO enlace de un pedido web con su
+                        F_PCL; si no coincide, «PDF del pedido (FACTUSOL)» y
+                        la emisión no lo encuentran. */}
+                    {store.ref_prefix_metadata ? (
+                      <span title="Fijado en la cuenta de la tienda (metadata); manda sobre este ajuste">
+                        <code>{store.ref_prefix_metadata}</code>
+                        <span className="muted small"> (cuenta)</span>
+                      </span>
+                    ) : (
+                      <input
+                        type="text" maxLength={6}
+                        aria-label={`Prefijo referencia FACTUSOL tienda ${store.label}`}
+                        placeholder={`${store.derived_ref_prefix ?? ""} (derivado)`}
+                        value={cfg.factusol_ref_prefix_by_store?.[store.slug] ?? ""}
+                        onChange={(e) => setCfg({
+                          ...cfg,
+                          factusol_ref_prefix_by_store: {
+                            ...(cfg.factusol_ref_prefix_by_store ?? {}),
+                            [store.slug]: e.target.value.toUpperCase(),
+                          },
+                        })}
+                      />
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -324,7 +356,10 @@ export default function ErpSettingsPage() {
           <p className="muted small">
             La serie por tienda solo decide la EMPRESA prevista del seguimiento
             mientras no haya factura. Al emitir, la serie la manda siempre el
-            pedido en FACTUSOL.
+            pedido en FACTUSOL. El prefijo de referencia es el que la app
+            Woo→FACTUSOL escribe en «Su referencia» (<code>FLE-005789</code>
+            para <code>FLUXLA-5789</code>); vacío = las 3 primeras letras del
+            nº de pedido, que pueden no coincidir.
           </p>
         </fieldset>
 

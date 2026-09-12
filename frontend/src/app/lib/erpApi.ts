@@ -133,7 +133,11 @@ export type FactusolOriginDocument = {
   codigo: number | null;
   numero: string | null;
   label: string;
+  /** Pedido web: el F_PCL se localiza al descargar por su referencia común
+   *  `REFPCL` (`ref`, p. ej. `FLE-005789`); la ficha NO comprueba en cada
+   *  carga si existe (el botón siempre intenta y un 404 controlado avisa). */
   by_ref: boolean;
+  ref?: string | null;
 };
 
 /** Fase 2 · paso de confirmación de pago al convertir (opción B). `paid=false`
@@ -1038,6 +1042,12 @@ export type ErpSettings = {
   factusol_series_default: string;
   /** C-2: override de serie por origen del pedido (o por store_id). */
   factusol_series_by_source: Record<string, string>;
+  /** Prefijo de la referencia común (`REFPCL`/`REFALB`/`REFFAC`) que la app
+   *  Woo→FACTUSOL pone a los documentos de cada tienda ({"fluxlasers":
+   *  "FLE"}). Vacío = se deriva de las 3 primeras letras del nº de pedido
+   *  (`FLUXLA-5789` → `FLU`), que puede no coincidir: entonces el F_PCL del
+   *  pedido web no se localiza y «PDF del pedido (FACTUSOL)» avisa. */
+  factusol_ref_prefix_by_store?: Record<string, string>;
   /** ERP-E2-fix2 — valor de F_PCL.ESTPCL que marca el pedido como facturado
    *  («Enviado» en el escritorio). Confirmado en vivo: "2". */
   factusol_estpcl_invoiced?: string;
@@ -1084,7 +1094,14 @@ export type ErpSettings = {
   factusol_series_email_from?: Record<string, string>;
   /** ERP-F6-fix3 — tiendas Woo dadas de alta, para configurar la serie de
    *  cada una (solo lectura; se rellena en el GET). */
-  woocommerce_stores?: { slug: string; label: string }[];
+  woocommerce_stores?: {
+    slug: string;
+    label: string;
+    /** Prefijo fijado a mano en el metadata_json de la cuenta (manda). */
+    ref_prefix_metadata?: string | null;
+    /** El que se deriva del nº de pedido si no hay ninguno configurado. */
+    derived_ref_prefix?: string;
+  }[];
   /** E4-fix1 — almacenes de recogida del albarán de devolución. */
   factusol_pickup_warehouses?: FactusolPickupWarehouse[];
 };

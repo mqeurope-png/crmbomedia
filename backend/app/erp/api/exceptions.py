@@ -52,6 +52,7 @@ from app.erp.seguimiento import (
     shipping_origins_config,
 )
 from app.integrations.factusol.catalogs import normalize_code
+from app.integrations.factusol.service import REF_PREFIX_RE, configured_ref_prefixes
 from app.models.crm import User
 
 router = APIRouter(prefix="/api/erp", tags=["erp-exceptions"])
@@ -81,6 +82,12 @@ class SettingsIn(BaseModel):
     # C-2: serie de facturación (global + override por origen/tienda).
     factusol_series_default: str | None = None
     factusol_series_by_source: dict[str, str] | None = None
+    #: Prefijo de la referencia común (`REFPCL`/`REFALB`/`REFFAC`) que la app
+    #: Woo→FACTUSOL pone a los documentos de cada tienda ({"fluxlasers":
+    #: "FLE"}). Sin él se deriva de las 3 primeras letras del nº de pedido
+    #: (`FLUXLA-5789` → `FLU`), que puede no coincidir, y el F_PCL del pedido
+    #: web no se localiza («aún no existe en FACTUSOL»). Vacío = derivado.
+    factusol_ref_prefix_by_store: dict[str, str] | None = None
     #: ERP-E2 — nombre de la empresa emisora de cada serie: {"5": "Streamtec"}.
     factusol_series_names: dict[str, str] | None = None
     #: ERP-E2-fix2 — valor de F_PCL.ESTPCL que FACTUSOL usa para «Enviado»
@@ -321,9 +328,17 @@ def _get_or_create_settings(session: Session) -> ErpSettings:
     return cfg
 
 
-def _woocommerce_stores(session: Session) -> list[dict[str, str]]:
+def _woocommerce_stores(session: Session) -> list[dict[str, str | None]]:
     """ERP-F6-fix3 — tiendas Woo dadas de alta ({slug, label}), para poder
-    configurar la serie de cada una (no un único «WooCommerce» para las tres)."""
+    configurar la serie de cada una (no un único «WooCommerce» para las tres).
+    Lleva además el prefijo de referencia FACTUSOL que ya tenga la cuenta en
+    su `metadata_json` (fijado a mano; manda sobre el de Ajustes) y el que se
+    DERIVA del nº de pedido si no se configura ninguno (`FLU` para
+    `FLUXLA-…`), para que la UI enseñe el que se usará de verdad."""
+    from app.integrations.factusol.service import (  # noqa: PLC0415
+        derived_ref_prefix,
+        store_metadata_ref_prefix,
+    )
     from app.models.integration_settings import (  # noqa: PLC0415
         ExternalSystem,
         IntegrationAccount,
@@ -334,7 +349,15 @@ def _woocommerce_stores(session: Session) -> list[dict[str, str]]:
         .where(IntegrationAccount.system == ExternalSystem.WOOCOMMERCE)
         .order_by(IntegrationAccount.account_id)
     ).all()
-    return [{"slug": a.account_id, "label": a.display_name or a.account_id} for a in rows]
+    return [
+        {
+            "slug": a.account_id, "label": a.display_name or a.account_id,
+            "ref_prefix_metadata": store_metadata_ref_prefix(a),
+            # Mismo cálculo que el nº de pedido Woo (`slug.upper()[:6]-nº`).
+            "derived_ref_prefix": derived_ref_prefix(f"{(a.account_id or '').upper()[:6]}-0"),
+        }
+        for a in rows
+    ]
 
 
 def _serialise_settings(cfg: ErpSettings, session: Session) -> dict[str, Any]:
@@ -355,6 +378,8 @@ def _serialise_settings(cfg: ErpSettings, session: Session) -> dict[str, Any]:
         # es el número que decide el rango de numeración del CODFAC.
         "factusol_series_default": _series(cfg).get("default") or "",
         "factusol_series_by_source": _series(cfg).get("by_source") or {},
+        # Prefijo de la referencia común por tienda Woo ({"fluxlasers": "FLE"}).
+        "factusol_ref_prefix_by_store": configured_ref_prefixes(session),
         "factusol_series_names": _series(cfg).get("names") or {},
         "factusol_estpcl_invoiced": _series(cfg).get("estpcl_invoiced") or "",
         # E3-B-fix3: sin configurar → el default efectivo ("1"), para que la
@@ -506,6 +531,7 @@ def update_settings(
     # llegue, conservando la parte que el PATCH no toque.
     if (payload.factusol_series_default is not None
             or payload.factusol_series_by_source is not None
+            or payload.factusol_ref_prefix_by_store is not None
             or payload.factusol_series_names is not None
             or payload.factusol_estpcl_invoiced is not None
             or payload.factusol_estpre_accepted is not None
@@ -586,6 +612,23 @@ def update_settings(
                 for k, v in payload.factusol_series_by_source.items()
                 if v and v.strip()
             }
+        # Prefijo de referencia FACTUSOL por tienda ({"fluxlasers": "FLE"}).
+        # Vacío = se deriva del nº de pedido; se guarda en MAYÚSCULAS.
+        if payload.factusol_ref_prefix_by_store is not None:
+            prefixes: dict[str, str] = {}
+            for store, raw_prefix in payload.factusol_ref_prefix_by_store.items():
+                key = str(store or "").strip().lower()
+                value = str(raw_prefix or "").strip().upper()
+                if not key or not value:
+                    continue
+                if not REF_PREFIX_RE.match(value):
+                    raise HTTPException(
+                        400,
+                        f"prefijo de referencia inválido para {key}: {raw_prefix!r} "
+                        "(1-6 letras o dígitos, p. ej. FLE)",
+                    )
+                prefixes[key] = value
+            series["ref_prefix_by_store"] = prefixes
         if payload.factusol_estpcl_invoiced is not None:
             series["estpcl_invoiced"] = payload.factusol_estpcl_invoiced.strip()
         # E3-B-fix3: estados de marcado del origen al convertir. Guardar ""
