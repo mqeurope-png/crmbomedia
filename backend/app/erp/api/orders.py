@@ -119,7 +119,19 @@ class OrderCreate(BaseModel):
         # Un pedido sin cliente no es accionable (ni facturable ni enviable).
         # La dirección de envío NO se valida aquí: es requisito del formulario
         # (se puede marcar «Recogida en tienda»), no del contrato de la API.
-        if not self.contact_id and not self.company_id:
+        #
+        # Tarea B (decisión de Bart): el alta MANUAL exige EMPRESA — un
+        # contacto suelto no basta, porque la factura y el albarán se hacen
+        # al cliente de FACTUSOL (F_CLI) de esa empresa (el endpoint comprueba
+        # además que esté vinculada). Con `factusol_source` (Fase 1) el
+        # cliente viene del documento y se mantiene la regla anterior.
+        if self.factusol_source is None:
+            if not self.company_id:
+                raise ValueError(
+                    "El pedido manual necesita una empresa (vinculada a un "
+                    "cliente de FACTUSOL); un contacto solo no basta."
+                )
+        elif not self.contact_id and not self.company_id:
             raise ValueError("El pedido necesita un contacto o una empresa.")
         return self
 
@@ -454,6 +466,29 @@ def worklist_visible(stmt):  # noqa: ANN001, ANN201 — Select[Order]
 # --- endpoints ---------------------------------------------------------------
 
 
+def _require_linked_company_or_error(session: Session, company_id: str | None) -> None:
+    """Tarea B: la empresa del alta manual tiene que existir y estar vinculada
+    a un cliente de FACTUSOL (`factusol_company_id` = CODCLI de F_CLI). Si no,
+    409 `company_not_linked` con el atajo («créala primero en FACTUSOL»)."""
+    from app.models.crm import Company  # noqa: PLC0415
+
+    company = session.get(Company, company_id) if company_id else None
+    if company is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, {
+            "code": "company_not_found", "detail": "La empresa del pedido no existe.",
+        })
+    if not company.factusol_company_id:
+        raise HTTPException(status.HTTP_409_CONFLICT, {
+            "code": "company_not_linked",
+            "detail": (
+                f"«{company.name}» aún no existe en FACTUSOL: créala primero "
+                "(«Crear en FACTUSOL» en el alta o en la ficha de la empresa) y "
+                "vuelve a crear el pedido."
+            ),
+            "company_id": company.id, "company_name": company.name,
+        })
+
+
 @router.post("", status_code=201)
 def create_order(
     payload: OrderCreate,
@@ -464,7 +499,14 @@ def create_order(
     muestras y reparaciones sin ticket Woo.
 
     D-2: `order_number` es opcional (se genera `MANUAL-000001`); la dirección
-    de envío/facturación y el NIF viven en `packing_json` (sin migración)."""
+    de envío/facturación y el NIF viven en `packing_json` (sin migración).
+
+    Tarea B: el alta MANUAL exige una empresa VINCULADA a un cliente de
+    FACTUSOL (`Company.factusol_company_id`): sin ella no hay a quién
+    facturar ni hacer el albarán. 404 `company_not_found` / 409
+    `company_not_linked` («créala primero en FACTUSOL»)."""
+    if payload.factusol_source is None:
+        _require_linked_company_or_error(session, payload.company_id)
     # Fase 1: si el alta parte de un documento FACTUSOL, el pedido lleva ese
     # origen (nunca `woocommerce`), su nº como external_id (dedup) y un nº de
     # pedido PRO-/PCL- con el nº del documento.

@@ -63,10 +63,13 @@ const mockListQuotes = listFactusolQuotes as jest.Mock;
 const mockGetQuote = getFactusolQuote as jest.Mock;
 const mockArticles = searchFactusolArticles as jest.Mock;
 
+// Tarea B: el alta manual exige empresa VINCULADA a FACTUSOL; la empresa de
+// los tests que envían el pedido lleva su CODCLI (el caso sin vincular se
+// prueba en `empresa-obligatoria.test.tsx`).
 const COMPANY = {
   id: "c1", name: "Duplicoder SL", tax_id: "B12345678",
   address_line: "C Aribau 171", city: "Barcelona", postal_code: "08036",
-  state: "Barcelona", country: "España", factusol_company_id: null,
+  state: "Barcelona", country: "España", factusol_company_id: "55555",
 };
 
 /** Cliente FACTUSOL SIN empresa en el CRM (el caso que arregla C-3-fix2). */
@@ -264,6 +267,10 @@ describe("NewManualOrderPage", () => {
 
   it("elegir una empresa existente y pulsar «Vincular» llama al endpoint", async () => {
     mockSearchFac.mockResolvedValue([FAC_SIN_CRM]);
+    // Solo se puede vincular una empresa CRM que AÚN no tenga cliente FACTUSOL.
+    mockCompanies.mockResolvedValue({
+      items: [{ ...COMPANY, factusol_company_id: null }], total: 1,
+    });
     const user = userEvent.setup();
     render(<NewManualOrderPage />);
     await pickFactusol(user);
