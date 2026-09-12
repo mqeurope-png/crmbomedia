@@ -1549,6 +1549,18 @@ export async function downloadOrderFactusolPedidoPdf(
   );
 }
 
+/** Fase 2 — PDF del albarán que BoHub creó en FACTUSOL para el pedido
+ *  (`orders.factusol_albaran_number`), con el mismo motor que el PDF del
+ *  pedido y de la factura (BoHub lo compone; DELSOL no imprime). 404 con
+ *  código propio si el pedido no tiene albarán. */
+export async function downloadOrderFactusolAlbaranPdf(
+  orderId: string, lang: FactusolPdfLang = "es",
+  variant?: "valorado" | "devolucion",
+): Promise<Blob> {
+  const query = qs({ lang, variant });
+  return apiDownloadBlob(`/api/erp/orders/${orderId}/factusol-albaran-pdf${query}`);
+}
+
 export async function uploadFactusolCompanyLogo(
   serie: number | string, file: File,
 ): Promise<{ serie: number; logo: boolean }> {

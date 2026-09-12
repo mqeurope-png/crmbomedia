@@ -47,6 +47,7 @@ jest.mock("../../../lib/erpApi", () => ({
   uncompleteOrder: jest.fn(),
   createOrderAlbaran: jest.fn(),
   getQuoteJobStatus: jest.fn(),
+  downloadOrderFactusolAlbaranPdf: jest.fn(),
 }));
 
 function detail(over = {}) {
@@ -92,6 +93,8 @@ describe("ERP · Ficha del pedido — albarán FACTUSOL y pago (Fase 2)", () => 
     expect(screen.getByText(/pendiente de factura/)).toBeInTheDocument();
     expect(screen.getByText(/No se ha emitido ninguna factura/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Crear albarán en FACTUSOL" })).not.toBeInTheDocument();
+    // Con albarán FACTUSOL, la tarjeta ofrece su PDF (mismo motor que el del pedido).
+    expect(screen.getByRole("button", { name: "PDF del albarán (FACTUSOL)" })).toBeInTheDocument();
   });
 
   it("con el cobro ya registrado lo dice; «sin pago» queda pendiente", async () => {
@@ -128,6 +131,7 @@ describe("ERP · Ficha del pedido — albarán FACTUSOL y pago (Fase 2)", () => 
     const user = userEvent.setup();
     render(<ErpOrderDetailPage />);
     expect(await screen.findByText("Sin albarán en FACTUSOL")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "PDF del albarán (FACTUSOL)" })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Crear albarán en FACTUSOL" }));
     await waitFor(() => expect(createOrderAlbaran).toHaveBeenCalledWith("o-1"));
     await waitFor(() => expect(getQuoteJobStatus).toHaveBeenCalledWith("job-7"));

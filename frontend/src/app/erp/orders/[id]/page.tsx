@@ -8,6 +8,7 @@ import { EmbalarModal } from "../../../components/erp/EmbalarModal";
 import { PDF_LANGS } from "../../../components/erp/FactusolDocumentDetailModal";
 import { InvoiceEmailModal } from "../../../components/erp/InvoiceEmailModal";
 import { EmitFactusolButton } from "../../../components/erp/EmitFactusolButton";
+import { FactusolAlbaranPdfButton } from "../../../components/erp/FactusolAlbaranPdfButton";
 import { OrderStatusMachine } from "../../../components/erp/OrderStatusMachine";
 import { ShippingFilesSection } from "../../../components/erp/ShippingFilesSection";
 import { getCurrentUser, type User } from "../../../lib/api";
@@ -358,6 +359,8 @@ export default function ErpOrderDetailPage() {
       <ShippingFilesSection
         orderId={order.id}
         isWooOrder={order.external_source === "woocommerce"}
+        factusolAlbaranNumber={order.factusol_albaran_number ?? null}
+        pdfLang={pdfLang}
       />
 
       {embalarOpen ? (
@@ -374,6 +377,7 @@ export default function ErpOrderDetailPage() {
         <AlbaranPagoCard
           order={order}
           canEdit={canEmit}
+          pdfLang={pdfLang}
           onChanged={() => load()}
           onError={setError}
         />
@@ -590,10 +594,11 @@ function albaranJobFromLocation(): string | null {
  *    factura; el cobro F-4-B se registra solo cuando exista la factura del
  *    pedido. «Sin pago» → pendiente, sin cobro. */
 function AlbaranPagoCard({
-  order, canEdit, onChanged, onError,
+  order, canEdit, pdfLang, onChanged, onError,
 }: {
   order: OrderDetail;
   canEdit: boolean;
+  pdfLang: FactusolPdfLang;
   onChanged: () => void;
   onError: (msg: string | null) => void;
 }) {
@@ -667,7 +672,16 @@ function AlbaranPagoCard({
       {notice ? <p className="form-info" role="status">{notice}</p> : null}
       <p>
         {order.factusol_albaran_number ? (
-          <span className="badge ok">Albarán FACTUSOL {order.factusol_albaran_number}</span>
+          <>
+            <span className="badge ok">Albarán FACTUSOL {order.factusol_albaran_number}</span>
+            {" "}
+            <FactusolAlbaranPdfButton
+              orderId={order.id}
+              numero={order.factusol_albaran_number}
+              lang={pdfLang}
+              onError={onError}
+            />
+          </>
         ) : jobId ? (
           <span className="badge warn">Creando el albarán en FACTUSOL…</span>
         ) : isWeb ? (

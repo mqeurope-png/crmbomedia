@@ -1416,6 +1416,91 @@ def order_factusol_pedido_pdf(
     )
 
 
+@router.get("/{order_id}/factusol-albaran-pdf")
+def order_factusol_albaran_pdf(
+    order_id: str,
+    lang: str = Query(default="es", pattern="^(es|en|de|fr|nl)$"),
+    variant: str | None = Query(default=None, pattern="^(valorado|devolucion)$"),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_view),
+):
+    """Fase 2 — PDF del albarán que BoHub creó en FACTUSOL para este pedido
+    (`orders.factusol_albaran_number`, `serie-código`), con el MISMO motor E4
+    que «PDF del pedido (FACTUSOL)» y los PDF de factura: la API de DELSOL no
+    imprime, BoHub compone el PDF a partir de F_ALB + F_LAL (solo lectura,
+    clave compuesta serie+código, ejercicio activo). `variant` opcional:
+    albarán valorado / de devolución. 404 con código propio si el pedido no
+    tiene albarán o ese albarán ya no existe en FACTUSOL; 502 si FACTUSOL no
+    responde. Nunca escribe nada."""
+    _ = current_user
+    from fastapi import Response  # noqa: PLC0415
+
+    from app.erp.api.factusol import _fop_names  # noqa: PLC0415
+    from app.erp.factusol_pdf import (  # noqa: PLC0415
+        company_for_serie,
+        extract_document_data,
+        generate_document_pdf,
+        load_raw_document,
+        logo_path_for_serie,
+        pdf_filename,
+    )
+    from app.integrations.factusol.client import (  # noqa: PLC0415
+        FactusolClient,
+        FactusolError,
+    )
+    from app.integrations.factusol.service import (  # noqa: PLC0415
+        coerce_serie,
+        ejercicio_for,
+    )
+
+    order = _get_order(session, order_id)
+    numero = str(order.factusol_albaran_number or "").strip()
+    if not numero:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, {
+            "code": "albaran_not_in_bohub",
+            "detail": "Este pedido no tiene albarán FACTUSOL creado por BoHub.",
+        })
+    head, _sep, tail = numero.partition("-")
+    serie, codigo = coerce_serie(head), _int_or_none_local(tail)
+    if serie is None or codigo is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, {
+            "code": "albaran_number_invalid",
+            "detail": f"El nº de albarán del pedido no es válido: {numero!r}.",
+        })
+    try:
+        client = FactusolClient.from_settings()
+        ejercicio = ejercicio_for(session)
+        raw = load_raw_document(
+            client, "albaranes", serie=serie, codigo=codigo, ejercicio=ejercicio,
+        )
+        if raw is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, {
+                "code": "albaran_not_in_factusol",
+                "detail": (
+                    f"El albarán {numero} ya no existe en FACTUSOL "
+                    f"(ejercicio {ejercicio})."
+                ),
+            })
+        data = extract_document_data(
+            client, "albaranes", raw[0], raw[1], ejercicio=ejercicio,
+            fop_names=_fop_names(client, ejercicio),
+        )
+    except FactusolError as exc:
+        logger.warning("factusol albaran-pdf KO order=%s: %s", order_id, exc)
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, {
+            "code": "factusol_pdf_failed", "detail": str(exc)[:200],
+        }) from exc
+    pdf = generate_document_pdf(
+        data, company=company_for_serie(session, serie), lang=lang,
+        logo=logo_path_for_serie(serie), variant=variant,
+    )
+    filename = pdf_filename("albaranes", data, lang, variant)
+    return Response(
+        content=pdf, media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @router.get("/{order_id}/factusol-invoice-status")
 def factusol_invoice_status(
     order_id: str,

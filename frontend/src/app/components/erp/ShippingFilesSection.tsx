@@ -7,20 +7,33 @@ import {
   listShippingFiles,
   openShippingFile,
   uploadShippingFile,
+  type FactusolPdfLang,
   type ShipmentFile,
   type ShipmentFileKind,
 } from "../../lib/erpApi";
+import { FactusolAlbaranPdfButton } from "./FactusolAlbaranPdfButton";
 import { FileUploadButton } from "./FileUploadButton";
 
 /** Sección «Documentos de envío» (Fase D · D-1): albarán + etiqueta con su
  *  render condicional (presente → Ver/Reemplazar; ausente → Descargar de Woo /
- *  Subir según el origen del pedido). */
+ *  Subir según el origen del pedido).
+ *
+ *  Fase 2: si el pedido tiene albarán en FACTUSOL (`factusolAlbaranNumber`),
+ *  se ofrece además «PDF del albarán (FACTUSOL)». Conviven (decisión de
+ *  Bart): «Subir albarán» sigue disponible para los albaranes externos / SAT
+ *  y como alternativa. */
 export function ShippingFilesSection({
   orderId,
   isWooOrder,
+  factusolAlbaranNumber = null,
+  pdfLang = "es",
 }: {
   orderId: string;
   isWooOrder: boolean;
+  /** Nº del albarán creado por BoHub en FACTUSOL (`5-500008`), si lo hay. */
+  factusolAlbaranNumber?: string | null;
+  /** Idioma del PDF (el selector de la ficha). */
+  pdfLang?: FactusolPdfLang;
 }) {
   const [files, setFiles] = useState<ShipmentFile[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -59,6 +72,19 @@ export function ShippingFilesSection({
       <div className="erp-shipping-docs">
         <div className="erp-shipping-doc" aria-label="Albarán">
           <h4>Albarán</h4>
+          {factusolAlbaranNumber ? (
+            /* Fase 2: el albarán vive en FACTUSOL → PDF desde allí. */
+            <>
+              <span className="badge ok">Albarán FACTUSOL {factusolAlbaranNumber}</span>
+              <FactusolAlbaranPdfButton
+                orderId={orderId}
+                numero={factusolAlbaranNumber}
+                lang={pdfLang}
+                className="button small"
+                onError={setError}
+              />
+            </>
+          ) : null}
           {albaran ? (
             <>
               <button type="button" className="button small"

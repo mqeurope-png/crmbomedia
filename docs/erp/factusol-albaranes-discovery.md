@@ -575,6 +575,14 @@ la allowlist descarta.
   modal de «Convertir en pedido» de la ficha de empresa; tarjeta «Albarán y
   pago FACTUSOL» en la ficha del pedido (nº, estado del pago y del cobro,
   botón de reintento, polling del job al llegar del alta).
+- **PDF del albarán (FACTUSOL)**: `GET /api/erp/orders/{id}/factusol-albaran-pdf`
+  (`lang`, `variant` valorado/devolución) compone el A4 del albarán con el
+  MISMO motor E4 que «PDF del pedido (FACTUSOL)» y los PDF de factura
+  (`load_raw_document` F_ALB+F_LAL por clave compuesta → `extract_document_data`
+  → `generate_document_pdf`): la API de DELSOL no imprime (sondeo E1) y
+  `PDFALB=1` solo marca que el escritorio guardó su PDF en el PC de Bart. El
+  botón vive en «Documentos de envío → Albarán» y en la tarjeta; «Subir
+  albarán» sigue disponible (albaranes externos / SAT).
 
 **Verificación en producción (Bart):**
 

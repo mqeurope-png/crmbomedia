@@ -1631,7 +1631,9 @@ def pdf_filename(
 ) -> str:
     """`Factura_5-260066_LABORATORIOS_PORTA.pdf` — legible y sin sorpresas
     de encoding en cabeceras HTTP (ASCII, sin espacios). Las variantes
-    llevan su título («Factura-de-anticipo_…»)."""
+    llevan su título («Factura-de-anticipo_…»). La etiqueta del documento
+    también se pasa a ASCII («Albarán» → `Albaran`): un byte fuera de ASCII
+    en `Content-Disposition` (latin-1 0xE1) lo rechaza el cliente HTTP."""
     lab = labels_for(lang)
     if variant in ("anticipo", "proforma", "devolucion"):
         key = {"anticipo": "title_facturas_anticipo",
@@ -1640,6 +1642,8 @@ def pdf_filename(
         doc_label = lab[key].capitalize().replace(" ", "-")
     else:
         doc_label = lab[f"doc_{doc_type}"].replace(" ", "-")
+    doc_label = unicodedata.normalize("NFKD", doc_label)
+    doc_label = doc_label.encode("ascii", "ignore").decode("ascii")
     cliente = data["cliente"]["nombre"] or data["cliente"]["codigo"] or ""
     cliente = unicodedata.normalize("NFKD", cliente)
     cliente = cliente.encode("ascii", "ignore").decode("ascii")
