@@ -38,6 +38,13 @@ Uso (desde el VPS):
     docker exec crmbo-api-1 python -m scripts.factusol_discover_albaranes \\
         --cli-row 2458 3101 4020
 
+    # 3-ter. Tarea C · Parte 2 — INFORME (solo lectura) de clientes con el
+    #    tipo de documento / régimen de IVA / país mal en F_CLI y de facturas
+    #    del ejercicio con IVA a clientes intracomunitarios / de exportación,
+    #    para corregirlos a mano (NUNCA se reescriben facturas):
+    docker exec crmbo-api-1 python -m scripts.factusol_discover_albaranes \\
+        --regimen-iva
+
     # 4. Fase 2 (albarán al convertir) — volcado REAL de un albarán, columna
     #    a columna con valor y tipo (como `--lco-row` en los cobros):
     docker exec crmbo-api-1 python -m scripts.factusol_discover_albaranes \\
@@ -1009,15 +1016,17 @@ def _line_link(row: dict[str, Any], suffix: str) -> tuple[str, str, str]:
     )
 
 
-#: Columnas de `F_CLI` que BoHub escribe hoy al crear un cliente
-#: (`customers.build_customer_payload`, C-3-fix1). TODO lo demás lo deja
-#: FACTUSOL con sus defaults de `EscribirRegistro` — ahí viven el tipo de
-#: documento del identificador (N.I.F. / NIF-IVA intracomunitario / pasaporte…)
-#: y el régimen de IVA (Sí / No / Intracomunitario / Exportación, RE) que
-#: Bart ve mal en las fichas creadas por BoHub (Tarea C).
+#: Columnas de `F_CLI` que BoHub escribe al crear un cliente
+#: (`customers.build_customer_payload`). Hasta la Tarea C eran 11 y TODO lo
+#: demás lo dejaba FACTUSOL con sus defaults de `EscribirRegistro`; el volcado
+#: real (`--cli-row 3392 3011 525` + `4279`, 2026-09-12) confirmó que el tipo
+#: de documento del identificador es `IFICLI` (0 = N.I.F., 2 = NIF/IVA
+#: intracomunitario), el «aplicar IVA» es `IVACLI` (0 / 2 intracomunitario /
+#: 3 exportación) y el tipo impositivo `TIVCLI` (1 = 21 %, 3 = 0 %, 4 =
+#: Exento) — ver `vat_regime.py`. Desde la Parte 2 BoHub las escribe.
 KNOWN_CLI_COLUMNS: tuple[str, ...] = (
     "CODCLI", "NOFCLI", "NOCCLI", "NIFCLI", "DOMCLI", "POBCLI", "CPOCLI",
-    "PROCLI", "PAICLI", "EMACLI", "TELCLI",
+    "PROCLI", "PAICLI", "EMACLI", "TELCLI", "IFICLI", "IVACLI", "TIVCLI",
 )
 
 #: Prefijos CANDIDATOS a esas columnas, por la convención de sufijos de las
@@ -1128,6 +1137,163 @@ def compare_customer_dumps(dumps: list[dict[str, Any]]) -> dict[str, list[Any]]:
         hint = f"  ← {category}" if category else ""
         print(f"  {col:<10} " + " | ".join(f"{v!r}" for v in values) + hint)
     return differing
+
+
+def _iva_of(row: dict[str, Any], suffix: str) -> float:
+    """Mayor IVA (importe o %) de las bandas 1-3 de una cabecera de documento."""
+    values = []
+    for column in (f"PIVA1{suffix}", f"IIVA1{suffix}", f"IIVA2{suffix}", f"IIVA3{suffix}"):
+        try:
+            values.append(float(row.get(column) or 0))
+        except (TypeError, ValueError):
+            continue
+    return max(values) if values else 0.0
+
+
+def customer_regime_state(row: dict[str, Any]) -> dict[str, Any]:
+    """Estado del régimen de un cliente F_CLI REAL: lo que codifica la ficha
+    (`IFICLI`/`IVACLI`/`TIVCLI`), lo que le tocaría por su país (`PAICLI`) +
+    NIF-IVA (`NIFCLI` con prefijo UE) y la lista de problemas. Solo lectura."""
+    from app.erp.language import normalize_country  # noqa: PLC0415
+    from app.integrations.factusol.vat_regime import (  # noqa: PLC0415
+        FCLI_REGIME_COLUMNS,
+        REGIME_LABELS,
+        regime_for,
+        regime_from_fcli_row,
+    )
+
+    def _int(value: Any) -> int | None:
+        try:
+            return int(float(value))
+        except (TypeError, ValueError):
+            return None
+
+    paicli = normalize(row.get("PAICLI"))
+    iso2 = normalize_country(paicli) if paicli else None
+    expected = regime_for(iso2, nif=row.get("NIFCLI")) if iso2 else None
+    actual = regime_from_fcli_row(row)
+    problems: list[str] = []
+    if not paicli:
+        problems.append("sin país (PAICLI vacío)")
+    elif not (paicli.isdigit() and 1 <= len(paicli) <= 3):
+        problems.append(f"PAICLI no numérico ({paicli!r})")
+    if paicli and iso2 is None:
+        problems.append(f"país no reconocido ({paicli!r})")
+    if expected is not None:
+        label = REGIME_LABELS[expected]
+        cols = FCLI_REGIME_COLUMNS[expected]
+        if actual is None:
+            problems.append(
+                f"régimen desconocido (IVACLI={row.get('IVACLI')!r}); por país / NIF "
+                f"debería ser {label}"
+            )
+        elif actual != expected:
+            problems.append(
+                f"régimen {REGIME_LABELS[actual]} pero por país / NIF debería ser {label}"
+            )
+        elif _int(row.get("TIVCLI")) != cols["TIVCLI"]:
+            problems.append(
+                f"TIVCLI={row.get('TIVCLI')!r} pero {label} lleva {cols['TIVCLI']}"
+            )
+        if "IFICLI" in cols and _int(row.get("IFICLI")) != cols["IFICLI"]:
+            problems.append(
+                f"IFICLI={row.get('IFICLI')!r} (tipo de documento) pero {label} "
+                f"lleva {cols['IFICLI']}"
+            )
+    return {
+        "codcli": normalize(row.get("CODCLI")),
+        "nombre": normalize(row.get("NOFCLI")) or normalize(row.get("NOCCLI")),
+        "nif": normalize(row.get("NIFCLI")),
+        "paicli": paicli, "iso2": iso2,
+        "ificli": row.get("IFICLI"), "ivacli": row.get("IVACLI"),
+        "tivcli": row.get("TIVCLI"),
+        "actual": actual, "expected": expected, "problems": problems,
+    }
+
+
+def regime_report(client: Any, ejercicio: str) -> dict[str, Any]:
+    """`--regimen-iva`: informe SOLO LECTURA (Tarea C · Parte 2) de
+
+    1. clientes F_CLI con el dato mal: `PAICLI` no numérico / no reconocido,
+       régimen (`IVACLI`/`TIVCLI`) incoherente con el país + NIF-IVA, tipo de
+       documento (`IFICLI`) incoherente; y
+    2. facturas F_FAC del ejercicio con IVA > 0 a clientes que por país /
+       ficha son intracomunitarios o de exportación.
+
+    Para corregirlos A MANO (la ficha, desde la empresa en BoHub o en el
+    escritorio; las facturas, en FACTUSOL). NUNCA se reescribe una factura."""
+    from app.integrations.factusol.vat_regime import (  # noqa: PLC0415
+        REGIME_LABELS,
+        REGIME_NACIONAL,
+    )
+
+    def _label(regime: str | None) -> str:
+        return REGIME_LABELS.get(regime, "?") if regime else "?"
+
+    print("=" * 74)
+    print(f"INFORME RÉGIMEN DE IVA · F_CLI y F_FAC · ejercicio {ejercicio}")
+    print("=" * 74)
+    try:
+        customers = client.load_table("F_CLI", filtro="1=1", ejercicio=ejercicio)
+        invoices = client.load_table("F_FAC", filtro="1=1", ejercicio=ejercicio)
+    except Exception as exc:  # noqa: BLE001 — se informa, nunca se rompe
+        print(f"  ❌ {exc}")
+        return {"customers": [], "invoices": [], "error": str(exc)}
+    states = {}
+    for row in customers:
+        state = customer_regime_state(row)
+        if state["codcli"]:
+            states[state["codcli"]] = state
+    flagged = sorted(
+        (s for s in states.values() if s["problems"]),
+        key=lambda s: int(s["codcli"]) if s["codcli"].isdigit() else 0,
+    )
+    print(f"  {len(customers)} clientes · {len(flagged)} con el dato mal")
+    print("  --- clientes (CODCLI · NIF · nombre · PAICLI→ISO2 · ficha IFICLI/IVACLI/TIVCLI "
+          "= régimen · debería ser · problemas) ---")
+    for s in flagged:
+        print(
+            f"  {s['codcli']:<6} {s['nif']:<16} {s['nombre'][:34]:<34} "
+            f"{s['paicli']!r}→{s['iso2'] or '?'} · "
+            f"{s['ificli']!r}/{s['ivacli']!r}/{s['tivcli']!r} = {_label(s['actual'])} · "
+            f"debería {_label(s['expected'])}"
+        )
+        for problem in s["problems"]:
+            print(f"         · {problem}")
+
+    flagged_invoices = []
+    for row in invoices:
+        state = states.get(normalize(row.get("CLIFAC")))
+        if state is None:
+            continue
+        hint = state["expected"] or state["actual"]
+        if hint is None or hint == REGIME_NACIONAL:
+            continue
+        iva = _iva_of(row, "FAC")
+        if iva <= 0:
+            continue
+        flagged_invoices.append({
+            "numero": f"{normalize(row.get('TIPFAC'))}-{normalize(row.get('CODFAC'))}",
+            "fecha": normalize(row.get("FECFAC"))[:10],
+            "codcli": state["codcli"], "cliente": state["nombre"],
+            "regime": hint, "iva": iva,
+            "total": row.get("TOTFAC"), "ref": normalize(row.get("REFFAC")),
+        })
+    flagged_invoices.sort(key=lambda i: i["numero"])
+    print("=" * 74)
+    print(f"FACTURAS DEL EJERCICIO CON IVA A CLIENTES INTRACOMUNITARIOS / DE EXPORTACIÓN "
+          f"({len(flagged_invoices)} de {len(invoices)})")
+    print("  (NO se reescribe ninguna factura: corrección manual en FACTUSOL)")
+    print("=" * 74)
+    for inv in flagged_invoices:
+        print(
+            f"  {inv['numero']:<10} {inv['fecha']:<10} cliente {inv['codcli']:<6} "
+            f"{inv['cliente'][:30]:<30} {_label(inv['regime'])} · IVA {inv['iva']:g} · "
+            f"total {inv['total']!r} · ref {inv['ref']!r}"
+        )
+    print("  SOLO LECTURA: no se ha escrito nada.")
+    return {"customers": flagged, "invoices": flagged_invoices,
+            "total_customers": len(customers), "total_invoices": len(invoices)}
 
 
 def dump_albaran(client: Any, ejercicio: str, numero: str) -> dict[str, Any] | None:
@@ -1453,6 +1619,12 @@ def main(argv: list[str] | None = None) -> int:
                              "a tipo de documento / régimen de IVA / RE; con "
                              "2+ clientes, qué columnas difieren (p. ej. "
                              "uno nacional, uno UE con NIF-IVA, uno fuera UE)")
+    parser.add_argument("--regimen-iva", action="store_true",
+                        help="Tarea C · Parte 2: informe (solo lectura) de "
+                             "clientes F_CLI con el tipo de documento / "
+                             "régimen de IVA / país mal y de facturas del "
+                             "ejercicio con IVA a clientes intracomunitarios "
+                             "o de exportación, para corregirlos a mano")
     args = parser.parse_args(argv)
 
     from app.integrations.factusol.client import FactusolClient  # noqa: PLC0415
@@ -1461,6 +1633,10 @@ def main(argv: list[str] | None = None) -> int:
     ejercicio = args.ejercicio or client.default_ejercicio
     print(f"FACTUSOL — discovery de albaranes (ERP-E1) · ejercicio {ejercicio}")
     print("SOLO LECTURA: este script no escribe nada en FACTUSOL.\n")
+
+    if args.regimen_iva:
+        regime_report(client, ejercicio)
+        return 0
 
     if args.cli_row:
         dumps = []

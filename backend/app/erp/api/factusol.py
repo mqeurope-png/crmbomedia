@@ -1724,9 +1724,30 @@ class CreateCustomerPayload(BaseModel):
     ciudad: str = Field(default="", max_length=120)
     cp: str = Field(default="", max_length=20)
     provincia: str = Field(default="", max_length=120)
-    pais: str = Field(default="ES", max_length=10)
+    #: Tarea C: país (ISO2, nombre o numérico) y NIF-IVA intracomunitario. Si
+    #: no vienen se toman de la empresa CRM (`Company.country` / `Company.vat`);
+    #: el país decide `PAICLI` y, con el NIF-IVA, el régimen de IVA.
+    pais: str | None = Field(default=None, max_length=64)
+    vat: str | None = Field(default=None, max_length=40)
     email: str | None = Field(default=None, max_length=255)
     telefono: str | None = Field(default=None, max_length=40)
+
+
+def _customer_origin(session: Session, crm_type: str, crm_id: str) -> dict[str, Any]:
+    """País y NIF-IVA del registro CRM (la empresa, o la empresa del contacto)
+    para el alta en F_CLI. Vacíos si no hay empresa."""
+    from app.models.crm import Company, Contact  # noqa: PLC0415
+
+    company = None
+    if crm_type == "company":
+        company = session.get(Company, crm_id)
+    else:
+        contact = session.get(Contact, crm_id)
+        if contact is not None and contact.company_id:
+            company = session.get(Company, contact.company_id)
+    if company is None:
+        return {"pais": None, "vat": None}
+    return {"pais": company.country or None, "vat": company.vat or None}
 
 
 @router.post("/customers/create", status_code=201)
@@ -1742,19 +1763,28 @@ def create_customer_endpoint(
        CODCLI existente y lo vincula (`created=False`).
     2. **Origen Woo**: si el cliente tiene pedidos de WooCommerce, el cliente lo
        gestiona la app externa Woo→FACTUSOL → 409, solo se vincula.
+
+    Tarea C: el país y el NIF-IVA salen de la empresa CRM si el payload no los
+    trae; con ellos se fija `PAICLI` real y el régimen (`IFICLI`/`IVACLI`/
+    `TIVCLI`), con guard de esquema (si no cuadra, 502 y nada escrito).
     """
     from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
     from app.integrations.factusol.customers import (  # noqa: PLC0415
         create_customer,
+        customer_regime,
         link_to_crm,
     )
+    from app.integrations.factusol.vat_regime import REGIME_LABELS  # noqa: PLC0415
 
     _reject_if_woo_managed(session, payload.crm_type, payload.crm_id)
+    data = payload.model_dump()
+    origin = _customer_origin(session, payload.crm_type, payload.crm_id)
+    data["pais"] = (payload.pais or "").strip() or origin["pais"] or ""
+    data["vat"] = (payload.vat or "").strip() or origin["vat"] or ""
+    regime = customer_regime(data)
     client, ejercicio = _client_and_ejercicio(session)
     try:
-        codcli, created = create_customer(
-            client, payload.model_dump(), ejercicio=ejercicio,
-        )
+        codcli, created = create_customer(client, data, ejercicio=ejercicio)
     except FactusolError as exc:
         logger.warning("factusol customers/create KO: %s", exc)
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, {
@@ -1771,7 +1801,115 @@ def create_customer_endpoint(
                          payload.crm_id, codcli, created=created)
     session.commit()
     return {"factusol_codcli": codcli, "created": created,
-            "crm_type": payload.crm_type, "crm_id": payload.crm_id}
+            "crm_type": payload.crm_type, "crm_id": payload.crm_id,
+            "regime": regime if created else None,
+            "regime_label": REGIME_LABELS[regime] if created else None}
+
+
+# --- Tarea C · Parte 2: régimen de IVA / tipo de documento del cliente F_CLI ---
+
+
+class FixRegimeIn(BaseModel):
+    company_id: str = Field(min_length=1, max_length=36)
+
+
+def _regime_context(session: Session, company_id: str):
+    """Empresa vinculada + fila REAL de su cliente F_CLI. 404/409 con código."""
+    from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
+    from app.integrations.factusol.customers import customer_row  # noqa: PLC0415
+    from app.models.crm import Company  # noqa: PLC0415
+
+    company = session.get(Company, company_id)
+    if company is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, {
+            "code": "company_not_found", "detail": "La empresa no existe.",
+        })
+    codcli = str(company.factusol_company_id or "").strip()
+    if not codcli:
+        raise HTTPException(status.HTTP_409_CONFLICT, {
+            "code": "company_unlinked",
+            "detail": "La empresa no está vinculada a ningún cliente de FACTUSOL.",
+        })
+    client, ejercicio = _client_and_ejercicio(session)
+    try:
+        row = customer_row(client, codcli, ejercicio=ejercicio)
+    except FactusolError as exc:
+        raise _factusol_gateway_error(exc, "factusol_customer_failed") from exc
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, {
+            "code": "factusol_customer_not_found",
+            "detail": f"El cliente FACTUSOL nº {codcli} no existe (ejercicio {ejercicio}).",
+        })
+    return company, codcli, row, client, ejercicio
+
+
+@router.get("/customers/regime-preview")
+def regime_preview_endpoint(
+    company_id: str = Query(min_length=1, max_length=36),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_view),
+) -> dict[str, Any]:
+    """Régimen de IVA que le corresponde al cliente por el país + NIF-IVA del
+    CRM, lo que codifica hoy su ficha F_CLI (`IFICLI`/`IVACLI`/`TIVCLI`/
+    `PAICLI`) y qué columnas cambiarían. No escribe nada."""
+    _ = current_user
+    from app.integrations.factusol.customers import regime_preview  # noqa: PLC0415
+
+    company, codcli, row, _client, _ej = _regime_context(session, company_id)
+    preview = regime_preview(
+        row, country_iso2=company.country, vat=company.vat, nif=company.tax_id,
+    )
+    return {"company_id": company.id, "codcli": codcli,
+            "company_country": company.country, "company_vat": company.vat,
+            **preview}
+
+
+@router.post("/customers/fix-regime")
+def fix_regime_endpoint(
+    payload: FixRegimeIn,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_edit),
+) -> dict[str, Any]:
+    """Corrige en FACTUSOL (`ActualizarRegistro` de F_CLI, SOLO las columnas
+    que cambian) el tipo de documento, el régimen de IVA y el país del cliente
+    vinculado, según el país + NIF-IVA de la empresa CRM. A demanda, con
+    auditoría; 502 y nada escrito si el esquema real no cuadra."""
+    from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
+    from app.integrations.factusol.customers import (  # noqa: PLC0415
+        update_customer_regime,
+    )
+    from app.models.crm import AuditLog  # noqa: PLC0415
+
+    company, codcli, _row, client, ejercicio = _regime_context(session, payload.company_id)
+    try:
+        result = update_customer_regime(
+            client, codcli=codcli, ejercicio=ejercicio,
+            country_iso2=company.country, vat=company.vat, nif=company.tax_id,
+        )
+    except FactusolError as exc:
+        logger.warning("factusol customers/fix-regime KO: %s", exc)
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, {
+            "code": "factusol_regime_failed", "detail": str(exc)[:300],
+        }) from exc
+    if result["changed"]:
+        session.add(AuditLog(
+            actor_user_id=current_user.id,
+            action="erp.factusol_customer_regime",
+            target_type="company",
+            target_id=company.id,
+            metadata_json=json.dumps({
+                "factusol_codcli": codcli, "regime": result["regime"],
+                "summary": (
+                    f"régimen de IVA corregido en FACTUSOL cliente nº {codcli}: "
+                    f"{result['regime_label']}"
+                ),
+                "written": result["written"], "changes": result["changes"],
+            }),
+        ))
+        session.commit()
+        logger.info("factusol fix-regime: empresa %s ← cliente %s → %s (%s)",
+                    company.id, codcli, result["regime"], result["written"])
+    return {"ok": True, "company_id": company.id, **result}
 
 
 def _reject_if_woo_managed(session: Session, crm_type: str, crm_id: str) -> None:
@@ -2162,6 +2300,13 @@ def _customer_from_company(session: Session, company_id: str) -> dict[str, Any]:
                 "Vincúlala antes de crear la proforma."
             ),
         })
+    from app.erp.language import normalize_country  # noqa: PLC0415
+    from app.integrations.factusol.vat_regime import regime_for  # noqa: PLC0415
+
+    # Tarea C: país REAL (antes CPAPRE salía siempre 724) y régimen de IVA por
+    # país + NIF-IVA: las proformas de un intracomunitario / exportación se
+    # calculan SIN IVA (`quotes._totals`).
+    country = normalize_country(company.country) if company.country else None
     return {
         "codcli": str(company.factusol_company_id),
         "nombre": company.name,
@@ -2170,6 +2315,9 @@ def _customer_from_company(session: Session, company_id: str) -> dict[str, Any]:
         "ciudad": company.city or "",
         "cp": company.postal_code or "",
         "provincia": company.state or "",
+        "pais": country or "",
+        "vat": company.vat or "",
+        "regime": regime_for(country, vat=company.vat, nif=company.tax_id),
     }
 
 
