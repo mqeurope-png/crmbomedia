@@ -40,22 +40,39 @@ contesta VIES y cómo lo interpreta BoHub):
 ```
 docker compose exec api python -m app.integrations.vies.client FR90501738249
 docker compose exec api python -m app.integrations.vies.client 90501738249 FR
+docker compose exec api python -m app.integrations.vies.client FR90501738249 --interpret '{"actionSucceed":false,"errorWrappers":[{"error":"MS_MAX_CONCURRENT_REQ"}]}'
 ```
 
-Con un veredicto negativo el log del `api` deja `vies … → no_valido (…) ·
-enviado {…} · respuesta HTTP … {…}` con la respuesta cruda de VIES.
+(`--interpret` no llama a VIES: enseña cómo lee BoHub ese cuerpo.) Sin
+veredicto positivo el log del `api` deja `vies … → desconocido|no_valido (…)
+· enviado {…} · respuesta HTTP … {…}` con la respuesta cruda de VIES.
 
 Solo se consulta cuando **aplica**: país de la UE distinto de España y con
 NIF-IVA del país (`Company.vat`, o `tax_id` con prefijo del país). España →
 nacional, fuera de la UE → exportación: VIES no aplica (`vies.applies=false`).
+
+## Cómo se lee la respuesta
+
+Confirmado con la respuesta real del VPS para `FR90501738249`:
+`{"actionSucceed": false, "errorWrappers": [{"error": "MS_MAX_CONCURRENT_REQ"}]}`
+(Francia limitando peticiones). Eso NO es un veredicto sobre el número.
+
+| Respuesta | Estado |
+|---|---|
+| `valid: true` (sin errores) | `valido` |
+| `actionSucceed: true` + `valid: false` | `no_valido` — el ÚNICO caso de VAT no dado de alta (sin `actionSucceed`, solo `valid: false` + `userError: "VALID"` explícito) |
+| `actionSucceed: false`, cualquier `errorWrappers` (`MS_MAX_CONCURRENT_REQ`, `GLOBAL_MAX_CONCURRENT_REQ`, `MS_UNAVAILABLE`, `SERVICE_UNAVAILABLE`, `TIMEOUT`, `VAT_BLOCKED`, `IP_BLOCKED`, `INVALID_REQUESTER_INFO`, `INVALID_INPUT`…), HTTP ≠ 200, cuerpo raro o sin veredicto | `desconocido` (pendiente de validar): no bloquea, el régimen sigue por país + NIF-IVA, se reintenta |
+
+Ante limitación de ritmo (`*_MAX_CONCURRENT_REQ*`) el cliente espera 1 s y
+2 s y reintenta (2 reintentos) antes de quedarse en `desconocido`.
 
 ## Estados
 
 | `vies_status` | Significado | Efecto en el régimen |
 |---|---|---|
 | `valido` | VIES dice que el número existe y está activo | **Intracomunitario confirmado** (chip «✓ verificado en VIES»; el motivo del régimen lo dice) |
-| `no_valido` | VIES responde y dice que NO (o el formato es inválido) | **No se puede eximir → nacional con IVA**. Alerta accionable en la ficha; el pedido entra en «Incidencias» con alerta bloqueante `vat_no_valido_vies` («Revalidar en VIES») |
-| `desconocido` | VIES no respondió (timeout, 5xx, estado miembro caído, respuesta sin veredicto) | No cambia la regla: se sigue por país + NIF-IVA (intracomunitario) con aviso «pendiente de validar»; se reintenta |
+| `no_valido` | VIES responde con éxito (`actionSucceed: true`) y dice que NO está dado de alta (`valid: false`); o el número ni tiene forma de NIF-IVA | **No se puede eximir → nacional con IVA**. Alerta accionable en la ficha; el pedido entra en «Incidencias» con alerta bloqueante `vat_no_valido_vies` («Revalidar en VIES») |
+| `desconocido` | VIES no respondió o devolvió un error (timeout, 5xx, estado miembro caído o saturado, `errorWrappers`, respuesta sin veredicto) | No cambia la regla: se sigue por país + NIF-IVA (intracomunitario) con aviso «pendiente de validar»; se reintenta |
 | `pendiente` | Aún no validado, el NIF-IVA cambió desde la última validación, o `VIES_ENABLED=false` | Igual que `desconocido` |
 
 **Nunca** un fallo de VIES se convierte en «no válido», y **nunca** bloquea un
@@ -82,7 +99,9 @@ NIF-IVA validado: si el actual es otro, el resultado no cuenta y vuelve a
 Cachés: en proceso por NIF-IVA (24 h firme / 10 min desconocido) y la propia
 empresa (`valido` se revalida a los 30 días; `no_valido` al día, porque un
 veredicto negativo puede cambiar — un alta reciente en VIES, o un resultado
-erróneo; `desconocido` a la hora). La ficha pide la validación al cargar
+erróneo; `desconocido` a la hora; y cualquier `no_valido` guardado ANTES del
+fix de la lectura de la respuesta se reconsulta en cuanto se cargue la
+ficha). La ficha pide la validación al cargar
 (sin forzar) cuando el estado es `pendiente`, `desconocido` o `no_valido`;
 «Revalidar en VIES» fuerza siempre y salta ambas cachés, así un VAT que
 quedó guardado como «no válido» pasa a válido en el acto.
