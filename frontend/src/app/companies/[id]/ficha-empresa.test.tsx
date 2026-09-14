@@ -246,10 +246,18 @@ describe("Ficha de empresa (rediseño de flujo, Fase 3)", () => {
       regime_reason: "FR (UE) con NIF-IVA FR16339753527 NO válido en VIES → nacional (no se puede eximir)",
       vies: VIES_KO,
     });
-    (viesRevalidate as jest.Mock).mockResolvedValue({
-      vies: VIES_OK, regime: "intracomunitario", regime_label: "Intracomunitario (exento)",
-      regime_reason: FISCAL.regime_reason, company: COMPANY,
-    });
+    // Al cargar se pide (sin forzar) por si el veredicto negativo ha cambiado:
+    // sigue siendo no válido. Al pulsar «Revalidar» (forzado) VIES ya lo da por bueno.
+    (viesRevalidate as jest.Mock)
+      .mockResolvedValueOnce({
+        vies: VIES_KO, regime: "nacional", regime_label: "Nacional (con IVA)",
+        regime_reason: "FR (UE) con NIF-IVA FR16339753527 NO válido en VIES → nacional (no se puede eximir)",
+        company: { ...COMPANY, vies_status: "no_valido", vies_name: null },
+      })
+      .mockResolvedValue({
+        vies: VIES_OK, regime: "intracomunitario", regime_label: "Intracomunitario (exento)",
+        regime_reason: FISCAL.regime_reason, company: COMPANY,
+      });
     const user = userEvent.setup();
     render(<CompanyDetailPage />);
     await screen.findByRole("heading", { name: "SAS La Maison de la Plaque" });
@@ -262,15 +270,16 @@ describe("Ficha de empresa (rediseño de flujo, Fase 3)", () => {
     expect(alerta).toHaveTextContent("El NIF-IVA FR16339753527 NO es válido en VIES");
     expect(alerta).toHaveTextContent("no se puede eximir de IVA");
     expect(alerta.className).toContain("is-blocking");
-    // Un veredicto firme no se repite solo al cargar: lo pide el operador.
-    expect(viesRevalidate).not.toHaveBeenCalled();
+    await waitFor(() => expect(viesRevalidate).toHaveBeenCalledWith("c1", { force: false }));
+    expect(viesRevalidate).toHaveBeenCalledTimes(1);
+    expect(cabecera).toHaveTextContent("VAT no válido en VIES");     // sigue igual
     await user.click(within(alerta).getByRole("button", { name: "Revalidar en VIES" }));
-    await waitFor(() => expect(viesRevalidate).toHaveBeenCalledWith("c1", { force: true }));
+    await waitFor(() => expect(viesRevalidate).toHaveBeenLastCalledWith("c1", { force: true }));
     await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
     expect(cabecera).toHaveTextContent("✓ verificado en VIES");
     expect(screen.getByText("FR · intracomunitario · exento")).toBeInTheDocument();
     expect(fiscales.getByText("Intracomunitario (exento)")).toBeInTheDocument();
-    expect(viesRevalidate).toHaveBeenCalledTimes(1);
+    expect(viesRevalidate).toHaveBeenCalledTimes(2);
   });
 
   it("pendiente: la ficha pide la validación al cargar sin forzar; VIES caído → «no disponible» sin bloquear; el botón de Datos fiscales fuerza", async () => {

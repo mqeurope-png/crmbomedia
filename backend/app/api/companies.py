@@ -313,7 +313,7 @@ def fiscal_check(
         if own is not None and company_eu_vat(own) == eu_vat and not needs_vies_check(own):
             vies_block = {**vies_state(own), "error": None}
         else:
-            vies_block = result_block(check_vat_live(eu_vat), vat=eu_vat)
+            vies_block = result_block(check_vat_live(eu_vat, country_code=iso2), vat=eu_vat)
     vies_valid = vies_block["valid"]
 
     regime = regime_for(iso2, vat=vat_raw or None, nif=tax or None, vies_valid=vies_valid)

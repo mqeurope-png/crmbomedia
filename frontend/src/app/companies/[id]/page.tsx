@@ -154,13 +154,15 @@ export default function CompanyDetailPage() {
     }
   }, [companyId]);
 
-  // Al cargar: si el NIF-IVA está pendiente de validar (o VIES no respondió
-  // la última vez) se pide la validación una vez, sin forzar.
+  // Al cargar: si el NIF-IVA está pendiente de validar, VIES no respondió la
+  // última vez, o el veredicto guardado es «no válido» (puede haber cambiado:
+  // un alta reciente en VIES, o un resultado erróneo) se pide la validación
+  // una vez, sin forzar: el backend decide si toca por antigüedad.
   const viesApplies = !!company?.vies?.applies;
   const viesStatus = company?.vies?.status ?? null;
   useEffect(() => {
     if (!companyId || !viesApplies) return;
-    if (viesStatus !== "pendiente" && viesStatus !== "desconocido") return;
+    if (viesStatus !== "pendiente" && viesStatus !== "desconocido" && viesStatus !== "no_valido") return;
     if (viesAutoRef.current === companyId) return;
     viesAutoRef.current = companyId;
     void revalidateVies(false);
