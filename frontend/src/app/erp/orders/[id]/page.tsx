@@ -7,6 +7,7 @@ import { PageHeader } from "../../../components/PageHeader";
 import { EmbalarModal } from "../../../components/erp/EmbalarModal";
 import { PDF_LANGS } from "../../../components/erp/FactusolDocumentDetailModal";
 import { InvoiceEmailModal } from "../../../components/erp/InvoiceEmailModal";
+import { OrderEmailModal } from "../../../components/erp/OrderEmailModal";
 import { CobroFactusolBadge } from "../../../components/erp/CobroFactusolBadge";
 import { EmitFactusolButton } from "../../../components/erp/EmitFactusolButton";
 import { RegistrarCobroModal } from "../../../components/erp/RegistrarCobroModal";
@@ -82,6 +83,10 @@ export default function ErpOrderDetailPage() {
   // FACTUSOL del pedido (serie+número) y luego se abre el modal de preview.
   const [invoiceRef, setInvoiceRef] = useState<FactusolInvoiceRef | null>(null);
   const [emailBusy, setEmailBusy] = useState(false);
+  // ERP · envío del PEDIDO por email (SAT / taller): modal + petición de crear
+  // el albarán cuando el aviso del modal lo ofrece.
+  const [orderEmailOpen, setOrderEmailOpen] = useState(false);
+  const [albaranSignal, setAlbaranSignal] = useState(0);
   // «Marcar completado» (solo BoHub, reversible).
   const [completeBusy, setCompleteBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -341,6 +346,16 @@ export default function ErpOrderDetailPage() {
               {emailBusy ? "Localizando…" : "Enviar factura por email"}
             </button>
           ) : null}
+          {/* ERP · enviar el PEDIDO al SAT / taller (y a quien haga falta) con
+              el albarán adjunto por defecto. */}
+          <button
+            type="button"
+            className="button small"
+            title="Envía el pedido por email (Gmail) con el albarán adjunto; el PDF del pedido y la factura son opcionales"
+            onClick={() => setOrderEmailOpen(true)}
+          >
+            Enviar por email
+          </button>
           {/* «Marcar completado»: estado final del pedido, solo en BoHub. */}
           <button
             type="button"
@@ -417,6 +432,16 @@ export default function ErpOrderDetailPage() {
           onSent={() => { setInvoiceRef(null); load(); }}
         />
       ) : null}
+      {/* ERP · enviar el pedido al SAT / taller con el albarán adjunto. */}
+      {orderEmailOpen ? (
+        <OrderEmailModal
+          orderId={order.id}
+          orderNumber={order.order_number}
+          onClose={() => setOrderEmailOpen(false)}
+          onSent={() => load()}
+          onCreateAlbaran={() => { setOrderEmailOpen(false); setAlbaranSignal((n) => n + 1); }}
+        />
+      ) : null}
       {order.completed ? (
         <p className="form-info">
           <span className="badge ok">Completado</span>{" "}
@@ -481,6 +506,7 @@ export default function ErpOrderDetailPage() {
           order={order}
           canEdit={canEmit}
           pdfLang={pdfLang}
+          createSignal={albaranSignal}
           onChanged={() => load()}
           onError={setError}
         />
@@ -697,11 +723,14 @@ function albaranJobFromLocation(): string | null {
  *    factura; el cobro F-4-B se registra solo cuando exista la factura del
  *    pedido. «Sin pago» → pendiente, sin cobro. */
 function AlbaranPagoCard({
-  order, canEdit, pdfLang, onChanged, onError,
+  order, canEdit, pdfLang, createSignal = 0, onChanged, onError,
 }: {
   order: OrderDetail;
   canEdit: boolean;
   pdfLang: FactusolPdfLang;
+  /** Contador que, al subir, lanza «Crear albarán en FACTUSOL» desde fuera
+   *  (lo usa el aviso del modal de envío por email cuando falta el albarán). */
+  createSignal?: number;
   onChanged: () => void;
   onError: (msg: string | null) => void;
 }) {
@@ -765,6 +794,14 @@ function AlbaranPagoCard({
       setBusy(false);
     }
   }
+
+  // Petición externa de crear el albarán (aviso del envío por email): se
+  // ignora el montaje inicial y cuando el pedido ya tiene albarán.
+  useEffect(() => {
+    if (createSignal > 0 && !order.factusol_albaran_number) void crearAlbaran();
+    // `crearAlbaran` solo usa setters y la API; disparar por el contador.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [createSignal]);
 
   const pago = order.factusol_payment ?? null;
   const isWeb = order.external_source === "woocommerce";

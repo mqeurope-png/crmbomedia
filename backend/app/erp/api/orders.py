@@ -1868,6 +1868,144 @@ def order_factusol_albaran_pdf(
     )
 
 
+# --- ERP · enviar el pedido por email (SAT / taller + otros) ----------------
+
+
+def _order_email_context(session: Session, order_id: str):
+    """Pedido + cliente FACTUSOL listos para el envío por email."""
+    from app.integrations.factusol.client import FactusolClient  # noqa: PLC0415
+    from app.integrations.factusol.service import ejercicio_for  # noqa: PLC0415
+
+    order = _get_order(session, order_id)
+    return order, FactusolClient.from_settings(), ejercicio_for(session)
+
+
+@router.get("/{order_id}/email-preview")
+def order_email_preview(
+    order_id: str,
+    lang: str | None = Query(default=None, pattern="^(es|en|de|fr|nl)$"),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_edit),
+) -> dict[str, Any]:
+    """Datos del modal «Enviar por email»: destinatario SAT precargado (de
+    Ajustes ERP), asunto y cuerpo editables, remitente y qué PDF se pueden
+    adjuntar (el albarán marcado por defecto; si falta, el aviso para
+    crearlo). No envía nada ni genera PDF."""
+    from app.erp.order_email import build_order_email_preview  # noqa: PLC0415
+    from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
+
+    order, client, ejercicio = _order_email_context(session, order_id)
+    try:
+        return build_order_email_preview(
+            session, client, order, ejercicio=ejercicio,
+            current_user=current_user, lang_override=lang,
+        )
+    except FactusolError as exc:
+        logger.warning("order email-preview KO order=%s: %s", order_id, exc)
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, {
+            "code": "factusol_unavailable", "detail": str(exc)[:200],
+        }) from exc
+
+
+class OrderEmailPayload(BaseModel):
+    """Envío del pedido por email. `confirm` OBLIGATORIO: mandar un correo es
+    irreversible, no puede salir de un clic accidental."""
+
+    confirm: bool = False
+    to: list[str] = Field(default_factory=list)
+    cc: list[str] = Field(default_factory=list)
+    bcc: list[str] = Field(default_factory=list)
+    subject: str = Field(min_length=1, max_length=500)
+    body_text: str = Field(min_length=1)
+    lang: str = Field(default="es", pattern="^(es|en|de|fr|nl)$")
+    from_alias: str = Field(min_length=3, max_length=255)
+    #: El albarán va por defecto (es el envío típico al taller); se puede
+    #: desmarcar para enviar sin él.
+    include_albaran: bool = True
+    include_pedido: bool = False
+    include_factura: bool = False
+
+
+@router.post("/{order_id}/email", status_code=201)
+def send_order_email_endpoint(
+    order_id: str,
+    payload: OrderEmailPayload,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_edit),
+) -> dict[str, Any]:
+    """Envía el pedido por email con la cuenta de Gmail integrada: albarán
+    adjunto por defecto, PDF del pedido y de la factura opcionales. Registra
+    el envío en el timeline del pedido; si falla, no registra nada."""
+    from app.erp.order_email import OrderEmailError, send_order_email  # noqa: PLC0415
+    from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
+    from app.integrations.gmail.service import (  # noqa: PLC0415
+        GmailNotConnectedError,
+        GmailScopeMissingError,
+    )
+
+    if not payload.confirm:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, {
+            "code": "confirmation_required",
+            "detail": "El envío requiere confirmación explícita.",
+        })
+
+    def _clean(values: list[str]) -> list[str]:
+        return [v.strip() for v in values if v and v.strip()]
+
+    to, cc, bcc = _clean(payload.to), _clean(payload.cc), _clean(payload.bcc)
+    if not to:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, {
+            "code": "no_recipient",
+            "detail": (
+                "Falta el destinatario. Configura el email del SAT en Ajustes "
+                "ERP o escribe uno."
+            ),
+        })
+    # El alias tiene que estar entre los permitidos del usuario (mismo criterio
+    # que el resto de envíos: no se suplanta un alias ajeno).
+    from app.models.crm import UserEmailAliasPref  # noqa: PLC0415
+
+    pref = session.scalar(
+        select(UserEmailAliasPref).where(
+            UserEmailAliasPref.user_id == current_user.id,
+            UserEmailAliasPref.alias_email == payload.from_alias,
+            UserEmailAliasPref.is_allowed.is_(True),
+        )
+    )
+    if pref is None:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, {
+            "code": "alias_not_allowed",
+            "detail": "El alias no está en tus preferencias (config. en /account).",
+        })
+
+    order, client, ejercicio = _order_email_context(session, order_id)
+    try:
+        return send_order_email(
+            session, client, order, ejercicio=ejercicio,
+            current_user=current_user, to=to, cc=cc, bcc=bcc,
+            subject=payload.subject, body_text=payload.body_text,
+            lang=payload.lang, from_alias=payload.from_alias,
+            include_albaran=payload.include_albaran,
+            include_pedido=payload.include_pedido,
+            include_factura=payload.include_factura,
+        )
+    except OrderEmailError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, {
+            "code": exc.code, "detail": exc.detail,
+        }) from exc
+    except (GmailNotConnectedError, GmailScopeMissingError) as exc:
+        # Gmail no conectado / sin permiso: no se ha enviado nada.
+        logger.warning("order email KO (gmail) order=%s: %s", order_id, exc)
+        raise HTTPException(status.HTTP_409_CONFLICT, {
+            "code": "gmail_not_ready", "detail": str(exc)[:300],
+        }) from exc
+    except FactusolError as exc:
+        logger.warning("order email KO (factusol) order=%s: %s", order_id, exc)
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, {
+            "code": "factusol_unavailable", "detail": str(exc)[:200],
+        }) from exc
+
+
 @router.get("/{order_id}/factusol-invoice-status")
 def factusol_invoice_status(
     order_id: str,

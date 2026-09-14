@@ -401,6 +401,24 @@ export default function ErpSettingsPage() {
           />
         </fieldset>
 
+        {/* ERP — destinatario por defecto del envío del PEDIDO por email. */}
+        <fieldset className="erp-series-fieldset">
+          <legend>Email del SAT / taller</legend>
+          <p className="muted small">
+            Destinatario que viene precargado en «Enviar por email» desde un
+            pedido (con el albarán adjunto). Se puede cambiar y añadir otros al
+            enviar. Vacío = sin destinatario precargado.
+          </p>
+          <input
+            type="email"
+            style={{ width: "100%" }}
+            placeholder="taller@bomedia.net"
+            aria-label="Email del SAT"
+            value={cfg.sat_email ?? ""}
+            onChange={(e) => setCfg({ ...cfg, sat_email: e.target.value })}
+          />
+        </fieldset>
+
         {/* ERP — remitente (alias de envío) del email de factura por serie. */}
         <fieldset className="erp-series-fieldset">
           <legend>Remitente del email de factura (por serie)</legend>
