@@ -198,6 +198,15 @@ class Company(TimestampMixin, Base):
         DateTime(timezone=True)
     )
     factusol_sync_source: Mapped[str | None] = mapped_column(String(16))
+    # Fase VIES (migración 0108): validación del NIF-IVA intracomunitario en
+    # el servicio oficial de la UE. `vies_status` valido / no_valido /
+    # desconocido; `vies_vat` = el NIF-IVA que se validó (si cambia, el
+    # resultado ya no aplica); nombre / dirección tal como los devuelve VIES.
+    vies_status: Mapped[str | None] = mapped_column(String(16))
+    vies_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    vies_vat: Mapped[str | None] = mapped_column(String(40))
+    vies_name: Mapped[str | None] = mapped_column(String(255))
+    vies_address: Mapped[str | None] = mapped_column(String(500))
 
     contacts: Mapped[list["Contact"]] = relationship(back_populates="company")
 

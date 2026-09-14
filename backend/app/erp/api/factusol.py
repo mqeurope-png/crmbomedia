@@ -1746,8 +1746,11 @@ def _customer_origin(session: Session, crm_type: str, crm_id: str) -> dict[str, 
         if contact is not None and contact.company_id:
             company = session.get(Company, contact.company_id)
     if company is None:
-        return {"pais": None, "vat": None}
-    return {"pais": company.country or None, "vat": company.vat or None}
+        return {"pais": None, "vat": None, "vies_valid": None}
+    from app.services.vies import company_vies_valid  # noqa: PLC0415
+
+    return {"pais": company.country or None, "vat": company.vat or None,
+            "vies_valid": company_vies_valid(company)}
 
 
 @router.post("/customers/create", status_code=201)
@@ -1781,6 +1784,8 @@ def create_customer_endpoint(
     origin = _customer_origin(session, payload.crm_type, payload.crm_id)
     data["pais"] = (payload.pais or "").strip() or origin["pais"] or ""
     data["vat"] = (payload.vat or "").strip() or origin["vat"] or ""
+    # Fase VIES: un NIF-IVA que VIES dice que NO es válido no exime.
+    data["vies_valid"] = origin.get("vies_valid")
     regime = customer_regime(data)
     client, ejercicio = _client_and_ejercicio(session)
     try:
@@ -1854,10 +1859,12 @@ def regime_preview_endpoint(
     `PAICLI`) y qué columnas cambiarían. No escribe nada."""
     _ = current_user
     from app.integrations.factusol.customers import regime_preview  # noqa: PLC0415
+    from app.services.vies import company_vies_valid  # noqa: PLC0415
 
     company, codcli, row, _client, _ej = _regime_context(session, company_id)
     preview = regime_preview(
         row, country_iso2=company.country, vat=company.vat, nif=company.tax_id,
+        vies_valid=company_vies_valid(company),
     )
     return {"company_id": company.id, "codcli": codcli,
             "company_country": company.country, "company_vat": company.vat,
@@ -1879,12 +1886,14 @@ def fix_regime_endpoint(
         update_customer_regime,
     )
     from app.models.crm import AuditLog  # noqa: PLC0415
+    from app.services.vies import company_vies_valid  # noqa: PLC0415
 
     company, codcli, _row, client, ejercicio = _regime_context(session, payload.company_id)
     try:
         result = update_customer_regime(
             client, codcli=codcli, ejercicio=ejercicio,
             country_iso2=company.country, vat=company.vat, nif=company.tax_id,
+            vies_valid=company_vies_valid(company),
         )
     except FactusolError as exc:
         logger.warning("factusol customers/fix-regime KO: %s", exc)
@@ -2306,6 +2315,8 @@ def _customer_from_company(session: Session, company_id: str) -> dict[str, Any]:
     # Tarea C: país REAL (antes CPAPRE salía siempre 724) y régimen de IVA por
     # país + NIF-IVA: las proformas de un intracomunitario / exportación se
     # calculan SIN IVA (`quotes._totals`).
+    from app.services.vies import company_vies_valid  # noqa: PLC0415
+
     country = normalize_country(company.country) if company.country else None
     return {
         "codcli": str(company.factusol_company_id),
@@ -2317,7 +2328,10 @@ def _customer_from_company(session: Session, company_id: str) -> dict[str, Any]:
         "provincia": company.state or "",
         "pais": country or "",
         "vat": company.vat or "",
-        "regime": regime_for(country, vat=company.vat, nif=company.tax_id),
+        "regime": regime_for(
+            country, vat=company.vat, nif=company.tax_id,
+            vies_valid=company_vies_valid(company),
+        ),
     }
 
 

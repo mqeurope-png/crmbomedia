@@ -28,6 +28,14 @@ from app.schemas.companies import (
     CompanyRead,
     CompanyWrite,
 )
+from app.services.vies import (
+    check_vat_live,
+    company_eu_vat,
+    needs_vies_check,
+    result_block,
+    validate_company_vies,
+    vies_state,
+)
 
 router = APIRouter(prefix="/api/companies", tags=["companies"])
 logger = logging.getLogger(__name__)
@@ -76,6 +84,9 @@ def _to_read(session: Session, row: Company) -> CompanyRead:
     ) or 0
     read = CompanyRead.model_validate(row)
     read.contacts_count = int(count)
+    # Fase VIES: el estado interpretado para el NIF-IVA actual (si cambió el
+    # NIF-IVA desde la validación, vuelve a «pendiente»).
+    read.vies = vies_state(row)
     return read
 
 
@@ -210,13 +221,16 @@ def create_company(
     row = Company(name=payload.name)
     _apply(row, payload)
     session.add(row)
+    # Fase VIES: empresa de la UE con NIF-IVA → se valida al vuelo (timeout
+    # corto; si VIES no responde queda «desconocido» y el alta sigue).
+    vies = validate_company_vies(session, row)
     record_event(
         session,
         action=Action.COMPANY_CREATED,
         target_type="company",
         target_id=row.id,
         actor=current_user,
-        metadata={"name": payload.name},
+        metadata={"name": payload.name, **({"vies": vies["status"]} if vies else {})},
     )
     session.commit()
     session.refresh(row)
@@ -263,14 +277,22 @@ def fiscal_check(
     - `duplicates.factusol`: cliente de F_CLI con ese NIF (best-effort: si
       FACTUSOL no responde, `factusol_checked=False` y se sigue; nunca
       bloquea el alta).
-    - `vies`: gancho de la validación VIES (su PR aparte rellena `status`
-      `valido` / `no_valido`; hoy siempre `pendiente`).
+    - `vies` (Fase VIES): validación del NIF-IVA en el servicio oficial de la
+      UE cuando el país es de la UE (no España) y hay NIF-IVA: `status`
+      `valido` / `no_valido` / `desconocido` (VIES no respondió) /
+      `pendiente` (VIES desactivado), `valid`, `checked_at`, nombre y
+      dirección según VIES. El régimen ya tiene en cuenta el veredicto: con
+      `no_valido` NO se puede eximir → nacional con IVA. Con `exclude_id`
+      (la ficha) se reutiliza el resultado guardado en esa empresa si es
+      reciente y del mismo NIF-IVA; si no, consulta en vivo (cacheada,
+      timeout corto, nunca bloquea).
     """
     _ = current_user
     from app.erp.language import normalize_country  # noqa: PLC0415
     from app.integrations.factusol.vat_regime import (  # noqa: PLC0415
         EU_ISO2,
         REGIME_LABELS,
+        eu_vat_for,
         normalize_vat,
         regime_for,
         regime_reason,
@@ -279,7 +301,22 @@ def fiscal_check(
     tax = (tax_id or "").strip()
     vat_raw = (vat or "").strip()
     iso2 = normalize_country(country) if (country or "").strip() else None
-    regime = regime_for(iso2, vat=vat_raw or None, nif=tax or None)
+
+    # VIES: solo UE fuera de España y con NIF-IVA del país.
+    eu_vat = (
+        eu_vat_for(iso2, vat=vat_raw or None, nif=tax or None)
+        if iso2 and iso2 != "ES" and iso2 in EU_ISO2 else None
+    )
+    vies_block: dict[str, Any] = result_block(None, vat=eu_vat)
+    if eu_vat:
+        own = session.get(Company, exclude_id) if exclude_id else None
+        if own is not None and company_eu_vat(own) == eu_vat and not needs_vies_check(own):
+            vies_block = {**vies_state(own), "error": None}
+        else:
+            vies_block = result_block(check_vat_live(eu_vat), vat=eu_vat)
+    vies_valid = vies_block["valid"]
+
+    regime = regime_for(iso2, vat=vat_raw or None, nif=tax or None, vies_valid=vies_valid)
     crm = find_companies_by_nif(session, tax, vat_raw, exclude_id=exclude_id)
 
     factusol: dict[str, Any] | None = None
@@ -313,7 +350,9 @@ def fiscal_check(
         "in_eu": bool(iso2 and iso2 in EU_ISO2),
         "regime": regime,
         "regime_label": REGIME_LABELS[regime],
-        "regime_reason": regime_reason(iso2, vat=vat_raw or None, nif=tax or None),
+        "regime_reason": regime_reason(
+            iso2, vat=vat_raw or None, nif=tax or None, vies_valid=vies_valid,
+        ),
         "vat_normalized": normalize_vat(vat_raw) if vat_raw else None,
         "duplicates": {
             "crm": [
@@ -328,9 +367,7 @@ def fiscal_check(
             "factusol_checked": factusol_checked,
             "factusol_error": factusol_error,
         },
-        # Gancho VIES (PR aparte): aquí irán `status` valido / no_valido /
-        # desconocido, `checked_at` y el nombre/dirección que devuelva.
-        "vies": {"status": "pendiente", "valid": None, "checked_at": None},
+        "vies": vies_block,
     }
 
 
@@ -371,16 +408,75 @@ def update_company(
                 detail="Ya existe otra empresa con ese dominio.",
             )
     _apply(row, payload)
+    # Fase VIES: si cambió el NIF-IVA (o toca revalidar) se consulta VIES;
+    # con el mismo NIF-IVA y un resultado reciente no se vuelve a llamar.
+    vies = validate_company_vies(session, row)
     record_event(
         session,
         action=Action.COMPANY_UPDATED,
         target_type="company",
         target_id=row.id,
         actor=current_user,
+        metadata={"vies": vies["status"]} if vies else None,
     )
     session.commit()
     session.refresh(row)
     return _to_read(session, row)
+
+
+@router.post("/{company_id}/vies-revalidate")
+def revalidate_company_vies(
+    company_id: str,
+    force: bool = Query(default=True, description="Salta la caché y consulta VIES ya"),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_user),
+) -> dict[str, Any]:
+    """Fase VIES · «Revalidar en VIES»: consulta el NIF-IVA de la empresa en
+    el servicio oficial de la UE y guarda el resultado en la empresa.
+
+    - `force=true` (botón): siempre consulta, saltando la caché.
+    - `force=false` (la ficha al cargar): solo si no hay resultado, cambió el
+      NIF-IVA, o el resultado es viejo (30 días; «desconocido» → 1 hora).
+
+    Devuelve el bloque `vies`, el régimen que sale con ese veredicto y la
+    empresa actualizada. Si la empresa no es de la UE o no tiene NIF-IVA,
+    `vies.applies=False` (VIES no aplica: exportación / nacional).
+    """
+    from app.erp.language import normalize_country  # noqa: PLC0415
+    from app.integrations.factusol.vat_regime import (  # noqa: PLC0415
+        REGIME_LABELS,
+        regime_for,
+        regime_reason,
+    )
+
+    row = session.get(Company, company_id)
+    if row is None:
+        raise not_found("Company")
+    before = row.vies_status
+    vies = validate_company_vies(session, row, force=force)
+    if vies is not None and (force or vies["status"] != before):
+        record_event(
+            session,
+            action=Action.COMPANY_UPDATED,
+            target_type="company",
+            target_id=row.id,
+            actor=current_user,
+            metadata={"vies": vies["status"], "vies_vat": vies["vat"], "forced": force},
+        )
+        session.commit()
+        session.refresh(row)
+    state = vies if vies is not None else vies_state(row)
+    iso2 = normalize_country(row.country) if row.country else None
+    regime = regime_for(iso2, vat=row.vat, nif=row.tax_id, vies_valid=state["valid"])
+    return {
+        "vies": state,
+        "regime": regime,
+        "regime_label": REGIME_LABELS[regime],
+        "regime_reason": regime_reason(
+            iso2, vat=row.vat, nif=row.tax_id, vies_valid=state["valid"],
+        ),
+        "company": _to_read(session, row).model_dump(mode="json"),
+    }
 
 
 @router.delete("/{company_id}", status_code=status.HTTP_204_NO_CONTENT)

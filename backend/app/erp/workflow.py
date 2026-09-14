@@ -74,6 +74,7 @@ ACTION_LABELS: dict[str, str] = {
     "vincular_empresa": "Vincular empresa a FACTUSOL",
     "revisar_incidencia": "Revisar incidencia",
     "crear_albaran": "Crear albarán en FACTUSOL",
+    "revalidar_vies": "Revalidar en VIES",
     "ninguna": "Sin acción pendiente",
 }
 
@@ -187,12 +188,31 @@ def order_alerts(
 
     # 3) Régimen de IVA del cliente: un intracomunitario / exportación factura
     #    SIN IVA. Informativo, pero es lo que evita una factura mal emitida.
-    #    (La validación del VAT en VIES llega en su fase y endurecerá esto.)
+    #    Fase VIES: si VIES dice que el NIF-IVA NO es válido no se puede
+    #    eximir → incidencia BLOQUEANTE (se facturaría mal el IVA); si aún no
+    #    está validado (pendiente / VIES caído) se avisa sin bloquear.
     regime = company_regime(company)
-    if regime == "intracomunitario":
+    vies = _vies_of(company)
+    if vies["vat"] and vies["status"] == "no_valido":
         alerts.append(_alert(
-            "cliente_intracomunitario",
-            "Cliente intracomunitario: la factura debe salir sin IVA.",
+            "vat_no_valido_vies",
+            f"El NIF-IVA {vies['vat']} NO es válido en VIES: no se puede eximir de "
+            "IVA; se trata como nacional con IVA.",
+            action="revalidar_vies", blocking=True,
+        ))
+    if regime == "intracomunitario":
+        if vies["vat"] and vies["status"] == "valido":
+            texto = ("Cliente intracomunitario (NIF-IVA verificado en VIES): la factura debe "
+                     "salir sin IVA.")
+        elif vies["vat"]:
+            motivo = "VIES no respondió" if vies["status"] == "desconocido" else "sin validar"
+            texto = ("Cliente intracomunitario con NIF-IVA pendiente de validar en VIES "
+                     f"({motivo}): la factura saldría sin IVA — valida el NIF-IVA antes de emitir.")
+        else:
+            texto = "Cliente intracomunitario: la factura debe salir sin IVA."
+        alerts.append(_alert(
+            "cliente_intracomunitario", texto,
+            action="revalidar_vies" if (vies["vat"] and vies["status"] != "valido") else None,
         ))
     elif regime == "exportacion":
         alerts.append(_alert(
@@ -222,17 +242,29 @@ def order_alerts(
 
 
 def company_regime(company: Any) -> str | None:
-    """Régimen de IVA del cliente del pedido (Tarea C), o None sin empresa /
-    sin país."""
+    """Régimen de IVA del cliente del pedido (Tarea C + VIES), o None sin
+    empresa / sin país."""
     if company is None or not getattr(company, "country", None):
         return None
     from app.erp.language import normalize_country  # noqa: PLC0415
     from app.integrations.factusol.vat_regime import regime_for  # noqa: PLC0415
+    from app.services.vies import company_vies_valid  # noqa: PLC0415
 
     return regime_for(
         normalize_country(company.country),
         vat=getattr(company, "vat", None), nif=getattr(company, "tax_id", None),
+        vies_valid=company_vies_valid(company),
     )
+
+
+def _vies_of(company: Any) -> dict[str, Any]:
+    """Estado VIES aplicable al NIF-IVA actual de la empresa (o vacío)."""
+    if company is None:
+        return {"vat": None, "status": None}
+    from app.services.vies import vies_state  # noqa: PLC0415
+
+    state = vies_state(company)
+    return {"vat": state["vat"], "status": state["status"]}
 
 
 def _open_exception(
@@ -342,6 +374,7 @@ def _company_block(company: Any) -> dict[str, Any] | None:
         "country": getattr(company, "country", None),
         "factusol_id": getattr(company, "factusol_company_id", None) or None,
         "regime": company_regime(company),
+        "vies": _vies_of(company),
     }
 
 

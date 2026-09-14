@@ -318,11 +318,13 @@ export default function ErpOrderDetailPage() {
     }
     if (
       a.code === "empresa_sin_vincular" || a.code === "cliente_intracomunitario"
-      || a.code === "cliente_exportacion"
+      || a.code === "cliente_exportacion" || a.code === "vat_no_valido_vies"
     ) {
+      // VIES (Fase VIES): «Revalidar en VIES» vive en la ficha de la empresa
+      // (ahí está el NIF-IVA para corregirlo si hace falta).
       return order.company_id ? (
         <Link href={`/companies/${order.company_id}`} className="button small secondary">
-          Ver ficha cliente
+          {a.action === "revalidar_vies" ? "Revalidar en VIES" : "Ver ficha cliente"}
         </Link>
       ) : null;
     }
