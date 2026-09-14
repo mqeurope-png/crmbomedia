@@ -920,6 +920,10 @@ export type SatQueueItem = {
   lines: { sku: string; description: string; quantity: number }[];
   /** Fase D: presencia de albarán/etiqueta vigentes (para los chips). */
   has_albaran: boolean;
+  /** Nº del albarán que BoHub creó en FACTUSOL («serie-código»), o null. Es
+   *  la fuente PREFERENTE del PDF en el taller: el mismo documento que el
+   *  botón de la ficha y el que adjunta el email al SAT. */
+  factusol_albaran_number?: string | null;
   has_etiqueta: boolean;
 };
 

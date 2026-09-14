@@ -3,10 +3,12 @@ import userEvent from "@testing-library/user-event";
 import { SatReadyCard } from "./SatReadyCard";
 import type { SatQueueItem } from "../../lib/erpApi";
 import {
+  downloadOrderFactusolAlbaranPdf,
   fireTransition,
   listShippingFiles,
   markPickedUp,
   openShippingFile,
+  saveBlob,
 } from "../../lib/erpApi";
 
 jest.mock("next/link", () => ({
@@ -19,15 +21,19 @@ jest.mock("next/link", () => ({
 jest.mock("../../lib/erpApi", () => ({
   // customerLabel es helper puro: se usa el real (D-2).
   customerLabel: jest.requireActual("../../lib/erpApi").customerLabel,
+  downloadOrderFactusolAlbaranPdf: jest.fn(),
   fireTransition: jest.fn(),
   listShippingFiles: jest.fn(),
   markPickedUp: jest.fn(),
   openShippingFile: jest.fn(),
+  saveBlob: jest.fn(),
 }));
 const mockFire = fireTransition as jest.Mock;
 const mockList = listShippingFiles as jest.Mock;
 const mockPicked = markPickedUp as jest.Mock;
 const mockOpen = openShippingFile as jest.Mock;
+const mockFactusolPdf = downloadOrderFactusolAlbaranPdf as jest.Mock;
+const mockSave = saveBlob as jest.Mock;
 
 function order(over: Partial<SatQueueItem> = {}): SatQueueItem {
   return {
@@ -44,10 +50,30 @@ beforeEach(() => {
   mockList.mockReset();
   mockPicked.mockReset();
   mockOpen.mockReset();
+  mockFactusolPdf.mockReset();
+  mockSave.mockReset();
   mockList.mockResolvedValue([]);
 });
 
 describe("SatReadyCard", () => {
+  it("con albarán en FACTUSOL descarga ESE PDF, no el fichero subido", async () => {
+    const blob = new Blob(["%PDF-"], { type: "application/pdf" });
+    mockFactusolPdf.mockResolvedValue(blob);
+    const user = userEvent.setup();
+    render(
+      <SatReadyCard
+        order={order({ factusol_albaran_number: "1-100327" })}
+        onChanged={() => {}}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: /Imprimir albarán/ }));
+    await waitFor(() => expect(mockFactusolPdf).toHaveBeenCalledWith("o1"));
+    await waitFor(() =>
+      expect(mockSave).toHaveBeenCalledWith(blob, "Albaran_1-100327.pdf"),
+    );
+    expect(mockList).not.toHaveBeenCalledWith("o1", "albaran");
+  });
+
   it("con albarán/etiqueta muestra «Imprimir» y abre el PDF al pulsar", async () => {
     mockList.mockResolvedValue([{
       id: "f1", kind: "albaran", source: "manual_upload", filename: "a.pdf",

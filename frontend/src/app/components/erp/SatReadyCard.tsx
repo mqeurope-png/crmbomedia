@@ -5,10 +5,12 @@ import { useState } from "react";
 import { extractErrorMessage } from "../../lib/errors";
 import {
   customerLabel,
+  downloadOrderFactusolAlbaranPdf,
   fireTransition,
   listShippingFiles,
   markPickedUp,
   openShippingFile,
+  saveBlob,
   type SatQueueItem,
   type ShipmentFileKind,
 } from "../../lib/erpApi";
@@ -27,12 +29,29 @@ export function SatReadyCard({
   const [confirming, setConfirming] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Igual que en «Por embalar»: el albarán de FACTUSOL es la fuente
+  // preferente del PDF; el fichero subido a mano, la alternativa.
+  const factusolAlbaran = order.factusol_albaran_number ?? null;
+
   async function openDoc(kind: ShipmentFileKind) {
     try {
       const files = await listShippingFiles(order.id, kind);
       if (files[0]) await openShippingFile(files[0]);
     } catch {
       // si falla, el chip «Falta …» lleva a la ficha para subirlo
+    }
+  }
+
+  async function printAlbaranFactusol() {
+    setBusy(true);
+    setError(null);
+    try {
+      const blob = await downloadOrderFactusolAlbaranPdf(order.id);
+      saveBlob(blob, `Albaran_${factusolAlbaran}.pdf`);
+    } catch {
+      setError("No se pudo generar el PDF del albarán de FACTUSOL.");
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -78,7 +97,13 @@ export function SatReadyCard({
       ) : null}
 
       <div className="sat-ready-chips">
-        {order.has_albaran ? (
+        {factusolAlbaran ? (
+          <button type="button" className="sat-chip-btn ok" disabled={busy}
+                  title={`Descarga el albarán ${factusolAlbaran} de FACTUSOL en PDF`}
+                  onClick={() => void printAlbaranFactusol()}>
+            📄 Imprimir albarán
+          </button>
+        ) : order.has_albaran ? (
           <button type="button" className="sat-chip-btn ok"
                   onClick={() => openDoc("albaran")}>
             📄 Imprimir albarán

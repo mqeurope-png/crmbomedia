@@ -4,9 +4,11 @@ import Link from "next/link";
 import { useState } from "react";
 import {
   customerLabel,
+  downloadOrderFactusolAlbaranPdf,
   fetchAlbaranFromWoo,
   listShippingFiles,
   openShippingFile,
+  saveBlob,
   STATUS_LABELS,
   type SatQueueItem,
 } from "../../lib/erpApi";
@@ -24,10 +26,29 @@ export function SatPreparingCard({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // El albarán que BoHub creó en FACTUSOL manda sobre el fichero subido a
+  // mano: es el documento real del pedido (mismo PDF que la ficha y que el
+  // email al SAT). El fichero subido queda para los pedidos del flujo antiguo.
+  const factusolAlbaran = order.factusol_albaran_number ?? null;
+
   async function albaranClick(e: React.SyntheticEvent) {
     e.preventDefault();
     e.stopPropagation();
     setError(null);
+    if (factusolAlbaran) {
+      setBusy(true);
+      try {
+        const blob = await downloadOrderFactusolAlbaranPdf(order.id);
+        saveBlob(blob, `Albaran_${factusolAlbaran}.pdf`);
+      } catch {
+        setError(
+          "No se pudo generar el PDF del albarán de FACTUSOL. Revisa la ficha del pedido.",
+        );
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
     if (order.has_albaran) {
       try {
         const files = await listShippingFiles(order.id, "albaran");
@@ -44,7 +65,10 @@ export function SatPreparingCard({
       onChanged();
       await openShippingFile(r.file);
     } catch {
-      setError("No se pudo descargar automáticamente. Sube el albarán a mano desde la ficha.");
+      setError(
+        "No se pudo descargar automáticamente. Crea el albarán en FACTUSOL o "
+        + "súbelo a mano desde la ficha.",
+      );
     } finally {
       setBusy(false);
     }
@@ -74,13 +98,18 @@ export function SatPreparingCard({
           <span
             role="button"
             tabIndex={0}
-            className={`sat-chip-btn ${order.has_albaran ? "ok" : "info"}`}
+            className={`sat-chip-btn ${factusolAlbaran || order.has_albaran ? "ok" : "info"}`}
             aria-disabled={busy}
+            title={factusolAlbaran
+              ? `Descarga el albarán ${factusolAlbaran} de FACTUSOL en PDF`
+              : undefined}
             onClick={albaranClick}
           >
-            {order.has_albaran
-              ? "📄 Imprimir albarán"
-              : busy ? "Descargando…" : "📄 Descargar albarán"}
+            {busy
+              ? "Descargando…"
+              : factusolAlbaran || order.has_albaran
+                ? "📄 Imprimir albarán"
+                : "📄 Descargar albarán"}
           </span>
         </div>
         <span className="sat-card-cta">Abrir →</span>
