@@ -182,6 +182,14 @@ class Settings(BaseSettings):
     vies_enabled: bool = True
     vies_base_url: str = "https://ec.europa.eu/taxation_customs/vies/rest-api"
     vies_timeout_seconds: float = 4.0
+    # Barrido en segundo plano de los NIF-IVA pendientes (VIES / Francia
+    # devuelve MS_MAX_CONCURRENT_REQ a menudo): cada N minutos, un lote, de
+    # una en una y espaciadas; pausa larga si VIES nos bloquea.
+    vies_sweep_enabled: bool = True
+    vies_sweep_interval_minutes: int = 30
+    vies_sweep_batch: int = 20
+    vies_sweep_spacing_seconds: float = 2.0
+    vies_sweep_pause_minutes: int = 60
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 

@@ -20,6 +20,10 @@ export type ViesState = {
   /** El NIF-IVA cambió desde la validación guardada. */
   stale: boolean;
   error?: string | null;
+  /** Barrido en segundo plano: consultas seguidas sin veredicto y cuándo
+   *  vuelve a tocar (null = en el siguiente barrido). */
+  attempts?: number;
+  next_retry_at?: string | null;
 };
 
 export type Company = {

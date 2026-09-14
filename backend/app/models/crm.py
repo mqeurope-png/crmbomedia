@@ -207,6 +207,11 @@ class Company(TimestampMixin, Base):
     vies_vat: Mapped[str | None] = mapped_column(String(40))
     vies_name: Mapped[str | None] = mapped_column(String(255))
     vies_address: Mapped[str | None] = mapped_column(String(500))
+    # Barrido en segundo plano (migración 0109): antes de `vies_next_retry_at`
+    # no se vuelve a consultar (backoff creciente); `vies_attempts` = consultas
+    # seguidas sin veredicto (0 con veredicto firme).
+    vies_next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    vies_attempts: Mapped[int | None] = mapped_column(Integer)
 
     contacts: Mapped[list["Contact"]] = relationship(back_populates="company")
 
