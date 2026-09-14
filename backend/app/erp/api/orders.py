@@ -33,6 +33,7 @@ from app.erp.models import (
     StatusDomain,
 )
 from app.erp.state_machine import TransitionError, apply_transition, available_transitions
+from app.erp.workflow import order_workflow
 from app.models.crm import User
 
 logger = logging.getLogger(__name__)
@@ -302,6 +303,9 @@ def _serialise_detail(session: Session, o: Order, actor: User) -> dict[str, Any]
         **_serialise_summary(o, customer_names(session, [o]).get(o.id)),
         "notes": o.notes,
         "packing": json.loads(o.packing_json) if o.packing_json else None,
+        # Rediseño de flujo: mismo bloque que la bandeja — la ficha pinta con
+        # él el stepper, la barra de alertas y el «siguiente paso».
+        "workflow": order_workflow(session, o),
         # Fase 2: paso de pago apuntado al convertir (opción B) y su cobro.
         "factusol_payment": _factusol_payment(o),
         # Documento de ORIGEN imprimible en FACTUSOL («PDF del pedido
@@ -671,6 +675,12 @@ def list_orders(
     # «pendiente» (factura sin cobro completo) o «sin_comprobar» (con factura
     # pero aún sin consultar FACTUSOL).
     cobro: str | None = Query(default=None, pattern="^(cobrada|pendiente|sin_comprobar)$"),
+    # Rediseño de flujo: cola de trabajo («lo que toca»), la organización
+    # PRIMARIA de la bandeja. Los filtros de estado siguen como refinamiento.
+    queue: str | None = Query(
+        default=None,
+        pattern="^(por_revisar|por_facturar|por_cobrar|por_enviar|incidencias|listo)$",
+    ),
     sort: str = Query(default="placed_desc"),
     limit: int = Query(default=100, ge=1, le=500),
     session: Session = Depends(get_session),
@@ -718,7 +728,21 @@ def list_orders(
         stmt.options(selectinload(Order.lines)).order_by(order_by).limit(limit)
     ))
     names = customer_names(session, rows)
-    return {"items": [_serialise_summary(o, names.get(o.id)) for o in rows]}
+    # Rediseño de flujo: el bloque `workflow` (cola + siguiente acción +
+    # alertas) lo calcula el backend UNA vez y lo consumen igual la bandeja y
+    # la ficha. Los contadores son de TODO lo filtrado, para que las pastillas
+    # de cola no cambien al elegir una.
+    from app.erp.workflow import queue_counts, workflows_for  # noqa: PLC0415
+
+    flows = workflows_for(session, rows)
+    counts = queue_counts(flows)
+    items = [
+        {**_serialise_summary(o, names.get(o.id)), "workflow": flows[o.id]}
+        for o in rows
+    ]
+    if queue:
+        items = [i for i in items if i["workflow"]["queue"] == queue]
+    return {"items": items, "queue_counts": counts, "queue": queue}
 
 
 @router.get("/pending-approval")

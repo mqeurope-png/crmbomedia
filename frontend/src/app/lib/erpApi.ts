@@ -15,6 +15,64 @@ export type InvoiceStatus =
   | "already_invoiced_externally" | "invoiced_by_erp";
 export type StatusDomain = "payment" | "preparation" | "transport" | "invoice";
 
+/** Rediseño de flujo (Fase 1) — el bloque `workflow` que calcula el backend
+ *  (`app/erp/workflow.py`) y consumen IGUAL la bandeja y la ficha: en qué cola
+ *  cae el pedido, qué acción toca y qué alertas tiene. El frontend no vuelve a
+ *  deducir el estado de flujo por su cuenta. */
+export type WorkflowQueue =
+  | "por_revisar" | "por_facturar" | "por_cobrar" | "por_enviar"
+  | "incidencias" | "listo";
+
+export type WorkflowAction =
+  | "aprobar" | "emitir_factura" | "registrar_cobro" | "crear_envio"
+  | "enviar_sat" | "marcar_completado" | "mapear_lineas" | "vincular_empresa"
+  | "revisar_incidencia" | "crear_albaran" | "ninguna";
+
+export type WorkflowAlert = {
+  code: string;
+  text: string;
+  action: WorkflowAction | null;
+  action_label: string | null;
+  /** Bloqueante: manda el pedido a la cola «Incidencias». */
+  blocking: boolean;
+};
+
+/** Un paso de la «línea de vida» del pedido (7 en la ficha). `skipped` = no
+ *  aplica (el albarán de un pedido web lo crea WooCommerce). */
+export type WorkflowStep = {
+  key: string;
+  label: string;
+  state: "done" | "now" | "pending" | "skipped";
+  detail: string | null;
+};
+
+export type WorkflowCompany = {
+  id: string;
+  name: string;
+  country: string | null;
+  /** Nº de cliente en FACTUSOL (F_CLI) o null si no está vinculada. */
+  factusol_id: string | null;
+  regime: string | null;
+};
+
+export type OrderWorkflow = {
+  queue: WorkflowQueue;
+  queue_label: string;
+  next_action: WorkflowAction;
+  next_action_label: string;
+  next_action_hint: string;
+  alerts: WorkflowAlert[];
+  blocked: boolean;
+  steps: WorkflowStep[];
+  /** Régimen de IVA del cliente: nacional / intracomunitario / exportacion. */
+  regime: string | null;
+  company: WorkflowCompany | null;
+};
+
+export const WORKFLOW_QUEUES: readonly WorkflowQueue[] = [
+  "por_revisar", "por_facturar", "por_cobrar", "por_enviar", "incidencias", "listo",
+] as const;
+
 export type OrderSummary = {
   id: string;
   order_number: string;
@@ -72,6 +130,8 @@ export type OrderSummary = {
   /** Fase 2: nº del albarán FACTUSOL (`5-500008`) creado por BoHub al
    *  convertir la proforma / pedido de cliente. Los pedidos web no lo llevan. */
   factusol_albaran_number?: string | null;
+  /** Rediseño de flujo: cola, siguiente acción y alertas (calculado). */
+  workflow?: OrderWorkflow;
 };
 
 export type Blocker = { code: string; detail: string };
@@ -138,6 +198,9 @@ export type OrderDetail = OrderSummary & {
    *  o el F_PCL de un pedido web (`by_ref`: se localiza por REFPCL al
    *  descargar). `null` = sin documento → el botón se deshabilita. */
   factusol_document?: FactusolOriginDocument | null;
+  /** Rediseño de flujo: el MISMO bloque que recibe la bandeja (stepper de la
+   *  «línea de vida», siguiente paso y alertas). */
+  workflow?: OrderWorkflow;
 };
 
 export type FactusolOriginDocument = {
@@ -241,11 +304,26 @@ export type OrderFilters = {
   completed?: boolean;
   /** Cobro FACTUSOL (estado contable): cobrada / pendiente / sin_comprobar. */
   cobro?: "cobrada" | "pendiente" | "sin_comprobar";
+  /** Rediseño de flujo: cola de trabajo (la organización primaria de la
+   *  bandeja). Los contadores llegan SIEMPRE completos, con filtro o sin él. */
+  queue?: WorkflowQueue;
   sort?: string;
   limit?: number;
 };
 
-export async function listOrders(filters: OrderFilters = {}): Promise<OrderSummary[]> {
+/** Lo que devuelve la bandeja: los pedidos (con su `workflow`) y el contador
+ *  de cada cola, calculado sobre todo lo filtrado ANTES de elegir cola. */
+export type OrdersBandeja = {
+  items: OrderSummary[];
+  queue_counts: Record<WorkflowQueue, number>;
+  queue: WorkflowQueue | null;
+};
+
+const EMPTY_QUEUE_COUNTS = Object.fromEntries(
+  WORKFLOW_QUEUES.map((q) => [q, 0]),
+) as Record<WorkflowQueue, number>;
+
+export async function listOrders(filters: OrderFilters = {}): Promise<OrdersBandeja> {
   const { show_external, show_excluded, completed, ...rest } = filters;
   const query = qs({
     ...rest,
@@ -253,8 +331,12 @@ export async function listOrders(filters: OrderFilters = {}): Promise<OrderSumma
     show_excluded: show_excluded ? "true" : undefined,
     completed: completed === undefined ? undefined : String(completed),
   });
-  const r = await apiFetch<{ items: OrderSummary[] }>(`/api/erp/orders${query}`);
-  return r.items;
+  const r = await apiFetch<Partial<OrdersBandeja>>(`/api/erp/orders${query}`);
+  return {
+    items: r.items ?? [],
+    queue_counts: { ...EMPTY_QUEUE_COUNTS, ...(r.queue_counts ?? {}) },
+    queue: r.queue ?? null,
+  };
 }
 
 export async function getOrder(id: string): Promise<OrderDetail> {

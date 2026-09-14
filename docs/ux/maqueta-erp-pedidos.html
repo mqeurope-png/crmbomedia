@@ -1,0 +1,253 @@
+<meta charset="utf-8">
+<title>BoHub ERP · rediseño de flujo</title>
+<style>
+  :root{
+    --bg:#f4f5f7;--card:#fff;--ink:#1b2330;--muted:#6b7280;--faint:#9aa2ad;
+    --line:#e7e9ee;--line2:#eef0f4;--brand:#2f6bff;--brand-ink:#1e40af;
+    --g-bg:#e7f6ec;--g-ink:#1f7a45;--a-bg:#fdf1dd;--a-ink:#9a6700;
+    --b-bg:#e8f0ff;--b-ink:#2451c7;--t-bg:#e6f5f3;--t-ink:#0f766e;
+    --n-bg:#eef0f4;--n-ink:#5b6472;--r-bg:#fdeaea;--r-ink:#b42318;--p-bg:#f0e9fd;--p-ink:#6d3fc4;
+    --radius:12px;--shadow:0 1px 2px rgba(20,30,50,.04),0 1px 3px rgba(20,30,50,.06);
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:1120px;margin:0 auto;padding:18px 22px 60px}
+  .topswitch{display:flex;gap:6px;margin:6px 0 18px;flex-wrap:wrap}
+  .topswitch button{border:1px solid var(--line);background:var(--card);color:var(--muted);padding:7px 14px;border-radius:999px;font-weight:500;font-size:13.5px;cursor:pointer}
+  .topswitch button.on{background:var(--ink);color:#fff;border-color:var(--ink)}
+  .note{background:#fff8e8;border:1px solid #f2e2b8;color:#7a5b12;border-radius:10px;padding:10px 14px;font-size:13px;margin-bottom:18px}
+  .screen{display:none}.screen.on{display:block}
+  .btn{border:1px solid var(--line);background:var(--card);color:var(--ink);padding:8px 13px;border-radius:9px;font-weight:500;font-size:13.5px;cursor:pointer;display:inline-flex;gap:6px;align-items:center;white-space:nowrap}
+  .btn:hover{border-color:#cfd4dc;background:#fbfbfc}
+  .btn.primary{background:var(--brand);border-color:var(--brand);color:#fff}.btn.primary:hover{background:#255ae6}
+  .btn.sm{padding:6px 11px;font-size:13px}
+  .pill{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;font-weight:500;padding:3px 8px;border-radius:6px}
+  .pill.g{background:var(--g-bg);color:var(--g-ink)}.pill.a{background:var(--a-bg);color:var(--a-ink)}
+  .pill.b{background:var(--b-bg);color:var(--b-ink)}.pill.t{background:var(--t-bg);color:var(--t-ink)}
+  .pill.n{background:var(--n-bg);color:var(--n-ink)}.pill.r{background:var(--r-bg);color:var(--r-ink)}.pill.p{background:var(--p-bg);color:var(--p-ink)}
+  .dot{width:6px;height:6px;border-radius:50%;background:currentColor;opacity:.75}
+  .muted{color:var(--muted)}.mono{font-variant-numeric:tabular-nums}
+  .head{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;margin-bottom:16px;flex-wrap:wrap}
+  .head h1{font-size:22px;margin:0 0 3px;font-weight:600;letter-spacing:-.01em}
+  .head .sub{color:var(--muted);font-size:13.5px}
+  .kebab{border:1px solid var(--line);background:var(--card);width:31px;height:31px;border-radius:8px;display:grid;place-items:center;cursor:pointer;color:var(--muted)}
+  .queues{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:20px}
+  .q{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:13px 14px;cursor:pointer;box-shadow:var(--shadow);border-top:3px solid var(--qc,var(--line))}
+  .q.on{border-color:var(--qc);box-shadow:0 0 0 2px color-mix(in srgb,var(--qc) 25%,transparent)}
+  .q .n{font-size:26px;font-weight:600;letter-spacing:-.02em;line-height:1}
+  .q .l{font-size:12.5px;color:var(--muted);margin-top:5px;display:flex;align-items:center;gap:6px}
+  .qtitle{display:flex;align-items:center;gap:8px;margin:0 0 10px;font-size:14px;font-weight:600}
+  .qtitle .cnt{color:var(--faint);font-weight:400}
+  .list{display:flex;flex-direction:column;gap:9px}
+  .item{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:13px 16px;display:grid;grid-template-columns:1fr auto;gap:12px;align-items:center}
+  .item.alert{border-left:3px solid #e2554a}
+  .il{min-width:0}
+  .il .r1{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+  .oid{font-weight:600;color:var(--brand-ink);font-size:15px;letter-spacing:-.01em}
+  .src{font-size:10.5px;font-weight:600;letter-spacing:.02em;text-transform:uppercase;color:var(--n-ink);background:var(--n-bg);padding:1px 7px;border-radius:5px}
+  .src.woo{color:var(--p-ink);background:var(--p-bg)}.src.man{color:var(--t-ink);background:var(--t-bg)}
+  .il .r2{color:var(--muted);font-size:13px;margin-top:4px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  .why{display:flex;align-items:center;gap:6px;font-size:12.5px;margin-top:7px;color:var(--a-ink)}
+  .why.err{color:var(--r-ink)}.why svg{flex:none}
+  .ir{display:flex;flex-direction:column;align-items:flex-end;gap:6px}
+  .amt{font-weight:600;font-variant-numeric:tabular-nums;font-size:15px}
+  .amt small{display:block;color:var(--faint);font-weight:400;font-size:11px;text-align:right}
+  .iract{display:flex;gap:6px;align-items:center}
+  .fhead{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:16px 20px;margin-bottom:14px}
+  .fhead .crumb{color:var(--faint);font-size:12.5px;margin-bottom:7px}
+  .ftop{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap}
+  .ftop h1{margin:0;font-size:20px;font-weight:600;letter-spacing:-.01em}
+  .ftop .cl{color:var(--muted);font-size:13.5px;margin-top:4px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  .alertbar{background:#fef6ec;border:1px solid #f3dcae;border-radius:10px;padding:11px 14px;margin-bottom:14px;display:flex;flex-direction:column;gap:7px}
+  .alertbar.ok{background:#eef8f0;border-color:#cfe8d5}
+  .alertbar .a{display:flex;align-items:center;gap:9px;font-size:13px;color:#8a5a0a}
+  .alertbar.ok .a{color:var(--g-ink)}
+  .alertbar .a .fix{margin-left:auto}
+  .steps{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:6px 4px;margin-bottom:14px;display:grid;grid-template-columns:repeat(7,1fr)}
+  .step{padding:14px 10px;text-align:center;border-right:1px solid var(--line2)}.step:last-child{border-right:none}
+  .step .ic{width:30px;height:30px;border-radius:50%;margin:0 auto 8px;display:grid;place-items:center;background:var(--n-bg);color:var(--faint);font-size:15px}
+  .step.done .ic{background:var(--g-bg);color:var(--g-ink)}
+  .step.now .ic{background:var(--brand);color:#fff;box-shadow:0 0 0 4px #e8f0ff}
+  .step .t{font-size:12px;font-weight:500}.step .d{font-size:11px;color:var(--faint);margin-top:2px;min-height:14px}
+  .step.now .t{color:var(--brand-ink)}
+  .nowbar{background:#eef4ff;border:1px solid #cfe0ff;border-radius:12px;padding:14px 18px;margin-bottom:14px;display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+  .nowbar .txt{flex:1;min-width:200px}
+  .nowbar .txt .k{font-size:12px;color:var(--brand-ink);font-weight:600;text-transform:uppercase;letter-spacing:.03em}
+  .nowbar .txt .v{font-size:15px;margin-top:2px}
+  .grid2{display:grid;grid-template-columns:1.1fr .9fr;gap:14px}
+  .panel{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:15px 18px;margin-bottom:14px}
+  .panel h3{margin:0 0 11px;font-size:13px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;display:flex;justify-content:space-between;align-items:center}
+  .kv{display:flex;justify-content:space-between;gap:10px;padding:7px 0;border-top:1px solid var(--line2);font-size:13.5px}
+  .kv:first-child{border-top:none}.kv .k{color:var(--muted)}
+  .big{display:flex;justify-content:space-between;align-items:baseline;padding-top:9px;margin-top:5px;border-top:1px solid var(--line)}
+  .big .n{font-size:22px;font-weight:600;font-variant-numeric:tabular-nums}
+  .tabs{display:flex;gap:4px;margin-bottom:12px;flex-wrap:wrap}
+  .tabs button{border:1px solid var(--line);background:var(--card);color:var(--muted);padding:7px 13px;border-radius:8px;font-size:13px;font-weight:500;cursor:pointer}
+  .tabs button.on{background:var(--b-bg);color:var(--b-ink);border-color:#c7dbff}
+  .dtable{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);overflow:hidden}
+  .drow{display:grid;grid-template-columns:120px 1fr 130px 150px auto;gap:12px;align-items:center;padding:12px 16px;border-top:1px solid var(--line2);font-size:13.5px}
+  .drow:first-child{border-top:none}.drow:hover{background:#fafbfc}
+  .dhead{background:#fafbfc;color:var(--faint);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;border-bottom:1px solid var(--line)}
+  .satgrid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}
+  .satc{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:15px 17px}
+  .satc .r1{display:flex;align-items:center;gap:9px;margin-bottom:9px;flex-wrap:wrap}
+  .satc .specs{display:grid;grid-template-columns:1fr 1fr;gap:6px 14px;font-size:13px;margin-bottom:12px}
+  .satc .specs .k{color:var(--faint);font-size:11px;text-transform:uppercase;letter-spacing:.03em}
+  .satc .acts{display:flex;gap:7px;flex-wrap:wrap;border-top:1px solid var(--line2);padding-top:11px}
+  .fld{width:100%;border:1px solid var(--line);border-radius:9px;padding:10px 12px;font-size:14px;background:var(--card);color:var(--ink)}
+  .combo{border:1px solid var(--brand);border-top:none;border-radius:0 0 10px 10px;background:var(--card);box-shadow:var(--shadow);overflow:hidden;margin-top:-1px}
+  .citem{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:11px 13px;border-top:1px solid var(--line2);font-size:13.5px;cursor:pointer}
+  .citem:hover{background:#f7f9ff}
+  .cmeta{color:var(--muted);font-size:12px;margin-top:2px;display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+  .citem.create{color:var(--brand-ink);font-weight:500;background:#f2f6ff}
+  .slabel{font-size:12px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:12px}
+  .flabel{font-size:12.5px;color:var(--muted);margin-bottom:5px}
+  .frow{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px}
+  .frow3{display:grid;grid-template-columns:.7fr 1.3fr 1fr;gap:12px}
+  .detect{display:flex;align-items:center;gap:7px;font-size:13px;color:var(--g-ink);background:var(--g-bg);border-radius:9px;padding:9px 12px;margin-top:4px}
+  .hint{display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--muted);margin-top:9px}
+  @media(max-width:940px){.queues{grid-template-columns:repeat(2,1fr)}.grid2{grid-template-columns:1fr}.satgrid{grid-template-columns:1fr}
+    .steps{grid-template-columns:repeat(7,minmax(84px,1fr));overflow-x:auto}.drow{grid-template-columns:1fr 1fr}}
+  @media(max-width:560px){.item{grid-template-columns:1fr}.ir{align-items:flex-start}.iract{flex-wrap:wrap}.frow,.frow3{grid-template-columns:1fr}}
+</style>
+<div class="wrap">
+  <div class="topswitch">
+    <button class="on" data-s="bandeja">Bandeja</button>
+    <button data-s="ficha">Ficha pedido</button>
+    <button data-s="empresa">Ficha empresa</button>
+    <button data-s="proformas">Proformas</button>
+    <button data-s="docs">Documentos</button>
+    <button data-s="sat">Cola SAT</button>
+    <button data-s="contacto">Contacto → empresa</button>
+    <button data-s="crearempresa">Crear empresa</button>
+  </div>
+  <div class="note">Rediseño de <b>flujo</b> (qué toca hacer + info que decide la acción), no de estética.</div>
+  <div class="screen on" id="bandeja">
+    <div class="head"><div><h1>Pedidos</h1><div class="sub">Ordenado por lo que hay que hacer, no por fecha.</div></div><button class="btn primary">+ Nuevo pedido</button></div>
+    <div class="queues">
+      <div class="q on" style="--qc:#e0a92a"><div class="n">4</div><div class="l"><span class="dot" style="background:#e0a92a"></span>Por revisar</div></div>
+      <div class="q" style="--qc:#2f6bff"><div class="n">6</div><div class="l"><span class="dot" style="background:#2f6bff"></span>Por facturar</div></div>
+      <div class="q" style="--qc:#1f9d74"><div class="n">3</div><div class="l"><span class="dot" style="background:#1f9d74"></span>Por cobrar</div></div>
+      <div class="q" style="--qc:#7a4bd6"><div class="n">5</div><div class="l"><span class="dot" style="background:#7a4bd6"></span>Por enviar</div></div>
+      <div class="q" style="--qc:#e2554a"><div class="n">2</div><div class="l"><span class="dot" style="background:#e2554a"></span>Incidencias</div></div>
+    </div>
+    <div class="qtitle">Por revisar <span class="cnt">· 4 pedidos esperando tu aprobación</span></div>
+    <div class="list">
+      <div class="item"><div class="il"><div class="r1"><span class="oid">BOPRIN-99929</span><span class="src woo">woo · boprint</span><span class="pill g"><span class="dot"></span>Pagado</span></div><div class="r2">Bruno García · Grabados FG · hace 5 días · 12 líneas</div></div><div class="ir"><div class="amt">1.720,62 €<small>IVA 21% · nacional</small></div><div class="iract"><button class="btn primary sm">Aprobar</button><button class="btn sm">Abrir</button></div></div></div>
+      <div class="item alert"><div class="il"><div class="r1"><span class="oid">ARTISJ-9544</span><span class="src woo">woo · artisjet</span><span class="pill g"><span class="dot"></span>Pagado</span></div><div class="r2">Alexandre · La Maison de la Plaque (Francia)</div><div class="why err">! Cliente intracomunitario — la factura debe salir <b>sin IVA</b></div></div><div class="ir"><div class="amt">351,52 €<small>exento</small></div><div class="iract"><button class="btn primary sm">Revisar y aprobar</button></div></div></div>
+      <div class="item alert"><div class="il"><div class="r1"><span class="oid">PRO-004352</span><span class="src man">manual</span><span class="pill g"><span class="dot"></span>Pagado</span></div><div class="r2">Eduard Riera · albarán 1-100327 creado</div><div class="why">! 1 línea <b>sin mapear</b> a artículo FACTUSOL</div></div><div class="ir"><div class="amt">60,50 €<small>IVA incl.</small></div><div class="iract"><button class="btn primary sm">Mapear línea</button><button class="btn sm">Abrir</button></div></div></div>
+      <div class="item"><div class="il"><div class="r1"><span class="oid">FLUXLA-5787</span><span class="src woo">woo · fluxlasers</span><span class="pill a"><span class="dot"></span>Pendiente de pago</span></div><div class="r2">Ismael Blanco · hace 4 días</div></div><div class="ir"><div class="amt">61,71 €<small>IVA incl.</small></div><div class="iract"><button class="btn sm">Aprobar igualmente</button></div></div></div>
+    </div>
+  </div>
+  <div class="screen" id="ficha">
+    <div class="fhead"><div class="crumb">ERP › Pedidos › <b>ARTISJ-9544</b></div><div class="ftop"><div><h1>ARTISJ-9544</h1><div class="cl">Alexandre · La Maison de la Plaque <span class="pill p">Francia · intracomunitario</span></div></div><div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn sm">PDF</button><button class="btn sm">Enviar a SAT</button><div class="kebab">⋯</div></div></div></div>
+    <div class="alertbar"><div class="a">! Cliente intracomunitario: factura <b>sin IVA</b>. Régimen en FACTUSOL: <b>correcto</b>.<button class="btn sm fix">Ver ficha cliente</button></div></div>
+    <div class="steps">
+      <div class="step done"><div class="ic">✓</div><div class="t">Creado</div><div class="d">8 sep</div></div>
+      <div class="step done"><div class="ic">✓</div><div class="t">Pagado</div><div class="d">351,52 €</div></div>
+      <div class="step done"><div class="ic">✓</div><div class="t">Aprobado</div><div class="d">9 sep</div></div>
+      <div class="step done"><div class="ic">✓</div><div class="t">Albarán</div><div class="d">2-100418</div></div>
+      <div class="step now"><div class="ic">$</div><div class="t">Factura</div><div class="d">pendiente</div></div>
+      <div class="step"><div class="ic">◔</div><div class="t">Cobro</div><div class="d">—</div></div>
+      <div class="step"><div class="ic">✈</div><div class="t">Enviado</div><div class="d">—</div></div>
+    </div>
+    <div class="nowbar"><div class="txt"><div class="k">Siguiente paso</div><div class="v">Emitir la factura (saldrá <b>exenta</b>). El cobro se registra solo al emitirla.</div></div><button class="btn primary">Emitir factura</button><button class="btn">Marcar completado</button></div>
+    <div class="grid2">
+      <div class="panel"><h3>Resumen económico</h3><div class="kv"><span class="k">Base imponible</span><span class="mono">351,52 €</span></div><div class="kv"><span class="k">IVA (intracomunitario)</span><span class="mono">0,00 € · exento</span></div><div class="kv"><span class="k">Forma de pago</span><span>Transferencia · MQ Europe</span></div><div class="big"><span class="k" style="color:var(--muted);font-size:13px">Total</span><span class="n">351,52 €</span></div></div>
+      <div class="panel"><h3>FACTUSOL</h3><div class="kv"><span class="k">Cliente</span><span>4470 · vinculado ✓</span></div><div class="kv"><span class="k">Albarán</span><span class="mono">2-100418 · PDF</span></div><div class="kv"><span class="k">Factura</span><span class="muted">pendiente</span></div><div class="kv"><span class="k">Cobro</span><span class="muted">—</span></div></div>
+    </div>
+  </div>
+  <div class="screen" id="empresa">
+    <div class="fhead"><div class="crumb">Empresas › <b>La Maison de la Plaque</b></div><div class="ftop"><div><h1>SAS La Maison de la Plaque</h1><div class="cl mono">FR16339753527 <span class="pill p">Francia · intracomunitario</span> <span class="pill g">FACTUSOL nº 2760 ✓</span></div></div><div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn primary sm">+ Nuevo pedido</button><button class="btn sm">Nueva proforma</button><div class="kebab">⋯</div></div></div></div>
+    <div class="alertbar"><div class="a">! Los datos del CRM no coinciden con FACTUSOL (dirección, CP). FACTUSOL es la fuente de verdad.<button class="btn sm fix">Traer datos de FACTUSOL</button></div></div>
+    <div class="grid2">
+      <div class="panel"><h3>Datos fiscales <span class="pill g" style="text-transform:none;letter-spacing:0">sincronizado</span></h3><div class="kv"><span class="k">NIF / VAT</span><span class="mono">FR16339753527</span></div><div class="kv"><span class="k">Régimen IVA</span><span>Intracomunitario · exento</span></div><div class="kv"><span class="k">Dirección</span><span>Rue du Chemin Noir · 21120 Is-sur-Tille</span></div><div class="kv"><span class="k">País</span><span>Francia (250)</span></div></div>
+      <div class="panel"><h3>Actividad reciente</h3><div class="kv"><span>Pedido ARTISJ-9544</span><span class="pill b">por facturar</span></div><div class="kv"><span>Factura 2-526079</span><span class="pill g">cobrada</span></div><div class="kv"><span>Proforma 2-000071</span><span class="pill a">pendiente</span></div><div class="kv"><span class="muted">Contacto</span><span>Alexandre · alex@…</span></div></div>
+    </div>
+  </div>
+  <div class="screen" id="proformas">
+    <div class="head"><div><h1>Proformas</h1><div class="sub">Presupuestos enviados y su estado.</div></div><button class="btn primary">+ Nueva proforma</button></div>
+    <div class="queues" style="grid-template-columns:repeat(3,1fr)">
+      <div class="q on" style="--qc:#1f9d74"><div class="n">3</div><div class="l"><span class="dot" style="background:#1f9d74"></span>Aceptadas · por convertir</div></div>
+      <div class="q" style="--qc:#e0a92a"><div class="n">8</div><div class="l"><span class="dot" style="background:#e0a92a"></span>Pendientes de respuesta</div></div>
+      <div class="q" style="--qc:#9aa2ad"><div class="n">2</div><div class="l"><span class="dot" style="background:#9aa2ad"></span>Rechazadas</div></div>
+    </div>
+    <div class="qtitle">Aceptadas · por convertir <span class="cnt">· listas para pasar a pedido</span></div>
+    <div class="list">
+      <div class="item"><div class="il"><div class="r1"><span class="oid">5-000039</span><span class="pill g">aceptada</span></div><div class="r2">Ligue Braille (Bélgica · intracom) · 04 sep</div></div><div class="ir"><div class="amt">4.770,00 €<small>exento</small></div><div class="iract"><button class="btn primary sm">Convertir en pedido</button><button class="btn sm">PDF</button></div></div></div>
+      <div class="item"><div class="il"><div class="r1"><span class="oid">2-000071</span><span class="pill g">aceptada</span></div><div class="r2">PREMO B.V. (Holanda · intracom) · 04 sep</div></div><div class="ir"><div class="amt">5.059,00 €<small>exento</small></div><div class="iract"><button class="btn primary sm">Convertir en pedido</button><button class="btn sm">PDF</button></div></div></div>
+      <div class="item"><div class="il"><div class="r1"><span class="oid">5-000037</span><span class="pill g">aceptada</span></div><div class="r2">SPRL Clossetcadeaux (Bélgica · intracom) · 26 ago</div></div><div class="ir"><div class="amt">331,00 €<small>exento</small></div><div class="iract"><button class="btn primary sm">Convertir en pedido</button><button class="btn sm">PDF</button></div></div></div>
+    </div>
+  </div>
+  <div class="screen" id="docs">
+    <div class="head"><div><h1>Documentos FACTUSOL</h1><div class="sub">Explorador de presupuestos, pedidos, albaranes y facturas.</div></div></div>
+    <div class="tabs"><button>Presupuestos</button><button>Pedidos cliente</button><button>Albaranes</button><button class="on">Facturas</button></div>
+    <div class="dtable">
+      <div class="drow dhead"><div>Nº</div><div>Cliente</div><div style="text-align:right">Total</div><div>Estado</div><div style="text-align:right">Acciones</div></div>
+      <div class="drow"><div class="oid" style="font-size:14px">2-526087</div><div>La Maison de la Plaque <span class="pill p" style="font-size:10px">intracom</span></div><div class="mono" style="text-align:right">351,52 €</div><div><span class="pill a">pend. cobro</span></div><div style="text-align:right"><button class="btn sm">Registrar cobro</button><button class="btn sm">PDF</button></div></div>
+      <div class="drow"><div class="oid" style="font-size:14px">5-260082</div><div>Rocío Bueno Salas</div><div class="mono" style="text-align:right">70,18 €</div><div><span class="pill g">cobrada</span></div><div style="text-align:right"><button class="btn sm">PDF</button></div></div>
+      <div class="drow"><div class="oid" style="font-size:14px">5-260085</div><div>Antonio Molina Puerto</div><div class="mono" style="text-align:right">347,27 €</div><div><span class="pill a">pend. cobro</span></div><div style="text-align:right"><button class="btn sm">Registrar cobro</button><button class="btn sm">PDF</button></div></div>
+    </div>
+  </div>
+  <div class="screen" id="sat">
+    <div class="head"><div><h1>Cola del taller (SAT)</h1><div class="sub">Lo que el taller necesita para preparar cada envío.</div></div></div>
+    <div class="satgrid">
+      <div class="satc">
+        <div class="r1"><span class="oid">MANUAL-000002</span><span class="src man">manual</span><span class="pill b">en cola</span></div>
+        <div class="specs"><div><div class="k">Nº serie</div>FBAP12613200249</div><div><div class="k">Licencia WhiteRIP</div>4829</div><div><div class="k">Origen envío</div>OFI-TER-SAT</div><div><div class="k">Observaciones</div>Recoge el cliente</div></div>
+        <div class="acts"><button class="btn primary sm">Enviar a SAT por email</button><button class="btn sm">Marcar procesado</button><button class="btn sm">Albarán PDF</button></div>
+      </div>
+    </div>
+  </div>
+  <div class="screen" id="contacto">
+    <div class="head"><div><h1>Crear contacto</h1><div class="sub">El buscador de empresa es el mismo aquí y en la ficha (adiós al desplegable gigante y al modal raro).</div></div></div>
+    <div style="max-width:560px">
+      <div class="panel">
+        <div style="margin-bottom:14px"><div style="font-size:13px;color:var(--muted);margin-bottom:5px">Nombre</div><input class="fld" placeholder="Nombre y apellidos"></div>
+        <div style="margin-bottom:14px"><div style="font-size:13px;color:var(--muted);margin-bottom:5px">Email</div><input class="fld" placeholder="nombre@empresa.com"></div>
+        <div style="position:relative">
+          <div style="font-size:13px;color:var(--muted);margin-bottom:5px">Empresa</div>
+          <input class="fld" value="la mai" style="border-color:var(--brand)">
+          <div class="combo">
+            <div class="citem"><div><b>SAS La Maison de la Plaque</b><div class="cmeta">FR16339753527 · Francia · <span class="pill g" style="font-size:10px">en FACTUSOL 2760</span></div></div><span class="muted">Elegir</span></div>
+            <div class="citem"><div><b>La Maison du Cadeau</b><div class="cmeta">B-98xxxxxx · España · <span class="pill n" style="font-size:10px">solo CRM</span></div></div><span class="muted">Elegir</span></div>
+            <div class="citem create">+ Crear empresa nueva «<b>la mai</b>»</div>
+          </div>
+        </div>
+        <div style="font-size:12.5px;color:var(--faint);margin:10px 0 16px">Escribe para buscar por nombre, CIF o dominio. Si no existe, créala sin salir de aquí.</div>
+        <button class="btn primary" style="width:100%;justify-content:center">Crear contacto</button>
+      </div>
+    </div>
+  </div>
+  <div class="screen" id="crearempresa">
+    <div class="head"><div><h1>Crear empresa</h1><div class="sub">Los datos fiscales mandan: de aquí sale todo (pedidos, albaranes, facturas, IVA).</div></div></div>
+    <div style="max-width:680px">
+      <div class="panel">
+        <div class="slabel">Identificación fiscal</div>
+        <div class="frow"><div style="grid-column:1/-1"><div class="flabel">Nombre fiscal *</div><input class="fld" value="SAS La Maison de la Plaque"></div></div>
+        <div class="frow"><div><div class="flabel">NIF / CIF / VAT</div><input class="fld" value="FR16339753527"></div><div><div class="flabel">País</div><input class="fld" value="Francia"></div></div>
+        <div class="detect">✓ Régimen detectado: <span class="pill p" style="margin-left:4px">Intracomunitario · sin IVA</span> <span class="muted" style="margin-left:auto;font-size:12px">País UE + VAT válido (verificar en VIES)</span></div>
+        <div class="hint">i No existe en FACTUSOL con ese NIF. Se creará como cliente nuevo al guardar.</div>
+      </div>
+      <div class="panel">
+        <div class="slabel">Dirección</div>
+        <div class="frow"><div style="grid-column:1/-1"><div class="flabel">Domicilio</div><input class="fld" value="Rue du Chemin Noir"></div></div>
+        <div class="frow3"><div><div class="flabel">CP</div><input class="fld" value="21120"></div><div><div class="flabel">Población</div><input class="fld" value="Is-sur-Tille"></div><div><div class="flabel">Provincia</div><input class="fld" placeholder="—"></div></div>
+      </div>
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <button class="btn primary">Crear empresa</button>
+        <button class="btn">Cancelar</button>
+        <label class="muted" style="display:flex;align-items:center;gap:7px;font-size:13.5px;margin-left:auto"><input type="checkbox" checked> Crear también en FACTUSOL</label>
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+  document.querySelectorAll('.topswitch button').forEach(b=>b.addEventListener('click',()=>{
+    document.querySelectorAll('.topswitch button').forEach(x=>x.classList.remove('on'));b.classList.add('on');
+    document.querySelectorAll('.screen').forEach(s=>s.classList.remove('on'));document.getElementById(b.dataset.s).classList.add('on');
+  }));
+  document.querySelectorAll('.q').forEach(q=>q.addEventListener('click',()=>{q.parentElement.querySelectorAll('.q').forEach(x=>x.classList.remove('on'));q.classList.add('on');}));
+  document.querySelectorAll('.tabs button').forEach(t=>t.addEventListener('click',()=>{t.parentElement.querySelectorAll('button').forEach(x=>x.classList.remove('on'));t.classList.add('on');}));
+</script>
+

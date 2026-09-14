@@ -77,6 +77,17 @@ function order(over = {}) {
   };
 }
 
+/** La bandeja pide ahora la envoltura con contadores de cola. */
+function page(items: unknown[]) {
+  return { items, queue_counts: {}, queue: null };
+}
+
+/** Las acciones por fila viven en el menú «⋯» de la tarjeta (rediseño de
+ *  flujo): hay que abrirlo antes de pulsarlas. */
+async function abrirMenu(user: ReturnType<typeof userEvent.setup>, numero: string) {
+  await user.click(screen.getByRole("button", { name: `Más acciones ${numero}` }));
+}
+
 const ROWS = [
   // A: cobrada en FACTUSOL aunque el CRM diga «Pendiente» de pago.
   order(),
@@ -94,12 +105,12 @@ const ROWS = [
 ];
 
 function row(number: string) {
-  return screen.getByText(number).closest("tr") as HTMLTableRowElement;
+  return screen.getByText(number).closest("[data-order-row]") as HTMLElement;
 }
 
 beforeEach(() => {
   (listOrders as jest.Mock).mockReset();
-  (listOrders as jest.Mock).mockResolvedValue(ROWS);
+  (listOrders as jest.Mock).mockResolvedValue(page(ROWS));
   (refreshOrdersFactusolCobro as jest.Mock).mockReset();
 });
 
@@ -143,13 +154,16 @@ describe("ERP · Bandeja — cobro FACTUSOL por fila, filtro, botón y TOTAL con
     render(<ErpOrdersPage />);
     await screen.findByText("BOPRIN-99930");
     // A ya cobrada → «Cobrado» deshabilitado; C sin factura → deshabilitado con tooltip.
+    await abrirMenu(user, "BOPRIN-99930");
     const btnA = screen.getByRole("button", { name: "Registrar cobro BOPRIN-99930" });
     expect(btnA).toBeDisabled();
     expect(btnA).toHaveTextContent("Cobrado");
+    await abrirMenu(user, "BOPRIN-99932");
     const btnC = screen.getByRole("button", { name: "Registrar cobro BOPRIN-99932" });
     expect(btnC).toBeDisabled();
     expect(btnC).toHaveAttribute("title", expect.stringMatching(/Emite la factura primero/));
     // B pendiente → abre el modal con ese pedido, sin salir de la bandeja.
+    await abrirMenu(user, "BOPRIN-99931");
     const btnB = screen.getByRole("button", { name: "Registrar cobro BOPRIN-99931" });
     expect(btnB).toBeEnabled();
     await user.click(btnB);
@@ -158,6 +172,7 @@ describe("ERP · Bandeja — cobro FACTUSOL por fila, filtro, botón y TOTAL con
     const calls = (listOrders as jest.Mock).mock.calls.length;
     await user.click(screen.getByRole("button", { name: "done" }));
     await waitFor(() => expect(within(row("BOPRIN-99931")).getByText("Cobrado FACTUSOL")).toBeInTheDocument());
+    await abrirMenu(user, "BOPRIN-99931");
     expect(screen.getByRole("button", { name: "Registrar cobro BOPRIN-99931" })).toBeDisabled();
     expect((listOrders as jest.Mock).mock.calls.length).toBe(calls);   // sin recargar la bandeja
     expect(screen.getByRole("status")).toHaveTextContent(/BOPRIN-99931: cobro registrado en FACTUSOL/);

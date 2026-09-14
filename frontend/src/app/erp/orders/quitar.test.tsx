@@ -47,6 +47,17 @@ function order(over = {}) {
   };
 }
 
+/** La bandeja pide ahora la envoltura con contadores de cola. */
+function page(items: unknown[]) {
+  return { items, queue_counts: {}, queue: null };
+}
+
+/** Las acciones por fila viven en el menú «⋯» de la tarjeta (rediseño de
+ *  flujo): hay que abrirlo antes de pulsarlas. */
+async function abrirMenu(user: ReturnType<typeof userEvent.setup>, numero: string) {
+  await user.click(screen.getByRole("button", { name: `Más acciones ${numero}` }));
+}
+
 const HIDDEN = order({
   excluded: true, seguimiento_excluded_at: "2026-09-10T18:00:00",
   seguimiento_excluded_reason: "prueba: probando agile", seguimiento_excluded_by_name: "Bart",
@@ -55,7 +66,7 @@ const HIDDEN = order({
 beforeEach(() => {
   (listOrders as jest.Mock).mockReset();
   (listOrders as jest.Mock).mockImplementation((f?: { show_excluded?: boolean }) =>
-    Promise.resolve(f?.show_excluded ? [HIDDEN] : [order()]),
+    Promise.resolve(page(f?.show_excluded ? [HIDDEN] : [order()])),
   );
   (previewExcludeSeguimiento as jest.Mock).mockReset();
   (previewExcludeSeguimiento as jest.Mock).mockResolvedValue({
@@ -82,6 +93,7 @@ describe("ERP · Pedidos (bandeja) — quitar / reincluir a mano", () => {
     const user = userEvent.setup();
     render(<ErpOrdersPage />);
     await screen.findByText("Mookase");
+    await abrirMenu(user, "BOPRIN-99922");
     await user.click(screen.getByRole("button", { name: "Quitar BOPRIN-99922 de la bandeja" }));
     const dialog = within(await screen.findByRole("dialog"));
     expect(dialog.getByRole("heading", { name: "Quitar BOPRIN-99922 de la bandeja" }))
@@ -101,10 +113,10 @@ describe("ERP · Pedidos (bandeja) — quitar / reincluir a mano", () => {
   });
 
   it("selección múltiple: «Quitar de la bandeja (n)» con un motivo común", async () => {
-    (listOrders as jest.Mock).mockImplementation(() => Promise.resolve([
+    (listOrders as jest.Mock).mockImplementation(() => Promise.resolve(page([
       order(),
       order({ id: "o-2", order_number: "BOPRIN-99927", company_name: "NEONLED" }),
-    ]));
+    ])));
     (previewExcludeSeguimiento as jest.Mock).mockResolvedValue({
       ok: true, items: [], con_avisos: 0, ya_excluidos: 0,
     });
@@ -140,6 +152,7 @@ describe("ERP · Pedidos (bandeja) — quitar / reincluir a mano", () => {
     expect(await screen.findByText("prueba: probando agile")).toBeInTheDocument();
     expect(screen.getByText(/10\/9\/2026 · Bart/)).toBeInTheDocument();
     expect(screen.getByTitle(/Quitado a mano de las listas de trabajo/)).toHaveTextContent("Oculto");
+    await abrirMenu(user, "BOPRIN-99922");
     await user.click(screen.getByRole("button", { name: "Reincluir BOPRIN-99922 en la bandeja" }));
     await waitFor(() => expect(includeSeguimiento).toHaveBeenCalledWith(["o-1"]));
     expect(await screen.findByRole("status")).toHaveTextContent(/1 pedido\(s\) reincluido\(s\)/);
@@ -150,6 +163,7 @@ describe("ERP · Pedidos (bandeja) — quitar / reincluir a mano", () => {
     (getCurrentUser as jest.Mock).mockResolvedValueOnce({ role: "user" });
     render(<ErpOrdersPage />);
     await screen.findByText("Mookase");
+    expect(screen.queryByRole("button", { name: /Más acciones/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Quitar/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("checkbox", { name: "Seleccionar BOPRIN-99922" })).not.toBeInTheDocument();
   });

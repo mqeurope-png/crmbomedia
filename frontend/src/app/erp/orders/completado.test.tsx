@@ -45,6 +45,17 @@ function order(over = {}) {
   };
 }
 
+/** La bandeja pide ahora la envoltura con contadores de cola. */
+function page(items: unknown[]) {
+  return { items, queue_counts: {}, queue: null };
+}
+
+/** Las acciones por fila viven en el menú «⋯» de la tarjeta (rediseño de
+ *  flujo): hay que abrirlo antes de pulsarlas. */
+async function abrirMenu(user: ReturnType<typeof userEvent.setup>, numero: string) {
+  await user.click(screen.getByRole("button", { name: `Más acciones ${numero}` }));
+}
+
 const DONE = order({
   completed: true, completed_at: "2026-09-10T18:00:00", completed_by_name: "Bart",
   invoice_status: "generated", factusol_invoice_number: "5-260100",
@@ -52,7 +63,7 @@ const DONE = order({
 
 beforeEach(() => {
   (listOrders as jest.Mock).mockReset();
-  (listOrders as jest.Mock).mockResolvedValue([order()]);
+  (listOrders as jest.Mock).mockResolvedValue(page([order()]));
   (completeOrder as jest.Mock).mockReset();
   (completeOrder as jest.Mock).mockResolvedValue({
     ...DONE, already_completed: false,
@@ -69,6 +80,7 @@ describe("ERP · Pedidos (bandeja) — marcar completado", () => {
     const user = userEvent.setup();
     render(<ErpOrdersPage />);
     await screen.findByText("Duplicoder");
+    await abrirMenu(user, "BOPRIN-99930");
     await user.click(screen.getByRole("button", { name: "Marcar completado BOPRIN-99930" }));
     expect(confirm).toHaveBeenCalledWith(expect.stringMatching(/aún no está facturado/));
     await waitFor(() => expect(completeOrder).toHaveBeenCalledWith("o-1"));
@@ -85,21 +97,23 @@ describe("ERP · Pedidos (bandeja) — marcar completado", () => {
     const user = userEvent.setup();
     render(<ErpOrdersPage />);
     await screen.findByText("Duplicoder");
+    await abrirMenu(user, "BOPRIN-99930");
     await user.click(screen.getByRole("button", { name: "Marcar completado BOPRIN-99930" }));
     expect(completeOrder).not.toHaveBeenCalled();
   });
 
   it("facturado: marca sin preguntar; el completado muestra el badge y «Desmarcar» lo revierte", async () => {
     const confirm = jest.spyOn(window, "confirm");
-    (listOrders as jest.Mock).mockResolvedValueOnce([order({
+    (listOrders as jest.Mock).mockResolvedValueOnce(page([order({
       invoice_status: "generated", factusol_invoice_number: "5-260100",
-    })]).mockResolvedValue([DONE]);
+    })])).mockResolvedValue(page([DONE]));
     (completeOrder as jest.Mock).mockResolvedValue({
       ...DONE, already_completed: false, completion_avisos: [],
     });
     const user = userEvent.setup();
     render(<ErpOrdersPage />);
     await screen.findByText("Duplicoder");
+    await abrirMenu(user, "BOPRIN-99930");
     await user.click(screen.getByRole("button", { name: "Marcar completado BOPRIN-99930" }));
     expect(confirm).not.toHaveBeenCalled();
     await waitFor(() => expect(completeOrder).toHaveBeenCalledWith("o-1"));
@@ -107,6 +121,7 @@ describe("ERP · Pedidos (bandeja) — marcar completado", () => {
     expect(await screen.findByText("Completado")).toHaveAttribute(
       "title", expect.stringMatching(/por Bart/),
     );
+    await abrirMenu(user, "BOPRIN-99930");
     await user.click(screen.getByRole("button", { name: "Desmarcar completado BOPRIN-99930" }));
     await waitFor(() => expect(uncompleteOrder).toHaveBeenCalledWith("o-1"));
     expect(await screen.findByText(/ya no está marcado como completado/)).toBeInTheDocument();

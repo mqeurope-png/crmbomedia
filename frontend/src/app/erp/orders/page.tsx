@@ -1,12 +1,19 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { PageHeader } from "../../components/PageHeader";
 import { CobroFactusolBadge } from "../../components/erp/CobroFactusolBadge";
 import { ExcludeSeguimientoModal } from "../../components/erp/ExcludeSeguimientoModal";
 import { OrderStatusBadge } from "../../components/erp/OrderStatusBadge";
 import { RegistrarCobroModal } from "../../components/erp/RegistrarCobroModal";
+import {
+  QUEUE_HINT,
+  QUEUE_LABEL,
+  WorkflowQueueCards,
+} from "../../components/erp/flow/WorkflowQueueCards";
+import { WorkflowAlerts } from "../../components/erp/flow/WorkflowAlerts";
+import { regimeLabel } from "../../components/erp/flow/RegimePill";
 import { getCurrentUser, type User } from "../../lib/api";
 import { extractErrorMessage } from "../../lib/errors";
 import {
@@ -22,11 +29,8 @@ import {
   type OrderSummary,
   refreshOrdersFactusolCobro,
   uncompleteOrder,
+  type WorkflowQueue,
 } from "../../lib/erpApi";
-
-const STORES = [
-  { value: "", label: "Todas las tiendas" },
-];
 
 const INVOICED_STATUSES = new Set(["generated", "invoiced_by_erp", "already_invoiced_externally"]);
 function isInvoiced(o: { invoice_status: string; factusol_invoice_number: string | null }): boolean {
@@ -39,14 +43,37 @@ function d(iso: string | null | undefined): string {
   return `${Number(day)}/${Number(m)}/${y}`;
 }
 
-/** ERP · Pedidos — la bandeja principal (los 4 estados de cada pedido).
- *  Control manual (#388 + bandeja): «Quitar» por fila y en bloque saca el
- *  pedido de TODAS las listas de trabajo (bandeja, Cola PEDIDOS, seguimiento y
- *  Drive) con un solo flag reversible; «Ver ocultados» los enseña con su motivo
- *  y «Reincluir» los devuelve. */
+/** Origen del pedido, como pastilla (web de tal tienda / manual / FACTUSOL). */
+function sourcePill(o: OrderSummary) {
+  const web = o.external_source === "woocommerce";
+  const manual = o.external_source === "manual";
+  return (
+    <span className={`erp-flow-src${web ? " is-woo" : manual ? " is-man" : ""}`}>
+      {web ? "woo" : o.external_source}
+    </span>
+  );
+}
+
+/** ERP · Pedidos — la BANDEJA DE TRABAJO (rediseño de flujo, Fase 1).
+ *
+ *  Ya no es una tabla de cuatro estados que hay que interpretar: arriba están
+ *  las colas con su contador (por revisar / por facturar / por cobrar / por
+ *  enviar / incidencias / listo) y cada pedido enseña su SIGUIENTE ACCIÓN como
+ *  botón principal, su alerta si la tiene y el importe con el régimen de IVA
+ *  del cliente. Quién decide todo eso es el backend (`workflow`), el mismo
+ *  bloque que consume la ficha.
+ *
+ *  No se ha perdido ninguna acción: los filtros de siempre quedan como
+ *  refinamiento y las acciones por fila (Completar/Desmarcar, Registrar cobro,
+ *  Quitar/Reincluir) viven en el menú «⋯» de cada tarjeta; las de bloque
+ *  (Completar seleccionados, Quitar de la bandeja, Reincluir) siguen sobre la
+ *  lista con la selección múltiple. */
 export default function ErpOrdersPage() {
   const [user, setUser] = useState<User | null>(null);
   const [rows, setRows] = useState<OrderSummary[]>([]);
+  const [counts, setCounts] = useState<Partial<Record<WorkflowQueue, number>>>({});
+  // Cola de trabajo elegida (organización primaria); null = todas.
+  const [queue, setQueue] = useState<WorkflowQueue | null>(null);
   const [prep, setPrep] = useState("");
   const [payment, setPayment] = useState("");
   // «Completado»: "" = todos, "yes" = solo completados, "no" = sin completar.
@@ -75,14 +102,19 @@ export default function ErpOrdersPage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      setRows(await listOrders({
+      const r = await listOrders({
         preparation: prep || undefined,
         payment: payment || undefined,
         show_external: showExternal,
         show_excluded: showExcluded,
         completed: completedFilter === "" ? undefined : completedFilter === "yes",
         cobro: (cobroFilter || undefined) as "cobrada" | "pendiente" | "sin_comprobar" | undefined,
-      }));
+        queue: queue ?? undefined,
+      });
+      setRows(r.items);
+      // Los contadores llegan de TODO lo filtrado (antes de elegir cola): la
+      // cabecera no se vacía al meterse en una cola.
+      setCounts(r.queue_counts);
       // Al cambiar de vista/filtros o tras una acción, la selección deja de tener sentido.
       setSelected(new Set());
     } catch (e) {
@@ -90,15 +122,13 @@ export default function ErpOrdersPage() {
     } finally {
       setLoading(false);
     }
-  }, [prep, payment, showExternal, showExcluded, completedFilter, cobroFilter]);
+  }, [prep, payment, showExternal, showExcluded, completedFilter, cobroFilter, queue]);
 
   useEffect(() => {
     getCurrentUser().then(setUser).catch(() => undefined);
   }, []);
 
   useEffect(() => { void load(); }, [load]);
-
-  const stores = useMemo(() => STORES, []);
 
   function toggleRow(id: string) {
     setSelected((prev) => {
@@ -292,12 +322,62 @@ export default function ErpOrdersPage() {
     }
   }
 
+  /** El botón principal de la tarjeta: la acción que el backend dice que toca.
+   *  Las que la bandeja sabe hacer sin salir (cobro, completar) se disparan
+   *  aquí mismo; el resto lleva a la ficha, que es donde viven. */
+  function primaryAction(o: OrderSummary): ReactNode {
+    const wf = o.workflow;
+    if (!wf || wf.next_action === "ninguna") {
+      return (
+        <Link href={`/erp/orders/${o.id}`} className="button small secondary">
+          Abrir
+        </Link>
+      );
+    }
+    const label = wf.next_action_label;
+    if (canEdit && wf.next_action === "registrar_cobro" && o.factusol_invoice_number) {
+      return (
+        <button
+          type="button" className="button small" disabled={busy}
+          aria-label={`${label} ${o.order_number}`} title={wf.next_action_hint}
+          onClick={() => { setError(null); setNotice(null); setCobroTarget(o); }}
+        >
+          {label}
+        </button>
+      );
+    }
+    if (canEdit && wf.next_action === "marcar_completado") {
+      return (
+        <button
+          type="button" className="button small" disabled={busy}
+          aria-label={`${label} ${o.order_number}`} title={wf.next_action_hint}
+          onClick={() => void onToggleComplete(o)}
+        >
+          {label}
+        </button>
+      );
+    }
+    return (
+      <Link
+        href={`/erp/orders/${o.id}`} className="button small"
+        aria-label={`${label} ${o.order_number}`} title={wf.next_action_hint}
+      >
+        {label}
+      </Link>
+    );
+  }
+
+  const enCola = queue ? QUEUE_LABEL[queue] : "Todos los pedidos";
+  const subtitulo = queue
+    ? `· ${rows.length} pedido(s) ${QUEUE_HINT[queue]}`
+    : `· ${rows.length} pedido(s)`;
+
   return (
-    <main className="shell shell-wide">
+    <main className="shell shell-wide erp-flow">
       <PageHeader
         title="Pedidos"
         eyebrow="ERP"
-        description="Bandeja principal — los 4 estados de cada pedido."
+        description="Bandeja de trabajo — ordenada por lo que hay que hacer."
         crumbs={[{ label: "ERP" }, { label: "Pedidos" }]}
         actions={
           <>
@@ -310,7 +390,12 @@ export default function ErpOrdersPage() {
           </>
         }
       />
-      <div className="wf-list-filters" style={{ marginBottom: 12, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+
+      <WorkflowQueueCards counts={counts} active={queue} onSelect={setQueue} />
+
+      {/* Los filtros de siempre: ahora REFINAN la cola elegida. */}
+      <div className="wf-list-filters erp-flow-filters">
+        <span className="erp-flow-filters-label">Refinar</span>
         <select value={prep} onChange={(e) => setPrep(e.target.value)} aria-label="Filtro preparación">
           <option value="">Preparación: todas</option>
           <option value="pending_review">Pend. revisión</option>
@@ -365,6 +450,27 @@ export default function ErpOrdersPage() {
           />
           <span className="small">Ver ocultados</span>
         </label>
+      </div>
+
+      <div className="erp-flow-qtitle">
+        <span>{enCola}</span>
+        <span className="cnt">{subtitulo}</span>
+        {queue ? (
+          <button type="button" className="button small secondary" onClick={() => setQueue(null)}>
+            Ver todas las colas
+          </button>
+        ) : null}
+        {canEdit && rows.length > 0 ? (
+          <label className="checkbox-inline" style={{ display: "flex", alignItems: "center", gap: 6, marginLeft: "auto" }}>
+            <input
+              type="checkbox"
+              aria-label="Seleccionar todo"
+              checked={rows.length > 0 && selected.size === rows.length}
+              onChange={toggleAll}
+            />
+            <span className="small muted">Seleccionar todo</span>
+          </label>
+        ) : null}
         {canEdit && selected.size > 0 ? (
           showExcluded ? (
             <button type="button" className="button small" disabled={busy}
@@ -386,154 +492,151 @@ export default function ErpOrdersPage() {
             </>
           )
         ) : null}
-        {stores.length > 1 ? <span /> : null}
       </div>
+
       {error ? <p className="form-error">{error}</p> : null}
       {notice ? <p className="form-success" role="status">{notice}</p> : null}
       {loading ? (
         <p className="muted">Cargando…</p>
       ) : rows.length === 0 ? (
         <p className="muted">
-          {showExcluded ? "No hay pedidos ocultados." : "No hay pedidos con este filtro."}
+          {showExcluded
+            ? "No hay pedidos ocultados."
+            : queue
+              ? "Esta cola está vacía con los filtros actuales."
+              : "No hay pedidos con este filtro."}
         </p>
       ) : (
-        <table className="data-table">
-          <thead>
-            <tr>
-              {canEdit ? (
-                <th>
+        <div className="erp-flow-list">
+          {rows.map((o) => {
+            const wf = o.workflow;
+            const cobrada = o.factusol_cobro_status === "cobrada";
+            return (
+              <article
+                key={o.id}
+                data-order-row={o.order_number}
+                className={`erp-flow-item${wf?.blocked ? " is-alert" : ""}${o.excluded ? " is-muted" : ""}`}
+              >
+                {canEdit ? (
                   <input
                     type="checkbox"
-                    aria-label="Seleccionar todo"
-                    checked={rows.length > 0 && selected.size === rows.length}
-                    onChange={toggleAll}
+                    aria-label={`Seleccionar ${o.order_number}`}
+                    checked={selected.has(o.id)}
+                    onChange={() => toggleRow(o.id)}
                   />
-                </th>
-              ) : null}
-              <th>Pedido</th>
-              <th>Cliente</th>
-              <th>Total</th>
-              <th>Pago</th>
-              <th>Preparación</th>
-              <th>Transporte</th>
-              <th>Facturación</th>
-              {showExcluded ? <th>Oculto</th> : null}
-              {canEdit ? <th aria-label="Acciones" /> : null}
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((o) => (
-              <tr key={o.id} className={o.excluded ? "muted" : undefined}>
-                {canEdit ? (
-                  <td>
-                    <input
-                      type="checkbox"
-                      aria-label={`Seleccionar ${o.order_number}`}
-                      checked={selected.has(o.id)}
-                      onChange={() => toggleRow(o.id)}
-                    />
-                  </td>
-                ) : null}
-                <td>
-                  <Link href={`/erp/orders/${o.id}`}><strong>{o.order_number}</strong></Link>
-                  {o.externally_processed_at ? (
-                    <span className="badge muted" style={{ marginLeft: 6 }}>Externalizado</span>
-                  ) : null}
-                  {o.excluded ? (
-                    <span className="badge muted" style={{ marginLeft: 6 }}
-                      title="Quitado a mano de las listas de trabajo (reversible)">
-                      Oculto
-                    </span>
-                  ) : null}
-                  {o.completed ? (
-                    <span className="badge ok" style={{ marginLeft: 6 }}
-                      title={`Completado${o.completed_at ? ` el ${d(o.completed_at)}` : ""}${o.completed_by_name ? ` por ${o.completed_by_name}` : ""} (solo BoHub)`}>
-                      Completado
-                    </span>
-                  ) : null}
-                  <div className="muted small">{o.external_source} · {o.placed_at?.slice(0, 10) ?? "—"}</div>
-                </td>
-                <td>{customerLabel(o) || <span className="muted">—</span>}</td>
-                <td>{o.total_amount.toFixed(2)} {o.currency}</td>
-                <td><OrderStatusBadge status={o.payment_status} /></td>
-                <td><OrderStatusBadge status={o.preparation_status} /></td>
-                <td><OrderStatusBadge status={o.transport_status} /></td>
-                <td>
-                  <OrderStatusBadge status={o.invoice_status} />
-                  {/* Estado de cobro EN FACTUSOL (contable), separado del
-                      «Pagado» de la columna PAGO (estado del CRM). */}
-                  {o.factusol_invoice_number ? (
-                    <div style={{ marginTop: 4 }}>
+                ) : <span />}
+                <div className="erp-flow-item-main">
+                  <div className="erp-flow-item-r1">
+                    <Link href={`/erp/orders/${o.id}`}><strong>{o.order_number}</strong></Link>
+                    {sourcePill(o)}
+                    <OrderStatusBadge status={o.payment_status} />
+                    {o.factusol_invoice_number ? (
                       <CobroFactusolBadge
                         hasInvoice
                         status={o.factusol_cobro_status ?? null}
                         cobro={o.factusol_cobro ?? null}
                       />
-                    </div>
-                  ) : null}
-                </td>
-                {showExcluded ? (
-                  <td className="small">
-                    {d(o.seguimiento_excluded_at)}
-                    {o.seguimiento_excluded_by_name ? ` · ${o.seguimiento_excluded_by_name}` : ""}
-                    <br />
-                    <span className="muted">{o.seguimiento_excluded_reason || "sin motivo"}</span>
-                  </td>
-                ) : null}
-                {canEdit ? (
-                  <td>
-                    <button
-                      type="button" className="button small secondary" disabled={busy}
-                      title={o.completed
-                        ? "Quitar la marca de completado (solo BoHub)"
-                        : "Marcar como completado: estado final, solo en BoHub (no toca WooCommerce)"}
-                      aria-label={o.completed
-                        ? `Desmarcar completado ${o.order_number}`
-                        : `Marcar completado ${o.order_number}`}
-                      onClick={() => void onToggleComplete(o)}
-                    >
-                      {o.completed ? "Desmarcar" : "Completar"}
-                    </button>{" "}
-                    {/* Cobro manual sin entrar al pedido: mismo modal que la
-                        ficha. Solo con factura pendiente de cobro. */}
-                    <button
-                      type="button" className="button small secondary"
-                      disabled={busy || !o.factusol_invoice_number || o.factusol_cobro_status === "cobrada"}
-                      title={!o.factusol_invoice_number
-                        ? "Emite la factura primero: el cobro se registra sobre la factura del pedido"
-                        : o.factusol_cobro_status === "cobrada"
-                          ? "La factura ya consta cobrada en FACTUSOL"
-                          : "Registrar el cobro de la factura en FACTUSOL (F_LCO + ESTFAC=2)"}
-                      aria-label={`Registrar cobro ${o.order_number}`}
-                      onClick={() => { setError(null); setNotice(null); setCobroTarget(o); }}
-                    >
-                      {o.factusol_cobro_status === "cobrada" ? "Cobrado" : "Registrar cobro"}
-                    </button>{" "}
+                    ) : null}
+                    {o.externally_processed_at ? (
+                      <span className="badge muted">Externalizado</span>
+                    ) : null}
                     {o.excluded ? (
-                      <button
-                        type="button" className="button small secondary" disabled={busy}
-                        title="Vuelve a incluir este pedido en la bandeja y en el seguimiento"
-                        aria-label={`Reincluir ${o.order_number} en la bandeja`}
-                        onClick={() => void onIncludeRows([o.id])}
-                      >
-                        Reincluir
-                      </button>
-                    ) : (
-                      <button
-                        type="button" className="button small secondary" disabled={busy}
-                        title="Quitar de la bandeja y del seguimiento (reversible; no borra nada)"
-                        aria-label={`Quitar ${o.order_number} de la bandeja`}
-                        onClick={() => openExclude([o])}
-                      >
-                        Quitar
-                      </button>
-                    )}
-                  </td>
-                ) : null}
-              </tr>
-            ))}
-          </tbody>
-        </table>
+                      <span className="badge muted"
+                        title="Quitado a mano de las listas de trabajo (reversible)">
+                        Oculto
+                      </span>
+                    ) : null}
+                    {o.completed ? (
+                      <span className="badge ok"
+                        title={`Completado${o.completed_at ? ` el ${d(o.completed_at)}` : ""}${o.completed_by_name ? ` por ${o.completed_by_name}` : ""} (solo BoHub)`}>
+                        Completado
+                      </span>
+                    ) : null}
+                  </div>
+                  <p className="erp-flow-item-r2">
+                    <span>{customerLabel(o) || "—"}</span>
+                    <span>{d(o.placed_at)}</span>
+                    {wf ? <span>{wf.queue_label}</span> : null}
+                  </p>
+                  {o.excluded ? (
+                    <p className="erp-flow-item-r2 small">
+                      <span>
+                        {d(o.seguimiento_excluded_at)}
+                        {o.seguimiento_excluded_by_name ? ` · ${o.seguimiento_excluded_by_name}` : ""}
+                      </span>
+                      <span className="muted">{o.seguimiento_excluded_reason || "sin motivo"}</span>
+                    </p>
+                  ) : null}
+                  {wf ? <WorkflowAlerts alerts={wf.alerts} variant="inline" max={2} /> : null}
+                </div>
+                <div className="erp-flow-item-side">
+                  <p className="erp-flow-amount">
+                    {o.total_amount.toFixed(2)} {o.currency}
+                    {regimeLabel(wf?.regime) ? <small>{regimeLabel(wf?.regime)}</small> : null}
+                  </p>
+                  <div className="erp-flow-item-actions">
+                    {primaryAction(o)}
+                    {canEdit ? (
+                      <RowMenu label={`Más acciones ${o.order_number}`}>
+                        <Link href={`/erp/orders/${o.id}`}>Abrir ficha</Link>
+                        {wf?.next_action === "marcar_completado" ? null : (
+                          <button
+                            type="button" disabled={busy}
+                            title={o.completed
+                              ? "Quitar la marca de completado (solo BoHub)"
+                              : "Marcar como completado: estado final, solo en BoHub (no toca WooCommerce)"}
+                            aria-label={o.completed
+                              ? `Desmarcar completado ${o.order_number}`
+                              : `Marcar completado ${o.order_number}`}
+                            onClick={() => void onToggleComplete(o)}
+                          >
+                            {o.completed ? "Desmarcar completado" : "Marcar completado"}
+                          </button>
+                        )}
+                        {/* Cobro manual sin entrar al pedido: mismo modal que la
+                            ficha. Solo con factura pendiente de cobro. */}
+                        {wf?.next_action === "registrar_cobro" && o.factusol_invoice_number ? null : (
+                          <button
+                            type="button"
+                            disabled={busy || !o.factusol_invoice_number || cobrada}
+                            title={!o.factusol_invoice_number
+                              ? "Emite la factura primero: el cobro se registra sobre la factura del pedido"
+                              : cobrada
+                                ? "La factura ya consta cobrada en FACTUSOL"
+                                : "Registrar el cobro de la factura en FACTUSOL (F_LCO + ESTFAC=2)"}
+                            aria-label={`Registrar cobro ${o.order_number}`}
+                            onClick={() => { setError(null); setNotice(null); setCobroTarget(o); }}
+                          >
+                            {cobrada ? "Cobrado" : "Registrar cobro"}
+                          </button>
+                        )}
+                        {o.excluded ? (
+                          <button
+                            type="button" disabled={busy}
+                            title="Vuelve a incluir este pedido en la bandeja y en el seguimiento"
+                            aria-label={`Reincluir ${o.order_number} en la bandeja`}
+                            onClick={() => void onIncludeRows([o.id])}
+                          >
+                            Reincluir en la bandeja
+                          </button>
+                        ) : (
+                          <button
+                            type="button" disabled={busy}
+                            title="Quitar de la bandeja y del seguimiento (reversible; no borra nada)"
+                            aria-label={`Quitar ${o.order_number} de la bandeja`}
+                            onClick={() => openExclude([o])}
+                          >
+                            Quitar de la bandeja
+                          </button>
+                        )}
+                      </RowMenu>
+                    ) : null}
+                  </div>
+                </div>
+              </article>
+            );
+          })}
+        </div>
       )}
 
       {cobroTarget ? (
@@ -556,5 +659,49 @@ export default function ErpOrdersPage() {
         />
       ) : null}
     </main>
+  );
+}
+
+/** Menú «⋯» de una tarjeta: ahí viven las acciones que no son la principal,
+ *  sin llenar la lista de botones. Se cierra al elegir, al pulsar fuera y con
+ *  Escape. */
+function RowMenu({ label, children }: { label: string; children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  const box = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function onDocClick(e: MouseEvent) {
+      if (box.current && !box.current.contains(e.target as Node)) setOpen(false);
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") setOpen(false);
+    }
+    document.addEventListener("mousedown", onDocClick);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDocClick);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  return (
+    <div className="erp-flow-menu" ref={box}>
+      <button
+        type="button"
+        className="button small secondary"
+        aria-label={label}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+      >
+        ⋯
+      </button>
+      {open ? (
+        <div className="erp-flow-menu-pop" onClick={() => setOpen(false)}>
+          {children}
+        </div>
+      ) : null}
+    </div>
   );
 }
