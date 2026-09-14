@@ -274,6 +274,8 @@ def test_ficha_devuelve_el_mismo_workflow(http, session_factory) -> None:
     assert ficha["workflow"]["company"] == {
         "id": "fr", "name": "La Maison de la Plaque", "country": "FR",
         "factusol_id": "2760", "regime": "intracomunitario",
+        # Fase VIES: NIF-IVA de la UE aún sin validar (VIES apagado en tests).
+        "vies": {"vat": "FR16339753527", "status": "pendiente"},
     }
 
 

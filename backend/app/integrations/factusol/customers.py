@@ -270,6 +270,7 @@ def customer_regime(data: dict[str, Any]) -> str:
         return explicit
     return regime_for(
         normalize_country(data.get("pais")), vat=data.get("vat"), nif=data.get("nif"),
+        vies_valid=data.get("vies_valid"),
     )
 
 
@@ -398,11 +399,14 @@ def customer_row(
 
 def regime_preview(
     row: dict[str, Any], *, country_iso2: str | None, vat: Any = None,
-    nif: Any = None,
+    nif: Any = None, vies_valid: bool | None = None,
 ) -> dict[str, Any]:
-    """Qué régimen le corresponde al cliente (por el país del CRM + NIF-IVA),
-    qué codifica hoy su ficha F_CLI y qué columnas cambiarían. No escribe."""
-    regime, proposed = proposed_fcli_values(country_iso2, vat=vat, nif=nif)
+    """Qué régimen le corresponde al cliente (por el país del CRM + NIF-IVA,
+    y el veredicto VIES si lo hay), qué codifica hoy su ficha F_CLI y qué
+    columnas cambiarían. No escribe."""
+    regime, proposed = proposed_fcli_values(
+        country_iso2, vat=vat, nif=nif, vies_valid=vies_valid,
+    )
     current_regime = regime_from_fcli_row(row)
     changes = fcli_changes(row, proposed)
     return {
@@ -410,7 +414,8 @@ def regime_preview(
         "country_iso2": normalize_country(country_iso2) if country_iso2 else None,
         "regime": regime,
         "regime_label": REGIME_LABELS[regime],
-        "reason": regime_reason(country_iso2, vat=vat, nif=nif),
+        "reason": regime_reason(country_iso2, vat=vat, nif=nif, vies_valid=vies_valid),
+        "vies_valid": vies_valid,
         "current": {
             **{c: row.get(c) for c in (*FCLI_REGIME_COLUMN_NAMES, "PAICLI")},
             "regime": current_regime,
@@ -425,6 +430,7 @@ def regime_preview(
 def update_customer_regime(
     client: FactusolClient, *, codcli: Any, ejercicio: str,
     country_iso2: str | None, vat: Any = None, nif: Any = None,
+    vies_valid: bool | None = None,
 ) -> dict[str, Any]:
     """Corrige en F_CLI el tipo de documento / régimen de IVA / país del
     cliente: lee la fila REAL, calcula lo propuesto y escribe con
@@ -437,7 +443,9 @@ def update_customer_regime(
         raise FactusolError(
             f"El cliente FACTUSOL nº {codcli} no existe (ejercicio {ejercicio})."
         )
-    preview = regime_preview(row, country_iso2=country_iso2, vat=vat, nif=nif)
+    preview = regime_preview(
+        row, country_iso2=country_iso2, vat=vat, nif=nif, vies_valid=vies_valid,
+    )
     if not preview["changes"]:
         return {**preview, "changed": False, "written": {}}
     payload: dict[str, Any] = {"CODCLI": row["CODCLI"]}

@@ -12,6 +12,9 @@ import pytest
 from cryptography.fernet import Fernet
 
 os.environ.setdefault("INTEGRATION_SECRETS_KEY", Fernet.generate_key().decode())
+# Fase VIES: ningún test debe salir a ec.europa.eu. Los tests de VIES
+# (`test_vies.py`) activan la validación con un cliente simulado.
+os.environ.setdefault("VIES_ENABLED", "false")
 
 
 @pytest.fixture(autouse=True)

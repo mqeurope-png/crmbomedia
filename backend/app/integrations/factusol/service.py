@@ -920,12 +920,14 @@ def regime_warning_for_pcl(
         regime_for,
     )
     from app.models.crm import Company  # noqa: PLC0415
+    from app.services.vies import company_vies_valid  # noqa: PLC0415
 
     company = session.get(Company, order.company_id)
     if company is None or not company.country:
         return None
     regime = regime_for(
         normalize_country(company.country), vat=company.vat, nif=company.tax_id,
+        vies_valid=company_vies_valid(company),
     )
     if regime == REGIME_NACIONAL:
         return None

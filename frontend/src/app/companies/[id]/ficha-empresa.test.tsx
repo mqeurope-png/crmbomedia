@@ -1,13 +1,18 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import CompanyDetailPage from "./page";
-import { fiscalCheck, getCompany, listCompanyContacts } from "../../lib/companiesApi";
+import {
+  fiscalCheck, getCompany, listCompanyContacts, viesRevalidate,
+} from "../../lib/companiesApi";
 import { listFactusolDocuments, listFactusolQuotes, listOrders } from "../../lib/erpApi";
 
 /** Ficha de empresa (rediseño de flujo, Fase 3): cabecera con NIF + país /
  *  régimen + vínculo FACTUSOL, barra de alerta CRM ≠ FACTUSOL con «Traer
  *  datos», datos fiscales con estado de sincronía, actividad reciente con
- *  estados, y acciones rápidas. Sin perder las pestañas ni la sección FACTUSOL. */
+ *  estados, y acciones rápidas. Sin perder las pestañas ni la sección FACTUSOL.
+ *  Fase VIES: chip «✓ verificado en VIES» / «pendiente» / «VAT no válido»,
+ *  «Revalidar en VIES», alerta bloqueante con VAT no válido y comprobación al
+ *  cargar cuando está pendiente (VIES caído → «no disponible» sin bloquear). */
 
 const push = jest.fn();
 jest.mock("next/navigation", () => ({
@@ -33,6 +38,7 @@ jest.mock("../../lib/companiesApi", () => ({
   updateCompany: jest.fn(),
   deleteCompany: jest.fn(),
   fiscalCheck: jest.fn(),
+  viesRevalidate: jest.fn(),
 }));
 jest.mock("../../lib/api", () => ({
   getCurrentUser: jest.fn(() => Promise.resolve({ role: "admin" })),
@@ -74,13 +80,33 @@ jest.mock("../../components/erp/CompanyQuotesPanel", () => ({
 
 let SYNC: { customer: unknown; diffs: { field: string }[] | null } = { customer: null, diffs: null };
 
+const VIES_OK = {
+  applies: true, vat: "FR16339753527", status: "valido", valid: true,
+  checked_at: "2026-09-14T10:00:00", name: "SAS LA MAISON DE LA PLAQUE", address: null,
+  stale: false,
+};
+const VIES_KO = { ...VIES_OK, status: "no_valido", valid: false, name: null };
+const VIES_PENDIENTE = { ...VIES_KO, status: "pendiente", valid: null, checked_at: null };
+const VIES_CAIDO = { ...VIES_KO, status: "desconocido", valid: null, error: "VIES HTTP 500" };
+
 const COMPANY = {
   id: "c1", name: "SAS La Maison de la Plaque", website: null, domain: "maisonplaque.fr",
   tax_id: "FR16339753527", vat: "FR16339753527", country: "FR", region: null,
   state: null, city: "Is-sur-Tille", address_line: "Rue du Chemin Noir",
   postal_code: "21120", sector: null, size_category: null, notes: null,
   source: "manual", factusol_company_id: "2760",
+  vies_status: "valido", vies_vat: "FR16339753527", vies_name: "SAS LA MAISON DE LA PLAQUE",
+  vies: VIES_OK,
   created_at: "2026-01-01T00:00:00", updated_at: "2026-01-01T00:00:00",
+};
+
+const FISCAL = {
+  country_iso2: "FR", in_eu: true, regime: "intracomunitario",
+  regime_label: "Intracomunitario (exento)",
+  regime_reason: "FR (UE) con NIF-IVA FR16339753527 verificado en VIES → intracomunitario",
+  vat_normalized: "FR16339753527",
+  duplicates: { crm: [], factusol: null, factusol_checked: false, factusol_error: null },
+  vies: VIES_OK,
 };
 
 beforeEach(() => {
@@ -97,14 +123,8 @@ beforeEach(() => {
       phone: null, commercial_status: "cliente", owner_user_id: null },
   ]);
   (fiscalCheck as jest.Mock).mockReset();
-  (fiscalCheck as jest.Mock).mockResolvedValue({
-    country_iso2: "FR", in_eu: true, regime: "intracomunitario",
-    regime_label: "Intracomunitario (exento)",
-    regime_reason: "FR (UE) con NIF-IVA FR16339753527 → intracomunitario",
-    vat_normalized: "FR16339753527",
-    duplicates: { crm: [], factusol: null, factusol_checked: false, factusol_error: null },
-    vies: { status: "pendiente", valid: null, checked_at: null },
-  });
+  (fiscalCheck as jest.Mock).mockResolvedValue(FISCAL);
+  (viesRevalidate as jest.Mock).mockReset();
   (listOrders as jest.Mock).mockReset();
   (listOrders as jest.Mock).mockResolvedValue({
     items: [{
@@ -137,6 +157,7 @@ describe("Ficha de empresa (rediseño de flujo, Fase 3)", () => {
     const cabecera = document.querySelector(".company-ficha-id") as HTMLElement;
     expect(cabecera).toHaveTextContent("FR16339753527");
     expect(await screen.findByText("FR · intracomunitario · exento")).toBeInTheDocument();
+    expect(cabecera).toHaveTextContent("✓ verificado en VIES");
     expect(cabecera).toHaveTextContent("FACTUSOL nº 2760 ✓");
     expect(screen.getByRole("link", { name: "+ Nuevo pedido" }))
       .toHaveAttribute("href", "/erp/orders/new?company_id=c1");
@@ -153,7 +174,10 @@ describe("Ficha de empresa (rediseño de flujo, Fase 3)", () => {
     expect(await fiscales.findByText("sincronizado")).toBeInTheDocument();
     expect(fiscales.getByText("Intracomunitario (exento)")).toBeInTheDocument();
     expect(fiscales.getByText(/Rue du Chemin Noir · 21120 Is-sur-Tille/)).toBeInTheDocument();
+    expect(fiscales.getByText("VIES").parentElement)
+      .toHaveTextContent("✓ verificado en VIES · SAS LA MAISON DE LA PLAQUE");
     expect(screen.queryByRole("alert")).toBeNull();   // sin diferencias, sin barra
+    expect(viesRevalidate).not.toHaveBeenCalled();     // válido y reciente: no se repite
 
     const act = within(screen.getByRole("region", { name: "Actividad reciente" }));
     expect(await act.findByRole("link", { name: "Pedido ARTISJ-9544" }))
@@ -213,6 +237,83 @@ describe("Ficha de empresa (rediseño de flujo, Fase 3)", () => {
     expect(screen.getByRole("button", { name: "Borrar" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Comprobar régimen de IVA" }));
     expect(await screen.findByText(/regime:1/)).toBeInTheDocument();
+  });
+
+  it("VAT no válido en VIES: chip, alerta bloqueante y «Revalidar en VIES»; si VIES ya lo da por bueno, se quita la alerta y vuelve a intracomunitario", async () => {
+    (getCompany as jest.Mock).mockResolvedValue({ ...COMPANY, vies_status: "no_valido", vies: VIES_KO });
+    (fiscalCheck as jest.Mock).mockResolvedValue({
+      ...FISCAL, regime: "nacional", regime_label: "Nacional (con IVA)",
+      regime_reason: "FR (UE) con NIF-IVA FR16339753527 NO válido en VIES → nacional (no se puede eximir)",
+      vies: VIES_KO,
+    });
+    (viesRevalidate as jest.Mock).mockResolvedValue({
+      vies: VIES_OK, regime: "intracomunitario", regime_label: "Intracomunitario (exento)",
+      regime_reason: FISCAL.regime_reason, company: COMPANY,
+    });
+    const user = userEvent.setup();
+    render(<CompanyDetailPage />);
+    await screen.findByRole("heading", { name: "SAS La Maison de la Plaque" });
+    const cabecera = document.querySelector(".company-ficha-id") as HTMLElement;
+    expect(cabecera).toHaveTextContent("VAT no válido en VIES");
+    const fiscales = within(screen.getByRole("region", { name: "Datos fiscales" }));
+    expect(await fiscales.findByText("Nacional (con IVA)")).toBeInTheDocument();
+    expect(fiscales.getByText(/NO válido en VIES → nacional/)).toBeInTheDocument();
+    const alerta = screen.getByRole("alert", { name: "Alertas de la empresa" });
+    expect(alerta).toHaveTextContent("El NIF-IVA FR16339753527 NO es válido en VIES");
+    expect(alerta).toHaveTextContent("no se puede eximir de IVA");
+    expect(alerta.className).toContain("is-blocking");
+    // Un veredicto firme no se repite solo al cargar: lo pide el operador.
+    expect(viesRevalidate).not.toHaveBeenCalled();
+    await user.click(within(alerta).getByRole("button", { name: "Revalidar en VIES" }));
+    await waitFor(() => expect(viesRevalidate).toHaveBeenCalledWith("c1", { force: true }));
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+    expect(cabecera).toHaveTextContent("✓ verificado en VIES");
+    expect(screen.getByText("FR · intracomunitario · exento")).toBeInTheDocument();
+    expect(fiscales.getByText("Intracomunitario (exento)")).toBeInTheDocument();
+    expect(viesRevalidate).toHaveBeenCalledTimes(1);
+  });
+
+  it("pendiente: la ficha pide la validación al cargar sin forzar; VIES caído → «no disponible» sin bloquear; el botón de Datos fiscales fuerza", async () => {
+    (getCompany as jest.Mock).mockResolvedValue({ ...COMPANY, vies_status: null, vies: VIES_PENDIENTE });
+    (fiscalCheck as jest.Mock).mockResolvedValue({ ...FISCAL, vies: VIES_PENDIENTE });
+    (viesRevalidate as jest.Mock).mockResolvedValue({
+      vies: VIES_CAIDO, regime: "intracomunitario", regime_label: "Intracomunitario (exento)",
+      regime_reason: "FR (UE) con NIF-IVA FR16339753527 → intracomunitario",
+      company: { ...COMPANY, vies_status: "desconocido", vies_name: null },
+    });
+    const user = userEvent.setup();
+    render(<CompanyDetailPage />);
+    await screen.findByRole("heading", { name: "SAS La Maison de la Plaque" });
+    await waitFor(() => expect(viesRevalidate).toHaveBeenCalledWith("c1", { force: false }));
+    const cabecera = document.querySelector(".company-ficha-id") as HTMLElement;
+    await waitFor(() => expect(cabecera).toHaveTextContent("VIES no disponible · pendiente"));
+    expect(screen.queryByRole("alert")).toBeNull();          // no bloquea
+    expect(screen.getByText("FR · intracomunitario · exento")).toBeInTheDocument();
+    expect(viesRevalidate).toHaveBeenCalledTimes(1);          // una sola vez al cargar
+    const fiscales = within(screen.getByRole("region", { name: "Datos fiscales" }));
+    await user.click(fiscales.getByRole("button", { name: "Revalidar en VIES" }));
+    await waitFor(() => expect(viesRevalidate).toHaveBeenLastCalledWith("c1", { force: true }));
+    // También en «⋯» (además del de Datos fiscales).
+    await user.click(screen.getByRole("button", { name: "Más acciones de la empresa" }));
+    expect(screen.getAllByRole("button", { name: "Revalidar en VIES" })).toHaveLength(2);
+  });
+
+  it("España / fuera de la UE: VIES no aplica — sin chip, sin fila y sin consultar", async () => {
+    (getCompany as jest.Mock).mockResolvedValue({
+      ...COMPANY, country: "ES", vat: null, tax_id: "B12345678", vies_status: null,
+      vies: { ...VIES_PENDIENTE, applies: false, vat: null, status: null },
+    });
+    (fiscalCheck as jest.Mock).mockResolvedValue({
+      ...FISCAL, country_iso2: "ES", regime: "nacional", regime_label: "Nacional (con IVA)",
+      regime_reason: "España → nacional", vat_normalized: null,
+      vies: { ...VIES_PENDIENTE, applies: false, vat: null, status: null },
+    });
+    render(<CompanyDetailPage />);
+    await screen.findByRole("heading", { name: "SAS La Maison de la Plaque" });
+    const fiscales = within(screen.getByRole("region", { name: "Datos fiscales" }));
+    expect(await fiscales.findByText("Nacional (con IVA)")).toBeInTheDocument();
+    expect(screen.queryByText(/VIES/)).toBeNull();
+    expect(viesRevalidate).not.toHaveBeenCalled();
   });
 
   it("no se pierde nada: pestañas Datos (con Guardar), Contactos y Proformas siguen ahí", async () => {

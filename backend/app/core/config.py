@@ -176,6 +176,13 @@ class Settings(BaseSettings):
     factusol_path_update_record: str = ""
     factusol_path_delete_records: str = ""
 
+    # Fase VIES — validación del NIF-IVA intracomunitario en el servicio
+    # oficial de la UE (API REST pública, gratuita). Timeout corto: VIES se
+    # cae y va lento a menudo, y nunca debe bloquear un alta.
+    vies_enabled: bool = True
+    vies_base_url: str = "https://ec.europa.eu/taxation_customs/vies/rest-api"
+    vies_timeout_seconds: float = 4.0
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
     @field_validator("integration_secrets_key")

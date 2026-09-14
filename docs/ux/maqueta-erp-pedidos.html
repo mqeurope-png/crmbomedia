@@ -168,10 +168,10 @@
     </div>
   </div>
   <div class="screen" id="empresa">
-    <div class="fhead"><div class="crumb">Empresas › <b>La Maison de la Plaque</b></div><div class="ftop"><div><h1>SAS La Maison de la Plaque</h1><div class="cl mono">FR16339753527 <span class="pill p">Francia · intracomunitario</span> <span class="pill g">FACTUSOL nº 2760 ✓</span></div></div><div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn primary sm">+ Nuevo pedido</button><button class="btn sm">Nueva proforma</button><div class="kebab">⋯</div></div></div></div>
+    <div class="fhead"><div class="crumb">Empresas › <b>La Maison de la Plaque</b></div><div class="ftop"><div><h1>SAS La Maison de la Plaque</h1><div class="cl mono">FR16339753527 <span class="pill p">Francia · intracomunitario</span> <span class="pill g">✓ verificado en VIES</span> <span class="pill g">FACTUSOL nº 2760 ✓</span></div></div><div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn primary sm">+ Nuevo pedido</button><button class="btn sm">Nueva proforma</button><div class="kebab">⋯</div></div></div></div>
     <div class="alertbar"><div class="a">! Los datos del CRM no coinciden con FACTUSOL (dirección, CP). FACTUSOL es la fuente de verdad.<button class="btn sm fix">Traer datos de FACTUSOL</button></div></div>
     <div class="grid2">
-      <div class="panel"><h3>Datos fiscales <span class="pill g" style="text-transform:none;letter-spacing:0">sincronizado</span></h3><div class="kv"><span class="k">NIF / VAT</span><span class="mono">FR16339753527</span></div><div class="kv"><span class="k">Régimen IVA</span><span>Intracomunitario · exento</span></div><div class="kv"><span class="k">Dirección</span><span>Rue du Chemin Noir · 21120 Is-sur-Tille</span></div><div class="kv"><span class="k">País</span><span>Francia (250)</span></div></div>
+      <div class="panel"><h3>Datos fiscales <span class="pill g" style="text-transform:none;letter-spacing:0">sincronizado</span></h3><div class="kv"><span class="k">NIF / VAT</span><span class="mono">FR16339753527</span></div><div class="kv"><span class="k">Régimen IVA</span><span>Intracomunitario · exento</span></div><div class="kv"><span class="k">VIES</span><span>✓ verificado en VIES · SAS LA MAISON DE LA PLAQUE <span class="muted" style="font-size:11px">· comprobado 14/09/2026</span> <button class="btn sm" style="margin-left:6px">Revalidar en VIES</button></span></div><div class="kv"><span class="k">Dirección</span><span>Rue du Chemin Noir · 21120 Is-sur-Tille</span></div><div class="kv"><span class="k">País</span><span>Francia (250)</span></div></div>
       <div class="panel"><h3>Actividad reciente</h3><div class="kv"><span>Pedido ARTISJ-9544</span><span class="pill b">por facturar</span></div><div class="kv"><span>Factura 2-526079</span><span class="pill g">cobrada</span></div><div class="kv"><span>Proforma 2-000071</span><span class="pill a">pendiente</span></div><div class="kv"><span class="muted">Contacto</span><span>Alexandre · alex@…</span></div></div>
     </div>
   </div>
@@ -236,7 +236,8 @@
         <div class="slabel">Identificación fiscal</div>
         <div class="frow"><div style="grid-column:1/-1"><div class="flabel">Nombre fiscal *</div><input class="fld" value="SAS La Maison de la Plaque"></div></div>
         <div class="frow"><div><div class="flabel">NIF / CIF / VAT</div><input class="fld" value="FR16339753527"></div><div><div class="flabel">País</div><input class="fld" value="Francia"></div></div>
-        <div class="detect">✓ Régimen detectado: <span class="pill p" style="margin-left:4px">Intracomunitario · sin IVA</span> <span class="muted" style="margin-left:auto;font-size:12px">FR (UE) con NIF-IVA → intracomunitario · VIES: pendiente de validar</span></div>
+        <div class="detect">✓ Régimen detectado: <span class="pill p" style="margin-left:4px">Intracomunitario · sin IVA</span> <span class="muted" style="margin-left:auto;font-size:12px">FR (UE) con NIF-IVA FR16339753527 verificado en VIES → intracomunitario · ✓ verificado en VIES (SAS LA MAISON DE LA PLAQUE)</span></div>
+        <div class="muted" style="font-size:11px;margin:4px 0 8px">Variantes del chip VIES: <b>✓ verificado en VIES</b> · <b>VAT no válido en VIES: no se puede eximir de IVA</b> (el régimen sale nacional con IVA y el pedido entra en incidencias) · <b>VIES no disponible: pendiente de validar</b> (se reintenta; no bloquea).</div>
         <div class="hint">i No existe en FACTUSOL con ese NIF. Se creará como cliente nuevo al guardar.</div>
       </div>
       <div class="panel">

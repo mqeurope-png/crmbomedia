@@ -57,8 +57,10 @@ export type CompanyCreated = {
  *    FACTUSOL» la VINCULA en vez de crear otra ficha.
  *  - «Crear también en FACTUSOL» (roles de edición del ERP): tras crear la
  *    empresa se da de alta el cliente F_CLI con su régimen y se vincula.
- *  - Gancho VIES: el chip del régimen dirá «verificado en VIES» / «pendiente»
- *    / «VAT no válido» cuando entre su PR; hoy el backend devuelve `pendiente`.
+ *  - VIES (Fase VIES): con país de la UE + NIF-IVA el backend lo valida en el
+ *    servicio oficial y el chip del régimen dice «✓ verificado en VIES» /
+ *    «VAT no válido» (entonces el régimen ya sale nacional con IVA) /
+ *    «pendiente de validar» (VIES no respondió: se reintenta más tarde).
  *
  *  Se usa como pantalla (`/companies/new`) y dentro del modal del buscador
  *  (crear y elegir sin salir). Es un superconjunto del alta rápida de antes
@@ -241,8 +243,12 @@ export function CompanyCreateForm({
             <span className="muted small company-create-reason">
               {check.regime_reason}
               {check.in_eu && (check.vat_normalized || vat.trim()) ? (
-                check.vies.status === "valido" ? " · ✓ verificado en VIES"
-                : check.vies.status === "no_valido" ? " · VAT no válido en VIES"
+                check.vies?.status === "valido"
+                  ? ` · ✓ verificado en VIES${check.vies.name ? ` (${check.vies.name})` : ""}`
+                : check.vies?.status === "no_valido"
+                  ? " · VAT no válido en VIES: no se puede eximir de IVA"
+                : check.vies?.status === "desconocido"
+                  ? " · VIES no disponible: pendiente de validar"
                 : " · VIES: pendiente de validar"
               ) : ""}
             </span>

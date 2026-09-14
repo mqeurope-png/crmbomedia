@@ -3,7 +3,7 @@
 import { Building2, FileText, Save, Users } from "lucide-react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { PageHeader } from "../../components/PageHeader";
 import { getCurrentUser } from "../../lib/api";
 import {
@@ -11,12 +11,14 @@ import {
   type CompanyContact,
   type CompanyWrite,
   type FiscalCheck,
+  type ViesStatus,
   deleteCompany,
   fiscalCheck,
   getCompany,
   listCompanyContacts,
   mergeCompanies,
   updateCompany,
+  viesRevalidate,
 } from "../../lib/companiesApi";
 import { formatBackendDateTime } from "../../lib/dates";
 import { extractErrorMessage } from "../../lib/errors";
@@ -30,6 +32,14 @@ import { RegimePill } from "../../components/erp/flow/RegimePill";
 
 type Tab = "data" | "contacts" | "quotes";
 type Sync = { customer: FactusolCustomer | null; diffs: { field: string }[] | null };
+
+/** Chip VIES de la cabecera / fila de «Datos fiscales» (Fase VIES). */
+const VIES_CHIP: Record<ViesStatus, { text: string; tone: string }> = {
+  valido: { text: "✓ verificado en VIES", tone: "ok" },
+  no_valido: { text: "VAT no válido en VIES", tone: "bad" },
+  desconocido: { text: "VIES no disponible · pendiente", tone: "warn" },
+  pendiente: { text: "VIES: pendiente de validar", tone: "muted" },
+};
 
 /** Ficha de empresa (rediseño de flujo, Fase 3).
  *
@@ -63,6 +73,12 @@ export default function CompanyDetailPage() {
   const [pullSignal, setPullSignal] = useState(0);
   const [regimeSignal, setRegimeSignal] = useState(0);
   const [quoteSignal, setQuoteSignal] = useState(0);
+  // Fase VIES: «Revalidar en VIES» (botón: fuerza) y la comprobación al
+  // cargar cuando está pendiente / VIES no respondió (sin forzar: el backend
+  // decide si toca).
+  const [viesBusy, setViesBusy] = useState(false);
+  const [viesError, setViesError] = useState<string | null>(null);
+  const viesAutoRef = useRef<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -109,6 +125,46 @@ export default function CompanyDetailPage() {
     // Solo los datos fiscales cambian el régimen.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [company?.id, taxId, vat, country]);
+
+  const companyId = company?.id ?? null;
+  const revalidateVies = useCallback(async (force: boolean) => {
+    if (!companyId) return;
+    setViesBusy(true);
+    setViesError(null);
+    try {
+      const r = await Promise.resolve().then(() => viesRevalidate(companyId, { force }));
+      // Solo lo de VIES: no pisa lo que el operador esté editando en «Datos».
+      setCompany((prev) => (prev && prev.id === companyId ? {
+        ...prev,
+        vies: r.vies,
+        vies_status: r.company.vies_status,
+        vies_checked_at: r.company.vies_checked_at,
+        vies_vat: r.company.vies_vat,
+        vies_name: r.company.vies_name,
+        vies_address: r.company.vies_address,
+      } : prev));
+      setFiscal((prev) => (prev ? {
+        ...prev, regime: r.regime, regime_label: r.regime_label,
+        regime_reason: r.regime_reason, vies: r.vies,
+      } : prev));
+    } catch (err) {
+      if (force) setViesError(extractErrorMessage(err, "No se pudo consultar VIES."));
+    } finally {
+      setViesBusy(false);
+    }
+  }, [companyId]);
+
+  // Al cargar: si el NIF-IVA está pendiente de validar (o VIES no respondió
+  // la última vez) se pide la validación una vez, sin forzar.
+  const viesApplies = !!company?.vies?.applies;
+  const viesStatus = company?.vies?.status ?? null;
+  useEffect(() => {
+    if (!companyId || !viesApplies) return;
+    if (viesStatus !== "pendiente" && viesStatus !== "desconocido") return;
+    if (viesAutoRef.current === companyId) return;
+    viesAutoRef.current = companyId;
+    void revalidateVies(false);
+  }, [companyId, viesApplies, viesStatus, revalidateVies]);
 
   const onSave = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -172,6 +228,9 @@ export default function CompanyDetailPage() {
   const diffs = sync?.diffs ?? null;
   const differs = !!diffs && diffs.length > 0;
   const nif = company.tax_id || company.vat || null;
+  const vies = company.vies?.applies ? company.vies : null;
+  const viesChip = vies?.status ? VIES_CHIP[vies.status] : null;
+  const viesInvalid = vies?.status === "no_valido";
   const syncLabel = !linked
     ? { text: "sin vincular", tone: "muted" }
     : sync === null || (sync.customer === null && diffs === null)
@@ -230,6 +289,11 @@ export default function CompanyDetailPage() {
                   Comprobar régimen de IVA
                 </button>
               ) : null}
+              {vies ? (
+                <button type="button" disabled={viesBusy} onClick={() => void revalidateVies(true)}>
+                  Revalidar en VIES
+                </button>
+              ) : null}
               <button type="button" onClick={() => setMergeOpen(true)}>Fusionar</button>
               <button type="button" onClick={onDelete}>Borrar</button>
             </ActionsMenu>
@@ -241,6 +305,12 @@ export default function CompanyDetailPage() {
       <p className="erp-flow-item-r2 company-ficha-id" style={{ margin: "0 0 12px" }}>
         {nif ? <strong className="mono">{nif}</strong> : <span className="muted">sin NIF</span>}
         {fiscal ? <RegimePill regime={fiscal.regime} country={fiscal.country_iso2} /> : null}
+        {viesChip ? (
+          <span className={`badge ${viesChip.tone}`} style={{ textTransform: "none", letterSpacing: 0 }}
+                title={vies?.name ? `Según VIES: ${vies.name}` : undefined}>
+            {viesChip.text}
+          </span>
+        ) : null}
         {linked ? (
           <span className="badge ok">FACTUSOL nº {company.factusol_company_id} ✓</span>
         ) : (
@@ -250,36 +320,53 @@ export default function CompanyDetailPage() {
 
       {error ? <p className="form-error">{error}</p> : null}
 
-      {/* Barra de alerta: CRM ≠ FACTUSOL (con «Traer datos»), o sin vincular. */}
-      {differs ? (
-        <div className="erp-flow-alertbar" role="alert" aria-label="Alertas de la empresa">
-          <div className="erp-flow-alert">
-            <span aria-hidden>!</span>
-            <span>
-              Los datos del CRM no coinciden con FACTUSOL
-              {" "}({diffs.map((d) => d.field).join(", ")}). FACTUSOL es la fuente de verdad.
-            </span>
-            {canEdit ? (
+      {/* Barra de alerta: VAT no válido en VIES (bloquea la exención), CRM ≠
+          FACTUSOL (con «Traer datos»), o sin vincular. */}
+      {viesInvalid || differs || !linked ? (
+        <div className={`erp-flow-alertbar${viesInvalid || !linked ? " is-blocking" : ""}`}
+             role="alert" aria-label="Alertas de la empresa">
+          {viesInvalid ? (
+            <div className="erp-flow-alert">
+              <span aria-hidden>!</span>
+              <span>
+                El NIF-IVA {vies?.vat} NO es válido en VIES: no se puede eximir de IVA y se
+                factura como nacional con IVA. Corrige el NIF-IVA en «Datos» o revalida.
+              </span>
               <span className="erp-flow-alert-fix">
-                <button type="button" className="button small secondary"
-                        onClick={() => setPullSignal((n) => n + 1)}>
-                  Traer datos de FACTUSOL
+                <button type="button" className="button small secondary" disabled={viesBusy}
+                        onClick={() => void revalidateVies(true)}>
+                  {viesBusy ? "Consultando VIES…" : "Revalidar en VIES"}
                 </button>
               </span>
-            ) : null}
-          </div>
-        </div>
-      ) : !linked ? (
-        <div className="erp-flow-alertbar is-blocking" role="alert" aria-label="Alertas de la empresa">
-          <div className="erp-flow-alert">
-            <span aria-hidden>!</span>
-            <span>
-              Empresa sin vincular a FACTUSOL: sin cliente F_CLI no hay albarán, factura ni proforma.
-            </span>
-            <span className="erp-flow-alert-fix">
-              <a href="#factusol" className="button small secondary">Vincular o crear en FACTUSOL</a>
-            </span>
-          </div>
+            </div>
+          ) : null}
+          {differs ? (
+            <div className="erp-flow-alert">
+              <span aria-hidden>!</span>
+              <span>
+                Los datos del CRM no coinciden con FACTUSOL
+                {" "}({diffs.map((d) => d.field).join(", ")}). FACTUSOL es la fuente de verdad.
+              </span>
+              {canEdit ? (
+                <span className="erp-flow-alert-fix">
+                  <button type="button" className="button small secondary"
+                          onClick={() => setPullSignal((n) => n + 1)}>
+                    Traer datos de FACTUSOL
+                  </button>
+                </span>
+              ) : null}
+            </div>
+          ) : !linked ? (
+            <div className="erp-flow-alert">
+              <span aria-hidden>!</span>
+              <span>
+                Empresa sin vincular a FACTUSOL: sin cliente F_CLI no hay albarán, factura ni proforma.
+              </span>
+              <span className="erp-flow-alert-fix">
+                <a href="#factusol" className="button small secondary">Vincular o crear en FACTUSOL</a>
+              </span>
+            </div>
+          ) : null}
         </div>
       ) : null}
 
@@ -313,6 +400,25 @@ export default function CompanyDetailPage() {
               ) : null}
             </span>
           </div>
+          {vies ? (
+            <div className="erp-flow-kv">
+              <span className="k">VIES</span>
+              <span className="v">
+                {viesChip ? viesChip.text : "—"}
+                {vies.name ? ` · ${vies.name}` : ""}
+                {vies.checked_at ? (
+                  <span className="muted small"> · comprobado {formatBackendDateTime(vies.checked_at)}</span>
+                ) : null}
+                {" "}
+                <button type="button" className="button small secondary" disabled={viesBusy}
+                        title="Consulta el NIF-IVA en el servicio oficial de la UE (salta la caché)"
+                        onClick={() => void revalidateVies(true)}>
+                  {viesBusy ? "Consultando VIES…" : "Revalidar en VIES"}
+                </button>
+                {viesError ? <span className="form-error small"> {viesError}</span> : null}
+              </span>
+            </div>
+          ) : null}
           <div className="erp-flow-kv">
             <span className="k">Dirección</span>
             <span className="v">

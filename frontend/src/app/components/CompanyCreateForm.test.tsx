@@ -33,9 +33,16 @@ function check(over: Record<string, unknown> = {}) {
     regime_reason: "FR (UE) con NIF-IVA FR16339753527 → intracomunitario",
     vat_normalized: "FR16339753527",
     duplicates: { crm: [], factusol: null, factusol_checked: true, factusol_error: null },
-    vies: { status: "pendiente", valid: null, checked_at: null },
+    vies: {
+      applies: true, vat: "FR16339753527", status: "pendiente", valid: null,
+      checked_at: null, name: null, address: null, stale: false,
+    },
     ...over,
   };
+}
+
+function vies(over: Record<string, unknown>) {
+  return { ...check().vies, ...over };
 }
 
 beforeEach(() => {
@@ -67,6 +74,44 @@ describe("CompanyCreateForm — «Crear empresa»", () => {
     expect(detect).toHaveTextContent("Intracomunitario · sin IVA");
     expect(detect).toHaveTextContent("VIES: pendiente de validar");
     expect(screen.getByText(/No existe en FACTUSOL con ese NIF/)).toBeInTheDocument();
+  });
+
+  it("VIES: «✓ verificado» con el nombre; «VAT no válido» deja el régimen nacional con IVA; VIES caído → «no disponible»", async () => {
+    const user = userEvent.setup();
+    async function detectar() {
+      await user.type(screen.getByLabelText("NIF-IVA (VAT intracomunitario)"), "FR16339753527");
+      await user.type(screen.getByLabelText("País"), "FR");
+      return screen.findByRole("status");
+    }
+    mockCheck.mockResolvedValue(check({
+      regime_reason: "FR (UE) con NIF-IVA FR16339753527 verificado en VIES → intracomunitario",
+      vies: vies({ status: "valido", valid: true, checked_at: "2026-09-14T10:00:00",
+                   name: "SAS LA MAISON DE LA PLAQUE" }),
+    }));
+    let view = render(<CompanyCreateForm onCreated={() => {}} />);
+    let detect = await detectar();
+    expect(detect).toHaveTextContent("Intracomunitario · sin IVA");
+    expect(detect).toHaveTextContent("✓ verificado en VIES (SAS LA MAISON DE LA PLAQUE)");
+    view.unmount();
+
+    mockCheck.mockResolvedValue(check({
+      regime: "nacional", regime_label: "Nacional (con IVA)",
+      regime_reason: "FR (UE) con NIF-IVA FR16339753527 NO válido en VIES → nacional (no se puede eximir)",
+      vies: vies({ status: "no_valido", valid: false, checked_at: "2026-09-14T10:00:00" }),
+    }));
+    view = render(<CompanyCreateForm onCreated={() => {}} />);
+    detect = await detectar();
+    expect(detect).toHaveTextContent("Nacional · con IVA");
+    expect(detect).toHaveTextContent("VAT no válido en VIES: no se puede eximir de IVA");
+    view.unmount();
+
+    mockCheck.mockResolvedValue(check({
+      vies: vies({ status: "desconocido", error: "VIES HTTP 500" }),
+    }));
+    render(<CompanyCreateForm onCreated={() => {}} />);
+    detect = await detectar();
+    expect(detect).toHaveTextContent("Intracomunitario · sin IVA");   // no bloquea
+    expect(detect).toHaveTextContent("VIES no disponible: pendiente de validar");
   });
 
   it("crea la empresa con sus datos fiscales y, con la casilla marcada, también el cliente en FACTUSOL", async () => {

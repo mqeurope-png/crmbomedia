@@ -67,6 +67,16 @@ class CompanyRead(BaseModel):
     is_active: bool
     #: C-3: CODCLI del cliente en FACTUSOL (None si aún no está vinculado).
     factusol_company_id: str | None = None
+    #: Fase VIES: último resultado guardado (crudo) y el bloque `vies`
+    #: interpretado para el NIF-IVA ACTUAL (`applies`, `status` valido /
+    #: no_valido / desconocido / pendiente, `valid`, `checked_at`, nombre y
+    #: dirección según VIES, `stale`). Lo rellena la API.
+    vies_status: str | None = None
+    vies_checked_at: datetime | None = None
+    vies_vat: str | None = None
+    vies_name: str | None = None
+    vies_address: str | None = None
+    vies: dict[str, Any] | None = None
     external_references: dict[str, Any] = Field(
         default_factory=dict,
         validation_alias=AliasChoices(

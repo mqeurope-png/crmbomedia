@@ -1,5 +1,27 @@
 import { apiFetch } from "./api";
 
+/** Fase VIES — validación del NIF-IVA intracomunitario en el servicio
+ *  oficial de la UE. `valido` confirma el régimen intracomunitario;
+ *  `no_valido` impide eximir (nacional con IVA, alerta accionable);
+ *  `desconocido` = VIES no respondió (se reintenta); `pendiente` = aún sin
+ *  validar (o VIES desactivado). */
+export type ViesStatus = "valido" | "no_valido" | "desconocido" | "pendiente";
+
+export type ViesState = {
+  /** false = VIES no aplica (España, fuera de la UE o sin NIF-IVA). */
+  applies: boolean;
+  vat: string | null;
+  status: ViesStatus | null;
+  valid: boolean | null;
+  checked_at: string | null;
+  /** Nombre y dirección según VIES (solo con `valido`). */
+  name: string | null;
+  address: string | null;
+  /** El NIF-IVA cambió desde la validación guardada. */
+  stale: boolean;
+  error?: string | null;
+};
+
 export type Company = {
   id: string;
   name: string;
@@ -20,6 +42,14 @@ export type Company = {
   is_active: boolean;
   /** C-3: CODCLI del cliente en FACTUSOL (null si no está vinculado). */
   factusol_company_id: string | null;
+  /** Fase VIES: último resultado guardado (crudo) y el bloque interpretado
+   *  para el NIF-IVA actual. Ausentes en respuestas antiguas / mocks. */
+  vies_status?: ViesStatus | null;
+  vies_checked_at?: string | null;
+  vies_vat?: string | null;
+  vies_name?: string | null;
+  vies_address?: string | null;
+  vies?: ViesState | null;
   external_references: Record<string, unknown>;
   custom_fields: Record<string, unknown>;
   contacts_count: number;
@@ -282,13 +312,31 @@ export type FiscalCheck = {
     factusol_checked: boolean;
     factusol_error: string | null;
   };
-  /** Validación VIES (PR aparte): hoy siempre «pendiente». */
-  vies: {
-    status: "pendiente" | "valido" | "no_valido" | "desconocido";
-    valid: boolean | null;
-    checked_at: string | null;
-  };
+  /** Validación VIES del NIF-IVA (UE fuera de España con NIF-IVA): el
+   *  régimen ya tiene en cuenta el veredicto. */
+  vies: ViesState;
 };
+
+/** «Revalidar en VIES»: consulta el servicio oficial (con `force` salta la
+ *  caché) y guarda el resultado en la empresa. Devuelve el bloque `vies`, el
+ *  régimen que sale con ese veredicto y la empresa actualizada. */
+export type ViesRevalidateResult = {
+  vies: ViesState;
+  regime: FiscalCheck["regime"];
+  regime_label: string;
+  regime_reason: string;
+  company: Company;
+};
+
+export async function viesRevalidate(
+  companyId: string, opts: { force?: boolean } = {},
+): Promise<ViesRevalidateResult> {
+  const force = opts.force ?? true;
+  return apiFetch<ViesRevalidateResult>(
+    `/api/companies/${companyId}/vies-revalidate?force=${force ? "true" : "false"}`,
+    { method: "POST" },
+  );
+}
 
 export async function fiscalCheck(params: {
   tax_id?: string; vat?: string; country?: string; exclude_id?: string;

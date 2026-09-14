@@ -159,12 +159,14 @@ def company_regime(session: Session, company_id: str | None) -> str | None:
     from app.erp.language import normalize_country  # noqa: PLC0415
     from app.integrations.factusol.vat_regime import regime_for  # noqa: PLC0415
     from app.models.crm import Company  # noqa: PLC0415
+    from app.services.vies import company_vies_valid  # noqa: PLC0415
 
     company = session.get(Company, company_id)
     if company is None or not company.country:
         return None
     return regime_for(
         normalize_country(company.country), vat=company.vat, nif=company.tax_id,
+        vies_valid=company_vies_valid(company),
     )
 
 

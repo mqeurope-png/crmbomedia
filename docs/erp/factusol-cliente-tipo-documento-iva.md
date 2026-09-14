@@ -156,3 +156,12 @@ fix con auditoría y guards), `test_factusol_factura_regimen.py`
 `test_factusol_discover_albaranes.py::test_regimen_iva_report_flags_customers_and_invoices`,
 `CompanyFactusolPanel.test.tsx` (modal, confirmación, ficha coherente, alta con
 país + NIF-IVA).
+
+## Fase VIES (validación del NIF-IVA)
+
+Desde la Fase VIES el veredicto del servicio oficial de la UE entra en la
+misma regla: `regime_for(..., vies_valid=)`. Con `vies_valid=False` (VIES dice
+que el NIF-IVA NO es válido) **no se puede eximir**: la ficha F_CLI propuesta
+y los documentos salen como nacional con IVA, y el pedido entra en
+«Incidencias». `True` confirma el intracomunitario; `None` (pendiente / VIES
+caído) no cambia la regla. Detalle en `docs/erp/vies.md`.

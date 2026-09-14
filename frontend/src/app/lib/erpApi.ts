@@ -26,7 +26,7 @@ export type WorkflowQueue =
 export type WorkflowAction =
   | "aprobar" | "emitir_factura" | "registrar_cobro" | "crear_envio"
   | "enviar_sat" | "marcar_completado" | "mapear_lineas" | "vincular_empresa"
-  | "revisar_incidencia" | "crear_albaran" | "ninguna";
+  | "revisar_incidencia" | "crear_albaran" | "revalidar_vies" | "ninguna";
 
 export type WorkflowAlert = {
   code: string;

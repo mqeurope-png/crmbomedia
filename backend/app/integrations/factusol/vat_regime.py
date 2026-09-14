@@ -113,19 +113,30 @@ def is_eu(country_iso2: str | None) -> bool:
     return (country_iso2 or "").upper() in EU_ISO2
 
 
-def regime_for(country_iso2: str | None, *, vat: Any = None, nif: Any = None) -> str:
-    """Régimen por país (ISO2) + NIF-IVA. Ver la cabecera del módulo."""
+def regime_for(
+    country_iso2: str | None, *, vat: Any = None, nif: Any = None,
+    vies_valid: bool | None = None,
+) -> str:
+    """Régimen por país (ISO2) + NIF-IVA. Ver la cabecera del módulo.
+
+    Fase VIES: `vies_valid=False` (VIES dice que el NIF-IVA NO es válido)
+    impide eximir → nacional con IVA aunque el país sea de la UE y haya
+    NIF-IVA. `True` lo confirma; `None` (pendiente / VIES caído) no cambia
+    la regla: se sigue por país + NIF-IVA sin bloquear."""
     country = normalize_country(country_iso2) if country_iso2 else None
     if country is None or country == "ES":
         return REGIME_NACIONAL
     if country in EU_ISO2:
-        if eu_vat_for(country, vat=vat, nif=nif):
+        if eu_vat_for(country, vat=vat, nif=nif) and vies_valid is not False:
             return REGIME_INTRACOMUNITARIO
         return REGIME_NACIONAL
     return REGIME_EXPORTACION
 
 
-def regime_reason(country_iso2: str | None, *, vat: Any = None, nif: Any = None) -> str:
+def regime_reason(
+    country_iso2: str | None, *, vat: Any = None, nif: Any = None,
+    vies_valid: bool | None = None,
+) -> str:
     """Frase para el operador: por qué sale ese régimen."""
     country = normalize_country(country_iso2) if country_iso2 else None
     if country is None:
@@ -134,6 +145,11 @@ def regime_reason(country_iso2: str | None, *, vat: Any = None, nif: Any = None)
         return "España → nacional"
     if country in EU_ISO2:
         number = eu_vat_for(country, vat=vat, nif=nif)
+        if number and vies_valid is False:
+            return (f"{country} (UE) con NIF-IVA {number} NO válido en VIES → "
+                    "nacional (no se puede eximir)")
+        if number and vies_valid is True:
+            return f"{country} (UE) con NIF-IVA {number} verificado en VIES → intracomunitario"
         if number:
             return f"{country} (UE) con NIF-IVA {number} → intracomunitario"
         return f"{country} (UE) sin NIF-IVA → nacional (IVA español)"
@@ -192,10 +208,11 @@ def paicli_for(country_iso2: str | None) -> str | None:
 
 def proposed_fcli_values(
     country_iso2: str | None, *, vat: Any = None, nif: Any = None,
+    vies_valid: bool | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """`(régimen, {columna: valor})` que BoHub quiere en la ficha F_CLI del
     cliente: las columnas del régimen y, si el país se reconoce, `PAICLI`."""
-    regime = regime_for(country_iso2, vat=vat, nif=nif)
+    regime = regime_for(country_iso2, vat=vat, nif=nif, vies_valid=vies_valid)
     values: dict[str, Any] = regime_columns(regime)
     paicli = paicli_for(country_iso2)
     if paicli is not None:

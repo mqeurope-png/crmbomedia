@@ -102,8 +102,11 @@ def test_fiscal_check_regimen_por_pais_y_vat(http) -> None:
         assert fr_sin_vat["regime"] == "nacional"          # consumidor final UE
         no = _check(http, country="NO", tax_id="987654321").json()
         assert no["regime"] == "exportacion" and no["in_eu"] is False
-        # Gancho VIES: existe, pendiente (lo rellena su PR).
-        assert fr["vies"] == {"status": "pendiente", "valid": None, "checked_at": None}
+        # VIES aplica (UE con NIF-IVA) pero está desactivado en los tests →
+        # «pendiente» sin veredicto; el detalle vivo está en `test_vies.py`.
+        assert fr["vies"]["applies"] is True and fr["vies"]["vat"] == "FR16339753527"
+        assert fr["vies"]["status"] == "pendiente" and fr["vies"]["valid"] is None
+        assert es["vies"]["applies"] is False and no["vies"]["applies"] is False
 
 
 # --- duplicados -----------------------------------------------------------------
