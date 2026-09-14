@@ -1128,6 +1128,9 @@ export type ErpSettings = {
    *  factura (F-1) usa este alias según la serie; si la serie no lo tiene, cae
    *  al alias por defecto del usuario. */
   factusol_series_email_from?: Record<string, string>;
+  /** ERP · email del SAT / taller: destinatario por defecto de «Enviar por
+   *  email» desde un pedido. "" = sin destinatario precargado. */
+  sat_email?: string;
   /** ERP-F6-fix3 — tiendas Woo dadas de alta, para configurar la serie de
    *  cada una (solo lectura; se rellena en el GET). */
   woocommerce_stores?: {
@@ -1932,6 +1935,82 @@ export async function sendInvoiceEmail(
     `/api/erp/factusol/documents/facturas/${serie}/${codigo}/email`,
     { method: "POST", body: JSON.stringify(payload) },
   );
+}
+
+// --- ERP · enviar el PEDIDO por email (SAT / taller + otros) ----------------
+
+/** Un PDF que se puede adjuntar al pedido (o por qué no se puede). */
+export type OrderEmailAttachmentInfo = {
+  available: boolean;
+  numero: string | null;
+  reason: string | null;
+  code: string | null;
+  doc_type?: string | null;
+};
+
+export type OrderEmailPreview = {
+  order_id: string;
+  order_number: string;
+  cliente: string;
+  lang: FactusolPdfLang;
+  /** Destinatarios precargados: el SAT de Ajustes ERP (vacío si no hay). */
+  to: string[];
+  sat_email: string;
+  sat_configured: boolean;
+  subject: string;
+  body_text: string;
+  from_alias: string;
+  attachments: {
+    albaran: OrderEmailAttachmentInfo;
+    pedido: OrderEmailAttachmentInfo;
+    factura: OrderEmailAttachmentInfo;
+  };
+  /** Qué viene marcado: el albarán si existe; los otros no. */
+  defaults: { albaran: boolean; pedido: boolean; factura: boolean };
+};
+
+export type OrderEmailSendPayload = {
+  confirm: true;
+  to: string[];
+  cc?: string[];
+  bcc?: string[];
+  subject: string;
+  body_text: string;
+  lang: FactusolPdfLang;
+  from_alias: string;
+  include_albaran: boolean;
+  include_pedido: boolean;
+  include_factura: boolean;
+};
+
+export type OrderEmailSendResult = {
+  sent: boolean;
+  order_id: string;
+  message_id: string;
+  thread_id: string | null;
+  to: string[];
+  cc: string[];
+  bcc: string[];
+  lang: FactusolPdfLang;
+  attachments: string[];
+  attachment_kinds: string[];
+};
+
+/** Datos del modal «Enviar por email» del pedido (no envía ni genera PDF). */
+export async function getOrderEmailPreview(
+  orderId: string, lang?: FactusolPdfLang,
+): Promise<OrderEmailPreview> {
+  const query = lang ? `?lang=${lang}` : "";
+  return apiFetch(`/api/erp/orders/${orderId}/email-preview${query}`);
+}
+
+/** Envía el pedido por email (Gmail integrado) con los PDF marcados. */
+export async function sendOrderEmail(
+  orderId: string, payload: OrderEmailSendPayload,
+): Promise<OrderEmailSendResult> {
+  return apiFetch(`/api/erp/orders/${orderId}/email`, {
+    method: "POST", body: JSON.stringify(payload),
+  });
 }
 
 /** ERP-F1 — localiza la factura FACTUSOL del pedido (serie + número) para que
