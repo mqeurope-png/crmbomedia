@@ -119,7 +119,7 @@ export function CompanyQuotesPanel({
       const result = await waitForJob(r.job_id);
       if (result) {
         const pago = payment.paid
-          ? " Pago apuntado (el cobro se registra al emitir la factura)."
+          ? " Pago apuntado (el cobro se registra a mano con «Registrar cobro» cuando exista la factura)."
           : " Sin pago: pendiente.";
         setNotice(
           `Pedido ${result.order_number} creado desde la proforma ${codpre}. `

@@ -11,9 +11,9 @@ import { OrderEmailModal } from "../../../components/erp/OrderEmailModal";
 import { CobroFactusolBadge } from "../../../components/erp/CobroFactusolBadge";
 import { EmitFactusolButton } from "../../../components/erp/EmitFactusolButton";
 import { RegistrarCobroModal } from "../../../components/erp/RegistrarCobroModal";
-import { FactusolAlbaranPdfButton } from "../../../components/erp/FactusolAlbaranPdfButton";
 import { OrderStatusMachine } from "../../../components/erp/OrderStatusMachine";
 import { ShippingFilesSection } from "../../../components/erp/ShippingFilesSection";
+import { ActionsMenu } from "../../../components/erp/flow/ActionsMenu";
 import { NextActionBar } from "../../../components/erp/flow/NextActionBar";
 import { RegimePill } from "../../../components/erp/flow/RegimePill";
 import { WorkflowAlerts } from "../../../components/erp/flow/WorkflowAlerts";
@@ -22,7 +22,6 @@ import { getCurrentUser, type User } from "../../../lib/api";
 import { extractErrorMessage } from "../../../lib/errors";
 import {
   completeOrder,
-  createOrderAlbaran,
   customerLabel,
   downloadOrderFactusolPedidoPdf,
   getErpSettings,
@@ -32,7 +31,6 @@ import {
   getFactusolStatus,
   getOrderFactusolCobro,
   type OrderCobroInfo,
-  getQuoteJobStatus,
   fireTransition,
   saveBlob,
   uncompleteOrder,
@@ -40,6 +38,7 @@ import {
   updateOrderSeguimiento,
   ERP_EDIT_ROLES,
   type AvailableTransition,
+  type FactusolCobroStatus,
   type FactusolInvoiceRef,
   type FactusolPdfLang,
   type FactusolStatus,
@@ -137,8 +136,10 @@ export default function ErpOrderDetailPage() {
   }, [load]);
 
   const canEmit = !!user && (ERP_EDIT_ROLES as readonly string[]).includes(user.role);
-  // Señal para abrir el modal de emisión desde la tarjeta FACTURACIÓN.
+  // Señal para abrir el modal de emisión desde «Siguiente paso» / «Solicitar
+  // factura», y fase de la emisión (para no ofrecer dos veces «Emitir»).
   const [emitSignal, setEmitSignal] = useState(0);
+  const [emitPhase, setEmitPhase] = useState<"idle" | "confirm" | "working" | "done" | "error">("idle");
 
   async function onFire(domain: StatusDomain, t: AvailableTransition) {
     // Fase D: «Embalado» abre el modal multi-bulto en vez de la transición
@@ -210,6 +211,14 @@ export default function ErpOrderDetailPage() {
     }
   }
 
+  /** Estado de cobro FACTUSOL (contable) de la factura del pedido: el estado
+   *  en vivo manda sobre el persistido. */
+  function cobroStatusOf(o: OrderDetail): FactusolCobroStatus | null {
+    const live = cobroLive?.status === "cobrada" || cobroLive?.status === "pendiente"
+      ? cobroLive.status : null;
+    return live ?? o.factusol_cobro_status ?? null;
+  }
+
   /** Botón de la barra «Siguiente paso»: la acción que el backend dice que
    *  toca, enganchada a lo que YA hace esta ficha (el modal de emisión, el de
    *  cobro, el albarán, el email al SAT…). Cuando la acción vive en otra
@@ -222,23 +231,43 @@ export default function ErpOrderDetailPage() {
     switch (wf.next_action) {
       case "emitir_factura":
         return canEmit ? (
-          <button type="button" className="button small" onClick={() => setEmitSignal((n) => n + 1)}>
-            {label}
-          </button>
-        ) : null;
-      case "registrar_cobro":
-        return canEmit ? (
           <button
             type="button" className="button small"
-            disabled={!order.factusol_invoice_number}
-            title={order.factusol_invoice_number
-              ? "Registra el cobro de la factura en FACTUSOL"
-              : "Emite la factura primero"}
-            onClick={() => setCobroOpen(true)}
+            disabled={emitPhase === "working"}
+            onClick={() => setEmitSignal((n) => n + 1)}
           >
-            {label}
+            {emitPhase === "working" ? "Generando…" : label}
           </button>
         ) : null;
+      case "registrar_cobro": {
+        // Misma lógica que el botón del panel FACTUSOL: el estado en vivo
+        // manda (cobrada fuera de BoHub → no ofrecer un segundo cobro).
+        if (!canEmit || !order.factusol_invoice_number) return null;
+        const cobrada = cobroStatusOf(order) === "cobrada";
+        return (
+          <button
+            type="button" className="button small"
+            disabled={cobrada}
+            title={cobrada
+              ? "La factura ya consta cobrada en FACTUSOL (no se registra un segundo cobro)"
+              : "Registra el cobro de la factura en FACTUSOL (F_LCO + ESTFAC=2) con cuenta, fecha y forma de pago"}
+            onClick={() => setCobroOpen(true)}
+          >
+            {cobrada ? "Cobrado en FACTUSOL" : label}
+          </button>
+        );
+      }
+      case "crear_envio": {
+        // La transición de transporte disponible (la fila de estados la omite
+        // para no repetirla).
+        const t = order.available_transitions?.transport?.[0];
+        return t ? (
+          <button type="button" className="button small" disabled={busy}
+                  onClick={() => void onFire("transport", t)}>
+            {t.label}
+          </button>
+        ) : null;
+      }
       case "marcar_completado":
         return canEmit ? (
           <button type="button" className="button small" disabled={completeBusy}
@@ -253,9 +282,10 @@ export default function ErpOrderDetailPage() {
           </button>
         ) : null;
       case "enviar_sat":
+        // El «Enviar por email» de la cabecera se esconde: es este.
         return canEmit ? (
           <button type="button" className="button small" onClick={() => setOrderEmailOpen(true)}>
-            Enviar al SAT por email
+            Enviar por email
           </button>
         ) : null;
       case "aprobar":
@@ -296,13 +326,8 @@ export default function ErpOrderDetailPage() {
         </Link>
       ) : null;
     }
-    if (a.code === "cobro_no_registrado" && canEmit) {
-      return (
-        <button type="button" className="button small secondary" onClick={() => setCobroOpen(true)}>
-          Registrar cobro
-        </button>
-      );
-    }
+    // «cobro_no_registrado»: el botón de cobro ya está en «Siguiente paso» o
+    // en el panel FACTUSOL; la alerta solo avisa.
     if (a.code === "excepcion_abierta") {
       return <Link href="/erp/exceptions" className="button small secondary">Ver excepciones</Link>;
     }
@@ -313,295 +338,201 @@ export default function ErpOrderDetailPage() {
     return <main className="shell"><p className="muted">{error ?? "Cargando…"}</p></main>;
   }
 
+  const wf = order.workflow ?? null;
+  const isWeb = order.external_source === "woocommerce";
+  const hasInvoice = !!order.factusol_invoice_number;
+  const invoiced = hasInvoice
+    || factusolStatus?.status === "invoiced"
+    || order.invoice_status === "generated"
+    || order.invoice_status === "invoiced_by_erp";
+  // Cobro FACTUSOL (contable, distinto del «Pagado» del CRM).
+  const cobroStatus = cobroStatusOf(order);
+  // Transición que ya es el botón principal (no repetirla en la fila de estados).
+  const primaryTransition = wf?.next_action === "crear_envio" && order.available_transitions?.transport?.[0]
+    ? { domain: "transport" as const, to_status: order.available_transitions.transport[0].to_status }
+    : null;
+  const cobroTitle = !hasInvoice
+    ? "Emite la factura primero: el cobro se registra sobre la factura del pedido en FACTUSOL"
+    : cobroStatus === "cobrada"
+      ? "La factura ya consta cobrada en FACTUSOL (no se registra un segundo cobro)"
+      : "Registra el cobro de la factura en FACTUSOL (F_LCO + ESTFAC=2) con cuenta, fecha y forma de pago";
+
   return (
-    <main className="shell shell-wide">
+    <main className="shell shell-wide erp-flow">
+      {/* Cabecera: nº, cliente y las acciones de documento del pedido (el
+          selector de idioma del PDF, el PDF del pedido, el envío por email y
+          el completado) + «⋯» con el resto. Las acciones de ESTADO viven en
+          «Siguiente paso» y en «Otras acciones de estado», no aquí. */}
       <PageHeader
         title={`Pedido ${order.order_number}`}
         eyebrow="ERP"
-        description={[
-          customerLabel(order) ? `Cliente: ${customerLabel(order)}` : null,
-          `${order.external_source} · ${order.total_amount.toFixed(2)} ${order.currency}`,
-        ].filter(Boolean).join(" — ")}
+        description={`${order.external_source} · ${order.total_amount.toFixed(2)} ${order.currency}`}
         crumbs={[
           { label: "ERP" },
           { label: "Pedidos", href: "/erp/orders" },
           { label: order.order_number },
         ]}
+        actions={
+          <>
+            <select
+              value={pdfLang}
+              aria-label="Idioma del PDF"
+              onChange={(e) => setPdfLang(e.target.value as FactusolPdfLang)}
+            >
+              {PDF_LANGS.map((l) => (
+                <option key={l.value} value={l.value}>{l.label}</option>
+              ))}
+            </select>
+            <button
+              type="button"
+              className="button small secondary"
+              disabled={pdfBusy || !order.factusol_document}
+              title={pdfDocumentTitle(order.factusol_document)}
+              onClick={async () => {
+                if (!order.factusol_document) return;
+                setPdfBusy(true);
+                setError(null);
+                setPdfNotice(null);
+                try {
+                  const blob = await downloadOrderFactusolPedidoPdf(order.id, pdfLang);
+                  saveBlob(blob, `Pedido_${order.order_number}.pdf`);
+                } catch (e) {
+                  // 404 controlado (el documento no está en FACTUSOL: pedido
+                  // web aún no replicado, o prefijo de referencia de la tienda
+                  // sin configurar — el aviso lo dice) → aviso discreto;
+                  // cualquier otra cosa sí es un error.
+                  if ((e as { status?: number } | null)?.status === 404) {
+                    setPdfNotice(extractErrorMessage(e, "Sin documento en FACTUSOL."));
+                  } else {
+                    setError(extractErrorMessage(
+                      e, "No se pudo generar el PDF del documento FACTUSOL.",
+                    ));
+                  }
+                } finally {
+                  setPdfBusy(false);
+                }
+              }}
+            >
+              {pdfBusy ? "Generando…" : "PDF del pedido (FACTUSOL)"}
+            </button>
+            {canEmit ? (
+              <>
+                {/* ERP · enviar el PEDIDO al SAT / taller (y a quien haga
+                    falta) con el albarán adjunto por defecto. */}
+                {wf?.next_action === "enviar_sat" ? null : (
+                  <button
+                    type="button"
+                    className="button small secondary"
+                    title="Envía el pedido por email (Gmail) con el albarán adjunto; el PDF del pedido y la factura son opcionales"
+                    onClick={() => setOrderEmailOpen(true)}
+                  >
+                    Enviar por email
+                  </button>
+                )}
+                {/* «Marcar completado»: estado final del pedido, solo en BoHub.
+                    Si ya es el «Siguiente paso», el botón está allí (no se repite). */}
+                {wf?.next_action === "marcar_completado" ? null : (
+                  <button
+                    type="button"
+                    className={`button small ${order.completed ? "secondary" : ""}`}
+                    disabled={completeBusy}
+                    title={order.completed
+                      ? "Quitar la marca de completado (solo BoHub)"
+                      : "Estado final del pedido (facturado y enviado), solo en BoHub; no toca WooCommerce"}
+                    onClick={() => void onToggleComplete()}
+                  >
+                    {completeBusy
+                      ? "Guardando…"
+                      : order.completed ? "Desmarcar completado" : "Marcar completado"}
+                  </button>
+                )}
+                <ActionsMenu label="Más acciones del pedido">
+                  {/* E4-fix1 — idioma del pedido: dato persistente (detectado
+                      en la importación Woo) editable a mano; alimenta la
+                      cascada de los PDF. */}
+                  <label className="erp-flow-menu-field">
+                    <span>Idioma del pedido</span>
+                    <select
+                      aria-label="Idioma del pedido"
+                      value={order.language ?? ""}
+                      onChange={async (e) => {
+                        const value = (e.target.value || null) as FactusolPdfLang | null;
+                        setError(null);
+                        try {
+                          await updateOrderLanguage(order.id, value);
+                          setOrder((o) => (o ? { ...o, language: value } : o));
+                          if (value) setPdfLang(value);
+                        } catch (err) {
+                          setError(extractErrorMessage(
+                            err, "No se pudo guardar el idioma del pedido.",
+                          ));
+                        }
+                      }}
+                    >
+                      <option value="">— sin detectar —</option>
+                      {PDF_LANGS.map((l) => (
+                        <option key={l.value} value={l.value}>{l.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                  {/* ERP-F1 — enviar la factura por email cuando el pedido ya
+                      está facturado en FACTUSOL. Resuelve la factura
+                      (serie+número) y abre la previsualización obligatoria. */}
+                  {invoiced ? (
+                    <button
+                      type="button"
+                      disabled={emailBusy}
+                      onClick={async () => {
+                        setEmailBusy(true);
+                        setError(null);
+                        try {
+                          const ref = await getOrderFactusolInvoiceRef(order.id);
+                          setInvoiceRef(ref);
+                        } catch (e) {
+                          setError(extractErrorMessage(
+                            e, "No se pudo localizar la factura en FACTUSOL.",
+                          ));
+                        } finally {
+                          setEmailBusy(false);
+                        }
+                      }}
+                    >
+                      {emailBusy ? "Localizando…" : "Enviar factura por email"}
+                    </button>
+                  ) : null}
+                </ActionsMenu>
+              </>
+            ) : null}
+          </>
+        }
       />
       {error ? <p className="form-error">{error}</p> : null}
       {notice ? <p className="form-success" role="status">{notice}</p> : null}
+      {pdfNotice ? <p className="muted small" role="status">{pdfNotice}</p> : null}
+      {emailBusy ? (
+        <p className="muted small" role="status">Localizando la factura en FACTUSOL…</p>
+      ) : null}
 
       {/* Rediseño de flujo (Fase 1) — la «línea de vida» del pedido: quién es
           el cliente y con qué régimen de IVA, qué alertas tiene, por dónde va
           el ciclo y qué toca AHORA. Todo sale del bloque `workflow` que
           calcula el backend (el mismo que ve la bandeja): aquí no se deduce
-          ningún estado. Debajo sigue estando todo lo de siempre. */}
-      {order.workflow ? (
-        <section className="erp-flow" aria-label="Estado del pedido">
-          <p className="erp-flow-item-r2" style={{ margin: "0 0 12px" }}>
-            <strong>{customerLabel(order) || "Sin cliente"}</strong>
-            <RegimePill
-              regime={order.workflow.regime}
-              country={order.workflow.company?.country}
-            />
-            {order.workflow.company?.factusol_id ? (
-              <span className="badge ok">
-                FACTUSOL nº {order.workflow.company.factusol_id}
-              </span>
-            ) : order.workflow.company ? (
-              <span className="badge warn">Empresa sin vincular a FACTUSOL</span>
-            ) : null}
-          </p>
-          <WorkflowAlerts alerts={order.workflow.alerts} renderAction={alertAction} />
-          <WorkflowSteps steps={order.workflow.steps} />
-          <NextActionBar workflow={order.workflow}>{nextStepAction()}</NextActionBar>
-          <div className="erp-flow-grid2">
-            <EconomicSummary order={order} />
-            <section className="erp-flow-panel" aria-label="FACTUSOL">
-              <h3>FACTUSOL</h3>
-              <p className="erp-flow-kv">
-                <span className="k">Cliente</span>
-                <span className="v">
-                  {order.workflow.company?.factusol_id
-                    ? `${order.workflow.company.factusol_id} · vinculado`
-                    : "sin vincular"}
-                </span>
-              </p>
-              <p className="erp-flow-kv">
-                <span className="k">Albarán</span>
-                <span className="v">{order.factusol_albaran_number || "—"}</span>
-              </p>
-              <p className="erp-flow-kv">
-                <span className="k">Factura</span>
-                <span className="v">{order.factusol_invoice_number || "pendiente"}</span>
-              </p>
-              <p className="erp-flow-kv">
-                <span className="k">Cobro</span>
-                <span className="v">
-                  {order.factusol_cobro_status === "cobrada"
-                    ? "cobrada"
-                    : order.factusol_invoice_number ? "pendiente" : "—"}
-                </span>
-              </p>
-            </section>
-          </div>
-        </section>
-      ) : null}
-
-      <div className="erp-factusol-row" style={{ margin: "0 0 14px" }}>
-        <span className="erp-doc-pdf">
-          <select
-            value={pdfLang}
-            aria-label="Idioma del PDF"
-            onChange={(e) => setPdfLang(e.target.value as FactusolPdfLang)}
-          >
-            {PDF_LANGS.map((l) => (
-              <option key={l.value} value={l.value}>{l.label}</option>
-            ))}
-          </select>
-          <button
-            type="button"
-            className="button small secondary"
-            disabled={pdfBusy || !order.factusol_document}
-            title={pdfDocumentTitle(order.factusol_document)}
-            onClick={async () => {
-              if (!order.factusol_document) return;
-              setPdfBusy(true);
-              setError(null);
-              setPdfNotice(null);
-              try {
-                const blob = await downloadOrderFactusolPedidoPdf(order.id, pdfLang);
-                saveBlob(blob, `Pedido_${order.order_number}.pdf`);
-              } catch (e) {
-                // 404 controlado (el documento no está en FACTUSOL: pedido
-                // web aún no replicado, o prefijo de referencia de la tienda
-                // sin configurar — el aviso lo dice) → aviso discreto;
-                // cualquier otra cosa sí es un error.
-                if ((e as { status?: number } | null)?.status === 404) {
-                  setPdfNotice(extractErrorMessage(e, "Sin documento en FACTUSOL."));
-                } else {
-                  setError(extractErrorMessage(
-                    e, "No se pudo generar el PDF del documento FACTUSOL.",
-                  ));
-                }
-              } finally {
-                setPdfBusy(false);
-              }
-            }}
-          >
-            {pdfBusy ? "Generando…" : "PDF del pedido (FACTUSOL)"}
-          </button>
-          {pdfNotice ? (
-            <span className="muted small" role="status">{pdfNotice}</span>
-          ) : null}
-        </span>
-        {/* E4-fix1 — idioma del pedido: dato persistente (detectado en la
-            importación Woo) editable a mano; alimenta la cascada de los PDF. */}
-        {canEmit ? (
-          <label className="erp-doc-pdf" style={{ marginLeft: 12 }}>
-            <span className="muted small">Idioma del pedido</span>
-            <select
-              aria-label="Idioma del pedido"
-              value={order.language ?? ""}
-              onChange={async (e) => {
-                const value = (e.target.value || null) as FactusolPdfLang | null;
-                setError(null);
-                try {
-                  await updateOrderLanguage(order.id, value);
-                  setOrder({ ...order, language: value });
-                  if (value) setPdfLang(value);
-                } catch (err) {
-                  setError(extractErrorMessage(
-                    err, "No se pudo guardar el idioma del pedido.",
-                  ));
-                }
-              }}
-            >
-              <option value="">— sin detectar —</option>
-              {PDF_LANGS.map((l) => (
-                <option key={l.value} value={l.value}>{l.label}</option>
-              ))}
-            </select>
-          </label>
+          ningún estado. */}
+      <p className="erp-flow-item-r2" style={{ margin: "0 0 12px" }}>
+        <strong>{customerLabel(order) || "Sin cliente"}</strong>
+        {wf ? <RegimePill regime={wf.regime} country={wf.company?.country} /> : null}
+        {wf?.company?.factusol_id ? (
+          <span className="badge ok">FACTUSOL nº {wf.company.factusol_id}</span>
+        ) : wf?.company ? (
+          <span className="badge warn">Empresa sin vincular a FACTUSOL</span>
         ) : null}
-      </div>
-      {canEmit ? (
-        <div className="erp-factusol-row" style={{ margin: "0 0 14px" }}>
-          <EmitFactusolButton
-            orderId={order.id}
-            invoiceStatus={order.invoice_status}
-            factusolInvoiceNumber={order.factusol_invoice_number}
-            totalAmount={order.total_amount}
-            currency={order.currency}
-            companyId={order.company_id}
-            factusolStatus={factusolStatus}
-            enableOptions
-            openSignal={emitSignal}
-            onInvoiced={() => load()}
-          />
-          {/* ERP-F1 — enviar la factura por email cuando el pedido ya está
-              facturado en FACTUSOL. Resuelve la factura (serie+número) y abre
-              la previsualización obligatoria. */}
-          {order.factusol_invoice_number
-           || factusolStatus?.status === "invoiced"
-           || order.invoice_status === "generated"
-           || order.invoice_status === "invoiced_by_erp" ? (
-            <button
-              type="button"
-              className="button small"
-              disabled={emailBusy}
-              onClick={async () => {
-                setEmailBusy(true);
-                setError(null);
-                try {
-                  const ref = await getOrderFactusolInvoiceRef(order.id);
-                  setInvoiceRef(ref);
-                } catch (e) {
-                  setError(extractErrorMessage(
-                    e, "No se pudo localizar la factura en FACTUSOL.",
-                  ));
-                } finally {
-                  setEmailBusy(false);
-                }
-              }}
-            >
-              {emailBusy ? "Localizando…" : "Enviar factura por email"}
-            </button>
-          ) : null}
-          {/* ERP · enviar el PEDIDO al SAT / taller (y a quien haga falta) con
-              el albarán adjunto por defecto. */}
-          <button
-            type="button"
-            className="button small"
-            title="Envía el pedido por email (Gmail) con el albarán adjunto; el PDF del pedido y la factura son opcionales"
-            onClick={() => setOrderEmailOpen(true)}
-          >
-            Enviar por email
-          </button>
-          {/* «Marcar completado»: estado final del pedido, solo en BoHub. */}
-          <button
-            type="button"
-            className={`button small ${order.completed ? "secondary" : ""}`}
-            disabled={completeBusy}
-            title={order.completed
-              ? "Quitar la marca de completado (solo BoHub)"
-              : "Estado final del pedido (facturado y enviado), solo en BoHub; no toca WooCommerce"}
-            onClick={() => void onToggleComplete()}
-          >
-            {completeBusy
-              ? "Guardando…"
-              : order.completed ? "Desmarcar completado" : "Marcar completado"}
-          </button>
-        </div>
-      ) : null}
-      {/* Cobro manual (F-4-B desde la app): estado de cobro EN FACTUSOL de la
-          factura del pedido (contable, distinto del «Pagado» del CRM) y el
-          botón que abre el modal compartido. Sin factura → deshabilitado con
-          tooltip, nunca un error rojo; ya cobrada → «Cobrado», sin doble cobro. */}
-      {(() => {
-        const hasInvoice = !!order.factusol_invoice_number;
-        const liveStatus = cobroLive?.status === "cobrada" || cobroLive?.status === "pendiente"
-          ? cobroLive.status : null;
-        const cobroStatus = liveStatus ?? order.factusol_cobro_status ?? null;
-        const title = !hasInvoice
-          ? "Emite la factura primero: el cobro se registra sobre la factura del pedido en FACTUSOL"
-          : cobroStatus === "cobrada"
-            ? "La factura ya consta cobrada en FACTUSOL (no se registra un segundo cobro)"
-            : "Registra el cobro de la factura en FACTUSOL (F_LCO + ESTFAC=2) con cuenta, fecha y forma de pago";
-        return (
-          <div className="erp-factusol-row erp-cobro-row" style={{ margin: "0 0 14px" }}>
-            <span className="small muted">Cobro FACTUSOL:</span>{" "}
-            {hasInvoice ? (
-              <CobroFactusolBadge
-                hasInvoice
-                status={cobroStatus}
-                cobro={order.factusol_cobro}
-              />
-            ) : (
-              <span className="muted small">sin factura</span>
-            )}
-            {cobroLive?.status === "pendiente" && cobroLive.saldo_pendiente != null ? (
-              <span className="muted small"> saldo {cobroLive.saldo_pendiente.toFixed(2)} €</span>
-            ) : null}
-            {canEmit ? (
-              <button
-                type="button"
-                className="button small"
-                disabled={!hasInvoice || cobroStatus === "cobrada"}
-                title={title}
-                onClick={() => setCobroOpen(true)}
-              >
-                {cobroStatus === "cobrada" ? "Cobrado en FACTUSOL" : "Registrar cobro en FACTUSOL"}
-              </button>
-            ) : null}
-          </div>
-        );
-      })()}
-      {cobroOpen ? (
-        <RegistrarCobroModal
-          orderId={order.id}
-          orderNumber={order.order_number}
-          onClose={() => setCobroOpen(false)}
-          onDone={(info) => { setCobroLive(info); load(); }}
-        />
-      ) : null}
-      {invoiceRef ? (
-        <InvoiceEmailModal
-          serie={invoiceRef.serie}
-          codigo={invoiceRef.codigo}
-          numero={invoiceRef.numero}
-          onClose={() => setInvoiceRef(null)}
-          onSent={() => { setInvoiceRef(null); load(); }}
-        />
-      ) : null}
-      {/* ERP · enviar el pedido al SAT / taller con el albarán adjunto. */}
-      {orderEmailOpen ? (
-        <OrderEmailModal
-          orderId={order.id}
-          orderNumber={order.order_number}
-          onClose={() => setOrderEmailOpen(false)}
-          onSent={() => load()}
-          onCreateAlbaran={() => { setOrderEmailOpen(false); setAlbaranSignal((n) => n + 1); }}
+      </p>
+      {wf ? (
+        <WorkflowAlerts
+          alerts={wf.alerts}
+          // Con incidencia bloqueante, «Siguiente paso» ya lleva ESA acción:
+          // la alerta no la repite.
+          renderAction={(a) => (wf.blocked && a.action === wf.next_action ? null : alertAction(a))}
         />
       ) : null}
       {order.completed ? (
@@ -639,74 +570,144 @@ export default function ErpOrderDetailPage() {
           ))}
         </ul>
       ) : null}
+      {wf ? <WorkflowSteps steps={wf.steps} /> : null}
+      {wf ? <NextActionBar workflow={wf}>{nextStepAction()}</NextActionBar> : null}
 
-      <OrderStatusMachine order={order} onFire={onFire} busy={busy} />
+      {/* Las transiciones de estado que no son la principal (Reembolso,
+          Empezar preparación, Bloquear, Crear envío, Solicitar factura…), en
+          una fila compacta: ninguna se pierde. */}
+      <OrderStatusMachine order={order} onFire={onFire} busy={busy} omit={primaryTransition} />
 
+      <div className="erp-flow-grid2">
+        <EconomicSummary order={order} />
+        {/* Bloque FACTUSOL: lo que hay allí y la acción de cada cosa. El
+            albarán (y su PDF) vive en «Documentos de envío». */}
+        <section className="erp-flow-panel" aria-label="FACTUSOL">
+          <h3>FACTUSOL</h3>
+          <div className="erp-flow-kv">
+            <span className="k">Cliente</span>
+            <span className="v">
+              {wf?.company?.factusol_id
+                ? `${wf.company.factusol_id} · vinculado`
+                : wf?.company ? "sin vincular" : "—"}
+            </span>
+          </div>
+          <div className="erp-flow-kv">
+            <span className="k">Albarán</span>
+            <span className="v">
+              {order.factusol_albaran_number || (isWeb ? "lo crea WooCommerce" : "—")}
+            </span>
+          </div>
+          <div className="erp-flow-kv">
+            <span className="k">Factura</span>
+            <div className="v erp-flow-kv-actions">
+              {canEmit ? (
+                <EmitFactusolButton
+                  orderId={order.id}
+                  invoiceStatus={order.invoice_status}
+                  factusolInvoiceNumber={order.factusol_invoice_number}
+                  totalAmount={order.total_amount}
+                  currency={order.currency}
+                  companyId={order.company_id}
+                  factusolStatus={factusolStatus}
+                  enableOptions
+                  openSignal={emitSignal}
+                  // Si emitir ya es el «Siguiente paso», el botón está allí; y
+                  // el nº de albarán ya lo dice la fila de arriba.
+                  buttonHidden={wf?.next_action === "emitir_factura"}
+                  albaranBadgeHidden
+                  onPhaseChange={setEmitPhase}
+                  onInvoiced={() => load()}
+                />
+              ) : (
+                order.factusol_invoice_number || "pendiente"
+              )}
+            </div>
+          </div>
+          {/* Cobro manual (F-4-B desde la app): estado de cobro EN FACTUSOL
+              de la factura del pedido y el botón que abre el modal
+              compartido. Sin factura → deshabilitado con tooltip, nunca un
+              error rojo; ya cobrada → «Cobrado», sin doble cobro. El cobro
+              es SIEMPRE manual: nada lo registra por su cuenta. */}
+          <div className="erp-flow-kv">
+            <span className="k">Cobro</span>
+            <div className="v erp-flow-kv-actions">
+              {hasInvoice ? (
+                <CobroFactusolBadge
+                  hasInvoice
+                  status={cobroStatus}
+                  cobro={order.factusol_cobro}
+                />
+              ) : (
+                <span className="muted small">sin factura</span>
+              )}
+              {cobroLive?.status === "pendiente" && cobroLive.saldo_pendiente != null ? (
+                <span className="muted small">saldo {cobroLive.saldo_pendiente.toFixed(2)} €</span>
+              ) : null}
+              {canEmit && wf?.next_action !== "registrar_cobro" ? (
+                <button
+                  type="button"
+                  className="button small secondary"
+                  disabled={!hasInvoice || cobroStatus === "cobrada"}
+                  title={cobroTitle}
+                  onClick={() => setCobroOpen(true)}
+                >
+                  {cobroStatus === "cobrada" ? "Cobrado en FACTUSOL" : "Registrar cobro en FACTUSOL"}
+                </button>
+              ) : null}
+            </div>
+          </div>
+        </section>
+      </div>
+
+      {/* El albarán vive AQUÍ y solo aquí: el de FACTUSOL (nº, PDF, crearlo si
+          falta) y el fichero subido a mano / descargado de Woo; y la etiqueta. */}
       <ShippingFilesSection
         orderId={order.id}
-        isWooOrder={order.external_source === "woocommerce"}
+        isWooOrder={isWeb}
+        orderSource={order.external_source}
         factusolAlbaranNumber={order.factusol_albaran_number ?? null}
         pdfLang={pdfLang}
+        canCreateAlbaran={canEmit}
+        createSignal={albaranSignal}
+        onAlbaranCreated={({ error: err }) => { if (err) setError(err); load(); }}
       />
-
-      {embalarOpen ? (
-        <EmbalarModal
-          orderId={order.id}
-          onCancel={() => setEmbalarOpen(false)}
-          onDone={() => { setEmbalarOpen(false); load(); }}
-        />
-      ) : null}
-
-      {/* Fase 2 — albarán FACTUSOL creado al convertir + pago apuntado (opción B).
-          Tarea A — un pedido MANUAL (sin documento en FACTUSOL) también: el
-          albarán se crea a demanda desde las líneas del pedido. Los web no
-          (lo crea WooCommerce). */}
-      {order.external_source.startsWith("factusol_")
-       || order.external_source === "manual"
-       || order.factusol_albaran_number || order.factusol_payment ? (
-        <AlbaranPagoCard
-          order={order}
-          canEdit={canEmit}
-          pdfLang={pdfLang}
-          createSignal={albaranSignal}
-          onChanged={() => load()}
-          onError={setError}
-        />
-      ) : null}
 
       {/* ERP-F6 — campos del Excel de seguimiento, editables desde la ficha. */}
       <SeguimientoFieldsCard
         order={order}
         canEdit={canEmit}
-        onSaved={(patch) => setOrder({ ...order, ...patch })}
+        onSaved={(patch) => setOrder((o) => (o ? { ...o, ...patch } : o))}
         onError={setError}
       />
 
-      <div className="erp-detail-grid">
-        <section className="erp-card" id="lineas">
+      <div className="erp-flow-grid2">
+        <section className="erp-flow-panel" id="lineas" aria-label="Líneas">
           <h3>Líneas</h3>
-          <table className="data-table">
-            <thead>
-              <tr><th>SKU</th><th>Artículo</th><th>Cant.</th><th>Total</th><th>Mapping</th></tr>
-            </thead>
-            <tbody>
-              {order.lines.map((l) => (
-                <tr key={l.id}>
-                  <td><code>{l.product_sku}</code></td>
-                  <td>{l.description}</td>
-                  <td>{l.quantity}</td>
-                  <td>{l.line_total.toFixed(2)}</td>
-                  <td>{l.product_codart
-                    ? <span className="badge ok">{l.product_codart}</span>
-                    : <span className="badge bad">sin mapear</span>}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <div className="erp-flow-table">
+            <table className="data-table">
+              <thead>
+                <tr><th>SKU</th><th>Artículo</th><th>Cant.</th><th>Total</th><th>Mapping</th></tr>
+              </thead>
+              <tbody>
+                {order.lines.map((l) => (
+                  <tr key={l.id}>
+                    <td><code>{l.product_sku}</code></td>
+                    <td>{l.description}</td>
+                    <td>{l.quantity}</td>
+                    <td>{l.line_total.toFixed(2)}</td>
+                    <td>{l.product_codart
+                      ? <span className="badge ok">{l.product_codart}</span>
+                      : <span className="badge bad">sin mapear</span>}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </section>
 
-        <section className="erp-card">
-          <h3>Timeline</h3>
+        <section className="erp-flow-panel" aria-label="Actividad">
+          <h3>Actividad</h3>
           {timeline.length === 0 ? (
             <p className="muted small">Sin eventos.</p>
           ) : (
@@ -728,7 +729,7 @@ export default function ErpOrderDetailPage() {
       </div>
 
       {order.exceptions.length > 0 ? (
-        <section className="erp-card">
+        <section className="erp-flow-panel" aria-label="Excepciones">
           <h3>Excepciones</h3>
           <ul>
             {order.exceptions.map((e) => (
@@ -740,6 +741,41 @@ export default function ErpOrderDetailPage() {
           </ul>
           <Link href="/erp/exceptions" className="link-button small">Ver bandeja de excepciones</Link>
         </section>
+      ) : null}
+
+      {cobroOpen ? (
+        <RegistrarCobroModal
+          orderId={order.id}
+          orderNumber={order.order_number}
+          onClose={() => setCobroOpen(false)}
+          onDone={(info) => { setCobroLive(info); load(); }}
+        />
+      ) : null}
+      {invoiceRef ? (
+        <InvoiceEmailModal
+          serie={invoiceRef.serie}
+          codigo={invoiceRef.codigo}
+          numero={invoiceRef.numero}
+          onClose={() => setInvoiceRef(null)}
+          onSent={() => { setInvoiceRef(null); load(); }}
+        />
+      ) : null}
+      {/* ERP · enviar el pedido al SAT / taller con el albarán adjunto. */}
+      {orderEmailOpen ? (
+        <OrderEmailModal
+          orderId={order.id}
+          orderNumber={order.order_number}
+          onClose={() => setOrderEmailOpen(false)}
+          onSent={() => load()}
+          onCreateAlbaran={() => { setOrderEmailOpen(false); setAlbaranSignal((n) => n + 1); }}
+        />
+      ) : null}
+      {embalarOpen ? (
+        <EmbalarModal
+          orderId={order.id}
+          onCancel={() => setEmbalarOpen(false)}
+          onDone={() => { setEmbalarOpen(false); load(); }}
+        />
       ) : null}
     </main>
   );
@@ -791,6 +827,25 @@ function EconomicSummary({ order }: { order: OrderDetail }) {
           {pago?.contrapartida_nombre ? ` · ${pago.contrapartida_nombre}` : ""}
         </span>
       </p>
+      {/* Fase 2 (opción B): lo apuntado al convertir. El cobro en FACTUSOL es
+          otra cosa (y siempre manual): lo dice el bloque FACTUSOL. */}
+      {pago ? (
+        <p className="erp-flow-kv">
+          <span className="k">Pago al convertir</span>
+          <span className="v">
+            {pago.paid ? (
+              <>
+                <span className="badge ok">Pagado (apuntado)</span>
+                {pago.fecha ? ` · fecha ${pago.fecha}` : ""}
+              </>
+            ) : (
+              <>
+                <span className="badge muted">Sin pago</span> · pendiente
+              </>
+            )}
+          </span>
+        </p>
+      ) : null}
       <p className="erp-flow-total">
         <span className="k muted">Total</span>
         <span className="n">{eur(order.total_amount)}</span>
@@ -851,7 +906,7 @@ function SeguimientoFieldsCard({
   }
 
   return (
-    <section className="erp-card">
+    <section className="erp-flow-panel" aria-label="Seguimiento">
       <h3>Seguimiento</h3>
       <div className="erp-doc-filters">
         <label className="field">
@@ -910,201 +965,6 @@ function SeguimientoFieldsCard({
         <p className="muted small" style={{ whiteSpace: "pre-wrap" }}>
           <strong>Observaciones:</strong> {order.notes}
         </p>
-      ) : null}
-    </section>
-  );
-}
-
-const ALBARAN_POLL_MS = 2000;
-const ALBARAN_POLL_MAX_TRIES = 30;  // ~60 s: el worker es serie
-
-/** Job del albarán con el que llega el alta (`?albaran_job=`), sin depender de
- *  `useSearchParams` (la ficha no lo usa). */
-function albaranJobFromLocation(): string | null {
-  if (typeof window === "undefined") return null;
-  try {
-    return new URLSearchParams(window.location.search).get("albaran_job");
-  } catch {
-    return null;
-  }
-}
-
-/** Fase 2 — «Albarán y pago FACTUSOL» del pedido creado desde una proforma /
- *  pedido de cliente de FACTUSOL:
- *
- *  - Albarán: el nº creado por BoHub al convertir (`F_ALB`+`F_LAL`, idempotente);
- *    si aún no lo tiene, botón para (re)crearlo. Los pedidos web nunca lo
- *    tienen aquí: su albarán lo crea WooCommerce.
- *  - Pago (opción B): «pagado» queda APUNTADO (cuenta, fecha) sin emitir
- *    factura; el cobro F-4-B se registra solo cuando exista la factura del
- *    pedido. «Sin pago» → pendiente, sin cobro. */
-function AlbaranPagoCard({
-  order, canEdit, pdfLang, createSignal = 0, onChanged, onError,
-}: {
-  order: OrderDetail;
-  canEdit: boolean;
-  pdfLang: FactusolPdfLang;
-  /** Contador que, al subir, lanza «Crear albarán en FACTUSOL» desde fuera
-   *  (lo usa el aviso del modal de envío por email cuando falta el albarán). */
-  createSignal?: number;
-  onChanged: () => void;
-  onError: (msg: string | null) => void;
-}) {
-  // El alta redirige aquí con el job del albarán recién encolado (solo
-  // importa si el pedido aún no tiene su nº). Estado inicial perezoso: la
-  // tarjeta se monta tras cargar el pedido, ya en el cliente.
-  const [jobId, setJobId] = useState<string | null>(
-    () => (order.factusol_albaran_number ? null : albaranJobFromLocation()),
-  );
-  const [busy, setBusy] = useState(false);
-  const [notice, setNotice] = useState<string | null>(null);
-
-  // Polling del job hasta que termine; al terminar se recarga el pedido.
-  useEffect(() => {
-    if (!jobId) return;
-    let alive = true;
-    let tries = 0;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const tick = () => {
-      getQuoteJobStatus(jobId)
-        .then((st) => {
-          if (!alive) return;
-          if (st.status === "finished") {
-            const numero = (st.result as { numero?: string } | undefined)?.numero;
-            setNotice(numero ? `Albarán FACTUSOL ${numero} creado.` : "Albarán creado.");
-            setJobId(null);
-            onChanged();
-          } else if (st.status === "failed") {
-            setJobId(null);
-            onError(`El albarán no se creó en FACTUSOL: ${st.error ?? "error"}`);
-          } else if (++tries >= ALBARAN_POLL_MAX_TRIES) {
-            setJobId(null);
-            setNotice("El albarán sigue en cola; recarga la ficha en unos segundos.");
-          } else {
-            timer = setTimeout(tick, ALBARAN_POLL_MS);
-          }
-        })
-        .catch(() => {
-          if (!alive) return;
-          if (++tries >= ALBARAN_POLL_MAX_TRIES) setJobId(null);
-          else timer = setTimeout(tick, ALBARAN_POLL_MS);
-        });
-    };
-    tick();
-    return () => { alive = false; if (timer) clearTimeout(timer); };
-    // onChanged/onError son estables a efectos prácticos (setters / load).
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [jobId]);
-
-  async function crearAlbaran() {
-    setBusy(true);
-    onError(null);
-    setNotice(null);
-    try {
-      const r = await createOrderAlbaran(order.id);
-      setNotice("Creando el albarán en FACTUSOL…");
-      setJobId(r.job_id);
-    } catch (e) {
-      onError(extractErrorMessage(e, "No se pudo encolar el albarán en FACTUSOL."));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  // Petición externa de crear el albarán (aviso del envío por email): se
-  // ignora el montaje inicial y cuando el pedido ya tiene albarán.
-  useEffect(() => {
-    if (createSignal > 0 && !order.factusol_albaran_number) void crearAlbaran();
-    // `crearAlbaran` solo usa setters y la API; disparar por el contador.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [createSignal]);
-
-  const pago = order.factusol_payment ?? null;
-  const isWeb = order.external_source === "woocommerce";
-
-  return (
-    <section className="erp-card" aria-label="Albarán y pago FACTUSOL">
-      <h3>Albarán y pago FACTUSOL</h3>
-      {notice ? <p className="form-info" role="status">{notice}</p> : null}
-      <p>
-        {order.factusol_albaran_number ? (
-          <>
-            <span className="badge ok">Albarán FACTUSOL {order.factusol_albaran_number}</span>
-            {" "}
-            <FactusolAlbaranPdfButton
-              orderId={order.id}
-              numero={order.factusol_albaran_number}
-              lang={pdfLang}
-              onError={onError}
-            />
-          </>
-        ) : jobId ? (
-          <span className="badge warn">Creando el albarán en FACTUSOL…</span>
-        ) : isWeb ? (
-          <span className="muted small">
-            Pedido web: el albarán lo crea WooCommerce, no BoHub.
-          </span>
-        ) : (
-          <>
-            <span className="badge muted">Sin albarán en FACTUSOL</span>
-            {canEdit ? (
-              <>
-                {" "}
-                <button type="button" className="button small" disabled={busy}
-                        title={order.external_source === "manual"
-                          ? "Crea el albarán en FACTUSOL (F_ALB + líneas) desde las líneas de este pedido manual (empresa vinculada a F_CLI); idempotente"
-                          : "Crea el albarán (F_ALB + líneas) a partir del documento de origen; idempotente"}
-                        onClick={() => void crearAlbaran()}>
-                  {busy ? "Encolando…" : "Crear albarán en FACTUSOL"}
-                </button>
-              </>
-            ) : null}
-          </>
-        )}
-      </p>
-      {pago ? (
-        <div className="erp-payment-summary">
-          {pago.paid ? (
-            <>
-              <p>
-                <span className="badge ok">Pagado (apuntado)</span>{" "}
-                {pago.forma_pago_nombre || pago.forma_pago
-                  ? `forma de pago ${pago.forma_pago_nombre ?? pago.forma_pago} · ` : ""}
-                cuenta {pago.contrapartida_nombre ?? pago.contrapartida ?? "—"}
-                {pago.fecha ? ` · fecha ${pago.fecha}` : ""}.
-              </p>
-              <p className="muted small">
-                {pago.cobro?.registered ? (
-                  <>
-                    Cobro registrado en FACTUSOL para la factura {pago.cobro.numero}
-                    {pago.cobro.linlco != null ? ` (línea ${pago.cobro.linlco}` : ""}
-                    {pago.cobro.importe != null ? `${pago.cobro.linlco != null ? ", " : " ("}${pago.cobro.importe.toFixed(2)} €)` : (pago.cobro.linlco != null ? ")" : "")}.
-                  </>
-                ) : pago.cobro && !pago.cobro.registered ? (
-                  <>
-                    Cobro FACTUSOL <strong>pendiente</strong>: no se pudo registrar
-                    {pago.cobro.motivo ? ` (${pago.cobro.motivo})` : ""}. Regístralo desde
-                    ERP · Documentos o el script de cobros.
-                  </>
-                ) : (
-                  <>
-                    Cobro FACTUSOL <strong>pendiente de factura</strong>: se registrará
-                    solo (F-4-B) al emitir la factura del pedido. No se ha emitido
-                    ninguna factura.
-                  </>
-                )}
-              </p>
-            </>
-          ) : (
-            <p>
-              <span className="badge muted">Sin pago</span>{" "}
-              pendiente
-              {pago.forma_pago_nombre || pago.forma_pago
-                ? ` · forma de pago ${pago.forma_pago_nombre ?? pago.forma_pago}` : ""}.
-              No se registra ningún cobro.
-            </p>
-          )}
-        </div>
       ) : null}
     </section>
   );

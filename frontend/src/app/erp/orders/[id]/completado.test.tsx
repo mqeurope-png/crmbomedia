@@ -10,8 +10,12 @@ jest.mock("next/link", () => ({
 jest.mock("next/navigation", () => ({
   useParams: () => ({ id: "o-1" }),
 }));
+// La cabecera del rediseño lleva las acciones del pedido (PDF, email,
+// completado, «⋯»): el mock las pinta para que sigan siendo accesibles.
 jest.mock("../../../components/PageHeader", () => ({
-  PageHeader: ({ title }: { title: string }) => <h1>{title}</h1>,
+  PageHeader: ({ title, actions }: { title: string; actions?: React.ReactNode }) => (
+    <><h1>{title}</h1>{actions}</>
+  ),
 }));
 jest.mock("../../../components/erp/EmbalarModal", () => ({ EmbalarModal: () => null }));
 jest.mock("../../../components/erp/FactusolDocumentDetailModal", () => ({

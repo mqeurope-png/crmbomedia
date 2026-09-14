@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import ErpOrderDetailPage from "./page";
 import { getOrder } from "../../../lib/erpApi";
@@ -16,8 +16,12 @@ jest.mock("next/link", () => ({
   }) => <a href={href} className={className}>{children}</a>,
 }));
 jest.mock("next/navigation", () => ({ useParams: () => ({ id: "o-1" }) }));
+// La cabecera del rediseño lleva las acciones del pedido (PDF, email,
+// completado, «⋯»): el mock las pinta para que sigan siendo accesibles.
 jest.mock("../../../components/PageHeader", () => ({
-  PageHeader: ({ title }: { title: string }) => <h1>{title}</h1>,
+  PageHeader: ({ title, actions }: { title: string; actions?: React.ReactNode }) => (
+    <><h1>{title}</h1>{actions}</>
+  ),
 }));
 jest.mock("../../../components/erp/EmbalarModal", () => ({ EmbalarModal: () => null }));
 jest.mock("../../../components/erp/FactusolDocumentDetailModal", () => ({
@@ -27,12 +31,12 @@ jest.mock("../../../components/erp/InvoiceEmailModal", () => ({ InvoiceEmailModa
 jest.mock("../../../components/erp/OrderEmailModal", () => ({ OrderEmailModal: () => null }));
 // El botón de emisión sólo tiene que decir si la ficha le pidió abrirse.
 jest.mock("../../../components/erp/EmitFactusolButton", () => ({
-  EmitFactusolButton: ({ openSignal }: { openSignal?: number }) => (
-    <span>emision:{openSignal ?? 0}</span>
+  EmitFactusolButton: ({ openSignal, buttonHidden }: { openSignal?: number; buttonHidden?: boolean }) => (
+    <>
+      {buttonHidden ? null : <button type="button">Emitir factura FACTUSOL</button>}
+      <span>emision:{openSignal ?? 0}</span>
+    </>
   ),
-}));
-jest.mock("../../../components/erp/OrderStatusMachine", () => ({
-  OrderStatusMachine: () => <div>maquina de estados</div>,
 }));
 jest.mock("../../../components/erp/ShippingFilesSection", () => ({
   ShippingFilesSection: () => <div>documentos de envío</div>,
@@ -42,6 +46,12 @@ jest.mock("../../../lib/api", () => ({
 }));
 jest.mock("../../../lib/erpApi", () => ({
   ERP_EDIT_ROLES: ["admin", "pedidos"],
+  // La fila «Otras acciones de estado» es real: necesita las etiquetas y
+  // los estados del cliente de API.
+  DOMAIN_LABELS: {
+    payment: "Pago", preparation: "Preparación", transport: "Transporte", invoice: "Facturación",
+  },
+  STATUS_LABELS: {},
   customerLabel: () => "Alexandre · La Maison de la Plaque",
   getOrder: jest.fn(),
   getOrderTimeline: jest.fn(() => Promise.resolve({ total: 0, items: [] })),
@@ -89,7 +99,12 @@ function detail(over = {}) {
       description: "Tinta", quantity: 1, unit_price: 351.52, tax_rate: 21,
       line_total: 351.52, notes: null,
     }],
-    status_history: [], exceptions: [], available_transitions: {}, blockers: [],
+    status_history: [], exceptions: [], blockers: [],
+    available_transitions: {
+      payment: [], invoice: [],
+      preparation: [{ to_status: "preparing", label: "Empezar preparación", required_evidence: [] }],
+      transport: [{ to_status: "label_created", label: "Crear envío", required_evidence: [] }],
+    },
     warnings: [], completed: false, completed_at: null, completed_by_user_id: null,
     completed_by_name: null,
     workflow: {
@@ -163,19 +178,50 @@ describe("ERP · Ficha del pedido (rediseño de flujo)", () => {
     const fac = within(screen.getByRole("region", { name: "FACTUSOL" }));
     expect(fac.getByText("Cliente").nextSibling).toHaveTextContent("2760 · vinculado");
     expect(fac.getByText("Albarán").nextSibling).toHaveTextContent("2-100418");
-    expect(fac.getByText("Factura").nextSibling).toHaveTextContent("pendiente");
+    // La fila «Factura» lleva el control de emisión (aquí, su mock); «Cobro»
+    // dice que aún no hay factura sobre la que cobrar.
+    expect(fac.getByText("Factura").nextSibling).toHaveTextContent("emision:0");
+    expect(fac.getByText("Cobro").nextSibling).toHaveTextContent("sin factura");
   });
 
   it("no se pierde nada de lo que ya había en la ficha", async () => {
     render(<ErpOrderDetailPage />);
-    expect(await screen.findByText("maquina de estados")).toBeInTheDocument();
-    expect(screen.getByText("documentos de envío")).toBeInTheDocument();
-    for (const titulo of ["Líneas", "Timeline", "Seguimiento"]) {
+    expect(await screen.findByText("documentos de envío")).toBeInTheDocument();
+    for (const titulo of ["Líneas", "Actividad", "Seguimiento", "FACTUSOL", "Resumen económico"]) {
       expect(screen.getByRole("heading", { name: titulo })).toBeInTheDocument();
     }
+    // Cabecera: idioma del PDF, PDF del pedido, email, completado y «⋯»
+    // (idioma del pedido, enviar factura por email).
+    expect(screen.getByRole("combobox", { name: "Idioma del PDF" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /PDF del pedido \(FACTUSOL\)/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Enviar por email" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Marcar completado" })).toBeInTheDocument();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Más acciones del pedido" }));
+    expect(screen.getByRole("combobox", { name: "Idioma del pedido" })).toBeInTheDocument();
+    // Las transiciones de estado siguen (fila compacta), no las 4 tarjetas.
+    const estados = screen.getByRole("region", { name: "Otras acciones de estado" });
+    expect(estados).toHaveTextContent("Preparación");
+    expect(within(estados).getByRole("button", { name: "Crear envío" })).toBeInTheDocument();
+    expect(document.querySelector(".erp-states")).toBeNull();
+    expect(document.querySelector(".erp-card")).toBeNull();
+  });
+
+  it("test_ficha_no_duplica_albaran_ni_acciones: cada acción y el albarán salen una sola vez", async () => {
+    render(<ErpOrderDetailPage />);
+    await screen.findByText("documentos de envío");
+    // «Emitir factura» es el siguiente paso: SOLO en la barra, no repetido en
+    // el bloque FACTUSOL. Las demás, una vez cada una.
+    expect(screen.getAllByRole("button", { name: /Emitir factura/ })).toHaveLength(1);
+    expect(screen.queryByRole("button", { name: "Emitir factura FACTUSOL" })).toBeNull();
+    expect(screen.getAllByRole("button", { name: "Marcar completado" })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: "Enviar por email" })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: /PDF del pedido/ })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: /Registrar cobro/ })).toHaveLength(1);
+    // El nº de albarán aparece en el stepper y en el bloque FACTUSOL como
+    // dato; el albarán como DOCUMENTO (PDF / crear) solo en Documentos de envío.
+    expect(screen.queryByText("Albarán y pago FACTUSOL")).toBeNull();
+    expect(screen.queryByText("Cobro FACTUSOL:")).toBeNull();
   });
 
   it("con incidencia bloqueante la barra cambia de tono y lleva a resolverla", async () => {
@@ -195,5 +241,81 @@ describe("ERP · Ficha del pedido (rediseño de flujo)", () => {
     const bar = within(await screen.findByRole("region", { name: "Siguiente paso" }));
     expect(bar.getByText("Hay que resolver esto")).toBeInTheDocument();
     expect(bar.getByRole("link", { name: "Ver líneas" })).toHaveAttribute("href", "#lineas");
+  });
+
+  // --- ninguna acción dos veces, en cada estado del flujo ---
+
+  function conSiguientePaso(over: Record<string, unknown>, extra: Record<string, unknown> = {}) {
+    return detail({ ...extra, workflow: { ...detail().workflow, alerts: [], ...over } });
+  }
+
+  it("«Marcar completado» como siguiente paso: solo en la barra (la cabecera no lo repite)", async () => {
+    (getOrder as jest.Mock).mockResolvedValue(conSiguientePaso({
+      next_action: "marcar_completado", next_action_label: "Marcar completado",
+      next_action_hint: "Todo hecho: márcalo como completado.",
+    }));
+    render(<ErpOrderDetailPage />);
+    const bar = within(await screen.findByRole("region", { name: "Siguiente paso" }));
+    expect(bar.getByRole("button", { name: "Marcar completado" })).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Marcar completado" })).toHaveLength(1);
+  });
+
+  it("«Enviar a SAT» como siguiente paso: un solo «Enviar por email»", async () => {
+    (getOrder as jest.Mock).mockResolvedValue(conSiguientePaso({
+      next_action: "enviar_sat", next_action_label: "Enviar a SAT",
+      next_action_hint: "El taller tiene que preparar el pedido.",
+    }));
+    render(<ErpOrderDetailPage />);
+    await screen.findByRole("region", { name: "Siguiente paso" });
+    expect(screen.getAllByRole("button", { name: "Enviar por email" })).toHaveLength(1);
+  });
+
+  it("«Registrar cobro» como siguiente paso respeta el estado en vivo: cobrada fuera de BoHub → deshabilitado, sin segundo cobro", async () => {
+    const { getOrderFactusolCobro } = jest.requireMock("../../../lib/erpApi");
+    (getOrderFactusolCobro as jest.Mock).mockResolvedValue({
+      order_id: "o-1", status: "cobrada", invoice: { serie: 2, codigo: 526087, numero: "2-526087" },
+    });
+    (getOrder as jest.Mock).mockResolvedValue(conSiguientePaso({
+      next_action: "registrar_cobro", next_action_label: "Registrar cobro",
+      next_action_hint: "El pedido consta pagado: registra el cobro en FACTUSOL.",
+    }, { factusol_invoice_number: "526087", invoice_status: "invoiced_by_erp", factusol_cobro_status: null }));
+    render(<ErpOrderDetailPage />);
+    const btn = await screen.findByRole("button", { name: "Cobrado en FACTUSOL" });
+    expect(btn).toBeDisabled();
+    // Una sola vez: el del panel FACTUSOL se esconde cuando es el siguiente paso.
+    expect(screen.getAllByRole("button", { name: /cobr/i })).toHaveLength(1);
+    expect(screen.getByText("Cobrado FACTUSOL")).toBeInTheDocument();
+  });
+
+  it("«Preparar envío» como siguiente paso dispara la transición de transporte y la fila de estados no la repite", async () => {
+    const { fireTransition } = jest.requireMock("../../../lib/erpApi");
+    (fireTransition as jest.Mock).mockResolvedValue(detail());
+    (getOrder as jest.Mock).mockResolvedValue(conSiguientePaso({
+      next_action: "crear_envio", next_action_label: "Preparar envío",
+      next_action_hint: "Prepara el envío y marca el transporte.",
+    }));
+    const user = userEvent.setup();
+    render(<ErpOrderDetailPage />);
+    const bar = within(await screen.findByRole("region", { name: "Siguiente paso" }));
+    expect(screen.getAllByRole("button", { name: "Crear envío" })).toHaveLength(1);
+    await user.click(bar.getByRole("button", { name: "Crear envío" }));
+    await waitFor(() => expect(fireTransition).toHaveBeenCalledWith(
+      "o-1", expect.objectContaining({ domain: "transport", to_status: "label_created" }),
+    ));
+  });
+
+  it("incidencia bloqueante: el enlace que la resuelve sale una vez (en «Siguiente paso»), la alerta solo avisa", async () => {
+    (getOrder as jest.Mock).mockResolvedValue(conSiguientePaso({
+      queue: "incidencias", blocked: true,
+      next_action: "revisar_incidencia", next_action_label: "Revisar incidencia",
+      next_action_hint: "1 excepción(es) sin resolver",
+      alerts: [{
+        code: "excepcion_abierta", text: "1 excepción(es) sin resolver",
+        action: "revisar_incidencia", action_label: "Revisar incidencia", blocking: true,
+      }],
+    }));
+    render(<ErpOrderDetailPage />);
+    await screen.findByRole("region", { name: "Siguiente paso" });
+    expect(screen.getAllByRole("link", { name: "Ver excepciones" })).toHaveLength(1);
   });
 });

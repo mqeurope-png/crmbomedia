@@ -9,9 +9,10 @@ E3-B): F_PRE/F_LPS, F_PCL/F_LPC, F_ALB/F_LAL con filas REALES (tipos de
 - pedido de cliente manual → albarán (`DOC='C'`) y el GUARDARRAÍL web
   (pedido Woo de BoHub y F_PCL de tienda web: nada se escribe);
 - idempotencia (nº guardado + enlace `DOC/DTP/DCO` ya existente en FACTUSOL);
-- pago opción B: «pagado» apunta el pago SIN emitir factura y el cobro F-4-B
-  se registra solo al emitir la factura desde la ficha o al facturar el
-  albarán desde el explorador; «sin pago» → pendiente, sin cobro;
+- pago opción B: «pagado» apunta el pago SIN emitir factura; «sin pago» →
+  pendiente. El cobro es SIEMPRE manual (decisión de Bart, 2026-09-14): ni
+  emitir la factura desde la ficha ni facturar el albarán desde el explorador
+  escriben F_LCO / ESTFAC — solo lo hace «Registrar cobro» (motor F-4-B);
 - el guard de esquema del dry-run: si la fila real no cuadra, no se escribe.
 """
 from __future__ import annotations
@@ -36,7 +37,6 @@ from app.erp.factusol_albaran import (
     albaran_blocker,
     create_albaran_for_order,
     payment_intent,
-    pending_collection,
     record_payment_intent,
     resolve_payment,
     web_pedido_reason,
@@ -168,6 +168,12 @@ def _import(db: Session, fake: WriteFakeClient, doc_type: str, serie: int,
 
 def _written(fake: WriteFakeClient, tabla: str) -> list[dict[str, Any]]:
     return [p for t, p in fake.written if t == tabla]
+
+
+def _estfac_cobrada(fake: WriteFakeClient) -> bool:
+    """¿Alguna factura quedó marcada cobrada (`ESTFAC=2`) en el cliente
+    simulado? Semántico, no por forma exacta del dict."""
+    return any(t == "F_FAC" and str(p.get("ESTFAC")) == "2" for t, p in fake.updated)
 
 
 def _reasons(db: Session, order: Order) -> list[str]:
@@ -317,7 +323,8 @@ def test_albaran_idempotente(db) -> None:
 def test_convertir_pagado_B_no_emite_factura_apunta_pago(db, http) -> None:
     """«Pagado» al convertir: NO se emite factura ni se escribe F_LCO. El pedido
     queda `paid` con la intención de cobro (contrapartida resuelta contra el
-    catálogo, fecha) y el albarán encolado; el cobro espera a la factura."""
+    catálogo, fecha) y el albarán encolado; el cobro se registrará a mano
+    («Registrar cobro») cuando exista la factura."""
     fake = _client()
     with (
         _patched(fake),
@@ -347,7 +354,8 @@ def test_convertir_pagado_B_no_emite_factura_apunta_pago(db, http) -> None:
     assert fake.written == []
     with db as s:
         order = s.get(Order, body["id"])
-        assert pending_collection(order) is not None
+        assert payment_intent(order)["paid"] is True
+        assert order.factusol_cobro_status is None      # nada cobrado: será manual
         assert any("Pago confirmado al convertir" in x for x in _reasons(s, order))
     # Sin cuenta conocida no se apunta nada (400) y sin cuenta con `paid` → 422.
     with _patched(_client()):
@@ -365,12 +373,12 @@ def test_convertir_pagado_B_no_emite_factura_apunta_pago(db, http) -> None:
         assert s.scalar(select(Order).where(Order.external_id == "5-000123")) is None
 
 
-def test_cobro_se_registra_al_emitir_factura(db) -> None:
+def test_emitir_factura_no_registra_cobro_automatico(db) -> None:
     """Con el pago apuntado (B) y el albarán creado, «Emitir factura» desde la
-    ficha factura ESE albarán (cadena E3-B) y, al existir la factura, registra
-    el cobro F-4-B tal cual: una línea en F_LCO copiada de la fila real (misma
-    serie/contrapartida), importe = total, y `ESTFAC=2`. El pedido queda
-    vinculado a la factura y el cobro anotado; una segunda emisión no duplica."""
+    ficha factura ESE albarán (cadena E3-B) y se queda ahí: la factura nace
+    pendiente de cobro (`ESTFAC=0`), NO se escribe ninguna línea en F_LCO ni
+    se marca cobrada, y la intención de cobro sigue apuntada para que la
+    registre el usuario. Una segunda emisión no duplica."""
     fake = _client()
     order = _import(db, fake, "presupuestos", 5, 27, payment={
         "paid": True, "forma_pago": "002", "contrapartida": "8",
@@ -382,6 +390,7 @@ def test_cobro_se_registra_al_emitir_factura(db) -> None:
     result = emit_invoice(db, order.id, fake)
     assert result["from_albaran"] == "5-500004"
     assert result["numero"] == "5-000001" and result["codfac"] == "1"
+    assert "cobro" not in result                        # emitir no cobra
     (factura,) = _written(fake, "F_FAC")
     assert factura["TIPFAC"] == "5" and factura["CODFAC"] == 1
     assert factura["ESTFAC"] == 0                       # nace pendiente de cobro
@@ -390,35 +399,87 @@ def test_cobro_se_registra_al_emitir_factura(db) -> None:
     assert len(lfa) == 2 and all(
         (ln["DOCLFA"], ln["DTPLFA"], ln["DCOLFA"]) == ("A", "5", 500004) for ln in lfa
     )
-    # El cobro F-4-B: SOLO F_LCO, copiando la fila real y sobrescribiendo lo mínimo.
-    (cobro,) = _written(fake, "F_LCO")
-    assert cobro["TFALCO"] == "5" and cobro["CFALCO"] == 1 and cobro["LINLCO"] == 1
-    assert cobro["IMPLCO"] == 186.34 and cobro["CPALCO"] == 8
-    assert cobro["FECLCO"] == "2026-09-11T00:00:00"
-    assert cobro["CPTLCO"] == "COBRO FACTURA Nº: 5 - 1"
-    assert cobro["FPALCO"] == "" and cobro["MULLCO"] == 51   # heredados
-    assert ("F_FAC", {"TIPFAC": 5, "CODFAC": 1, "ESTFAC": "2"}) in fake.updated
-    # El albarán queda «Facturado» y el pedido vinculado con su cobro anotado.
+    # Nada de cobro: ni F_LCO ni ESTFAC=2. El albarán sí queda «Facturado».
+    assert _written(fake, "F_LCO") == []
+    assert not _estfac_cobrada(fake)
     assert ("F_ALB", {"TIPALB": 5, "CODALB": 500004, "ESTALB": "1"}) in fake.updated
     db.refresh(order)
     assert order.factusol_invoice_number == "1"
     assert order.invoice_status.value == "invoiced_by_erp"
+    assert order.factusol_cobro_status is None          # nadie lo dio por cobrado
     fp = payment_intent(order)
-    assert fp["cobro"]["registered"] is True and fp["cobro"]["numero"] == "5-000001"
-    assert fp["cobro"]["linlco"] == 1 and fp["cobro"]["importe"] == 186.34
-    assert pending_collection(order) is None
-    assert result["cobro"]["registered"] is True
-    assert any("Cobro de 186.34 € registrado" in r for r in _reasons(db, order))
+    assert fp["paid"] is True and fp["cobro"] is None   # la intención sigue apuntada
+    assert not any("registrado en FACTUSOL" in r for r in _reasons(db, order))
+    # El flujo lo ofrece como SIGUIENTE PASO (una vez aprobado el pedido),
+    # nunca lo da por hecho.
+    from datetime import UTC, datetime
+
+    from app.erp.workflow import order_workflow
+    order.approved_at = datetime.now(UTC)
+    db.commit()
+    wf = order_workflow(db, order)
+    assert wf["queue"] == "por_cobrar" and wf["next_action"] == "registrar_cobro"
+    assert {st["key"]: st["state"] for st in wf["steps"]}["cobro"] == "now"
     # Segunda emisión: ya tiene factura.
     with pytest.raises(FactusolError, match="ya tiene factura"):
         emit_invoice(db, order.id, fake)
-    assert len(_written(fake, "F_LCO")) == 1
+    assert _written(fake, "F_LCO") == []
 
 
-def test_cobro_se_registra_al_facturar_albaran_desde_explorador(db) -> None:
+def test_cobro_solo_manual(db) -> None:
+    """La única vía al cobro es «Registrar cobro»: el motor F-4-B
+    (`register_invoice_collection` + `mark_orders_after_collection`, lo que
+    ejecuta el job del botón de la ficha, la bandeja y Documentos) escribe UNA
+    línea en F_LCO copiando la fila real, marca `ESTFAC=2` y deja el pedido
+    «cobrada» — y el flujo, que hasta entonces lo ofrecía como siguiente
+    paso, lo da por hecho solo ahora."""
+    from datetime import UTC, datetime
+
+    from app.erp.factusol_cobro import mark_orders_after_collection
+    from app.erp.workflow import order_workflow
+    from app.integrations.factusol.collections_write import register_invoice_collection
+
+    fake = _client()
+    order = _import(db, fake, "presupuestos", 5, 27, payment={
+        "paid": True, "forma_pago": "002", "forma_pago_nombre": "Transferencia",
+        "contrapartida": "8", "fecha": "2026-09-11",
+    })
+    create_albaran_for_order(db, fake, order, ejercicio="2026")
+    order.approved_at = datetime.now(UTC)
+    db.commit()
+    emit_invoice(db, order.id, fake)
+    db.refresh(order)
+    assert order.factusol_cobro_status is None
+    before = order_workflow(db, order)
+    assert before["next_action"] == "registrar_cobro"
+    assert {st["key"]: st["state"] for st in before["steps"]}["cobro"] == "now"
+
+    result = register_invoice_collection(
+        fake, db, serie=5, codigo=1, contrapartida="8", fecha="2026-09-11",
+        forma="Transferencia", ejercicio="2026",
+    )
+    assert result["registered"] is True and result["status"] == "registered"
+    (cobro,) = _written(fake, "F_LCO")
+    assert cobro["TFALCO"] == "5" and cobro["CFALCO"] == 1 and cobro["LINLCO"] == 1
+    assert cobro["IMPLCO"] == 186.34 and cobro["CPALCO"] == 8
+    assert cobro["CPTLCO"] == "COBRO FACTURA Nº: 5 - 1"
+    assert _estfac_cobrada(fake)
+    # El job deja el pedido «cobrada»; el flujo pasa al envío y el paso
+    # «Cobro» queda hecho.
+    updated = mark_orders_after_collection(db, serie=5, codigo=1, result=result)
+    db.commit()
+    assert [o.id for o in updated] == [order.id]
+    db.refresh(order)
+    assert order.factusol_cobro_status == "cobrada"
+    after = order_workflow(db, order)
+    assert after["next_action"] != "registrar_cobro"
+    assert {st["key"]: st["state"] for st in after["steps"]}["cobro"] == "done"
+
+
+def test_facturar_albaran_desde_explorador_vincula_sin_cobrar(db) -> None:
     """La otra vía a la factura: `albaranes → facturas` desde ERP · Documentos.
-    La cadena localiza el pedido por su nº de albarán, lo vincula y registra
-    el cobro apuntado (mismo motor F-4-B)."""
+    La cadena localiza el pedido por su nº de albarán y le VINCULA la factura;
+    el cobro apuntado no se registra (es manual)."""
     fake = _client()
     order = _import(db, fake, "presupuestos", 5, 27, payment={
         "paid": True, "contrapartida": "Streamtec (Sabadell)", "fecha": "2026-09-11",
@@ -431,11 +492,12 @@ def test_cobro_se_registra_al_facturar_albaran_desde_explorador(db) -> None:
     assert result["numero"] == "5-000001"
     assert result["order"]["order_number"] == order.order_number
     assert result["order"]["linked"] is True
-    assert result["order"]["cobro"]["registered"] is True
-    assert len(_written(fake, "F_LCO")) == 1
+    assert "cobro" not in result["order"]
+    assert _written(fake, "F_LCO") == []
+    assert not _estfac_cobrada(fake)
     db.refresh(order)
     assert order.factusol_invoice_number == "1"
-    assert pending_collection(order) is None
+    assert order.factusol_cobro_status is None          # pendiente de registrar a mano
 
 
 def test_convertir_sin_pago_no_cobra(db) -> None:
@@ -450,15 +512,15 @@ def test_convertir_sin_pago_no_cobra(db) -> None:
     assert order.payment_status.value == "pending"
     fp = payment_intent(order)
     assert fp["paid"] is False and fp["forma_pago"] == "002"
-    assert fp["contrapartida"] is None and pending_collection(order) is None
+    assert fp["contrapartida"] is None
     assert any("Sin pago al convertir" in r for r in _reasons(db, order))
     create_albaran_for_order(db, fake, order, ejercicio="2026")
     (header,) = _written(fake, "F_ALB")
     assert header["FOPALB"] == "002"
     result = emit_invoice(db, order.id, fake)
-    assert result["cobro"] is None
+    assert "cobro" not in result
     assert _written(fake, "F_LCO") == []
-    assert ("F_FAC", {"TIPFAC": 5, "CODFAC": 1, "ESTFAC": "2"}) not in fake.updated
+    assert not _estfac_cobrada(fake)
     db.refresh(order)
     assert order.payment_status.value == "pending"
     assert order.factusol_invoice_number == "1"

@@ -31,6 +31,9 @@ export function EmitFactusolButton({
   factusolStatus = null,
   enableOptions = false,
   openSignal = 0,
+  buttonHidden = false,
+  albaranBadgeHidden = false,
+  onPhaseChange,
   onInvoiced,
 }: {
   orderId: string;
@@ -49,6 +52,16 @@ export function EmitFactusolButton({
    *  compartir ESTE flujo en vez de disparar una transición que no emitía
    *  nada y dejaba el pedido colgado en «pending». */
   openSignal?: number;
+  /** Rediseño de flujo: cuando «Emitir factura» ya es el botón principal
+   *  del «Siguiente paso» de la ficha, aquí solo quedan el badge de albarán,
+   *  los mensajes y el modal (se abre por `openSignal`), sin repetir el botón. */
+  buttonHidden?: boolean;
+  /** La ficha ya enseña el nº de albarán en su panel FACTUSOL: no repetir
+   *  aquí el badge «Albarán en FACTUSOL — sin factura». */
+  albaranBadgeHidden?: boolean;
+  /** Para que quien pinta el botón principal fuera (la ficha) pueda
+   *  deshabilitarlo mientras la emisión está en vuelo. */
+  onPhaseChange?: (phase: "idle" | "confirm" | "working" | "done" | "error") => void;
   onInvoiced?: (codfac: string) => void;
 }) {
   const preInvoiced =
@@ -61,6 +74,8 @@ export function EmitFactusolButton({
   const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
 
   useEffect(() => () => { timers.current.forEach(clearTimeout); }, []);
+
+  useEffect(() => { onPhaseChange?.(phase); }, [phase, onPhaseChange]);
 
   // Apertura externa (tarjeta FACTURACIÓN). Se ignora el montaje inicial y
   // cuando ya hay factura o una emisión en vuelo.
@@ -128,21 +143,23 @@ export function EmitFactusolButton({
 
   return (
     <>
-      {albaran ? (
+      {albaran && !albaranBadgeHidden ? (
         <span className="badge warn" aria-label="Albarán FACTUSOL">
           Albarán en FACTUSOL
           {albaran.albaran_codigo ? ` #${albaran.albaran_codigo}` : ""} — sin factura
         </span>
       ) : null}
-      <button
-        type="button"
-        /* D-2: emitir factura es acción principal → botón primario. */
-        className="button small"
-        disabled={phase === "working"}
-        onClick={() => setPhase("confirm")}
-      >
-        {phase === "working" ? "Generando…" : "Emitir factura FACTUSOL"}
-      </button>
+      {buttonHidden && phase !== "working" ? null : (
+        <button
+          type="button"
+          /* D-2: emitir factura es acción principal → botón primario. */
+          className="button small"
+          disabled={phase === "working"}
+          onClick={() => setPhase("confirm")}
+        >
+          {phase === "working" ? "Generando…" : "Emitir factura FACTUSOL"}
+        </button>
+      )}
       {message ? (
         <p className={phase === "error" ? "form-error" : "muted small"} role="status">
           {message}

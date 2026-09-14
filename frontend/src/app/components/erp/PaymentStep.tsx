@@ -39,8 +39,8 @@ export function paymentReady(value: PaymentIntentInput): boolean {
  *  - **Sin pago** (por defecto): solo se apunta la forma de pago; el pedido
  *    queda pendiente, sin cobro ni intención.
  *  - **Pagado**: NO se emite factura. Se apunta el pago (cuenta donde entró
- *    el dinero + fecha) y el cobro se registra en FACTUSOL (F-4-B) cuando
- *    exista la factura de ese pedido.
+ *    el dinero + fecha); el cobro F-4-B lo registra el usuario a mano con
+ *    «Registrar cobro» cuando exista la factura (nunca solo).
  *
  *  Catálogos best-effort: sin FACTUSOL, la forma de pago se escribe a mano. */
 export function PaymentStep({
@@ -158,7 +158,7 @@ export function PaymentStep({
       ) : null}
       <p className="muted small">
         {value.paid
-          ? "No se emite ninguna factura. El pago queda apuntado en el pedido y el cobro se registra en FACTUSOL cuando exista la factura."
+          ? "No se emite ninguna factura. El pago queda apuntado en el pedido; el cobro se registra en FACTUSOL a mano («Registrar cobro») cuando exista la factura."
           : "Solo se apunta la forma de pago: el pedido queda pendiente de pago, sin cobro."}
       </p>
     </fieldset>

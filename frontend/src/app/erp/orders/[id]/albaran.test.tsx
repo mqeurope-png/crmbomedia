@@ -3,6 +3,11 @@ import userEvent from "@testing-library/user-event";
 import ErpOrderDetailPage from "./page";
 import { createOrderAlbaran, getOrder, getQuoteJobStatus } from "../../../lib/erpApi";
 
+/** ERP · Ficha del pedido — el albarán FACTUSOL vive en UN solo sitio
+ *  («Documentos de envío»): nº + PDF, o «Crear albarán en FACTUSOL» si falta
+ *  (con el polling del job del worker serie). El pago apuntado al convertir
+ *  (Fase 2, opción B) se ve en el resumen económico; el cobro es manual. */
+
 jest.mock("next/link", () => ({
   __esModule: true,
   default: ({ children }: { children: React.ReactNode }) => <span>{children}</span>,
@@ -11,21 +16,26 @@ jest.mock("next/navigation", () => ({
   useParams: () => ({ id: "o-1" }),
 }));
 jest.mock("../../../components/PageHeader", () => ({
-  PageHeader: ({ title }: { title: string }) => <h1>{title}</h1>,
+  PageHeader: ({ title, actions }: { title: string; actions?: React.ReactNode }) => (
+    <><h1>{title}</h1>{actions}</>
+  ),
 }));
 jest.mock("../../../components/erp/EmbalarModal", () => ({ EmbalarModal: () => null }));
 jest.mock("../../../components/erp/FactusolDocumentDetailModal", () => ({
   PDF_LANGS: [{ value: "es", label: "Español" }],
 }));
 jest.mock("../../../components/erp/InvoiceEmailModal", () => ({ InvoiceEmailModal: () => null }));
+jest.mock("../../../components/erp/OrderEmailModal", () => ({ OrderEmailModal: () => null }));
 jest.mock("../../../components/erp/EmitFactusolButton", () => ({
   EmitFactusolButton: () => <span>emitir</span>,
 }));
 jest.mock("../../../components/erp/OrderStatusMachine", () => ({
   OrderStatusMachine: () => null,
 }));
-jest.mock("../../../components/erp/ShippingFilesSection", () => ({
-  ShippingFilesSection: () => null,
+jest.mock("../../../components/erp/FactusolAlbaranPdfButton", () => ({
+  FactusolAlbaranPdfButton: ({ numero }: { numero: string }) => (
+    <button type="button">PDF del albarán (FACTUSOL)<span hidden>{numero}</span></button>
+  ),
 }));
 jest.mock("../../../lib/api", () => ({
   getCurrentUser: jest.fn(() => Promise.resolve({ role: "admin" })),
@@ -49,6 +59,11 @@ jest.mock("../../../lib/erpApi", () => ({
   createOrderAlbaran: jest.fn(),
   getQuoteJobStatus: jest.fn(),
   downloadOrderFactusolAlbaranPdf: jest.fn(),
+  // «Documentos de envío» real: ficheros subidos a mano / de Woo.
+  listShippingFiles: jest.fn(() => Promise.resolve([])),
+  uploadShippingFile: jest.fn(),
+  fetchAlbaranFromWoo: jest.fn(),
+  openShippingFile: jest.fn(),
 }));
 
 function detail(over = {}) {
@@ -82,46 +97,33 @@ beforeEach(() => {
   window.history.replaceState({}, "", "/erp/orders/o-1");
 });
 
-describe("ERP · Ficha del pedido — albarán FACTUSOL y pago (Fase 2)", () => {
-  it("muestra el albarán creado y el pago apuntado con el cobro pendiente de factura", async () => {
+describe("ERP · Ficha del pedido — albarán FACTUSOL en «Documentos de envío» y pago apuntado", () => {
+  it("test_ficha_no_duplica_albaran_ni_acciones: el albarán sale UNA vez (con su PDF) y el pago apuntado en el resumen", async () => {
     (getOrder as jest.Mock).mockResolvedValue(detail({
       factusol_albaran_number: "5-500008", factusol_payment: PAGADO, payment_status: "paid",
     }));
     render(<ErpOrderDetailPage />);
     expect(await screen.findByText("Albarán FACTUSOL 5-500008")).toBeInTheDocument();
-    expect(screen.getByText("Pagado (apuntado)")).toBeInTheDocument();
-    expect(screen.getByText(/cuenta Streamtec Sabadell · fecha 2026-09-11/)).toBeInTheDocument();
-    expect(screen.getByText(/pendiente de factura/)).toBeInTheDocument();
-    expect(screen.getByText(/No se ha emitido ninguna factura/)).toBeInTheDocument();
+    // Una sola vez: en «Documentos de envío». La tarjeta duplicada ya no existe.
+    expect(screen.getAllByText("Albarán FACTUSOL 5-500008")).toHaveLength(1);
+    expect(screen.queryByText("Albarán y pago FACTUSOL")).not.toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "PDF del albarán (FACTUSOL)" })).toHaveLength(1);
     expect(screen.queryByRole("button", { name: "Crear albarán en FACTUSOL" })).not.toBeInTheDocument();
-    // Con albarán FACTUSOL, la tarjeta ofrece su PDF (mismo motor que el del pedido).
-    expect(screen.getByRole("button", { name: "PDF del albarán (FACTUSOL)" })).toBeInTheDocument();
+    // El bloque FACTUSOL de arriba solo informa del nº (no repite el PDF).
+    expect(screen.getByRole("region", { name: "FACTUSOL" })).toHaveTextContent("5-500008");
+    // El pago apuntado (forma de pago + cuenta) está en el resumen económico.
+    const resumen = screen.getByRole("region", { name: "Resumen económico" });
+    expect(resumen).toHaveTextContent("Transferencia · Streamtec Sabadell");
+    expect(resumen).toHaveTextContent("Pagado (apuntado)");
+    expect(resumen).toHaveTextContent("fecha 2026-09-11");
+    // Y las acciones de cabecera no están repetidas abajo.
+    expect(screen.getAllByRole("button", { name: /PDF del pedido \(FACTUSOL\)/ })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: "Marcar completado" })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: "Enviar por email" })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: /Registrar cobro/ })).toHaveLength(1);
   });
 
-  it("con el cobro ya registrado lo dice; «sin pago» queda pendiente", async () => {
-    (getOrder as jest.Mock).mockResolvedValueOnce(detail({
-      factusol_albaran_number: "5-500008", factusol_invoice_number: "1",
-      factusol_payment: {
-        ...PAGADO,
-        cobro: { registered: true, status: "registered", numero: "5-000001", linlco: 1,
-                 importe: 186.34, fecha: "2026-09-11", motivo: null, at: null },
-      },
-    }));
-    const { unmount } = render(<ErpOrderDetailPage />);
-    expect(await screen.findByText(/Cobro registrado en FACTUSOL para la factura 5-000001/))
-      .toBeInTheDocument();
-    unmount();
-    (getOrder as jest.Mock).mockResolvedValueOnce(detail({
-      factusol_albaran_number: "5-500008",
-      factusol_payment: { ...PAGADO, paid: false, contrapartida: null, contrapartida_nombre: null },
-    }));
-    render(<ErpOrderDetailPage />);
-    expect(await screen.findByText("Sin pago")).toBeInTheDocument();
-    expect(screen.getByText(/forma de pago Transferencia/)).toBeInTheDocument();
-    expect(screen.getByText(/No se registra ningún cobro/)).toBeInTheDocument();
-  });
-
-  it("sin albarán ofrece crearlo: encola, hace polling del job y recarga con el nº", async () => {
+  it("sin albarán ofrece crearlo en «Documentos de envío»: encola, hace polling del job y recarga con el nº", async () => {
     (getOrder as jest.Mock)
       .mockResolvedValueOnce(detail())
       .mockResolvedValue(detail({ factusol_albaran_number: "5-500009" }));
@@ -138,6 +140,7 @@ describe("ERP · Ficha del pedido — albarán FACTUSOL y pago (Fase 2)", () => 
     await waitFor(() => expect(getQuoteJobStatus).toHaveBeenCalledWith("job-7"));
     expect(await screen.findByText("Albarán FACTUSOL 5-500009 creado.")).toBeInTheDocument();
     expect(await screen.findByText("Albarán FACTUSOL 5-500009")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "PDF del albarán (FACTUSOL)" })).toBeInTheDocument();
   });
 
   it("al llegar del alta con ?albaran_job= hace polling y enseña el error si el job falla", async () => {
@@ -152,14 +155,16 @@ describe("ERP · Ficha del pedido — albarán FACTUSOL y pago (Fase 2)", () => 
       .toBeInTheDocument();
   });
 
-  it("un pedido web no tiene tarjeta de albarán (lo crea WooCommerce)", async () => {
+  it("un pedido web no ofrece crear albarán (lo crea WooCommerce)", async () => {
     (getOrder as jest.Mock).mockResolvedValue(detail({
       external_source: "woocommerce", order_number: "BOPRIN-99917",
     }));
     render(<ErpOrderDetailPage />);
     expect(await screen.findByText("Pedido BOPRIN-99917")).toBeInTheDocument();
-    expect(screen.queryByText("Albarán y pago FACTUSOL")).not.toBeInTheDocument();
+    expect(await screen.findByRole("region", { name: "Documentos de envío" }))
+      .toHaveTextContent(/lo crea WooCommerce/);
     expect(screen.queryByRole("button", { name: "Crear albarán en FACTUSOL" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Sin albarán en FACTUSOL")).not.toBeInTheDocument();
   });
 
   it("test_crear_albaran_manual: un pedido MANUAL sin albarán ofrece crearlo desde sus líneas y recarga con el nº", async () => {
@@ -187,5 +192,20 @@ describe("ERP · Ficha del pedido — albarán FACTUSOL y pago (Fase 2)", () => 
     expect(await screen.findByText("Albarán FACTUSOL 5-500004")).toBeInTheDocument();
     // Ya con nº: el PDF del albarán (#396) está disponible y no se ofrece crear otro.
     expect(screen.queryByRole("button", { name: "Crear albarán en FACTUSOL" })).not.toBeInTheDocument();
+  });
+
+  it("«sin pago» al convertir: el resumen enseña la forma de pago y el cobro sigue siendo manual", async () => {
+    (getOrder as jest.Mock).mockResolvedValue(detail({
+      factusol_albaran_number: "5-500008",
+      factusol_payment: { ...PAGADO, paid: false, contrapartida: null, contrapartida_nombre: null },
+    }));
+    render(<ErpOrderDetailPage />);
+    const resumen = await screen.findByRole("region", { name: "Resumen económico" });
+    expect(resumen).toHaveTextContent("Transferencia");
+    expect(resumen).toHaveTextContent("Sin pago");
+    // Sin factura: el cobro (manual) espera a que exista.
+    const cobro = screen.getByRole("button", { name: "Registrar cobro en FACTUSOL" });
+    expect(cobro).toBeDisabled();
+    expect(cobro).toHaveAttribute("title", expect.stringMatching(/Emite la factura primero/));
   });
 });

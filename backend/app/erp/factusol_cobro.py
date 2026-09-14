@@ -323,7 +323,7 @@ def mark_order_from_result(
     session: Session, order: Order, *, serie: int, codigo: int,
     result: dict[str, Any], source: str, actor_user_id: str | None = None,
 ) -> bool:
-    """Tras registrar el cobro (job F-4-B, manual o Fase 2): deja el pedido
+    """Tras registrar el cobro (job F-4-B, siempre manual): deja el pedido
     como «cobrada» sin releer FACTUSOL. `already` también cuenta (ya estaba
     cobrada). False si el resultado no fue un cobro."""
     registered = bool(result.get("registered"))

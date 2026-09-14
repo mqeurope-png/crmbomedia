@@ -659,7 +659,7 @@ def convert_document(
     albaranes, aviso para facturas); (c) el registro EXACTO de cabecera y
     líneas va al log; (d) `header_overrides` (forma de pago elegida) pisa la
     cabecera; (e) al crear una FACTURA se vincula al pedido de BoHub que haya
-    detrás y se registra su cobro apuntado (`on_invoice_created`).
+    detrás (`on_invoice_created`); el cobro es siempre manual.
 
     Atómico con compensación: si falla una línea se borra lo escrito
     filtrando por la clave COMPUESTA `(TIP, COD)` — borrar por número a
@@ -812,23 +812,24 @@ def convert_document(
             + (f": {mark_reason}" if mark_reason else ".")
         )
 
-    # Fase 2 (opción B): si acaba de nacer una FACTURA y detrás hay un pedido
-    # de BoHub (por su albarán o por su documento origen), se vincula y se
-    # registra el cobro apuntado al convertir. Nunca pone en riesgo la factura.
+    # Fase 2: si acaba de nacer una FACTURA y detrás hay un pedido de BoHub
+    # (por su albarán o por su documento origen), se vincula. El cobro NO se
+    # registra aquí: es siempre manual («Registrar cobro»). Nunca pone en
+    # riesgo la factura.
     order_link: dict[str, Any] | None = None
     if target_type == "facturas":
         try:
             from app.erp.factusol_albaran import on_invoice_created  # noqa: PLC0415
 
             order_link = on_invoice_created(
-                session, client, source_type=source_type, source_serie=tip,
+                session, source_type=source_type, source_serie=tip,
                 source_codigo=cod, serie=serie, codigo=int(codigo),
                 ejercicio=ejercicio, actor_user_id=actor_user_id,
             )
         except Exception as exc:  # noqa: BLE001 — la factura ya existe
             logger.warning(
                 "factusol.chain: factura %s creada, pero no se pudo vincular al "
-                "pedido / registrar su cobro: %s", numero, exc, exc_info=True,
+                "pedido: %s", numero, exc, exc_info=True,
             )
             order_link = {"error": str(exc)[:300]}
 

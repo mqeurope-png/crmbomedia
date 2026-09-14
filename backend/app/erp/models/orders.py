@@ -196,8 +196,8 @@ class Order(TimestampMixin, Base):
     # BoHub creó en F_ALB al convertir la proforma / pedido de cliente en
     # pedido. NULL si no hay albarán. Los pedidos web NUNCA lo llevan (el
     # albarán lo crea WooCommerce). Indexado: al facturar ese albarán desde el
-    # explorador se localiza el pedido para vincular la factura y registrar el
-    # cobro apuntado (opción B).
+    # explorador se localiza el pedido para vincularle la factura (el cobro
+    # es siempre manual).
     factusol_albaran_number: Mapped[str | None] = mapped_column(
         String(32), index=True,
     )

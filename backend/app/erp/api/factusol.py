@@ -2429,7 +2429,7 @@ def convert_quote_endpoint(
 ) -> dict[str, Any]:
     """Encola la conversión de la proforma en pedido de BoHub y, Fase 2, en el
     mismo job del worker serial: apunta el pago (opción B: sin emitir
-    factura; el cobro F-4-B se registra cuando exista) y crea el ALBARÁN en
+    factura; el cobro se registra a mano) y crea el ALBARÁN en
     FACTUSOL (idempotente, guard de esquema). El paso de pago se valida aquí
     (400 si la cuenta no está en el catálogo)."""
     from app.erp.factusol_albaran import PaymentError, resolve_payment  # noqa: PLC0415

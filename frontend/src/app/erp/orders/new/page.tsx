@@ -876,7 +876,7 @@ export default function NewManualOrderPage() {
           {facPreview && !facPreview.already_imported ? (
             /* Fase 2: al crear el pedido se crea su albarán en FACTUSOL (sin
                factura) y se confirma el pago: sin pago, o pagado (el cobro se
-               registra cuando exista la factura). */
+               registra a mano cuando exista la factura). */
             <>
               <p className="muted small">
                 Al crear el pedido se creará su <strong>albarán en FACTUSOL</strong>

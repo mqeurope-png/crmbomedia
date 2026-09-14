@@ -191,7 +191,9 @@ export type OrderDetail = OrderSummary & {
   warnings: Warning[];
   externally_processed_note: string | null;
   externally_processed_by_user_id: string | null;
-  /** Fase 2: paso de pago apuntado al convertir (opción B) y su cobro. */
+  /** Fase 2: paso de pago apuntado al convertir (opción B). Su `cobro` solo
+   *  lo llevan los pedidos anteriores al 14/9/2026 (cuando se registraba
+   *  solo al emitir); ahora el cobro es siempre manual. */
   factusol_payment?: FactusolPaymentInfo | null;
   /** Documento de ORIGEN imprimible en FACTUSOL («PDF del pedido
    *  (FACTUSOL)»): presupuesto / pedido de cliente del que se creó (Fase 1),
@@ -219,8 +221,8 @@ export type FactusolOriginDocument = {
 /** Fase 2 · paso de confirmación de pago al convertir (opción B). `paid=false`
  *  = «sin pago» (solo se apunta la forma de pago). `paid=true` exige la
  *  contrapartida (código «6» o nombre «Bomedia (Sabadell)»); fecha opcional
- *  (hoy por defecto). Nunca emite factura: el cobro F-4-B se registra cuando
- *  exista la factura del pedido. */
+ *  (hoy por defecto). Nunca emite factura, y el cobro F-4-B tampoco se
+ *  registra solo: lo hace «Registrar cobro» cuando exista la factura. */
 export type PaymentIntentInput = {
   paid: boolean;
   forma_pago?: string | null;
