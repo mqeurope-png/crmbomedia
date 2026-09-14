@@ -2372,6 +2372,11 @@ export type FactusolQuoteLine = {
 /** Proforma (presupuesto F_PRE). Recuerda que F_PRE es MONO-LÍNEA: `lines`
  *  sale de la caché del CRM y está vacío en las proformas hechas en el
  *  FACTUSOL de escritorio (`line_source: "ref_text"`). */
+/** Colas de la pantalla Proformas (Fase 4): aceptada → por convertir,
+ *  pendiente de respuesta, rechazada, y convertida (ya es pedido de BoHub). */
+export type QuoteQueue = "aceptadas" | "pendientes" | "rechazadas" | "convertidas";
+export type QuoteEstado = "pendiente" | "aceptada" | "rechazada" | "otro";
+
 export type FactusolQuote = {
   codpre: string | null;
   referencia: string;
@@ -2383,6 +2388,21 @@ export type FactusolQuote = {
   total: number;
   lines?: FactusolQuoteLine[];
   line_source?: "cache" | "ref_text";
+  /** Fase 4: estado (`ESTPRE`), cola, empresa CRM vinculada, régimen de IVA
+   *  (de la empresa; sin empresa, lo que dice la cabecera) y el pedido de
+   *  BoHub si ya se convirtió. Ausentes en respuestas antiguas / mocks. */
+  estpre?: number | null;
+  estado?: QuoteEstado;
+  estado_label?: string;
+  queue?: QuoteQueue | null;
+  queue_label?: string | null;
+  company?: { id: string; name: string; country: string | null; factusol_id: string | null } | null;
+  order?: { id: string; order_number: string } | null;
+  country_iso2?: string | null;
+  regime?: "nacional" | "intracomunitario" | "exportacion" | null;
+  regime_label?: string | null;
+  regime_source?: "empresa" | "cabecera" | null;
+  exento?: boolean;
 };
 
 export type QuoteJobStatus =
@@ -2399,9 +2419,18 @@ export async function searchFactusolArticles(q: string): Promise<FactusolArticle
   return r.items;
 }
 
+export type QuotesListing = {
+  items: FactusolQuote[];
+  unlinked: boolean;
+  /** Fase 4: contadores de TODAS las colas (aunque se filtre con `queue`) y
+   *  los valores reales de `ESTPRE` que hay. */
+  queue_counts?: Record<QuoteQueue, number>;
+  estpre_values?: Record<string, number>;
+};
+
 export async function listFactusolQuotes(
-  opts: { company_id?: string; days_back?: number } = {},
-): Promise<{ items: FactusolQuote[]; unlinked: boolean }> {
+  opts: { company_id?: string; days_back?: number; queue?: QuoteQueue } = {},
+): Promise<QuotesListing> {
   return apiFetch(`/api/erp/factusol/quotes${qs(opts)}`);
 }
 

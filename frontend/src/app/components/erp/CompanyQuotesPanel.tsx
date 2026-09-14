@@ -4,41 +4,25 @@ import { useCallback, useEffect, useState } from "react";
 import { extractErrorMessage } from "../../lib/errors";
 import {
   convertFactusolQuoteToOrder,
-  getQuoteJobStatus,
   listFactusolQuotes,
   type FactusolQuote,
   type PaymentIntentInput,
 } from "../../lib/erpApi";
+import { ConvertQuoteDialog } from "./ConvertQuoteDialog";
 import { CreateQuoteModal } from "./CreateQuoteModal";
-import { initialPayment, paymentReady, PaymentStep } from "./PaymentStep";
+import { albaranSummary, conversionNotice, pollQuoteJob } from "./quoteJobs";
 import { QuotesTable } from "./QuotesTable";
 
-const POLL_MS = 2000;
-const POLL_MAX_TRIES = 30;  // ~60 s: el worker es serie, puede haber cola
-
-/** Texto del albarán tal como lo devuelve el job de conversión (Fase 2). */
-export function albaranSummary(result: Record<string, unknown>): string {
-  const alb = result.albaran as { numero?: string; status?: string } | null | undefined;
-  if (alb?.numero) {
-    return alb.status === "already" || alb.status === "linked"
-      ? `Albarán FACTUSOL ${alb.numero} (ya existía).`
-      : `Albarán FACTUSOL ${alb.numero} creado.`;
-  }
-  if (typeof result.albaran_error === "string" && result.albaran_error) {
-    return `El albarán NO se creó: ${result.albaran_error} Reintenta desde la ficha del pedido.`;
-  }
-  if (typeof result.albaran_skipped === "string" && result.albaran_skipped) {
-    return `Sin albarán: ${result.albaran_skipped}`;
-  }
-  return "";
-}
+export { albaranSummary };
 
 /** Pestaña «Proformas FACTUSOL» de la ficha de empresa (C-4).
  *
  *  Las escrituras van por la cola serializada, así que aquí se encola y se
  *  hace polling del job hasta que termina — el mismo contrato que la emisión
  *  de facturas. Fase 2: «Convertir en pedido» pasa por el paso de pago
- *  (opción B) y crea el albarán en FACTUSOL en el mismo job. */
+ *  (opción B) y crea el albarán en FACTUSOL en el mismo job. Fase 4: el
+ *  diálogo de conversión y el polling son los mismos que en la pantalla
+ *  Proformas. */
 export function CompanyQuotesPanel({
   companyId,
   companyName,
@@ -64,7 +48,6 @@ export function CompanyQuotesPanel({
   const [busyJob, setBusyJob] = useState(false);
   // Fase 2: proforma pendiente de confirmar el pago antes de convertir.
   const [converting, setConverting] = useState<FactusolQuote | null>(null);
-  const [payment, setPayment] = useState<PaymentIntentInput>(initialPayment());
 
   const load = useCallback(() => {
     setLoading(true);
@@ -86,14 +69,11 @@ export function CompanyQuotesPanel({
 
   /** Espera a que el job termine. Devuelve su resultado, o null si falló. */
   const waitForJob = useCallback(async (jobId: string) => {
-    for (let i = 0; i < POLL_MAX_TRIES; i++) {
-      const s = await getQuoteJobStatus(jobId);
-      if (s.status === "finished") return s.result;
-      if (s.status === "failed") {
-        setError(s.error || "La operación falló en FACTUSOL.");
-        return null;
-      }
-      await new Promise((r) => setTimeout(r, POLL_MS));
+    const outcome = await pollQuoteJob(jobId);
+    if (outcome.status === "finished") return outcome.result;
+    if (outcome.status === "failed") {
+      setError(outcome.error);
+      return null;
     }
     setNotice("Sigue en curso; actualiza en unos segundos.");
     return null;
@@ -111,12 +91,7 @@ export function CompanyQuotesPanel({
     load();
   }
 
-  function openConvert(q: FactusolQuote) {
-    setPayment(initialPayment());
-    setConverting(q);
-  }
-
-  async function convert(codpre: string) {
+  async function convert(codpre: string, payment: PaymentIntentInput) {
     setConverting(null);
     setBusyJob(true);
     setError(null);
@@ -125,13 +100,7 @@ export function CompanyQuotesPanel({
       const r = await convertFactusolQuoteToOrder(codpre, { payment, create_albaran: true });
       const result = await waitForJob(r.job_id);
       if (result) {
-        const pago = payment.paid
-          ? " Pago apuntado (el cobro se registra a mano con «Registrar cobro» cuando exista la factura)."
-          : " Sin pago: pendiente.";
-        setNotice(
-          `Pedido ${result.order_number} creado desde la proforma ${codpre}. `
-          + albaranSummary(result) + pago,
-        );
+        setNotice(conversionNotice(codpre, result, payment.paid));
         if (typeof result.order_id === "string") onOrderCreated?.(result.order_id);
       }
     } catch (e) {
@@ -181,7 +150,7 @@ export function CompanyQuotesPanel({
               </button>
               <button type="button" className="button small secondary"
                       disabled={busyJob}
-                      onClick={() => openConvert(q)}>
+                      onClick={() => setConverting(q)}>
                 Convertir en pedido
               </button>
             </>
@@ -201,29 +170,11 @@ export function CompanyQuotesPanel({
       ) : null}
 
       {converting ? (
-        <div className="modal-overlay" role="dialog" aria-modal="true"
-             aria-label="Convertir proforma en pedido">
-          <div className="modal-dialog">
-            <h2>Convertir la proforma {converting.codpre} en pedido</h2>
-            <p className="muted small">
-              {converting.referencia || "Sin referencia"} · {converting.total.toFixed(2)} €.
-              Se creará el pedido en BoHub y su <strong>albarán en FACTUSOL</strong>
-              {" "}(sin factura).
-            </p>
-            <PaymentStep value={payment} onChange={setPayment} />
-            <div className="modal-actions">
-              <button type="button" className="button secondary"
-                      onClick={() => setConverting(null)}>
-                Cancelar
-              </button>
-              <button type="button" className="button"
-                      disabled={!paymentReady(payment)}
-                      onClick={() => convert(converting.codpre ?? "")}>
-                Crear pedido y albarán
-              </button>
-            </div>
-          </div>
-        </div>
+        <ConvertQuoteDialog
+          quote={converting}
+          onCancel={() => setConverting(null)}
+          onConfirm={(payment) => void convert(converting.codpre ?? "", payment)}
+        />
       ) : null}
     </section>
   );

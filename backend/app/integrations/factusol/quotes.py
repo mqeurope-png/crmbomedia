@@ -287,6 +287,12 @@ def _row_to_quote(row: dict[str, Any]) -> dict[str, Any]:
     out["base"] = _num(out.get("net1pre"))
     out["iva"] = _num(out.get("iiva1pre"))
     out["total"] = _num(out.get("totpre"))
+    # Fase 4 (pantalla Proformas): estado del presupuesto. `ESTPRE` se LEE
+    # (la API devuelve la fila entera) pero no forma parte de `QUOTE_FIELDS`,
+    # que es lo que se escribe.
+    out["estpre"] = _int_or_none(row.get("ESTPRE"))
+    out["estado"] = quote_estado(out["estpre"])
+    out["estado_label"] = QUOTE_ESTADO_LABELS[out["estado"]]
     return out
 
 
@@ -762,8 +768,38 @@ def create_quote(
 #: Para cerrarlo: `SELECT DISTINCT ESTPRE, COUNT(*) FROM F_PRE GROUP BY ESTPRE`
 #: (lo hace el script de descubrimiento).
 ESTPRE_PENDING = 0
+ESTPRE_ACCEPTED = 1
+#: «Rechazado» en el escritorio de FACTUSOL (enumeración Pendiente / Aceptado /
+#: Rechazado). NO está confirmado con un volcado: si `SELECT DISTINCT ESTPRE`
+#: dice otra cosa, se ajusta aquí. Cualquier valor no reconocido queda como
+#: `otro` (nunca se inventa un estado).
+ESTPRE_REJECTED = 2
 #: Etiquetas de los estados que sí conocemos, para el mensaje al operador.
-ESTPRE_LABELS = {0: "pendiente", 1: "aceptada"}
+ESTPRE_LABELS = {0: "pendiente", 1: "aceptada", ESTPRE_REJECTED: "rechazada"}
+
+#: Estado de la proforma tal como lo enseña la pantalla Proformas (Fase 4).
+QUOTE_ESTADO_PENDIENTE = "pendiente"
+QUOTE_ESTADO_ACEPTADA = "aceptada"
+QUOTE_ESTADO_RECHAZADA = "rechazada"
+QUOTE_ESTADO_OTRO = "otro"
+QUOTE_ESTADO_LABELS: dict[str, str] = {
+    QUOTE_ESTADO_PENDIENTE: "pendiente",
+    QUOTE_ESTADO_ACEPTADA: "aceptada",
+    QUOTE_ESTADO_RECHAZADA: "rechazada",
+    QUOTE_ESTADO_OTRO: "otro estado",
+}
+
+
+def quote_estado(estpre: int | None) -> str:
+    """`ESTPRE` → estado legible. Sin valor (o 0) = pendiente, que es el
+    estado inicial con el que FACTUSOL crea las filas."""
+    if estpre is None or estpre == ESTPRE_PENDING:
+        return QUOTE_ESTADO_PENDIENTE
+    if estpre == ESTPRE_ACCEPTED:
+        return QUOTE_ESTADO_ACEPTADA
+    if estpre == ESTPRE_REJECTED:
+        return QUOTE_ESTADO_RECHAZADA
+    return QUOTE_ESTADO_OTRO
 
 
 def quote_state(client: FactusolClient, codpre: str, *, ejercicio: str) -> int | None:

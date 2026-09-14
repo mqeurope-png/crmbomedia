@@ -241,6 +241,41 @@ def order_alerts(
     return alerts
 
 
+# --- Proformas (Fase 4): colas de la pantalla Proformas --------------------------
+#
+# Mismo criterio que la bandeja: la cola dice «lo que toca». Una proforma
+# aceptada está POR CONVERTIR mientras no exista su pedido en BoHub; en
+# cuanto existe pasa a «convertidas» (el equivalente a «listo»). Pendientes y
+# rechazadas van por el estado `ESTPRE` de FACTUSOL.
+
+QUOTE_QUEUE_ACEPTADAS = "aceptadas"
+QUOTE_QUEUE_PENDIENTES = "pendientes"
+QUOTE_QUEUE_RECHAZADAS = "rechazadas"
+QUOTE_QUEUE_CONVERTIDAS = "convertidas"
+QUOTE_QUEUES: tuple[str, ...] = (
+    QUOTE_QUEUE_ACEPTADAS, QUOTE_QUEUE_PENDIENTES, QUOTE_QUEUE_RECHAZADAS,
+    QUOTE_QUEUE_CONVERTIDAS,
+)
+QUOTE_QUEUE_LABELS: dict[str, str] = {
+    QUOTE_QUEUE_ACEPTADAS: "Aceptadas · por convertir",
+    QUOTE_QUEUE_PENDIENTES: "Pendientes de respuesta",
+    QUOTE_QUEUE_RECHAZADAS: "Rechazadas",
+    QUOTE_QUEUE_CONVERTIDAS: "Convertidas",
+}
+
+
+def quote_queue(estado: str, *, converted: bool) -> str | None:
+    """Cola de una proforma por su estado FACTUSOL y si ya es pedido de BoHub.
+    Un estado no reconocido (`otro`) no tiene cola (solo sale en «todas»)."""
+    if converted:
+        return QUOTE_QUEUE_CONVERTIDAS
+    return {
+        "aceptada": QUOTE_QUEUE_ACEPTADAS,
+        "pendiente": QUOTE_QUEUE_PENDIENTES,
+        "rechazada": QUOTE_QUEUE_RECHAZADAS,
+    }.get(estado)
+
+
 def company_regime(company: Any) -> str | None:
     """Régimen de IVA del cliente del pedido (Tarea C + VIES), o None sin
     empresa / sin país."""

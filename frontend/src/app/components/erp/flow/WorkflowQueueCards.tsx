@@ -37,9 +37,48 @@ export const QUEUE_HINT: Record<WorkflowQueue, string> = {
   listo: "nada pendiente",
 };
 
+/** Tarjetas de colas genéricas (rediseño de flujo): una tarjeta por cola con
+ *  su contador, el mismo patrón para la bandeja de pedidos y para las
+ *  proformas (Fase 4). Volver a pulsar la cola activa quita el filtro. */
+export function QueueCards<Q extends string>({
+  counts, active, onSelect, queues, labels, colors, hints, ariaLabel = "Colas de trabajo",
+}: {
+  counts: Partial<Record<Q, number>>;
+  active: Q | null;
+  onSelect: (queue: Q | null) => void;
+  queues: readonly Q[];
+  labels: Record<Q, string>;
+  colors: Record<Q, string>;
+  hints?: Partial<Record<Q, string>>;
+  ariaLabel?: string;
+}) {
+  return (
+    <nav className="erp-flow-queues" aria-label={ariaLabel}>
+      {queues.map((q) => (
+        <button
+          key={q}
+          type="button"
+          className={`erp-flow-queue${active === q ? " is-active" : ""}`}
+          style={{ ["--qc" as string]: colors[q] }}
+          aria-pressed={active === q}
+          aria-label={`${labels[q]} (${counts[q] ?? 0})`}
+          title={hints?.[q]}
+          onClick={() => onSelect(active === q ? null : q)}
+        >
+          <span className="erp-flow-queue-n">{counts[q] ?? 0}</span>
+          <span className="erp-flow-queue-l">
+            <span className="erp-flow-dot" aria-hidden />
+            {labels[q]}
+          </span>
+        </button>
+      ))}
+    </nav>
+  );
+}
+
 /** Cabecera de la bandeja: una tarjeta por cola con su contador. Es la
  *  organización PRIMARIA del trabajo (los filtros de estado quedan como
- *  refinamiento). Volver a pulsar la cola activa quita el filtro. */
+ *  refinamiento). */
 export function WorkflowQueueCards({
   counts, active, onSelect, queues = QUEUE_ORDER,
 }: {
@@ -49,25 +88,14 @@ export function WorkflowQueueCards({
   queues?: readonly WorkflowQueue[];
 }) {
   return (
-    <nav className="erp-flow-queues" aria-label="Colas de trabajo">
-      {queues.map((q) => (
-        <button
-          key={q}
-          type="button"
-          className={`erp-flow-queue${active === q ? " is-active" : ""}`}
-          style={{ ["--qc" as string]: QUEUE_COLOR[q] }}
-          aria-pressed={active === q}
-          aria-label={`${QUEUE_LABEL[q]} (${counts[q] ?? 0})`}
-          title={QUEUE_HINT[q]}
-          onClick={() => onSelect(active === q ? null : q)}
-        >
-          <span className="erp-flow-queue-n">{counts[q] ?? 0}</span>
-          <span className="erp-flow-queue-l">
-            <span className="erp-flow-dot" aria-hidden />
-            {QUEUE_LABEL[q]}
-          </span>
-        </button>
-      ))}
-    </nav>
+    <QueueCards
+      counts={counts}
+      active={active}
+      onSelect={onSelect}
+      queues={queues}
+      labels={QUEUE_LABEL}
+      colors={QUEUE_COLOR}
+      hints={QUEUE_HINT}
+    />
   );
 }
