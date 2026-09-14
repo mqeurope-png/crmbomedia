@@ -63,6 +63,17 @@ const C = order({ id: "o-3", order_number: "BOPRIN-99932", invoice_status: "invo
   factusol_invoice_number: "260732", completed: true, completed_at: "2026-09-10T10:00:00Z",
   completed_by_user_id: "u-1", completed_by_name: "Bart" });
 
+/** La bandeja pide ahora la envoltura con contadores de cola. */
+function page(items: unknown[]) {
+  return { items, queue_counts: {}, queue: null };
+}
+
+/** Las acciones por fila viven en el menú «⋯» de la tarjeta (rediseño de
+ *  flujo): hay que abrirlo antes de pulsarlas. */
+async function abrirMenu(user: ReturnType<typeof userEvent.setup>, numero: string) {
+  await user.click(screen.getByRole("button", { name: `Más acciones ${numero}` }));
+}
+
 function done(o: ReturnType<typeof order>, avisos: string[] = []) {
   return {
     ...o, completed: true, completed_at: "2026-09-12T12:00:00Z", completed_by_user_id: "u-1",
@@ -71,12 +82,12 @@ function done(o: ReturnType<typeof order>, avisos: string[] = []) {
 }
 
 function row(number: string) {
-  return screen.getByText(number).closest("tr") as HTMLTableRowElement;
+  return screen.getByText(number).closest("[data-order-row]") as HTMLElement;
 }
 
 beforeEach(() => {
   (listOrders as jest.Mock).mockReset();
-  (listOrders as jest.Mock).mockResolvedValue([A, B, C]);
+  (listOrders as jest.Mock).mockResolvedValue(page([A, B, C]));
   (completeOrdersBulk as jest.Mock).mockReset();
   jest.restoreAllMocks();
 });

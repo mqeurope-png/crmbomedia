@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { PageHeader } from "../../../components/PageHeader";
 import { EmbalarModal } from "../../../components/erp/EmbalarModal";
 import { PDF_LANGS } from "../../../components/erp/FactusolDocumentDetailModal";
@@ -14,6 +14,10 @@ import { RegistrarCobroModal } from "../../../components/erp/RegistrarCobroModal
 import { FactusolAlbaranPdfButton } from "../../../components/erp/FactusolAlbaranPdfButton";
 import { OrderStatusMachine } from "../../../components/erp/OrderStatusMachine";
 import { ShippingFilesSection } from "../../../components/erp/ShippingFilesSection";
+import { NextActionBar } from "../../../components/erp/flow/NextActionBar";
+import { RegimePill } from "../../../components/erp/flow/RegimePill";
+import { WorkflowAlerts } from "../../../components/erp/flow/WorkflowAlerts";
+import { WorkflowSteps } from "../../../components/erp/flow/WorkflowSteps";
 import { getCurrentUser, type User } from "../../../lib/api";
 import { extractErrorMessage } from "../../../lib/errors";
 import {
@@ -42,6 +46,7 @@ import {
   type OrderDetail,
   type StatusDomain,
   type TimelineEvent,
+  type WorkflowAlert,
 } from "../../../lib/erpApi";
 
 const INVOICED_STATUSES = new Set(["generated", "invoiced_by_erp", "already_invoiced_externally"]);
@@ -205,6 +210,105 @@ export default function ErpOrderDetailPage() {
     }
   }
 
+  /** Botón de la barra «Siguiente paso»: la acción que el backend dice que
+   *  toca, enganchada a lo que YA hace esta ficha (el modal de emisión, el de
+   *  cobro, el albarán, el email al SAT…). Cuando la acción vive en otra
+   *  pantalla (aprobar, mapear líneas, vincular la empresa) lleva hasta allí
+   *  en vez de inventarse un flujo nuevo. */
+  function nextStepAction(): ReactNode {
+    const wf = order?.workflow;
+    if (!wf || !order) return null;
+    const label = wf.next_action_label;
+    switch (wf.next_action) {
+      case "emitir_factura":
+        return canEmit ? (
+          <button type="button" className="button small" onClick={() => setEmitSignal((n) => n + 1)}>
+            {label}
+          </button>
+        ) : null;
+      case "registrar_cobro":
+        return canEmit ? (
+          <button
+            type="button" className="button small"
+            disabled={!order.factusol_invoice_number}
+            title={order.factusol_invoice_number
+              ? "Registra el cobro de la factura en FACTUSOL"
+              : "Emite la factura primero"}
+            onClick={() => setCobroOpen(true)}
+          >
+            {label}
+          </button>
+        ) : null;
+      case "marcar_completado":
+        return canEmit ? (
+          <button type="button" className="button small" disabled={completeBusy}
+                  onClick={() => void onToggleComplete()}>
+            {label}
+          </button>
+        ) : null;
+      case "crear_albaran":
+        return canEmit ? (
+          <button type="button" className="button small" onClick={() => setAlbaranSignal((n) => n + 1)}>
+            {label}
+          </button>
+        ) : null;
+      case "enviar_sat":
+        return canEmit ? (
+          <button type="button" className="button small" onClick={() => setOrderEmailOpen(true)}>
+            Enviar al SAT por email
+          </button>
+        ) : null;
+      case "aprobar":
+        return (
+          <Link href="/erp/orders/pending-approval" className="button small">
+            Ir a la Cola PEDIDOS
+          </Link>
+        );
+      case "mapear_lineas":
+        return <a href="#lineas" className="button small">Ver líneas</a>;
+      case "vincular_empresa":
+        return order.company_id ? (
+          <Link href={`/companies/${order.company_id}`} className="button small">
+            Abrir ficha de empresa
+          </Link>
+        ) : null;
+      case "revisar_incidencia":
+        return <Link href="/erp/exceptions" className="button small">Ver excepciones</Link>;
+      default:
+        return null;
+    }
+  }
+
+  /** Botón que resuelve cada alerta de la barra (la alerta dice QUÉ pasa;
+   *  esto lleva a dónde se arregla). */
+  function alertAction(a: WorkflowAlert): ReactNode {
+    if (!order) return null;
+    if (a.code === "lineas_sin_mapear") {
+      return <a href="#lineas" className="button small secondary">Ver líneas</a>;
+    }
+    if (
+      a.code === "empresa_sin_vincular" || a.code === "cliente_intracomunitario"
+      || a.code === "cliente_exportacion"
+    ) {
+      return order.company_id ? (
+        <Link href={`/companies/${order.company_id}`} className="button small secondary">
+          Ver ficha cliente
+        </Link>
+      ) : null;
+    }
+    if (a.code === "cobro_no_registrado" && canEmit) {
+      return (
+        <button type="button" className="button small secondary" onClick={() => setCobroOpen(true)}>
+          Registrar cobro
+        </button>
+      );
+    }
+    if (a.code === "excepcion_abierta") {
+      return <Link href="/erp/exceptions" className="button small secondary">Ver excepciones</Link>;
+    }
+    return null;
+  }
+
   if (!order) {
     return <main className="shell"><p className="muted">{error ?? "Cargando…"}</p></main>;
   }
@@ -226,6 +330,64 @@ export default function ErpOrderDetailPage() {
       />
       {error ? <p className="form-error">{error}</p> : null}
       {notice ? <p className="form-success" role="status">{notice}</p> : null}
+
+      {/* Rediseño de flujo (Fase 1) — la «línea de vida» del pedido: quién es
+          el cliente y con qué régimen de IVA, qué alertas tiene, por dónde va
+          el ciclo y qué toca AHORA. Todo sale del bloque `workflow` que
+          calcula el backend (el mismo que ve la bandeja): aquí no se deduce
+          ningún estado. Debajo sigue estando todo lo de siempre. */}
+      {order.workflow ? (
+        <section className="erp-flow" aria-label="Estado del pedido">
+          <p className="erp-flow-item-r2" style={{ margin: "0 0 12px" }}>
+            <strong>{customerLabel(order) || "Sin cliente"}</strong>
+            <RegimePill
+              regime={order.workflow.regime}
+              country={order.workflow.company?.country}
+            />
+            {order.workflow.company?.factusol_id ? (
+              <span className="badge ok">
+                FACTUSOL nº {order.workflow.company.factusol_id}
+              </span>
+            ) : order.workflow.company ? (
+              <span className="badge warn">Empresa sin vincular a FACTUSOL</span>
+            ) : null}
+          </p>
+          <WorkflowAlerts alerts={order.workflow.alerts} renderAction={alertAction} />
+          <WorkflowSteps steps={order.workflow.steps} />
+          <NextActionBar workflow={order.workflow}>{nextStepAction()}</NextActionBar>
+          <div className="erp-flow-grid2">
+            <EconomicSummary order={order} />
+            <section className="erp-flow-panel" aria-label="FACTUSOL">
+              <h3>FACTUSOL</h3>
+              <p className="erp-flow-kv">
+                <span className="k">Cliente</span>
+                <span className="v">
+                  {order.workflow.company?.factusol_id
+                    ? `${order.workflow.company.factusol_id} · vinculado`
+                    : "sin vincular"}
+                </span>
+              </p>
+              <p className="erp-flow-kv">
+                <span className="k">Albarán</span>
+                <span className="v">{order.factusol_albaran_number || "—"}</span>
+              </p>
+              <p className="erp-flow-kv">
+                <span className="k">Factura</span>
+                <span className="v">{order.factusol_invoice_number || "pendiente"}</span>
+              </p>
+              <p className="erp-flow-kv">
+                <span className="k">Cobro</span>
+                <span className="v">
+                  {order.factusol_cobro_status === "cobrada"
+                    ? "cobrada"
+                    : order.factusol_invoice_number ? "pendiente" : "—"}
+                </span>
+              </p>
+            </section>
+          </div>
+        </section>
+      ) : null}
+
       <div className="erp-factusol-row" style={{ margin: "0 0 14px" }}>
         <span className="erp-doc-pdf">
           <select
@@ -521,7 +683,7 @@ export default function ErpOrderDetailPage() {
       />
 
       <div className="erp-detail-grid">
-        <section className="erp-card">
+        <section className="erp-card" id="lineas">
           <h3>Líneas</h3>
           <table className="data-table">
             <thead>
@@ -580,6 +742,60 @@ export default function ErpOrderDetailPage() {
         </section>
       ) : null}
     </main>
+  );
+}
+
+const REGIME_TEXT: Record<string, string> = {
+  nacional: "nacional",
+  intracomunitario: "intracomunitario",
+  exportacion: "exportación",
+};
+
+/** Resumen económico del pedido CON SU RÉGIMEN: la base sale de las líneas y
+ *  el IVA de su tipo, salvo que el cliente sea intracomunitario o de
+ *  exportación — entonces la factura va exenta y aquí se dice, que es donde
+ *  se mira antes de emitir. El total es siempre el del pedido: si no cuadra
+ *  con base + IVA (portes de la cabecera, descuentos), la diferencia se
+ *  enseña en vez de esconderla. */
+function EconomicSummary({ order }: { order: OrderDetail }) {
+  const regime = order.workflow?.regime ?? null;
+  const exento = regime === "intracomunitario" || regime === "exportacion";
+  const base = order.lines.reduce((s, l) => s + (l.line_total ?? 0), 0);
+  const iva = exento
+    ? 0
+    : order.lines.reduce((s, l) => s + (l.line_total ?? 0) * (l.tax_rate ?? 0) / 100, 0);
+  const otros = order.total_amount - base - iva;
+  const pago = order.factusol_payment ?? null;
+  const eur = (n: number) => `${n.toFixed(2)} ${order.currency}`;
+  return (
+    <section className="erp-flow-panel" aria-label="Resumen económico">
+      <h3>Resumen económico</h3>
+      <p className="erp-flow-kv">
+        <span className="k">Base imponible</span>
+        <span className="v">{eur(base)}</span>
+      </p>
+      <p className="erp-flow-kv">
+        <span className="k">IVA{regime ? ` (${REGIME_TEXT[regime] ?? regime})` : ""}</span>
+        <span className="v">{exento ? `${eur(0)} · exento` : eur(iva)}</span>
+      </p>
+      {Math.abs(otros) >= 0.01 ? (
+        <p className="erp-flow-kv">
+          <span className="k">Portes y otros cargos</span>
+          <span className="v">{eur(otros)}</span>
+        </p>
+      ) : null}
+      <p className="erp-flow-kv">
+        <span className="k">Forma de pago</span>
+        <span className="v">
+          {pago?.forma_pago_nombre || pago?.forma_pago || "—"}
+          {pago?.contrapartida_nombre ? ` · ${pago.contrapartida_nombre}` : ""}
+        </span>
+      </p>
+      <p className="erp-flow-total">
+        <span className="k muted">Total</span>
+        <span className="n">{eur(order.total_amount)}</span>
+      </p>
+    </section>
   );
 }
 

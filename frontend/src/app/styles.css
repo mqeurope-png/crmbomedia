@@ -11111,3 +11111,392 @@ tr.is-inactive {
   gap: 8px;
   margin-top: 14px;
 }
+
+/* =============================================================
+   ERP · rediseño de flujo (Fase 1) — bandeja por colas + ficha
+   «línea de vida». Tokens y componentes COMPARTIDOS por las dos
+   pantallas (y por las que vengan en las fases siguientes), para
+   que todo el ERP tenga el mismo aspecto.
+   ============================================================= */
+.erp-flow {
+  --flow-line: var(--line);
+  --flow-line-soft: #EEF0F4;
+  --flow-radius: var(--radius-md);
+  --flow-shadow: var(--shadow-card);
+}
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* --- colas de trabajo (cabecera de la bandeja) --- */
+.erp-flow-queues {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 10px;
+  margin: 0 0 18px;
+}
+.erp-flow-queue {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-top: 3px solid var(--qc, var(--line));
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-card);
+  padding: 12px 14px;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+}
+.erp-flow-queue:hover { box-shadow: var(--shadow-card-hover); }
+.erp-flow-queue.is-active {
+  border-color: var(--qc);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--qc) 25%, transparent);
+}
+.erp-flow-queue-n {
+  display: block;
+  font-size: 26px;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: -0.02em;
+}
+.erp-flow-queue-l {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 5px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.erp-flow-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--qc, var(--muted));
+  flex: none;
+}
+.erp-flow-qtitle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 0 0 10px;
+  font-size: 14px;
+  font-weight: 600;
+}
+.erp-flow-qtitle .cnt { color: var(--muted); font-weight: 400; }
+
+/* --- lista de pedidos por acción --- */
+.erp-flow-list {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+.erp-flow-item {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-card);
+  padding: 12px 16px;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 12px;
+  align-items: center;
+}
+.erp-flow-item.is-alert { border-left: 3px solid #E2554A; }
+.erp-flow-item.is-muted { opacity: 0.72; }
+.erp-flow-item-main { min-width: 0; }
+.erp-flow-item-r1 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.erp-flow-item-r1 a { font-weight: 600; }
+.erp-flow-item-r2 {
+  color: var(--muted);
+  font-size: 13px;
+  margin: 4px 0 0;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.erp-flow-src {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: #5B6472;
+  background: #EEF0F4;
+  padding: 1px 7px;
+  border-radius: 5px;
+}
+.erp-flow-src.is-woo { color: #6D3FC4; background: #F0E9FD; }
+.erp-flow-src.is-man { color: #0F766E; background: #E6F5F3; }
+.erp-flow-item-side {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+}
+.erp-flow-amount {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  font-size: 15px;
+  text-align: right;
+  margin: 0;
+}
+.erp-flow-amount small {
+  display: block;
+  color: var(--muted);
+  font-weight: 400;
+  font-size: 11px;
+}
+.erp-flow-item-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+/* --- alertas --- */
+.erp-flow-why-list { margin: 7px 0 0; }
+.erp-flow-why {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin: 3px 0 0;
+  font-size: 12.5px;
+  color: #9A6700;
+}
+.erp-flow-why.is-blocking { color: var(--danger); }
+.erp-flow-why.muted { color: var(--muted); }
+.erp-flow-alertbar {
+  background: #FEF6EC;
+  border: 1px solid #F3DCAE;
+  border-radius: 10px;
+  padding: 11px 14px;
+  margin: 0 0 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.erp-flow-alertbar.is-blocking { background: #FEF3F2; border-color: #F5C7C2; }
+.erp-flow-alert {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 13px;
+  color: #8A5A0A;
+}
+.erp-flow-alertbar.is-blocking .erp-flow-alert { color: var(--danger); }
+.erp-flow-alert-fix { margin-left: auto; }
+
+/* --- stepper («línea de vida») --- */
+.erp-flow-steps {
+  list-style: none;
+  margin: 0 0 14px;
+  padding: 6px 4px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-card);
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+}
+.erp-flow-step {
+  padding: 14px 8px;
+  text-align: center;
+  border-right: 1px solid #EEF0F4;
+}
+.erp-flow-step:last-child { border-right: none; }
+.erp-flow-step-ic {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  margin: 0 auto 8px;
+  display: grid;
+  place-items: center;
+  background: #EEF0F4;
+  color: #9AA2AD;
+  font-size: 14px;
+}
+.erp-flow-step.is-done .erp-flow-step-ic { background: #E7F6EC; color: #1F7A45; }
+.erp-flow-step.is-now .erp-flow-step-ic {
+  background: var(--brand);
+  color: #fff;
+  box-shadow: 0 0 0 4px var(--primary-tint);
+}
+.erp-flow-step-t { display: block; font-size: 12px; font-weight: 500; }
+.erp-flow-step.is-now .erp-flow-step-t { color: var(--brand-dark); }
+.erp-flow-step.is-skipped .erp-flow-step-t { color: var(--muted); }
+.erp-flow-step-d {
+  display: block;
+  font-size: 11px;
+  color: #9AA2AD;
+  margin-top: 2px;
+  min-height: 14px;
+  overflow-wrap: anywhere;
+}
+
+/* --- «siguiente paso» --- */
+.erp-flow-nowbar {
+  background: var(--primary-tint);
+  border: 1px solid #CFE0FF;
+  border-radius: var(--radius-md);
+  padding: 14px 18px;
+  margin: 0 0 14px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.erp-flow-nowbar.is-blocking { background: #FEF3F2; border-color: #F5C7C2; }
+.erp-flow-nowbar-txt { flex: 1; min-width: 220px; }
+.erp-flow-nowbar-k {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--brand-dark);
+}
+.erp-flow-nowbar.is-blocking .erp-flow-nowbar-k { color: var(--danger); }
+.erp-flow-nowbar-v { margin: 2px 0 0; font-size: 15px; }
+.erp-flow-nowbar-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* --- paneles (resumen económico / FACTUSOL) --- */
+.erp-flow-grid2 {
+  display: grid;
+  grid-template-columns: 1.1fr 0.9fr;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+.erp-flow-panel {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-card);
+  padding: 15px 18px;
+}
+.erp-flow-panel h3 {
+  margin: 0 0 11px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.erp-flow-kv {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 0;
+  border-top: 1px solid #EEF0F4;
+  font-size: 13.5px;
+}
+.erp-flow-kv:first-of-type { border-top: none; }
+.erp-flow-kv .k { color: var(--muted); }
+.erp-flow-kv .v { text-align: right; font-variant-numeric: tabular-nums; }
+.erp-flow-total {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding-top: 9px;
+  margin-top: 5px;
+  border-top: 1px solid var(--line);
+}
+.erp-flow-total .n {
+  font-size: 22px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- pastillas (régimen) --- */
+.erp-flow-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  font-weight: 500;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: #EEF0F4;
+  color: #5B6472;
+  white-space: nowrap;
+}
+.erp-flow-pill.is-p { background: #F0E9FD; color: #6D3FC4; }
+.erp-flow-pill.is-t { background: #E6F5F3; color: #0F766E; }
+.erp-flow-pill.is-n { background: #EEF0F4; color: #5B6472; }
+
+/* --- menú «⋯» de la tarjeta de pedido --- */
+.erp-flow-menu { position: relative; }
+.erp-flow-menu-pop {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 20;
+  min-width: 210px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: var(--shadow-card-hover);
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.erp-flow-menu-pop button,
+.erp-flow-menu-pop a {
+  background: none;
+  border: none;
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: 7px;
+  font: inherit;
+  font-size: 13.5px;
+  color: inherit;
+  cursor: pointer;
+  text-decoration: none;
+}
+.erp-flow-menu-pop button:hover:not(:disabled),
+.erp-flow-menu-pop a:hover { background: var(--primary-tint); }
+.erp-flow-menu-pop button:disabled { color: var(--muted); cursor: not-allowed; }
+
+/* --- filtros de refinamiento --- */
+.erp-flow-filters {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-bottom: 14px;
+}
+.erp-flow-filters-label {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+@media (max-width: 1040px) {
+  .erp-flow-queues { grid-template-columns: repeat(3, 1fr); }
+  .erp-flow-grid2 { grid-template-columns: 1fr; }
+  .erp-flow-steps { grid-template-columns: repeat(7, minmax(84px, 1fr)); overflow-x: auto; }
+}
+@media (max-width: 640px) {
+  .erp-flow-queues { grid-template-columns: repeat(2, 1fr); }
+  .erp-flow-item { grid-template-columns: auto 1fr; }
+  .erp-flow-item-side { grid-column: 1 / -1; align-items: flex-start; }
+  .erp-flow-amount { text-align: left; }
+  .erp-flow-item-actions { justify-content: flex-start; }
+}
