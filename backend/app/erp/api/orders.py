@@ -682,6 +682,9 @@ def list_orders(
         default=None,
         pattern="^(por_revisar|por_facturar|por_cobrar|por_enviar|incidencias|listo)$",
     ),
+    # Fase 3 (ficha de empresa): pedidos de UNA empresa, con su `workflow`,
+    # para la «actividad reciente».
+    company_id: str | None = Query(default=None, max_length=36),
     sort: str = Query(default="placed_desc"),
     limit: int = Query(default=100, ge=1, le=500),
     session: Session = Depends(get_session),
@@ -689,6 +692,8 @@ def list_orders(
 ) -> dict[str, Any]:
     _ = current_user
     stmt = select(Order)
+    if company_id:
+        stmt = stmt.where(Order.company_id == company_id)
     if payment:
         stmt = stmt.where(Order.payment_status == payment)
     if cobro == "sin_comprobar":

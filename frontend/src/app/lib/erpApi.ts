@@ -309,6 +309,8 @@ export type OrderFilters = {
   /** Rediseño de flujo: cola de trabajo (la organización primaria de la
    *  bandeja). Los contadores llegan SIEMPRE completos, con filtro o sin él. */
   queue?: WorkflowQueue;
+  /** Fase 3 (ficha de empresa): pedidos de UNA empresa. */
+  company_id?: string;
   sort?: string;
   limit?: number;
 };

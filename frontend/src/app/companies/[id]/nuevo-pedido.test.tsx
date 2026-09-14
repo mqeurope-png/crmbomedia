@@ -24,6 +24,16 @@ jest.mock("../../lib/companiesApi", () => ({
   mergeCompanies: jest.fn(),
   updateCompany: jest.fn(),
   deleteCompany: jest.fn(),
+  fiscalCheck: jest.fn(() => Promise.reject(new Error("sin backend"))),
+}));
+jest.mock("../../lib/api", () => ({
+  getCurrentUser: jest.fn(() => Promise.resolve({ role: "admin" })),
+}));
+jest.mock("../../lib/erpApi", () => ({
+  ERP_EDIT_ROLES: ["admin", "pedidos"],
+  listOrders: jest.fn(() => Promise.resolve({ items: [], queue_counts: {}, queue: null })),
+  listFactusolDocuments: jest.fn(() => Promise.resolve({ items: [], total: 0 })),
+  listFactusolQuotes: jest.fn(() => Promise.resolve({ items: [], unlinked: false })),
 }));
 jest.mock("../../lib/dates", () => ({ formatBackendDateTime: () => "—" }));
 jest.mock("../../components/erp/CompanyFactusolPanel", () => ({
