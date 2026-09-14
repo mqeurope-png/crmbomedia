@@ -259,3 +259,43 @@ export function pickDefaultKeep(companies: DuplicateCompany[]): string {
   }
   return best.id;
 }
+
+// --- Fase 2 (rediseño de flujo): «Crear empresa» -----------------------------
+
+/** Lo que la pantalla «Crear empresa» sabe de los datos fiscales ANTES de
+ *  guardar: régimen de IVA detectado (país + NIF-IVA, la misma regla que fija
+ *  la ficha F_CLI), duplicados en el CRM y en FACTUSOL, y el gancho VIES. */
+export type FiscalCheck = {
+  country_iso2: string | null;
+  in_eu: boolean;
+  regime: "nacional" | "intracomunitario" | "exportacion";
+  regime_label: string;
+  regime_reason: string;
+  vat_normalized: string | null;
+  duplicates: {
+    crm: {
+      id: string; name: string; tax_id: string | null; vat: string | null;
+      country: string | null; factusol_company_id: string | null;
+    }[];
+    /** Cliente F_CLI con ese NIF (null si no hay o no se pudo comprobar). */
+    factusol: { codcli: string; nombre: string | null; nif: string | null } | null;
+    factusol_checked: boolean;
+    factusol_error: string | null;
+  };
+  /** Validación VIES (PR aparte): hoy siempre «pendiente». */
+  vies: {
+    status: "pendiente" | "valido" | "no_valido" | "desconocido";
+    valid: boolean | null;
+    checked_at: string | null;
+  };
+};
+
+export async function fiscalCheck(params: {
+  tax_id?: string; vat?: string; country?: string; exclude_id?: string;
+}): Promise<FiscalCheck> {
+  const sp = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v && v.trim()) sp.set(k, v.trim());
+  }
+  return apiFetch<FiscalCheck>(`/api/companies/fiscal-check?${sp.toString()}`);
+}

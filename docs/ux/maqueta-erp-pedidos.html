@@ -219,7 +219,7 @@
           <div style="font-size:13px;color:var(--muted);margin-bottom:5px">Empresa</div>
           <input class="fld" value="la mai" style="border-color:var(--brand)">
           <div class="combo">
-            <div class="citem"><div><b>SAS La Maison de la Plaque</b><div class="cmeta">FR16339753527 · Francia · <span class="pill g" style="font-size:10px">en FACTUSOL 2760</span></div></div><span class="muted">Elegir</span></div>
+            <div class="citem"><div><b>SAS La Maison de la Plaque</b><div class="cmeta">FR16339753527 · Francia · <span class="pill g" style="font-size:10px">en FACTUSOL nº 2760</span></div></div><span class="muted">Elegir</span></div>
             <div class="citem"><div><b>La Maison du Cadeau</b><div class="cmeta">B-98xxxxxx · España · <span class="pill n" style="font-size:10px">solo CRM</span></div></div><span class="muted">Elegir</span></div>
             <div class="citem create">+ Crear empresa nueva «<b>la mai</b>»</div>
           </div>
@@ -236,13 +236,18 @@
         <div class="slabel">Identificación fiscal</div>
         <div class="frow"><div style="grid-column:1/-1"><div class="flabel">Nombre fiscal *</div><input class="fld" value="SAS La Maison de la Plaque"></div></div>
         <div class="frow"><div><div class="flabel">NIF / CIF / VAT</div><input class="fld" value="FR16339753527"></div><div><div class="flabel">País</div><input class="fld" value="Francia"></div></div>
-        <div class="detect">✓ Régimen detectado: <span class="pill p" style="margin-left:4px">Intracomunitario · sin IVA</span> <span class="muted" style="margin-left:auto;font-size:12px">País UE + VAT válido (verificar en VIES)</span></div>
+        <div class="detect">✓ Régimen detectado: <span class="pill p" style="margin-left:4px">Intracomunitario · sin IVA</span> <span class="muted" style="margin-left:auto;font-size:12px">FR (UE) con NIF-IVA → intracomunitario · VIES: pendiente de validar</span></div>
         <div class="hint">i No existe en FACTUSOL con ese NIF. Se creará como cliente nuevo al guardar.</div>
       </div>
       <div class="panel">
         <div class="slabel">Dirección</div>
         <div class="frow"><div style="grid-column:1/-1"><div class="flabel">Domicilio</div><input class="fld" value="Rue du Chemin Noir"></div></div>
         <div class="frow3"><div><div class="flabel">CP</div><input class="fld" value="21120"></div><div><div class="flabel">Población</div><input class="fld" value="Is-sur-Tille"></div><div><div class="flabel">Provincia</div><input class="fld" placeholder="—"></div></div>
+      </div>
+      <div class="panel">
+        <div class="slabel">Contacto</div>
+        <div class="frow"><div><div class="flabel">Web</div><input class="fld" value="https://maisonplaque.fr"></div><div><div class="flabel">Dominio</div><input class="fld" value="maisonplaque.fr"></div></div>
+        <div class="frow"><div><div class="flabel">Idioma de los documentos</div><select class="fld"><option>— por el país —</option><option selected>Français</option></select></div><div><div class="flabel">Sector</div><input class="fld" placeholder="—"></div></div>
       </div>
       <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
         <button class="btn primary">Crear empresa</button>

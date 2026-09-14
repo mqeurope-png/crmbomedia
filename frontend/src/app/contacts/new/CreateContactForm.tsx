@@ -2,13 +2,28 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { createContact, type Company } from "../../lib/api";
+import { createContact } from "../../lib/api";
 import { extractErrorMessage } from "../../lib/errors";
+import { CompanyCreateForm, type CompanyCreated } from "../../components/CompanyCreateForm";
+import { CompanySearch } from "../../components/CompanySearch";
 
-export function CreateContactForm({ companies }: Readonly<{ companies: Company[] }>) {
+type Picked = { id: string; name: string; factusol_company_id: string | null };
+
+/** Alta de contacto. Rediseño de flujo (Fase 2): la empresa se elige con el
+ *  buscador unificado (nombre / CIF / NIF-IVA / dominio, con su estado
+ *  FACTUSOL) en vez del desplegable con TODAS las empresas; si no existe se
+ *  crea aquí mismo con el formulario de «Crear empresa» y queda elegida. El
+ *  resto del alta (origen Manual, responsable = quien crea, consentimiento)
+ *  no cambia. */
+export function CreateContactForm() {
   const router = useRouter();
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [company, setCompany] = useState<Picked | null>(null);
+  // Texto con el que se pidió «Crear empresa nueva «…»»: abre el formulario
+  // embebido; null = buscador.
+  const [creating, setCreating] = useState<string | null>(null);
 
   async function onSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -26,7 +41,7 @@ export function CreateContactForm({ companies }: Readonly<{ companies: Company[]
       email: form.get("email"),
       phone: form.get("phone") || null,
       marketing_consent: form.get("marketing_consent") || "unknown",
-      company_id: form.get("company_id") || null,
+      company_id: company?.id ?? null,
     };
 
     try {
@@ -40,9 +55,21 @@ export function CreateContactForm({ companies }: Readonly<{ companies: Company[]
     }
   }
 
+  function onCompanyCreated({ company: fresh, factusol, factusolError }: CompanyCreated) {
+    setCompany({
+      id: fresh.id, name: fresh.name,
+      factusol_company_id: factusol?.codcli ?? fresh.factusol_company_id ?? null,
+    });
+    setCreating(null);
+    setNotice(factusolError
+      ? `Empresa «${fresh.name}» creada (sin alta en FACTUSOL: ${factusolError}).`
+      : `Empresa «${fresh.name}» creada y elegida.`);
+  }
+
   return (
     <form className="form-card" onSubmit={onSubmit}>
       {error ? <div className="error-state">{error}</div> : null}
+      {notice ? <p className="form-success" role="status">{notice}</p> : null}
       <label>
         Nombre
         <input name="first_name" required maxLength={120} />
@@ -70,15 +97,55 @@ export function CreateContactForm({ companies }: Readonly<{ companies: Company[]
         Origen: <strong>Manual</strong> · Se asigna automáticamente a ti como
         responsable. Para anotar cómo llegó el lead usa el campo de notas.
       </p>
-      <label>
-        Empresa
-        <select name="company_id" defaultValue="">
-          <option value="">Sin empresa</option>
-          {companies.map((company) => (
-            <option key={company.id} value={company.id}>{company.name}</option>
-          ))}
-        </select>
-      </label>
+
+      {/* Empresa: buscador unificado (adiós al desplegable gigante). */}
+      <div className="company-field" aria-label="Empresa del contacto">
+        {company ? (
+          <div className="company-field-picked">
+            <span className="field"><span>Empresa</span></span>
+            <p>
+              <strong>{company.name}</strong>{" "}
+              {company.factusol_company_id ? (
+                <span className="badge ok">en FACTUSOL nº {company.factusol_company_id}</span>
+              ) : (
+                <span className="badge muted">solo CRM</span>
+              )}
+            </p>
+            <div className="form-actions">
+              <button type="button" className="button small secondary"
+                      onClick={() => setCompany(null)}>
+                Cambiar
+              </button>
+              <button type="button" className="button small secondary"
+                      onClick={() => setCompany(null)}>
+                Sin empresa
+              </button>
+            </div>
+          </div>
+        ) : creating !== null ? (
+          <div className="company-field-create">
+            <p className="field"><span>Nueva empresa</span></p>
+            <CompanyCreateForm
+              compact
+              initialName={creating}
+              onCreated={onCompanyCreated}
+              onCancel={() => setCreating(null)}
+              onUseExisting={(c) => {
+                setCompany({ id: c.id, name: c.name, factusol_company_id: null });
+                setCreating(null);
+              }}
+            />
+          </div>
+        ) : (
+          <CompanySearch
+            onPick={(c) => setCompany({
+              id: c.id, name: c.name, factusol_company_id: c.factusol_company_id,
+            })}
+            onCreate={(name) => setCreating(name)}
+          />
+        )}
+      </div>
+
       <label>
         Consentimiento marketing
         <select name="marketing_consent" defaultValue="unknown">
@@ -88,7 +155,7 @@ export function CreateContactForm({ companies }: Readonly<{ companies: Company[]
           <option value="unsubscribed">Baja</option>
         </select>
       </label>
-      <button className="button" type="submit" disabled={isSubmitting}>
+      <button className="button" type="submit" disabled={isSubmitting || creating !== null}>
         {isSubmitting ? "Creando..." : "Crear contacto"}
       </button>
     </form>
