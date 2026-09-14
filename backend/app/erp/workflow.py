@@ -270,15 +270,15 @@ def _next_step(order: Order) -> tuple[str, str, str]:
             QUEUE_POR_FACTURAR, "emitir_factura",
             "Emite la factura en FACTUSOL.",
         )
-    if not is_cobrada(order) and not is_paid(order):
-        return (
-            QUEUE_POR_COBRAR, "registrar_cobro",
-            "Registra el cobro de la factura en FACTUSOL.",
-        )
+    # Cobro: SIEMPRE manual («Registrar cobro»), y solo tiene sentido cuando
+    # hay una factura FACTUSOL sobre la que registrarlo. Una factura marcada
+    # como emitida fuera del ERP no se puede cobrar desde aquí: se sigue.
     if not is_cobrada(order) and order.factusol_invoice_number:
         return (
             QUEUE_POR_COBRAR, "registrar_cobro",
-            "El pedido consta pagado: registra el cobro en FACTUSOL.",
+            "El pedido consta pagado: registra el cobro en FACTUSOL."
+            if is_paid(order) else
+            "Registra el cobro de la factura en FACTUSOL.",
         )
     if not is_shipped(order):
         action = "crear_envio" if _v(order.preparation_status) in _PREPARED else "enviar_sat"

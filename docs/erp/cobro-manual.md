@@ -67,8 +67,16 @@ resolver la factura del pedido + el estado de cobro persistido para la bandeja.
   fila. «Actualizar cobros FACTUSOL» (`POST /orders/factusol-cobros/refresh`,
   solo lectura: F_FAC y F_LCO se leen UNA vez) refresca todas las filas con
   factura. El job de cobro también deja el pedido «cobrada»
-  (`mark_orders_after_collection`), aunque el modal se cierre antes; la
-  Fase 2 (opción B) hace lo mismo al registrar su cobro.
+  (`mark_orders_after_collection`), aunque el modal se cierre antes.
+- **El cobro es SIEMPRE manual** (decisión de Bart, 2026-09-14): emitir la
+  factura —desde la ficha o al facturar el albarán / presupuesto desde el
+  explorador— ya no registra el cobro apuntado al convertir (Fase 2, opción
+  B). «Registrar cobro» (ficha, bandeja, Documentos) es la única vía; el
+  `workflow` del pedido lo ofrece como siguiente paso y nunca lo da por hecho.
+  La única excepción que sigue viva es el auto-marcado ERP-F3 (`ESTFAC=2` sin
+  `F_LCO`) de la factura de un pedido WEB ya pagado al comprar: opt-in por
+  ajuste, desactivado por defecto, y solo en la emisión por F_PCL (nunca en
+  la de un pedido con albarán de BoHub).
 - **Persistencia**: `orders.factusol_invoice_serie`, `factusol_cobro_status`
   (indexado), `factusol_cobro_checked_at` + detalle en
   `packing_json.factusol_cobro` (migración `20260915_0105`).

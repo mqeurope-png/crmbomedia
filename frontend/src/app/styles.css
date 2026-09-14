@@ -11401,10 +11401,10 @@ tr.is-inactive {
   justify-content: space-between;
   gap: 10px;
   padding: 7px 0;
-  border-top: 1px solid #EEF0F4;
+  margin: 0;
   font-size: 13.5px;
 }
-.erp-flow-kv:first-of-type { border-top: none; }
+.erp-flow-kv + .erp-flow-kv { border-top: 1px solid #EEF0F4; }
 .erp-flow-kv .k { color: var(--muted); }
 .erp-flow-kv .v { text-align: right; font-variant-numeric: tabular-nums; }
 .erp-flow-total {
@@ -11500,3 +11500,76 @@ tr.is-inactive {
   .erp-flow-amount { text-align: left; }
   .erp-flow-item-actions { justify-content: flex-start; }
 }
+
+/* --- Fase 1 (remate): la ficha entera como paneles del rediseño --- */
+.erp-flow-states {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  align-items: center;
+  padding: 10px 14px;
+  margin: 0 0 14px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-card);
+  font-size: 13px;
+}
+.erp-flow-states-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  margin-right: 4px;
+}
+.erp-flow-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.erp-flow-state-dom { color: var(--muted); font-size: 12px; }
+.erp-flow-kv-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+/* Mensajes (estado de la emisión, errores) bajo los botones, a línea completa. */
+.erp-flow-kv-actions > p { flex-basis: 100%; margin: 0; text-align: right; }
+.erp-flow-docrow {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 0;
+  font-size: 13.5px;
+}
+.erp-flow-docrow + .erp-flow-docrow { border-top: 1px solid #EEF0F4; }
+.erp-flow-docrow .k { color: var(--muted); min-width: 80px; }
+.erp-flow-docrow .v {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.erp-flow-panel { margin-bottom: 14px; }
+.erp-flow-grid2 .erp-flow-panel { margin-bottom: 0; }
+.erp-flow-panel .erp-doc-filters { margin: 0 0 8px; }
+.erp-flow-table { overflow-x: auto; }
+.erp-flow-panel .data-table { margin: 0; }
+.erp-flow-panel .erp-timeline-item:last-child { border-bottom: none; }
+.erp-flow-menu-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.erp-flow-menu-field select { font: inherit; color: var(--ink); }
+.page-header-actions select { padding: 6px 8px; }

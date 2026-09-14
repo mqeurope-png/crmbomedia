@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { PageHeader } from "../../components/PageHeader";
 import { CobroFactusolBadge } from "../../components/erp/CobroFactusolBadge";
 import { ExcludeSeguimientoModal } from "../../components/erp/ExcludeSeguimientoModal";
@@ -14,6 +14,7 @@ import {
 } from "../../components/erp/flow/WorkflowQueueCards";
 import { WorkflowAlerts } from "../../components/erp/flow/WorkflowAlerts";
 import { regimeLabel } from "../../components/erp/flow/RegimePill";
+import { ActionsMenu } from "../../components/erp/flow/ActionsMenu";
 import { getCurrentUser, type User } from "../../lib/api";
 import { extractErrorMessage } from "../../lib/errors";
 import {
@@ -577,7 +578,7 @@ export default function ErpOrdersPage() {
                   <div className="erp-flow-item-actions">
                     {primaryAction(o)}
                     {canEdit ? (
-                      <RowMenu label={`Más acciones ${o.order_number}`}>
+                      <ActionsMenu label={`Más acciones ${o.order_number}`}>
                         <Link href={`/erp/orders/${o.id}`}>Abrir ficha</Link>
                         {wf?.next_action === "marcar_completado" ? null : (
                           <button
@@ -629,7 +630,7 @@ export default function ErpOrdersPage() {
                             Quitar de la bandeja
                           </button>
                         )}
-                      </RowMenu>
+                      </ActionsMenu>
                     ) : null}
                   </div>
                 </div>
@@ -659,49 +660,5 @@ export default function ErpOrdersPage() {
         />
       ) : null}
     </main>
-  );
-}
-
-/** Menú «⋯» de una tarjeta: ahí viven las acciones que no son la principal,
- *  sin llenar la lista de botones. Se cierra al elegir, al pulsar fuera y con
- *  Escape. */
-function RowMenu({ label, children }: { label: string; children: ReactNode }) {
-  const [open, setOpen] = useState(false);
-  const box = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    function onDocClick(e: MouseEvent) {
-      if (box.current && !box.current.contains(e.target as Node)) setOpen(false);
-    }
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") setOpen(false);
-    }
-    document.addEventListener("mousedown", onDocClick);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDocClick);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
-
-  return (
-    <div className="erp-flow-menu" ref={box}>
-      <button
-        type="button"
-        className="button small secondary"
-        aria-label={label}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        onClick={() => setOpen((v) => !v)}
-      >
-        ⋯
-      </button>
-      {open ? (
-        <div className="erp-flow-menu-pop" onClick={() => setOpen(false)}>
-          {children}
-        </div>
-      ) : null}
-    </div>
   );
 }

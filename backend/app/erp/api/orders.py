@@ -114,8 +114,8 @@ class OrderCreate(BaseModel):
     # Fase 1: origen FACTUSOL (presupuesto / pedido de cliente) del alta manual.
     factusol_source: FactusolSourceIn | None = None
     # Fase 2 (solo con `factusol_source`): paso de confirmación de pago
-    # (opción B: se apunta; el cobro F-4-B se registra al existir la factura)
-    # y creación del albarán en FACTUSOL (encolada en `factusol:writes`).
+    # (opción B: se apunta; el cobro se registra a mano con «Registrar
+    # cobro») y creación del albarán en FACTUSOL (encolada en `factusol:writes`).
     payment: PaymentIn | None = None
     create_albaran: bool = True
 
@@ -306,7 +306,8 @@ def _serialise_detail(session: Session, o: Order, actor: User) -> dict[str, Any]
         # Rediseño de flujo: mismo bloque que la bandeja — la ficha pinta con
         # él el stepper, la barra de alertas y el «siguiente paso».
         "workflow": order_workflow(session, o),
-        # Fase 2: paso de pago apuntado al convertir (opción B) y su cobro.
+        # Fase 2: paso de pago apuntado al convertir (opción B). Su `cobro` solo
+        # lo llevan los pedidos anteriores al 14/9 (cuando se registraba solo).
         "factusol_payment": _factusol_payment(o),
         # Documento de ORIGEN imprimible en FACTUSOL («PDF del pedido
         # (FACTUSOL)»); None = sin documento → la ficha deshabilita el botón.

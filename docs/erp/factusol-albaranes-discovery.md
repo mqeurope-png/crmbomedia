@@ -516,6 +516,7 @@ así que «Pagado» al convertir admite dos lecturas, y son trabajo distinto:
   forma de pago + contrapartida + fecha (`payment_status=paid`), y el cobro
   F-4-B se registra solo cuando esa factura exista (al convertir el albarán
   en factura desde BoHub). No se crea ninguna factura que nadie pidió.
+  *(Superado el 2026-09-14: el cobro es siempre manual — ver 10.5.)*
 
 «Sin pago» es igual en las dos: solo se apunta la forma de pago (`FOPALB`
 heredada u override), sin `F_LCO`.
@@ -565,24 +566,26 @@ la allowlist descarta.
 - **Pago, opción B** (`PaymentIn`: `paid`, `forma_pago`, `contrapartida`,
   `fecha`): «pagado» NO emite factura; deja `payment_status=paid` y el bloque
   `packing_json.factusol_payment` (cuenta resuelta contra el catálogo de
-  contrapartidas, fecha). El cobro F-4-B (`register_invoice_collection`, solo
-  `F_LCO` + `ESTFAC=2`) se registra solo cuando EXISTE la factura del pedido:
-  al emitirla desde la ficha (`emit_invoice` → ahora factura ESE albarán con
-  la cadena) o al facturar el albarán / presupuesto desde ERP · Documentos
-  (`chain.convert_document` → `on_invoice_created`, que además vincula la
-  factura al pedido). «Sin pago» solo apunta la forma de pago.
+  contrapartidas, fecha). **El cobro es SIEMPRE manual** (decisión de Bart,
+  2026-09-14; antes se registraba solo al existir la factura): ni `emit_invoice`
+  (que factura ESE albarán con la cadena) ni `chain.convert_document` →
+  `on_invoice_created` (que solo VINCULA la factura al pedido) escriben
+  `F_LCO` ni marcan `ESTFAC`; lo hace «Registrar cobro» (ficha, bandeja,
+  Documentos) con el motor F-4-B. «Sin pago» solo apunta la forma de pago.
 - **UI**: paso de pago (`PaymentStep`) en el alta desde FACTUSOL y en el
-  modal de «Convertir en pedido» de la ficha de empresa; tarjeta «Albarán y
-  pago FACTUSOL» en la ficha del pedido (nº, estado del pago y del cobro,
-  botón de reintento, polling del job al llegar del alta).
+  modal de «Convertir en pedido» de la ficha de empresa. En la ficha del
+  pedido (rediseño de flujo, Fase 1 remate) el albarán vive SOLO en
+  «Documentos de envío» (nº, PDF, «Crear albarán en FACTUSOL» con polling
+  del job al llegar del alta); el pago apuntado se ve en el resumen
+  económico y el estado de cobro + «Registrar cobro» en el panel FACTUSOL.
 - **PDF del albarán (FACTUSOL)**: `GET /api/erp/orders/{id}/factusol-albaran-pdf`
   (`lang`, `variant` valorado/devolución) compone el A4 del albarán con el
   MISMO motor E4 que «PDF del pedido (FACTUSOL)» y los PDF de factura
   (`load_raw_document` F_ALB+F_LAL por clave compuesta → `extract_document_data`
   → `generate_document_pdf`): la API de DELSOL no imprime (sondeo E1) y
   `PDFALB=1` solo marca que el escritorio guardó su PDF en el PC de Bart. El
-  botón vive en «Documentos de envío → Albarán» y en la tarjeta; «Subir
-  albarán» sigue disponible (albaranes externos / SAT).
+  botón vive en «Documentos de envío → Albarán»; «Subir albarán» sigue
+  disponible (albaranes externos / SAT).
 - **PDF del pedido (FACTUSOL)** imprime el documento de ORIGEN real del pedido
   (`GET /api/erp/orders/{id}/factusol-pedido-pdf`): presupuesto F_PRE para los
   creados desde proforma, F_PCL por serie + nº para los creados desde un
@@ -603,9 +606,11 @@ docker exec crmbo-api-1 alembic upgrade head          # orders.factusol_albaran_
 #    → ERP · Documentos · albaranes: cabecera + líneas, ESTALB=0, CODALB numérico,
 #    líneas con DOCLAL='P'/DTPLAL/DCOLAL del presupuesto. Volcarlo:
 docker exec crmbo-api-1 python -m scripts.factusol_discover_albaranes --alb-row 5-5000NN
-# 2) «Pagado» (B): NO hay factura; la ficha enseña «Pagado (apuntado) · cobro pendiente
-#    de factura». Al emitir la factura (ficha o explorador): F_LCO línea 1, saldo 0,
-#    ESTFAC=2, y la ficha pasa a «Cobro registrado».
+# 2) «Pagado» (B): NO hay factura; el resumen económico enseña «Pagado (apuntado)»
+#    con su fecha. Al emitir la factura (ficha o explorador) NO se escribe F_LCO ni
+#    ESTFAC: el panel FACTUSOL queda «pendiente de cobro» y el siguiente paso es
+#    «Registrar cobro» (manual, desde el 2026-09-14). Tras registrarlo: F_LCO
+#    línea 1, saldo 0, ESTFAC=2 y el pedido «cobrada».
 # 3) «Sin pago»: sin cobro, pendiente.
 # 4) Log del worker con el registro exacto:
 docker logs crmbo-worker-factusol-1 --since 1h 2>&1 | grep -E "EscribirRegistro F_(ALB|LAL)|no cuadra"
@@ -707,7 +712,8 @@ Cómo se construye (`app/integrations/factusol/albaran_manual.py`):
   y empresa vinculada a `F_CLI` (`company_not_linked`); web → nunca. Mismo
   endpoint `POST /orders/{id}/albaran`, mismo job y mismo nº guardado
   (`factusol_albaran_number`) → «PDF del albarán» (#396) y «Emitir factura».
-- Ficha: la tarjeta «Albarán y pago FACTUSOL» también en pedidos manuales.
+- Ficha: «Crear albarán en FACTUSOL» en «Documentos de envío» también en
+  pedidos manuales.
 
 Tests: `tests/test_erp_albaran_manual.py` (`test_crear_albaran_manual_desde_lineas`,
 `_linea_texto_libre`, `test_crear_albaran_idempotente`,

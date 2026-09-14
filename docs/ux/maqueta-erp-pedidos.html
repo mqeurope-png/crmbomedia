@@ -75,6 +75,9 @@
   .nowbar .txt .k{font-size:12px;color:var(--brand-ink);font-weight:600;text-transform:uppercase;letter-spacing:.03em}
   .nowbar .txt .v{font-size:15px;margin-top:2px}
   .grid2{display:grid;grid-template-columns:1.1fr .9fr;gap:14px}
+  .states{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:10px 14px;margin-bottom:14px;display:flex;flex-wrap:wrap;gap:8px 18px;align-items:center;font-size:13px}
+  .states .stitle{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)}
+  .states .state{display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap}
   .panel{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:15px 18px;margin-bottom:14px}
   .panel h3{margin:0 0 11px;font-size:13px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;display:flex;justify-content:space-between;align-items:center}
   .kv{display:flex;justify-content:space-between;gap:10px;padding:7px 0;border-top:1px solid var(--line2);font-size:13.5px}
@@ -140,7 +143,7 @@
     </div>
   </div>
   <div class="screen" id="ficha">
-    <div class="fhead"><div class="crumb">ERP › Pedidos › <b>ARTISJ-9544</b></div><div class="ftop"><div><h1>ARTISJ-9544</h1><div class="cl">Alexandre · La Maison de la Plaque <span class="pill p">Francia · intracomunitario</span></div></div><div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn sm">PDF</button><button class="btn sm">Enviar a SAT</button><div class="kebab">⋯</div></div></div></div>
+    <div class="fhead"><div class="crumb">ERP › Pedidos › <b>ARTISJ-9544</b></div><div class="ftop"><div><h1>ARTISJ-9544</h1><div class="cl">Alexandre · La Maison de la Plaque <span class="pill p">Francia · intracomunitario</span> <span class="pill g">FACTUSOL nº 4470</span></div></div><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><select class="fld" style="width:auto;padding:6px 8px"><option>ES</option><option>EN</option><option>FR</option></select><button class="btn sm">PDF del pedido</button><button class="btn sm">Enviar por email</button><button class="btn sm">Marcar completado</button><div class="kebab" title="Idioma del pedido · Enviar factura por email">⋯</div></div></div></div>
     <div class="alertbar"><div class="a">! Cliente intracomunitario: factura <b>sin IVA</b>. Régimen en FACTUSOL: <b>correcto</b>.<button class="btn sm fix">Ver ficha cliente</button></div></div>
     <div class="steps">
       <div class="step done"><div class="ic">✓</div><div class="t">Creado</div><div class="d">8 sep</div></div>
@@ -151,10 +154,17 @@
       <div class="step"><div class="ic">◔</div><div class="t">Cobro</div><div class="d">—</div></div>
       <div class="step"><div class="ic">✈</div><div class="t">Enviado</div><div class="d">—</div></div>
     </div>
-    <div class="nowbar"><div class="txt"><div class="k">Siguiente paso</div><div class="v">Emitir la factura (saldrá <b>exenta</b>). El cobro se registra solo al emitirla.</div></div><button class="btn primary">Emitir factura</button><button class="btn">Marcar completado</button></div>
+    <div class="nowbar"><div class="txt"><div class="k">Siguiente paso</div><div class="v">Emitir la factura (saldrá <b>exenta</b>). El cobro se registra después, a mano, con «Registrar cobro».</div></div><button class="btn primary">Emitir factura</button><button class="btn">Marcar completado</button></div>
     <div class="grid2">
       <div class="panel"><h3>Resumen económico</h3><div class="kv"><span class="k">Base imponible</span><span class="mono">351,52 €</span></div><div class="kv"><span class="k">IVA (intracomunitario)</span><span class="mono">0,00 € · exento</span></div><div class="kv"><span class="k">Forma de pago</span><span>Transferencia · MQ Europe</span></div><div class="big"><span class="k" style="color:var(--muted);font-size:13px">Total</span><span class="n">351,52 €</span></div></div>
-      <div class="panel"><h3>FACTUSOL</h3><div class="kv"><span class="k">Cliente</span><span>4470 · vinculado ✓</span></div><div class="kv"><span class="k">Albarán</span><span class="mono">2-100418 · PDF</span></div><div class="kv"><span class="k">Factura</span><span class="muted">pendiente</span></div><div class="kv"><span class="k">Cobro</span><span class="muted">—</span></div></div>
+      <div class="panel"><h3>FACTUSOL</h3><div class="kv"><span class="k">Cliente</span><span>4470 · vinculado ✓</span></div><div class="kv"><span class="k">Albarán</span><span class="mono">2-100418</span></div><div class="kv"><span class="k">Factura</span><span class="muted">pendiente</span></div><div class="kv"><span class="k">Cobro</span><span class="muted">sin factura · <button class="btn sm" disabled>Registrar cobro</button></span></div></div>
+    </div>
+    <div class="states"><span class="stitle">Otras acciones de estado</span><span class="state"><span class="muted">Pago</span><span class="pill g">Pagado</span><button class="btn sm">Reembolso</button></span><span class="state"><span class="muted">Preparación</span><span class="pill b">En cola</span><button class="btn sm">Empezar preparación</button><button class="btn sm">Bloquear en cola</button></span><span class="state"><span class="muted">Transporte</span><span class="pill n">Sin enviar</span><button class="btn sm">Crear envío</button></span><span class="state"><span class="muted">Facturación</span><span class="pill n">Sin factura</span></span></div>
+    <div class="panel"><h3>Documentos de envío</h3><div class="kv"><span class="k">Albarán</span><span><span class="pill g">Albarán FACTUSOL 2-100418</span> <button class="btn sm">PDF del albarán (FACTUSOL)</button> <button class="btn sm">Subir albarán</button></span></div><div class="kv"><span class="k">Etiqueta</span><span><button class="btn sm">Subir etiqueta</button></span></div></div>
+    <div class="panel"><h3>Seguimiento</h3><div class="frow3"><div><div class="flabel">Nº de serie</div><input class="fld" value="FBAP12613200249"></div><div><div class="flabel">Licencia WhiteRIP</div><input class="fld" value="4829"></div><div><div class="flabel">Origen del envío</div><input class="fld" value="SAT"></div></div><div class="hint">Observaciones: recoge el cliente · <button class="btn sm">Guardar seguimiento</button></div></div>
+    <div class="grid2">
+      <div class="panel"><h3>Líneas</h3><div class="kv"><span class="mono">99cy · Tinta blanca 1 l</span><span class="mono">1 × 351,52 € <span class="pill g">99cy</span></span></div><div class="kv"><span class="mono">RARO-1 · Cabezal</span><span class="mono">1 × 0,00 € <span class="pill r">sin mapear</span></span></div></div>
+      <div class="panel"><h3>Actividad</h3><div class="kv"><span class="muted">9 sep 10:12</span><span>Aprobado</span></div><div class="kv"><span class="muted">8 sep 18:40</span><span>Albarán 2-100418 creado en FACTUSOL</span></div><div class="kv"><span class="muted">8 sep 18:39</span><span>Pago confirmado al convertir</span></div></div>
     </div>
   </div>
   <div class="screen" id="empresa">

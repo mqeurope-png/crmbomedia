@@ -5,7 +5,8 @@ el albarán que BoHub creó en `F_ALB` al convertir la proforma / pedido de
 cliente de FACTUSOL en pedido. Solo altas manuales desde un documento de
 FACTUSOL: los pedidos web NO generan albarán en BoHub (lo crea WooCommerce).
 Con índice: al facturar ese albarán desde el explorador hay que localizar el
-pedido para vincular la factura y registrar el cobro apuntado (opción B).
+pedido para vincular la factura (y, hasta el 2026-09-14, registrar el cobro
+apuntado; desde entonces el cobro es siempre manual).
 
 Revision ID: 20260914_0104
 Revises: 20260913_0103

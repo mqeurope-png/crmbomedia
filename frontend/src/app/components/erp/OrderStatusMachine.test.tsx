@@ -32,8 +32,10 @@ function detail(over: Partial<OrderDetail> = {}): OrderDetail {
 }
 
 describe("OrderStatusMachine", () => {
-  it("pinta los 4 dominios con su estado", () => {
+  it("pinta los 4 dominios con su estado en la fila compacta «Otras acciones de estado»", () => {
     render(<OrderStatusMachine order={detail()} onFire={() => {}} />);
+    expect(screen.getByRole("region", { name: "Otras acciones de estado" })).toBeInTheDocument();
+    expect(document.querySelector(".erp-states")).toBeNull();   // ya no son tarjetas
     expect(screen.getByText("Pago")).toBeInTheDocument();
     expect(screen.getByText("Preparación")).toBeInTheDocument();
     expect(screen.getByText("Transporte")).toBeInTheDocument();

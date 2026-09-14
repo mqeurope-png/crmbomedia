@@ -18,12 +18,16 @@ nº queda en `orders.factusol_albaran_number`.
 
 **Pago — opción B (decidida con Bart).** «Pagado» NO emite ninguna factura: se
 apunta en el pedido (`packing_json.factusol_payment`: forma de pago,
-contrapartida, fecha; `payment_status=paid`) y el cobro F-4-B
-(`register_invoice_collection`, solo `F_LCO` + `ESTFAC=2`) se registra
-automáticamente cuando EXISTA la factura de ese pedido — al emitirla desde la
-ficha (`service.emit_invoice`) o al facturar el albarán / presupuesto desde el
-explorador (`chain.convert_document` → `on_invoice_created`). «Sin pago» solo
-apunta la forma de pago: sin cobro ni intención, pendiente.
+contrapartida, fecha; `payment_status=paid`). «Sin pago» solo apunta la forma
+de pago: pendiente.
+
+**El cobro es SIEMPRE manual (decisión de Bart, 2026-09-14).** Ni al emitir la
+factura desde la ficha (`service.emit_invoice`) ni al facturar el albarán /
+presupuesto desde el explorador (`chain.convert_document` →
+`on_invoice_created`, que solo VINCULA la factura al pedido) se escribe
+`F_LCO` ni se marca `ESTFAC`: el cobro se registra únicamente cuando el usuario
+pulsa «Registrar cobro» (ficha, bandeja o Documentos), con el motor F-4-B.
+El `workflow` del pedido lo ofrece como siguiente paso, nunca lo da por hecho.
 """
 from __future__ import annotations
 
@@ -334,8 +338,9 @@ def record_payment_intent(
     """Apunta el paso de pago en el pedido (sin escribir en FACTUSOL).
 
     - Pagado: `payment_status=paid` + bloque `factusol_payment` con la
-      intención de cobro (contrapartida, fecha) → el cobro F-4-B se registra
-      cuando exista la factura.
+      intención de cobro (contrapartida, fecha). El cobro F-4-B NO se
+      registra solo: lo hace el usuario con «Registrar cobro» cuando exista
+      la factura.
     - Sin pago: solo la forma de pago; el estado de pago no cambia (pendiente)
       y no queda ninguna intención de cobro."""
     packing = packing_of(order)
@@ -357,7 +362,8 @@ def record_payment_intent(
             reason=(
                 "Pago confirmado al convertir: cobro FACTUSOL "
                 f"({resolved['contrapartida_nombre']}, {resolved['fecha']}) "
-                "pendiente de que exista la factura"
+                "pendiente de registrar a mano con «Registrar cobro» cuando "
+                "exista la factura"
             ),
             actor_user_id=actor_user_id,
             metadata={"event": "factusol_payment_intent", **resolved},
@@ -379,93 +385,6 @@ def record_payment_intent(
 def payment_intent(order: Order) -> dict[str, Any] | None:
     block = packing_of(order).get(PAYMENT_KEY)
     return block if isinstance(block, dict) else None
-
-
-def pending_collection(order: Order) -> dict[str, Any] | None:
-    """La intención de cobro aún no registrada en FACTUSOL, si la hay."""
-    block = payment_intent(order)
-    if not block or not block.get("paid") or not block.get("contrapartida"):
-        return None
-    cobro = block.get("cobro") or {}
-    if cobro.get("registered"):
-        return None
-    return block
-
-
-def register_pending_collection(
-    session: Session, client: FactusolClient, order: Order,
-    *, serie: int, codigo: int, ejercicio: str,
-    actor_user_id: str | None = None,
-) -> dict[str, Any] | None:
-    """Registra en FACTUSOL el cobro apuntado al convertir, ahora que existe
-    la factura `serie-codigo` del pedido — con el motor F-4-B tal cual (solo
-    `F_LCO` + `ESTFAC=2`, idempotente, nunca lanza). `None` si el pedido no
-    tenía pago pendiente. El resultado queda en el pedido."""
-    from app.integrations.factusol.collections_write import (  # noqa: PLC0415
-        register_invoice_collection,
-    )
-
-    block = pending_collection(order)
-    if block is None:
-        return None
-    numero = f"{serie}-{int(codigo):06d}"
-    try:
-        result = register_invoice_collection(
-            client, session, serie=int(serie), codigo=int(codigo),
-            contrapartida=str(block["contrapartida"]), fecha=block["fecha"],
-            forma=block.get("forma_pago_nombre"), ejercicio=ejercicio,
-        )
-    except Exception as exc:  # noqa: BLE001 — la factura ya existe; solo aviso
-        logger.warning(
-            "fase2 cobro %s (pedido %s): %s", numero, order.order_number, exc,
-            exc_info=True,
-        )
-        result = {"registered": False, "status": "error", "motivo": str(exc)[:200]}
-    registered = bool(result.get("registered")) or result.get("status") == "already"
-    cobro = {
-        "registered": registered,
-        "status": result.get("status"),
-        "numero": numero,
-        "linlco": result.get("linlco"),
-        "importe": result.get("importe"),
-        "fecha": result.get("fecha"),
-        "estfac_marked": result.get("estfac_marked"),
-        "motivo": result.get("motivo"),
-        "at": datetime.now(UTC).isoformat(),
-    }
-    packing = packing_of(order)
-    packing.setdefault(PAYMENT_KEY, {})["cobro"] = cobro
-    save_packing(order, packing)
-    if registered:
-        # Estado de cobro FACTUSOL persistido (bandeja / ficha), sin releer.
-        from app.erp.factusol_cobro import mark_order_from_result  # noqa: PLC0415
-
-        mark_order_from_result(
-            session, order, serie=int(serie), codigo=int(codigo), result=result,
-            source="fase2", actor_user_id=actor_user_id,
-        )
-    paid = PaymentStatus.PAID.value
-    if result.get("registered"):
-        reason = (
-            f"Cobro de {result.get('importe')} € registrado en FACTUSOL para la "
-            f"factura {numero} ({block.get('contrapartida_nombre')})"
-        )
-    elif result.get("status") == "already":
-        reason = f"La factura {numero} ya constaba cobrada en FACTUSOL"
-    else:
-        reason = (
-            f"No se pudo registrar el cobro de la factura {numero} en FACTUSOL: "
-            f"{result.get('motivo') or result.get('status')}"
-        )
-    _history(
-        session, order, domain=StatusDomain.PAYMENT, from_status=paid,
-        to_status=paid, reason=reason, actor_user_id=actor_user_id,
-        metadata={"event": "factusol_collection", **cobro},
-    )
-    (logger.info if registered else logger.warning)(
-        "fase2 cobro %s (pedido %s): %s", numero, order.order_number, reason,
-    )
-    return cobro
 
 
 # --- albarán ----------------------------------------------------------------------
@@ -672,7 +591,7 @@ def record_albaran_failure(
     )
 
 
-# --- al existir la factura: vincular el pedido y registrar el cobro -------------
+# --- al existir la factura: vincular el pedido (el cobro es manual) ----------------
 
 
 def find_order_for_albaran(session: Session, serie: int, codigo: int) -> Order | None:
@@ -720,14 +639,14 @@ def attach_invoice(
 
 
 def on_invoice_created(
-    session: Session, client: FactusolClient, *, source_type: str,
+    session: Session, *, source_type: str,
     source_serie: int, source_codigo: int, serie: int, codigo: int,
     ejercicio: str, actor_user_id: str | None = None,
 ) -> dict[str, Any] | None:
     """Enganche de la cadena: acaba de crearse la factura `serie-codigo` desde
     `source_type source_serie-source_codigo`. Si ese origen es el albarán (o el
-    documento) de un pedido de BoHub, vincula la factura al pedido y registra
-    el cobro apuntado (opción B). `None` si no hay pedido detrás. No hace
+    documento) de un pedido de BoHub, vincula la factura al pedido — y nada
+    más: el cobro es siempre manual. `None` si no hay pedido detrás. No hace
     commit: lo hace el caller junto con el resto de la conversión."""
     if source_type == "albaranes":
         order = find_order_for_albaran(session, source_serie, source_codigo)
@@ -746,11 +665,8 @@ def on_invoice_created(
             actor_user_id=actor_user_id,
         )
         linked = True
-    cobro = register_pending_collection(
-        session, client, order, serie=serie, codigo=codigo, ejercicio=ejercicio,
-        actor_user_id=actor_user_id,
-    )
+    # El cobro apuntado NO se registra aquí: es siempre manual.
     return {
         "order_id": order.id, "order_number": order.order_number,
-        "linked": linked, "cobro": cobro,
+        "linked": linked,
     }

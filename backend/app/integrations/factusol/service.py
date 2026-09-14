@@ -736,8 +736,8 @@ def emit_invoice(
 
     # Fase 2: el pedido tiene el albarán que BoHub creó al convertir → la
     # factura sale de ESE albarán con la cadena E3-B (no hay F_PCL por REFPCL
-    # para un PRO-/PCL-). La factura queda vinculada y, si el pago se apuntó
-    # al convertir (opción B), se registra el cobro F-4-B.
+    # para un PRO-/PCL-). La factura queda vinculada al pedido; el cobro se
+    # registra a mano («Registrar cobro»), nunca al emitir.
     if order.factusol_albaran_number:
         return _emit_from_albaran(
             session, order, client, ejercicio=ejercicio, actor=actor,
@@ -885,20 +885,12 @@ def emit_invoice(
             **({"regime_warning": regime_warning} if regime_warning else {}),
         }),
     ))
-    # Fase 2 (opción B): pago apuntado al convertir → ahora que existe la
-    # factura, cobro F-4-B (solo F_LCO + ESTFAC=2). Nunca lanza.
-    cobro = None
-    try:
-        from app.erp.factusol_albaran import register_pending_collection  # noqa: PLC0415
-
-        cobro = register_pending_collection(
-            session, client, order, serie=serie, codigo=int(codfac),
-            ejercicio=ejercicio, actor_user_id=(actor.id if actor else None),
-        )
-    except Exception:  # noqa: BLE001 — la factura ya está emitida
-        logger.warning("factusol: cobro apuntado del pedido %s no registrado",
-                       order.order_number, exc_info=True)
-
+    # El cobro es SIEMPRE manual (decisión de Bart, 2026-09-14): emitir la
+    # factura no escribe F_LCO ni marca ESTFAC aunque el pago se apuntara al
+    # convertir (la única excepción es el auto-marcado ERP-F3 de arriba: solo
+    # pedidos WEB ya pagados, opt-in por ajuste y desactivado por defecto).
+    # Se registra solo con «Registrar cobro» (ficha, bandeja o Documentos),
+    # que usa el motor F-4-B.
     _log_sync(
         session, order, codfac, str(codpcl), ejercicio, len(lineas),
         message=(
@@ -909,7 +901,6 @@ def emit_invoice(
     session.commit()
     return {"codfac": codfac, "codpcl": str(codpcl), "ejercicio": ejercicio,
             "lines": len(lineas), "serie": serie, "pcl_marked": pcl_marked,
-            "cobro": cobro,
             **({"regime_warning": regime_warning} if regime_warning else {})}
 
 
@@ -960,8 +951,8 @@ def _emit_from_albaran(
     """Fase 2 — factura del pedido a partir de SU albarán (`albaranes →
     facturas` de la cadena E3-B, probada en producción). Las opciones del
     modal (serie, fecha, forma de pago, observaciones) pisan lo copiado. La
-    cadena vincula la factura al pedido y registra el cobro apuntado
-    (`on_invoice_created`); si ese enganche fallara, se vincula aquí."""
+    cadena vincula la factura al pedido (`on_invoice_created`); si ese
+    enganche fallara, se vincula aquí. El cobro es siempre manual."""
     from app.integrations.factusol.chain import convert_document  # noqa: PLC0415
     from app.integrations.factusol.documents import visible_number  # noqa: PLC0415
 
@@ -1005,12 +996,10 @@ def _emit_from_albaran(
         ),
     )
     session.commit()
-    link = result.get("order") or {}
     return {
         "codfac": codfac, "ejercicio": ejercicio, "lines": result["lines"],
         "serie": result["serie"], "from_albaran": order.factusol_albaran_number,
         "numero": visible_number(result["serie"], result["codigo"]),
-        "cobro": link.get("cobro") if isinstance(link, dict) else None,
         "origin_mark_warning": result.get("origin_mark_warning"),
     }
 

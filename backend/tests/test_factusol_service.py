@@ -531,10 +531,11 @@ def test_emit_invoice_end_to_end_success(session_factory):
         result = emit_invoice(s, oid, client)
     tablas = [t for t, _ in client.writes]
     assert tablas.count("F_FAC") == 1 and tablas.count("F_LFA") == 2
+    # Emitir nunca cobra (el cobro es siempre manual): el resultado no lleva
+    # ningún bloque de cobro.
     assert result == {"codfac": "526067", "codpcl": "2765",
                       "ejercicio": "2026", "lines": 2, "serie": 5,
-                      "pcl_marked": False,
-                      "cobro": None}   # Fase 2: sin pago apuntado
+                      "pcl_marked": False}
     cabecera = next(rec for t, rec in client.writes if t == "F_FAC")
     assert cabecera["REFFAC"] == "BOP-099866" and cabecera["CODFAC"] == "526067"
     # Serie heredada del pedido + enlace factura→pedido (ERP-E2-fix1).
