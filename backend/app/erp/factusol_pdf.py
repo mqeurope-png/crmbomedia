@@ -860,7 +860,15 @@ def extract_document_data(
         for band in bands:
             amount = band[band_key]
             if abs(amount) > 0.004:
-                piva = 0.0 if band["exenta"] else band["piva"]
+                # El % del cargo sale de su banda, PERO solo si esa banda
+                # lleva IVA de verdad. Mismo criterio que el bloque de
+                # totales (ERP-F1-fix1): manda el IMPORTE de IVA, no el
+                # porcentaje. Una entrega intracomunitaria / exportación
+                # queda con la banda al 21 % e IVA 0,00 (caso real: factura
+                # 2-526075, EDITIONS CLOUET) — y rotular ahí «Portes · IVA
+                # 21 %» en un documento exento es falso.
+                exenta = band["exenta"] or abs(band["iva"]) < 0.005
+                piva = 0.0 if exenta else band["piva"]
                 by_piva[piva] = by_piva.get(piva, 0.0) + amount
         for piva, amount in by_piva.items():
             charges.append({"kind": kind, "piva": piva, "amount": amount})

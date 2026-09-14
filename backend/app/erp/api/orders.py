@@ -55,6 +55,10 @@ class OrderLineIn(BaseModel):
     unit_price: float = Field(default=0, ge=0)
     tax_rate: float = Field(default=21, ge=0, le=100)
     notes: str | None = None
+    #: Línea de PORTES (gastos de envío), no mercancía: al emitir va a la
+    #: banda `IPOR1*` de la cabecera del documento FACTUSOL — donde están los
+    #: portes de los pedidos web — en vez de a una línea de F_LAL/F_LFA.
+    is_shipping: bool = False
 
     @model_validator(mode="after")
     def _require_sku_or_description(self) -> OrderLineIn:
@@ -314,6 +318,7 @@ def _serialise_detail(session: Session, o: Order, actor: User) -> dict[str, Any]
                 "tax_rate": float(line.tax_rate),
                 "line_total": float(line.line_total),
                 "notes": line.notes,
+                "is_shipping": bool(line.is_shipping),
             }
             for line in o.lines
         ],
@@ -568,6 +573,7 @@ def create_order(
             description=line.description or line.product_sku,
             quantity=line.quantity, unit_price=line.unit_price,
             tax_rate=line.tax_rate, line_total=line_total, notes=line.notes,
+            is_shipping=line.is_shipping,
         ))
     order.total_amount = round(total, 2)
     # D-2: traza del alta manual en el historial (quién y desde dónde).

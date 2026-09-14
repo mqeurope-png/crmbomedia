@@ -64,12 +64,19 @@ def _num(value: Any, default: float = 0.0) -> float:
 
 
 def order_lines_for_document(order: Order) -> list[dict[str, Any]]:
-    """Líneas del pedido de BoHub en la forma de los builders de C-4
-    (`codart`, `description`, `quantity`, `unit_price`, `discount_pct`,
+    """Líneas de MERCANCÍA del pedido de BoHub en la forma de los builders de
+    C-4 (`codart`, `description`, `quantity`, `unit_price`, `discount_pct`,
     `iva_pct`). El SKU (o CODART) se traduce después a CODART interno; el
-    descuento se recupera de la nota «dto. X%» que deja la Fase 1."""
+    descuento se recupera de la nota «dto. X%» que deja la Fase 1.
+
+    Las líneas de PORTES quedan fuera: en FACTUSOL los gastos de envío no son
+    una línea del documento sino la banda `IPOR1*` de la cabecera — es donde
+    los deja la app Woo→FACTUSOL y de donde los lee el PDF (ERP-F1). Van por
+    `order_portes_amount`."""
     out: list[dict[str, Any]] = []
     for line in sorted(order.lines, key=lambda ln: ln.position):
+        if getattr(line, "is_shipping", False):
+            continue
         m = _DTO_RE.search(line.notes or "")
         out.append({
             "codart": (line.product_codart or line.product_sku or "").strip(),
@@ -80,6 +87,18 @@ def order_lines_for_document(order: Order) -> list[dict[str, Any]]:
             "iva_pct": _num(line.tax_rate, 21.0),
         })
     return out
+
+
+def order_portes_amount(order: Order) -> float:
+    """Importe de los PORTES del pedido: la suma de sus líneas de portes. Va
+    a la banda `IPOR1*` de la cabecera del documento (no a una línea)."""
+    total = 0.0
+    for line in order.lines:
+        if getattr(line, "is_shipping", False):
+            total += _num(line.line_total) or (
+                _num(line.quantity, 1.0) * _num(line.unit_price)
+            )
+    return round(total, 2)
 
 
 def customer_for_albaran(
@@ -212,7 +231,7 @@ def build_standalone_albaran(
     *, serie: int, codigo: str, ejercicio: str, customer: dict[str, Any],
     lines: list[dict[str, Any]], fecha: str, referencia: str | None,
     fopalb: str | None, allowed_header: frozenset[str],
-    allowed_lines: frozenset[str],
+    allowed_lines: frozenset[str], portes: float = 0.0,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Cabecera `F_ALB` + líneas `F_LAL` de un albarán SIN origen: el
     «origen» es un F_PRE virtual construido con los builders de C-4 y se
@@ -222,6 +241,7 @@ def build_standalone_albaran(
     virtual_header = build_quote_payload(
         codigo, ejercicio=ejercicio, customer=customer,
         refpre=(referencia or "").strip(), lines=lines, fecha=fecha, fopfac=fopalb,
+        portes=portes,
     )
     cabecera = build_target_header(
         virtual_header, src=src, dst=dst, serie=serie, codigo=codigo,
@@ -257,10 +277,13 @@ def create_standalone_albaran(
     _ = actor_user_id
     dst = DOC_SPECS["albaranes"]
     lines = order_lines_for_document(order)
+    portes = order_portes_amount(order)
     if not lines:
         raise FactusolError(
-            f"El pedido {order.order_number} no tiene líneas: no hay nada que "
-            "poner en el albarán."
+            f"El pedido {order.order_number} no tiene líneas de mercancía: no "
+            "hay nada que poner en el albarán"
+            + (" (los portes van en la cabecera, no son una línea)."
+               if portes else ".")
         )
     customer = customer_for_albaran(client, codcli=codcli, ejercicio=ejercicio)
     allowed_header = live_columns(client, dst.table, ejercicio=ejercicio)
@@ -279,10 +302,16 @@ def create_standalone_albaran(
     resolved, free_text = resolve_line_articles(
         client, lines, ejercicio=ejercicio, numero=numero,
     )
+    if portes:
+        logger.info(
+            "factusol albarán %s: portes %.2f € a la banda de la cabecera "
+            "(IPOR1), como los pedidos web", numero, portes,
+        )
     cabecera, lineas = build_standalone_albaran(
         serie=serie, codigo=codigo, ejercicio=ejercicio, customer=customer,
         lines=resolved, fecha=fecha_doc, referencia=order.order_number,
         fopalb=fopalb, allowed_header=allowed_header, allowed_lines=allowed_lines,
+        portes=portes,
     )
     # Tipos como la fila REAL más reciente de la misma serie (la plantilla del
     # guard): `CLIALB` entero, `CPAALB` texto, importes float…
@@ -362,5 +391,6 @@ def create_standalone_albaran(
         "numero": numero, "lines": len(lineas), "source": None,
         "standalone": True, "free_text_lines": free_text,
         "regime": effective_regime, "regime_warning": regime_warning,
+        "portes": portes,
         "origin_marked": True, "origin_mark_warning": None, "order": None,
     }
