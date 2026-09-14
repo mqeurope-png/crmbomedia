@@ -8,7 +8,10 @@ through a general-purpose PATCH.
 from __future__ import annotations
 
 import json
+import logging
+import re
 from datetime import UTC, datetime
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import func, or_, select
@@ -27,6 +30,41 @@ from app.schemas.companies import (
 )
 
 router = APIRouter(prefix="/api/companies", tags=["companies"])
+logger = logging.getLogger(__name__)
+
+
+def _nif_key(value: Any) -> str:
+    """NIF / CIF / NIF-IVA comparable: sin espacios, puntos ni guiones, en
+    mayúsculas (`b-64.113.590` ≡ `B64113590`)."""
+    return re.sub(r"[\s.\-]", "", str(value or "")).upper()
+
+
+def find_companies_by_nif(
+    session: Session, *values: Any, exclude_id: str | None = None,
+) -> list[Company]:
+    """Empresas del CRM cuyo `tax_id` o `vat` coincide con alguno de los
+    identificadores dados (comparación normalizada). Es el guard
+    anti-duplicados del alta y del buscador de la Fase 2."""
+    keys = {_nif_key(v) for v in values if _nif_key(v)}
+    if not keys:
+        return []
+
+    def sql_key(column):  # noqa: ANN001, ANN202 — misma normalización, en SQL
+        stripped = column
+        for sep in (" ", ".", "-"):
+            stripped = func.replace(stripped, sep, "")
+        return func.upper(stripped)
+
+    stmt = select(Company).where(or_(
+        sql_key(Company.tax_id).in_(keys),
+        sql_key(Company.vat).in_(keys),
+    ))
+    if exclude_id:
+        stmt = stmt.where(Company.id != exclude_id)
+    hits = list(session.scalars(stmt.order_by(Company.name.asc())))
+    # Re-filtro en Python: `ilike` no normaliza puntos/guiones y `upper()`
+    # no quita separadores; aquí manda la clave comparable.
+    return [c for c in hits if _nif_key(c.tax_id) in keys or _nif_key(c.vat) in keys]
 
 
 def _to_read(session: Session, row: Company) -> CompanyRead:
@@ -98,6 +136,8 @@ def list_companies(
                 Company.name.ilike(like),
                 Company.domain.ilike(like),
                 Company.tax_id.ilike(like),
+                # Fase 2 (buscador unificado): el NIF-IVA también identifica.
+                Company.vat.ilike(like),
             )
         )
     if country:
@@ -147,6 +187,26 @@ def create_company(
                     f"Edita la existente ({clash.name})."
                 ),
             )
+    # Fase 2: no crear dos empresas con el mismo NIF / NIF-IVA. El buscador y
+    # «Crear empresa» avisan antes; esto es la red de seguridad. Se devuelve
+    # la existente para que la UI ofrezca usarla.
+    clash_nif = find_companies_by_nif(session, payload.tax_id, payload.vat)
+    if clash_nif:
+        existing = clash_nif[0]
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "duplicate_tax_id",
+                "detail": (
+                    f"Ya existe una empresa con ese NIF: «{existing.name}»"
+                    + (f" (FACTUSOL nº {existing.factusol_company_id})"
+                       if existing.factusol_company_id else "")
+                    + ". Usa la existente en vez de crear otra."
+                ),
+                "existing_company_id": existing.id,
+                "existing_company_name": existing.name,
+            },
+        )
     row = Company(name=payload.name)
     _apply(row, payload)
     session.add(row)
@@ -183,6 +243,95 @@ def count_companies(
         or 0
     )
     return {"total": total}
+
+
+@router.get("/fiscal-check")
+def fiscal_check(
+    tax_id: str | None = Query(default=None, max_length=64),
+    vat: str | None = Query(default=None, max_length=40),
+    country: str | None = Query(default=None, max_length=120),
+    exclude_id: str | None = Query(default=None, max_length=36),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_viewer),
+) -> dict[str, Any]:
+    """Fase 2 · «Crear empresa»: lo que la pantalla necesita saber de los
+    datos fiscales ANTES de guardar, en una sola llamada.
+
+    - `regime`: el régimen de IVA que saldría de país + NIF-IVA (la misma
+      regla que fija `IFICLI`/`IVACLI`/`TIVCLI` al crear el cliente F_CLI).
+    - `duplicates.crm`: empresas del CRM con ese NIF / NIF-IVA.
+    - `duplicates.factusol`: cliente de F_CLI con ese NIF (best-effort: si
+      FACTUSOL no responde, `factusol_checked=False` y se sigue; nunca
+      bloquea el alta).
+    - `vies`: gancho de la validación VIES (su PR aparte rellena `status`
+      `valido` / `no_valido`; hoy siempre `pendiente`).
+    """
+    _ = current_user
+    from app.erp.language import normalize_country  # noqa: PLC0415
+    from app.integrations.factusol.vat_regime import (  # noqa: PLC0415
+        EU_ISO2,
+        REGIME_LABELS,
+        normalize_vat,
+        regime_for,
+        regime_reason,
+    )
+
+    tax = (tax_id or "").strip()
+    vat_raw = (vat or "").strip()
+    iso2 = normalize_country(country) if (country or "").strip() else None
+    regime = regime_for(iso2, vat=vat_raw or None, nif=tax or None)
+    crm = find_companies_by_nif(session, tax, vat_raw, exclude_id=exclude_id)
+
+    factusol: dict[str, Any] | None = None
+    factusol_checked = False
+    factusol_error: str | None = None
+    nifs = [v for v in (tax, normalize_vat(vat_raw) or vat_raw) if v]
+    if nifs:
+        try:
+            from app.integrations.factusol.client import FactusolClient  # noqa: PLC0415
+            from app.integrations.factusol.customers import find_by_nif  # noqa: PLC0415
+            from app.integrations.factusol.service import ejercicio_for  # noqa: PLC0415
+
+            client = FactusolClient.from_settings()
+            ejercicio = ejercicio_for(session)
+            for nif in dict.fromkeys(nifs):
+                hit = find_by_nif(client, nif, ejercicio=ejercicio)
+                if hit and hit.get("codcli"):
+                    factusol = {
+                        "codcli": str(hit["codcli"]),
+                        "nombre": hit.get("nombre"),
+                        "nif": hit.get("nif"),
+                    }
+                    break
+            factusol_checked = True
+        except Exception as exc:  # noqa: BLE001 — sin credenciales / DELSOL caído
+            factusol_error = str(exc)[:200]
+            logger.info("fiscal-check: FACTUSOL no disponible: %s", factusol_error)
+
+    return {
+        "country_iso2": iso2,
+        "in_eu": bool(iso2 and iso2 in EU_ISO2),
+        "regime": regime,
+        "regime_label": REGIME_LABELS[regime],
+        "regime_reason": regime_reason(iso2, vat=vat_raw or None, nif=tax or None),
+        "vat_normalized": normalize_vat(vat_raw) if vat_raw else None,
+        "duplicates": {
+            "crm": [
+                {
+                    "id": c.id, "name": c.name, "tax_id": c.tax_id, "vat": c.vat,
+                    "country": c.country,
+                    "factusol_company_id": c.factusol_company_id,
+                }
+                for c in crm
+            ],
+            "factusol": factusol,
+            "factusol_checked": factusol_checked,
+            "factusol_error": factusol_error,
+        },
+        # Gancho VIES (PR aparte): aquí irán `status` valido / no_valido /
+        # desconocido, `checked_at` y el nombre/dirección que devuelva.
+        "vies": {"status": "pendiente", "valid": None, "checked_at": None},
+    }
 
 
 @router.get("/{company_id}", response_model=CompanyRead)
@@ -382,7 +531,7 @@ def assign_company_to_contact(
 # Bulk actions (Sprint Filtros & Listas — PR-F).
 # ---------------------------------------------------------------------------
 
-from typing import Any, Literal  # noqa: PLC0415, E402
+from typing import Literal  # noqa: PLC0415, E402
 
 from pydantic import BaseModel, Field  # noqa: PLC0415, E402
 

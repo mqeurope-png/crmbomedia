@@ -1,13 +1,8 @@
 "use client";
 
-import { Building2, Plus } from "lucide-react";
 import { useEffect, useState } from "react";
-import {
-  type Company,
-  createCompany,
-  listCompanies,
-} from "../lib/companiesApi";
-import { extractErrorMessage } from "../lib/errors";
+import { CompanyCreateForm, type CompanyCreated } from "./CompanyCreateForm";
+import { CompanySearch } from "./CompanySearch";
 
 type Props = {
   open: boolean;
@@ -16,155 +11,83 @@ type Props = {
   onPick: (companyId: string | null, label: string) => void;
 };
 
+/** Modal «Asignar empresa» de la ficha de contacto (rediseño de flujo, Fase 2).
+ *
+ *  Antes anidaba dos overlays fijos (`email-compose-overlay` + `modal-backdrop`,
+ *  que también es un overlay a pantalla completa) y usaba clases `.btn` que no
+ *  existen en el CSS: salía descuadrado y con los botones sin estilo. Ahora
+ *  usa el modal estándar (`modal-overlay` + `modal-dialog`) y dentro el MISMO
+ *  buscador unificado que el alta de contacto; «Crear empresa nueva» abre el
+ *  formulario completo de «Crear empresa» sin salir del modal y la elige al
+ *  guardar. Mantiene el contrato `onPick(id, label)` de siempre. */
 export function CompanyPickerModal({ open, onClose, onPick }: Props) {
-  const [q, setQ] = useState("");
-  const [debounced, setDebounced] = useState("");
-  const [matches, setMatches] = useState<Company[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [createMode, setCreateMode] = useState(false);
-  const [newName, setNewName] = useState("");
-  const [newDomain, setNewDomain] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [createName, setCreateName] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  // Al cerrar se vuelve al buscador (el modal se reabre limpio).
+  useEffect(() => {
+    if (!open) { setCreateName(null); setNotice(null); }
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
-    const t = window.setTimeout(() => setDebounced(q.trim()), 300);
-    return () => window.clearTimeout(t);
-  }, [q, open]);
-
-  useEffect(() => {
-    if (!open) return;
-    setLoading(true);
-    listCompanies({ q: debounced || undefined, limit: 10 })
-      .then((p) => setMatches(p.items))
-      .catch(() => setMatches([]))
-      .finally(() => setLoading(false));
-  }, [debounced, open]);
-
-  const onCreate = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setBusy(true);
-    setError(null);
-    try {
-      const fresh = await createCompany({
-        name: newName.trim(),
-        domain: newDomain.trim() || null,
-      });
-      onPick(fresh.id, fresh.name);
-      setCreateMode(false);
-      setNewName("");
-      setNewDomain("");
-      onClose();
-    } catch (err) {
-      setError(extractErrorMessage(err, "No se pudo crear."));
-    } finally {
-      setBusy(false);
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose();
     }
-  };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
 
   if (!open) return null;
+
+  function onCreated({ company, factusolError }: CompanyCreated) {
+    if (factusolError) {
+      // La empresa existe y se asigna igual; lo de FACTUSOL se resuelve
+      // desde su ficha.
+      setNotice(`Empresa creada, pero no se pudo dar de alta en FACTUSOL: ${factusolError}`);
+    }
+    onPick(company.id, company.name);
+    onClose();
+  }
+
   return (
     <div
-      className="email-compose-overlay"
+      className="modal-overlay"
       role="presentation"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
+      onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
       <div
-        className="modal-backdrop"
+        className={`modal-dialog company-picker-dialog${createName !== null ? " is-wide" : ""}`}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="company-picker-title"
         onMouseDown={(e) => e.stopPropagation()}
       >
-        <h2>Asignar empresa</h2>
-        {createMode ? (
-          <form onSubmit={onCreate}>
-            <label className="field">
-              Nombre *
-              <input
-                type="text"
-                value={newName}
-                onChange={(e) => setNewName(e.target.value)}
-                required
-                autoFocus
-              />
-            </label>
-            <label className="field">
-              Dominio
-              <input
-                type="text"
-                value={newDomain}
-                onChange={(e) => setNewDomain(e.target.value)}
-                placeholder="bomedia.net"
-              />
-            </label>
-            {error ? <p className="form-error">{error}</p> : null}
-            <div className="form-actions">
-              <button
-                type="button"
-                className="btn"
-                onClick={() => setCreateMode(false)}
-                disabled={busy}
-              >
-                Volver
-              </button>
-              <button
-                type="submit"
-                className="btn btn-primary"
-                disabled={busy || !newName.trim()}
-              >
-                Crear y asignar
-              </button>
-            </div>
-          </form>
+        <div className="company-picker-head">
+          <h2 id="company-picker-title">
+            {createName !== null ? "Crear empresa" : "Asignar empresa"}
+          </h2>
+          <button type="button" className="button small secondary" onClick={onClose}
+                  aria-label="Cerrar">
+            ✕
+          </button>
+        </div>
+        {notice ? <p className="form-info" role="status">{notice}</p> : null}
+        {createName !== null ? (
+          <CompanyCreateForm
+            compact
+            initialName={createName}
+            onCreated={onCreated}
+            onCancel={() => setCreateName(null)}
+            onUseExisting={(c) => { onPick(c.id, c.name); onClose(); }}
+          />
         ) : (
-          <>
-            <label className="field">
-              Buscar
-              <input
-                type="search"
-                value={q}
-                onChange={(e) => setQ(e.target.value)}
-                placeholder="Nombre, dominio, CIF…"
-                autoFocus
-              />
-            </label>
-            {loading ? <p className="muted">Buscando…</p> : null}
-            {!loading && matches.length === 0 && debounced ? (
-              <p className="muted">Ninguna coincidencia.</p>
-            ) : null}
-            <ul className="company-merge-list">
-              {matches.map((c) => (
-                <li key={c.id}>
-                  <button
-                    type="button"
-                    className="btn small"
-                    onClick={() => {
-                      onPick(c.id, c.name);
-                      onClose();
-                    }}
-                  >
-                    <Building2 size={11} aria-hidden /> {c.name}
-                    {c.domain ? (
-                      <span className="muted small"> {c.domain}</span>
-                    ) : null}
-                  </button>
-                </li>
-              ))}
-            </ul>
-            <div className="form-actions">
-              <button type="button" className="btn" onClick={onClose}>
-                Cancelar
-              </button>
-              <button
-                type="button"
-                className="btn btn-primary"
-                onClick={() => setCreateMode(true)}
-              >
-                <Plus size={11} aria-hidden /> Crear nueva
-              </button>
-            </div>
-          </>
+          <CompanySearch
+            autoFocus
+            label="Buscar empresa"
+            onPick={(c) => { onPick(c.id, c.name); onClose(); }}
+            onCreate={(name) => setCreateName(name)}
+          />
         )}
       </div>
     </div>

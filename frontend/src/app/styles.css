@@ -11573,3 +11573,86 @@ tr.is-inactive {
 }
 .erp-flow-menu-field select { font: inherit; color: var(--ink); }
 .page-header-actions select { padding: 6px 8px; }
+
+/* =============================================================
+   Rediseño de flujo · Fase 2 — buscador de empresa unificado y
+   «Crear empresa» (mismos tokens que la bandeja y la ficha).
+   ============================================================= */
+.company-search { position: relative; display: flex; flex-direction: column; gap: 4px; }
+.company-search-list {
+  list-style: none;
+  margin: -1px 0 0;
+  padding: 0;
+  border: 1px solid var(--brand);
+  border-top: none;
+  border-radius: 0 0 10px 10px;
+  background: var(--card);
+  box-shadow: var(--shadow-card-hover);
+  overflow: hidden;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.company-search-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 13px;
+  border-top: 1px solid #EEF0F4;
+  font-size: 13.5px;
+  cursor: pointer;
+}
+.company-search-item:first-child { border-top: none; }
+.company-search-item.is-active,
+.company-search-item:hover { background: #F7F9FF; }
+.company-search-item.is-create { color: var(--brand-dark); font-weight: 500; background: #F2F6FF; }
+.company-search-item.is-create.is-active { background: var(--primary-tint-strong); }
+.company-search-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.company-search-meta { color: var(--muted); font-size: 12px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.company-search-hint { padding: 10px 13px; color: var(--muted); font-size: 13px; }
+.company-search-help { margin: 2px 0 0; }
+.company-field { display: grid; gap: 6px; }
+.company-field-picked p { margin: 4px 0 8px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+.company-create { display: grid; gap: 14px; }
+.company-create .erp-flow-panel { margin: 0; }
+.company-create-wrap { max-width: 720px; }
+.company-create-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
+.company-create-row3 { grid-template-columns: 1fr 1.3fr 0.9fr; }
+.company-create-span2 { grid-column: 1 / -1; }
+.company-create .field { margin: 0; }
+.company-create textarea { width: 100%; }
+.company-create-detect {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 4px 0 0;
+  padding: 9px 12px;
+  border-radius: 9px;
+  background: #E7F6EC;
+  color: #1F7A45;
+  font-size: 13px;
+}
+.company-create-reason { margin-left: auto; }
+.company-create-dup {
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  border-radius: 9px;
+  background: #FEF6EC;
+  border: 1px solid #F3DCAE;
+  color: #8A5A0A;
+  font-size: 13px;
+}
+.company-create-dup p { margin: 0 0 8px; }
+.company-create-hint { margin: 8px 0 0; }
+.company-create-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.company-create-factusol { margin-left: auto; }
+.company-picker-dialog { max-width: 560px; padding: 20px 22px; gap: 12px; }
+.company-picker-dialog.is-wide { max-width: 760px; }
+.company-picker-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.company-picker-head h2 { margin: 0; font-size: 18px; }
+@media (max-width: 640px) {
+  .company-create-row, .company-create-row3 { grid-template-columns: 1fr; }
+  .company-create-reason { margin-left: 0; }
+}
