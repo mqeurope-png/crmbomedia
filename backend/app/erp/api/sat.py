@@ -158,6 +158,12 @@ def sat_queue(
             ],
             "has_albaran": KIND_ALBARAN in files_by_order.get(o.id, set()),
             "has_etiqueta": KIND_ETIQUETA in files_by_order.get(o.id, set()),
+            # Albarán que BoHub creó en FACTUSOL (Fase 2). Es la fuente
+            # PREFERENTE del PDF en el taller: el mismo documento que el botón
+            # de la ficha (#396) y el que adjunta el email al SAT (#407). El
+            # fichero subido a mano (`has_albaran`) queda de alternativa para
+            # los pedidos del flujo antiguo.
+            "factusol_albaran_number": o.factusol_albaran_number or None,
         }
 
     return {

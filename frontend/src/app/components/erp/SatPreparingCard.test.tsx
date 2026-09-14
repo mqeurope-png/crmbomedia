@@ -3,9 +3,11 @@ import userEvent from "@testing-library/user-event";
 import { SatPreparingCard } from "./SatPreparingCard";
 import type { SatQueueItem } from "../../lib/erpApi";
 import {
+  downloadOrderFactusolAlbaranPdf,
   fetchAlbaranFromWoo,
   listShippingFiles,
   openShippingFile,
+  saveBlob,
 } from "../../lib/erpApi";
 
 jest.mock("next/link", () => ({
@@ -18,14 +20,18 @@ jest.mock("next/link", () => ({
 jest.mock("../../lib/erpApi", () => ({
   // customerLabel es helper puro: se usa el real (D-2).
   customerLabel: jest.requireActual("../../lib/erpApi").customerLabel,
+  downloadOrderFactusolAlbaranPdf: jest.fn(),
   fetchAlbaranFromWoo: jest.fn(),
   listShippingFiles: jest.fn(),
   openShippingFile: jest.fn(),
+  saveBlob: jest.fn(),
   STATUS_LABELS: {},
 }));
 const mockFetch = fetchAlbaranFromWoo as jest.Mock;
 const mockList = listShippingFiles as jest.Mock;
 const mockOpen = openShippingFile as jest.Mock;
+const mockFactusolPdf = downloadOrderFactusolAlbaranPdf as jest.Mock;
+const mockSave = saveBlob as jest.Mock;
 
 function order(over: Partial<SatQueueItem> = {}): SatQueueItem {
   return {
@@ -47,6 +53,8 @@ beforeEach(() => {
   mockFetch.mockReset();
   mockList.mockReset();
   mockOpen.mockReset();
+  mockFactusolPdf.mockReset();
+  mockSave.mockReset();
   mockList.mockResolvedValue([]);
 });
 
@@ -98,7 +106,57 @@ describe("SatPreparingCard", () => {
     const user = userEvent.setup();
     render(<SatPreparingCard order={order({ has_albaran: false })} onChanged={() => {}} />);
     await user.click(screen.getByRole("button", { name: /Descargar albarán/ }));
-    expect(await screen.findByText(/Sube el albarán a mano/)).toBeInTheDocument();
+    expect(await screen.findByText(/súbelo a mano desde la ficha/)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Ir a la ficha/ })).toHaveAttribute("href", "/erp/orders/o1");
+  });
+
+  it("con albarán en FACTUSOL descarga ESE PDF (no el fichero subido ni Woo)", async () => {
+    const blob = new Blob(["%PDF-"], { type: "application/pdf" });
+    mockFactusolPdf.mockResolvedValue(blob);
+    const user = userEvent.setup();
+    render(
+      <SatPreparingCard
+        order={order({ factusol_albaran_number: "1-100327", has_albaran: false })}
+        onChanged={() => {}}
+      />,
+    );
+    // Con albarán de FACTUSOL el chip ya no dice «Descargar»: hay documento.
+    await user.click(screen.getByRole("button", { name: /Imprimir albarán/ }));
+    await waitFor(() => expect(mockFactusolPdf).toHaveBeenCalledWith("o1"));
+    await waitFor(() =>
+      expect(mockSave).toHaveBeenCalledWith(blob, "Albaran_1-100327.pdf"),
+    );
+    // No se toca el flujo antiguo.
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(mockList).not.toHaveBeenCalled();
+  });
+
+  it("el albarán de FACTUSOL manda sobre el fichero subido a mano", async () => {
+    mockFactusolPdf.mockResolvedValue(new Blob(["%PDF-"]));
+    const user = userEvent.setup();
+    render(
+      <SatPreparingCard
+        order={order({ factusol_albaran_number: "1-100327", has_albaran: true })}
+        onChanged={() => {}}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: /Imprimir albarán/ }));
+    await waitFor(() => expect(mockFactusolPdf).toHaveBeenCalled());
+    expect(mockList).not.toHaveBeenCalled();
+  });
+
+  it("si el PDF de FACTUSOL falla lo dice sin romper la card", async () => {
+    mockFactusolPdf.mockRejectedValue(new Error("502"));
+    const user = userEvent.setup();
+    render(
+      <SatPreparingCard
+        order={order({ factusol_albaran_number: "1-100327" })}
+        onChanged={() => {}}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: /Imprimir albarán/ }));
+    expect(await screen.findByText(/No se pudo generar el PDF del albarán de FACTUSOL/))
+      .toBeInTheDocument();
+    expect(mockSave).not.toHaveBeenCalled();
   });
 });
