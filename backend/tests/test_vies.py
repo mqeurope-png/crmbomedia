@@ -78,6 +78,69 @@ def test_cliente_valido(monkeypatch) -> None:
     assert r.checked_at is not None and r.from_cache is False
 
 
+def _valid_transport() -> _Transport:
+    return _Transport(lambda p: (200, {"valid": True, "name": "SAS BANDIT BANDIT",
+                                       "address": "PARIS", "userError": "VALID"}))
+
+
+@pytest.mark.parametrize("entrada,pais", [
+    ("FR90501738249", None),
+    ("FR90501738249", "FR"),
+    ("FR 90 501 738 249", None),
+    ("fr-90.501.738.249", "FR"),
+    (" FR90501738249 ", "fr"),
+    ("90501738249", "FR"),                       # ya sin prefijo: tal cual
+])
+def test_vies_normaliza_quita_prefijo_pais(entrada, pais) -> None:
+    """El API de VIES espera `countryCode=FR` + `vatNumber` SIN el prefijo
+    (con `FR90501738249` dentro del número responde «no válido»; la web lo
+    quita sola, el API no). Todas las variantes envían lo mismo y salen
+    válidas → intracomunitario."""
+    t = _valid_transport()
+    r = check_vat(entrada, country_code=pais, transport=t, force=True)
+    assert t.calls == [{"countryCode": "FR", "vatNumber": "90501738249"}]
+    assert r.status == "valido" and r.valid is True
+    assert r.vat == "FR90501738249" and r.name == "SAS BANDIT BANDIT"
+    # Con ese veredicto el régimen es intracomunitario (exento). (La regla de
+    # régimen sigue leyendo el NIF-IVA del CRM con su prefijo, como siempre.)
+    assert regime_for("FR", vat=r.vat, vies_valid=r.valid) == "intracomunitario"
+
+
+def test_vies_numero_sin_prefijo_sigue_ok() -> None:
+    """Un número que ya viene sin prefijo se envía tal cual (con el país de la
+    empresa) y comparte caché con la forma con prefijo."""
+    t = _valid_transport()
+    a = check_vat("90501738249", country_code="FR", transport=t)
+    b = check_vat("FR90501738249", transport=t)
+    assert t.calls == [{"countryCode": "FR", "vatNumber": "90501738249"}]
+    assert a.status == "valido" and b.status == "valido" and b.from_cache is True
+    # Sin país y sin prefijo no hay forma de saber a qué estado preguntar.
+    assert vies_client.vies_request_parts("90501738249") is None
+    assert check_vat("90501738249", transport=t).status == "no_valido"
+    assert len(t.calls) == 1
+
+
+def test_vies_es_prefijo() -> None:
+    """España: el NIF puede venir con `ES` delante o sin él; solo se quita el
+    prefijo si el número empieza por el código de país, sin confundirlo con
+    la primera letra del propio NIF."""
+    parts = vies_client.vies_request_parts
+    assert parts("ESB12345678", country_code="ES") == ("ES", "B12345678")
+    assert parts("es b-12.345.678", country_code="ES") == ("ES", "B12345678")
+    assert parts("B12345678", country_code="ES") == ("ES", "B12345678")
+    assert parts("ESB12345678") == ("ES", "B12345678")
+    assert parts("E12345678", country_code="ES") == ("ES", "E12345678")   # letra E ≠ prefijo ES
+    assert parts("B12345678") is None                                      # sin país no se sabe
+    # Grecia: VIES usa `EL`; en el CRM puede venir `GR`.
+    assert parts("EL123456789", country_code="GR") == ("EL", "123456789")
+    assert parts("GR123456789", country_code="GR") == ("EL", "123456789")
+    assert parts("EL123456789") == ("EL", "123456789")
+    t = _valid_transport()
+    check_vat("ESB12345678", country_code="ES", transport=t)
+    check_vat("B12345678", country_code="ES", transport=t, force=True)
+    assert t.calls == [{"countryCode": "ES", "vatNumber": "B12345678"}] * 2
+
+
 def test_cliente_no_valido() -> None:
     t = _Transport(lambda p: (200, {"valid": False, "name": "---", "address": "---",
                                     "userError": "INVALID"}))
@@ -166,6 +229,13 @@ def test_needs_vies_check_por_antiguedad() -> None:
     unknown = _company(vies_status="desconocido", vies_vat=FR,
                        vies_checked_at=now - timedelta(hours=2))
     assert vies_service.needs_vies_check(unknown) is True
+    # «No válido» se reintenta al día (un veredicto negativo puede cambiar).
+    invalid_fresh = _company(vies_status="no_valido", vies_vat=FR,
+                             vies_checked_at=now - timedelta(hours=2))
+    assert vies_service.needs_vies_check(invalid_fresh) is False
+    invalid_old = _company(vies_status="no_valido", vies_vat=FR,
+                           vies_checked_at=now - timedelta(days=2))
+    assert vies_service.needs_vies_check(invalid_old) is True
     assert vies_service.needs_vies_check(_company(country="NO")) is False
 
 
@@ -225,8 +295,11 @@ class _FakeVies:
         self.verdicts = verdicts or {}
         self.calls: list[tuple[str, bool]] = []
 
-    def __call__(self, vat, *, force=False, base_url=None, timeout=None, transport=None):
+    def __call__(self, vat, *, country_code=None, force=False, base_url=None, timeout=None,
+                 transport=None):
         self.calls.append((vat, force))
+        parts = vies_client.vies_request_parts(vat, country_code=country_code)
+        assert parts is not None and not parts[1].startswith(parts[0]), parts
         status = self.verdicts.get(vat, "desconocido")
         return ViesResult(
             status=status, valid={"valido": True, "no_valido": False}.get(status),
@@ -386,6 +459,56 @@ def test_revalidar_confirma_intracomunitario_y_no_fuerza_si_reciente(http) -> No
         assert r.json()["company"]["vies"]["name"] == "LA MAISON (VIES)"
     # 404 para una empresa que no existe.
     assert http.post("/api/companies/nope/vies-revalidate", headers=h).status_code == 404
+
+
+def test_vat_cacheado_como_no_valido_se_revalida_a_valido(http, session_factory) -> None:
+    """Un VAT que quedó guardado como «no válido» (el bug del prefijo) pasa a
+    válido con «Revalidar en VIES» (forzado) — y también solo, al cargar la
+    ficha, cuando el veredicto negativo tiene más de un día. El número se
+    envía normalizado (sin prefijo) y el régimen vuelve a intracomunitario
+    sin alerta bloqueante."""
+    bandit = "FR90501738249"
+    with session_factory() as s:
+        s.add(Company(id="bandit", name="SAS BANDIT BANDIT", country="FR", vat=bandit,
+                      factusol_company_id="4471", vies_status="no_valido", vies_vat=bandit,
+                      vies_checked_at=datetime.now(UTC) - timedelta(days=2)))
+        s.commit()
+        _order(s, oid="o3", company_id="bandit")
+        wf = order_workflow(s, s.get(Order, "o3"))
+    assert wf["regime"] == "nacional" and wf["blocked"] is True       # antes del fix
+
+    sent: list[dict] = []
+
+    def fake_check(vat, *, country_code=None, force=False, base_url=None, timeout=None,
+                   transport=None):
+        parts = vies_client.vies_request_parts(vat, country_code=country_code)
+        sent.append({"countryCode": parts[0], "vatNumber": parts[1], "force": force})
+        return ViesResult(status="valido", valid=True, vat=parts[0] + parts[1],
+                          country_code=parts[0], number=parts[1], name="SAS BANDIT BANDIT",
+                          checked_at=datetime.now(UTC))
+
+    h = auth_headers(http, "user")
+    settings = SimpleNamespace(vies_enabled=True, vies_base_url="http://vies.test",
+                               vies_timeout_seconds=1.0)
+    with patch.object(vies_service, "get_settings", return_value=settings), \
+            patch.object(vies_service, "check_vat", fake_check):
+        # La ficha al cargar (sin forzar): el «no válido» tiene > 1 día → se reconsulta.
+        r = http.post("/api/companies/bandit/vies-revalidate", params={"force": "false"},
+                      headers=h)
+        assert r.status_code == 200, r.text
+        assert sent == [{"countryCode": "FR", "vatNumber": "90501738249", "force": False}]
+        assert r.json()["vies"]["status"] == "valido" and r.json()["regime"] == "intracomunitario"
+        # El botón (forzado) también, y siempre con el mismo número normalizado.
+        r = http.post("/api/companies/bandit/vies-revalidate", headers=h)
+        assert sent[-1] == {"countryCode": "FR", "vatNumber": "90501738249", "force": True}
+        assert "verificado en VIES" in r.json()["regime_reason"]
+    with session_factory() as s:
+        c = s.get(Company, "bandit")
+        assert c.vies_status == "valido" and c.vies_name == "SAS BANDIT BANDIT"
+        wf = order_workflow(s, s.get(Order, "o3"))
+    assert wf["regime"] == "intracomunitario" and wf["blocked"] is False
+    assert not [a for a in wf["alerts"] if a["code"] == "vat_no_valido_vies"]
+    assert wf["company"]["vies"]["status"] == "valido"
 
 
 def test_vies_desactivado_no_llama_y_queda_pendiente(http) -> None:

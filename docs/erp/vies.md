@@ -16,7 +16,34 @@ POST https://ec.europa.eu/taxation_customs/vies/rest-api/check-vat-number
 ```
 
 `countryCode` es el prefijo del NIF-IVA (Grecia = `EL`); `vatNumber` el número
-sin prefijo. Cliente en `backend/app/integrations/vies/client.py`.
+**sin prefijo**. El API no perdona el prefijo dentro del número: con
+`vatNumber="FR90501738249"` responde «no válido» (la web de VIES lo quita
+sola y avisa en rojo; el API no). Por eso el cliente normaliza SIEMPRE antes
+de llamar (`vies_request_parts`): mayúsculas, sin espacios / puntos / guiones,
+y si el número empieza por las 2 letras del país se quitan:
+
+| Entrada | País | Se envía |
+|---|---|---|
+| `FR90501738249`, `FR 90 501 738 249`, `fr-90.501.738.249` | FR (o sin país) | `FR` + `90501738249` |
+| `90501738249` | FR | `FR` + `90501738249` (tal cual) |
+| `ESB12345678` / `B12345678` | ES | `ES` + `B12345678` |
+| `E12345678` | ES | `ES` + `E12345678` (la letra E no es el prefijo) |
+| `EL123456789` / `GR123456789` | GR | `EL` + `123456789` |
+
+La caché (en proceso y en la empresa) usa esa misma forma normalizada, así la
+revalidación y la comprobación al cargar la ficha comparten entrada.
+Cliente en `backend/app/integrations/vies/client.py`.
+
+Diagnóstico desde el servidor (solo lectura, enseña qué se envía, qué
+contesta VIES y cómo lo interpreta BoHub):
+
+```
+docker compose exec api python -m app.integrations.vies.client FR90501738249
+docker compose exec api python -m app.integrations.vies.client 90501738249 FR
+```
+
+Con un veredicto negativo el log del `api` deja `vies … → no_valido (…) ·
+enviado {…} · respuesta HTTP … {…}` con la respuesta cruda de VIES.
 
 Solo se consulta cuando **aplica**: país de la UE distinto de España y con
 NIF-IVA del país (`Company.vat`, o `tax_id` con prefijo del país). España →
@@ -53,7 +80,12 @@ NIF-IVA validado: si el actual es otro, el resultado no cuenta y vuelve a
 «pendiente»), `vies_name`, `vies_address` (migración `20260917_0108`).
 
 Cachés: en proceso por NIF-IVA (24 h firme / 10 min desconocido) y la propia
-empresa (se revalida a los 30 días; `desconocido` a la hora).
+empresa (`valido` se revalida a los 30 días; `no_valido` al día, porque un
+veredicto negativo puede cambiar — un alta reciente en VIES, o un resultado
+erróneo; `desconocido` a la hora). La ficha pide la validación al cargar
+(sin forzar) cuando el estado es `pendiente`, `desconocido` o `no_valido`;
+«Revalidar en VIES» fuerza siempre y salta ambas cachés, así un VAT que
+quedó guardado como «no válido» pasa a válido en el acto.
 
 ## Dónde se usa el veredicto
 

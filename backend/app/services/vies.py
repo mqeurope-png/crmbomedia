@@ -34,10 +34,13 @@ from app.models.crm import Company
 
 logger = logging.getLogger(__name__)
 
-#: Un resultado firme se da por bueno este tiempo; uno «desconocido» se
-#: reintenta antes.
+#: Un «válido» se da por bueno este tiempo; uno «desconocido» se reintenta
+#: antes; un «no válido» también se reintenta (un NIF-IVA recién dado de alta
+#: tarda días en aparecer en VIES, y así un veredicto negativo erróneo se
+#: corrige solo al cargar la ficha).
 RECHECK_AFTER = timedelta(days=30)
 RECHECK_UNKNOWN_AFTER = timedelta(hours=1)
+RECHECK_INVALID_AFTER = timedelta(days=1)
 
 
 def company_eu_vat(company: Any) -> str | None:
@@ -97,7 +100,7 @@ def vies_state(company: Any) -> dict[str, Any]:
 
 def needs_vies_check(company: Any, *, now: datetime | None = None) -> bool:
     """¿Toca (re)validar? Sin NIF-IVA UE no; sin resultado o con otro NIF-IVA
-    sí; firme → cada 30 días; desconocido → cada hora."""
+    sí; válido → cada 30 días; no válido → cada día; desconocido → cada hora."""
     vat = company_eu_vat(company)
     if not vat:
         return False
@@ -110,7 +113,10 @@ def needs_vies_check(company: Any, *, now: datetime | None = None) -> bool:
     now = now or datetime.now(UTC)
     if checked.tzinfo is None:
         checked = checked.replace(tzinfo=UTC)
-    limit = RECHECK_UNKNOWN_AFTER if company.vies_status == VIES_DESCONOCIDO else RECHECK_AFTER
+    limit = {
+        VIES_DESCONOCIDO: RECHECK_UNKNOWN_AFTER,
+        VIES_NO_VALIDO: RECHECK_INVALID_AFTER,
+    }.get(company.vies_status, RECHECK_AFTER)
     return now - checked >= limit
 
 
@@ -126,16 +132,22 @@ def vies_enabled() -> bool:
     return bool(getattr(get_settings(), "vies_enabled", True))
 
 
-def check_vat_live(vat: str, *, force: bool = False) -> ViesResult | None:
+def check_vat_live(
+    vat: str, *, force: bool = False, country_code: str | None = None,
+) -> ViesResult | None:
     """Consulta VIES (con la caché en proceso del cliente salvo `force`) con
-    la configuración de la app. None si VIES está desactivado. Nunca lanza:
-    cualquier fallo es `desconocido`."""
+    la configuración de la app. El cliente normaliza el número (mayúsculas,
+    sin separadores, SIN el prefijo de país) antes de llamar; `country_code`
+    (ISO2 de la empresa) permite quitar el prefijo aunque venga escrito de
+    otra forma. None si VIES está desactivado. Nunca lanza: cualquier fallo
+    es `desconocido`."""
     settings = get_settings()
     if not getattr(settings, "vies_enabled", True):
         return None
     try:
         return check_vat(
-            vat, force=force, base_url=getattr(settings, "vies_base_url", None),
+            vat, country_code=country_code, force=force,
+            base_url=getattr(settings, "vies_base_url", None),
             timeout=getattr(settings, "vies_timeout_seconds", None),
         )
     except Exception as exc:  # noqa: BLE001 — el cliente ya no lanza; por si acaso
@@ -175,7 +187,9 @@ def validate_company_vies(
         return None
     if not force and not needs_vies_check(company):
         return vies_state(company)
-    result = check_vat_live(vat, force=force)
+    result = check_vat_live(
+        vat, force=force, country_code=normalize_country(getattr(company, "country", None)),
+    )
     if result is None:
         return None
     apply_result(company, result)
