@@ -44,11 +44,14 @@ export function CompanyQuotesPanel({
   companyName,
   factusolCodcli,
   onOrderCreated,
+  createSignal = 0,
 }: {
   companyId: string;
   companyName: string;
   factusolCodcli: string | null;
   onOrderCreated?: (orderId: string) => void;
+  /** Fase 3: «Nueva proforma» desde la cabecera de la ficha de empresa. */
+  createSignal?: number;
 }) {
   const [quotes, setQuotes] = useState<FactusolQuote[]>([]);
   const [unlinked, setUnlinked] = useState(false);
@@ -76,6 +79,10 @@ export function CompanyQuotesPanel({
   }, [companyId]);
 
   useEffect(() => { load(); }, [load]);
+
+  useEffect(() => {
+    if (createSignal > 0 && factusolCodcli) setCreating(true);
+  }, [createSignal, factusolCodcli]);
 
   /** Espera a que el job termine. Devuelve su resultado, o null si falló. */
   const waitForJob = useCallback(async (jobId: string) => {

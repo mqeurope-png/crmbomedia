@@ -52,11 +52,24 @@ export function CompanyFactusolPanel({
   company,
   onLinked,
   onPulled,
+  onSync,
+  pullSignal = 0,
+  regimeSignal = 0,
+  inlineDiffAlert = true,
 }: {
   company: Company;
   onLinked?: (codcli: string) => void;
   /** Tras «Traer datos»: el padre recarga la empresa. */
   onPulled?: () => void;
+  /** Fase 3 (ficha de empresa): estado de sincronía CRM ↔ FACTUSOL para la
+   *  cabecera y la barra de alerta de la ficha (`null` = aún sin leer). */
+  onSync?: (sync: { customer: FactusolCustomer | null; diffs: Diff[] | null }) => void;
+  /** Contadores que, al subir, abren «Traer datos» / «Comprobar régimen»
+   *  desde la cabecera de la ficha (misma previsualización + confirmación). */
+  pullSignal?: number;
+  regimeSignal?: number;
+  /** La ficha ya enseña la alerta «CRM ≠ FACTUSOL» arriba: no repetirla aquí. */
+  inlineDiffAlert?: boolean;
 }) {
   const [user, setUser] = useState<User | null>(null);
   const [customer, setCustomer] = useState<FactusolCustomer | null>(null);
@@ -81,18 +94,36 @@ export function CompanyFactusolPanel({
   // Con vínculo: lee el cliente F_CLI por su CÓDIGO (el vínculo) para
   // detectar divergencias.
   useEffect(() => {
-    if (!code) return;
+    if (!code) {
+      onSync?.({ customer: null, diffs: null });
+      return;
+    }
     let alive = true;
     searchFactusolCustomers(code, "codcli")
       .then((hits) => {
         if (!alive) return;
         const hit = hits.find((h) => h.codcli === code) ?? hits[0] ?? null;
+        const d = hit ? diffOf(company, hit) : null;
         setCustomer(hit);
-        setDiffs(hit ? diffOf(company, hit) : null);
+        setDiffs(d);
+        onSync?.({ customer: hit, diffs: d });
       })
       .catch(() => undefined);
     return () => { alive = false; };
+    // `onSync` es una arrow de la ficha (setState): no re-leer por ella.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [code, company]);
+
+  // Acciones rápidas de la cabecera de la ficha (Fase 3): mismas
+  // previsualizaciones con confirmación que los botones de aquí.
+  useEffect(() => {
+    if (pullSignal > 0 && code) void abrirTraerDatos();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pullSignal]);
+  useEffect(() => {
+    if (regimeSignal > 0 && code) void abrirRegimen();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [regimeSignal]);
 
   async function buscarEnFactusol() {
     if (!company.tax_id) {
@@ -229,6 +260,7 @@ export function CompanyFactusolPanel({
           </p>
           {diffs && diffs.length > 0 ? (
             <>
+              {inlineDiffAlert ? (
               <p className="form-error" role="status">
                 Los datos difieren de FACTUSOL.{" "}
                 <button type="button" className="button small secondary"
@@ -246,7 +278,8 @@ export function CompanyFactusolPanel({
                   </>
                 ) : null}
               </p>
-              {showDiff ? (
+              ) : null}
+              {showDiff || !inlineDiffAlert ? (
                 <table className="data-table">
                   <thead>
                     <tr><th>Campo</th><th>CRM</th><th>FACTUSOL</th></tr>

@@ -11656,3 +11656,8 @@ tr.is-inactive {
   .company-create-row, .company-create-row3 { grid-template-columns: 1fr; }
   .company-create-reason { margin-left: 0; }
 }
+
+/* --- Fase 3: ficha de empresa --- */
+.company-ficha-id .mono { font-variant-numeric: tabular-nums; }
+.company-edit-form.erp-flow-panel { margin-bottom: 14px; }
+.erp-flow-panel h3 .badge { margin-left: 8px; vertical-align: middle; }
