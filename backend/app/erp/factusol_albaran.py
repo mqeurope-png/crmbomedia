@@ -608,6 +608,7 @@ def _create_albaran_from_lines(
             "lines": result["lines"], "source": None, "standalone": True,
             "codcli": codcli, "free_text_lines": result["free_text_lines"],
             "regime": result["regime"], "regime_warning": result["regime_warning"],
+            "portes": result["portes"],
         },
     )
     session.commit()

@@ -430,8 +430,15 @@ def next_codpre(client: FactusolClient, ejercicio: str) -> str:
 
 def _totals(
     lines: list[dict[str, Any]], *, regime: str | None = None,
+    portes: float = 0.0,
 ) -> dict[str, float]:
     """Base, IVA y total del conjunto de líneas.
+
+    `portes` (ERP · portes como línea aparte) son los gastos de envío del
+    documento, que en FACTUSOL NO son una línea sino una banda de cabecera
+    (`IPOR1*`, el mismo sitio donde los deja la app Woo→FACTUSOL). Suman a la
+    base imponible (`BAS1 = NET1 + IPOR1`) y llevan el IVA de la banda, así
+    que siguen el régimen del cliente como el resto del documento.
 
     Solo se usa la banda 1 de IVA (`NET1PRE`/`IIVA1PRE`): mezclar tipos en una
     misma proforma exigiría repartir en las bandas 2/3/4, y las proformas de
@@ -458,9 +465,13 @@ def _totals(
         logger.info("factusol: régimen %s → IVA 0 en vez de %.2f %%", regime, iva_pct)
     iva_pct = iva_pct_for(regime, iva_pct)
     base = round(base, 2)
-    iva = round(base * iva_pct / 100, 2)
-    return {"base": base, "iva_pct": iva_pct, "iva": iva,
-            "total": round(base + iva, 2)}
+    portes = round(_num(portes), 2)
+    # Base imponible de la banda = neto de líneas + portes (como FACTUSOL).
+    imponible = round(base + portes, 2)
+    iva = round(imponible * iva_pct / 100, 2)
+    return {"base": base, "portes": portes, "imponible": imponible,
+            "iva_pct": iva_pct, "iva": iva,
+            "total": round(imponible + iva, 2)}
 
 
 def header_says_no_iva(piva1: Any, base: Any) -> bool:
@@ -486,14 +497,19 @@ def _cpapre(pais: Any) -> str:
 def build_quote_payload(
     codpre: str, *, ejercicio: str, customer: dict[str, Any],
     refpre: str, lines: list[dict[str, Any]], fecha: str | None = None,
-    fopfac: str | None = None,
+    fopfac: str | None = None, portes: float = 0.0,
 ) -> dict[str, Any]:
     """Registro F_PRE listo para `EscribirRegistro`.
 
     Solo columnas verificadas contra la base real. Las que no ponemos las deja
     FACTUSOL con sus defaults — no inventamos valores (la lección de C-3-fix1).
+
+    `portes` > 0 añade la banda de portes (`IPOR1PRE`) y la base imponible
+    (`BAS1PRE = NET1PRE + IPOR1PRE`), que es donde viven los gastos de envío
+    de los documentos web. Con `portes=0` (el caso de siempre) el registro
+    sale EXACTAMENTE igual que antes: ninguna columna nueva.
     """
-    totals = _totals(lines, regime=customer.get("regime"))
+    totals = _totals(lines, regime=customer.get("regime"), portes=portes)
     payload: dict[str, Any] = {
         "CODPRE": codpre,
         "TIPPRE": DEFAULT_TIPPRE,
@@ -514,6 +530,11 @@ def build_quote_payload(
         "IIVA1PRE": totals["iva"],
         "TOTPRE": totals["total"],
     }
+    if totals["portes"]:
+        # Portes en la banda 1, la del IVA del documento: así siguen el
+        # régimen del cliente y el PDF los pinta como los de los pedidos web.
+        payload["IPOR1PRE"] = totals["portes"]
+        payload["BAS1PRE"] = totals["imponible"]
     # REFPRE = «Su ref.» del documento. Solo se escribe si el operador la
     # teclea. C-4 la auto-rellenaba con un resumen de las líneas
     # («1x UV INK; 1x test»), que desde C-4-fix3 es ruido duplicado: el

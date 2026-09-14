@@ -17,6 +17,7 @@ from enum import StrEnum
 from uuid import uuid4
 
 from sqlalchemy import (
+    Boolean,
     DateTime,
     Enum,
     ForeignKey,
@@ -25,6 +26,7 @@ from sqlalchemy import (
     Numeric,
     String,
     Text,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -287,6 +289,13 @@ class OrderLine(Base):
     tax_rate: Mapped[float] = mapped_column(Numeric(5, 2), nullable=False, default=21)
     line_total: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False, default=0)
     notes: Mapped[str | None] = mapped_column(Text)
+    #: Línea de PORTES (gastos de envío), no mercancía. En FACTUSOL los portes
+    #: no son una línea del documento sino la banda `IPOR1*` de la cabecera
+    #: (donde los deja la app Woo→FACTUSOL y de donde los lee el PDF), así que
+    #: al emitir van a esa banda y NO a F_LAL/F_LFA.
+    is_shipping: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("0"),
+    )
 
     order: Mapped[Order] = relationship(back_populates="lines")
 

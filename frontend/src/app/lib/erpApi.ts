@@ -89,6 +89,9 @@ export type OrderLine = {
   tax_rate: number;
   line_total: number;
   notes: string | null;
+  /** Línea de PORTES (gastos de envío), no mercancía: al emitir va a los
+   *  portes de la cabecera del documento FACTUSOL, como los pedidos web. */
+  is_shipping?: boolean;
 };
 
 export type StatusHistoryRow = {
@@ -757,6 +760,8 @@ export type OrderCreatePayload = {
     quantity: number;
     unit_price: number;
     tax_rate?: number;
+    /** Portes: línea aparte que el backend manda a los portes del documento. */
+    is_shipping?: boolean;
   }[];
 };
 

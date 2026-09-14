@@ -49,6 +49,10 @@ const EMPTY_ADDRESS: OrderAddress = {
   address_line: "", city: "", postal_code: "", state: "", country: "España",
 };
 
+/** Descripción de la línea de portes del pedido (la misma etiqueta que el
+ *  PDF pone en la línea de portes de los documentos web). */
+const PORTES_DESCRIPTION = "Portes";
+
 function num(v: string): number {
   const n = Number(v);
   return Number.isFinite(n) ? n : 0;
@@ -147,6 +151,9 @@ export default function NewManualOrderPage() {
   const [taxId, setTaxId] = useState("");
   const [notes, setNotes] = useState("");
   const [lines, setLines] = useState<LineRow[]>([{ ...EMPTY_LINE }]);
+  // Portes del pedido: se mandan como su propia LÍNEA (`is_shipping`), igual
+  // que los pedidos web los llevan aparte de la mercancía.
+  const [portes, setPortes] = useState("");
   const [pickup, setPickup] = useState(false);
   const [shipping, setShipping] = useState<OrderAddress>({ ...EMPTY_ADDRESS });
   const [billingSame, setBillingSame] = useState(true);
@@ -303,8 +310,9 @@ export default function NewManualOrderPage() {
   }
 
   const total = useMemo(
-    () => lines.reduce((sum, l) => sum + num(l.quantity) * num(l.unit_price), 0),
-    [lines],
+    () => lines.reduce((sum, l) => sum + num(l.quantity) * num(l.unit_price), 0)
+      + num(portes),
+    [lines, portes],
   );
 
   /** C-4: vuelca el desglose de una proforma en las líneas del pedido.
@@ -741,12 +749,23 @@ export default function NewManualOrderPage() {
         // pedido parte de un documento de FACTUSOL.
         payment: facPreview ? payment : undefined,
         create_albaran: facPreview ? true : undefined,
-        lines: lines.map((l) => ({
-          product_sku: l.product_sku.trim(),
-          description: l.description.trim() || l.product_sku.trim(),
-          quantity: num(l.quantity),
-          unit_price: num(l.unit_price),
-        })),
+        lines: [
+          ...lines.map((l) => ({
+            product_sku: l.product_sku.trim(),
+            description: l.description.trim() || l.product_sku.trim(),
+            quantity: num(l.quantity),
+            unit_price: num(l.unit_price),
+          })),
+          // Portes: su propia línea, marcada como tal (el backend la manda a
+          // los portes del documento FACTUSOL, no a una línea de mercancía).
+          ...(num(portes) > 0 ? [{
+            product_sku: "",
+            description: PORTES_DESCRIPTION,
+            quantity: 1,
+            unit_price: num(portes),
+            is_shipping: true,
+          }] : []),
+        ],
       });
       // La ficha hace polling del job del albarán y enseña su nº al terminar.
       const albaranJob = order.albaran_job_id
@@ -1106,6 +1125,27 @@ export default function NewManualOrderPage() {
                   onClick={() => setLines((rs) => [...rs, { ...EMPTY_LINE }])}>
             + Añadir línea
           </button>
+          {/* Portes como LÍNEA APARTE, igual que los pedidos web: no se
+              mezclan con la mercancía. En FACTUSOL viajan en la banda de
+              portes de la cabecera (IPOR1), que es donde los deja la app
+              Woo→FACTUSOL y de donde el PDF los pinta como línea de cargo. */}
+          <div className="form-row">
+            <label className="field">
+              <span>Portes (gastos de envío)</span>
+              <input type="number" min="0" step="0.01" value={portes}
+                     aria-label="Portes"
+                     placeholder="0.00"
+                     title="Se añaden como línea de portes del pedido, aparte de la mercancía (como en los pedidos web)."
+                     onChange={(e) => setPortes(e.target.value)} />
+            </label>
+          </div>
+          {num(portes) > 0 ? (
+            <p className="muted small" role="status">
+              Portes: <strong>{num(portes).toFixed(2)} EUR</strong> como línea
+              aparte. En FACTUSOL van en los portes del documento, como los de
+              los pedidos web.
+            </p>
+          ) : null}
           <p className="erp-manual-total">
             Total: <strong>{total.toFixed(2)} EUR</strong>
           </p>
