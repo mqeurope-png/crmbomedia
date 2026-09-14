@@ -2095,6 +2095,7 @@ def search_articles_endpoint(
 def list_quotes_endpoint(
     company_id: str | None = Query(default=None),
     days_back: int = Query(default=180, ge=0, le=1825),
+    queue: str | None = Query(default=None, max_length=20),
     session: Session = Depends(get_session),
     current_user: User = Depends(require_erp_view),
 ) -> dict[str, Any]:
@@ -2102,12 +2103,26 @@ def list_quotes_endpoint(
 
     Sin `company_id` lista las de todos los clientes. Si la empresa existe pero
     **no está vinculada** a FACTUSOL devuelve lista vacía con
-    `unlinked=True` — no es un error, es que aún no hay nada que enseñar."""
+    `unlinked=True` — no es un error, es que aún no hay nada que enseñar.
+
+    Fase 4 (pantalla Proformas): cada proforma lleva `estado` (por `ESTPRE`),
+    `queue` («aceptadas» = por convertir / «pendientes» / «rechazadas» /
+    «convertidas» = ya es pedido de BoHub, con `order`), la empresa vinculada
+    y su régimen de IVA. `queue_counts` cuenta TODAS las proformas del listado
+    aunque se filtre con `queue`; `estpre_values` enseña qué valores reales
+    de `ESTPRE` hay (comprobación del mapeo «rechazada»)."""
     _ = current_user
+    from app.erp.quotes_bandeja import annotate_quotes  # noqa: PLC0415
+    from app.erp.workflow import QUOTE_QUEUES  # noqa: PLC0415
     from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
     from app.integrations.factusol.quotes import list_quotes  # noqa: PLC0415
     from app.models.crm import Company  # noqa: PLC0415
 
+    if queue and queue not in QUOTE_QUEUES:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, {
+            "code": "unknown_queue",
+            "detail": f"Cola desconocida: {queue!r}. Válidas: {', '.join(QUOTE_QUEUES)}.",
+        })
     codcli: str | None = None
     if company_id:
         company = session.get(Company, company_id)
@@ -2125,7 +2140,10 @@ def list_quotes_endpoint(
                             days_back=days_back)
     except FactusolError as exc:
         raise _factusol_gateway_error(exc, "factusol_quotes_failed") from exc
-    return {"items": items, "unlinked": False, "ejercicio": ejercicio}
+    summary = annotate_quotes(session, items)
+    if queue:
+        items = [q for q in items if q.get("queue") == queue]
+    return {"items": items, "unlinked": False, "ejercicio": ejercicio, **summary}
 
 
 @router.get("/quotes/search")

@@ -281,3 +281,36 @@ Documentado para que no se dé por hecho:
 - Enviar o aceptar proformas (email al cliente, firma).
 - Flujo Woo → FACTUSOL de proformas.
 - `search_customers` sobre proformas.
+
+## Pantalla Proformas (rediseño de flujo · Fase 4)
+
+`/erp/proformas` reimplementa la pantalla «proformas» de la maqueta
+(`docs/ux/maqueta-erp-pedidos.html`) con los componentes del flujo:
+
+- **Colas arriba con contador** (mismo patrón y tokens que la bandeja):
+  **Aceptadas · por convertir** (`ESTPRE=1` sin pedido en BoHub),
+  **Pendientes de respuesta** (`ESTPRE=0` o sin valor), **Rechazadas**
+  (`ESTPRE=2`, enumeración del escritorio Pendiente / Aceptado / Rechazado —
+  sin confirmar con volcado; `estpre_values` en la respuesta enseña qué
+  valores hay de verdad) y **Convertidas** (ya son pedido de BoHub, con el
+  enlace al pedido; el equivalente a «Listo»). Un `ESTPRE` no reconocido
+  queda como «otro estado» y solo sale en «todas» (nunca se inventa).
+  El criterio vive en `app/erp/workflow.py::quote_queue`, como las colas de
+  pedidos; `app/erp/quotes_bandeja.py` lo aplica al listado
+  (`GET /api/erp/factusol/quotes` → `queue`, `queue_label`, `queue_counts`,
+  `company`, `order`, `regime`…; filtro `?queue=`).
+- **Cada proforma**: nº, estado (pastilla), cliente (enlace a la ficha si
+  está vinculado) con **país · régimen** (la misma regla que la ficha F_CLI:
+  país + NIF-IVA + VIES; sin empresa vinculada, la cabecera del documento:
+  0 % explícito = «exento según la proforma»), fecha, referencia, importe
+  con «exento» / «IVA incl.».
+- **Acciones**: **Convertir en pedido** (principal en aceptadas y
+  pendientes; el mismo paso de pago + albarán de la Fase 2, idempotente,
+  origen `factusol_proforma`), **PDF** (`documents/presupuestos/1/{codpre}/pdf`),
+  y en «⋯»: **Duplicar**, **Editar** (con empresa vinculada), **Ver
+  empresa** y, en rechazadas, «Convertir de todas formas». En convertidas la
+  acción principal es «Abrir pedido». **+ Nueva proforma** elige la empresa
+  con el buscador unificado y abre el alta de siempre.
+- Nada de la pestaña «Proformas FACTUSOL» de la ficha de empresa se pierde:
+  comparte el diálogo de conversión y el polling (`ConvertQuoteDialog`,
+  `quoteJobs.ts`).

@@ -177,10 +177,12 @@
   </div>
   <div class="screen" id="proformas">
     <div class="head"><div><h1>Proformas</h1><div class="sub">Presupuestos enviados y su estado.</div></div><button class="btn primary">+ Nueva proforma</button></div>
-    <div class="queues" style="grid-template-columns:repeat(3,1fr)">
+    <div class="queues" style="grid-template-columns:repeat(4,1fr)">
       <div class="q on" style="--qc:#1f9d74"><div class="n">3</div><div class="l"><span class="dot" style="background:#1f9d74"></span>Aceptadas · por convertir</div></div>
       <div class="q" style="--qc:#e0a92a"><div class="n">8</div><div class="l"><span class="dot" style="background:#e0a92a"></span>Pendientes de respuesta</div></div>
       <div class="q" style="--qc:#9aa2ad"><div class="n">2</div><div class="l"><span class="dot" style="background:#9aa2ad"></span>Rechazadas</div></div>
+      <!-- Fase 4: las ya convertidas (equivalente a «Listo» en la bandeja) siguen a la vista, con su pedido. -->
+      <div class="q" style="--qc:#2f6bff"><div class="n">5</div><div class="l"><span class="dot" style="background:#2f6bff"></span>Convertidas</div></div>
     </div>
     <div class="qtitle">Aceptadas · por convertir <span class="cnt">· listas para pasar a pedido</span></div>
     <div class="list">

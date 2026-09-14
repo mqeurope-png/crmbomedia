@@ -4,6 +4,7 @@ import {
   Building2,
   ClipboardList,
   Database,
+  FileCheck,
   FileText,
   Kanban,
   Landmark,
@@ -72,6 +73,15 @@ export const NAV_ITEMS: ReadonlyArray<NavItem> = [
       { href: "/erp/orders/pending-approval", label: "Cola PEDIDOS" },
       { href: "/erp/exceptions", label: "Excepciones" },
     ],
+  },
+  {
+    // Rediseño de flujo · Fase 4 — pantalla Proformas (colas aceptadas /
+    // pendientes / rechazadas + convertir en pedido).
+    href: "/erp/proformas",
+    label: "ERP · Proformas",
+    icon: FileCheck,
+    scope: "erp",
+    allowedRoles: ["admin", "manager", "pedidos", "user"],
   },
   {
     href: "/erp/documentos",

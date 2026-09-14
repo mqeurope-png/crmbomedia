@@ -11212,6 +11212,8 @@ tr.is-inactive {
 }
 .erp-flow-item.is-alert { border-left: 3px solid #E2554A; }
 .erp-flow-item.is-muted { opacity: 0.72; }
+/* Sin casilla de selección (proformas): dos columnas. */
+.erp-flow-item.is-plain { grid-template-columns: 1fr auto; }
 .erp-flow-item-main { min-width: 0; }
 .erp-flow-item-r1 {
   display: flex;
