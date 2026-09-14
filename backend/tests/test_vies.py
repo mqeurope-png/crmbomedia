@@ -142,14 +142,172 @@ def test_vies_es_prefijo() -> None:
 
 
 def test_cliente_no_valido() -> None:
-    t = _Transport(lambda p: (200, {"valid": False, "name": "---", "address": "---",
-                                    "userError": "INVALID"}))
+    t = _Transport(lambda p: (200, {"actionSucceed": True, "valid": False, "name": "---",
+                                    "address": "---", "userError": "VALID"}))
     r = check_vat("BE0999999999", transport=t)
     assert r.status == "no_valido" and r.valid is False
     assert r.name is None and r.address is None                       # «---» = nada
     # Formato imposible: no se llama a VIES, no válido directamente.
     r2 = check_vat("12345", transport=t)
     assert r2.status == "no_valido" and len(t.calls) == 1
+
+
+# --- lectura de la respuesta: solo dos veredictos reales -----------------------------
+
+
+BANDIT = "FR90501738249"
+#: Respuesta REAL de VIES en el VPS para FR90501738249 (Francia limitando
+#: peticiones): no es un veredicto sobre el número.
+MS_MAX_BODY = {"actionSucceed": False, "errorWrappers": [{"error": "MS_MAX_CONCURRENT_REQ"}]}
+
+
+def _no_sleep(_seconds: float) -> None:
+    return None
+
+
+def test_vies_ms_max_concurrent_req_es_desconocido(http, session_factory) -> None:
+    """`MS_MAX_CONCURRENT_REQ` → `desconocido` (pendiente de validar), NUNCA
+    «no válido»: el régimen sigue por país + NIF-IVA y el pedido no se
+    bloquea."""
+    t = _Transport(lambda p: (200, MS_MAX_BODY))
+    r = check_vat(BANDIT, transport=t, sleeper=_no_sleep)
+    assert r.status == "desconocido" and r.valid is None
+    assert r.error == "MS_MAX_CONCURRENT_REQ" and r.rate_limited is True
+    assert t.calls[0] == {"countryCode": "FR", "vatNumber": "90501738249"}
+    assert regime_for("FR", vat=BANDIT, vies_valid=r.valid) == "intracomunitario"
+
+    # De punta a punta: la empresa queda «desconocido» y el pedido sale sin bloqueo.
+    with session_factory() as s:
+        s.add(Company(id="bandit", name="SAS BANDIT BANDIT", country="FR", vat=BANDIT,
+                      factusol_company_id="4471"))
+        s.commit()
+        _order(s, oid="o4", company_id="bandit")
+    settings = SimpleNamespace(vies_enabled=True, vies_base_url="http://vies.test",
+                               vies_timeout_seconds=1.0)
+    real_check = vies_client.check_vat
+
+    def check_with_fake_transport(vat, **kw):
+        kw.pop("base_url", None), kw.pop("timeout", None)
+        return real_check(vat, transport=t, sleeper=_no_sleep, **kw)
+
+    h = auth_headers(http, "user")
+    with patch.object(vies_service, "get_settings", return_value=settings), \
+            patch.object(vies_service, "check_vat", check_with_fake_transport):
+        r = http.post("/api/companies/bandit/vies-revalidate", headers=h)
+    assert r.status_code == 200, r.text
+    assert r.json()["vies"]["status"] == "desconocido" and r.json()["regime"] == "intracomunitario"
+    assert r.json()["company"]["vies_status"] == "desconocido"
+    with session_factory() as s:
+        wf = order_workflow(s, s.get(Order, "o4"))
+    assert wf["blocked"] is False and wf["regime"] == "intracomunitario"
+    assert not [a for a in wf["alerts"] if a["code"] == "vat_no_valido_vies"]
+    aviso = next(a for a in wf["alerts"] if a["code"] == "cliente_intracomunitario")
+    assert "VIES no respondió" in aviso["text"]
+
+
+@pytest.mark.parametrize("body", [
+    {"actionSucceed": False, "errorWrappers": [{"error": "GLOBAL_MAX_CONCURRENT_REQ"}]},
+    {"actionSucceed": False, "errorWrappers": [{"error": "MS_UNAVAILABLE"}]},
+    {"actionSucceed": False, "errorWrappers": [{"error": "SERVICE_UNAVAILABLE"}]},
+    {"actionSucceed": False, "errorWrappers": [{"error": "TIMEOUT"}]},
+    {"actionSucceed": False, "errorWrappers": [{"error": "VAT_BLOCKED"}]},
+    {"actionSucceed": False, "errorWrappers": [{"error": "IP_BLOCKED"}]},
+    {"actionSucceed": False, "errorWrappers": [{"error": "INVALID_REQUESTER_INFO"}]},
+    {"actionSucceed": True, "valid": False, "errorWrappers": [{"error": "MS_UNAVAILABLE"}]},
+    {"valid": False, "userError": "MS_UNAVAILABLE"},            # formato clásico
+    {"valid": False, "userError": "INVALID_INPUT"},
+    {"actionSucceed": False},                                     # sin detalle
+    {"valid": False},                                             # sin actionSucceed ni userError
+    {},                                                           # sin veredicto
+])
+def test_vies_error_wrappers_varios_son_desconocido(body) -> None:
+    """Cualquier `errorWrappers` / `actionSucceed:false` / respuesta sin
+    veredicto claro → `desconocido`, nunca «no válido»."""
+    t = _Transport(lambda p: (200, body))
+    r = check_vat(BANDIT, transport=t, force=True, sleeper=_no_sleep)
+    assert r.status == "desconocido" and r.valid is None, body
+    assert r.error
+
+
+def test_vies_valid_true_es_valido() -> None:
+    for body in (
+        {"actionSucceed": True, "valid": True, "name": "SAS BANDIT BANDIT", "address": "PARIS"},
+        {"valid": True, "userError": "VALID", "name": "SAS BANDIT BANDIT"},
+        {"valid": "true", "name": "SAS BANDIT BANDIT"},
+    ):
+        t = _Transport(lambda p, b=body: (200, b))
+        r = check_vat(BANDIT, transport=t, force=True)
+        assert r.status == "valido" and r.valid is True, body
+        assert r.name == "SAS BANDIT BANDIT"
+    assert regime_for("FR", vat=BANDIT, vies_valid=True) == "intracomunitario"
+
+
+def test_vies_action_succeed_valid_false_es_no_valido() -> None:
+    """El ÚNICO «no válido»: petición con éxito y `valid: false`."""
+    t = _Transport(lambda p: (200, {"actionSucceed": True, "valid": False, "name": "---",
+                                    "address": "---"}))
+    r = check_vat(BANDIT, transport=t, force=True)
+    assert r.status == "no_valido" and r.valid is False
+    assert regime_for("FR", vat=BANDIT, vies_valid=False) == "nacional"
+    # Formato clásico sin `actionSucceed`: solo con `userError: VALID` explícito.
+    t2 = _Transport(lambda p: (200, {"valid": False, "userError": "VALID"}))
+    assert check_vat(BANDIT, transport=t2, force=True).status == "no_valido"
+    # Con `actionSucceed: false` un `valid: false` NO cuenta.
+    t3 = _Transport(lambda p: (200, {"actionSucceed": False, "valid": False}))
+    assert check_vat(BANDIT, transport=t3, force=True).status == "desconocido"
+
+
+def test_vies_reintenta_ante_max_concurrent() -> None:
+    """Limitación de ritmo: espera y reintenta (2 veces) antes de rendirse."""
+    answers = [MS_MAX_BODY, MS_MAX_BODY,
+               {"actionSucceed": True, "valid": True, "name": "SAS BANDIT BANDIT"}]
+    t = _Transport(lambda p: (200, answers[len(t.calls) - 1]))
+    waited: list[float] = []
+    r = check_vat(BANDIT, transport=t, force=True, sleeper=waited.append)
+    assert r.status == "valido" and len(t.calls) == 3
+    assert waited == list(vies_client.RETRY_DELAYS)
+    # Saturado todo el rato: se queda en desconocido tras los reintentos, sin
+    # bloquear, y con caché corta (se reintentará luego).
+    always = _Transport(lambda p: (200, MS_MAX_BODY))
+    waited.clear()
+    r = check_vat(BANDIT, transport=always, force=True, sleeper=waited.append)
+    assert r.status == "desconocido" and len(always.calls) == 3 and len(waited) == 2
+    # Otros errores (no de ritmo) no se reintentan.
+    down = _Transport(lambda p: (200, {"actionSucceed": False,
+                                       "errorWrappers": [{"error": "MS_UNAVAILABLE"}]}))
+    waited.clear()
+    r = check_vat(BANDIT, transport=down, force=True, sleeper=waited.append)
+    assert r.status == "desconocido" and len(down.calls) == 1 and waited == []
+
+
+def test_no_valido_guardado_antes_del_fix_se_reconsulta() -> None:
+    """Los VAT que quedaron «no válido» por el bug (antes del fix) se vuelven
+    a consultar al cargar la ficha aunque sean recientes."""
+    before = vies_service.INVALID_VERDICTS_TRUSTED_FROM - timedelta(hours=1)
+    suspect = _company(vies_status="no_valido", vies_vat=FR, vies_checked_at=before)
+    assert vies_service.needs_vies_check(suspect, now=before + timedelta(minutes=5)) is True
+    trusted = _company(vies_status="no_valido", vies_vat=FR,
+                       vies_checked_at=vies_service.INVALID_VERDICTS_TRUSTED_FROM)
+    assert vies_service.needs_vies_check(
+        trusted, now=vies_service.INVALID_VERDICTS_TRUSTED_FROM + timedelta(hours=1)) is False
+
+
+def test_diagnostico_interpreta_la_respuesta_real(capsys) -> None:
+    """El comando de diagnóstico sigue funcionando, y con `--interpret` enseña
+    cómo lee BoHub el cuerpo real que devolvió VIES en el VPS."""
+    import json
+    lines: list[str] = []
+    code = vies_client._main([BANDIT, "--interpret", json.dumps(MS_MAX_BODY)], out=lines.append)
+    text = "\n".join(lines)
+    assert code == 1
+    assert '{"countryCode": "FR", "vatNumber": "90501738249"}' in text
+    assert "→ BoHub: desconocido (MS_MAX_CONCURRENT_REQ)" in text
+    assert "pendiente de validar" in text
+    lines.clear()
+    ok = {"actionSucceed": True, "valid": True, "name": "SAS BANDIT BANDIT"}
+    assert vies_client._main([BANDIT, "FR", "--interpret", json.dumps(ok)], out=lines.append) == 0
+    assert "→ BoHub: valido" in "\n".join(lines)
+    assert vies_client._main([], out=lines.append) == 2
 
 
 @pytest.mark.parametrize("respuesta", [
@@ -230,12 +388,12 @@ def test_needs_vies_check_por_antiguedad() -> None:
                        vies_checked_at=now - timedelta(hours=2))
     assert vies_service.needs_vies_check(unknown) is True
     # «No válido» se reintenta al día (un veredicto negativo puede cambiar).
-    invalid_fresh = _company(vies_status="no_valido", vies_vat=FR,
-                             vies_checked_at=now - timedelta(hours=2))
-    assert vies_service.needs_vies_check(invalid_fresh) is False
-    invalid_old = _company(vies_status="no_valido", vies_vat=FR,
-                           vies_checked_at=now - timedelta(days=2))
-    assert vies_service.needs_vies_check(invalid_old) is True
+    # Con fechas posteriores al fix de la lectura: los anteriores se
+    # reconsultan siempre (ver `test_no_valido_guardado_antes_del_fix_se_reconsulta`).
+    after_fix = vies_service.INVALID_VERDICTS_TRUSTED_FROM + timedelta(days=3)
+    invalid_fresh = _company(vies_status="no_valido", vies_vat=FR, vies_checked_at=after_fix)
+    assert vies_service.needs_vies_check(invalid_fresh, now=after_fix + timedelta(hours=2)) is False
+    assert vies_service.needs_vies_check(invalid_fresh, now=after_fix + timedelta(days=2)) is True
     assert vies_service.needs_vies_check(_company(country="NO")) is False
 
 

@@ -16,16 +16,35 @@ espacios / puntos / guiones, y sin las 2 letras del país si el número
 empieza por ellas (`FR90501738249` → `FR` + `90501738249`; `ESB12345678` →
 `ES` + `B12345678`; `B12345678` con país `ES` → tal cual).
 
-Robustez (VIES se cae y va lento a menudo): timeout corto, un solo intento,
-y CUALQUIER fallo (red, 5xx, JSON raro, estado miembro caído) se traduce a
-`desconocido` — nunca a «no válido», nunca una excepción hacia arriba. El
-resultado se cachea en proceso (por NIF-IVA) para no revalidar en cada
-carga; `force=True` salta la caché («Revalidar en VIES»).
+Cómo se lee la respuesta (confirmado con la respuesta real del VPS, VAT
+FR90501738249: `{"actionSucceed": false, "errorWrappers": [{"error":
+"MS_MAX_CONCURRENT_REQ"}]}` — Francia limitando peticiones, NO un veredicto):
+
+- `valid: true` (sin errores) → `valido`.
+- `actionSucceed: true` + `valid: false` → `no_valido`. Es el ÚNICO caso de
+  VAT no dado de alta. (Sin `actionSucceed` en la respuesta, solo cuenta
+  `valid: false` con `userError: "VALID"` explícito: la respuesta clásica
+  «petición correcta, número no registrado».)
+- `actionSucceed: false`, cualquier `errorWrappers` o `userError` de error
+  (`MS_MAX_CONCURRENT_REQ`, `GLOBAL_MAX_CONCURRENT_REQ`, `MS_UNAVAILABLE`,
+  `SERVICE_UNAVAILABLE`, `TIMEOUT`, `VAT_BLOCKED`, `IP_BLOCKED`,
+  `INVALID_REQUESTER_INFO`, `INVALID_INPUT`…), HTTP ≠ 200, cuerpo raro o sin
+  veredicto → `desconocido` («pendiente de validar»): NUNCA «no válido», no
+  bloquea, el régimen sigue por país + NIF-IVA y se reintenta más tarde.
+
+Robustez (VIES se cae y va lento a menudo): timeout corto; ante limitación
+de ritmo (`*_MAX_CONCURRENT_REQ*`) se reintenta con una pequeña espera (2
+reintentos) antes de quedarse en `desconocido`; CUALQUIER fallo (red, 5xx,
+JSON raro, estado miembro caído) se traduce a `desconocido` — nunca una
+excepción hacia arriba. El resultado se cachea en proceso (por NIF-IVA) para
+no revalidar en cada carga (los `desconocido` caducan pronto); `force=True`
+salta la caché («Revalidar en VIES»).
 
 Estados:
 - `valido`: VIES dice que el número existe y está activo.
-- `no_valido`: VIES responde y dice que NO (o el formato no es válido).
-- `desconocido`: VIES no respondió / no pudo comprobarlo.
+- `no_valido`: VIES responde con éxito y dice que NO está dado de alta (o el
+  número ni siquiera tiene forma de NIF-IVA: no se llama).
+- `desconocido`: VIES no respondió / no pudo comprobarlo / error temporal.
 """
 from __future__ import annotations
 
@@ -57,10 +76,15 @@ DEFAULT_TIMEOUT_SECONDS = 4.0
 CACHE_TTL_SECONDS = 24 * 3600
 CACHE_TTL_UNKNOWN_SECONDS = 600
 
-#: `userError` de VIES que significan «el número no es válido» (respuesta
-#: firme), frente a los que significan «no he podido comprobarlo».
-_INVALID_ERRORS = frozenset({"INVALID_INPUT", "INVALID"})
-_OK_ERRORS = frozenset({"VALID", "", "NONE"})
+#: Valores de `userError` que NO son un error («petición correcta»).
+_NO_ERROR = frozenset({"", "VALID", "NONE"})
+#: Errores de limitación de ritmo de VIES: se reintenta con espera.
+RATE_LIMIT_ERRORS = frozenset({
+    "MS_MAX_CONCURRENT_REQ", "MS_MAX_CONCURRENT_REQ_TIME",
+    "GLOBAL_MAX_CONCURRENT_REQ", "GLOBAL_MAX_CONCURRENT_REQ_TIME",
+})
+#: Esperas (segundos) antes de cada reintento por limitación de ritmo.
+RETRY_DELAYS: tuple[float, ...] = (1.0, 2.0)
 
 
 @dataclass(frozen=True)
@@ -75,6 +99,12 @@ class ViesResult:
     error: str | None = None
     checked_at: datetime | None = None
     from_cache: bool = False
+    #: Códigos de error que devolvió VIES (`errorWrappers` / `userError`).
+    error_codes: tuple[str, ...] = ()
+
+    @property
+    def rate_limited(self) -> bool:
+        return any(code in RATE_LIMIT_ERRORS for code in self.error_codes)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -189,12 +219,14 @@ def _http_transport(timeout: float) -> Transport:
 def check_vat(
     vat: Any, *, country_code: str | None = None, force: bool = False,
     base_url: str | None = None, timeout: float | None = None,
-    transport: Transport | None = None,
+    transport: Transport | None = None, sleeper: Callable[[float], None] | None = None,
 ) -> ViesResult:
     """Valida el NIF-IVA en VIES. Nunca lanza: cualquier fallo es
     `desconocido` con su motivo en `error`. Cacheado por NIF-IVA normalizado
     (país + número sin prefijo) salvo `force`, así la revalidación y la
-    comprobación al cargar la ficha comparten la misma entrada."""
+    comprobación al cargar la ficha comparten la misma entrada. Ante
+    limitación de ritmo (`*_MAX_CONCURRENT_REQ*`) reintenta con espera
+    (`RETRY_DELAYS`; `sleeper` inyectable en tests)."""
     parts = vies_request_parts(vat, country_code=country_code)
     if parts is None:
         raw = str(vat or "").strip()
@@ -212,25 +244,39 @@ def check_vat(
 
     url = f"{(base_url or DEFAULT_BASE_URL).rstrip('/')}/check-vat-number"
     call = transport or _http_transport(timeout or DEFAULT_TIMEOUT_SECONDS)
+    wait = sleeper or time.sleep
     payload = {"countryCode": country, "vatNumber": number}
-    now = datetime.now(UTC)
-    try:
-        status_code, body = call(url, payload)
-    except Exception as exc:  # noqa: BLE001 — red, timeout, DNS…
-        result = ViesResult(
-            status=VIES_DESCONOCIDO, valid=None, vat=normalized, country_code=country,
-            number=number, error=f"VIES no responde: {type(exc).__name__}: {str(exc)[:120]}",
-            checked_at=now,
-        )
-        logger.warning("vies %s (enviado %s): %s", normalized, payload, result.error)
-        _cache_put(result)
-        return result
+    attempt = 0
+    while True:
+        now = datetime.now(UTC)
+        try:
+            status_code, body = call(url, payload)
+        except Exception as exc:  # noqa: BLE001 — red, timeout, DNS…
+            result = ViesResult(
+                status=VIES_DESCONOCIDO, valid=None, vat=normalized, country_code=country,
+                number=number, checked_at=now,
+                error=f"VIES no responde: {type(exc).__name__}: {str(exc)[:120]}",
+            )
+            logger.warning("vies %s (enviado %s): %s", normalized, payload, result.error)
+            _cache_put(result)
+            return result
 
-    result = _interpret(status_code, body, normalized, country, number, now)
+        result = _interpret(status_code, body, normalized, country, number, now)
+        if result.rate_limited and attempt < len(RETRY_DELAYS):
+            # Limitación de ritmo del estado miembro / global: no es un
+            # veredicto; se espera un poco y se vuelve a preguntar.
+            delay = RETRY_DELAYS[attempt]
+            attempt += 1
+            logger.info("vies %s: %s → reintento %d en %.1fs", normalized, result.error,
+                        attempt, delay)
+            wait(delay)
+            continue
+        break
+
     if result.status == VIES_VALIDO:
         logger.info("vies %s → valido (enviado %s)", normalized, payload)
     else:
-        # Con el veredicto negativo se deja constancia de QUÉ se envió y QUÉ
+        # Sin veredicto positivo se deja constancia de QUÉ se envió y QUÉ
         # contestó VIES, para poder diagnosticarlo desde el log del servidor.
         logger.warning(
             "vies %s → %s (%s) · enviado %s · respuesta HTTP %s %s",
@@ -245,36 +291,82 @@ def _short(body: Any, limit: int = 400) -> str:
     return text if len(text) <= limit else text[:limit] + "…"
 
 
-def _interpret(
+def _as_bool(value: Any) -> bool | None:
+    """`true`/`false` como booleano o como texto; None si no viene."""
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower() if value is not None else ""
+    if text == "true":
+        return True
+    if text == "false":
+        return False
+    return None
+
+
+def _error_codes(body: dict[str, Any]) -> tuple[str, ...]:
+    """Códigos de error de la respuesta: `errorWrappers: [{error: …}]` y un
+    `userError` que no sea «VALID»."""
+    codes: list[str] = []
+    wrappers = body.get("errorWrappers") or []
+    if isinstance(wrappers, dict):
+        wrappers = [wrappers]
+    if isinstance(wrappers, list):
+        for wrapper in wrappers:
+            raw = wrapper.get("error") if isinstance(wrapper, dict) else wrapper
+            code = str(raw or "").strip().upper()
+            if code and code not in codes:
+                codes.append(code)
+    user_error = str(body.get("userError") or "").strip().upper()
+    if user_error not in _NO_ERROR and user_error not in codes:
+        codes.append(user_error)
+    return tuple(codes)
+
+
+def interpret_response(
     status_code: int, body: Any, vat: str, country: str, number: str, now: datetime,
 ) -> ViesResult:
+    """Lee la respuesta de VIES según la regla de la cabecera del módulo:
+    solo `valid: true` es válido y solo `actionSucceed: true` + `valid: false`
+    es no válido; cualquier error / respuesta sin veredicto es `desconocido`."""
     if status_code != 200 or not isinstance(body, dict):
         return ViesResult(
             status=VIES_DESCONOCIDO, valid=None, vat=vat, country_code=country,
             number=number, error=f"VIES HTTP {status_code}", checked_at=now,
         )
-    user_error = str(body.get("userError") or "").strip().upper()
-    valid = body.get("valid")
-    # `true` como booleano o como texto: VIES es un JSON, pero mejor no fiarse.
-    if valid is True or str(valid).strip().lower() == "true":
+    codes = _error_codes(body)
+    action = _as_bool(body.get("actionSucceed"))
+    valid = _as_bool(body.get("valid"))
+    if codes or action is False:
+        # MS_MAX_CONCURRENT_REQ, GLOBAL_MAX_CONCURRENT_REQ, MS_UNAVAILABLE,
+        # SERVICE_UNAVAILABLE, TIMEOUT, VAT_BLOCKED, IP_BLOCKED,
+        # INVALID_REQUESTER_INFO… — VIES no ha podido comprobarlo: NO es un
+        # veredicto sobre el número.
+        return ViesResult(
+            status=VIES_DESCONOCIDO, valid=None, vat=vat, country_code=country,
+            number=number, error=", ".join(codes) or "actionSucceed=false",
+            checked_at=now, error_codes=codes,
+        )
+    if valid is True:
         return ViesResult(
             status=VIES_VALIDO, valid=True, vat=vat, country_code=country, number=number,
             name=_clean(body.get("name")), address=_clean(body.get("address")),
             checked_at=now,
         )
-    if user_error in _OK_ERRORS or user_error in _INVALID_ERRORS:
-        # VIES respondió con criterio: el número no existe / no está activo /
-        # no tiene un formato válido.
+    user_error = str(body.get("userError") or "").strip().upper()
+    if valid is False and (action is True or (action is None and user_error == "VALID")):
+        # Petición correcta y el número NO está dado de alta: el único
+        # veredicto de «no válido».
         return ViesResult(
             status=VIES_NO_VALIDO, valid=False, vat=vat, country_code=country,
-            number=number, error=user_error or None, checked_at=now,
+            number=number, error="VIES: NIF-IVA no dado de alta", checked_at=now,
         )
-    # MS_UNAVAILABLE, SERVICE_UNAVAILABLE, TIMEOUT, *_MAX_CONCURRENT_REQ,
-    # IP_BLOCKED, VAT_BLOCKED… — no se ha podido comprobar.
     return ViesResult(
         status=VIES_DESCONOCIDO, valid=None, vat=vat, country_code=country,
-        number=number, error=user_error or "respuesta sin veredicto", checked_at=now,
+        number=number, error="respuesta sin veredicto", checked_at=now,
     )
+
+
+_interpret = interpret_response
 
 
 def _clean(value: Any) -> str | None:
@@ -284,39 +376,66 @@ def _clean(value: Any) -> str | None:
     return text[:500]
 
 
-def _main(argv: list[str]) -> int:  # pragma: no cover — diagnóstico manual
+def _main(argv: list[str], out: Callable[[str], None] = print) -> int:
     """Diagnóstico desde el servidor (solo lectura, no toca la BD):
 
         python -m app.integrations.vies.client FR90501738249
         python -m app.integrations.vies.client 90501738249 FR
+        python -m app.integrations.vies.client FR90501738249 --interpret '{"actionSucceed":false,…}'
 
-    Enseña exactamente qué se envía a VIES, qué contesta (HTTP + cuerpo) y
-    cómo lo interpreta BoHub."""
+    Enseña exactamente qué se envía a VIES, qué contesta (HTTP + cuerpo,
+    con los reintentos por limitación de ritmo) y cómo lo interpreta BoHub.
+    Con `--interpret <json>` no llama a VIES: interpreta ese cuerpo."""
     import json  # noqa: PLC0415
-    import sys  # noqa: PLC0415
 
-    if not argv:
-        print("uso: python -m app.integrations.vies.client <NIF-IVA> [país ISO2]")
+    args = list(argv)
+    body_given: Any = None
+    if "--interpret" in args:
+        i = args.index("--interpret")
+        if i + 1 >= len(args):
+            out("uso: … --interpret '<json de la respuesta>'")
+            return 2
+        body_given = json.loads(args[i + 1])
+        del args[i:i + 2]
+    if not args:
+        out("uso: python -m app.integrations.vies.client <NIF-IVA> [país ISO2] "
+            "[--interpret '<json>']")
         return 2
-    vat, country = argv[0], (argv[1] if len(argv) > 1 else None)
+    vat, country = args[0], (args[1] if len(args) > 1 else None)
     parts = vies_request_parts(vat, country_code=country)
-    print(f"entrada: {vat!r} país={country!r}")
+    out(f"entrada: {vat!r} país={country!r}")
     if parts is None:
-        print("→ formato de NIF-IVA no válido (no se llama a VIES)")
+        out("→ formato de NIF-IVA no válido (no se llama a VIES)")
         return 1
     payload = {"countryCode": parts[0], "vatNumber": parts[1]}
     url = f"{DEFAULT_BASE_URL}/check-vat-number"
-    print(f"POST {url}\n{json.dumps(payload)}")
-    try:
-        status_code, body = _http_transport(DEFAULT_TIMEOUT_SECONDS * 3)(url, payload)
-    except Exception as exc:  # noqa: BLE001
-        print(f"→ sin respuesta: {type(exc).__name__}: {exc}")
-        return 1
-    print(f"HTTP {status_code}\n{json.dumps(body, indent=2, ensure_ascii=False)}")
-    result = _interpret(status_code, body, parts[0] + parts[1], parts[0], parts[1],
-                        datetime.now(UTC))
-    print(f"→ BoHub: {result.status}" + (f" ({result.error})" if result.error else ""))
-    sys.stdout.flush()
+    out(f"POST {url}\n{json.dumps(payload)}")
+    if body_given is not None:
+        exchanges = [(200, body_given)]
+        out("(sin llamar a VIES: se interpreta el cuerpo dado)")
+    else:
+        exchanges = []
+        call = _http_transport(DEFAULT_TIMEOUT_SECONDS * 3)
+
+        def recording(url_: str, payload_: dict[str, Any]) -> tuple[int, Any]:
+            status_code_, body_ = call(url_, payload_)
+            exchanges.append((status_code_, body_))
+            return status_code_, body_
+
+        result = check_vat(vat, country_code=country, force=True, transport=recording)
+        if not exchanges:
+            out(f"→ sin respuesta: {result.error}")
+            return 1
+    for n, (status_code, body) in enumerate(exchanges, 1):
+        label = f" (intento {n})" if len(exchanges) > 1 else ""
+        out(f"HTTP {status_code}{label}\n{json.dumps(body, indent=2, ensure_ascii=False)}")
+    status_code, body = exchanges[-1]
+    result = interpret_response(status_code, body, parts[0] + parts[1], parts[0], parts[1],
+                                datetime.now(UTC))
+    out(f"→ BoHub: {result.status}" + (f" ({result.error})" if result.error else ""))
+    if result.status == VIES_DESCONOCIDO:
+        out("   = pendiente de validar: no bloquea, el régimen sigue por país + NIF-IVA "
+            "y se reintenta más tarde")
     return 0 if result.status == VIES_VALIDO else 1
 
 

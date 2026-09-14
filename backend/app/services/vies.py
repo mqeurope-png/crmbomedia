@@ -41,6 +41,10 @@ logger = logging.getLogger(__name__)
 RECHECK_AFTER = timedelta(days=30)
 RECHECK_UNKNOWN_AFTER = timedelta(hours=1)
 RECHECK_INVALID_AFTER = timedelta(days=1)
+#: Hasta el fix de la lectura de la respuesta (errores temporales de VIES como
+#: `MS_MAX_CONCURRENT_REQ` se guardaban como «no válido»), ningún `no_valido`
+#: guardado es de fiar: se reconsulta en cuanto se cargue la ficha.
+INVALID_VERDICTS_TRUSTED_FROM = datetime(2026, 9, 15, tzinfo=UTC)
 
 
 def company_eu_vat(company: Any) -> str | None:
@@ -113,6 +117,8 @@ def needs_vies_check(company: Any, *, now: datetime | None = None) -> bool:
     now = now or datetime.now(UTC)
     if checked.tzinfo is None:
         checked = checked.replace(tzinfo=UTC)
+    if company.vies_status == VIES_NO_VALIDO and checked < INVALID_VERDICTS_TRUSTED_FROM:
+        return True
     limit = {
         VIES_DESCONOCIDO: RECHECK_UNKNOWN_AFTER,
         VIES_NO_VALIDO: RECHECK_INVALID_AFTER,
