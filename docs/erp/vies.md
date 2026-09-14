@@ -106,6 +106,46 @@ ficha). La ficha pide la validación al cargar
 «Revalidar en VIES» fuerza siempre y salta ambas cachés, así un VAT que
 quedó guardado como «no válido» pasa a válido en el acto.
 
+## Revalidación en segundo plano de los «pendiente»
+
+VIES (sobre todo Francia) devuelve `MS_MAX_CONCURRENT_REQ` muy a menudo, así
+que muchas empresas se quedan en `desconocido` y «Revalidar en VIES» vuelve a
+encontrarlo saturado. Un barrido periódico (`app/services/vies_sweep.py`) las
+resuelve solas hasta `valido` / `no_valido`:
+
+- **Dónde corre**: job RQ self-rescheduling (mismo patrón que
+  `workflows.scheduler`: heartbeat SETNX + `enqueue_in`) en la cola
+  `vies:sweep`, que escucha **`worker-workflows`** (`--with-scheduler`). El
+  API lo arma al arrancar. Cada `VIES_SWEEP_INTERVAL_MINUTES` (30).
+- **Qué entra**: empresas activas de la UE (no España) con NIF-IVA y sin
+  veredicto firme para su NIF-IVA actual (`desconocido`, nunca consultadas o
+  con el NIF-IVA cambiado), cuyo `vies_next_retry_at` ya pasó. España y
+  fuera de la UE no entran. Las nunca consultadas primero.
+- **Cómo**: de una en una, `VIES_SWEEP_SPACING_SECONDS` (2 s) entre
+  llamadas, como mucho `VIES_SWEEP_BATCH` (20) por barrido (el resto en el
+  siguiente), forzando la consulta (salta la caché en proceso). Nunca en
+  paralelo.
+- **Progreso**: commit por empresa. Veredicto firme → `vies_attempts=0`,
+  `vies_next_retry_at=NULL` y no vuelve a entrar. Sin veredicto →
+  `vies_attempts+1` y `vies_next_retry_at` con backoff creciente: 30 min →
+  1 h → 2 h → 4 h → 8 h → 24 h (≈ 5 consultas el primer día, luego una
+  diaria). «Revalidar en VIES» (manual, forzado) usa el mismo control.
+- **Anti-bloqueo**: 3 respuestas seguidas de limitación de ritmo cortan el
+  barrido; `IP_BLOCKED` / `GLOBAL_MAX_CONCURRENT_REQ*` pausan los barridos
+  `VIES_SWEEP_PAUSE_MINUTES` (60; en Redis, compartido api + worker). Nada
+  de esto se convierte en «no válido».
+- **Log** (en `worker-workflows`): una línea por empresa y el resumen
+  `vies.sweep: N candidatas, M consultadas → válidas / no válidas / sin
+  veredicto; P siguen pendientes`.
+- **A mano** (solo lectura con `--dry-run`):
+
+```
+docker compose exec api python -m app.services.vies_sweep --dry-run   # lista las pendientes que ya toca
+docker compose exec api python -m app.services.vies_sweep             # un barrido ahora
+```
+
+Migración `20260918_0109`: `companies.vies_next_retry_at`, `vies_attempts`.
+
 ## Dónde se usa el veredicto
 
 `app/services/vies.py::company_vies_valid(company)` → `True` / `False` /

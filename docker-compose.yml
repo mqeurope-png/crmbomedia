@@ -138,6 +138,9 @@ services:
       - workflows:dispatch
       - workflows:execute
       - workflows:scheduler
+      # Fase VIES: barrido periódico (self-rescheduling, necesita
+      # --with-scheduler) de los NIF-IVA pendientes de veredicto.
+      - vies:sweep
     depends_on:
       db:
         condition: service_healthy

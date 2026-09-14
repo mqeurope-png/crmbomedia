@@ -79,6 +79,7 @@ def vies_state(company: Any) -> dict[str, Any]:
     """Bloque `vies` de la API: estado aplicable al NIF-IVA ACTUAL."""
     vat = company_eu_vat(company)
     checked_at = getattr(company, "vies_checked_at", None)
+    next_retry = getattr(company, "vies_next_retry_at", None)
     status = getattr(company, "vies_status", None)
     stale = bool(vat) and (getattr(company, "vies_vat", None) or "") != vat
     if not vat:
@@ -99,6 +100,10 @@ def vies_state(company: Any) -> dict[str, Any]:
         "name": getattr(company, "vies_name", None) if not stale else None,
         "address": getattr(company, "vies_address", None) if not stale else None,
         "stale": stale,
+        # Barrido en segundo plano: consultas seguidas sin veredicto y
+        # cuándo vuelve a tocar (None = en el siguiente barrido).
+        "attempts": int(getattr(company, "vies_attempts", 0) or 0),
+        "next_retry_at": next_retry.isoformat() if (next_retry and not stale) else None,
     }
 
 
@@ -126,12 +131,39 @@ def needs_vies_check(company: Any, *, now: datetime | None = None) -> bool:
     return now - checked >= limit
 
 
-def apply_result(company: Company, result: ViesResult) -> None:
+#: Backoff por empresa del barrido en segundo plano (`vies_sweep`): tras cada
+#: consulta sin veredicto se espera más antes de la siguiente. Tope: un día
+#: (≈ 5 consultas el primer día, luego una diaria).
+RETRY_BACKOFF: tuple[timedelta, ...] = (
+    timedelta(minutes=30), timedelta(hours=1), timedelta(hours=2),
+    timedelta(hours=4), timedelta(hours=8), timedelta(hours=24),
+)
+
+
+def retry_backoff(attempts: int) -> timedelta:
+    """Espera hasta el siguiente reintento tras `attempts` consultas seguidas
+    sin veredicto (1 → 30 min … 6+ → 24 h)."""
+    index = min(max(int(attempts or 0), 1), len(RETRY_BACKOFF)) - 1
+    return RETRY_BACKOFF[index]
+
+
+def apply_result(company: Company, result: ViesResult, *, now: datetime | None = None) -> None:
+    """Guarda el resultado en la empresa y lleva el control del reintento:
+    sin veredicto (`desconocido`) suma un intento y fija `vies_next_retry_at`
+    con backoff creciente; con veredicto firme lo pone a cero."""
+    now = now or datetime.now(UTC)
     company.vies_status = result.status
-    company.vies_checked_at = result.checked_at or datetime.now(UTC)
+    company.vies_checked_at = result.checked_at or now
     company.vies_vat = result.vat or None
     company.vies_name = result.name
     company.vies_address = result.address
+    if result.status == VIES_DESCONOCIDO:
+        attempts = int(getattr(company, "vies_attempts", 0) or 0) + 1
+        company.vies_attempts = attempts
+        company.vies_next_retry_at = now + retry_backoff(attempts)
+    else:
+        company.vies_attempts = 0
+        company.vies_next_retry_at = None
 
 
 def vies_enabled() -> bool:

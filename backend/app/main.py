@@ -305,6 +305,22 @@ async def _arm_workflows_scheduler() -> None:
 
 
 @app.on_event("startup")
+async def _arm_vies_sweep() -> None:
+    """Fase VIES — barrido periódico de los NIF-IVA pendientes de veredicto
+    (cola `vies:sweep`, la escucha `worker-workflows`)."""
+    try:
+        from app.services.vies_sweep import arm  # noqa: PLC0415
+
+        arm()
+    except Exception:  # noqa: BLE001
+        import logging  # noqa: PLC0415
+
+        logging.getLogger(__name__).warning(
+            "vies.sweep arm failed at startup", exc_info=True
+        )
+
+
+@app.on_event("startup")
 async def _arm_gmail_oauth_lifecycle() -> None:
     """PR-OAuth-Permisos-Admin Items 9 + 13. Arma los crons de aviso de
     caducidad de token Gmail, digest admin y sync de aliases Send-As."""

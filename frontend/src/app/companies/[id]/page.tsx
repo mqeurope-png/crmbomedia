@@ -411,6 +411,12 @@ export default function CompanyDetailPage() {
                 {vies.checked_at ? (
                   <span className="muted small"> · comprobado {formatBackendDateTime(vies.checked_at)}</span>
                 ) : null}
+                {vies.status === "desconocido" || vies.status === "pendiente" ? (
+                  <span className="muted small">
+                    {" "}· se reintenta solo en segundo plano
+                    {vies.next_retry_at ? ` (próximo intento ${formatBackendDateTime(vies.next_retry_at)})` : ""}
+                  </span>
+                ) : null}
                 {" "}
                 <button type="button" className="button small secondary" disabled={viesBusy}
                         title="Consulta el NIF-IVA en el servicio oficial de la UE (salta la caché)"
