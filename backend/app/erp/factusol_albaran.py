@@ -628,6 +628,7 @@ def attach_invoice(
     inv = _status_value(order.invoice_status)
     order.invoice_status = InvoiceStatus.INVOICED_BY_ERP
     order.factusol_invoice_number = str(int(codigo))
+    order.factusol_invoice_serie = int(serie)  # Lote 2 · B: serie + número
     _history(
         session, order, domain=StatusDomain.INVOICE, from_status=inv,
         to_status=InvoiceStatus.INVOICED_BY_ERP.value,

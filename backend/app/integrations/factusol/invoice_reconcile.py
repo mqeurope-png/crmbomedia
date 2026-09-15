@@ -116,7 +116,10 @@ def reconcile_factusol_invoices(
             **info,
         })
         if not dry_run and info["codfac"]:
-            _auto_link_factura(session, o, info["codfac"], ejercicio, ref=ref, actor=None)
+            _auto_link_factura(
+                session, o, info["codfac"], ejercicio, ref=ref, actor=None,
+                serie=info["serie"],
+            )
 
     if not dry_run:
         session.commit()

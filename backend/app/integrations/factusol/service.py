@@ -695,6 +695,7 @@ def get_and_link_factusol_status(
         if not order.factusol_invoice_number:
             _auto_link_factura(
                 session, order, codfac, ejercicio, ref=info["ref"], actor=actor,
+                serie=coerce_serie(info["factura"].get("TIPFAC")),
             )
             session.commit()
             auto_linked = True
@@ -752,6 +753,7 @@ def emit_invoice(
         codfac = str(existing["factura"].get("CODFAC"))
         _auto_link_factura(
             session, order, codfac, ejercicio, ref=existing["ref"], actor=actor,
+            serie=coerce_serie(existing["factura"].get("TIPFAC")),
         )
         session.commit()
         logger.info("factusol: factura ya existía, auto-vinculada order=%s codfac=%s",
@@ -870,6 +872,9 @@ def emit_invoice(
     now = datetime.now(UTC)
     order.invoice_status = InvoiceStatus.INVOICED_BY_ERP.value
     order.factusol_invoice_number = codfac
+    # Lote 2 · B: SIEMPRE serie + número (el número solo es único por serie;
+    # con el número desnudo los homónimos de otra serie se cruzaban).
+    order.factusol_invoice_serie = coerce_serie(serie)
     session.add(OrderStatusHistory(
         order_id=order.id, domain=StatusDomain.INVOICE,
         from_status=inv, to_status=InvoiceStatus.INVOICED_BY_ERP.value,
@@ -1008,14 +1013,18 @@ def _emit_from_albaran(
 
 def _auto_link_factura(
     session: Session, order: Order, codfac: str, ejercicio: str,
-    *, ref: str | None, actor: User | None = None,
+    *, ref: str | None, actor: User | None = None, serie: int | None = None,
 ) -> None:
     """Marca el pedido como facturado apuntando a un CODFAC que YA existe en
-    FACTUSOL (no escribe nada en FACTUSOL). Escribe historial + SyncLog."""
+    FACTUSOL (no escribe nada en FACTUSOL). Escribe historial + SyncLog.
+    Lote 2 · B: guarda también la SERIE (TIPFAC) cuando el caller la conoce —
+    el número solo es único por serie."""
     inv = _status_value(order.invoice_status)
     now = datetime.now(UTC)
     order.invoice_status = InvoiceStatus.INVOICED_BY_ERP.value
     order.factusol_invoice_number = str(codfac)
+    if serie is not None:
+        order.factusol_invoice_serie = int(serie)
     session.add(OrderStatusHistory(
         order_id=order.id, domain=StatusDomain.INVOICE,
         from_status=inv, to_status=InvoiceStatus.INVOICED_BY_ERP.value,
@@ -1023,6 +1032,7 @@ def _auto_link_factura(
         reason="Factura localizada en FACTUSOL (vinculada automáticamente)",
         metadata_json=json.dumps({
             "factusol_codfac": str(codfac), "factusol_ref": ref,
+            "factusol_serie": serie,
             "factusol_ejercicio": ejercicio, "source": "auto_linked_from_factusol",
         }),
     ))
