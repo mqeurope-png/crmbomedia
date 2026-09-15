@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { extractErrorMessage } from "../../lib/errors";
 import {
   getContrapartidas,
+  getFactusolFacturaCobro,
   getFactusolFormasPago,
   getOrderFactusolCobro,
   registerInvoiceCollection,
@@ -21,28 +22,44 @@ function eur(n: number | null | undefined): string {
   return n == null ? "—" : `${n.toFixed(2)} €`;
 }
 
-/** «Registrar cobro en FACTUSOL» — modal COMPARTIDO por la ficha del pedido y
- *  la fila de la bandeja. Reutiliza el motor F-4-B tal cual: el cobro se
- *  registra con `POST /factusol/documents/facturas/{serie}/{codigo}/collection`
- *  (solo `F_LCO` + `ESTFAC=2`, cola `factusol:writes`, idempotente).
+/** «Registrar cobro en FACTUSOL» — modal COMPARTIDO por la ficha del pedido, la
+ *  fila de la bandeja y (Fase 5) el explorador de documentos. Reutiliza el motor
+ *  F-4-B tal cual: el cobro se registra con `POST /factusol/documents/facturas/
+ *  {serie}/{codigo}/collection` (solo `F_LCO` + `ESTFAC=2`, cola
+ *  `factusol:writes`, idempotente).
  *
- *  Al abrir resuelve la factura del pedido EN VIVO (serie + número, importe,
- *  saldo, forma de pago, cuenta sugerida y avisos). Ya cobrada → estado
- *  «Cobrado», sin doble cobro. Con líneas de cobro previas (anticipo /
- *  posible doble cobro) AVISA pero deja decidir. Confirmación explícita antes
- *  de escribir; al terminar re-comprueba la factura (saldo ≈ 0). */
+ *  Se abre de dos formas: con un pedido de BoHub (`orderId`/`orderNumber`, que
+ *  resuelve su factura) o con una factura de FACTUSOL directa (`factura`,
+ *  serie+número, sin pedido). En ambos casos resuelve EN VIVO importe, saldo,
+ *  forma de pago, cuenta sugerida y avisos. Ya cobrada → «Cobrado», sin doble
+ *  cobro. Con líneas de cobro previas AVISA pero deja decidir. Confirmación
+ *  explícita antes de escribir; al terminar re-comprueba la factura (saldo ≈ 0). */
 export function RegistrarCobroModal({
   orderId,
   orderNumber,
+  factura,
   onClose,
   onDone,
 }: {
-  orderId: string;
-  orderNumber: string;
+  orderId?: string;
+  orderNumber?: string;
+  /** Fase 5 — cobro de una factura de FACTUSOL sin pedido de BoHub. */
+  factura?: { serie: number; codigo: number | string; numero: string };
   onClose: () => void;
   /** Se llama con el estado re-comprobado tras registrar (o si ya estaba cobrada). */
   onDone?: (info: OrderCobroInfo) => void;
 }) {
+  // Deps por primitivos (no el objeto `factura`, que el padre recrea en cada
+  // render): así el efecto de carga no se re-dispara en bucle.
+  const facSerie = factura?.serie;
+  const facCodigo = factura?.codigo;
+  const reload = useCallback(
+    (): Promise<OrderCobroInfo> =>
+      facSerie !== undefined && facCodigo !== undefined
+        ? getFactusolFacturaCobro(facSerie, facCodigo)
+        : getOrderFactusolCobro(orderId as string),
+    [facSerie, facCodigo, orderId],
+  );
   const [info, setInfo] = useState<OrderCobroInfo | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -61,7 +78,7 @@ export function RegistrarCobroModal({
     let alive = true;
     setLoading(true);
     Promise.resolve()
-      .then(() => getOrderFactusolCobro(orderId))
+      .then(() => reload())
       .then((res) => {
         if (!alive) return;
         setInfo(res);
@@ -81,7 +98,7 @@ export function RegistrarCobroModal({
       .then((items) => { if (alive) setFormas(items ?? []); })
       .catch(() => undefined);
     return () => { alive = false; };
-  }, [orderId]);
+  }, [reload]);
 
   const pendiente = info?.status === "pendiente";
   const cobrada = info?.status === "cobrada";
@@ -102,7 +119,7 @@ export function RegistrarCobroModal({
         forma: forma || null, observaciones: observaciones.trim() || null,
       });
       if (res.status === "already") {
-        const fresh = await getOrderFactusolCobro(orderId);
+        const fresh = await reload();
         setInfo(fresh);
         setSuccess(`La factura ${res.numero} ya constaba cobrada en FACTUSOL: no se ha registrado nada.`);
         onDone?.(fresh);
@@ -123,7 +140,7 @@ export function RegistrarCobroModal({
         return;
       }
       // Re-chequeo: la factura debe quedar con saldo ≈ 0 / ESTFAC=2.
-      const fresh = await getOrderFactusolCobro(orderId);
+      const fresh = await reload();
       setInfo(fresh);
       if (fresh.status === "cobrada") {
         setSuccess(
@@ -144,7 +161,7 @@ export function RegistrarCobroModal({
     }
   }
 
-  const title = `Registrar cobro en FACTUSOL · ${orderNumber}`;
+  const title = `Registrar cobro en FACTUSOL · ${orderNumber ?? factura?.numero ?? ""}`;
 
   return (
     <div className="modal-overlay" role="dialog" aria-modal="true" aria-label={title}>

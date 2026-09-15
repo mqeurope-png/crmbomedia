@@ -1,12 +1,21 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { PageHeader } from "../../components/PageHeader";
-import { cycleBadge, FactusolDocumentDetailModal } from
-  "../../components/erp/FactusolDocumentDetailModal";
+import {
+  cycleBadge,
+  defaultPdfLang,
+  FactusolDocumentDetailModal,
+} from "../../components/erp/FactusolDocumentDetailModal";
+import { ActionsMenu } from "../../components/erp/flow/ActionsMenu";
+import { RegimePill } from "../../components/erp/flow/RegimePill";
+import { RegistrarCobroModal } from "../../components/erp/RegistrarCobroModal";
+import { getCurrentUser } from "../../lib/api";
 import {
   downloadFacturasPdfZip,
   downloadFactusolDocumentPdf,
+  ERP_EDIT_ROLES,
   getFactusolSeries,
   listFactusolDocuments,
   saveBlob,
@@ -20,17 +29,18 @@ import { extractErrorMessage } from "../../lib/errors";
 
 const PAGE_SIZE = 100;
 
+/** Pestañas por tipo, en el orden de la maqueta («docs»): presupuestos,
+ *  pedidos de cliente, albaranes, facturas. La clave es el `FactusolDocType`
+ *  del backend; la etiqueta, la de la maqueta. */
 const TABS: { key: FactusolDocType; label: string }[] = [
-  { key: "pedidos", label: "Pedidos" },
   { key: "presupuestos", label: "Presupuestos" },
+  { key: "pedidos", label: "Pedidos cliente" },
   { key: "albaranes", label: "Albaranes" },
   { key: "facturas", label: "Facturas" },
 ];
 
-/** E3-B — estados del ciclo por los que se puede filtrar en cada pestaña,
- *  con la semántica de CADA tipo (E3-B-fix1): un albarán «pendiente» está
- *  «Sin facturar» — nunca «sin albarán». Una factura no tiene «siguiente
- *  paso», así que su pestaña no ofrece este filtro. */
+/** E3-B — estados del ciclo por los que se puede filtrar en cada pestaña, con
+ *  la semántica de CADA tipo: un albarán «pendiente» está «Sin facturar». */
 const CICLO_OPTIONS: Partial<Record<
   FactusolDocType,
   { value: NonNullable<FactusolDocumentFilters["ciclo"]>; label: string }[]
@@ -51,33 +61,42 @@ const CICLO_OPTIONS: Partial<Record<
   ],
 };
 
-/** Celda «Ciclo» (E3-B): las facturas enseñan su origen; el resto, el badge
- *  del estado del ciclo PRE→ALB→FAC con la semántica de SU tipo
- *  (E3-B-fix1). Sin anotación (el backend la sirve best-effort) → «—». */
-function renderCiclo(d: FactusolDocument) {
-  const ciclo = d.ciclo;
-  if (!ciclo) return <span className="muted">—</span>;
-  if (d.doc_type === "facturas") {
-    return ciclo.origen.length > 0 ? (
-      <span className="muted small">
-        de {ciclo.origen.map((o) => o.numero).join(", ")}
-      </span>
-    ) : (
-      <span className="muted">—</span>
-    );
-  }
-  const badge = cycleBadge(d.doc_type, ciclo);
-  return badge ? (
-    <span className={badge.className}>{badge.label}</span>
-  ) : (
-    <span className="muted">—</span>
-  );
+/** Orden consistente con la pantalla de Proformas: dropdown «Ordenar por» +
+ *  botón de sentido. El backend ordena el conjunto completo; `numero` es
+ *  numérico de verdad (ordena por CÓDIGO, 9 antes que 40). */
+const SORT_LABEL: Record<FactusolDocumentSort, string> = {
+  numero: "Nº", cliente: "Cliente", fecha: "Fecha", total: "Total",
+  saldo: "Saldo pend.",
+};
+
+function fmtDate(iso: string | null): string {
+  if (!iso) return "—";
+  const [y, m, d] = iso.slice(0, 10).split("-");
+  return y && m && d ? `${d}/${m}/${y}` : iso;
 }
 
-/** ERP-E3-A/E3-B — explorador de documentos FACTUSOL. Lectura EN VIVO (sin
- *  cache): cada listado consulta la contabilidad real, igual que la vista
- *  de proformas de C-4. Desde E3-B el detalle permite crear el siguiente
- *  documento del ciclo (albarán/factura). */
+function eur(n: number | null | undefined): string {
+  return n === null || n === undefined ? "—" : `${n.toFixed(2)} €`;
+}
+
+/** Idioma del PDF por el país del cliente (E4-fix2): mismo criterio que el
+ *  resto del ERP. Prefiere el ISO2 del CRM; cae al país del documento. */
+function pdfLangFor(d: FactusolDocument) {
+  return defaultPdfLang(d.country_iso2 ?? d.cliente_pais);
+}
+
+/** Una factura está cobrada cuando ESTFAC=2 (mismo criterio que el workflow):
+ *  entonces no se ofrece «Registrar cobro». */
+function facturaCobrada(d: FactusolDocument): boolean {
+  return String(d.estado ?? "").replace(/\.0$/, "") === "2";
+}
+
+/** ERP-E3 / Fase 5 — explorador de documentos FACTUSOL con los componentes
+ *  reales del ERP (pastilla país·régimen, badge de estado, «⋯»), lectura EN
+ *  VIVO (sin cache) y solo lectura salvo el cobro F-4-B. Por documento se
+ *  ofrece la acción que toca: PDF (todos), «Registrar cobro» (facturas
+ *  pendientes, motor F-4-B), y «Crear/Abrir pedido» de BoHub (presupuestos /
+ *  pedidos de cliente). Filtros y orden consistentes con Proformas. */
 export default function FactusolDocumentosPage() {
   const [tab, setTab] = useState<FactusolDocType>("facturas");
   const [items, setItems] = useState<FactusolDocument[]>([]);
@@ -85,29 +104,36 @@ export default function FactusolDocumentosPage() {
   const [offset, setOffset] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [series, setSeries] = useState<FactusolSerie[]>([]);
   const [detail, setDetail] = useState<FactusolDocument | null>(null);
+  const [canEdit, setCanEdit] = useState(false);
+  // Cobro F-4-B (solo facturas pendientes): la factura elegida para el modal.
+  const [cobrando, setCobrando] = useState<FactusolDocument | null>(null);
   // Descarga de PDF (solo facturas): selección múltiple → ZIP, y por fila.
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [downloading, setDownloading] = useState(false);
   const [dlError, setDlError] = useState<string | null>(null);
 
-  // Filtros. `clienteQ` viaja tal cual: el backend lo resuelve contra
-  // F_CLI por nombre, CIF o email (E3-A-fix1).
+  // Filtros. `clienteQ` viaja tal cual: el backend lo resuelve contra F_CLI
+  // por nombre, CIF o email (E3-A-fix1).
   const [serie, setSerie] = useState<string>("");
   const [clienteInput, setClienteInput] = useState("");
   const [clienteQ, setClienteQ] = useState("");
   const [fechaDesde, setFechaDesde] = useState("");
   const [fechaHasta, setFechaHasta] = useState("");
   const [q, setQ] = useState("");
-  // E3-B — filtro por estado del ciclo PRE→ALB→FAC.
   const [ciclo, setCiclo] = useState<string>("");
-  // ERP-F3 — filtro por estado de COBRO (solo facturas): ""=todas, "0"=
-  // pendientes de cobro, "2"=cobradas. Se manda por el filtro `estado`.
+  // ERP-F3 — filtro por estado de COBRO (solo facturas), por `estado`.
   const [pago, setPago] = useState<string>("");
-  // Orden (E3-A-fix1): sobre el conjunto completo filtrado, en el backend.
   const [sort, setSort] = useState<FactusolDocumentSort>("numero");
   const [dir, setDir] = useState<"asc" | "desc">("desc");
+
+  useEffect(() => {
+    getCurrentUser()
+      .then((u) => setCanEdit((ERP_EDIT_ROLES as readonly string[]).includes(u.role)))
+      .catch(() => setCanEdit(false));
+  }, []);
 
   useEffect(() => {
     getFactusolSeries()
@@ -126,10 +152,7 @@ export default function FactusolDocumentosPage() {
         fecha_hasta: fechaHasta || undefined,
         q: q.trim() || undefined,
         ciclo: (ciclo || undefined) as FactusolDocumentFilters["ciclo"],
-        // ERP-F3: filtro de cobro (solo facturas) sobre la columna `estado`.
         estado: tab === "facturas" && pago ? pago : undefined,
-        // E3-B-fix1: tras crear un documento se recarga saltando el cache
-        // del índice del ciclo, para que la columna CICLO no salga vieja.
         fresh_ciclo: fresh || undefined,
         sort,
         dir,
@@ -153,17 +176,6 @@ export default function FactusolDocumentosPage() {
     void load(0);
   }, [load]);
 
-  function toggleSort(column: FactusolDocumentSort) {
-    if (sort === column) {
-      setDir((d) => (d === "asc" ? "desc" : "asc"));
-    } else {
-      setSort(column);
-      // Texto asc primero (cliente); numérico/fecha desc primero, como el
-      // orden por defecto.
-      setDir(column === "cliente" ? "asc" : "desc");
-    }
-  }
-
   function limpiar() {
     setSerie("");
     setClienteInput("");
@@ -175,7 +187,7 @@ export default function FactusolDocumentosPage() {
     setPago("");
   }
 
-  // --- Descarga de PDF de facturas (solo lectura) -------------------------
+  // --- Descarga de PDF ----------------------------------------------------
   const rowKey = (d: FactusolDocument) => `${d.serie}-${d.codigo}`;
 
   function toggleRow(key: string) {
@@ -197,9 +209,9 @@ export default function FactusolDocumentosPage() {
     setDownloading(true);
     try {
       const blob = await downloadFactusolDocumentPdf(
-        "facturas", d.serie, d.codigo,
+        tab, d.serie, d.codigo, pdfLangFor(d),
       );
-      saveBlob(blob, `Factura_${d.serie}-${d.codigo}.pdf`);
+      saveBlob(blob, `${TABS.find((t) => t.key === tab)?.label ?? "Documento"}_${d.numero}.pdf`);
     } catch (e) {
       setDlError(extractErrorMessage(e, "No se pudo descargar el PDF."));
     } finally {
@@ -230,12 +242,58 @@ export default function FactusolDocumentosPage() {
     serie !== "" || clienteQ !== "" || fechaDesde !== "" ||
     fechaHasta !== "" || q.trim() !== "" || ciclo !== "" || pago !== "";
   const cicloOptions = CICLO_OPTIONS[tab];
+  const isFacturas = tab === "facturas";
+  const sortKeys: FactusolDocumentSort[] = isFacturas
+    ? ["numero", "cliente", "fecha", "total", "saldo"]
+    : ["numero", "cliente", "fecha", "total"];
+
+  /** Acción principal por documento (la que toca según el tipo/estado). */
+  function primaryAction(d: FactusolDocument) {
+    if (isFacturas) {
+      if (canEdit && !facturaCobrada(d) && d.serie !== null && d.codigo !== null) {
+        return (
+          <button
+            type="button" className="button small"
+            onClick={(e) => { e.stopPropagation(); setCobrando(d); }}
+          >
+            Registrar cobro
+          </button>
+        );
+      }
+      return null;
+    }
+    if (tab === "presupuestos" || tab === "pedidos") {
+      if (d.order) {
+        return (
+          <Link
+            href={`/erp/orders/${d.order.id}`} className="button small"
+            onClick={(e) => e.stopPropagation()}
+          >
+            Abrir pedido {d.order.order_number}
+          </Link>
+        );
+      }
+      if (canEdit && d.serie !== null && d.codigo !== null) {
+        return (
+          <Link
+            href={`/erp/orders/new?doc_type=${tab}&serie=${d.serie}&codigo=${d.codigo}`}
+            className="button small"
+            onClick={(e) => e.stopPropagation()}
+          >
+            Crear pedido
+          </Link>
+        );
+      }
+    }
+    return null;
+  }
 
   return (
-    <main className="shell">
+    <main className="shell shell-wide erp-flow">
       <PageHeader
         title="Documentos FACTUSOL"
-        description="Lectura en vivo de la contabilidad — pedidos, presupuestos, albaranes y facturas."
+        eyebrow="ERP"
+        description="Explorador de presupuestos, pedidos, albaranes y facturas — lectura en vivo."
       />
 
       <div className="erp-doc-tabs" role="tablist" aria-label="Tipo de documento">
@@ -246,31 +304,31 @@ export default function FactusolDocumentosPage() {
             role="tab"
             aria-selected={tab === t.key}
             className={`pill-toggle ${tab === t.key ? "is-active" : ""}`}
-            onClick={() => { setTab(t.key); setDetail(null); setCiclo(""); setPago(""); }}
+            onClick={() => {
+              setTab(t.key); setDetail(null); setCiclo(""); setPago("");
+              setSort("numero"); setDir("desc");
+            }}
           >
             {t.label}
           </button>
         ))}
       </div>
 
-      <div className="erp-doc-filters">
-        <label className="field">
-          <span>Serie / empresa</span>
-          <select
-            value={serie}
-            aria-label="Serie / empresa"
-            onChange={(e) => setSerie(e.target.value)}
-          >
-            <option value="">Todas</option>
-            {series.map((s) => (
-              <option key={s.serie} value={s.serie}>
-                {s.serie} · {s.nombre}
-              </option>
-            ))}
-          </select>
-        </label>
+      {error ? <p className="form-error" role="alert">{error}</p> : null}
+      {notice ? <p className="form-info" role="status">{notice}</p> : null}
+      {dlError ? <p className="form-error">{dlError}</p> : null}
 
-        <label className="field erp-doc-filter-cliente">
+      <div className="erp-flow-filters" role="search" aria-label="Filtros de documentos">
+        <label className="field erp-flow-filter-grow">
+          <span className="sr-only">Buscar documento</span>
+          <input
+            type="search" value={q}
+            placeholder="Nº, referencia o cliente…"
+            aria-label="Buscar por número, referencia o cliente"
+            onChange={(e) => setQ(e.target.value)}
+          />
+        </label>
+        <label className="field">
           <span>Cliente, CIF o email</span>
           <span className="erp-doc-cliente-buscar">
             <input
@@ -279,56 +337,41 @@ export default function FactusolDocumentosPage() {
               value={clienteInput}
               aria-label="Cliente, CIF o email"
               onChange={(e) => setClienteInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") setClienteQ(clienteInput);
-              }}
+              onKeyDown={(e) => { if (e.key === "Enter") setClienteQ(clienteInput); }}
             />
             <button
-              type="button"
-              className="button small secondary"
+              type="button" className="button small secondary"
               onClick={() => setClienteQ(clienteInput)}
             >
               Buscar
             </button>
           </span>
         </label>
-
+        <label className="field">
+          <span>Serie / empresa</span>
+          <select value={serie} aria-label="Serie / empresa"
+                  onChange={(e) => setSerie(e.target.value)}>
+            <option value="">Todas</option>
+            {series.map((s) => (
+              <option key={s.serie} value={s.serie}>{s.serie} · {s.nombre}</option>
+            ))}
+          </select>
+        </label>
         <label className="field">
           <span>Desde</span>
-          <input
-            type="date"
-            value={fechaDesde}
-            aria-label="Fecha desde"
-            onChange={(e) => setFechaDesde(e.target.value)}
-          />
+          <input type="date" value={fechaDesde} aria-label="Fecha desde"
+                 onChange={(e) => setFechaDesde(e.target.value)} />
         </label>
         <label className="field">
           <span>Hasta</span>
-          <input
-            type="date"
-            value={fechaHasta}
-            aria-label="Fecha hasta"
-            onChange={(e) => setFechaHasta(e.target.value)}
-          />
-        </label>
-        <label className="field erp-doc-filter-q">
-          <span>Nº / referencia</span>
-          <input
-            type="search"
-            placeholder="5-260066, BOP-099917…"
-            value={q}
-            aria-label="Buscar por número o referencia"
-            onChange={(e) => setQ(e.target.value)}
-          />
+          <input type="date" value={fechaHasta} aria-label="Fecha hasta"
+                 onChange={(e) => setFechaHasta(e.target.value)} />
         </label>
         {cicloOptions ? (
           <label className="field">
             <span>Ciclo</span>
-            <select
-              value={ciclo}
-              aria-label="Estado del ciclo"
-              onChange={(e) => setCiclo(e.target.value)}
-            >
+            <select value={ciclo} aria-label="Estado del ciclo"
+                    onChange={(e) => setCiclo(e.target.value)}>
               <option value="">Todos</option>
               {cicloOptions.map((opt) => (
                 <option key={opt.value} value={opt.value}>{opt.label}</option>
@@ -336,14 +379,11 @@ export default function FactusolDocumentosPage() {
             </select>
           </label>
         ) : null}
-        {tab === "facturas" ? (
+        {isFacturas ? (
           <label className="field">
             <span>Cobro</span>
-            <select
-              value={pago}
-              aria-label="Estado de cobro"
-              onChange={(e) => setPago(e.target.value)}
-            >
+            <select value={pago} aria-label="Estado de cobro"
+                    onChange={(e) => setPago(e.target.value)}>
               <option value="">Todas</option>
               <option value="0">Pendientes de cobro</option>
               <option value="1">Parciales</option>
@@ -351,31 +391,36 @@ export default function FactusolDocumentosPage() {
             </select>
           </label>
         ) : null}
+        <label className="field">
+          <span>Ordenar por</span>
+          <select value={sort} aria-label="Ordenar por"
+                  onChange={(e) => setSort(e.target.value as FactusolDocumentSort)}>
+            {sortKeys.map((k) => <option key={k} value={k}>{SORT_LABEL[k]}</option>)}
+          </select>
+        </label>
+        <button
+          type="button" className="button small secondary"
+          aria-label={dir === "desc" ? "Orden descendente" : "Orden ascendente"}
+          title={dir === "desc" ? "Descendente (pulsa para ascendente)" : "Ascendente (pulsa para descendente)"}
+          onClick={() => setDir((d) => (d === "desc" ? "asc" : "desc"))}
+        >
+          {dir === "desc" ? "↓ desc" : "↑ asc"}
+        </button>
         {hasFilters ? (
-          <button
-            type="button"
-            className="button small secondary erp-doc-clear"
-            onClick={limpiar}
-          >
+          <button type="button" className="button small secondary erp-doc-clear"
+                  onClick={limpiar}>
             Limpiar filtros
           </button>
         ) : null}
-        {tab === "facturas" && selected.size > 0 ? (
+        {isFacturas && selected.size > 0 ? (
           <button
-            type="button"
-            className="button small"
-            disabled={downloading}
+            type="button" className="button small" disabled={downloading}
             onClick={() => void downloadSelectedZip()}
           >
-            {downloading
-              ? "Descargando…"
-              : `Descargar PDF (ZIP) (${selected.size})`}
+            {downloading ? "Descargando…" : `Descargar PDF (ZIP) (${selected.size})`}
           </button>
         ) : null}
       </div>
-
-      {error ? <p className="form-error">{error}</p> : null}
-      {dlError ? <p className="form-error">{dlError}</p> : null}
 
       {loading ? (
         <p className="muted">Consultando FACTUSOL…</p>
@@ -386,7 +431,7 @@ export default function FactusolDocumentosPage() {
           <table className="data-table erp-doc-table">
             <thead>
               <tr>
-                {tab === "facturas" ? (
+                {isFacturas ? (
                   <th className="erp-doc-check">
                     <input
                       type="checkbox"
@@ -396,94 +441,103 @@ export default function FactusolDocumentosPage() {
                     />
                   </th>
                 ) : null}
-                {([
-                  ["numero", "Número"],
-                  ["cliente", "Cliente"],
-                  ["fecha", "Fecha"],
-                  ["total", "Total"],
-                  // F3-fix1 — saldo pendiente de cobro, ordenable, solo en la
-                  // pestaña de facturas.
-                  ...(tab === "facturas"
-                    ? [["saldo", "Saldo pend."] as [FactusolDocumentSort, string]]
-                    : []),
-                ] as [FactusolDocumentSort, string][]).map(([col, label]) => (
-                  <th
-                    key={col}
-                    aria-sort={
-                      sort === col
-                        ? dir === "asc" ? "ascending" : "descending"
-                        : "none"
-                    }
-                  >
-                    <button
-                      type="button"
-                      className="erp-doc-sort"
-                      onClick={() => toggleSort(col)}
-                    >
-                      {label}
-                      {sort === col ? (dir === "asc" ? " ▲" : " ▼") : ""}
-                    </button>
-                  </th>
-                ))}
+                <th>Nº</th>
+                <th>Cliente</th>
+                <th>Fecha</th>
+                <th>Total</th>
+                {isFacturas ? <th>Saldo pend.</th> : null}
                 <th>Estado</th>
-                <th>Ciclo</th>
-                <th>Referencia</th>
-                {tab === "facturas" ? <th>PDF</th> : null}
+                <th className="erp-doc-actions-col">Acciones</th>
               </tr>
             </thead>
             <tbody>
-              {items.map((d) => (
-                <tr
-                  key={`${d.serie}-${d.codigo}`}
-                  className="erp-doc-row"
-                  onClick={() => setDetail(d)}
-                >
-                  {tab === "facturas" ? (
-                    <td
-                      className="erp-doc-check"
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      <input
-                        type="checkbox"
-                        aria-label={`Seleccionar factura ${d.numero}`}
-                        checked={selected.has(rowKey(d))}
-                        onChange={() => toggleRow(rowKey(d))}
-                      />
+              {items.map((d) => {
+                const badge = cycleBadge(tab, d.ciclo ?? null);
+                return (
+                  <tr
+                    key={`${d.serie}-${d.codigo}`}
+                    className="erp-doc-row"
+                    onClick={() => setDetail(d)}
+                  >
+                    {isFacturas ? (
+                      <td className="erp-doc-check" onClick={(e) => e.stopPropagation()}>
+                        <input
+                          type="checkbox"
+                          aria-label={`Seleccionar factura ${d.numero}`}
+                          checked={selected.has(rowKey(d))}
+                          onChange={() => toggleRow(rowKey(d))}
+                        />
+                      </td>
+                    ) : null}
+                    <td><strong className="mono">{d.numero}</strong></td>
+                    <td>
+                      <div className="erp-doc-cliente">
+                        {d.company ? (
+                          <Link href={`/companies/${d.company.id}`}
+                                onClick={(e) => e.stopPropagation()}>
+                            {d.company.name}
+                          </Link>
+                        ) : (d.cliente_nombre ?? d.cliente_codigo ?? "—")}
+                        {d.regime ? (
+                          <RegimePill regime={d.regime} country={d.country_iso2} />
+                        ) : d.exento ? (
+                          <span className="erp-flow-pill is-p"
+                                title="El documento lleva un 0 % explícito de IVA">
+                            exento · según el documento
+                          </span>
+                        ) : null}
+                      </div>
+                      {d.referencia ? (
+                        <span className="muted small">{d.referencia}</span>
+                      ) : null}
                     </td>
-                  ) : null}
-                  <td><strong>{d.numero}</strong></td>
-                  <td>{d.cliente_nombre ?? d.cliente_codigo ?? "—"}</td>
-                  <td>{d.fecha ?? "—"}</td>
-                  <td>
-                    {d.total !== null && d.total !== undefined
-                      ? `${d.total.toFixed(2)} €` : "—"}
-                  </td>
-                  {tab === "facturas" ? (
-                    <td className={
-                      d.saldo_pendiente && d.saldo_pendiente > 0.005
-                        ? "erp-doc-saldo-due" : undefined
-                    }>
-                      {d.saldo_pendiente !== null && d.saldo_pendiente !== undefined
-                        ? `${d.saldo_pendiente.toFixed(2)} €` : "—"}
+                    <td>{fmtDate(d.fecha)}</td>
+                    <td className="mono">{eur(d.total)}</td>
+                    {isFacturas ? (
+                      <td className={
+                        d.saldo_pendiente && d.saldo_pendiente > 0.005
+                          ? "erp-doc-saldo-due mono" : "mono"
+                      }>
+                        {d.saldo_pendiente !== null && d.saldo_pendiente !== undefined
+                          ? eur(d.saldo_pendiente) : "—"}
+                      </td>
+                    ) : null}
+                    <td>
+                      <span className={`badge ${d.estado_tone ?? "muted"}`}>
+                        {d.estado_label}
+                      </span>
+                      {badge && tab !== "facturas" ? (
+                        <span className={`${badge.className} erp-doc-ciclo-badge`}>{badge.label}</span>
+                      ) : null}
                     </td>
-                  ) : null}
-                  <td>{d.estado_label}</td>
-                  <td>{renderCiclo(d)}</td>
-                  <td className="muted small">{d.referencia ?? "—"}</td>
-                  {tab === "facturas" ? (
                     <td onClick={(e) => e.stopPropagation()}>
-                      <button
-                        type="button"
-                        className="button small secondary"
-                        disabled={downloading || d.serie === null || d.codigo === null}
-                        onClick={() => void downloadOne(d)}
-                      >
-                        PDF
-                      </button>
+                      <div className="erp-doc-row-actions">
+                        {primaryAction(d)}
+                        <button
+                          type="button" className="button small secondary"
+                          disabled={downloading || d.serie === null || d.codigo === null}
+                          onClick={() => void downloadOne(d)}
+                        >
+                          PDF
+                        </button>
+                        <ActionsMenu label={`Más acciones ${d.numero}`}>
+                          <button type="button" onClick={() => setDetail(d)}>
+                            Ver detalle
+                          </button>
+                          {d.company ? (
+                            <Link href={`/companies/${d.company.id}`}>Ver empresa</Link>
+                          ) : null}
+                          {d.order ? (
+                            <Link href={`/erp/orders/${d.order.id}`}>
+                              Abrir pedido {d.order.order_number}
+                            </Link>
+                          ) : null}
+                        </ActionsMenu>
+                      </div>
                     </td>
-                  ) : null}
-                </tr>
-              ))}
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
           <div className="erp-doc-pager">
@@ -491,16 +545,14 @@ export default function FactusolDocumentosPage() {
               {offset + 1}–{Math.min(offset + items.length, total)} de {total}
             </span>
             <button
-              type="button"
-              className="button small secondary"
+              type="button" className="button small secondary"
               disabled={offset === 0 || loading}
               onClick={() => void load(Math.max(0, offset - PAGE_SIZE))}
             >
               ← Anteriores
             </button>
             <button
-              type="button"
-              className="button small secondary"
+              type="button" className="button small secondary"
               disabled={offset + items.length >= total || loading}
               onClick={() => void load(offset + PAGE_SIZE)}
             >
@@ -517,6 +569,24 @@ export default function FactusolDocumentosPage() {
           codigo={detail.codigo}
           onClose={() => setDetail(null)}
           onChanged={() => void load(offset, true)}
+        />
+      ) : null}
+
+      {cobrando && cobrando.serie !== null && cobrando.codigo !== null ? (
+        <RegistrarCobroModal
+          factura={{
+            serie: cobrando.serie,
+            codigo: cobrando.codigo,
+            numero: cobrando.numero,
+          }}
+          onClose={() => setCobrando(null)}
+          onDone={(fresh) => {
+            setCobrando(null);
+            if (fresh.status === "cobrada") {
+              setNotice(`Factura ${fresh.numero ?? ""} cobrada en FACTUSOL.`);
+            }
+            void load(offset, true);
+          }}
         />
       ) : null}
     </main>

@@ -90,6 +90,116 @@ def _orders_by_codpre(session: Session, codpres: set[str]) -> dict[str, Order]:
     return {str(o.external_id): o for o in rows if o.external_id}
 
 
+def _orders_by_document(
+    session: Session, doc_type: str, docs: list[dict[str, Any]],
+) -> dict[str, Order]:
+    """Pedidos de BoHub creados desde estos documentos FACTUSOL, indexados por
+    `external_id`. Las proformas se importan con `external_id` = CODPRE a secas
+    (origen `factusol_proforma`); los pedidos de cliente con `serie-código`
+    (origen `factusol_pedido`). Los albaranes/facturas no crean pedido por sí
+    mismos: se devuelve `{}`."""
+    from app.erp.orders_from_factusol import (  # noqa: PLC0415
+        SOURCE_BY_DOC_TYPE,
+        external_id_for,
+    )
+
+    if doc_type not in SOURCE_BY_DOC_TYPE:
+        return {}
+    ext_ids: set[str] = set()
+    for d in docs:
+        codigo = d.get("codigo")
+        if codigo is None:
+            continue
+        try:
+            ext_ids.add(external_id_for(doc_type, int(d.get("serie") or 0), int(codigo)))
+        except (TypeError, ValueError):
+            continue
+    if not ext_ids:
+        return {}
+    rows = session.scalars(
+        select(Order).where(
+            Order.external_source == SOURCE_BY_DOC_TYPE[doc_type],
+            Order.external_id.in_(sorted(ext_ids)),
+        )
+    ).all()
+    return {str(o.external_id): o for o in rows if o.external_id}
+
+
+#: Tono de la pastilla de estado por tipo, con el MISMO criterio que el
+#: escritorio (los mismos códigos que `documents.ESTADO_LABELS`): presupuestos/
+#: pedidos ESTPRE/ESTPCL, albaranes ESTALB, facturas ESTFAC (2=cobrada,
+#: 0=pendiente de cobro, 1=cobro parcial). Fuera del mapa → neutro.
+_ESTADO_TONES: dict[str, dict[str, str]] = {
+    "presupuestos": {"0": "warn", "1": "ok", "2": "muted"},
+    "pedidos": {"0": "warn", "2": "ok"},
+    "albaranes": {"0": "muted", "1": "ok"},
+    "facturas": {"0": "warn", "1": "warn", "2": "ok"},
+}
+
+
+def _estado_tone(doc_type: str, estado: Any) -> str:
+    code = str(estado if estado is not None else "").strip()
+    if code.endswith(".0"):
+        code = code[:-2]
+    return _ESTADO_TONES.get(doc_type, {}).get(code, "muted")
+
+
+def annotate_documents_crm(
+    session: Session, docs: list[dict[str, Any]], doc_type: str,
+) -> None:
+    """Cruza cada documento (cabecera FACTUSOL ya normalizada) con el CRM, IGUAL
+    que `annotate_quotes` hace con las proformas, para el explorador de
+    documentos (Fase 5). Añade in place, sin escribir en FACTUSOL:
+
+    - `company`: empresa CRM vinculada por CODCLI (`{id,name,country,factusol_id}`).
+    - `country_iso2` / `regime` / `regime_label` / `regime_source` / `exento`:
+      el régimen de IVA (empresa → cabecera 0 % explícito), la MISMA regla que
+      la ficha y las proformas (`workflow.company_regime`).
+    - `order`: el pedido de BoHub si el documento ya se importó (presupuestos /
+      pedidos de cliente); `None` en el resto o si aún no se importó.
+    - `estado_tone`: el tono de la pastilla de estado (mismo criterio que el
+      escritorio)."""
+    codclis = {str(d.get("cliente_codigo")) for d in docs if d.get("cliente_codigo")}
+    companies = _companies_by_codcli(session, codclis)
+    orders = _orders_by_document(session, doc_type, docs)
+    from app.erp.orders_from_factusol import (  # noqa: PLC0415
+        SOURCE_BY_DOC_TYPE,
+        external_id_for,
+    )
+
+    linkable = doc_type in SOURCE_BY_DOC_TYPE
+    for d in docs:
+        code = str(d.get("cliente_codigo") or "").strip()
+        company = companies.get(code) or (
+            companies.get(str(int(code))) if code.isdigit() else None
+        )
+        regime = company_regime(company) if company is not None else None
+        exento_cabecera = header_says_no_iva(d.get("iva_pct"), d.get("base"))
+        d["company"] = _company_block(company) if company is not None else None
+        d["country_iso2"] = normalize_country(company.country) if (
+            company is not None and company.country) else None
+        d["regime"] = regime
+        d["regime_label"] = REGIME_LABELS[regime] if regime else (
+            "Exento (según el documento)" if exento_cabecera else None
+        )
+        d["regime_source"] = "empresa" if regime else ("cabecera" if exento_cabecera else None)
+        d["exento"] = (regime in ("intracomunitario", "exportacion")) if regime else exento_cabecera
+        d["estado_tone"] = _estado_tone(doc_type, d.get("estado"))
+        order = None
+        if linkable and d.get("codigo") is not None:
+            try:
+                ext_id = external_id_for(
+                    doc_type, int(d.get("serie") or 0), int(d["codigo"]),
+                )
+                order = orders.get(ext_id)
+            except (TypeError, ValueError):
+                order = None
+        d["order"] = (
+            {"id": order.id, "order_number": order.order_number}
+            if order is not None else None
+        )
+
+
 def _company_block(company: Company) -> dict[str, Any]:
     return {
         "id": company.id, "name": company.name, "country": company.country,

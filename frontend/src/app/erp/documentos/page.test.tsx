@@ -4,74 +4,116 @@ import FactusolDocumentosPage from "./page";
 import {
   downloadFacturasPdfZip,
   downloadFactusolDocumentPdf,
-  getFactusolDocument,
   getFactusolSeries,
   listFactusolDocuments,
   saveBlob,
 } from "../../lib/erpApi";
 
-jest.mock("../../lib/erpApi", () => ({
-  listFactusolDocuments: jest.fn(),
-  getFactusolDocument: jest.fn(),
-  getFactusolSeries: jest.fn(),
-  convertFactusolDocument: jest.fn(),
-  getFactusolConvertStatus: jest.fn(),
-  downloadFactusolDocumentPdf: jest.fn(),
-  downloadFacturasPdfZip: jest.fn(),
-  getErpSettings: jest.fn(() => Promise.resolve({ factusol_companies: {} })),
-  saveBlob: jest.fn(),
-  ERP_EDIT_ROLES: ["admin", "pedidos"],
-}));
-jest.mock("../../lib/api", () => ({
-  getCurrentUser: jest.fn(() => Promise.resolve({ role: "admin" })),
+/** ERP · Documentos FACTUSOL (Fase 5) — explorador con los componentes reales
+ *  del ERP: pestañas por tipo (maqueta «docs»), tabla con pastilla país·régimen
+ *  y de estado, y por documento la acción que toca (PDF en todos, «Registrar
+ *  cobro» F-4-B en facturas pendientes, «Crear/Abrir pedido» en presupuestos /
+ *  pedidos). Filtros y orden como en Proformas. */
+
+jest.mock("next/link", () => ({
+  __esModule: true,
+  default: ({ children, href, onClick }: {
+    children: React.ReactNode; href: string; onClick?: (e: unknown) => void;
+  }) => <a href={href} onClick={onClick}>{children}</a>,
 }));
 jest.mock("../../components/PageHeader", () => ({
   PageHeader: ({ title }: { title: string }) => <h1>{title}</h1>,
 }));
+jest.mock("../../lib/api", () => ({
+  getCurrentUser: jest.fn(() => Promise.resolve({ role: "admin" })),
+}));
+jest.mock("../../lib/erpApi", () => ({
+  listFactusolDocuments: jest.fn(),
+  getFactusolDocument: jest.fn(),
+  getFactusolSeries: jest.fn(),
+  downloadFactusolDocumentPdf: jest.fn(),
+  downloadFacturasPdfZip: jest.fn(),
+  saveBlob: jest.fn(),
+  ERP_EDIT_ROLES: ["admin", "pedidos"],
+}));
+// El detalle y el cobro se prueban en sus propios tests; aquí se mockean para
+// aislar la pantalla. `cycleBadge`/`defaultPdfLang` son helpers del módulo.
+jest.mock("../../components/erp/FactusolDocumentDetailModal", () => ({
+  FactusolDocumentDetailModal: ({ docType }: { docType: string }) => (
+    <div>DETALLE {docType}</div>
+  ),
+  cycleBadge: () => null,
+  defaultPdfLang: () => "es",
+}));
+jest.mock("../../components/erp/RegistrarCobroModal", () => ({
+  RegistrarCobroModal: ({ factura, onDone }: {
+    factura: { numero: string }; onDone?: (info: unknown) => void;
+  }) => (
+    <div role="dialog" aria-label="cobro">
+      COBRO {factura.numero}
+      <button type="button"
+              onClick={() => onDone?.({ status: "cobrada", numero: factura.numero })}>
+        REGISTRAR
+      </button>
+    </div>
+  ),
+}));
 
 const mockList = listFactusolDocuments as jest.Mock;
-const mockDetail = getFactusolDocument as jest.Mock;
 const mockSeries = getFactusolSeries as jest.Mock;
+const mockPdf = downloadFactusolDocumentPdf as jest.Mock;
+const mockZip = downloadFacturasPdfZip as jest.Mock;
 
-function doc(over = {}) {
+function factura(over = {}) {
   return {
     doc_type: "facturas", codigo: 260066, serie: 5, numero: "5-260066",
-    cliente_codigo: "99", cliente_nombre: "MOVIATICOS",
+    cliente_codigo: "2458", cliente_nombre: "DUPLICODER",
     fecha: "2026-08-21", total: 186.34, estado: "0",
-    estado_label: "Estado 0", referencia: "BOP-099917",
-    forma_pago: "002", ...over,
+    estado_label: "Pendiente de cobro", estado_tone: "warn",
+    referencia: "BOP-099917", forma_pago: "002", saldo_pendiente: 186.34,
+    company: { id: "es", name: "Duplicoder SL", country: "ES", factusol_id: "2458" },
+    country_iso2: "ES", regime: "nacional", regime_label: "Nacional (con IVA)",
+    regime_source: "empresa", exento: false, order: null, ...over,
   };
 }
 
 beforeEach(() => {
   mockList.mockReset();
-  mockList.mockResolvedValue({ items: [doc()], total: 1 });
-  mockDetail.mockReset();
+  mockList.mockResolvedValue({ items: [factura()], total: 1 });
   mockSeries.mockReset();
   mockSeries.mockResolvedValue({
     items: [
       { serie: 5, nombre: "Streamtec", is_default: true, is_known: true },
       { serie: 2, nombre: "MQ Europe", is_default: false, is_known: true },
-      { serie: 7, nombre: "Serie 7", is_default: false, is_known: false },
     ],
     default: 5,
   });
+  mockPdf.mockReset();
+  mockPdf.mockResolvedValue(new Blob());
+  mockZip.mockReset();
+  mockZip.mockResolvedValue(new Blob());
+  (saveBlob as jest.Mock).mockReset();
 });
 
-describe("ERP · Documentos (E3-A)", () => {
-  it("muestra las 4 pestañas y lista facturas por defecto", async () => {
+describe("ERP · Documentos FACTUSOL (Fase 5)", () => {
+  it("muestra las 4 pestañas de la maqueta y lista facturas con país·régimen", async () => {
     render(<FactusolDocumentosPage />);
-    for (const label of ["Pedidos", "Presupuestos", "Albaranes", "Facturas"]) {
+    for (const label of ["Presupuestos", "Pedidos cliente", "Albaranes", "Facturas"]) {
       expect(screen.getByRole("tab", { name: label })).toBeInTheDocument();
     }
     expect(await screen.findByText("5-260066")).toBeInTheDocument();
-    expect(screen.getByText("MOVIATICOS")).toBeInTheDocument();
+    // Empresa CRM vinculada + pastilla de régimen (país · régimen).
+    expect(screen.getByText("Duplicoder SL")).toBeInTheDocument();
+    expect(screen.getByText(/ES · nacional/)).toBeInTheDocument();
+    // Estado como PASTILLA (badge), no texto pelado.
+    const estado = screen.getByText("Pendiente de cobro");
+    expect(estado.className).toContain("badge");
     expect(mockList).toHaveBeenCalledWith(
       "facturas", expect.objectContaining({ limit: 100, offset: 0 }),
     );
   });
 
-  it("cambiar de pestaña re-consulta el tipo elegido", async () => {
+  it("cada pestaña consulta su tipo", async () => {
     const user = userEvent.setup();
     render(<FactusolDocumentosPage />);
     await screen.findByText("5-260066");
@@ -81,217 +123,128 @@ describe("ERP · Documentos (E3-A)", () => {
     );
   });
 
-  it("el filtro de serie viaja al backend; las series sin nombre no salen", async () => {
+  it("una factura pendiente ofrece «Registrar cobro» (F-4-B) y recarga al hacerlo", async () => {
     const user = userEvent.setup();
     render(<FactusolDocumentosPage />);
-    // Esperar a que carguen las opciones de series antes de seleccionar.
-    await screen.findByRole("option", { name: "5 · Streamtec" });
+    await screen.findByText("5-260066");
+    await user.click(screen.getByRole("button", { name: "Registrar cobro" }));
+    // Se abre el modal F-4-B con la factura (serie+número), sin pedido.
+    const dialog = await screen.findByRole("dialog", { name: "cobro" });
+    expect(within(dialog).getByText(/COBRO 5-260066/)).toBeInTheDocument();
+    mockList.mockClear();
+    await user.click(within(dialog).getByRole("button", { name: "REGISTRAR" }));
+    // Tras registrar, la lista se recarga (fresh) y avisa.
+    await waitFor(() => expect(mockList).toHaveBeenCalled());
+    expect(await screen.findByText(/cobrada en FACTUSOL/)).toBeInTheDocument();
+  });
+
+  it("una factura cobrada NO ofrece «Registrar cobro»", async () => {
+    mockList.mockResolvedValue({
+      items: [factura({ estado: "2", estado_label: "Cobrada", estado_tone: "ok",
+                        saldo_pendiente: 0 })],
+      total: 1,
+    });
+    render(<FactusolDocumentosPage />);
+    expect(await screen.findByText("Cobrada")).toBeInTheDocument();
     expect(
-      screen.queryByRole("option", { name: "7 · Serie 7" }),
+      screen.queryByRole("button", { name: "Registrar cobro" }),
     ).not.toBeInTheDocument();
-    await user.selectOptions(screen.getByLabelText("Serie / empresa"), "5");
-    await waitFor(() =>
-      expect(mockList).toHaveBeenCalledWith(
-        "facturas", expect.objectContaining({ serie: 5 }),
-      ),
-    );
   });
 
-  it("el campo cliente acepta CIF/email y viaja como cliente_q", async () => {
-    const user = userEvent.setup();
-    render(<FactusolDocumentosPage />);
-    await screen.findByText("5-260066");
-    const input = screen.getByLabelText("Cliente, CIF o email");
-    expect(input).toHaveAttribute(
-      "placeholder", expect.stringContaining("B12345678"),
-    );
-    await user.type(input, "admin@moviaticos.com{Enter}");
-    await waitFor(() =>
-      expect(mockList).toHaveBeenCalledWith(
-        "facturas",
-        expect.objectContaining({ cliente_q: "admin@moviaticos.com" }),
-      ),
-    );
-  });
-
-  it("las cabeceras ordenan asc/desc sobre el conjunto (toggle)", async () => {
-    const user = userEvent.setup();
-    render(<FactusolDocumentosPage />);
-    await screen.findByText("5-260066");
-    // Default: numero desc.
-    expect(mockList).toHaveBeenCalledWith(
-      "facturas", expect.objectContaining({ sort: "numero", dir: "desc" }),
-    );
-    await user.click(screen.getByRole("button", { name: /^Total/ }));
-    await waitFor(() =>
-      expect(mockList).toHaveBeenCalledWith(
-        "facturas", expect.objectContaining({ sort: "total", dir: "desc" }),
-      ),
-    );
-    // Segundo click en la misma columna → asc, con indicador.
-    await user.click(screen.getByRole("button", { name: /^Total/ }));
-    await waitFor(() =>
-      expect(mockList).toHaveBeenCalledWith(
-        "facturas", expect.objectContaining({ sort: "total", dir: "asc" }),
-      ),
-    );
-    expect(screen.getByRole("button", { name: /Total ▲/ })).toBeInTheDocument();
-  });
-
-  it("el detalle muestra la forma de pago con nombre", async () => {
-    mockDetail.mockResolvedValue({
-      ...doc(),
-      forma_pago_nombre: "Transferencia 30 días",
-      lines: [],
-    });
-    const user = userEvent.setup();
-    render(<FactusolDocumentosPage />);
-    await user.click(await screen.findByText("5-260066"));
-    expect(await screen.findByText("Transferencia 30 días")).toBeInTheDocument();
-    expect(screen.getByText("Forma de pago")).toBeInTheDocument();
-  });
-
-  it("abrir una fila carga el detalle con líneas", async () => {
-    mockDetail.mockResolvedValue({
-      ...doc(),
-      lines: [{
-        position: 1, codart: "99cy", description: "Tinta cyan",
-        quantity: 2, unit_price: 40, line_total: 80,
-      }],
-    });
-    const user = userEvent.setup();
-    render(<FactusolDocumentosPage />);
-    await user.click(await screen.findByText("5-260066"));
-    expect(await screen.findByText("Tinta cyan")).toBeInTheDocument();
-    expect(mockDetail).toHaveBeenCalledWith("facturas", 5, 260066, undefined);
-  });
-
-  it("pinta el badge del ciclo y filtra por él (E3-B)", async () => {
+  it("el PDF de una fila descarga por el tipo de la pestaña", async () => {
     const user = userEvent.setup();
     mockList.mockResolvedValue({
-      items: [doc({
-        doc_type: "presupuestos", codigo: 27, numero: "5-000027",
-        ciclo: {
-          albaranes: [{ doc_type: "albaranes", serie: 5, codigo: 500004,
-                        numero: "5-500004" }],
-          facturas: [{ doc_type: "facturas", serie: 5, codigo: 260063,
-                       numero: "5-260063" }],
-          origen: [], estado: "facturado",
-        },
-      })],
+      items: [factura({ doc_type: "albaranes", codigo: 500005, numero: "5-500005",
+                        estado: "1", estado_label: "Facturado", estado_tone: "ok" })],
       total: 1,
     });
     render(<FactusolDocumentosPage />);
-    await user.click(screen.getByRole("tab", { name: "Presupuestos" }));
-    // «Facturado» aparece también como opción del filtro: se aserta el BADGE.
-    const facturado = await screen.findAllByText("Facturado");
-    expect(facturado.some((el) => el.className.includes("badge"))).toBe(true);
-    // El filtro de ciclo existe en presupuestos y viaja al backend.
-    await user.selectOptions(
-      screen.getByLabelText("Estado del ciclo"), "facturado",
-    );
-    await waitFor(() =>
-      expect(mockList).toHaveBeenCalledWith(
-        "presupuestos", expect.objectContaining({ ciclo: "facturado" }),
-      ),
-    );
-  });
-
-  it("la pestaña facturas no ofrece filtro de ciclo y enseña el origen", async () => {
-    mockList.mockResolvedValue({
-      items: [doc({
-        ciclo: {
-          albaranes: [], facturas: [],
-          origen: [{ doc_type: "albaranes", serie: 5, codigo: 500004,
-                     numero: "5-500004" }],
-          estado: null,
-        },
-      })],
-      total: 1,
-    });
-    render(<FactusolDocumentosPage />);
-    expect(await screen.findByText(/de 5-500004/)).toBeInTheDocument();
-    expect(screen.queryByLabelText("Estado del ciclo")).not.toBeInTheDocument();
-  });
-
-  it("las opciones del filtro Ciclo dependen de la pestaña (E3-B-fix1)", async () => {
-    // test_cycle_filter_options_depend_on_tab
-    const user = userEvent.setup();
-    render(<FactusolDocumentosPage />);
-    await screen.findByText("5-260066");
-    // Facturas (pestaña por defecto): sin filtro de ciclo.
-    expect(screen.queryByLabelText("Estado del ciclo")).not.toBeInTheDocument();
-    // Albaranes: Sin facturar / Facturado — nunca «Sin albarán…».
-    await user.click(screen.getByRole("tab", { name: "Albaranes" }));
-    const filtroAlb = await screen.findByLabelText("Estado del ciclo");
-    expect(
-      within(filtroAlb).getByRole("option", { name: "Sin facturar" }),
-    ).toBeInTheDocument();
-    expect(
-      within(filtroAlb).getByRole("option", { name: "Facturado" }),
-    ).toBeInTheDocument();
-    expect(
-      within(filtroAlb).queryByRole("option", { name: /Sin albarán/ }),
-    ).not.toBeInTheDocument();
-    // Presupuestos: las tres fases del ciclo.
-    await user.click(screen.getByRole("tab", { name: "Presupuestos" }));
-    const filtroPre = await screen.findByLabelText("Estado del ciclo");
-    for (const name of ["Sin albarán ni factura", "Con albarán", "Facturado"]) {
-      expect(
-        within(filtroPre).getByRole("option", { name }),
-      ).toBeInTheDocument();
-    }
-  });
-
-  it("el badge del listado de albaranes dice «Sin facturar» (E3-B-fix1)", async () => {
-    mockList.mockResolvedValue({
-      items: [doc({
-        doc_type: "albaranes", codigo: 500005, numero: "5-500005",
-        ciclo: {
-          albaranes: [], facturas: [], origen: [],
-          estado: "pendiente", estado_label: "Sin facturar",
-        },
-      })],
-      total: 1,
-    });
-    const user = userEvent.setup();
-    render(<FactusolDocumentosPage />);
-    await user.click(screen.getByRole("tab", { name: "Albaranes" }));
-    // «Sin facturar» está también en el filtro: se aserta el BADGE de la fila.
-    const sinFacturar = await screen.findAllByText("Sin facturar");
-    expect(sinFacturar.some((el) => el.className.includes("badge"))).toBe(true);
-    expect(screen.queryByText(/Sin albarán ni factura/)).not.toBeInTheDocument();
-  });
-
-  it("«Limpiar filtros» resetea y re-consulta sin filtros", async () => {
-    const user = userEvent.setup();
-    render(<FactusolDocumentosPage />);
-    await screen.findByRole("option", { name: "2 · MQ Europe" });
-    await user.selectOptions(screen.getByLabelText("Serie / empresa"), "2");
-    await user.click(
-      await screen.findByRole("button", { name: "Limpiar filtros" }),
-    );
-    await waitFor(() => {
-      const last = mockList.mock.calls.at(-1);
-      expect(last?.[1].serie).toBeUndefined();
-    });
-  });
-
-  it("el botón PDF de una factura descarga su PDF por serie+número", async () => {
-    const user = userEvent.setup();
-    (downloadFactusolDocumentPdf as jest.Mock).mockResolvedValue(new Blob());
-    render(<FactusolDocumentosPage />);
-    await screen.findByText("5-260066");
+    await user.click(await screen.findByRole("tab", { name: "Albaranes" }));
+    await screen.findByText("5-500005");
     await user.click(screen.getByRole("button", { name: "PDF" }));
     await waitFor(() =>
-      expect(downloadFactusolDocumentPdf).toHaveBeenCalledWith("facturas", 5, 260066),
+      expect(mockPdf).toHaveBeenCalledWith("albaranes", 5, 500005, "es"),
     );
     expect(saveBlob).toHaveBeenCalled();
   });
 
+  it("un presupuesto ya importado enlaza «Abrir pedido»; sin importar, «Crear pedido»", async () => {
+    const user = userEvent.setup();
+    mockList.mockResolvedValue({
+      items: [
+        factura({ doc_type: "presupuestos", codigo: 27, numero: "5-000027",
+                  estado: "1", estado_label: "Aceptado", estado_tone: "ok",
+                  order: { id: "o27", order_number: "PRO-000027" } }),
+        factura({ doc_type: "presupuestos", codigo: 28, numero: "5-000028",
+                  estado: "0", estado_label: "Pendiente", estado_tone: "warn",
+                  order: null }),
+      ],
+      total: 2,
+    });
+    render(<FactusolDocumentosPage />);
+    await user.click(await screen.findByRole("tab", { name: "Presupuestos" }));
+    await screen.findByText("5-000027");
+    // Con pedido → «Abrir pedido» al detalle del pedido.
+    const abrir = screen.getByRole("link", { name: /Abrir pedido PRO-000027/ });
+    expect(abrir).toHaveAttribute("href", "/erp/orders/o27");
+    // Sin pedido → «Crear pedido» reutiliza el alta prefijada por la URL.
+    const crear = screen.getByRole("link", { name: "Crear pedido" });
+    expect(crear).toHaveAttribute(
+      "href", "/erp/orders/new?doc_type=presupuestos&serie=5&codigo=28",
+    );
+  });
+
+  it("la búsqueda viaja como `q` (número/referencia/cliente), estilo Proformas", async () => {
+    const user = userEvent.setup();
+    render(<FactusolDocumentosPage />);
+    await screen.findByText("5-260066");
+    await user.type(
+      screen.getByLabelText("Buscar por número, referencia o cliente"),
+      "moviaticos",
+    );
+    await waitFor(() =>
+      expect(mockList).toHaveBeenCalledWith(
+        "facturas", expect.objectContaining({ q: "moviaticos" }),
+      ),
+    );
+  });
+
+  it("«Ordenar por» y el sentido viajan al backend", async () => {
+    const user = userEvent.setup();
+    render(<FactusolDocumentosPage />);
+    await screen.findByText("5-260066");
+    // Por defecto: numero desc.
+    expect(mockList).toHaveBeenCalledWith(
+      "facturas", expect.objectContaining({ sort: "numero", dir: "desc" }),
+    );
+    await user.selectOptions(screen.getByLabelText("Ordenar por"), "fecha");
+    await waitFor(() =>
+      expect(mockList).toHaveBeenCalledWith(
+        "facturas", expect.objectContaining({ sort: "fecha" }),
+      ),
+    );
+    await user.click(screen.getByRole("button", { name: "Orden descendente" }));
+    await waitFor(() =>
+      expect(mockList).toHaveBeenCalledWith(
+        "facturas", expect.objectContaining({ dir: "asc" }),
+      ),
+    );
+  });
+
+  it("el filtro de cobro (solo facturas) viaja como `estado`", async () => {
+    const user = userEvent.setup();
+    render(<FactusolDocumentosPage />);
+    await screen.findByText("5-260066");
+    await user.selectOptions(screen.getByLabelText("Estado de cobro"), "0");
+    await waitFor(() =>
+      expect(mockList).toHaveBeenCalledWith(
+        "facturas", expect.objectContaining({ estado: "0" }),
+      ),
+    );
+  });
+
   it("la selección múltiple descarga las facturas en un ZIP", async () => {
     const user = userEvent.setup();
-    (downloadFacturasPdfZip as jest.Mock).mockResolvedValue(new Blob());
     render(<FactusolDocumentosPage />);
     await screen.findByText("5-260066");
     await user.click(
@@ -301,8 +254,20 @@ describe("ERP · Documentos (E3-A)", () => {
       await screen.findByRole("button", { name: /Descargar PDF \(ZIP\)/ }),
     );
     await waitFor(() =>
-      expect(downloadFacturasPdfZip).toHaveBeenCalledWith([{ serie: 5, codigo: 260066 }]),
+      expect(mockZip).toHaveBeenCalledWith([{ serie: 5, codigo: 260066 }]),
     );
     expect(saveBlob).toHaveBeenCalledWith(expect.anything(), "facturas_pdf.zip");
+  });
+
+  it("«Limpiar filtros» resetea y re-consulta sin filtros", async () => {
+    const user = userEvent.setup();
+    render(<FactusolDocumentosPage />);
+    await screen.findByRole("option", { name: "2 · MQ Europe" });
+    await user.selectOptions(screen.getByLabelText("Serie / empresa"), "2");
+    await user.click(await screen.findByRole("button", { name: "Limpiar filtros" }));
+    await waitFor(() => {
+      const last = mockList.mock.calls.at(-1);
+      expect(last?.[1].serie).toBeUndefined();
+    });
   });
 });

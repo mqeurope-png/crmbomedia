@@ -234,6 +234,26 @@ export default function NewManualOrderPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [presetCompanyId]);
 
+  // Fase 5 — «Crear pedido» desde el explorador de documentos: la URL trae
+  // ?doc_type=&serie=&codigo= y se precarga el documento FACTUSOL con el mismo
+  // flujo de importación (Fase 1/2), sin teclear serie ni número.
+  const presetDocType = searchParams?.get("doc_type") ?? null;
+  const presetDocSerie = searchParams?.get("serie") ?? null;
+  const presetDocCodigo = searchParams?.get("codigo") ?? null;
+
+  useEffect(() => {
+    if (presetDocType !== "presupuestos" && presetDocType !== "pedidos") return;
+    const serie = Number(presetDocSerie);
+    const codigo = Number(presetDocCodigo);
+    if (!Number.isInteger(serie) || serie <= 0
+        || !Number.isInteger(codigo) || codigo <= 0) return;
+    setFacDocType(presetDocType);
+    setFacSerie(String(serie));
+    setFacCodigo(String(codigo));
+    void loadFactusolDocument(presetDocType, serie, codigo);
+    // loadFactusolDocument solo usa setters/estado: referencia estable.
+  }, [presetDocType, presetDocSerie, presetDocCodigo]);
+
   // Autocomplete de empresas (patrón datalist debounced del CRM).
   useEffect(() => {
     const handle = window.setTimeout(() => {
