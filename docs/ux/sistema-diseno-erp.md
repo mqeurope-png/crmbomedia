@@ -58,6 +58,7 @@ prototipo usa Geist, no adoptada).
 | `--fs-body` | 14 px | cuerpo, filas, pares etiqueta/valor, botones |
 | `--fs-label` | 12 px | etiquetas, cabeceras de tabla, pastillas, chips |
 | `--fs-mono` / `--font-mono` | 13 px · `ui-monospace, SF Mono, Menlo, Consolas…` | **todo dato numérico** |
+| `--fs-tech` | 19 px | dato técnico del taller en la Cola SAT (nº de serie, licencia WhiteRIP): se lee de pie, a un metro de la pantalla, y se copia con un botón |
 
 Regla nueva: **todo dato numérico va en monoespaciada** para poder comparar
 y copiar sin equivocarse: referencias, nº de pedido/albarán/factura, NIF/CIF,
@@ -147,10 +148,13 @@ etiqueta/valor (`td::before { content: attr(data-label) }`).
 </table>
 ```
 
-Ya lo usan las tablas del detalle de documento FACTUSOL (líneas y cobros).
-La vista lista de la bandeja (`.erp-bandeja-table`, < 1100) y la tabla del
-taller (`.sat-table`, < 768) se apilan por CSS aunque aún no lleven
-`data-label`. **No hay scroll horizontal de página en ninguna pantalla.**
+Ya lo usan las tablas del detalle de documento FACTUSOL (líneas y cobros),
+la lista de Documentos FACTUSOL, la actividad reciente de la ficha de
+empresa, la tabla de orígenes de Ajustes ERP y la tabla de líneas compartida
+(`DocumentLinesTable`, proforma y pedido manual). La vista lista de la
+bandeja (`.erp-bandeja-table`, < 1100) y la tabla del taller (`.sat-table`,
+< 768) se apilan por CSS aunque aún no lleven `data-label`. **No hay scroll
+horizontal de página en ninguna pantalla.**
 
 ## E6 · Botones y modales
 
@@ -165,7 +169,9 @@ Escala de botones (una sola en todo el ERP; un primario por pantalla):
 
 Alto mínimo `--control-h` 40 px en escritorio y `--control-h-touch` 48 px
 por debajo de 768 px (todo control pulsable). `.button.small` (32 px) queda
-para filas de tabla y chips densos; `.button.lg` = 48 px.
+para filas de tabla y chips densos; `.button.lg` = 48 px. `--control-h-sm`
+36 px es solo para el botón «copiar» que acompaña a un dato técnico en la
+Cola SAT (va dentro de una tarjeta ya alta; en móvil sube a 48 px).
 
 Molde único de modal (`.modal-dialog`):
 
@@ -190,7 +196,9 @@ Normalizados en este lote: `CreateQuoteModal` (`erp-modal modal-wide`),
 `InvoiceEmailModal`, `OrderEmailModal`, `ExcludeSeguimientoModal`,
 `CancelOrderModal`, `EmbalarModal`, `EmitFactusolButton` (confirmación),
 `EmitFactusolModal`, `FactusolDocumentDetailModal` (detalle `wide` + dos
-confirmaciones) y `CompanyPickerModal` (520 / `wide` al crear).
+confirmaciones), `CompanyPickerModal` (siempre `wide`: el buscador enseña
+candidatos y el alta lleva VIES y FACTUSOL al lado), `LinkDocumentOrderModal`
+(vincular documento a pedido) y el «Ver ejemplo» de plantillas en Ajustes.
 `RegistrarCobroModal` ya seguía el molde estructurado.
 
 ## E7 · Responsive y accesibilidad
@@ -213,8 +221,10 @@ Acción principal fija abajo en móvil:
 
 Va al **final** del contenido de la pantalla (usa `position: sticky; bottom:
 0`, que solo se mantiene visible mientras queda contenido por debajo). En
-escritorio es una fila normal alineada a la derecha. La adopción en la ficha
-de pedido y en el alta de pedido manual queda para los lotes de pantalla.
+escritorio es una fila normal alineada a la derecha. La usan la ficha de
+pedido (siguiente acción del flujo) y el alta de pedido manual (total
+compacto + «Crear pedido»; la columna lateral pasa a `display: contents`
+por debajo de 1024 px para que la barra sea hija directa del formulario).
 
 Mínimos que cumple todo lo anterior: contraste 4,5:1, target 48 px en móvil,
 foco visible, nunca solo color (cada estado lleva su palabra).
@@ -232,11 +242,11 @@ los moldes (rejilla, modal, tabla responsive, barra fija) están definidos.
 
 - Confirmación **escrita** en «Anular pedido» (hoy pide motivo opcional y
   confirma con botón): es lógica de la ficha/`CancelOrderModal`.
-- Adoptar `PrimaryActionBar` en la ficha y en el alta de pedido manual.
-- `data-label` en las tablas de páginas (documentos FACTUSOL, seguimiento,
-  conciliación, actividad de empresa) para que el patrón responsive muestre
-  la etiqueta de cada valor; el CSS ya está.
+- `data-label` en las tablas de seguimiento y conciliación, y en la vista
+  lista de la bandeja y la tabla del taller (hoy se apilan solo por CSS).
 - Modales ERP pequeños que aún no llevan `erp-modal` (`MarkExternalModal`,
   `ReportExceptionModal`, `ConvertQuoteDialog`, `WooStoreForm`,
   `WooWebhookModal`, los de `CompanyFactusolPanel`): basta añadir la clase.
 - La proforma como página propia (elimina la excepción `.modal-wide`).
+- Retirar las reglas `.erp-quote-lines` de `styles.css`, sin uso desde que la
+  tabla de líneas es `DocumentLinesTable`.
