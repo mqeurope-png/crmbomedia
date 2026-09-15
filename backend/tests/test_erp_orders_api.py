@@ -648,3 +648,150 @@ def test_factusol_live_real_exception_still_blocks(client, session_factory):
                    headers=auth_headers(client, "pedidos"))
     assert {b["code"] for b in r.json()["blockers"]} == {"open_exceptions"}
     assert r.json()["warnings"] == []
+
+
+# --- Lote B7/B8: bandeja (cola antes del límite, tienda, facturado, fechas) --
+
+
+def _woo_store(session_factory, slug: str, label: str | None = None) -> str:
+    from app.models.integration_settings import (  # noqa: PLC0415
+        ExternalSystem,
+        IntegrationAccount,
+        IntegrationMode,
+    )
+
+    with session_factory() as s:
+        acc = IntegrationAccount(
+            system=ExternalSystem.WOOCOMMERCE, account_id=slug,
+            display_name=label or slug, mode=IntegrationMode.LIVE,
+        )
+        s.add(acc)
+        s.commit()
+        return acc.id
+
+
+def _set_store(session_factory, oid: str, store_id: str) -> None:
+    with session_factory() as s:
+        s.get(Order, oid).store_id = store_id
+        s.commit()
+
+
+def _numbers(r) -> list[str]:
+    assert r.status_code == 200, r.text
+    return [o["order_number"] for o in r.json()["items"]]
+
+
+def test_list_queue_filter_applies_before_limit(client):
+    """B7: la cola se decide en Python; antes se recortaban `limit` filas y
+    LUEGO se filtraba por cola, con lo que una cola salía incompleta (o vacía)
+    en cuanto había más de `limit` pedidos por delante. Ahora: se filtra por
+    cola y después se recorta; los contadores siguen siendo de TODO lo
+    filtrado."""
+    # Tres por revisar (los más antiguos) + dos aprobados (por facturar).
+    for i in (1, 2, 3):
+        _create(client, order_number=f"REV-{i}", placed_at=f"2026-09-0{i}T10:00:00Z")
+    for i in (4, 5):
+        oid = _create(client, order_number=f"FAC-{i}",
+                      placed_at=f"2026-09-0{i}T10:00:00Z")["id"]
+        ap = client.post(f"/api/erp/orders/{oid}/approve",
+                         headers=auth_headers(client, "pedidos"))
+        assert ap.status_code == 200, ap.text
+
+    r = client.get("/api/erp/orders?sort=placed_asc&limit=2&queue=por_facturar",
+                   headers=auth_headers(client, "user"))
+    assert _numbers(r) == ["FAC-4", "FAC-5"]
+    counts = r.json()["queue_counts"]
+    assert counts["por_revisar"] == 3 and counts["por_facturar"] == 2
+    # El límite sigue mandando DENTRO de la cola.
+    r2 = client.get("/api/erp/orders?sort=placed_asc&limit=1&queue=por_facturar",
+                    headers=auth_headers(client, "user"))
+    assert _numbers(r2) == ["FAC-4"]
+    assert r2.json()["queue_counts"]["por_facturar"] == 2
+
+
+def test_list_filters_by_store_slug(client, session_factory):
+    """B7: «Tienda» filtra por el slug de la cuenta Woo (sin distinguir
+    mayúsculas); los manuales sin tienda quedan fuera."""
+    boprint = _woo_store(session_factory, "boprint", "BoPrint")
+    artisjet = _woo_store(session_factory, "artisjet", "artisJet")
+    a = _create(client, order_number="BOPRIN-1")["id"]
+    b = _create(client, order_number="ARTISJ-2")["id"]
+    _create(client, order_number="MAN-3")
+    _set_store(session_factory, a, boprint)
+    _set_store(session_factory, b, artisjet)
+
+    r = client.get("/api/erp/orders?store_slug=boprint", headers=auth_headers(client, "user"))
+    assert _numbers(r) == ["BOPRIN-1"]
+    r = client.get("/api/erp/orders?store_slug=ARTISJET", headers=auth_headers(client, "user"))
+    assert _numbers(r) == ["ARTISJ-2"]
+    r = client.get("/api/erp/orders?store_slug=fluxlasers", headers=auth_headers(client, "user"))
+    assert _numbers(r) == []
+    r = client.get("/api/erp/orders", headers=auth_headers(client, "user"))
+    assert set(_numbers(r)) == {"BOPRIN-1", "ARTISJ-2", "MAN-3"}
+
+
+def test_list_filters_by_invoiced(client, session_factory):
+    """B7: «Facturado» = con nº de factura FACTUSOL o estado de factura
+    emitido; «Sin facturar» = lo contrario. Ausente = todos."""
+    con_num = _create(client, order_number="INV-NUM")["id"]
+    con_estado = _create(client, order_number="INV-EST")["id"]
+    _create(client, order_number="INV-NO")
+    with session_factory() as s:
+        s.get(Order, con_num).factusol_invoice_number = "5-260100"
+        s.get(Order, con_estado).invoice_status = "already_invoiced_externally"
+        s.commit()
+
+    r = client.get("/api/erp/orders?invoiced=true", headers=auth_headers(client, "user"))
+    assert set(_numbers(r)) == {"INV-NUM", "INV-EST"}
+    r = client.get("/api/erp/orders?invoiced=false", headers=auth_headers(client, "user"))
+    assert _numbers(r) == ["INV-NO"]
+    r = client.get("/api/erp/orders", headers=auth_headers(client, "user"))
+    assert len(_numbers(r)) == 3
+
+
+def test_list_filters_by_placed_range_and_sort(client):
+    """B7: Desde/Hasta acotan por fecha del pedido (inclusivas, día entero) y
+    `sort` ordena por fecha en los dos sentidos."""
+    _create(client, order_number="D-01", placed_at="2026-09-01T23:30:00Z")
+    _create(client, order_number="D-05", placed_at="2026-09-05T08:00:00Z")
+    _create(client, order_number="D-10", placed_at="2026-09-10T00:15:00Z")
+
+    h = auth_headers(client, "user")
+    assert _numbers(client.get("/api/erp/orders?placed_from=2026-09-05", headers=h)) \
+        == ["D-10", "D-05"]
+    assert _numbers(client.get("/api/erp/orders?placed_to=2026-09-05", headers=h)) \
+        == ["D-05", "D-01"]
+    assert _numbers(client.get(
+        "/api/erp/orders?placed_from=2026-09-05&placed_to=2026-09-05", headers=h,
+    )) == ["D-05"]
+    # Orden por fecha: descendente por defecto, ascendente si se pide.
+    assert _numbers(client.get("/api/erp/orders", headers=h)) == ["D-10", "D-05", "D-01"]
+    assert _numbers(client.get("/api/erp/orders?sort=placed_asc", headers=h)) \
+        == ["D-01", "D-05", "D-10"]
+
+
+def test_pending_approval_filters_by_store_slug_and_sorts(client, session_factory):
+    """B8: la Cola PEDIDOS admite tienda por slug y orden por fecha; sin
+    parámetros sigue saliendo lo más antiguo primero."""
+    boprint = _woo_store(session_factory, "boprint")
+    a = _create(client, order_number="COLA-A", placed_at="2026-09-01T10:00:00Z")["id"]
+    _create(client, order_number="COLA-B", placed_at="2026-09-03T10:00:00Z")
+    c = _create(client, order_number="COLA-C", placed_at="2026-09-02T10:00:00Z")["id"]
+    _set_store(session_factory, a, boprint)
+    _set_store(session_factory, c, boprint)
+
+    h = auth_headers(client, "user")
+    assert _numbers(client.get("/api/erp/orders/pending-approval", headers=h)) \
+        == ["COLA-A", "COLA-C", "COLA-B"]
+    assert _numbers(client.get(
+        "/api/erp/orders/pending-approval?sort=placed_desc", headers=h,
+    )) == ["COLA-B", "COLA-C", "COLA-A"]
+    assert _numbers(client.get(
+        "/api/erp/orders/pending-approval?store_slug=BoPrint", headers=h,
+    )) == ["COLA-A", "COLA-C"]
+    assert _numbers(client.get(
+        "/api/erp/orders/pending-approval?store_slug=boprint&sort=placed_desc", headers=h,
+    )) == ["COLA-C", "COLA-A"]
+    # Valor de orden desconocido → 422 (no se cae a un orden silencioso).
+    assert client.get("/api/erp/orders/pending-approval?sort=total_desc",
+                      headers=h).status_code == 422

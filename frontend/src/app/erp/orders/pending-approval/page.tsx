@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { PageHeader } from "../../../components/PageHeader";
 import { MarkExternalModal } from "../../../components/erp/MarkExternalModal";
 import { OrderApprovalCard } from "../../../components/erp/OrderApprovalCard";
@@ -9,12 +9,19 @@ import { extractErrorMessage } from "../../../lib/errors";
 import {
   approveOrder,
   bulkMarkExternallyProcessed,
+  customerLabel,
   ERP_EDIT_ROLES,
+  getErpSettings,
   listPendingApproval,
   markExternallyProcessed,
   type PendingOrder,
 } from "../../../lib/erpApi";
 
+type SortDir = "asc" | "desc";
+
+/** Cola PEDIDOS: pendientes de revisión, con sus bloqueos. Lote B8: filtros
+ *  ligeros (buscar por nº / cliente en local, tienda y orden por fecha en el
+ *  backend); las tarjetas y sus acciones siguen igual. */
 export default function PendingApprovalPage() {
   const [rows, setRows] = useState<PendingOrder[]>([]);
   const [user, setUser] = useState<User | null>(null);
@@ -24,21 +31,46 @@ export default function PendingApprovalPage() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   // Ids objetivo del modal de externalización (1 = una card; N = selección).
   const [markTarget, setMarkTarget] = useState<string[] | null>(null);
+  // Lote B8: filtros ligeros. La búsqueda es local (la cola es corta); tienda
+  // y orden los aplica el backend. Ascendente por defecto: lo más antiguo
+  // primero, como siempre.
+  const [text, setText] = useState("");
+  const [store, setStore] = useState("");
+  const [sortDir, setSortDir] = useState<SortDir>("asc");
+  const [stores, setStores] = useState<{ slug: string; label: string }[]>([]);
 
   const load = useCallback(() => {
     setLoading(true);
-    listPendingApproval()
+    listPendingApproval({
+      store_slug: store || undefined,
+      sort: sortDir === "desc" ? "placed_desc" : "placed_asc",
+    })
       .then(setRows)
       .catch((e) => setError(extractErrorMessage(e, "No se pudo cargar la cola.")))
       .finally(() => setLoading(false));
-  }, []);
+  }, [store, sortDir]);
 
   useEffect(() => {
     getCurrentUser().then(setUser).catch(() => undefined);
-    load();
-  }, [load]);
+    getErpSettings()
+      .then((s) => setStores((s.woocommerce_stores ?? []).map((t) => ({ slug: t.slug, label: t.label }))))
+      .catch(() => undefined);
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
 
   const canManage = !!user && (ERP_EDIT_ROLES as readonly string[]).includes(user.role);
+
+  // Búsqueda local por nº de pedido o cliente (sin acentos ni mayúsculas).
+  const visible = useMemo(() => {
+    const q = normaliza(text);
+    if (!q) return rows;
+    return rows.filter((o) =>
+      normaliza(o.order_number).includes(q) || normaliza(customerLabel(o)).includes(q),
+    );
+  }, [rows, text]);
+
+  const hasFilters = !!text || !!store || sortDir !== "asc";
 
   async function onApprove(orderId: string) {
     setBusy(true);
@@ -105,6 +137,44 @@ export default function PendingApprovalPage() {
         ]}
       />
       {error ? <p className="form-error">{error}</p> : null}
+
+      <div className="erp-flow-filters erp-approval-filters" role="search" aria-label="Filtros de la cola">
+        <label className="field erp-flow-filter-grow">
+          <span className="sr-only">Buscar pedido</span>
+          <input
+            type="search" value={text} placeholder="Nº de pedido o cliente…"
+            aria-label="Buscar pedido"
+            onChange={(e) => setText(e.target.value)}
+          />
+        </label>
+        <label className="field">
+          <span>Tienda</span>
+          <select value={store} aria-label="Filtro tienda" onChange={(e) => setStore(e.target.value)}>
+            <option value="">Todas</option>
+            {stores.map((s) => <option key={s.slug} value={s.slug}>{s.label}</option>)}
+          </select>
+        </label>
+        <button
+          type="button" className="button small secondary"
+          aria-label={sortDir === "asc" ? "Orden ascendente" : "Orden descendente"}
+          title={sortDir === "asc"
+            ? "Por fecha del pedido, los más antiguos primero (pulsa para invertir)"
+            : "Por fecha del pedido, los más recientes primero (pulsa para invertir)"}
+          onClick={() => setSortDir((v) => (v === "asc" ? "desc" : "asc"))}
+        >
+          {sortDir === "asc" ? "Fecha ↑" : "Fecha ↓"}
+        </button>
+        {hasFilters ? (
+          <button type="button" className="button small secondary"
+                  onClick={() => { setText(""); setStore(""); setSortDir("asc"); }}>
+            Limpiar filtros
+          </button>
+        ) : null}
+        <span className="muted small">
+          {loading ? "Cargando…" : `${visible.length} de ${rows.length} pedido(s)`}
+        </span>
+      </div>
+
       {canManage && selected.size > 0 ? (
         <div className="erp-bulk-bar">
           <span>{selected.size} seleccionado(s)</span>
@@ -129,10 +199,14 @@ export default function PendingApprovalPage() {
       {loading ? (
         <p className="muted">Cargando…</p>
       ) : rows.length === 0 ? (
-        <p className="muted">No hay pedidos pendientes de aprobación. 🎉</p>
+        <p className="muted">
+          {store ? "No hay pedidos pendientes de aprobación de esta tienda." : "No hay pedidos pendientes de aprobación. 🎉"}
+        </p>
+      ) : visible.length === 0 ? (
+        <p className="muted">Ningún pedido de la cola casa con «{text}».</p>
       ) : (
         <div className="erp-approval-grid">
-          {rows.map((o) => (
+          {visible.map((o) => (
             <OrderApprovalCard
               key={o.id}
               order={o}
@@ -157,4 +231,8 @@ export default function PendingApprovalPage() {
       ) : null}
     </main>
   );
+}
+
+function normaliza(s: string | null | undefined): string {
+  return (s ?? "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().trim();
 }

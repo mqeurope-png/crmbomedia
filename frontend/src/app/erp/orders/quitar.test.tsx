@@ -30,6 +30,7 @@ jest.mock("../../lib/erpApi", () => ({
   excludeSeguimiento: jest.fn(),
   includeSeguimiento: jest.fn(),
   previewExcludeSeguimiento: jest.fn(),
+  getErpSettings: jest.fn(() => Promise.resolve({})),
 }));
 
 function order(over = {}) {
@@ -64,6 +65,8 @@ const HIDDEN = order({
 });
 
 beforeEach(() => {
+  // La bandeja recuerda los últimos filtros: cada test parte de cero.
+  window.localStorage.clear();
   (listOrders as jest.Mock).mockReset();
   (listOrders as jest.Mock).mockImplementation((f?: { show_excluded?: boolean }) =>
     Promise.resolve(page(f?.show_excluded ? [HIDDEN] : [order()])),

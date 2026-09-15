@@ -11700,3 +11700,141 @@ tr.is-inactive {
 .company-ficha-id .mono { font-variant-numeric: tabular-nums; }
 .company-edit-form.erp-flow-panel { margin-bottom: 14px; }
 .erp-flow-panel h3 .badge { margin-left: 8px; vertical-align: middle; }
+
+/* ==========================================================================
+   ERP · Lote B7/B8 — bandeja de pedidos: pastillas de estado, chips de
+   filtros activos, fecha destacada, vista LISTA (tabla) y filtros ligeros de
+   la Cola PEDIDOS. Solo se añade; nada de lo anterior cambia.
+   ========================================================================== */
+
+/* Las cuatro pastillas de estado (Pagado · Facturado · Cobro registrado ·
+   Completado): verde = se cumple, gris = no. Grandes en la tarjeta, compactas
+   (is-sm) en la celda de la tabla. */
+.erp-status-pills {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.erp-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.3;
+  white-space: nowrap;
+  border: 1px solid transparent;
+  cursor: default;
+}
+.erp-status-pill-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: none;
+  opacity: 0.9;
+}
+.erp-status-pill.is-on {
+  background: #E4F5EA;
+  color: #167A3E;
+  border-color: #BFE5CC;
+}
+.erp-status-pill.is-off {
+  background: #F1F3F6;
+  color: #7A8290;
+  border-color: #E3E7EC;
+}
+.erp-status-pills.is-sm { gap: 4px; }
+.erp-status-pills.is-sm .erp-status-pill { padding: 1px 7px; font-size: 11px; gap: 4px; }
+.erp-status-pills.is-sm .erp-status-pill-dot { width: 6px; height: 6px; }
+.erp-flow-item-pills { margin: 6px 0 2px; }
+
+/* Fecha del pedido, destacada en cada fila. */
+.erp-flow-date {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  font-size: 12.5px;
+  color: var(--ink);
+  background: #F5F7FA;
+  border-radius: 5px;
+  padding: 1px 7px;
+  white-space: nowrap;
+}
+
+/* Chips de filtros activos + «Limpiar filtros» / «Por defecto». */
+.erp-flow-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  margin: -4px 0 12px;
+}
+.erp-flow-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid #C7D7FF;
+  background: #EEF4FF;
+  color: var(--brand);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.erp-flow-chip:hover { background: #DFE9FF; }
+.erp-flow-chip span { font-weight: 600; }
+
+/* Tarjetas / Lista. */
+.erp-flow-view { display: inline-flex; gap: 4px; }
+
+/* Vista LISTA: tabla con la misma información y las mismas acciones que la
+   tarjeta. En pantallas anchas desborda visible (el menú «⋯» necesita salir
+   de la fila); en estrechas, scroll horizontal. */
+.erp-bandeja-table-wrap { overflow: visible; }
+.erp-bandeja-table { font-size: 13.5px; }
+.erp-bandeja-table th.num,
+.erp-bandeja-table td.num { text-align: right; white-space: nowrap; }
+.erp-bandeja-table td.erp-flow-amount { font-size: 14px; }
+.erp-bandeja-table td.erp-flow-amount small { text-align: right; }
+.erp-bandeja-table tr.is-alert td:first-child { box-shadow: inset 3px 0 0 #E2554A; }
+.erp-bandeja-table tr.is-muted td { opacity: 0.72; }
+.erp-bandeja-table .erp-flow-item-actions { justify-content: flex-start; }
+.erp-bandeja-table .erp-flow-item-r2.small { margin-top: 4px; }
+.erp-bandeja-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+.erp-bandeja-badges:empty { display: none; }
+.erp-bandeja-sort {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  text-transform: inherit;
+  letter-spacing: inherit;
+  cursor: pointer;
+}
+.erp-bandeja-queue {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.erp-bandeja-next { display: block; margin-top: 2px; }
+@media (max-width: 1100px) {
+  .erp-bandeja-table-wrap { overflow-x: auto; padding-bottom: 160px; margin-bottom: -160px; }
+  .erp-bandeja-table { min-width: 960px; }
+}
+
+/* Cola PEDIDOS: barra de filtros ligera (buscar, tienda, orden) sobre el grid
+   de tarjetas de aprobación. */
+.erp-approval-filters { margin: 0 0 14px; }
