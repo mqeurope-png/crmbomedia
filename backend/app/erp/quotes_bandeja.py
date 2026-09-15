@@ -8,6 +8,11 @@ Por proforma se añade:
 - `queue` / `queue_label`: por `workflow.quote_queue` (mismo criterio que la
   bandeja de pedidos: la cola dice lo que toca).
 - `company`: la empresa CRM vinculada al CLIPRE (id, nombre, país) si existe.
+
+Y, para el explorador de documentos (Fase 5 / Lote 2 · PR-2),
+`annotate_documents_crm`: el mismo cruce sobre los cuatro tipos, con el
+pedido de BoHub ligado a cada documento (importado desde él, o el que lleva
+vinculado este albarán / esta factura).
 - `regime` / `regime_label` / `country_iso2`: el régimen de IVA de la
   empresa (país + NIF-IVA + VIES, `workflow.company_regime`); sin empresa
   vinculada se lee la cabecera del documento (0 % explícito → exento, sin
@@ -29,6 +34,7 @@ from sqlalchemy.orm import Session
 from app.erp.language import normalize_country
 from app.erp.models import Order, OrderSource
 from app.erp.workflow import QUOTE_QUEUE_LABELS, QUOTE_QUEUES, company_regime, quote_queue
+from app.integrations.factusol.documents import visible_number
 from app.integrations.factusol.quotes import header_says_no_iva
 from app.integrations.factusol.vat_regime import REGIME_LABELS
 from app.models.crm import Company
@@ -90,39 +96,137 @@ def _orders_by_codpre(session: Session, codpres: set[str]) -> dict[str, Order]:
     return {str(o.external_id): o for o in rows if o.external_id}
 
 
-def _orders_by_document(
-    session: Session, doc_type: str, docs: list[dict[str, Any]],
-) -> dict[str, Order]:
-    """Pedidos de BoHub creados desde estos documentos FACTUSOL, indexados por
-    `external_id`. Las proformas se importan con `external_id` = CODPRE a secas
-    (origen `factusol_proforma`); los pedidos de cliente con `serie-código`
-    (origen `factusol_pedido`). Los albaranes/facturas no crean pedido por sí
-    mismos: se devuelve `{}`."""
+def document_order_key(doc_type: str, doc: dict[str, Any]) -> str | None:
+    """Clave con la que `_orders_by_document` indexa el pedido de cada
+    documento: el `external_id` de importación en presupuestos / pedidos de
+    cliente, y el nº visible `serie-código` en albaranes y facturas (que es
+    lo que guarda el pedido en `factusol_albaran_number` / lo que compone
+    `factusol_invoice_serie` + `factusol_invoice_number`). `None` si el
+    documento no tiene clave utilizable."""
     from app.erp.orders_from_factusol import (  # noqa: PLC0415
         SOURCE_BY_DOC_TYPE,
         external_id_for,
     )
 
-    if doc_type not in SOURCE_BY_DOC_TYPE:
-        return {}
-    ext_ids: set[str] = set()
-    for d in docs:
-        codigo = d.get("codigo")
-        if codigo is None:
-            continue
+    codigo = doc.get("codigo")
+    if not isinstance(codigo, int):
+        return None
+    if doc_type in SOURCE_BY_DOC_TYPE:
         try:
-            ext_ids.add(external_id_for(doc_type, int(d.get("serie") or 0), int(codigo)))
+            return external_id_for(doc_type, int(doc.get("serie") or 0), codigo)
         except (TypeError, ValueError):
-            continue
-    if not ext_ids:
+            return None
+    if doc_type in ("albaranes", "facturas"):
+        if doc.get("serie") is None:
+            return None
+        return visible_number(doc["serie"], codigo)
+    return None
+
+
+def _orders_by_document(
+    session: Session, doc_type: str, docs: list[dict[str, Any]],
+) -> dict[str, Order]:
+    """Pedidos de BoHub ligados a estos documentos FACTUSOL, indexados por
+    `document_order_key`:
+
+    - presupuestos / pedidos de cliente: el pedido que se IMPORTÓ desde el
+      documento (`external_id` = CODPRE a secas, origen `factusol_proforma`;
+      o `serie-código`, origen `factusol_pedido`).
+    - albaranes (Lote 2 · PR-2): el pedido cuyo `factusol_albaran_number` es
+      el nº visible del albarán.
+    - facturas (Lote 2 · PR-2): el pedido cuya factura vinculada es esta —
+      por serie + número (`factusol_invoice_serie` + `factusol_invoice_number`)
+      y, si el pedido solo guarda el número desnudo, por la REFFAC = referencia
+      común del pedido (regla de `factusol_pdf.find_order_for_invoice`, que
+      nunca adivina).
+
+    Sin escribir nada: es un cruce de lectura contra la BD de BoHub."""
+    from app.erp.orders_from_factusol import SOURCE_BY_DOC_TYPE  # noqa: PLC0415
+
+    if doc_type in SOURCE_BY_DOC_TYPE:
+        ext_ids = {k for k in (document_order_key(doc_type, d) for d in docs) if k}
+        if not ext_ids:
+            return {}
+        rows = session.scalars(
+            select(Order).where(
+                Order.external_source == SOURCE_BY_DOC_TYPE[doc_type],
+                Order.external_id.in_(sorted(ext_ids)),
+            )
+        ).all()
+        return {str(o.external_id): o for o in rows if o.external_id}
+    if doc_type == "albaranes":
+        return _orders_by_albaran(session, docs)
+    if doc_type == "facturas":
+        return _orders_by_invoice(session, docs)
+    return {}
+
+
+def _orders_by_albaran(session: Session, docs: list[dict[str, Any]]) -> dict[str, Order]:
+    numbers = {k for k in (document_order_key("albaranes", d) for d in docs) if k}
+    if not numbers:
         return {}
     rows = session.scalars(
-        select(Order).where(
-            Order.external_source == SOURCE_BY_DOC_TYPE[doc_type],
-            Order.external_id.in_(sorted(ext_ids)),
-        )
+        select(Order).where(Order.factusol_albaran_number.in_(sorted(numbers)))
     ).all()
-    return {str(o.external_id): o for o in rows if o.external_id}
+    return {str(o.factusol_albaran_number): o for o in rows if o.factusol_albaran_number}
+
+
+def _orders_by_invoice(session: Session, docs: list[dict[str, Any]]) -> dict[str, Order]:
+    """Facturas → pedido, en UNA consulta para los candidatos de toda la lista
+    y resolviendo en memoria los casos claros; solo los ambiguos (número
+    desnudo compartido entre series, varios pedidos con el mismo número…)
+    pasan por `find_order_for_invoice`, que aplica la regla completa
+    (serie → REFFAC → cliente) sin adivinar."""
+    from app.erp.factusol_pdf import (  # noqa: PLC0415
+        find_order_for_invoice,
+        order_invoice_serie,
+    )
+
+    wanted: list[tuple[dict[str, Any], int, int, list[str]]] = []
+    numbers: set[str] = set()
+    for d in docs:
+        codigo, serie = d.get("codigo"), d.get("serie")
+        if not isinstance(codigo, int) or serie is None:
+            continue
+        keys = [str(codigo), f"{serie}-{codigo}", f"{serie}-{codigo:06d}"]
+        numbers.update(keys)
+        wanted.append((d, int(serie), codigo, keys))
+    if not numbers:
+        return {}
+    rows = session.scalars(
+        select(Order).where(Order.factusol_invoice_number.in_(sorted(numbers)))
+    ).all()
+    by_number: dict[str, list[Order]] = {}
+    for o in rows:
+        by_number.setdefault(str(o.factusol_invoice_number), []).append(o)
+
+    out: dict[str, Order] = {}
+    for d, serie, codigo, keys in wanted:
+        candidates: list[Order] = []
+        for k in keys:
+            for o in by_number.get(k, []):
+                if o not in candidates:
+                    candidates.append(o)
+        if not candidates:
+            continue
+        series = [order_invoice_serie(o) for o in candidates]
+        same = [o for o, s in zip(candidates, series, strict=True) if s == serie]
+        if all(s is not None for s in series):
+            # Todos los candidatos declaran serie: la factura es de quien
+            # guarda ESTA serie (si es uno solo); los de otra serie son la
+            # factura homónima de otro pedido.
+            if len(same) == 1:
+                out[d["numero"]] = same[0]
+                continue
+            if not same:
+                continue
+        order = find_order_for_invoice(
+            session, serie=serie, codigo=codigo,
+            referencia=d.get("referencia"), cliente_codigo=d.get("cliente_codigo"),
+        )
+        if order is not None:
+            out[d["numero"]] = order
+    return out
 
 
 #: Tono de la pastilla de estado por tipo, con el MISMO criterio que el
@@ -155,19 +259,14 @@ def annotate_documents_crm(
     - `country_iso2` / `regime` / `regime_label` / `regime_source` / `exento`:
       el régimen de IVA (empresa → cabecera 0 % explícito), la MISMA regla que
       la ficha y las proformas (`workflow.company_regime`).
-    - `order`: el pedido de BoHub si el documento ya se importó (presupuestos /
-      pedidos de cliente); `None` en el resto o si aún no se importó.
+    - `order`: el pedido de BoHub ligado al documento — el importado desde él
+      (presupuestos / pedidos de cliente) o, Lote 2 · PR-2, el que tiene
+      vinculado este albarán / esta factura; `None` si no hay ninguno.
     - `estado_tone`: el tono de la pastilla de estado (mismo criterio que el
       escritorio)."""
     codclis = {str(d.get("cliente_codigo")) for d in docs if d.get("cliente_codigo")}
     companies = _companies_by_codcli(session, codclis)
     orders = _orders_by_document(session, doc_type, docs)
-    from app.erp.orders_from_factusol import (  # noqa: PLC0415
-        SOURCE_BY_DOC_TYPE,
-        external_id_for,
-    )
-
-    linkable = doc_type in SOURCE_BY_DOC_TYPE
     for d in docs:
         code = str(d.get("cliente_codigo") or "").strip()
         company = companies.get(code) or (
@@ -185,15 +284,8 @@ def annotate_documents_crm(
         d["regime_source"] = "empresa" if regime else ("cabecera" if exento_cabecera else None)
         d["exento"] = (regime in ("intracomunitario", "exportacion")) if regime else exento_cabecera
         d["estado_tone"] = _estado_tone(doc_type, d.get("estado"))
-        order = None
-        if linkable and d.get("codigo") is not None:
-            try:
-                ext_id = external_id_for(
-                    doc_type, int(d.get("serie") or 0), int(d["codigo"]),
-                )
-                order = orders.get(ext_id)
-            except (TypeError, ValueError):
-                order = None
+        key = document_order_key(doc_type, d)
+        order = orders.get(key) if key else None
         d["order"] = (
             {"id": order.id, "order_number": order.order_number}
             if order is not None else None

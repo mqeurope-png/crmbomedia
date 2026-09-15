@@ -12977,11 +12977,20 @@ input[type="radio"]:focus-visible {
 /* Pestañas: la activa en oscuro (se ve de lejos); el contador, pastilla. */
 .sat-tabs { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin: 0 0 var(--sp-3); }
 .sat-tab {
+/* ===== Lote 2 · PR-2 · documentos FACTUSOL ==================================
+   Pantalla de consulta y reconciliación (sección 7 de la revisión): chip
+   «Solo sin vincular · N», banda ámbar en las filas sin pedido de BoHub con
+   «Vincular» en la columna «Pedido», importes en mono a la derecha en una
+   columna de ancho fijo, «Solo lectura · sincronizado hace X» bajo el título
+   y, en móvil, cada fila como tarjeta de pares etiqueta/valor (el molde
+   `data-table--responsive` + `data-label`). Solo tokens del sistema. */
+.erp-doc-chip {
   display: inline-flex;
   align-items: center;
   gap: var(--sp-2);
   min-height: var(--control-h);
   padding: 0 var(--sp-4);
+  padding: 0 var(--sp-3);
   border: 1px solid var(--line);
   border-radius: var(--r-control);
   background: var(--card);
@@ -13116,6 +13125,29 @@ input[type="radio"]:focus-visible {
   color: var(--muted);
 }
 .sat-tech-row {
+  white-space: nowrap;
+}
+.erp-doc-chip:hover { background: var(--bg); color: var(--ink); }
+.erp-doc-chip.is-active {
+  border-color: var(--st-blue-ink);
+  background: var(--st-blue-bg);
+  color: var(--st-blue-ink);
+}
+.erp-doc-chip-n { font-weight: 600; }
+/* Fila sin pedido: banda ámbar a la izquierda (el estado informa; la acción
+   es el botón «Vincular» / «Crear pedido» de la columna «Pedido»). */
+.erp-doc-table tr.is-unlinked > td:first-child { box-shadow: inset 3px 0 0 var(--st-amber-ink); }
+/* Importe (y saldo): ancho fijo para sumar de un vistazo; `.num` ya pone
+   mono + derecha. La columna «Pedido» va a la derecha, en mono. */
+.erp-doc-table .erp-doc-col-amount { width: 8.5em; min-width: 8.5em; }
+.erp-doc-table .erp-doc-col-pedido { text-align: right; white-space: nowrap; }
+.erp-doc-pedido-link { font-weight: 600; color: var(--brand-ink); }
+.erp-doc-table td.erp-doc-check { width: 2.5em; }
+/* Modal «Vincular a pedido»: grupos de sugerencias y lista de pedidos. */
+.erp-doc-link-group h3 { margin: 0 0 var(--sp-1); font-size: var(--fs-label); text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+.erp-doc-link-group > p { margin: 0 0 var(--sp-2); }
+.erp-doc-link-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--sp-2); }
+.erp-doc-link-list li {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -13317,6 +13349,7 @@ input[type="radio"]:focus-visible {
   align-items: start;
   margin: var(--sp-3) 0 0;
   padding: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
   border: 1px solid var(--line);
   border-radius: var(--r-control);
   background: var(--card);
@@ -13360,4 +13393,16 @@ input[type="radio"]:focus-visible {
   .company-create-blocked { text-align: left; }
   .company-create-candidate .button,
   .company-create-vies .button { flex: 1 1 100%; }
+.erp-doc-link-main { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-1) var(--sp-2); min-width: 0; }
+@media (max-width: 767px) {
+  /* Tarjeta: la banda ámbar pasa al borde de la tarjeta y los valores
+     numéricos vuelven a su sitio (derecha, mono). */
+  table.erp-doc-table tr.is-unlinked { border-left: 3px solid var(--st-amber-ink); }
+  table.erp-doc-table tr.is-unlinked > td:first-child { box-shadow: none; }
+  table.erp-doc-table .erp-doc-col-amount,
+  table.erp-doc-table .erp-doc-col-pedido { width: auto; min-width: 0; }
+  table.erp-doc-table td.erp-doc-check { width: auto; }
+  .erp-doc-row-actions { justify-content: flex-start; }
+  .erp-doc-chip { min-height: var(--control-h-touch); }
+  .erp-doc-link-list li { flex-direction: column; align-items: stretch; }
 }

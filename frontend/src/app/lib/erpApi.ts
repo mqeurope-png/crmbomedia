@@ -1838,16 +1838,95 @@ export type FactusolDocumentFilters = {
   /** E3-B-fix1 — salta el cache del índice del ciclo (tras crear un
    *  documento, para que la columna CICLO se repinte al momento). */
   fresh_ciclo?: boolean;
+  /** Lote 2 · PR-2 — `false` = «solo sin vincular» (sin pedido de BoHub);
+   *  `true` = solo los vinculados. Se aplica antes de paginar. */
+  linked?: boolean;
   limit?: number;
   offset?: number;
 };
 
+/** Lote 2 · PR-2 — respuesta del listado: además de la página, el contador
+ *  de «sin vincular» (sobre el resto de filtros, sin aplicar `linked`) y la
+ *  marca de tiempo de la lectura en vivo para «sincronizado hace X». */
+export type FactusolDocumentList = {
+  items: FactusolDocument[];
+  total: number;
+  /** Documentos SIN pedido de BoHub entre los que casan los filtros. */
+  unlinked_total?: number;
+  /** Hora del servidor (ISO) en que se leyó FACTUSOL. */
+  fetched_at?: string | null;
+  /** Antigüedad (s) del índice del ciclo cacheado; `null` si no cargó. */
+  cycle_index_age_seconds?: number | null;
+};
+
 export async function listFactusolDocuments(
   docType: FactusolDocType, filters: FactusolDocumentFilters = {},
-): Promise<{ items: FactusolDocument[]; total: number }> {
-  const { fresh_ciclo, ...rest } = filters;
-  const query = qs({ ...rest, fresh_ciclo: fresh_ciclo ? "1" : undefined });
+): Promise<FactusolDocumentList> {
+  const { fresh_ciclo, linked, ...rest } = filters;
+  const query = qs({
+    ...rest,
+    fresh_ciclo: fresh_ciclo ? "1" : undefined,
+    linked: linked === undefined ? undefined : String(linked),
+  });
   return apiFetch(`/api/erp/factusol/documents/${docType}${query}`);
+}
+
+// --- vincular albarán / factura a un pedido de BoHub (Lote 2 · PR-2) -------
+
+/** Un pedido sugerido para vincular. `match`: `referencia` (su referencia
+ *  común es la REFFAC/REFALB del documento, fuerte), `cliente` (misma
+ *  empresa, débil) o `busqueda` (por nº de pedido). `current_link` es el
+ *  documento de ESE tipo que el pedido ya tiene vinculado (aviso). */
+export type FactusolLinkCandidate = {
+  id: string;
+  order_number: string;
+  company_name: string | null;
+  total_amount: number;
+  placed_at: string | null;
+  external_source: string;
+  current_link: string | null;
+  match: "referencia" | "cliente" | "busqueda";
+};
+
+export type FactusolLinkCandidates = {
+  doc: {
+    doc_type: FactusolDocType; serie: number; codigo: number; numero: string;
+    referencia: string | null; cliente_codigo: string | null;
+    cliente_nombre: string | null; fecha: string | null; total: number | null;
+  };
+  /** Pedidos que YA apuntan a este documento. */
+  linked_orders: { id: string; order_number: string }[];
+  candidates: FactusolLinkCandidate[];
+  q: string | null;
+};
+
+/** Sugerencias de pedido para vincular (solo lectura). `q` busca por nº. */
+export async function getDocumentLinkCandidates(
+  docType: FactusolDocType, serie: number, codigo: number | string, q?: string,
+): Promise<FactusolLinkCandidates> {
+  const query = qs({ q: q?.trim() || undefined });
+  return apiFetch(
+    `/api/erp/factusol/documents/${docType}/${serie}/${codigo}/link-candidates${query}`,
+  );
+}
+
+/** Vincula el albarán / la factura al pedido: SOLO escribe los campos del
+ *  pedido en BoHub (FACTUSOL no se toca). `force` salta el 409 cuando el
+ *  pedido ya tenía otro documento de ese tipo o el documento ya apuntaba a
+ *  otro pedido. */
+export async function linkDocumentToOrder(
+  docType: FactusolDocType, serie: number, codigo: number | string,
+  payload: { order_id: string; confirm: boolean; force?: boolean },
+): Promise<{
+  status: "linked";
+  doc: { doc_type: FactusolDocType; serie: number; codigo: number; numero: string };
+  order: { id: string; order_number: string };
+  previous: string | null;
+}> {
+  return apiFetch(
+    `/api/erp/factusol/documents/${docType}/${serie}/${codigo}/link-order`,
+    { method: "POST", body: JSON.stringify(payload) },
+  );
 }
 
 export async function getFactusolDocument(

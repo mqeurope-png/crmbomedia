@@ -211,7 +211,7 @@ def test_list_documents_no_fallback_when_genuinely_empty() -> None:
     """`1=1` que devuelve [] NO re-consulta (la tabla está vacía de verdad)."""
     client = FakeClient({"F_ALB": []})
     out = list_documents(client, "albaranes", ejercicio="2026")
-    assert out == {"items": [], "total": 0}
+    assert out == {"items": [], "total": 0, "unlinked_total": 0}
     assert len([c for c in client.calls if c[0] == "F_ALB"]) == 1
 
 
@@ -420,7 +420,7 @@ def test_customer_filter_no_match_returns_empty_not_all() -> None:
 
     client = FakeClient({"F_FAC": FACTURAS, "F_CLI": F_CLI})
     out = ld(client, "facturas", ejercicio="2026", cliente_q="no-existe-xyz")
-    assert out == {"items": [], "total": 0}
+    assert out == {"items": [], "total": 0, "unlinked_total": 0}
     # Cortocircuito: ni siquiera se consulta la tabla de documentos.
     assert not any(t == "F_FAC" for t, _ in client.calls)
 
@@ -555,6 +555,134 @@ def test_documents_list_links_bohub_order_for_presupuesto(
     assert d["numero"] == "5-000027"
     assert d["order"] == {"id": "o27", "order_number": "PRO-000027"}
     assert d["estado_tone"] == "ok"  # ESTPRE=1 → aceptado
+
+
+# ---------------------------------------------------------------------------
+# Lote 2 · PR-2 — pedido de BoHub en albaranes y facturas, filtro «solo sin
+# vincular» con contador honesto y marca de tiempo de la lectura en vivo.
+# ---------------------------------------------------------------------------
+
+
+def _list(client, path: str) -> dict[str, Any]:
+    r = client.get(path, headers=auth_headers(client, "user"))
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def test_facturas_link_order_by_serie_and_number(client, session_factory) -> None:
+    """Un pedido con `factusol_invoice_serie` + `factusol_invoice_number`
+    aparece en SU factura (serie + número); la homónima de otra serie no lo
+    hereda. El contador de sin vincular cuenta sobre el resto de filtros."""
+    with session_factory() as s:
+        s.add(Order(id="o1", order_number="MAN-7001", total_amount=186.34, currency="EUR",
+                    factusol_invoice_number="260066", factusol_invoice_serie=5,
+                    invoice_status="invoiced_by_erp"))
+        s.commit()
+    rows = FACTURAS + [_fac(260066, "1", CNOFAC="HOMÓNIMA")]
+    with _patched_factusol(FakeClient({"F_FAC": rows})):
+        body = _list(client, "/api/erp/factusol/documents/facturas")
+        solo_sin = _list(client, "/api/erp/factusol/documents/facturas?linked=false")
+        solo_con = _list(client, "/api/erp/factusol/documents/facturas?linked=true")
+        serie5 = _list(client, "/api/erp/factusol/documents/facturas?serie=5&linked=false")
+    by_num = {d["numero"]: d for d in body["items"]}
+    assert by_num["5-260066"]["order"] == {"id": "o1", "order_number": "MAN-7001"}
+    assert by_num["1-260066"]["order"] is None  # homónima de otra serie
+    assert body["total"] == 5 and body["unlinked_total"] == 4
+    # `linked=false`: solo las 4 sin pedido; el total es el filtrado y el
+    # contador no cambia al activar el chip.
+    assert solo_sin["total"] == 4 and solo_sin["unlinked_total"] == 4
+    assert all(d["order"] is None for d in solo_sin["items"])
+    assert solo_con["total"] == 1 and solo_con["items"][0]["numero"] == "5-260066"
+    assert solo_con["unlinked_total"] == 4
+    # Combinado con otro filtro: el contador es sobre la serie 5.
+    assert serie5["total"] == 1 and serie5["unlinked_total"] == 1
+
+
+def test_facturas_link_order_by_bare_number_and_reffac(client, session_factory) -> None:
+    """Pedidos que solo guardan el CODFAC desnudo (emisión antigua): gana el
+    que tiene la REFFAC como referencia común; el homónimo de otra tienda no.
+    Es la regla de `find_order_for_invoice` (nunca adivina)."""
+    with session_factory() as s:
+        # `BOPRIN-260066` → ref `BOP-260066` = REFFAC de la factura 5-260066.
+        s.add(Order(id="bop", order_number="BOPRIN-260066", total_amount=1, currency="EUR",
+                    factusol_invoice_number="260066"))
+        s.add(Order(id="art", order_number="ARTISJ-260066", total_amount=1, currency="EUR",
+                    factusol_invoice_number="260066"))
+        s.commit()
+    with _patched_factusol(FakeClient({"F_FAC": FACTURAS})):
+        body = _list(client, "/api/erp/factusol/documents/facturas?serie=5")
+    by_num = {d["numero"]: d for d in body["items"]}
+    assert by_num["5-260066"]["order"]["order_number"] == "BOPRIN-260066"
+    assert by_num["5-260065"]["order"] is None
+
+
+def test_facturas_bare_number_without_evidence_stays_unlinked(client, session_factory) -> None:
+    """Dos pedidos con el mismo número desnudo y ninguna prueba (ni REFFAC ni
+    cliente) → ambigüedad real: la factura queda SIN pedido."""
+    with session_factory() as s:
+        s.add(Order(id="a", order_number="XX-1", total_amount=1, currency="EUR",
+                    factusol_invoice_number="260066"))
+        s.add(Order(id="b", order_number="YY-2", total_amount=1, currency="EUR",
+                    factusol_invoice_number="260066"))
+        s.commit()
+    with _patched_factusol(FakeClient({"F_FAC": [_fac(260066, "5")]})):
+        body = _list(client, "/api/erp/factusol/documents/facturas")
+    assert body["items"][0]["order"] is None
+    assert body["unlinked_total"] == 1
+
+
+ALBARANES = [
+    {"TIPALB": "5", "CODALB": 91, "CLIALB": 2458, "CNOALB": "DUPLICODER, S.L.",
+     "FECALB": "2026-08-02T00:00:00", "ESTALB": 0, "TOTALB": 10.0, "REFALB": "BOP-000091"},
+    {"TIPALB": "5", "CODALB": 92, "CLIALB": 99, "CNOALB": "MOVIATICOS",
+     "FECALB": "2026-08-03T00:00:00", "ESTALB": 1, "TOTALB": 20.0, "REFALB": "MOV-000092"},
+]
+
+
+def test_albaranes_link_order_by_albaran_number(client, session_factory) -> None:
+    """Un pedido con `factusol_albaran_number` = `serie-código` aparece en su
+    albarán; `linked=false` lo deja fuera."""
+    with session_factory() as s:
+        s.add(Order(id="o91", order_number="MAN-7091", total_amount=10, currency="EUR",
+                    factusol_albaran_number="5-000091"))
+        s.commit()
+    with _patched_factusol(FakeClient({"F_ALB": ALBARANES})):
+        body = _list(client, "/api/erp/factusol/documents/albaranes")
+        sin = _list(client, "/api/erp/factusol/documents/albaranes?linked=false")
+    by_num = {d["numero"]: d for d in body["items"]}
+    assert by_num["5-000091"]["order"] == {"id": "o91", "order_number": "MAN-7091"}
+    assert by_num["5-000092"]["order"] is None
+    assert body["unlinked_total"] == 1
+    assert [d["numero"] for d in sin["items"]] == ["5-000092"]
+
+
+def test_presupuestos_linked_filter_uses_imported_order(client, session_factory) -> None:
+    """En presupuestos «sin vincular» = sin pedido importado (la acción sigue
+    siendo «Crear pedido»)."""
+    with session_factory() as s:
+        s.add(Order(id="o27", order_number="PRO-000027", total_amount=100.0, currency="EUR",
+                    external_source=OrderSource.FACTUSOL_PROFORMA, external_id="27"))
+        s.commit()
+    otro = {**F_PRE_27, "CODPRE": 28, "REFPRE": "REF-28"}
+    with _patched_factusol(FakeClient({"F_PRE": [F_PRE_27, otro]})):
+        body = _list(client, "/api/erp/factusol/documents/presupuestos?linked=false")
+    assert [d["numero"] for d in body["items"]] == ["5-000028"]
+    assert body["total"] == 1 and body["unlinked_total"] == 1
+
+
+def test_documents_list_reports_fetched_at_and_cycle_index_age(client, session_factory) -> None:
+    """La respuesta dice CUÁNDO se leyó FACTUSOL (`fetched_at`, ISO con zona)
+    y la antigüedad del índice del ciclo cacheado (0 s recién leído; nunca
+    negativa) — para «Solo lectura · sincronizado hace X»."""
+    _ = session_factory
+    from datetime import datetime
+
+    with _patched_factusol(FakeClient({"F_FAC": FACTURAS})):
+        body = _list(client, "/api/erp/factusol/documents/facturas?fresh_ciclo=1")
+    fetched = datetime.fromisoformat(body["fetched_at"])
+    assert fetched.tzinfo is not None
+    assert isinstance(body["cycle_index_age_seconds"], int)
+    assert 0 <= body["cycle_index_age_seconds"] <= 30
 
 
 def test_factura_cobro_info_pendiente(client, session_factory) -> None:

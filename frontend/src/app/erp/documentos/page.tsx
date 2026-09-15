@@ -10,6 +10,10 @@ import {
 } from "../../components/erp/FactusolDocumentDetailModal";
 import { ActionsMenu } from "../../components/erp/flow/ActionsMenu";
 import { RegimePill } from "../../components/erp/flow/RegimePill";
+import {
+  LinkDocumentOrderModal,
+  type LinkedOrder,
+} from "../../components/erp/LinkDocumentOrderModal";
 import { RegistrarCobroModal } from "../../components/erp/RegistrarCobroModal";
 import { getCurrentUser } from "../../lib/api";
 import {
@@ -79,6 +83,29 @@ function eur(n: number | null | undefined): string {
   return n === null || n === undefined ? "—" : `${n.toFixed(2)} €`;
 }
 
+/** Lote 2 · PR-2 — rango de mes por defecto: el mes en curso (para cuadrar
+ *  cierres), en la zona horaria del navegador. */
+function currentMonthRange(now = new Date()): { desde: string; hasta: string } {
+  const y = now.getFullYear();
+  const m = now.getMonth();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const last = new Date(y, m + 1, 0).getDate();
+  return { desde: `${y}-${pad(m + 1)}-01`, hasta: `${y}-${pad(m + 1)}-${pad(last)}` };
+}
+
+/** «hace X» desde una marca ISO del servidor (la de la lectura en vivo). */
+function sinceLabel(iso: string, now: number): string {
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return "";
+  const s = Math.max(0, Math.round((now - t) / 1000));
+  if (s < 45) return "hace unos segundos";
+  const min = Math.round(s / 60);
+  if (min < 60) return `hace ${min} min`;
+  const h = Math.round(min / 60);
+  if (h < 24) return `hace ${h} h`;
+  return `hace ${Math.round(h / 24)} días`;
+}
+
 /** Idioma del PDF por el país del cliente (E4-fix2): mismo criterio que el
  *  resto del ERP. Prefiere el ISO2 del CRM; cae al país del documento. */
 function pdfLangFor(d: FactusolDocument) {
@@ -93,16 +120,25 @@ function facturaCobrada(d: FactusolDocument): boolean {
 
 /** ERP-E3 / Fase 5 — explorador de documentos FACTUSOL con los componentes
  *  reales del ERP (pastilla país·régimen, badge de estado, «⋯»), lectura EN
- *  VIVO (sin cache) y solo lectura salvo el cobro F-4-B. Por documento se
- *  ofrece la acción que toca: PDF (todos), «Registrar cobro» (facturas
- *  pendientes, motor F-4-B), y «Crear/Abrir pedido» de BoHub (presupuestos /
- *  pedidos de cliente). Filtros y orden consistentes con Proformas. */
+ *  VIVO (sin cache) y solo lectura salvo el cobro F-4-B y el vínculo a
+ *  pedido. Por documento se ofrece la acción que toca: PDF (todos),
+ *  «Registrar cobro» (facturas pendientes, motor F-4-B), y en la columna
+ *  «Pedido» el enlace al pedido de BoHub o cómo conseguirlo: «Crear pedido»
+ *  (presupuestos / pedidos de cliente) o «Vincular» (albaranes / facturas
+ *  creados en FACTUSOL; Lote 2 · PR-2). Filtros y orden consistentes con
+ *  Proformas; «Solo sin vincular · N» como chip destacado, rango de mes por
+ *  defecto y «Solo lectura · sincronizado hace X» bajo el título. */
 export default function FactusolDocumentosPage() {
   const [tab, setTab] = useState<FactusolDocType>("facturas");
   const [items, setItems] = useState<FactusolDocument[]>([]);
   const [total, setTotal] = useState(0);
+  const [unlinkedTotal, setUnlinkedTotal] = useState<number | null>(null);
+  const [fetchedAt, setFetchedAt] = useState<string | null>(null);
+  const [cycleAge, setCycleAge] = useState<number | null>(null);
+  const [now, setNow] = useState(() => Date.now());
   const [offset, setOffset] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [series, setSeries] = useState<FactusolSerie[]>([]);
@@ -110,22 +146,27 @@ export default function FactusolDocumentosPage() {
   const [canEdit, setCanEdit] = useState(false);
   // Cobro F-4-B (solo facturas pendientes): la factura elegida para el modal.
   const [cobrando, setCobrando] = useState<FactusolDocument | null>(null);
+  // Lote 2 · PR-2 — «Vincular»: el albarán / la factura elegido para el modal.
+  const [vinculando, setVinculando] = useState<FactusolDocument | null>(null);
   // Descarga de PDF (solo facturas): selección múltiple → ZIP, y por fila.
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [downloading, setDownloading] = useState(false);
   const [dlError, setDlError] = useState<string | null>(null);
 
   // Filtros. `clienteQ` viaja tal cual: el backend lo resuelve contra F_CLI
-  // por nombre, CIF o email (E3-A-fix1).
+  // por nombre, CIF o email (E3-A-fix1). Fechas: el mes en curso por
+  // defecto (Lote 2 · PR-2), borrables.
   const [serie, setSerie] = useState<string>("");
   const [clienteInput, setClienteInput] = useState("");
   const [clienteQ, setClienteQ] = useState("");
-  const [fechaDesde, setFechaDesde] = useState("");
-  const [fechaHasta, setFechaHasta] = useState("");
+  const [fechaDesde, setFechaDesde] = useState(() => currentMonthRange().desde);
+  const [fechaHasta, setFechaHasta] = useState(() => currentMonthRange().hasta);
   const [q, setQ] = useState("");
   const [ciclo, setCiclo] = useState<string>("");
   // ERP-F3 — filtro por estado de COBRO (solo facturas), por `estado`.
   const [pago, setPago] = useState<string>("");
+  // Lote 2 · PR-2 — chip «Solo sin vincular» (documentos sin pedido de BoHub).
+  const [soloSinVincular, setSoloSinVincular] = useState(false);
   const [sort, setSort] = useState<FactusolDocumentSort>("numero");
   const [dir, setDir] = useState<"asc" | "desc">("desc");
 
@@ -141,8 +182,15 @@ export default function FactusolDocumentosPage() {
       .catch(() => setSeries([]));
   }, []);
 
+  // «sincronizado hace X» se refresca solo, sin volver a leer FACTUSOL.
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(Date.now()), 30_000);
+    return () => window.clearInterval(id);
+  }, []);
+
   const load = useCallback(async (nextOffset: number, fresh = false) => {
     setLoading(true);
+    setSyncing(fresh);
     setError(null);
     try {
       const r = await listFactusolDocuments(tab, {
@@ -153,6 +201,7 @@ export default function FactusolDocumentosPage() {
         q: q.trim() || undefined,
         ciclo: (ciclo || undefined) as FactusolDocumentFilters["ciclo"],
         estado: tab === "facturas" && pago ? pago : undefined,
+        linked: soloSinVincular ? false : undefined,
         fresh_ciclo: fresh || undefined,
         sort,
         dir,
@@ -161,16 +210,22 @@ export default function FactusolDocumentosPage() {
       });
       setItems(r.items);
       setTotal(r.total);
+      setUnlinkedTotal(r.unlinked_total ?? null);
+      setFetchedAt(r.fetched_at ?? new Date().toISOString());
+      setCycleAge(r.cycle_index_age_seconds ?? null);
+      setNow(Date.now());
       setOffset(nextOffset);
       setSelected(new Set());  // la selección no sobrevive a un recargado
     } catch (e) {
       setError(extractErrorMessage(e, "No se pudo consultar FACTUSOL."));
       setItems([]);
       setTotal(0);
+      setUnlinkedTotal(null);
     } finally {
       setLoading(false);
+      setSyncing(false);
     }
-  }, [tab, serie, clienteQ, fechaDesde, fechaHasta, q, ciclo, pago, sort, dir]);
+  }, [tab, serie, clienteQ, fechaDesde, fechaHasta, q, ciclo, pago, soloSinVincular, sort, dir]);
 
   useEffect(() => {
     void load(0);
@@ -185,6 +240,13 @@ export default function FactusolDocumentosPage() {
     setQ("");
     setCiclo("");
     setPago("");
+    setSoloSinVincular(false);
+  }
+
+  function mesEnCurso() {
+    const r = currentMonthRange();
+    setFechaDesde(r.desde);
+    setFechaHasta(r.hasta);
   }
 
   // --- Descarga de PDF ----------------------------------------------------
@@ -238,52 +300,87 @@ export default function FactusolDocumentosPage() {
     }
   }
 
+  // --- Vincular a pedido (Lote 2 · PR-2) ----------------------------------
+  /** Tras vincular: la fila pasa a tener pedido sin releer FACTUSOL (nada
+   *  cambió allí) y el contador del chip baja en uno. */
+  function onLinked(d: FactusolDocument, order: LinkedOrder) {
+    setVinculando(null);
+    setItems((prev) => prev.map((row) => (row === d ? { ...row, order } : row)));
+    setUnlinkedTotal((n) => (n === null ? null : Math.max(0, n - 1)));
+    const texto = tab === "albaranes" ? "Albarán {n} vinculado" : "Factura {n} vinculada";
+    setNotice(`${texto.replace("{n}", d.numero)} al pedido ${order.order_number}.`);
+  }
+
+  const month = currentMonthRange();
+  const isCurrentMonth = fechaDesde === month.desde && fechaHasta === month.hasta;
   const hasFilters =
     serie !== "" || clienteQ !== "" || fechaDesde !== "" ||
-    fechaHasta !== "" || q.trim() !== "" || ciclo !== "" || pago !== "";
+    fechaHasta !== "" || q.trim() !== "" || ciclo !== "" || pago !== "" ||
+    soloSinVincular;
   const cicloOptions = CICLO_OPTIONS[tab];
   const isFacturas = tab === "facturas";
+  const isLinkable = tab === "albaranes" || tab === "facturas";
   const sortKeys: FactusolDocumentSort[] = isFacturas
     ? ["numero", "cliente", "fecha", "total", "saldo"]
     : ["numero", "cliente", "fecha", "total"];
+  const syncLine = fetchedAt
+    ? `Solo lectura · sincronizado ${sinceLabel(fetchedAt, now)}`
+    : "Solo lectura · lectura en vivo de FACTUSOL";
+  const syncTitle = cycleAge !== null
+    ? `Datos leídos de FACTUSOL al cargar; el índice del ciclo tiene ${cycleAge} s.`
+    : "Datos leídos de FACTUSOL al cargar la lista.";
+
+  /** Columna «Pedido»: el pedido de BoHub ligado al documento o la acción
+   *  para conseguirlo (crear en presupuestos / pedidos; vincular en albaranes
+   *  / facturas). */
+  function pedidoCell(d: FactusolDocument) {
+    if (d.order) {
+      return (
+        <Link
+          href={`/erp/orders/${d.order.id}`} className="mono erp-doc-pedido-link"
+          aria-label={`Abrir pedido ${d.order.order_number}`}
+          onClick={(e) => e.stopPropagation()}
+        >
+          {d.order.order_number}
+        </Link>
+      );
+    }
+    if (!canEdit || d.serie === null || d.codigo === null) {
+      return <span className="muted">Sin vincular</span>;
+    }
+    if (tab === "presupuestos" || tab === "pedidos") {
+      return (
+        <Link
+          href={`/erp/orders/new?doc_type=${tab}&serie=${d.serie}&codigo=${d.codigo}`}
+          className="button small secondary erp-doc-link-btn"
+          onClick={(e) => e.stopPropagation()}
+        >
+          Crear pedido
+        </Link>
+      );
+    }
+    return (
+      <button
+        type="button" className="button small secondary erp-doc-link-btn"
+        aria-label={`Vincular ${d.numero} a un pedido`}
+        onClick={(e) => { e.stopPropagation(); setVinculando(d); }}
+      >
+        Vincular
+      </button>
+    );
+  }
 
   /** Acción principal por documento (la que toca según el tipo/estado). */
   function primaryAction(d: FactusolDocument) {
-    if (isFacturas) {
-      if (canEdit && !facturaCobrada(d) && d.serie !== null && d.codigo !== null) {
-        return (
-          <button
-            type="button" className="button small"
-            onClick={(e) => { e.stopPropagation(); setCobrando(d); }}
-          >
-            Registrar cobro
-          </button>
-        );
-      }
-      return null;
-    }
-    if (tab === "presupuestos" || tab === "pedidos") {
-      if (d.order) {
-        return (
-          <Link
-            href={`/erp/orders/${d.order.id}`} className="button small"
-            onClick={(e) => e.stopPropagation()}
-          >
-            Abrir pedido {d.order.order_number}
-          </Link>
-        );
-      }
-      if (canEdit && d.serie !== null && d.codigo !== null) {
-        return (
-          <Link
-            href={`/erp/orders/new?doc_type=${tab}&serie=${d.serie}&codigo=${d.codigo}`}
-            className="button small"
-            onClick={(e) => e.stopPropagation()}
-          >
-            Crear pedido
-          </Link>
-        );
-      }
+    if (isFacturas && canEdit && !facturaCobrada(d) && d.serie !== null && d.codigo !== null) {
+      return (
+        <button
+          type="button" className="button small"
+          onClick={(e) => { e.stopPropagation(); setCobrando(d); }}
+        >
+          Registrar cobro
+        </button>
+      );
     }
     return null;
   }
@@ -293,7 +390,17 @@ export default function FactusolDocumentosPage() {
       <PageHeader
         title="Documentos FACTUSOL"
         eyebrow="ERP"
-        description="Explorador de presupuestos, pedidos, albaranes y facturas — lectura en vivo."
+        description={syncLine}
+        actions={
+          <button
+            type="button" className="button secondary"
+            disabled={loading}
+            title={syncTitle}
+            onClick={() => void load(offset, true)}
+          >
+            {syncing ? "Sincronizando…" : "Sincronizar ahora"}
+          </button>
+        }
       />
 
       <div className="erp-doc-tabs" role="tablist" aria-label="Tipo de documento">
@@ -319,6 +426,26 @@ export default function FactusolDocumentosPage() {
       {dlError ? <p className="form-error">{dlError}</p> : null}
 
       <div className="erp-flow-filters" role="search" aria-label="Filtros de documentos">
+        <button
+          type="button"
+          className={`erp-doc-chip ${soloSinVincular ? "is-active" : ""}`}
+          aria-pressed={soloSinVincular}
+          title={isLinkable
+            ? "Documentos sin pedido de BoHub (se vinculan desde la fila)"
+            : "Documentos sin pedido de BoHub (se crea desde la fila)"}
+          onClick={() => setSoloSinVincular((v) => !v)}
+        >
+          Solo sin vincular
+          {unlinkedTotal !== null ? (
+            <>
+              {" "}
+              <span className="erp-doc-chip-n mono" aria-label={`${unlinkedTotal} sin vincular`}>
+                · {unlinkedTotal}
+              </span>
+            </>
+          ) : null}
+          {soloSinVincular ? <> <span aria-hidden>✕</span></> : null}
+        </button>
         <label className="field erp-flow-filter-grow">
           <span className="sr-only">Buscar documento</span>
           <input
@@ -367,6 +494,11 @@ export default function FactusolDocumentosPage() {
           <input type="date" value={fechaHasta} aria-label="Fecha hasta"
                  onChange={(e) => setFechaHasta(e.target.value)} />
         </label>
+        {!isCurrentMonth ? (
+          <button type="button" className="button small tertiary" onClick={mesEnCurso}>
+            Mes en curso
+          </button>
+        ) : null}
         {cicloOptions ? (
           <label className="field">
             <span>Ciclo</span>
@@ -428,7 +560,7 @@ export default function FactusolDocumentosPage() {
         <p className="muted">Sin documentos que casen los filtros.</p>
       ) : (
         <>
-          <table className="data-table erp-doc-table">
+          <table className="data-table data-table--responsive erp-doc-table">
             <thead>
               <tr>
                 {isFacturas ? (
@@ -444,9 +576,10 @@ export default function FactusolDocumentosPage() {
                 <th>Nº</th>
                 <th>Cliente</th>
                 <th>Fecha</th>
-                <th>Total</th>
-                {isFacturas ? <th>Saldo pend.</th> : null}
+                <th className="num erp-doc-col-amount">Total</th>
+                {isFacturas ? <th className="num erp-doc-col-amount">Saldo pend.</th> : null}
                 <th>Estado</th>
+                <th className="erp-doc-col-pedido">Pedido</th>
                 <th className="erp-doc-actions-col">Acciones</th>
               </tr>
             </thead>
@@ -456,11 +589,12 @@ export default function FactusolDocumentosPage() {
                 return (
                   <tr
                     key={`${d.serie}-${d.codigo}`}
-                    className="erp-doc-row"
+                    className={`erp-doc-row ${d.order ? "" : "is-unlinked"}`}
                     onClick={() => setDetail(d)}
                   >
                     {isFacturas ? (
-                      <td className="erp-doc-check" onClick={(e) => e.stopPropagation()}>
+                      <td className="erp-doc-check" data-label="Seleccionar"
+                          onClick={(e) => e.stopPropagation()}>
                         <input
                           type="checkbox"
                           aria-label={`Seleccionar factura ${d.numero}`}
@@ -469,8 +603,8 @@ export default function FactusolDocumentosPage() {
                         />
                       </td>
                     ) : null}
-                    <td><strong className="mono">{d.numero}</strong></td>
-                    <td>
+                    <td data-label="Nº"><strong className="mono">{d.numero}</strong></td>
+                    <td data-label="Cliente">
                       <div className="erp-doc-cliente">
                         {d.company ? (
                           <Link href={`/companies/${d.company.id}`}
@@ -488,21 +622,21 @@ export default function FactusolDocumentosPage() {
                         ) : null}
                       </div>
                       {d.referencia ? (
-                        <span className="muted small">{d.referencia}</span>
+                        <span className="muted small mono">{d.referencia}</span>
                       ) : null}
                     </td>
-                    <td>{fmtDate(d.fecha)}</td>
-                    <td className="mono">{eur(d.total)}</td>
+                    <td data-label="Fecha" className="mono">{fmtDate(d.fecha)}</td>
+                    <td data-label="Total" className="num erp-doc-col-amount">{eur(d.total)}</td>
                     {isFacturas ? (
-                      <td className={
+                      <td data-label="Saldo pend." className={
                         d.saldo_pendiente && d.saldo_pendiente > 0.005
-                          ? "erp-doc-saldo-due mono" : "mono"
+                          ? "erp-doc-saldo-due num erp-doc-col-amount" : "num erp-doc-col-amount"
                       }>
                         {d.saldo_pendiente !== null && d.saldo_pendiente !== undefined
                           ? eur(d.saldo_pendiente) : "—"}
                       </td>
                     ) : null}
-                    <td>
+                    <td data-label="Estado">
                       <span className={`badge ${d.estado_tone ?? "muted"}`}>
                         {d.estado_label}
                       </span>
@@ -510,7 +644,11 @@ export default function FactusolDocumentosPage() {
                         <span className={`${badge.className} erp-doc-ciclo-badge`}>{badge.label}</span>
                       ) : null}
                     </td>
-                    <td onClick={(e) => e.stopPropagation()}>
+                    <td data-label="Pedido" className="erp-doc-col-pedido"
+                        onClick={(e) => e.stopPropagation()}>
+                      {pedidoCell(d)}
+                    </td>
+                    <td data-label="Acciones" onClick={(e) => e.stopPropagation()}>
                       <div className="erp-doc-row-actions">
                         {primaryAction(d)}
                         <button
@@ -587,6 +725,17 @@ export default function FactusolDocumentosPage() {
             }
             void load(offset, true);
           }}
+        />
+      ) : null}
+
+      {vinculando && vinculando.serie !== null && vinculando.codigo !== null ? (
+        <LinkDocumentOrderModal
+          docType={tab}
+          serie={vinculando.serie}
+          codigo={vinculando.codigo}
+          numero={vinculando.numero}
+          onClose={() => setVinculando(null)}
+          onLinked={(order) => onLinked(vinculando, order)}
         />
       ) : null}
     </main>
