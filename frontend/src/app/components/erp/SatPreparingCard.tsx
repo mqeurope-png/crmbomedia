@@ -13,23 +13,16 @@ import {
   type SatQueueItem,
 } from "../../lib/erpApi";
 
-/** Card de «📦 Por embalar» (D-1-fix2): la card entera enlaza al modo trabajo,
- *  con un chip de albarán que NO navega (descarga/abre el PDF sin salir del
- *  táctil — el operativo lo necesita para cotejar líneas antes de embalar). */
-export function SatPreparingCard({
-  order,
-  onChanged,
-}: {
-  order: SatQueueItem;
-  onChanged: () => void;
-}) {
+/** Acción «albarán» de un pedido por embalar, compartida por la card y por la
+ *  fila de la vista lista (Lote B6): el albarán que BoHub creó en FACTUSOL
+ *  manda sobre el fichero subido a mano (es el documento real del pedido, el
+ *  mismo PDF que la ficha y que el email al SAT); el fichero subido queda para
+ *  los pedidos del flujo antiguo; y sin ninguno de los dos, se descarga de Woo. */
+export function useSatAlbaranAction(order: SatQueueItem, onChanged: () => void) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  // El albarán que BoHub creó en FACTUSOL manda sobre el fichero subido a
-  // mano: es el documento real del pedido (mismo PDF que la ficha y que el
-  // email al SAT). El fichero subido queda para los pedidos del flujo antiguo.
   const factusolAlbaran = order.factusol_albaran_number ?? null;
+  const hasAlbaran = Boolean(factusolAlbaran || order.has_albaran);
 
   async function albaranClick(e: React.SyntheticEvent) {
     e.preventDefault();
@@ -74,6 +67,31 @@ export function SatPreparingCard({
     }
   }
 
+  const label = busy
+    ? "Descargando…"
+    : hasAlbaran
+      ? "📄 Imprimir albarán"
+      : "📄 Descargar albarán";
+  const title = factusolAlbaran
+    ? `Descarga el albarán ${factusolAlbaran} de FACTUSOL en PDF`
+    : undefined;
+
+  return { busy, error, albaranClick, hasAlbaran, factusolAlbaran, label, title };
+}
+
+/** Card de «📦 Por embalar» (D-1-fix2): la card entera enlaza al modo trabajo,
+ *  con un chip de albarán que NO navega (descarga/abre el PDF sin salir del
+ *  táctil — el operativo lo necesita para cotejar líneas antes de embalar). */
+export function SatPreparingCard({
+  order,
+  onChanged,
+}: {
+  order: SatQueueItem;
+  onChanged: () => void;
+}) {
+  const { busy, error, albaranClick, hasAlbaran, label, title } =
+    useSatAlbaranAction(order, onChanged);
+
   return (
     <div className="sat-card-wrap">
       <Link href={`/erp/sat/${order.id}`} className="sat-card">
@@ -98,18 +116,12 @@ export function SatPreparingCard({
           <span
             role="button"
             tabIndex={0}
-            className={`sat-chip-btn ${factusolAlbaran || order.has_albaran ? "ok" : "info"}`}
+            className={`sat-chip-btn ${hasAlbaran ? "ok" : "info"}`}
             aria-disabled={busy}
-            title={factusolAlbaran
-              ? `Descarga el albarán ${factusolAlbaran} de FACTUSOL en PDF`
-              : undefined}
+            title={title}
             onClick={albaranClick}
           >
-            {busy
-              ? "Descargando…"
-              : factusolAlbaran || order.has_albaran
-                ? "📄 Imprimir albarán"
-                : "📄 Descargar albarán"}
+            {label}
           </span>
         </div>
         <span className="sat-card-cta">Abrir →</span>

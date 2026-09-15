@@ -1153,6 +1153,19 @@ def fire_transition(
     return _serialise_detail(session, _get_order(session, order_id), current_user)
 
 
+def approve_inline(session: Session, order: Order, actor: User, *, reason: str) -> None:
+    """Aprobación (Cola PEDIDOS): pending_review → in_queue vía engine +
+    approved_at/by. La comparten `/approve`, «Enviar a SAT» por email y
+    «Añadir a mano a la Cola SAT» (regla: enviado al taller = aprobado). El
+    caller comprueba antes `_blockers()`; aquí puede saltar TransitionError."""
+    apply_transition(
+        session, order=order, domain=StatusDomain.PREPARATION,
+        to_status="in_queue", actor=actor, reason=reason,
+    )
+    order.approved_at = datetime.now(UTC)
+    order.approved_by_user_id = actor.id
+
+
 @router.post("/{order_id}/approve")
 def approve_order(
     order_id: str,
@@ -1169,17 +1182,11 @@ def approve_order(
             detail={"code": "blocked", "blockers": blockers},
         )
     try:
-        apply_transition(
-            session, order=order, domain=StatusDomain.PREPARATION,
-            to_status="in_queue", actor=current_user,
-            reason="aprobado en Cola PEDIDOS",
-        )
+        approve_inline(session, order, current_user, reason="aprobado en Cola PEDIDOS")
     except TransitionError as exc:
         raise HTTPException(
             409, {"code": exc.code, "detail": exc.detail}
         ) from exc
-    order.approved_at = datetime.now(UTC)
-    order.approved_by_user_id = current_user.id
     session.commit()
     return _serialise_detail(session, _get_order(session, order_id), current_user)
 

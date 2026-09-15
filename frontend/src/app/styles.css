@@ -11712,3 +11712,48 @@ tr.is-inactive {
 .erp-quote-preview-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .erp-quote-preview td.num, .erp-quote-preview th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .erp-quote-preview .erp-article-sku { font-size: 12px; }
+
+/* ===== BoHub ERP — Cola SAT · Lote B6: filtros, vista lista, historial ======
+   Solo la cola (/erp/sat): cabecera con toggle Tarjetas/Lista, barra de
+   filtros sobre fondo claro del taller, tabla compacta con las mismas acciones
+   que las tarjetas, historial plegable y «Añadir pedido a la cola». */
+.sat-queue-head { flex-wrap: wrap; gap: 8px 12px; }
+.sat-queue-head .sat-queue-count { margin-right: auto; }
+.sat-queue-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.sat-view-toggle { display: inline-flex; border: 1px solid #cbd5e1; border-radius: 999px; overflow: hidden; background: #fff; }
+.sat-view-toggle button { border: 0; background: transparent; padding: 6px 14px; font-size: 13px; font-weight: 700; color: #475569; cursor: pointer; }
+.sat-view-toggle button[aria-pressed="true"] { background: #0f172a; color: #fff; }
+.sat-main .erp-flow-filters { background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 10px 12px; margin: 0 0 12px; }
+.sat-add-form { display: flex; align-items: flex-end; gap: 8px 10px; flex-wrap: wrap; margin: 0 0 14px; }
+.sat-add-form .field { margin: 0; flex: 1 1 240px; max-width: 360px; }
+.sat-add-form .field > span { font-size: 11px; color: var(--muted); }
+.sat-add-form .form-info, .sat-add-form .form-error { margin: 0; flex: 1 1 100%; }
+/* Vista lista: en escritorio la cola puede ir más ancha que las tarjetas. */
+.sat-main:has(.sat-view-list) { max-width: 1200px; }
+.sat-table-wrap { overflow-x: auto; background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; }
+.sat-table { width: 100%; border-collapse: collapse; font-size: 14px; min-width: 760px; }
+.sat-table th, .sat-table td { padding: 8px 10px; border-bottom: 1px solid #e2e8f0; text-align: left; vertical-align: middle; white-space: nowrap; }
+.sat-table th { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: #64748b; background: #f8fafc; }
+.sat-table tbody tr:last-child td { border-bottom: 0; }
+.sat-table td.sat-td-cliente { white-space: normal; min-width: 160px; }
+.sat-table .sat-td-num a { font-weight: 800; color: #0f172a; text-decoration: none; }
+.sat-table .sat-td-num a:hover { text-decoration: underline; }
+.sat-table .sat-row-total { margin-left: 8px; }
+.sat-table .sat-td-actions { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.sat-table .sat-chip-btn { padding: 4px 10px; font-size: 12px; }
+.sat-table .sat-confirm { display: inline-flex; gap: 6px; align-items: center; }
+.sat-table tr.sat-row-error td { background: #fef2f2; white-space: normal; }
+.sat-table tr.sat-row-error p { margin: 0; }
+.sat-row-warn { color: #b45309; font-weight: 800; font-size: 11px; margin-left: 6px; }
+.sat-doc-flag { display: inline-block; margin-right: 8px; font-size: 12px; color: #94a3b8; }
+.sat-doc-flag.ok { color: var(--success); font-weight: 700; }
+.sat-doc-flag.warn { color: #b54708; font-weight: 700; }
+.sat-history { margin-top: 20px; }
+.sat-history-toggle { display: block; width: 100%; text-align: left; border: 1px solid #e2e8f0; border-radius: 12px; background: #fff; padding: 12px 14px; font-size: 15px; font-weight: 800; color: #0f172a; cursor: pointer; margin-bottom: 10px; }
+.sat-history-toggle[aria-expanded="true"] { border-bottom-left-radius: 0; border-bottom-right-radius: 0; margin-bottom: 0; border-bottom: 0; }
+.sat-history-toggle[aria-expanded="true"] + .sat-table-wrap { border-top-left-radius: 0; border-top-right-radius: 0; }
+.sat-history-reason { white-space: normal; }
+@media (max-width: 640px) {
+  .sat-queue-head .sat-queue-count { flex: 1 1 100%; margin-right: 0; }
+  .sat-add-form .field { max-width: none; }
+}
