@@ -249,6 +249,139 @@ def order_store_slug(session: Session, order: Any) -> str | None:
     return store.account_id if store is not None else None
 
 
+class OrderInvoiceMismatch(ValueError):
+    """La factura pedida NO es la del pedido indicado (o el pedido no tiene
+    factura): nunca se envía la factura de un pedido desde otro."""
+
+
+def resolve_order_for_invoice(
+    session: Session, order_id: str, *, serie: int, codigo: int,
+    referencia: Any = None, cliente_codigo: Any = None,
+):
+    """Pedido `order_id` VERIFICADO como dueño de la factura (serie, código).
+    Es el camino de la ficha de pedido: el pedido se conoce, no se adivina a
+    partir de la factura. Vale si:
+      - su referencia común es la REFFAC de la factura; o
+      - guarda ese nº de factura con la misma serie; o
+      - guarda ese nº de factura SIN serie (CODFAC desnudo) y nada lo
+        contradice: ni la referencia (si ambas constan y difieren) ni el
+        cliente (CLIFAC ≠ empresa del pedido), salvo que el cliente coincida.
+    Si no, `OrderInvoiceMismatch` (nunca se envía la factura de otro pedido)."""
+    from app.erp.factusol_cobro import parse_invoice_number  # noqa: PLC0415
+    from app.erp.factusol_pdf import (  # noqa: PLC0415
+        order_composed_ref,
+        order_customer_code,
+        order_invoice_serie,
+    )
+    from app.erp.models import Order  # noqa: PLC0415
+
+    order = session.get(Order, order_id)
+    if order is None:
+        raise OrderInvoiceMismatch("El pedido no existe.")
+    _, o_codigo = parse_invoice_number(order.factusol_invoice_number)
+    o_serie = order_invoice_serie(order)
+    ref = str(referencia or "").strip().upper()
+    o_ref = order_composed_ref(session, order)
+    inv_cli = str(cliente_codigo or "").strip()
+    o_cli = order_customer_code(session, order) or ""
+    ref_match = bool(ref) and o_ref == ref
+    cli_match = bool(inv_cli) and o_cli == inv_cli
+    ref_conflict = bool(ref) and bool(o_ref) and o_ref != ref
+    cli_conflict = bool(inv_cli) and bool(o_cli) and o_cli != inv_cli
+    same_number = o_codigo == int(codigo)
+    if o_serie is not None:
+        ok = ref_match or (same_number and o_serie == int(serie))
+    else:
+        ok = ref_match or (same_number and (cli_match or not (ref_conflict or cli_conflict)))
+    if not ok:
+        raise OrderInvoiceMismatch(
+            f"La factura {serie}-{int(codigo):06d} no es la del pedido "
+            f"{order.order_number}."
+        )
+    return order
+
+
+def erp_configured_senders(session: Session) -> set[str]:
+    """Alias remitentes configurados en Ajustes ERP (por tienda y por serie),
+    en minúsculas. Son los que el ERP propone como «De» de la factura."""
+    from app.integrations.factusol.service import series_config  # noqa: PLC0415
+
+    cfg = series_config(session)
+    out = {
+        v.strip().lower()
+        for v in store_email_from_config(cfg.get("store_email_from")).values()
+        if v and v.strip()
+    }
+    out |= {
+        v.strip().lower()
+        for v in series_email_from_config(cfg.get("series_email_from")).values()
+        if v and v.strip()
+    }
+    return out
+
+
+def check_sender_alias(session: Session, user: Any, alias: str) -> dict[str, Any]:
+    """¿Puede `user` enviar desde `alias`? `{ok, source, reason}`.
+
+    Bug 3 (#426): `gmail:sync_aliases` refleja TODOS los send-as de la cuenta
+    Google compartida en `user_email_alias_prefs`, pero marca `is_allowed=0`
+    a todo alias que no sea el email propio del usuario (para que cada
+    comercial solo vea los suyos en el compositor). `pedidos@streamtec.es`
+    es un alias de la organización, no de nadie → quedaba oculto y el ERP
+    lo rechazaba aunque en Gmail esté verificado.
+
+    Criterio ahora:
+      1. Alias en las preferencias PERMITIDAS del usuario → ok (`preferencia`).
+      2. Alias configurado como remitente en Ajustes ERP (tienda o serie) y
+         send-as VERIFICADO en Gmail (lista en vivo; si Gmail no responde, el
+         espejo local aunque esté oculto) → ok (`gmail` / `gmail_cache`). Se
+         refresca el espejo local con lo que dice Gmail (sin cambiar la
+         visibilidad que eligió el usuario).
+      3. Cualquier otro alias → no (nadie suplanta un alias ajeno que el ERP
+         no tenga configurado)."""
+    from app.integrations.gmail import service as gmail_service  # noqa: PLC0415
+    from app.models.crm import UserEmailAliasPref  # noqa: PLC0415
+
+    wanted = (alias or "").strip()
+    key = wanted.lower()
+    if not key:
+        return {"ok": False, "source": None, "reason": "sin_alias"}
+    rows = session.scalars(
+        select(UserEmailAliasPref).where(UserEmailAliasPref.user_id == user.id)
+    ).all()
+    mine = {r.alias_email.strip().lower(): r for r in rows}
+    row = mine.get(key)
+    if row is not None and row.is_allowed:
+        return {"ok": True, "source": "preferencia", "reason": None}
+    if key not in erp_configured_senders(session):
+        return {"ok": False, "source": None, "reason": "alias_not_allowed"}
+    try:
+        gmail = gmail_service.list_aliases(session, user.id)
+    except Exception:  # noqa: BLE001 — Gmail desconectado / sin scope / caído
+        if row is not None:
+            return {"ok": True, "source": "gmail_cache", "reason": None}
+        return {"ok": False, "source": None, "reason": "gmail_unavailable"}
+    verified = {
+        (a.get("send_as_email") or "").strip().lower(): a for a in gmail
+    }
+    found = verified.get(key)
+    if found is None:
+        return {"ok": False, "source": None, "reason": "not_in_gmail"}
+    # Espejo local al día (fila oculta si no existía: la visibilidad en el
+    # compositor sigue siendo decisión del usuario / del sync).
+    display = found.get("display_name") or None
+    if row is None:
+        session.add(UserEmailAliasPref(
+            user_id=user.id, alias_email=found.get("send_as_email") or wanted,
+            is_allowed=False, is_default=False, gmail_display_name=display,
+        ))
+        session.flush()
+    elif display and row.gmail_display_name != display:
+        row.gmail_display_name = display
+        session.flush()
+    return {"ok": True, "source": "gmail", "reason": None}
+
+
 def find_reply_target(session: Session, order: Any) -> str | None:
     """Id de nuestro `EmailMessage` al que responder para agrupar el correo
     de la factura en el hilo del pedido, o None si no hay uno fiable.
@@ -289,13 +422,21 @@ def build_invoice_email_preview(
     current_user: Any,
     lang_override: str | None = None,
     fop_names: dict[str, str] | None = None,
+    order_id: str | None = None,
 ) -> dict[str, Any]:
     """Datos de la PREVISUALIZACIÓN (obligatoria antes de enviar): a quién,
     asunto, idioma + procedencia, cuerpo editable y el nombre del adjunto.
-    NO envía nada ni genera el PDF todavía."""
+    NO envía nada ni genera el PDF todavía.
+
+    `order_id`: el pedido desde cuya ficha se envía; se VERIFICA que la
+    factura es suya (`resolve_order_for_invoice`, si no
+    `OrderInvoiceMismatch`). Sin él, el pedido se localiza a partir de la
+    factura (serie + número + referencia + cliente; nunca por número desnudo,
+    que es homónimo entre series)."""
     from app.erp.factusol_pdf import (  # noqa: PLC0415
         extract_document_data,
         load_raw_document,
+        order_customer_code,
         pdf_filename,
         suggest_pdf_language,
     )
@@ -309,17 +450,24 @@ def build_invoice_email_preview(
         client, "facturas", raw[0], raw[1], ejercicio=ejercicio,
         fop_names=fop_names,
     )
-    suggestion = suggest_pdf_language(session, "facturas", data)
+    order = _order_for(session, order_id, serie=serie, codigo=codigo, data=data)
+    suggestion = suggest_pdf_language(session, "facturas", data, order=order)
     lang = lang_override if lang_override in SUPPORTED_LANGS else suggestion["lang"]
     source = "selector" if lang_override in SUPPORTED_LANGS else suggestion["source"]
 
-    order = _find_order(session, data)
+    # Destinatario: el contacto del pedido de ESTA factura (nunca el de un
+    # pedido homónimo). Además se contrasta el cliente de la factura (CLIFAC)
+    # con la empresa del pedido: si no coinciden, se avisa en la
+    # previsualización (posible vínculo erróneo) en vez de callar.
     to = ""
     if order is not None and order.contact_id:
         from app.models.crm import Contact  # noqa: PLC0415
 
         contact = session.get(Contact, order.contact_id)
         to = (contact.email or "") if contact is not None else ""
+    invoice_cli = str((data.get("cliente") or {}).get("codigo") or "").strip()
+    order_cli = order_customer_code(session, order) if order is not None else None
+    customer_mismatch = bool(invoice_cli and order_cli and invoice_cli != order_cli)
 
     subject, body_text = render_invoice_email(
         session, lang=lang, cliente=data["cliente"]["nombre"],
@@ -338,6 +486,12 @@ def build_invoice_email_preview(
     from_alias_source = (
         "tienda" if store_alias else ("serie" if serie_alias else "usuario")
     )
+    # ¿Se podrá enviar desde ese alias? Mismo criterio que el envío (send-as
+    # verificado de Gmail); se avisa ya en la previsualización, no al pulsar.
+    alias_check = (
+        check_sender_alias(session, current_user, from_alias)
+        if from_alias else {"ok": False, "reason": "sin_alias"}
+    )
     return {
         "serie": serie, "codigo": codigo,
         "numero": data["numero"],
@@ -349,12 +503,19 @@ def build_invoice_email_preview(
         # De dónde sale el remitente: "tienda", "serie" (empresa emisora) o
         # "usuario".
         "from_alias_source": from_alias_source,
+        # None = no se pudo comprobar contra Gmail (desconectado / sin scope).
+        "from_alias_ok": alias_check.get("ok"),
+        "from_alias_problem": alias_check.get("reason"),
         "store": store_slug,
         "attachment_filename": pdf_filename("facturas", data, lang),
         "reply_to_message_id": reply_to,
         "replies_to_thread": reply_to is not None,
         "order_id": order.id if order is not None else None,
         "order_number": order.order_number if order is not None else None,
+        # Cliente de la factura en FACTUSOL y si NO coincide con la empresa
+        # del pedido (posible vínculo erróneo: el operador debe mirar el «Para»).
+        "invoice_customer": (data.get("cliente") or {}).get("nombre") or None,
+        "customer_mismatch": customer_mismatch,
     }
 
 
@@ -362,6 +523,20 @@ def _find_order(session: Session, data: dict[str, Any]):
     from app.erp.factusol_pdf import _find_order_for_document  # noqa: PLC0415
 
     return _find_order_for_document(session, "facturas", data)
+
+
+def _order_for(
+    session: Session, order_id: str | None, *, serie: int, codigo: int,
+    data: dict[str, Any],
+):
+    """Pedido de la factura: el indicado (verificado) o el localizado."""
+    if order_id:
+        return resolve_order_for_invoice(
+            session, order_id, serie=serie, codigo=codigo,
+            referencia=data.get("referencia"),
+            cliente_codigo=(data.get("cliente") or {}).get("codigo"),
+        )
+    return _find_order(session, data)
 
 
 def send_invoice_email(
@@ -383,11 +558,16 @@ def send_invoice_email(
     fop_names: dict[str, str] | None = None,
     company: dict[str, Any] | None = None,
     logo: Any = None,
+    order_id: str | None = None,
 ) -> dict[str, Any]:
     """Genera el PDF de la factura y lo envía por Gmail, ligado al contacto
     del pedido y (si procede) al hilo. Registra el envío en el timeline del
     pedido. Si el envío falla, propaga la excepción y NO registra nada: la
     factura NO queda marcada como enviada y el PDF se puede regenerar.
+
+    `order_id`: pedido desde cuya ficha se envía, VERIFICADO como dueño de la
+    factura (si no, `OrderInvoiceMismatch` antes de enviar nada); sin él se
+    localiza por serie + número + referencia + cliente.
     """
     from app.core.audit import record_event  # noqa: PLC0415
     from app.erp.factusol_pdf import (  # noqa: PLC0415
@@ -409,6 +589,8 @@ def send_invoice_email(
         client, "facturas", raw[0], raw[1], ejercicio=ejercicio,
         fop_names=fop_names,
     )
+    # Antes de generar nada: el pedido (verificado si viene de la ficha).
+    order = _order_for(session, order_id, serie=serie, codigo=codigo, data=data)
     company = company if company is not None else company_for_serie(session, serie)
     pdf = generate_document_pdf(
         data, company=company, lang=lang,
@@ -417,8 +599,6 @@ def send_invoice_email(
     )
     filename = pdf_filename("facturas", data, lang, variant)
     body_html = _text_to_html(body_text)
-
-    order = _find_order(session, data)
 
     # El envío es la parte irreversible: si falla, la excepción sube y no se
     # registra nada (el caller devuelve error y el PDF se puede reintentar).

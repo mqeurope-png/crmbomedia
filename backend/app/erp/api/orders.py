@@ -1991,22 +1991,12 @@ def send_order_email_endpoint(
                 "ERP o escribe uno."
             ),
         })
-    # El alias tiene que estar entre los permitidos del usuario (mismo criterio
-    # que el resto de envíos: no se suplanta un alias ajeno).
-    from app.models.crm import UserEmailAliasPref  # noqa: PLC0415
+    # El alias: entre los permitidos del usuario o un remitente configurado en
+    # Ajustes ERP verificado en Gmail (mismo criterio que la factura; no se
+    # suplanta un alias ajeno).
+    from app.erp.api.factusol import _require_sender_alias  # noqa: PLC0415
 
-    pref = session.scalar(
-        select(UserEmailAliasPref).where(
-            UserEmailAliasPref.user_id == current_user.id,
-            UserEmailAliasPref.alias_email == payload.from_alias,
-            UserEmailAliasPref.is_allowed.is_(True),
-        )
-    )
-    if pref is None:
-        raise HTTPException(status.HTTP_403_FORBIDDEN, {
-            "code": "alias_not_allowed",
-            "detail": "El alias no está en tus preferencias (config. en /account).",
-        })
+    _require_sender_alias(session, current_user, payload.from_alias)
 
     order, client, ejercicio = _order_email_context(session, order_id)
     try:

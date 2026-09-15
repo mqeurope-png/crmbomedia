@@ -760,6 +760,7 @@ export default function ErpOrderDetailPage() {
           serie={invoiceRef.serie}
           codigo={invoiceRef.codigo}
           numero={invoiceRef.numero}
+          orderId={order.id}
           onClose={() => setInvoiceRef(null)}
           onSent={() => { setInvoiceRef(null); load(); }}
         />

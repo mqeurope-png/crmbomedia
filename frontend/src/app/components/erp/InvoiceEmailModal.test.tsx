@@ -158,3 +158,47 @@ it("indica que el remitente es el de la TIENDA del pedido cuando así viene", as
   expect(await screen.findByText(/tienda@boprint\.es/)).toBeInTheDocument();
   expect(screen.getByText(/remitente de la tienda boprint/)).toBeInTheDocument();
 });
+
+// --- #426: pedido explícito desde la ficha, aviso de remitente, cliente ------
+
+describe("InvoiceEmailModal — ficha de pedido (#426)", () => {
+  it("pide la previsualización y envía con el pedido de la ficha (order_id), nunca adivinado", async () => {
+    const user = userEvent.setup();
+    render(<InvoiceEmailModal serie={5} codigo={63} orderId="ord-escola" onClose={jest.fn()} />);
+    await screen.findByLabelText("Destinatario");
+    expect(mockPreview).toHaveBeenCalledWith(5, 63, undefined, "ord-escola");
+    await user.click(screen.getByRole("button", { name: "Enviar factura" }));
+    await waitFor(() => expect(mockSend).toHaveBeenCalledTimes(1));
+    expect(mockSend).toHaveBeenCalledWith(5, 63, expect.objectContaining({
+      confirm: true, order_id: "ord-escola",
+    }));
+  });
+
+  it("avisa cuando el remitente propuesto no es un «enviar como» verificado en Gmail", async () => {
+    mockPreview.mockResolvedValue(preview({
+      from_alias: "pedidos@streamtec.es", from_alias_source: "tienda", store: "fluxlasers",
+      from_alias_ok: false, from_alias_problem: "not_in_gmail",
+    }));
+    render(<InvoiceEmailModal serie={5} codigo={63} onClose={jest.fn()} />);
+    await screen.findByLabelText("Destinatario");
+    expect(screen.getByRole("alert")).toHaveTextContent(/no es un «enviar como» verificado/);
+    expect(screen.getByText(/remitente de la tienda fluxlasers/)).toBeInTheDocument();
+  });
+
+  it("avisa cuando el cliente de la factura no coincide con la empresa del pedido", async () => {
+    mockPreview.mockResolvedValue(preview({
+      customer_mismatch: true, invoice_customer: "NEON LED, S.L.",
+    }));
+    render(<InvoiceEmailModal serie={5} codigo={63} orderId="ord-escola" onClose={jest.fn()} />);
+    await screen.findByLabelText("Destinatario");
+    expect(screen.getByRole("alert")).toHaveTextContent(/NEON LED, S.L./);
+    expect(screen.getByRole("alert")).toHaveTextContent(/no coincide con la empresa del pedido/);
+  });
+
+  it("sin problemas no hay avisos", async () => {
+    mockPreview.mockResolvedValue(preview({ from_alias_ok: true, customer_mismatch: false }));
+    render(<InvoiceEmailModal serie={5} codigo={63} onClose={jest.fn()} />);
+    await screen.findByLabelText("Destinatario");
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+});

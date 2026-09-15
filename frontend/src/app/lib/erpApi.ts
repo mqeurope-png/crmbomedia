@@ -2015,6 +2015,12 @@ export type InvoiceEmailPreview = {
    *  serie (`"serie"`); si no, el alias por defecto del usuario (`"usuario"`). */
   from_alias: string;
   from_alias_source: "tienda" | "serie" | "usuario";
+  /** ¿Se podrá enviar desde ese alias? (preferencia del usuario, o remitente
+   *  de Ajustes ERP verificado como send-as en Gmail). `null`/ausente = no se
+   *  pudo comprobar. */
+  from_alias_ok?: boolean | null;
+  /** Por qué no: "alias_not_allowed" | "not_in_gmail" | "gmail_unavailable" | … */
+  from_alias_problem?: string | null;
   /** Slug de la tienda Woo del pedido (null si no es de tienda). */
   store?: string | null;
   attachment_filename: string;
@@ -2025,6 +2031,10 @@ export type InvoiceEmailPreview = {
   order_id: string | null;
   /** Nº de pedido de BoHub (va en asunto y cuerpo vía el placeholder {pedido}). */
   order_number?: string | null;
+  /** Cliente de la factura en FACTUSOL y si NO coincide con la empresa del
+   *  pedido (posible vínculo erróneo: revisar el «Para»). */
+  invoice_customer?: string | null;
+  customer_mismatch?: boolean;
 };
 
 export type InvoiceEmailSendPayload = {
@@ -2040,6 +2050,9 @@ export type InvoiceEmailSendPayload = {
   bank?: number | null;
   /** Solo "anticipo" cambia el PDF; el resto de variantes no aplican aquí. */
   variant?: "anticipo" | null;
+  /** Pedido desde cuya ficha se envía: el backend verifica que la factura es
+   *  suya (409 si no) y registra el envío en SU timeline. */
+  order_id?: string | null;
 };
 
 export type InvoiceEmailSendResult = {
@@ -2057,8 +2070,14 @@ export type FactusolInvoiceRef = { serie: number; codigo: number; numero: string
 
 export async function getInvoiceEmailPreview(
   serie: number, codigo: number | string, lang?: FactusolPdfLang,
+  orderId?: string | null,
 ): Promise<InvoiceEmailPreview> {
-  const query = lang ? `?lang=${lang}` : "";
+  // `order_id` (ficha de pedido): destinatario, tienda, idioma y timeline
+  // del pedido indicado, tras verificar que la factura es suya.
+  const params = new URLSearchParams();
+  if (lang) params.set("lang", lang);
+  if (orderId) params.set("order_id", orderId);
+  const query = params.toString() ? `?${params.toString()}` : "";
   return apiFetch(
     `/api/erp/factusol/documents/facturas/${serie}/${codigo}/email-preview${query}`,
   );

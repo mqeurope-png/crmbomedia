@@ -701,20 +701,33 @@ def invoice_email_preview(
     serie: int,
     codigo: int,
     lang: str | None = Query(default=None, pattern="^(es|en|de|fr|nl)$"),
+    order_id: str | None = Query(default=None, max_length=64),
     session: Session = Depends(get_session),
     current_user: User = Depends(require_erp_edit),
 ) -> dict[str, Any]:
     """Datos para la PREVISUALIZACIÓN obligatoria antes de enviar la factura
     por email: destinatario, asunto, idioma (+ procedencia), cuerpo editable
-    y nombre del adjunto. No envía nada ni genera el PDF."""
-    from app.erp.invoice_email import build_invoice_email_preview  # noqa: PLC0415
+    y nombre del adjunto. No envía nada ni genera el PDF.
+
+    `order_id` (ficha de pedido): el destinatario, la tienda, el idioma y el
+    timeline son los de ESE pedido, tras verificar que la factura es suya
+    (409 `order_invoice_mismatch` si no)."""
+    from app.erp.invoice_email import (  # noqa: PLC0415
+        OrderInvoiceMismatch,
+        build_invoice_email_preview,
+    )
 
     client, ejercicio = _client_and_ejercicio(session)
-    preview = build_invoice_email_preview(
-        session, client, serie=serie, codigo=codigo, ejercicio=ejercicio,
-        current_user=current_user, lang_override=lang,
-        fop_names=_fop_names(client, ejercicio),
-    )
+    try:
+        preview = build_invoice_email_preview(
+            session, client, serie=serie, codigo=codigo, ejercicio=ejercicio,
+            current_user=current_user, lang_override=lang,
+            fop_names=_fop_names(client, ejercicio), order_id=order_id,
+        )
+    except OrderInvoiceMismatch as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, {
+            "code": "order_invoice_mismatch", "detail": str(exc)[:200],
+        }) from exc
     if preview.get("error") == "not_found":
         raise HTTPException(
             status.HTTP_404_NOT_FOUND,
@@ -736,6 +749,9 @@ class InvoiceEmailPayload(BaseModel):
     reply_to_message_id: str | None = None
     bank: int | None = Field(default=None, ge=0, le=20)
     variant: str | None = Field(default=None, pattern="^(anticipo)$")
+    #: Pedido desde cuya ficha se envía: se verifica que la factura es suya y
+    #: el envío se registra en SU timeline (nunca en el de un homónimo).
+    order_id: str | None = Field(default=None, max_length=64)
 
 
 @router.post("/documents/facturas/{serie}/{codigo}/email", status_code=201)
@@ -751,7 +767,10 @@ def send_invoice_email_endpoint(
     pedido si `reply_to_message_id` viene, si no correo nuevo. Registra el
     envío en el timeline del pedido; si falla, NO marca como enviada."""
     from app.erp.factusol_pdf import bank_accounts, company_for_serie  # noqa: PLC0415
-    from app.erp.invoice_email import send_invoice_email  # noqa: PLC0415
+    from app.erp.invoice_email import (  # noqa: PLC0415
+        OrderInvoiceMismatch,
+        send_invoice_email,
+    )
     from app.integrations.gmail.service import (  # noqa: PLC0415
         GmailNotConnectedError,
         GmailScopeMissingError,
@@ -767,23 +786,10 @@ def send_invoice_email_endpoint(
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, {
             "code": "no_recipient", "detail": "Falta el destinatario.",
         })
-    # El alias debe estar en las preferencias permitidas del usuario (mismo
-    # criterio que el envío normal de la app — no suplantar un alias ajeno).
-    from sqlalchemy import select  # noqa: PLC0415
-
-    from app.models.crm import UserEmailAliasPref  # noqa: PLC0415
-    pref = session.scalar(
-        select(UserEmailAliasPref).where(
-            UserEmailAliasPref.user_id == current_user.id,
-            UserEmailAliasPref.alias_email == payload.from_alias,
-            UserEmailAliasPref.is_allowed.is_(True),
-        )
-    )
-    if pref is None:
-        raise HTTPException(status.HTTP_403_FORBIDDEN, {
-            "code": "alias_not_allowed",
-            "detail": "El alias no está en tus preferencias (config. en /account).",
-        })
+    # El alias: en las preferencias permitidas del usuario, o un remitente
+    # configurado en Ajustes ERP (tienda / serie) que sea send-as VERIFICADO
+    # en Gmail (comprobado en vivo). Nunca un alias ajeno cualquiera.
+    _require_sender_alias(session, current_user, payload.from_alias)
 
     client, ejercicio = _client_and_ejercicio(session)
     company = company_for_serie(session, serie)
@@ -800,16 +806,54 @@ def send_invoice_email_endpoint(
             reply_to_message_id=payload.reply_to_message_id,
             bank=selected_bank, variant=payload.variant,
             fop_names=_fop_names(client, ejercicio), company=company,
+            order_id=payload.order_id,
         )
     except (GmailNotConnectedError, GmailScopeMissingError) as exc:
         # Gmail no conectado / sin scope: NO se marca como enviada.
         raise HTTPException(status.HTTP_400_BAD_REQUEST, {
             "code": "gmail_unavailable", "detail": str(exc)[:200],
         }) from exc
+    except OrderInvoiceMismatch as exc:
+        # La factura no es del pedido indicado: no se envía nada.
+        raise HTTPException(status.HTTP_409_CONFLICT, {
+            "code": "order_invoice_mismatch", "detail": str(exc)[:200],
+        }) from exc
     except ValueError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, {
             "code": "invoice_not_found", "detail": str(exc)[:200],
         }) from exc
+
+
+#: Mensajes de por qué NO se puede enviar desde un alias (código → texto).
+_SENDER_ALIAS_PROBLEMS = {
+    "alias_not_allowed": (
+        "El alias no está en tus preferencias (/account) ni es un remitente "
+        "configurado en Ajustes ERP."
+    ),
+    "not_in_gmail": (
+        "El alias no es un «enviar como» verificado de la cuenta de Gmail."
+    ),
+    "gmail_unavailable": (
+        "No se pudo comprobar el alias en Gmail (desconectado o sin permiso) "
+        "y no consta como send-as en BoHub."
+    ),
+    "sin_alias": "Falta el remitente.",
+}
+
+
+def _require_sender_alias(session: Session, current_user: User, alias: str) -> None:
+    """403 `alias_not_allowed` (con `reason`) si `current_user` no puede
+    enviar desde `alias`; ver `check_sender_alias`."""
+    from app.erp.invoice_email import check_sender_alias  # noqa: PLC0415
+
+    verdict = check_sender_alias(session, current_user, alias)
+    if verdict.get("ok"):
+        return
+    reason = str(verdict.get("reason") or "alias_not_allowed")
+    raise HTTPException(status.HTTP_403_FORBIDDEN, {
+        "code": "alias_not_allowed", "reason": reason,
+        "detail": _SENDER_ALIAS_PROBLEMS.get(reason, _SENDER_ALIAS_PROBLEMS["alias_not_allowed"]),
+    })
 
 
 # --- ERP-F3: marcar la factura como cobrada / pendiente ---------------------
