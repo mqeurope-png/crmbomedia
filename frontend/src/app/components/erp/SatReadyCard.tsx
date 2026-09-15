@@ -15,16 +15,11 @@ import {
   type ShipmentFileKind,
 } from "../../lib/erpApi";
 
-/** Card de «🚚 Listos para envío» (Fase D-1-fix1): pedido embalado pendiente de
- *  imprimir albarán/etiqueta y marcar recogido. Chips grandes táctiles + botón
- *  «Marcar recogido» con confirmación (evita mispulsados en tablet). */
-export function SatReadyCard({
-  order,
-  onChanged,
-}: {
-  order: SatQueueItem;
-  onChanged: () => void;
-}) {
+/** Acciones de un pedido «listo para envío», compartidas por la card y por la
+ *  fila de la vista lista (Lote B6): imprimir albarán (FACTUSOL manda sobre el
+ *  fichero subido) / etiqueta, «Marcar recogido» con confirmación (evita
+ *  mispulsados en tablet) y «Reabrir preparación». */
+export function useSatReadyActions(order: SatQueueItem, onChanged: () => void) {
   const [busy, setBusy] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -84,6 +79,104 @@ export function SatReadyCard({
     }
   }
 
+  return {
+    busy, confirming, setConfirming, error, factusolAlbaran,
+    openDoc, printAlbaranFactusol, recogido, reabrir,
+  };
+}
+
+/** Chips de albarán/etiqueta de un pedido listo (card y fila lista). */
+export function SatReadyDocChips({
+  order,
+  actions,
+}: {
+  order: SatQueueItem;
+  actions: ReturnType<typeof useSatReadyActions>;
+}) {
+  const { busy, factusolAlbaran, openDoc, printAlbaranFactusol } = actions;
+  return (
+    <>
+      {factusolAlbaran ? (
+        <button type="button" className="sat-chip-btn ok" disabled={busy}
+                title={`Descarga el albarán ${factusolAlbaran} de FACTUSOL en PDF`}
+                onClick={() => void printAlbaranFactusol()}>
+          📄 Imprimir albarán
+        </button>
+      ) : order.has_albaran ? (
+        <button type="button" className="sat-chip-btn ok"
+                onClick={() => openDoc("albaran")}>
+          📄 Imprimir albarán
+        </button>
+      ) : (
+        <Link href={`/erp/orders/${order.id}`} className="sat-chip-btn warn">
+          📄 Falta albarán
+        </Link>
+      )}
+      {order.has_etiqueta ? (
+        <button type="button" className="sat-chip-btn ok"
+                onClick={() => openDoc("etiqueta")}>
+          🏷️ Imprimir etiqueta
+        </button>
+      ) : (
+        <Link href={`/erp/orders/${order.id}`} className="sat-chip-btn warn">
+          🏷️ Falta etiqueta
+        </Link>
+      )}
+    </>
+  );
+}
+
+/** Botones «Marcar recogido» (con confirmación) + «Reabrir preparación»
+ *  (card y fila lista). */
+export function SatReadyButtons({
+  actions,
+  compact = false,
+}: {
+  actions: ReturnType<typeof useSatReadyActions>;
+  compact?: boolean;
+}) {
+  const { busy, confirming, setConfirming, recogido, reabrir } = actions;
+  const pickCls = compact ? "button small" : "sat-btn pack";
+  return (
+    <>
+      {confirming ? (
+        <div className="sat-confirm">
+          <span>¿El paquete ha salido?</span>
+          <button type="button" className={pickCls} disabled={busy}
+                  onClick={recogido}>
+            Sí, recogido
+          </button>
+          <button type="button" className="button secondary small" disabled={busy}
+                  onClick={() => setConfirming(false)}>
+            No
+          </button>
+        </div>
+      ) : (
+        <button type="button" className={pickCls} disabled={busy}
+                onClick={() => setConfirming(true)}>
+          📤 Marcar recogido
+        </button>
+      )}
+      <button type="button" className="button secondary small" disabled={busy}
+              onClick={reabrir}>
+        Reabrir preparación
+      </button>
+    </>
+  );
+}
+
+/** Card de «🚚 Listos para envío» (Fase D-1-fix1): pedido embalado pendiente de
+ *  imprimir albarán/etiqueta y marcar recogido. Chips grandes táctiles + botón
+ *  «Marcar recogido» con confirmación (evita mispulsados en tablet). */
+export function SatReadyCard({
+  order,
+  onChanged,
+}: {
+  order: SatQueueItem;
+  onChanged: () => void;
+}) {
+  const actions = useSatReadyActions(order, onChanged);
+
   return (
     <div className="sat-card sat-ready-card">
       <div className="sat-card-top">
@@ -97,59 +190,13 @@ export function SatReadyCard({
       ) : null}
 
       <div className="sat-ready-chips">
-        {factusolAlbaran ? (
-          <button type="button" className="sat-chip-btn ok" disabled={busy}
-                  title={`Descarga el albarán ${factusolAlbaran} de FACTUSOL en PDF`}
-                  onClick={() => void printAlbaranFactusol()}>
-            📄 Imprimir albarán
-          </button>
-        ) : order.has_albaran ? (
-          <button type="button" className="sat-chip-btn ok"
-                  onClick={() => openDoc("albaran")}>
-            📄 Imprimir albarán
-          </button>
-        ) : (
-          <Link href={`/erp/orders/${order.id}`} className="sat-chip-btn warn">
-            📄 Falta albarán
-          </Link>
-        )}
-        {order.has_etiqueta ? (
-          <button type="button" className="sat-chip-btn ok"
-                  onClick={() => openDoc("etiqueta")}>
-            🏷️ Imprimir etiqueta
-          </button>
-        ) : (
-          <Link href={`/erp/orders/${order.id}`} className="sat-chip-btn warn">
-            🏷️ Falta etiqueta
-          </Link>
-        )}
+        <SatReadyDocChips order={order} actions={actions} />
       </div>
 
-      {error ? <p className="form-error">{error}</p> : null}
+      {actions.error ? <p className="form-error">{actions.error}</p> : null}
 
       <div className="sat-ready-actions">
-        {confirming ? (
-          <div className="sat-confirm">
-            <span>¿El paquete ha salido?</span>
-            <button type="button" className="sat-btn pack" disabled={busy}
-                    onClick={recogido}>
-              Sí, recogido
-            </button>
-            <button type="button" className="button secondary small" disabled={busy}
-                    onClick={() => setConfirming(false)}>
-              No
-            </button>
-          </div>
-        ) : (
-          <button type="button" className="sat-btn pack" disabled={busy}
-                  onClick={() => setConfirming(true)}>
-            📤 Marcar recogido
-          </button>
-        )}
-        <button type="button" className="button secondary small" disabled={busy}
-                onClick={reabrir}>
-          Reabrir preparación
-        </button>
+        <SatReadyButtons actions={actions} />
       </div>
     </div>
   );

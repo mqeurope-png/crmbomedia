@@ -1091,6 +1091,9 @@ export type SatQueueItem = {
    *  botón de la ficha y el que adjunta el email al SAT. */
   factusol_albaran_number?: string | null;
   has_etiqueta: boolean;
+  /** Lote B6: tienda (slug) y fecha del pedido, para la vista lista. */
+  store_slug?: string | null;
+  placed_at?: string | null;
 };
 
 /** Cola SAT en 2 secciones (D-1-fix1): por embalar + listos para envío. */
@@ -1099,8 +1102,93 @@ export type SatQueue = {
   ready_for_pickup: SatQueueItem[];
 };
 
-export async function getSatQueue(): Promise<SatQueue> {
-  return apiFetch<SatQueue>("/api/erp/sat/queue");
+/** Filtro «Estado» de la Cola SAT: `por_embalar` = las tres de la sección
+ *  (bloqueado/preparando/en cola); `ready` = solo «Listos para envío». */
+export type SatQueueEstado = "por_embalar" | "blocked" | "in_queue" | "preparing" | "ready";
+
+/** Lote B6: filtros de la Cola SAT (mismos para cola e historial). Fechas
+ *  YYYY-MM-DD sobre la fecha del pedido; `q` busca nº de pedido o cliente. */
+export type SatQueueFilters = {
+  desde?: string;
+  hasta?: string;
+  store_slug?: string;
+  estado?: SatQueueEstado;
+  q?: string;
+};
+
+export async function getSatQueue(filters: SatQueueFilters = {}): Promise<SatQueue> {
+  return apiFetch<SatQueue>(`/api/erp/sat/queue${qs(filters)}`);
+}
+
+/** Fila del historial de «enviados al taller»: un email al SAT
+ *  (`email_sat`, con destinatarios) o un paso a in_queue (`aprobado`, con el
+ *  motivo: Cola PEDIDOS, enviado por email, reabierto, añadido a mano). */
+export type SatHistoryRow = {
+  order_id: string;
+  order_number: string;
+  contact_name: string | null;
+  company_name: string | null;
+  kind: "email_sat" | "aprobado";
+  at: string;
+  actor_user_id: string | null;
+  actor_name: string | null;
+  to: string[];
+  cc: string[];
+  subject: string | null;
+  attachment_kinds: string[];
+  reason: string | null;
+  from_status: string | null;
+  preparation_status: PreparationStatus;
+  transport_status: TransportStatus;
+  factusol_albaran_number: string | null;
+  has_albaran: boolean;
+  store_slug: string | null;
+  placed_at: string | null;
+  cancelled: boolean;
+  excluded: boolean;
+};
+
+export async function getSatHistory(
+  filters: SatQueueFilters & { limit?: number } = {},
+): Promise<{ items: SatHistoryRow[]; limit: number }> {
+  // El historial no filtra por `estado` (es un registro de lo que pasó).
+  const { desde, hasta, store_slug, q, limit } = filters;
+  return apiFetch(`/api/erp/sat/history${qs({ desde, hasta, store_slug, q, limit })}`);
+}
+
+/** «Añadir pedido a la cola»: nº de pedido → id + situación actual. */
+export type SatOrderLookup = {
+  id: string;
+  order_number: string;
+  contact_name: string | null;
+  company_name: string | null;
+  preparation_status: PreparationStatus;
+  transport_status: TransportStatus;
+  already_queued: boolean;
+  cancelled: boolean;
+  excluded: boolean;
+};
+
+export async function findSatOrderByNumber(number: string): Promise<SatOrderLookup> {
+  return apiFetch<SatOrderLookup>(`/api/erp/sat/find-order${qs({ number: number.trim() })}`);
+}
+
+export type SatEnqueueResult = {
+  order_id: string;
+  order_number: string;
+  preparation_status: PreparationStatus;
+  already_queued: boolean;
+  /** true si estaba pendiente de revisión y se aprobó al añadirlo. */
+  approved: boolean;
+  via: "approve" | "transition" | "direct" | null;
+};
+
+/** Añade un pedido a la Cola SAT a mano (pendiente → aprobado; embalado /
+ *  externalizado → vuelve a la cola). Idempotente si ya estaba. */
+export async function satEnqueueOrder(orderId: string): Promise<SatEnqueueResult> {
+  return apiFetch<SatEnqueueResult>(`/api/erp/orders/${orderId}/sat-enqueue`, {
+    method: "POST",
+  });
 }
 
 /** «Marcar recogido»: el paquete salió del taller → transporte in_transit. */
