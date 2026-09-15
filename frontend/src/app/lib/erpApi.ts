@@ -1087,6 +1087,10 @@ export const ERP_EDIT_ROLES = ["admin", "pedidos"] as const;
 
 // --- Cola SAT (PR 5) --------------------------------------------------------
 
+/** Lote 2 A3: de dónde sale el albarán que el taller imprime/descarga desde
+ *  la cola (prioridad del backend: `factusol` › `file` › `woo`). */
+export type SatAlbaranSource = "factusol" | "file" | "woo";
+
 export type SatQueueItem = {
   id: string;
   order_number: string;
@@ -1100,12 +1104,30 @@ export type SatQueueItem = {
   total_amount: number;
   currency: string;
   lines: { sku: string; description: string; quantity: number }[];
-  /** Fase D: presencia de albarán/etiqueta vigentes (para los chips). */
+  /** Lote 2 A3: «hay albarán que imprimir o descargar». True también para un
+   *  pedido web que aún no lo ha bajado de Woo (lo genera la tienda; BoHub
+   *  nunca lo crea en FACTUSOL). El fichero vigente queda aparte en
+   *  `has_albaran_file`. */
   has_albaran: boolean;
+  /** Ruta del chip de albarán: `factusol` (PDF del albarán de FACTUSOL) ·
+   *  `file` (fichero vigente: subido o ya descargado de Woo) · `woo` (pedido
+   *  web: descargar de WooCommerce y abrir) · null (sin albarán). */
+  albaran_source: SatAlbaranSource | null;
+  /** Fase D: fichero de albarán vigente en shipment_files y su origen
+   *  (`manual_upload` · `woo_pdf_plugin` · `crm_generated_pdf`). */
+  has_albaran_file: boolean;
+  albaran_file_source: string | null;
+  /** Pedido web (WooCommerce): su albarán lo genera la tienda, nunca FACTUSOL. */
+  is_web_order: boolean;
+  /** Pedido web con descarga de Woo posible (tienda, id y conexión en orden);
+   *  si no, `woo_albaran_unavailable_reason` dice por qué (la card lo enseña). */
+  woo_albaran_available: boolean;
+  woo_albaran_unavailable_reason: string | null;
   /** Nº del albarán que BoHub creó en FACTUSOL («serie-código»), o null. Es
    *  la fuente PREFERENTE del PDF en el taller: el mismo documento que el
    *  botón de la ficha y el que adjunta el email al SAT. */
   factusol_albaran_number?: string | null;
+  /** Fase D: presencia de etiqueta vigente (para el chip). */
   has_etiqueta: boolean;
   /** Lote B6: tienda (slug) y fecha del pedido, para la vista lista. */
   store_slug?: string | null;

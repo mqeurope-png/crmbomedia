@@ -11895,3 +11895,8 @@ tr.is-inactive {
 /* Cola PEDIDOS: barra de filtros ligera (buscar, tienda, orden) sobre el grid
    de tarjetas de aprobación. */
 .erp-approval-filters { margin: 0 0 14px; }
+
+/* Cola SAT (Lote 2 A3): motivo por el que el albarán de WooCommerce de un
+   pedido web no se puede descargar — junto al chip, visible en la tablet
+   (sin depender del tooltip). */
+.sat-chip-reason { display: inline-block; font-size: 12px; color: #b54708; white-space: normal; max-width: 100%; }
