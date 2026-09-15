@@ -8,7 +8,7 @@ import type { WorkflowAlert } from "../../../lib/erpApi";
  *  compacta dentro de la tarjeta del pedido (`variant="inline"`).
  *
  *  `renderAction` deja a cada pantalla poner el botón que resuelve la alerta
- *  («Ver ficha cliente», «Mapear líneas»…) sin duplicar el texto. */
+ *  («Ver ficha cliente», «Revalidar en VIES»…) sin duplicar el texto. */
 export function WorkflowAlerts({
   alerts, variant = "bar", renderAction, max,
 }: {

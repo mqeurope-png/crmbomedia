@@ -21,7 +21,7 @@ import app.main  # noqa: F401
 from app.db.base import Base
 from app.db.session import get_session
 from app.erp.models import ErpException, ExceptionStatus, Order, OrderLine, OrderSource
-from app.erp.workflow import order_workflow
+from app.erp.workflow import ACTION_LABELS, order_workflow
 from app.main import app
 from app.models.crm import Company
 from tests._test_helpers import auth_headers, seed_test_users
@@ -171,18 +171,44 @@ def test_workflow_por_enviar_y_listo(session_factory) -> None:
 # --- incidencias -------------------------------------------------------------
 
 
-def test_workflow_incidencia_lineas_sin_mapear(session_factory) -> None:
-    """Línea sin CODART: incidencia BLOQUEANTE — manda sobre el ciclo."""
+def test_workflow_lineas_sin_mapear_no_cuentan_para_el_flujo(session_factory) -> None:
+    """Una línea sin CODART se emite como texto libre: NO es incidencia, no
+    bloquea, no hay «Mapear líneas», y la acción es la de su estado real."""
     with session_factory() as s:
-        _order(s, oid="o5", number="PRO-004352", payment_status="paid",
+        _order(s, oid="o5", number="PRO-004352", company_id="fr", payment_status="paid",
                preparation_status="in_queue", approved_at=datetime.now(UTC),
+               factusol_albaran_number="2-100418",
                lines=[{"sku": "99cy", "codart": "99cy"},
                       {"sku": "RARO-1", "codart": None}])
     wf = _wf(session_factory, "o5")
-    assert wf["queue"] == "incidencias"
-    assert wf["next_action"] == "mapear_lineas" and wf["blocked"] is True
-    alert = next(a for a in wf["alerts"] if a["code"] == "lineas_sin_mapear")
-    assert "1 línea sin mapear" in alert["text"] and alert["blocking"] is True
+    assert wf["queue"] == "por_facturar" and wf["blocked"] is False
+    assert wf["next_action"] == "emitir_factura"
+    assert wf["next_action_label"] == "Emitir factura"
+    codes = [a["code"] for a in wf["alerts"]]
+    assert "lineas_sin_mapear" not in codes
+    assert not any(a["action"] == "mapear_lineas" for a in wf["alerts"])
+    assert "mapear_lineas" not in ACTION_LABELS
+    # Y en el resto de estados, lo mismo: la acción es la del estado.
+    with session_factory() as s:
+        _order(s, oid="o5b", number="PRO-004353", payment_status="paid",
+               preparation_status="pending_review",
+               lines=[{"sku": "RARO-2", "codart": None}])
+    wf = _wf(session_factory, "o5b")
+    assert wf["queue"] == "por_revisar" and wf["next_action"] == "aprobar"
+
+
+def test_workflow_las_demas_incidencias_siguen(session_factory) -> None:
+    """Quitar el mapeo no toca las otras incidencias: empresa sin vincular (y
+    el pedido con líneas sin mapear sigue entrando por ESA razón, no por el
+    mapeo)."""
+    with session_factory() as s:
+        _order(s, oid="o5c", number="MANUAL-9", company_id="sinlink",
+               external_source=OrderSource.MANUAL, payment_status="paid",
+               preparation_status="in_queue", approved_at=datetime.now(UTC),
+               lines=[{"sku": "RARO-3", "codart": None}])
+    wf = _wf(session_factory, "o5c")
+    assert wf["queue"] == "incidencias" and wf["next_action"] == "vincular_empresa"
+    assert [a["code"] for a in wf["alerts"] if a["blocking"]] == ["empresa_sin_vincular"]
 
 
 def test_workflow_incidencia_empresa_sin_vincular(session_factory) -> None:
@@ -209,9 +235,8 @@ def test_workflow_incidencia_excepcion_abierta(session_factory) -> None:
     assert "excepcion_abierta" in [a["code"] for a in wf["alerts"]]
 
 
-def test_workflow_lineas_sin_mapear_no_molesta_si_ya_facturado(session_factory) -> None:
-    """Si el pedido YA está facturado, el mapeo dejó de importar: no se
-    convierte en incidencia (no se reabre trabajo hecho)."""
+def test_workflow_lineas_sin_mapear_tampoco_si_ya_facturado(session_factory) -> None:
+    """Facturado con una línea sin CODART: sigue su ciclo (por enviar)."""
     with session_factory() as s:
         _order(s, oid="o8", number="BOPRIN-4", payment_status="paid",
                preparation_status="packed", approved_at=datetime.now(UTC),

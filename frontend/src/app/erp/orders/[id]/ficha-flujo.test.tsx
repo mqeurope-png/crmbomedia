@@ -229,18 +229,20 @@ describe("ERP · Ficha del pedido (rediseño de flujo)", () => {
       workflow: {
         ...detail().workflow,
         queue: "incidencias", queue_label: "Incidencias", blocked: true,
-        next_action: "mapear_lineas", next_action_label: "Mapear líneas",
-        next_action_hint: "1 línea sin mapear a artículo de FACTUSOL.",
+        next_action: "revisar_incidencia", next_action_label: "Revisar incidencia",
+        next_action_hint: "Excepción abierta: rotura.",
         alerts: [{
-          code: "lineas_sin_mapear", text: "1 línea sin mapear a artículo de FACTUSOL.",
-          action: "mapear_lineas", action_label: "Mapear líneas", blocking: true,
+          code: "excepcion_abierta", text: "Excepción abierta: rotura.",
+          action: "revisar_incidencia", action_label: "Revisar incidencia", blocking: true,
         }],
       },
     }));
     render(<ErpOrderDetailPage />);
     const bar = within(await screen.findByRole("region", { name: "Siguiente paso" }));
     expect(bar.getByText("Hay que resolver esto")).toBeInTheDocument();
-    expect(bar.getByRole("link", { name: "Ver líneas" })).toHaveAttribute("href", "#lineas");
+    expect(bar.getByRole("link", { name: "Ver excepciones" })).toHaveAttribute("href", "/erp/exceptions");
+    // El mapeo de líneas ya no es incidencia ni acción: nada de «Mapear líneas».
+    expect(screen.queryByText(/Mapear líneas/)).toBeNull();
   });
 
   // --- ninguna acción dos veces, en cada estado del flujo ---

@@ -294,8 +294,6 @@ export default function ErpOrderDetailPage() {
             Ir a la Cola PEDIDOS
           </Link>
         );
-      case "mapear_lineas":
-        return <a href="#lineas" className="button small">Ver líneas</a>;
       case "vincular_empresa":
         return order.company_id ? (
           <Link href={`/companies/${order.company_id}`} className="button small">
@@ -313,9 +311,6 @@ export default function ErpOrderDetailPage() {
    *  esto lleva a dónde se arregla). */
   function alertAction(a: WorkflowAlert): ReactNode {
     if (!order) return null;
-    if (a.code === "lineas_sin_mapear") {
-      return <a href="#lineas" className="button small secondary">Ver líneas</a>;
-    }
     if (
       a.code === "empresa_sin_vincular" || a.code === "cliente_intracomunitario"
       || a.code === "cliente_exportacion" || a.code === "vat_no_valido_vies"
