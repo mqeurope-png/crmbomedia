@@ -2403,6 +2403,12 @@ export type FactusolQuote = {
   regime_label?: string | null;
   regime_source?: "empresa" | "cabecera" | null;
   exento?: boolean;
+  /** Serie (`TIPPRE` = empresa emisora: 1 Bomedia / 2 MQ Europe / 4 Lambert /
+   *  5 Streamtec) y número visible «serie-código» (5-000039). */
+  tippre?: string | number | null;
+  serie?: number | null;
+  serie_label?: string | null;
+  numero?: string | null;
 };
 
 export type QuoteJobStatus =
@@ -2429,7 +2435,7 @@ export type QuotesListing = {
 };
 
 export async function listFactusolQuotes(
-  opts: { company_id?: string; days_back?: number; queue?: QuoteQueue } = {},
+  opts: { company_id?: string; days_back?: number; queue?: QuoteQueue; limit?: number } = {},
 ): Promise<QuotesListing> {
   return apiFetch(`/api/erp/factusol/quotes${qs(opts)}`);
 }

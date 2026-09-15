@@ -70,6 +70,7 @@ const mockCompany = getCompany as jest.Mock;
 const BRAILLE = {
   codpre: "39", referencia: "Placas braille", fecha: "2026-09-04", clipre: "3392",
   cliente_nombre: "LIGUE BRAILLE", base: 4770, iva: 0, total: 4770,
+  tippre: "5", serie: 5, serie_label: "Streamtec", numero: "5-000039",
   estpre: 1, estado: "aceptada", estado_label: "aceptada", queue: "aceptadas",
   queue_label: "Aceptadas · por convertir",
   company: { id: "be", name: "Ligue Braille", country: "BE", factusol_id: "3392" },
@@ -77,29 +78,35 @@ const BRAILLE = {
   regime_label: "Intracomunitario (exento)", regime_source: "empresa", exento: true,
 };
 const CLOSSET = {
-  ...BRAILLE, codpre: "37", referencia: "Rótulos", fecha: "2026-08-26", clipre: "9999",
+  ...BRAILLE, codpre: "37", numero: "5-000037", referencia: "Rótulos", fecha: "2026-08-26", clipre: "9999",
   cliente_nombre: "SPRL Clossetcadeaux", total: 331, company: null, country_iso2: null,
   regime: null, regime_label: "Exento (según la proforma)", regime_source: "cabecera",
 };
 const DUPLICODER = {
-  ...BRAILLE, codpre: "40", referencia: "Tinta", clipre: "2458", cliente_nombre: "DUPLICODER",
+  ...BRAILLE, codpre: "40", tippre: "1", serie: 1, serie_label: "Bomedia", numero: "1-000040",
+  referencia: "Tinta", fecha: "2026-09-01", clipre: "2458", cliente_nombre: "DUPLICODER",
   base: 100, iva: 21, total: 121, estpre: 0, estado: "pendiente", estado_label: "pendiente",
   queue: "pendientes", queue_label: "Pendientes de respuesta",
   company: { id: "es", name: "Duplicoder SL", country: "ES", factusol_id: "2458" },
   country_iso2: "ES", regime: "nacional", regime_label: "Nacional (con IVA)", exento: false,
 };
 const RECHAZADA = {
-  ...DUPLICODER, codpre: "41", estpre: 2, estado: "rechazada", estado_label: "rechazada",
+  ...DUPLICODER, codpre: "41", tippre: "2", serie: 2, serie_label: "MQ Europe", numero: "2-000041",
+  fecha: "2026-07-15", estpre: 2, estado: "rechazada", estado_label: "rechazada",
   queue: "rechazadas", queue_label: "Rechazadas",
 };
+const NUEVE = {
+  ...BRAILLE, codpre: "9", numero: "5-000009", referencia: "Muestras", fecha: "2026-09-10",
+};
 const CONVERTIDA = {
-  ...BRAILLE, codpre: "71", referencia: "Placas", queue: "convertidas", queue_label: "Convertidas",
+  ...BRAILLE, codpre: "71", tippre: "2", serie: 2, serie_label: "MQ Europe", numero: "2-000071",
+  referencia: "Placas", queue: "convertidas", queue_label: "Convertidas",
   order: { id: "o71", order_number: "PRO-000071" },
 };
 const LISTING = {
-  items: [BRAILLE, CLOSSET, DUPLICODER, RECHAZADA, CONVERTIDA],
+  items: [BRAILLE, CLOSSET, DUPLICODER, RECHAZADA, CONVERTIDA, NUEVE],
   unlinked: false,
-  queue_counts: { aceptadas: 2, pendientes: 1, rechazadas: 1, convertidas: 1 },
+  queue_counts: { aceptadas: 3, pendientes: 1, rechazadas: 1, convertidas: 1 },
   estpre_values: { "1": 3, "0": 1, "2": 1 },
 };
 
@@ -124,15 +131,17 @@ describe("Pantalla Proformas (rediseño de flujo, Fase 4)", () => {
     expect(await screen.findByRole("heading", { name: "Proformas" })).toBeInTheDocument();
     expect(screen.getByText("Presupuestos enviados y su estado.")).toBeInTheDocument();
     const list = within(await screen.findByRole("list", { name: "Proformas" }));
-    await waitFor(() => expect(mockList).toHaveBeenCalledWith({ days_back: 365 }));
+    await waitFor(() => expect(mockList).toHaveBeenCalledWith({ days_back: 365, limit: 500 }));
     const colas = within(screen.getByRole("navigation", { name: "Colas de proformas" }));
-    expect(colas.getByRole("button", { name: "Aceptadas · por convertir (2)" })).toHaveAttribute("aria-pressed", "true");
+    expect(colas.getByRole("button", { name: "Aceptadas · por convertir (3)" })).toHaveAttribute("aria-pressed", "true");
     expect(colas.getByRole("button", { name: "Pendientes de respuesta (1)" })).toBeInTheDocument();
     expect(colas.getByRole("button", { name: "Rechazadas (1)" })).toBeInTheDocument();
     expect(colas.getByRole("button", { name: "Convertidas (1)" })).toBeInTheDocument();
 
-    expect(list.getAllByRole("listitem")).toHaveLength(2);              // solo la cola activa
+    expect(list.getAllByRole("listitem")).toHaveLength(3);              // solo la cola activa
     const braille = within(row("39"));
+    expect(braille.getByText("5-000039")).toBeInTheDocument();          // nº visible serie-código
+    expect(braille.getByText("Streamtec")).toBeInTheDocument();         // empresa emisora
     expect(braille.getByText("aceptada")).toBeInTheDocument();
     expect(braille.getByRole("link", { name: "Ligue Braille" })).toHaveAttribute("href", "/companies/be");
     expect(braille.getByText("BE · intracomunitario · exento")).toBeInTheDocument();
@@ -175,7 +184,7 @@ describe("Pantalla Proformas (rediseño de flujo, Fase 4)", () => {
 
     // Volver a pulsar la cola activa → todas; el buscador filtra dentro.
     await user.click(screen.getByRole("button", { name: "Rechazadas (1)" }));
-    expect(within(screen.getByRole("list", { name: "Proformas" })).getAllByRole("listitem")).toHaveLength(5);
+    expect(within(screen.getByRole("list", { name: "Proformas" })).getAllByRole("listitem")).toHaveLength(6);
     await user.type(screen.getByRole("searchbox", { name: "Buscar proforma" }), "closset");
     expect(within(screen.getByRole("list", { name: "Proformas" })).getAllByRole("listitem")).toHaveLength(1);
   });
@@ -197,7 +206,7 @@ describe("Pantalla Proformas (rediseño de flujo, Fase 4)", () => {
       ...LISTING,
       items: LISTING.items.map((q) => (q.codpre === "39"
         ? { ...q, queue: "convertidas", order: { id: "o39", order_number: "PRO-000039" } } : q)),
-      queue_counts: { aceptadas: 1, pendientes: 1, rechazadas: 1, convertidas: 2 },
+      queue_counts: { aceptadas: 2, pendientes: 1, rechazadas: 1, convertidas: 2 },
     });
     await user.click(within(dialog).getByRole("button", { name: "Crear pedido y albarán" }));
     await waitFor(() => expect(mockConvert).toHaveBeenCalledWith("39", expect.objectContaining({
@@ -219,7 +228,7 @@ describe("Pantalla Proformas (rediseño de flujo, Fase 4)", () => {
     render(<ProformasPage />);
     await screen.findByRole("list", { name: "Proformas" });
     await user.click(within(row("39")).getByRole("button", { name: "PDF" }));
-    await waitFor(() => expect(mockPdf).toHaveBeenCalledWith("presupuestos", 1, "39", "fr", {}));
+    await waitFor(() => expect(mockPdf).toHaveBeenCalledWith("presupuestos", 5, "39", "fr", {}));
     expect(saveBlob).toHaveBeenCalledWith(expect.any(Blob), "Proforma_39.pdf");
     await user.click(within(row("39")).getByRole("button", { name: "Más acciones 39" }));
     await user.click(within(row("39")).getByRole("button", { name: "Duplicar" }));
@@ -248,5 +257,109 @@ describe("Pantalla Proformas (rediseño de flujo, Fase 4)", () => {
     await user.click(within(row("39")).getByRole("button", { name: "Más acciones 39" }));
     await user.click(within(row("39")).getByRole("button", { name: "Editar" }));
     expect(await screen.findByText(/QUOTE MODAL Ligue Braille edit:39/)).toBeInTheDocument();
+  });
+
+  function order(): string[] {
+    return screen.getAllByRole("listitem").map((el) => el.getAttribute("aria-label") ?? "");
+  }
+
+  it("buscador en vivo por empresa, referencia y nº (con serie o a secas); los contadores siguen al filtro", async () => {
+    const user = userEvent.setup();
+    render(<ProformasPage />);
+    await screen.findByRole("list", { name: "Proformas" });
+    const buscar = screen.getByRole("searchbox", { name: "Buscar proforma" });
+    // Empresa (CRM vinculada): Ligue Braille → 39 y 9 en aceptadas, 71 en convertidas.
+    await user.type(buscar, "ligue");
+    expect(order()).toEqual(["Proforma 9", "Proforma 39"]);
+    expect(screen.getByRole("button", { name: "Aceptadas · por convertir (2)" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Convertidas (1)" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Pendientes de respuesta (0)" })).toBeInTheDocument();
+    // Referencia de una proforma de OTRA cola: la lista de la activa queda vacía
+    // y el contador dice dónde está.
+    await user.clear(buscar);
+    await user.type(buscar, "tinta");
+    expect(screen.getByText("Nada en «Aceptadas · por convertir».")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Pendientes de respuesta (1)" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Aceptadas · por convertir (0)" })).toBeInTheDocument();
+    // Nº con serie y a secas.
+    await user.clear(buscar);
+    await user.type(buscar, "5-000037");
+    expect(order()).toEqual(["Proforma 37"]);
+    await user.clear(buscar);
+    await user.type(buscar, "37");
+    expect(order()).toEqual(["Proforma 37"]);
+    // Cliente del documento (sin empresa CRM).
+    await user.clear(buscar);
+    await user.type(buscar, "closset");
+    expect(order()).toEqual(["Proforma 37"]);
+    await user.click(screen.getByRole("button", { name: "Limpiar filtros" }));
+    expect(order()).toHaveLength(3);
+  });
+
+  it("el rango de fechas acota y se combina con el texto y la cola; un «desde» antiguo amplía el periodo pedido", async () => {
+    const user = userEvent.setup();
+    render(<ProformasPage />);
+    await screen.findByRole("list", { name: "Proformas" });
+    await user.click(screen.getByRole("button", { name: "Aceptadas · por convertir (3)" }));  // todas
+    expect(order()).toHaveLength(6);
+    await user.type(screen.getByLabelText("Fecha desde"), "2026-09-01");
+    await user.type(screen.getByLabelText("Fecha hasta"), "2026-09-05");
+    expect(order()).toEqual(["Proforma 71", "Proforma 39", "Proforma 40"]);   // fecha desc, empate → nº desc
+    expect(screen.getByRole("button", { name: "Aceptadas · por convertir (1)" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Rechazadas (0)" })).toBeInTheDocument();
+    // + texto
+    await user.type(screen.getByRole("searchbox", { name: "Buscar proforma" }), "ligue");
+    expect(order()).toEqual(["Proforma 71", "Proforma 39"]);
+    // + cola
+    await user.click(screen.getByRole("button", { name: "Convertidas (1)" }));
+    expect(order()).toEqual(["Proforma 71"]);
+    // «Desde» más antiguo que el periodo (1 año) → se pide más al backend.
+    await user.clear(screen.getByLabelText("Fecha desde"));
+    await user.type(screen.getByLabelText("Fecha desde"), "2024-01-01");
+    await waitFor(() => expect(mockList).toHaveBeenLastCalledWith(
+      expect.objectContaining({ limit: 500, days_back: expect.any(Number) }),
+    ));
+    const last = mockList.mock.calls[mockList.mock.calls.length - 1][0] as { days_back: number };
+    expect(last.days_back).toBeGreaterThan(365);
+    expect(last.days_back).toBeLessThanOrEqual(1825);
+  });
+
+  it("orden por fecha (por defecto, desc), serie y nº de FACTUSOL (numérico), asc y desc, dentro de la cola activa", async () => {
+    const user = userEvent.setup();
+    render(<ProformasPage />);
+    await screen.findByRole("list", { name: "Proformas" });
+    // En la cola activa (aceptadas): fecha desc por defecto.
+    expect(order()).toEqual(["Proforma 9", "Proforma 39", "Proforma 37"]);
+    await user.click(screen.getByRole("button", { name: "Aceptadas · por convertir (3)" }));  // todas
+    expect(order()).toEqual([
+      "Proforma 9", "Proforma 71", "Proforma 39", "Proforma 40", "Proforma 37", "Proforma 41",
+    ]);
+    // Nº de proforma: numérico de verdad (9 antes que 37), asc y desc.
+    await user.selectOptions(screen.getByLabelText("Ordenar por"), "codpre");
+    expect(order()).toEqual([
+      "Proforma 71", "Proforma 41", "Proforma 40", "Proforma 39", "Proforma 37", "Proforma 9",
+    ]);
+    await user.click(screen.getByRole("button", { name: "Orden descendente" }));
+    expect(order()).toEqual([
+      "Proforma 9", "Proforma 37", "Proforma 39", "Proforma 40", "Proforma 41", "Proforma 71",
+    ]);
+    // Serie (1 Bomedia, 2 MQ Europe, 5 Streamtec) asc; empate → nº.
+    await user.selectOptions(screen.getByLabelText("Ordenar por"), "serie");
+    expect(order()).toEqual([
+      "Proforma 40", "Proforma 41", "Proforma 71", "Proforma 9", "Proforma 37", "Proforma 39",
+    ]);
+    await user.click(screen.getByRole("button", { name: "Orden ascendente" }));
+    expect(order()).toEqual([
+      "Proforma 39", "Proforma 37", "Proforma 9", "Proforma 71", "Proforma 41", "Proforma 40",
+    ]);
+    // Fecha asc.
+    await user.selectOptions(screen.getByLabelText("Ordenar por"), "fecha");
+    await user.click(screen.getByRole("button", { name: "Orden descendente" }));
+    expect(order()).toEqual([
+      "Proforma 41", "Proforma 37", "Proforma 40", "Proforma 39", "Proforma 71", "Proforma 9",
+    ]);
+    // Y dentro de una cola.
+    await user.click(screen.getByRole("button", { name: "Aceptadas · por convertir (3)" }));
+    expect(order()).toEqual(["Proforma 37", "Proforma 39", "Proforma 9"]);
   });
 });

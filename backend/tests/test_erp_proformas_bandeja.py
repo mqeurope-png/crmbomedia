@@ -71,6 +71,7 @@ QUOTES = [
     _row(506, "9999", ESTPRE=1, PIVA1PRE=0, NET1PRE=300.0,        # sin empresa CRM;
          IIVA1PRE=0, TOTPRE=300.0),                                # cabecera al 0 %
     _row(507, "2458", ESTPRE=7),                                   # estado no reconocido
+    _row(508, "2760", ESTPRE=0, TIPPRE="5"),                       # serie 5 (Streamtec)
 ]
 
 
@@ -142,11 +143,16 @@ def test_listado_calcula_las_tres_colas_y_convertidas(http) -> None:
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["queue_counts"] == {
-        "aceptadas": 2, "pendientes": 2, "rechazadas": 1, "convertidas": 1,
+        "aceptadas": 2, "pendientes": 3, "rechazadas": 1, "convertidas": 1,
     }
     # Qué valores de ESTPRE hay de verdad (para cerrar el mapeo «rechazada»).
-    assert body["estpre_values"] == {"1": 3, "0": 1, "null": 1, "2": 1, "7": 1}
+    assert body["estpre_values"] == {"1": 3, "0": 2, "null": 1, "2": 1, "7": 1}
     by = {q["codpre"]: q for q in body["items"]}
+    # Serie (empresa emisora) y número visible «serie-código».
+    assert by["501"]["serie"] == 1 and by["501"]["serie_label"] == "Bomedia"
+    assert by["501"]["numero"] == "1-000501"
+    assert by["508"]["serie"] == 5 and by["508"]["serie_label"] == "Streamtec"
+    assert by["508"]["numero"] == "5-000508"
     assert by["501"]["estado"] == "aceptada" and by["501"]["queue"] == "aceptadas"
     assert by["501"]["queue_label"] == "Aceptadas · por convertir"
     assert by["502"]["queue"] == "pendientes" and by["503"]["queue"] == "pendientes"
@@ -188,13 +194,14 @@ def test_filtro_por_cola_y_contadores_completos(http) -> None:
     with _patched(_FakeFactusol(QUOTES)):
         r = _list(http, queue="aceptadas")
         assert {q["codpre"] for q in r.json()["items"]} == {"501", "506"}
-        assert r.json()["queue_counts"]["pendientes"] == 2                 # cuenta todas
+        assert r.json()["queue_counts"]["pendientes"] == 3                 # cuenta todas
+        # `limit` llega al listado (la pantalla pide más de las 100 por defecto).
+        r = _list(http, limit=2)
+        assert len(r.json()["items"]) == 2
+        assert _list(http, limit=5000).status_code == 422
         r = _list(http, queue="convertidas")
         assert [q["codpre"] for q in r.json()["items"]] == ["505"]
         assert _list(http, queue="lo_que_sea").status_code == 422
-        # Por empresa sigue funcionando y también lleva colas.
-        r = _list(http, company_id="es")
-        assert {q["queue"] for q in r.json()["items"]} == {"pendientes", None}
 
 
 # --- convertir en pedido: idempotente, origen proforma ------------------------------
@@ -220,3 +227,9 @@ def test_convertir_en_pedido_es_idempotente_y_marca_el_origen(http, session_fact
     assert by["501"]["queue"] == "convertidas"
     assert by["501"]["order"]["order_number"] == "PRO-000501"
     assert body["queue_counts"]["aceptadas"] == 1 and body["queue_counts"]["convertidas"] == 2
+
+
+def test_listado_por_empresa_conserva_las_colas(http) -> None:
+    with _patched(_FakeFactusol(QUOTES)):
+        r = _list(http, company_id="es")
+    assert {q["queue"] for q in r.json()["items"]} == {"pendientes", None}

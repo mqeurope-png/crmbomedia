@@ -11214,6 +11214,19 @@ tr.is-inactive {
 .erp-flow-item.is-muted { opacity: 0.72; }
 /* Sin casilla de selección (proformas): dos columnas. */
 .erp-flow-item.is-plain { grid-template-columns: 1fr auto; }
+/* Barra de filtros (proformas): texto, fechas, periodo y orden; se apilan
+   en móvil. */
+.erp-flow-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px 10px;
+  margin: 0 0 12px;
+}
+.erp-flow-filters .field { margin: 0; }
+.erp-flow-filters .field > span:not(.sr-only) { font-size: 11px; color: var(--muted); }
+.erp-flow-filters .erp-flow-filter-grow { flex: 1 1 220px; }
+.erp-flow-filters input[type="date"] { min-width: 140px; }
 .erp-flow-item-main { min-width: 0; }
 .erp-flow-item-r1 {
   display: flex;
