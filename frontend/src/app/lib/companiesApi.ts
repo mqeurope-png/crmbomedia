@@ -329,9 +329,11 @@ export type FiscalCheck = {
   regime_reason: string;
   vat_normalized: string | null;
   duplicates: {
+    /** Tarjeta candidata de «Usar esta» (Lote 2): nombre, NIF, población y
+     *  vínculo FACTUSOL. El alta devuelve 409 con cualquiera de ellas. */
     crm: {
       id: string; name: string; tax_id: string | null; vat: string | null;
-      country: string | null; factusol_company_id: string | null;
+      country: string | null; city?: string | null; factusol_company_id: string | null;
     }[];
     /** Cliente F_CLI con ese NIF (null si no hay o no se pudo comprobar). */
     factusol: { codcli: string; nombre: string | null; nif: string | null } | null;
@@ -366,10 +368,15 @@ export async function viesRevalidate(
 
 export async function fiscalCheck(params: {
   tax_id?: string; vat?: string; country?: string; exclude_id?: string;
+  /** «Volver a comprobar» (Lote 2): consulta VIES en vivo saltando la caché
+   *  y el resultado guardado en `exclude_id`. */
+  force?: boolean;
 }): Promise<FiscalCheck> {
+  const { force, ...text } = params;
   const sp = new URLSearchParams();
-  for (const [k, v] of Object.entries(params)) {
+  for (const [k, v] of Object.entries(text)) {
     if (v && v.trim()) sp.set(k, v.trim());
   }
+  if (force) sp.set("force", "true");
   return apiFetch<FiscalCheck>(`/api/companies/fiscal-check?${sp.toString()}`);
 }

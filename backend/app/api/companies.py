@@ -272,6 +272,7 @@ def fiscal_check(
     vat: str | None = Query(default=None, max_length=40),
     country: str | None = Query(default=None, max_length=120),
     exclude_id: str | None = Query(default=None, max_length=36),
+    force: bool = Query(default=False),
     session: Session = Depends(get_session),
     current_user: User = Depends(require_viewer),
 ) -> dict[str, Any]:
@@ -280,19 +281,26 @@ def fiscal_check(
 
     - `regime`: el régimen de IVA que saldría de país + NIF-IVA (la misma
       regla que fija `IFICLI`/`IVACLI`/`TIVCLI` al crear el cliente F_CLI).
-    - `duplicates.crm`: empresas del CRM con ese NIF / NIF-IVA.
+    - `duplicates.crm`: empresas del CRM con ese NIF / NIF-IVA (con nombre,
+      NIF, población y nº de cliente FACTUSOL: la tarjeta candidata de
+      «Usar esta»). El alta devuelve 409 con cualquiera de ellas, así que
+      la pantalla bloquea «Crear empresa» mientras haya una.
     - `duplicates.factusol`: cliente de F_CLI con ese NIF (best-effort: si
       FACTUSOL no responde, `factusol_checked=False` y se sigue; nunca
       bloquea el alta).
     - `vies` (Fase VIES): validación del NIF-IVA en el servicio oficial de la
       UE cuando el país es de la UE (no España) y hay NIF-IVA: `status`
       `valido` / `no_valido` / `desconocido` (VIES no respondió) /
-      `pendiente` (VIES desactivado), `valid`, `checked_at`, nombre y
-      dirección según VIES. El régimen ya tiene en cuenta el veredicto: con
-      `no_valido` NO se puede eximir → nacional con IVA. Con `exclude_id`
-      (la ficha) se reutiliza el resultado guardado en esa empresa si es
-      reciente y del mismo NIF-IVA; si no, consulta en vivo (cacheada,
-      timeout corto, nunca bloquea).
+      `pendiente` (VIES desactivado), `valid`, `checked_at` (la hora que
+      enseña la pantalla), nombre y dirección según VIES. El régimen ya
+      tiene en cuenta el veredicto: con `no_valido` NO se puede eximir →
+      nacional con IVA. Con `exclude_id` (la ficha) se reutiliza el
+      resultado guardado en esa empresa si es reciente y del mismo NIF-IVA;
+      si no, consulta en vivo (cacheada, timeout corto, nunca bloquea).
+    - `force` (Lote 2 · «Volver a comprobar»): consulta VIES en vivo
+      saltando la caché en proceso del cliente Y el resultado guardado en
+      `exclude_id`, para esta comprobación. No escribe nada en la empresa
+      (eso lo hace `vies-revalidate`) ni toca el barrido en segundo plano.
     """
     _ = current_user
     from app.erp.language import normalize_country  # noqa: PLC0415
@@ -316,11 +324,13 @@ def fiscal_check(
     )
     vies_block: dict[str, Any] = result_block(None, vat=eu_vat)
     if eu_vat:
-        own = session.get(Company, exclude_id) if exclude_id else None
+        own = session.get(Company, exclude_id) if (exclude_id and not force) else None
         if own is not None and company_eu_vat(own) == eu_vat and not needs_vies_check(own):
             vies_block = {**vies_state(own), "error": None}
         else:
-            vies_block = result_block(check_vat_live(eu_vat, country_code=iso2), vat=eu_vat)
+            vies_block = result_block(
+                check_vat_live(eu_vat, force=force, country_code=iso2), vat=eu_vat,
+            )
     vies_valid = vies_block["valid"]
 
     regime = regime_for(iso2, vat=vat_raw or None, nif=tax or None, vies_valid=vies_valid)
@@ -365,7 +375,7 @@ def fiscal_check(
             "crm": [
                 {
                     "id": c.id, "name": c.name, "tax_id": c.tax_id, "vat": c.vat,
-                    "country": c.country,
+                    "country": c.country, "city": c.city,
                     "factusol_company_id": c.factusol_company_id,
                 }
                 for c in crm

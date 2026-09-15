@@ -12793,6 +12793,127 @@ input[type="radio"]:focus-visible {
 }
 .company-archived-band-txt {
   flex: 1 1 320px;
+/* =============================================================
+   Lote 2 · PR-2 · empresa — buscar y crear (revisión §9). Candidata
+   anti-duplicados con «Usar esta», VIES con cuatro estados y hora,
+   régimen explicado, casilla FACTUSOL con su consecuencia y modal de
+   ancho fijo (720) con la lista scrolleando dentro. Solo tokens.
+   ============================================================= */
+/* Modal: ancho fijo del molde (`.wide`) tanto buscando como creando. El
+   cuerpo scrollea y el diálogo no cambia de tamaño al llegar resultados:
+   buscando reserva la altura de la lista (≈ 2/3 del ancho, 480 px). */
+.modal-dialog.company-picker-dialog:has(> .modal-body) { overflow: hidden; }
+.company-picker-dialog > .modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding: var(--sp-2) 0;
+}
+.company-picker-dialog.is-searching > .modal-body {
+  min-height: min(50vh, calc(var(--modal-w-wide) * 2 / 3));
+}
+.company-picker-dialog > .company-picker-head h2 > .muted {
+  display: block;
+  margin-top: var(--sp-1);
+  font-size: var(--fs-body);
+  font-weight: 400;
+}
+.company-picker-dialog .modal-close { flex: none; font-size: var(--fs-subtitle); }
+/* Dentro del modal, la acción principal del formulario queda siempre a la
+   vista (pie pegajoso dentro del cuerpo que scrollea). */
+.company-picker-dialog .company-create-actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  margin: 0;
+  padding: var(--sp-3) 0 0;
+  background: var(--card);
+  border-top: 1px solid var(--line2);
+}
+
+/* Buscador: NIF en mono, pastilla de vínculo y «Usar esta» en cada fila; la
+   opción «Crear empresa «…»» se queda pegada abajo aunque la lista scrollee. */
+.company-search-item { flex-wrap: wrap; gap: var(--sp-2) var(--sp-3); }
+.company-search-item .company-search-main { flex: 1 1 180px; }
+.company-search-item strong { font-size: var(--fs-body); }
+.company-search-meta .mono { font-size: var(--fs-label); }
+.company-search-use { flex: none; pointer-events: none; }
+.company-search-item.is-create {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  justify-content: flex-start;
+  border-top: 1px solid var(--line2);
+}
+.company-search-create-ask { color: var(--muted); font-weight: 400; }
+.company-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: var(--sp-1) var(--sp-2);
+  border-radius: var(--r-pill);
+  background: var(--st-neutral-bg);
+  color: var(--st-neutral-ink);
+  font-size: var(--fs-label);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.company-pill.is-factusol { background: var(--st-green-bg); color: var(--st-green-ink); }
+.company-pill.is-crm { background: var(--st-teal-bg); color: var(--st-teal-ink); }
+
+/* Crear empresa: país primero (de él salen régimen y VIES), NIF en mono. */
+.company-create-row3 { grid-template-columns: 0.9fr 1fr 1.3fr; }
+.company-create .field input.company-create-nif {
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono);
+}
+.company-create-checking { display: flex; align-items: center; gap: var(--sp-2); margin: var(--sp-1) 0 0; }
+.company-create-spinner {
+  display: inline-block;
+  flex: none;
+  width: var(--sp-3);
+  height: var(--sp-3);
+  margin-right: var(--sp-1);
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: var(--r-pill);
+  vertical-align: middle;
+  animation: spin 0.8s linear infinite;
+}
+
+/* Candidata anti-duplicados (rojo = bloquea): tarjeta con nombre, NIF,
+   población, vínculo y «Usar esta» (primario si está en FACTUSOL). */
+.company-create-dup {
+  margin: var(--sp-3) 0 0;
+  padding: var(--sp-3);
+  border: 1px solid transparent;
+  border-radius: var(--r-control);
+  background: var(--st-red-bg);
+  color: var(--ink);
+  font-size: var(--fs-body);
+}
+.company-create-dup-title { margin: 0 0 var(--sp-2); }
+.company-create-dup-title strong { color: var(--st-red-ink); }
+.company-create-candidates {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+.company-create-candidate {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2) var(--sp-3);
+  padding: var(--sp-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  background: var(--card);
+}
+.company-create-candidate-main {
+  flex: 1 1 180px;
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -13144,4 +13265,99 @@ input[type="radio"]:focus-visible {
   .erp-ficha-back { min-height: var(--control-h-touch); display: flex; align-items: center; }
   .erp-flow-steps.is-vertical .erp-flow-step-body.is-card { padding: var(--sp-3); }
   .erp-ficha-panel-head { min-height: var(--control-h-touch); }
+.company-create-candidate-main strong { font-size: var(--fs-subtitle); }
+.company-create-candidate-meta { color: var(--muted); font-size: var(--fs-label); }
+
+/* Régimen explicado (morado = intracomunitario, teal = exportación, neutro =
+ *  nacional): la consecuencia en negrita y el porqué debajo. */
+.company-create-regime {
+  --ink-on-color: var(--st-neutral-ink);
+  margin: var(--sp-3) 0 0;
+  padding: var(--sp-3);
+  border-radius: var(--r-control);
+  background: var(--st-neutral-bg);
+  color: var(--ink-on-color);
+  font-size: var(--fs-body);
+  line-height: 1.5;
+}
+.company-create-regime.is-p { --ink-on-color: var(--st-purple-ink); background: var(--st-purple-bg); }
+.company-create-regime.is-t { --ink-on-color: var(--st-teal-ink); background: var(--st-teal-bg); }
+.company-create-regime p { margin: 0; }
+.company-create-regime .company-create-reason { margin: var(--sp-1) 0 0; font-size: var(--fs-label); }
+
+/* VIES: cuatro estados con su color de estado (nunca solo color: cada uno
+   lleva su palabra y la hora) y «Volver a comprobar» a la derecha. */
+.company-create-vies {
+  --ink-on-color: var(--st-neutral-ink);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2) var(--sp-3);
+  margin: var(--sp-2) 0 0;
+  padding: var(--sp-3);
+  border-radius: var(--r-control);
+  background: var(--st-neutral-bg);
+  color: var(--ink-on-color);
+  font-size: var(--fs-body);
+  line-height: 1.5;
+}
+.company-create-vies.is-valido { --ink-on-color: var(--st-green-ink); background: var(--st-green-bg); }
+.company-create-vies.is-no_valido { --ink-on-color: var(--st-red-ink); background: var(--st-red-bg); }
+.company-create-vies.is-desconocido { --ink-on-color: var(--st-amber-ink); background: var(--st-amber-bg); }
+.company-create-vies p { flex: 1 1 200px; margin: 0; }
+.company-create-vies .button { flex: none; }
+.company-create-vies-detail { display: block; font-size: var(--fs-label); }
+
+/* «Crear también en FACTUSOL»: casilla + etiqueta + consecuencia en dos
+   líneas, junto a lo fiscal (no perdida en la fila de botones). */
+.company-create-factusol {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--sp-1) var(--sp-3);
+  align-items: start;
+  margin: var(--sp-3) 0 0;
+  padding: var(--sp-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  background: var(--card);
+}
+.company-create-factusol input[type="checkbox"] { margin: var(--sp-1) 0 0; }
+.company-create-factusol-text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  font-size: var(--fs-body);
+}
+.company-create-factusol-text label { cursor: pointer; }
+.company-create-factusol-why,
+.company-create-hint { margin: 0; color: var(--muted); font-size: var(--fs-label); line-height: 1.5; }
+.company-create > .erp-flow-panel > .company-create-hint { margin-top: var(--sp-3); }
+
+/* Pie: acción a la derecha y, si está desactivada, el motivo escrito. */
+.company-create-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--sp-2);
+}
+.company-create-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+}
+.company-create-blocked {
+  width: 100%;
+  margin: 0;
+  color: var(--st-red-ink);
+  font-size: var(--fs-label);
+  text-align: right;
+}
+@media (max-width: 767px) {
+  .company-create-row3 { grid-template-columns: 1fr; }
+  .company-create-buttons { width: 100%; }
+  .company-create-buttons .button { flex: 1 1 auto; min-height: var(--control-h-touch); }
+  .company-create-blocked { text-align: left; }
+  .company-create-candidate .button,
+  .company-create-vies .button { flex: 1 1 100%; }
 }
