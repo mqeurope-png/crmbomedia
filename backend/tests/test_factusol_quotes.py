@@ -39,6 +39,7 @@ from app.integrations.factusol.quotes import (
     quote_lines_for_order,
     resolve_codarts,
     search_articles,
+    skus_for_codarts,
     update_quote,
 )
 from app.models.crm import Company
@@ -870,3 +871,160 @@ def test_convert_quote_to_order_no_escribe_nada_en_factusol(session):
     fake = _FakeFactusol(quotes=[_quote_row(81)])
     convert_quote_to_order(fake, session, "81", ejercicio="2026")
     assert fake.writes == []
+
+
+# --- Lote B3b · portes en la proforma ----------------------------------------
+
+
+def test_create_quote_con_portes_escribe_la_banda_ipor1pre(session):
+    """Los portes van a la cabecera (`IPOR1PRE` + `BAS1PRE`), como en el
+    albarán manual y los pedidos web — NO como línea de F_LPS. Suman a la
+    base imponible y llevan el IVA del documento."""
+    fake = _FakeFactusol()
+    create_quote(
+        fake, session, ejercicio="2026",
+        customer={"codcli": "55555", "nombre": "Acme SL"},
+        lines=[{"description": "Vinilo", "quantity": 2, "unit_price": 40,
+                "iva_pct": 21}],
+        portes=19.0,
+    )
+    header = fake.writes_to("F_PRE")[0]
+    assert header["NET1PRE"] == 80.0
+    assert header["IPOR1PRE"] == 19.0
+    assert header["BAS1PRE"] == 99.0
+    assert header["IIVA1PRE"] == 20.79
+    assert header["TOTPRE"] == 119.79
+    # Ninguna línea de portes: siguen siendo solo las de mercancía.
+    assert [line["DESLPS"] for line in fake.writes_to("F_LPS")] == ["Vinilo"]
+
+
+def test_create_quote_sin_portes_no_añade_columnas(session):
+    """Con portes=0 el registro sale exactamente como hasta ahora."""
+    fake = _FakeFactusol()
+    create_quote(
+        fake, session, ejercicio="2026", customer={"codcli": "55555"},
+        lines=[{"description": "Vinilo", "quantity": 1, "unit_price": 10}],
+        portes=0,
+    )
+    header = fake.writes_to("F_PRE")[0]
+    assert "IPOR1PRE" not in header and "BAS1PRE" not in header
+
+
+def test_update_quote_pasa_los_portes_a_la_cabecera():
+    fake = _FakeFactusol(quotes=[{**_quote_row(710), "ESTPRE": 0}])
+    update_quote(
+        fake, "710", ejercicio="2026", customer={"codcli": "55555"},
+        lines=[{"description": "Vinilo", "quantity": 1, "unit_price": 100,
+                "iva_pct": 21}],
+        portes=12.0,
+    )
+    header = fake.updates_to("F_PRE")[0]
+    assert header["IPOR1PRE"] == 12.0
+    assert header["BAS1PRE"] == 112.0
+    assert header["IIVA1PRE"] == 23.52
+    assert header["TOTPRE"] == 135.52
+
+
+def test_update_quote_quitar_los_portes_pone_la_banda_a_cero():
+    """`ActualizarRegistro` solo toca las columnas enviadas: si la proforma
+    tenía portes y el operador los quita, hay que escribir el 0 explícito o
+    se quedarían los portes viejos con los totales nuevos."""
+    fake = _FakeFactusol(quotes=[{**_quote_row(711), "ESTPRE": 0,
+                                  "IPOR1PRE": 19.0, "BAS1PRE": 119.0}])
+    update_quote(
+        fake, "711", ejercicio="2026", customer={"codcli": "55555"},
+        lines=[{"description": "Vinilo", "quantity": 1, "unit_price": 100,
+                "iva_pct": 21}],
+        portes=0,
+    )
+    header = fake.updates_to("F_PRE")[0]
+    assert header["IPOR1PRE"] == 0.0
+    assert header["BAS1PRE"] == 100.0
+    assert header["TOTPRE"] == 121.0
+
+
+def test_update_quote_sin_portes_antes_ni_ahora_no_añade_columnas():
+    """Proforma que nunca tuvo portes: el UPDATE sale como siempre."""
+    fake = _FakeFactusol(quotes=[{**_quote_row(712), "ESTPRE": 0}])
+    update_quote(
+        fake, "712", ejercicio="2026", customer={"codcli": "55555"},
+        lines=[{"description": "Vinilo", "quantity": 1, "unit_price": 100}],
+    )
+    header = fake.updates_to("F_PRE")[0]
+    assert "IPOR1PRE" not in header and "BAS1PRE" not in header
+
+
+def test_get_quote_expone_los_portes_de_la_cabecera(session):
+    """Al editar, el modal precarga los portes para no perderlos."""
+    fake = _FakeFactusol(quotes=[{**_quote_row(43), "IPOR1PRE": 19.0}])
+    assert get_quote(fake, session, "43", ejercicio="2026")["portes"] == 19.0
+    fake2 = _FakeFactusol(quotes=[_quote_row(44)])
+    assert get_quote(fake2, session, "44", ejercicio="2026")["portes"] == 0.0
+
+
+# --- Lote B4 · SKU comercial por línea al leer la proforma --------------------
+
+
+def test_get_quote_devuelve_el_sku_comercial_de_cada_linea(session):
+    """`ARTLPS` guarda el CODART interno (`00001`), pero el autocomplete
+    enseña el EQUART (`CDR80WPT`). Sin `sku`, duplicar obligaba a volver a
+    elegir cada artículo. Una sola consulta a F_ART para toda la proforma."""
+    fake = _FakeFactusol(
+        quotes=[_quote_row(45)],
+        lines=[
+            _line_row(45, 1, art="00001", desc="CD TQ 700 MB", precio=0.79),
+            _line_row(45, 2, art="1712", desc="Cable HDMI", precio=10),
+            _line_row(45, 3, art="", desc="Mano de obra", precio=60),
+            _line_row(45, 4, art="HUERFANO", desc="Ya no existe", precio=1),
+        ],
+        articles=[
+            {"CODART": "00001", "EQUART": "CDR80WPT"},
+            {"CODART": "1712", "EQUART": ""},   # sin comercial → el interno
+        ],
+    )
+    quote = get_quote(fake, session, "45", ejercicio="2026")
+    assert [line["sku"] for line in quote["lines"]] == [
+        "CDR80WPT", "1712", None, "HUERFANO",
+    ]
+    # `codart` sigue siendo el interno: es lo que el backend sabe escribir.
+    assert [line["codart"] for line in quote["lines"]] == [
+        "00001", "1712", None, "HUERFANO",
+    ]
+    art_filters = [f for t, f in fake.filters if t == "F_ART"]
+    assert len(art_filters) == 1
+    assert "CODART IN ('00001','1712','HUERFANO')" in art_filters[0]
+
+
+def test_get_quote_sin_articulos_no_consulta_f_art(session):
+    fake = _FakeFactusol(quotes=[_quote_row(46)],
+                         lines=[_line_row(46, 1, desc="Texto libre")])
+    quote = get_quote(fake, session, "46", ejercicio="2026")
+    assert quote["lines"][0]["sku"] is None
+    assert not [f for t, f in fake.filters if t == "F_ART"]
+
+
+def test_get_quote_sku_cae_al_codart_si_f_art_falla(session):
+    """Si F_ART no responde, la proforma se sigue pudiendo leer y duplicar
+    (con el código interno a la vista) en vez de fallar entera."""
+    class _NoArticles(_FakeFactusol):
+        def load_table(self, tabla, *, filtro="1=1", ejercicio=None):
+            if tabla == "F_ART":
+                raise FactusolError("F_ART caída")
+            return super().load_table(tabla, filtro=filtro, ejercicio=ejercicio)
+
+    fake = _NoArticles(quotes=[_quote_row(47)],
+                       lines=[_line_row(47, 1, art="00001", desc="CD")])
+    quote = get_quote(fake, session, "47", ejercicio="2026")
+    assert quote["lines"][0]["sku"] == "00001"
+
+
+def test_skus_for_codarts_traduce_en_lote():
+    fake = _FakeFactusol(articles=[
+        {"CODART": "99cy", "EQUART": "Ink500mlCY"},
+        {"CODART": "1712", "EQUART": "CAB-HDMI"},
+    ])
+    assert skus_for_codarts(fake, ["99cy", "1712", "", None, "99cy"],
+                            ejercicio="2026") == {
+        "99cy": "Ink500mlCY", "1712": "CAB-HDMI",
+    }
+    assert skus_for_codarts(fake, [], ejercicio="2026") == {}

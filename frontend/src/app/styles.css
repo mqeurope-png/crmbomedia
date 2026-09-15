@@ -11700,3 +11700,15 @@ tr.is-inactive {
 .company-ficha-id .mono { font-variant-numeric: tabular-nums; }
 .company-edit-form.erp-flow-panel { margin-bottom: 14px; }
 .erp-flow-panel h3 .badge { margin-left: 8px; vertical-align: middle; }
+
+/* Lote B3b/B4 · modal de proforma: portes + destinatario libre (dropshipping)
+   y vista previa de la plantilla en «Duplicar». */
+.erp-quote-foot .erp-quote-portes input { width: 120px; }
+.erp-quote-shipping { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: #f8fafc; }
+.erp-quote-shipping .form-row { display: flex; gap: 10px; flex-wrap: wrap; }
+.erp-quote-shipping .form-row .field { flex: 1 1 160px; }
+.erp-quote-preview { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; }
+.erp-quote-preview-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.erp-quote-preview-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.erp-quote-preview td.num, .erp-quote-preview th.num { text-align: right; font-variant-numeric: tabular-nums; }
+.erp-quote-preview .erp-article-sku { font-size: 12px; }

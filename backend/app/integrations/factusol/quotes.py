@@ -293,6 +293,11 @@ def _row_to_quote(row: dict[str, Any]) -> dict[str, Any]:
     out["estpre"] = _int_or_none(row.get("ESTPRE"))
     out["estado"] = quote_estado(out["estpre"])
     out["estado_label"] = QUOTE_ESTADO_LABELS[out["estado"]]
+    # Lote B3b: portes de la cabecera (banda `IPOR1PRE`, donde los deja tanto
+    # la app Woo→FACTUSOL como `build_quote_payload`). Se LEE de la fila
+    # completa igual que ESTPRE; al editar, el modal lo precarga para no
+    # perderlos al reescribir la cabecera.
+    out["portes"] = _num(row.get("IPOR1PRE"))
     return out
 
 
@@ -398,10 +403,62 @@ def list_quote_lines(
     return [_row_to_quote_line(r) for r in rows]
 
 
+def skus_for_codarts(
+    client: FactusolClient, codarts: list[str], *, ejercicio: str,
+) -> dict[str, str]:
+    """`{CODART interno: SKU comercial}` en UNA consulta a F_ART.
+
+    Es el camino inverso de `resolve_codarts`: `F_LPS.ARTLPS` guarda el CODART
+    interno (`00001`), pero el operativo reconoce el `EQUART` (`CDR80WPT`), que
+    es lo que enseña y busca el autocomplete. Sin esta traducción, duplicar una
+    proforma obligaba a volver a elegir cada artículo (Lote B4).
+
+    Un artículo sin EQUART se identifica por su CODART, como en el buscador
+    (`_row_to_article`). Los CODART que no estén en F_ART no aparecen en el
+    dict.
+    """
+    wanted = [c for c in dict.fromkeys(str(x or "").strip() for x in codarts) if c]
+    if not wanted:
+        return {}
+    in_list = ",".join(f"'{_sql_escape(c)}'" for c in wanted)
+    rows = client.load_table(
+        TABLE_ARTICLES, filtro=f"CODART IN ({in_list})", ejercicio=ejercicio,
+    )
+    out: dict[str, str] = {}
+    for row in rows:
+        codart = str(row.get("CODART") or "").strip()
+        if codart:
+            out[codart] = str(row.get("EQUART") or "").strip() or codart
+    return out
+
+
+def _attach_line_skus(
+    client: FactusolClient, lines: list[dict[str, Any]], *, ejercicio: str,
+) -> None:
+    """Añade `sku` a cada línea: el comercial del artículo, o None en las de
+    texto libre. Si F_ART falla se cae al CODART: una proforma se puede
+    duplicar igual, solo que enseñando el código interno."""
+    try:
+        skus = skus_for_codarts(
+            client, [line.get("codart") for line in lines], ejercicio=ejercicio,
+        )
+    except FactusolError:
+        logger.warning("factusol: no se pudieron traducir los CODART a SKU",
+                       exc_info=True)
+        skus = {}
+    for line in lines:
+        codart = line.get("codart")
+        line["sku"] = (skus.get(codart) or codart) if codart else None
+
+
 def get_quote(
     client: FactusolClient, session: Session, codpre: str, *, ejercicio: str,
 ) -> dict[str, Any] | None:
     """Una proforma con su desglose real de F_LPS. None si el CODPRE no existe.
+
+    Cada línea lleva `codart` (el interno de `ARTLPS`) y `sku` (el comercial,
+    ver `skus_for_codarts`), para que el modal de duplicar muestre el artículo
+    tal como lo reconoce el operativo sin volver a elegirlo.
 
     `session` ya no se usa para leer líneas (la caché local quedó obsoleta en
     C-4-fix3); se mantiene en la firma porque los llamadores la pasan y para no
@@ -415,6 +472,7 @@ def get_quote(
         return None
     quote = _row_to_quote(rows[0])
     quote["lines"] = list_quote_lines(client, str(quote["codpre"]), ejercicio=ejercicio)
+    _attach_line_skus(client, quote["lines"], ejercicio=ejercicio)
     quote["line_source"] = TABLE_QUOTE_LINES
     return quote
 
@@ -700,12 +758,17 @@ def create_quote(
     client: FactusolClient, session: Session, *, ejercicio: str,
     customer: dict[str, Any], lines: list[dict[str, Any]],
     referencia: str | None = None, fecha: str | None = None,
-    fopfac: str | None = None,
+    fopfac: str | None = None, portes: float = 0.0,
 ) -> dict[str, Any]:
     """Crea la proforma: cabecera en `F_PRE` + una fila por línea en `F_LPS`.
 
     `referencia` la escribe el operador cuando quiere fijar el texto de REFPRE;
     si no la pasa, se compone desde las líneas.
+
+    `portes` (Lote B3b) van a la banda de portes de la cabecera
+    (`IPOR1PRE`/`BAS1PRE`, ver `build_quote_payload`), igual que en el albarán
+    manual y en los pedidos web — NO como línea de F_LPS. Con 0 (lo habitual)
+    el registro sale exactamente como hasta ahora.
 
     Orden deliberado: cabecera primero, líneas después. Si la cabecera falla no
     hay nada que limpiar; si falla una línea, la proforma queda incompleta pero
@@ -727,7 +790,7 @@ def create_quote(
     codpre = next_codpre(client, ejercicio)
     payload = build_quote_payload(
         codpre, ejercicio=ejercicio, customer=customer, refpre=refpre,
-        lines=lines, fecha=fecha, fopfac=fopfac,
+        lines=lines, fecha=fecha, fopfac=fopfac, portes=portes,
     )
     try:
         client.write_record(TABLE_QUOTES, payload, ejercicio=ejercicio)
@@ -802,22 +865,33 @@ def quote_estado(estpre: int | None) -> str:
     return QUOTE_ESTADO_OTRO
 
 
-def quote_state(client: FactusolClient, codpre: str, *, ejercicio: str) -> int | None:
-    """`ESTPRE` de la proforma, o None si no existe."""
+def _quote_row(
+    client: FactusolClient, codpre: str, *, ejercicio: str,
+) -> dict[str, Any] | None:
+    """Fila F_PRE completa de la proforma, o None si no existe."""
     if not str(codpre).strip().isdigit():
         return None
     rows = client.load_table(
         TABLE_QUOTES, filtro=f"CODPRE={int(codpre)}", ejercicio=ejercicio,
     )
-    if not rows:
-        return None
-    return _int_or_none(rows[0].get("ESTPRE")) or ESTPRE_PENDING
+    return dict(rows[0]) if rows else None
+
+
+def _estado_of(row: dict[str, Any]) -> int:
+    return _int_or_none(row.get("ESTPRE")) or ESTPRE_PENDING
+
+
+def quote_state(client: FactusolClient, codpre: str, *, ejercicio: str) -> int | None:
+    """`ESTPRE` de la proforma, o None si no existe."""
+    row = _quote_row(client, codpre, ejercicio=ejercicio)
+    return None if row is None else _estado_of(row)
 
 
 def update_quote(
     client: FactusolClient, codpre: str, *, ejercicio: str,
     customer: dict[str, Any], lines: list[dict[str, Any]],
     referencia: str | None = None, force: bool = False,
+    portes: float = 0.0,
 ) -> dict[str, Any]:
     """Reescribe una proforma: cabecera con `ActualizarRegistro` y líneas
     borradas + vueltas a escribir.
@@ -827,13 +901,21 @@ def update_quote(
     casar posiciones y acabaría reescribiéndolas casi siempre. Borrar y
     reescribir es más simple y deja el mismo resultado.
 
+    `portes` (Lote B3b): banda `IPOR1PRE`/`BAS1PRE` como en el alta. Si la
+    proforma TENÍA portes y el operador los quita, la banda se pone a 0
+    explícitamente — `ActualizarRegistro` solo toca las columnas que se
+    envían, y sin esto los portes viejos se quedarían en la cabecera con los
+    totales nuevos. Solo se escribe el 0 cuando la fila tenía valor: en una
+    proforma que nunca los tuvo el registro sale como hasta ahora.
+
     `force` salta el guard de estado (ver `ESTPRE_PENDING`).
     """
-    estado = quote_state(client, codpre, ejercicio=ejercicio)
-    if estado is None:
+    row = _quote_row(client, codpre, ejercicio=ejercicio)
+    if row is None:
         raise FactusolError(
             f"La proforma {codpre} no existe en el ejercicio {ejercicio}"
         )
+    estado = _estado_of(row)
     if estado != ESTPRE_PENDING and not force:
         etiqueta = ESTPRE_LABELS.get(estado, f"en estado {estado}")
         raise QuoteNotEditableError(
@@ -844,8 +926,11 @@ def update_quote(
 
     header = build_quote_payload(
         str(codpre), ejercicio=ejercicio, customer=customer,
-        refpre=(referencia or "").strip(), lines=lines,
+        refpre=(referencia or "").strip(), lines=lines, portes=portes,
     )
+    if "IPOR1PRE" not in header and _num(row.get("IPOR1PRE")):
+        header["IPOR1PRE"] = 0.0
+        header["BAS1PRE"] = header["NET1PRE"]
     # En un UPDATE no se tocan ni el código ni la fecha de creación: el primero
     # es la clave y la segunda es cuándo nació el documento, no cuándo se editó.
     header.pop("FECPRE", None)

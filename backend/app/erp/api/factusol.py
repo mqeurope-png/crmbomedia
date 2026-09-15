@@ -2373,10 +2373,12 @@ def get_quote_endpoint(
     session: Session = Depends(get_session),
     current_user: User = Depends(require_erp_view),
 ) -> dict[str, Any]:
-    """Una proforma con su desglose.
+    """Una proforma con su desglose real de F_LPS (`line_source: "F_LPS"`).
 
-    `line_source` = `cache` (la creó el CRM, hay líneas reales) o `ref_text`
-    (se creó en el escritorio FACTUSOL: solo existe el texto de REFPRE)."""
+    Cada línea trae `codart` (interno, `ARTLPS`) y `sku` (el comercial
+    `EQUART`; None en las de texto libre) para que el modal de duplicar
+    muestre el artículo sin volver a elegirlo. La cabecera trae `portes`
+    (`IPOR1PRE`) para precargarlos al editar (Lote B3b/B4)."""
     _ = current_user
     from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
     from app.integrations.factusol.quotes import get_quote  # noqa: PLC0415
@@ -2414,6 +2416,23 @@ class QuoteAddressIn(BaseModel):
     pais: str = Field(default="", max_length=10)
 
 
+class QuoteShippingIn(BaseModel):
+    """Destinatario de envío LIBRE (Lote B3b · dropshipping): la proforma va a
+    nombre fiscal del cliente (CLIPRE/CNIPRE) pero el bloque de dirección de
+    la cabecera (CNOPRE/CDOPRE/CPOPRE/CCPPRE/CPRPRE/CPAPRE) es el del
+    destinatario final, que puede no existir en FACTUSOL. Todo opcional: lo
+    que no se rellena se resuelve en `_apply_shipping`."""
+
+    name: str = Field(default="", max_length=255)
+    address_line: str = Field(default="", max_length=255)
+    city: str = Field(default="", max_length=255)
+    postal_code: str = Field(default="", max_length=20)
+    state: str = Field(default="", max_length=255)
+    #: ISO2 («BE»), numérico («056») o nombre («Bélgica»): `quotes._cpapre`
+    #: lo traduce al ISO numérico que guarda CPAPRE.
+    country: str = Field(default="", max_length=64)
+
+
 class CreateQuotePayload(BaseModel):
     """Alta de proforma. El cliente sale de la empresa CRM vinculada; el
     operador solo elige líneas (o escribe una referencia libre)."""
@@ -2426,6 +2445,13 @@ class CreateQuotePayload(BaseModel):
     fopfac: str | None = Field(default=None, max_length=10)
     #: Dirección alternativa; None → la de la empresa CRM.
     address: QuoteAddressIn | None = None
+    #: Lote B3b: gastos de envío. Van a la banda de portes de la cabecera
+    #: (`IPOR1PRE`/`BAS1PRE`), como en el albarán manual, NO como línea.
+    #: None o 0 → sin portes (registro idéntico al de siempre).
+    portes: float | None = Field(default=None, ge=0)
+    #: Lote B3b: destinatario libre (dropshipping). Si viene junto con
+    #: `address`, manda el libre.
+    shipping: QuoteShippingIn | None = None
 
 
 def _apply_address(
@@ -2439,6 +2465,43 @@ def _apply_address(
         return customer
     chosen = {k: v.strip() for k, v in address.model_dump().items() if v.strip()}
     return {**customer, **chosen}
+
+
+#: Campos del destinatario libre que forman la DIRECCIÓN (sin nombre ni país).
+_SHIPPING_ADDRESS_KEYS = ("address_line", "city", "postal_code", "state")
+
+
+def _apply_shipping(
+    customer: dict[str, Any], shipping: QuoteShippingIn | None,
+) -> dict[str, Any]:
+    """Pisa el bloque de envío del cliente con el destinatario libre
+    (dropshipping). Mismo mecanismo que `_apply_address`: se mezcla en el
+    dict `customer` y `build_quote_payload` lo vuelca en CNOPRE/CDOPRE/…;
+    `codcli`, `nif` y `regime` (CLIPRE/CNIPRE/IVA) no se tocan — el cliente
+    fiscal sigue siendo el de la empresa CRM.
+
+    - Nombre: solo si viene; vacío → el del cliente (CNOPRE nunca queda en
+      blanco por esto).
+    - Dirección (calle/ciudad/CP/provincia): si viene AL MENOS un campo se
+      sustituye el bloque ENTERO. A diferencia de la dirección alternativa
+      de F_CLI (que se completa con la sede), aquí mezclar sería peor:
+      dejaría la provincia de la sede bajo la ciudad del destinatario.
+    - País: solo si viene; vacío → el del cliente.
+    """
+    if shipping is None:
+        return customer
+    data = {k: v.strip() for k, v in shipping.model_dump().items()}
+    out = dict(customer)
+    if data["name"]:
+        out["nombre"] = data["name"]
+    if any(data[k] for k in _SHIPPING_ADDRESS_KEYS):
+        out["direccion"] = data["address_line"]
+        out["ciudad"] = data["city"]
+        out["cp"] = data["postal_code"]
+        out["provincia"] = data["state"]
+    if data["country"]:
+        out["pais"] = data["country"]
+    return out
 
 
 def _customer_from_company(session: Session, company_id: str) -> dict[str, Any]:
@@ -2504,8 +2567,13 @@ def create_quote_endpoint(
             "code": "empty_quote",
             "detail": "Añade al menos una línea o escribe una referencia.",
         })
-    customer = _apply_address(
-        _customer_from_company(session, payload.company_id), payload.address,
+    # Dirección alternativa de F_CLI primero, destinatario libre después: si
+    # vienen los dos, manda el libre (Lote B3b).
+    customer = _apply_shipping(
+        _apply_address(
+            _customer_from_company(session, payload.company_id), payload.address,
+        ),
+        payload.shipping,
     )
     job_id = enqueue_create_quote(
         customer,
@@ -2513,10 +2581,13 @@ def create_quote_endpoint(
         payload.referencia.strip() or None,
         payload.fecha,
         payload.fopfac,
+        float(payload.portes or 0),
     )
     _audit_quote(session, current_user, "erp.factusol_quote_create",
                  payload.company_id, {"job_id": job_id,
-                                      "lines": len(payload.lines)})
+                                      "lines": len(payload.lines),
+                                      "portes": float(payload.portes or 0),
+                                      "shipping": payload.shipping is not None})
     session.commit()
     return {"job_id": job_id, "status": "queued"}
 
@@ -2548,16 +2619,21 @@ def update_quote_endpoint(
             "code": "empty_quote",
             "detail": "Añade al menos una línea o escribe una referencia.",
         })
-    customer = _apply_address(
-        _customer_from_company(session, payload.company_id), payload.address,
+    customer = _apply_shipping(
+        _apply_address(
+            _customer_from_company(session, payload.company_id), payload.address,
+        ),
+        payload.shipping,
     )
     job_id = enqueue_update_quote(
         codpre, customer, [line.model_dump() for line in payload.lines],
         payload.referencia.strip() or None, payload.force,
+        float(payload.portes or 0),
     )
     _audit_quote(session, current_user, "erp.factusol_quote_update", codpre,
                  {"job_id": job_id, "lines": len(payload.lines),
-                  "force": payload.force})
+                  "force": payload.force, "portes": float(payload.portes or 0),
+                  "shipping": payload.shipping is not None})
     session.commit()
     return {"job_id": job_id, "status": "queued", "codpre": codpre}
 
