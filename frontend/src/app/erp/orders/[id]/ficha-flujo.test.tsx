@@ -46,8 +46,27 @@ jest.mock("../../../components/erp/EmitFactusolButton", () => ({
     </>
   ),
 }));
+// El panel real se prueba aparte; aquí solo importa si la ficha le pidió
+// abrir el selector de la etiqueta (Lote 2 C) y que, subida, la ficha recargue.
 jest.mock("../../../components/erp/ShippingFilesSection", () => ({
-  ShippingFilesSection: () => <div>documentos de envío</div>,
+  ShippingFilesSection: ({ openEtiquetaSignal, onUploaded }: {
+    openEtiquetaSignal?: number;
+    onUploaded?: (r: unknown) => void;
+  }) => (
+    <>
+      <div>documentos de envío</div>
+      <span>etiqueta:{openEtiquetaSignal ?? 0}</span>
+      <button
+        type="button"
+        onClick={() => onUploaded?.({
+          kind: "etiqueta", file: { id: "f-1" }, transition_applied: true,
+          transport_status: "label_created", transition_reason: null,
+        })}
+      >
+        simular etiqueta subida
+      </button>
+    </>
+  ),
 }));
 jest.mock("../../../lib/api", () => ({
   getCurrentUser: jest.fn(() => Promise.resolve({ role: "admin" })),
@@ -215,7 +234,11 @@ describe("ERP · Ficha del pedido (rediseño de flujo)", () => {
     // Las transiciones de estado siguen (fila compacta), no las 4 tarjetas.
     const estados = screen.getByRole("region", { name: "Otras acciones de estado" });
     expect(estados).toHaveTextContent("Preparación");
-    expect(within(estados).getByRole("button", { name: "Crear envío" })).toBeInTheDocument();
+    expect(within(estados).getByRole("button", { name: "Empezar preparación" })).toBeInTheDocument();
+    // «Crear envío» (transport → label_created) ya NO se pinta: subir la
+    // etiqueta es el envío (Lote 2 C). El arco sigue en el backend.
+    expect(within(estados).queryByRole("button", { name: "Crear envío" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Crear envío" })).toBeNull();
     expect(document.querySelector(".erp-states")).toBeNull();
     expect(document.querySelector(".erp-card")).toBeNull();
   });
@@ -339,20 +362,58 @@ describe("ERP · Ficha del pedido (rediseño de flujo)", () => {
     expect(screen.getByText("Cobrado FACTUSOL")).toBeInTheDocument();
   });
 
-  it("«Preparar envío» como siguiente paso dispara la transición de transporte y la fila de estados no la repite", async () => {
+  // --- Lote 2 C: «Crear envío» → «Subir etiqueta» ---
+
+  it("«Subir etiqueta» como siguiente paso abre el selector de la etiqueta (no dispara «Crear envío») y, subida, la ficha recarga", async () => {
+    const { fireTransition } = jest.requireMock("../../../lib/erpApi");
+    (fireTransition as jest.Mock).mockClear();
+    (getOrder as jest.Mock).mockResolvedValue(conSiguientePaso({
+      queue: "por_enviar", queue_label: "Por enviar",
+      next_action: "crear_envio", next_action_label: "Subir etiqueta",
+      next_action_hint: "Sube la etiqueta de envío (o marca el pedido como recogido).",
+    }, { preparation_status: "packed" }));
+    const user = userEvent.setup();
+    render(<ErpOrderDetailPage />);
+    const bar = within(await screen.findByRole("region", { name: "Siguiente paso" }));
+    expect(bar.getByText(/Sube la etiqueta de envío/)).toBeInTheDocument();
+    expect(screen.getByText("etiqueta:0")).toBeInTheDocument();
+    await user.click(bar.getByRole("button", { name: "Subir etiqueta" }));
+    // El botón pide al panel «Documentos de envío» que abra su selector…
+    expect(await screen.findByText("etiqueta:1")).toBeInTheDocument();
+    // …y NADIE dispara ya la transición «Crear envío» a secas: ni la barra
+    // ni la fila de estados (el arco sigue en el backend, oculto).
+    expect(screen.queryByRole("button", { name: "Crear envío" })).toBeNull();
+    expect(fireTransition).not.toHaveBeenCalled();
+    // Subida la etiqueta, la ficha vuelve a leer el pedido: el stepper y el
+    // «Siguiente paso» reflejan «Etiqueta creada».
+    const antes = (getOrder as jest.Mock).mock.calls.length;
+    await user.click(screen.getByRole("button", { name: "simular etiqueta subida" }));
+    await waitFor(() => expect((getOrder as jest.Mock).mock.calls.length).toBeGreaterThan(antes));
+  });
+
+  it("con la etiqueta ya subida (label_created) el siguiente paso es la transición de transporte que toca y la fila no la repite", async () => {
     const { fireTransition } = jest.requireMock("../../../lib/erpApi");
     (fireTransition as jest.Mock).mockResolvedValue(detail());
     (getOrder as jest.Mock).mockResolvedValue(conSiguientePaso({
-      next_action: "crear_envio", next_action_label: "Preparar envío",
-      next_action_hint: "Prepara el envío y marca el transporte.",
+      queue: "por_enviar", queue_label: "Por enviar",
+      next_action: "crear_envio", next_action_label: "Marcar recogido",
+      next_action_hint: "Etiqueta subida: marca el pedido como recogido cuando salga.",
+    }, {
+      preparation_status: "packed", transport_status: "label_created",
+      available_transitions: {
+        payment: [], invoice: [], preparation: [],
+        transport: [{ to_status: "in_transit", label: "Recogido / en tránsito", required_evidence: [] }],
+      },
     }));
     const user = userEvent.setup();
     render(<ErpOrderDetailPage />);
     const bar = within(await screen.findByRole("region", { name: "Siguiente paso" }));
-    expect(screen.getAllByRole("button", { name: "Crear envío" })).toHaveLength(1);
-    await user.click(bar.getByRole("button", { name: "Crear envío" }));
+    // Las demás transiciones de transporte se conservan, y una sola vez.
+    expect(screen.getAllByRole("button", { name: "Recogido / en tránsito" })).toHaveLength(1);
+    expect(screen.queryByRole("button", { name: "Subir etiqueta" })).toBeNull();
+    await user.click(bar.getByRole("button", { name: "Recogido / en tránsito" }));
     await waitFor(() => expect(fireTransition).toHaveBeenCalledWith(
-      "o-1", expect.objectContaining({ domain: "transport", to_status: "label_created" }),
+      "o-1", expect.objectContaining({ domain: "transport", to_status: "in_transit" }),
     ));
   });
 

@@ -67,7 +67,11 @@ ACTION_LABELS: dict[str, str] = {
     "aprobar": "Aprobar",
     "emitir_factura": "Emitir factura",
     "registrar_cobro": "Registrar cobro",
-    "crear_envio": "Preparar envío",
+    # Lote 2 C: «Crear envío» ya no es un botón; subir la etiqueta ES el envío
+    # (la subida mueve el transporte a label_created). Con la etiqueta ya
+    # subida, la etiqueta del paso cambia a «Marcar recogido» (ver
+    # `_next_action_label`), misma acción y mismo sitio (la ficha).
+    "crear_envio": "Subir etiqueta",
     "enviar_sat": "Enviar a SAT",
     "marcar_completado": "Marcar completado",
     "vincular_empresa": "Vincular empresa a FACTUSOL",
@@ -338,13 +342,19 @@ def _next_step(order: Order) -> tuple[str, str, str]:
             "Registra el cobro de la factura en FACTUSOL.",
         )
     if not is_shipped(order):
-        action = "crear_envio" if _v(order.preparation_status) in _PREPARED else "enviar_sat"
+        if _v(order.preparation_status) not in _PREPARED:
+            return (
+                QUEUE_POR_ENVIAR, "enviar_sat",
+                "El taller tiene que preparar el pedido.",
+            )
+        # Lote 2 C: subir la etiqueta ES «Crear envío». Con ella ya subida
+        # (label_created) lo que falta es que el paquete salga.
         texto = (
-            "Prepara el envío y marca el transporte."
-            if action == "crear_envio"
-            else "El taller tiene que preparar el pedido."
+            "Etiqueta subida: marca el pedido como recogido cuando salga."
+            if _v(order.transport_status) == TransportStatus.LABEL_CREATED.value
+            else "Sube la etiqueta de envío (o marca el pedido como recogido)."
         )
-        return QUEUE_POR_ENVIAR, action, texto
+        return QUEUE_POR_ENVIAR, "crear_envio", texto
     if not order.completed_at:
         return (
             QUEUE_POR_ENVIAR, "marcar_completado",
@@ -381,7 +391,7 @@ def order_workflow(
         "queue": queue,
         "queue_label": QUEUE_LABELS[queue],
         "next_action": action,
-        "next_action_label": ACTION_LABELS.get(action, action),
+        "next_action_label": _next_action_label(order, action),
         "next_action_hint": explain,
         "alerts": alerts,
         "blocked": bool(blocking),
@@ -392,6 +402,19 @@ def order_workflow(
         # régimen) y en el bloque FACTUSOL (nº de cliente o «sin vincular»).
         "company": _company_block(company),
     }
+
+
+def _next_action_label(order: Order, action: str) -> str:
+    """Etiqueta del siguiente paso. Lote 2 C: `crear_envio` se lee según el
+    sub-estado del transporte — «Subir etiqueta» mientras no hay envío y
+    «Marcar recogido» con la etiqueta ya subida. La acción (y la cola) no
+    cambian: es el mismo paso visto desde donde está el pedido."""
+    if (
+        action == "crear_envio"
+        and _v(order.transport_status) == TransportStatus.LABEL_CREATED.value
+    ):
+        return "Marcar recogido"
+    return ACTION_LABELS.get(action, action)
 
 
 def _company_block(company: Any) -> dict[str, Any] | None:

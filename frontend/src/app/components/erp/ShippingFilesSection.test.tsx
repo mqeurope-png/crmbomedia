@@ -11,6 +11,7 @@ import {
   saveBlob,
   uploadShippingFile,
   type ShipmentFile,
+  type ShippingFileUploadResult,
 } from "../../lib/erpApi";
 
 jest.mock("../../lib/erpApi", () => ({
@@ -182,5 +183,91 @@ describe("ShippingFilesSection", () => {
     await waitFor(() => expect(createOrderAlbaran).toHaveBeenCalledWith("o1"));
     expect(await screen.findByText("Creando el albarán en FACTUSOL…")).toBeInTheDocument();
     expect(screen.getByText(/Albarán encolado en FACTUSOL/)).toBeInTheDocument();
+  });
+
+  // --- Lote 2 C: subir la etiqueta ES «Crear envío» ---
+
+  function subida(over: Partial<ShippingFileUploadResult> = {}): ShippingFileUploadResult {
+    return {
+      file: file("etiqueta"), transition_applied: true,
+      transport_status: "label_created", transition_reason: null, ...over,
+    };
+  }
+  const pdf = () => new File(["%PDF-"], "gls.pdf", { type: "application/pdf" });
+
+  it("subir la etiqueta: llama al endpoint, refresca, dice que el transporte pasó a «Etiqueta creada» y lo comunica a la ficha", async () => {
+    mockUpload.mockResolvedValue(subida());
+    const onUploaded = jest.fn();
+    const user = userEvent.setup();
+    render(<ShippingFilesSection orderId="o1" isWooOrder={false} onUploaded={onUploaded} />);
+    const fichero = pdf();
+    await user.upload(await screen.findByLabelText("Subir etiqueta"), fichero);
+    await waitFor(() => expect(mockUpload).toHaveBeenCalledWith("o1", "etiqueta", fichero));
+    expect(await screen.findByText("Etiqueta subida: el transporte pasa a «Etiqueta creada»."))
+      .toBeInTheDocument();
+    expect(onUploaded).toHaveBeenCalledWith(expect.objectContaining({
+      kind: "etiqueta", transition_applied: true, transport_status: "label_created",
+    }));
+    await waitFor(() => expect(mockList).toHaveBeenCalledTimes(2));
+  });
+
+  it("etiqueta subida sin el pedido embalado: el fichero queda y se avisa de por qué el transporte no cambia", async () => {
+    mockUpload.mockResolvedValue(subida({
+      transition_applied: false, transport_status: "not_shipped",
+      transition_reason: "[packed_before_label] crear envío exige preparación embalada; actual: 'preparing'",
+    }));
+    const onUploaded = jest.fn();
+    const user = userEvent.setup();
+    render(<ShippingFilesSection orderId="o1" isWooOrder={false} onUploaded={onUploaded} />);
+    await user.upload(await screen.findByLabelText("Subir etiqueta"), pdf());
+    const aviso = await screen.findByText(/el transporte sigue en «Sin enviar»/);
+    expect(aviso).toHaveTextContent(/exige preparación embalada/);
+    expect(aviso).toHaveClass("form-warning");
+    expect(screen.queryByText(/pasa a «Etiqueta creada»/)).toBeNull();
+    // La ficha recarga igualmente (el fichero está guardado).
+    expect(onUploaded).toHaveBeenCalledWith(expect.objectContaining({
+      kind: "etiqueta", transition_applied: false,
+    }));
+  });
+
+  it("reemplazar la etiqueta con el envío ya creado: sin aviso de transporte", async () => {
+    mockList.mockResolvedValue([file("etiqueta")]);
+    mockUpload.mockResolvedValue(subida({ transition_applied: false, transport_status: "label_created" }));
+    const user = userEvent.setup();
+    render(<ShippingFilesSection orderId="o1" isWooOrder={false} />);
+    await user.upload(await screen.findByLabelText("Reemplazar etiqueta"), pdf());
+    expect(await screen.findByText("Etiqueta subida.")).toBeInTheDocument();
+    expect(screen.queryByText(/sigue en «Sin enviar»/)).toBeNull();
+  });
+
+  it("subir el albarán nunca habla de transporte (no lo mueve), pero sí avisa a la ficha", async () => {
+    mockUpload.mockResolvedValue(subida({
+      file: file("albaran"), transition_applied: false, transport_status: "not_shipped",
+    }));
+    const onUploaded = jest.fn();
+    const user = userEvent.setup();
+    render(<ShippingFilesSection orderId="o1" isWooOrder={false} onUploaded={onUploaded} />);
+    await user.upload(await screen.findByLabelText("Subir albarán"), pdf());
+    await waitFor(() => expect(onUploaded).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "albaran" }),
+    ));
+    expect(screen.queryByText(/Etiqueta subida/)).toBeNull();
+    expect(screen.queryByText(/transporte/)).toBeNull();
+  });
+
+  it("la señal «Subir etiqueta» (siguiente paso de la ficha) abre el selector de fichero de la ETIQUETA", async () => {
+    const click = jest.spyOn(HTMLElement.prototype, "click");
+    try {
+      const { rerender } = render(<ShippingFilesSection orderId="o1" isWooOrder={false} />);
+      await screen.findByRole("button", { name: "Subir etiqueta" });
+      expect(click).not.toHaveBeenCalled();
+      rerender(<ShippingFilesSection orderId="o1" isWooOrder={false} openEtiquetaSignal={1} />);
+      await waitFor(() => expect(click).toHaveBeenCalledTimes(1));
+      const input = click.mock.contexts[0] as HTMLInputElement;
+      expect(input.type).toBe("file");
+      expect(input).toHaveAttribute("aria-label", "Subir etiqueta");
+    } finally {
+      click.mockRestore();
+    }
   });
 });

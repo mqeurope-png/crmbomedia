@@ -8,6 +8,9 @@ API de Genei/DSV:
 - Albarán: descarga automática del plugin PDF de WooCommerce (o subida manual
   como fallback) — `shipment_files(kind=albaran)`.
 - Etiqueta: siempre subida manual en Fase D — `shipment_files(kind=etiqueta)`.
+  Lote 2 C: subir la etiqueta ES «Crear envío»: con el transporte en
+  `not_shipped` la subida aplica `not_shipped → label_created` por la máquina
+  de estados (el arco sigue existiendo; la UI ya no lo pinta como botón).
 
 Los bytes viven en el storage abstracto (`app/storage`); la BD solo guarda la
 ruta relativa.
@@ -38,6 +41,7 @@ from app.db.session import get_session
 from app.erp.api.deps import require_erp_view
 from app.erp.models import (
     KIND_ALBARAN,
+    KIND_ETIQUETA,
     SHIPMENT_FILE_KINDS,
     SOURCE_CRM_GENERATED_PDF,
     SOURCE_MANUAL_UPLOAD,
@@ -46,6 +50,8 @@ from app.erp.models import (
     OrderSource,
     ShipmentFile,
     ShipmentPackage,
+    StatusDomain,
+    TransportStatus,
 )
 from app.erp.state_machine.engine import TransitionError, apply_transition
 from app.models.crm import User
@@ -62,6 +68,9 @@ MAX_SHIPPING_FILE_BYTES = 20 * 1024 * 1024
 ALLOWED_SHIPPING_MIME = frozenset({
     "application/pdf", "image/png", "image/jpeg", "image/jpg",
 })
+#: Motivo con el que queda en el historial el `not_shipped → label_created`
+#: que dispara la subida de la etiqueta (Lote 2 C).
+ETIQUETA_TRANSITION_REASON = "etiqueta subida"
 
 
 def _get_order(session: Session, order_id: str) -> Order:
@@ -288,6 +297,32 @@ def download_shipping_file(
     )
 
 
+def _transition_on_etiqueta(
+    session: Session, order: Order, row: ShipmentFile, actor: User,
+) -> tuple[bool, str | None]:
+    """Lote 2 C — tras guardar la ETIQUETA intenta `not_shipped →
+    label_created` por la máquina de estados (motivo «etiqueta subida», el
+    fichero como evidencia). Devuelve `(aplicada, motivo_del_rechazo)`.
+
+    Solo actúa desde `not_shipped`: reemplazar la etiqueta con el envío ya
+    creado (o en tránsito) no toca el estado. Si el engine la rechaza (guard
+    «sin embalar», rol sin permiso) el fichero se conserva igual y el motivo
+    vuelve al cliente; el estado lo moverá «Marcar recogido» (que ya hace
+    `not_shipped → label_created → in_transit`) o una nueva subida."""
+    if _status_value(order.transport_status) != TransportStatus.NOT_SHIPPED.value:
+        return False, None
+    try:
+        apply_transition(
+            session, order=order, domain=StatusDomain.TRANSPORT,
+            to_status=TransportStatus.LABEL_CREATED.value, actor=actor,
+            reason=ETIQUETA_TRANSITION_REASON,
+            evidence={"shipment_file_id": row.id, "filename": row.filename},
+        )
+    except TransitionError as exc:
+        return False, exc.detail
+    return True, None
+
+
 @router.post("/{order_id}/shipping-files", status_code=201)
 async def upload_shipping_file(
     order_id: str,
@@ -297,7 +332,13 @@ async def upload_shipping_file(
     current_user: User = Depends(require_erp_view),
 ) -> dict[str, Any]:
     """Subida manual de albarán o etiqueta. Marca el fichero previo del mismo
-    kind como reemplazado (se conserva) y guarda el nuevo."""
+    kind como reemplazado (se conserva) y guarda el nuevo.
+
+    Lote 2 C — subir la ETIQUETA es «Crear envío»: con el transporte en
+    `not_shipped` se aplica `not_shipped → label_created`. La respuesta lleva
+    `transition_applied`, `transport_status` (el que queda) y
+    `transition_reason` (por qué NO se aplicó, si el engine la rechazó: el
+    fichero se guarda igual). El albarán nunca mueve el transporte."""
     order = _get_order(session, order_id)
     if kind not in SHIPMENT_FILE_KINDS:
         raise HTTPException(400, f"kind inválido: {kind!r} (usa albaran|etiqueta)")
@@ -320,8 +361,18 @@ async def upload_shipping_file(
         filename=file.filename or f"{kind}.pdf", mime_type=mime, data=data,
         actor_id=current_user.id,
     )
+    session.flush()  # id del fichero: va como evidencia de la transición
+    applied, reason = (
+        _transition_on_etiqueta(session, order, row, current_user)
+        if kind == KIND_ETIQUETA else (False, None)
+    )
     session.commit()
-    return {"order_id": order.id, "file": _serialise_file(row)}
+    return {
+        "order_id": order.id, "file": _serialise_file(row),
+        "transition_applied": applied,
+        "transport_status": _status_value(order.transport_status),
+        "transition_reason": reason,
+    }
 
 
 @router.post("/{order_id}/albaran/fetch-from-woo", status_code=201)

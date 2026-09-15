@@ -12,6 +12,7 @@ import {
   type FactusolPdfLang,
   type ShipmentFile,
   type ShipmentFileKind,
+  type ShippingFileUploadResult,
 } from "../../lib/erpApi";
 import { FactusolAlbaranPdfButton } from "./FactusolAlbaranPdfButton";
 import { FileUploadButton } from "./FileUploadButton";
@@ -40,7 +41,9 @@ function albaranJobFromLocation(): string | null {
  *  - Fichero de albarán subido a mano / descargado de Woo: Ver / Reemplazar,
  *    o Descargar de Woo / Subir según el origen. Conviven con el de FACTUSOL
  *    (decisión de Bart): el subido sirve para albaranes externos / SAT.
- *  - Etiqueta: Ver / Reemplazar o Subir. */
+ *  - Etiqueta: Ver / Reemplazar o Subir. Lote 2 C: subir la etiqueta ES
+ *    «Crear envío» — el backend pasa el transporte a «Etiqueta creada» al
+ *    guardarla (si el pedido está embalado) y aquí se dice si lo hizo. */
 export function ShippingFilesSection({
   orderId,
   isWooOrder,
@@ -50,6 +53,8 @@ export function ShippingFilesSection({
   canCreateAlbaran = false,
   createSignal = 0,
   onAlbaranCreated,
+  openEtiquetaSignal = 0,
+  onUploaded,
 }: {
   orderId: string;
   isWooOrder: boolean;
@@ -69,9 +74,24 @@ export function ShippingFilesSection({
   /** Tras crearse el albarán (o fallar): la ficha recarga el pedido y, si
    *  hay error, lo enseña. */
   onAlbaranCreated?: (result: { numero: string | null; error: string | null }) => void;
+  /** Contador que, al subir, trae el panel a la vista y abre el selector de
+   *  fichero de la ETIQUETA (el «Subir etiqueta» del «Siguiente paso» de la
+   *  ficha). */
+  openEtiquetaSignal?: number;
+  /** Tras subir un fichero (albarán o etiqueta), con la respuesta del
+   *  backend: la ficha recarga el pedido (la etiqueta puede haber movido el
+   *  transporte a «Etiqueta creada»). */
+  onUploaded?: (result: ShippingFileUploadResult & { kind: ShipmentFileKind }) => void;
 }) {
   const [files, setFiles] = useState<ShipmentFile[]>([]);
   const [error, setError] = useState<string | null>(null);
+  // Lote 2 C: aviso (amarillo) cuando la etiqueta se guardó pero el
+  // transporte no se movió (pedido sin embalar…).
+  const [warning, setWarning] = useState<string | null>(null);
+  const sectionRef = useRef<HTMLElement>(null);
+  const etiquetaRowRef = useRef<HTMLDivElement>(null);
+  const onUploadedRef = useRef(onUploaded);
+  useEffect(() => { onUploadedRef.current = onUploaded; }, [onUploaded]);
   const [fetchingAlbaran, setFetchingAlbaran] = useState(false);
   // Albarán FACTUSOL: el alta redirige aquí con el job recién encolado (solo
   // importa si el pedido aún no tiene su nº). Estado inicial perezoso: el
@@ -179,12 +199,42 @@ export function ShippingFilesSection({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [createSignal]);
 
+  // «Subir etiqueta» desde el «Siguiente paso» de la ficha: el panel se trae
+  // a la vista y se abre el selector de la etiqueta (el input oculto de su
+  // botón de subida). Se ignora el montaje inicial (contador a 0).
+  useEffect(() => {
+    if (openEtiquetaSignal <= 0) return;
+    const section = sectionRef.current;
+    if (section && typeof section.scrollIntoView === "function") {
+      section.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+    etiquetaRowRef.current?.querySelector<HTMLInputElement>('input[type="file"]')?.click();
+  }, [openEtiquetaSignal]);
+
   const albaran = files.find((f) => f.kind === "albaran") ?? null;
   const etiqueta = files.find((f) => f.kind === "etiqueta") ?? null;
 
+  /** Sube albarán o etiqueta y refresca la lista. Etiqueta (Lote 2 C): el
+   *  backend intenta `not_shipped → label_created`; aquí se dice si el
+   *  transporte se movió o por qué no (el fichero queda guardado igual). */
   async function upload(kind: ShipmentFileKind, file: File) {
-    await uploadShippingFile(orderId, kind, file);
+    const r = await uploadShippingFile(orderId, kind, file);
     load();
+    if (kind === "etiqueta") {
+      if (r.transition_applied) {
+        setWarning(null);
+        setNotice("Etiqueta subida: el transporte pasa a «Etiqueta creada».");
+      } else if (r.transition_reason) {
+        setNotice(null);
+        setWarning(
+          `Etiqueta guardada, pero el transporte sigue en «Sin enviar»: ${r.transition_reason}.`,
+        );
+      } else {
+        setWarning(null);
+        setNotice("Etiqueta subida.");
+      }
+    }
+    onUploadedRef.current?.({ ...r, kind });
   }
 
   async function descargarWoo() {
@@ -201,9 +251,10 @@ export function ShippingFilesSection({
   }
 
   return (
-    <section className="erp-flow-panel" aria-label="Documentos de envío">
+    <section ref={sectionRef} className="erp-flow-panel" aria-label="Documentos de envío">
       <h3>Documentos de envío</h3>
       {error ? <p className="form-error">{error}</p> : null}
+      {warning ? <p className="form-warning" role="status">{warning}</p> : null}
       {notice ? <p className="form-info" role="status">{notice}</p> : null}
       <div className="erp-flow-docrow" role="group" aria-label="Albarán">
         <span className="k">Albarán</span>
@@ -265,7 +316,7 @@ export function ShippingFilesSection({
         </span>
       </div>
 
-      <div className="erp-flow-docrow" role="group" aria-label="Etiqueta">
+      <div ref={etiquetaRowRef} className="erp-flow-docrow" role="group" aria-label="Etiqueta">
         <span className="k">Etiqueta</span>
         <span className="v">
           {etiqueta ? (
