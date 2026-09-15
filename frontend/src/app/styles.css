@@ -11895,3 +11895,68 @@ tr.is-inactive {
 /* Cola PEDIDOS: barra de filtros ligera (buscar, tienda, orden) sobre el grid
    de tarjetas de aprobación. */
 .erp-approval-filters { margin: 0 0 14px; }
+
+/* --- ERP · Lote 2 (A1 + A2) — bandeja ------------------------------------ */
+
+/* A1: en la vista LISTA el botón principal es un enlace (`a.button`) dentro
+   de `table.data-table`, y `.data-table a { color: var(--brand) }` (más
+   específico que `.button`) le pisaba el blanco del texto: azul sobre azul,
+   un rectángulo sin texto. El enlace-botón conserva los colores del botón. */
+.data-table a.button { color: #fff; font-weight: 600; }
+.data-table a.button:hover { text-decoration: none; }
+.data-table a.button.secondary { color: var(--color-primary); }
+.data-table a.button.ghost { color: var(--color-dark); }
+
+/* Acción principal y «⋯» de cada pedido, en tarjetas y en lista: 40 px de
+   alto (referencia de diseño) y texto centrado. En la tabla la etiqueta no
+   se parte (la columna crece; en pantallas estrechas la tabla ya hace scroll). */
+.erp-flow-item-actions .button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 40px;
+}
+.erp-bandeja-table td .erp-flow-item-actions { flex-wrap: nowrap; }
+.erp-bandeja-table td .erp-flow-item-actions .button { white-space: nowrap; }
+
+/* A2: «Ver: Activos / Ocultados / Anulados» — un control segmentado
+   excluyente (una sola vista de revisión) en la barra de filtros. */
+.erp-flow-seg {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+.erp-flow-seg-label {
+  color: var(--muted);
+  padding: 0 6px 0 8px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-size: 11px;
+}
+.erp-flow-seg-btn {
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 5px 10px;
+  min-height: 30px;
+  cursor: pointer;
+}
+.erp-flow-seg-btn:hover { background: var(--color-bg-light); color: var(--color-dark); }
+.erp-flow-seg-btn.is-on {
+  background: #1b2330;
+  color: #fff;
+  font-weight: 600;
+}
+.erp-flow-seg-btn:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--color-primary) 35%, transparent);
+  outline-offset: 1px;
+}

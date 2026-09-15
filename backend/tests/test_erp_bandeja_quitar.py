@@ -303,6 +303,37 @@ def test_bandeja_respeta_filtros_en_ver_ocultados(session_factory, http) -> None
     assert r.status_code in (401, 403)
 
 
+def test_ver_ocultados_no_mezcla_anulados(session_factory, http) -> None:
+    """Lote 2 A2: los anulados viven SOLO en «Ver anulados». Un pedido quitado
+    a mano Y anulado después es un anulado: no sale en «Ver ocultados». Y si
+    llegan los dos flags, manda «Ver anulados» (nunca se mezclan)."""
+    with session_factory() as s:
+        solo_oculto = _order(s, "MANUAL-000971", source=OrderSource.MANUAL)
+        oculto_y_anulado = _order(s, "MANUAL-000972", source=OrderSource.MANUAL)
+        solo_anulado = _order(s, "MANUAL-000973", source=OrderSource.MANUAL)
+        s.commit()
+    _exclude(http, [solo_oculto, oculto_y_anulado], reason_code="duplicado")
+    with session_factory() as s:
+        for oid in (oculto_y_anulado, solo_anulado):
+            o = s.get(Order, oid)
+            o.cancelled_at = datetime(2026, 9, 12, tzinfo=UTC)
+            o.cancelled_reason = "anulado en prueba"
+        s.commit()
+
+    # Bandeja normal: ninguno de los tres.
+    assert _numeros(_bandeja(http)) == set()
+    # «Ver ocultados»: solo el quitado que NO está anulado.
+    assert _numeros(_bandeja(http, show_excluded="true")) == {"MANUAL-000971"}
+    # «Ver anulados»: los dos anulados (esté o no quitado a mano).
+    assert _numeros(_bandeja(http, show_cancelled="true")) == {
+        "MANUAL-000972", "MANUAL-000973",
+    }
+    # Los dos flags a la vez: manda «Ver anulados».
+    assert _numeros(_bandeja(http, show_excluded="true", show_cancelled="true")) == {
+        "MANUAL-000972", "MANUAL-000973",
+    }
+
+
 def test_cola_sat_tambien_oculta_quitados(session_factory, http) -> None:
     """«Fuera de mis listas de trabajo» incluye la cola del taller (SAT)."""
     with session_factory() as s:

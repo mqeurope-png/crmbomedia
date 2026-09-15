@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useSearchParams } from "next/navigation";
+import { Suspense, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { PageHeader } from "../../components/PageHeader";
 import { CobroFactusolBadge } from "../../components/erp/CobroFactusolBadge";
 import { ExcludeSeguimientoModal } from "../../components/erp/ExcludeSeguimientoModal";
@@ -20,6 +21,8 @@ import { ActionsMenu } from "../../components/erp/flow/ActionsMenu";
 import { getCurrentUser, type User } from "../../lib/api";
 import { extractErrorMessage } from "../../lib/errors";
 import {
+  approveOrder,
+  approveOrdersBulk,
   completeOrder,
   completeOrdersBulk,
   customerLabel,
@@ -46,6 +49,24 @@ function d(iso: string | null | undefined): string {
 
 type SortDir = "desc" | "asc";
 type Vista = "cards" | "list";
+
+/** Vista de revisión (Lote 2 A2): la bandeja normal («activos»), SOLO los
+ *  quitados a mano («ocultados») o SOLO los anulados («anulados»). Son
+ *  EXCLUYENTES: un pedido anulado nunca se mezcla con los ocultados, y al
+ *  backend va un solo flag (o ninguno). No se persiste: son vistas de
+ *  revisión, no tiene sentido volver a entrar en ellas sin querer. */
+type Revision = "activos" | "ocultados" | "anulados";
+const REVISION_OPTIONS: [Revision, string, string][] = [
+  ["activos", "Activos", "La bandeja: los pedidos en curso"],
+  ["ocultados", "Ocultados", "Solo los quitados a mano de la bandeja, con su motivo y «Reincluir»"],
+  ["anulados", "Anulados", "Solo los anulados (se restauran desde la ficha)"],
+];
+
+/** Cola válida en `?queue=` (Lote 2 D: el inicio del ERP y los enlaces a la
+ *  antigua Cola PEDIDOS entran por `/erp/orders?queue=por_revisar`). */
+function queueFromParam(value: string | null | undefined): WorkflowQueue | null {
+  return value && value in QUEUE_LABEL ? (value as WorkflowQueue) : null;
+}
 
 /** Los filtros que se PERSISTEN (últimos usados). Los «Ver …» (procesados
  *  externamente / ocultados / anulados) no: son vistas de revisión y no tiene
@@ -162,9 +183,18 @@ function mismosFiltros(a: Filtros, b: Filtros): boolean {
  *  No se ha perdido ninguna acción: los filtros de siempre quedan como
  *  refinamiento y las acciones por fila (Completar/Desmarcar, Registrar cobro,
  *  Quitar/Reincluir) viven en el menú «⋯» de cada tarjeta; las de bloque
- *  (Completar seleccionados, Quitar de la bandeja, Reincluir) siguen sobre la
- *  lista con la selección múltiple. */
-export default function ErpOrdersPage() {
+ *  (Aprobar seleccionados, Completar seleccionados, Quitar de la bandeja,
+ *  Reincluir) siguen sobre la lista con la selección múltiple.
+ *
+ *  Lote 2 (A2 + D): «Activos / Ocultados / Anulados» es un solo control
+ *  excluyente; la Cola PEDIDOS ya no es una pantalla aparte — es la cola
+ *  «Por revisar» (`?queue=por_revisar` la preselecciona) y «Aprobar» se hace
+ *  aquí mismo, uno a uno o en bloque. */
+function ErpOrdersScreen() {
+  const searchParams = useSearchParams();
+  // `?queue=` manda sobre lo recordado (solo para la cola; los filtros de
+  // refinamiento siguen siendo los últimos usados).
+  const urlQueue = queueFromParam(searchParams?.get("queue"));
   const [user, setUser] = useState<User | null>(null);
   const [rows, setRows] = useState<OrderSummary[]>([]);
   const [counts, setCounts] = useState<Partial<Record<WorkflowQueue, number>>>({});
@@ -178,10 +208,10 @@ export default function ErpOrdersPage() {
   const [ready, setReady] = useState(false);
   // B-2-fix4: por defecto la bandeja esconde los procesados externamente.
   const [showExternal, setShowExternal] = useState(false);
-  // Control manual — «Ver ocultados»: SOLO los quitados a mano.
-  const [showExcluded, setShowExcluded] = useState(false);
-  // «Ver anulados»: SOLO los anulados (estado final reversible desde la ficha).
-  const [showCancelled, setShowCancelled] = useState(false);
+  // Vista de revisión (A2): activos / SOLO ocultados / SOLO anulados.
+  const [revision, setRevision] = useState<Revision>("activos");
+  const showExcluded = revision === "ocultados";
+  const showCancelled = revision === "anulados";
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -248,9 +278,27 @@ export default function ErpOrdersPage() {
     setReady(true);
   }, []);
 
+  // Lote 2 D: la cola de la URL se preselecciona (y se sigue si cambia).
+  useEffect(() => { if (urlQueue) setQueue(urlQueue); }, [urlQueue]);
+
   useEffect(() => { if (ready) void load(); }, [ready, load]);
   useEffect(() => { if (ready) guardar(LS_FILTROS, JSON.stringify(filtros)); }, [ready, filtros]);
   useEffect(() => { if (ready) guardar(LS_VISTA, vista); }, [ready, vista]);
+  // La URL refleja la cola elegida (`?queue=`), para que recargar o compartir
+  // el enlace vuelva a la misma cola; sin cola, sin parámetro.
+  useEffect(() => {
+    if (!ready) return;
+    try {
+      const url = new URL(window.location.href);
+      if (queue) url.searchParams.set("queue", queue);
+      else url.searchParams.delete("queue");
+      if (url.href !== window.location.href) {
+        window.history.replaceState(window.history.state, "", url);
+      }
+    } catch {
+      // Sin acceso a location/history: la bandeja funciona igual.
+    }
+  }, [ready, queue]);
 
   function setFiltro<K extends keyof Filtros>(key: K, value: Filtros[K]) {
     setFiltros((prev) => ({ ...prev, [key]: value }));
@@ -266,8 +314,7 @@ export default function ErpOrdersPage() {
     setFiltros(EMPTY_FILTROS);
     setQueue(null);
     setShowExternal(false);
-    setShowExcluded(false);
-    setShowCancelled(false);
+    setRevision("activos");
   }
 
   /** Tienda de un pedido web por el prefijo del nº (`BOPRIN-…` → boprint):
@@ -437,6 +484,58 @@ export default function ErpOrdersPage() {
     }
   }
 
+  // «Aprobar» (Lote 2 D): pending_review → in_queue (cola del taller), aquí
+  // mismo, sin pasar por una pantalla aparte. Con bloqueos (excepciones
+  // abiertas) el backend responde 409 `blocked` y se enseña el motivo.
+  async function onApprove(o: OrderSummary) {
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      await approveOrder(o.id);
+      setNotice(`${o.order_number} aprobado: pasa a la cola del taller (SAT).`);
+      await load();
+    } catch (e) {
+      setError(`No se pudo aprobar ${o.order_number}: ${extractErrorMessage(e, "error inesperado")}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** Los seleccionados que de verdad se pueden aprobar (pendientes de revisión). */
+  const aprobables = rows.filter((r) => selected.has(r.id) && r.preparation_status === "pending_review");
+
+  // «Aprobar seleccionados»: la misma semántica que «Aprobar» aplicada a los
+  // seleccionados pendientes de revisión, de una vez. Los bloqueados se
+  // informan (con su motivo) y el resto se aprueba igualmente; luego se
+  // recarga, porque los aprobados cambian de cola.
+  async function onApproveSelected() {
+    if (aprobables.length === 0) return;
+    const otros = selected.size - aprobables.length;
+    const msg = `¿Aprobar ${aprobables.length} pedido(s)? Pasan a la cola del taller (SAT).`
+      + (otros ? ` (${otros} de los seleccionados no está(n) pendiente(s) de revisión y se deja(n) como está(n).)` : "");
+    if (!window.confirm(msg)) return;
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const r = await approveOrdersBulk(aprobables.map((x) => x.id));
+      const numero = (id: string) => aprobables.find((x) => x.id === id)?.order_number ?? id;
+      const fallos = r.failed.map((f) => `${numero(f.order_id)}: ${f.error}`);
+      setNotice(
+        `${r.approved} pedido(s) aprobado(s): pasan a la cola del taller (SAT)`
+        + (r.already_approved ? `, ${r.already_approved} ya lo estaba(n)` : "")
+        + (fallos.length ? `. No se pudo aprobar ${fallos.length}: ${fallos.join("; ")}` : "")
+        + ".",
+      );
+      await load();
+    } catch (e) {
+      setError(extractErrorMessage(e, "No se pudieron aprobar los pedidos seleccionados."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   // «Actualizar cobros FACTUSOL»: comprueba en bloque (solo lectura) y
   // repinta las filas en su sitio, sin recargar la bandeja.
   async function onRefreshCobros() {
@@ -486,8 +585,9 @@ export default function ErpOrdersPage() {
   }
 
   /** El botón principal de la tarjeta: la acción que el backend dice que toca.
-   *  Las que la bandeja sabe hacer sin salir (cobro, completar) se disparan
-   *  aquí mismo; el resto lleva a la ficha, que es donde viven. */
+   *  Las que la bandeja sabe hacer sin salir (aprobar, cobro, completar) se
+   *  disparan aquí mismo; el resto lleva a la ficha, que es donde viven. El
+   *  MISMO en tarjetas y en la vista lista. */
   function primaryAction(o: OrderSummary): ReactNode {
     const wf = o.workflow;
     if (!wf || wf.next_action === "ninguna") {
@@ -498,6 +598,17 @@ export default function ErpOrdersPage() {
       );
     }
     const label = wf.next_action_label;
+    if (canEdit && wf.next_action === "aprobar") {
+      return (
+        <button
+          type="button" className="button small" disabled={busy}
+          aria-label={`${label} ${o.order_number}`} title={wf.next_action_hint}
+          onClick={() => void onApprove(o)}
+        >
+          {label}
+        </button>
+      );
+    }
     if (canEdit && wf.next_action === "registrar_cobro" && o.factusol_invoice_number) {
       return (
         <button
@@ -673,7 +784,7 @@ export default function ErpOrdersPage() {
   }
   if (filtros.from) chips.push({ key: "from", label: `Desde ${d(filtros.from)}` });
   if (filtros.to) chips.push({ key: "to", label: `Hasta ${d(filtros.to)}` });
-  const hayFiltros = chips.length > 0 || !!queue || showExternal || showExcluded || showCancelled
+  const hayFiltros = chips.length > 0 || !!queue || showExternal || revision !== "activos"
     || filtros.sortDir !== "desc";
   const esDefault = mismosFiltros(filtros, DEFAULT_FILTROS);
 
@@ -699,14 +810,9 @@ export default function ErpOrdersPage() {
         description="Bandeja de trabajo — ordenada por lo que hay que hacer."
         crumbs={[{ label: "ERP" }, { label: "Pedidos" }]}
         actions={
-          <>
-            <Link href="/erp/orders/pending-approval" className="button secondary small">
-              Cola PEDIDOS
-            </Link>
-            <Link href="/erp/orders/new" className="button small">
-              + Nuevo pedido manual
-            </Link>
-          </>
+          <Link href="/erp/orders/new" className="button small">
+            + Nuevo pedido manual
+          </Link>
         }
       />
 
@@ -774,35 +880,30 @@ export default function ErpOrdersPage() {
           <input
             type="checkbox"
             checked={showExternal}
-            disabled={showExcluded || showCancelled}
+            disabled={revision !== "activos"}
             aria-label="Mostrar procesados externamente"
             onChange={(e) => setShowExternal(e.target.checked)}
           />
           <span className="small">Mostrar procesados externamente</span>
         </label>
-        {/* Control manual — ver SOLO los quitados a mano, con motivo y «Reincluir». */}
-        <label className="checkbox-inline" style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <input
-            type="checkbox"
-            checked={showExcluded}
-            disabled={showCancelled}
-            aria-label="Ver pedidos ocultados de la bandeja"
-            onChange={(e) => setShowExcluded(e.target.checked)}
-          />
-          <span className="small">Ver ocultados</span>
-        </label>
-        {/* «Ver anulados»: SOLO los anulados (excluyente con «Ver ocultados»,
-            como en el backend). */}
-        <label className="checkbox-inline" style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <input
-            type="checkbox"
-            checked={showCancelled}
-            disabled={showExcluded}
-            aria-label="Ver pedidos anulados"
-            onChange={(e) => setShowCancelled(e.target.checked)}
-          />
-          <span className="small">Ver anulados</span>
-        </label>
+        {/* Lote 2 A2: una sola vista de revisión — Activos / SOLO los quitados
+            a mano (con motivo y «Reincluir») / SOLO los anulados. Excluyentes:
+            nunca se mezclan ni van los dos flags al backend. */}
+        <span className="erp-flow-seg" role="group" aria-label="Ver">
+          <span className="erp-flow-seg-label small">Ver</span>
+          {REVISION_OPTIONS.map(([value, label, hint]) => (
+            <button
+              key={value} type="button"
+              className={`erp-flow-seg-btn${revision === value ? " is-on" : ""}`}
+              aria-pressed={revision === value}
+              aria-label={`Ver ${label.toLowerCase()}`}
+              title={hint}
+              onClick={() => setRevision(value)}
+            >
+              {label}
+            </button>
+          ))}
+        </span>
       </div>
 
       {/* Filtros activos como chips (cada uno se quita con su ×), «Limpiar
@@ -876,6 +977,15 @@ export default function ErpOrdersPage() {
             </button>
           ) : (
             <>
+              {/* Lote 2 D: aprobar en bloque desde «Por revisar» (solo cuenta
+                  los seleccionados que están pendientes de revisión). */}
+              {aprobables.length > 0 ? (
+                <button type="button" className="button small" disabled={busy}
+                  title="Aprueba los seleccionados pendientes de revisión: pasan a la cola del taller (SAT). Los bloqueados se informan y el resto se aprueba igualmente."
+                  onClick={() => void onApproveSelected()}>
+                  Aprobar seleccionados ({aprobables.length})
+                </button>
+              ) : null}
               <button type="button" className="button small" disabled={busy}
                 title="Marca los seleccionados como completados (estado final, solo en BoHub; no toca WooCommerce; reversible uno a uno con «Desmarcar»)"
                 onClick={() => void onCompleteSelected()}>
@@ -1055,5 +1165,14 @@ export default function ErpOrdersPage() {
         />
       ) : null}
     </main>
+  );
+}
+
+/** `useSearchParams` exige Suspense en el app router (`?queue=`). */
+export default function ErpOrdersPage() {
+  return (
+    <Suspense fallback={<main className="shell shell-wide erp-flow"><p className="muted">Cargando…</p></main>}>
+      <ErpOrdersScreen />
+    </Suspense>
   );
 }

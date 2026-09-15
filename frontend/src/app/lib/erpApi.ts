@@ -462,8 +462,29 @@ export async function fireTransition(
   });
 }
 
+/** «Aprobar» (pending_review → in_queue). Lote 2 D: se dispara desde la
+ *  bandeja («Por revisar»); con bloqueos el backend responde 409 `blocked`
+ *  con la lista de motivos. */
 export async function approveOrder(id: string): Promise<OrderDetail> {
   return apiFetch<OrderDetail>(`/api/erp/orders/${id}/approve`, { method: "POST" });
+}
+
+/** «Aprobar seleccionados» (bandeja): la misma lógica que `approveOrder`
+ *  aplicada a cada pedido. Los bloqueados / inexistentes van en `failed` con
+ *  su motivo; los que ya no estaban pendientes se cuentan aparte; el resto
+ *  se aprueba igualmente. */
+export type BulkApproveResult = {
+  ok: boolean;
+  approved: number;
+  already_approved: number;
+  failed: { order_id: string; error: string; code?: string }[];
+  items: OrderSummary[];
+};
+
+export async function approveOrdersBulk(orderIds: string[]): Promise<BulkApproveResult> {
+  return apiFetch("/api/erp/orders/bulk-approve", {
+    method: "POST", body: JSON.stringify({ order_ids: orderIds }),
+  });
 }
 
 /** «Marcar completado» (solo BoHub, reversible): estado final del pedido.
