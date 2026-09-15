@@ -3161,9 +3161,22 @@ export async function listShippingFiles(
   return r.items;
 }
 
+/** Respuesta de la subida de un fichero de expedición. Lote 2 C: subir la
+ *  ETIQUETA con el transporte «Sin enviar» aplica `not_shipped →
+ *  label_created` en el backend (es el antiguo «Crear envío»). Si el engine
+ *  la rechaza (pedido sin embalar, rol sin permiso), el fichero se guarda
+ *  igual, `transition_applied` es false y `transition_reason` dice por qué.
+ *  El albarán nunca mueve el transporte (`transition_reason` null). */
+export type ShippingFileUploadResult = {
+  file: ShipmentFile;
+  transition_applied: boolean;
+  transport_status: TransportStatus;
+  transition_reason: string | null;
+};
+
 export async function uploadShippingFile(
   orderId: string, kind: ShipmentFileKind, file: File,
-): Promise<{ file: ShipmentFile }> {
+): Promise<ShippingFileUploadResult> {
   const form = new FormData();
   form.append("kind", kind);
   form.append("file", file);
