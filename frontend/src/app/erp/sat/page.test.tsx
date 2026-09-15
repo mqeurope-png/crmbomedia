@@ -52,14 +52,27 @@ const mockEnqueue = satEnqueueOrder as jest.Mock;
 const mockUser = getCurrentUser as jest.Mock;
 const mockPicked = markPickedUp as jest.Mock;
 
+/** Pedido WEB en cola (Lote 2 A3): su albarán lo genera WooCommerce, aún sin
+ *  descargar → el chip ofrece «Descargar albarán». */
 function item(over: Partial<SatQueueItem> = {}): SatQueueItem {
   return {
     id: "o1", order_number: "BOP-1", contact_name: "Ana Pi", company_name: "Duplicoder SL",
     preparation_status: "in_queue", transport_status: "not_shipped", payment_status: "paid",
     total_amount: 100, currency: "EUR", lines: [{ sku: "A", description: "Art A", quantity: 1 }],
-    has_albaran: false, has_etiqueta: false, store_slug: "boprint",
+    is_web_order: true, has_albaran: true, albaran_source: "woo", has_albaran_file: false,
+    albaran_file_source: null, woo_albaran_available: true, woo_albaran_unavailable_reason: null,
+    has_etiqueta: false, store_slug: "boprint",
     placed_at: "2026-09-01T10:00:00+00:00", ...over,
   };
+}
+
+/** Pedido MANUAL sin albarán (ni en FACTUSOL ni subido). */
+function manualItem(over: Partial<SatQueueItem> = {}): SatQueueItem {
+  return item({
+    id: "o3", order_number: "MAN-3", contact_name: null, company_name: "Otra SL",
+    is_web_order: false, has_albaran: false, albaran_source: null,
+    woo_albaran_available: false, store_slug: null, ...over,
+  });
 }
 
 function historyRow(over: Partial<SatHistoryRow> = {}): SatHistoryRow {
@@ -86,8 +99,10 @@ beforeEach(() => {
   });
   mockQueue.mockResolvedValue({
     preparing: [item()],
+    // Listo para envío con el albarán de Woo ya descargado y etiqueta subida.
     ready_for_pickup: [item({ id: "o2", order_number: "BOP-2", preparation_status: "packed",
-                             has_albaran: true, has_etiqueta: true })],
+                             albaran_source: "file", has_albaran_file: true,
+                             albaran_file_source: "woo_pdf_plugin", has_etiqueta: true })],
   });
   mockHistory.mockResolvedValue({ items: [], limit: 100 });
 });
@@ -158,6 +173,38 @@ describe("SatQueuePage (Lote B6)", () => {
     window.localStorage.setItem("bohub.sat.queue.view", "list");
     render(<SatQueuePage />);
     expect(await screen.findByRole("table", { name: "Pedidos por embalar" })).toBeInTheDocument();
+  });
+
+  it("albarán por tipo de pedido (Lote 2 A3): web → Woo, manual sin albarán → «Falta albarán»", async () => {
+    window.localStorage.setItem("bohub.sat.queue.view", "list");
+    const reason = "La tienda «artisjet» no tiene configurada la conexión con WooCommerce.";
+    mockQueue.mockResolvedValue({
+      preparing: [
+        item(),
+        manualItem(),
+        item({ id: "o4", order_number: "ARTISJ-9553", store_slug: "artisjet",
+               has_albaran: false, albaran_source: null, woo_albaran_available: false,
+               woo_albaran_unavailable_reason: reason }),
+      ],
+      ready_for_pickup: [manualItem({ id: "o5", order_number: "MAN-5", preparation_status: "packed" })],
+    });
+    render(<SatQueuePage />);
+    const prepTable = await screen.findByRole("table", { name: "Pedidos por embalar" });
+    const rows = within(prepTable).getAllByRole("row");
+    // Web con descarga posible: botón de Woo, sin «Falta».
+    expect(within(rows[1]).getByRole("button", { name: /Descargar albarán/ })).toBeInTheDocument();
+    expect(within(rows[1]).queryByText(/Falta/)).not.toBeInTheDocument();
+    // Manual sin albarán: «Falta albarán» enlaza a la ficha y no ofrece Woo.
+    expect(within(rows[2]).getByRole("link", { name: /Falta albarán/ })).toHaveAttribute("href", "/erp/orders/o3");
+    expect(within(rows[2]).queryByRole("button", { name: /Descargar albarán/ })).not.toBeInTheDocument();
+    // Web sin descarga posible: nunca «Falta albarán», sino el motivo.
+    expect(within(rows[3]).getByRole("link", { name: /Albarán de WooCommerce no disponible/ }))
+      .toHaveAttribute("href", "/erp/orders/o4");
+    expect(within(rows[3]).getByText(reason)).toBeInTheDocument();
+    expect(within(rows[3]).queryByText(/Falta albarán/)).not.toBeInTheDocument();
+    // En «Listos» el manual sin albarán sigue con «Falta albarán» → ficha.
+    const readyTable = screen.getByRole("table", { name: "Pedidos listos para envío" });
+    expect(within(readyTable).getByRole("link", { name: /Falta albarán/ })).toHaveAttribute("href", "/erp/orders/o5");
   });
 
   it("el historial se pliega/despliega, carga con los filtros y pinta las filas", async () => {
