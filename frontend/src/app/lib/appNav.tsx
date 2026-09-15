@@ -68,9 +68,10 @@ export const NAV_ITEMS: ReadonlyArray<NavItem> = [
     icon: Package,
     scope: "erp",
     allowedRoles: ["admin", "manager", "pedidos", "user"],
+    // Lote 2 D: la Cola PEDIDOS ya no es pantalla aparte — es la cola «Por
+    // revisar» de la bandeja (`/erp/orders?queue=por_revisar`).
     children: [
       { href: "/erp/orders", label: "Bandeja" },
-      { href: "/erp/orders/pending-approval", label: "Cola PEDIDOS" },
       { href: "/erp/exceptions", label: "Excepciones" },
     ],
   },

@@ -8,6 +8,9 @@ import {
   previewExcludeSeguimiento,
 } from "../../lib/erpApi";
 
+jest.mock("next/navigation", () => ({
+  useSearchParams: () => new URLSearchParams(""),
+}));
 jest.mock("next/link", () => ({
   __esModule: true,
   default: ({ children }: { children: React.ReactNode }) => <span>{children}</span>,
@@ -148,9 +151,13 @@ describe("ERP · Pedidos (bandeja) — quitar / reincluir a mano", () => {
     const user = userEvent.setup();
     render(<ErpOrdersPage />);
     await screen.findByText("Mookase");
-    await user.click(screen.getByRole("checkbox", { name: "Ver pedidos ocultados de la bandeja" }));
+    // Lote 2 A2: «Ver ocultados» es una opción del control «Ver» (excluyente
+    // con «Ver anulados»): pide SOLO los ocultados, nunca los anulados.
+    await user.click(screen.getByRole("button", { name: "Ver ocultados" }));
     await waitFor(() =>
-      expect(listOrders).toHaveBeenLastCalledWith(expect.objectContaining({ show_excluded: true })),
+      expect(listOrders).toHaveBeenLastCalledWith(expect.objectContaining({
+        show_excluded: true, show_cancelled: false,
+      })),
     );
     expect(await screen.findByText("prueba: probando agile")).toBeInTheDocument();
     expect(screen.getByText(/10\/9\/2026 · Bart/)).toBeInTheDocument();

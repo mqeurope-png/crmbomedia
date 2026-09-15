@@ -58,6 +58,16 @@ export function formatFastApiDetail(detail: unknown, fallback = DEFAULT_MESSAGE)
     if (typeof inner === "string" && inner.trim()) return inner.trim();
     const message = (detail as { message?: unknown }).message;
     if (typeof message === "string" && message.trim()) return message.trim();
+    // `POST /orders/{id}/approve` responde 409 `{code: "blocked", blockers:
+    // [{code, detail}]}`: el motivo está en la lista (Lote 2 D — «Aprobar»
+    // desde la bandeja enseña por qué no se puede).
+    const blockers = (detail as { blockers?: unknown }).blockers;
+    if (Array.isArray(blockers)) {
+      const motivos = blockers
+        .map((b) => (typeof b === "string" ? b : (b as { detail?: unknown } | null)?.detail))
+        .filter((m): m is string => typeof m === "string" && m.trim() !== "");
+      if (motivos.length > 0) return `Bloqueado: ${motivos.join("; ")}`;
+    }
   }
   return fallback;
 }

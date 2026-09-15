@@ -27,6 +27,16 @@ describe("formatFastApiDetail", () => {
     expect(formatFastApiDetail({ message: "Algo falló" })).toBe("Algo falló");
   });
 
+  it("enseña los bloqueos de un 409 {code: blocked, blockers} (Lote 2 D: «Aprobar» en la bandeja)", () => {
+    const out = formatFastApiDetail({
+      code: "blocked",
+      blockers: [{ code: "open_exceptions", detail: "1 excepción(es) sin resolver" }],
+    });
+    expect(out).toBe("Bloqueado: 1 excepción(es) sin resolver");
+    // Sin motivos legibles, al fallback.
+    expect(formatFastApiDetail({ code: "blocked", blockers: [] }, "fallback")).toBe("fallback");
+  });
+
   it("cae al fallback si no hay nada legible", () => {
     expect(formatFastApiDetail({ code: "x" }, "fallback")).toBe("fallback");
     expect(formatFastApiDetail(null, "fallback")).toBe("fallback");

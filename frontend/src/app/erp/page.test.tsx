@@ -28,6 +28,10 @@ describe("ErpHome", () => {
       await screen.findByText("Pedidos pendientes de aprobación"),
     ).toBeInTheDocument();
     expect(screen.getByText("3")).toBeInTheDocument();
+    // Lote 2 D: lleva a la bandeja filtrada por «Por revisar» (la Cola
+    // PEDIDOS ya no es pantalla aparte).
+    expect(screen.getByRole("link", { name: /Pedidos pendientes de aprobación/ }))
+      .toHaveAttribute("href", "/erp/orders?queue=por_revisar");
   });
 
   it("enseña el aviso cuando se llega desde una URL del CRM (?desde)", async () => {
