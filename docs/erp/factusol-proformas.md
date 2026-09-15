@@ -314,3 +314,21 @@ Documentado para que no se dé por hecho:
 - Nada de la pestaña «Proformas FACTUSOL» de la ficha de empresa se pierde:
   comparte el diálogo de conversión y el polling (`ConvertQuoteDialog`,
   `quoteJobs.ts`).
+
+### Filtros y orden (refinamiento de la pantalla)
+
+- **Buscador en vivo** (un solo campo): empresa / cliente, referencia y nº
+  de proforma (con serie, `5-000039`, o a secas, `39`).
+- **Rango de fechas** desde / hasta (además del periodo). Un «desde» más
+  antiguo que el periodo amplía automáticamente lo que se pide al backend.
+- **Contadores de cola coherentes con el filtro**: como en la bandeja, las
+  tarjetas cuentan las proformas que pasan el texto y las fechas, antes de
+  aplicar la cola. Los filtros se combinan con la cola activa.
+- **Orden** (dentro de la cola activa, asc / desc): fecha (por defecto,
+  descendente), serie (`TIPPRE` = empresa emisora: 1 Bomedia / 2 MQ Europe /
+  4 Lambert / 5 Streamtec; nombres de `/erp/settings` con ese fallback) y nº
+  de proforma de FACTUSOL (`CODPRE`, **numérico**: 9 antes que 40). Empates
+  por nº.
+- Cada fila enseña el número visible «serie-código» (`numero`) y la empresa
+  emisora (`serie_label`); el backend los devuelve junto a `serie`. El
+  listado admite `?limit=` (la pantalla pide 500).

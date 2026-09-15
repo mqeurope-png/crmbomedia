@@ -56,8 +56,54 @@ const DAYS_OPTIONS = [
   { value: 90, label: "3 meses" }, { value: 180, label: "6 meses" },
   { value: 365, label: "1 año" }, { value: 730, label: "2 años" },
 ];
-/** Serie de los presupuestos (TIPPRE es siempre '1'). */
+/** Serie por defecto del PDF cuando la proforma no trae `TIPPRE`. */
 const PRESUPUESTO_SERIE = 1;
+/** Hasta cuántas proformas pide la pantalla (el listado va DESC por CODPRE). */
+const LIST_LIMIT = 500;
+const MAX_DAYS_BACK = 1825;
+
+type SortKey = "fecha" | "serie" | "codpre";
+type SortDir = "asc" | "desc";
+const SORT_LABEL: Record<SortKey, string> = {
+  fecha: "Fecha", serie: "Serie", codpre: "Nº de proforma",
+};
+
+function serieOf(q: FactusolQuote): number {
+  return q.serie ?? (Number(q.tippre) || 0);
+}
+/** Nº de FACTUSOL como número de verdad (9 < 40, no «9» > «40»). */
+function codpreOf(q: FactusolQuote): number {
+  return Number(q.codpre) || 0;
+}
+
+/** Orden de la lista: fecha (empate → nº), serie (empate → nº) o nº; siempre
+ *  numérico en el nº. */
+function sortQuotes(list: FactusolQuote[], key: SortKey, dir: SortDir): FactusolQuote[] {
+  const sign = dir === "asc" ? 1 : -1;
+  const byCodpre = (a: FactusolQuote, b: FactusolQuote) => codpreOf(a) - codpreOf(b);
+  const cmp = (a: FactusolQuote, b: FactusolQuote): number => {
+    if (key === "fecha") {
+      const d = (a.fecha ?? "").localeCompare(b.fecha ?? "");
+      return d !== 0 ? d : byCodpre(a, b);
+    }
+    if (key === "serie") {
+      const d = serieOf(a) - serieOf(b);
+      return d !== 0 ? d : byCodpre(a, b);
+    }
+    return byCodpre(a, b);
+  };
+  return [...list].sort((a, b) => sign * cmp(a, b));
+}
+
+/** Días hacia atrás que hay que pedir para cubrir «desde» (el periodo elegido
+ *  como mínimo). */
+function daysBackFor(daysBack: number, desde: string): number {
+  if (!desde) return daysBack;
+  const from = new Date(`${desde}T00:00:00Z`).getTime();
+  if (Number.isNaN(from)) return daysBack;
+  const days = Math.ceil((Date.now() - from) / 86_400_000) + 1;
+  return Math.min(MAX_DAYS_BACK, Math.max(daysBack, days));
+}
 
 function fmtDate(iso: string | null): string {
   if (!iso) return "—";
@@ -95,7 +141,6 @@ type Company = { id: string; name: string; codcli: string };
  *  unificado y abre el alta de siempre. */
 export default function ProformasPage() {
   const [quotes, setQuotes] = useState<FactusolQuote[]>([]);
-  const [counts, setCounts] = useState<Partial<Record<QuoteQueue, number>>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -103,7 +148,12 @@ export default function ProformasPage() {
   const [canEdit, setCanEdit] = useState(false);
   const [queue, setQueue] = useState<QuoteQueue | null>("aceptadas");
   const [daysBack, setDaysBack] = useState(365);
+  // Filtros combinables (sobre las colas): texto, rango de fechas; y orden.
   const [text, setText] = useState("");
+  const [desde, setDesde] = useState("");
+  const [hasta, setHasta] = useState("");
+  const [sortKey, setSortKey] = useState<SortKey>("fecha");
+  const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [converting, setConverting] = useState<FactusolQuote | null>(null);
   const [editing, setEditing] = useState<{ quote: FactusolQuote; company: Company } | null>(null);
   const [picking, setPicking] = useState(false);
@@ -115,32 +165,50 @@ export default function ProformasPage() {
       .catch(() => setCanEdit(false));
   }, []);
 
+  // «Desde» más antiguo que el periodo amplía lo que se pide al backend.
+  const effectiveDays = daysBackFor(daysBack, desde);
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const r = await listFactusolQuotes({ days_back: daysBack });
+      const r = await listFactusolQuotes({ days_back: effectiveDays, limit: LIST_LIMIT });
       setQuotes(r.items);
-      setCounts(r.queue_counts ?? {});
     } catch (e) {
       setError(extractErrorMessage(e, "No se pudieron cargar las proformas."));
     } finally {
       setLoading(false);
     }
-  }, [daysBack]);
+  }, [effectiveDays]);
 
   useEffect(() => { void load(); }, [load]);
 
-  const rows = useMemo(() => {
+  // Filtros (texto + fechas) ANTES de la cola: los contadores de las colas
+  // siguen al filtro, como en la bandeja.
+  const filtered = useMemo(() => {
     const needle = text.trim().toLowerCase();
     return quotes.filter((q) => {
-      if (queue && q.queue !== queue) return false;
+      if (desde && (!q.fecha || q.fecha < desde)) return false;
+      if (hasta && (!q.fecha || q.fecha > hasta)) return false;
       if (!needle) return true;
-      const hay = [q.codpre, q.cliente_nombre, q.company?.name, q.referencia]
+      const hay = [q.numero, q.codpre, q.cliente_nombre, q.company?.name, q.referencia]
         .map((s) => (s || "").toLowerCase()).join(" ");
       return hay.includes(needle);
     });
-  }, [quotes, queue, text]);
+  }, [quotes, text, desde, hasta]);
+
+  const counts = useMemo(() => {
+    const c: Partial<Record<QuoteQueue, number>> = {};
+    for (const q of filtered) {
+      if (q.queue) c[q.queue] = (c[q.queue] ?? 0) + 1;
+    }
+    return c;
+  }, [filtered]);
+
+  const rows = useMemo(
+    () => sortQuotes(filtered.filter((q) => !queue || q.queue === queue), sortKey, sortDir),
+    [filtered, queue, sortKey, sortDir],
+  );
+  const hasFilters = Boolean(text.trim() || desde || hasta);
 
   /** Espera al job y devuelve su resultado, o null (con el error ya puesto). */
   async function waitFor(jobId: string): Promise<Record<string, unknown> | null> {
@@ -191,7 +259,7 @@ export default function ProformasPage() {
     setError(null);
     try {
       const blob = await downloadFactusolDocumentPdf(
-        "presupuestos", PRESUPUESTO_SERIE, codpre,
+        "presupuestos", serieOf(q) || PRESUPUESTO_SERIE, codpre,
         pdfLangFor(q.country_iso2 ?? q.company?.country), {},
       );
       saveBlob(blob, `Proforma_${codpre}.pdf`);
@@ -283,6 +351,57 @@ export default function ProformasPage() {
       {error ? <p className="form-error" role="alert">{error}</p> : null}
       {notice ? <p className="form-info" role="status">{notice}</p> : null}
 
+      <div className="erp-flow-filters" role="search" aria-label="Filtros de proformas">
+        <label className="field erp-flow-filter-grow">
+          <span className="sr-only">Buscar proforma</span>
+          <input
+            type="search" value={text} placeholder="Empresa, cliente, referencia o nº…"
+            aria-label="Buscar proforma"
+            onChange={(e) => setText(e.target.value)}
+          />
+        </label>
+        <label className="field">
+          <span>Desde</span>
+          <input type="date" aria-label="Fecha desde" value={desde}
+                 onChange={(e) => setDesde(e.target.value)} />
+        </label>
+        <label className="field">
+          <span>Hasta</span>
+          <input type="date" aria-label="Fecha hasta" value={hasta}
+                 onChange={(e) => setHasta(e.target.value)} />
+        </label>
+        <label className="field">
+          <span>Periodo</span>
+          <select value={daysBack} aria-label="Periodo"
+                  onChange={(e) => setDaysBack(Number(e.target.value))}>
+            {DAYS_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+        </label>
+        <label className="field">
+          <span>Ordenar por</span>
+          <select value={sortKey} aria-label="Ordenar por"
+                  onChange={(e) => setSortKey(e.target.value as SortKey)}>
+            {(Object.keys(SORT_LABEL) as SortKey[]).map((k) => (
+              <option key={k} value={k}>{SORT_LABEL[k]}</option>
+            ))}
+          </select>
+        </label>
+        <button
+          type="button" className="button small secondary"
+          aria-label={sortDir === "desc" ? "Orden descendente" : "Orden ascendente"}
+          title={sortDir === "desc" ? "Descendente (pulsa para ascendente)" : "Ascendente (pulsa para descendente)"}
+          onClick={() => setSortDir((d) => (d === "desc" ? "asc" : "desc"))}
+        >
+          {sortDir === "desc" ? "↓ desc" : "↑ asc"}
+        </button>
+        {hasFilters ? (
+          <button type="button" className="button small secondary"
+                  onClick={() => { setText(""); setDesde(""); setHasta(""); }}>
+            Limpiar filtros
+          </button>
+        ) : null}
+      </div>
+
       <div className="erp-flow-qtitle">
         <span>{title}</span>
         <span className="cnt">· {rows.length} · {subtitle}</span>
@@ -291,21 +410,6 @@ export default function ProformasPage() {
             Ver todas las colas
           </button>
         ) : null}
-        <label className="field" style={{ marginLeft: "auto", minWidth: 180 }}>
-          <span className="sr-only">Buscar proforma</span>
-          <input
-            type="search" value={text} placeholder="Nº, cliente o referencia…"
-            aria-label="Buscar proforma"
-            onChange={(e) => setText(e.target.value)}
-          />
-        </label>
-        <label className="field">
-          <span className="sr-only">Periodo</span>
-          <select value={daysBack} aria-label="Periodo"
-                  onChange={(e) => setDaysBack(Number(e.target.value))}>
-            {DAYS_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-          </select>
-        </label>
       </div>
 
       {loading ? (
@@ -324,7 +428,10 @@ export default function ProformasPage() {
                        data-quote-row={codpre} aria-label={`Proforma ${codpre}`}>
                 <div className="erp-flow-item-main">
                   <div className="erp-flow-item-r1">
-                    <strong className="mono">{codpre}</strong>
+                    <strong className="mono" title={`CODPRE ${codpre}`}>{q.numero ?? codpre}</strong>
+                    {q.serie_label ? (
+                      <span className="erp-flow-src" title={`Serie ${serieOf(q)}`}>{q.serie_label}</span>
+                    ) : null}
                     <span className={`badge ${ESTADO_TONE[q.estado ?? "otro"] ?? "muted"}`}>
                       {q.estado_label ?? "—"}
                     </span>

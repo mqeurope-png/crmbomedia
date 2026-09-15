@@ -33,6 +33,24 @@ from app.integrations.factusol.quotes import header_says_no_iva
 from app.integrations.factusol.vat_regime import REGIME_LABELS
 from app.models.crm import Company
 
+#: Serie (`TIPPRE`) = empresa emisora. Los nombres se leen de los ajustes
+#: (`series_names`, `/erp/settings`); esto es el fallback.
+DEFAULT_SERIE_NAMES: dict[int, str] = {1: "Bomedia", 2: "MQ Europe", 4: "Lambert", 5: "Streamtec"}
+
+
+def _serie_of(value: Any) -> int | None:
+    text = str(value or "").strip()
+    return int(text) if text.isdigit() else None
+
+
+def _serie_names(session: Session) -> dict[int, str]:
+    try:
+        from app.integrations.factusol.service import series_names  # noqa: PLC0415
+
+        return {**DEFAULT_SERIE_NAMES, **series_names(session)}
+    except Exception:  # noqa: BLE001 — sin ajustes no se cae la pantalla
+        return dict(DEFAULT_SERIE_NAMES)
+
 
 def _companies_by_codcli(session: Session, codclis: set[str]) -> dict[str, Company]:
     """Empresas CRM vinculadas a esos CODCLI. `'0055'` y `'55'` son el mismo
@@ -86,11 +104,22 @@ def annotate_quotes(session: Session, quotes: list[dict[str, Any]]) -> dict[str,
     codpres = {str(q.get("codpre")) for q in quotes if q.get("codpre")}
     companies = _companies_by_codcli(session, codclis)
     orders = _orders_by_codpre(session, codpres)
+    serie_names = _serie_names(session)
 
     counts: Counter[str] = Counter()
     estpre_values: Counter[str] = Counter()
     for q in quotes:
         estpre_values[str(q.get("estpre")) if q.get("estpre") is not None else "null"] += 1
+        # Serie (empresa emisora) y número visible «serie-código», como en el
+        # escritorio de FACTUSOL (5-000039).
+        serie = _serie_of(q.get("tippre"))
+        q["serie"] = serie
+        q["serie_label"] = serie_names.get(serie) if serie is not None else None
+        codpre = str(q.get("codpre") or "")
+        if serie is not None and codpre.isdigit():
+            q["numero"] = f"{serie}-{int(codpre):06d}"
+        else:
+            q["numero"] = codpre or None
         clipre = str(q.get("clipre") or "").strip()
         company = companies.get(clipre) or (
             companies.get(str(int(clipre))) if clipre.isdigit() else None

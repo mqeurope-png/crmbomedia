@@ -2096,6 +2096,7 @@ def list_quotes_endpoint(
     company_id: str | None = Query(default=None),
     days_back: int = Query(default=180, ge=0, le=1825),
     queue: str | None = Query(default=None, max_length=20),
+    limit: int = Query(default=100, ge=1, le=1000),
     session: Session = Depends(get_session),
     current_user: User = Depends(require_erp_view),
 ) -> dict[str, Any]:
@@ -2137,7 +2138,7 @@ def list_quotes_endpoint(
     client, ejercicio = _client_and_ejercicio(session)
     try:
         items = list_quotes(client, ejercicio=ejercicio, codcli=codcli,
-                            days_back=days_back)
+                            days_back=days_back, limit=limit)
     except FactusolError as exc:
         raise _factusol_gateway_error(exc, "factusol_quotes_failed") from exc
     summary = annotate_quotes(session, items)
