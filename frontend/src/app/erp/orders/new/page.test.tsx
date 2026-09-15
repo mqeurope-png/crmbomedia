@@ -156,7 +156,37 @@ describe("NewManualOrderPage", () => {
     expect(payload.lines).toHaveLength(1);
     expect(payload.lines[0]).toMatchObject({ product_sku: "SKU-1", unit_price: 100 });
     expect(payload.shipping_address.city).toBe("Barcelona");
+    // Sin nombre de envío se envía a la empresa: null, no cadena vacía.
+    expect(payload.shipping_name).toBeNull();
     await waitFor(() => expect(push).toHaveBeenCalledWith("/erp/orders/new-order-1"));
+  });
+
+  // --- Lote B3a: nombre de envío (dropshipping) --------------------------------
+
+  it("envía el nombre de envío (dropshipping) junto con la dirección de envío", async () => {
+    const user = userEvent.setup();
+    render(<NewManualOrderPage />);
+    await waitFor(() => expect(mockCompanies).toHaveBeenCalled());
+    await user.type(screen.getByLabelText("Empresa"), "Duplicoder SL");
+    await user.type(screen.getByLabelText("Descripción línea 1"), "Artículo 1");
+    await user.type(screen.getByLabelText("Precio línea 1"), "100");
+    await user.type(screen.getByLabelText("Nombre de envío"), "  Destinatario Dropship SL ");
+    // La dirección de envío tecleada sustituye a la precargada de la empresa.
+    await user.clear(screen.getByLabelText("Dirección de envío"));
+    await user.type(screen.getByLabelText("Dirección de envío"), "12 Rue de la Paix");
+    expect(screen.getByText(/El albarán irá a/)).toHaveTextContent("Destinatario Dropship SL");
+
+    const submit = screen.getByRole("button", { name: "Crear pedido" });
+    await waitFor(() => expect(submit).toBeEnabled());
+    await user.click(submit);
+
+    await waitFor(() => expect(mockCreate).toHaveBeenCalled());
+    const payload = mockCreate.mock.calls[0][0];
+    expect(payload.shipping_name).toBe("Destinatario Dropship SL");   // recortado
+    expect(payload.shipping_address).toMatchObject({
+      address_line: "12 Rue de la Paix", city: "Barcelona", postal_code: "08036",
+    });
+    expect(payload.pickup_in_store).toBe(false);
   });
 
   it("con «Recogida en tienda» no exige dirección de envío", async () => {
@@ -166,6 +196,8 @@ describe("NewManualOrderPage", () => {
     await user.type(screen.getByLabelText("Empresa"), "Duplicoder SL");
     await user.click(screen.getByLabelText("Recogida en tienda"));
     expect(screen.queryByLabelText("Dirección de envío")).not.toBeInTheDocument();
+    // Tampoco hay destinatario de envío: el pedido se recoge en tienda.
+    expect(screen.queryByLabelText("Nombre de envío")).not.toBeInTheDocument();
     await user.type(screen.getByLabelText("SKU línea 1"), "SKU-1");
     await user.type(screen.getByLabelText("Descripción línea 1"), "Artículo 1");
     await waitFor(() =>

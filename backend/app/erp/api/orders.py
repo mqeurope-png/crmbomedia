@@ -111,6 +111,11 @@ class OrderCreate(BaseModel):
     pickup_in_store: bool = False
     shipping_address: AddressIn | None = None
     billing_address: AddressIn | None = None
+    # Lote B3a — nombre de envío (dropshipping): DESTINATARIO del albarán cuando
+    # no es la empresa cliente (`Order.shipping_name`). Con dirección de envío,
+    # el albarán FACTUSOL que crea BoHub lleva este nombre + esa dirección en su
+    # bloque de cliente; la factura sigue saliendo a los datos fiscales (F_CLI).
+    shipping_name: str | None = Field(default=None, max_length=120)
     # Fase 1: origen FACTUSOL (presupuesto / pedido de cliente) del alta manual.
     factusol_source: FactusolSourceIn | None = None
     # Fase 2 (solo con `factusol_source`): paso de confirmación de pago
@@ -585,6 +590,8 @@ def create_order(
         notes=payload.notes,
         placed_at=payload.placed_at or datetime.now(UTC),
         packing_json=_manual_packing_json(payload),
+        # Lote B3a: destinatario del envío si no es la empresa (dropshipping).
+        shipping_name=(payload.shipping_name or "").strip() or None,
     )
     session.add(order)
     session.flush()
@@ -2041,6 +2048,7 @@ def order_factusol_albaran_pdf(
 
     from app.erp.api.factusol import _fop_names  # noqa: PLC0415
     from app.erp.factusol_pdf import (  # noqa: PLC0415
+        annotate_delivery_recipient,
         company_for_serie,
         extract_document_data,
         generate_document_pdf,
@@ -2088,6 +2096,11 @@ def order_factusol_albaran_pdf(
         data = extract_document_data(
             client, "albaranes", raw[0], raw[1], ejercicio=ejercicio,
             fop_names=_fop_names(client, ejercicio),
+        )
+        # Lote B3a: albarán con nombre de envío (dropshipping) → el PDF apunta
+        # además el nombre FISCAL del cliente debajo del bloque de entrega.
+        annotate_delivery_recipient(
+            session, data, order=order, client=client, ejercicio=ejercicio,
         )
     except FactusolError as exc:
         logger.warning("factusol albaran-pdf KO order=%s: %s", order_id, exc)
