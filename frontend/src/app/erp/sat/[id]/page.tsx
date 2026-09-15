@@ -4,6 +4,7 @@ import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { EmbalarModal } from "../../../components/erp/EmbalarModal";
 import { ReportExceptionModal } from "../../../components/erp/ReportExceptionModal";
+import { SatObservaciones, SatTechData } from "../../../components/erp/SatTechData";
 import { extractErrorMessage } from "../../../lib/errors";
 import {
   attachDocument,
@@ -16,7 +17,9 @@ import {
 
 /** Modo trabajo SAT de un pedido: líneas verificables, subir foto y avanzar el
  *  estado (Empezar / Embalado) o reportar un problema. Táctil, botones grandes.
- *  Fase D: «Embalado» abre el modal multi-bulto (el backend exige ≥1 bulto). */
+ *  Fase D: «Embalado» abre el modal multi-bulto (el backend exige ≥1 bulto).
+ *  Lote 2 · PR-2: lo mismo que la card — observaciones del comercial arriba en
+ *  ámbar (solo si hay) y nº de serie / licencia WhiteRIP grandes con «copiar». */
 export default function SatOrderWorkPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
@@ -88,6 +91,16 @@ export default function SatOrderWorkPage() {
         {STATUS_LABELS[prep]?.label ?? prep}
       </span>
       {error ? <p className="form-error">{error}</p> : null}
+
+      <SatObservaciones notes={order.notes} />
+      <section className="sat-work-tech" aria-label="Datos técnicos">
+        <h2>Datos técnicos</h2>
+        <SatTechData
+          serial={order.serial_number}
+          license={order.whiterip_license}
+          origin={order.shipping_origin}
+        />
+      </section>
 
       <section className="sat-work-lines">
         <h2>Líneas</h2>

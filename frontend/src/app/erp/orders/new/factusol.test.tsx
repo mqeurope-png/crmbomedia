@@ -137,9 +137,11 @@ describe("Fase 1 · alta de pedido desde FACTUSOL y desde la ficha de empresa", 
       doc_type: "pedidos", serie: 5, codigo: 123, referencia: "Pedido tienda",
       forma_pago: "011", forma_pago_nombre: "Recibo domiciliado",
     });
+    // Lote 2 · PR-2: cada línea lleva su `tax_rate` (sin ficha F_CLI leída, el
+    // general del 21 %), el mismo con el que el backend calcula `total_amount`.
     expect(payload.lines).toEqual([
-      { product_sku: "CDR80WPT", description: "CD TQ 700 MB", quantity: 100, unit_price: 0.5 },
-      { product_sku: "", description: "Portes", quantity: 1, unit_price: 10.5 },
+      { product_sku: "CDR80WPT", description: "CD TQ 700 MB", quantity: 100, unit_price: 0.5, tax_rate: 21 },
+      { product_sku: "", description: "Portes", quantity: 1, unit_price: 10.5, tax_rate: 21 },
     ]);
     expect(push).toHaveBeenCalledWith("/erp/orders/new-order-1");
   });

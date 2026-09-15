@@ -43,15 +43,24 @@ const VIES_CHIP: Record<ViesStatus, { text: string; tone: string }> = {
   pendiente: { text: "VIES: pendiente de validar", tone: "muted" },
 };
 
-/** Ficha de empresa (rediseño de flujo, Fase 3).
+/** Explicación única de por qué una acción está desactivada mientras la
+ *  empresa sigue archivada (Lote 2 · PR-2). */
+const ARCHIVED_HINT = "Empresa archivada: pulsa «Reactivar» para volver a operar con ella.";
+
+/** Ficha de empresa (rediseño de flujo, Fase 3 · Lote 2 PR-2).
  *
- *  Arriba, lo que decide el trabajo: nombre fiscal, NIF + país/régimen y el
- *  vínculo FACTUSOL (o el aviso «sin vincular»); la barra de alerta cuando los
- *  datos del CRM no coinciden con FACTUSOL (con «Traer datos de FACTUSOL»);
- *  «Datos fiscales» con su estado de sincronía y «Actividad reciente»
- *  (pedidos con su cola, facturas con su cobro, proformas). Acciones rápidas:
- *  Nuevo pedido, Nueva proforma, Traer datos; y en «⋯» el «Comprobar régimen
- *  de IVA» de siempre, Fusionar y Borrar.
+ *  Arriba, lo que decide el trabajo: nombre fiscal, NIF + localidad y tres
+ *  pastillas junto al nombre (estado Activa/Archivada, vínculo «En FACTUSOL ·
+ *  CLI-x» / «Solo CRM» y régimen de IVA) más el chip VIES; si está archivada,
+ *  una banda gris arriba del todo con motivo y fecha y «Reactivar» como acción
+ *  primaria (el resto de acciones se queda, desactivado y con el porqué). La
+ *  barra de alerta cuando los datos del CRM no coinciden con FACTUSOL (con
+ *  «Traer datos de FACTUSOL»); «Datos fiscales» como panel de pares con la fila
+ *  VIES siempre presente («No aplica» o estado + fecha + «Volver a comprobar»)
+ *  y «Actividad reciente» en una sola tabla con filtro por tipo (pedidos con
+ *  su cola, facturas con su cobro, proformas). Acciones rápidas: Nuevo pedido,
+ *  Nueva proforma, Traer datos; y en «⋯» el «Comprobar régimen de IVA» de
+ *  siempre, Revalidar en VIES, Fusionar, Archivar/Reactivar y Borrar.
  *
  *  Debajo se conserva todo lo que había: las pestañas Datos (formulario
  *  completo), Contactos y Proformas FACTUSOL, y la sección FACTUSOL
@@ -219,13 +228,13 @@ export default function CompanyDetailPage() {
   };
 
   // Archivado reversible (limpieza de empresas): oculta la empresa de listados
-  // y buscadores, sin borrar; «Restaurar» la devuelve. Sus pedidos / contactos
-  // / tareas se conservan.
+  // y buscadores, sin borrar; «Reactivar» (endpoint `restore`) la devuelve.
+  // Sus pedidos / contactos / tareas se conservan.
   const onArchive = async () => {
     if (!company) return;
     if (!confirm(
       `¿Archivar "${company.name}"? Queda fuera de listados y buscadores (reversible con `
-      + "«Restaurar»); no se borra nada.",
+      + "«Reactivar»); no se borra nada.",
     )) return;
     setArchiving(true);
     setError(null);
@@ -247,7 +256,7 @@ export default function CompanyDetailPage() {
       const updated = await restoreCompany(company.id);
       setCompany(updated);
     } catch (err) {
-      setError(extractErrorMessage(err, "No se pudo restaurar."));
+      setError(extractErrorMessage(err, "No se pudo reactivar."));
     } finally {
       setArchiving(false);
     }
@@ -271,6 +280,7 @@ export default function CompanyDetailPage() {
   const diffs = sync?.diffs ?? null;
   const differs = !!diffs && diffs.length > 0;
   const nif = company.tax_id || company.vat || null;
+  const lugar = [company.city, company.country].filter(Boolean).join(", ");
   const vies = company.vies?.applies ? company.vies : null;
   const viesChip = vies?.status ? VIES_CHIP[vies.status] : null;
   const viesInvalid = vies?.status === "no_valido";
@@ -288,7 +298,7 @@ export default function CompanyDetailPage() {
   }
 
   return (
-    <main className="shell shell-wide erp-flow">
+    <main className="shell shell-wide erp-flow company-ficha">
       <PageHeader
         title={company.name}
         eyebrow="Empresa"
@@ -298,20 +308,30 @@ export default function CompanyDetailPage() {
         ]}
         actions={
           <>
-            {/* Fase 1 — alta de pedido con esta empresa precargada. */}
-            <Link
-              href={`/erp/orders/new?company_id=${company.id}`}
-              className="button small"
-            >
-              + Nuevo pedido
-            </Link>
+            {/* Fase 1 — alta de pedido con esta empresa precargada. Archivada:
+                el botón se queda, desactivado y con el porqué (el primario de
+                la pantalla pasa a ser «Reactivar»). */}
+            {archived ? (
+              <button type="button" className="button small secondary" disabled title={ARCHIVED_HINT}>
+                + Nuevo pedido
+              </button>
+            ) : (
+              <Link
+                href={`/erp/orders/new?company_id=${company.id}`}
+                className="button small"
+              >
+                + Nuevo pedido
+              </Link>
+            )}
             <button
               type="button"
               className="button small secondary"
-              disabled={!linked}
-              title={linked
-                ? "Crea una proforma en FACTUSOL para esta empresa"
-                : "Vincula la empresa a un cliente de FACTUSOL para crear proformas"}
+              disabled={!linked || archived}
+              title={archived
+                ? ARCHIVED_HINT
+                : linked
+                  ? "Crea una proforma en FACTUSOL para esta empresa"
+                  : "Vincula la empresa a un cliente de FACTUSOL para crear proformas"}
               onClick={nuevaProforma}
             >
               Nueva proforma
@@ -320,7 +340,10 @@ export default function CompanyDetailPage() {
               <button
                 type="button"
                 className="button small secondary"
-                title="Sobrescribe los datos de la empresa CRM con los de FACTUSOL (pide confirmación; no toca FACTUSOL)"
+                disabled={archived}
+                title={archived
+                  ? ARCHIVED_HINT
+                  : "Sobrescribe los datos de la empresa CRM con los de FACTUSOL (pide confirmación; no toca FACTUSOL)"}
                 onClick={() => setPullSignal((n) => n + 1)}
               >
                 Traer datos
@@ -328,18 +351,21 @@ export default function CompanyDetailPage() {
             ) : null}
             <ActionsMenu label="Más acciones de la empresa">
               {linked && canEdit ? (
-                <button type="button" onClick={() => setRegimeSignal((n) => n + 1)}>
+                <button type="button" disabled={archived} title={archived ? ARCHIVED_HINT : undefined}
+                        onClick={() => setRegimeSignal((n) => n + 1)}>
                   Comprobar régimen de IVA
                 </button>
               ) : null}
               {vies ? (
-                <button type="button" disabled={viesBusy} onClick={() => void revalidateVies(true)}>
+                <button type="button" disabled={viesBusy || archived}
+                        title={archived ? ARCHIVED_HINT : undefined}
+                        onClick={() => void revalidateVies(true)}>
                   Revalidar en VIES
                 </button>
               ) : null}
               <button type="button" onClick={() => setMergeOpen(true)}>Fusionar</button>
-              {company.is_archived ? (
-                <button type="button" disabled={archiving} onClick={onRestore}>Restaurar</button>
+              {archived ? (
+                <button type="button" disabled={archiving} onClick={onRestore}>Reactivar</button>
               ) : (
                 <button type="button" disabled={archiving} onClick={onArchive}>Archivar</button>
               )}
@@ -349,41 +375,62 @@ export default function CompanyDetailPage() {
         }
       />
 
-      {/* Cabecera: NIF + país/régimen + vínculo FACTUSOL. */}
-      <p className="erp-flow-item-r2 company-ficha-id" style={{ margin: "0 0 12px" }}>
-        {nif ? <strong className="mono">{nif}</strong> : <span className="muted">sin NIF</span>}
-        {fiscal ? <RegimePill regime={fiscal.regime} country={fiscal.country_iso2} /> : null}
-        {viesChip ? (
-          <span className={`badge ${viesChip.tone}`} style={{ textTransform: "none", letterSpacing: 0 }}
-                title={vies?.name ? `Según VIES: ${vies.name}` : undefined}>
-            {viesChip.text}
-          </span>
-        ) : null}
-        {linked ? (
-          <span className="badge ok">FACTUSOL nº {company.factusol_company_id} ✓</span>
-        ) : (
-          <span className="badge warn">Sin vincular a FACTUSOL</span>
-        )}
-        {company.is_archived ? <span className="badge muted">Archivada</span> : null}
-      </p>
-
-      {company.is_archived ? (
-        <div className="erp-flow-alertbar" role="status" aria-label="Empresa archivada">
-          <div className="erp-flow-alert">
-            <span aria-hidden>!</span>
-            <span>
-              Empresa archivada{company.archived_reason ? ` (${company.archived_reason})` : ""}: está
-              fuera de listados y buscadores, y no genera alertas. No se ha borrado nada.
-            </span>
-            <span className="erp-flow-alert-fix">
-              <button type="button" className="button small secondary" disabled={archiving}
-                      onClick={onRestore}>
-                {archiving ? "Restaurando…" : "Restaurar"}
-              </button>
-            </span>
+      {/* Lote 2 · PR-2: archivada = banda gris arriba del todo con motivo y
+          fecha, y «Reactivar» como acción primaria de la pantalla (mismo
+          endpoint `restore` que el antiguo «Restaurar»). */}
+      {archived ? (
+        <div className="company-archived-band" role="status" aria-label="Empresa archivada">
+          <div className="company-archived-band-txt">
+            <p>
+              <strong>Empresa archivada</strong>
+              {company.archived_at
+                ? ` el ${formatBackendDateTime(company.archived_at, { day: "2-digit", month: "short", year: "numeric" })}`
+                : ""}
+              {" · "}Motivo: {company.archived_reason || "sin indicar"}.
+            </p>
+            <p className="company-archived-band-hint">
+              Está fuera de listados y buscadores y no genera alertas. No se ha borrado nada.
+              Mientras siga archivada no se pueden crear pedidos ni proformas, ni traer datos o
+              comprobar el régimen y el VIES en FACTUSOL.
+            </p>
           </div>
+          <button type="button" className="button" disabled={archiving} onClick={onRestore}>
+            {archiving ? "Reactivando…" : "Reactivar"}
+          </button>
         </div>
       ) : null}
+
+      {/* Cabecera bajo el nombre: NIF + localidad, y estado / vínculo FACTUSOL
+          / régimen como tres pastillas (más el chip VIES). */}
+      <div className="company-ficha-id">
+        <p className="company-ficha-nif">
+          {nif ? <strong className="mono">{nif}</strong> : <span className="muted">sin NIF</span>}
+          {lugar ? <span>· {lugar}</span> : null}
+        </p>
+        <p className="company-ficha-pills" aria-label="Estado, vínculo FACTUSOL y régimen">
+          <span className={`erp-flow-pill ${archived ? "is-n" : "is-g"}`}>
+            {archived ? "Archivada" : "Activa"}
+          </span>
+          {linked ? (
+            <span className="erp-flow-pill is-g"
+                  title={`Cliente nº ${company.factusol_company_id} en FACTUSOL (F_CLI)`}>
+              En FACTUSOL · CLI-{company.factusol_company_id}
+            </span>
+          ) : (
+            <span className="erp-flow-pill is-n"
+                  title="Sin cliente en FACTUSOL: sin F_CLI no hay albarán, factura ni proforma">
+              Solo CRM
+            </span>
+          )}
+          {fiscal ? <RegimePill regime={fiscal.regime} country={fiscal.country_iso2} /> : null}
+          {viesChip ? (
+            <span className={`badge ${viesChip.tone}`} style={{ textTransform: "none", letterSpacing: 0 }}
+                  title={vies?.name ? `Según VIES: ${vies.name}` : undefined}>
+              {viesChip.text}
+            </span>
+          ) : null}
+        </p>
+      </div>
 
       {error ? <p className="form-error">{error}</p> : null}
 
@@ -438,22 +485,23 @@ export default function CompanyDetailPage() {
       ) : null}
 
       <div className="erp-flow-grid2">
-        <section className="erp-flow-panel" aria-label="Datos fiscales">
+        <section className="erp-flow-panel company-fiscal" aria-label="Datos fiscales">
           <h3>
             Datos fiscales{" "}
             <span className={`badge ${syncLabel.tone}`} style={{ textTransform: "none", letterSpacing: 0 }}>
               {syncLabel.text}
             </span>
           </h3>
-          <div className="erp-flow-kv">
-            <span className="k">NIF / VAT</span>
-            <span className="v mono">
+          {/* Panel de pares etiqueta/valor (E5): dos columnas desde 1280 px y
+              una por debajo. La fila VIES está SIEMPRE, aunque diga «No
+              aplica», para que el hueco no genere dudas. */}
+          <dl className="erp-kv-grid">
+            <dt>NIF / VAT</dt>
+            <dd className="mono">
               {company.tax_id || "—"}{company.vat && company.vat !== company.tax_id ? ` · ${company.vat}` : ""}
-            </span>
-          </div>
-          <div className="erp-flow-kv">
-            <span className="k">Régimen IVA</span>
-            <span className="v">
+            </dd>
+            <dt>Régimen IVA</dt>
+            <dd>
               {fiscal ? (
                 <>
                   {fiscal.regime_label}
@@ -465,51 +513,56 @@ export default function CompanyDetailPage() {
                   FACTUSOL: {sync.customer.regime_label}
                 </span>
               ) : null}
-            </span>
-          </div>
-          {vies ? (
-            <div className="erp-flow-kv">
-              <span className="k">VIES</span>
-              <span className="v">
-                {viesChip ? viesChip.text : "—"}
-                {vies.name ? ` · ${vies.name}` : ""}
-                {vies.checked_at ? (
-                  <span className="muted small"> · comprobado {formatBackendDateTime(vies.checked_at)}</span>
-                ) : null}
-                {vies.status === "desconocido" || vies.status === "pendiente" ? (
-                  <span className="muted small">
-                    {" "}· se reintenta solo en segundo plano
-                    {vies.next_retry_at ? ` (próximo intento ${formatBackendDateTime(vies.next_retry_at)})` : ""}
+            </dd>
+            <dt>VIES</dt>
+            <dd className="company-fiscal-vies">
+              {vies ? (
+                <>
+                  <span className={`badge ${viesChip?.tone ?? "muted"}`}
+                        style={{ textTransform: "none", letterSpacing: 0 }}>
+                    {viesChip ? viesChip.text : "—"}
                   </span>
-                ) : null}
-                {" "}
-                <button type="button" className="button small secondary" disabled={viesBusy}
-                        title="Consulta el NIF-IVA en el servicio oficial de la UE (salta la caché)"
-                        onClick={() => void revalidateVies(true)}>
-                  {viesBusy ? "Consultando VIES…" : "Revalidar en VIES"}
-                </button>
-                {viesError ? <span className="form-error small"> {viesError}</span> : null}
-              </span>
-            </div>
-          ) : null}
-          <div className="erp-flow-kv">
-            <span className="k">Dirección</span>
-            <span className="v">
+                  {vies.name ? <span>{vies.name}</span> : null}
+                  <span className="muted">
+                    {vies.checked_at
+                      ? `comprobado el ${formatBackendDateTime(vies.checked_at)}`
+                      : "todavía sin comprobar"}
+                  </span>
+                  {vies.status === "desconocido" || vies.status === "pendiente" ? (
+                    <span className="muted">
+                      se reintenta solo en segundo plano
+                      {vies.next_retry_at ? ` (próximo intento ${formatBackendDateTime(vies.next_retry_at)})` : ""}
+                    </span>
+                  ) : null}
+                  <button type="button" className="button small secondary" disabled={viesBusy || archived}
+                          title={archived
+                            ? ARCHIVED_HINT
+                            : "Consulta el NIF-IVA en el servicio oficial de la UE (salta la caché)"}
+                          onClick={() => void revalidateVies(true)}>
+                    {viesBusy ? "Consultando VIES…" : "Volver a comprobar"}
+                  </button>
+                  {viesError ? <span className="form-error small">{viesError}</span> : null}
+                </>
+              ) : (
+                <>
+                  <span className="erp-flow-pill is-n">No aplica</span>
+                  <span className="muted">solo para NIF-IVA de la UE fuera de España</span>
+                </>
+              )}
+            </dd>
+            <dt>Dirección</dt>
+            <dd>
               {[company.address_line, [company.postal_code, company.city].filter(Boolean).join(" ")]
                 .filter(Boolean).join(" · ") || "—"}
-            </span>
-          </div>
-          <div className="erp-flow-kv">
-            <span className="k">País</span>
-            <span className="v">
+            </dd>
+            <dt>País</dt>
+            <dd>
               {company.country || "—"}
               {fiscal?.country_iso2 && fiscal.country_iso2 !== company.country ? ` (${fiscal.country_iso2})` : ""}
-            </span>
-          </div>
-          <div className="erp-flow-kv">
-            <span className="k">Web</span>
-            <span className="v">{company.website || company.domain || "—"}</span>
-          </div>
+            </dd>
+            <dt>Web</dt>
+            <dd>{company.website || company.domain || "—"}</dd>
+          </dl>
         </section>
 
         <CompanyActivityPanel

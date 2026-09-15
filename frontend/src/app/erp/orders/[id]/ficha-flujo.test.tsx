@@ -5,9 +5,14 @@ import { getOrder } from "../../../lib/erpApi";
 
 /** ERP · rediseño de flujo (Fase 1) — la FICHA como «línea de vida».
  *
- *  Cabecera con el cliente y su régimen, barra de alertas, stepper de 7 pasos
- *  con el actual resaltado, «Siguiente paso» con su botón, resumen económico
- *  con el IVA que toca y bloque FACTUSOL. Todo lo anterior sigue debajo. */
+ *  Cabecera con el cliente y su régimen, barra de alertas, los 7 pasos con el
+ *  actual resaltado, «Siguiente paso» con su botón, resumen económico con el
+ *  IVA que toca y bloque FACTUSOL. Todo lo anterior sigue debajo.
+ *
+ *  Lote 2 · PR-2: la línea de vida es VERTICAL (el paso actual es la única
+ *  tarjeta azul y lleva «Siguiente paso» con su acción dentro), la cabecera
+ *  tiene la barra de 7 segmentos («Paso 5 de 7 · Factura») y la miga vuelve a
+ *  la cola de la bandeja de la que se llegó (`?from=`). */
 
 jest.mock("next/link", () => ({
   __esModule: true,
@@ -15,7 +20,12 @@ jest.mock("next/link", () => ({
     children: React.ReactNode; href: string; className?: string;
   }) => <a href={href} className={className}>{children}</a>,
 }));
-jest.mock("next/navigation", () => ({ useParams: () => ({ id: "o-1" }) }));
+// `?from=<cola>`: la miga de vuelta a la bandeja (Lote 2 · PR-2).
+let search = "";
+jest.mock("next/navigation", () => ({
+  useParams: () => ({ id: "o-1" }),
+  useSearchParams: () => new URLSearchParams(search),
+}));
 // La cabecera del rediseño lleva las acciones del pedido (PDF, email,
 // completado, «⋯»): el mock las pinta para que sigan siendo accesibles.
 jest.mock("../../../components/PageHeader", () => ({
@@ -154,26 +164,96 @@ function detail(over = {}) {
 }
 
 beforeEach(() => {
+  search = "";
   (getOrder as jest.Mock).mockReset();
   (getOrder as jest.Mock).mockResolvedValue(detail());
 });
 
 describe("ERP · Ficha del pedido (rediseño de flujo)", () => {
-  it("la cabecera dice quién es el cliente, su régimen y su nº de FACTUSOL", async () => {
+  it("la cabecera dice quién es el cliente, su cola, su régimen y su nº de FACTUSOL", async () => {
     render(<ErpOrderDetailPage />);
     expect(await screen.findByText("Alexandre · La Maison de la Plaque")).toBeInTheDocument();
+    expect(screen.getByText("Por facturar")).toBeInTheDocument();
     expect(screen.getByText("FR · intracomunitario · exento")).toBeInTheDocument();
     expect(screen.getByText("FACTUSOL nº 2760")).toBeInTheDocument();
   });
 
-  it("el stepper pinta los 7 pasos con el actual resaltado", async () => {
+  it("la línea de vida es VERTICAL: 7 pasos con su dato, ✓ en los hechos y el actual como única tarjeta con «Siguiente paso» y su acción dentro", async () => {
     render(<ErpOrderDetailPage />);
-    const steps = within(await screen.findByRole("list", { name: "Ciclo del pedido" }));
+    const list = await screen.findByRole("list", { name: "Ciclo del pedido" });
+    expect(list).toHaveClass("erp-flow-steps", "is-vertical");
+    const steps = within(list);
     const items = steps.getAllByRole("listitem");
     expect(items).toHaveLength(7);
+    // Cada paso lleva su dato (fecha, importe, nº de albarán) y los hechos, ✓.
+    expect(steps.getByText("Creado").closest("li")).toHaveTextContent("✓");
+    expect(steps.getByText("Pagado").closest("li")).toHaveTextContent("351.52 EUR");
     expect(steps.getByText("Albarán").closest("li")).toHaveTextContent("2-100418");
+    expect(steps.getByText("Enviado").closest("li")).toHaveTextContent("pendiente");
+    // El actual: numerado, «Paso actual», y DENTRO la barra «Siguiente paso»
+    // con el botón de la acción (la misma que ya usaba la ficha).
     const actual = items.find((li) => li.getAttribute("aria-current") === "step");
+    expect(actual).toBeDefined();
     expect(actual).toHaveTextContent("Factura");
+    expect(actual).toHaveTextContent("Paso actual");
+    expect(actual?.querySelector(".erp-flow-step-ic")).toHaveTextContent("5");
+    const bar = within(actual as HTMLElement).getByRole("region", { name: "Siguiente paso" });
+    expect(bar).toHaveTextContent(/Emite la factura en FACTUSOL/);
+    expect(within(bar).getByRole("button", { name: "Emitir factura" })).toBeInTheDocument();
+    // Una sola tarjeta azul en toda la pantalla: la del paso actual.
+    expect(document.querySelectorAll(".erp-flow-step-body.is-card")).toHaveLength(1);
+    expect(actual?.querySelector(".erp-flow-step-body.is-card")).not.toBeNull();
+    expect(screen.getAllByRole("region", { name: "Siguiente paso" })).toHaveLength(1);
+    // El stepper horizontal de antes ya no existe en la ficha.
+    expect(document.querySelector(".erp-flow-steps:not(.is-vertical)")).toBeNull();
+  });
+
+  it("la cabecera lleva la barra de 7 segmentos con la lectura rápida «Paso 5 de 7 · Factura»", async () => {
+    render(<ErpOrderDetailPage />);
+    const txt = await screen.findByText(/Paso 5 de 7/);
+    expect(txt).toHaveTextContent("Paso 5 de 7 · Factura");
+    const segs = document.querySelectorAll(".erp-flow-progress-seg");
+    expect(segs).toHaveLength(7);
+    expect(Array.from(segs).map((s) => s.className.replace("erp-flow-progress-seg ", ""))).toEqual([
+      "is-done", "is-done", "is-done", "is-done", "is-now", "is-pending", "is-pending",
+    ]);
+  });
+
+  it("un paso omitido dice por qué (pedido web sin albarán: lo crea WooCommerce)", async () => {
+    (getOrder as jest.Mock).mockResolvedValue(detail({
+      factusol_albaran_number: null,
+      workflow: {
+        ...detail().workflow,
+        steps: STEPS.map((s) => (s.key === "albaran"
+          ? { ...s, state: "skipped", detail: "lo crea WooCommerce" } : s)),
+      },
+    }));
+    render(<ErpOrderDetailPage />);
+    const list = await screen.findByRole("list", { name: "Ciclo del pedido" });
+    const albaran = within(list).getByText("Albarán").closest("li");
+    expect(albaran).toHaveClass("is-skipped");
+    expect(albaran).toHaveTextContent("no aplica · lo crea WooCommerce");
+    expect(albaran).toHaveTextContent("No aplica");
+    expect(document.querySelector(".erp-flow-progress-seg.is-skipped")).not.toBeNull();
+  });
+
+  // --- Lote 2 · PR-2: la miga recuerda la cola de la bandeja ---
+
+  it("con ?from=<cola> la miga es «← Bandeja · Por cobrar» y vuelve a esa cola", async () => {
+    search = "from=por_cobrar";
+    render(<ErpOrderDetailPage />);
+    const back = await screen.findByRole("link", { name: "← Bandeja · Por cobrar" });
+    expect(back).toHaveAttribute("href", "/erp/orders?queue=por_cobrar");
+  });
+
+  it("sin ?from= (o con una cola que no existe) la miga vuelve a la bandeja a secas", async () => {
+    const { unmount } = render(<ErpOrderDetailPage />);
+    expect(await screen.findByRole("link", { name: "← Bandeja" })).toHaveAttribute("href", "/erp/orders");
+    unmount();
+    search = "from=lo-que-sea";
+    render(<ErpOrderDetailPage />);
+    expect(await screen.findByRole("link", { name: "← Bandeja" })).toHaveAttribute("href", "/erp/orders");
+    expect(screen.queryByRole("link", { name: /Bandeja · / })).toBeNull();
   });
 
   it("la alerta de IVA sale arriba con el enlace al cliente", async () => {
@@ -214,9 +294,15 @@ describe("ERP · Ficha del pedido (rediseño de flujo)", () => {
   it("no se pierde nada de lo que ya había en la ficha", async () => {
     render(<ErpOrderDetailPage />);
     expect(await screen.findByText("documentos de envío")).toBeInTheDocument();
-    for (const titulo of ["Líneas", "Actividad", "Seguimiento", "FACTUSOL", "Resumen económico"]) {
+    // «Actividad» pasa a llamarse «Historial»; «Documentos de envío» y
+    // «Seguimiento» viven dentro de «Envío y seguimiento» (paneles plegables).
+    for (const titulo of [
+      "Línea de vida del pedido", "Líneas", "Envío y seguimiento", "Historial", "Seguimiento",
+      "FACTUSOL", "Resumen económico",
+    ]) {
       expect(screen.getByRole("heading", { name: titulo })).toBeInTheDocument();
     }
+    expect(screen.queryByRole("heading", { name: "Actividad" })).toBeNull();
     // Cabecera: idioma del PDF, PDF del pedido, email, «Enviar factura al
     // cliente» (deshabilitado sin factura emitida, nunca oculto), completado
     // y «⋯» (idioma del pedido).

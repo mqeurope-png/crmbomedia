@@ -416,13 +416,14 @@ def list_documents(
     offset: int = 0,
     annotate: Any = None,
     ciclo: str | None = None,
+    linked: bool | None = None,
 ) -> dict[str, Any]:
     """Listado en vivo de un tipo de documento, filtrado, ordenado y paginado.
 
-    Devuelve `{"items": [...], "total": N}` — `total` es el nº de documentos
-    que casan TODOS los filtros, `items` la página `offset:offset+limit`.
-    El orden (E3-A-fix1) se aplica sobre el conjunto COMPLETO filtrado antes
-    de paginar, numérico donde toca.
+    Devuelve `{"items": [...], "total": N, "unlinked_total": M}` — `total` es
+    el nº de documentos que casan TODOS los filtros, `items` la página
+    `offset:offset+limit`. El orden (E3-A-fix1) se aplica sobre el conjunto
+    COMPLETO filtrado antes de paginar, numérico donde toca.
 
     `cliente_q` (E3-A-fix1): término libre que se resuelve contra F_CLI por
     nombre/CIF/email → set de CODCLI; los documentos se filtran por
@@ -433,13 +434,20 @@ def list_documents(
     cada doc (lo construye `chain.cycle_annotator` — inyectado para no crear
     el import circular documents↔chain), y `ciclo` filtra por su `estado`
     ANTES de paginar, para que el total sea el filtrado.
+
+    `linked` (Lote 2 · PR-2): filtra por si el documento tiene pedido de
+    BoHub (`order`, que también pone el anotador) — `False` = «solo sin
+    vincular». Se aplica después de anotar y antes de paginar, así `total`
+    es honesto. `unlinked_total` es el nº de documentos SIN pedido entre los
+    que casan el resto de filtros (antes de aplicar `linked`): es el contador
+    del chip, que no cambia al activarlo.
     """
     spec = DOC_SPECS[doc_type]
     codclis: set[str] | None = None
     if cliente_q and cliente_q.strip():
         codclis = matching_codclis(client, cliente_q, ejercicio=ejercicio)
         if not codclis:
-            return {"items": [], "total": 0}
+            return {"items": [], "total": 0, "unlinked_total": 0}
         if len(codclis) == 1 and not codcli:
             # Un único cliente casó → su código sirve de predicado SQL.
             codcli = next(iter(codclis))
@@ -481,6 +489,11 @@ def list_documents(
             d for d in docs
             if (d.get("ciclo") or {}).get("estado") == str(ciclo).strip()
         ]
+    # Lote 2 · PR-2 — contador de «sin vincular» sobre el conjunto que casa
+    # el resto de filtros; después, el filtro `linked` en sí.
+    unlinked_total = sum(1 for d in docs if not d.get("order"))
+    if linked is not None:
+        docs = [d for d in docs if bool(d.get("order")) is linked]
     # Orden sobre el conjunto COMPLETO filtrado, antes de paginar. El ORDER
     # BY del filtro SQL no está documentado como fiable; ordenar en Python
     # filas ya traídas es gratis. None/no-numérico al final siempre.
@@ -494,7 +507,10 @@ def list_documents(
     total = len(docs)
     limit = max(1, min(int(limit or DEFAULT_PAGE_SIZE), MAX_PAGE_SIZE))
     offset = max(0, int(offset or 0))
-    return {"items": docs[offset:offset + limit], "total": total}
+    return {
+        "items": docs[offset:offset + limit], "total": total,
+        "unlinked_total": unlinked_total,
+    }
 
 
 def normalize_line(doc_type: str, row: dict[str, Any]) -> dict[str, Any]:
@@ -519,7 +535,7 @@ def normalize_line(doc_type: str, row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def get_document(
+def get_header(
     client: FactusolClient,
     doc_type: str,
     *,
@@ -527,8 +543,10 @@ def get_document(
     codigo: int,
     ejercicio: str,
 ) -> dict[str, Any] | None:
-    """Cabecera + líneas de un documento por su clave COMPUESTA (serie,
-    código) — el código solo es único por serie (ERP-E2-fix2).
+    """Solo la cabecera normalizada de un documento por su clave COMPUESTA
+    (serie, código), sin cargar las líneas — lo que necesita «Vincular a
+    pedido» (Lote 2 · PR-2) para comprobar que el documento existe y leer su
+    referencia y cliente. `None` si no existe.
 
     El filtro SQL va por el código (numérico, trivial); la serie se casa en
     Python para no depender de cómo viaje `TIP*` ('5' vs 5)."""
@@ -547,6 +565,25 @@ def get_document(
         match = rows[0]
     if match is None:
         return None
+    return normalize_header(doc_type, match)
+
+
+def get_document(
+    client: FactusolClient,
+    doc_type: str,
+    *,
+    serie: int,
+    codigo: int,
+    ejercicio: str,
+) -> dict[str, Any] | None:
+    """Cabecera + líneas de un documento por su clave COMPUESTA (serie,
+    código) — el código solo es único por serie (ERP-E2-fix2)."""
+    spec = DOC_SPECS[doc_type]
+    header = get_header(
+        client, doc_type, serie=serie, codigo=codigo, ejercicio=ejercicio,
+    )
+    if header is None:
+        return None
 
     line_rows = client.load_table(
         spec.lines_table,
@@ -561,6 +598,5 @@ def get_document(
         if coerce_serie(r.get(spec.line_tip)) in (serie, None)
     ]
     lines.sort(key=lambda ln: ln["position"])
-    header = normalize_header(doc_type, match)
     header["lines"] = lines
     return header

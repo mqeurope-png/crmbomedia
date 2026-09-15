@@ -5,16 +5,21 @@ import type { OrderWorkflow } from "../../../lib/erpApi";
 
 /** «Siguiente paso» de la ficha: lo que el sistema dice que toca, con su
  *  acción incrustada. El texto sale del backend (`next_action_hint`); los
- *  botones los pone la ficha, que es quien sabe abrir cada modal. */
+ *  botones los pone la ficha, que es quien sabe abrir cada modal.
+ *
+ *  Lote 2 · PR-2: con `embedded` va DENTRO del paso actual de la línea de
+ *  vida (sin caja propia: la tarjeta azul es la del paso). */
 export function NextActionBar({
-  workflow, children,
+  workflow, children, embedded = false,
 }: {
   workflow: OrderWorkflow;
   children?: ReactNode;
+  /** Sin caja propia: se pinta dentro de la tarjeta del paso actual. */
+  embedded?: boolean;
 }) {
   return (
     <section
-      className={`erp-flow-nowbar${workflow.blocked ? " is-blocking" : ""}`}
+      className={`erp-flow-nowbar${workflow.blocked ? " is-blocking" : ""}${embedded ? " is-embedded" : ""}`}
       aria-label="Siguiente paso"
     >
       <div className="erp-flow-nowbar-txt">

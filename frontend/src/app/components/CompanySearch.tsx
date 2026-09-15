@@ -6,15 +6,17 @@ import { listCompanies, type Company } from "../lib/companiesApi";
 const DEBOUNCE_MS = 250;
 const LIMIT = 8;
 
-/** Buscador de empresa UNIFICADO (rediseño de flujo, Fase 2): el mismo en el
- *  alta de contacto, en la ficha de contacto («Asignar empresa») y donde haga
- *  falta elegir una empresa.
+/** Buscador de empresa UNIFICADO (rediseño de flujo, Fase 2 · revisión Lote
+ *  2): el mismo en el alta de contacto, en la ficha de contacto («Asignar
+ *  empresa») y donde haga falta elegir una empresa.
  *
  *  - Filtra en vivo por nombre / CIF / NIF-IVA / dominio (`GET /api/companies?q=`).
- *  - Cada resultado dice si la empresa está en FACTUSOL (con su nº de
- *    cliente) o es solo CRM.
- *  - Una opción persistente «＋ Crear empresa nueva «…»» al final, para
- *    crearla sin salir de donde estés.
+ *  - Cada resultado dice si la empresa está «En FACTUSOL» (con su nº de
+ *    cliente, botón primario «Usar esta») o es «Solo CRM» (secundario: habrá
+ *    que vincularla antes de facturar). El NIF va en monoespaciada.
+ *  - Una opción persistente «＋ Crear empresa «…»» al final de la lista
+ *    (pegada abajo aunque se haga scroll), que lleva el texto tecleado al
+ *    formulario: nadie vuelve a escribir.
  *
  *  Sustituye al desplegable con TODAS las empresas del alta de contacto y al
  *  buscador del modal de la ficha. Combobox accesible (teclado: ↑ ↓ ⏎ Esc). */
@@ -163,16 +165,22 @@ export function CompanySearch({
               <span className="company-search-main">
                 <strong>{c.name}</strong>
                 <span className="company-search-meta">
-                  {[c.tax_id || c.vat, c.country, c.domain].filter(Boolean).join(" · ") || "sin NIF"}
-                  {" · "}
-                  {c.factusol_company_id ? (
-                    <span className="badge ok">en FACTUSOL nº {c.factusol_company_id}</span>
-                  ) : (
-                    <span className="badge muted">solo CRM</span>
-                  )}
+                  <span className="mono">{c.tax_id || c.vat || "sin NIF"}</span>
+                  {[c.city, c.country, c.domain].filter(Boolean).map((x, k) => (
+                    <span key={k}>· {x}</span>
+                  ))}
                 </span>
               </span>
-              <span className="muted small">Elegir</span>
+              <span className={`company-pill ${c.factusol_company_id ? "is-factusol" : "is-crm"}`}>
+                {c.factusol_company_id ? `En FACTUSOL · nº ${c.factusol_company_id}` : "Solo CRM"}
+              </span>
+              {/* La fila entera es la opción; esto solo pinta la acción. */}
+              <span
+                className={`button small company-search-use${c.factusol_company_id ? "" : " secondary"}`}
+                aria-hidden="true"
+              >
+                Usar esta
+              </span>
             </li>
           ))}
           {!loading && items.length === 0 && !error ? (
@@ -188,7 +196,8 @@ export function CompanySearch({
               onClick={() => pick(items.length)}
               onMouseEnter={() => setActive(items.length)}
             >
-              ＋ Crear empresa nueva «<strong>{q}</strong>»
+              <span className="company-search-create-ask">¿No está en la lista?</span>
+              <strong>＋ Crear empresa «{q}»</strong>
             </li>
           ) : null}
         </ul>

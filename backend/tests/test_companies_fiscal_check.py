@@ -37,7 +37,7 @@ def session_factory() -> Generator[sessionmaker, None, None]:
                     tax_id="FR16339753527", vat="FR16339753527",
                     factusol_company_id="2760", domain="maisonplaque.fr"),
             Company(id="cadeau", name="La Maison du Cadeau", country="ES",
-                    tax_id="B-98.765.432"),
+                    tax_id="B-98.765.432", city="Madrid"),
             Company(id="dupli", name="Duplicoder SL", country="ES",
                     tax_id="B12345678", factusol_company_id="2458"),
         ])
@@ -107,6 +107,12 @@ def test_fiscal_check_regimen_por_pais_y_vat(http) -> None:
         assert fr["vies"]["applies"] is True and fr["vies"]["vat"] == "FR16339753527"
         assert fr["vies"]["status"] == "pendiente" and fr["vies"]["valid"] is None
         assert es["vies"]["applies"] is False and no["vies"]["applies"] is False
+        # «Volver a comprobar» (`force=true`) con VIES desactivado: mismo
+        # resultado, sin error (lo que hace `force` se prueba en test_vies).
+        forced = _check(http, country="FR", vat="FR16339753527", force="true")
+        assert forced.status_code == 200
+        assert forced.json()["vies"]["status"] == "pendiente"
+        assert forced.json()["vies"]["checked_at"] is None
 
 
 # --- duplicados -----------------------------------------------------------------
@@ -117,6 +123,12 @@ def test_fiscal_check_duplicados_crm_normalizando_nif(http) -> None:
     with _patched(_FakeFactusol()):
         r = _check(http, tax_id="b98765432").json()
         assert [c["id"] for c in r["duplicates"]["crm"]] == ["cadeau"]
+        # La tarjeta candidata («Usar esta», Lote 2): nombre, NIF, población y
+        # vínculo FACTUSOL.
+        assert r["duplicates"]["crm"][0] == {
+            "id": "cadeau", "name": "La Maison du Cadeau", "tax_id": "B-98.765.432",
+            "vat": None, "country": "ES", "city": "Madrid", "factusol_company_id": None,
+        }
         r = _check(http, vat="FR16339753527").json()
         assert [c["id"] for c in r["duplicates"]["crm"]] == ["maison"]
         assert r["duplicates"]["crm"][0]["factusol_company_id"] == "2760"

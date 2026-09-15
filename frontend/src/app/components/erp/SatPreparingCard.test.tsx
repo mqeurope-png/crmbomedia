@@ -69,6 +69,74 @@ beforeEach(() => {
   mockList.mockResolvedValue([]);
 });
 
+afterEach(() => {
+  Object.defineProperty(navigator, "clipboard", { value: undefined, configurable: true });
+});
+
+// --- Lote 2 · PR-2: diseño de taller (revisión §8) ---------------------------
+
+describe("SatPreparingCard · Lote 2 PR-2", () => {
+  it("las observaciones del comercial van arriba, en ámbar, y solo si hay nota", () => {
+    const { container, rerender } = render(
+      <SatPreparingCard
+        order={order({ notes: "Cliente pide embalaje reforzado.", serial_number: "FLX-1" })}
+        onChanged={() => {}}
+      />,
+    );
+    const note = screen.getByRole("note", { name: "Observaciones del comercial" });
+    expect(note).toHaveClass("sat-obs");
+    expect(note).toHaveTextContent("Cliente pide embalaje reforzado.");
+    // Antes de los datos técnicos y de las líneas.
+    const tech = container.querySelector(".sat-tech");
+    const lines = container.querySelector(".sat-card-lines");
+    expect(tech).not.toBeNull();
+    expect(note.compareDocumentPosition(tech as Element) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(note.compareDocumentPosition(lines as Element) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // Sin nota (o solo espacios) el bloque no aparece.
+    rerender(<SatPreparingCard order={order({ notes: "   " })} onChanged={() => {}} />);
+    expect(screen.queryByRole("note")).not.toBeInTheDocument();
+  });
+
+  it("datos técnicos en su caja, en mono, con «copiar» que copia el nº de serie; sin dato «—»", async () => {
+    const user = userEvent.setup();
+    const writeText = jest.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    render(
+      <SatPreparingCard
+        order={order({ serial_number: "FLX-7741-2026", whiterip_license: null, shipping_origin: "SAT" })}
+        onChanged={() => {}}
+      />,
+    );
+    expect(screen.getByText("FLX-7741-2026")).toHaveClass("sat-tech-value");
+    await user.click(screen.getByRole("button", { name: "Copiar nº de serie" }));
+    expect(writeText).toHaveBeenCalledWith("FLX-7741-2026");
+    expect(await screen.findByText("Copiado")).toBeInTheDocument();
+    // La caja de licencia se pinta igual (layout estable) con «—» y sin botón.
+    expect(screen.getByText("Licencia WhiteRIP")).toBeInTheDocument();
+    expect(screen.getByText("—")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Copiar licencia WhiteRIP" })).not.toBeInTheDocument();
+    expect(screen.getByText("SAT")).toHaveClass("sat-origin-pill");
+    // Copiar no navega ni dispara el albarán.
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("tres acciones de 48 px en dos filas: abrir (primario, ancho) y debajo albarán + ficha", () => {
+    const { container } = render(<SatPreparingCard order={order()} onChanged={() => {}} />);
+    const open = screen.getByRole("link", { name: /Abrir modo trabajo/ });
+    expect(open).toHaveAttribute("href", "/erp/sat/o1");
+    expect(open).toHaveClass("button", "lg");
+    expect(open.closest(".sat-card-actions-primary")).not.toBeNull();
+    const chip = screen.getByRole("button", { name: /Falta albarán/ });
+    expect(chip).toHaveClass("sat-chip-btn", "lg");
+    const ficha = screen.getByRole("link", { name: "Ficha" });
+    expect(ficha).toHaveAttribute("href", "/erp/orders/o1");
+    expect(ficha).toHaveClass("button", "secondary", "lg");
+    expect(chip.closest(".sat-card-actions-secondary")).toBe(ficha.closest(".sat-card-actions-secondary"));
+    // La card ya no es un enlace entero (con botones dentro se pulsaba el equivocado).
+    expect(container.querySelector("a.sat-card")).toBeNull();
+  });
+});
+
 describe("SatPreparingCard", () => {
   it("muestra el nombre del cliente bajo el número de pedido (D-2)", () => {
     render(

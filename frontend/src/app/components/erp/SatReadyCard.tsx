@@ -13,6 +13,7 @@ import {
   type ShipmentFileKind,
 } from "../../lib/erpApi";
 import { SatAlbaranChip, useSatAlbaranAction } from "./SatPreparingCard";
+import { SatObservaciones, SatTechData } from "./SatTechData";
 
 /** Acciones de un pedido «listo para envío», compartidas por la card y por la
  *  fila de la vista lista (Lote B6): imprimir albarán (mismo chip que en «Por
@@ -72,25 +73,29 @@ export function useSatReadyActions(order: SatQueueItem, onChanged: () => void) {
   };
 }
 
-/** Chips de albarán/etiqueta de un pedido listo (card y fila lista). */
+/** Chips de albarán/etiqueta de un pedido listo (card y fila lista).
+ *  `size="lg"`: 48 px, para la fila de secundarios de la card. */
 export function SatReadyDocChips({
   order,
   actions,
+  size,
 }: {
   order: SatQueueItem;
   actions: ReturnType<typeof useSatReadyActions>;
+  size?: "lg";
 }) {
   const { albaran, openDoc } = actions;
+  const lg = size === "lg" ? " lg" : "";
   return (
     <>
-      <SatAlbaranChip order={order} albaran={albaran} />
+      <SatAlbaranChip order={order} albaran={albaran} size={size} />
       {order.has_etiqueta ? (
-        <button type="button" className="sat-chip-btn ok"
+        <button type="button" className={`sat-chip-btn ok${lg}`}
                 onClick={() => openDoc("etiqueta")}>
           🏷️ Imprimir etiqueta
         </button>
       ) : (
-        <Link href={`/erp/orders/${order.id}`} className="sat-chip-btn warn">
+        <Link href={`/erp/orders/${order.id}`} className={`sat-chip-btn warn${lg}`}>
           🏷️ Falta etiqueta
         </Link>
       )}
@@ -98,8 +103,60 @@ export function SatReadyDocChips({
   );
 }
 
+/** «Marcar recogido» con confirmación (evita mispulsados en tablet). En la
+ *  card es el primario de 48 px a todo el ancho; `compact` = fila de tabla. */
+export function SatPickupButton({
+  actions,
+  compact = false,
+}: {
+  actions: ReturnType<typeof useSatReadyActions>;
+  compact?: boolean;
+}) {
+  const { busy, confirming, setConfirming, recogido } = actions;
+  const pickCls = compact ? "button small" : "button lg sat-card-primary";
+  const noCls = compact ? "button secondary small" : "button secondary lg";
+  if (confirming) {
+    return (
+      <div className="sat-confirm">
+        <span>¿El paquete ha salido?</span>
+        <button type="button" className={pickCls} disabled={busy} onClick={recogido}>
+          Sí, recogido
+        </button>
+        <button type="button" className={noCls} disabled={busy}
+                onClick={() => setConfirming(false)}>
+          No
+        </button>
+      </div>
+    );
+  }
+  return (
+    <button type="button" className={pickCls} disabled={busy}
+            onClick={() => setConfirming(true)}>
+      📤 Marcar recogido
+    </button>
+  );
+}
+
+/** «Reabrir preparación»: acción correctiva, poco frecuente. En la card va
+ *  aparte y sin caja (terciario), pero igual de alta (48 px). */
+export function SatReopenButton({
+  actions,
+  compact = false,
+}: {
+  actions: ReturnType<typeof useSatReadyActions>;
+  compact?: boolean;
+}) {
+  const { busy, reabrir } = actions;
+  return (
+    <button type="button" className={compact ? "button secondary small" : "button tertiary lg"}
+            disabled={busy} onClick={reabrir}>
+      Reabrir preparación
+    </button>
+  );
+}
+
 /** Botones «Marcar recogido» (con confirmación) + «Reabrir preparación»
- *  (card y fila lista). */
+ *  seguidos (fila de la vista lista). */
 export function SatReadyButtons({
   actions,
   compact = false,
@@ -107,39 +164,21 @@ export function SatReadyButtons({
   actions: ReturnType<typeof useSatReadyActions>;
   compact?: boolean;
 }) {
-  const { busy, confirming, setConfirming, recogido, reabrir } = actions;
-  const pickCls = compact ? "button small" : "sat-btn pack";
   return (
     <>
-      {confirming ? (
-        <div className="sat-confirm">
-          <span>¿El paquete ha salido?</span>
-          <button type="button" className={pickCls} disabled={busy}
-                  onClick={recogido}>
-            Sí, recogido
-          </button>
-          <button type="button" className="button secondary small" disabled={busy}
-                  onClick={() => setConfirming(false)}>
-            No
-          </button>
-        </div>
-      ) : (
-        <button type="button" className={pickCls} disabled={busy}
-                onClick={() => setConfirming(true)}>
-          📤 Marcar recogido
-        </button>
-      )}
-      <button type="button" className="button secondary small" disabled={busy}
-              onClick={reabrir}>
-        Reabrir preparación
-      </button>
+      <SatPickupButton actions={actions} compact={compact} />
+      <SatReopenButton actions={actions} compact={compact} />
     </>
   );
 }
 
-/** Card de «🚚 Listos para envío» (Fase D-1-fix1): pedido embalado pendiente de
- *  imprimir albarán/etiqueta y marcar recogido. Chips grandes táctiles + botón
- *  «Marcar recogido» con confirmación (evita mispulsados en tablet). */
+/** Card de «🚚 Listos para envío» (Lote 2 · PR-2, revisión de diseño §8):
+ *  pedido embalado pendiente de imprimir albarán/etiqueta y marcar recogido.
+ *  Mismo orden de lectura que «Por embalar» (observaciones del comercial en
+ *  ámbar arriba, datos técnicos grandes con «copiar») y tres acciones de 48 px
+ *  en dos filas: «Marcar recogido» (primario, con confirmación) y debajo,
+ *  separados, imprimir albarán y etiqueta. «Reabrir preparación» queda aparte
+ *  como terciario: es correctiva y no debe pulsarse por error. */
 export function SatReadyCard({
   order,
   onChanged,
@@ -150,26 +189,36 @@ export function SatReadyCard({
   const actions = useSatReadyActions(order, onChanged);
 
   return (
-    <div className="sat-card sat-ready-card">
+    <article className="sat-card sat-ready-card" aria-label={`Pedido ${order.order_number}`}>
       <div className="sat-card-top">
         <span className="sat-card-num">{order.order_number}</span>
-        <span className="muted small">
+        <span className="muted small mono">
           {order.total_amount.toFixed(2)} {order.currency}
         </span>
       </div>
       {customerLabel(order) ? (
         <div className="sat-card-customer">{customerLabel(order)}</div>
       ) : null}
-
-      <div className="sat-ready-chips">
-        <SatReadyDocChips order={order} actions={actions} />
-      </div>
+      <SatObservaciones notes={order.notes} />
+      <SatTechData
+        serial={order.serial_number}
+        license={order.whiterip_license}
+        origin={order.shipping_origin}
+      />
 
       {actions.error ? <p className="form-error">{actions.error}</p> : null}
 
-      <div className="sat-ready-actions">
-        <SatReadyButtons actions={actions} />
+      <div className="sat-card-actions">
+        <div className="sat-card-actions-primary">
+          <SatPickupButton actions={actions} />
+        </div>
+        <div className="sat-card-actions-secondary">
+          <SatReadyDocChips order={order} actions={actions} size="lg" />
+        </div>
+        <div className="sat-card-actions-tertiary">
+          <SatReopenButton actions={actions} />
+        </div>
       </div>
-    </div>
+    </article>
   );
 }

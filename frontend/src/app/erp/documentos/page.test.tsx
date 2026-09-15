@@ -1,6 +1,7 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import FactusolDocumentosPage from "./page";
+import { getCurrentUser } from "../../lib/api";
 import {
   downloadFacturasPdfZip,
   downloadFactusolDocumentPdf,
@@ -13,19 +14,40 @@ import {
  *  del ERP: pestañas por tipo (maqueta «docs»), tabla con pastilla país·régimen
  *  y de estado, y por documento la acción que toca (PDF en todos, «Registrar
  *  cobro» F-4-B en facturas pendientes, «Crear/Abrir pedido» en presupuestos /
- *  pedidos). Filtros y orden como en Proformas. */
+ *  pedidos). Filtros y orden como en Proformas.
+ *
+ *  Lote 2 · PR-2 (revisión de diseño, sección 7): chip «Solo sin vincular ·
+ *  N», banda ámbar + «Vincular» en las filas sin pedido, mes en curso por
+ *  defecto, «Solo lectura · sincronizado hace X» + «Sincronizar ahora», y
+ *  filas como tarjetas en móvil (`data-label`). */
 
 jest.mock("next/link", () => ({
   __esModule: true,
-  default: ({ children, href, onClick }: {
+  default: ({ children, href, onClick, ...rest }: {
     children: React.ReactNode; href: string; onClick?: (e: unknown) => void;
-  }) => <a href={href} onClick={onClick}>{children}</a>,
+  }) => <a href={href} onClick={onClick} {...rest}>{children}</a>,
 }));
 jest.mock("../../components/PageHeader", () => ({
-  PageHeader: ({ title }: { title: string }) => <h1>{title}</h1>,
+  PageHeader: ({ title, description, actions }: {
+    title: string; description?: string; actions?: React.ReactNode;
+  }) => <header><h1>{title}</h1>{description ? <p>{description}</p> : null}{actions}</header>,
 }));
 jest.mock("../../lib/api", () => ({
   getCurrentUser: jest.fn(() => Promise.resolve({ role: "admin" })),
+}));
+jest.mock("../../components/erp/LinkDocumentOrderModal", () => ({
+  LinkDocumentOrderModal: ({ docType, numero, onLinked, onClose }: {
+    docType: string; numero: string;
+    onLinked: (o: { id: string; order_number: string }) => void; onClose: () => void;
+  }) => (
+    <div role="dialog" aria-label="vincular">
+      VINCULAR {docType} {numero}
+      <button type="button" onClick={() => onLinked({ id: "o-bop", order_number: "BOPRIN-99919" })}>
+        USAR
+      </button>
+      <button type="button" onClick={onClose}>CERRAR</button>
+    </div>
+  ),
 }));
 jest.mock("../../lib/erpApi", () => ({
   listFactusolDocuments: jest.fn(),
@@ -77,7 +99,18 @@ function factura(over = {}) {
   };
 }
 
+/** Mes en curso en la zona del navegador (mismo cálculo que la página). */
+function currentMonth() {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = now.getMonth();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const last = new Date(y, m + 1, 0).getDate();
+  return { desde: `${y}-${pad(m + 1)}-01`, hasta: `${y}-${pad(m + 1)}-${pad(last)}` };
+}
+
 beforeEach(() => {
+  (getCurrentUser as jest.Mock).mockResolvedValue({ role: "admin" });
   mockList.mockReset();
   mockList.mockResolvedValue({ items: [factura()], total: 1 });
   mockSeries.mockReset();
@@ -268,6 +301,163 @@ describe("ERP · Documentos FACTUSOL (Fase 5)", () => {
     await waitFor(() => {
       const last = mockList.mock.calls.at(-1);
       expect(last?.[1].serie).toBeUndefined();
+      // Lote 2 · PR-2: también quita el rango de mes por defecto.
+      expect(last?.[1].fecha_desde).toBeUndefined();
+      expect(last?.[1].fecha_hasta).toBeUndefined();
     });
+  });
+});
+
+describe("ERP · Documentos FACTUSOL (Lote 2 · PR-2)", () => {
+  it("el chip «Solo sin vincular · N» lleva el contador y filtra con `linked=false`", async () => {
+    const user = userEvent.setup();
+    mockList.mockResolvedValue({ items: [factura()], total: 7, unlinked_total: 4 });
+    render(<FactusolDocumentosPage />);
+    await screen.findByText("5-260066");
+    const chip = screen.getByRole("button", { name: /Solo sin vincular/ });
+    expect(chip).toHaveAttribute("aria-pressed", "false");
+    expect(chip).toHaveTextContent("Solo sin vincular · 4");
+    expect(mockList).toHaveBeenCalledWith(
+      "facturas", expect.objectContaining({ linked: undefined }),
+    );
+    await user.click(chip);
+    await waitFor(() =>
+      expect(mockList).toHaveBeenCalledWith(
+        "facturas", expect.objectContaining({ linked: false }),
+      ),
+    );
+    expect(screen.getByRole("button", { name: /Solo sin vincular/ }))
+      .toHaveAttribute("aria-pressed", "true");
+    // Se desactiva con otro clic (vuelve a «todos»).
+    mockList.mockClear();
+    await user.click(screen.getByRole("button", { name: /Solo sin vincular/ }));
+    await waitFor(() => expect(mockList.mock.calls.at(-1)?.[1].linked).toBeUndefined());
+  });
+
+  it("una factura sin pedido lleva banda ámbar y «Vincular»; al vincular, la fila y el contador cambian", async () => {
+    const user = userEvent.setup();
+    mockList.mockResolvedValue({
+      items: [
+        factura(),
+        factura({ codigo: 260067, numero: "5-260067",
+                  order: { id: "o-x", order_number: "MAN-7001" } }),
+      ],
+      total: 2, unlinked_total: 1,
+    });
+    render(<FactusolDocumentosPage />);
+    const num = await screen.findByText("5-260066");
+    const row = num.closest("tr") as HTMLElement;
+    expect(row.className).toContain("is-unlinked");
+    // La vinculada NO lleva banda y enseña el nº del pedido como enlace.
+    const linkedRow = screen.getByText("5-260067").closest("tr") as HTMLElement;
+    expect(linkedRow.className).not.toContain("is-unlinked");
+    expect(within(linkedRow).getByRole("link", { name: "Abrir pedido MAN-7001" }))
+      .toHaveAttribute("href", "/erp/orders/o-x");
+    expect(within(linkedRow).queryByRole("button", { name: /Vincular/ })).not.toBeInTheDocument();
+
+    await user.click(within(row).getByRole("button", { name: "Vincular 5-260066 a un pedido" }));
+    const dialog = await screen.findByRole("dialog", { name: "vincular" });
+    expect(dialog).toHaveTextContent("VINCULAR facturas 5-260066");
+    mockList.mockClear();
+    await user.click(within(dialog).getByRole("button", { name: "USAR" }));
+    // La fila pasa a tener pedido sin releer FACTUSOL; el contador baja.
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      "Factura 5-260066 vinculada al pedido BOPRIN-99919.",
+    );
+    expect(within(row).getByRole("link", { name: "Abrir pedido BOPRIN-99919" }))
+      .toHaveAttribute("href", "/erp/orders/o-bop");
+    expect(row.className).not.toContain("is-unlinked");
+    expect(screen.getByRole("button", { name: /Solo sin vincular/ }))
+      .toHaveTextContent("Solo sin vincular · 0");
+    expect(mockList).not.toHaveBeenCalled();
+  });
+
+  it("en albaranes también se ofrece «Vincular»; en presupuestos sigue siendo «Crear pedido»", async () => {
+    const user = userEvent.setup();
+    mockList.mockResolvedValue({
+      items: [factura({ doc_type: "albaranes", codigo: 91, numero: "5-000091",
+                        estado: "0", estado_label: "Pendiente", estado_tone: "muted" })],
+      total: 1, unlinked_total: 1,
+    });
+    render(<FactusolDocumentosPage />);
+    await user.click(await screen.findByRole("tab", { name: "Albaranes" }));
+    expect(await screen.findByRole("button", { name: "Vincular 5-000091 a un pedido" }))
+      .toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Crear pedido" })).not.toBeInTheDocument();
+    mockList.mockResolvedValue({
+      items: [factura({ doc_type: "presupuestos", codigo: 28, numero: "5-000028",
+                        estado: "0", estado_label: "Pendiente", estado_tone: "warn" })],
+      total: 1, unlinked_total: 1,
+    });
+    await user.click(screen.getByRole("tab", { name: "Presupuestos" }));
+    expect(await screen.findByRole("link", { name: "Crear pedido" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /a un pedido$/ })).not.toBeInTheDocument();
+  });
+
+  it("sin permiso de edición no hay «Vincular»: la fila dice «Sin vincular»", async () => {
+    (getCurrentUser as jest.Mock).mockResolvedValue({ role: "user" });
+    render(<FactusolDocumentosPage />);
+    await screen.findByText("5-260066");
+    expect(await screen.findByText("Sin vincular")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /a un pedido$/ })).not.toBeInTheDocument();
+  });
+
+  it("el rango de fechas arranca en el mes en curso, se puede borrar y volver a poner", async () => {
+    const user = userEvent.setup();
+    const { desde, hasta } = currentMonth();
+    render(<FactusolDocumentosPage />);
+    await screen.findByText("5-260066");
+    expect(screen.getByLabelText("Fecha desde")).toHaveValue(desde);
+    expect(screen.getByLabelText("Fecha hasta")).toHaveValue(hasta);
+    expect(mockList).toHaveBeenCalledWith(
+      "facturas", expect.objectContaining({ fecha_desde: desde, fecha_hasta: hasta }),
+    );
+    expect(screen.queryByRole("button", { name: "Mes en curso" })).not.toBeInTheDocument();
+    await user.clear(screen.getByLabelText("Fecha desde"));
+    await waitFor(() =>
+      expect(mockList.mock.calls.at(-1)?.[1]).toEqual(
+        expect.objectContaining({ fecha_desde: undefined, fecha_hasta: hasta }),
+      ),
+    );
+    await user.click(await screen.findByRole("button", { name: "Mes en curso" }));
+    await waitFor(() => expect(screen.getByLabelText("Fecha desde")).toHaveValue(desde));
+  });
+
+  it("dice «Solo lectura · sincronizado hace X» y «Sincronizar ahora» relee saltando el cache", async () => {
+    const user = userEvent.setup();
+    mockList.mockResolvedValue({
+      items: [factura()], total: 1, unlinked_total: 1,
+      fetched_at: new Date().toISOString(), cycle_index_age_seconds: 0,
+    });
+    render(<FactusolDocumentosPage />);
+    await screen.findByText("5-260066");
+    expect(screen.getByText("Solo lectura · sincronizado hace unos segundos")).toBeInTheDocument();
+    expect(mockList).toHaveBeenCalledWith(
+      "facturas", expect.objectContaining({ fresh_ciclo: undefined }),
+    );
+    await user.click(screen.getByRole("button", { name: "Sincronizar ahora" }));
+    await waitFor(() =>
+      expect(mockList).toHaveBeenCalledWith(
+        "facturas", expect.objectContaining({ fresh_ciclo: true, offset: 0 }),
+      ),
+    );
+  });
+
+  it("la tabla es responsive: cada celda lleva su etiqueta y los importes van en `num`", async () => {
+    render(<FactusolDocumentosPage />);
+    const num = await screen.findByText("5-260066");
+    const table = num.closest("table") as HTMLElement;
+    expect(table.className).toContain("data-table--responsive");
+    const row = num.closest("tr") as HTMLElement;
+    const labels = Array.from(row.querySelectorAll("td")).map((td) => td.getAttribute("data-label"));
+    expect(labels).toEqual([
+      "Seleccionar", "Nº", "Cliente", "Fecha", "Total", "Saldo pend.", "Estado", "Pedido", "Acciones",
+    ]);
+    // Total y saldo: celdas `num` (mono, a la derecha) de ancho fijo.
+    const amounts = within(row).getAllByText("186.34 €", { selector: "td.num" });
+    expect(amounts).toHaveLength(2);
+    expect(amounts.every((td) => td.className.includes("erp-doc-col-amount"))).toBe(true);
+    expect(within(table).getAllByRole("columnheader", { name: /Total|Saldo pend\./ })
+      .every((th) => th.className.includes("num"))).toBe(true);
   });
 });

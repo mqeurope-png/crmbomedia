@@ -4,12 +4,18 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { PageHeader } from "../../../components/PageHeader";
-import { ArticleAutocompleteInput } from "../../../components/erp/ArticleAutocompleteInput";
 import {
   CustomerAutocomplete,
   type CustomerChoice,
 } from "../../../components/erp/CustomerAutocomplete";
+import {
+  DocumentLinesTable,
+  emptyDocumentLine,
+  lineNum,
+  type DocumentLine,
+} from "../../../components/erp/DocumentLinesTable";
 import { initialPayment, paymentReady, PaymentStep } from "../../../components/erp/PaymentStep";
+import { PrimaryActionBar } from "../../../components/erp/PrimaryActionBar";
 import { QuotePicker } from "../../../components/erp/QuotePicker";
 import { listContacts, type Contact } from "../../../lib/api";
 import { getCompany, listCompanies, type Company } from "../../../lib/companiesApi";
@@ -24,26 +30,15 @@ import {
   listFactusolQuotes,
   previewOrderFromFactusol,
   searchFactusolCustomers,
-  type FactusolArticle,
   type FactusolCustomer,
   type FactusolDocument,
   type FactusolOrderDocType,
   type FactusolOrderPreview,
   type FactusolQuote,
+  type FactusolRegime,
   type OrderAddress,
   type PaymentIntentInput,
 } from "../../../lib/erpApi";
-
-type LineRow = {
-  product_sku: string;
-  description: string;
-  quantity: string;
-  unit_price: string;
-};
-
-const EMPTY_LINE: LineRow = {
-  product_sku: "", description: "", quantity: "1", unit_price: "",
-};
 
 const EMPTY_ADDRESS: OrderAddress = {
   address_line: "", city: "", postal_code: "", state: "", country: "España",
@@ -53,10 +48,9 @@ const EMPTY_ADDRESS: OrderAddress = {
  *  PDF pone en la línea de portes de los documentos web). */
 const PORTES_DESCRIPTION = "Portes";
 
-function num(v: string): number {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : 0;
-}
+/** IVA general. Es también lo que asume el backend cuando una línea llega
+ *  sin `tax_rate`. */
+const IVA_GENERAL = 21;
 
 function today(): string {
   return new Date().toISOString().slice(0, 10);
@@ -66,9 +60,33 @@ function addressFilled(a: OrderAddress): boolean {
   return Boolean(a.address_line?.trim() || a.city?.trim() || a.postal_code?.trim());
 }
 
+function round2(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
+function eur(n: number): string {
+  return `${n.toFixed(2)} €`;
+}
+
+/** Lote 2 · PR-2 — IVA por defecto de las líneas según el régimen del cliente
+ *  F_CLI (Tarea C): nacional → 21 %; intracomunitario / exportación → 0 %
+ *  (exento). Sin ficha leída, el general. Se manda como `tax_rate` en CADA
+ *  línea (portes incluidos) para que el total del panel sea exactamente el
+ *  `total_amount` que guarda el backend: Σ round(cant × precio, 2) × (1 + IVA). */
+function regimeTaxRate(regime: FactusolRegime | null | undefined): number {
+  return regime === "intracomunitario" || regime === "exportacion" ? 0 : IVA_GENERAL;
+}
+
 /** Alta de pedido manual (Fase D · D-2): encargos por teléfono, muestras y
  *  reparaciones sin ticket Woo. El origen es fijo `manual` y el número lo
- *  genera el backend (`MANUAL-000001`). */
+ *  genera el backend (`MANUAL-000001`).
+ *
+ *  Lote 2 · PR-2 (revisión de diseño §10): tres pasos numerados — Empresa,
+ *  Líneas, Envío — con el total (IVA incluido) siempre visible en un panel
+ *  lateral (barra fija abajo en móvil), el requisito FACTUSOL explicado donde
+ *  ocurre («Vincular ahora» junto a la empresa) y el botón desactivado con su
+ *  motivo escrito debajo. Nada de lo anterior se quita: importar de FACTUSOL
+ *  es un desplegable dentro del paso 1; facturación y notas, uno del paso 3. */
 const DOC_TYPE_LABEL: Record<FactusolOrderDocType, string> = {
   presupuestos: "presupuesto",
   pedidos: "pedido de cliente",
@@ -94,6 +112,15 @@ function formatAddress(a: OrderAddress): string {
     a.country?.trim(),
   ].filter(Boolean);
   return parts.join(", ");
+}
+
+/** Dirección de la empresa CRM tal como la usa el formulario. */
+function companyAddressOf(c: Company): OrderAddress {
+  return {
+    address_line: c.address_line ?? "", city: c.city ?? "",
+    postal_code: c.postal_code ?? "", state: c.state ?? "",
+    country: c.country ?? "España",
+  };
 }
 
 /** Nombre fiscal del cliente F_CLI (NOFCLI; el comercial si el fiscal está vacío). */
@@ -138,6 +165,11 @@ function loadedNotice(
   };
 }
 
+/** Atajo de la dirección de envío: «La de la empresa» (los campos siguen a la
+ *  dirección conocida de la empresa: F_CLI o CRM) u «Otra dirección» (lo que
+ *  Bart escriba). Editar un campo pasa solo a «Otra dirección». */
+type ShippingMode = "company" | "other";
+
 export default function NewManualOrderPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -150,12 +182,19 @@ export default function NewManualOrderPage() {
   const [placedAt, setPlacedAt] = useState(today());
   const [taxId, setTaxId] = useState("");
   const [notes, setNotes] = useState("");
-  const [lines, setLines] = useState<LineRow[]>([{ ...EMPTY_LINE }]);
+  const [lines, setLines] = useState<DocumentLine[]>([emptyDocumentLine()]);
   // Portes del pedido: se mandan como su propia LÍNEA (`is_shipping`), igual
   // que los pedidos web los llevan aparte de la mercancía.
   const [portes, setPortes] = useState("");
   const [pickup, setPickup] = useState(false);
   const [shipping, setShipping] = useState<OrderAddress>({ ...EMPTY_ADDRESS });
+  const [shippingMode, setShippingModeState] = useState<ShippingMode>("company");
+  // Espejo del modo para los callbacks asíncronos (vincular, precarga de la
+  // URL), que no ven el estado del render en curso.
+  const shippingModeRef = useRef<ShippingMode>("company");
+  // Última dirección conocida de la empresa elegida (F_CLI manda sobre CRM):
+  // es lo que vuelca el atajo «La de la empresa».
+  const [companyAddress, setCompanyAddress] = useState<OrderAddress | null>(null);
   // Nombre de envío (dropshipping): destinatario del albarán cuando NO es la
   // empresa cliente. Vacío = se envía a la empresa; la factura va SIEMPRE a
   // los datos fiscales de la empresa.
@@ -165,7 +204,7 @@ export default function NewManualOrderPage() {
   const [pendingCrmCompany, setPendingCrmCompany] = useState<Company | null>(null);
   // Tarea B: CODCLI (F_CLI) de la empresa elegida. El alta manual exige
   // empresa VINCULADA a FACTUSOL — sin CODCLI no se puede crear el pedido
-  // (se ofrece «Crear en FACTUSOL»). null = sin empresa o sin vincular.
+  // (se ofrece «Vincular ahora»). null = sin empresa o sin vincular.
   const [companyCodcli, setCompanyCodcli] = useState<string | null>(null);
   // Cliente F_CLI cuyos datos se han volcado al formulario (nombre fiscal
   // visible, solo lectura). null = nada precargado desde FACTUSOL.
@@ -212,6 +251,36 @@ export default function NewManualOrderPage() {
   // Fase 1 — «Nuevo pedido» desde la ficha de empresa: ?company_id= precarga.
   const presetCompanyId = searchParams?.get("company_id") ?? null;
 
+  // Fase 5 — «Crear pedido» desde el explorador de documentos: la URL trae
+  // ?doc_type=&serie=&codigo= y se precarga el documento FACTUSOL con el mismo
+  // flujo de importación (Fase 1/2), sin teclear serie ni número.
+  const presetDocType = searchParams?.get("doc_type") ?? null;
+  const presetDocSerie = searchParams?.get("serie") ?? null;
+  const presetDocCodigo = searchParams?.get("codigo") ?? null;
+
+  // Lote 2 · PR-2: «Importar de FACTUSOL» es un desplegable del paso 1 (abierto
+  // si la URL trae un documento o al cargar uno); facturación y notas, otro
+  // del paso 3.
+  const [importOpen, setImportOpen] = useState(
+    presetDocType === "presupuestos" || presetDocType === "pedidos",
+  );
+  const [moreOpen, setMoreOpen] = useState(false);
+
+  function setShippingMode(mode: ShippingMode) {
+    shippingModeRef.current = mode;
+    setShippingModeState(mode);
+  }
+
+  /** Dirección de la empresa CRM → campos de envío. Con «La de la empresa»
+   *  (o sin nada escrito) se vuelca; si Bart ya escribió otra dirección se
+   *  respeta, y solo se recuerda para el atajo del selector. */
+  function adoptCompanyAddress(c: Company) {
+    const addr = companyAddressOf(c);
+    setCompanyAddress(addressFilled(addr) ? addr : null);
+    setShipping((prev) =>
+      (shippingModeRef.current === "company" || !addressFilled(prev) ? addr : prev));
+  }
+
   useEffect(() => {
     if (!presetCompanyId) return;
     let alive = true;
@@ -223,27 +292,16 @@ export default function NewManualOrderPage() {
         setCompanyCodcli(c.factusol_company_id ?? null);
         setPendingCrmCompany(c.factusol_company_id ? null : c);
         setTaxId((prev) => prev || c.tax_id || "");
-        setShipping((prev) => (addressFilled(prev) ? prev : {
-          address_line: c.address_line ?? "", city: c.city ?? "",
-          postal_code: c.postal_code ?? "", state: c.state ?? "",
-          country: c.country ?? "España",
-        }));
+        adoptCompanyAddress(c);
         // B) Empresa vinculada: FACTUSOL manda sobre NIF y direcciones.
         setFactusolCustomer(null);
         if (c.factusol_company_id) void prefillFromFactusol(c.factusol_company_id, c.name);
       })
       .catch(() => undefined);
     return () => { alive = false; };
-    // prefillFromFactusol solo usa setters: estable.
+    // prefillFromFactusol / adoptCompanyAddress solo usan setters: estables.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [presetCompanyId]);
-
-  // Fase 5 — «Crear pedido» desde el explorador de documentos: la URL trae
-  // ?doc_type=&serie=&codigo= y se precarga el documento FACTUSOL con el mismo
-  // flujo de importación (Fase 1/2), sin teclear serie ni número.
-  const presetDocType = searchParams?.get("doc_type") ?? null;
-  const presetDocSerie = searchParams?.get("serie") ?? null;
-  const presetDocCodigo = searchParams?.get("codigo") ?? null;
 
   useEffect(() => {
     if (presetDocType !== "presupuestos" && presetDocType !== "pedidos") return;
@@ -320,24 +378,19 @@ export default function NewManualOrderPage() {
     return () => { alive = false; };
   }, [companyId]);
 
-  const articleSearchEnabled = companyLinked;
-
-  /** C-4-fix2: rellena la línea desde el catálogo F_ART. El precio se deja en
-   *  blanco si FACTUSOL no tiene precio de venta — nunca se fuerza «0.00». */
-  function applyArticle(i: number, a: FactusolArticle) {
-    setLines((rs) => rs.map((r, j) => (j === i ? {
-      ...r,
-      product_sku: a.sku ?? a.codart ?? "",
-      description: a.descripcion ?? a.sku ?? "",
-      unit_price: a.precio_venta ? String(a.precio_venta) : r.unit_price,
-    } : r)));
-  }
-
-  const total = useMemo(
-    () => lines.reduce((sum, l) => sum + num(l.quantity) * num(l.unit_price), 0)
-      + num(portes),
-    [lines, portes],
+  // --- Total con IVA, como lo calcula el backend ----------------------------
+  const regime = factusolCustomer?.regime ?? null;
+  const taxRate = regimeTaxRate(regime);
+  const articlesBase = useMemo(
+    () => round2(lines.reduce(
+      (sum, l) => sum + round2(lineNum(l.quantity) * lineNum(l.unit_price)), 0,
+    )),
+    [lines],
   );
+  const portesAmount = lineNum(portes) > 0 ? round2(lineNum(portes)) : 0;
+  const base = round2(articlesBase + portesAmount);
+  const total = round2(base * (1 + taxRate / 100));
+  const ivaAmount = round2(total - base);
 
   /** C-4: vuelca el desglose de una proforma en las líneas del pedido.
    *  Si la proforma se hizo en el FACTUSOL de escritorio no hay desglose
@@ -347,22 +400,20 @@ export default function NewManualOrderPage() {
     setQuoteNotice(null);
     try {
       const quote = await getFactusolQuote(codpre);
-      const rows: LineRow[] = (quote.lines ?? []).map((l) => ({
-        product_sku: l.codart ?? "",
+      const rows: DocumentLine[] = (quote.lines ?? []).map((l) => emptyDocumentLine({
+        sku: l.codart ?? "",
         description: l.description,
         quantity: String(l.quantity),
         unit_price: String(l.unit_price),
       }));
-      const fallback: LineRow[] = [{
-        product_sku: "",
+      const fallback: DocumentLine[] = [emptyDocumentLine({
         description: quote.referencia || `Proforma ${codpre}`,
-        quantity: "1",
         unit_price: String(quote.base),
-      }];
+      })];
       const next = rows.length > 0 ? rows : fallback;
       // Se AÑADEN a lo que ya haya, descartando las filas vacías del inicio.
       setLines((prev) => {
-        const kept = prev.filter((l) => l.description.trim() || l.product_sku.trim());
+        const kept = prev.filter((l) => l.description.trim() || l.sku.trim());
         return [...kept, ...next];
       });
       setQuoteNotice(
@@ -382,7 +433,7 @@ export default function NewManualOrderPage() {
     setCompanyQuery(value);
     const hit = companies.find((c) => c.name === value);
     setCompanyId(hit?.id ?? null);
-    // Tarea B: empresa vinculada → CODCLI; sin vincular → «créala primero».
+    // Tarea B: empresa vinculada → CODCLI; sin vincular → «vincúlala primero».
     setCompanyCodcli(hit?.factusol_company_id ?? null);
     setPendingCrmCompany(hit && !hit.factusol_company_id ? hit : null);
     // Otra empresa (o ninguna): lo precargado de la anterior ya no vale, y una
@@ -391,12 +442,7 @@ export default function NewManualOrderPage() {
     setFactusolCustomer(null);
     if (!hit) return;
     setTaxId((prev) => prev || hit.tax_id || "");
-    // Autocompleta la dirección desde la empresa si aún está vacía.
-    setShipping((prev) => (addressFilled(prev) ? prev : {
-      address_line: hit.address_line ?? "", city: hit.city ?? "",
-      postal_code: hit.postal_code ?? "", state: hit.state ?? "",
-      country: hit.country ?? "España",
-    }));
+    adoptCompanyAddress(hit);
     // B) Empresa vinculada: FACTUSOL manda sobre NIF y direcciones.
     if (hit.factusol_company_id) void prefillFromFactusol(hit.factusol_company_id, hit.name);
   }
@@ -461,11 +507,7 @@ export default function NewManualOrderPage() {
     setCompanyQuery(c.name);
     setCompanyCodcli(c.factusol_company_id ?? null);
     setTaxId((prev) => prev || c.tax_id || "");
-    setShipping((prev) => (addressFilled(prev) ? prev : {
-      address_line: c.address_line ?? "", city: c.city ?? "",
-      postal_code: c.postal_code ?? "", state: c.state ?? "",
-      country: c.country ?? "España",
-    }));
+    adoptCompanyAddress(c);
     // B) Empresa vinculada: FACTUSOL manda sobre NIF y direcciones.
     prefillSeq.current += 1;
     setFactusolCustomer(null);
@@ -488,6 +530,9 @@ export default function NewManualOrderPage() {
     if (hasAddress) {
       setShipping(fromFactusol);
       setBilling(fromFactusol);
+      // La dirección de F_CLI ES la de la empresa: el atajo apunta a ella.
+      setCompanyAddress(fromFactusol);
+      setShippingMode("company");
     }
     setFactusolCustomer(cust);
     return { nif, address: hasAddress ? fromFactusol : null };
@@ -577,6 +622,9 @@ export default function NewManualOrderPage() {
     }
   }
 
+  /** «Vincular ahora» (Lote 2 · PR-2, antes «Crear en FACTUSOL»): da de alta
+   *  el cliente F_CLI con los datos de la empresa CRM — o lo vincula si ya
+   *  existe con ese NIF — sin salir del formulario. */
   async function createInFactusol() {
     if (!pendingCrmCompany) return;
     setCreatingCustomer(true);
@@ -630,25 +678,24 @@ export default function NewManualOrderPage() {
     const label = DOC_TYPE_LABEL[docType];
     setFacLoading(true);
     setFacNotice(null);
+    setImportOpen(true);
     try {
       const p = await previewOrderFromFactusol(docType, serie, codigo);
       setFacPreview(p);
       setPayment(initialPayment(p.forma_pago, p.forma_pago_nombre));
-      const rows: LineRow[] = p.lines.map((l) => ({
-        product_sku: l.codart ?? "",
+      const rows: DocumentLine[] = p.lines.map((l) => emptyDocumentLine({
+        sku: l.codart ?? "",
         description: l.description || l.codart || "",
         quantity: String(l.quantity),
         unit_price: String(l.unit_price),
       }));
-      const fallback: LineRow[] = [{
-        product_sku: "",
+      const fallback: DocumentLine[] = [emptyDocumentLine({
         description: p.referencia || `${label} ${p.numero}`,
-        quantity: "1",
         unit_price: String(p.total ?? 0),
-      }];
+      })];
       const next = rows.length > 0 ? rows : fallback;
       setLines((prev) => {
-        const kept = prev.filter((l) => l.description.trim() || l.product_sku.trim());
+        const kept = prev.filter((l) => l.description.trim() || l.sku.trim());
         return [...kept, ...next];
       });
       if (p.fecha) setPlacedAt(p.fecha);
@@ -719,18 +766,14 @@ export default function NewManualOrderPage() {
     }
   }
 
-  function updateLine(i: number, key: keyof LineRow, value: string) {
-    setLines((rs) => rs.map((r, j) => (j === i ? { ...r, [key]: value } : r)));
-  }
-
   // C-4: el SKU es opcional (servicios, reparaciones, muestras). Lo que
   // identifica la línea es la descripción.
   const lineErrors = lines.map((l) =>
     !l.description.trim()
       ? "Indica la descripción."
-      : num(l.quantity) <= 0
+      : lineNum(l.quantity) <= 0
         ? "La cantidad debe ser > 0."
-        : num(l.unit_price) < 0
+        : lineNum(l.unit_price) < 0
           ? "El precio no puede ser negativo."
           : null,
   );
@@ -740,9 +783,29 @@ export default function NewManualOrderPage() {
   const companyHasCodcli = Boolean(companyId && companyCodcli);
   const customerOk = facPreview ? Boolean(companyId || contactId) : companyHasCodcli;
   const addressOk = pickup || addressFilled(shipping);
-  const valid = customerOk && addressOk && lines.length > 0
-    && lineErrors.every((e) => e === null) && !facPreview?.already_imported
-    && (!facPreview || paymentReady(payment));
+  const anyLineContent = lines.some((l) => l.description.trim() || l.sku.trim());
+  const firstLineError = lineErrors.findIndex((e) => e !== null);
+
+  // Lote 2 · PR-2: el botón desactivado siempre lleva su motivo escrito. El
+  // primer bloqueo en el orden de los pasos (empresa → líneas → envío → pago).
+  const submitReason: string | null = !customerOk
+    ? (facPreview
+      ? "Elige la empresa o el contacto del pedido."
+      : !companyId
+        ? "Falta elegir la empresa."
+        : "Falta vincular la empresa a FACTUSOL.")
+    : facPreview?.already_imported
+      ? `Este documento ya es el pedido ${facPreview.already_imported.order_number}: no se puede importar dos veces.`
+      : !anyLineContent
+        ? "Añade al menos una línea."
+        : firstLineError !== -1
+          ? `Línea ${firstLineError + 1}: ${lineErrors[firstLineError]}`
+          : !addressOk
+            ? "Falta la dirección de envío."
+            : facPreview && !paymentReady(payment)
+              ? "Completa el paso de pago."
+              : null;
+  const valid = submitReason === null;
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -777,18 +840,21 @@ export default function NewManualOrderPage() {
         create_albaran: facPreview ? true : undefined,
         lines: [
           ...lines.map((l) => ({
-            product_sku: l.product_sku.trim(),
-            description: l.description.trim() || l.product_sku.trim(),
-            quantity: num(l.quantity),
-            unit_price: num(l.unit_price),
+            product_sku: l.sku.trim(),
+            description: l.description.trim() || l.sku.trim(),
+            quantity: lineNum(l.quantity),
+            unit_price: lineNum(l.unit_price),
+            // El IVA del régimen del cliente: el mismo que suma el panel.
+            tax_rate: taxRate,
           })),
           // Portes: su propia línea, marcada como tal (el backend la manda a
           // los portes del documento FACTUSOL, no a una línea de mercancía).
-          ...(num(portes) > 0 ? [{
+          ...(lineNum(portes) > 0 ? [{
             product_sku: "",
             description: PORTES_DESCRIPTION,
             quantity: 1,
-            unit_price: num(portes),
+            unit_price: lineNum(portes),
+            tax_rate: taxRate,
             is_shipping: true,
           }] : []),
         ],
@@ -805,6 +871,20 @@ export default function NewManualOrderPage() {
     }
   }
 
+  const ivaLabel = taxRate > 0 ? `IVA ${taxRate} %` : "Exento";
+  const regimeNote = regime
+    ? (taxRate > 0
+      ? `Régimen ${factusolCustomer?.regime_label ?? "nacional"} (ficha FACTUSOL nº ${factusolCustomer?.codcli}): IVA general del ${IVA_GENERAL} %.`
+      : `Sin IVA: régimen ${factusolCustomer?.regime_label ?? regime} según la ficha FACTUSOL nº ${factusolCustomer?.codcli}.`)
+    : `IVA general del ${IVA_GENERAL} %. Se ajusta al régimen de la ficha FACTUSOL al elegir la empresa.`;
+  const barHint = facPreview
+    ? "Al crear el pedido, BoHub crea también su albarán en FACTUSOL (sin factura)."
+    : "Se guarda en BoHub con nº MANUAL; la factura y el albarán se emiten desde su ficha.";
+  const moreSummary = [
+    !billingSame ? "otra dirección de facturación" : null,
+    notes.trim() ? "con notas" : null,
+  ].filter(Boolean).join(" · ");
+
   return (
     <main className="shell shell-wide">
       <PageHeader
@@ -818,423 +898,480 @@ export default function NewManualOrderPage() {
         ]}
       />
 
-      <form className="erp-manual-form" onSubmit={submit}>
+      <form className="erp-manual-form erp-new-order" onSubmit={submit}>
         {error ? <p className="form-error">{error}</p> : null}
 
-        {/* Fase 1 — crear el pedido desde un documento que ya existe en FACTUSOL. */}
-        <section className="erp-card">
-          <h3>Importar de FACTUSOL</h3>
-          <p className="muted small">
-            Crea el pedido a partir de un presupuesto o de un pedido de cliente
-            que ya existe en FACTUSOL. Solo se lee: no se escribe nada allí.
-          </p>
-          <div className="form-row">
-            <label className="field">
-              <span>Documento</span>
-              <select
-                aria-label="Tipo de documento FACTUSOL"
-                value={facDocType}
-                onChange={(e) => setFacDocType(e.target.value as FactusolOrderDocType)}
-              >
-                <option value="presupuestos">Presupuesto / proforma</option>
-                <option value="pedidos">Pedido de cliente</option>
-              </select>
-            </label>
-            {facDocType === "pedidos" ? (
-              <>
-                <label className="field">
-                  <span>Serie</span>
-                  <input type="number" min="1" max="9" value={facSerie}
-                         aria-label="Serie del documento FACTUSOL"
-                         onChange={(e) => setFacSerie(e.target.value)} />
-                </label>
-                <label className="field">
-                  <span>Número</span>
-                  <input type="number" min="1" value={facCodigo}
-                         aria-label="Número del documento FACTUSOL"
-                         onChange={(e) => setFacCodigo(e.target.value)} />
-                </label>
-                <button type="button" className="button small"
-                        disabled={facLoading || !facCodigo}
-                        onClick={loadFromInputs}>
-                  {facLoading ? "Leyendo…" : "Cargar documento"}
-                </button>
-              </>
-            ) : null}
-          </div>
-          {facDocType === "presupuestos" ? (
-            /* A) El mismo buscador/listado de proformas de la ficha de empresa:
-               sin teclear serie y número. */
-            <QuotePicker
-              companyId={companyId}
-              busy={facLoading}
-              onPick={(q) => {
-                if (q.codpre) void loadFactusolDocument("presupuestos", 1, Number(q.codpre));
-              }}
-            />
-          ) : (
-            <PedidoClientePicker
-              busy={facLoading}
-              onPick={(d) => {
-                const serie = d.serie ?? 0;
-                const codigo = Number(d.codigo);
-                setFacSerie(String(serie || ""));
-                setFacCodigo(Number.isInteger(codigo) && codigo > 0 ? String(codigo) : "");
-                if (serie > 0 && Number.isInteger(codigo) && codigo > 0) {
-                  void loadFactusolDocument("pedidos", serie, codigo);
-                }
-              }}
-            />
-          )}
-          {facNotice ? (
-            <p className={facNotice.tone === "error" ? "form-error" : "form-info"}
-               role="status">
-              {facNotice.text}
-            </p>
-          ) : null}
-          {facPreview?.already_imported ? (
-            <p className="small">
-              <Link href={`/erp/orders/${facPreview.already_imported.order_id}`}>
-                Abrir el pedido {facPreview.already_imported.order_number}
-              </Link>
-            </p>
-          ) : null}
-          {facPreview && !facPreview.already_imported ? (
-            /* Fase 2: al crear el pedido se crea su albarán en FACTUSOL (sin
-               factura) y se confirma el pago: sin pago, o pagado (el cobro se
-               registra a mano cuando exista la factura). */
-            <>
-              <p className="muted small">
-                Al crear el pedido se creará su <strong>albarán en FACTUSOL</strong>
-                {" "}(sin factura). Confirma el pago:
-              </p>
-              <PaymentStep value={payment} onChange={setPayment} />
-            </>
-          ) : null}
-        </section>
-
-        <section className="erp-card">
-          <h3>Cliente</h3>
-          <p className="muted small">
-            Origen:{" "}
-            <strong>
+        <div className="erp-new-order-main">
+          {/* ---- 1 · Empresa ------------------------------------------------ */}
+          <section className="erp-card erp-step" aria-labelledby="erp-step-1">
+            <h3 id="erp-step-1" className="erp-step-title">
+              <span className="erp-step-num">1</span> · Empresa
+            </h3>
+            <p className="muted small">
+              Origen:{" "}
+              <strong>
+                {facPreview
+                  ? `${DOC_TYPE_LABEL[facPreview.doc_type]} FACTUSOL ${facPreview.numero}`
+                  : "manual"}
+              </strong>
               {facPreview
-                ? `${DOC_TYPE_LABEL[facPreview.doc_type]} FACTUSOL ${facPreview.numero}`
-                : "manual"}
-            </strong>
-            {facPreview
-              ? ` · nº de pedido ${facPreview.order_number}.`
-              : " · el número de pedido se genera solo."}
-          </p>
-          {/* C-3: busca primero en FACTUSOL (fuente contable) y luego en CRM. */}
-          <CustomerAutocomplete key={customerSearchKey} onPick={onPickCustomer} />
-          {factusolNotice ? (
-            <p className={factusolNotice.tone === "error" ? "form-error" : "form-info"}
-               role="status">
-              {factusolNotice.text}
+                ? ` · nº de pedido ${facPreview.order_number}.`
+                : " · el número de pedido se genera solo."}
             </p>
-          ) : null}
-          {/* C-3-fix2: cliente FACTUSOL sin empresa CRM → 2 acciones reales. */}
-          {pendingFactusolCustomer ? (
-            <div className="erp-factusol-actions">
-              <button type="button" className="button small"
-                      disabled={creatingCrmCompany}
-                      onClick={createCrmFromFactusol}>
-                {creatingCrmCompany
-                  ? "Creando…"
-                  : "Crear empresa CRM con estos datos y vincular"}
-              </button>
-              <button type="button" className="button small secondary"
-                      onClick={() => setLinkingExisting((v) => !v)}>
-                Vincular a empresa CRM existente…
-              </button>
-            </div>
-          ) : null}
-
-          {pendingFactusolCustomer && linkingExisting ? (
-            <div className="erp-link-existing">
-              <label className="field">
-                <span>Empresa CRM a vincular</span>
-                <input
-                  type="text" list="erp-link-companies" value={linkCompanyQuery}
-                  placeholder="Buscar empresa sin FACTUSOL…"
-                  aria-label="Empresa CRM a vincular"
-                  onChange={(e) => setLinkCompanyQuery(e.target.value)}
-                />
-                <datalist id="erp-link-companies">
-                  {linkCompanies.map((c) => <option key={c.id} value={c.name} />)}
-                </datalist>
-              </label>
-              <div className="erp-exc-actions">
+            {/* C-3: busca primero en FACTUSOL (fuente contable) y luego en CRM. */}
+            <CustomerAutocomplete key={customerSearchKey} onPick={onPickCustomer} />
+            {factusolNotice ? (
+              <p className={factusolNotice.tone === "error" ? "form-error" : "form-info"}
+                 role="status">
+                {factusolNotice.text}
+              </p>
+            ) : null}
+            {/* C-3-fix2: cliente FACTUSOL sin empresa CRM → 2 acciones reales. */}
+            {pendingFactusolCustomer ? (
+              <div className="erp-factusol-actions">
                 <button type="button" className="button small"
-                        disabled={!linkCompanyId || linking}
-                        onClick={linkToExistingCompany}>
-                  {linking ? "Vinculando…" : "Vincular"}
+                        disabled={creatingCrmCompany}
+                        onClick={createCrmFromFactusol}>
+                  {creatingCrmCompany
+                    ? "Creando…"
+                    : "Crear empresa CRM con estos datos y vincular"}
                 </button>
                 <button type="button" className="button small secondary"
-                        onClick={() => setLinkingExisting(false)}>
-                  Cancelar
+                        onClick={() => setLinkingExisting((v) => !v)}>
+                  Vincular a empresa CRM existente…
                 </button>
               </div>
-            </div>
-          ) : null}
+            ) : null}
 
-          {pendingCrmCompany ? (
-            <p className="form-info" role="status">
-              «{pendingCrmCompany.name}» aún no existe en FACTUSOL: créala primero
-              (el pedido se factura y se le crea el albarán a ese cliente).{" "}
-              <button type="button" className="button small"
-                      disabled={creatingCustomer}
-                      onClick={createInFactusol}>
-                {creatingCustomer ? "Creando…" : "Crear en FACTUSOL"}
-              </button>
-            </p>
-          ) : null}
-          <div className="form-row">
-            <label className="field">
-              <span>Empresa</span>
-              <input
-                type="text" list="erp-new-order-companies" value={companyQuery}
-                placeholder="Buscar empresa…"
-                onChange={(e) => pickCompany(e.target.value)}
-              />
-              <datalist id="erp-new-order-companies">
-                {companies.map((c) => <option key={c.id} value={c.name} />)}
-              </datalist>
-            </label>
-            <label className="field">
-              <span>Contacto</span>
-              <input
-                type="text" list="erp-new-order-contacts" value={contactQuery}
-                placeholder="Buscar contacto…"
-                onChange={(e) => pickContact(e.target.value)}
-              />
-              <datalist id="erp-new-order-contacts">
-                {contacts.map((c) => (
-                  <option key={c.id} value={contactName(c)} />
-                ))}
-              </datalist>
-            </label>
-          </div>
-          {factusolCustomer ? (
-            /* Lo que se ha cargado de FACTUSOL, a la vista: el nombre fiscal
-               del cliente F_CLI (los documentos van a este nombre). La
-               «Empresa» de arriba sigue siendo la del CRM, a la que queda el
-               pedido. */
+            {pendingFactusolCustomer && linkingExisting ? (
+              <div className="erp-link-existing">
+                <label className="field">
+                  <span>Empresa CRM a vincular</span>
+                  <input
+                    type="text" list="erp-link-companies" value={linkCompanyQuery}
+                    placeholder="Buscar empresa sin FACTUSOL…"
+                    aria-label="Empresa CRM a vincular"
+                    onChange={(e) => setLinkCompanyQuery(e.target.value)}
+                  />
+                  <datalist id="erp-link-companies">
+                    {linkCompanies.map((c) => <option key={c.id} value={c.name} />)}
+                  </datalist>
+                </label>
+                <div className="erp-exc-actions">
+                  <button type="button" className="button small"
+                          disabled={!linkCompanyId || linking}
+                          onClick={linkToExistingCompany}>
+                    {linking ? "Vinculando…" : "Vincular"}
+                  </button>
+                  <button type="button" className="button small secondary"
+                          onClick={() => setLinkingExisting(false)}>
+                    Cancelar
+                  </button>
+                </div>
+              </div>
+            ) : null}
+
             <div className="form-row">
               <label className="field">
-                <span>Nombre fiscal (FACTUSOL nº {factusolCustomer.codcli})</span>
-                <input type="text" readOnly value={fiscalName(factusolCustomer)}
-                       aria-label="Nombre fiscal FACTUSOL"
-                       title="Nombre fiscal del cliente en FACTUSOL (solo lectura). Las facturas y albaranes van a este nombre." />
+                <span>Empresa</span>
+                <input
+                  type="text" list="erp-new-order-companies" value={companyQuery}
+                  placeholder="Buscar empresa…"
+                  onChange={(e) => pickCompany(e.target.value)}
+                />
+                <datalist id="erp-new-order-companies">
+                  {companies.map((c) => <option key={c.id} value={c.name} />)}
+                </datalist>
               </label>
               <label className="field">
-                <span>NIF en FACTUSOL</span>
-                <input type="text" readOnly value={factusolCustomer.nif ?? ""}
-                       aria-label="NIF FACTUSOL"
-                       placeholder="(sin NIF en FACTUSOL)" />
-              </label>
-            </div>
-          ) : null}
-          {!customerOk ? (
-            <p className="muted small" role="note">
-              {facPreview
-                ? "Elige una empresa o un contacto de la lista."
-                : !companyId
-                  ? "Elige una empresa de la lista (obligatoria: el pedido se factura y se le crea el albarán en FACTUSOL). Un contacto solo no basta."
-                  : "La empresa tiene que estar vinculada a un cliente de FACTUSOL antes de crear el pedido."}{" "}
-              <a href="/companies/new" target="_blank" rel="noreferrer">
-                ¿No existe? Créala primero en Empresas
-              </a>
-            </p>
-          ) : null}
-          <div className="form-row">
-            <label className="field">
-              <span>Fecha del pedido</span>
-              <input type="date" value={placedAt}
-                     onChange={(e) => setPlacedAt(e.target.value)} />
-            </label>
-            <label className="field">
-              <span>NIF / CIF</span>
-              <input type="text" value={taxId}
-                     onChange={(e) => setTaxId(e.target.value)} />
-            </label>
-          </div>
-        </section>
-
-        <section className="erp-card">
-          <h3>Líneas</h3>
-          {/* C-4: si el cliente tiene proformas en FACTUSOL, se pueden volcar
-              al pedido en vez de reteclear el presupuesto. */}
-          {quotes.length > 0 ? (
-            <div className="erp-quotes-inline">
-              <button type="button" className="button small secondary"
-                      aria-expanded={quotesOpen}
-                      onClick={() => setQuotesOpen((v) => !v)}>
-                {quotesOpen ? "▾" : "▸"} Proformas FACTUSOL disponibles ({quotes.length})
-              </button>
-              {quoteNotice ? (
-                <p className="form-info" role="status">{quoteNotice}</p>
-              ) : null}
-              {quotesOpen ? (
-                <ul className="erp-quote-list">
-                  {quotes.slice(0, 5).map((q) => (
-                    <li key={q.codpre ?? ""}>
-                      <span>
-                        nº {q.codpre} · {q.fecha ?? "—"} ·{" "}
-                        {q.total.toFixed(2)} € · {q.referencia || "—"}
-                      </span>
-                      <button type="button" className="button small"
-                              disabled={loadingQuote !== null}
-                              onClick={() => loadQuoteLines(q.codpre ?? "")}>
-                        {loadingQuote === q.codpre ? "Cargando…" : "Cargar líneas al pedido"}
-                      </button>
-                    </li>
+                <span>Contacto</span>
+                <input
+                  type="text" list="erp-new-order-contacts" value={contactQuery}
+                  placeholder="Buscar contacto…"
+                  onChange={(e) => pickContact(e.target.value)}
+                />
+                <datalist id="erp-new-order-contacts">
+                  {contacts.map((c) => (
+                    <option key={c.id} value={contactName(c)} />
                   ))}
-                </ul>
+                </datalist>
+              </label>
+            </div>
+            {companyId ? (
+              <p className="erp-company-state">
+                {companyCodcli ? (
+                  <span className="erp-new-order-pill is-linked">
+                    FACTUSOL nº <span className="mono">{companyCodcli}</span>
+                  </span>
+                ) : (
+                  <span className="erp-new-order-pill is-crm-only">Solo CRM</span>
+                )}
+              </p>
+            ) : null}
+            {/* Lote 2 · PR-2: el requisito FACTUSOL se explica DONDE ocurre y
+                trae su solución, sin salir del formulario. */}
+            {pendingCrmCompany ? (
+              <div className="erp-inline-notice is-amber" role="status">
+                <p>
+                  <strong>Esta empresa aún no está en FACTUSOL.</strong> Sin ella
+                  no se puede emitir factura. Se puede vincular sin salir de aquí:
+                  se crea el cliente con los datos de «{pendingCrmCompany.name}»
+                  (o se vincula si ya existe con ese NIF).
+                </p>
+                <button type="button" className="button small secondary"
+                        disabled={creatingCustomer}
+                        onClick={createInFactusol}>
+                  {creatingCustomer ? "Vinculando…" : "Vincular ahora"}
+                </button>
+              </div>
+            ) : null}
+            {factusolCustomer ? (
+              /* Lo que se ha cargado de FACTUSOL, a la vista: el nombre fiscal
+                 del cliente F_CLI (los documentos van a este nombre). La
+                 «Empresa» de arriba sigue siendo la del CRM, a la que queda el
+                 pedido. */
+              <div className="form-row">
+                <label className="field">
+                  <span>Nombre fiscal (FACTUSOL nº {factusolCustomer.codcli})</span>
+                  <input type="text" readOnly value={fiscalName(factusolCustomer)}
+                         aria-label="Nombre fiscal FACTUSOL"
+                         title="Nombre fiscal del cliente en FACTUSOL (solo lectura). Las facturas y albaranes van a este nombre." />
+                </label>
+                <label className="field">
+                  <span>NIF en FACTUSOL</span>
+                  <input type="text" readOnly value={factusolCustomer.nif ?? ""}
+                         aria-label="NIF FACTUSOL"
+                         placeholder="(sin NIF en FACTUSOL)" />
+                </label>
+              </div>
+            ) : null}
+            {!customerOk && !pendingCrmCompany ? (
+              <p className="muted small" role="note">
+                {facPreview
+                  ? "Elige una empresa o un contacto de la lista."
+                  : !companyId
+                    ? "Elige una empresa de la lista (obligatoria: el pedido se factura y se le crea el albarán en FACTUSOL). Un contacto solo no basta."
+                    : "La empresa tiene que estar vinculada a un cliente de FACTUSOL antes de crear el pedido."}{" "}
+                <a href="/companies/new" target="_blank" rel="noreferrer">
+                  ¿No existe? Créala primero en Empresas
+                </a>
+              </p>
+            ) : null}
+            <div className="form-row">
+              <label className="field">
+                <span>Fecha del pedido</span>
+                <input type="date" value={placedAt}
+                       onChange={(e) => setPlacedAt(e.target.value)} />
+              </label>
+              <label className="field">
+                <span>NIF / CIF</span>
+                <input type="text" value={taxId}
+                       onChange={(e) => setTaxId(e.target.value)} />
+              </label>
+            </div>
+
+            {/* Fase 1 — crear el pedido desde un documento que ya existe en
+                FACTUSOL. Lote 2: desplegable dentro del paso 1. */}
+            <details className="erp-step-helper" open={importOpen}
+                     onToggle={(e) => setImportOpen(e.currentTarget.open)}>
+              <summary>
+                Importar de FACTUSOL
+                <span className="muted"> · presupuesto o pedido de cliente ya existente</span>
+              </summary>
+              <div className="erp-step-helper-body">
+                <p className="muted small">
+                  Crea el pedido a partir de un presupuesto o de un pedido de cliente
+                  que ya existe en FACTUSOL. Solo se lee: no se escribe nada allí.
+                </p>
+                <div className="form-row">
+                  <label className="field">
+                    <span>Documento</span>
+                    <select
+                      aria-label="Tipo de documento FACTUSOL"
+                      value={facDocType}
+                      onChange={(e) => setFacDocType(e.target.value as FactusolOrderDocType)}
+                    >
+                      <option value="presupuestos">Presupuesto / proforma</option>
+                      <option value="pedidos">Pedido de cliente</option>
+                    </select>
+                  </label>
+                  {facDocType === "pedidos" ? (
+                    <>
+                      <label className="field">
+                        <span>Serie</span>
+                        <input type="number" min="1" max="9" value={facSerie}
+                               aria-label="Serie del documento FACTUSOL"
+                               onChange={(e) => setFacSerie(e.target.value)} />
+                      </label>
+                      <label className="field">
+                        <span>Número</span>
+                        <input type="number" min="1" value={facCodigo}
+                               aria-label="Número del documento FACTUSOL"
+                               onChange={(e) => setFacCodigo(e.target.value)} />
+                      </label>
+                      <button type="button" className="button small"
+                              disabled={facLoading || !facCodigo}
+                              onClick={loadFromInputs}>
+                        {facLoading ? "Leyendo…" : "Cargar documento"}
+                      </button>
+                    </>
+                  ) : null}
+                </div>
+                {facDocType === "presupuestos" ? (
+                  /* A) El mismo buscador/listado de proformas de la ficha de
+                     empresa: sin teclear serie y número. */
+                  <QuotePicker
+                    companyId={companyId}
+                    busy={facLoading}
+                    onPick={(q) => {
+                      if (q.codpre) void loadFactusolDocument("presupuestos", 1, Number(q.codpre));
+                    }}
+                  />
+                ) : (
+                  <PedidoClientePicker
+                    busy={facLoading}
+                    onPick={(d) => {
+                      const serie = d.serie ?? 0;
+                      const codigo = Number(d.codigo);
+                      setFacSerie(String(serie || ""));
+                      setFacCodigo(Number.isInteger(codigo) && codigo > 0 ? String(codigo) : "");
+                      if (serie > 0 && Number.isInteger(codigo) && codigo > 0) {
+                        void loadFactusolDocument("pedidos", serie, codigo);
+                      }
+                    }}
+                  />
+                )}
+                {facNotice ? (
+                  <p className={facNotice.tone === "error" ? "form-error" : "form-info"}
+                     role="status">
+                    {facNotice.text}
+                  </p>
+                ) : null}
+                {facPreview?.already_imported ? (
+                  <p className="small">
+                    <Link href={`/erp/orders/${facPreview.already_imported.order_id}`}>
+                      Abrir el pedido {facPreview.already_imported.order_number}
+                    </Link>
+                  </p>
+                ) : null}
+              </div>
+            </details>
+          </section>
+
+          {/* ---- 2 · Líneas ------------------------------------------------- */}
+          <section className="erp-card erp-step" aria-labelledby="erp-step-2">
+            <h3 id="erp-step-2" className="erp-step-title">
+              <span className="erp-step-num">2</span> · Líneas
+            </h3>
+            {/* C-4: si el cliente tiene proformas en FACTUSOL, se pueden volcar
+                al pedido en vez de reteclear el presupuesto. */}
+            {quotes.length > 0 ? (
+              <div className="erp-quotes-inline">
+                <button type="button" className="button small secondary"
+                        aria-expanded={quotesOpen}
+                        onClick={() => setQuotesOpen((v) => !v)}>
+                  {quotesOpen ? "▾" : "▸"} Proformas FACTUSOL disponibles ({quotes.length})
+                </button>
+                {quoteNotice ? (
+                  <p className="form-info" role="status">{quoteNotice}</p>
+                ) : null}
+                {quotesOpen ? (
+                  <ul className="erp-quote-list">
+                    {quotes.slice(0, 5).map((q) => (
+                      <li key={q.codpre ?? ""}>
+                        <span>
+                          nº {q.codpre} · {q.fecha ?? "—"} ·{" "}
+                          {q.total.toFixed(2)} € · {q.referencia || "—"}
+                        </span>
+                        <button type="button" className="button small"
+                                disabled={loadingQuote !== null}
+                                onClick={() => loadQuoteLines(q.codpre ?? "")}>
+                          {loadingQuote === q.codpre ? "Cargando…" : "Cargar líneas al pedido"}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+              </div>
+            ) : null}
+            {/* Lote 2 · PR-2: la misma tabla de líneas que la proforma. Sin
+                catálogo (empresa sin vínculo FACTUSOL) son inputs normales. */}
+            <DocumentLinesTable
+              lines={lines}
+              onChange={setLines}
+              articleSearch={companyLinked}
+              ariaLabel="Líneas del pedido"
+            />
+          </section>
+
+          {/* ---- 3 · Envío -------------------------------------------------- */}
+          <section className="erp-card erp-step" aria-labelledby="erp-step-3">
+            <h3 id="erp-step-3" className="erp-step-title">
+              <span className="erp-step-num">3</span> · Envío
+            </h3>
+            {/* Portes como LÍNEA APARTE, igual que los pedidos web: no se
+                mezclan con la mercancía. En FACTUSOL viajan en la banda de
+                portes de la cabecera (IPOR1), que es donde los deja la app
+                Woo→FACTUSOL y de donde el PDF los pinta como línea de cargo. */}
+            <div className="form-row">
+              <label className="field erp-field-portes">
+                <span>Portes (gastos de envío)</span>
+                <input type="number" min="0" step="0.01" value={portes}
+                       aria-label="Portes"
+                       placeholder="0.00"
+                       title="Se añaden como línea de portes del pedido, aparte de la mercancía (como en los pedidos web)."
+                       onChange={(e) => setPortes(e.target.value)} />
+              </label>
+              {!pickup ? (
+                /* Lote 2 · PR-2: atajo de la dirección de la empresa. */
+                <label className="field erp-field-shipmode">
+                  <span>Enviar a</span>
+                  <select aria-label="Enviar a" value={shippingMode}
+                          onChange={(e) => {
+                            const mode = e.target.value as ShippingMode;
+                            setShippingMode(mode);
+                            if (mode === "company" && companyAddress) setShipping(companyAddress);
+                          }}>
+                    <option value="company">La de la empresa</option>
+                    <option value="other">Otra dirección</option>
+                  </select>
+                </label>
               ) : null}
             </div>
-          ) : null}
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>SKU (opcional)</th><th>Descripción</th><th>Cant.</th>
-                <th>Precio ud.</th><th>Total</th><th />
-              </tr>
-            </thead>
-            <tbody>
-              {lines.map((l, i) => (
-                <tr key={i}>
-                  <td>
-                    <ArticleAutocompleteInput
-                      value={l.product_sku}
-                      enabled={articleSearchEnabled}
-                      ariaLabel={`SKU línea ${i + 1}`}
-                      onChange={(v) => updateLine(i, "product_sku", v)}
-                      onPick={(a) => applyArticle(i, a)}
-                    />
-                  </td>
-                  <td>
-                    <ArticleAutocompleteInput
-                      value={l.description}
-                      enabled={articleSearchEnabled}
-                      ariaLabel={`Descripción línea ${i + 1}`}
-                      onChange={(v) => updateLine(i, "description", v)}
-                      onPick={(a) => applyArticle(i, a)}
-                    />
-                  </td>
-                  <td>
-                    <input type="number" min="0" step="1" value={l.quantity}
-                           aria-label={`Cantidad línea ${i + 1}`}
-                           onChange={(e) => updateLine(i, "quantity", e.target.value)} />
-                  </td>
-                  <td>
-                    <input type="number" min="0" step="0.01" value={l.unit_price}
-                           aria-label={`Precio línea ${i + 1}`}
-                           onChange={(e) => updateLine(i, "unit_price", e.target.value)} />
-                  </td>
-                  <td>{(num(l.quantity) * num(l.unit_price)).toFixed(2)}</td>
-                  <td>
-                    {lines.length > 1 ? (
-                      <button type="button" className="button small secondary"
-                              aria-label={`Eliminar línea ${i + 1}`}
-                              onClick={() => setLines((rs) => rs.filter((_, j) => j !== i))}>
-                        ✕
-                      </button>
-                    ) : null}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          <button type="button" className="button small secondary"
-                  onClick={() => setLines((rs) => [...rs, { ...EMPTY_LINE }])}>
-            + Añadir línea
-          </button>
-          {/* Portes como LÍNEA APARTE, igual que los pedidos web: no se
-              mezclan con la mercancía. En FACTUSOL viajan en la banda de
-              portes de la cabecera (IPOR1), que es donde los deja la app
-              Woo→FACTUSOL y de donde el PDF los pinta como línea de cargo. */}
-          <div className="form-row">
-            <label className="field">
-              <span>Portes (gastos de envío)</span>
-              <input type="number" min="0" step="0.01" value={portes}
-                     aria-label="Portes"
-                     placeholder="0.00"
-                     title="Se añaden como línea de portes del pedido, aparte de la mercancía (como en los pedidos web)."
-                     onChange={(e) => setPortes(e.target.value)} />
+            {lineNum(portes) > 0 ? (
+              <p className="muted small" role="status">
+                Portes: <strong>{lineNum(portes).toFixed(2)} EUR</strong> como línea
+                aparte. En FACTUSOL van en los portes del documento, como los de
+                los pedidos web.
+              </p>
+            ) : null}
+            <label className="field-toggle">
+              <input type="checkbox" checked={pickup}
+                     onChange={(e) => setPickup(e.target.checked)} />
+              <span>Recogida en tienda</span>
             </label>
-          </div>
-          {num(portes) > 0 ? (
-            <p className="muted small" role="status">
-              Portes: <strong>{num(portes).toFixed(2)} EUR</strong> como línea
-              aparte. En FACTUSOL van en los portes del documento, como los de
-              los pedidos web.
-            </p>
-          ) : null}
-          <p className="erp-manual-total">
-            Total: <strong>{total.toFixed(2)} EUR</strong>
-          </p>
-        </section>
+            {!pickup ? (
+              <>
+                {shippingMode === "company" && !companyAddress ? (
+                  <p className="muted small">
+                    {companyId
+                      ? "La empresa no tiene dirección guardada: escríbela debajo."
+                      : "Elige la empresa y se usará su dirección; o escríbela debajo."}
+                  </p>
+                ) : null}
+                {/* Dropshipping: el albarán FACTUSOL que crea BoHub (y su PDF)
+                    va a este nombre + la dirección de envío de abajo; la
+                    factura sale siempre a los datos fiscales de la empresa. */}
+                <label className="field">
+                  <span>Nombre de envío (si no es la empresa)</span>
+                  <input type="text" value={shippingName}
+                         aria-label="Nombre de envío"
+                         placeholder="Destinatario del envío (dropshipping)"
+                         maxLength={120}
+                         title="Destinatario que sale en el albarán cuando el envío no va a la empresa cliente (dropshipping). En blanco: la empresa. La factura va siempre a la empresa."
+                         onChange={(e) => setShippingName(e.target.value)} />
+                </label>
+                <AddressFields legend="envío" value={shipping}
+                               onChange={(a) => {
+                                 setShipping(a);
+                                 // Ya no es la de la empresa: el selector lo dice.
+                                 if (shippingModeRef.current === "company") setShippingMode("other");
+                               }} />
+                {shippingName.trim() ? (
+                  <p className="muted small" role="status">
+                    El albarán irá a <strong>{shippingName.trim()}</strong> con esta
+                    dirección de envío; la factura, a la empresa.
+                  </p>
+                ) : null}
+              </>
+            ) : null}
 
-        <section className="erp-card">
-          <h3>Envío</h3>
-          <label className="field-toggle">
-            <input type="checkbox" checked={pickup}
-                   onChange={(e) => setPickup(e.target.checked)} />
-            <span>Recogida en tienda</span>
-          </label>
-          {!pickup ? (
-            <>
-              {/* Dropshipping: el albarán FACTUSOL que crea BoHub (y su PDF)
-                  va a este nombre + la dirección de envío de abajo; la
-                  factura sale siempre a los datos fiscales de la empresa. */}
-              <label className="field">
-                <span>Nombre de envío (si no es la empresa)</span>
-                <input type="text" value={shippingName}
-                       aria-label="Nombre de envío"
-                       placeholder="Destinatario del envío (dropshipping)"
-                       maxLength={120}
-                       title="Destinatario que sale en el albarán cuando el envío no va a la empresa cliente (dropshipping). En blanco: la empresa. La factura va siempre a la empresa."
-                       onChange={(e) => setShippingName(e.target.value)} />
-              </label>
-              <AddressFields legend="envío" value={shipping} onChange={setShipping} />
-              {shippingName.trim() ? (
-                <p className="muted small" role="status">
-                  El albarán irá a <strong>{shippingName.trim()}</strong> con esta
-                  dirección de envío; la factura, a la empresa.
+            {facPreview && !facPreview.already_imported ? (
+              /* Fase 2: al crear el pedido se crea su albarán en FACTUSOL (sin
+                 factura) y se confirma el pago: sin pago, o pagado (el cobro se
+                 registra a mano cuando exista la factura). */
+              <div className="erp-step-block">
+                <h4 className="erp-step-subtitle">Pago</h4>
+                <p className="muted small">
+                  Al crear el pedido se creará su <strong>albarán en FACTUSOL</strong>
+                  {" "}(sin factura). Confirma el pago:
                 </p>
-              ) : null}
-            </>
-          ) : null}
-        </section>
+                <PaymentStep value={payment} onChange={setPayment} />
+              </div>
+            ) : null}
 
-        <section className="erp-card">
-          <h3>Facturación</h3>
-          <label className="field-toggle">
-            <input type="checkbox" checked={billingSame}
-                   onChange={(e) => setBillingSame(e.target.checked)} />
-            <span>Usar dirección de envío</span>
-          </label>
-          {!billingSame ? (
-            <AddressFields legend="facturación" value={billing} onChange={setBilling} />
-          ) : null}
-        </section>
+            {/* Facturación y notas: casi siempre «la de envío» y sin notas,
+                así que van plegadas — pero el resumen dice si hay algo. */}
+            <details className="erp-step-more" open={moreOpen}
+                     onToggle={(e) => setMoreOpen(e.currentTarget.open)}>
+              <summary>
+                Más: facturación y notas
+                {moreSummary ? <span className="muted"> · {moreSummary}</span> : null}
+              </summary>
+              <div className="erp-step-helper-body">
+                <label className="field-toggle">
+                  <input type="checkbox" checked={billingSame}
+                         onChange={(e) => setBillingSame(e.target.checked)} />
+                  <span>Usar dirección de envío</span>
+                </label>
+                {!billingSame ? (
+                  <AddressFields legend="facturación" value={billing} onChange={setBilling} />
+                ) : null}
+                <label className="field">
+                  <span>Notas internas</span>
+                  <textarea rows={3} value={notes} aria-label="Notas internas"
+                            onChange={(e) => setNotes(e.target.value)} />
+                </label>
+              </div>
+            </details>
+          </section>
+        </div>
 
-        <section className="erp-card">
-          <h3>Notas internas</h3>
-          <label className="field">
-            <span>Notas</span>
-            <textarea rows={3} value={notes} aria-label="Notas internas"
-                      onChange={(e) => setNotes(e.target.value)} />
-          </label>
-        </section>
+        {/* ---- Total siempre visible + acción principal --------------------
+            Panel lateral pegajoso en escritorio; en móvil el panel queda al
+            final y la barra (PrimaryActionBar) se pega abajo con el total. */}
+        <div className="erp-new-order-side">
+          <section className="erp-card erp-total-panel" aria-labelledby="erp-total-title">
+            <h3 id="erp-total-title" className="erp-step-title">Total del pedido</h3>
+            <dl className="erp-total-rows">
+              <div>
+                <dt>Artículos</dt>
+                <dd className="num">{eur(articlesBase)}</dd>
+              </div>
+              <div>
+                <dt>Portes</dt>
+                <dd className="num">{eur(portesAmount)}</dd>
+              </div>
+              <div>
+                <dt>{ivaLabel}</dt>
+                <dd className="num">{eur(ivaAmount)}</dd>
+              </div>
+              <div className="is-total">
+                <dt>Total</dt>
+                <dd className="num">{eur(total)}</dd>
+              </div>
+            </dl>
+            <p className="muted small erp-total-note">{regimeNote}</p>
+          </section>
 
-        <div className="form-actions">
-          <Link href="/erp/orders" className="button secondary">Cancelar</Link>
-          <button type="submit" className="button" disabled={!valid || submitting}>
-            {submitting ? "Creando…" : "Crear pedido"}
-          </button>
+          <PrimaryActionBar className="erp-new-order-actions" label="Crear pedido"
+                            hint={barHint}>
+            <p className="erp-new-order-bar-total">
+              <span>Total (IVA incl.)</span>
+              <strong className="num">{eur(total)}</strong>
+            </p>
+            <button type="submit" className="button"
+                    disabled={!valid || submitting}
+                    aria-describedby={!valid ? "erp-new-order-reason" : undefined}>
+              {submitting ? "Creando…" : "Crear pedido"}
+            </button>
+            <Link href="/erp/orders" className="button secondary">Cancelar</Link>
+            {!valid ? (
+              <p id="erp-new-order-reason" className="erp-new-order-reason">
+                {submitReason}
+              </p>
+            ) : null}
+          </PrimaryActionBar>
         </div>
       </form>
     </main>

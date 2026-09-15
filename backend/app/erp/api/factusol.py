@@ -12,6 +12,7 @@ import json
 import logging
 import time
 import zipfile
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import (
@@ -216,6 +217,7 @@ def list_factusol_documents(
         default=None, pattern="^(pendiente|con_albaran|facturado)$",
     ),
     fresh_ciclo: bool = Query(default=False),
+    linked: bool | None = Query(default=None),
     sort: str = Query(
         default="numero", pattern="^(numero|cliente|fecha|total|saldo)$",
     ),
@@ -240,7 +242,16 @@ def list_factusol_documents(
     para repintar la columna al momento). E3-B-fix3: el ESTALB nativo sale
     como Pendiente/Facturado incondicionalmente (confirmado en el
     escritorio); la correlación con las facturas hijas queda como
-    diagnóstico en el log."""
+    diagnóstico en el log.
+
+    Lote 2 · PR-2: `linked=false` deja solo los documentos SIN pedido de
+    BoHub (`linked=true`, solo los que lo tienen); se aplica antes de paginar
+    y `unlinked_total` trae el contador del chip «Solo sin vincular» (sobre
+    el resto de filtros, sin aplicar `linked`). La respuesta lleva además
+    `fetched_at` (hora del servidor de esta lectura en vivo, ISO) y
+    `cycle_index_age_seconds` (antigüedad del índice del ciclo cacheado, 0
+    si se acaba de leer, `null` si no está cargado) para que la UI diga
+    «sincronizado hace X»."""
     _ = current_user
     from app.integrations.factusol.chain import cycle_annotator  # noqa: PLC0415
     from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
@@ -316,19 +327,341 @@ def list_factusol_documents(
             logger.warning("factusol documents/%s: cruce CRM KO: %s", doc_type, exc)
 
     try:
-        return list_documents(
+        result = list_documents(
             client, doc_type, ejercicio=ejercicio,
             codcli=codcli, serie=serie, estado=estado,
             fecha_desde=fecha_desde, fecha_hasta=fecha_hasta,
             q=q, cliente_q=cliente_q, sort=sort, direction=dir,
             limit=limit, offset=offset,
-            annotate=annotate, ciclo=ciclo,
+            annotate=annotate, ciclo=ciclo, linked=linked,
         )
     except FactusolError as exc:
         logger.warning("factusol documents/%s KO: %s", doc_type, exc)
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, {
             "code": "factusol_list_failed", "detail": str(exc)[:200],
         }) from exc
+    result["fetched_at"] = datetime.now(UTC).isoformat()
+    result["cycle_index_age_seconds"] = _cycle_index_age_seconds(ejercicio)
+    return result
+
+
+def _cycle_index_age_seconds(ejercicio: str) -> int | None:
+    """Antigüedad (s) del índice del ciclo cacheado por `chain` para el
+    ejercicio: 0 recién leído, hasta el TTL; `None` si no hay índice (no se
+    pudo cargar). Solo lee el cache — nunca lo toca."""
+    from app.integrations.factusol.chain import (  # noqa: PLC0415
+        _CHAIN_INDEX_CACHE,
+        CHAIN_INDEX_TTL_SECONDS,
+    )
+
+    cached = _CHAIN_INDEX_CACHE.get(ejercicio)
+    if not cached:
+        return None
+    expires_at = cached[0]
+    age = CHAIN_INDEX_TTL_SECONDS - (expires_at - time.time())
+    return max(0, int(age))
+
+
+# --- vincular albarán / factura a un pedido de BoHub (Lote 2 · PR-2) ---------
+#
+# Los presupuestos y pedidos de cliente se vinculan CREANDO el pedido en BoHub
+# («Crear pedido», `orders/new?doc_type=…`). Los albaranes y facturas creados
+# directamente en FACTUSOL no tienen ese camino: aquí se apuntan a un pedido
+# YA existente escribiendo solo los campos del pedido (`factusol_albaran_number`
+# / `factusol_invoice_serie` + `factusol_invoice_number`). FACTUSOL solo se lee.
+
+LINKABLE_DOC_TYPES = ("albaranes", "facturas")
+#: Sugerencias por cliente / búsqueda: tope de pedidos por bloque.
+_LINK_CANDIDATES_LIMIT = 20
+
+
+class LinkDocumentOrderPayload(BaseModel):
+    """`confirm` obligatorio (escritura en el pedido); `force` re-vincula
+    aunque el pedido ya tenga otro documento de ese tipo o el documento ya
+    esté vinculado a otro pedido (el operador vio el 409)."""
+
+    order_id: str = Field(min_length=1, max_length=64)
+    confirm: bool = False
+    force: bool = False
+
+
+def _link_doc_or_404(
+    session: Session, doc_type: str, serie: int, codigo: int,
+) -> dict[str, Any]:
+    """Cabecera EN VIVO del albarán / factura (solo lectura). 400 si el tipo
+    no se vincula así, 404 si no existe, 502 si FACTUSOL no responde."""
+    from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
+    from app.integrations.factusol.documents import get_header  # noqa: PLC0415
+
+    if doc_type not in LINKABLE_DOC_TYPES:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, {
+            "code": "link_not_supported",
+            "detail": (
+                "Los presupuestos y pedidos de cliente se vinculan creando el "
+                "pedido en BoHub («Crear pedido»)."
+            ),
+        })
+    client, ejercicio = _client_and_ejercicio(session)
+    try:
+        doc = get_header(
+            client, doc_type, serie=serie, codigo=codigo, ejercicio=ejercicio,
+        )
+    except FactusolError as exc:
+        raise _factusol_gateway_error(exc, "factusol_detail_failed") from exc
+    if doc is None:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            f"No existe el documento {serie}-{codigo} en {doc_type}",
+        )
+    return doc
+
+
+def _order_doc_link(order: Any, doc_type: str) -> str | None:
+    """Nº visible del documento de ese tipo que el pedido YA tiene vinculado
+    (`serie-código` si la serie consta; el número desnudo si no)."""
+    from app.integrations.factusol.documents import visible_number  # noqa: PLC0415
+
+    if doc_type == "albaranes":
+        return str(order.factusol_albaran_number or "").strip() or None
+    numero = str(order.factusol_invoice_number or "").strip()
+    if not numero:
+        return None
+    if order.factusol_invoice_serie is not None and "-" not in numero:
+        return visible_number(order.factusol_invoice_serie, numero)
+    return numero
+
+
+def _link_candidate_block(
+    order: Any, *, doc_type: str, match: str, company_names: dict[str, str],
+) -> dict[str, Any]:
+    return {
+        "id": order.id,
+        "order_number": order.order_number,
+        "company_name": company_names.get(order.company_id or "") or None,
+        "total_amount": float(order.total_amount or 0),
+        "placed_at": (order.placed_at or order.created_at).isoformat()
+        if (order.placed_at or order.created_at) else None,
+        "external_source": getattr(order.external_source, "value", order.external_source),
+        # Lo que el pedido ya tiene vinculado de ESTE tipo (aviso en la UI).
+        "current_link": _order_doc_link(order, doc_type),
+        # `referencia` (REFFAC/REFALB = referencia común, fuerte), `cliente`
+        # (misma empresa, débil) o `busqueda` (por nº de pedido).
+        "match": match,
+    }
+
+
+def _orders_linked_to_document(
+    session: Session, doc_type: str, doc: dict[str, Any],
+) -> list[Any]:
+    """Pedidos que YA apuntan a este documento (para avisar / 409)."""
+    from app.erp.quotes_bandeja import _orders_by_document  # noqa: PLC0415
+
+    found = _orders_by_document(session, doc_type, [doc])
+    return list(found.values())
+
+
+@router.get("/documents/{doc_type}/{serie}/{codigo}/link-candidates")
+def document_link_candidates(
+    doc_type: str,
+    serie: int,
+    codigo: int,
+    q: str | None = Query(default=None, max_length=64),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_view),
+) -> dict[str, Any]:
+    """Pedidos de BoHub a los que podría vincularse el albarán / la factura
+    (Lote 2 · PR-2). Solo lectura.
+
+    - `referencia` (fuerte): pedidos cuya referencia común (`PREFIJO-nnnnnn`,
+      la que BoHub pone en REFPCL/REFALB/REFFAC) es la del documento.
+    - `cliente` (débil): pedidos de la empresa CRM vinculada al CODCLI del
+      documento, los más recientes primero.
+    - `busqueda`: con `q`, pedidos cuyo nº contiene el término.
+
+    Los pedidos anulados no se sugieren. `linked_orders` trae los pedidos que
+    YA apuntan a este documento (la UI avisa antes de duplicar)."""
+    _ = current_user
+    from sqlalchemy import or_, select  # noqa: PLC0415
+
+    from app.erp.factusol_pdf import order_composed_ref  # noqa: PLC0415
+    from app.erp.models import Order  # noqa: PLC0415
+    from app.models.crm import Company  # noqa: PLC0415
+
+    doc = _link_doc_or_404(session, doc_type, serie, codigo)
+    ref = str(doc.get("referencia") or "").strip().upper()
+    codcli = str(doc.get("cliente_codigo") or "").strip()
+    alive = Order.cancelled_at.is_(None)
+
+    by_ref: list[Any] = []
+    if ref and "-" in ref:
+        tail = ref.rsplit("-", 1)[-1]
+        if tail.isdigit():
+            n = int(tail)
+            rows = session.scalars(
+                select(Order).where(alive, or_(
+                    Order.order_number.like(f"%-{n}"),
+                    Order.order_number.like(f"%-{n:06d}"),
+                    Order.order_number == str(n),
+                )).order_by(Order.created_at.desc())
+            ).all()
+            by_ref = [o for o in rows if order_composed_ref(session, o) == ref]
+
+    by_customer: list[Any] = []
+    if codcli:
+        codes = {codcli}
+        if codcli.isdigit():
+            codes.add(str(int(codcli)))
+        company_ids = session.scalars(
+            select(Company.id).where(Company.factusol_company_id.in_(sorted(codes)))
+        ).all()
+        if company_ids:
+            seen = {o.id for o in by_ref}
+            rows = session.scalars(
+                select(Order).where(alive, Order.company_id.in_(company_ids))
+                .order_by(Order.created_at.desc()).limit(_LINK_CANDIDATES_LIMIT + len(seen))
+            ).all()
+            by_customer = [o for o in rows if o.id not in seen][:_LINK_CANDIDATES_LIMIT]
+
+    by_search: list[Any] = []
+    term = (q or "").strip()
+    if term:
+        seen = {o.id for o in by_ref} | {o.id for o in by_customer}
+        rows = session.scalars(
+            select(Order).where(alive, Order.order_number.ilike(f"%{term}%"))
+            .order_by(Order.created_at.desc()).limit(_LINK_CANDIDATES_LIMIT + len(seen))
+        ).all()
+        by_search = [o for o in rows if o.id not in seen][:_LINK_CANDIDATES_LIMIT]
+
+    everyone = by_ref + by_customer + by_search
+    company_ids = sorted({o.company_id for o in everyone if o.company_id})
+    company_names = {
+        c.id: c.name for c in session.scalars(
+            select(Company).where(Company.id.in_(company_ids))
+        ).all()
+    } if company_ids else {}
+    candidates = [
+        _link_candidate_block(o, doc_type=doc_type, match=match, company_names=company_names)
+        for match, block in (
+            ("referencia", by_ref), ("cliente", by_customer), ("busqueda", by_search),
+        )
+        for o in block
+    ]
+    return {
+        "doc": {
+            "doc_type": doc_type, "serie": serie, "codigo": codigo,
+            "numero": doc.get("numero"), "referencia": doc.get("referencia"),
+            "cliente_codigo": doc.get("cliente_codigo"),
+            "cliente_nombre": doc.get("cliente_nombre"),
+            "fecha": doc.get("fecha"), "total": doc.get("total"),
+        },
+        "linked_orders": [
+            {"id": o.id, "order_number": o.order_number}
+            for o in _orders_linked_to_document(session, doc_type, doc)
+        ],
+        "candidates": candidates,
+        "q": term or None,
+    }
+
+
+@router.post("/documents/{doc_type}/{serie}/{codigo}/link-order")
+def link_document_to_order(
+    doc_type: str,
+    serie: int,
+    codigo: int,
+    payload: LinkDocumentOrderPayload,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_edit),
+) -> dict[str, Any]:
+    """Vincula el albarán / la factura de FACTUSOL a un pedido de BoHub
+    (Lote 2 · PR-2). SOLO escribe campos del pedido; FACTUSOL solo se lee
+    (para comprobar que el documento existe y tomar su referencia).
+
+    - facturas: `factusol_invoice_serie` + `factusol_invoice_number`, por
+      `invoice_link_fix.relink_order` (limpia el cobro cacheado, deja
+      historial y evento).
+    - albaranes: `factusol_albaran_number` = `serie-código`, con la misma
+      entrada de historial que la creación del albarán.
+
+    409 (`order_already_linked` / `document_already_linked`) si el pedido ya
+    tiene otro documento de ese tipo o el documento ya apunta a otro pedido;
+    `force` lo salta. `confirm` es obligatorio."""
+    from app.erp.models import Order  # noqa: PLC0415
+    from app.integrations.factusol.documents import visible_number  # noqa: PLC0415
+
+    if not payload.confirm:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, {
+            "code": "confirm_required",
+            "detail": "Marca la confirmación para vincular el documento al pedido.",
+        })
+    doc = _link_doc_or_404(session, doc_type, serie, codigo)
+    order = session.get(Order, payload.order_id)
+    if order is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, {
+            "code": "order_not_found", "detail": "El pedido no existe en BoHub.",
+        })
+    numero = visible_number(serie, codigo)
+    singular = "albarán" if doc_type == "albaranes" else "factura"
+    current = _order_doc_link(order, doc_type)
+    # Ya apunta a este documento (o al número desnudo sin serie, que es
+    # justo lo que se completa): re-vincular no es un conflicto.
+    already_here = current in (numero, str(int(codigo)))
+    if not payload.force:
+        if current and not already_here:
+            raise HTTPException(status.HTTP_409_CONFLICT, {
+                "code": "order_already_linked",
+                "detail": (
+                    f"El pedido {order.order_number} ya tiene {singular} "
+                    f"{current}. Fuerza el vínculo para sustituirlo."
+                ),
+                "current": current,
+            })
+        others = [
+            o for o in _orders_linked_to_document(session, doc_type, doc)
+            if o.id != order.id
+        ]
+        if others:
+            raise HTTPException(status.HTTP_409_CONFLICT, {
+                "code": "document_already_linked",
+                "detail": (
+                    f"{singular.capitalize()} {numero} ya está vinculado al pedido "
+                    f"{others[0].order_number}. Fuerza el vínculo para apuntarlo "
+                    "también a este."
+                ),
+                "existing": {"id": others[0].id, "order_number": others[0].order_number},
+            })
+
+    referencia = str(doc.get("referencia") or "").strip()
+    if doc_type == "facturas":
+        from app.erp.invoice_link_fix import relink_order  # noqa: PLC0415
+
+        relink_order(
+            session, order, serie=serie, codigo=codigo, referencia=referencia,
+            actor_user_id=current_user.id,
+        )
+    else:
+        from app.erp.factusol_albaran import _attach_albaran  # noqa: PLC0415
+
+        _attach_albaran(
+            session, order, numero, how="vinculado desde Documentos FACTUSOL",
+            actor_user_id=current_user.id,
+            extra={"source": "documents_link", "serie": serie, "codigo": codigo,
+                   "referencia": referencia or None,
+                   "antes": current},
+        )
+    _audit_quote(
+        session, current_user, "erp.factusol_document_link",
+        f"{doc_type}:{serie}-{codigo}",
+        {"order_id": order.id, "order_number": order.order_number,
+         "numero": numero, "referencia": referencia or None,
+         "antes": current, "force": payload.force},
+    )
+    session.commit()
+    return {
+        "status": "linked",
+        "doc": {"doc_type": doc_type, "serie": serie, "codigo": codigo, "numero": numero},
+        "order": {"id": order.id, "order_number": order.order_number},
+        "previous": current,
+    }
 
 
 # --- rutas de ESTADO de jobs (literal) — DECLARADAS ANTES de la genérica ---

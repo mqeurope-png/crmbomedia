@@ -4,6 +4,7 @@ import Link from "next/link";
 import { customerLabel, STATUS_LABELS, type SatQueueItem } from "../../lib/erpApi";
 import { SatAlbaranChip, useSatAlbaranAction } from "./SatPreparingCard";
 import { SatReadyButtons, SatReadyDocChips, useSatReadyActions } from "./SatReadyCard";
+import { SatObservaciones, SatTechData } from "./SatTechData";
 
 /** Fecha corta del pedido (dd/mm/aaaa) para tablas del taller. */
 export function satShortDate(iso: string | null | undefined): string {
@@ -22,11 +23,50 @@ export function satDateTime(iso: string | null | undefined): string {
   });
 }
 
+/** Nº de columnas de la tabla (para las filas de aviso/observaciones). */
+const COLS = 8;
+
 function StatusBadge({ status }: { status: string }) {
   return (
     <span className={`badge ${STATUS_LABELS[status]?.tone ?? "muted"}`}>
       {STATUS_LABELS[status]?.label ?? status}
     </span>
+  );
+}
+
+/** Lote 2 · PR-2: las observaciones del comercial van ENCIMA de la fila, en
+ *  ámbar y a todo el ancho — solo si hay nota. */
+function NotesRow({ order }: { order: SatQueueItem }) {
+  if (!(order.notes ?? "").trim()) return null;
+  return (
+    <tr className="sat-row-notes">
+      <td colSpan={COLS}><SatObservaciones notes={order.notes} /></td>
+    </tr>
+  );
+}
+
+function hasTechData(order: SatQueueItem): boolean {
+  return Boolean(
+    (order.serial_number ?? "").trim()
+    || (order.whiterip_license ?? "").trim()
+    || (order.shipping_origin ?? "").trim(),
+  );
+}
+
+/** Celda «Datos técnicos» de la lista (compacta: solo lo que tenga valor, con
+ *  su botón de copiar; sin nada → «—»). */
+function TechCell({ order }: { order: SatQueueItem }) {
+  return (
+    <td className="sat-td-tech">
+      {hasTechData(order) ? (
+        <SatTechData
+          compact
+          serial={order.serial_number}
+          license={order.whiterip_license}
+          origin={order.shipping_origin}
+        />
+      ) : "—"}
+    </td>
   );
 }
 
@@ -36,6 +76,7 @@ function SatPreparingRow({ order, onChanged }: { order: SatQueueItem; onChanged:
   const albaran = useSatAlbaranAction(order, onChanged);
   return (
     <>
+      <NotesRow order={order} />
       <tr>
         <td className="sat-td-num">
           <Link href={`/erp/sat/${order.id}`}>{order.order_number}</Link>
@@ -47,6 +88,7 @@ function SatPreparingRow({ order, onChanged }: { order: SatQueueItem; onChanged:
         <td>{order.store_slug ?? "—"}</td>
         <td>{satShortDate(order.placed_at)}</td>
         <td><StatusBadge status={order.preparation_status} /></td>
+        <TechCell order={order} />
         <td>
           <span className={`sat-doc-flag ${albaran.hasAlbaran ? "ok" : "warn"}`}
                 title={albaran.title}>
@@ -66,7 +108,7 @@ function SatPreparingRow({ order, onChanged }: { order: SatQueueItem; onChanged:
       </tr>
       {albaran.error ? (
         <tr className="sat-row-error">
-          <td colSpan={7}>
+          <td colSpan={COLS}>
             <p className="form-error small" role="status">
               {albaran.error}{" "}
               <Link href={`/erp/orders/${order.id}`}>Ir a la ficha</Link>
@@ -85,6 +127,7 @@ function SatReadyRow({ order, onChanged }: { order: SatQueueItem; onChanged: () 
   const { hasAlbaran } = actions.albaran;
   return (
     <>
+      <NotesRow order={order} />
       <tr>
         <td className="sat-td-num">
           <Link href={`/erp/orders/${order.id}`}>{order.order_number}</Link>
@@ -96,6 +139,7 @@ function SatReadyRow({ order, onChanged }: { order: SatQueueItem; onChanged: () 
         <td>{order.store_slug ?? "—"}</td>
         <td>{satShortDate(order.placed_at)}</td>
         <td><StatusBadge status={order.preparation_status} /></td>
+        <TechCell order={order} />
         <td>
           <span className={`sat-doc-flag ${hasAlbaran ? "ok" : "warn"}`}
                 title={actions.albaran.title}>
@@ -114,7 +158,7 @@ function SatReadyRow({ order, onChanged }: { order: SatQueueItem; onChanged: () 
       </tr>
       {actions.error ? (
         <tr className="sat-row-error">
-          <td colSpan={7}><p className="form-error small" role="status">{actions.error}</p></td>
+          <td colSpan={COLS}><p className="form-error small" role="status">{actions.error}</p></td>
         </tr>
       ) : null}
     </>
@@ -122,7 +166,9 @@ function SatReadyRow({ order, onChanged }: { order: SatQueueItem; onChanged: () 
 }
 
 /** Vista lista de la Cola SAT (Lote B6): tabla compacta con las MISMAS
- *  acciones que las tarjetas. `variant` decide qué fila se pinta. */
+ *  acciones que las tarjetas. `variant` decide qué fila se pinta. Lote 2 ·
+ *  PR-2: columna «Datos técnicos» (nº de serie / licencia con «copiar»,
+ *  origen) y las observaciones del comercial encima de la fila. */
 export function SatQueueTable({
   items,
   variant,
@@ -144,6 +190,7 @@ export function SatQueueTable({
             <th>Tienda</th>
             <th>Fecha</th>
             <th>Estado</th>
+            <th>Datos técnicos</th>
             <th>Documentos</th>
             <th>Acciones</th>
           </tr>

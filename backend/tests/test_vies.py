@@ -619,6 +619,41 @@ def test_revalidar_confirma_intracomunitario_y_no_fuerza_si_reciente(http) -> No
     assert http.post("/api/companies/nope/vies-revalidate", headers=h).status_code == 404
 
 
+def test_fiscal_check_force_salta_la_cache_y_el_resultado_guardado(http) -> None:
+    """Lote 2 · «Volver a comprobar» en «Crear empresa»: `fiscal-check`
+    con `force=true` consulta VIES en vivo saltando la caché del cliente y
+    el resultado guardado en la empresa (`exclude_id`), y devuelve la hora
+    de la comprobación. Sin `force` todo sigue igual (reutiliza lo guardado)."""
+    fake = _FakeVies({FR: "valido"})
+    h = auth_headers(http, "user")
+    with _vies_on(fake):
+        # La ficha guarda un veredicto reciente.
+        r = http.post("/api/companies/fr/vies-revalidate", params={"force": "false"}, headers=h)
+        assert r.status_code == 200 and fake.calls == [(FR, False)]
+        # Sin `force`, editando esa empresa: reutiliza lo guardado (no llama).
+        fc = http.get("/api/companies/fiscal-check", headers=h,
+                      params={"country": "FR", "vat": FR, "exclude_id": "fr"}).json()
+        assert fc["vies"]["status"] == "valido" and fc["vies"]["checked_at"]
+        assert len(fake.calls) == 1
+        # Con `force`: consulta en vivo saltando caché y guardado.
+        fc = http.get("/api/companies/fiscal-check", headers=h,
+                      params={"country": "FR", "vat": FR, "exclude_id": "fr",
+                              "force": "true"}).json()
+        assert fake.calls[-1] == (FR, True) and len(fake.calls) == 2
+        assert fc["vies"]["status"] == "valido" and fc["vies"]["valid"] is True
+        assert fc["vies"]["checked_at"] and fc["vies"]["name"] == "LA MAISON (VIES)"
+        assert fc["regime"] == "intracomunitario" and "verificado en VIES" in fc["regime_reason"]
+        # En el alta (sin empresa detrás) `force` también llega al cliente.
+        http.get("/api/companies/fiscal-check", headers=h, params={"country": "FR", "vat": FR})
+        assert fake.calls[-1] == (FR, False)
+        http.get("/api/companies/fiscal-check", headers=h,
+                 params={"country": "FR", "vat": FR, "force": "true"})
+        assert fake.calls[-1] == (FR, True)
+    # `force` no escribe en la empresa: el veredicto guardado es el de la ficha.
+    r = http.get("/api/companies/fr", headers=h).json()
+    assert r["vies_status"] == "valido" and r["vies"]["status"] == "valido"
+
+
 def test_vat_cacheado_como_no_valido_se_revalida_a_valido(http, session_factory) -> None:
     """Un VAT que quedó guardado como «no válido» (el bug del prefijo) pasa a
     válido con «Revalidar en VIES» (forzado) — y también solo, al cargar la

@@ -34,13 +34,20 @@ describe("CompanySearch — buscador de empresa unificado", () => {
     await user.type(screen.getByRole("combobox", { name: "Empresa" }), "la mai");
     await waitFor(() => expect(mockList).toHaveBeenCalledWith({ q: "la mai", limit: 8 }));
     const opciones = await screen.findAllByRole("option");
-    // 2 empresas + «Crear empresa nueva».
+    // 2 empresas + «Crear empresa «…»».
     expect(opciones).toHaveLength(3);
     expect(opciones[0]).toHaveTextContent("SAS La Maison de la Plaque");
-    expect(opciones[0]).toHaveTextContent("en FACTUSOL nº 2760");
+    expect(opciones[0]).toHaveTextContent("En FACTUSOL · nº 2760");
+    // El NIF va en monoespaciada (dato numérico) y cada fila enseña su acción;
+    // «En FACTUSOL» da el primario, «Solo CRM» el secundario.
+    expect(opciones[0].querySelector(".mono")).toHaveTextContent("FR16339753527");
+    expect(opciones[0].querySelector(".company-search-use")).toHaveTextContent("Usar esta");
+    expect(opciones[0].querySelector(".company-search-use")?.className).not.toContain("secondary");
     expect(opciones[1]).toHaveTextContent("La Maison du Cadeau");
-    expect(opciones[1]).toHaveTextContent("solo CRM");
-    expect(opciones[2]).toHaveTextContent("Crear empresa nueva «la mai»");
+    expect(opciones[1]).toHaveTextContent("Solo CRM");
+    expect(opciones[1].querySelector(".company-search-use")?.className).toContain("secondary");
+    expect(opciones[2]).toHaveTextContent("Crear empresa «la mai»");
+    expect(opciones[2].className).toContain("is-create");
   });
 
   it("elegir una empresa llama a onPick y cierra la lista", async () => {
@@ -53,17 +60,30 @@ describe("CompanySearch — buscador de empresa unificado", () => {
     expect(screen.queryByRole("option")).toBeNull();
   });
 
-  it("la opción «Crear empresa nueva «…»» es persistente y lleva el texto escrito", async () => {
+  it("la opción «Crear empresa «…»» es persistente (última, también con resultados) y lleva el texto escrito", async () => {
     mockList.mockResolvedValue({ items: [], total: 0 });
     const onCreate = jest.fn();
     const user = userEvent.setup();
-    render(<CompanySearch onPick={() => {}} onCreate={onCreate} />);
+    const view = render(<CompanySearch onPick={() => {}} onCreate={onCreate} />);
     await user.type(screen.getByRole("combobox", { name: "Empresa" }), "Nueva SL");
     expect(await screen.findByText("Ninguna empresa coincide.")).toBeInTheDocument();
     const [crear] = screen.getAllByRole("option");
-    expect(crear).toHaveTextContent("Crear empresa nueva «Nueva SL»");
+    expect(crear).toHaveTextContent("¿No está en la lista?");
+    expect(crear).toHaveTextContent("Crear empresa «Nueva SL»");
     await user.click(crear);
     expect(onCreate).toHaveBeenCalledWith("Nueva SL");
+    view.unmount();
+
+    // Con resultados sigue ahí, la última, y arrastra lo escrito tal cual.
+    mockList.mockResolvedValue({ items: [company()], total: 1 });
+    render(<CompanySearch onPick={() => {}} onCreate={onCreate} />);
+    await user.type(screen.getByRole("combobox", { name: "Empresa" }), "rotulacion");
+    await screen.findByRole("option", { name: /SAS La Maison de la Plaque/ });
+    const opciones = screen.getAllByRole("option");
+    expect(opciones).toHaveLength(2);
+    expect(opciones[1]).toHaveTextContent("Crear empresa «rotulacion»");
+    await user.click(opciones[1]);
+    expect(onCreate).toHaveBeenLastCalledWith("rotulacion");
   });
 
   it("teclado: ↓ ↓ ⏎ elige la segunda; sin onCreate no hay opción de crear", async () => {

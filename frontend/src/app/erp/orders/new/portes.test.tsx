@@ -96,8 +96,13 @@ describe("Alta de pedido manual — PORTES como línea aparte (como los web)", (
     await elegirEmpresaYLinea(user);
     await user.type(screen.getByLabelText("Portes"), "19");
 
-    // El total del pedido suma los portes (80 + 19).
-    expect(screen.getByText(/Total:/)).toHaveTextContent("99.00 EUR");
+    // El panel del total (Lote 2 · PR-2) suma los portes (80 + 19) y el IVA
+    // como lo calcula el backend: 99 × 1,21 = 119,79.
+    const panel = screen.getByRole("region", { name: "Total del pedido" });
+    expect(panel).toHaveTextContent(/Artículos\s*80\.00 €/);
+    expect(panel).toHaveTextContent(/Portes\s*19\.00 €/);
+    expect(panel).toHaveTextContent(/IVA 21 %\s*20\.79 €/);
+    expect(panel).toHaveTextContent(/Total\s*119\.79 €/);
     expect(screen.getByText(/como línea aparte/)).toHaveTextContent(
       "Portes: 19.00 EUR como línea aparte",
     );
@@ -110,12 +115,12 @@ describe("Alta de pedido manual — PORTES como línea aparte (como los web)", (
     expect(lines).toHaveLength(2);
     // La mercancía queda intacta (sin portes sumados a su precio).
     expect(lines[0]).toMatchObject({
-      description: "Tinta cyan", quantity: 2, unit_price: 40,
+      description: "Tinta cyan", quantity: 2, unit_price: 40, tax_rate: 21,
     });
     expect(lines[0].is_shipping).toBeUndefined();
-    // Y los portes van en su línea, marcados.
+    // Y los portes van en su línea, marcados y con el mismo IVA.
     expect(lines[1]).toMatchObject({
-      description: "Portes", quantity: 1, unit_price: 19, is_shipping: true,
+      description: "Portes", quantity: 1, unit_price: 19, is_shipping: true, tax_rate: 21,
     });
   });
 
@@ -123,7 +128,9 @@ describe("Alta de pedido manual — PORTES como línea aparte (como los web)", (
     const user = userEvent.setup();
     render(<NewManualOrderPage />);
     await elegirEmpresaYLinea(user);
-    expect(screen.getByText(/Total:/)).toHaveTextContent("80.00 EUR");
+    const panel = screen.getByRole("region", { name: "Total del pedido" });
+    expect(panel).toHaveTextContent(/Portes\s*0\.00 €/);
+    expect(panel).toHaveTextContent(/Total\s*96\.80 €/);   // 80 × 1,21
     expect(screen.queryByText(/como línea aparte/)).not.toBeInTheDocument();
     const submit = screen.getByRole("button", { name: "Crear pedido" });
     await waitFor(() => expect(submit).toBeEnabled());

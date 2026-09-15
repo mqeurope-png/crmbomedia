@@ -13,6 +13,7 @@ import {
   type SatAlbaranSource,
   type SatQueueItem,
 } from "../../lib/erpApi";
+import { SatObservaciones, SatTechData } from "./SatTechData";
 
 /** Estado del chip de albarán de un pedido de la cola (Lote 2 A3), derivado
  *  del contrato del backend (`albaran_source`, prioridad factusol › file › woo):
@@ -158,37 +159,27 @@ export function useSatAlbaranAction(order: SatQueueItem, onChanged: () => void) 
 }
 
 /** Chip de albarán (card «Por embalar», card «Listos» y filas de la lista).
- *  `inLink`: la card de «Por embalar» es entera un <Link>, así que el chip es
- *  un span con rol botón (un <a> anidado es HTML inválido) y los estados sin
- *  albarán tampoco navegan: al pulsar explican qué hacer. Fuera de un link,
- *  «Falta albarán» / «no disponible» enlazan a la ficha, como siempre. Con un
- *  pedido web sin descarga posible se enseña además el motivo. */
+ *  `explainInPlace`: en la card de «Por embalar» los estados sin albarán no
+ *  navegan a la ficha (el taller no la edita): al pulsar explican qué hacer y
+ *  el aviso enlaza a la ficha. Fuera de ahí, «Falta albarán» / «no disponible»
+ *  enlazan a la ficha, como siempre. Con un pedido web sin descarga posible
+ *  se enseña además el motivo. `size="lg"`: 48 px (fila de acciones de la
+ *  card, Lote 2 · PR-2). */
 export function SatAlbaranChip({
   order,
   albaran,
-  inLink = false,
+  explainInPlace = false,
+  size,
 }: {
   order: SatQueueItem;
   albaran: ReturnType<typeof useSatAlbaranAction>;
-  inLink?: boolean;
+  explainInPlace?: boolean;
+  size?: "lg";
 }) {
   const { busy, albaranClick, hasAlbaran, missing, reason, label, title, tone } = albaran;
-  const cls = `sat-chip-btn ${tone}`;
+  const cls = `sat-chip-btn ${tone}${size === "lg" ? " lg" : ""}`;
   let chip: React.ReactNode;
-  if (inLink) {
-    chip = (
-      <span
-        role="button"
-        tabIndex={0}
-        className={cls}
-        aria-disabled={busy}
-        title={title}
-        onClick={albaranClick}
-      >
-        {label}
-      </span>
-    );
-  } else if (hasAlbaran) {
+  if (hasAlbaran || explainInPlace) {
     chip = (
       <button type="button" className={cls} disabled={busy} title={title}
               onClick={albaranClick}>
@@ -212,9 +203,14 @@ export function SatAlbaranChip({
   );
 }
 
-/** Card de «📦 Por embalar» (D-1-fix2): la card entera enlaza al modo trabajo,
- *  con un chip de albarán que NO navega (descarga/abre el PDF sin salir del
- *  táctil — el operativo lo necesita para cotejar líneas antes de embalar). */
+/** Card de «📦 Por embalar» (Lote 2 · PR-2, revisión de diseño §8): se usa de
+ *  pie y a veces con guantes. Orden de lectura: nº y estado → cliente →
+ *  observaciones del comercial (ámbar, solo si hay) → datos técnicos grandes
+ *  con «copiar» → líneas → tres acciones de 48 px en dos filas: «Abrir modo
+ *  trabajo» (primario, a todo el ancho) y debajo, separados, el albarán (que
+ *  descarga/abre el PDF sin salir del táctil — el operativo lo necesita para
+ *  cotejar líneas antes de embalar) y la ficha. La card ya NO es un enlace
+ *  entero: con botones dentro, era la forma de pulsar el equivocado. */
 export function SatPreparingCard({
   order,
   onChanged,
@@ -226,7 +222,7 @@ export function SatPreparingCard({
 
   return (
     <div className="sat-card-wrap">
-      <Link href={`/erp/sat/${order.id}`} className="sat-card">
+      <article className="sat-card sat-preparing-card" aria-label={`Pedido ${order.order_number}`}>
         <div className="sat-card-top">
           <span className="sat-card-num">{order.order_number}</span>
           <span className={`badge ${STATUS_LABELS[order.preparation_status]?.tone ?? "muted"}`}>
@@ -239,16 +235,31 @@ export function SatPreparingCard({
         {order.payment_status !== "paid" ? (
           <div className="sat-card-warn">⚠ SIN COBRAR</div>
         ) : null}
+        <SatObservaciones notes={order.notes} />
+        <SatTechData
+          serial={order.serial_number}
+          license={order.whiterip_license}
+          origin={order.shipping_origin}
+        />
         <ul className="sat-card-lines">
           {order.lines.map((l, i) => (
             <li key={i}>{l.quantity}× {l.description}</li>
           ))}
         </ul>
-        <div className="sat-card-docs">
-          <SatAlbaranChip order={order} albaran={albaran} inLink />
+        <div className="sat-card-actions">
+          <div className="sat-card-actions-primary">
+            <Link href={`/erp/sat/${order.id}`} className="button lg sat-card-primary">
+              Abrir modo trabajo →
+            </Link>
+          </div>
+          <div className="sat-card-actions-secondary">
+            <SatAlbaranChip order={order} albaran={albaran} explainInPlace size="lg" />
+            <Link href={`/erp/orders/${order.id}`} className="button secondary lg">
+              Ficha
+            </Link>
+          </div>
         </div>
-        <span className="sat-card-cta">Abrir →</span>
-      </Link>
+      </article>
       {albaran.error ? (
         <p className="form-error small" role="status">
           {albaran.error}{" "}

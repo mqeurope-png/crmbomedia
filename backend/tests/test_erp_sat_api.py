@@ -135,6 +135,37 @@ def test_sat_queue_visible_to_sat_role(client, session_factory):
                       headers=auth_headers(client, "viewer")).status_code == 403
 
 
+def test_sat_queue_item_lleva_observaciones_y_datos_tecnicos(client, session_factory):
+    """Lote 2 · PR-2: la cola expone lo que el taller lee de pie — las
+    observaciones del comercial, el nº de serie, la licencia WhiteRIP y el
+    origen del envío (campos de seguimiento de la ficha, solo lectura aquí).
+    Vacío o solo espacios llega como None; nunca se inventa."""
+    with session_factory() as s:
+        s.add_all([
+            Order(order_number="T-FULL", preparation_status="preparing", payment_status="paid",
+                  notes="  Cliente pide embalaje reforzado y manual en alemán.  ",
+                  serial_number="FLX-7741-2026", whiterip_license="WR-4C-88231",
+                  shipping_origin="SAT"),
+            Order(order_number="T-EMPTY", preparation_status="packed", payment_status="paid",
+                  notes="   ", serial_number=None, whiterip_license="", shipping_origin=None),
+        ])
+        s.commit()
+    body = client.get("/api/erp/sat/queue", headers=auth_headers(client, "sat")).json()
+    full = next(i for i in body["preparing"] if i["order_number"] == "T-FULL")
+    assert full["notes"] == "Cliente pide embalaje reforzado y manual en alemán."
+    assert full["serial_number"] == "FLX-7741-2026"
+    assert full["whiterip_license"] == "WR-4C-88231"
+    assert full["shipping_origin"] == "SAT"
+    empty = next(i for i in body["ready_for_pickup"] if i["order_number"] == "T-EMPTY")
+    assert empty["notes"] is None
+    assert empty["serial_number"] is None
+    assert empty["whiterip_license"] is None
+    assert empty["shipping_origin"] is None
+    # Las claves están siempre (contrato estable para la card).
+    for key in ("notes", "serial_number", "whiterip_license", "shipping_origin"):
+        assert key in empty
+
+
 # --- Lote B6: filtros de la cola ---------------------------------------------
 
 

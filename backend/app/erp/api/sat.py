@@ -265,6 +265,15 @@ def _iso(dt: datetime | None) -> str | None:
     return dt.isoformat() if dt else None
 
 
+def _clean(value: str | None) -> str | None:
+    """Texto libre de la ficha para la cola: recortado, y None si queda vacío
+    (así la card no pinta un bloque de observaciones en blanco)."""
+    if value is None:
+        return None
+    text = value.strip()
+    return text or None
+
+
 def _as_utc(dt: datetime) -> datetime:
     """SQLite devuelve naive; MySQL también puede. Para ordenar y serializar
     todo igual se asume UTC (es lo que se escribe)."""
@@ -377,6 +386,16 @@ def sat_queue(
             # Lote B6: la vista lista enseña tienda y fecha del pedido.
             "store_slug": _store_slug(stores, o),
             "placed_at": _iso(o.placed_at),
+            # Lote 2 · PR-2: lo que el taller necesita leer de pie, a un brazo
+            # de distancia — observaciones del comercial (lo primero), nº de
+            # serie y licencia WhiteRIP (grandes, en mono, con «copiar») y
+            # origen del envío (OFI-TER-SAT). Son los campos de seguimiento
+            # del pedido (ERP-F6), que se editan en la ficha; aquí solo se
+            # leen. Vacío o solo espacios → None (la card pinta «—»).
+            "serial_number": _clean(o.serial_number),
+            "whiterip_license": _clean(o.whiterip_license),
+            "shipping_origin": _clean(o.shipping_origin),
+            "notes": _clean(o.notes),
         }
 
     return {
