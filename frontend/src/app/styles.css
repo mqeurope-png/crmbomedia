@@ -12648,6 +12648,114 @@ input[type="radio"]:focus-visible {
 }
 .company-ficha-id p { margin: 0; }
 .company-ficha-nif {
+
+/* =====================================================================
+   Lote 2 · PR-2 · ficha de pedido  (docs/ux/revision-ux-erp, pantalla 3)
+   Línea de vida vertical con el paso actual como única tarjeta azul, barra
+   de 7 segmentos en la cabecera, «pendiente de cobro» destacado, paneles
+   plegables con resumen, miga de vuelta a la cola y acción principal fija
+   abajo en móvil. Solo tokens del sistema (E1–E3): nada en px fuera de la
+   escala ni grises sobre datos.
+   ===================================================================== */
+/* --- miga de vuelta («← Bandeja · Por cobrar») --- */
+.erp-ficha-back { margin: 0 0 var(--sp-2); font-size: var(--fs-label); }
+.erp-ficha-back a { color: var(--brand-ink); text-decoration: none; }
+.erp-ficha-back a:hover { text-decoration: underline; }
+
+/* --- barra de 7 segmentos («Paso 6 de 7 · Cobro») --- */
+.erp-flow-progress { margin: 0 0 var(--sp-4); }
+.erp-flow-progress-bar { display: flex; gap: var(--sp-1); }
+.erp-flow-progress-seg {
+  flex: 1 1 0;
+  height: 6px;
+  border-radius: var(--r-pill);
+  background: var(--line);
+}
+.erp-flow-progress-seg.is-done { background: var(--st-green-ink); }
+.erp-flow-progress-seg.is-now { background: var(--brand); }
+.erp-flow-progress-seg.is-skipped {
+  background: repeating-linear-gradient(90deg, var(--line) 0 4px, transparent 4px 8px);
+}
+.erp-flow-progress-txt { margin: var(--sp-2) 0 0; font-size: var(--fs-label); color: var(--muted); }
+.erp-flow-progress-txt strong { color: var(--ink); font-weight: 600; }
+
+/* --- dos columnas desde 1280: línea de vida a la izquierda, paneles a la
+       derecha (E7). Debajo, una columna en el mismo orden. --- */
+.erp-ficha-cols { display: grid; grid-template-columns: 1fr; gap: var(--sp-4); align-items: start; }
+.erp-ficha-main,
+.erp-ficha-side { display: flex; flex-direction: column; gap: var(--sp-4); min-width: 0; }
+.erp-ficha-main > *,
+.erp-ficha-side > * { margin: 0; }
+@media (min-width: 1280px) {
+  .erp-ficha-cols { grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr); }
+}
+
+/* --- línea de vida vertical (WorkflowSteps `vertical`) --- */
+.erp-lifeline h3 { margin-bottom: var(--sp-4); }
+.erp-flow-steps.is-vertical {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  background: none;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  overflow: visible;
+}
+.erp-flow-steps.is-vertical .erp-flow-step {
+  position: relative;
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  column-gap: var(--sp-3);
+  align-items: start;
+  padding: 0 0 var(--sp-4);
+  border: 0;
+  text-align: left;
+}
+.erp-flow-steps.is-vertical .erp-flow-step:last-child { padding-bottom: 0; }
+/* Conector entre iconos: verde tras un paso hecho, gris en el resto. */
+.erp-flow-steps.is-vertical .erp-flow-step::before {
+  content: "";
+  position: absolute;
+  left: 13px;
+  top: 28px;
+  bottom: 0;
+  width: 2px;
+  background: var(--line);
+}
+.erp-flow-steps.is-vertical .erp-flow-step.is-done::before { background: var(--st-green-ink); }
+.erp-flow-steps.is-vertical .erp-flow-step:last-child::before { display: none; }
+.erp-flow-steps.is-vertical .erp-flow-step-ic {
+  grid-row: auto;
+  width: 28px;
+  height: 28px;
+  margin: 0;
+  font-size: var(--fs-label);
+  font-weight: 700;
+  font-family: var(--font-mono);
+  background: var(--card);
+  color: var(--muted);
+  border: 2px solid var(--line);
+  box-shadow: none;
+}
+.erp-flow-steps.is-vertical .erp-flow-step.is-done .erp-flow-step-ic {
+  background: var(--st-green-ink);
+  color: #fff;
+  border-color: var(--st-green-ink);
+}
+.erp-flow-steps.is-vertical .erp-flow-step.is-now .erp-flow-step-ic {
+  background: var(--card);
+  color: var(--brand-ink);
+  border-color: var(--brand);
+}
+.erp-flow-steps.is-vertical .erp-flow-step.is-skipped .erp-flow-step-ic {
+  background: var(--st-neutral-bg);
+  color: var(--st-neutral-ink);
+  border-color: var(--st-neutral-bg);
+}
+.erp-flow-steps.is-vertical .erp-flow-step-body { grid-column: 2; min-width: 0; padding-top: var(--sp-1); }
+.erp-flow-steps.is-vertical .erp-flow-step-row {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
@@ -12810,6 +12918,76 @@ input[type="radio"]:focus-visible {
   background: var(--card);
 }
 .sat-tech-label {
+
+}
+.erp-flow-steps.is-vertical .erp-flow-step-t {
+  display: inline;
+  grid-column: auto;
+  font-size: var(--fs-body);
+  font-weight: 600;
+  color: var(--ink);
+}
+.erp-flow-steps.is-vertical .erp-flow-step.is-pending .erp-flow-step-t,
+.erp-flow-steps.is-vertical .erp-flow-step.is-skipped .erp-flow-step-t { color: var(--muted); }
+.erp-flow-steps.is-vertical .erp-flow-step-d {
+  display: inline;
+  grid-column: auto;
+  margin: 0;
+  min-height: 0;
+  font-size: var(--fs-label);
+  font-family: var(--font-mono);
+  color: var(--muted);
+}
+.erp-flow-steps.is-vertical .erp-flow-step-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px var(--sp-2);
+  border-radius: var(--r-pill);
+  background: var(--st-amber-bg);
+  color: var(--st-amber-ink);
+  font-size: var(--fs-label);
+  font-weight: 600;
+}
+/* La ÚNICA tarjeta azul de la pantalla: el paso actual. */
+.erp-flow-steps.is-vertical .erp-flow-step-body.is-card {
+  padding: var(--sp-3) var(--sp-4);
+  border: 1px solid #CFE0FF;
+  border-radius: var(--r-panel);
+  background: var(--primary-tint);
+}
+.erp-flow-steps.is-vertical .erp-flow-step.is-now .erp-flow-step-t { font-size: var(--fs-subtitle); color: var(--ink); }
+.erp-flow-steps.is-vertical .erp-flow-step-x { margin-top: var(--sp-2); }
+/* «Siguiente paso» incrustado en la tarjeta: sin caja propia. */
+.erp-flow-nowbar.is-embedded {
+  background: none;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  margin: 0;
+}
+.erp-flow-nowbar.is-embedded .erp-flow-nowbar-v { font-size: var(--fs-body); color: var(--muted); }
+.erp-flow-nowbar.is-embedded.is-blocking .erp-flow-nowbar-v { color: var(--danger-ink); }
+.erp-flow-steps.is-vertical .erp-flow-step.is-now:has(.is-blocking) .erp-flow-step-body.is-card {
+  background: #FEF3F2;
+  border-color: #F5C7C2;
+}
+.erp-lifeline > .erp-flow-nowbar { margin-top: var(--sp-4); }
+
+/* --- «pendiente de cobro» destacado (resumen económico) --- */
+.erp-flow-cobro {
+  --ink-on-color: var(--st-amber-ink);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--r-panel);
+  background: var(--st-amber-bg);
+  color: var(--ink-on-color);
+}
+.erp-flow-cobro.is-done { --ink-on-color: var(--st-green-ink); background: var(--st-green-bg); }
+.erp-flow-cobro.is-na { --ink-on-color: var(--st-neutral-ink); background: var(--st-neutral-bg); }
+.erp-flow-cobro-k {
   font-size: var(--fs-label);
   font-weight: 600;
   letter-spacing: 0.05em;
@@ -12911,3 +13089,59 @@ input[type="radio"]:focus-visible {
 /* Modo trabajo: mismos bloques bajo el título. */
 .sat-work .sat-obs { margin: var(--sp-3) 0 0; }
 .sat-work-tech .sat-tech { margin: 0; }
+
+}
+.erp-flow-cobro-n {
+  font-family: var(--font-mono);
+  font-size: var(--fs-title);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+.erp-flow-cobro-s { font-size: var(--fs-label); }
+
+/* --- paneles plegables con resumen --- */
+.erp-ficha-panel { padding: 0; }
+.erp-ficha-panel-head {
+  list-style: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  min-height: var(--control-h);
+  border-radius: var(--r-panel);
+}
+.erp-ficha-panel-head::-webkit-details-marker { display: none; }
+.erp-ficha-panel-head:hover { background: var(--bg); }
+.erp-ficha-panel-head:focus-visible { outline: 3px solid var(--focus); outline-offset: -3px; }
+.erp-ficha-panel-txt { flex: 1 1 140px; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.erp-ficha-panel-txt h3 { margin: 0; }
+.erp-ficha-panel-sum { font-size: var(--fs-label); color: var(--muted); overflow-wrap: anywhere; }
+.erp-ficha-panel-chev { color: var(--muted); font-size: var(--fs-body); }
+.erp-ficha-panel-body { padding: 0 var(--sp-4) var(--sp-4); }
+.erp-ficha-panel.is-open > .erp-ficha-panel-head {
+  border-bottom: 1px solid var(--line2);
+  margin-bottom: var(--sp-3);
+  border-radius: var(--r-panel) var(--r-panel) 0 0;
+}
+/* Los paneles que van dentro (documentos de envío, seguimiento) pierden la
+   caja: ya están dentro de una. */
+.erp-ficha-panel-body > .erp-flow-panel {
+  padding: 0;
+  border: 0;
+  box-shadow: none;
+  border-radius: 0;
+  margin: 0;
+}
+.erp-ficha-panel-body > .erp-flow-panel + .erp-flow-panel {
+  margin-top: var(--sp-4);
+  padding-top: var(--sp-4);
+  border-top: 1px solid var(--line2);
+}
+
+/* --- móvil: la acción del paso actual pegada abajo (PrimaryActionBar) --- */
+@media (max-width: 767px) {
+  .erp-ficha-back { min-height: var(--control-h-touch); display: flex; align-items: center; }
+  .erp-flow-steps.is-vertical .erp-flow-step-body.is-card { padding: var(--sp-3); }
+  .erp-ficha-panel-head { min-height: var(--control-h-touch); }
+}

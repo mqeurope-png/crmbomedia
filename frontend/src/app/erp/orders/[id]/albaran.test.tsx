@@ -14,6 +14,7 @@ jest.mock("next/link", () => ({
 }));
 jest.mock("next/navigation", () => ({
   useParams: () => ({ id: "o-1" }),
+  useSearchParams: () => new URLSearchParams(""),
 }));
 jest.mock("../../../components/PageHeader", () => ({
   PageHeader: ({ title, actions }: { title: string; actions?: React.ReactNode }) => (

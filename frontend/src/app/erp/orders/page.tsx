@@ -584,6 +584,11 @@ function ErpOrdersScreen() {
     }
   }
 
+  /** Lote 2 · PR-2: el enlace a la ficha lleva la cola actual (`?from=`)
+   *  para que su miga «← Bandeja · Por cobrar» devuelva exactamente aquí. */
+  const fichaHref = (o: OrderSummary) =>
+    queue ? `/erp/orders/${o.id}?from=${queue}` : `/erp/orders/${o.id}`;
+
   /** El botón principal de la tarjeta: la acción que el backend dice que toca.
    *  Las que la bandeja sabe hacer sin salir (aprobar, cobro, completar) se
    *  disparan aquí mismo; el resto lleva a la ficha, que es donde viven. El
@@ -592,7 +597,7 @@ function ErpOrdersScreen() {
     const wf = o.workflow;
     if (!wf || wf.next_action === "ninguna") {
       return (
-        <Link href={`/erp/orders/${o.id}`} className="button small secondary">
+        <Link href={fichaHref(o)} className="button small secondary">
           Abrir
         </Link>
       );
@@ -633,7 +638,7 @@ function ErpOrdersScreen() {
     }
     return (
       <Link
-        href={`/erp/orders/${o.id}`} className="button small"
+        href={fichaHref(o)} className="button small"
         aria-label={`${label} ${o.order_number}`} title={wf.next_action_hint}
       >
         {label}
@@ -649,7 +654,7 @@ function ErpOrdersScreen() {
     const cobrada = o.factusol_cobro_status === "cobrada";
     return (
       <ActionsMenu label={`Más acciones ${o.order_number}`}>
-        <Link href={`/erp/orders/${o.id}`}>Abrir ficha</Link>
+        <Link href={fichaHref(o)}>Abrir ficha</Link>
         {wf?.next_action === "marcar_completado" ? null : (
           <button
             type="button" disabled={busy || !!o.cancelled}
@@ -1053,7 +1058,7 @@ function ErpOrdersScreen() {
                       </td>
                     ) : null}
                     <td>
-                      <Link href={`/erp/orders/${o.id}`}><strong>{o.order_number}</strong></Link>
+                      <Link href={fichaHref(o)}><strong>{o.order_number}</strong></Link>
                       <div className="erp-bandeja-badges">{smallBadges(o)}</div>
                       {reviewInfo(o)}
                     </td>
@@ -1114,7 +1119,7 @@ function ErpOrdersScreen() {
                 ) : <span />}
                 <div className="erp-flow-item-main">
                   <div className="erp-flow-item-r1">
-                    <Link href={`/erp/orders/${o.id}`}><strong>{o.order_number}</strong></Link>
+                    <Link href={fichaHref(o)}><strong>{o.order_number}</strong></Link>
                     {sourcePill(o)}
                     <time className="erp-flow-date" dateTime={o.placed_at ?? undefined} title="Fecha del pedido">
                       {d(o.placed_at)}

@@ -9,6 +9,7 @@ jest.mock("next/link", () => ({
 }));
 jest.mock("next/navigation", () => ({
   useParams: () => ({ id: "o-1" }),
+  useSearchParams: () => new URLSearchParams(""),
 }));
 // La cabecera del rediseño lleva las acciones del pedido (PDF, email,
 // completado, «⋯»): el mock las pinta para que sigan siendo accesibles.

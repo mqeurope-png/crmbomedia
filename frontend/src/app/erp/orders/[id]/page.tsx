@@ -1,8 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { useParams } from "next/navigation";
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useParams, useSearchParams } from "next/navigation";
+import {
+  Suspense, useCallback, useEffect, useState, useSyncExternalStore, type ReactNode,
+} from "react";
 import { PageHeader } from "../../../components/PageHeader";
 import { CancelOrderModal } from "../../../components/erp/CancelOrderModal";
 import { EmbalarModal } from "../../../components/erp/EmbalarModal";
@@ -11,6 +13,7 @@ import { InvoiceEmailModal } from "../../../components/erp/InvoiceEmailModal";
 import { OrderEmailModal } from "../../../components/erp/OrderEmailModal";
 import { CobroFactusolBadge } from "../../../components/erp/CobroFactusolBadge";
 import { EmitFactusolButton } from "../../../components/erp/EmitFactusolButton";
+import { PrimaryActionBar } from "../../../components/erp/PrimaryActionBar";
 import { RegistrarCobroModal } from "../../../components/erp/RegistrarCobroModal";
 import { OrderStatusMachine } from "../../../components/erp/OrderStatusMachine";
 import { ShippingFilesSection } from "../../../components/erp/ShippingFilesSection";
@@ -18,9 +21,11 @@ import { ActionsMenu } from "../../../components/erp/flow/ActionsMenu";
 import { NextActionBar } from "../../../components/erp/flow/NextActionBar";
 import { RegimePill } from "../../../components/erp/flow/RegimePill";
 import { WorkflowAlerts } from "../../../components/erp/flow/WorkflowAlerts";
-import { WorkflowSteps } from "../../../components/erp/flow/WorkflowSteps";
+import { QUEUE_LABEL } from "../../../components/erp/flow/WorkflowQueueCards";
+import { WorkflowProgress, WorkflowSteps } from "../../../components/erp/flow/WorkflowSteps";
 import { getCurrentUser, type User } from "../../../lib/api";
 import { extractErrorMessage } from "../../../lib/errors";
+import { usePersistentState } from "../../../lib/usePersistentState";
 import {
   completeOrder,
   customerLabel,
@@ -48,10 +53,96 @@ import {
   type OrderDetail,
   type StatusDomain,
   type TimelineEvent,
+  type WorkflowAction,
   type WorkflowAlert,
+  type WorkflowQueue,
 } from "../../../lib/erpApi";
 
 const INVOICED_STATUSES = new Set(["generated", "invoiced_by_erp", "already_invoiced_externally"]);
+
+/** Lote 2 · PR-2 — la cola de la bandeja de la que se llegó (`?from=`), solo
+ *  si es una cola real: la miga «← Bandeja · Por cobrar» devuelve a ella. */
+function queueFromParam(value: string | null | undefined): WorkflowQueue | null {
+  return value && value in QUEUE_LABEL ? (value as WorkflowQueue) : null;
+}
+
+/** Paneles plegables de la ficha y la clave con la que cada uno recuerda si
+ *  el usuario lo dejó abierto o cerrado (localStorage, por navegador). */
+type FichaPanelId = "lineas" | "envio" | "historial";
+const PANEL_LS_KEY: Record<FichaPanelId, string> = {
+  lineas: "erp.ficha.panel.lineas",
+  envio: "erp.ficha.panel.envio",
+  historial: "erp.ficha.panel.historial",
+};
+
+/** El panel que interesa en el paso actual (se abre por defecto; el resto
+ *  se pliega por debajo de 1280 px). Sale de `next_action`, la única fuente. */
+function relevantPanel(action: WorkflowAction | undefined): FichaPanelId | null {
+  switch (action) {
+    case "aprobar":
+    case "vincular_empresa":
+    case "revalidar_vies":
+    case "emitir_factura":
+    case "crear_albaran":
+      return "lineas";
+    case "crear_envio":
+    case "enviar_sat":
+      return "envio";
+    case "marcar_completado":
+    case "revisar_incidencia":
+    case "ninguna":
+      return "historial";
+    default:
+      // «Registrar cobro»: lo que hay que mirar es el resumen económico, que
+      // siempre está a la vista.
+      return null;
+  }
+}
+
+/** Estado de transporte en palabras, para el resumen del panel de envío. */
+const TRANSPORT_TEXT: Record<string, string> = {
+  not_shipped: "Sin expedición",
+  label_created: "Etiqueta creada",
+  in_transit: "En tránsito",
+  delivered: "Entregado",
+  incident: "Incidencia en el envío",
+  returned: "Devuelto",
+  already_shipped_externally: "Enviado fuera del ERP",
+};
+
+/** «hace 2 h» / «hace 3 días» para el resumen del historial. */
+function hace(iso: string, now: number = Date.now()): string {
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return "—";
+  const s = Math.max(0, Math.round((now - t) / 1000));
+  if (s < 60) return "ahora mismo";
+  const m = Math.round(s / 60);
+  if (m < 60) return `hace ${m} min`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `hace ${h} h`;
+  const d = Math.round(h / 24);
+  if (d < 30) return d === 1 ? "hace 1 día" : `hace ${d} días`;
+  return `el ${new Date(iso).toLocaleDateString("es-ES")}`;
+}
+
+/** Media query como estado (SSR: false). El molde de la ficha decide con
+ *  esto qué paneles abre por defecto y si la acción principal va pegada
+ *  abajo (móvil). */
+function useMediaQuery(query: string): boolean {
+  const subscribe = useCallback((onChange: () => void) => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+      return () => undefined;
+    }
+    const mq = window.matchMedia(query);
+    mq.addEventListener?.("change", onChange);
+    return () => mq.removeEventListener?.("change", onChange);
+  }, [query]);
+  return useSyncExternalStore(
+    subscribe,
+    () => (typeof window.matchMedia === "function" ? window.matchMedia(query).matches : false),
+    () => false,
+  );
+}
 
 /** Tooltip del botón «PDF del pedido (FACTUSOL)» — la ETIQUETA es siempre
  *  la misma (decisión de Bart), aunque por debajo el documento de origen sea
@@ -70,9 +161,25 @@ function isInvoiced(o: { invoice_status: string; factusol_invoice_number: string
   return INVOICED_STATUSES.has(o.invoice_status) || !!o.factusol_invoice_number;
 }
 
+/** `useSearchParams` exige Suspense en el app router (`?from=`). */
 export default function ErpOrderDetailPage() {
+  return (
+    <Suspense fallback={<main className="shell shell-wide erp-flow"><p className="muted">Cargando…</p></main>}>
+      <ErpOrderDetailScreen />
+    </Suspense>
+  );
+}
+
+function ErpOrderDetailScreen() {
   const params = useParams<{ id: string }>();
   const id = params.id;
+  const searchParams = useSearchParams();
+  // Lote 2 · PR-2: la cola de la bandeja de la que se llegó (miga de vuelta).
+  const fromQueue = queueFromParam(searchParams?.get("from"));
+  // Molde responsive: por debajo de 1280 solo se abre el panel del paso
+  // actual; en móvil (< 768) la acción principal va pegada abajo.
+  const isWide = useMediaQuery("(min-width: 1280px)");
+  const isMobile = useMediaQuery("(max-width: 767px)");
   const [order, setOrder] = useState<OrderDetail | null>(null);
   const [timeline, setTimeline] = useState<TimelineEvent[]>([]);
   const [user, setUser] = useState<User | null>(null);
@@ -379,9 +486,32 @@ export default function ErpOrderDetailPage() {
     : cobroStatus === "cobrada"
       ? "La factura ya consta cobrada en FACTUSOL (no se registra un segundo cobro)"
       : "Registra el cobro de la factura en FACTUSOL (F_LCO + ESTFAC=2) con cuenta, fecha y forma de pago";
+  // Lote 2 · PR-2: la miga vuelve a la cola de la que se llegó (`?from=`).
+  const bandejaHref = fromQueue ? `/erp/orders?queue=${fromQueue}` : "/erp/orders";
+  const bandejaLabel = fromQueue ? `Bandeja · ${QUEUE_LABEL[fromQueue]}` : "Bandeja";
+  // La acción del paso actual. En móvil vive en la barra pegada abajo (una
+  // sola vez); en escritorio, dentro de la tarjeta del paso actual.
+  const stepAction = wf ? nextStepAction() : null;
+  const stickyAction = isMobile && stepAction ? stepAction : null;
+  const relevant = relevantPanel(wf?.next_action);
+  const panelDefault = (p: FichaPanelId) => isWide || relevant === p;
+  // Cobro de la factura: el saldo en vivo manda; si no, el persistido.
+  const saldoPendiente = cobroLive?.saldo_pendiente ?? order.factusol_cobro?.saldo_pendiente ?? null;
+  const totalCobrado = cobroLive?.total_cobrado ?? order.factusol_cobro?.total_cobrado ?? null;
+  const eur = (n: number) => `${n.toFixed(2)} ${order.currency}`;
+  const sinMapear = order.lines.filter((l) => !l.product_codart).length;
+  const otrosCargos = order.total_amount - lineasBase(order) - lineasIva(order);
+  const ultimoEvento = timeline.reduce<string | null>(
+    (max, e) => (max == null || e.at > max ? e.at : max), null,
+  );
 
   return (
-    <main className="shell shell-wide erp-flow">
+    <main className={`shell shell-wide erp-flow erp-ficha${stickyAction ? " has-sticky-action" : ""}`}>
+      {/* Lote 2 · PR-2: la miga recuerda la cola de la bandeja de la que se
+          llegó («← Bandeja · Por cobrar»); sin `?from=`, la bandeja a secas. */}
+      <p className="erp-ficha-back">
+        <Link href={bandejaHref}>← {bandejaLabel}</Link>
+      </p>
       {/* Cabecera: nº, cliente y las acciones de documento del pedido (el
           selector de idioma del PDF, el PDF del pedido, el envío por email y
           el completado) + «⋯» con el resto. Las acciones de ESTADO viven en
@@ -392,7 +522,7 @@ export default function ErpOrderDetailPage() {
         description={`${order.external_source} · ${order.total_amount.toFixed(2)} ${order.currency}`}
         crumbs={[
           { label: "ERP" },
-          { label: "Pedidos", href: "/erp/orders" },
+          { label: bandejaLabel, href: bandejaHref },
           { label: order.order_number },
         ]}
         actions={
@@ -616,6 +746,7 @@ export default function ErpOrderDetailPage() {
           ningún estado. */}
       <p className="erp-flow-item-r2" style={{ margin: "0 0 12px" }}>
         <strong>{customerLabel(order) || "Sin cliente"}</strong>
+        {wf ? <span className="erp-flow-pill is-n" title="Cola de la bandeja">{wf.queue_label}</span> : null}
         {wf ? <RegimePill regime={wf.regime} country={wf.company?.country} /> : null}
         {wf?.company?.factusol_id ? (
           <span className="badge ok">FACTUSOL nº {wf.company.factusol_id}</span>
@@ -623,6 +754,9 @@ export default function ErpOrderDetailPage() {
           <span className="badge warn">Empresa sin vincular a FACTUSOL</span>
         ) : null}
       </p>
+      {/* Lote 2 · PR-2: la barra de 7 segmentos («Paso 6 de 7 · Cobro»), la
+          lectura rápida sin recorrer la línea de vida. */}
+      {wf ? <WorkflowProgress steps={wf.steps} /> : null}
       {wf ? (
         <WorkflowAlerts
           alerts={wf.alerts}
@@ -676,8 +810,28 @@ export default function ErpOrderDetailPage() {
           ))}
         </ul>
       ) : null}
-      {wf ? <WorkflowSteps steps={wf.steps} /> : null}
-      {wf ? <NextActionBar workflow={wf}>{nextStepAction()}</NextActionBar> : null}
+      <div className="erp-ficha-cols">
+      <div className="erp-ficha-main">
+      {/* Lote 2 · PR-2 — la línea de vida VERTICAL: los 7 pasos en columna,
+          cada uno con su dato (fecha, importe, nº de albarán/factura) y el
+          actual como la única tarjeta azul, con «Siguiente paso» y su acción
+          dentro. Si no hay paso actual (todo hecho), «Siguiente paso» va
+          debajo de la lista. Todo sale de `workflow` (backend). */}
+      {wf ? (
+        <section className="erp-flow-panel erp-lifeline" aria-label="Línea de vida del pedido">
+          <h3>Línea de vida del pedido</h3>
+          <WorkflowSteps
+            steps={wf.steps}
+            vertical
+            renderAction={(s) => (s.state === "now" ? (
+              <NextActionBar workflow={wf} embedded>{isMobile ? null : stepAction}</NextActionBar>
+            ) : null)}
+          />
+          {wf.steps.some((s) => s.state === "now") ? null : (
+            <NextActionBar workflow={wf}>{isMobile ? null : stepAction}</NextActionBar>
+          )}
+        </section>
+      ) : null}
 
       {/* Las transiciones de estado que no son la principal (Reembolso,
           Empezar preparación, Bloquear, Recogido…), en una fila compacta:
@@ -697,8 +851,30 @@ export default function ErpOrderDetailPage() {
         ]}
       />
 
-      <div className="erp-flow-grid2">
-        <EconomicSummary order={order} />
+      {order.exceptions.length > 0 ? (
+        <section className="erp-flow-panel" aria-label="Excepciones">
+          <h3>Excepciones</h3>
+          <ul>
+            {order.exceptions.map((e) => (
+              <li key={e.id}>
+                <span className="badge warn">{e.type}{e.subtype ? `:${e.subtype}` : ""}</span>{" "}
+                <span className="badge muted">{e.status}</span>
+              </li>
+            ))}
+          </ul>
+          <Link href="/erp/exceptions" className="link-button small">Ver bandeja de excepciones</Link>
+        </section>
+      ) : null}
+      </div>
+
+      <div className="erp-ficha-side">
+        <EconomicSummary
+          order={order}
+          hasInvoice={hasInvoice}
+          cobroStatus={cobroStatus}
+          saldoPendiente={saldoPendiente}
+          totalCobrado={totalCobrado}
+        />
         {/* Bloque FACTUSOL: lo que hay allí y la acción de cada cosa. El
             albarán (y su PDF) vive en «Documentos de envío». */}
         <section className="erp-flow-panel" aria-label="FACTUSOL">
@@ -777,36 +953,21 @@ export default function ErpOrderDetailPage() {
             </div>
           </div>
         </section>
-      </div>
 
-      {/* El albarán vive AQUÍ y solo aquí: el de FACTUSOL (nº, PDF, crearlo si
-          falta) y el fichero subido a mano / descargado de Woo; y la etiqueta
-          (cuya subida mueve el transporte: al subirla, la ficha se recarga
-          para que el stepper y el «Siguiente paso» lo reflejen). */}
-      <ShippingFilesSection
-        orderId={order.id}
-        isWooOrder={isWeb}
-        orderSource={order.external_source}
-        factusolAlbaranNumber={order.factusol_albaran_number ?? null}
-        pdfLang={pdfLang}
-        canCreateAlbaran={canEmit}
-        createSignal={albaranSignal}
-        onAlbaranCreated={({ error: err }) => { if (err) setError(err); load(); }}
-        openEtiquetaSignal={etiquetaSignal}
-        onUploaded={() => load()}
-      />
-
-      {/* ERP-F6 — campos del Excel de seguimiento, editables desde la ficha. */}
-      <SeguimientoFieldsCard
-        order={order}
-        canEdit={canEmit}
-        onSaved={(patch) => setOrder((o) => (o ? { ...o, ...patch } : o))}
-        onError={setError}
-      />
-
-      <div className="erp-flow-grid2">
-        <section className="erp-flow-panel" id="lineas" aria-label="Líneas">
-          <h3>Líneas</h3>
+        {/* Lote 2 · PR-2 — paneles plegables con resumen en la cabecera
+            («3 artículos · portes 45,00 €»): se pierde cero información y
+            cada uno recuerda si el usuario lo dejó abierto o cerrado. Por
+            defecto se abre el del paso actual (y todos desde 1280 px). */}
+        <FichaPanel
+          id="lineas"
+          title="Líneas"
+          summary={[
+            `${order.lines.length} ${order.lines.length === 1 ? "artículo" : "artículos"}`,
+            sinMapear > 0 ? `${sinMapear} sin mapear` : null,
+            Math.abs(otrosCargos) >= 0.01 ? `portes ${eur(otrosCargos)}` : null,
+          ].filter(Boolean).join(" · ")}
+          defaultOpen={panelDefault("lineas")}
+        >
           <div className="erp-flow-table">
             <table className="data-table">
               <thead>
@@ -827,10 +988,56 @@ export default function ErpOrderDetailPage() {
               </tbody>
             </table>
           </div>
-        </section>
+        </FichaPanel>
 
-        <section className="erp-flow-panel" aria-label="Actividad">
-          <h3>Actividad</h3>
+        {/* Envío y seguimiento: el albarán vive AQUÍ y solo aquí (el de
+            FACTUSOL —nº, PDF, crearlo si falta— y el fichero subido a mano /
+            descargado de Woo), la etiqueta (cuya subida mueve el transporte:
+            al subirla, la ficha se recarga para que la línea de vida y el
+            «Siguiente paso» lo reflejen) y los campos del Excel de
+            seguimiento (ERP-F6). «Crear albarán» / «Subir etiqueta» desde el
+            paso actual abren el panel si estaba plegado. */}
+        <FichaPanel
+          id="envio"
+          title="Envío y seguimiento"
+          summary={[
+            TRANSPORT_TEXT[order.transport_status] ?? order.transport_status,
+            order.factusol_albaran_number
+              ? `albarán ${order.factusol_albaran_number}`
+              : isWeb ? null : "sin albarán",
+            order.tracking_number ? `seguimiento ${order.tracking_number}` : null,
+          ].filter(Boolean).join(" · ")}
+          defaultOpen={panelDefault("envio")}
+          openSignal={albaranSignal + etiquetaSignal}
+        >
+          <ShippingFilesSection
+            orderId={order.id}
+            isWooOrder={isWeb}
+            orderSource={order.external_source}
+            factusolAlbaranNumber={order.factusol_albaran_number ?? null}
+            pdfLang={pdfLang}
+            canCreateAlbaran={canEmit}
+            createSignal={albaranSignal}
+            onAlbaranCreated={({ error: err }) => { if (err) setError(err); load(); }}
+            openEtiquetaSignal={etiquetaSignal}
+            onUploaded={() => load()}
+          />
+          <SeguimientoFieldsCard
+            order={order}
+            canEdit={canEmit}
+            onSaved={(patch) => setOrder((o) => (o ? { ...o, ...patch } : o))}
+            onError={setError}
+          />
+        </FichaPanel>
+
+        <FichaPanel
+          id="historial"
+          title="Historial"
+          summary={timeline.length === 0
+            ? "Sin eventos"
+            : `${timeline.length} ${timeline.length === 1 ? "evento" : "eventos"}${ultimoEvento ? ` · último ${hace(ultimoEvento)}` : ""}`}
+          defaultOpen={panelDefault("historial")}
+        >
           {timeline.length === 0 ? (
             <p className="muted small">Sin eventos.</p>
           ) : (
@@ -848,22 +1055,16 @@ export default function ErpOrderDetailPage() {
               ))}
             </ul>
           )}
-        </section>
+        </FichaPanel>
+      </div>
       </div>
 
-      {order.exceptions.length > 0 ? (
-        <section className="erp-flow-panel" aria-label="Excepciones">
-          <h3>Excepciones</h3>
-          <ul>
-            {order.exceptions.map((e) => (
-              <li key={e.id}>
-                <span className="badge warn">{e.type}{e.subtype ? `:${e.subtype}` : ""}</span>{" "}
-                <span className="badge muted">{e.status}</span>
-              </li>
-            ))}
-          </ul>
-          <Link href="/erp/exceptions" className="link-button small">Ver bandeja de excepciones</Link>
-        </section>
+      {/* Lote 2 · PR-2 (E7) — en móvil la acción del paso actual va pegada
+          al borde inferior, una sola vez (la tarjeta del paso solo lleva el
+          texto). Va al FINAL del contenido, que es como `sticky` se mantiene
+          visible. */}
+      {stickyAction && wf ? (
+        <PrimaryActionBar hint={wf.next_action_hint}>{stickyAction}</PrimaryActionBar>
       ) : null}
 
       {cobroOpen ? (
@@ -919,22 +1120,52 @@ const REGIME_TEXT: Record<string, string> = {
   exportacion: "exportación",
 };
 
+/** Base imponible del pedido: la suma de sus líneas. */
+function lineasBase(order: OrderDetail): number {
+  return order.lines.reduce((s, l) => s + (l.line_total ?? 0), 0);
+}
+
+/** IVA de las líneas según el régimen del cliente: intracomunitario y
+ *  exportación van exentos (0). */
+function lineasIva(order: OrderDetail): number {
+  const regime = order.workflow?.regime ?? null;
+  if (regime === "intracomunitario" || regime === "exportacion") return 0;
+  return order.lines.reduce((s, l) => s + (l.line_total ?? 0) * (l.tax_rate ?? 0) / 100, 0);
+}
+
 /** Resumen económico del pedido CON SU RÉGIMEN: la base sale de las líneas y
  *  el IVA de su tipo, salvo que el cliente sea intracomunitario o de
  *  exportación — entonces la factura va exenta y aquí se dice, que es donde
  *  se mira antes de emitir. El total es siempre el del pedido: si no cuadra
  *  con base + IVA (portes de la cabecera, descuentos), la diferencia se
- *  enseña en vez de esconderla. */
-function EconomicSummary({ order }: { order: OrderDetail }) {
+ *  enseña en vez de esconderla.
+ *
+ *  Lote 2 · PR-2: el «pendiente de cobro» es el dato que más se consulta y
+ *  va aquí, en bloque ámbar con la cifra grande (verde cuando la factura ya
+ *  está cobrada; sin factura, no hay nada que cobrar todavía). El saldo es
+ *  el de FACTUSOL: el comprobado en vivo o, si no, el persistido. */
+function EconomicSummary({
+  order, hasInvoice, cobroStatus, saldoPendiente, totalCobrado,
+}: {
+  order: OrderDetail;
+  hasInvoice: boolean;
+  cobroStatus: FactusolCobroStatus | null;
+  saldoPendiente: number | null;
+  totalCobrado: number | null;
+}) {
   const regime = order.workflow?.regime ?? null;
   const exento = regime === "intracomunitario" || regime === "exportacion";
-  const base = order.lines.reduce((s, l) => s + (l.line_total ?? 0), 0);
-  const iva = exento
-    ? 0
-    : order.lines.reduce((s, l) => s + (l.line_total ?? 0) * (l.tax_rate ?? 0) / 100, 0);
+  const base = lineasBase(order);
+  const iva = lineasIva(order);
   const otros = order.total_amount - base - iva;
   const pago = order.factusol_payment ?? null;
   const eur = (n: number) => `${n.toFixed(2)} ${order.currency}`;
+  const cobrada = cobroStatus === "cobrada";
+  const cobroTone = !hasInvoice ? "na" : cobrada ? "done" : "pending";
+  const pendiente = !hasInvoice
+    ? null
+    : saldoPendiente ?? (cobrada ? 0 : null);
+  const cobrado = totalCobrado ?? (cobrada ? order.total_amount : hasInvoice ? 0 : null);
   return (
     <section className="erp-flow-panel" aria-label="Resumen económico">
       <h3>Resumen económico</h3>
@@ -982,7 +1213,82 @@ function EconomicSummary({ order }: { order: OrderDetail }) {
         <span className="k muted">Total</span>
         <span className="n">{eur(order.total_amount)}</span>
       </p>
+      {hasInvoice ? (
+        <p className="erp-flow-kv">
+          <span className="k">Cobrado</span>
+          <span className="v">{cobrado != null ? eur(cobrado) : "—"}</span>
+        </p>
+      ) : null}
+      <div
+        className={`erp-flow-cobro is-${cobroTone}`}
+        role="group"
+        aria-label="Pendiente de cobro"
+      >
+        <span className="erp-flow-cobro-k">Pendiente de cobro</span>
+        <span className="erp-flow-cobro-n">{pendiente != null ? eur(pendiente) : "—"}</span>
+        <span className="erp-flow-cobro-s">
+          {!hasInvoice
+            ? "sin factura emitida"
+            : cobrada
+              ? "factura cobrada en FACTUSOL"
+              : pendiente == null
+                ? "saldo sin comprobar en FACTUSOL"
+                : "de la factura en FACTUSOL"}
+        </span>
+      </div>
     </section>
+  );
+}
+
+/** Lote 2 · PR-2 — panel plegable de la ficha: `<details>` con el título y
+ *  un resumen de lo esencial en la cabecera («3 artículos · portes 45,00 €»),
+ *  para que plegado no se pierda información. Recuerda por usuario (en el
+ *  navegador) si se dejó abierto o cerrado; mientras no haya elegido, manda
+ *  `defaultOpen` (el panel del paso actual, o todos desde 1280 px). Un
+ *  `openSignal` que sube lo abre desde fuera (p. ej. «Crear albarán» desde
+ *  el paso actual abre «Envío y seguimiento»), sin tocar lo recordado. */
+function FichaPanel({
+  id, title, summary, defaultOpen, openSignal = 0, children,
+}: {
+  id: FichaPanelId;
+  title: string;
+  summary: string;
+  defaultOpen: boolean;
+  openSignal?: number;
+  children: ReactNode;
+}) {
+  const [stored, setStored] = usePersistentState<boolean | null>(PANEL_LS_KEY[id], null);
+  // Señal externa ya «consumida»: al cerrarlo a mano se anota la actual para
+  // que no lo vuelva a abrir hasta la siguiente.
+  const [closedAt, setClosedAt] = useState(0);
+  const open = openSignal > closedAt || (stored ?? defaultOpen);
+  const bodyId = `erp-ficha-panel-${id}`;
+  return (
+    <details
+      className={`erp-flow-panel erp-ficha-panel${open ? " is-open" : ""}`}
+      open={open}
+      aria-label={title}
+    >
+      <summary
+        className="erp-ficha-panel-head"
+        aria-expanded={open}
+        aria-controls={bodyId}
+        onClick={(e) => {
+          // Controlado por React (no por el toggle nativo): el estado se
+          // recuerda y sirve en cualquier navegador igual.
+          e.preventDefault();
+          if (open) setClosedAt(openSignal);
+          setStored(!open);
+        }}
+      >
+        <span className="erp-ficha-panel-txt">
+          <h3>{title}</h3>
+          <span className="erp-ficha-panel-sum">{summary}</span>
+        </span>
+        <span className="erp-ficha-panel-chev" aria-hidden>{open ? "▴" : "▾"}</span>
+      </summary>
+      <div id={bodyId} className="erp-ficha-panel-body">{children}</div>
+    </details>
   );
 }
 
