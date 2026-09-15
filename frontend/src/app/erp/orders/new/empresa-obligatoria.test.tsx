@@ -94,7 +94,7 @@ describe("Tarea B · «+ Nuevo pedido manual» exige EMPRESA vinculada a FACTUSO
     expect(mockCreate).not.toHaveBeenCalled();
   });
 
-  it("test_pedido_manual_empresa_no_en_factusol_pide_crear: empresa sin F_CLI → «créala primero», botón «Crear en FACTUSOL», y tras crearla precarga y deja crear el pedido", async () => {
+  it("test_pedido_manual_empresa_no_en_factusol_pide_crear: empresa sin F_CLI → aviso ámbar junto a la empresa con «Vincular ahora», y tras vincular precarga y deja crear el pedido", async () => {
     mockCreateCustomer.mockResolvedValue({
       factusol_codcli: "9001", created: true, crm_type: "company", crm_id: "c-sin",
     });
@@ -110,15 +110,18 @@ describe("Tarea B · «+ Nuevo pedido manual» exige EMPRESA vinculada a FACTUSO
     await waitFor(() => expect(mockCompanies).toHaveBeenCalled());
     await user.type(screen.getByLabelText("Empresa"), "Sin FACTUSOL SL");
     await fillLine(user);
-    // Bloqueado con el motivo y el atajo; no se crea nada.
+    // Lote 2 · PR-2: el bloqueo se explica DONDE ocurre (aviso ámbar junto a
+    // la empresa, con su solución) y bajo el botón (motivo escrito); no se
+    // crea nada.
     expect(await screen.findByRole("status")).toHaveTextContent(
-      "«Sin FACTUSOL SL» aún no existe en FACTUSOL: créala primero",
+      "Esta empresa aún no está en FACTUSOL. Sin ella no se puede emitir factura.",
     );
     const submit = screen.getByRole("button", { name: "Crear pedido" });
     expect(submit).toBeDisabled();
-    expect(screen.getByRole("note")).toHaveTextContent(/vinculada a un cliente de FACTUSOL/);
-    // Crear en FACTUSOL (Fase C) → vinculada → precarga (#392) → se puede crear.
-    await user.click(screen.getByRole("button", { name: "Crear en FACTUSOL" }));
+    expect(screen.getByText("Falta vincular la empresa a FACTUSOL.")).toBeInTheDocument();
+    // «Vincular ahora» (crea o vincula el F_CLI, Fase C) → vinculada →
+    // precarga (#392) → se puede crear.
+    await user.click(screen.getByRole("button", { name: "Vincular ahora" }));
     await waitFor(() => expect(mockCreateCustomer).toHaveBeenCalledWith(expect.objectContaining({
       crm_type: "company", crm_id: "c-sin", nombre: "Sin FACTUSOL SL", nif: "B11111111",
     })));
@@ -137,7 +140,7 @@ describe("Tarea B · «+ Nuevo pedido manual» exige EMPRESA vinculada a FACTUSO
     await waitFor(() => expect(mockCompanies).toHaveBeenCalled());
     await user.type(screen.getByLabelText("Empresa"), "Duplicoder SL");
     await fillLine(user);
-    expect(screen.queryByRole("button", { name: "Crear en FACTUSOL" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Vincular ahora" })).toBeNull();
     const submit = screen.getByRole("button", { name: "Crear pedido" });
     await waitFor(() => expect(submit).toBeEnabled());
     await user.click(submit);

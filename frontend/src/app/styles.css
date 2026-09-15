@@ -12847,6 +12847,75 @@ input[type="radio"]:focus-visible {
 }
 .company-search-create-ask { color: var(--muted); font-weight: 400; }
 .company-pill {
+   Lote 2 · PR-2 · nuevo pedido manual
+   (docs/ux/revision-ux-erp §10 «Nuevo pedido manual» y §6 tabla de líneas).
+   Tres pasos numerados, requisito FACTUSOL junto a la empresa, total siempre
+   visible (panel pegajoso en escritorio / barra fija abajo en móvil), botón
+   desactivado con motivo escrito y tabla de líneas compartida
+   (DocumentLinesTable.tsx). Solo tokens del sistema (E1–E7).
+   ========================================================================== */
+/* Rejilla: pasos a la izquierda; panel de total + acción a la derecha desde
+   1024 px. Por debajo, el lateral se disuelve (`display: contents`) para que
+   el panel y la barra sean hijos directos del formulario: así la barra
+   (.erp-primary-sticky, E7) se pega al borde inferior mientras queda
+   formulario por debajo. */
+.erp-new-order { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--sp-4); }
+.erp-new-order > .form-error { margin: 0; }
+.erp-new-order-main { display: flex; flex-direction: column; gap: var(--sp-4); min-width: 0; }
+.erp-new-order-side { display: contents; }
+.erp-new-order .erp-card { margin-bottom: 0; }
+@media (min-width: 1024px) {
+  .erp-new-order { grid-template-columns: minmax(0, 1fr) 320px; gap: var(--sp-6); align-items: start; }
+  .erp-new-order-side {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-4);
+    position: sticky;
+    top: var(--sp-4);
+  }
+  .erp-new-order-side .erp-primary-sticky {
+    flex-direction: column;
+    align-items: stretch;
+    margin: 0;
+    padding: var(--sp-4);
+    border: 1px solid var(--line);
+    border-radius: var(--r-panel);
+    background: var(--card);
+  }
+  .erp-new-order-side .erp-primary-sticky-hint { flex: 0 0 auto; }
+  .erp-new-order-side .erp-primary-sticky-actions { flex-direction: column; }
+  .erp-new-order-side .erp-primary-sticky-actions > .button { width: 100%; min-height: var(--control-h-touch); }
+}
+
+/* Pasos numerados: cabecera --fs-subtitle con el número en una ficha oscura. */
+.erp-card h3.erp-step-title {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0;
+  font-size: var(--fs-subtitle);
+  font-weight: 600;
+  color: var(--ink);
+}
+.erp-step-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--r-control);
+  background: var(--ink);
+  color: #fff;
+  font-family: var(--font-mono);
+  font-size: var(--fs-body);
+}
+.erp-step-subtitle { margin: 0; font-size: var(--fs-body); font-weight: 600; }
+.erp-step-block { display: flex; flex-direction: column; gap: var(--sp-3); padding-top: var(--sp-3); border-top: 1px solid var(--line2); }
+
+/* Estado del vínculo de la empresa elegida (informa; no se pulsa). */
+.erp-company-state { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); margin: 0; font-size: var(--fs-label); color: var(--muted); }
+.erp-new-order-pill {
   display: inline-flex;
   align-items: center;
   gap: var(--sp-1);
@@ -13534,4 +13603,121 @@ p.erp-settings-status { margin: 0; }
   .erp-settings-row > input.erp-settings-prefix,
   .erp-settings-row > input.erp-settings-short,
   .erp-settings-row > input.erp-settings-email { flex-basis: 100%; }
+  font-size: var(--fs-label);
+  font-weight: 600;
+  color: var(--ink-on-color);
+}
+.erp-new-order-pill.is-linked { --ink-on-color: var(--st-green-ink); background: var(--st-green-bg); }
+.erp-new-order-pill.is-crm-only { --ink-on-color: var(--st-amber-ink); background: var(--st-amber-bg); }
+
+/* Aviso en línea junto al campo: fondo de estado ámbar con su tinta (nunca
+   gris sobre ámbar) y la acción dentro, sin salir del formulario. */
+.erp-inline-notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-3);
+  margin: 0;
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--r-control);
+  font-size: var(--fs-body);
+  line-height: 1.5;
+  color: var(--ink-on-color);
+}
+.erp-inline-notice p { flex: 1 1 220px; margin: 0; }
+.erp-inline-notice.is-amber { --ink-on-color: var(--st-amber-ink); background: var(--st-amber-bg); }
+.erp-inline-notice.is-amber .button,
+.erp-inline-notice.is-amber .button:hover:not(:disabled) {
+  background: var(--card);
+  border-color: var(--st-amber-ink);
+  color: var(--st-amber-ink);
+}
+
+/* Ayudas plegadas dentro del paso (importar de FACTUSOL; facturación y notas). */
+.erp-step-helper,
+.erp-step-more { margin: 0; border: 1px solid var(--line2); border-radius: var(--r-control); background: var(--bg); }
+.erp-step-helper > summary,
+.erp-step-more > summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-1);
+  min-height: var(--control-h);
+  padding: var(--sp-2) var(--sp-4);
+  cursor: pointer;
+  list-style: none;
+  font-size: var(--fs-body);
+  font-weight: 600;
+  color: var(--ink);
+}
+.erp-step-helper > summary::-webkit-details-marker,
+.erp-step-more > summary::-webkit-details-marker { display: none; }
+.erp-step-helper > summary::before,
+.erp-step-more > summary::before { content: "▸"; color: var(--muted); }
+.erp-step-helper[open] > summary::before,
+.erp-step-more[open] > summary::before { content: "▾"; }
+.erp-step-helper > summary .muted,
+.erp-step-more > summary .muted { font-weight: 400; }
+.erp-step-helper-body { display: flex; flex-direction: column; gap: var(--sp-3); padding: 0 var(--sp-4) var(--sp-4); }
+
+/* Envío: portes (cifra en mono) y atajo «La de la empresa / Otra dirección». */
+.erp-field-portes { flex: 0 1 200px; }
+.erp-field-shipmode { flex: 1 1 220px; }
+.erp-field-portes input { font-family: var(--font-mono); font-variant-numeric: tabular-nums; text-align: right; }
+
+/* Panel «Total del pedido»: pares etiqueta/importe, importes en mono a la
+   derecha, el total en --fs-title. */
+.erp-total-rows { display: flex; flex-direction: column; gap: var(--sp-2); margin: 0; }
+.erp-total-rows > div { display: flex; justify-content: space-between; align-items: baseline; gap: var(--sp-3); font-size: var(--fs-body); }
+.erp-total-rows dt { color: var(--muted); }
+.erp-total-rows dd { margin: 0; color: var(--ink); }
+.erp-total-rows .is-total { padding-top: var(--sp-2); border-top: 1px solid var(--line2); }
+.erp-total-rows .is-total dt { color: var(--ink); font-weight: 600; }
+.erp-total-rows .is-total dd { font-size: var(--fs-title); font-weight: 600; }
+.erp-total-note { margin: 0; }
+
+/* Acción principal: motivo escrito bajo el botón (tinta ámbar; nunca un botón
+   gris sin explicación) y total compacto solo en la barra móvil. */
+.erp-new-order-reason { flex: 1 1 100%; margin: 0; font-size: var(--fs-label); line-height: 1.5; color: var(--st-amber-ink); }
+.erp-new-order-bar-total {
+  display: none;
+  flex: 1 1 100%;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: var(--sp-3);
+  margin: 0;
+  font-size: var(--fs-body);
+}
+.erp-new-order-bar-total strong { font-size: var(--fs-subtitle); }
+@media (max-width: 767px) {
+  .erp-new-order-bar-total { display: flex; }
+  /* A sangre dentro del gutter de la shell (16 px). */
+  .erp-new-order-actions { margin-left: calc(-1 * var(--sp-4)); margin-right: calc(-1 * var(--sp-4)); padding-left: var(--sp-4); padding-right: var(--sp-4); }
+}
+
+/* Tabla de líneas compartida (§6): anchos FIJOS por columna — el descuadre
+   venía de dimensionar según el contenido — y cifras en mono a la derecha.
+   En móvil, tarjetas de pares etiqueta/campo (E5, data-table--responsive). */
+.erp-doc-lines-wrap { display: flex; flex-direction: column; gap: var(--sp-3); min-width: 0; }
+table.erp-doc-lines { width: 100%; table-layout: fixed; }
+.erp-doc-lines th,
+.erp-doc-lines td { vertical-align: middle; }
+.erp-doc-lines td { padding-top: var(--sp-1); padding-bottom: var(--sp-1); }
+.erp-doc-lines input { width: 100%; min-width: 0; min-height: var(--control-h); border-radius: var(--r-control); }
+.erp-doc-lines td.num input { font-family: var(--font-mono); font-variant-numeric: tabular-nums; text-align: right; }
+.erp-doc-lines td.erp-doc-total { font-family: var(--font-mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.erp-doc-lines td.erp-doc-del { text-align: right; }
+.erp-doc-col-sku { width: 16%; }
+.erp-doc-col-qty { width: 9%; }
+.erp-doc-col-price { width: 13%; }
+.erp-doc-col-pct { width: 9%; }
+.erp-doc-col-total { width: 13%; }
+.erp-doc-col-del { width: var(--sp-12); }
+.erp-doc-lines-foot { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--sp-3) var(--sp-4); }
+.erp-doc-lines-foot .erp-manual-total { margin: 0 0 0 auto; }
+.erp-doc-lines-foot .erp-quote-portes input { width: 120px; }
+@media (max-width: 767px) {
+  table.erp-doc-lines td > .erp-article-ac { flex: 1 1 auto; min-width: 0; }
+  table.erp-doc-lines td.erp-doc-del { justify-content: flex-end; }
+  table.erp-doc-lines .erp-article-ac-list { min-width: 0; }
 }

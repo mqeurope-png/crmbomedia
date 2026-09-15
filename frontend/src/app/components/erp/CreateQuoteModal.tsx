@@ -13,28 +13,17 @@ import {
   updateFactusolQuote,
   waitForQuoteJob,
   type FactusolAddress,
-  type FactusolArticle,
   type FactusolQuote,
   type QuoteShippingInput,
 } from "../../lib/erpApi";
-import { ArticleAutocompleteInput } from "./ArticleAutocompleteInput";
+import {
+  DocumentLinesTable,
+  documentLineTotal,
+  emptyDocumentLine,
+  type DocumentLine,
+} from "./DocumentLinesTable";
 
 type Mode = "articles" | "duplicate";
-
-type LineRow = {
-  codart: string;
-  description: string;
-  quantity: string;
-  unit_price: string;
-  /** DTO % → `DT1LPS`, el primero de los 3 niveles de descuento de F_LPS. */
-  discount_pct: string;
-  iva_pct: string;
-};
-
-const EMPTY_LINE: LineRow = {
-  codart: "", description: "", quantity: "1", unit_price: "",
-  discount_pct: "0", iva_pct: "21",
-};
 
 /** Destinatario libre (dropshipping, Lote B3b). Todo opcional. */
 type ShippingForm = Required<QuoteShippingInput>;
@@ -42,10 +31,6 @@ type ShippingForm = Required<QuoteShippingInput>;
 const EMPTY_SHIPPING: ShippingForm = {
   name: "", address_line: "", city: "", postal_code: "", state: "", country: "",
 };
-
-/** Campo de línea con autocomplete que tiene el foco. Solo ESE campo busca en
- *  el catálogo (ver `ArticleAutocompleteInput enabled`). */
-type AcField = { line: number; field: "codart" | "description" };
 
 const DEBOUNCE_MS = 300;
 const TEMPLATE_DAYS_BACK = 365;
@@ -64,26 +49,22 @@ function today(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
-/** Total de la línea con el descuento aplicado — el mismo cálculo que hace el
- *  backend para `TOTLPS`, para que lo que se ve cuadre con lo que se escribe. */
-function lineTotal(l: LineRow): number {
-  return num(l.quantity) * num(l.unit_price) * (1 - num(l.discount_pct) / 100);
-}
-
 function serieOf(q: FactusolQuote): number {
   return q.serie ?? (Number(q.tippre) || PRESUPUESTO_SERIE);
 }
 
-/** Líneas de una proforma → filas editables. El SKU se precarga con el
- *  comercial (`sku`, EQUART) que es lo que enseña el autocomplete: así el
- *  artículo queda mapeado sin volver a elegirlo (Lote B4). Las de texto libre
- *  quedan con el SKU vacío y su descripción. */
-function rowsFromQuote(quote: FactusolQuote): LineRow[] {
-  return (quote.lines ?? []).map((l) => ({
-    codart: l.sku ?? l.codart ?? "",
+/** Líneas de una proforma → filas editables (Lote 2 · PR-2: las mismas filas
+ *  que el pedido manual, `DocumentLine`). El SKU se precarga con el comercial
+ *  (`sku`, EQUART) que es lo que enseña el autocomplete: así el artículo queda
+ *  mapeado sin volver a elegirlo (Lote B4). Las de texto libre quedan con el
+ *  SKU vacío y su descripción. */
+function rowsFromQuote(quote: FactusolQuote): DocumentLine[] {
+  return (quote.lines ?? []).map((l) => emptyDocumentLine({
+    sku: l.sku ?? l.codart ?? "",
     description: l.description,
     quantity: String(l.quantity),
     unit_price: String(l.unit_price),
+    // DTO % → `DT1LPS`, el primero de los 3 niveles de descuento de F_LPS.
     discount_pct: String(l.discount_pct ?? 0),
     iva_pct: String(l.iva_pct),
   }));
@@ -143,7 +124,7 @@ export function CreateQuoteModal({
 }) {
   const editing = Boolean(editCodpre);
   const [mode, setMode] = useState<Mode>("articles");
-  const [lines, setLines] = useState<LineRow[]>([{ ...EMPTY_LINE }]);
+  const [lines, setLines] = useState<DocumentLine[]>([emptyDocumentLine()]);
   const [portes, setPortes] = useState("");
   const [fecha, setFecha] = useState(today());
   const [referencia, setReferencia] = useState("");
@@ -171,8 +152,6 @@ export function CreateQuoteModal({
   const [loadingTemplate, setLoadingTemplate] = useState<string | null>(null);
   const [openingPdf, setOpeningPdf] = useState(false);
   const [loadedFrom, setLoadedFrom] = useState<string | null>(null);
-  // Campo con autocomplete activo: solo el que tiene el foco busca.
-  const [acField, setAcField] = useState<AcField | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -228,7 +207,7 @@ export function CreateQuoteModal({
         if (!alive) return;
         setReferencia(quote.referencia ?? "");
         const rows = rowsFromQuote(quote);
-        setLines(rows.length > 0 ? rows : [{ ...EMPTY_LINE }]);
+        setLines(rows.length > 0 ? rows : [emptyDocumentLine()]);
         setPortes(quote.portes ? String(quote.portes) : "");
       })
       .catch((e) => {
@@ -238,48 +217,14 @@ export function CreateQuoteModal({
   }, [editCodpre]);
 
   const linesTotal = useMemo(
-    () => lines.reduce((sum, l) => sum + lineTotal(l), 0),
+    () => lines.reduce((sum, l) => sum + documentLineTotal(l), 0),
     [lines],
   );
   // Base imponible = líneas + portes, como `BAS1PRE` en FACTUSOL.
   const total = linesTotal + num(portes);
 
-  function updateLine(i: number, key: keyof LineRow, value: string) {
-    setLines((rs) => rs.map((r, j) => (j === i ? { ...r, [key]: value } : r)));
-  }
-
   function updateShipping(key: keyof ShippingForm, value: string) {
     setShipping((s) => ({ ...s, [key]: value }));
-  }
-
-  /** ¿Este campo es el que tiene el foco? Solo él busca en el catálogo: las
-   *  precargas (plantilla, edición, elegir un artículo) cambian el valor de
-   *  TODAS las líneas a la vez y, si cada input buscase por su cuenta, se
-   *  lanzarían 2N consultas y se abrirían 2N desplegables sin que nadie
-   *  hubiera tecleado — era el «se buguea» del modo Duplicar. */
-  function isAc(i: number, field: AcField["field"]): boolean {
-    return acField?.line === i && acField.field === field;
-  }
-
-  function acCellProps(i: number, field: AcField["field"]) {
-    return {
-      onFocusCapture: () => setAcField({ line: i, field }),
-      onBlurCapture: () => setAcField((cur) =>
-        (cur?.line === i && cur.field === field ? null : cur)),
-    };
-  }
-
-  /** Rellena la línea con el artículo elegido del catálogo. El precio de venta
-   *  se deja EN BLANCO si FACTUSOL no lo tiene: forzar «0.00» invita a emitir
-   *  una proforma a cero sin que nadie lo note. */
-  function applyArticle(i: number, a: FactusolArticle) {
-    setLines((rs) => rs.map((r, j) => (j === i ? {
-      ...r,
-      codart: a.sku ?? a.codart ?? "",
-      description: a.descripcion ?? a.sku ?? "",
-      unit_price: a.precio_venta ? String(a.precio_venta) : "",
-      iva_pct: String(a.iva_pct || 21),
-    } : r)));
   }
 
   /** Paso 1 de duplicar: carga la proforma elegida (líneas reales de F_LPS
@@ -312,7 +257,7 @@ export function CreateQuoteModal({
     if (rows.length > 0) {
       setLines(rows);
     } else {
-      setLines([{ ...EMPTY_LINE }]);
+      setLines([emptyDocumentLine()]);
       setNotice(
         `La proforma ${template.codpre} no tiene líneas en FACTUSOL. `
         + "Añádelas aquí.",
@@ -320,7 +265,6 @@ export function CreateQuoteModal({
     }
     setPortes(template.portes ? String(template.portes) : "");
     setLoadedFrom(template.codpre);
-    setAcField(null);
     setMode("articles");
   }
 
@@ -355,7 +299,7 @@ export function CreateQuoteModal({
       lines: lines
         .filter((l) => l.description.trim() && num(l.quantity) > 0)
         .map((l) => ({
-          codart: l.codart.trim() || undefined,
+          codart: l.sku.trim() || undefined,
           description: l.description.trim(),
           quantity: num(l.quantity),
           unit_price: num(l.unit_price),
@@ -670,102 +614,45 @@ export function CreateQuoteModal({
               (mano de obra, reparaciones) escribe la línea a mano y deja el SKU
               vacío. Los portes van en su propio campo, debajo de la tabla.
             </p>
-            <table className="data-table erp-quote-lines">
-              <thead>
-                <tr>
-                  <th>SKU (opcional)</th><th>Descripción</th><th>Cant.</th>
-                  <th>Precio ud.</th><th>DTO %</th><th>IVA %</th>
-                  <th>Total</th><th />
-                </tr>
-              </thead>
-              <tbody>
-                {lines.map((l, i) => (
-                  <tr key={i}>
-                    <td {...acCellProps(i, "codart")}>
-                      <ArticleAutocompleteInput
-                        value={l.codart}
-                        enabled={isAc(i, "codart")}
-                        ariaLabel={`SKU línea ${i + 1}`}
-                        placeholder="CDR80WPT"
-                        onChange={(v) => updateLine(i, "codart", v)}
-                        onPick={(a) => applyArticle(i, a)}
-                      />
-                    </td>
-                    <td {...acCellProps(i, "description")}>
-                      <ArticleAutocompleteInput
-                        value={l.description}
-                        enabled={isAc(i, "description")}
-                        ariaLabel={`Descripción línea ${i + 1}`}
-                        placeholder="Descripción del artículo o concepto"
-                        onChange={(v) => updateLine(i, "description", v)}
-                        onPick={(a) => applyArticle(i, a)}
-                      />
-                    </td>
-                    <td>
-                      <input type="number" min="0" step="1" value={l.quantity}
-                             aria-label={`Cantidad línea ${i + 1}`}
-                             onChange={(e) => updateLine(i, "quantity", e.target.value)} />
-                    </td>
-                    <td>
-                      <input type="number" min="0" step="0.01" value={l.unit_price}
-                             aria-label={`Precio línea ${i + 1}`}
-                             onChange={(e) => updateLine(i, "unit_price", e.target.value)} />
-                    </td>
-                    <td>
-                      <input type="number" min="0" max="100" step="0.01"
-                             value={l.discount_pct}
-                             aria-label={`Descuento línea ${i + 1}`}
-                             onChange={(e) => updateLine(i, "discount_pct", e.target.value)} />
-                    </td>
-                    <td>
-                      <input type="number" min="0" step="1" value={l.iva_pct}
-                             aria-label={`IVA línea ${i + 1}`}
-                             onChange={(e) => updateLine(i, "iva_pct", e.target.value)} />
-                    </td>
-                    <td>{lineTotal(l).toFixed(2)}</td>
-                    <td>
-                      {lines.length > 1 ? (
-                        <button type="button" className="button small secondary"
-                                aria-label={`Eliminar línea ${i + 1}`}
-                                onClick={() => setLines((rs) => rs.filter((_, j) => j !== i))}>
-                          ✕
-                        </button>
-                      ) : null}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            <div className="erp-quote-foot">
-              <button type="button" className="button small secondary"
-                      onClick={() => setLines((rs) => [...rs, { ...EMPTY_LINE }])}>
-                + Añadir línea
-              </button>
-              <label className="field">
-                <span>Fecha</span>
-                <input type="date" value={fecha}
-                       onChange={(e) => setFecha(e.target.value)} />
-              </label>
-              {/* Portes aparte de la mercancía, como en el pedido manual. En
-                  FACTUSOL van a la banda de portes de la cabecera (IPOR1PRE),
-                  que es donde los deja la app Woo→FACTUSOL y de donde el PDF
-                  los pinta como línea de cargo. */}
-              <label className="field erp-quote-portes">
-                <span>Portes (€)</span>
-                <input type="number" min="0" step="0.01" value={portes}
-                       aria-label="Portes" placeholder="0.00"
-                       title="Gastos de envío. Van en los portes del documento, aparte de la mercancía (como en los pedidos web)."
-                       onChange={(e) => setPortes(e.target.value)} />
-              </label>
-              <p className="erp-manual-total">
-                Base: <strong>{total.toFixed(2)} EUR</strong>
-                {num(portes) > 0 ? (
-                  <span className="muted small">
-                    {" "}(líneas {linesTotal.toFixed(2)} + portes {num(portes).toFixed(2)})
-                  </span>
-                ) : null}
-              </p>
-            </div>
+            {/* Lote 2 · PR-2: la misma tabla de líneas que el pedido manual
+                (DocumentLinesTable), aquí con DTO % e IVA % (F_LPS). */}
+            <DocumentLinesTable
+              lines={lines}
+              onChange={setLines}
+              showDiscount
+              showIva
+              ariaLabel="Líneas de la proforma"
+              skuPlaceholder="CDR80WPT"
+              descriptionPlaceholder="Descripción del artículo o concepto"
+              footer={(
+                <>
+                  <label className="field">
+                    <span>Fecha</span>
+                    <input type="date" value={fecha}
+                           onChange={(e) => setFecha(e.target.value)} />
+                  </label>
+                  {/* Portes aparte de la mercancía, como en el pedido manual. En
+                      FACTUSOL van a la banda de portes de la cabecera (IPOR1PRE),
+                      que es donde los deja la app Woo→FACTUSOL y de donde el PDF
+                      los pinta como línea de cargo. */}
+                  <label className="field erp-quote-portes">
+                    <span>Portes (€)</span>
+                    <input type="number" min="0" step="0.01" value={portes}
+                           aria-label="Portes" placeholder="0.00"
+                           title="Gastos de envío. Van en los portes del documento, aparte de la mercancía (como en los pedidos web)."
+                           onChange={(e) => setPortes(e.target.value)} />
+                  </label>
+                  <p className="erp-manual-total">
+                    Base: <strong>{total.toFixed(2)} EUR</strong>
+                    {num(portes) > 0 ? (
+                      <span className="muted small">
+                        {" "}(líneas {linesTotal.toFixed(2)} + portes {num(portes).toFixed(2)})
+                      </span>
+                    ) : null}
+                  </p>
+                </>
+              )}
+            />
             <p className="muted small">
               Las líneas se guardan en FACTUSOL (F_LPS) y se ven igual en el
               escritorio. El descuento va al primer nivel (DTO 1).
