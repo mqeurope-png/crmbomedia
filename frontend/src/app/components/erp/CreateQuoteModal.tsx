@@ -5,14 +5,17 @@ import { listCompanies, type Company } from "../../lib/companiesApi";
 import { extractErrorMessage } from "../../lib/errors";
 import {
   createFactusolQuote,
+  downloadFactusolDocumentPdf,
   getFactusolCustomerAddresses,
   getFactusolQuote,
+  saveBlob,
   searchFactusolQuotes,
   updateFactusolQuote,
   waitForQuoteJob,
   type FactusolAddress,
   type FactusolArticle,
   type FactusolQuote,
+  type QuoteShippingInput,
 } from "../../lib/erpApi";
 import { ArticleAutocompleteInput } from "./ArticleAutocompleteInput";
 
@@ -33,9 +36,24 @@ const EMPTY_LINE: LineRow = {
   discount_pct: "0", iva_pct: "21",
 };
 
+/** Destinatario libre (dropshipping, Lote B3b). Todo opcional. */
+type ShippingForm = Required<QuoteShippingInput>;
+
+const EMPTY_SHIPPING: ShippingForm = {
+  name: "", address_line: "", city: "", postal_code: "", state: "", country: "",
+};
+
+/** Campo de línea con autocomplete que tiene el foco. Solo ESE campo busca en
+ *  el catálogo (ver `ArticleAutocompleteInput enabled`). */
+type AcField = { line: number; field: "codart" | "description" };
+
 const DEBOUNCE_MS = 300;
 const TEMPLATE_DAYS_BACK = 365;
 const REF_PREVIEW_CHARS = 60;
+/** Serie por defecto del presupuesto si la cabecera no trae TIPPRE. */
+const PRESUPUESTO_SERIE = 1;
+/** El PDF de la plantilla es para el operador, no para el cliente. */
+const TEMPLATE_PDF_LANG = "es";
 
 function num(v: string): number {
   const n = Number(v);
@@ -52,17 +70,59 @@ function lineTotal(l: LineRow): number {
   return num(l.quantity) * num(l.unit_price) * (1 - num(l.discount_pct) / 100);
 }
 
+function serieOf(q: FactusolQuote): number {
+  return q.serie ?? (Number(q.tippre) || PRESUPUESTO_SERIE);
+}
+
+/** Líneas de una proforma → filas editables. El SKU se precarga con el
+ *  comercial (`sku`, EQUART) que es lo que enseña el autocomplete: así el
+ *  artículo queda mapeado sin volver a elegirlo (Lote B4). Las de texto libre
+ *  quedan con el SKU vacío y su descripción. */
+function rowsFromQuote(quote: FactusolQuote): LineRow[] {
+  return (quote.lines ?? []).map((l) => ({
+    codart: l.sku ?? l.codart ?? "",
+    description: l.description,
+    quantity: String(l.quantity),
+    unit_price: String(l.unit_price),
+    discount_pct: String(l.discount_pct ?? 0),
+    iva_pct: String(l.iva_pct),
+  }));
+}
+
+function shippingFilled(s: ShippingForm): boolean {
+  return Object.values(s).some((v) => v.trim());
+}
+
+/** Abre el PDF en una pestaña nueva (como `openShippingFile`). Si el navegador
+ *  bloquea la ventana, cae a la descarga normal. */
+function openPdfBlob(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const win = window.open(url, "_blank");
+  if (!win) saveBlob(blob, filename);
+  // El navegador retiene el blob mientras la pestaña lo usa; se libera tras
+  // un margen para no cortar la apertura.
+  window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+
 /** Alta de proforma FACTUSOL. Dos modos:
  *
  *  - **Con artículos**: buscador F_ART + tabla de líneas editable. Una proforma
  *    «simple» se hace aquí con una sola línea escrita a mano, sin tocar el
  *    catálogo — por eso C-4-fix2 retiró la pestaña «Rápida», que duplicaba esto.
  *  - **Duplicar**: parte de una proforma anterior **de cualquier cliente**.
+ *    Lote B4: al elegirla se enseña una vista previa de sus líneas (con el
+ *    SKU comercial) y un «Ver PDF»; «Usar como plantilla» las vuelca a la
+ *    tabla editable ya mapeadas.
  *
  *  Sobre duplicar: se carga la plantilla en la tabla y se crea una proforma
  *  NUEVA con el cliente destino. No se usa `POST /quotes/{codpre}/duplicate`
  *  porque ese endpoint copia la fila F_PRE entera, incluido `CLIPRE`: duplicar
  *  la de otro cliente dejaría la nueva a nombre del cliente equivocado.
+ *
+ *  Lote B3b: «Portes (€)» va a la banda de portes de la cabecera (IPOR1PRE),
+ *  como en el pedido manual — no como línea. Y «Enviar a otro nombre /
+ *  dirección» permite un destinatario libre (dropshipping) sin tocar el
+ *  cliente fiscal.
  */
 export function CreateQuoteModal({
   companyId,
@@ -84,11 +144,15 @@ export function CreateQuoteModal({
   const editing = Boolean(editCodpre);
   const [mode, setMode] = useState<Mode>("articles");
   const [lines, setLines] = useState<LineRow[]>([{ ...EMPTY_LINE }]);
+  const [portes, setPortes] = useState("");
   const [fecha, setFecha] = useState(today());
   const [referencia, setReferencia] = useState("");
   // Direcciones del cliente: la sede + las adicionales de FACTUSOL.
   const [addresses, setAddresses] = useState<FactusolAddress[]>([]);
   const [addressCode, setAddressCode] = useState(0);
+  // Destinatario libre (dropshipping). Solo se envía con el bloque abierto.
+  const [shippingOpen, setShippingOpen] = useState(false);
+  const [shipping, setShipping] = useState<ShippingForm>({ ...EMPTY_SHIPPING });
   // Cliente DESTINO: arranca en la empresa desde la que se abrió el modal.
   const [targetId, setTargetId] = useState(companyId);
   const [targetName, setTargetName] = useState(companyName);
@@ -102,7 +166,13 @@ export function CreateQuoteModal({
   const [templateQuery, setTemplateQuery] = useState("");
   const [templates, setTemplates] = useState<FactusolQuote[]>([]);
   const [searchingTemplates, setSearchingTemplates] = useState(false);
+  // Plantilla elegida (con sus líneas), a la espera de «Usar como plantilla».
+  const [template, setTemplate] = useState<FactusolQuote | null>(null);
+  const [loadingTemplate, setLoadingTemplate] = useState<string | null>(null);
+  const [openingPdf, setOpeningPdf] = useState(false);
   const [loadedFrom, setLoadedFrom] = useState<string | null>(null);
+  // Campo con autocomplete activo: solo el que tiene el foco busca.
+  const [acField, setAcField] = useState<AcField | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -148,7 +218,8 @@ export function CreateQuoteModal({
     return () => { alive = false; };
   }, [targetCodcli]);
 
-  // Modo edición: precarga la proforma que se va a modificar.
+  // Modo edición: precarga la proforma que se va a modificar (líneas con el
+  // SKU comercial y portes de la cabecera, para no perderlos al reescribir).
   useEffect(() => {
     if (!editCodpre) return;
     let alive = true;
@@ -156,15 +227,9 @@ export function CreateQuoteModal({
       .then((quote) => {
         if (!alive) return;
         setReferencia(quote.referencia ?? "");
-        const rows = (quote.lines ?? []).map((l) => ({
-          codart: l.codart ?? "",
-          description: l.description,
-          quantity: String(l.quantity),
-          unit_price: String(l.unit_price),
-          discount_pct: String(l.discount_pct ?? 0),
-          iva_pct: String(l.iva_pct),
-        }));
+        const rows = rowsFromQuote(quote);
         setLines(rows.length > 0 ? rows : [{ ...EMPTY_LINE }]);
+        setPortes(quote.portes ? String(quote.portes) : "");
       })
       .catch((e) => {
         if (alive) setError(extractErrorMessage(e, "No se pudo cargar la proforma."));
@@ -172,15 +237,36 @@ export function CreateQuoteModal({
     return () => { alive = false; };
   }, [editCodpre]);
 
-  const total = useMemo(
-    () => lines.reduce(
-      (sum, l) => sum + lineTotal(l), 0,
-    ),
+  const linesTotal = useMemo(
+    () => lines.reduce((sum, l) => sum + lineTotal(l), 0),
     [lines],
   );
+  // Base imponible = líneas + portes, como `BAS1PRE` en FACTUSOL.
+  const total = linesTotal + num(portes);
 
   function updateLine(i: number, key: keyof LineRow, value: string) {
     setLines((rs) => rs.map((r, j) => (j === i ? { ...r, [key]: value } : r)));
+  }
+
+  function updateShipping(key: keyof ShippingForm, value: string) {
+    setShipping((s) => ({ ...s, [key]: value }));
+  }
+
+  /** ¿Este campo es el que tiene el foco? Solo él busca en el catálogo: las
+   *  precargas (plantilla, edición, elegir un artículo) cambian el valor de
+   *  TODAS las líneas a la vez y, si cada input buscase por su cuenta, se
+   *  lanzarían 2N consultas y se abrirían 2N desplegables sin que nadie
+   *  hubiera tecleado — era el «se buguea» del modo Duplicar. */
+  function isAc(i: number, field: AcField["field"]): boolean {
+    return acField?.line === i && acField.field === field;
+  }
+
+  function acCellProps(i: number, field: AcField["field"]) {
+    return {
+      onFocusCapture: () => setAcField({ line: i, field }),
+      onBlurCapture: () => setAcField((cur) =>
+        (cur?.line === i && cur.field === field ? null : cur)),
+    };
   }
 
   /** Rellena la línea con el artículo elegido del catálogo. El precio de venta
@@ -196,41 +282,65 @@ export function CreateQuoteModal({
     } : r)));
   }
 
-  /** Carga una proforma como plantilla, siempre al modo «Con artículos».
-   *
-   *  C-4-fix3: las líneas son las **reales** de F_LPS, así que funciona igual
-   *  con proformas creadas en el FACTUSOL de escritorio. Ya no hay «proformas
-   *  sin desglose»; si F_LPS no devuelve nada es que la proforma está vacía, y
-   *  se avisa discretamente dejando la tabla editable. */
+  /** Paso 1 de duplicar: carga la proforma elegida (líneas reales de F_LPS
+   *  con su SKU comercial) y la enseña en la vista previa. No toca la tabla
+   *  editable hasta «Usar como plantilla». */
   const loadTemplate = useCallback(async (quote: FactusolQuote) => {
     if (!quote.codpre) return;
     setError(null);
     setNotice(null);
+    setLoadingTemplate(quote.codpre);
     try {
-      const full = await getFactusolQuote(quote.codpre);
-      const rows: LineRow[] = (full.lines ?? []).map((l) => ({
-        codart: l.codart ?? "",
-        description: l.description,
-        quantity: String(l.quantity),
-        unit_price: String(l.unit_price),
-        discount_pct: String(l.discount_pct ?? 0),
-        iva_pct: String(l.iva_pct),
-      }));
-      if (rows.length > 0) {
-        setLines(rows);
-      } else {
-        setLines([{ ...EMPTY_LINE }]);
-        setNotice(
-          `La proforma ${quote.codpre} no tiene líneas en FACTUSOL. `
-          + "Añádelas aquí.",
-        );
-      }
-      setLoadedFrom(quote.codpre);
-      setMode("articles");
+      setTemplate(await getFactusolQuote(quote.codpre));
     } catch (e) {
       setError(extractErrorMessage(e, "No se pudo cargar la plantilla."));
+    } finally {
+      setLoadingTemplate(null);
     }
   }, []);
+
+  /** Paso 2 de duplicar: vuelca la plantilla a la tabla y pasa a «Con
+   *  artículos». Las líneas llegan ya mapeadas (SKU comercial), así que no
+   *  hay que volver a elegir cada artículo.
+   *
+   *  C-4-fix3: las líneas son las **reales** de F_LPS, así que funciona igual
+   *  con proformas creadas en el FACTUSOL de escritorio. Si F_LPS no devuelve
+   *  nada es que la proforma está vacía, y se avisa dejando la tabla editable. */
+  function applyTemplate() {
+    if (!template?.codpre) return;
+    const rows = rowsFromQuote(template);
+    if (rows.length > 0) {
+      setLines(rows);
+    } else {
+      setLines([{ ...EMPTY_LINE }]);
+      setNotice(
+        `La proforma ${template.codpre} no tiene líneas en FACTUSOL. `
+        + "Añádelas aquí.",
+      );
+    }
+    setPortes(template.portes ? String(template.portes) : "");
+    setLoadedFrom(template.codpre);
+    setAcField(null);
+    setMode("articles");
+  }
+
+  /** PDF de la plantilla (variante proforma) en una pestaña nueva. */
+  async function viewTemplatePdf() {
+    if (!template?.codpre) return;
+    setOpeningPdf(true);
+    setError(null);
+    try {
+      const blob = await downloadFactusolDocumentPdf(
+        "presupuestos", serieOf(template), template.codpre, TEMPLATE_PDF_LANG,
+        { variant: "proforma" },
+      );
+      openPdfBlob(blob, `Proforma_${template.codpre}.pdf`);
+    } catch (e) {
+      setError(extractErrorMessage(e, "No se pudo generar el PDF de la proforma."));
+    } finally {
+      setOpeningPdf(false);
+    }
+  }
 
   const valid = lines.some((l) => l.description.trim() && num(l.quantity) > 0);
 
@@ -258,6 +368,18 @@ export function CreateQuoteModal({
       address: chosen && chosen.codigo !== 0 ? {
         direccion: chosen.direccion, ciudad: chosen.ciudad, cp: chosen.cp,
         provincia: chosen.provincia, pais: chosen.pais,
+      } : null,
+      // Siempre un número: al editar, un 0 le dice al backend que quite los
+      // portes que la proforma tuviera.
+      portes: Math.max(0, num(portes)),
+      // Destinatario libre: solo con el bloque abierto y algo escrito.
+      shipping: shippingOpen && shippingFilled(shipping) ? {
+        name: shipping.name.trim(),
+        address_line: shipping.address_line.trim(),
+        city: shipping.city.trim(),
+        postal_code: shipping.postal_code.trim(),
+        state: shipping.state.trim(),
+        country: shipping.country.trim(),
       } : null,
     };
     try {
@@ -346,6 +468,68 @@ export function CreateQuoteModal({
           </label>
         ) : null}
 
+        {/* Lote B3b: destinatario libre (dropshipping). La proforma sigue a
+            nombre fiscal del cliente; cambia solo a quién y dónde se entrega.
+            Si también se eligió una dirección de F_CLI, manda este bloque. */}
+        <label className="field-toggle">
+          <input type="checkbox" checked={shippingOpen}
+                 aria-label="Enviar a otro nombre / dirección (dropshipping)"
+                 onChange={(e) => setShippingOpen(e.target.checked)} />
+          <span>Enviar a otro nombre / dirección (dropshipping)</span>
+        </label>
+        {shippingOpen ? (
+          <div className="erp-quote-shipping" role="group"
+               aria-label="Destinatario de envío">
+            <label className="field">
+              <span>Nombre de envío</span>
+              <input type="text" value={shipping.name} maxLength={255}
+                     aria-label="Nombre de envío"
+                     placeholder="A quién se entrega (vacío = el cliente)"
+                     onChange={(e) => updateShipping("name", e.target.value)} />
+            </label>
+            <label className="field">
+              <span>Dirección</span>
+              <input type="text" value={shipping.address_line} maxLength={255}
+                     aria-label="Dirección de entrega"
+                     onChange={(e) => updateShipping("address_line", e.target.value)} />
+            </label>
+            <div className="form-row">
+              <label className="field">
+                <span>Ciudad</span>
+                <input type="text" value={shipping.city} maxLength={255}
+                       aria-label="Ciudad de entrega"
+                       onChange={(e) => updateShipping("city", e.target.value)} />
+              </label>
+              <label className="field">
+                <span>Código postal</span>
+                <input type="text" value={shipping.postal_code} maxLength={20}
+                       aria-label="Código postal de entrega"
+                       onChange={(e) => updateShipping("postal_code", e.target.value)} />
+              </label>
+            </div>
+            <div className="form-row">
+              <label className="field">
+                <span>Provincia</span>
+                <input type="text" value={shipping.state} maxLength={255}
+                       aria-label="Provincia de entrega"
+                       onChange={(e) => updateShipping("state", e.target.value)} />
+              </label>
+              <label className="field">
+                <span>País</span>
+                <input type="text" value={shipping.country} maxLength={64}
+                       aria-label="País de entrega"
+                       placeholder="ES, BE… o el nombre (vacío = el del cliente)"
+                       onChange={(e) => updateShipping("country", e.target.value)} />
+              </label>
+            </div>
+            <span className="muted small">
+              La proforma sigue a nombre fiscal de <strong>{targetName}</strong>;
+              solo cambia el destinatario del documento. Si se deja la dirección
+              en blanco, se usa la del cliente.
+            </span>
+          </div>
+        ) : null}
+
         <label className="field">
           <span>Referencia (opcional)</span>
           <input type="text" value={referencia} maxLength={250}
@@ -402,20 +586,87 @@ export function CreateQuoteModal({
                       {q.referencia.slice(0, REF_PREVIEW_CHARS)}
                     </span>
                     <button type="button" className="button small"
+                            disabled={loadingTemplate !== null}
                             onClick={() => loadTemplate(q)}>
-                      Cargar esta plantilla
+                      {loadingTemplate === q.codpre ? "Cargando…" : "Cargar esta plantilla"}
                     </button>
                   </li>
                 ))}
               </ul>
             )}
+
+            {/* Vista previa de la plantilla elegida (Lote B4): líneas reales
+                con su SKU comercial, PDF y el paso a la tabla editable. */}
+            {template ? (
+              <div className="erp-quote-preview" role="region"
+                   aria-label={`Plantilla nº ${template.codpre}`}>
+                <div className="erp-quote-preview-head">
+                  <span>
+                    <strong>Proforma nº {template.codpre}</strong>
+                    {" · "}{template.fecha ?? "—"}
+                    {" · "}{template.cliente_nombre ?? "—"}
+                    {" · "}{template.total.toFixed(2)} €
+                    {template.referencia ? ` · ${template.referencia}` : ""}
+                  </span>
+                  <div className="erp-quote-preview-actions">
+                    <button type="button" className="button small secondary"
+                            onClick={() => void viewTemplatePdf()}
+                            disabled={openingPdf}>
+                      {openingPdf ? "Generando PDF…" : "Ver PDF"}
+                    </button>
+                    <button type="button" className="button small"
+                            onClick={applyTemplate}>
+                      Usar como plantilla
+                    </button>
+                  </div>
+                </div>
+                {(template.lines ?? []).length === 0 ? (
+                  <p className="form-info" role="status">
+                    La proforma {template.codpre} no tiene líneas en FACTUSOL.
+                  </p>
+                ) : (
+                  <table className="data-table" aria-label="Líneas de la plantilla">
+                    <thead>
+                      <tr>
+                        <th>SKU</th><th>Descripción</th>
+                        <th className="num">Cant.</th>
+                        <th className="num">Precio ud.</th>
+                        <th className="num">Total</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(template.lines ?? []).map((l) => (
+                        <tr key={l.position}>
+                          <td>
+                            <span className="erp-article-sku">
+                              {l.sku ?? l.codart ?? "—"}
+                            </span>
+                          </td>
+                          <td>{l.description}</td>
+                          <td className="num">{l.quantity}</td>
+                          <td className="num">{l.unit_price.toFixed(2)}</td>
+                          <td className="num">{l.line_total.toFixed(2)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+                {template.portes ? (
+                  <p className="muted small">
+                    Portes: <strong>{template.portes.toFixed(2)} €</strong> — se
+                    cargan en el campo «Portes» al usarla como plantilla.
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
           </>
         ) : (
           <>
             <p className="muted small">
               Busca en el catálogo escribiendo en <strong>SKU</strong> o{" "}
               <strong>Descripción</strong>. Para conceptos que no son artículos
-              (mano de obra, portes) escribe la línea a mano y deja el SKU vacío.
+              (mano de obra, reparaciones) escribe la línea a mano y deja el SKU
+              vacío. Los portes van en su propio campo, debajo de la tabla.
             </p>
             <table className="data-table erp-quote-lines">
               <thead>
@@ -428,18 +679,20 @@ export function CreateQuoteModal({
               <tbody>
                 {lines.map((l, i) => (
                   <tr key={i}>
-                    <td>
+                    <td {...acCellProps(i, "codart")}>
                       <ArticleAutocompleteInput
                         value={l.codart}
+                        enabled={isAc(i, "codart")}
                         ariaLabel={`SKU línea ${i + 1}`}
                         placeholder="CDR80WPT"
                         onChange={(v) => updateLine(i, "codart", v)}
                         onPick={(a) => applyArticle(i, a)}
                       />
                     </td>
-                    <td>
+                    <td {...acCellProps(i, "description")}>
                       <ArticleAutocompleteInput
                         value={l.description}
+                        enabled={isAc(i, "description")}
                         ariaLabel={`Descripción línea ${i + 1}`}
                         placeholder="Descripción del artículo o concepto"
                         onChange={(v) => updateLine(i, "description", v)}
@@ -491,8 +744,24 @@ export function CreateQuoteModal({
                 <input type="date" value={fecha}
                        onChange={(e) => setFecha(e.target.value)} />
               </label>
+              {/* Portes aparte de la mercancía, como en el pedido manual. En
+                  FACTUSOL van a la banda de portes de la cabecera (IPOR1PRE),
+                  que es donde los deja la app Woo→FACTUSOL y de donde el PDF
+                  los pinta como línea de cargo. */}
+              <label className="field erp-quote-portes">
+                <span>Portes (€)</span>
+                <input type="number" min="0" step="0.01" value={portes}
+                       aria-label="Portes" placeholder="0.00"
+                       title="Gastos de envío. Van en los portes del documento, aparte de la mercancía (como en los pedidos web)."
+                       onChange={(e) => setPortes(e.target.value)} />
+              </label>
               <p className="erp-manual-total">
                 Base: <strong>{total.toFixed(2)} EUR</strong>
+                {num(portes) > 0 ? (
+                  <span className="muted small">
+                    {" "}(líneas {linesTotal.toFixed(2)} + portes {num(portes).toFixed(2)})
+                  </span>
+                ) : null}
               </p>
             </div>
             <p className="muted small">

@@ -444,9 +444,10 @@ def enqueue_create_order_albaran(
 def create_quote_job(
     customer: dict[str, Any], lines: list[dict[str, Any]],
     referencia: str | None = None, fecha: str | None = None,
-    fopfac: str | None = None,
+    fopfac: str | None = None, portes: float = 0.0,
 ) -> dict[str, Any]:
-    """Crea la proforma en F_PRE y cachea su desglose."""
+    """Crea la proforma en F_PRE (cabecera + líneas F_LPS). `portes` (Lote
+    B3b) van a la banda IPOR1PRE de la cabecera, no como línea."""
     from sqlalchemy.orm import Session  # noqa: PLC0415
 
     from app.db.session import get_engine  # noqa: PLC0415
@@ -458,7 +459,7 @@ def create_quote_job(
         result = create_quote(
             client, session, ejercicio=ejercicio_for(session),
             customer=customer, lines=lines, referencia=referencia,
-            fecha=fecha, fopfac=fopfac,
+            fecha=fecha, fopfac=fopfac, portes=portes,
         )
     logger.info("factusol: proforma creada codpre=%s", result.get("codpre"))
     return result
@@ -466,7 +467,7 @@ def create_quote_job(
 
 def update_quote_job(
     codpre: str, customer: dict[str, Any], lines: list[dict[str, Any]],
-    referencia: str | None = None, force: bool = False,
+    referencia: str | None = None, force: bool = False, portes: float = 0.0,
 ) -> dict[str, Any]:
     """Reescribe cabecera + líneas de una proforma existente."""
     from sqlalchemy.orm import Session  # noqa: PLC0415
@@ -480,6 +481,7 @@ def update_quote_job(
         result = update_quote(
             client, codpre, ejercicio=ejercicio_for(session),
             customer=customer, lines=lines, referencia=referencia, force=force,
+            portes=portes,
         )
     logger.info("factusol: proforma %s actualizada", codpre)
     return result
@@ -539,21 +541,21 @@ def convert_quote_to_order_job(
 def enqueue_create_quote(
     customer: dict[str, Any], lines: list[dict[str, Any]],
     referencia: str | None = None, fecha: str | None = None,
-    fopfac: str | None = None,
+    fopfac: str | None = None, portes: float = 0.0,
 ) -> str:
     return _enqueue(
         "app.integrations.factusol.jobs.create_quote_job",
-        customer, lines, referencia, fecha, fopfac,
+        customer, lines, referencia, fecha, fopfac, portes,
     )
 
 
 def enqueue_update_quote(
     codpre: str, customer: dict[str, Any], lines: list[dict[str, Any]],
-    referencia: str | None = None, force: bool = False,
+    referencia: str | None = None, force: bool = False, portes: float = 0.0,
 ) -> str:
     return _enqueue(
         "app.integrations.factusol.jobs.update_quote_job",
-        codpre, customer, lines, referencia, force,
+        codpre, customer, lines, referencia, force, portes,
     )
 
 

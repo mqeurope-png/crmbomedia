@@ -488,6 +488,191 @@ def test_patch_quote_pasa_la_direccion_elegida(client, session_factory):
     assert customer["nombre"] == "Acme SL"
 
 
+# --- Lote B3b · portes + destinatario libre (dropshipping) --------------------
+
+
+def test_create_quote_pasa_portes_y_destinatario_libre(client, session_factory):
+    """`portes` viaja al job como argumento propio (va a la banda IPOR1PRE, no
+    como línea) y `shipping` pisa el bloque de envío del cliente conservando
+    el fiscal (codcli/nif)."""
+    with session_factory() as s:
+        cid = _company(s)
+    with patch("app.integrations.factusol.jobs.enqueue_create_quote",
+               return_value="job-q2") as enq:
+        r = client.post("/api/erp/factusol/quotes",
+                        headers=auth_headers(client, "pedidos"),
+                        json={"company_id": cid,
+                              "lines": [{"description": "Vinilo",
+                                         "quantity": 1, "unit_price": 100}],
+                              "portes": 19.5,
+                              "shipping": {"name": "Juan Pérez",
+                                           "address_line": "C/ Nueva 5",
+                                           "city": "Bilbao",
+                                           "postal_code": "48001",
+                                           "state": "Bizkaia",
+                                           "country": "ES"}})
+    assert r.status_code == 202, r.text
+    args = enq.call_args.args
+    customer = args[0]
+    assert customer["codcli"] == "55555"
+    assert customer["nif"] == "B12345678"
+    assert customer["nombre"] == "Juan Pérez"
+    assert customer["direccion"] == "C/ Nueva 5"
+    assert customer["ciudad"] == "Bilbao"
+    assert customer["cp"] == "48001"
+    assert customer["provincia"] == "Bizkaia"
+    assert customer["pais"] == "ES"
+    assert args[5] == 19.5  # portes
+    # Ninguna línea de portes en las líneas.
+    assert [line["description"] for line in args[1]] == ["Vinilo"]
+
+
+def test_create_quote_sin_portes_ni_envio_manda_cero(client, session_factory):
+    with session_factory() as s:
+        cid = _company(s)
+    with patch("app.integrations.factusol.jobs.enqueue_create_quote",
+               return_value="job-q3") as enq:
+        r = client.post("/api/erp/factusol/quotes",
+                        headers=auth_headers(client, "pedidos"),
+                        json={"company_id": cid, "referencia": "X"})
+    assert r.status_code == 202
+    assert enq.call_args.args[5] == 0.0
+    assert enq.call_args.args[0]["nombre"] == "Acme SL"
+
+
+def test_create_quote_422_si_los_portes_son_negativos(client, session_factory):
+    with session_factory() as s:
+        cid = _company(s)
+    r = client.post("/api/erp/factusol/quotes",
+                    headers=auth_headers(client, "pedidos"),
+                    json={"company_id": cid, "referencia": "X", "portes": -1})
+    assert r.status_code == 422
+
+
+def test_create_quote_destinatario_libre_manda_sobre_direccion_alternativa(
+    client, session_factory,
+):
+    """Si vienen la dirección alternativa de F_CLI Y el destinatario libre,
+    manda el libre."""
+    with session_factory() as s:
+        cid = _company(s)
+    with patch("app.integrations.factusol.jobs.enqueue_create_quote",
+               return_value="job-q4") as enq:
+        r = client.post("/api/erp/factusol/quotes",
+                        headers=auth_headers(client, "pedidos"),
+                        json={"company_id": cid, "referencia": "X",
+                              "address": {"direccion": "Pol. Ind. 4",
+                                          "ciudad": "Bilbao", "cp": "48001",
+                                          "provincia": "Bizkaia"},
+                              "shipping": {"address_line": "Rue Neuve 12",
+                                           "city": "Bruxelles",
+                                           "postal_code": "1000",
+                                           "country": "BE"}})
+    assert r.status_code == 202
+    customer = enq.call_args.args[0]
+    assert customer["direccion"] == "Rue Neuve 12"
+    assert customer["ciudad"] == "Bruxelles"
+    assert customer["cp"] == "1000"
+    # La provincia NO se hereda de la alternativa: el bloque libre va entero.
+    assert customer["provincia"] == ""
+    assert customer["pais"] == "BE"
+    # Sin nombre de envío se conserva el del cliente.
+    assert customer["nombre"] == "Acme SL"
+
+
+def test_apply_shipping_solo_nombre_conserva_la_direccion():
+    from app.erp.api.factusol import QuoteShippingIn, _apply_shipping
+
+    customer = {"codcli": "1", "nombre": "Acme SL", "nif": "B1",
+                "direccion": "C/ Mayor 1", "ciudad": "Madrid", "cp": "28001",
+                "provincia": "Madrid", "pais": "ES", "regime": "nacional"}
+    out = _apply_shipping(customer, QuoteShippingIn(name="A/A Marta"))
+    assert out["nombre"] == "A/A Marta"
+    assert out["direccion"] == "C/ Mayor 1" and out["ciudad"] == "Madrid"
+    assert out["regime"] == "nacional"
+    assert _apply_shipping(customer, None) is customer
+    # Todo vacío: no cambia nada.
+    assert _apply_shipping(customer, QuoteShippingIn()) == customer
+
+
+def test_shipping_llega_a_la_cabecera_f_pre_sin_tocar_clipre_ni_cnipre():
+    """De punta a punta: el destinatario libre acaba en CNOPRE/CDOPRE/… con el
+    país en ISO numérico, y CLIPRE/CNIPRE siguen siendo los fiscales."""
+    from app.erp.api.factusol import QuoteShippingIn, _apply_shipping
+    from app.integrations.factusol.quotes import build_quote_payload
+
+    customer = {"codcli": "55555", "nombre": "Acme SL", "nif": "B12345678",
+                "direccion": "C/ Mayor 1", "ciudad": "Madrid", "cp": "28001",
+                "provincia": "Madrid", "pais": "ES", "regime": "nacional"}
+    merged = _apply_shipping(customer, QuoteShippingIn(
+        name="Ligue Braille", address_line="Rue d'Angleterre 57",
+        city="Bruxelles", postal_code="1060", country="Bélgica",
+    ))
+    header = build_quote_payload(
+        "900", ejercicio="2026", customer=merged, refpre="",
+        lines=[{"description": "Placas", "quantity": 1, "unit_price": 100,
+                "iva_pct": 21}],
+        portes=19.0,
+    )
+    assert header["CLIPRE"] == "55555"
+    assert header["CNIPRE"] == "B12345678"
+    assert header["CNOPRE"] == "Ligue Braille"
+    assert header["CDOPRE"] == "Rue d'Angleterre 57"
+    assert header["CPOPRE"] == "Bruxelles"
+    assert header["CCPPRE"] == "1060"
+    assert header["CPRPRE"] == ""
+    assert header["CPAPRE"] == "056"
+    # El IVA sigue el régimen del CLIENTE (nacional), no el país de envío.
+    assert header["PIVA1PRE"] == 21.0
+    assert header["IPOR1PRE"] == 19.0 and header["BAS1PRE"] == 119.0
+
+
+def test_patch_quote_pasa_portes_y_destinatario_libre(client, session_factory):
+    with session_factory() as s:
+        cid = _company(s)
+    with patch("app.integrations.factusol.jobs.enqueue_update_quote",
+               return_value="job-u3") as enq:
+        r = client.patch("/api/erp/factusol/quotes/700",
+                         headers=auth_headers(client, "pedidos"),
+                         json={"company_id": cid, "referencia": "X",
+                               "portes": 7.25,
+                               "shipping": {"name": "Obra Valencia"}})
+    assert r.status_code == 202, r.text
+    args = enq.call_args.args
+    assert args[0] == "700"
+    assert args[1]["nombre"] == "Obra Valencia"
+    assert args[1]["codcli"] == "55555"
+    assert args[4] is False  # force
+    assert args[5] == 7.25   # portes
+
+
+# --- Lote B4 · el detalle trae el SKU comercial por línea ---------------------
+
+
+def test_get_quote_devuelve_sku_comercial_y_portes(client):
+    fake = _FakeFactusol(
+        quotes=[_quote_row(12, IPOR1PRE=19.0)],
+        lines=[
+            {"TIPLPS": "1", "CODLPS": 12, "POSLPS": 1, "ARTLPS": "00001",
+             "DESLPS": "CD TQ 700 MB", "CANLPS": 10, "PRELPS": 0.79,
+             "TOTLPS": 7.9, "IVALPS": 21.0},
+            {"TIPLPS": "1", "CODLPS": 12, "POSLPS": 2, "ARTLPS": "",
+             "DESLPS": "Hora SAT", "CANLPS": 1, "PRELPS": 60.0,
+             "TOTLPS": 60.0, "IVALPS": 21.0},
+        ],
+        articles=[{"CODART": "00001", "EQUART": "CDR80WPT"}],
+    )
+    with _patch_client(fake):
+        r = client.get("/api/erp/factusol/quotes/12",
+                       headers=auth_headers(client, "user"))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert [(line["codart"], line["sku"]) for line in body["lines"]] == [
+        ("00001", "CDR80WPT"), (None, None),
+    ]
+    assert body["portes"] == 19.0
+
+
 def test_patch_quote_prohibido_para_solo_lectura(client, session_factory):
     with session_factory() as s:
         cid = _company(s)

@@ -2505,7 +2505,11 @@ export type FactusolArticle = {
 /** Una línea del desglose de la proforma. */
 export type FactusolQuoteLine = {
   position: number;
+  /** CODART interno (`ARTLPS`); null en las líneas de texto libre. */
   codart: string | null;
+  /** Lote B4: SKU comercial (`EQUART`) del artículo — el que enseña y busca
+   *  el autocomplete. Null en las de texto libre; ausente en mocks antiguos. */
+  sku?: string | null;
   description: string;
   quantity: number;
   unit_price: number;
@@ -2531,8 +2535,10 @@ export type FactusolQuote = {
   base: number;
   iva: number;
   total: number;
+  /** Lote B3b: portes de la cabecera (`IPOR1PRE`); 0 si no tiene. */
+  portes?: number;
   lines?: FactusolQuoteLine[];
-  line_source?: "cache" | "ref_text";
+  line_source?: "cache" | "ref_text" | "F_LPS";
   /** Fase 4: estado (`ESTPRE`), cola, empresa CRM vinculada, régimen de IVA
    *  (de la empresa; sin empresa, lo que dice la cabecera) y el pedido de
    *  BoHub si ya se convirtió. Ausentes en respuestas antiguas / mocks. */
@@ -2901,6 +2907,24 @@ export type CreateQuotePayload = {
     provincia?: string;
     pais?: string;
   } | null;
+  /** Lote B3b: gastos de envío. Van a la banda de portes de la cabecera
+   *  (IPOR1PRE), como en el albarán manual — NO como línea. 0/null → sin. */
+  portes?: number | null;
+  /** Lote B3b: destinatario libre (dropshipping). Pisa el bloque de envío de
+   *  la cabecera (nombre + dirección); el cliente fiscal no cambia. Si viene
+   *  junto con `address`, manda este. */
+  shipping?: QuoteShippingInput | null;
+};
+
+/** Destinatario de envío libre de la proforma (Lote B3b). Todo opcional: sin
+ *  nombre se conserva el del cliente; sin país, el del cliente. */
+export type QuoteShippingInput = {
+  name?: string;
+  address_line?: string;
+  city?: string;
+  postal_code?: string;
+  state?: string;
+  country?: string;
 };
 
 export async function createFactusolQuote(
