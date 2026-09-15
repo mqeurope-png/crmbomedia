@@ -413,7 +413,9 @@ export function CreateQuoteModal({
   return (
     <div className="modal-overlay" role="dialog" aria-modal="true"
          aria-label={editing ? "Editar proforma FACTUSOL" : "Nueva proforma FACTUSOL"}>
-      <div className="modal-dialog modal-wide">
+      {/* Lote 2 · E6: molde plano del ERP; `modal-wide` es la única excepción
+          de ancho (editor de líneas de 8 columnas), ver styles.css. */}
+      <div className="modal-dialog erp-modal modal-wide">
         <h2>{editing ? `Editar proforma nº ${editCodpre}` : "Nueva proforma"}</h2>
 
         <div className="erp-quote-target">

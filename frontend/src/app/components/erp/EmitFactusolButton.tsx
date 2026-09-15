@@ -178,7 +178,7 @@ export function EmitFactusolButton({
       {phase === "confirm" && !enableOptions ? (
         <div className="modal-overlay" role="dialog" aria-modal="true"
              aria-label="Confirmar emisión de factura FACTUSOL">
-          <div className="modal-dialog">
+          <div className="modal-dialog erp-modal">
             <h2>Emitir factura en FACTUSOL</h2>
             <p>
               Total: <strong>{totalAmount.toFixed(2)} {currency}</strong>

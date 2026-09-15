@@ -74,7 +74,7 @@ export function ExcludeSeguimientoModal({
 
   return (
     <div className="modal-overlay" role="dialog" aria-modal="true" aria-label={title}>
-      <div className="modal-dialog">
+      <div className="modal-dialog erp-modal">
         <h2>{title}</h2>
         <p className="muted small">
           Sale de TODAS tus listas de trabajo a la vez: la bandeja de Pedidos,

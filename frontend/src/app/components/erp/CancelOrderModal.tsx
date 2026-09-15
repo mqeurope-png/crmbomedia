@@ -75,7 +75,7 @@ export function CancelOrderModal({
   return (
     <div className="modal-overlay" role="dialog" aria-modal="true"
          aria-label={`Anular pedido ${orderNumber}`}>
-      <div className="modal-dialog">
+      <div className="modal-dialog erp-modal">
         <h2>Anular pedido <span className="muted">{orderNumber}</span></h2>
 
         {result ? (
