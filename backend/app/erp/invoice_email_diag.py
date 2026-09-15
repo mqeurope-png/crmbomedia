@@ -57,16 +57,20 @@ class Candidate:
 
 def _verdict(
     order: Order, *, serie: int, ref: str, cli: str, o_serie: int | None,
-    o_ref: str, o_cli: str | None,
+    o_ref: str, o_cli: str | None, total: int,
 ) -> str:
+    _ = order
     if o_serie is not None:
         return "serie coincide" if o_serie == serie else f"DESCARTADO: serie {o_serie} ≠ {serie}"
     if ref and o_ref == ref:
         return "referencia coincide (serie no guardada)"
     if cli and o_cli == cli:
         return "cliente coincide (serie y referencia no)"
-    _ = order
-    return "DESCARTADO: sin serie, referencia ni cliente coincidentes"
+    if (ref and o_ref and o_ref != ref) or (cli and o_cli and o_cli != cli):
+        return "DESCARTADO: la referencia o el cliente contradicen"
+    if total == 1:
+        return "único pedido con ese nº y nada lo contradice (sin serie guardada)"
+    return "DESCARTADO: homónimo sin serie, referencia ni cliente que lo confirmen"
 
 
 def diagnose_invoice_link(
@@ -110,7 +114,7 @@ def diagnose_invoice_link(
             contacto_email=contact.email if contact is not None else None,
             referencia=o_ref,
             veredicto=_verdict(order, serie=serie, ref=ref, cli=cli, o_serie=o_serie,
-                               o_ref=o_ref, o_cli=o_cli),
+                               o_ref=o_ref, o_cli=o_cli, total=len(candidates)),
         ))
 
     # Búsqueda ANTIGUA (#426 y anteriores): primer pedido con ese número desnudo.

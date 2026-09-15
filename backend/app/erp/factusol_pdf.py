@@ -1777,8 +1777,12 @@ def find_order_for_invoice(
       - o, sin serie guardada, su referencia común coincide con la REFFAC de
         la factura (fuerte);
       - o, sin serie guardada ni referencia, su empresa cliente es la de la
-        factura (CLIFAC ↔ `Company.factusol_company_id`; débil).
-    Con más de un candidato fuerte (o débil sin fuerte) no se elige ninguno."""
+        factura (CLIFAC ↔ `Company.factusol_company_id`; débil);
+      - o es el ÚNICO pedido con ese número y nada lo contradice (ni la
+        referencia ni el cliente, cuando ambos lados constan): la factura
+        emitida desde BoHub sin referencia ni cliente enlazado.
+    Con más de un candidato fuerte (o débil sin fuerte, o varios homónimos
+    sin pruebas) no se elige ninguno."""
     from sqlalchemy import select  # noqa: PLC0415
 
     from app.erp.models import Order  # noqa: PLC0415
@@ -1803,21 +1807,31 @@ def find_order_for_invoice(
         return None
     ref = str(referencia or "").strip().upper()
     cli = str(cliente_codigo or "").strip()
-    strong, weak = [], []
+    strong, weak, neutral = [], [], []
     for order in candidates:
         o_serie = order_invoice_serie(order)
         if serie_int is not None and o_serie is not None:
             if o_serie == serie_int:
                 strong.append(order)
             continue  # otra serie: es la factura homónima de OTRO pedido
-        if ref and order_composed_ref(session, order) == ref:
+        o_ref = order_composed_ref(session, order)
+        o_cli = order_customer_code(session, order) or ""
+        if ref and o_ref == ref:
             strong.append(order)
-        elif cli and order_customer_code(session, order) == cli:
+        elif cli and o_cli == cli:
             weak.append(order)
+        elif not ((ref and o_ref and o_ref != ref) or (cli and o_cli and o_cli != cli)):
+            neutral.append(order)  # nada lo confirma, pero nada lo contradice
     if len(strong) == 1:
         return strong[0]
-    if not strong and len(weak) == 1:
+    if strong:
+        return None
+    if len(weak) == 1:
         return weak[0]
+    if weak:
+        return None
+    if len(candidates) == 1 and len(neutral) == 1:
+        return neutral[0]
     return None
 
 
