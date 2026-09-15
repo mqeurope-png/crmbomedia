@@ -54,6 +54,9 @@ class EntitySearchRequest(BaseModel):
     sort_dir: str = "desc"
     limit: int = Field(default=25, ge=1, le=200)
     offset: int = Field(default=0, ge=0)
+    #: Limpieza de empresas: por defecto se OCULTAN las archivadas (entidades
+    #: con `is_archived`). El toggle «Ver archivadas» del listado lo pone True.
+    include_archived: bool = False
 
 
 class EntitySearchPage(BaseModel):
@@ -136,6 +139,16 @@ def _resolve_sort(descriptor: Any, payload: EntitySearchRequest):
     return column, sort_dir
 
 
+def _visibility_clauses(descriptor: Any, *, include_archived: bool) -> list[Any]:
+    """Filtros de visibilidad por defecto de la entidad. Hoy: las empresas
+    archivadas quedan fuera salvo `include_archived` (toggle «Ver
+    archivadas»). Genérico: cualquier modelo con `is_archived`."""
+    col = getattr(descriptor.base_model, "is_archived", None)
+    if col is not None and not include_archived:
+        return [col.is_(False)]
+    return []
+
+
 def _segment_resolver_for(session: Session):
     """Closure factory for `in_segment` field. Sprint Filtros & Listas
     (PR-Cf): el motor levanta `SegmentRuleError("in_segment requires a
@@ -189,16 +202,17 @@ def entity_search(
             status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
         ) from exc
 
+    visibility = _visibility_clauses(descriptor, include_archived=payload.include_archived)
     column, sort_dir = _resolve_sort(descriptor, payload)
     order_by = column.asc() if sort_dir == "asc" else column.desc()
 
     total = session.scalar(
-        select(func.count()).select_from(descriptor.base_model).where(clause)
+        select(func.count()).select_from(descriptor.base_model).where(clause, *visibility)
     ) or 0
 
     stmt = (
         select(descriptor.base_model)
-        .where(clause)
+        .where(clause, *visibility)
         .order_by(order_by)
         .offset(payload.offset)
         .limit(payload.limit)
@@ -259,9 +273,10 @@ def entity_search_ids(
             status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
         ) from exc
 
+    visibility = _visibility_clauses(descriptor, include_archived=payload.include_archived)
     rows = list(
         session.scalars(
-            select(descriptor.id_column).where(clause).limit(MAX_IDS + 1)
+            select(descriptor.id_column).where(clause, *visibility).limit(MAX_IDS + 1)
         )
     )
     truncated = len(rows) > MAX_IDS

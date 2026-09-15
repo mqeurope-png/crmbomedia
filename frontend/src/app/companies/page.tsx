@@ -80,6 +80,9 @@ export default function CompaniesListPage() {
   const [rules, setRules] = useState<Record<string, unknown>>(EMPTY_RULES);
   const [q, setQ] = useState("");
   const [searchInput, setSearchInput] = useState("");
+  // Limpieza de empresas: por defecto las archivadas quedan fuera; el toggle
+  // «Ver archivadas» las incluye.
+  const [includeArchived, setIncludeArchived] = useState(false);
   const [sort, setSort] = useState<SortState | null>({
     field: "name",
     direction: "asc",
@@ -262,8 +265,8 @@ export default function CompaniesListPage() {
 
   // Fetch
   const fetchKey = useMemo(
-    () => JSON.stringify({ rules, q, sort, offset }),
-    [rules, q, sort, offset],
+    () => JSON.stringify({ rules, q, sort, offset, includeArchived }),
+    [rules, q, sort, offset, includeArchived],
   );
 
   useEffect(() => {
@@ -302,6 +305,7 @@ export default function CompaniesListPage() {
       sort_dir: sort?.direction ?? "asc",
       limit: PAGE_SIZE,
       offset,
+      include_archived: includeArchived,
     })
       .then((page) => {
         if (cancelled) return;
@@ -594,6 +598,14 @@ export default function CompaniesListPage() {
             value={searchInput}
             onChange={(e) => setSearchInput(e.target.value)}
           />
+          <label className="checkbox-inline" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <input
+              type="checkbox"
+              checked={includeArchived}
+              onChange={(e) => { setIncludeArchived(e.target.checked); setOffset(0); }}
+            />
+            <span className="small">Ver archivadas</span>
+          </label>
           <div className="contact-toolbar-spacer" />
           <button
             type="button"

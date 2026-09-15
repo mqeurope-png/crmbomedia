@@ -163,10 +163,13 @@ def order_alerts(
     # incidencia, ni cola, ni acción, ni bloqueo.
 
     company = _company_of(session, order, ctx)
+    # Empresa archivada (limpieza): no genera alertas ni incidencias («sin
+    # vincular a FACTUSOL» incluido). El pedido sigue su ciclo por su estado.
+    archived = bool(company is not None and getattr(company, "is_archived", False))
 
     # 1) Empresa sin vincular a cliente de F_CLI: sin CODCLI no hay albarán ni
     #    factura posibles para ese cliente.
-    if company is not None and not (company.factusol_company_id or ""):
+    if company is not None and not archived and not (company.factusol_company_id or ""):
         alerts.append(_alert(
             "empresa_sin_vincular",
             f"«{company.name}» no está vinculada a un cliente de FACTUSOL.",
@@ -178,8 +181,8 @@ def order_alerts(
     #    Fase VIES: si VIES dice que el NIF-IVA NO es válido no se puede
     #    eximir → incidencia BLOQUEANTE (se facturaría mal el IVA); si aún no
     #    está validado (pendiente / VIES caído) se avisa sin bloquear.
-    regime = company_regime(company)
-    vies = _vies_of(company)
+    regime = company_regime(company) if not archived else None
+    vies = _vies_of(company) if not archived else {"vat": None, "status": None}
     if vies["vat"] and vies["status"] == "no_valido":
         alerts.append(_alert(
             "vat_no_valido_vies",

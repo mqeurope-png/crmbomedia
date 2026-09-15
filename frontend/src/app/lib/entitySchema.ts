@@ -124,6 +124,9 @@ export type EntitySearchRequest = {
   sort_dir?: "asc" | "desc";
   limit?: number;
   offset?: number;
+  /** Limpieza de empresas: incluir las archivadas (toggle «Ver archivadas»);
+   *  por defecto quedan fuera. */
+  include_archived?: boolean;
 };
 
 export type EntitySearchPage<T = Record<string, unknown>> = {

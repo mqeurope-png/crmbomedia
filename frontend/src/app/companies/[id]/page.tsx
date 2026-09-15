@@ -12,9 +12,11 @@ import {
   type CompanyWrite,
   type FiscalCheck,
   type ViesStatus,
+  archiveCompany,
   deleteCompany,
   fiscalCheck,
   getCompany,
+  restoreCompany,
   listCompanyContacts,
   mergeCompanies,
   updateCompany,
@@ -63,6 +65,7 @@ export default function CompanyDetailPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [archiving, setArchiving] = useState(false);
   const [mergeOpen, setMergeOpen] = useState(false);
   const [canEdit, setCanEdit] = useState(false);
   // Régimen detectado por país + NIF-IVA (misma regla que la ficha F_CLI).
@@ -215,6 +218,41 @@ export default function CompanyDetailPage() {
     }
   };
 
+  // Archivado reversible (limpieza de empresas): oculta la empresa de listados
+  // y buscadores, sin borrar; «Restaurar» la devuelve. Sus pedidos / contactos
+  // / tareas se conservan.
+  const onArchive = async () => {
+    if (!company) return;
+    if (!confirm(
+      `¿Archivar "${company.name}"? Queda fuera de listados y buscadores (reversible con `
+      + "«Restaurar»); no se borra nada.",
+    )) return;
+    setArchiving(true);
+    setError(null);
+    try {
+      const updated = await archiveCompany(company.id);
+      setCompany(updated);
+    } catch (err) {
+      setError(extractErrorMessage(err, "No se pudo archivar."));
+    } finally {
+      setArchiving(false);
+    }
+  };
+
+  const onRestore = async () => {
+    if (!company) return;
+    setArchiving(true);
+    setError(null);
+    try {
+      const updated = await restoreCompany(company.id);
+      setCompany(updated);
+    } catch (err) {
+      setError(extractErrorMessage(err, "No se pudo restaurar."));
+    } finally {
+      setArchiving(false);
+    }
+  };
+
   if (loading) return <main className="shell"><p className="muted">Cargando…</p></main>;
   if (error || !company)
     return (
@@ -227,6 +265,9 @@ export default function CompanyDetailPage() {
   ) => setCompany((prev) => (prev ? { ...prev, [key]: value } : prev));
 
   const linked = !!company.factusol_company_id;
+  // Una empresa archivada no muestra las alertas de flujo (sin vincular / CRM
+  // ≠ FACTUSOL / VIES): su banner propio manda y no se le pide acción.
+  const archived = !!company.is_archived;
   const diffs = sync?.diffs ?? null;
   const differs = !!diffs && diffs.length > 0;
   const nif = company.tax_id || company.vat || null;
@@ -297,6 +338,11 @@ export default function CompanyDetailPage() {
                 </button>
               ) : null}
               <button type="button" onClick={() => setMergeOpen(true)}>Fusionar</button>
+              {company.is_archived ? (
+                <button type="button" disabled={archiving} onClick={onRestore}>Restaurar</button>
+              ) : (
+                <button type="button" disabled={archiving} onClick={onArchive}>Archivar</button>
+              )}
               <button type="button" onClick={onDelete}>Borrar</button>
             </ActionsMenu>
           </>
@@ -318,13 +364,32 @@ export default function CompanyDetailPage() {
         ) : (
           <span className="badge warn">Sin vincular a FACTUSOL</span>
         )}
+        {company.is_archived ? <span className="badge muted">Archivada</span> : null}
       </p>
+
+      {company.is_archived ? (
+        <div className="erp-flow-alertbar" role="status" aria-label="Empresa archivada">
+          <div className="erp-flow-alert">
+            <span aria-hidden>!</span>
+            <span>
+              Empresa archivada{company.archived_reason ? ` (${company.archived_reason})` : ""}: está
+              fuera de listados y buscadores, y no genera alertas. No se ha borrado nada.
+            </span>
+            <span className="erp-flow-alert-fix">
+              <button type="button" className="button small secondary" disabled={archiving}
+                      onClick={onRestore}>
+                {archiving ? "Restaurando…" : "Restaurar"}
+              </button>
+            </span>
+          </div>
+        </div>
+      ) : null}
 
       {error ? <p className="form-error">{error}</p> : null}
 
       {/* Barra de alerta: VAT no válido en VIES (bloquea la exención), CRM ≠
           FACTUSOL (con «Traer datos»), o sin vincular. */}
-      {viesInvalid || differs || !linked ? (
+      {!archived && (viesInvalid || differs || !linked) ? (
         <div className={`erp-flow-alertbar${viesInvalid || !linked ? " is-blocking" : ""}`}
              role="alert" aria-label="Alertas de la empresa">
           {viesInvalid ? (

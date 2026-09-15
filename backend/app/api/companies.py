@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from pydantic import BaseModel
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
@@ -126,6 +127,10 @@ def list_companies(
     country: str | None = Query(default=None),
     source: str | None = Query(default=None),
     has_contacts: bool | None = Query(default=None),
+    # Limpieza de empresas: las archivadas quedan FUERA por defecto (el
+    # buscador unificado, el picker y los autocompletes las ocultan). El
+    # listado con el toggle «Ver archivadas» pasa `include_archived=true`.
+    include_archived: bool = Query(default=False),
     # PR-Fix-Filtros-Lista-Cortada. Cap subido de 200 a 5000 — pickers
     # como CustomFieldSelector (workflow filter builder) hidrataban
     # toda la lista de empresas para resolver el dropdown del field
@@ -140,6 +145,8 @@ def list_companies(
 ) -> CompanyList:
     _ = current_user
     stmt = select(Company)
+    if not include_archived:
+        stmt = stmt.where(Company.is_archived.is_(False))
     if q:
         like = f"%{q}%"
         stmt = stmt.where(
@@ -501,6 +508,62 @@ def delete_company(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
+class ArchivePayload(BaseModel):
+    reason: str | None = None
+
+
+@router.post("/{company_id}/archive", response_model=CompanyRead)
+def archive_company(
+    company_id: str,
+    payload: ArchivePayload | None = None,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_admin),
+) -> CompanyRead:
+    """Archiva la empresa (REVERSIBLE, no borra): queda fuera de listados /
+    bandejas / buscadores y no genera alertas. Sus contactos / pedidos /
+    tareas se conservan. Idempotente."""
+    row = session.get(Company, company_id)
+    if row is None:
+        raise not_found("Company")
+    reason = (payload.reason if payload else None) or "archivada a mano"
+    if not row.is_archived:
+        row.is_archived = True
+        row.archived_at = datetime.now(UTC)
+        row.archived_reason = reason[:255]
+        record_event(
+            session, action=Action.COMPANY_UPDATED, target_type="company",
+            target_id=row.id, actor=current_user,
+            metadata={"archived": True, "reason": row.archived_reason},
+        )
+        session.commit()
+        session.refresh(row)
+    return _to_read(session, row)
+
+
+@router.post("/{company_id}/restore", response_model=CompanyRead)
+def restore_company(
+    company_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_user),
+) -> CompanyRead:
+    """Restaura una empresa archivada (vuelve a listados y buscadores).
+    Idempotente."""
+    row = session.get(Company, company_id)
+    if row is None:
+        raise not_found("Company")
+    if row.is_archived:
+        row.is_archived = False
+        row.archived_at = None
+        row.archived_reason = None
+        record_event(
+            session, action=Action.COMPANY_UPDATED, target_type="company",
+            target_id=row.id, actor=current_user, metadata={"archived": False},
+        )
+        session.commit()
+        session.refresh(row)
+    return _to_read(session, row)
+
+
 @router.post(
     "/{company_id}/merge/{target_id}", response_model=CompanyRead
 )
@@ -629,7 +692,7 @@ def assign_company_to_contact(
 
 from typing import Literal  # noqa: PLC0415, E402
 
-from pydantic import BaseModel, Field  # noqa: PLC0415, E402
+from pydantic import Field  # noqa: PLC0415, E402
 
 #: Cap defensivo de filas por llamada — espejo de
 #: `MAX_BULK_CONTACTS` en `app/api/bulk.py` (Sprint A).
