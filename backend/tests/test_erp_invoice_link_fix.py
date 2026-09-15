@@ -158,7 +158,9 @@ def test_apply_relinks_fixes_and_prevents_reappearance(session_factory) -> None:
         ok = s.scalar(select(Order).where(Order.order_number == "FLUXLA-5784"))
         assert (ok.factusol_invoice_number, ok.factusol_invoice_serie) == ("260090", 5)
         # Historial + auditoría en cada pedido corregido.
-        hist = s.scalars(select(OrderStatusHistory).where(OrderStatusHistory.order_id == o1.id)).all()
+        hist = s.scalars(
+            select(OrderStatusHistory).where(OrderStatusHistory.order_id == o1.id)
+        ).all()
         assert any("corregido" in (h.reason or "") for h in hist)
         audits = s.scalars(select(AuditLog).where(AuditLog.target_id == o3.id)).all()
         assert any(a.action == "erp.invoice_link_removed" for a in audits)
