@@ -12591,3 +12591,37 @@ input[type="radio"]:focus-visible {
 .erp-flow-item-r1 a,
 .erp-flow-kv .v,
 .erp-flow-docrow .v { overflow-wrap: anywhere; }
+
+/* ==========================================================================
+   ERP · Lote 2 · PR-2 · proformas  (docs/ux/revision-ux-erp §5 «Proformas»)
+   Fila de trabajo de la proforma: nº en mono con las pastillas de serie
+   (origen) y régimen al lado; el cliente como subtítulo; y debajo la
+   antigüedad en palabras («Aceptada hace 3 días», «Enviada hace 41 días · sin
+   respuesta», «Convertida en BP-2479» enlazando al pedido). Pasado el umbral
+   la frase se tiñe de ámbar: es un aviso comercial, no un estado del sistema
+   (por eso no es pastilla). Solo tokens del sistema de diseño.
+   ========================================================================== */
+.erp-pf-client {
+  margin: var(--sp-1) 0 0;
+  font-size: var(--fs-subtitle);
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.erp-pf-age { gap: var(--sp-2) var(--sp-3); }
+/* La frase de antigüedad hereda el gris con dato (--muted) de la fila; la
+   fecha y la referencia que la acompañan también. */
+.erp-pf-age-t { color: var(--muted); }
+.erp-pf-age-t.is-late {
+  color: var(--st-amber-ink);
+  font-weight: 500;
+}
+/* «Convertida en BP-2479»: el nº del pedido es un dato → mono; y un enlace
+   → color de marca (interacción). */
+.erp-pf-age-t a {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+.erp-pf-age .mono { font-size: var(--fs-mono); }

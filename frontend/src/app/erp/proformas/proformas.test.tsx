@@ -16,7 +16,12 @@ import {
  *  de la cola elegida con nº, cliente (país · régimen), importe, estado y la
  *  acción principal «Convertir en pedido» (la conversión de siempre: paso de
  *  pago + albarán), PDF y Duplicar; «+ Nueva proforma» con el buscador de
- *  empresa. Nada de lo que había se pierde (Editar, Ver empresa). */
+ *  empresa. Nada de lo que había se pierde (Editar, Ver empresa).
+ *
+ *  Lote 2 · PR-2 (revisión de diseño §5): antigüedad en palabras por fila
+ *  (ámbar pasado el umbral en pendientes), «pendientes» por antigüedad por
+ *  defecto, Duplicar como secundario fijo en todas las filas y la convertida
+ *  enlazando a su pedido desde la frase y desde «Ver pedido». */
 
 jest.mock("next/link", () => ({
   __esModule: true,
@@ -103,14 +108,30 @@ const CONVERTIDA = {
   referencia: "Placas", queue: "convertidas", queue_label: "Convertidas",
   order: { id: "o71", order_number: "PRO-000071" },
 };
+/** Pendiente de hace 41 días: pasa del umbral comercial (30). Solo entra en
+ *  los tests de PR-2 (no altera los contadores de los demás). */
+const VIEJA = {
+  ...DUPLICODER, codpre: "42", numero: "1-000042", referencia: "Vinilos", fecha: "2026-08-05",
+};
 const LISTING = {
   items: [BRAILLE, CLOSSET, DUPLICODER, RECHAZADA, CONVERTIDA, NUEVE],
   unlinked: false,
   queue_counts: { aceptadas: 3, pendientes: 1, rechazadas: 1, convertidas: 1 },
   estpre_values: { "1": 3, "0": 1, "2": 1 },
 };
+const LISTING_CON_VIEJA = {
+  ...LISTING,
+  items: [...LISTING.items, VIEJA],
+  queue_counts: { ...LISTING.queue_counts, pendientes: 2 },
+};
+
+/** «Hoy» fijo (15 sep 2026) para que la antigüedad en palabras sea estable:
+ *  39 y 71 son del 4 sep (11 días), 40 del 1 sep (14), 41 del 15 jul (62),
+ *  42 del 5 ago (41). */
+let nowSpy: jest.SpyInstance<number, []>;
 
 beforeEach(() => {
+  nowSpy = jest.spyOn(Date, "now").mockReturnValue(new Date(2026, 8, 15, 10, 0).getTime());
   mockList.mockReset();
   mockList.mockResolvedValue(LISTING);
   mockConvert.mockReset();
@@ -119,6 +140,10 @@ beforeEach(() => {
   mockPdf.mockReset();
   mockCompany.mockReset();
   (saveBlob as jest.Mock).mockReset();
+});
+
+afterEach(() => {
+  nowSpy.mockRestore();
 });
 
 function row(codpre: string) {
@@ -169,18 +194,21 @@ describe("Pantalla Proformas (rediseño de flujo, Fase 4)", () => {
 
     await user.click(screen.getByRole("button", { name: "Convertidas (1)" }));
     const conv = within(row("71"));
-    expect(conv.getByRole("link", { name: "Abrir pedido PRO-000071" })).toHaveAttribute("href", "/erp/orders/o71");
+    expect(conv.getByRole("link", { name: "Ver pedido" })).toHaveAttribute("href", "/erp/orders/o71");
     expect(conv.queryByRole("button", { name: "Convertir en pedido" })).toBeNull();
 
     await user.click(screen.getByRole("button", { name: "Rechazadas (1)" }));
     const rech = within(row("41"));
     expect(rech.getByText("rechazada")).toBeInTheDocument();
     expect(rech.queryByRole("button", { name: "Convertir en pedido" })).toBeNull();
+    // Duplicar va fijo en la fila; en «⋯» quedan Convertir de todas formas,
+    // Editar y Ver empresa.
+    expect(rech.getByRole("button", { name: "Duplicar" })).toBeInTheDocument();
     await user.click(rech.getByRole("button", { name: "Más acciones 41" }));
     expect(rech.getByRole("button", { name: "Convertir de todas formas" })).toBeInTheDocument();
-    expect(rech.getByRole("button", { name: "Duplicar" })).toBeInTheDocument();
     expect(rech.getByRole("button", { name: "Editar" })).toBeInTheDocument();
     expect(rech.getByRole("link", { name: "Ver empresa" })).toHaveAttribute("href", "/companies/es");
+    expect(rech.getAllByRole("button", { name: "Duplicar" })).toHaveLength(1);
 
     // Volver a pulsar la cola activa → todas; el buscador filtra dentro.
     await user.click(screen.getByRole("button", { name: "Rechazadas (1)" }));
@@ -230,7 +258,7 @@ describe("Pantalla Proformas (rediseño de flujo, Fase 4)", () => {
     await user.click(within(row("39")).getByRole("button", { name: "PDF" }));
     await waitFor(() => expect(mockPdf).toHaveBeenCalledWith("presupuestos", 5, "39", "fr", {}));
     expect(saveBlob).toHaveBeenCalledWith(expect.any(Blob), "Proforma_39.pdf");
-    await user.click(within(row("39")).getByRole("button", { name: "Más acciones 39" }));
+    // Duplicar está en la fila, sin abrir «⋯».
     await user.click(within(row("39")).getByRole("button", { name: "Duplicar" }));
     await waitFor(() => expect(mockDuplicate).toHaveBeenCalledWith("39"));
     expect(await screen.findByText("Proforma nº 600 creada (duplicado de 39).")).toBeInTheDocument();
@@ -361,5 +389,98 @@ describe("Pantalla Proformas (rediseño de flujo, Fase 4)", () => {
     // Y dentro de una cola.
     await user.click(screen.getByRole("button", { name: "Aceptadas · por convertir (3)" }));
     expect(order()).toEqual(["Proforma 37", "Proforma 39", "Proforma 9"]);
+  });
+
+  // ---- Lote 2 · PR-2 (revisión de diseño §5 «Proformas») ----
+
+  it("PR-2 · antigüedad en palabras en cada fila; pasados 30 días, la pendiente va en ámbar (aviso comercial)", async () => {
+    mockList.mockResolvedValue(LISTING_CON_VIEJA);
+    const user = userEvent.setup();
+    render(<ProformasPage />);
+    await screen.findByRole("list", { name: "Proformas" });
+    expect(within(row("39")).getByText("Aceptada hace 11 días")).not.toHaveClass("is-late");
+    expect(within(row("9")).getByText("Aceptada hace 5 días")).toBeInTheDocument();
+    expect(within(row("37")).getByText("Aceptada hace 20 días")).toBeInTheDocument();
+    // La fecha absoluta sigue al lado, como dato (mono).
+    expect(within(row("39")).getByText("04/09/2026")).toHaveClass("mono");
+
+    await user.click(screen.getByRole("button", { name: "Pendientes de respuesta (2)" }));
+    const reciente = within(row("40")).getByText("Enviada hace 14 días · sin respuesta");
+    expect(reciente).not.toHaveClass("is-late");
+    const tardia = within(row("42")).getByText("Enviada hace 41 días · sin respuesta");
+    expect(tardia).toHaveClass("is-late");
+    expect(tardia).toHaveAttribute("title", expect.stringContaining("41 días sin respuesta"));
+
+    await user.click(screen.getByRole("button", { name: "Rechazadas (1)" }));
+    expect(within(row("41")).getByText("Rechazada hace 9 semanas")).not.toHaveClass("is-late");
+  });
+
+  it("PR-2 · «pendientes» va por antigüedad (más antiguas primero) por defecto; las demás por fecha desc; la elección del usuario manda", async () => {
+    mockList.mockResolvedValue(LISTING_CON_VIEJA);
+    const user = userEvent.setup();
+    render(<ProformasPage />);
+    await screen.findByRole("list", { name: "Proformas" });
+    expect(order()).toEqual(["Proforma 9", "Proforma 39", "Proforma 37"]);      // aceptadas: fecha desc
+    await user.click(screen.getByRole("button", { name: "Pendientes de respuesta (2)" }));
+    expect(order()).toEqual(["Proforma 42", "Proforma 40"]);                     // la de 41 días primero
+    expect(screen.getByRole("button", { name: "Orden ascendente" })).toBeInTheDocument();
+    expect(screen.getByText(/más antiguas primero/)).toBeInTheDocument();
+    // Otra cola → fecha desc, sin que el usuario toque nada; y al volver, antigüedad.
+    await user.click(screen.getByRole("button", { name: "Convertidas (1)" }));
+    expect(screen.getByRole("button", { name: "Orden descendente" })).toBeInTheDocument();
+    expect(screen.queryByText(/más antiguas primero/)).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Pendientes de respuesta (2)" }));
+    expect(order()).toEqual(["Proforma 42", "Proforma 40"]);
+    // El usuario elige desc: se respeta en pendientes, en las demás y al volver.
+    await user.click(screen.getByRole("button", { name: "Orden ascendente" }));
+    expect(order()).toEqual(["Proforma 40", "Proforma 42"]);
+    expect(screen.queryByText(/más antiguas primero/)).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Aceptadas · por convertir (3)" }));
+    expect(order()).toEqual(["Proforma 9", "Proforma 39", "Proforma 37"]);
+    await user.click(screen.getByRole("button", { name: "Pendientes de respuesta (2)" }));
+    expect(order()).toEqual(["Proforma 40", "Proforma 42"]);
+    // Y con «Nº de proforma» tampoco se le cambia la dirección elegida.
+    await user.selectOptions(screen.getByLabelText("Ordenar por"), "codpre");
+    expect(order()).toEqual(["Proforma 42", "Proforma 40"]);
+  });
+
+  it("PR-2 · Duplicar es un secundario fijo en cada fila, también en convertidas, y no se repite en «⋯»", async () => {
+    mockDuplicate.mockResolvedValue({ job_id: "job-d2", status: "queued", source_codpre: "71" });
+    mockStatus.mockResolvedValue({ status: "finished", result: { codpre: "602" } });
+    const user = userEvent.setup();
+    render(<ProformasPage />);
+    await screen.findByRole("list", { name: "Proformas" });
+    for (const codpre of ["9", "39", "37"]) {
+      const dup = within(row(codpre)).getByRole("button", { name: "Duplicar" });
+      expect(dup).toHaveClass("button", "secondary");
+      expect(dup.closest(".erp-flow-menu-pop")).toBeNull();                     // fuera de «⋯»
+    }
+    await user.click(screen.getByRole("button", { name: "Convertidas (1)" }));
+    const conv = within(row("71"));
+    await user.click(conv.getByRole("button", { name: "Más acciones 71" }));
+    expect(conv.getAllByRole("button", { name: "Duplicar" })).toHaveLength(1);
+    expect(conv.queryByRole("link", { name: "Abrir pedido" })).toBeNull();      // «Ver pedido» ya está en la fila
+    expect(conv.getByRole("button", { name: "Editar" })).toBeInTheDocument();
+    await user.click(conv.getByRole("button", { name: "Duplicar" }));
+    await waitFor(() => expect(mockDuplicate).toHaveBeenCalledWith("71"));
+    expect(await screen.findByText("Proforma nº 602 creada (duplicado de 71).")).toBeInTheDocument();
+  });
+
+  it("PR-2 · la convertida enlaza a su pedido desde la frase de estado y desde «Ver pedido» (secundario), y conserva la pastilla", async () => {
+    const user = userEvent.setup();
+    render(<ProformasPage />);
+    await screen.findByRole("list", { name: "Proformas" });
+    await user.click(screen.getByRole("button", { name: "Convertidas (1)" }));
+    const conv = within(row("71"));
+    const frase = conv.getByText(/Convertida en/);
+    expect(frase).toHaveTextContent("Convertida en PRO-000071");
+    expect(frase).not.toHaveClass("is-late");
+    expect(within(frase).getByRole("link", { name: "PRO-000071" })).toHaveAttribute("href", "/erp/orders/o71");
+    const ver = conv.getByRole("link", { name: "Ver pedido" });
+    expect(ver).toHaveAttribute("href", "/erp/orders/o71");
+    expect(ver).toHaveClass("button", "secondary");
+    expect(conv.getByText("pedido PRO-000071")).toHaveClass("badge");
+    expect(conv.queryByRole("button", { name: "Convertir en pedido" })).toBeNull();
+    expect(conv.queryByText(/sin respuesta/)).toBeNull();                       // ya es pedido
   });
 });
