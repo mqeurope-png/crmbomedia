@@ -193,4 +193,43 @@ describe("SatReadyCard", () => {
       "o1", expect.objectContaining({ domain: "preparation", to_status: "in_queue" }),
     ));
   });
+
+  // --- Lote 2 · PR-2: diseño de taller (revisión §8) -------------------------
+
+  it("observaciones arriba en ámbar (solo si hay), datos técnicos con «copiar» y acciones de 48 px en filas", async () => {
+    const user = userEvent.setup();
+    const writeText = jest.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    const { container, rerender } = render(
+      <SatReadyCard
+        order={order({ notes: "Avisar antes de enviar.", whiterip_license: "WR-4C-88231" })}
+        onChanged={() => {}}
+      />,
+    );
+    const note = screen.getByRole("note", { name: "Observaciones del comercial" });
+    expect(note).toHaveTextContent("Avisar antes de enviar.");
+    const tech = container.querySelector(".sat-tech");
+    expect(note.compareDocumentPosition(tech as Element) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByText("WR-4C-88231")).toHaveClass("sat-tech-value");
+    await user.click(screen.getByRole("button", { name: "Copiar licencia WhiteRIP" }));
+    expect(writeText).toHaveBeenCalledWith("WR-4C-88231");
+    expect(await screen.findByText("Copiado")).toBeInTheDocument();
+    // Primario solo y ancho; los dos documentos debajo, juntos; reabrir aparte.
+    const pick = screen.getByRole("button", { name: /Marcar recogido/ });
+    expect(pick).toHaveClass("button", "lg");
+    expect(pick.closest(".sat-card-actions-primary")).not.toBeNull();
+    const alb = screen.getByRole("button", { name: /Imprimir albarán/ });
+    const etq = screen.getByRole("button", { name: /Imprimir etiqueta/ });
+    expect(alb).toHaveClass("sat-chip-btn", "lg");
+    expect(etq).toHaveClass("sat-chip-btn", "lg");
+    expect(alb.closest(".sat-card-actions-secondary")).toBe(etq.closest(".sat-card-actions-secondary"));
+    const reopen = screen.getByRole("button", { name: "Reabrir preparación" });
+    expect(reopen).toHaveClass("button", "tertiary", "lg");
+    expect(reopen.closest(".sat-card-actions-tertiary")).not.toBeNull();
+    // Sin nota, sin bloque; las cajas técnicas quedan con «—».
+    rerender(<SatReadyCard order={order()} onChanged={() => {}} />);
+    expect(screen.queryByRole("note")).not.toBeInTheDocument();
+    expect(screen.getAllByText("—")).toHaveLength(3);
+    Object.defineProperty(navigator, "clipboard", { value: undefined, configurable: true });
+  });
 });

@@ -62,7 +62,9 @@ function item(over: Partial<SatQueueItem> = {}): SatQueueItem {
     is_web_order: true, has_albaran: true, albaran_source: "woo", has_albaran_file: false,
     albaran_file_source: null, woo_albaran_available: true, woo_albaran_unavailable_reason: null,
     has_etiqueta: false, store_slug: "boprint",
-    placed_at: "2026-09-01T10:00:00+00:00", ...over,
+    placed_at: "2026-09-01T10:00:00+00:00",
+    notes: null, serial_number: null, whiterip_license: null, shipping_origin: null,
+    ...over,
   };
 }
 
@@ -85,6 +87,12 @@ function historyRow(over: Partial<SatHistoryRow> = {}): SatHistoryRow {
     factusol_albaran_number: "5-500001", has_albaran: false, store_slug: "boprint",
     placed_at: "2026-09-01T10:00:00+00:00", cancelled: false, excluded: false, ...over,
   };
+}
+
+/** La cola está cargada cuando las pestañas enseñan su contador. */
+async function loaded(porEmbalar = 1, listos = 1) {
+  await screen.findByRole("tab", { name: `Por embalar ${porEmbalar}` });
+  expect(screen.getByRole("tab", { name: `Listos ${listos}` })).toBeInTheDocument();
 }
 
 beforeEach(() => {
@@ -111,7 +119,7 @@ describe("SatQueuePage (Lote B6)", () => {
   it("carga la cola sin filtros y pasa los filtros a getSatQueue", async () => {
     const user = userEvent.setup();
     render(<SatQueuePage />);
-    expect(await screen.findByText("Por embalar: 1 · Listos: 1")).toBeInTheDocument();
+    await loaded();
     expect(mockQueue).toHaveBeenLastCalledWith({});
 
     await user.selectOptions(screen.getByLabelText("Estado"), "blocked");
@@ -141,7 +149,7 @@ describe("SatQueuePage (Lote B6)", () => {
     mockPicked.mockResolvedValue({ order_id: "o2", transport_status: "in_transit", already_picked_up: false });
     render(<SatQueuePage />);
     // Por defecto tarjetas: la card de «por embalar» enlaza al modo trabajo.
-    expect(await screen.findByRole("link", { name: /Abrir →/ })).toHaveAttribute("href", "/erp/sat/o1");
+    expect(await screen.findByRole("link", { name: /Abrir modo trabajo/ })).toHaveAttribute("href", "/erp/sat/o1");
     expect(screen.queryByRole("table", { name: "Pedidos por embalar" })).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Lista" }));
@@ -152,9 +160,11 @@ describe("SatQueuePage (Lote B6)", () => {
     expect(within(prepTable).getByRole("button", { name: /Descargar albarán/ })).toBeInTheDocument();
     expect(window.localStorage.getItem("bohub.sat.queue.view")).toBe("list");
 
-    // La fila de «listos» tiene las mismas acciones que la card: imprimir,
-    // marcar recogido (con confirmación) y reabrir.
-    const readyTable = screen.getByRole("table", { name: "Pedidos listos para envío" });
+    // La fila de «listos» (pestaña «Listos») tiene las mismas acciones que la
+    // card: imprimir, marcar recogido (con confirmación) y reabrir.
+    await user.click(screen.getByRole("tab", { name: /Listos/ }));
+    const readyTable = await screen.findByRole("table", { name: "Pedidos listos para envío" });
+    expect(screen.queryByRole("table", { name: "Pedidos por embalar" })).not.toBeInTheDocument();
     expect(within(readyTable).getByRole("button", { name: /Imprimir albarán/ })).toBeInTheDocument();
     expect(within(readyTable).getByRole("button", { name: /Imprimir etiqueta/ })).toBeInTheDocument();
     expect(within(readyTable).getByRole("button", { name: "Reabrir preparación" })).toBeInTheDocument();
@@ -165,8 +175,10 @@ describe("SatQueuePage (Lote B6)", () => {
     await waitFor(() => expect(mockQueue.mock.calls.length).toBeGreaterThanOrEqual(2));
 
     await user.click(screen.getByRole("button", { name: "Tarjetas" }));
-    expect(await screen.findByRole("link", { name: /Abrir →/ })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: /Marcar recogido/ })).toHaveClass("lg");
     expect(window.localStorage.getItem("bohub.sat.queue.view")).toBe("cards");
+    await user.click(screen.getByRole("tab", { name: /Por embalar/ }));
+    expect(await screen.findByRole("link", { name: /Abrir modo trabajo/ })).toBeInTheDocument();
   });
 
   it("arranca en vista lista si así quedó guardado", async () => {
@@ -176,6 +188,7 @@ describe("SatQueuePage (Lote B6)", () => {
   });
 
   it("albarán por tipo de pedido (Lote 2 A3): web → Woo, manual sin albarán → «Falta albarán»", async () => {
+    const user = userEvent.setup();
     window.localStorage.setItem("bohub.sat.queue.view", "list");
     const reason = "La tienda «artisjet» no tiene configurada la conexión con WooCommerce.";
     mockQueue.mockResolvedValue({
@@ -203,11 +216,12 @@ describe("SatQueuePage (Lote B6)", () => {
     expect(within(rows[3]).getByText(reason)).toBeInTheDocument();
     expect(within(rows[3]).queryByText(/Falta albarán/)).not.toBeInTheDocument();
     // En «Listos» el manual sin albarán sigue con «Falta albarán» → ficha.
-    const readyTable = screen.getByRole("table", { name: "Pedidos listos para envío" });
+    await user.click(screen.getByRole("tab", { name: /Listos/ }));
+    const readyTable = await screen.findByRole("table", { name: "Pedidos listos para envío" });
     expect(within(readyTable).getByRole("link", { name: /Falta albarán/ })).toHaveAttribute("href", "/erp/orders/o5");
   });
 
-  it("el historial se pliega/despliega, carga con los filtros y pinta las filas", async () => {
+  it("la pestaña «Enviados» carga el historial con los filtros y pinta hora, responsable y estado", async () => {
     const user = userEvent.setup();
     mockHistory.mockResolvedValue({
       items: [
@@ -222,28 +236,83 @@ describe("SatQueuePage (Lote B6)", () => {
       limit: 100,
     });
     render(<SatQueuePage />);
-    await screen.findByText("Por embalar: 1 · Listos: 1");
+    await loaded();
+    // Tres pestañas; «Enviados» sin contador hasta que carga (perezoso).
+    const tabs = screen.getAllByRole("tab");
+    expect(tabs.map((t) => t.textContent?.trim())).toEqual(["Por embalar 1", "Listos 1", "Enviados"]);
+    expect(screen.getByRole("tab", { name: /Por embalar/ })).toHaveAttribute("aria-selected", "true");
     expect(mockHistory).not.toHaveBeenCalled();
 
+    // El filtro «Estado = Listos» salta a su pestaña (no deja una cola vacía).
     await user.selectOptions(screen.getByLabelText("Estado"), "ready");
-    await user.click(screen.getByRole("button", { name: /Historial de enviados al taller/ }));
+    expect(screen.getByRole("tab", { name: /Listos/ })).toHaveAttribute("aria-selected", "true");
+
+    await user.click(screen.getByRole("tab", { name: "Enviados" }));
     await waitFor(() => expect(mockHistory).toHaveBeenCalledWith({ estado: "ready" }));
     const table = await screen.findByRole("table", { name: "Enviados al taller" });
+    // El panel es el de la pestaña y las otras dos secciones no se pintan.
+    expect(screen.getByRole("tabpanel", { name: "Enviados al taller" })).toContainElement(table);
+    expect(screen.queryByRole("table", { name: "Pedidos por embalar" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /Abrir modo trabajo/ })).not.toBeInTheDocument();
+    // Ahora la pestaña lleva contador.
+    expect(await screen.findByRole("tab", { name: "Enviados 2" })).toHaveAttribute("aria-selected", "true");
+    // Hora + responsable + tipo + destinatario + estado + albarán.
+    const headers = within(table).getAllByRole("columnheader").map((h) => h.textContent);
+    expect(headers).toEqual(["Nº", "Cliente", "Cuándo", "Quién", "Tipo", "Destinatario", "Estado actual", "Albarán"]);
     const rows = within(table).getAllByRole("row");
     expect(rows).toHaveLength(3); // cabecera + 2
     expect(within(rows[1]).getByRole("link", { name: "BOP-1" })).toHaveAttribute("href", "/erp/orders/o1");
+    expect(within(rows[1]).getByText(/10\/09\/2026/)).toBeInTheDocument();
     expect(within(rows[1]).getByText("Email SAT")).toBeInTheDocument();
     expect(within(rows[1]).getByText("taller@bomedia.net")).toBeInTheDocument();
     expect(within(rows[1]).getByText("Pedidos User")).toBeInTheDocument();
     expect(within(rows[1]).getByText("5-500001")).toBeInTheDocument();
+    expect(within(rows[2]).getByText("Admin User")).toBeInTheDocument();
     expect(within(rows[2]).getByText("Aprobado")).toBeInTheDocument();
     expect(within(rows[2]).getByText("aprobado en Cola PEDIDOS")).toBeInTheDocument();
     expect(within(rows[2]).getByText("Otra SL")).toBeInTheDocument();
     expect(within(rows[2]).getByText("Subido")).toBeInTheDocument();
     expect(within(rows[2]).getByText("Embalado")).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: /Historial de enviados al taller/ }));
+    // «Actualizar» recarga también el historial mientras la pestaña está abierta.
+    const calls = mockHistory.mock.calls.length;
+    await user.click(screen.getByRole("button", { name: "Actualizar" }));
+    await waitFor(() => expect(mockHistory.mock.calls.length).toBeGreaterThan(calls));
+
+    // Volver a «Por embalar» quita la tabla del historial.
+    await user.click(screen.getByRole("tab", { name: /Por embalar/ }));
     expect(screen.queryByRole("table", { name: "Enviados al taller" })).not.toBeInTheDocument();
+  });
+
+  it("la vista lista enseña los datos técnicos (con copiar) y las observaciones encima de la fila", async () => {
+    window.localStorage.setItem("bohub.sat.queue.view", "list");
+    mockQueue.mockResolvedValue({
+      preparing: [
+        item({ notes: "Cliente pide manual en alemán.", serial_number: "FLX-7741-2026",
+               shipping_origin: "SAT" }),
+        manualItem(),
+      ],
+      ready_for_pickup: [],
+    });
+    render(<SatQueuePage />);
+    const table = await screen.findByRole("table", { name: "Pedidos por embalar" });
+    expect(within(table).getByRole("columnheader", { name: "Datos técnicos" })).toBeInTheDocument();
+    const rows = within(table).getAllByRole("row");
+    // cabecera + observaciones de BOP-1 + BOP-1 + MAN-3
+    expect(rows).toHaveLength(4);
+    expect(rows[1]).toHaveClass("sat-row-notes");
+    expect(within(rows[1]).getByRole("note", { name: "Observaciones del comercial" }))
+      .toHaveTextContent("Cliente pide manual en alemán.");
+    expect(within(rows[2]).getByRole("link", { name: "BOP-1" })).toBeInTheDocument();
+    expect(within(rows[2]).getByText("FLX-7741-2026")).toHaveClass("sat-tech-value");
+    expect(within(rows[2]).getByRole("button", { name: "Copiar nº de serie" })).toBeInTheDocument();
+    expect(within(rows[2]).getByText("SAT")).toHaveClass("sat-origin-pill");
+    // En la lista compacta lo vacío no se pinta (la licencia no sale).
+    expect(within(rows[2]).queryByText("Licencia WhiteRIP")).not.toBeInTheDocument();
+    // Sin datos ni nota: «—» en la celda y ninguna fila de observaciones.
+    expect(rows[3]).not.toHaveClass("sat-row-notes");
+    expect(rows[3].querySelector(".sat-td-tech")).toHaveTextContent("—");
+    expect(within(rows[3]).queryByRole("button", { name: /Copiar/ })).not.toBeInTheDocument();
   });
 
   it("«Añadir pedido a la cola» resuelve el nº, encola y recarga", async () => {
@@ -258,7 +327,7 @@ describe("SatQueuePage (Lote B6)", () => {
       already_queued: false, approved: true, via: "approve",
     });
     render(<SatQueuePage />);
-    await screen.findByText("Por embalar: 1 · Listos: 1");
+    await loaded();
     const calls = mockQueue.mock.calls.length;
 
     await user.type(await screen.findByLabelText("Número de pedido a añadir"), " bop-9 ");
@@ -284,7 +353,7 @@ describe("SatQueuePage (Lote B6)", () => {
       id: "s", role: "sat", full_name: "Sat User", email: "s@x", is_active: true,
     });
     render(<SatQueuePage />);
-    await screen.findByText("Por embalar: 1 · Listos: 1");
+    await loaded();
     expect(screen.queryByLabelText("Número de pedido a añadir")).not.toBeInTheDocument();
   });
 });

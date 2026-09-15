@@ -24,6 +24,11 @@ import {
 
 type View = "cards" | "list";
 
+/** Lote 2 · PR-2: las tres pestañas de la cola. «Enviados» es el antiguo
+ *  historial plegable (email al SAT o aprobación), ahora al mismo nivel que
+ *  las otras dos para que se vea a qué hora se envió cada pedido y quién. */
+type Tab = "por_embalar" | "listos" | "enviados";
+
 /** Preferencia de vista (tarjetas / lista) por dispositivo: la tablet del
  *  taller quiere tarjetas; el escritorio de oficina, lista. */
 const VIEW_KEY = "bohub.sat.queue.view";
@@ -58,13 +63,18 @@ const KIND_LABEL: Record<SatHistoryRow["kind"], string> = {
   aprobado: "Aprobado",
 };
 
-/** Cola SAT táctil (D-1-fix1): 2 secciones — «Por embalar» (con acceso al modo
- *  trabajo) y «Listos para envío» (imprimir albarán/etiqueta + marcar recogido).
- *  En móvil/tablet las secciones se apilan; en escritorio pueden ir en columnas.
+/** Cola SAT táctil (D-1-fix1): «Por embalar» (con acceso al modo trabajo) y
+ *  «Listos para envío» (imprimir albarán/etiqueta + marcar recogido).
  *
  *  Lote B6: filtros (fechas, tienda, estado, texto), vista tarjetas/lista con
  *  las mismas acciones, historial de «enviados al taller» (email al SAT o
- *  aprobación) y «Añadir pedido a la cola» a mano por nº de pedido. */
+ *  aprobación) y «Añadir pedido a la cola» a mano por nº de pedido.
+ *
+ *  Lote 2 · PR-2 (revisión de diseño §8): la pantalla se diseña primero para
+ *  móvil. Tres pestañas con contador — «Por embalar» · «Listos» · «Enviados»
+ *  (el historial, con hora y responsable) —, y en las cards: observaciones
+ *  del comercial arriba en ámbar, datos técnicos grandes con «copiar» y tres
+ *  acciones de 48 px en dos filas. En escritorio, la misma card en rejilla. */
 export default function SatQueuePage() {
   const [queue, setQueue] = useState<SatQueue>({ preparing: [], ready_for_pickup: [] });
   const [loading, setLoading] = useState(true);
@@ -109,6 +119,17 @@ export default function SatQueuePage() {
     storeView(v);
   }
 
+  // --- pestañas --------------------------------------------------------------
+  const [tab, setTab] = useState<Tab>("por_embalar");
+
+  /** El filtro «Estado» solo llena una sección: al elegirlo se salta a su
+   *  pestaña para no dejar al operario mirando una cola vacía. */
+  function changeEstado(v: "" | SatQueueEstado) {
+    setEstado(v);
+    if (v === "ready") setTab("listos");
+    else if (v) setTab("por_embalar");
+  }
+
   // --- permisos: añadir a mano es de oficina (admin / pedidos) ---------------
   const [canEdit, setCanEdit] = useState(false);
 
@@ -134,9 +155,10 @@ export default function SatQueuePage() {
 
   useEffect(() => { load(); }, [load]);
 
-  // --- historial de enviados al taller ---------------------------------------
-  const [historyOpen, setHistoryOpen] = useState(false);
+  // --- «Enviados»: historial de enviados al taller (carga perezosa) ----------
+  const historyOpen = tab === "enviados";
   const [history, setHistory] = useState<SatHistoryRow[]>([]);
+  const [historyLoaded, setHistoryLoaded] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
 
@@ -144,7 +166,7 @@ export default function SatQueuePage() {
     setHistoryLoading(true);
     setHistoryError(null);
     getSatHistory(filters)
-      .then((r) => setHistory(r.items))
+      .then((r) => { setHistory(r.items); setHistoryLoaded(true); })
       .catch((e) => setHistoryError(extractErrorMessage(e, "No se pudo cargar el historial.")))
       .finally(() => setHistoryLoading(false));
   }, [filters]);
@@ -194,12 +216,18 @@ export default function SatQueuePage() {
 
   const { preparing, ready_for_pickup: ready } = queue;
 
+  const TABS: { key: Tab; label: string; count: number | null }[] = [
+    { key: "por_embalar", label: "Por embalar", count: preparing.length },
+    { key: "listos", label: "Listos", count: ready.length },
+    { key: "enviados", label: "Enviados", count: historyLoaded ? history.length : null },
+  ];
+
   return (
     <div className={`sat-queue-wrap ${view === "list" ? "sat-view-list" : "sat-view-cards"}`}>
       <div className="sat-queue-head">
         <h1>Cola SAT</h1>
         <span className="muted small sat-queue-count">
-          Por embalar: {preparing.length} · Listos: {ready.length}
+          {loading ? "Cargando…" : `${preparing.length + ready.length} en el taller`}
         </span>
         <div className="sat-queue-tools">
           <div className="sat-view-toggle" role="group" aria-label="Vista">
@@ -249,7 +277,7 @@ export default function SatQueuePage() {
         <label className="field">
           <span>Estado</span>
           <select value={estado} aria-label="Estado"
-                  onChange={(e) => setEstado(e.target.value as "" | SatQueueEstado)}>
+                  onChange={(e) => changeEstado(e.target.value as "" | SatQueueEstado)}>
             {ESTADO_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
           </select>
         </label>
@@ -279,11 +307,30 @@ export default function SatQueuePage() {
       ) : null}
 
       {error ? <p className="form-error">{error}</p> : null}
-      {loading ? <p className="muted">Cargando…</p> : null}
 
-      <div className="sat-sections">
-        <section className="sat-section" aria-label="Por embalar">
-          <h2>📦 Por embalar</h2>
+      <div className="sat-tabs" role="tablist" aria-label="Secciones de la Cola SAT">
+        {TABS.map((t) => (
+          <button
+            key={t.key}
+            type="button"
+            role="tab"
+            id={`sat-tab-${t.key}`}
+            aria-selected={tab === t.key}
+            aria-controls={`sat-panel-${t.key}`}
+            className="sat-tab"
+            onClick={() => setTab(t.key)}
+          >
+            {t.label}{" "}
+            {t.count !== null ? <span className="sat-tab-count">{t.count}</span> : null}
+          </button>
+        ))}
+      </div>
+
+      {tab === "por_embalar" ? (
+        <section
+          className="sat-section" role="tabpanel" id="sat-panel-por_embalar"
+          aria-label="Por embalar"
+        >
           {preparing.length === 0 ? (
             <p className="sat-empty">{hasFilters ? "Nada por embalar con estos filtros." : "Nada por embalar."}</p>
           ) : view === "list" ? (
@@ -297,9 +344,13 @@ export default function SatQueuePage() {
             </div>
           )}
         </section>
+      ) : null}
 
-        <section className="sat-section" aria-label="Listos para envío">
-          <h2>🚚 Listos para envío</h2>
+      {tab === "listos" ? (
+        <section
+          className="sat-section" role="tabpanel" id="sat-panel-listos"
+          aria-label="Listos para envío"
+        >
           {ready.length === 0 ? (
             <p className="sat-empty">{hasFilters ? "Nada listo para enviar con estos filtros." : "Nada listo para enviar."}</p>
           ) : view === "list" ? (
@@ -313,18 +364,18 @@ export default function SatQueuePage() {
             </div>
           )}
         </section>
-      </div>
+      ) : null}
 
-      <section className="sat-section sat-history" aria-label="Historial de enviados al taller">
-        <button
-          type="button" className="sat-history-toggle" aria-expanded={historyOpen}
-          onClick={() => setHistoryOpen((o) => !o)}
+      {tab === "enviados" ? (
+        <section
+          className="sat-section sat-history" role="tabpanel" id="sat-panel-enviados"
+          aria-label="Enviados al taller"
         >
-          {historyOpen ? "▾" : "▸"} Historial de enviados al taller
-          <span className="muted small"> · email al SAT o aprobación</span>
-        </button>
-        {historyOpen ? (
-          historyError ? (
+          <p className="muted small sat-history-hint">
+            Cada envío al taller (email al SAT o aprobación), con su hora y quién lo hizo:
+            así no se manda dos veces.
+          </p>
+          {historyError ? (
             <p className="form-error">{historyError}</p>
           ) : historyLoading && history.length === 0 ? (
             <p className="muted">Cargando historial…</p>
@@ -352,7 +403,7 @@ export default function SatQueuePage() {
                         <Link href={`/erp/orders/${h.order_id}`}>{h.order_number}</Link>
                       </td>
                       <td className="sat-td-cliente">{customerLabel(h) || "—"}</td>
-                      <td>{satDateTime(h.at)}</td>
+                      <td className="mono">{satDateTime(h.at)}</td>
                       <td>{h.actor_name ?? "—"}</td>
                       <td title={h.reason ?? h.subject ?? undefined}>
                         <span className={`badge ${h.kind === "email_sat" ? "active" : "ok"}`}>
@@ -368,15 +419,15 @@ export default function SatQueuePage() {
                         {h.cancelled ? <span className="badge bad"> Anulado</span> : null}
                         {h.excluded ? <span className="badge muted"> Quitado</span> : null}
                       </td>
-                      <td>{h.factusol_albaran_number ?? (h.has_albaran ? "Subido" : "—")}</td>
+                      <td className="mono">{h.factusol_albaran_number ?? (h.has_albaran ? "Subido" : "—")}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
-          )
-        ) : null}
-      </section>
+          )}
+        </section>
+      ) : null}
     </div>
   );
 }

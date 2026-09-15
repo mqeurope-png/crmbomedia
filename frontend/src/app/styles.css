@@ -85,6 +85,9 @@
   --fs-body: 14px;
   --fs-label: 12px;
   --fs-mono: 13px;
+  --fs-tech: 19px;          /* Lote 2 · PR-2: dato técnico del taller (nº de
+                               serie, licencia) — se coteja con el equipo a un
+                               brazo de distancia; siempre en --font-mono */
   --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono",
     monospace;
   --mono: var(--font-mono);
@@ -105,6 +108,8 @@
   /* E6 · Controles y modales. */
   --control-h: 40px;        /* alto mínimo de botón/campo en escritorio */
   --control-h-touch: 48px;  /* < 768 px: target táctil del taller */
+  --control-h-sm: 36px;     /* Lote 2 · PR-2: botón de copiar dentro de una
+                               caja de dato (Cola SAT) */
   --modal-w-form: 520px;    /* modal de formulario */
   --modal-w-wide: 720px;    /* buscador con resultados / detalle con tabla */
 
@@ -12732,3 +12737,177 @@ input[type="radio"]:focus-visible {
   .company-archived-band > .button { margin-left: 0; width: 100%; }
   .company-activity-table td.mono { white-space: normal; }
 }
+
+   ERP · Lote 2 · PR-2 · Cola SAT (revisión de diseño §8: se usa de pie, con
+   las manos ocupadas). Pestañas con contador («Por embalar» · «Listos» ·
+   «Enviados»), observaciones del comercial arriba en ámbar, datos técnicos
+   grandes en mono con botón de copiar (36 px), origen como pastilla y tres
+   acciones de 48 px en dos filas. Solo tokens: --fs-tech y --control-h-sm
+   viven en :root. En escritorio, la misma card en rejilla (no tabla).
+   ========================================================================== */
+/* Pestañas: la activa en oscuro (se ve de lejos); el contador, pastilla. */
+.sat-tabs { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin: 0 0 var(--sp-3); }
+.sat-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: var(--control-h);
+  padding: 0 var(--sp-4);
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  background: var(--card);
+  color: var(--muted);
+  font: inherit;
+  font-size: var(--fs-body);
+  font-weight: 600;
+  cursor: pointer;
+}
+.sat-tab:hover { color: var(--ink); }
+.sat-tab[aria-selected="true"] { background: var(--ink); border-color: var(--ink); color: #fff; }
+.sat-tab-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: var(--sp-6);
+  padding: 0 var(--sp-2);
+  border-radius: var(--r-pill);
+  background: var(--st-neutral-bg);
+  color: var(--st-neutral-ink);
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  font-weight: 600;
+  line-height: 1.7;
+}
+.sat-tab[aria-selected="true"] .sat-tab-count { background: rgba(255, 255, 255, 0.2); color: #fff; }
+.sat-history-hint { margin: 0 0 var(--sp-3); }
+
+/* Observaciones del comercial: si hay nota, es lo primero que se lee. */
+.sat-obs {
+  --ink-on-color: var(--st-amber-ink);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  margin: 0 0 var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--r-control);
+  background: var(--st-amber-bg);
+  color: var(--ink-on-color);
+}
+.sat-obs-label { font-size: var(--fs-label); font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; }
+.sat-obs-text { font-size: var(--fs-subtitle); line-height: 1.5; white-space: pre-line; overflow-wrap: anywhere; }
+
+/* Datos técnicos: cada uno en su caja, valor a --fs-tech en mono, copiar a
+   la derecha. La caja se pinta aunque no haya dato («—») para que las cards
+   de la rejilla no bailen. */
+.sat-tech { display: flex; flex-direction: column; gap: var(--sp-2); margin: 0 0 var(--sp-3); }
+.sat-tech-box {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  padding: var(--sp-3);
+  border: 1px solid var(--line2);
+  border-radius: var(--r-control);
+  background: var(--card);
+}
+.sat-tech-label {
+  font-size: var(--fs-label);
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.sat-tech-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  min-height: var(--control-h-sm);
+}
+.sat-tech-value {
+  font-family: var(--font-mono);
+  font-size: var(--fs-tech);
+  font-weight: 500;
+  line-height: 1.2;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.sat-copy { display: inline-flex; align-items: center; gap: var(--sp-2); flex: none; }
+.sat-copy-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--control-h-sm);
+  height: var(--control-h-sm);
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  background: var(--card);
+  color: var(--brand-ink);
+  font-size: var(--fs-subtitle);
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+}
+.sat-copy-btn:hover { background: var(--primary-tint); }
+.sat-copy-btn.is-done { border-color: var(--st-green-ink); background: var(--st-green-bg); color: var(--st-green-ink); }
+/* «Copiado» sale a la izquierda del botón: el botón no se mueve bajo el dedo. */
+.sat-copy-msg { order: -1; font-size: var(--fs-label); font-weight: 600; color: var(--st-green-ink); white-space: nowrap; }
+.sat-copy-msg:empty { display: none; }
+.sat-copy-msg.is-fail { color: var(--danger-ink); }
+.sat-origin { display: inline-flex; align-items: center; gap: var(--sp-2); }
+.sat-origin-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--sp-6);
+  padding: 0 var(--sp-3);
+  border-radius: var(--r-pill);
+  background: var(--st-teal-bg);
+  color: var(--st-teal-ink);
+  font-size: var(--fs-label);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+/* Lista compacta: solo lo que tenga valor, en línea y en cuerpo. */
+.sat-tech.is-compact { flex-direction: row; flex-wrap: wrap; align-items: center; gap: var(--sp-2) var(--sp-4); margin: 0; }
+.sat-tech.is-compact .sat-tech-box { gap: 0; padding: 0; border: 0; background: transparent; }
+.sat-tech.is-compact .sat-tech-row { justify-content: flex-start; gap: var(--sp-2); min-height: 0; }
+.sat-tech.is-compact .sat-tech-value { font-size: var(--fs-body); }
+.sat-table td.sat-td-tech { white-space: normal; }
+/* Observaciones encima de la fila, a todo el ancho. */
+.sat-table tr.sat-row-notes td { padding: var(--sp-2) var(--sp-3) 0; border-bottom: 0; white-space: normal; }
+.sat-table tr.sat-row-notes .sat-obs { margin: 0; }
+@media (max-width: 767px) {
+  table.sat-table tr.sat-row-notes { margin-bottom: 0; padding-bottom: 0; border-bottom: 0; border-radius: var(--r-panel) var(--r-panel) 0 0; }
+  table.sat-table tr.sat-row-notes + tr { border-top: 0; border-radius: 0 0 var(--r-panel) var(--r-panel); }
+  table.sat-table tr.sat-row-notes td { padding: 0; }
+}
+
+/* Card: ya no es un enlace entero (con botones dentro era la forma de pulsar
+   el equivocado). Columna flex para que las acciones queden abajo y las cards
+   de la rejilla midan lo mismo. */
+.sat-card { display: flex; flex-direction: column; }
+.sat-card:active { transform: none; }
+.sat-card-lines { flex: 1 1 auto; }
+.sat-card-actions { display: flex; flex-direction: column; gap: var(--sp-3); margin-top: auto; padding-top: var(--sp-3); }
+.sat-card-actions-primary > .button,
+.sat-card-actions-tertiary > .button { width: 100%; }
+.sat-card-actions-secondary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-3); }
+.sat-card-actions-secondary .sat-chip-reason { grid-column: 1 / -1; }
+.sat-card-actions .button.lg,
+.sat-chip-btn.lg { min-height: var(--control-h-touch); font-size: var(--fs-subtitle); }
+.sat-card-primary { font-weight: 700; }
+.sat-chip-btn.lg {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-control);
+  text-align: center;
+  line-height: 1.2;
+}
+.sat-card-actions .sat-confirm { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-2) var(--sp-3); align-items: center; }
+.sat-card-actions .sat-confirm > span { grid-column: 1 / -1; font-size: var(--fs-subtitle); font-weight: 600; }
+
+/* Modo trabajo: mismos bloques bajo el título. */
+.sat-work .sat-obs { margin: var(--sp-3) 0 0; }
+.sat-work-tech .sat-tech { margin: 0; }

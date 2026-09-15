@@ -1153,6 +1153,15 @@ export type SatQueueItem = {
   /** Lote B6: tienda (slug) y fecha del pedido, para la vista lista. */
   store_slug?: string | null;
   placed_at?: string | null;
+  /** Lote 2 · PR-2: lo que el taller lee de pie. Campos de seguimiento de la
+   *  ficha (ERP-F6), solo lectura en la cola; el backend ya los recorta y
+   *  manda null si están vacíos. `notes` = observaciones del comercial (va
+   *  arriba, en ámbar, solo si hay); `serial_number` y `whiterip_license`
+   *  van grandes en mono con botón de copiar; `shipping_origin` = OFI-TER-SAT. */
+  notes?: string | null;
+  serial_number?: string | null;
+  whiterip_license?: string | null;
+  shipping_origin?: string | null;
 };
 
 /** Cola SAT en 2 secciones (D-1-fix1): por embalar + listos para envío. */
