@@ -1077,3 +1077,162 @@ def test_scan_invoice_links_flags_crossed_and_ambiguous(session_factory) -> None
         assert "BOPRIN-99927" in to_csv(scan)
         # Solo lecturas de F_FAC.
         assert {t for t, _ in client.calls} == {"F_FAC"}
+
+
+# ---------------------------------------------------------------------------
+# Lote 2 · PR-2 — Ajustes ERP: «Ver ejemplo» y «Enviarme una prueba» de las
+# plantillas (datos de muestra; la prueba sale por Gmail sin PDF).
+# ---------------------------------------------------------------------------
+
+
+def test_settings_template_preview_renders_sample(http, session_factory) -> None:
+    """La previsualización rellena la plantilla del idioma con los datos de
+    muestra (cliente, nº de factura, nº de pedido y referencia) con la misma
+    sustitución que el envío real. Con `subject`/`body` usa lo que se está
+    escribiendo; vacíos → la guardada/por defecto. Vale para quien solo VE."""
+    _ = session_factory
+    headers = auth_headers(http, "pedidos")
+    r = http.post("/api/erp/settings/invoice-email/preview", json={"lang": "fr"},
+                  headers=headers)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["lang"] == "fr"
+    assert body["subject"] == "Facture 5-000118 · commande BP-2479"
+    assert "Rotulación Levante S.L." in body["body_text"]
+    assert "votre réf. BOP-002479" in body["body_text"]
+    assert body["body_html"].startswith("<p>")
+    assert "<br/>" in body["body_html"]  # mismo HTML que el envío real
+    assert body["sample"]["numero"] == "5-000118"
+    # Sin serie por defecto ni tiendas: el remitente de ejemplo es el alias
+    # del propio usuario.
+    assert body["from_alias_example"] == "pedidos@example.com"
+    assert body["from_alias_source"] == "usuario"
+    # Texto aún sin guardar → se usa tal cual.
+    r2 = http.post("/api/erp/settings/invoice-email/preview", json={
+        "lang": "es", "subject": "Su factura {numero}{pedido}",
+        "body": "Hola {cliente}:\n\nva{referencia}.",
+    }, headers=headers)
+    assert r2.json()["subject"] == "Su factura 5-000118 · pedido BP-2479"
+    # {referencia} lleva su propio separador (« (su ref. X)»), como en el envío.
+    assert r2.json()["body_text"] == "Hola Rotulación Levante S.L.:\n\nva (su ref. BOP-002479)."
+    # Solo espacios = vacío → la plantilla por defecto del idioma.
+    r3 = http.post("/api/erp/settings/invoice-email/preview", json={
+        "lang": "es", "subject": "   ", "body": "",
+    }, headers=headers)
+    assert r3.json()["subject"] == "Factura 5-000118 · pedido BP-2479"
+    # Idioma no soportado → español.
+    r4 = http.post("/api/erp/settings/invoice-email/preview", json={"lang": "it"},
+                   headers=headers)
+    assert r4.json()["lang"] == "es"
+
+
+def test_settings_template_preview_sender_follows_default_serie(
+    http, session_factory,
+) -> None:
+    """El remitente de ejemplo sigue el orden del envío real sin pedido: el
+    de la SERIE por defecto; si no tiene, el de la primera tienda con
+    remitente; si no, el del usuario."""
+    admin = auth_headers(http, "admin")
+    http.patch("/api/erp/settings", json={"factusol_series_default": "5"}, headers=admin)
+    r = http.post("/api/erp/settings/invoice-email/preview", json={"lang": "es"},
+                  headers=admin)
+    assert r.json()["from_alias_example"] == "pedidos@streamtec.es"
+    assert r.json()["from_alias_source"] == "serie"
+    assert r.json()["from_alias_scope"] == "5"
+    # Serie por defecto sin remitente → cae a la primera tienda con alias.
+    with session_factory() as s:
+        _seed_store(s, "artisjet")
+        s.commit()
+    http.patch("/api/erp/settings", json={"factusol_series_email_from": {"5": ""}},
+               headers=admin)
+    r2 = http.post("/api/erp/settings/invoice-email/preview", json={"lang": "es"},
+                   headers=admin)
+    assert r2.json()["from_alias_example"] == "info@artisjet-printers.eu"
+    assert r2.json()["from_alias_source"] == "tienda"
+    assert r2.json()["from_alias_scope"] == "artisjet"
+
+
+def test_settings_template_test_send_to_me(http, session_factory) -> None:
+    """«Enviarme una prueba»: envía por Gmail la plantilla rellena con los
+    datos de muestra al propio usuario, desde el remitente configurado (serie
+    por defecto), sin PDF, con «[Prueba]» delante del asunto, y lo audita."""
+    from app.models.crm import AuditLog
+
+    admin = auth_headers(http, "admin")
+    http.patch("/api/erp/settings", json={"factusol_series_default": "5"}, headers=admin)
+    with session_factory() as s:
+        _seed_alias(s, role="admin", alias="pedidos@streamtec.es")
+    send_patch, _ = _patch_send()
+    with send_patch as mock_send:
+        r = http.post("/api/erp/settings/invoice-email/test-send", json={
+            "lang": "es", "subject": "Su factura {numero}{pedido}",
+        }, headers=admin)
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["sent"] is True
+    assert body["to"] == "admin@example.com"
+    assert body["from_alias"] == "pedidos@streamtec.es"
+    assert body["from_alias_source"] == "serie"
+    assert body["subject"] == "[Prueba] Su factura 5-000118 · pedido BP-2479"
+    mock_send.assert_called_once()
+    kwargs = mock_send.call_args.kwargs
+    assert kwargs["to"] == ["admin@example.com"]
+    assert kwargs["from_alias"] == "pedidos@streamtec.es"
+    assert kwargs["subject"] == "[Prueba] Su factura 5-000118 · pedido BP-2479"
+    assert "Rotulación Levante S.L." in kwargs["body_text"]
+    assert kwargs["body_html"].startswith("<p>")
+    assert kwargs.get("attachments") is None  # sin PDF: es una prueba del texto
+    assert kwargs["contact_id"] is None
+    with session_factory() as s:
+        rows = s.query(AuditLog).filter_by(action="erp.settings_template_test_sent").all()
+        assert len(rows) == 1
+        assert "admin@example.com" in (rows[0].message or "")
+    # `to` explícito → a esa dirección.
+    send_patch2, _ = _patch_send()
+    with send_patch2 as mock_send2:
+        r2 = http.post("/api/erp/settings/invoice-email/test-send", json={
+            "lang": "en", "to": "otro@example.com",
+        }, headers=admin)
+    assert r2.status_code == 201, r2.text
+    assert mock_send2.call_args.kwargs["to"] == ["otro@example.com"]
+    assert r2.json()["subject"] == "[Prueba] Invoice 5-000118 · order BP-2479"
+
+
+def test_settings_template_test_send_rejects_unusable_sender(
+    http, session_factory,
+) -> None:
+    """Si el remitente configurado no es un «enviar como» utilizable por el
+    usuario, 403 con el motivo y NO se envía nada."""
+    _ = session_factory
+    admin = auth_headers(http, "admin")
+    http.patch("/api/erp/settings", json={"factusol_series_default": "5"}, headers=admin)
+    send_patch, _ = _patch_send()
+    with _gmail_aliases("admin@example.com"), send_patch as mock_send:
+        r = http.post("/api/erp/settings/invoice-email/test-send", json={"lang": "es"},
+                      headers=admin)
+    assert r.status_code == 403, r.text
+    assert r.json()["detail"]["code"] == "alias_not_allowed"
+    assert r.json()["detail"]["reason"] == "not_in_gmail"
+    assert r.json()["detail"]["from_alias"] == "pedidos@streamtec.es"
+    assert "pedidos@streamtec.es" in r.json()["detail"]["detail"]
+    mock_send.assert_not_called()
+    # Destinatario inválido → 400 antes de tocar Gmail.
+    send_patch2, _ = _patch_send()
+    with send_patch2 as mock_send2:
+        r2 = http.post("/api/erp/settings/invoice-email/test-send", json={
+            "lang": "es", "to": "esto no es un email",
+        }, headers=admin)
+    assert r2.status_code == 400
+    mock_send2.assert_not_called()
+
+
+def test_settings_template_test_send_requires_admin(http, session_factory) -> None:
+    """La prueba sale desde un alias de la organización: solo ADMIN (igual
+    que guardar las plantillas). Ver el ejemplo sí puede cualquiera del ERP."""
+    _ = session_factory
+    send_patch, _ = _patch_send()
+    with send_patch as mock_send:
+        r = http.post("/api/erp/settings/invoice-email/test-send", json={"lang": "es"},
+                      headers=auth_headers(http, "pedidos"))
+    assert r.status_code == 403
+    mock_send.assert_not_called()

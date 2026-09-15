@@ -5,8 +5,11 @@ Cierra la Fase A. Endpoints:
   - POST  /api/erp/exceptions/{id}/assign     {assigned_to_user_id}
   - POST  /api/erp/exceptions/{id}/status     {status}   (open/in_progress/dismissed)
   - POST  /api/erp/exceptions/{id}/resolve    {resolution_note}
-  - GET   /api/erp/settings
+  - GET   /api/erp/settings                    (lleva `can_edit`)
   - PATCH /api/erp/settings                    (solo ADMIN)
+  - POST  /api/erp/settings/invoice-email/preview    (plantilla con datos de muestra)
+  - POST  /api/erp/settings/invoice-email/test-send  (solo ADMIN; me la envía por Gmail)
+  - GET   /api/erp/settings/next-references          (siguiente nº manual y ref. por tienda)
 
 El chip de alerta ETA vencida es de presentación: el backend expone
 `eta_overdue` (bool) por excepción comparando `metadata.eta_date <= hoy`;
@@ -27,7 +30,12 @@ from app.core.audit import record_event
 from app.core.crypto import encrypt
 from app.core.errors import not_found
 from app.db.session import get_session
-from app.erp.api.deps import require_erp_admin, require_erp_edit, require_erp_view
+from app.erp.api.deps import (
+    ERP_ADMIN_ROLES,
+    require_erp_admin,
+    require_erp_edit,
+    require_erp_view,
+)
 from app.erp.contrapartidas import (
     contrapartidas_config,
     normalize_store,
@@ -517,10 +525,11 @@ def get_settings_endpoint(
     session: Session = Depends(get_session),
     current_user: User = Depends(require_erp_view),
 ) -> dict[str, Any]:
-    _ = current_user
     cfg = _get_or_create_settings(session)
     session.commit()
-    return _serialise_settings(cfg, session)
+    # Lote 2 · PR-2: la UI desactiva «Guardar cambios» (con el motivo) a quien
+    # no puede guardar, en vez de dejar que el PATCH falle con 403.
+    return {**_serialise_settings(cfg, session), "can_edit": _can_edit(current_user)}
 
 
 @router.patch("/settings")
@@ -731,7 +740,11 @@ def update_settings(
         cfg.drive_spreadsheet_id = payload.drive_spreadsheet_id.strip() or None
     _audit_settings(session, current_user)
     session.commit()
-    return _serialise_settings(cfg, session)
+    return {**_serialise_settings(cfg, session), "can_edit": _can_edit(current_user)}
+
+
+def _can_edit(user: User) -> bool:
+    return user.role in ERP_ADMIN_ROLES
 
 
 def _audit_settings(session: Session, actor: User) -> None:
@@ -742,3 +755,253 @@ def _audit_settings(session: Session, actor: User) -> None:
         )
     except Exception:  # noqa: BLE001
         pass
+
+
+# --- Lote 2 · PR-2 · Ajustes ERP: ejemplos en vivo ----------------------------
+#
+# Cada ajuste enseña al lado lo que va a pasar. Las plantillas del email de
+# factura se ven rellenas con datos de muestra («Ver ejemplo») y se pueden
+# enviar a uno mismo («Enviarme una prueba»); los prefijos de referencia
+# enseñan la siguiente referencia que se compondrá con ellos.
+
+
+class TemplatePreviewIn(BaseModel):
+    lang: str = "es"
+    #: Asunto / cuerpo tal como se están escribiendo (aún sin guardar). Vacío
+    #: o ausente = la plantilla guardada (o la por defecto del idioma).
+    subject: str | None = Field(default=None, max_length=500)
+    body: str | None = Field(default=None, max_length=10000)
+
+
+class TemplateTestIn(TemplatePreviewIn):
+    #: Destinatario de la prueba. Ausente = el email del propio usuario.
+    to: str | None = Field(default=None, max_length=255)
+
+
+def _default_serie(session: Session) -> int | None:
+    """Serie por defecto configurada (`factusol_series_json.default`), o None."""
+    from app.integrations.factusol.service import series_config  # noqa: PLC0415
+
+    raw = str(series_config(session).get("default") or "").strip()
+    return int(raw) if raw.isdigit() else None
+
+
+def _sample_sender(session: Session, user: User) -> tuple[str, str, str | None]:
+    """Remitente con el que saldría la prueba: `(alias, origen, tienda|serie)`.
+    Mismo orden que el envío real pero sin pedido: el remitente de la SERIE
+    por defecto; si no tiene, el de la primera tienda Woo con remitente
+    propio; si no, el alias por defecto del usuario. Alias vacío = no hay
+    ninguno."""
+    from app.erp.invoice_email import (  # noqa: PLC0415
+        default_from_alias,
+        series_from_alias,
+        store_from_alias,
+    )
+
+    serie = _default_serie(session)
+    serie_alias = series_from_alias(session, serie)
+    if serie_alias:
+        return serie_alias, "serie", str(serie)
+    for store in _woocommerce_stores(session):
+        alias = store_from_alias(session, store["slug"])
+        if alias:
+            return alias, "tienda", store["slug"]
+    return default_from_alias(session, user) or "", "usuario", None
+
+
+@router.post("/settings/invoice-email/preview")
+def preview_invoice_email_template(
+    payload: TemplatePreviewIn,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_view),
+) -> dict[str, Any]:
+    """Plantilla del idioma rellena con datos de MUESTRA (cliente, nº de
+    factura, nº de pedido y referencia ficticios), con la misma sustitución
+    que el envío real. Si llegan `subject`/`body`, se usan ellos (lo que se
+    está escribiendo); si no, la plantilla guardada. No envía nada."""
+    from app.erp.invoice_email import (  # noqa: PLC0415
+        SAMPLE_INVOICE_EMAIL,
+        render_sample_invoice_email,
+    )
+
+    sample = render_sample_invoice_email(
+        session, lang=payload.lang, subject=payload.subject, body=payload.body,
+    )
+    alias, source, scope = _sample_sender(session, current_user)
+    return {
+        **sample,
+        # Desde dónde saldría (para enseñarlo en el ejemplo): tienda / serie /
+        # usuario, como en el envío real.
+        "from_alias_example": alias,
+        "from_alias_source": source,
+        "from_alias_scope": scope,
+        "sample": dict(SAMPLE_INVOICE_EMAIL),
+    }
+
+
+_SENDER_PROBLEMS: dict[str, str] = {
+    "sin_alias": "No hay ningún remitente configurado ni alias de envío propio.",
+    "alias_not_allowed": (
+        "El remitente no está en tus preferencias de envío ni es un remitente "
+        "configurado en Ajustes ERP."
+    ),
+    "not_in_gmail": (
+        "El remitente no es un «enviar como» verificado de la cuenta de Gmail."
+    ),
+    "gmail_unavailable": (
+        "No se pudo comprobar el remitente en Gmail (desconectado o sin permiso)."
+    ),
+}
+
+
+@router.post("/settings/invoice-email/test-send", status_code=201)
+def send_invoice_email_template_test(
+    payload: TemplateTestIn,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_admin),
+) -> dict[str, Any]:
+    """Envía por Gmail la plantilla rellena con los datos de muestra al
+    propio usuario (o a `to`), desde el remitente configurado para la serie
+    por defecto / primera tienda con remitente (validado como send-as; si no
+    se puede usar, 403 con el motivo). Sin PDF: es una prueba del texto. El
+    asunto va precedido de «[Prueba]» para que no se confunda en la bandeja."""
+    from app.erp.invoice_email import (  # noqa: PLC0415
+        check_sender_alias,
+        render_sample_invoice_email,
+    )
+    from app.integrations.gmail import service as gmail_service  # noqa: PLC0415
+
+    to = (payload.to or "").strip() or (current_user.email or "").strip()
+    if "@" not in to or " " in to:
+        raise HTTPException(400, f"Destinatario inválido: {to!r}")
+    sample = render_sample_invoice_email(
+        session, lang=payload.lang, subject=payload.subject, body=payload.body,
+    )
+    alias, source, scope = _sample_sender(session, current_user)
+    check = (
+        check_sender_alias(session, current_user, alias)
+        if alias else {"ok": False, "reason": "sin_alias"}
+    )
+    if not check.get("ok"):
+        reason = str(check.get("reason") or "alias_not_allowed")
+        raise HTTPException(403, {
+            "code": "alias_not_allowed",
+            "reason": reason,
+            "from_alias": alias,
+            "detail": (
+                f"No se puede enviar desde {alias or '(sin remitente)'}: "
+                f"{_SENDER_PROBLEMS.get(reason, reason)}"
+            ),
+        })
+    subject = f"[Prueba] {sample['subject']}"
+    message = gmail_service.send_email(
+        session,
+        sender_user_id=current_user.id,
+        from_alias=alias,
+        from_name=None,
+        to=[to],
+        cc=None, bcc=None,
+        subject=subject,
+        body_html=sample["body_html"],
+        body_text=sample["body_text"],
+        contact_id=None,
+    )
+    try:
+        record_event(
+            session, action="erp.settings_template_test_sent",
+            target_type="erp_settings", target_id=ERP_SETTINGS_SINGLETON_ID,
+            actor=current_user,
+            message=(
+                f"Prueba de la plantilla del email de factura ({sample['lang']}) "
+                f"enviada a {to} desde {alias}"
+            ),
+            metadata={
+                "lang": sample["lang"], "to": to, "from_alias": alias,
+                "from_alias_source": source, "message_id": message.id,
+            },
+        )
+    except Exception:  # noqa: BLE001 — audit nunca bloquea
+        pass
+    session.commit()
+    return {
+        "sent": True,
+        "to": to,
+        "lang": sample["lang"],
+        "subject": subject,
+        "from_alias": alias,
+        "from_alias_source": source,
+        "from_alias_scope": scope,
+        "message_id": message.id,
+    }
+
+
+def _store_next_number(session: Session, store_id: str) -> int | None:
+    """Siguiente nº de pedido Woo de esa tienda según lo que YA conocemos:
+    el mayor número de los últimos pedidos + 1. None si no hay ninguno (el
+    nº real lo pone WooCommerce; esto es solo para el ejemplo)."""
+    from app.erp.models import Order  # noqa: PLC0415
+
+    rows = session.scalars(
+        select(Order.order_number).where(Order.store_id == store_id)
+        .order_by(Order.created_at.desc()).limit(50)
+    ).all()
+    top: int | None = None
+    for number in rows:
+        suffix = str(number or "").split("-")[-1]
+        if suffix.isdigit():
+            top = max(top or 0, int(suffix))
+    return top + 1 if top is not None else None
+
+
+@router.get("/settings/next-references")
+def next_references(
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_view),
+) -> dict[str, Any]:
+    """Lo que se compondrá con los ajustes actuales: el siguiente nº de
+    pedido manual y, por tienda Woo, el prefijo efectivo (metadata de la
+    cuenta → configurado → derivado) con la siguiente referencia de ejemplo.
+    El siguiente nº de pedido web lo decide WooCommerce, así que el ejemplo
+    usa el último conocido de esa tienda + 1 (o 1 si no hay ninguno); la UI
+    recompone la referencia en vivo con el prefijo que se esté escribiendo."""
+    from app.erp.api.orders import _next_manual_number  # noqa: PLC0415
+    from app.integrations.factusol.service import _compose_ref  # noqa: PLC0415
+    from app.models.integration_settings import (  # noqa: PLC0415
+        ExternalSystem,
+        IntegrationAccount,
+    )
+
+    _ = current_user
+    configured = configured_ref_prefixes(session)
+    accounts = {
+        a.account_id: a
+        for a in session.scalars(
+            select(IntegrationAccount)
+            .where(IntegrationAccount.system == ExternalSystem.WOOCOMMERCE)
+        ).all()
+    }
+    stores: list[dict[str, Any]] = []
+    for store in _woocommerce_stores(session):
+        slug = str(store["slug"] or "")
+        metadata = store.get("ref_prefix_metadata")
+        if metadata:
+            prefix, source = str(metadata), "cuenta"
+        elif configured.get(slug.lower()):
+            prefix, source = configured[slug.lower()], "ajustes"
+        else:
+            prefix, source = str(store.get("derived_ref_prefix") or ""), "derivado"
+        account = accounts.get(slug)
+        known_next = _store_next_number(session, account.id) if account is not None else None
+        next_number = known_next or 1
+        stores.append({
+            "slug": slug,
+            "label": store["label"],
+            "prefix": prefix,
+            "prefix_source": source,
+            "next_number": next_number,
+            # True si el nº sale de pedidos ya conocidos; False = nunca hubo
+            # ninguno y se enseña 000001.
+            "next_number_known": known_next is not None,
+            "example_ref": _compose_ref(f"{slug.upper()[:6]}-{next_number}", prefix),
+        })
+    return {"manual_next": _next_manual_number(session), "stores": stores}

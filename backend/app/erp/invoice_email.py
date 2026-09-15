@@ -108,15 +108,13 @@ def invoice_email_templates(session: Session) -> dict[str, dict[str, str]]:
     return out
 
 
-def render_invoice_email(
-    session: Session, *, lang: str, cliente: str, numero: str,
-    referencia: str, pedido: str = "",
+def _fill_template(
+    lang: str, subject: str, body: str, *, cliente: str, numero: str,
+    referencia: str, pedido: str,
 ) -> tuple[str, str]:
-    """`(asunto, cuerpo_texto)` de la plantilla del idioma, con los
-    placeholders sustituidos. Idioma no soportado → español. `pedido` es el nº
-    de pedido de BoHub (vacío → el placeholder {pedido} desaparece)."""
-    lang = lang if lang in SUPPORTED_LANGS else "es"
-    tpl = invoice_email_templates(session)[lang]
+    """Sustituye los placeholders en `subject`/`body` (idioma ya resuelto).
+    {referencia} y {pedido} llevan su separador localizado y desaparecen si
+    no hay dato."""
     ref_txt = ""
     if referencia:
         ref_txt = _REF_SUFFIX.get(lang, _REF_SUFFIX["es"]).format(ref=referencia)
@@ -133,7 +131,58 @@ def render_invoice_email(
             text = text.replace("{" + key + "}", val)
         return text
 
-    return _fill(tpl["subject"]), _fill(tpl["body"])
+    return _fill(subject), _fill(body)
+
+
+def render_invoice_email(
+    session: Session, *, lang: str, cliente: str, numero: str,
+    referencia: str, pedido: str = "",
+) -> tuple[str, str]:
+    """`(asunto, cuerpo_texto)` de la plantilla del idioma, con los
+    placeholders sustituidos. Idioma no soportado → español. `pedido` es el nº
+    de pedido de BoHub (vacío → el placeholder {pedido} desaparece)."""
+    lang = lang if lang in SUPPORTED_LANGS else "es"
+    tpl = invoice_email_templates(session)[lang]
+    return _fill_template(
+        lang, tpl["subject"], tpl["body"], cliente=cliente, numero=numero,
+        referencia=referencia, pedido=pedido,
+    )
+
+
+#: Lote 2 · PR-2 — datos de MUESTRA con los que Ajustes ERP enseña cómo queda
+#: una plantilla («Ver ejemplo» / «Enviarme una prueba»). Rellenan los cuatro
+#: placeholders para que se vea el efecto de cada uno.
+SAMPLE_INVOICE_EMAIL: dict[str, str] = {
+    "cliente": "Rotulación Levante S.L.",
+    "numero": "5-000118",
+    "pedido": "BP-2479",
+    "referencia": "BOP-002479",
+}
+
+
+def render_sample_invoice_email(
+    session: Session, *, lang: str, subject: str | None = None,
+    body: str | None = None,
+) -> dict[str, str]:
+    """Plantilla del idioma rellena con los datos de muestra
+    (`SAMPLE_INVOICE_EMAIL`), con la misma sustitución que el envío real.
+    `subject` / `body` no vacíos sustituyen a la plantilla guardada (es lo que
+    se está escribiendo en Ajustes, aún sin guardar); vacíos → la guardada o,
+    si no hay, la por defecto del idioma. Idioma no soportado → español.
+    Devuelve `{lang, subject, body_text, body_html}`."""
+    lang = lang if lang in SUPPORTED_LANGS else "es"
+    tpl = invoice_email_templates(session)[lang]
+    subject_tpl = subject if subject is not None and subject.strip() else tpl["subject"]
+    body_tpl = body if body is not None and body.strip() else tpl["body"]
+    rendered_subject, rendered_body = _fill_template(
+        lang, subject_tpl, body_tpl, **SAMPLE_INVOICE_EMAIL,
+    )
+    return {
+        "lang": lang,
+        "subject": rendered_subject,
+        "body_text": rendered_body,
+        "body_html": _text_to_html(rendered_body),
+    }
 
 
 def _text_to_html(text: str) -> str:

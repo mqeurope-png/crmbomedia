@@ -1479,7 +1479,90 @@ export type ErpSettings = {
   }[];
   /** E4-fix1 — almacenes de recogida del albarán de devolución. */
   factusol_pickup_warehouses?: FactusolPickupWarehouse[];
+  /** ERP-E2 — nombre de la empresa emisora de cada serie ({"5": "Streamtec"}),
+   *  para escribir «serie 5 (Streamtec)» al lado del ajuste. */
+  factusol_series_names?: Record<string, string>;
+  /** Lote 2 · PR-2 — si el usuario puede guardar (solo ADMIN). La UI desactiva
+   *  «Guardar cambios» con el motivo en vez de dejar que el PATCH falle. */
+  can_edit?: boolean;
 };
+
+/** Lote 2 · PR-2 — plantilla del email de factura rellena con datos de
+ *  MUESTRA («Ver ejemplo»): misma sustitución que el envío real. */
+export type InvoiceEmailTemplatePreview = {
+  lang: string;
+  subject: string;
+  body_text: string;
+  body_html: string;
+  /** Desde dónde saldría: el remitente de la serie por defecto, de la primera
+   *  tienda con remitente o del usuario. */
+  from_alias_example: string;
+  from_alias_source: "serie" | "tienda" | "usuario";
+  from_alias_scope: string | null;
+  sample: { cliente: string; numero: string; pedido: string; referencia: string };
+};
+
+/** Previsualiza la plantilla de un idioma con datos de muestra. `subject` /
+ *  `body` = lo que se está escribiendo (vacío → la guardada / por defecto). */
+export async function previewInvoiceEmailTemplate(
+  lang: string,
+  draft: { subject?: string; body?: string } = {},
+): Promise<InvoiceEmailTemplatePreview> {
+  return apiFetch<InvoiceEmailTemplatePreview>("/api/erp/settings/invoice-email/preview", {
+    method: "POST",
+    body: JSON.stringify({ lang, subject: draft.subject ?? null, body: draft.body ?? null }),
+  });
+}
+
+/** Lote 2 · PR-2 — resultado de «Enviarme una prueba» (sin PDF; el asunto va
+ *  precedido de «[Prueba]»). */
+export type InvoiceEmailTemplateTestResult = {
+  sent: true;
+  to: string;
+  lang: string;
+  subject: string;
+  from_alias: string;
+  from_alias_source: "serie" | "tienda" | "usuario";
+  from_alias_scope: string | null;
+  message_id: string;
+};
+
+/** Envía la plantilla rellena con datos de muestra al propio usuario (o a
+ *  `to`) desde el remitente configurado. Solo ADMIN; 403 con motivo si el
+ *  remitente no es un «enviar como» utilizable. */
+export async function sendInvoiceEmailTemplateTest(
+  lang: string,
+  draft: { subject?: string; body?: string; to?: string } = {},
+): Promise<InvoiceEmailTemplateTestResult> {
+  return apiFetch<InvoiceEmailTemplateTestResult>("/api/erp/settings/invoice-email/test-send", {
+    method: "POST",
+    body: JSON.stringify({
+      lang, subject: draft.subject ?? null, body: draft.body ?? null, to: draft.to ?? null,
+    }),
+  });
+}
+
+/** Lote 2 · PR-2 — lo que se compondrá con los ajustes actuales: siguiente
+ *  nº de pedido manual y, por tienda Woo, el prefijo efectivo con la
+ *  siguiente referencia de ejemplo. `next_number` permite recomponer la
+ *  referencia en vivo con el prefijo que se esté escribiendo. */
+export type ErpNextReferences = {
+  manual_next: string;
+  stores: {
+    slug: string;
+    label: string;
+    prefix: string;
+    prefix_source: "cuenta" | "ajustes" | "derivado";
+    next_number: number;
+    /** false = nunca hubo pedidos de esa tienda y se enseña 000001. */
+    next_number_known: boolean;
+    example_ref: string;
+  }[];
+};
+
+export async function getErpNextReferences(): Promise<ErpNextReferences> {
+  return apiFetch<ErpNextReferences>("/api/erp/settings/next-references");
+}
 
 /** ERP-E4 — identidad fiscal de una empresa emisora (serie). Los textos
  *  legales van por idioma ({es, en, …}). `logo` es de solo lectura (se sube
