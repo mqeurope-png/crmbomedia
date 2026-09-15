@@ -68,7 +68,7 @@ export function EmbalarModal({
   return (
     <div className="modal-overlay" role="dialog" aria-modal="true"
          aria-label="Embalar pedido (bultos)">
-      <div className="modal-dialog">
+      <div className="modal-dialog erp-modal">
         <h2>Embalado — bultos</h2>
         <p className="muted small">
           Indica peso y medidas de cada bulto. Todos los valores deben ser &gt; 0.

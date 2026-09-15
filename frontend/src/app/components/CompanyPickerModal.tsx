@@ -57,7 +57,9 @@ export function CompanyPickerModal({ open, onClose, onPick }: Props) {
       onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
       <div
-        className={`modal-dialog company-picker-dialog${createName !== null ? " is-wide" : ""}`}
+        // Lote 2 · E6: molde plano del ERP; 520 px buscando y 720 (`wide`)
+        // con el formulario de «Crear empresa» abierto.
+        className={`modal-dialog erp-modal company-picker-dialog${createName !== null ? " wide" : ""}`}
         role="dialog"
         aria-modal="true"
         aria-labelledby="company-picker-title"
