@@ -7,6 +7,13 @@ jest.mock("../../lib/erpApi", () => ({
   getErpSettings: jest.fn(),
   updateErpSettings: jest.fn(),
 }));
+// Sugerencias de remitente (datalist): los «enviar como» del usuario.
+jest.mock("../../lib/emailsApi", () => ({
+  getMyEmailAliases: jest.fn(() => Promise.resolve([
+    { send_as_email: "pedidos@streamtec.es", display_name: "Streamtec",
+      is_default: true, resolved_display_name: "Streamtec" },
+  ])),
+}));
 const mockGet = getErpSettings as jest.Mock;
 const mockUpdate = updateErpSettings as jest.Mock;
 
@@ -205,5 +212,50 @@ describe("ErpSettingsPage — contrapartidas de cobro (F5)", () => {
     expect(sent.contrapartidas).toHaveLength(3);
     expect(sent.paypal_contrapartidas_by_store.boprint).toBe("6");
     expect(sent.paypal_contrapartidas_by_store.artisjet).toBe("12");
+  });
+});
+
+describe("ErpSettingsPage — «Enviar factura al cliente»: remitente por tienda y plantillas", () => {
+  it("una fila por tienda Woo; el remitente de la tienda viaja al guardar", async () => {
+    mockGet.mockResolvedValue(settings({
+      woocommerce_stores: [
+        { slug: "boprint", label: "boprint" },
+        { slug: "fluxlasers", label: "fluxlasers" },
+      ],
+      factusol_store_email_from: { boprint: "pedidos@streamtec.es" },
+    }));
+    const user = userEvent.setup();
+    render(<ErpSettingsPage />);
+    const boprint = await screen.findByLabelText("Remitente tienda boprint");
+    expect(boprint).toHaveValue("pedidos@streamtec.es");
+    expect(screen.getByLabelText("Remitente tienda fluxlasers")).toHaveValue("");
+    await user.clear(boprint);
+    await user.type(boprint, "tienda@boprint.es");
+    await user.click(screen.getByRole("button", { name: /Guardar/ }));
+    await waitFor(() => expect(mockUpdate).toHaveBeenCalled());
+    expect(mockUpdate.mock.calls[0][0].factusol_store_email_from).toMatchObject({
+      boprint: "tienda@boprint.es",
+    });
+  });
+
+  it("plantillas por idioma: asunto y cuerpo editables viajan al guardar", async () => {
+    mockGet.mockResolvedValue(settings({
+      factusol_invoice_email_templates: {
+        es: { subject: "Factura {numero}{pedido}", body: "Adjuntamos la factura {numero}{pedido}." },
+        fr: { subject: "Facture {numero}{pedido}", body: "Ci-joint la facture {numero}{pedido}." },
+      },
+    }));
+    const user = userEvent.setup();
+    render(<ErpSettingsPage />);
+    const asuntoFr = await screen.findByLabelText("Asunto factura fr");
+    expect(asuntoFr).toHaveValue("Facture {numero}{pedido}");
+    await user.clear(asuntoFr);
+    // user-event trata «{» como tecla especial: «{{» escribe la llave literal.
+    await user.type(asuntoFr, "Votre facture {{numero}{{pedido}");
+    await user.click(screen.getByRole("button", { name: /Guardar/ }));
+    await waitFor(() => expect(mockUpdate).toHaveBeenCalled());
+    const sent = mockUpdate.mock.calls[0][0].factusol_invoice_email_templates;
+    expect(sent.fr.subject).toBe("Votre facture {numero}{pedido}");
+    expect(sent.es.subject).toBe("Factura {numero}{pedido}");  // el resto se conserva
   });
 });

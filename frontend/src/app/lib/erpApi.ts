@@ -1218,6 +1218,16 @@ export type ErpSettings = {
    *  factura (F-1) usa este alias según la serie; si la serie no lo tiene, cae
    *  al alias por defecto del usuario. */
   factusol_series_email_from?: Record<string, string>;
+  /** ERP · remitente del email de factura por TIENDA ({"boprint":
+   *  "pedidos@streamtec.es"}). Más fino que la serie: dos tiendas de la misma
+   *  empresa emisora pueden enviar desde alias distintos. Manda sobre el de la
+   *  serie; un valor vacío borra el default de esa tienda (cae a la serie). */
+  factusol_store_email_from?: Record<string, string>;
+  /** ERP · plantillas del email de factura por idioma ({"es": {subject, body}}).
+   *  Placeholders: {cliente}, {numero} (nº factura), {pedido} (nº de pedido,
+   *  con separador; vacío sin pedido) y {referencia} («su ref.»). Vacío = el
+   *  default del código para ese idioma. */
+  factusol_invoice_email_templates?: Record<string, { subject: string; body: string }>;
   /** ERP · email del SAT / taller: destinatario por defecto de «Enviar por
    *  email» desde un pedido. "" = sin destinatario precargado. */
   sat_email?: string;
@@ -2000,17 +2010,21 @@ export type InvoiceEmailPreview = {
   lang_source: InvoiceEmailLangSource;
   subject: string;
   body_text: string;
-  /** Alias emisor: el de la empresa emisora de esta serie si está configurado
-   *  (`from_alias_source: "serie"`); si no, el alias por defecto del usuario
-   *  (`"usuario"`). */
+  /** Alias emisor, por orden: el de la TIENDA del pedido si está configurado
+   *  (`from_alias_source: "tienda"`); si no, el de la empresa emisora de esta
+   *  serie (`"serie"`); si no, el alias por defecto del usuario (`"usuario"`). */
   from_alias: string;
-  from_alias_source: "serie" | "usuario";
+  from_alias_source: "tienda" | "serie" | "usuario";
+  /** Slug de la tienda Woo del pedido (null si no es de tienda). */
+  store?: string | null;
   attachment_filename: string;
   /** Si hay un hilo del pedido al que responder, su message-id; si no null. */
   reply_to_message_id: string | null;
   replies_to_thread: boolean;
   /** Pedido del CRM al que se registrará el envío (null si no se localizó). */
   order_id: string | null;
+  /** Nº de pedido de BoHub (va en asunto y cuerpo vía el placeholder {pedido}). */
+  order_number?: string | null;
 };
 
 export type InvoiceEmailSendPayload = {

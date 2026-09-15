@@ -426,6 +426,35 @@ export default function ErpOrderDetailPage() {
                     Enviar por email
                   </button>
                 )}
+                {/* «Enviar factura al cliente»: la factura de FACTUSOL en PDF,
+                    desde el alias de la TIENDA del pedido (o de la serie), en
+                    el idioma del pedido/cliente, con previsualización
+                    obligatoria antes de enviar y registro en el timeline.
+                    Sin factura emitida queda deshabilitado (no oculto). */}
+                <button
+                  type="button"
+                  className="button small secondary"
+                  disabled={!invoiced || emailBusy}
+                  title={invoiced
+                    ? "Envía la factura al cliente por email (Gmail) con el PDF adjunto; verás remitente, destinatario y asunto antes de enviar"
+                    : "Emite la factura en FACTUSOL primero"}
+                  onClick={async () => {
+                    setEmailBusy(true);
+                    setError(null);
+                    try {
+                      const ref = await getOrderFactusolInvoiceRef(order.id);
+                      setInvoiceRef(ref);
+                    } catch (e) {
+                      setError(extractErrorMessage(
+                        e, "No se pudo localizar la factura en FACTUSOL.",
+                      ));
+                    } finally {
+                      setEmailBusy(false);
+                    }
+                  }}
+                >
+                  {emailBusy ? "Localizando…" : "Enviar factura al cliente"}
+                </button>
                 {/* «Marcar completado»: estado final del pedido, solo en BoHub.
                     Si ya es el «Siguiente paso», el botón está allí (no se repite). */}
                 {wf?.next_action === "marcar_completado" ? null : (
@@ -472,31 +501,9 @@ export default function ErpOrderDetailPage() {
                       ))}
                     </select>
                   </label>
-                  {/* ERP-F1 — enviar la factura por email cuando el pedido ya
-                      está facturado en FACTUSOL. Resuelve la factura
-                      (serie+número) y abre la previsualización obligatoria. */}
-                  {invoiced ? (
-                    <button
-                      type="button"
-                      disabled={emailBusy}
-                      onClick={async () => {
-                        setEmailBusy(true);
-                        setError(null);
-                        try {
-                          const ref = await getOrderFactusolInvoiceRef(order.id);
-                          setInvoiceRef(ref);
-                        } catch (e) {
-                          setError(extractErrorMessage(
-                            e, "No se pudo localizar la factura en FACTUSOL.",
-                          ));
-                        } finally {
-                          setEmailBusy(false);
-                        }
-                      }}
-                    >
-                      {emailBusy ? "Localizando…" : "Enviar factura por email"}
-                    </button>
-                  ) : null}
+                  {/* ERP-F1 «Enviar factura por email» vive ahora en la cabecera
+                      como «Enviar factura al cliente» (una sola acción, sin
+                      duplicarla aquí). */}
                 </ActionsMenu>
               </>
             ) : null}

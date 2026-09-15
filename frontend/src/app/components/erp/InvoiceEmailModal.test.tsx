@@ -149,3 +149,12 @@ describe("InvoiceEmailModal", () => {
     expect(mockSend).not.toHaveBeenCalled();
   });
 });
+
+it("indica que el remitente es el de la TIENDA del pedido cuando así viene", async () => {
+  mockPreview.mockResolvedValue(preview({
+    from_alias: "tienda@boprint.es", from_alias_source: "tienda", store: "boprint",
+  }));
+  render(<InvoiceEmailModal serie={5} codigo={63} onClose={() => undefined} />);
+  expect(await screen.findByText(/tienda@boprint\.es/)).toBeInTheDocument();
+  expect(screen.getByText(/remitente de la tienda boprint/)).toBeInTheDocument();
+});
