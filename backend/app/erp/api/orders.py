@@ -789,7 +789,11 @@ def list_orders(
         stmt = stmt.where(Order.cancelled_at.isnot(None))
     elif show_excluded:
         # Vista de revisión: solo los quitados a mano (con motivo y quién).
-        stmt = stmt.where(Order.seguimiento_excluded_at.isnot(None))
+        # Lote 2 A2: un pedido quitado Y anulado es un anulado — vive SOLO en
+        # «Ver anulados»; «Ver ocultados» nunca mezcla anulados.
+        stmt = stmt.where(
+            Order.seguimiento_excluded_at.isnot(None), Order.cancelled_at.is_(None),
+        )
     else:
         # Control manual: los quitados no aparecen en la bandeja.
         stmt = worklist_visible(stmt)
@@ -1324,6 +1328,78 @@ def bulk_complete_orders(
         "sin_facturar": sum(
             1 for it in items if "aún sin facturar" in it["completion_avisos"]
         ),
+        "items": items,
+    }
+
+
+class BulkApproveIn(BaseModel):
+    order_ids: list[str] = Field(min_length=1, max_length=500)
+
+
+@router.post("/bulk-approve")
+def bulk_approve_orders(
+    payload: BulkApproveIn,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_approve),
+) -> dict[str, Any]:
+    """«Aprobar seleccionados» de la bandeja (Lote 2 D: la Cola PEDIDOS ya no
+    es una pantalla aparte; se aprueba desde «Por revisar»). La MISMA lógica
+    que `/approve` (`_blockers` + `approve_inline`) aplicada a cada pedido
+    seleccionado, con el mismo patrón que `bulk-complete`: cada pedido se
+    confirma por separado y los fallos se informan en `failed` (con su
+    motivo) sin abortar el resto. Un pedido con bloqueos (excepciones
+    abiertas) cuenta como fallo con el texto del bloqueo; uno que ya no está
+    pendiente de revisión se cuenta aparte (`already_approved`) y no cambia.
+    Solo con permiso de aprobación (admin / pedidos)."""
+    approved: list[str] = []
+    already: list[str] = []
+    failed: list[dict[str, str]] = []
+    items: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for order_id in payload.order_ids:
+        if order_id in seen:
+            continue
+        seen.add(order_id)
+        try:
+            order = session.get(Order, order_id)
+            if order is None:
+                failed.append({"order_id": order_id, "error": "El pedido no existe."})
+                continue
+            if _status_value(order.preparation_status) != "pending_review":
+                # Ya aprobado (o más allá): idempotente, se cuenta aparte.
+                already.append(order.id)
+                continue
+            blockers = _blockers(session, order)
+            if blockers:
+                failed.append({
+                    "order_id": order_id, "code": "blocked",
+                    "error": "Bloqueado: " + "; ".join(b["detail"] for b in blockers),
+                })
+                continue
+            approve_inline(
+                session, order, current_user, reason="aprobado desde la bandeja (en bloque)",
+            )
+            session.commit()
+        except TransitionError as exc:
+            session.rollback()
+            failed.append({"order_id": order_id, "code": exc.code, "error": exc.detail})
+            continue
+        except Exception as exc:  # noqa: BLE001 — se informa y se sigue
+            session.rollback()
+            logger.warning("bulk-approve: pedido %s KO: %s", order_id, exc)
+            failed.append({"order_id": order_id, "error": str(exc)[:200]})
+            continue
+        order = _get_order(session, order_id)
+        approved.append(order.id)
+        items.append({
+            **_serialise_summary(order, customer_names(session, [order]).get(order.id)),
+            "workflow": order_workflow(session, order),
+        })
+    return {
+        "ok": not failed,
+        "approved": len(approved),
+        "already_approved": len(already),
+        "failed": failed,
         "items": items,
     }
 

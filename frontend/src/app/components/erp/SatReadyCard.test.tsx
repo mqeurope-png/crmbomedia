@@ -4,6 +4,7 @@ import { SatReadyCard } from "./SatReadyCard";
 import type { SatQueueItem } from "../../lib/erpApi";
 import {
   downloadOrderFactusolAlbaranPdf,
+  fetchAlbaranFromWoo,
   fireTransition,
   listShippingFiles,
   markPickedUp,
@@ -22,12 +23,15 @@ jest.mock("../../lib/erpApi", () => ({
   // customerLabel es helper puro: se usa el real (D-2).
   customerLabel: jest.requireActual("../../lib/erpApi").customerLabel,
   downloadOrderFactusolAlbaranPdf: jest.fn(),
+  fetchAlbaranFromWoo: jest.fn(),
   fireTransition: jest.fn(),
   listShippingFiles: jest.fn(),
   markPickedUp: jest.fn(),
   openShippingFile: jest.fn(),
   saveBlob: jest.fn(),
+  STATUS_LABELS: {},
 }));
+const mockFetch = fetchAlbaranFromWoo as jest.Mock;
 const mockFire = fireTransition as jest.Mock;
 const mockList = listShippingFiles as jest.Mock;
 const mockPicked = markPickedUp as jest.Mock;
@@ -35,17 +39,37 @@ const mockOpen = openShippingFile as jest.Mock;
 const mockFactusolPdf = downloadOrderFactusolAlbaranPdf as jest.Mock;
 const mockSave = saveBlob as jest.Mock;
 
+/** Pedido MANUAL embalado con albarán subido a mano y etiqueta. */
 function order(over: Partial<SatQueueItem> = {}): SatQueueItem {
   return {
     id: "o1", order_number: "BOP-1", contact_name: null, company_name: null,
     preparation_status: "packed",
     transport_status: "not_shipped", payment_status: "paid",
     total_amount: 100, currency: "EUR", lines: [],
-    has_albaran: true, has_etiqueta: true, ...over,
+    has_albaran: true, albaran_source: "file", has_albaran_file: true,
+    albaran_file_source: "manual_upload", is_web_order: false,
+    woo_albaran_available: false, woo_albaran_unavailable_reason: null,
+    has_etiqueta: true, ...over,
   };
 }
 
+/** Pedido WEB embalado sin fichero aún (Lote 2 A3: el caso ARTISJ-9553). */
+function webOrder(over: Partial<SatQueueItem> = {}): SatQueueItem {
+  return order({
+    order_number: "ARTISJ-9553", store_slug: "artisjet", is_web_order: true,
+    has_albaran: true, albaran_source: "woo", has_albaran_file: false,
+    albaran_file_source: null, woo_albaran_available: true, ...over,
+  });
+}
+
+const FILE = {
+  id: "f1", kind: "albaran" as const, source: "woo_pdf_plugin" as const,
+  filename: "a.pdf", mime_type: "application/pdf", size_bytes: 1,
+  uploaded_by_user_id: null, uploaded_at: null, download_url: "/x",
+};
+
 beforeEach(() => {
+  mockFetch.mockReset();
   mockFire.mockReset();
   mockList.mockReset();
   mockPicked.mockReset();
@@ -62,7 +86,7 @@ describe("SatReadyCard", () => {
     const user = userEvent.setup();
     render(
       <SatReadyCard
-        order={order({ factusol_albaran_number: "1-100327" })}
+        order={order({ factusol_albaran_number: "1-100327", albaran_source: "factusol" })}
         onChanged={() => {}}
       />,
     );
@@ -87,10 +111,65 @@ describe("SatReadyCard", () => {
     await waitFor(() => expect(mockOpen).toHaveBeenCalled());
   });
 
-  it("sin albarán muestra «Falta albarán» enlazando a la ficha", () => {
-    render(<SatReadyCard order={order({ has_albaran: false })} onChanged={() => {}} />);
+  it("pedido manual sin albarán muestra «Falta albarán» enlazando a la ficha", () => {
+    render(
+      <SatReadyCard
+        order={order({
+          has_albaran: false, albaran_source: null, has_albaran_file: false,
+          albaran_file_source: null,
+        })}
+        onChanged={() => {}}
+      />,
+    );
     const link = screen.getByRole("link", { name: /Falta albarán/ });
     expect(link).toHaveAttribute("href", "/erp/orders/o1");
+    expect(link).toHaveClass("warn");
+  });
+
+  // --- Lote 2 A3: pedidos web → albarán de WooCommerce -----------------------
+
+  it("pedido web embalado sin fichero: «Descargar albarán» de Woo, nunca «Falta albarán»", async () => {
+    mockFetch.mockResolvedValue({ file: FILE, already_present: false });
+    const onChanged = jest.fn();
+    const user = userEvent.setup();
+    render(<SatReadyCard order={webOrder()} onChanged={onChanged} />);
+    expect(screen.queryByText(/Falta albarán/)).not.toBeInTheDocument();
+    const chip = screen.getByRole("button", { name: /Descargar albarán/ });
+    expect(chip).toHaveAttribute("title", expect.stringMatching(/WooCommerce.*artisjet/));
+    await user.click(chip);
+    await waitFor(() => expect(mockFetch).toHaveBeenCalledWith("o1"));
+    await waitFor(() => expect(onChanged).toHaveBeenCalled());
+    await waitFor(() => expect(mockOpen).toHaveBeenCalledWith(FILE));
+    expect(mockFactusolPdf).not.toHaveBeenCalled();
+    // La etiqueta sigue con su chip propio.
+    expect(screen.getByRole("button", { name: /Imprimir etiqueta/ })).toBeInTheDocument();
+  });
+
+  it("si la descarga de Woo falla lo dice bajo la card sin mandar a FACTUSOL", async () => {
+    mockFetch.mockRejectedValue(new Error("502"));
+    const user = userEvent.setup();
+    render(<SatReadyCard order={webOrder()} onChanged={() => {}} />);
+    await user.click(screen.getByRole("button", { name: /Descargar albarán/ }));
+    const aviso = await screen.findByText(/No se pudo descargar el albarán de WooCommerce/);
+    expect(aviso).not.toHaveTextContent(/FACTUSOL/);
+  });
+
+  it("pedido web sin descarga posible: chip «no disponible» con motivo, a la ficha", () => {
+    const reason = "Falta el id del pedido en WooCommerce.";
+    render(
+      <SatReadyCard
+        order={webOrder({
+          has_albaran: false, albaran_source: null, woo_albaran_available: false,
+          woo_albaran_unavailable_reason: reason,
+        })}
+        onChanged={() => {}}
+      />,
+    );
+    const link = screen.getByRole("link", { name: /Albarán de WooCommerce no disponible/ });
+    expect(link).toHaveAttribute("href", "/erp/orders/o1");
+    // El motivo se ve junto al chip (en la tablet no hay tooltip).
+    expect(screen.getByText(reason)).toBeInTheDocument();
+    expect(screen.queryByText(/Falta albarán/)).not.toBeInTheDocument();
   });
 
   it("«Marcar recogido» pide confirmación y llama markPickedUp", async () => {

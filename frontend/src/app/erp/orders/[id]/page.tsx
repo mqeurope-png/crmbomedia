@@ -98,6 +98,9 @@ export default function ErpOrderDetailPage() {
   // el albarán cuando el aviso del modal lo ofrece.
   const [orderEmailOpen, setOrderEmailOpen] = useState(false);
   const [albaranSignal, setAlbaranSignal] = useState(0);
+  // Lote 2 C: «Subir etiqueta» desde «Siguiente paso» abre el selector de la
+  // etiqueta de «Documentos de envío» (la subida es el antiguo «Crear envío»).
+  const [etiquetaSignal, setEtiquetaSignal] = useState(0);
   // «Marcar completado» (solo BoHub, reversible).
   const [completeBusy, setCompleteBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -265,8 +268,20 @@ export default function ErpOrderDetailPage() {
         );
       }
       case "crear_envio": {
-        // La transición de transporte disponible (la fila de estados la omite
-        // para no repetirla).
+        // Lote 2 C: sin envío todavía, el paso es SUBIR LA ETIQUETA — abre el
+        // selector de «Documentos de envío»; al guardarla, el backend pasa el
+        // transporte a «Etiqueta creada» y la ficha se recarga. El arco
+        // «Crear envío» a secas ya no se pinta en ningún sitio.
+        if (order.transport_status === "not_shipped") {
+          return (
+            <button type="button" className="button small"
+                    onClick={() => setEtiquetaSignal((n) => n + 1)}>
+              {label}
+            </button>
+          );
+        }
+        // Con la etiqueta ya subida: la transición de transporte disponible
+        // (recogida…); la fila de estados la omite para no repetirla.
         const t = order.available_transitions?.transport?.[0];
         return t ? (
           <button type="button" className="button small" disabled={busy}
@@ -351,8 +366,12 @@ export default function ErpOrderDetailPage() {
     || order.invoice_status === "invoiced_by_erp";
   // Cobro FACTUSOL (contable, distinto del «Pagado» del CRM).
   const cobroStatus = cobroStatusOf(order);
-  // Transición que ya es el botón principal (no repetirla en la fila de estados).
-  const primaryTransition = wf?.next_action === "crear_envio" && order.available_transitions?.transport?.[0]
+  // Transición que ya es el botón principal (no repetirla en la fila de
+  // estados). Con el transporte «Sin enviar» el botón principal es «Subir
+  // etiqueta», que no es una transición: nada que omitir.
+  const primaryTransition = wf?.next_action === "crear_envio"
+    && order.transport_status !== "not_shipped"
+    && order.available_transitions?.transport?.[0]
     ? { domain: "transport" as const, to_status: order.available_transitions.transport[0].to_status }
     : null;
   const cobroTitle = !hasInvoice
@@ -661,16 +680,21 @@ export default function ErpOrderDetailPage() {
       {wf ? <NextActionBar workflow={wf}>{nextStepAction()}</NextActionBar> : null}
 
       {/* Las transiciones de estado que no son la principal (Reembolso,
-          Empezar preparación, Bloquear, Crear envío…), en una fila compacta:
-          ninguna se pierde. «Solicitar factura» (invoice → pending) NO se
-          pinta: era un alias de «Emitir factura FACTUSOL», que es el único
-          botón de factura (Bloque 2b). */}
+          Empezar preparación, Bloquear, Recogido…), en una fila compacta:
+          ninguna se pierde. Dos NO se pintan (el arco sigue en el backend):
+          «Solicitar factura» (invoice → pending), alias de «Emitir factura
+          FACTUSOL», el único botón de factura (Bloque 2b); y «Crear envío»
+          (transport → label_created), que ahora es subir la etiqueta
+          (Lote 2 C). */}
       <OrderStatusMachine
         order={order}
         onFire={onFire}
         busy={busy}
         omit={primaryTransition}
-        hide={[{ domain: "invoice", to_status: "pending" }]}
+        hide={[
+          { domain: "invoice", to_status: "pending" },
+          { domain: "transport", to_status: "label_created" },
+        ]}
       />
 
       <div className="erp-flow-grid2">
@@ -756,7 +780,9 @@ export default function ErpOrderDetailPage() {
       </div>
 
       {/* El albarán vive AQUÍ y solo aquí: el de FACTUSOL (nº, PDF, crearlo si
-          falta) y el fichero subido a mano / descargado de Woo; y la etiqueta. */}
+          falta) y el fichero subido a mano / descargado de Woo; y la etiqueta
+          (cuya subida mueve el transporte: al subirla, la ficha se recarga
+          para que el stepper y el «Siguiente paso» lo reflejen). */}
       <ShippingFilesSection
         orderId={order.id}
         isWooOrder={isWeb}
@@ -766,6 +792,8 @@ export default function ErpOrderDetailPage() {
         canCreateAlbaran={canEmit}
         createSignal={albaranSignal}
         onAlbaranCreated={({ error: err }) => { if (err) setError(err); load(); }}
+        openEtiquetaSignal={etiquetaSignal}
+        onUploaded={() => load()}
       />
 
       {/* ERP-F6 — campos del Excel de seguimiento, editables desde la ficha. */}

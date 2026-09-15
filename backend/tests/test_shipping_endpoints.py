@@ -4,6 +4,7 @@ Storage local en tmp_path (monkeypatch); el cliente WooCommerce se mockea.
 """
 from __future__ import annotations
 
+import json
 from collections.abc import Generator
 from unittest.mock import patch
 
@@ -17,7 +18,13 @@ import app.erp.api.shipping as shipping_api
 import app.main  # noqa: F401
 from app.db.base import Base
 from app.db.session import get_session
-from app.erp.models import Order, OrderLine, ShipmentFile, ShipmentPackage
+from app.erp.models import (
+    Order,
+    OrderLine,
+    OrderStatusHistory,
+    ShipmentFile,
+    ShipmentPackage,
+)
 from app.integrations.woocommerce.client import WooError
 from app.main import app
 from app.models.crm import ExternalSystem
@@ -214,6 +221,132 @@ def test_shipping_file_upload_rejects_bad_mime(client, session_factory):
     r = _upload(client, oid, "etiqueta", name="x.exe",
                 content=b"MZ", mime="application/octet-stream")
     assert r.status_code == 415
+
+
+# --- Lote 2 C: subir la etiqueta ES «Crear envío» ---------------------------
+
+
+def _transport_of(s: Session, oid: str) -> str:
+    v = s.get(Order, oid).transport_status
+    return getattr(v, "value", v)
+
+
+def _history(s: Session, oid: str) -> list[OrderStatusHistory]:
+    return list(s.scalars(select(OrderStatusHistory).where(
+        OrderStatusHistory.order_id == oid)))
+
+
+def test_etiqueta_upload_on_packed_order_creates_label(client, session_factory):
+    """Pedido embalado + etiqueta subida → `not_shipped → label_created` por
+    la máquina de estados: historial con motivo «etiqueta subida» y el
+    fichero como evidencia."""
+    with session_factory() as s:
+        oid = _mk_order(s, prep="packed")
+    r = _upload(client, oid, "etiqueta", name="gls.pdf")
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["transition_applied"] is True
+    assert body["transport_status"] == "label_created"
+    assert body["transition_reason"] is None
+    assert body["file"]["kind"] == "etiqueta"
+    with session_factory() as s:
+        assert _transport_of(s, oid) == "label_created"
+        rows = _history(s, oid)
+        assert len(rows) == 1
+        h = rows[0]
+        assert getattr(h.domain, "value", h.domain) == "transport"
+        assert (h.from_status, h.to_status) == ("not_shipped", "label_created")
+        assert h.reason == "etiqueta subida"
+        assert h.changed_by_user_id is not None
+        meta = json.loads(h.metadata_json)
+        assert meta == {"shipment_file_id": body["file"]["id"], "filename": "gls.pdf"}
+
+
+def test_etiqueta_upload_on_unpacked_order_keeps_file_without_transition(
+    client, session_factory
+):
+    """Sin embalar el guard rechaza el arco: la etiqueta se guarda igual y la
+    respuesta dice que el transporte no se movió y por qué."""
+    with session_factory() as s:
+        oid = _mk_order(s, prep="preparing")
+    r = _upload(client, oid, "etiqueta")
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["transition_applied"] is False
+    assert body["transport_status"] == "not_shipped"
+    assert "embalada" in body["transition_reason"]
+    g = client.get(f"/api/erp/orders/{oid}/shipping-files?kind=etiqueta",
+                   headers=auth_headers(client, "sat"))
+    assert len(g.json()["items"]) == 1
+    with session_factory() as s:
+        assert _transport_of(s, oid) == "not_shipped"
+        assert _history(s, oid) == []
+
+
+def test_etiqueta_upload_by_role_without_transition_permission_keeps_file(
+    client, session_factory
+):
+    """Un rol que puede subir ficheros pero no disparar el arco (USER): el
+    fichero se guarda, la transición no, y el motivo vuelve."""
+    with session_factory() as s:
+        oid = _mk_order(s, prep="packed")
+    r = _upload(client, oid, "etiqueta", role="user")
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["transition_applied"] is False
+    assert body["transport_status"] == "not_shipped"
+    assert "rol" in body["transition_reason"]
+    with session_factory() as s:
+        assert _transport_of(s, oid) == "not_shipped"
+        assert _history(s, oid) == []
+
+
+def test_albaran_upload_never_transitions(client, session_factory):
+    with session_factory() as s:
+        oid = _mk_order(s, prep="packed")
+    r = _upload(client, oid, "albaran")
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["transition_applied"] is False
+    assert body["transition_reason"] is None
+    assert body["transport_status"] == "not_shipped"
+    with session_factory() as s:
+        assert _transport_of(s, oid) == "not_shipped"
+        assert _history(s, oid) == []
+
+
+def test_etiqueta_replace_after_label_created_does_not_transition_again(
+    client, session_factory
+):
+    """Reemplazar la etiqueta con el envío ya creado no toca el estado ni
+    añade historial."""
+    with session_factory() as s:
+        oid = _mk_order(s, prep="packed", transport="label_created")
+    r = _upload(client, oid, "etiqueta", name="v2.pdf")
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["transition_applied"] is False
+    assert body["transition_reason"] is None
+    assert body["transport_status"] == "label_created"
+    with session_factory() as s:
+        assert _transport_of(s, oid) == "label_created"
+        assert _history(s, oid) == []
+
+
+def test_etiqueta_then_mark_picked_up_reaches_in_transit(client, session_factory):
+    """Flujo completo del taller: etiqueta subida (label_created) y después
+    «Marcar recogido» (in_transit) — `mark-picked-up` no cambia."""
+    with session_factory() as s:
+        oid = _mk_order(s, prep="packed")
+    assert _upload(client, oid, "etiqueta").json()["transport_status"] == "label_created"
+    r = client.post(f"/api/erp/orders/{oid}/mark-picked-up",
+                    headers=auth_headers(client, "sat"))
+    assert r.status_code == 200, r.text
+    assert r.json()["transport_status"] == "in_transit"
+    with session_factory() as s:
+        arcs = [(h.from_status, h.to_status) for h in _history(s, oid)]
+        assert sorted(arcs) == [("label_created", "in_transit"),
+                                ("not_shipped", "label_created")]
 
 
 # --- albarán desde Woo ------------------------------------------------------

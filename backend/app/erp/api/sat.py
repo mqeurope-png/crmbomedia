@@ -18,6 +18,13 @@ transición).
 Regla del taller (Lote B6): «enviado al taller» = el pedido se mandó por
 email al SAT O se aprobó. Por eso el historial une las dos fuentes y por eso
 enviar por email aprueba (en `order_email.py`) si seguía pendiente.
+
+Albarán en la cola (Lote 2 A3): cada item dice de DÓNDE sale el albarán que el
+taller imprime (`albaran_source`): el de FACTUSOL para pedidos manuales / de
+FACTUSOL, el fichero vigente si ya lo hay, y para los pedidos WEB el de
+WooCommerce (lo genera la tienda; BoHub nunca lo crea en FACTUSOL —
+`WebOrderNoAlbaran`). Un pedido web solo queda «sin albarán» cuando la descarga
+de Woo no es posible, y entonces el item trae el motivo.
 """
 from __future__ import annotations
 
@@ -33,6 +40,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.core.errors import not_found
 from app.db.session import get_session
 from app.erp.api.deps import require_erp_edit, require_erp_view
+from app.erp.factusol_albaran import is_web_order
 from app.erp.models import (
     EXCEPTION_SUBTYPES,
     KIND_ALBARAN,
@@ -48,8 +56,14 @@ from app.erp.models import (
 from app.erp.state_machine import TransitionError, apply_transition
 from app.erp.storage import get_document_storage
 from app.models.crm import AuditLog, User
+from app.models.integration_settings import IntegrationAccount
 
 router = APIRouter(prefix="/api/erp", tags=["erp-sat"])
+
+#: Fuente del albarán que el taller imprime/descarga desde la cola (Lote 2 A3).
+ALBARAN_FACTUSOL = "factusol"   # PDF del albarán que BoHub creó en FACTUSOL
+ALBARAN_FILE = "file"           # fichero vigente (subido a mano o ya bajado de Woo)
+ALBARAN_WOO = "woo"             # pedido web: descargar de WooCommerce y abrir
 
 #: Máximo por documento (foto de móvil ~ pocos MB; PDF de etiqueta pequeño).
 MAX_DOC_BYTES = 15 * 1024 * 1024
@@ -135,8 +149,6 @@ def _apply_filters(
             hasta + timedelta(days=1), time.min, tzinfo=UTC,
         ))
     if store_slug and store_slug.strip():
-        from app.models.integration_settings import IntegrationAccount  # noqa: PLC0415
-
         stmt = stmt.where(Order.store_id.in_(
             select(IntegrationAccount.id).where(
                 func.lower(IntegrationAccount.account_id) == store_slug.strip().lower()
@@ -158,34 +170,95 @@ def _apply_filters(
     return stmt
 
 
-def _files_by_order(session: Session, order_ids: list[str]) -> dict[str, set[str]]:
-    """Presencia de albarán/etiqueta vigentes (Fase D) — una sola query."""
-    files: dict[str, set[str]] = {}
+def _files_by_order(session: Session, order_ids: list[str]) -> dict[str, dict[str, str]]:
+    """`{order_id: {kind: source}}` de los albaranes/etiquetas vigentes (Fase
+    D) — una sola query. Con varios vigentes del mismo kind (no debería:
+    subir/descargar reemplaza el anterior) se queda el más reciente."""
+    files: dict[str, dict[str, str]] = {}
     if order_ids:
-        for oid, kind in session.execute(
-            select(ShipmentFile.order_id, ShipmentFile.kind).where(
+        for oid, kind, source in session.execute(
+            select(ShipmentFile.order_id, ShipmentFile.kind, ShipmentFile.source).where(
                 ShipmentFile.order_id.in_(order_ids),
                 ShipmentFile.replaced_at.is_(None),
-            )
+            ).order_by(ShipmentFile.uploaded_at.desc())
         ):
-            files.setdefault(oid, set()).add(kind)
+            files.setdefault(oid, {}).setdefault(kind, source)
     return files
 
 
-def _store_slugs(session: Session, orders: list[Order]) -> dict[str, str]:
-    """`{store_id: slug}` de las tiendas de los pedidos dados (una query)."""
-    from app.models.integration_settings import IntegrationAccount  # noqa: PLC0415
-
+def _stores_by_id(session: Session, orders: list[Order]) -> dict[str, IntegrationAccount]:
+    """`{store_id: cuenta}` de las tiendas de los pedidos dados (una query):
+    el slug para la vista lista y la configuración de la conexión con Woo
+    para saber si el albarán web se puede descargar."""
     ids = {o.store_id for o in orders if o.store_id}
     if not ids:
         return {}
     return {
-        acc_id: slug for acc_id, slug in session.execute(
-            select(IntegrationAccount.id, IntegrationAccount.account_id).where(
-                IntegrationAccount.id.in_(ids)
-            )
+        acc.id: acc for acc in session.scalars(
+            select(IntegrationAccount).where(IntegrationAccount.id.in_(ids))
         )
     }
+
+
+def _store_slug(stores: dict[str, IntegrationAccount], o: Order) -> str | None:
+    acc = stores.get(o.store_id or "")
+    return acc.account_id if acc else None
+
+
+def woo_albaran_state(
+    order: Order, account: IntegrationAccount | None,
+) -> tuple[bool, str | None]:
+    """`(disponible, motivo)`: ¿se puede descargar el albarán de WooCommerce
+    de este pedido (`POST /orders/{id}/albaran/fetch-from-woo`)?
+
+    Solo aplica a pedidos WEB: su albarán lo genera la tienda (mu-plugin
+    `bohub-albaran`, con el albarán propio de BoHub como respaldo) y BoHub
+    nunca lo crea en FACTUSOL (`WebOrderNoAlbaran`). Son las mismas
+    condiciones que exige el endpoint de descarga (tienda, id de Woo numérico
+    y cuenta con conexión configurada), evaluadas sin salir a la red. Para un
+    pedido manual / de FACTUSOL devuelve `(False, None)`: no es un fallo, es
+    que el albarán sale de FACTUSOL."""
+    if not is_web_order(order):
+        return False, None
+    if not order.store_id:
+        return False, "El pedido no tiene tienda vinculada en BoHub."
+    if account is None:
+        return False, "La tienda del pedido ya no existe en BoHub."
+    try:
+        int(str(order.external_id or "").strip())
+    except ValueError:
+        return False, "Falta el id del pedido en WooCommerce."
+    if not (
+        account.base_url
+        and account.consumer_key_encrypted
+        and account.consumer_secret_encrypted
+    ):
+        return False, (
+            f"La tienda «{account.account_id}» no tiene configurada la conexión "
+            "con WooCommerce."
+        )
+    return True, None
+
+
+def albaran_source_for(
+    order: Order, files: dict[str, str], woo_available: bool,
+) -> str | None:
+    """De dónde sale el albarán que imprime el taller, por prioridad:
+
+    1. `factusol`: el albarán que BoHub creó en FACTUSOL (el documento real
+       del pedido, el mismo PDF que la ficha y que el email al SAT);
+    2. `file`: fichero vigente en `shipment_files` (subido a mano o ya
+       descargado de Woo);
+    3. `woo`: pedido web sin fichero aún — se descarga de WooCommerce;
+    4. `None`: sin albarán (manual sin crear/subir, o web sin descarga
+       posible — entonces `woo_albaran_unavailable_reason` dice por qué)."""
+    if order.factusol_albaran_number:
+        return ALBARAN_FACTUSOL
+    if KIND_ALBARAN in files:
+        return ALBARAN_FILE
+    if woo_available:
+        return ALBARAN_WOO
+    return None
 
 
 def _iso(dt: datetime | None) -> str | None:
@@ -256,7 +329,7 @@ def sat_queue(
 
     all_rows = [*prep_rows, *ready_rows]
     files_by_order = _files_by_order(session, [o.id for o in all_rows])
-    stores = _store_slugs(session, all_rows)
+    stores = _stores_by_id(session, all_rows)
 
     # D-2: nombre del cliente en las cards del taller (el número solo no basta).
     from app.erp.api.orders import customer_names  # noqa: PLC0415
@@ -265,6 +338,9 @@ def sat_queue(
 
     def _item(o: Order) -> dict[str, Any]:
         who = names.get(o.id) or {}
+        files = files_by_order.get(o.id, {})
+        woo_ok, woo_reason = woo_albaran_state(o, stores.get(o.store_id or ""))
+        source = albaran_source_for(o, files, woo_ok)
         return {
             "id": o.id,
             "order_number": o.order_number,
@@ -280,16 +356,26 @@ def sat_queue(
                  "quantity": float(line.quantity)}
                 for line in o.lines
             ],
-            "has_albaran": KIND_ALBARAN in files_by_order.get(o.id, set()),
-            "has_etiqueta": KIND_ETIQUETA in files_by_order.get(o.id, set()),
+            # Lote 2 A3 — albarán de la cola. `albaran_source` dice de dónde
+            # sale el PDF (factusol › file › woo, ver `albaran_source_for`) y
+            # `has_albaran` es «hay albarán que imprimir o descargar»: True
+            # también para un pedido web que aún no lo ha bajado de Woo (lo
+            # genera la tienda; BoHub nunca lo crea en FACTUSOL). El fichero
+            # vigente queda aparte en `has_albaran_file` / `albaran_file_source`.
+            "has_albaran": source is not None,
+            "albaran_source": source,
+            "has_albaran_file": KIND_ALBARAN in files,
+            "albaran_file_source": files.get(KIND_ALBARAN),
+            "is_web_order": is_web_order(o),
+            "woo_albaran_available": woo_ok,
+            "woo_albaran_unavailable_reason": woo_reason,
+            "has_etiqueta": KIND_ETIQUETA in files,
             # Albarán que BoHub creó en FACTUSOL (Fase 2). Es la fuente
             # PREFERENTE del PDF en el taller: el mismo documento que el botón
-            # de la ficha (#396) y el que adjunta el email al SAT (#407). El
-            # fichero subido a mano (`has_albaran`) queda de alternativa para
-            # los pedidos del flujo antiguo.
+            # de la ficha (#396) y el que adjunta el email al SAT (#407).
             "factusol_albaran_number": o.factusol_albaran_number or None,
             # Lote B6: la vista lista enseña tienda y fecha del pedido.
-            "store_slug": stores.get(o.store_id or ""),
+            "store_slug": _store_slug(stores, o),
             "placed_at": _iso(o.placed_at),
         }
 
@@ -355,7 +441,7 @@ def sat_history(
 
     names = customer_names(session, order_list)
     files_by_order = _files_by_order(session, list(orders))
-    stores = _store_slugs(session, order_list)
+    stores = _stores_by_id(session, order_list)
     user_ids = {
         uid for uid in (
             *(a.actor_user_id for a, _o in email_rows),
@@ -381,8 +467,10 @@ def sat_history(
             "preparation_status": _prep(o),
             "transport_status": getattr(o.transport_status, "value", o.transport_status),
             "factusol_albaran_number": o.factusol_albaran_number or None,
-            "has_albaran": KIND_ALBARAN in files_by_order.get(o.id, set()),
-            "store_slug": stores.get(o.store_id or ""),
+            # En el historial `has_albaran` sigue siendo «hay fichero subido /
+            # descargado» (columna «Subido»): es un registro, no una acción.
+            "has_albaran": KIND_ALBARAN in files_by_order.get(o.id, {}),
+            "store_slug": _store_slug(stores, o),
             "placed_at": _iso(o.placed_at),
             "cancelled": o.cancelled_at is not None,
             "excluded": o.seguimiento_excluded_at is not None,

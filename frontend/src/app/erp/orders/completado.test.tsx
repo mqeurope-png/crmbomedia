@@ -3,6 +3,9 @@ import userEvent from "@testing-library/user-event";
 import ErpOrdersPage from "./page";
 import { completeOrder, listOrders, uncompleteOrder } from "../../lib/erpApi";
 
+jest.mock("next/navigation", () => ({
+  useSearchParams: () => new URLSearchParams(""),
+}));
 jest.mock("next/link", () => ({
   __esModule: true,
   default: ({ children }: { children: React.ReactNode }) => <span>{children}</span>,

@@ -10,25 +10,94 @@ import {
   openShippingFile,
   saveBlob,
   STATUS_LABELS,
+  type SatAlbaranSource,
   type SatQueueItem,
 } from "../../lib/erpApi";
 
-/** Acción «albarán» de un pedido por embalar, compartida por la card y por la
- *  fila de la vista lista (Lote B6): el albarán que BoHub creó en FACTUSOL
- *  manda sobre el fichero subido a mano (es el documento real del pedido, el
- *  mismo PDF que la ficha y que el email al SAT); el fichero subido queda para
- *  los pedidos del flujo antiguo; y sin ninguno de los dos, se descarga de Woo. */
+/** Estado del chip de albarán de un pedido de la cola (Lote 2 A3), derivado
+ *  del contrato del backend (`albaran_source`, prioridad factusol › file › woo):
+ *  - `factusol`: PDF del albarán que BoHub creó en FACTUSOL (pedidos manuales /
+ *    de FACTUSOL) — el mismo que la ficha y que el email al SAT;
+ *  - `file`: fichero vigente (subido a mano o ya descargado de Woo);
+ *  - `woo`: pedido WEB sin fichero aún — se descarga de WooCommerce (mu-plugin
+ *    de la tienda) y se abre. El albarán de un pedido web NUNCA lo crea
+ *    FACTUSOL, así que aquí jamás se dice «Falta albarán»;
+ *  - sin fuente: manual → «Falta albarán» (crear en FACTUSOL o subir desde la
+ *    ficha); web → «Albarán de WooCommerce no disponible» + motivo del backend. */
+export type SatAlbaranState = {
+  source: SatAlbaranSource | null;
+  /** Hay albarán que imprimir o descargar. */
+  hasAlbaran: boolean;
+  /** Por qué no lo hay: pedido manual sin albarán, o web sin descarga posible. */
+  missing: "manual" | "woo_unavailable" | null;
+  /** Motivo del backend cuando es web y la descarga de Woo no es posible. */
+  reason: string | null;
+  label: string;
+  title: string | undefined;
+  tone: "ok" | "info" | "warn";
+};
+
+const FILE_TITLES: Record<string, string> = {
+  manual_upload: "Abre el albarán subido a mano",
+  woo_pdf_plugin: "Abre el albarán de WooCommerce (PDF de la tienda)",
+  crm_generated_pdf: "Abre el albarán generado por BoHub con los datos de WooCommerce",
+};
+
+export function satAlbaranState(order: SatQueueItem): SatAlbaranState {
+  const source = order.albaran_source;
+  const tienda = order.store_slug ? ` (tienda «${order.store_slug}»)` : "";
+  if (source === "factusol") {
+    return {
+      source, hasAlbaran: true, missing: null, reason: null, tone: "ok",
+      label: "📄 Imprimir albarán",
+      title: `Descarga el albarán ${order.factusol_albaran_number} de FACTUSOL en PDF`,
+    };
+  }
+  if (source === "file") {
+    return {
+      source, hasAlbaran: true, missing: null, reason: null, tone: "ok",
+      label: "📄 Imprimir albarán",
+      title: FILE_TITLES[order.albaran_file_source ?? ""] ?? "Abre el albarán guardado",
+    };
+  }
+  if (source === "woo") {
+    return {
+      source, hasAlbaran: true, missing: null, reason: null, tone: "info",
+      label: "📄 Descargar albarán",
+      title: `Descarga el albarán generado por WooCommerce${tienda} y lo abre`,
+    };
+  }
+  if (order.is_web_order) {
+    const reason = order.woo_albaran_unavailable_reason
+      ?? "No se puede descargar de la tienda.";
+    return {
+      source: null, hasAlbaran: false, missing: "woo_unavailable", reason,
+      tone: "warn", label: "📄 Albarán de WooCommerce no disponible", title: reason,
+    };
+  }
+  return {
+    source: null, hasAlbaran: false, missing: "manual", reason: null, tone: "warn",
+    label: "📄 Falta albarán",
+    title: "Crea el albarán en FACTUSOL o súbelo a mano desde la ficha",
+  };
+}
+
+/** Acción «albarán» de un pedido de la cola, compartida por las cards («Por
+ *  embalar» y «Listos») y por las filas de la vista lista (Lote B6): la ruta la
+ *  decide `satAlbaranState` (FACTUSOL manda sobre el fichero; un pedido web sin
+ *  fichero se descarga de Woo) y, cuando no hay albarán, la pulsación explica
+ *  qué hacer — en la tablet del taller no hay tooltip que valga. */
 export function useSatAlbaranAction(order: SatQueueItem, onChanged: () => void) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const state = satAlbaranState(order);
   const factusolAlbaran = order.factusol_albaran_number ?? null;
-  const hasAlbaran = Boolean(factusolAlbaran || order.has_albaran);
 
   async function albaranClick(e: React.SyntheticEvent) {
     e.preventDefault();
     e.stopPropagation();
     setError(null);
-    if (factusolAlbaran) {
+    if (state.source === "factusol") {
       setBusy(true);
       try {
         const blob = await downloadOrderFactusolAlbaranPdf(order.id);
@@ -42,41 +111,105 @@ export function useSatAlbaranAction(order: SatQueueItem, onChanged: () => void) 
       }
       return;
     }
-    if (order.has_albaran) {
+    if (state.source === "file") {
       try {
         const files = await listShippingFiles(order.id, "albaran");
         if (files[0]) await openShippingFile(files[0]);
+        else setError("No se encontró el albarán guardado. Revisa la ficha del pedido.");
       } catch {
         setError("No se pudo abrir el albarán. Revisa la ficha del pedido.");
       }
       return;
     }
-    // Sin albarán: descarga automática (mu-plugin → reportlab) y auto-abre.
-    setBusy(true);
-    try {
-      const r = await fetchAlbaranFromWoo(order.id);
-      onChanged();
-      await openShippingFile(r.file);
-    } catch {
-      setError(
-        "No se pudo descargar automáticamente. Crea el albarán en FACTUSOL o "
-        + "súbelo a mano desde la ficha.",
-      );
-    } finally {
-      setBusy(false);
+    if (state.source === "woo") {
+      // Pedido web: descarga (mu-plugin → reportlab), refresca y auto-abre.
+      setBusy(true);
+      try {
+        const r = await fetchAlbaranFromWoo(order.id);
+        onChanged();
+        await openShippingFile(r.file);
+      } catch {
+        setError(
+          "No se pudo descargar el albarán de WooCommerce. Reintenta o súbelo a "
+          + "mano desde la ficha.",
+        );
+      } finally {
+        setBusy(false);
+      }
+      return;
     }
+    // Sin albarán: la pulsación no navega (la card entera ya es un enlace),
+    // explica qué hacer y el aviso enlaza a la ficha.
+    setError(
+      state.missing === "woo_unavailable"
+        ? `Albarán de WooCommerce no disponible: ${state.reason}`
+        : "Este pedido no tiene albarán: créalo en FACTUSOL o súbelo a mano desde la ficha.",
+    );
   }
 
-  const label = busy
-    ? "Descargando…"
-    : hasAlbaran
-      ? "📄 Imprimir albarán"
-      : "📄 Descargar albarán";
-  const title = factusolAlbaran
-    ? `Descarga el albarán ${factusolAlbaran} de FACTUSOL en PDF`
-    : undefined;
+  return {
+    ...state,
+    busy,
+    error,
+    albaranClick,
+    factusolAlbaran,
+    label: busy ? "Descargando…" : state.label,
+  };
+}
 
-  return { busy, error, albaranClick, hasAlbaran, factusolAlbaran, label, title };
+/** Chip de albarán (card «Por embalar», card «Listos» y filas de la lista).
+ *  `inLink`: la card de «Por embalar» es entera un <Link>, así que el chip es
+ *  un span con rol botón (un <a> anidado es HTML inválido) y los estados sin
+ *  albarán tampoco navegan: al pulsar explican qué hacer. Fuera de un link,
+ *  «Falta albarán» / «no disponible» enlazan a la ficha, como siempre. Con un
+ *  pedido web sin descarga posible se enseña además el motivo. */
+export function SatAlbaranChip({
+  order,
+  albaran,
+  inLink = false,
+}: {
+  order: SatQueueItem;
+  albaran: ReturnType<typeof useSatAlbaranAction>;
+  inLink?: boolean;
+}) {
+  const { busy, albaranClick, hasAlbaran, missing, reason, label, title, tone } = albaran;
+  const cls = `sat-chip-btn ${tone}`;
+  let chip: React.ReactNode;
+  if (inLink) {
+    chip = (
+      <span
+        role="button"
+        tabIndex={0}
+        className={cls}
+        aria-disabled={busy}
+        title={title}
+        onClick={albaranClick}
+      >
+        {label}
+      </span>
+    );
+  } else if (hasAlbaran) {
+    chip = (
+      <button type="button" className={cls} disabled={busy} title={title}
+              onClick={albaranClick}>
+        {label}
+      </button>
+    );
+  } else {
+    chip = (
+      <Link href={`/erp/orders/${order.id}`} className={cls} title={title}>
+        {label}
+      </Link>
+    );
+  }
+  return (
+    <>
+      {chip}
+      {missing === "woo_unavailable" && reason ? (
+        <span className="sat-chip-reason">{reason}</span>
+      ) : null}
+    </>
+  );
 }
 
 /** Card de «📦 Por embalar» (D-1-fix2): la card entera enlaza al modo trabajo,
@@ -89,8 +222,7 @@ export function SatPreparingCard({
   order: SatQueueItem;
   onChanged: () => void;
 }) {
-  const { busy, error, albaranClick, hasAlbaran, label, title } =
-    useSatAlbaranAction(order, onChanged);
+  const albaran = useSatAlbaranAction(order, onChanged);
 
   return (
     <div className="sat-card-wrap">
@@ -113,22 +245,13 @@ export function SatPreparingCard({
           ))}
         </ul>
         <div className="sat-card-docs">
-          <span
-            role="button"
-            tabIndex={0}
-            className={`sat-chip-btn ${hasAlbaran ? "ok" : "info"}`}
-            aria-disabled={busy}
-            title={title}
-            onClick={albaranClick}
-          >
-            {label}
-          </span>
+          <SatAlbaranChip order={order} albaran={albaran} inLink />
         </div>
         <span className="sat-card-cta">Abrir →</span>
       </Link>
-      {error ? (
+      {albaran.error ? (
         <p className="form-error small" role="status">
-          {error}{" "}
+          {albaran.error}{" "}
           <Link href={`/erp/orders/${order.id}`}>Ir a la ficha</Link>
         </p>
       ) : null}

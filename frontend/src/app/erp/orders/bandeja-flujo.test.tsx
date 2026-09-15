@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import ErpOrdersPage from "./page";
-import { listOrders } from "../../lib/erpApi";
+import { approveOrder, approveOrdersBulk, listOrders } from "../../lib/erpApi";
 
 /** ERP · rediseño de flujo (Fase 1) — la BANDEJA DE TRABAJO.
  *
@@ -10,6 +10,11 @@ import { listOrders } from "../../lib/erpApi";
  *  toca y su alerta, y que NO se ha perdido ninguna de las acciones ni de los
  *  filtros que ya existían. */
 
+// `?queue=` de la URL (Lote 2 D): cada test lo fija antes de montar.
+let search = "";
+jest.mock("next/navigation", () => ({
+  useSearchParams: () => new URLSearchParams(search),
+}));
 jest.mock("next/link", () => ({
   __esModule: true,
   default: ({ children, href, className, ...rest }: {
@@ -41,6 +46,8 @@ jest.mock("../../lib/erpApi", () => ({
   customerLabel: (o: { contact_name?: string | null; company_name?: string | null }) =>
     [o.contact_name, o.company_name].filter(Boolean).join(" · "),
   listOrders: jest.fn(),
+  approveOrder: jest.fn(),
+  approveOrdersBulk: jest.fn(),
   completeOrder: jest.fn(),
   uncompleteOrder: jest.fn(),
   completeOrdersBulk: jest.fn(),
@@ -120,6 +127,7 @@ const C = order({
 });
 const D = order({
   id: "o-4", order_number: "BOPRIN-4", total_amount: 100,
+  preparation_status: "in_queue", approved_at: "2026-09-09T10:00:00",
   invoice_status: "invoiced_by_erp", factusol_invoice_number: "260731",
   factusol_cobro_status: "pendiente",
   workflow: wf({
@@ -149,8 +157,13 @@ async function abrirMenu(user: ReturnType<typeof userEvent.setup>, numero: strin
 beforeEach(() => {
   // La bandeja recuerda los últimos filtros y la vista: cada test parte de cero.
   window.localStorage.clear();
+  window.history.replaceState({}, "", "/erp/orders");
+  search = "";
   (listOrders as jest.Mock).mockReset();
   (listOrders as jest.Mock).mockResolvedValue(page([A, B, C, D]));
+  (approveOrder as jest.Mock).mockReset();
+  (approveOrdersBulk as jest.Mock).mockReset();
+  jest.restoreAllMocks();
 });
 
 function ultimaLlamada() {
@@ -182,9 +195,9 @@ describe("ERP · Bandeja de trabajo (rediseño de flujo)", () => {
     render(<ErpOrdersPage />);
     await screen.findByText("BOPRIN-1");
 
-    // Pendiente de aprobar: la acción lleva a donde se hace.
-    expect(within(row("BOPRIN-1")).getByRole("link", { name: "Aprobar BOPRIN-1" }))
-      .toHaveAttribute("href", "/erp/orders/o-1");
+    // Pendiente de aprobar: se aprueba aquí mismo (Lote 2 D), sin ir a otra pantalla.
+    expect(within(row("BOPRIN-1")).getByRole("button", { name: "Aprobar BOPRIN-1" }))
+      .toHaveTextContent("Aprobar");
 
     // Intracomunitario: se avisa de que la factura va SIN IVA y el importe lo dice.
     const b = within(row("ARTISJ-2"));
@@ -228,8 +241,13 @@ describe("ERP · Bandeja de trabajo (rediseño de flujo)", () => {
     }
     expect(screen.getByRole("button", { name: "Actualizar cobros FACTUSOL" })).toBeInTheDocument();
     expect(screen.getByRole("checkbox", { name: "Mostrar procesados externamente" })).toBeInTheDocument();
-    expect(screen.getByRole("checkbox", { name: "Ver pedidos ocultados de la bandeja" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Cola PEDIDOS" })).toBeInTheDocument();
+    // Lote 2 A2: «Ver ocultados» / «Ver anulados» viven en un control excluyente.
+    const ver = within(screen.getByRole("group", { name: "Ver" }));
+    expect(ver.getByRole("button", { name: "Ver activos" })).toHaveAttribute("aria-pressed", "true");
+    expect(ver.getByRole("button", { name: "Ver ocultados" })).toHaveAttribute("aria-pressed", "false");
+    expect(ver.getByRole("button", { name: "Ver anulados" })).toHaveAttribute("aria-pressed", "false");
+    // Lote 2 D: la Cola PEDIDOS ya no es una pantalla aparte (ni enlace a ella).
+    expect(screen.queryByRole("link", { name: "Cola PEDIDOS" })).toBeNull();
     expect(screen.getByRole("link", { name: "+ Nuevo pedido manual" })).toBeInTheDocument();
 
     // Acciones por pedido: siguen todas, en el menú «⋯».
@@ -363,20 +381,141 @@ describe("ERP · Bandeja (Lote B7) — filtros nuevos y orden", () => {
     const user = userEvent.setup();
     render(<ErpOrdersPage />);
     await screen.findByText("BOPRIN-1");
-    await user.click(screen.getByRole("checkbox", { name: "Ver pedidos anulados" }));
-    await waitFor(() => expect(ultimaLlamada()).toEqual(expect.objectContaining({ show_cancelled: true })));
+    await user.click(screen.getByRole("button", { name: "Ver anulados" }));
+    await waitFor(() => expect(ultimaLlamada()).toEqual(expect.objectContaining({
+      show_cancelled: true, show_excluded: false,
+    })));
     const r = row("MANUAL-000009");
     expect(within(r).getByText("Anulado")).toHaveAttribute(
       "title", expect.stringMatching(/Anulado el 11\/9\/2026 por Bart: duplicado/),
     );
     expect(within(r).getByText("duplicado")).toBeInTheDocument();
     // Excluyente con «Ver ocultados» (como el backend) y sin acciones de bloque.
-    expect(screen.getByRole("checkbox", { name: "Ver pedidos ocultados de la bandeja" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Ver anulados" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "Ver ocultados" })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("checkbox", { name: "Mostrar procesados externamente" })).toBeDisabled();
     expect(screen.queryByRole("checkbox", { name: "Seleccionar todo" })).toBeNull();
     // Vuelta a la bandeja normal.
-    await user.click(screen.getByRole("checkbox", { name: "Ver pedidos anulados" }));
-    await waitFor(() => expect(ultimaLlamada()).toEqual(expect.objectContaining({ show_cancelled: false })));
-    expect(screen.getByRole("checkbox", { name: "Ver pedidos ocultados de la bandeja" })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "Ver activos" }));
+    await waitFor(() => expect(ultimaLlamada()).toEqual(expect.objectContaining({
+      show_cancelled: false, show_excluded: false,
+    })));
+    expect(screen.getByRole("checkbox", { name: "Mostrar procesados externamente" })).toBeEnabled();
+  });
+
+  it("«Ver ocultados» y «Ver anulados» son excluyentes: elegir uno quita el otro y nunca van los dos flags", async () => {
+    const user = userEvent.setup();
+    render(<ErpOrdersPage />);
+    await screen.findByText("BOPRIN-1");
+    await user.click(screen.getByRole("button", { name: "Ver ocultados" }));
+    await waitFor(() => expect(ultimaLlamada()).toEqual(expect.objectContaining({
+      show_excluded: true, show_cancelled: false,
+    })));
+    expect(screen.getByRole("button", { name: "Ver ocultados" })).toHaveAttribute("aria-pressed", "true");
+    // Pasar a anulados deja de pedir ocultados (un solo flag).
+    await user.click(screen.getByRole("button", { name: "Ver anulados" }));
+    await waitFor(() => expect(ultimaLlamada()).toEqual(expect.objectContaining({
+      show_excluded: false, show_cancelled: true,
+    })));
+    expect(screen.getByRole("button", { name: "Ver ocultados" })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("button", { name: "Ver anulados" })).toHaveAttribute("aria-pressed", "true");
+    // Nunca se ha mandado show_excluded y show_cancelled a la vez.
+    for (const [args] of (listOrders as jest.Mock).mock.calls) {
+      expect(args.show_excluded && args.show_cancelled).toBeFalsy();
+    }
+    // «Limpiar filtros» vuelve a activos.
+    await user.click(screen.getByRole("button", { name: "Limpiar filtros" }));
+    await waitFor(() => expect(ultimaLlamada()).toEqual(expect.objectContaining({
+      show_excluded: false, show_cancelled: false,
+    })));
+    expect(screen.getByRole("button", { name: "Ver activos" })).toHaveAttribute("aria-pressed", "true");
+  });
+});
+
+// --- Lote 2 D: la Cola PEDIDOS es la cola «Por revisar» de la bandeja --------
+
+describe("ERP · Bandeja (Lote 2 D) — aprobar aquí mismo y cola desde la URL", () => {
+  it("«?queue=por_revisar» preselecciona la cola al entrar (la URL manda) y otras colas también", async () => {
+    search = "queue=por_revisar";
+    render(<ErpOrdersPage />);
+    await screen.findByText("BOPRIN-1");
+    expect(listOrders).toHaveBeenCalledTimes(1);
+    expect(ultimaLlamada()).toEqual(expect.objectContaining({ queue: "por_revisar" }));
+    expect(screen.getByRole("button", { name: "Por revisar (4)" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "Ver todas las colas" })).toBeInTheDocument();
+    // Los filtros recordados siguen (solo la cola viene de la URL).
+    expect(ultimaLlamada()).toEqual(expect.objectContaining({ payment: "paid", completed: false }));
+  });
+
+  it("un valor de cola desconocido en la URL se ignora", async () => {
+    search = "queue=lo-que-sea";
+    render(<ErpOrdersPage />);
+    await screen.findByText("BOPRIN-1");
+    expect(ultimaLlamada()).toEqual(expect.objectContaining({ queue: undefined }));
+    expect(screen.queryByRole("button", { name: "Ver todas las colas" })).toBeNull();
+  });
+
+  it("«Aprobar» en la fila llama a approveOrder, avisa y recarga; con bloqueos enseña el motivo", async () => {
+    (approveOrder as jest.Mock).mockResolvedValueOnce({ id: "o-1", preparation_status: "in_queue" });
+    const user = userEvent.setup();
+    render(<ErpOrdersPage />);
+    await screen.findByText("BOPRIN-1");
+    const calls = (listOrders as jest.Mock).mock.calls.length;
+    await user.click(within(row("BOPRIN-1")).getByRole("button", { name: "Aprobar BOPRIN-1" }));
+    await waitFor(() => expect(approveOrder).toHaveBeenCalledWith("o-1"));
+    expect(await screen.findByRole("status")).toHaveTextContent("BOPRIN-1 aprobado: pasa a la cola del taller (SAT).");
+    await waitFor(() => expect((listOrders as jest.Mock).mock.calls.length).toBe(calls + 1));
+
+    // 409 `blocked`: el mensaje llega ya formateado con los bloqueos.
+    (approveOrder as jest.Mock).mockRejectedValueOnce(new Error("Bloqueado: 1 excepción(es) sin resolver"));
+    await user.click(within(row("BOPRIN-1")).getByRole("button", { name: "Aprobar BOPRIN-1" }));
+    await waitFor(() => expect(document.querySelector(".form-error")).toHaveTextContent(
+      "No se pudo aprobar BOPRIN-1: Bloqueado: 1 excepción(es) sin resolver",
+    ));
+  });
+
+  it("«Aprobar seleccionados (n)» cuenta solo los pendientes de revisión, confirma, llama a approveOrdersBulk e informa los fallos", async () => {
+    const confirm = jest.spyOn(window, "confirm").mockReturnValue(true);
+    (approveOrdersBulk as jest.Mock).mockResolvedValue({
+      ok: false, approved: 1, already_approved: 0,
+      failed: [{ order_id: "o-3", code: "blocked", error: "Bloqueado: 1 excepción(es) sin resolver" }],
+      items: [{ ...A, preparation_status: "in_queue" }],
+    });
+    const user = userEvent.setup();
+    render(<ErpOrdersPage />);
+    await screen.findByText("BOPRIN-1");
+    expect(screen.queryByRole("button", { name: /Aprobar seleccionados/ })).toBeNull();
+    // A, C pendientes de revisión; D ya está aprobado (en cola, facturado): no cuenta.
+    await user.click(screen.getByRole("checkbox", { name: "Seleccionar BOPRIN-1" }));
+    await user.click(screen.getByRole("checkbox", { name: "Seleccionar PRO-3" }));
+    await user.click(screen.getByRole("checkbox", { name: "Seleccionar BOPRIN-4" }));
+    expect(screen.getByRole("button", { name: "Completar seleccionados (3)" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Aprobar seleccionados (2)" }));
+    expect(confirm).toHaveBeenCalledWith(expect.stringMatching(/¿Aprobar 2 pedido\(s\)\?/));
+    expect(confirm).toHaveBeenCalledWith(expect.stringMatching(/1 de los seleccionados no está\(n\) pendiente\(s\) de revisión/));
+    await waitFor(() => expect(approveOrdersBulk).toHaveBeenCalledWith(["o-1", "o-3"]));
+    const status = await screen.findByRole("status");
+    expect(status).toHaveTextContent("1 pedido(s) aprobado(s): pasan a la cola del taller (SAT)");
+    expect(status).toHaveTextContent("No se pudo aprobar 1: PRO-3: Bloqueado: 1 excepción(es) sin resolver");
+    expect(document.querySelector(".form-error")).toBeNull();
+    // Recarga (los aprobados cambian de cola) y limpia la selección.
+    await waitFor(() => expect((listOrders as jest.Mock).mock.calls.length).toBeGreaterThanOrEqual(2));
+    expect(screen.queryByRole("button", { name: /Aprobar seleccionados/ })).toBeNull();
+  });
+
+  it("si se cancela la confirmación no se aprueba nada; sin pendientes de revisión no hay botón", async () => {
+    jest.spyOn(window, "confirm").mockReturnValue(false);
+    const user = userEvent.setup();
+    render(<ErpOrdersPage />);
+    await screen.findByText("BOPRIN-1");
+    await user.click(screen.getByRole("checkbox", { name: "Seleccionar BOPRIN-1" }));
+    await user.click(screen.getByRole("button", { name: "Aprobar seleccionados (1)" }));
+    expect(approveOrdersBulk).not.toHaveBeenCalled();
+    // Solo D (in_queue) seleccionado: «Completar» sí, «Aprobar» no.
+    await user.click(screen.getByRole("checkbox", { name: "Seleccionar BOPRIN-1" }));
+    await user.click(screen.getByRole("checkbox", { name: "Seleccionar BOPRIN-4" }));
+    expect(screen.getByRole("button", { name: "Completar seleccionados (1)" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Aprobar seleccionados/ })).toBeNull();
   });
 });
 
@@ -438,7 +577,18 @@ describe("ERP · Bandeja (Lote B7) — vista lista", () => {
     await user.click(within(dd).getByRole("button", { name: "Más acciones BOPRIN-4" }));
     expect(screen.getByRole("button", { name: "Quitar BOPRIN-4 de la bandeja" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Marcar completado BOPRIN-4" })).toBeInTheDocument();
-    expect(within(row("PRO-3")).getByRole("link", { name: "Vincular empresa a FACTUSOL PRO-3" })).toBeInTheDocument();
+    // Lote 2 A1: el botón principal de la columna ACCIONES lleva su etiqueta
+    // visible dentro de la fila (enlace-botón y botón), con la misma pinta
+    // `.button` que en la tarjeta (el color lo arregla el CSS de la tabla).
+    const accionC = within(row("PRO-3")).getByRole("link", { name: "Vincular empresa a FACTUSOL PRO-3" });
+    expect(accionC).toHaveTextContent("Vincular empresa a FACTUSOL");
+    expect(accionC).toHaveClass("button", "small");
+    expect(accionC.closest("td")).not.toBeNull();
+    const accionA = within(row("BOPRIN-1")).getByRole("button", { name: "Aprobar BOPRIN-1" });
+    expect(accionA).toHaveTextContent("Aprobar");
+    expect(accionA).toHaveClass("button", "small");
+    expect(within(row("ARTISJ-2")).getByRole("link", { name: "Emitir factura ARTISJ-2" }))
+      .toHaveTextContent("Emitir factura");
     expect(row("PRO-3").className).toContain("is-alert");
 
     // Selección múltiple y acciones de bloque, igual que en tarjetas.

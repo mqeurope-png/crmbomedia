@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { customerLabel, STATUS_LABELS, type SatQueueItem } from "../../lib/erpApi";
-import { useSatAlbaranAction } from "./SatPreparingCard";
+import { SatAlbaranChip, useSatAlbaranAction } from "./SatPreparingCard";
 import { SatReadyButtons, SatReadyDocChips, useSatReadyActions } from "./SatReadyCard";
 
 /** Fecha corta del pedido (dd/mm/aaaa) para tablas del taller. */
@@ -33,8 +33,7 @@ function StatusBadge({ status }: { status: string }) {
 /** Fila de «Por embalar»: mismas acciones que la card (abrir modo trabajo +
  *  albarán sin salir de la lista). */
 function SatPreparingRow({ order, onChanged }: { order: SatQueueItem; onChanged: () => void }) {
-  const { busy, error, albaranClick, hasAlbaran, label, title } =
-    useSatAlbaranAction(order, onChanged);
+  const albaran = useSatAlbaranAction(order, onChanged);
   return (
     <>
       <tr>
@@ -49,8 +48,9 @@ function SatPreparingRow({ order, onChanged }: { order: SatQueueItem; onChanged:
         <td>{satShortDate(order.placed_at)}</td>
         <td><StatusBadge status={order.preparation_status} /></td>
         <td>
-          <span className={`sat-doc-flag ${hasAlbaran ? "ok" : ""}`}>
-            {hasAlbaran ? "📄 Albarán" : "📄 —"}
+          <span className={`sat-doc-flag ${albaran.hasAlbaran ? "ok" : "warn"}`}
+                title={albaran.title}>
+            {albaran.hasAlbaran ? "📄 Albarán" : "📄 Falta"}
           </span>
           <span className={`sat-doc-flag ${order.has_etiqueta ? "ok" : ""}`}>
             {order.has_etiqueta ? "🏷️ Etiqueta" : "🏷️ —"}
@@ -59,24 +59,16 @@ function SatPreparingRow({ order, onChanged }: { order: SatQueueItem; onChanged:
         <td>
           <div className="sat-td-actions">
             <Link href={`/erp/sat/${order.id}`} className="button small">Abrir →</Link>
-            <button
-              type="button"
-              className={`sat-chip-btn ${hasAlbaran ? "ok" : "info"}`}
-              disabled={busy}
-              title={title}
-              onClick={albaranClick}
-            >
-              {label}
-            </button>
+            <SatAlbaranChip order={order} albaran={albaran} />
             <Link href={`/erp/orders/${order.id}`} className="button secondary small">Ficha</Link>
           </div>
         </td>
       </tr>
-      {error ? (
+      {albaran.error ? (
         <tr className="sat-row-error">
           <td colSpan={7}>
             <p className="form-error small" role="status">
-              {error}{" "}
+              {albaran.error}{" "}
               <Link href={`/erp/orders/${order.id}`}>Ir a la ficha</Link>
             </p>
           </td>
@@ -90,7 +82,7 @@ function SatPreparingRow({ order, onChanged }: { order: SatQueueItem; onChanged:
  *  (con confirmación) y reabrir — los mismos handlers que la card. */
 function SatReadyRow({ order, onChanged }: { order: SatQueueItem; onChanged: () => void }) {
   const actions = useSatReadyActions(order, onChanged);
-  const hasAlbaran = Boolean(actions.factusolAlbaran || order.has_albaran);
+  const { hasAlbaran } = actions.albaran;
   return (
     <>
       <tr>
@@ -105,7 +97,8 @@ function SatReadyRow({ order, onChanged }: { order: SatQueueItem; onChanged: () 
         <td>{satShortDate(order.placed_at)}</td>
         <td><StatusBadge status={order.preparation_status} /></td>
         <td>
-          <span className={`sat-doc-flag ${hasAlbaran ? "ok" : "warn"}`}>
+          <span className={`sat-doc-flag ${hasAlbaran ? "ok" : "warn"}`}
+                title={actions.albaran.title}>
             {hasAlbaran ? "📄 Albarán" : "📄 Falta"}
           </span>
           <span className={`sat-doc-flag ${order.has_etiqueta ? "ok" : "warn"}`}>

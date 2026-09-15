@@ -406,7 +406,7 @@ export function FactusolDocumentDetailModal({
   return (
     <div className="modal-overlay" role="dialog" aria-modal="true"
          aria-label={`Detalle ${TYPE_LABELS[current.docType]}`}>
-      <div className="modal-dialog erp-emit-modal erp-doc-detail">
+      <div className="modal-dialog erp-modal wide erp-doc-detail">
         <h2>
           {TYPE_LABELS[current.docType]}{" "}
           <span className="muted">
@@ -542,26 +542,28 @@ export function FactusolDocumentDetailModal({
             ) : null}
 
             {doc.lines.length > 0 ? (
-              <table className="data-table">
+              /* Lote 2 · E5: tabla de consulta — cifras a la derecha en
+                 monoespaciada; en móvil, pares etiqueta/valor. */
+              <table className="data-table data-table--responsive">
                 <thead>
                   <tr>
                     <th>#</th>
                     <th>Artículo</th>
                     <th>Descripción</th>
-                    <th>Cant.</th>
-                    <th>Precio</th>
-                    <th>Total</th>
+                    <th className="num">Cant.</th>
+                    <th className="num">Precio</th>
+                    <th className="num">Total</th>
                   </tr>
                 </thead>
                 <tbody>
                   {doc.lines.map((ln) => (
                     <tr key={`${ln.position}-${ln.description}`}>
-                      <td>{ln.position}</td>
-                      <td className="muted small">{ln.codart ?? "—"}</td>
-                      <td>{ln.description}</td>
-                      <td>{ln.quantity}</td>
-                      <td>{ln.unit_price.toFixed(2)}</td>
-                      <td>{ln.line_total.toFixed(2)}</td>
+                      <td data-label="#">{ln.position}</td>
+                      <td data-label="Artículo" className="muted small mono">{ln.codart ?? "—"}</td>
+                      <td data-label="Descripción">{ln.description}</td>
+                      <td data-label="Cant." className="num">{ln.quantity}</td>
+                      <td data-label="Precio" className="num">{ln.unit_price.toFixed(2)}</td>
+                      <td data-label="Total" className="num">{ln.line_total.toFixed(2)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -576,11 +578,11 @@ export function FactusolDocumentDetailModal({
               <section className="erp-doc-cobros">
                 <h3>Cobros</h3>
                 {doc.cobros && doc.cobros.length > 0 ? (
-                  <table className="data-table">
+                  <table className="data-table data-table--responsive">
                     <thead>
                       <tr>
                         <th>Fecha</th>
-                        <th>Importe</th>
+                        <th className="num">Importe</th>
                         {/* ERP-F5: CPALCO es la CONTRAPARTIDA (destino del
                             dinero), no la forma de pago. */}
                         <th>Contrapartida</th>
@@ -590,16 +592,16 @@ export function FactusolDocumentDetailModal({
                     <tbody>
                       {doc.cobros.map((c, i) => (
                         <tr key={`${c.linea ?? i}`}>
-                          <td>{c.fecha ?? "—"}</td>
-                          <td>
+                          <td data-label="Fecha" className="mono">{c.fecha ?? "—"}</td>
+                          <td data-label="Importe" className="num">
                             {c.importe !== null && c.importe !== undefined
                               ? `${c.importe.toFixed(2)} €` : "—"}
                           </td>
-                          <td>
+                          <td data-label="Contrapartida">
                             {c.contrapartida_nombre
                               ?? (c.contrapartida ? `Código ${c.contrapartida}` : "—")}
                           </td>
-                          <td className="muted small">{c.concepto ?? "—"}</td>
+                          <td data-label="Concepto" className="muted small">{c.concepto ?? "—"}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -799,7 +801,7 @@ export function FactusolDocumentDetailModal({
       {doc && payConfirm !== null ? (
         <div className="modal-overlay" role="dialog" aria-modal="true"
              aria-label="Confirmar marcado de cobro">
-          <div className="modal-dialog erp-emit-modal">
+          <div className="modal-dialog erp-modal">
             <h2>
               Marcar como {payConfirm ? "cobrada" : "pendiente"}
             </h2>
@@ -900,7 +902,7 @@ function ConvertConfirmModal({
   return (
     <div className="modal-overlay" role="dialog" aria-modal="true"
          aria-label={`Crear ${targetLabel}`}>
-      <div className="modal-dialog erp-emit-modal">
+      <div className="modal-dialog erp-modal">
         <h2>
           Crear {targetLabel} desde {tipo} {doc.numero}
         </h2>

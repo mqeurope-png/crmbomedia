@@ -177,7 +177,7 @@ export function InvoiceEmailModal({
   return (
     <div className="modal-overlay" role="dialog" aria-modal="true"
          aria-label={`Enviar factura ${docLabel} por email`}>
-      <div className="modal-dialog erp-emit-modal erp-invoice-email">
+      <div className="modal-dialog erp-modal erp-invoice-email">
         <h2>
           Enviar factura por email{" "}
           <span className="muted">{preview?.numero ?? docLabel}</span>

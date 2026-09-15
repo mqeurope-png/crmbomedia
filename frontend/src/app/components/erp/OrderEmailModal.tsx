@@ -144,7 +144,7 @@ export function OrderEmailModal({
   return (
     <div className="modal-overlay" role="dialog" aria-modal="true"
          aria-label={`Enviar pedido ${label} por email`}>
-      <div className="modal-dialog erp-emit-modal erp-invoice-email">
+      <div className="modal-dialog erp-modal erp-invoice-email">
         <h2>Enviar pedido por email <span className="muted">{label}</span></h2>
 
         {loadError ? <p className="form-error">{loadError}</p> : null}

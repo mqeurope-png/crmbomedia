@@ -63,7 +63,8 @@ export default function ErpHome() {
 
       <section className="erp-home-widgets">
         {pending !== null ? (
-          <Link href="/erp/orders/pending-approval" className="erp-home-stat">
+          // Lote 2 D: la Cola PEDIDOS es la cola «Por revisar» de la bandeja.
+          <Link href="/erp/orders?queue=por_revisar" className="erp-home-stat">
             <span className="erp-home-stat-value">{pending}</span>
             <span className="erp-home-stat-label">Pedidos pendientes de aprobación</span>
           </Link>

@@ -90,9 +90,15 @@ def _pick_row(
     return None, "—"
 
 
-def scan_invoice_links(session: Session, client: Any, *, ejercicio: str) -> dict[str, Any]:
-    """Recorre los pedidos con nº de factura y clasifica su vínculo."""
-    f_fac = client.load_table("F_FAC", ejercicio=ejercicio)
+def scan_invoice_links(
+    session: Session, client: Any, *, ejercicio: str,
+    f_fac_rows: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Recorre los pedidos con nº de factura y clasifica su vínculo.
+    `f_fac_rows`: F_FAC ya cargada (evita una segunda lectura)."""
+    f_fac = f_fac_rows if f_fac_rows is not None else client.load_table(
+        "F_FAC", ejercicio=ejercicio,
+    )
     by_code = _index_f_fac(f_fac)
     stores = {
         s.id: s.account_id

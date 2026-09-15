@@ -147,6 +147,21 @@ def test_workflow_por_enviar_y_listo(session_factory) -> None:
                factusol_cobro_status="cobrada")
     wf = _wf(session_factory, "o4")
     assert wf["queue"] == "por_enviar" and wf["next_action"] == "crear_envio"
+    # Lote 2 C: «Crear envío» ya no es un botón; el paso es subir la etiqueta
+    # (la subida mueve el transporte) o marcar la recogida.
+    assert wf["next_action_label"] == "Subir etiqueta"
+    assert wf["next_action_hint"] == "Sube la etiqueta de envío (o marca el pedido como recogido)."
+
+    # Con la etiqueta ya subida (label_created) la acción es la misma pero se
+    # lee como lo que falta: la recogida.
+    with session_factory() as s:
+        o = s.get(Order, "o4")
+        o.transport_status = "label_created"
+        s.commit()
+    wf = _wf(session_factory, "o4")
+    assert wf["queue"] == "por_enviar" and wf["next_action"] == "crear_envio"
+    assert wf["next_action_label"] == "Marcar recogido"
+    assert "recogido" in wf["next_action_hint"]
 
     with session_factory() as s:
         o = s.get(Order, "o4")

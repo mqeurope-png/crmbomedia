@@ -46,6 +46,68 @@
   --success: #067647;
   --warning: #B54708;
 
+  /* =====================================================================
+     Sistema de diseño ERP · Lote 2  (docs/ux/sistema-diseno-erp.md)
+     Tokens transversales de la revisión de diseño del ERP
+     (docs/ux/revision-ux-erp). Regla de uso del color: --brand SOLO para
+     acciones e interacción; los colores de estado SOLO informan. Los
+     aliases de arriba (--bg / --ink / --muted / --line / --brand) son los de
+     la maqueta aprobada a ±2 % de luminancia: no se repinta el CRM.
+     ===================================================================== */
+  /* E1 · Color */
+  --faint: #9aa2ad;         /* 2,5:1 — SOLO elementos sin dato: separadores,
+                               flechas de desplegable, placeholders. Todo
+                               texto que aporte un dato usa --muted (4,8:1). */
+  --line2: #eef0f4;         /* separador interior (filas dentro de un panel) */
+  --brand-ink: #1e40af;     /* texto/enlace de marca sobre fondo claro (7,6:1) */
+  --focus: rgba(47, 107, 255, 0.4); /* anillo de foco visible: 3 px, #2f6bff al 40 % */
+  --ink-on-color: #1b2330;  /* tinta sobre fondos de estado (≥ 4,5:1). Cada
+                               estado la redefine con su propia tinta; nunca
+                               gris sobre ámbar. */
+  --danger-ink: #b42318;    /* rojo de ACCIÓN destructiva («Anular»), distinto
+                               del rojo de estado «incidencia» (--st-red-ink). */
+  /* Pastillas / casillas de estado (fondo · tinta), todas ≥ 4,5:1. El ámbar
+     se oscurece a #8a5c00 (el #9a6700 del brief daba 4,36:1); los fondos no
+     cambian. */
+  --st-green-bg: #e7f6ec;   --st-green-ink: #1f7a45;    /* hecho */
+  --st-amber-bg: #fdf1dd;   --st-amber-ink: #8a5c00;    /* pendiente */
+  --st-blue-bg: #e8f0ff;    --st-blue-ink: #2451c7;     /* informativo (por facturar) */
+  --st-teal-bg: #e6f5f3;    --st-teal-ink: #0f766e;     /* manual */
+  --st-neutral-bg: #eef0f4; --st-neutral-ink: #5b6472;  /* no aplica */
+  --st-red-bg: #fdeaea;     --st-red-ink: #b42318;      /* bloqueado / incidencia */
+  --st-purple-bg: #f0e9fd;  --st-purple-ink: #6d3fc4;   /* woo / intracomunitario */
+
+  /* E2 · Tipografía: escala cerrada de seis pasos; nada por debajo de 12 px
+     (12 solo para etiquetas). Todo dato numérico va en --font-mono. */
+  --fs-display: 28px;
+  --fs-title: 20px;
+  --fs-subtitle: 16px;
+  --fs-body: 14px;
+  --fs-label: 12px;
+  --fs-mono: 13px;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono",
+    monospace;
+  --mono: var(--font-mono);
+
+  /* E3 · Espaciado (escala de 4 px, siete pasos) y radios. Dentro de una
+     tarjeta 12/16; entre bloques 24/32. */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+  --sp-12: 48px;
+  --r-control: 8px;         /* botones, campos, casillas */
+  --r-panel: 12px;          /* tarjetas, paneles, modales */
+  --r-pill: 99px;           /* solo pastillas */
+
+  /* E6 · Controles y modales. */
+  --control-h: 40px;        /* alto mínimo de botón/campo en escritorio */
+  --control-h-touch: 48px;  /* < 768 px: target táctil del taller */
+  --modal-w-form: 520px;    /* modal de formulario */
+  --modal-w-wide: 720px;    /* buscador con resultados / detalle con tabla */
+
   /* Fuente base — Inter, cargada por next/font en layout.tsx. La var
      `--font-base` se sobreescribe desde el <html className>. */
   --font-base: "Inter", system-ui, -apple-system, "Segoe UI", Roboto,
@@ -1302,8 +1364,8 @@ h1 {
 
 .button:hover { background: var(--brand-dark); }
 .button:focus-visible {
-  outline: 3px solid color-mix(in srgb, var(--color-primary) 35%, transparent);
-  outline-offset: 1px;
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
 }
 .button:disabled { cursor: not-allowed; opacity: 0.55; }
 
@@ -10631,61 +10693,61 @@ tr.is-inactive {
 /* ===== BoHub ERP (Fase A) ==================================================
    Reutiliza los tokens del CRM (.badge.{ok,warn,bad,muted,active}, .button,
    .data-table). Estas clases cubren solo las pantallas ERP. */
-.erp-states { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 4px 0 20px; }
-.erp-state-box { border: 1px solid var(--line, #e5e7eb); border-radius: 12px; padding: 14px; display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
-.erp-state-dom { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted, #64748b); font-weight: 700; }
-.erp-state-actions { display: flex; flex-direction: column; gap: 6px; width: 100%; }
-.erp-detail-grid { display: grid; grid-template-columns: 1.3fr 1fr; gap: 18px; align-items: start; }
-.erp-card { border: 1px solid var(--line, #e5e7eb); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
-.erp-card h3 { margin: 0 0 10px; font-size: 14px; }
+.erp-states { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 4px 0 24px; }
+.erp-state-box { border: 1px solid var(--line); border-radius: var(--r-panel); padding: 16px; display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+.erp-state-dom { font-size: var(--fs-label); text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 700; }
+.erp-state-actions { display: flex; flex-direction: column; gap: 8px; width: 100%; }
+.erp-detail-grid { display: grid; grid-template-columns: 1.3fr 1fr; gap: 16px; align-items: start; }
+.erp-card { border: 1px solid var(--line); border-radius: var(--r-panel); padding: 16px; margin-bottom: 16px; }
+.erp-card h3 { margin: 0 0 12px; font-size: var(--fs-body); }
 /* ERP-F2 — inicio del ERP (/erp): contadores + tarjetas de acceso. Mismo
    diseño que el resto del ERP (tokens compartidos). */
-.erp-home-widgets { display: flex; flex-wrap: wrap; gap: 12px; margin: 4px 0 18px; }
-.erp-home-stat { display: flex; flex-direction: column; gap: 2px; min-width: 200px;
-  border: 1px solid var(--line, #e5e7eb); border-radius: 12px; padding: 14px 16px;
+.erp-home-widgets { display: flex; flex-wrap: wrap; gap: 12px; margin: 4px 0 16px; }
+.erp-home-stat { display: flex; flex-direction: column; gap: 4px; min-width: 200px;
+  border: 1px solid var(--line); border-radius: var(--r-panel); padding: 16px;
   text-decoration: none; color: inherit; }
 .erp-home-stat:hover { border-color: #93c5fd; background: #f5f9ff; }
-.erp-home-stat-value { font-size: 26px; font-weight: 700; line-height: 1.1; }
-.erp-home-stat-label { font-size: 13px; color: var(--muted, #64748b); }
+.erp-home-stat-value { font-size: var(--fs-display); font-weight: 700; line-height: 1.1; }
+.erp-home-stat-label { font-size: var(--fs-body); color: var(--muted); }
 .erp-home-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
   gap: 12px; }
-.erp-home-card { display: flex; align-items: center; gap: 10px;
-  border: 1px solid var(--line, #e5e7eb); border-radius: 12px; padding: 16px;
+.erp-home-card { display: flex; align-items: center; gap: 12px;
+  border: 1px solid var(--line); border-radius: var(--r-panel); padding: 16px;
   text-decoration: none; color: inherit; font-weight: 600; }
 .erp-home-card:hover { border-color: #93c5fd; background: #f5f9ff; }
-.erp-home-card-label { font-size: 14px; }
+.erp-home-card-label { font-size: var(--fs-body); }
 /* ERP-F2-fix1 — selector de rol agrupado por ámbito + nota/aviso. */
 .role-select { display: flex; flex-direction: column; gap: 4px; }
-.role-scope-note { margin: 0; color: var(--muted, #64748b); }
-.role-scope-warn { margin: 2px 0 0; padding: 6px 8px; border-radius: 8px;
-  font-size: 12px; color: #92400e; background: #fffbeb;
+.role-scope-note { margin: 0; color: var(--muted); }
+.role-scope-warn { margin: 4px 0 0; padding: 8px; border-radius: var(--r-control);
+  font-size: var(--fs-label); color: var(--st-amber-ink); background: #fffbeb;
   border: 1px solid #fcd34d; }
 /* ERP-F3 — miniatura del logo de la empresa emisora en /erp/settings. */
-.erp-logo-thumb { display: flex; align-items: center; gap: 10px;
-  margin: 2px 0 6px; }
+.erp-logo-thumb { display: flex; align-items: center; gap: 12px;
+  margin: 4px 0 8px; }
 .erp-logo-thumb img { height: 40px; width: auto; max-width: 140px;
-  object-fit: contain; border: 1px solid var(--line, #e5e7eb);
-  border-radius: 6px; background: #fff; padding: 2px; }
+  object-fit: contain; border: 1px solid var(--line);
+  border-radius: var(--r-control); background: #fff; padding: 4px; }
 .erp-timeline { list-style: none; margin: 0; padding: 0; }
-.erp-timeline-item { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; padding: 8px 0; border-bottom: 1px dashed var(--line, #e5e7eb); font-size: 13px; }
-.erp-timeline-item.is-exception .erp-timeline-title { color: #b42318; }
-.erp-timeline-when { color: var(--muted, #94a3b8); white-space: nowrap; font-size: 12px; }
+.erp-timeline-item { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; padding: 8px 0; border-bottom: 1px dashed var(--line); font-size: var(--fs-body); }
+.erp-timeline-item.is-exception .erp-timeline-title { color: var(--st-red-ink); }
+.erp-timeline-when { color: var(--muted); white-space: nowrap; font-size: var(--fs-label); }
 .erp-timeline-title { font-weight: 600; }
-.erp-blockers { list-style: none; margin: 0 0 14px; padding: 0; display: flex; flex-direction: column; gap: 6px; }
-.erp-blocker { font-size: 13px; }
+.erp-blockers { list-style: none; margin: 0 0 16px; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.erp-blocker { font-size: var(--fs-body); }
 .erp-approval-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
-.erp-approval-card { border: 1px solid var(--line, #e5e7eb); border-radius: 12px; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+.erp-approval-card { border: 1px solid var(--line); border-radius: var(--r-panel); padding: 16px; display: flex; flex-direction: column; gap: 12px; }
 .erp-approval-card.is-blocked { border-color: #fca5a5; background: #fef7f7; }
 .erp-approval-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
-.erp-approval-num { font-weight: 700; font-size: 16px; }
-.erp-approval-badges { display: flex; gap: 6px; flex-wrap: wrap; }
+.erp-approval-num { font-weight: 700; font-size: var(--fs-subtitle); }
+.erp-approval-badges { display: flex; gap: 8px; flex-wrap: wrap; }
 /* B-2-fix4: avisos (no bloqueantes) + acciones + selección múltiple */
 .erp-approval-card.is-selected { border-color: #93c5fd; background: #f5f9ff; }
 .erp-approval-actions { display: flex; gap: 8px; flex-wrap: wrap; }
-.erp-warnings { list-style: none; margin: 0 0 6px; padding: 0; display: flex; flex-direction: column; gap: 6px; }
-.erp-warning { font-size: 13px; color: #92400e; }
-.erp-bulk-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 10px 14px; margin-bottom: 14px; border: 1px solid #bfdbfe; background: #eff6ff; border-radius: 10px; font-size: 14px; }
-.form-info { padding: 10px 14px; margin: 0 0 14px; border: 1px solid var(--line, #e5e7eb); background: #f8fafc; border-radius: 10px; font-size: 14px; }
+.erp-warnings { list-style: none; margin: 0 0 8px; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.erp-warning { font-size: var(--fs-body); color: var(--st-amber-ink); }
+.erp-bulk-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 12px 16px; margin-bottom: 16px; border: 1px solid #bfdbfe; background: #eff6ff; border-radius: var(--r-panel); font-size: var(--fs-body); }
+.form-info { padding: 12px 16px; margin: 0 0 16px; border: 1px solid var(--line); background: #f8fafc; border-radius: var(--r-panel); font-size: var(--fs-body); }
 @media (max-width: 900px) {
   .erp-states { grid-template-columns: repeat(2, 1fr); }
   .erp-detail-grid { grid-template-columns: 1fr; }
@@ -10694,33 +10756,33 @@ tr.is-inactive {
 /* ===== BoHub ERP — Cola SAT táctil (Fase A PR 5) ==========================
    Layout full-bleed pensado para tablet vertical + móvil del taller. */
 .sat-shell { min-height: 100vh; display: flex; flex-direction: column; background: #f8fafc; }
-.sat-topbar { display: flex; align-items: center; justify-content: space-between; padding: 12px 18px; background: #0f172a; color: #fff; position: sticky; top: 0; z-index: 10; }
-.sat-topbar-title { font-size: 18px; font-weight: 800; }
-.sat-topbar-back { color: #cbd5e1; text-decoration: none; font-size: 14px; }
+.sat-topbar { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; background: var(--ink); color: #fff; position: sticky; top: 0; z-index: 10; }
+.sat-topbar-title { font-size: var(--fs-title); font-weight: 800; }
+.sat-topbar-back { color: var(--line); text-decoration: none; font-size: var(--fs-body); }
 .sat-main { flex: 1; padding: 16px; max-width: 900px; width: 100%; margin: 0 auto; }
-.sat-queue-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
-.sat-queue-head h1 { font-size: 20px; margin: 0; }
-.sat-empty { font-size: 18px; text-align: center; padding: 40px 0; color: #16a34a; }
-.sat-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
-.sat-card { display: block; border: 2px solid #e2e8f0; border-radius: 16px; padding: 18px; background: #fff; text-decoration: none; color: inherit; }
+.sat-queue-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+.sat-queue-head h1 { font-size: var(--fs-title); margin: 0; }
+.sat-empty { font-size: var(--fs-title); text-align: center; padding: 32px 0; color: var(--st-green-ink); }
+.sat-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+.sat-card { display: block; border: 2px solid var(--line); border-radius: var(--r-panel); padding: 16px; background: #fff; text-decoration: none; color: inherit; }
 .sat-card:active { transform: scale(0.99); }
-.sat-card-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
-.sat-card-num { font-size: 20px; font-weight: 800; }
-.sat-card-warn { color: #b45309; font-weight: 800; font-size: 13px; margin-bottom: 6px; }
-.sat-card-lines { margin: 8px 0; padding-left: 18px; color: #334155; font-size: 15px; }
-.sat-card-cta { color: #2563eb; font-weight: 700; }
+.sat-card-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.sat-card-num { font-size: var(--fs-title); font-weight: 800; }
+.sat-card-warn { color: var(--st-amber-ink); font-weight: 800; font-size: var(--fs-body); margin-bottom: 8px; }
+.sat-card-lines { margin: 8px 0; padding-left: 16px; color: var(--ink); font-size: var(--fs-subtitle); }
+.sat-card-cta { color: var(--brand); font-weight: 700; }
 /* Modo trabajo */
 .sat-work { padding: 16px; max-width: 720px; margin: 0 auto; }
-.sat-work h1 { font-size: 24px; margin: 0 0 6px; }
-.sat-work h2 { font-size: 15px; margin: 20px 0 8px; }
-.sat-line-check { display: block; padding: 12px; border: 1px solid #e2e8f0; border-radius: 10px; margin-bottom: 8px; font-size: 16px; }
-.sat-packing-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
-.sat-upload { display: inline-block; margin-top: 12px; padding: 14px 18px; background: #eef4ff; color: #1d4ed8; border-radius: 12px; font-weight: 700; cursor: pointer; }
+.sat-work h1 { font-size: var(--fs-display); margin: 0 0 8px; }
+.sat-work h2 { font-size: var(--fs-subtitle); margin: 24px 0 8px; }
+.sat-line-check { display: block; padding: 12px; border: 1px solid var(--line); border-radius: var(--r-panel); margin-bottom: 8px; font-size: var(--fs-subtitle); }
+.sat-packing-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+.sat-upload { display: inline-block; margin-top: 12px; padding: 16px; background: var(--primary-tint); color: var(--brand-ink); border-radius: var(--r-panel); font-weight: 700; cursor: pointer; }
 .sat-work-actions { display: flex; flex-direction: column; gap: 12px; margin-top: 24px; }
-.sat-btn { width: 100%; padding: 20px; font-size: 18px; font-weight: 800; border-radius: 14px; border: 0; cursor: pointer; }
-.sat-btn.start { background: #2563eb; color: #fff; }
-.sat-btn.pack { background: #16a34a; color: #fff; }
-.sat-btn.issue { background: #fff; border: 2px solid #fca5a5; color: #b42318; padding: 14px; font-size: 15px; }
+.sat-btn { width: 100%; padding: 16px; font-size: var(--fs-title); font-weight: 800; border-radius: var(--r-panel); border: 0; cursor: pointer; }
+.sat-btn.start { background: var(--brand); color: #fff; }
+.sat-btn.pack { background: var(--st-green-ink); color: #fff; }
+.sat-btn.issue { background: #fff; border: 2px solid #fca5a5; color: var(--danger-ink); padding: 16px; font-size: var(--fs-body); }
 @media (max-width: 640px) {
   .sat-packing-grid { grid-template-columns: 1fr; }
   .sat-cards { grid-template-columns: 1fr; }
@@ -10729,66 +10791,69 @@ tr.is-inactive {
 /* ===== BoHub ERP — bandeja de excepciones + settings (Fase A PR 6) ======== */
 .erp-exc-overdue { background: #fef2f2; }
 .erp-exc-eta-chip { margin-left: 8px; }
-.erp-exc-actions { display: flex; gap: 6px; flex-wrap: wrap; }
-.erp-settings-form { display: flex; flex-direction: column; gap: 14px; max-width: 460px; }
+.erp-exc-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.erp-settings-form { display: flex; flex-direction: column; gap: 16px; max-width: 460px; }
 
 /* --- BoHub ERP Fase D · D-2: cliente visible + form de alta manual --------- */
 /* Nombre del cliente bajo el número de pedido (cards SAT / Cola PEDIDOS). El
    número sigue mandando visualmente; el cliente va un escalón por debajo. */
-.sat-card-customer { font-size: 15px; font-weight: 600; color: #334155; margin-bottom: 4px; }
-.erp-approval-customer { margin: 2px 0 6px; font-size: 13px; font-weight: 600; color: #334155; }
+.sat-card-customer { font-size: var(--fs-subtitle); font-weight: 600; color: var(--ink); margin-bottom: 4px; }
+.erp-approval-customer { margin: 4px 0 8px; font-size: var(--fs-body); font-weight: 600; color: var(--ink); }
 
 /* Chips de documento de la Cola SAT (D-1-fix1/fix2 los usaban sin CSS). */
 .sat-chip-btn {
-  display: inline-block; padding: 8px 12px; border-radius: 999px;
-  border: 1px solid transparent; font-size: 14px; font-weight: 700;
+  display: inline-block; padding: 8px 12px; border-radius: var(--r-pill);
+  border: 1px solid transparent; font-size: var(--fs-body); font-weight: 700;
   cursor: pointer; text-decoration: none; background: var(--line); color: var(--ink);
 }
 .sat-chip-btn.ok { background: #ecfdf3; color: var(--success); border-color: #a7f3d0; }
-.sat-chip-btn.warn { background: #fffaeb; color: #b54708; border-color: #fde68a; }
-.sat-chip-btn.info { background: #eef4ff; color: var(--brand); border-color: #bfdbfe; }
+.sat-chip-btn.warn { background: #fffaeb; color: var(--st-amber-ink); border-color: #fde68a; }
+.sat-chip-btn.info { background: var(--primary-tint); color: var(--brand); border-color: #bfdbfe; }
 .sat-card-docs { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
 
 /* Alta de pedido manual (/erp/orders/new). */
 .erp-manual-form { display: flex; flex-direction: column; gap: 16px; }
-.erp-manual-form .erp-card { display: flex; flex-direction: column; gap: 10px; }
+.erp-manual-form .erp-card { display: flex; flex-direction: column; gap: 12px; }
 .erp-manual-form .data-table input { width: 100%; }
-.erp-manual-total { margin: 8px 0 0; font-size: 16px; text-align: right; }
+.erp-manual-total { margin: 8px 0 0; font-size: var(--fs-subtitle); text-align: right; }
 
 /* C-2: serie de facturación configurable en /erp/settings. */
-.erp-series-fieldset { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
-.erp-series-fieldset legend { font-size: 13px; font-weight: 700; padding: 0 6px; }
+.erp-series-fieldset { border: 1px solid var(--line); border-radius: var(--r-panel); padding: 12px 16px; display: flex; flex-direction: column; gap: 12px; }
+.erp-series-fieldset legend { font-size: var(--fs-body); font-weight: 700; padding: 0 8px; }
 .erp-series-fieldset .data-table input { width: 100%; }
 
 /* C-3: buscador de clientes FACTUSOL ↔ CRM. */
 .erp-customer-autocomplete { display: flex; flex-direction: column; gap: 8px; }
-.erp-ac-heading { margin: 6px 0 2px; font-size: 12px; font-weight: 700; text-transform: uppercase; color: #64748b; }
+.erp-ac-heading { margin: 8px 0 4px; font-size: var(--fs-label); font-weight: 700; text-transform: uppercase; color: var(--muted); }
 .erp-ac-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
-.erp-ac-item { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: #fff; cursor: pointer; font: inherit; }
+.erp-ac-item { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; padding: 8px 12px; border: 1px solid var(--line); border-radius: var(--r-control); background: #fff; cursor: pointer; font: inherit; }
 .erp-ac-item:hover { background: #f8fafc; }
 .erp-ac-name { font-weight: 600; flex: 1; }
 
 /* C-3-fix2: acciones de vinculación FACTUSOL ↔ CRM en el alta de pedido. */
-.erp-factusol-actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 6px 0; }
-.erp-link-existing { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: #f8fafc; }
+.erp-factusol-actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
+.erp-link-existing { display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid var(--line); border-radius: var(--r-control); background: #f8fafc; }
 
 /* C-4: proformas FACTUSOL (ficha de empresa + alta de pedido). */
 .erp-quotes-inline { display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; align-items: flex-start; }
-.erp-quote-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; width: 100%; }
-.erp-quote-list li { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: #f8fafc; font-size: 13px; }
+.erp-quote-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; width: 100%; }
+.erp-quote-list li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 12px; border: 1px solid var(--line); border-radius: var(--r-control); background: #f8fafc; font-size: var(--fs-body); }
 /* C-4-fix1: SKU comercial · descripción · precio en 3 columnas. */
-.erp-article-hit { display: grid; grid-template-columns: minmax(90px, auto) 1fr auto; gap: 10px; align-items: baseline; width: 100%; text-align: left; padding: 6px 8px; border: 0; background: none; font: inherit; cursor: pointer; }
+.erp-article-hit { display: grid; grid-template-columns: minmax(90px, auto) 1fr auto; gap: 12px; align-items: baseline; width: 100%; text-align: left; padding: 8px; border: 0; background: none; font: inherit; cursor: pointer; }
 .erp-article-hit:hover { background: #f1f5f9; }
 .erp-article-sku { font-weight: 700; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .erp-article-desc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .erp-article-price { font-variant-numeric: tabular-nums; }
-.erp-quote-target { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: #f8fafc; margin-bottom: 8px; }
+.erp-quote-target { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 12px; border: 1px solid var(--line); border-radius: var(--r-control); background: #f8fafc; margin-bottom: 8px; }
 
 /* C-4-fix2: modal ancho — la tabla de líneas no cabía y obligaba a scroll
    horizontal. El contenido scrollea dentro, no la página.
    C-4-fix3: con padding interior; sin él el contenido quedaba pegado al borde. */
-.modal-dialog.modal-wide { max-width: min(1200px, 95vw); width: min(1200px, 95vw); max-height: 90vh; overflow-y: auto; padding: 24px; display: flex; flex-direction: column; gap: 16px; }
-.modal-dialog.modal-wide > * { margin: 0; }
+/* Lote 2 · E6: `.modal-wide` es la ÚNICA excepción documentada a los dos
+   anchos del molde (520 / 720): el editor de líneas de la proforma tiene 8
+   columnas con campos y no cabe en 720. Desaparece cuando la proforma pase a
+   página propia (cambio mayor 13/17 de la revisión). */
+.modal-dialog.modal-wide { max-width: min(1200px, 95vw); width: min(1200px, 95vw); max-height: 90vh; overflow-y: auto; }
 .modal-dialog.modal-wide .data-table { width: 100%; table-layout: fixed; }
 /* C-4-fix6: 8 columnas — SKU · Descripción · Cant · Precio · DTO · IVA · Total · ✕ */
 .erp-quote-lines th:nth-child(1) { width: 14%; }
@@ -10799,13 +10864,13 @@ tr.is-inactive {
 .erp-quote-lines th:nth-child(4),
 .erp-quote-lines th:nth-child(7) { width: 12%; }
 .erp-quote-lines th:nth-child(8) { width: 5%; }
-.erp-quote-row-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.erp-quote-row-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 
 /* C-5: conciliación masiva CRM ↔ FACTUSOL. */
 .erp-bulk-candidates { display: flex; flex-direction: column; gap: 4px; }
-.erp-bulk-candidate { display: flex; align-items: baseline; gap: 6px; font-size: 13px; }
+.erp-bulk-candidate { display: flex; align-items: baseline; gap: 8px; font-size: var(--fs-body); }
 .erp-bulk-diff { margin: 8px 0; background: #f8fafc; }
-.erp-bulk-diff td.muted, .erp-bulk-diff tr.muted td { color: #94a3b8; }
+.erp-bulk-diff td.muted, .erp-bulk-diff tr.muted td { color: var(--muted); }
 .erp-quote-lines input { width: 100%; }
 .erp-quote-foot { display: flex; align-items: flex-end; gap: 16px; flex-wrap: wrap; margin-top: 8px; }
 .erp-quote-foot .erp-manual-total { margin-left: auto; }
@@ -10813,14 +10878,14 @@ tr.is-inactive {
 /* C-4-fix2: autocomplete F_ART reutilizable (modal proforma + pedido manual). */
 .erp-article-ac { position: relative; }
 .erp-article-ac input { width: 100%; }
-.erp-article-ac-list { position: absolute; z-index: 30; top: 100%; left: 0; right: 0; list-style: none; margin: 2px 0 0; padding: 4px; max-height: 260px; overflow-y: auto; background: #fff; border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 24px rgba(15, 23, 42, .12); min-width: 320px; }
+.erp-article-ac-list { position: absolute; z-index: 30; top: 100%; left: 0; right: 0; list-style: none; margin: 4px 0 0; padding: 4px; max-height: 260px; overflow-y: auto; background: #fff; border: 1px solid var(--line); border-radius: var(--r-control); box-shadow: 0 8px 24px rgba(15, 23, 42, .12); min-width: 320px; }
 
 /* Deduplicar empresas por CIF (Fase C · C-7). Cada grupo es una tarjeta
    anidada dentro de la lista, así que se distingue con un fondo suave para
    que no parezca que la tabla de detalle pertenece a la sección de arriba. */
-.erp-dedupe-group { background: var(--surface-2, #fafafa); margin-bottom: 12px; }
+.erp-dedupe-group { background: var(--bg); margin-bottom: 12px; }
 .erp-dedupe-group .form-row { align-items: center; justify-content: space-between; }
-.erp-dedupe-group .data-table { margin-top: 10px; }
+.erp-dedupe-group .data-table { margin-top: 12px; }
 
 /* CRM-1.6 — panel de filtros: chip stack de filtros aplicados sobre el
    querybuilder (EntityFilterBuilder). El accordion-guía de CRM-1.6 se retiró
@@ -10850,8 +10915,8 @@ tr.is-inactive {
 /* ERP-E3-A — explorador de documentos FACTUSOL. */
 .erp-doc-tabs {
   display: flex;
-  gap: 6px;
-  margin: 0 0 14px;
+  gap: 8px;
+  margin: 0 0 16px;
 }
 .erp-doc-filters {
   display: flex;
@@ -10859,9 +10924,9 @@ tr.is-inactive {
   align-items: flex-end;
   gap: 12px;
   margin: 0 0 16px;
-  padding: 12px 14px;
+  padding: 12px 16px;
   border: 1px solid var(--line);
-  border-radius: 12px;
+  border-radius: var(--r-panel);
   background: var(--card);
 }
 .erp-doc-filters .field {
@@ -10877,18 +10942,18 @@ tr.is-inactive {
 }
 .erp-doc-cliente-buscar {
   display: flex;
-  gap: 6px;
+  gap: 8px;
 }
 .erp-doc-cliente-activo {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
 }
 .erp-doc-cliente-activo button {
   border: none;
   background: transparent;
   cursor: pointer;
-  font-size: 14px;
+  font-size: var(--fs-body);
   line-height: 1;
   color: inherit;
 }
@@ -10903,15 +10968,15 @@ tr.is-inactive {
   list-style: none;
   background: #fff;
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: var(--r-panel);
   box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
 }
 .erp-doc-cliente-opts button {
   display: block;
   width: 100%;
-  padding: 6px 8px;
+  padding: 8px;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--r-control);
   background: transparent;
   text-align: left;
   cursor: pointer;
@@ -10931,36 +10996,37 @@ tr.is-inactive {
 .erp-doc-pager {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   margin-top: 12px;
 }
+/* Lote 2: el detalle de documento usa el ancho «wide» del molde (720). */
 .erp-doc-detail {
-  max-width: 720px;
+  max-width: var(--modal-w-wide);
 }
 .erp-doc-detail-head {
   display: grid;
   grid-template-columns: auto 1fr;
-  gap: 4px 14px;
+  gap: 4px 16px;
   margin: 0 0 12px;
 }
 .erp-doc-detail-head dt {
-  color: #64748b;
-  font-size: 13px;
+  color: var(--muted);
+  font-size: var(--fs-body);
 }
 .erp-doc-detail-head dd {
   margin: 0;
 }
 /* F3-fix1 — sección de cobros + saldo pendiente en el detalle de la factura. */
-.erp-doc-cobros { margin-top: 14px; }
-.erp-doc-cobros h3 { font-size: 14px; margin: 0 0 8px; }
+.erp-doc-cobros { margin-top: 16px; }
+.erp-doc-cobros h3 { font-size: var(--fs-body); margin: 0 0 8px; }
 .erp-doc-cobros-resumen {
-  display: grid; grid-template-columns: auto auto; gap: 2px 14px;
+  display: grid; grid-template-columns: auto auto; gap: 4px 16px;
   justify-content: end; margin: 8px 0 0; text-align: right;
 }
-.erp-doc-cobros-resumen dt { color: #64748b; font-size: 13px; }
+.erp-doc-cobros-resumen dt { color: var(--muted); font-size: var(--fs-body); }
 .erp-doc-cobros-resumen dd { margin: 0; }
 /* Saldo por cobrar → en rojo suave, tanto en el listado como en el detalle. */
-.erp-doc-saldo-due { color: #b42318; font-weight: 600; }
+.erp-doc-saldo-due { color: var(--st-red-ink); font-weight: 600; }
 
 /* ERP-E3-A-fix1 — cabeceras ordenables del explorador. */
 .erp-doc-sort {
@@ -10990,15 +11056,15 @@ tr.is-inactive {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   justify-content: flex-end;
 }
 .erp-doc-actions-col {
   text-align: right;
 }
 .erp-doc-ciclo-badge {
-  margin-left: 6px;
-  font-size: 11px;
+  margin-left: 8px;
+  font-size: var(--fs-label);
 }
 
 /* ERP-E3-B — ciclo PRE→ALB→FAC en el detalle: badge + enlaces al origen y a
@@ -11007,9 +11073,9 @@ tr.is-inactive {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px 14px;
+  gap: 8px 16px;
   margin: 0 0 12px;
-  font-size: 13px;
+  font-size: var(--fs-body);
 }
 .erp-doc-ciclo-link {
   border: none;
@@ -11027,28 +11093,28 @@ tr.is-inactive {
 .erp-doc-ciclo-aviso {
   margin: 0 0 12px;
   padding: 8px 12px;
-  border-radius: 8px;
+  border-radius: var(--r-control);
   background: #fffaeb;
-  color: #b54708;
-  font-size: 13px;
+  color: var(--st-amber-ink);
+  font-size: var(--fs-body);
 }
 
 /* ERP-E4 — descarga de PDF (selector de idioma + botón, en línea). */
 .erp-doc-pdf {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
 }
 .erp-doc-pdf select {
-  padding: 6px 8px;
+  padding: 8px;
 }
 
 /* ERP-E4 — bloque plegable de cada empresa emisora en /erp/settings. */
 .erp-company-block {
-  border: 1px solid var(--line, #e2e8f0);
-  border-radius: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
   padding: 8px 12px;
-  margin: 0 0 10px;
+  margin: 0 0 12px;
 }
 .erp-company-block summary {
   cursor: pointer;
@@ -11060,16 +11126,16 @@ tr.is-inactive {
 
 /* E4-fix1 — cuentas bancarias y almacenes de recogida en /erp/settings. */
 .erp-bank-fieldset {
-  margin-top: 10px;
-  border: 1px solid var(--line, #e2e8f0);
-  border-radius: 8px;
+  margin-top: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
   padding: 8px 12px;
 }
 .erp-bank-row {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   margin-bottom: 8px;
 }
 .erp-bank-row input,
@@ -11082,7 +11148,7 @@ tr.is-inactive {
   align-items: center;
   gap: 4px;
   white-space: nowrap;
-  font-size: 13px;
+  font-size: var(--fs-body);
 }
 .erp-doc-pdf-langsrc {
   white-space: nowrap;
@@ -11091,9 +11157,9 @@ tr.is-inactive {
 /* ERP-F4-A — conciliación bancaria (/erp/conciliacion). */
 .erp-tabs {
   display: flex;
-  gap: 6px;
-  margin: 8px 0 14px;
-  border-bottom: 1px solid var(--line, #e2e8f0);
+  gap: 8px;
+  margin: 8px 0 16px;
+  border-bottom: 1px solid var(--line);
 }
 .erp-tabs button {
   border: none;
@@ -11101,15 +11167,15 @@ tr.is-inactive {
   padding: 8px 12px;
   font: inherit;
   font-weight: 600;
-  color: var(--muted, #64748b);
+  color: var(--muted);
   cursor: pointer;
   border-bottom: 2px solid transparent;
   margin-bottom: -1px;
 }
-.erp-tabs button:hover { color: var(--ink, #0f172a); }
+.erp-tabs button:hover { color: var(--ink); }
 .erp-tabs button.active {
-  color: var(--brand, #2563eb);
-  border-bottom-color: var(--brand, #2563eb);
+  color: var(--brand);
+  border-bottom-color: var(--brand);
 }
 .erp-bank-proposals {
   list-style: none;
@@ -11118,22 +11184,22 @@ tr.is-inactive {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  font-size: 13px;
+  font-size: var(--fs-body);
 }
 .erp-bank-proposals li { line-height: 1.3; }
-.erp-bank-proposals .badge { margin-right: 6px; }
+.erp-bank-proposals .badge { margin-right: 8px; }
 .erp-bank-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
   justify-content: flex-end;
 }
-.erp-bank-actions .button { padding: 3px 8px; font-size: 12px; white-space: nowrap; }
+.erp-bank-actions .button { padding: 4px 8px; font-size: var(--fs-label); white-space: nowrap; }
 .modal-actions {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
-  margin-top: 14px;
+  margin-top: 16px;
 }
 
 /* =============================================================
@@ -11144,7 +11210,7 @@ tr.is-inactive {
    ============================================================= */
 .erp-flow {
   --flow-line: var(--line);
-  --flow-line-soft: #EEF0F4;
+  --flow-line-soft: var(--line2);
   --flow-radius: var(--radius-md);
   --flow-shadow: var(--shadow-card);
 }
@@ -11164,8 +11230,8 @@ tr.is-inactive {
 .erp-flow-queues {
   display: grid;
   grid-template-columns: repeat(6, 1fr);
-  gap: 10px;
-  margin: 0 0 18px;
+  gap: 12px;
+  margin: 0 0 16px;
 }
 .erp-flow-queue {
   background: var(--card);
@@ -11173,7 +11239,7 @@ tr.is-inactive {
   border-top: 3px solid var(--qc, var(--line));
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-card);
-  padding: 12px 14px;
+  padding: 12px 16px;
   text-align: left;
   cursor: pointer;
   font: inherit;
@@ -11186,7 +11252,7 @@ tr.is-inactive {
 }
 .erp-flow-queue-n {
   display: block;
-  font-size: 26px;
+  font-size: var(--fs-display);
   font-weight: 600;
   line-height: 1;
   letter-spacing: -0.02em;
@@ -11194,9 +11260,9 @@ tr.is-inactive {
 .erp-flow-queue-l {
   display: flex;
   align-items: center;
-  gap: 6px;
-  margin-top: 5px;
-  font-size: 12.5px;
+  gap: 8px;
+  margin-top: 4px;
+  font-size: var(--fs-label);
   color: var(--muted);
 }
 .erp-flow-dot {
@@ -11211,8 +11277,8 @@ tr.is-inactive {
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
-  margin: 0 0 10px;
-  font-size: 14px;
+  margin: 0 0 12px;
+  font-size: var(--fs-body);
   font-weight: 600;
 }
 .erp-flow-qtitle .cnt { color: var(--muted); font-weight: 400; }
@@ -11221,7 +11287,7 @@ tr.is-inactive {
 .erp-flow-list {
   display: flex;
   flex-direction: column;
-  gap: 9px;
+  gap: 8px;
 }
 .erp-flow-item {
   background: var(--card);
@@ -11244,11 +11310,11 @@ tr.is-inactive {
   display: flex;
   flex-wrap: wrap;
   align-items: flex-end;
-  gap: 8px 10px;
+  gap: 8px 12px;
   margin: 0 0 12px;
 }
 .erp-flow-filters .field { margin: 0; }
-.erp-flow-filters .field > span:not(.sr-only) { font-size: 11px; color: var(--muted); }
+.erp-flow-filters .field > span:not(.sr-only) { font-size: var(--fs-label); color: var(--muted); }
 .erp-flow-filters .erp-flow-filter-grow { flex: 1 1 220px; }
 .erp-flow-filters input[type="date"] { min-width: 140px; }
 .erp-flow-item-main { min-width: 0; }
@@ -11261,35 +11327,35 @@ tr.is-inactive {
 .erp-flow-item-r1 a { font-weight: 600; }
 .erp-flow-item-r2 {
   color: var(--muted);
-  font-size: 13px;
+  font-size: var(--fs-body);
   margin: 4px 0 0;
   display: flex;
-  gap: 10px;
+  gap: 12px;
   align-items: center;
   flex-wrap: wrap;
 }
 .erp-flow-src {
-  font-size: 10.5px;
+  font-size: var(--fs-label);
   font-weight: 600;
   letter-spacing: 0.02em;
   text-transform: uppercase;
-  color: #5B6472;
-  background: #EEF0F4;
-  padding: 1px 7px;
-  border-radius: 5px;
+  color: var(--st-neutral-ink);
+  background: var(--st-neutral-bg);
+  padding: 4px 8px;
+  border-radius: var(--r-pill);
 }
-.erp-flow-src.is-woo { color: #6D3FC4; background: #F0E9FD; }
-.erp-flow-src.is-man { color: #0F766E; background: #E6F5F3; }
+.erp-flow-src.is-woo { color: var(--st-purple-ink); background: var(--st-purple-bg); }
+.erp-flow-src.is-man { color: var(--st-teal-ink); background: var(--st-teal-bg); }
 .erp-flow-item-side {
   display: flex;
   flex-direction: column;
   align-items: flex-end;
-  gap: 6px;
+  gap: 8px;
 }
 .erp-flow-amount {
   font-weight: 600;
   font-variant-numeric: tabular-nums;
-  font-size: 15px;
+  font-size: var(--fs-body);
   text-align: right;
   margin: 0;
 }
@@ -11297,45 +11363,45 @@ tr.is-inactive {
   display: block;
   color: var(--muted);
   font-weight: 400;
-  font-size: 11px;
+  font-size: var(--fs-label);
 }
 .erp-flow-item-actions {
   display: flex;
-  gap: 6px;
+  gap: 8px;
   align-items: center;
   flex-wrap: wrap;
   justify-content: flex-end;
 }
 
 /* --- alertas --- */
-.erp-flow-why-list { margin: 7px 0 0; }
+.erp-flow-why-list { margin: 8px 0 0; }
 .erp-flow-why {
   display: flex;
   align-items: baseline;
-  gap: 6px;
-  margin: 3px 0 0;
-  font-size: 12.5px;
-  color: #9A6700;
+  gap: 8px;
+  margin: 4px 0 0;
+  font-size: var(--fs-label);
+  color: var(--st-amber-ink);
 }
 .erp-flow-why.is-blocking { color: var(--danger); }
 .erp-flow-why.muted { color: var(--muted); }
 .erp-flow-alertbar {
   background: #FEF6EC;
   border: 1px solid #F3DCAE;
-  border-radius: 10px;
-  padding: 11px 14px;
-  margin: 0 0 14px;
+  border-radius: var(--r-panel);
+  padding: 12px 16px;
+  margin: 0 0 16px;
   display: flex;
   flex-direction: column;
-  gap: 7px;
+  gap: 8px;
 }
 .erp-flow-alertbar.is-blocking { background: #FEF3F2; border-color: #F5C7C2; }
 .erp-flow-alert {
   display: flex;
   align-items: center;
-  gap: 9px;
-  font-size: 13px;
-  color: #8A5A0A;
+  gap: 8px;
+  font-size: var(--fs-body);
+  color: var(--st-amber-ink);
 }
 .erp-flow-alertbar.is-blocking .erp-flow-alert { color: var(--danger); }
 .erp-flow-alert-fix { margin-left: auto; }
@@ -11343,8 +11409,8 @@ tr.is-inactive {
 /* --- stepper («línea de vida») --- */
 .erp-flow-steps {
   list-style: none;
-  margin: 0 0 14px;
-  padding: 6px 4px;
+  margin: 0 0 16px;
+  padding: 8px 4px;
   background: var(--card);
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
@@ -11353,9 +11419,9 @@ tr.is-inactive {
   grid-template-columns: repeat(7, 1fr);
 }
 .erp-flow-step {
-  padding: 14px 8px;
+  padding: 16px 8px;
   text-align: center;
-  border-right: 1px solid #EEF0F4;
+  border-right: 1px solid var(--line2);
 }
 .erp-flow-step:last-child { border-right: none; }
 .erp-flow-step-ic {
@@ -11365,24 +11431,24 @@ tr.is-inactive {
   margin: 0 auto 8px;
   display: grid;
   place-items: center;
-  background: #EEF0F4;
-  color: #9AA2AD;
-  font-size: 14px;
+  background: var(--st-neutral-bg);
+  color: var(--faint);
+  font-size: var(--fs-body);
 }
-.erp-flow-step.is-done .erp-flow-step-ic { background: #E7F6EC; color: #1F7A45; }
+.erp-flow-step.is-done .erp-flow-step-ic { background: var(--st-green-bg); color: var(--st-green-ink); }
 .erp-flow-step.is-now .erp-flow-step-ic {
   background: var(--brand);
   color: #fff;
   box-shadow: 0 0 0 4px var(--primary-tint);
 }
-.erp-flow-step-t { display: block; font-size: 12px; font-weight: 500; }
+.erp-flow-step-t { display: block; font-size: var(--fs-label); font-weight: 500; }
 .erp-flow-step.is-now .erp-flow-step-t { color: var(--brand-dark); }
 .erp-flow-step.is-skipped .erp-flow-step-t { color: var(--muted); }
 .erp-flow-step-d {
   display: block;
-  font-size: 11px;
-  color: #9AA2AD;
-  margin-top: 2px;
+  font-size: var(--fs-label);
+  color: var(--muted);
+  margin-top: 4px;
   min-height: 14px;
   overflow-wrap: anywhere;
 }
@@ -11392,44 +11458,44 @@ tr.is-inactive {
   background: var(--primary-tint);
   border: 1px solid #CFE0FF;
   border-radius: var(--radius-md);
-  padding: 14px 18px;
-  margin: 0 0 14px;
+  padding: 16px;
+  margin: 0 0 16px;
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 16px;
   flex-wrap: wrap;
 }
 .erp-flow-nowbar.is-blocking { background: #FEF3F2; border-color: #F5C7C2; }
 .erp-flow-nowbar-txt { flex: 1; min-width: 220px; }
 .erp-flow-nowbar-k {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--fs-label);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.03em;
   color: var(--brand-dark);
 }
 .erp-flow-nowbar.is-blocking .erp-flow-nowbar-k { color: var(--danger); }
-.erp-flow-nowbar-v { margin: 2px 0 0; font-size: 15px; }
+.erp-flow-nowbar-v { margin: 4px 0 0; font-size: var(--fs-subtitle); }
 .erp-flow-nowbar-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 
 /* --- paneles (resumen económico / FACTUSOL) --- */
 .erp-flow-grid2 {
   display: grid;
   grid-template-columns: 1.1fr 0.9fr;
-  gap: 14px;
-  margin-bottom: 14px;
+  gap: 16px;
+  margin-bottom: 16px;
 }
 .erp-flow-panel {
   background: var(--card);
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-card);
-  padding: 15px 18px;
+  padding: 16px;
 }
 .erp-flow-panel h3 {
-  margin: 0 0 11px;
-  font-size: 13px;
+  margin: 0 0 12px;
+  font-size: var(--fs-body);
   font-weight: 600;
   color: var(--muted);
   text-transform: uppercase;
@@ -11438,24 +11504,24 @@ tr.is-inactive {
 .erp-flow-kv {
   display: flex;
   justify-content: space-between;
-  gap: 10px;
-  padding: 7px 0;
+  gap: 12px;
+  padding: 8px 0;
   margin: 0;
-  font-size: 13.5px;
+  font-size: var(--fs-body);
 }
-.erp-flow-kv + .erp-flow-kv { border-top: 1px solid #EEF0F4; }
+.erp-flow-kv + .erp-flow-kv { border-top: 1px solid var(--line2); }
 .erp-flow-kv .k { color: var(--muted); }
 .erp-flow-kv .v { text-align: right; font-variant-numeric: tabular-nums; }
 .erp-flow-total {
   display: flex;
   justify-content: space-between;
   align-items: baseline;
-  padding-top: 9px;
-  margin-top: 5px;
+  padding-top: 8px;
+  margin-top: 4px;
   border-top: 1px solid var(--line);
 }
 .erp-flow-total .n {
-  font-size: 22px;
+  font-size: var(--fs-title);
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
@@ -11464,18 +11530,18 @@ tr.is-inactive {
 .erp-flow-pill {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  font-size: 11.5px;
+  gap: 4px;
+  font-size: var(--fs-label);
   font-weight: 500;
-  padding: 3px 8px;
-  border-radius: 6px;
-  background: #EEF0F4;
-  color: #5B6472;
+  padding: 4px 8px;
+  border-radius: var(--r-pill);
+  background: var(--st-neutral-bg);
+  color: var(--st-neutral-ink);
   white-space: nowrap;
 }
-.erp-flow-pill.is-p { background: #F0E9FD; color: #6D3FC4; }
-.erp-flow-pill.is-t { background: #E6F5F3; color: #0F766E; }
-.erp-flow-pill.is-n { background: #EEF0F4; color: #5B6472; }
+.erp-flow-pill.is-p { background: var(--st-purple-bg); color: var(--st-purple-ink); }
+.erp-flow-pill.is-t { background: var(--st-teal-bg); color: var(--st-teal-ink); }
+.erp-flow-pill.is-n { background: var(--st-neutral-bg); color: var(--st-neutral-ink); }
 
 /* --- menú «⋯» de la tarjeta de pedido --- */
 .erp-flow-menu { position: relative; }
@@ -11487,22 +11553,22 @@ tr.is-inactive {
   min-width: 210px;
   background: var(--card);
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: var(--r-panel);
   box-shadow: var(--shadow-card-hover);
-  padding: 6px;
+  padding: 8px;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 4px;
 }
 .erp-flow-menu-pop button,
 .erp-flow-menu-pop a {
   background: none;
   border: none;
   text-align: left;
-  padding: 8px 10px;
-  border-radius: 7px;
+  padding: 8px 12px;
+  border-radius: var(--r-control);
   font: inherit;
-  font-size: 13.5px;
+  font-size: var(--fs-body);
   color: inherit;
   cursor: pointer;
   text-decoration: none;
@@ -11517,19 +11583,23 @@ tr.is-inactive {
   gap: 8px;
   flex-wrap: wrap;
   align-items: center;
-  margin-bottom: 14px;
+  margin-bottom: 16px;
 }
 .erp-flow-filters-label {
-  font-size: 12px;
+  font-size: var(--fs-label);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--muted);
 }
 
+/* Lote 2 · E7: la ficha va a dos columnas solo desde 1280 px; entre 768 y
+   1279 una columna con los paneles debajo. */
+@media (max-width: 1279px) {
+  .erp-flow-grid2 { grid-template-columns: 1fr; }
+}
 @media (max-width: 1040px) {
   .erp-flow-queues { grid-template-columns: repeat(3, 1fr); }
-  .erp-flow-grid2 { grid-template-columns: 1fr; }
   .erp-flow-steps { grid-template-columns: repeat(7, minmax(84px, 1fr)); overflow-x: auto; }
 }
 @media (max-width: 640px) {
@@ -11544,18 +11614,18 @@ tr.is-inactive {
 .erp-flow-states {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px 18px;
+  gap: 8px 16px;
   align-items: center;
-  padding: 10px 14px;
-  margin: 0 0 14px;
+  padding: 12px 16px;
+  margin: 0 0 16px;
   background: var(--card);
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-card);
-  font-size: 13px;
+  font-size: var(--fs-body);
 }
 .erp-flow-states-title {
-  font-size: 11px;
+  font-size: var(--fs-label);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -11565,14 +11635,14 @@ tr.is-inactive {
 .erp-flow-state {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   flex-wrap: wrap;
 }
-.erp-flow-state-dom { color: var(--muted); font-size: 12px; }
+.erp-flow-state-dom { color: var(--muted); font-size: var(--fs-label); }
 .erp-flow-kv-actions {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   flex-wrap: wrap;
   justify-content: flex-end;
 }
@@ -11582,21 +11652,21 @@ tr.is-inactive {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   flex-wrap: wrap;
   padding: 8px 0;
-  font-size: 13.5px;
+  font-size: var(--fs-body);
 }
-.erp-flow-docrow + .erp-flow-docrow { border-top: 1px solid #EEF0F4; }
+.erp-flow-docrow + .erp-flow-docrow { border-top: 1px solid var(--line2); }
 .erp-flow-docrow .k { color: var(--muted); min-width: 80px; }
 .erp-flow-docrow .v {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   flex-wrap: wrap;
   justify-content: flex-end;
 }
-.erp-flow-panel { margin-bottom: 14px; }
+.erp-flow-panel { margin-bottom: 16px; }
 .erp-flow-grid2 .erp-flow-panel { margin-bottom: 0; }
 .erp-flow-panel .erp-doc-filters { margin: 0 0 8px; }
 .erp-flow-table { overflow-x: auto; }
@@ -11606,12 +11676,12 @@ tr.is-inactive {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  padding: 8px 10px;
-  font-size: 12.5px;
+  padding: 8px 12px;
+  font-size: var(--fs-label);
   color: var(--muted);
 }
 .erp-flow-menu-field select { font: inherit; color: var(--ink); }
-.page-header-actions select { padding: 6px 8px; }
+.page-header-actions select { padding: 8px; }
 
 /* =============================================================
    Rediseño de flujo · Fase 2 — buscador de empresa unificado y
@@ -11624,7 +11694,7 @@ tr.is-inactive {
   padding: 0;
   border: 1px solid var(--brand);
   border-top: none;
-  border-radius: 0 0 10px 10px;
+  border-radius: 0 0 var(--r-panel) var(--r-panel);
   background: var(--card);
   box-shadow: var(--shadow-card-hover);
   overflow: hidden;
@@ -11635,10 +11705,10 @@ tr.is-inactive {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 10px;
-  padding: 10px 13px;
-  border-top: 1px solid #EEF0F4;
-  font-size: 13.5px;
+  gap: 12px;
+  padding: 12px;
+  border-top: 1px solid var(--line2);
+  font-size: var(--fs-body);
   cursor: pointer;
 }
 .company-search-item:first-child { border-top: none; }
@@ -11646,14 +11716,14 @@ tr.is-inactive {
 .company-search-item:hover { background: #F7F9FF; }
 .company-search-item.is-create { color: var(--brand-dark); font-weight: 500; background: #F2F6FF; }
 .company-search-item.is-create.is-active { background: var(--primary-tint-strong); }
-.company-search-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.company-search-meta { color: var(--muted); font-size: 12px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
-.company-search-hint { padding: 10px 13px; color: var(--muted); font-size: 13px; }
-.company-search-help { margin: 2px 0 0; }
-.company-field { display: grid; gap: 6px; }
+.company-search-main { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.company-search-meta { color: var(--muted); font-size: var(--fs-label); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.company-search-hint { padding: 12px; color: var(--muted); font-size: var(--fs-body); }
+.company-search-help { margin: 4px 0 0; }
+.company-field { display: grid; gap: 8px; }
 .company-field-picked p { margin: 4px 0 8px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 
-.company-create { display: grid; gap: 14px; }
+.company-create { display: grid; gap: 16px; }
 .company-create .erp-flow-panel { margin: 0; }
 .company-create-wrap { max-width: 720px; }
 .company-create-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
@@ -11667,30 +11737,31 @@ tr.is-inactive {
   gap: 8px;
   flex-wrap: wrap;
   margin: 4px 0 0;
-  padding: 9px 12px;
-  border-radius: 9px;
-  background: #E7F6EC;
-  color: #1F7A45;
-  font-size: 13px;
+  padding: 8px 12px;
+  border-radius: var(--r-control);
+  background: var(--st-green-bg);
+  color: var(--st-green-ink);
+  font-size: var(--fs-body);
 }
 .company-create-reason { margin-left: auto; }
 .company-create-dup {
-  margin: 10px 0 0;
-  padding: 10px 12px;
-  border-radius: 9px;
+  margin: 12px 0 0;
+  padding: 12px;
+  border-radius: var(--r-control);
   background: #FEF6EC;
   border: 1px solid #F3DCAE;
-  color: #8A5A0A;
-  font-size: 13px;
+  color: var(--st-amber-ink);
+  font-size: var(--fs-body);
 }
 .company-create-dup p { margin: 0 0 8px; }
 .company-create-hint { margin: 8px 0 0; }
 .company-create-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .company-create-factusol { margin-left: auto; }
-.company-picker-dialog { max-width: 560px; padding: 20px 22px; gap: 12px; }
-.company-picker-dialog.is-wide { max-width: 760px; }
+/* Lote 2 · E6: el buscador de empresa usa el molde (520 / 720 con `.wide`).
+   `.is-wide` se mantiene como alias para la ficha de empresa. */
+.company-picker-dialog.is-wide { max-width: var(--modal-w-wide); }
 .company-picker-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
-.company-picker-head h2 { margin: 0; font-size: 18px; }
+.company-picker-head h2 { margin: 0; font-size: var(--fs-title); }
 @media (max-width: 640px) {
   .company-create-row, .company-create-row3 { grid-template-columns: 1fr; }
   .company-create-reason { margin-left: 0; }
@@ -11698,20 +11769,20 @@ tr.is-inactive {
 
 /* --- Fase 3: ficha de empresa --- */
 .company-ficha-id .mono { font-variant-numeric: tabular-nums; }
-.company-edit-form.erp-flow-panel { margin-bottom: 14px; }
+.company-edit-form.erp-flow-panel { margin-bottom: 16px; }
 .erp-flow-panel h3 .badge { margin-left: 8px; vertical-align: middle; }
 
 /* Lote B3b/B4 · modal de proforma: portes + destinatario libre (dropshipping)
    y vista previa de la plantilla en «Duplicar». */
 .erp-quote-foot .erp-quote-portes input { width: 120px; }
-.erp-quote-shipping { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: #f8fafc; }
-.erp-quote-shipping .form-row { display: flex; gap: 10px; flex-wrap: wrap; }
+.erp-quote-shipping { display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid var(--line); border-radius: var(--r-control); background: #f8fafc; }
+.erp-quote-shipping .form-row { display: flex; gap: 12px; flex-wrap: wrap; }
 .erp-quote-shipping .form-row .field { flex: 1 1 160px; }
-.erp-quote-preview { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; }
-.erp-quote-preview-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.erp-quote-preview { display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid var(--line); border-radius: var(--r-control); }
+.erp-quote-preview-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .erp-quote-preview-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .erp-quote-preview td.num, .erp-quote-preview th.num { text-align: right; font-variant-numeric: tabular-nums; }
-.erp-quote-preview .erp-article-sku { font-size: 12px; }
+.erp-quote-preview .erp-article-sku { font-size: var(--fs-label); }
 
 /* ===== BoHub ERP — Cola SAT · Lote B6: filtros, vista lista, historial ======
    Solo la cola (/erp/sat): cabecera con toggle Tarjetas/Lista, barra de
@@ -11720,36 +11791,36 @@ tr.is-inactive {
 .sat-queue-head { flex-wrap: wrap; gap: 8px 12px; }
 .sat-queue-head .sat-queue-count { margin-right: auto; }
 .sat-queue-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.sat-view-toggle { display: inline-flex; border: 1px solid #cbd5e1; border-radius: 999px; overflow: hidden; background: #fff; }
-.sat-view-toggle button { border: 0; background: transparent; padding: 6px 14px; font-size: 13px; font-weight: 700; color: #475569; cursor: pointer; }
-.sat-view-toggle button[aria-pressed="true"] { background: #0f172a; color: #fff; }
-.sat-main .erp-flow-filters { background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 10px 12px; margin: 0 0 12px; }
-.sat-add-form { display: flex; align-items: flex-end; gap: 8px 10px; flex-wrap: wrap; margin: 0 0 14px; }
+.sat-view-toggle { display: inline-flex; border: 1px solid var(--line); border-radius: var(--r-pill); overflow: hidden; background: #fff; }
+.sat-view-toggle button { border: 0; background: transparent; padding: 8px 16px; font-size: var(--fs-body); font-weight: 700; color: var(--muted); cursor: pointer; }
+.sat-view-toggle button[aria-pressed="true"] { background: var(--ink); color: #fff; }
+.sat-main .erp-flow-filters { background: #fff; border: 1px solid var(--line); border-radius: var(--r-panel); padding: 12px; margin: 0 0 12px; }
+.sat-add-form { display: flex; align-items: flex-end; gap: 8px 12px; flex-wrap: wrap; margin: 0 0 16px; }
 .sat-add-form .field { margin: 0; flex: 1 1 240px; max-width: 360px; }
-.sat-add-form .field > span { font-size: 11px; color: var(--muted); }
+.sat-add-form .field > span { font-size: var(--fs-label); color: var(--muted); }
 .sat-add-form .form-info, .sat-add-form .form-error { margin: 0; flex: 1 1 100%; }
 /* Vista lista: en escritorio la cola puede ir más ancha que las tarjetas. */
 .sat-main:has(.sat-view-list) { max-width: 1200px; }
-.sat-table-wrap { overflow-x: auto; background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; }
-.sat-table { width: 100%; border-collapse: collapse; font-size: 14px; min-width: 760px; }
-.sat-table th, .sat-table td { padding: 8px 10px; border-bottom: 1px solid #e2e8f0; text-align: left; vertical-align: middle; white-space: nowrap; }
-.sat-table th { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: #64748b; background: #f8fafc; }
+.sat-table-wrap { overflow-x: auto; background: #fff; border: 1px solid var(--line); border-radius: var(--r-panel); }
+.sat-table { width: 100%; border-collapse: collapse; font-size: var(--fs-body); min-width: 760px; }
+.sat-table th, .sat-table td { padding: 8px 12px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: middle; white-space: nowrap; }
+.sat-table th { font-size: var(--fs-label); text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); background: #f8fafc; }
 .sat-table tbody tr:last-child td { border-bottom: 0; }
 .sat-table td.sat-td-cliente { white-space: normal; min-width: 160px; }
-.sat-table .sat-td-num a { font-weight: 800; color: #0f172a; text-decoration: none; }
+.sat-table .sat-td-num a { font-weight: 800; color: var(--ink); text-decoration: none; }
 .sat-table .sat-td-num a:hover { text-decoration: underline; }
 .sat-table .sat-row-total { margin-left: 8px; }
-.sat-table .sat-td-actions { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
-.sat-table .sat-chip-btn { padding: 4px 10px; font-size: 12px; }
-.sat-table .sat-confirm { display: inline-flex; gap: 6px; align-items: center; }
+.sat-table .sat-td-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.sat-table .sat-chip-btn { padding: 4px 12px; font-size: var(--fs-label); }
+.sat-table .sat-confirm { display: inline-flex; gap: 8px; align-items: center; }
 .sat-table tr.sat-row-error td { background: #fef2f2; white-space: normal; }
 .sat-table tr.sat-row-error p { margin: 0; }
-.sat-row-warn { color: #b45309; font-weight: 800; font-size: 11px; margin-left: 6px; }
-.sat-doc-flag { display: inline-block; margin-right: 8px; font-size: 12px; color: #94a3b8; }
+.sat-row-warn { color: var(--st-amber-ink); font-weight: 800; font-size: var(--fs-label); margin-left: 8px; }
+.sat-doc-flag { display: inline-block; margin-right: 8px; font-size: var(--fs-label); color: var(--muted); }
 .sat-doc-flag.ok { color: var(--success); font-weight: 700; }
-.sat-doc-flag.warn { color: #b54708; font-weight: 700; }
-.sat-history { margin-top: 20px; }
-.sat-history-toggle { display: block; width: 100%; text-align: left; border: 1px solid #e2e8f0; border-radius: 12px; background: #fff; padding: 12px 14px; font-size: 15px; font-weight: 800; color: #0f172a; cursor: pointer; margin-bottom: 10px; }
+.sat-doc-flag.warn { color: var(--st-amber-ink); font-weight: 700; }
+.sat-history { margin-top: 24px; }
+.sat-history-toggle { display: block; width: 100%; text-align: left; border: 1px solid var(--line); border-radius: var(--r-panel); background: #fff; padding: 12px 16px; font-size: var(--fs-subtitle); font-weight: 800; color: var(--ink); cursor: pointer; margin-bottom: 12px; }
 .sat-history-toggle[aria-expanded="true"] { border-bottom-left-radius: 0; border-bottom-right-radius: 0; margin-bottom: 0; border-bottom: 0; }
 .sat-history-toggle[aria-expanded="true"] + .sat-table-wrap { border-top-left-radius: 0; border-top-right-radius: 0; }
 .sat-history-reason { white-space: normal; }
@@ -11764,27 +11835,36 @@ tr.is-inactive {
    la Cola PEDIDOS. Solo se añade; nada de lo anterior cambia.
    ========================================================================== */
 
-/* Las cuatro pastillas de estado (Pagado · Facturado · Cobro registrado ·
-   Completado): verde = se cumple, gris = no. Grandes en la tarjeta, compactas
-   (is-sm) en la celda de la tabla. */
+/* Lote 2 · E4 — estado del pedido = rejilla fija de cuatro casillas (Pago ·
+   Factura · Cobro · Envío; ver OrderStatusGrid.tsx) + la pastilla «Completado»
+   (marca manual de BoHub, no es un paso del proceso). `.erp-status-pills` es
+   el envoltorio que usa la bandeja: grande en la tarjeta, compacto (is-sm) en
+   la celda de la tabla. Las casillas y pastillas INFORMAN, nunca se pulsan. */
 .erp-status-pills {
-  display: inline-flex;
+  display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: var(--sp-2);
   align-items: center;
 }
+.erp-status-pills > .erp-status-grid { flex: 1 1 320px; }
+.erp-status-pills.is-sm { gap: var(--sp-1); align-items: flex-start; flex-direction: column; }
+.erp-status-pills.is-sm > .erp-status-grid { flex: 0 0 auto; }
+.erp-flow-item-pills { margin: var(--sp-2) 0 var(--sp-1); }
+
+/* Pastilla «Completado»: verde = sí, neutro = no. */
 .erp-status-pill {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 3px 10px;
-  border-radius: 999px;
-  font-size: 12.5px;
+  gap: var(--sp-2);
+  padding: var(--sp-1) var(--sp-3);
+  border-radius: var(--r-pill);
+  font-size: var(--fs-label);
   font-weight: 600;
   line-height: 1.3;
   white-space: nowrap;
   border: 1px solid transparent;
   cursor: default;
+  color: var(--ink-on-color);
 }
 .erp-status-pill-dot {
   width: 7px;
@@ -11795,29 +11875,100 @@ tr.is-inactive {
   opacity: 0.9;
 }
 .erp-status-pill.is-on {
-  background: #E4F5EA;
-  color: #167A3E;
-  border-color: #BFE5CC;
+  --ink-on-color: var(--st-green-ink);
+  background: var(--st-green-bg);
 }
 .erp-status-pill.is-off {
-  background: #F1F3F6;
-  color: #7A8290;
-  border-color: #E3E7EC;
+  --ink-on-color: var(--st-neutral-ink);
+  background: var(--st-neutral-bg);
 }
-.erp-status-pills.is-sm { gap: 4px; }
-.erp-status-pills.is-sm .erp-status-pill { padding: 1px 7px; font-size: 11px; gap: 4px; }
+.erp-status-pills.is-sm .erp-status-pill { padding: 0 var(--sp-2); gap: var(--sp-1); }
 .erp-status-pills.is-sm .erp-status-pill-dot { width: 6px; height: 6px; }
-.erp-flow-item-pills { margin: 6px 0 2px; }
+
+/* Rejilla: cuatro casillas, misma posición y color siempre. Verde = hecho,
+   ámbar = pendiente, gris = no aplica, rojo = bloqueado. Cada casilla lleva
+   su palabra + la palabra del estado: funciona sin distinguir colores. */
+.erp-status-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--sp-2);
+  max-width: 520px;
+}
+.erp-status-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  padding: var(--sp-2) var(--sp-1);
+  border-radius: var(--r-control);
+  text-align: center;
+  cursor: default;
+  --ink-on-color: var(--st-neutral-ink);
+  background: var(--st-neutral-bg);
+  color: var(--ink-on-color);
+}
+.erp-status-cell-k {
+  font-size: var(--fs-label);
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.erp-status-cell-v {
+  max-width: 100%;
+  font-size: var(--fs-body);
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.erp-status-cell.is-done { --ink-on-color: var(--st-green-ink); background: var(--st-green-bg); }
+.erp-status-cell.is-pending { --ink-on-color: var(--st-amber-ink); background: var(--st-amber-bg); }
+.erp-status-cell.is-na { --ink-on-color: var(--st-neutral-ink); background: var(--st-neutral-bg); }
+.erp-status-cell.is-blocked { --ink-on-color: var(--st-red-ink); background: var(--st-red-bg); }
+/* Compacta (celda de la vista lista): 2×2 con etiqueta a la izquierda. */
+.erp-status-grid.is-sm {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--sp-1);
+  max-width: 260px;
+  min-width: 200px;
+}
+.erp-status-grid.is-sm .erp-status-cell {
+  flex-direction: row;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 2px var(--sp-2);
+  text-align: left;
+}
+.erp-status-grid.is-sm .erp-status-cell-v { font-size: var(--fs-label); }
+/* Móvil: 2×2 con etiqueta a la izquierda y valor a la derecha. */
+@media (max-width: 767px) {
+  .erp-status-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    max-width: none;
+  }
+  .erp-status-cell {
+    flex-direction: row;
+    justify-content: space-between;
+    align-items: center;
+    gap: var(--sp-2);
+    padding: var(--sp-2) var(--sp-3);
+    text-align: left;
+  }
+}
 
 /* Fecha del pedido, destacada en cada fila. */
 .erp-flow-date {
   font-variant-numeric: tabular-nums;
   font-weight: 600;
-  font-size: 12.5px;
+  font-size: var(--fs-label);
   color: var(--ink);
-  background: #F5F7FA;
-  border-radius: 5px;
-  padding: 1px 7px;
+  background: var(--st-neutral-bg);
+  border-radius: var(--r-control);
+  padding: 4px 8px;
   white-space: nowrap;
 }
 
@@ -11826,20 +11977,20 @@ tr.is-inactive {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px 8px;
+  gap: 8px;
   margin: -4px 0 12px;
 }
 .erp-flow-chip {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 3px 9px;
-  border-radius: 999px;
+  gap: 4px;
+  padding: 4px 8px;
+  border-radius: var(--r-pill);
   border: 1px solid #C7D7FF;
-  background: #EEF4FF;
+  background: var(--primary-tint);
   color: var(--brand);
   font: inherit;
-  font-size: 12.5px;
+  font-size: var(--fs-label);
   font-weight: 500;
   cursor: pointer;
 }
@@ -11853,10 +12004,10 @@ tr.is-inactive {
    tarjeta. En pantallas anchas desborda visible (el menú «⋯» necesita salir
    de la fila); en estrechas, scroll horizontal. */
 .erp-bandeja-table-wrap { overflow: visible; }
-.erp-bandeja-table { font-size: 13.5px; }
+.erp-bandeja-table { font-size: var(--fs-body); }
 .erp-bandeja-table th.num,
 .erp-bandeja-table td.num { text-align: right; white-space: nowrap; }
-.erp-bandeja-table td.erp-flow-amount { font-size: 14px; }
+.erp-bandeja-table td.erp-flow-amount { font-size: var(--fs-body); }
 .erp-bandeja-table td.erp-flow-amount small { text-align: right; }
 .erp-bandeja-table tr.is-alert td:first-child { box-shadow: inset 3px 0 0 #E2554A; }
 .erp-bandeja-table tr.is-muted td { opacity: 0.72; }
@@ -11882,16 +12033,561 @@ tr.is-inactive {
 .erp-bandeja-queue {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   font-weight: 600;
   white-space: nowrap;
 }
-.erp-bandeja-next { display: block; margin-top: 2px; }
-@media (max-width: 1100px) {
-  .erp-bandeja-table-wrap { overflow-x: auto; padding-bottom: 160px; margin-bottom: -160px; }
-  .erp-bandeja-table { min-width: 960px; }
-}
+.erp-bandeja-next { display: block; margin-top: 4px; }
+/* Lote 2 · E5: sin scroll horizontal. Por debajo de 1100 px la vista lista
+   se apila como pares (ver «Tabla de consulta» al final del fichero). */
 
 /* Cola PEDIDOS: barra de filtros ligera (buscar, tienda, orden) sobre el grid
    de tarjetas de aprobación. */
-.erp-approval-filters { margin: 0 0 14px; }
+/* Cola SAT (Lote 2 A3): motivo por el que el albarán de WooCommerce de un
+   pedido web no se puede descargar — junto al chip, visible en la tablet
+   (sin depender del tooltip). */
+.sat-chip-reason { display: inline-block; font-size: var(--fs-label); color: var(--st-amber-ink); white-space: normal; max-width: 100%; }
+
+/* --- ERP · Lote 2 (A1 + A2) — bandeja ------------------------------------ */
+
+/* A1: en la vista LISTA el botón principal es un enlace (`a.button`) dentro
+   de `table.data-table`, y `.data-table a { color: var(--brand) }` (más
+   específico que `.button`) le pisaba el blanco del texto: azul sobre azul,
+   un rectángulo sin texto. El enlace-botón conserva los colores del botón. */
+.data-table a.button { color: #fff; font-weight: 600; }
+.data-table a.button:hover { text-decoration: none; }
+.data-table a.button.secondary { color: var(--color-primary); }
+.data-table a.button.ghost { color: var(--color-dark); }
+
+/* Acción principal y «⋯» de cada pedido, en tarjetas y en lista: 40 px de
+   alto (referencia de diseño) y texto centrado. En la tabla la etiqueta no
+   se parte (la columna crece; en pantallas estrechas la tabla ya hace scroll). */
+.erp-flow-item-actions .button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 40px;
+}
+.erp-bandeja-table td .erp-flow-item-actions { flex-wrap: nowrap; }
+.erp-bandeja-table td .erp-flow-item-actions .button { white-space: nowrap; }
+
+/* A2: «Ver: Activos / Ocultados / Anulados» — un control segmentado
+   excluyente (una sola vista de revisión) en la barra de filtros. */
+.erp-flow-seg {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+.erp-flow-seg-label {
+  color: var(--muted);
+  padding: 0 6px 0 8px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-size: var(--fs-label);
+}
+.erp-flow-seg-btn {
+  font: inherit;
+  font-size: var(--fs-body);
+  font-weight: 500;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 5px 10px;
+  min-height: 30px;
+  cursor: pointer;
+}
+.erp-flow-seg-btn:hover { background: var(--color-bg-light); color: var(--color-dark); }
+.erp-flow-seg-btn.is-on {
+  background: #1b2330;
+  color: #fff;
+  font-weight: 600;
+}
+.erp-flow-seg-btn:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--color-primary) 35%, transparent);
+  outline-offset: 1px;
+}
+
+.erp-approval-filters { margin: 0 0 16px; }
+
+/* ==========================================================================
+   Sistema de diseño ERP · Lote 2 — reglas globales
+   (docs/ux/sistema-diseno-erp.md · docs/ux/revision-ux-erp). Va al FINAL del
+   fichero a propósito: fija el molde común (foco, tipografía de datos,
+   escala de botones, molde de modal, tabla de consulta, panel de ficha,
+   responsive y accesibilidad) por encima de los bloques ERP anteriores sin
+   reescribirlos. Solo toca el ERP y los tres moldes compartidos (.button,
+   .modal-dialog, .data-table); el resto del CRM no se repinta.
+   ========================================================================== */
+
+/* --- E1 · Foco visible en todos los controles --------------------------- */
+/* Botones, enlaces y controles de teclado: anillo --focus (3 px, 40 %). Los
+   campos ya llevan un halo por `box-shadow` (arriba); aquí se sube a --focus
+   para que teclado y ratón vean lo mismo. */
+button:focus-visible,
+a:focus-visible,
+summary:focus-visible,
+[role="button"]:focus-visible,
+[tabindex]:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  border-color: var(--brand);
+  box-shadow: 0 0 0 3px var(--focus);
+}
+input[type="checkbox"]:focus-visible,
+input[type="radio"]:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+  box-shadow: none;
+}
+
+/* --- E2 · Tipografía: datos numéricos en monoespaciada ------------------- */
+/* Referencias, nº de pedido/factura/albarán, NIF/CIF, importes, nº de serie:
+   `.mono` (texto) y `.num` (celda numérica, alineada a la derecha). */
+.mono,
+.num,
+.data-table td.num,
+.data-table th.num,
+.erp-flow-date,
+.erp-flow-amount,
+.erp-flow-total .n,
+.erp-flow-kv .v,
+.erp-doc-cobros-resumen dd,
+.erp-manual-total strong,
+.erp-article-sku,
+.erp-approval-num,
+.sat-card-num,
+.sat-td-num,
+.company-ficha-id .mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+.data-table td.num,
+.data-table th.num {
+  text-align: right;
+  white-space: nowrap;
+}
+/* Lo que acompaña al dato (régimen, unidad, pastilla, botón) vuelve a la
+   fuente base. */
+.erp-flow-amount small,
+.erp-flow-kv .v .badge,
+.erp-flow-kv .v .button { font-family: var(--font-base); }
+/* Cabeceras ERP mapeadas a la escala (display / title / subtitle / label). */
+.erp-flow-panel h3,
+.erp-flow-states-title,
+.erp-flow-nowbar-k,
+.erp-flow-filters-label,
+.erp-state-dom,
+.erp-ac-heading { font-size: var(--fs-label); }
+.erp-flow-panel h2,
+.erp-card h2,
+.company-create h2 { font-size: var(--fs-title); font-weight: 600; margin: 0 0 var(--sp-3); }
+
+/* --- E6 · Escala de botones ---------------------------------------------- */
+/* Primario (.button) · secundario (.button.secondary, con borde) · terciario
+   (.button.tertiary / .ghost, sin caja) · destructivo (.button.danger,
+   separado del grupo y con confirmación escrita). Un primario por pantalla.
+   Alto mínimo 40 px en escritorio y 48 px en móvil; `.small` (32 px) queda
+   para filas de tabla y chips densos. */
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--control-h);
+  border-radius: var(--r-control);
+  font-size: var(--fs-body);
+  line-height: 1.2;
+}
+.button.small,
+.data-table .button,
+.erp-bank-actions .button { min-height: 32px; }
+.button.lg { min-height: var(--control-h-touch); font-size: var(--fs-subtitle); }
+.button.secondary {
+  background: var(--card);
+  border-color: var(--line);
+  color: var(--ink);
+  font-weight: 500;
+}
+.button.secondary:hover:not(:disabled) { background: var(--bg); border-color: #cfd4dc; }
+.button.tertiary,
+.button.ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--muted);
+  font-weight: 500;
+}
+.button.tertiary:hover:not(:disabled),
+.button.ghost:hover:not(:disabled) { background: var(--st-neutral-bg); color: var(--ink); }
+.button.danger {
+  background: var(--card);
+  border-color: #f3c9c5;
+  color: var(--danger-ink);
+  font-weight: 500;
+}
+.button.danger:hover:not(:disabled) { background: var(--st-red-bg); border-color: var(--danger-ink); color: var(--danger-ink); }
+
+/* --- E6 · Molde único de modal ------------------------------------------- */
+/* Cabecera (título + contexto), cuerpo con scroll propio y pie fijo con la
+   acción a la derecha. Dos anchos: 520 (formulario) y 720 (`.wide`: buscador
+   con resultados / detalle con tabla). Anchos ad hoc prohibidos: la única
+   excepción es `.modal-wide` (editor de líneas de la proforma), documentada
+   arriba. En móvil ocupa toda la pantalla desde abajo. */
+.modal-dialog {
+  max-width: var(--modal-w-form);
+  border-radius: var(--r-panel);
+}
+.modal-dialog.wide { max-width: var(--modal-w-wide); }
+.modal-header {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  align-items: flex-start;
+  padding: var(--sp-4) var(--sp-6);
+  background: var(--card);
+  border-bottom: 1px solid var(--line2);
+}
+.modal-header h2 { font-size: var(--fs-title); font-weight: 600; line-height: 1.25; }
+.modal-body { padding: var(--sp-4) var(--sp-6); }
+.modal-close { color: var(--muted); }
+/* Modal estructurado (.modal-header + .modal-body + .modal-actions): el cuerpo
+   scrollea y el pie queda fijo. */
+.modal-dialog:has(> .modal-body) { overflow: hidden; }
+.modal-dialog > .modal-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+.modal-dialog > .modal-actions {
+  flex: none;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: var(--sp-3) var(--sp-6);
+  border-top: 1px solid var(--line2);
+  background: var(--card);
+}
+/* Modal «plano» del ERP (.erp-modal): el contenido va directo en el diálogo;
+   el h2 hace de cabecera pegajosa y .modal-actions de pie pegajoso. Alias:
+   .erp-emit-modal (nombre anterior) y .company-picker-dialog. */
+.modal-dialog.erp-modal,
+.modal-dialog.erp-emit-modal,
+.modal-dialog.company-picker-dialog {
+  padding: 0 var(--sp-6) var(--sp-4);
+  gap: var(--sp-3);
+  overflow-y: auto;
+}
+.modal-dialog.erp-modal > *,
+.modal-dialog.erp-emit-modal > *,
+.modal-dialog.company-picker-dialog > * { margin-top: 0; margin-bottom: 0; }
+.modal-dialog.erp-modal > h2:first-child,
+.modal-dialog.erp-emit-modal > h2:first-child,
+.modal-dialog.company-picker-dialog > .company-picker-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  margin: 0 calc(-1 * var(--sp-6)) var(--sp-1);
+  padding: var(--sp-4) var(--sp-6);
+  background: var(--card);
+  border-bottom: 1px solid var(--line2);
+  font-size: var(--fs-title);
+  font-weight: 600;
+  line-height: 1.25;
+}
+/* El contexto del título (nº de pedido, factura) va debajo, en cuerpo. */
+.modal-dialog.erp-modal > h2:first-child > .muted,
+.modal-dialog.erp-emit-modal > h2:first-child > .muted {
+  display: block;
+  margin-top: 2px;
+  font-size: var(--fs-body);
+  font-weight: 400;
+}
+.modal-dialog.erp-modal > .modal-actions,
+.modal-dialog.erp-emit-modal > .modal-actions,
+.modal-dialog.company-picker-dialog > .modal-actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  margin: auto calc(-1 * var(--sp-6)) calc(-1 * var(--sp-4));
+  padding: var(--sp-3) var(--sp-6);
+}
+/* Contenido de los modales del ERP que hasta ahora no tenía CSS propio. */
+.erp-modal .field,
+.erp-modal fieldset.field { margin: 0; }
+.erp-modal .field > span { font-size: var(--fs-label); color: var(--ink); font-weight: 500; }
+.erp-modal .field input,
+.erp-modal .field select,
+.modal-form input,
+.modal-form select { min-height: var(--control-h); border-radius: var(--r-control); border-color: var(--line); }
+.erp-modal .field-toggle { font-size: var(--fs-body); }
+.erp-cobro-target { padding: var(--sp-3); border: 1px solid var(--line); border-radius: var(--r-control); background: var(--bg); }
+.erp-cobro-target p { margin: 0 0 var(--sp-1); }
+.erp-cobro-target p:last-child { margin-bottom: 0; }
+.erp-cobro-summary { padding: var(--sp-2) var(--sp-3); border-radius: var(--r-control); background: var(--bg); }
+.erp-email-attachments {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: var(--sp-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+}
+.erp-email-attachments legend { padding: 0 var(--sp-1); font-size: var(--fs-label); font-weight: 600; color: var(--muted); }
+.erp-reason-chips { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin: 0 0 var(--sp-2); }
+.erp-bulto-row { display: flex; flex-direction: column; gap: var(--sp-2); padding: var(--sp-3); border: 1px solid var(--line); border-radius: var(--r-control); }
+.erp-bulto-head { display: flex; justify-content: space-between; align-items: center; gap: var(--sp-2); }
+.erp-bulto-fields { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--sp-2); }
+@media (max-width: 767px) { .erp-bulto-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+/* --- E5 · Tabla de consulta ----------------------------------------------- */
+/* Para comparar cifras y fechas: densa, cabecera fija, números a la derecha
+   en monoespaciada, envoltorio con scroll propio. En móvil (< 768) la tabla
+   con `.data-table--responsive` pasa a lista de pares etiqueta/valor
+   (`td[data-label]`); la vista lista de la bandeja y la tabla del taller se
+   apilan igual. Sin scroll horizontal en ninguna pantalla. */
+.table-wrapper,
+.erp-flow-table,
+.sat-table-wrap,
+.erp-bandeja-table-wrap { max-width: 100%; }
+.data-table thead th { font-size: var(--fs-label); font-weight: 600; }
+.erp-flow-panel .data-table thead th,
+.erp-doc-table thead th,
+.erp-seguimiento-table thead th,
+.erp-bank-table thead th,
+.data-table--responsive thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--surface, #f9fafb);
+}
+@media (max-width: 767px) {
+  table.data-table--responsive,
+  table.sat-table { min-width: 0; }
+  table.data-table--responsive thead,
+  table.sat-table thead { display: none; }
+  table.data-table--responsive,
+  table.data-table--responsive tbody,
+  table.sat-table,
+  table.sat-table tbody { display: block; width: 100%; }
+  table.data-table--responsive tr,
+  table.sat-table tr {
+    display: block;
+    margin: 0 0 var(--sp-2);
+    padding: var(--sp-2) var(--sp-3);
+    border: 1px solid var(--line);
+    border-radius: var(--r-panel);
+    background: var(--card);
+  }
+  table.data-table--responsive td,
+  table.sat-table td {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: var(--sp-3);
+    padding: var(--sp-1) 0;
+    border-bottom: 1px solid var(--line2);
+    text-align: right;
+    white-space: normal;
+  }
+  table.data-table--responsive td:last-child,
+  table.sat-table td:last-child { border-bottom: 0; }
+  table.data-table--responsive td::before {
+    content: attr(data-label);
+    flex: 0 0 40%;
+    text-align: left;
+    color: var(--muted);
+    font-family: var(--font-base);
+    font-size: var(--fs-label);
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+  table.data-table--responsive td:not([data-label]),
+  table.sat-table td { justify-content: flex-start; text-align: left; }
+  table.data-table--responsive tbody tr:hover,
+  table.sat-table tbody tr:hover { background: var(--card); }
+  .sat-table-wrap { overflow: visible; border: 0; background: transparent; }
+  .sat-table .sat-td-actions { justify-content: flex-start; }
+}
+/* Vista lista de la bandeja: por debajo de 1100 px se apila (sin scroll
+   horizontal ni truco de padding); el menú «⋯» sale de la fila igual. */
+@media (max-width: 1100px) {
+  .erp-bandeja-table-wrap { overflow: visible; }
+  table.erp-bandeja-table,
+  table.erp-bandeja-table tbody { display: block; width: 100%; min-width: 0; }
+  table.erp-bandeja-table thead { display: none; }
+  table.erp-bandeja-table tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: var(--sp-1) var(--sp-3);
+    margin: 0 0 var(--sp-2);
+    padding: var(--sp-3) var(--sp-4);
+    border: 1px solid var(--line);
+    border-radius: var(--r-panel);
+    background: var(--card);
+    box-shadow: var(--shadow-card);
+  }
+  table.erp-bandeja-table td { display: block; padding: 0; border: 0; text-align: left; }
+  table.erp-bandeja-table td.num { text-align: left; }
+  table.erp-bandeja-table td:last-child { grid-column: 1 / -1; }
+  table.erp-bandeja-table tr.is-alert { border-left: 3px solid #E2554A; }
+  table.erp-bandeja-table tr.is-alert td:first-child { box-shadow: none; }
+}
+
+/* --- E5 · Panel de ficha (pares etiqueta/valor) --------------------------- */
+/* Una entidad, pares etiqueta/valor; nunca tabla. `.erp-kv-grid` pone los
+   pares a dos columnas desde 1280 px y a una por debajo. */
+.erp-kv-grid {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: var(--sp-1) var(--sp-4);
+  margin: 0;
+}
+.erp-kv-grid dt,
+.erp-doc-detail-head dt { color: var(--muted); font-size: var(--fs-label); font-weight: 500; padding-top: 2px; }
+.erp-kv-grid dd,
+.erp-doc-detail-head dd { margin: 0; font-size: var(--fs-body); overflow-wrap: anywhere; }
+@media (min-width: 1280px) {
+  .erp-kv-grid { grid-template-columns: max-content minmax(0, 1fr) max-content minmax(0, 1fr); }
+}
+.erp-flow-kv .k { font-size: var(--fs-body); }
+
+/* --- E7 · Responsive y accesibilidad -------------------------------------- */
+/* ≥ 1280: ficha a dos columnas (arriba). 768–1279: una columna. < 768: colas
+   en fila con scroll táctil, línea de vida vertical, rejilla 2×2, acción
+   principal fija abajo, targets de 48 px. */
+/* Cola activa en oscuro: se ve de lejos dónde estás. */
+.erp-flow-queue.is-active {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: #fff;
+  box-shadow: none;
+}
+.erp-flow-queue.is-active .erp-flow-queue-l { color: rgba(255, 255, 255, 0.78); }
+.erp-flow-queue:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+/* Acción principal fija abajo (PrimaryActionBar.tsx). En escritorio es una
+   fila normal alineada a la derecha; en móvil se pega al borde inferior. */
+.erp-primary-sticky {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--sp-2) var(--sp-3);
+  margin: var(--sp-4) 0 0;
+}
+.erp-primary-sticky-hint { flex: 1 1 200px; margin: 0; color: var(--muted); font-size: var(--fs-label); }
+.erp-primary-sticky-actions { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+@media (max-width: 767px) {
+  .erp-primary-sticky {
+    position: sticky;
+    bottom: 0;
+    z-index: 25;
+    padding: var(--sp-3) 0 calc(var(--sp-3) + env(safe-area-inset-bottom, 0px));
+    background: rgba(255, 255, 255, 0.96);
+    backdrop-filter: saturate(140%) blur(6px);
+    border-top: 1px solid var(--line);
+    box-shadow: 0 -6px 18px rgba(27, 35, 48, 0.08);
+  }
+  .erp-primary-sticky-hint { flex-basis: 100%; text-align: center; }
+  .erp-primary-sticky-actions { width: 100%; }
+  .erp-primary-sticky-actions > .button { flex: 1 1 auto; min-height: var(--control-h-touch); font-size: var(--fs-subtitle); }
+  /* Targets táctiles de 48 px en todo control pulsable. */
+  .button,
+  .button.small,
+  .sat-btn,
+  .sat-chip-btn,
+  .erp-flow-chip,
+  .erp-flow-menu-pop button,
+  .erp-flow-menu-pop a,
+  .sat-view-toggle button,
+  .erp-tabs button { min-height: var(--control-h-touch); }
+  input:not([type="checkbox"]):not([type="radio"]),
+  select { min-height: var(--control-h-touch); }
+  .erp-flow-item input[type="checkbox"],
+  .erp-bandeja-table input[type="checkbox"],
+  .field-toggle input[type="checkbox"],
+  .checkbox input[type="checkbox"] { width: 22px; height: 22px; }
+  /* Colas: fila con scroll táctil y la activa en oscuro. */
+  .erp-flow-queues {
+    display: flex;
+    gap: var(--sp-2);
+    overflow-x: auto;
+    scroll-snap-type: x proximity;
+    padding-bottom: var(--sp-1);
+    -webkit-overflow-scrolling: touch;
+  }
+  .erp-flow-queue { flex: 0 0 auto; min-width: 132px; scroll-snap-align: start; }
+  /* Línea de vida vertical: cabe en cualquier ancho y cada paso muestra su
+     dato. Misma lista, otra dirección. */
+  .erp-flow-steps { grid-template-columns: 1fr; overflow: visible; padding: var(--sp-1) var(--sp-3); }
+  .erp-flow-step {
+    display: grid;
+    grid-template-columns: 30px minmax(0, 1fr);
+    column-gap: var(--sp-3);
+    align-items: center;
+    padding: var(--sp-2) 0;
+    border-right: 0;
+    border-bottom: 1px solid var(--line2);
+    text-align: left;
+  }
+  .erp-flow-step:last-child { border-bottom: 0; }
+  .erp-flow-step-ic { grid-row: 1 / span 2; margin: 0; }
+  .erp-flow-step-t,
+  .erp-flow-step-d { grid-column: 2; }
+  .erp-flow-step-d { min-height: 0; margin-top: 0; }
+  /* Fila de trabajo: importe y fecha se apilan bajo el nombre; el primario
+     ocupa todo el ancho. */
+  .erp-flow-item { grid-template-columns: auto minmax(0, 1fr); }
+  .erp-flow-item-side { grid-column: 1 / -1; align-items: stretch; }
+  .erp-flow-item-actions { justify-content: stretch; }
+  .erp-flow-item-actions > .button:not(.small):first-child { flex: 1 1 auto; }
+  /* Modal: hoja a pantalla completa desde abajo. */
+  .modal-overlay { padding: 0; align-items: flex-end; }
+  .modal-dialog,
+  .modal-dialog.wide,
+  .modal-dialog.modal-wide {
+    width: 100%;
+    max-width: none;
+    min-height: 55dvh;
+    max-height: 100dvh;
+    border-radius: var(--r-panel) var(--r-panel) 0 0;
+    animation: modal-sheet 160ms ease-out;
+  }
+  .modal-dialog.erp-modal,
+  .modal-dialog.erp-emit-modal,
+  .modal-dialog.company-picker-dialog { padding-left: var(--sp-4); padding-right: var(--sp-4); }
+  .modal-dialog.erp-modal > h2:first-child,
+  .modal-dialog.erp-emit-modal > h2:first-child,
+  .modal-dialog.company-picker-dialog > .company-picker-head,
+  .modal-dialog.erp-modal > .modal-actions,
+  .modal-dialog.erp-emit-modal > .modal-actions,
+  .modal-dialog.company-picker-dialog > .modal-actions {
+    margin-left: calc(-1 * var(--sp-4));
+    margin-right: calc(-1 * var(--sp-4));
+    padding-left: var(--sp-4);
+    padding-right: var(--sp-4);
+  }
+  .modal-header,
+  .modal-body,
+  .modal-dialog > .modal-actions { padding-left: var(--sp-4); padding-right: var(--sp-4); }
+  .modal-actions .button { flex: 1 1 auto; }
+  /* Paneles de la ficha plegados con resumen: los <details> del ERP. */
+  .erp-flow-panel details > summary { min-height: var(--control-h-touch); display: flex; align-items: center; }
+}
+@keyframes modal-sheet {
+  from { transform: translateY(24px); opacity: 0.6; }
+  to { transform: none; opacity: 1; }
+}
+/* Sin scroll horizontal de página en ningún ancho: lo que no cabe se apila o
+   scrollea dentro de su envoltorio. */
+.erp-flow,
+.erp-flow-panel,
+.erp-card,
+.sat-main { min-width: 0; max-width: 100%; }
+.erp-flow-item-r1 a,
+.erp-flow-kv .v,
+.erp-flow-docrow .v { overflow-wrap: anywhere; }
