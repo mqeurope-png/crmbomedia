@@ -127,6 +127,15 @@ export type OrderSummary = {
   completed_at?: string | null;
   completed_by_user_id?: string | null;
   completed_by_name?: string | null;
+  /** «Anular pedido» (solo manuales/FACTUSOL, reversible, distinto de
+   *  quitar): estado final; fuera de bandeja, colas y seguimiento. */
+  cancelled?: boolean;
+  cancelled_at?: string | null;
+  cancelled_reason?: string | null;
+  cancelled_by_user_id?: string | null;
+  cancelled_by_name?: string | null;
+  /** Nombre de envío (dropshipping) del pedido manual; null = la empresa. */
+  shipping_name?: string | null;
   /** Fase 2: nº del albarán FACTUSOL (`5-500008`) creado por BoHub al
    *  convertir la proforma / pedido de cliente. Los pedidos web no lo llevan. */
   factusol_albaran_number?: string | null;
@@ -302,8 +311,17 @@ export type OrderFilters = {
   show_external?: boolean;
   /** Control manual — ver SOLO los quitados a mano («Ver ocultados»). */
   show_excluded?: boolean;
+  /** «Ver anulados»: SOLO los pedidos anulados. */
+  show_cancelled?: boolean;
   /** «Completado»: true = solo completados, false = solo sin completar. */
   completed?: boolean;
+  /** Fase 6: facturado (true) / sin facturar (false); ausente = todos. */
+  invoiced?: boolean;
+  /** Fase 6: tienda por slug (artisjet / boprint / fluxlasers…). */
+  store_slug?: string;
+  /** Fase 6: rango de fecha del pedido (YYYY-MM-DD, inclusivo). */
+  placed_from?: string;
+  placed_to?: string;
   /** Cobro FACTUSOL (estado contable): cobrada / pendiente / sin_comprobar. */
   cobro?: "cobrada" | "pendiente" | "sin_comprobar";
   /** Rediseño de flujo: cola de trabajo (la organización primaria de la
@@ -328,12 +346,16 @@ const EMPTY_QUEUE_COUNTS = Object.fromEntries(
 ) as Record<WorkflowQueue, number>;
 
 export async function listOrders(filters: OrderFilters = {}): Promise<OrdersBandeja> {
-  const { show_external, show_excluded, completed, ...rest } = filters;
+  const {
+    show_external, show_excluded, show_cancelled, completed, invoiced, ...rest
+  } = filters;
   const query = qs({
     ...rest,
     show_external: show_external ? "true" : undefined,
     show_excluded: show_excluded ? "true" : undefined,
+    show_cancelled: show_cancelled ? "true" : undefined,
     completed: completed === undefined ? undefined : String(completed),
+    invoiced: invoiced === undefined ? undefined : String(invoiced),
   });
   const r = await apiFetch<Partial<OrdersBandeja>>(`/api/erp/orders${query}`);
   return {
@@ -347,8 +369,79 @@ export async function getOrder(id: string): Promise<OrderDetail> {
   return apiFetch<OrderDetail>(`/api/erp/orders/${id}`);
 }
 
-export async function listPendingApproval(): Promise<PendingOrder[]> {
-  const r = await apiFetch<{ items: PendingOrder[] }>("/api/erp/orders/pending-approval");
+// --- «Anular pedido» (manual / FACTUSOL; reversible; distinto de quitar) ----
+
+/** Documento FACTUSOL del pedido que se podría BORRAR al anular (albarán o
+ *  presupuesto). La factura nunca: se borra desde FACTUSOL. */
+export type CancelOrderDoc = {
+  doc_type: "albaranes" | "presupuestos";
+  serie: number;
+  codigo: number;
+  numero: string;
+  /** Estado en FACTUSOL (0 pendiente; albarán 1 = facturado; presupuesto 1 = aceptado). */
+  estado: number | null;
+  /** Se puede borrar sin romper nada (no facturado / sin hijos). */
+  deletable: boolean;
+  reason: string | null;
+};
+
+export type CancelOrderPreview = {
+  can_cancel: boolean;
+  /** Motivos por los que NO se puede anular (p. ej. ya tiene factura, es web). */
+  blockers: string[];
+  /** Avisos no bloqueantes. */
+  warnings: string[];
+  factusol_docs: CancelOrderDoc[];
+};
+
+export type CancelOrderPayload = {
+  /** OBLIGATORIO true: anular es una decisión, no un clic accidental. */
+  confirm: boolean;
+  reason?: string | null;
+  /** Borrar también en FACTUSOL los documentos marcados como borrables
+   *  (albarán / presupuesto). Se hace en cola (worker) y se informa. */
+  delete_factusol_docs?: boolean;
+};
+
+export type CancelOrderResult = OrderDetail & {
+  already_cancelled?: boolean;
+  /** Avisos no bloqueantes (p. ej. FACTUSOL no respondió: no se borró nada). */
+  cancel_warnings?: string[];
+  /** Job de borrado en FACTUSOL (si se pidió); se consulta con
+   *  `getConvertJobStatus`/`convert-status`. */
+  factusol_delete_job_id?: string | null;
+  factusol_docs_to_delete?: CancelOrderDoc[];
+};
+
+export async function previewCancelOrder(orderId: string): Promise<CancelOrderPreview> {
+  return apiFetch(`/api/erp/orders/${orderId}/cancel-preview`, { method: "POST" });
+}
+
+export async function cancelOrder(
+  orderId: string, payload: CancelOrderPayload,
+): Promise<CancelOrderResult> {
+  return apiFetch(`/api/erp/orders/${orderId}/cancel`, {
+    method: "POST", body: JSON.stringify(payload),
+  });
+}
+
+export async function uncancelOrder(orderId: string): Promise<OrderDetail & { already_active?: boolean }> {
+  return apiFetch(`/api/erp/orders/${orderId}/uncancel`, { method: "POST" });
+}
+
+/** Lote B8: filtros ligeros de la Cola PEDIDOS — tienda por slug y orden por
+ *  fecha (ascendente por defecto: lo más antiguo primero). */
+export type PendingApprovalFilters = {
+  store_slug?: string;
+  sort?: "placed_asc" | "placed_desc";
+};
+
+export async function listPendingApproval(
+  filters: PendingApprovalFilters = {},
+): Promise<PendingOrder[]> {
+  const r = await apiFetch<{ items: PendingOrder[] }>(
+    `/api/erp/orders/pending-approval${qs(filters)}`,
+  );
   return r.items;
 }
 
@@ -834,6 +927,9 @@ export type OrderCreatePayload = {
   pickup_in_store?: boolean;
   shipping_address?: OrderAddress | null;
   billing_address?: OrderAddress | null;
+  /** Nombre de envío (dropshipping): destinatario del albarán cuando NO es la
+   *  empresa cliente. null = enviar a la empresa. */
+  shipping_name?: string | null;
   /** Fase 1: el alta parte de un presupuesto / pedido de cliente de FACTUSOL. */
   factusol_source?: FactusolSourceInput | null;
   /** Fase 2 (solo con `factusol_source`): paso de pago y albarán en FACTUSOL. */
@@ -1011,6 +1107,9 @@ export type SatQueueItem = {
    *  botón de la ficha y el que adjunta el email al SAT. */
   factusol_albaran_number?: string | null;
   has_etiqueta: boolean;
+  /** Lote B6: tienda (slug) y fecha del pedido, para la vista lista. */
+  store_slug?: string | null;
+  placed_at?: string | null;
 };
 
 /** Cola SAT en 2 secciones (D-1-fix1): por embalar + listos para envío. */
@@ -1019,8 +1118,93 @@ export type SatQueue = {
   ready_for_pickup: SatQueueItem[];
 };
 
-export async function getSatQueue(): Promise<SatQueue> {
-  return apiFetch<SatQueue>("/api/erp/sat/queue");
+/** Filtro «Estado» de la Cola SAT: `por_embalar` = las tres de la sección
+ *  (bloqueado/preparando/en cola); `ready` = solo «Listos para envío». */
+export type SatQueueEstado = "por_embalar" | "blocked" | "in_queue" | "preparing" | "ready";
+
+/** Lote B6: filtros de la Cola SAT (mismos para cola e historial). Fechas
+ *  YYYY-MM-DD sobre la fecha del pedido; `q` busca nº de pedido o cliente. */
+export type SatQueueFilters = {
+  desde?: string;
+  hasta?: string;
+  store_slug?: string;
+  estado?: SatQueueEstado;
+  q?: string;
+};
+
+export async function getSatQueue(filters: SatQueueFilters = {}): Promise<SatQueue> {
+  return apiFetch<SatQueue>(`/api/erp/sat/queue${qs(filters)}`);
+}
+
+/** Fila del historial de «enviados al taller»: un email al SAT
+ *  (`email_sat`, con destinatarios) o un paso a in_queue (`aprobado`, con el
+ *  motivo: Cola PEDIDOS, enviado por email, reabierto, añadido a mano). */
+export type SatHistoryRow = {
+  order_id: string;
+  order_number: string;
+  contact_name: string | null;
+  company_name: string | null;
+  kind: "email_sat" | "aprobado";
+  at: string;
+  actor_user_id: string | null;
+  actor_name: string | null;
+  to: string[];
+  cc: string[];
+  subject: string | null;
+  attachment_kinds: string[];
+  reason: string | null;
+  from_status: string | null;
+  preparation_status: PreparationStatus;
+  transport_status: TransportStatus;
+  factusol_albaran_number: string | null;
+  has_albaran: boolean;
+  store_slug: string | null;
+  placed_at: string | null;
+  cancelled: boolean;
+  excluded: boolean;
+};
+
+export async function getSatHistory(
+  filters: SatQueueFilters & { limit?: number } = {},
+): Promise<{ items: SatHistoryRow[]; limit: number }> {
+  // El historial no filtra por `estado` (es un registro de lo que pasó).
+  const { desde, hasta, store_slug, q, limit } = filters;
+  return apiFetch(`/api/erp/sat/history${qs({ desde, hasta, store_slug, q, limit })}`);
+}
+
+/** «Añadir pedido a la cola»: nº de pedido → id + situación actual. */
+export type SatOrderLookup = {
+  id: string;
+  order_number: string;
+  contact_name: string | null;
+  company_name: string | null;
+  preparation_status: PreparationStatus;
+  transport_status: TransportStatus;
+  already_queued: boolean;
+  cancelled: boolean;
+  excluded: boolean;
+};
+
+export async function findSatOrderByNumber(number: string): Promise<SatOrderLookup> {
+  return apiFetch<SatOrderLookup>(`/api/erp/sat/find-order${qs({ number: number.trim() })}`);
+}
+
+export type SatEnqueueResult = {
+  order_id: string;
+  order_number: string;
+  preparation_status: PreparationStatus;
+  already_queued: boolean;
+  /** true si estaba pendiente de revisión y se aprobó al añadirlo. */
+  approved: boolean;
+  via: "approve" | "transition" | "direct" | null;
+};
+
+/** Añade un pedido a la Cola SAT a mano (pendiente → aprobado; embalado /
+ *  externalizado → vuelve a la cola). Idempotente si ya estaba. */
+export async function satEnqueueOrder(orderId: string): Promise<SatEnqueueResult> {
+  return apiFetch<SatEnqueueResult>(`/api/erp/orders/${orderId}/sat-enqueue`, {
+    method: "POST",
+  });
 }
 
 /** «Marcar recogido»: el paquete salió del taller → transporte in_transit. */
@@ -2425,7 +2609,11 @@ export type FactusolArticle = {
 /** Una línea del desglose de la proforma. */
 export type FactusolQuoteLine = {
   position: number;
+  /** CODART interno (`ARTLPS`); null en las líneas de texto libre. */
   codart: string | null;
+  /** Lote B4: SKU comercial (`EQUART`) del artículo — el que enseña y busca
+   *  el autocomplete. Null en las de texto libre; ausente en mocks antiguos. */
+  sku?: string | null;
   description: string;
   quantity: number;
   unit_price: number;
@@ -2451,8 +2639,10 @@ export type FactusolQuote = {
   base: number;
   iva: number;
   total: number;
+  /** Lote B3b: portes de la cabecera (`IPOR1PRE`); 0 si no tiene. */
+  portes?: number;
   lines?: FactusolQuoteLine[];
-  line_source?: "cache" | "ref_text";
+  line_source?: "cache" | "ref_text" | "F_LPS";
   /** Fase 4: estado (`ESTPRE`), cola, empresa CRM vinculada, régimen de IVA
    *  (de la empresa; sin empresa, lo que dice la cabecera) y el pedido de
    *  BoHub si ya se convirtió. Ausentes en respuestas antiguas / mocks. */
@@ -2821,6 +3011,24 @@ export type CreateQuotePayload = {
     provincia?: string;
     pais?: string;
   } | null;
+  /** Lote B3b: gastos de envío. Van a la banda de portes de la cabecera
+   *  (IPOR1PRE), como en el albarán manual — NO como línea. 0/null → sin. */
+  portes?: number | null;
+  /** Lote B3b: destinatario libre (dropshipping). Pisa el bloque de envío de
+   *  la cabecera (nombre + dirección); el cliente fiscal no cambia. Si viene
+   *  junto con `address`, manda este. */
+  shipping?: QuoteShippingInput | null;
+};
+
+/** Destinatario de envío libre de la proforma (Lote B3b). Todo opcional: sin
+ *  nombre se conserva el del cliente; sin país, el del cliente. */
+export type QuoteShippingInput = {
+  name?: string;
+  address_line?: string;
+  city?: string;
+  postal_code?: string;
+  state?: string;
+  country?: string;
 };
 
 export async function createFactusolQuote(

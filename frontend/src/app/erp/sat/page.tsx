@@ -1,42 +1,283 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import { SatPreparingCard } from "../../components/erp/SatPreparingCard";
+import { satDateTime, SatQueueTable } from "../../components/erp/SatQueueTable";
 import { SatReadyCard } from "../../components/erp/SatReadyCard";
+import { getCurrentUser } from "../../lib/api";
 import { extractErrorMessage } from "../../lib/errors";
-import { getSatQueue, type SatQueue } from "../../lib/erpApi";
+import {
+  customerLabel,
+  ERP_EDIT_ROLES,
+  findSatOrderByNumber,
+  getErpSettings,
+  getSatHistory,
+  getSatQueue,
+  satEnqueueOrder,
+  STATUS_LABELS,
+  type SatHistoryRow,
+  type SatQueue,
+  type SatQueueEstado,
+  type SatQueueFilters,
+} from "../../lib/erpApi";
+
+type View = "cards" | "list";
+
+/** Preferencia de vista (tarjetas / lista) por dispositivo: la tablet del
+ *  taller quiere tarjetas; el escritorio de oficina, lista. */
+const VIEW_KEY = "bohub.sat.queue.view";
+
+function readStoredView(): View {
+  try {
+    return window.localStorage.getItem(VIEW_KEY) === "list" ? "list" : "cards";
+  } catch {
+    return "cards";
+  }
+}
+
+function storeView(view: View): void {
+  try {
+    window.localStorage.setItem(VIEW_KEY, view);
+  } catch {
+    // sin storage (modo privado, etc.): la preferencia dura la sesión
+  }
+}
+
+const ESTADO_OPTIONS: { value: "" | SatQueueEstado; label: string }[] = [
+  { value: "", label: "Todos" },
+  { value: "por_embalar", label: "Por embalar" },
+  { value: "blocked", label: "Bloqueados" },
+  { value: "in_queue", label: "En cola" },
+  { value: "preparing", label: "Preparando" },
+  { value: "ready", label: "Listos" },
+];
+
+const KIND_LABEL: Record<SatHistoryRow["kind"], string> = {
+  email_sat: "Email SAT",
+  aprobado: "Aprobado",
+};
 
 /** Cola SAT táctil (D-1-fix1): 2 secciones — «Por embalar» (con acceso al modo
  *  trabajo) y «Listos para envío» (imprimir albarán/etiqueta + marcar recogido).
- *  En móvil/tablet las secciones se apilan; en escritorio pueden ir en columnas. */
+ *  En móvil/tablet las secciones se apilan; en escritorio pueden ir en columnas.
+ *
+ *  Lote B6: filtros (fechas, tienda, estado, texto), vista tarjetas/lista con
+ *  las mismas acciones, historial de «enviados al taller» (email al SAT o
+ *  aprobación) y «Añadir pedido a la cola» a mano por nº de pedido. */
 export default function SatQueuePage() {
   const [queue, setQueue] = useState<SatQueue>({ preparing: [], ready_for_pickup: [] });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // --- filtros ---------------------------------------------------------------
+  const [desde, setDesde] = useState("");
+  const [hasta, setHasta] = useState("");
+  const [store, setStore] = useState("");
+  const [estado, setEstado] = useState<"" | SatQueueEstado>("");
+  const [qInput, setQInput] = useState("");
+  const [q, setQ] = useState("");
+  const [stores, setStores] = useState<{ slug: string; label: string }[]>([]);
+
+  // El buscador se aplica con un pequeño retardo para no pedir la cola en
+  // cada tecla (la tablet del taller va por wifi).
+  useEffect(() => {
+    const t = setTimeout(() => setQ(qInput.trim()), 300);
+    return () => clearTimeout(t);
+  }, [qInput]);
+
+  const filters = useMemo<SatQueueFilters>(() => {
+    const f: SatQueueFilters = {};
+    if (desde) f.desde = desde;
+    if (hasta) f.hasta = hasta;
+    if (store) f.store_slug = store;
+    if (estado) f.estado = estado;
+    if (q) f.q = q;
+    return f;
+  }, [desde, hasta, store, estado, q]);
+  const hasFilters = Object.keys(filters).length > 0;
+
+  function limpiar() {
+    setDesde(""); setHasta(""); setStore(""); setEstado(""); setQInput(""); setQ("");
+  }
+
+  // --- vista -----------------------------------------------------------------
+  const [view, setView] = useState<View>("cards");
+  useEffect(() => { setView(readStoredView()); }, []);
+  function changeView(v: View) {
+    setView(v);
+    storeView(v);
+  }
+
+  // --- permisos: añadir a mano es de oficina (admin / pedidos) ---------------
+  const [canEdit, setCanEdit] = useState(false);
+
+  useEffect(() => {
+    getCurrentUser()
+      .then((u) => setCanEdit(Boolean(u && (ERP_EDIT_ROLES as readonly string[]).includes(u.role))))
+      .catch(() => setCanEdit(false));
+    // Las tiendas son best-effort: sin ellas el filtro simplemente no sale.
+    getErpSettings()
+      .then((s) => setStores((s.woocommerce_stores ?? []).map((w) => ({ slug: w.slug, label: w.label }))))
+      .catch(() => setStores([]));
+  }, []);
+
+  // --- cola ------------------------------------------------------------------
   const load = useCallback(() => {
     setLoading(true);
-    getSatQueue()
+    setError(null);
+    getSatQueue(filters)
       .then(setQueue)
       .catch((e) => setError(extractErrorMessage(e, "No se pudo cargar la cola.")))
       .finally(() => setLoading(false));
-  }, []);
+  }, [filters]);
 
   useEffect(() => { load(); }, [load]);
+
+  // --- historial de enviados al taller ---------------------------------------
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [history, setHistory] = useState<SatHistoryRow[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+
+  const loadHistory = useCallback(() => {
+    setHistoryLoading(true);
+    setHistoryError(null);
+    getSatHistory(filters)
+      .then((r) => setHistory(r.items))
+      .catch((e) => setHistoryError(extractErrorMessage(e, "No se pudo cargar el historial.")))
+      .finally(() => setHistoryLoading(false));
+  }, [filters]);
+
+  useEffect(() => {
+    if (historyOpen) loadHistory();
+  }, [historyOpen, loadHistory]);
+
+  const refreshAll = useCallback(() => {
+    load();
+    if (historyOpen) loadHistory();
+  }, [load, loadHistory, historyOpen]);
+
+  // --- añadir a mano ---------------------------------------------------------
+  const [addNumber, setAddNumber] = useState("");
+  const [addBusy, setAddBusy] = useState(false);
+  const [addNotice, setAddNotice] = useState<string | null>(null);
+  const [addError, setAddError] = useState<string | null>(null);
+
+  async function addByNumber(e: FormEvent) {
+    e.preventDefault();
+    const num = addNumber.trim();
+    if (!num || addBusy) return;
+    setAddBusy(true);
+    setAddNotice(null);
+    setAddError(null);
+    try {
+      const found = await findSatOrderByNumber(num);
+      const r = await satEnqueueOrder(found.id);
+      const who = customerLabel(found);
+      const label = who ? `${r.order_number} (${who})` : r.order_number;
+      setAddNotice(
+        r.already_queued
+          ? `${label} ya estaba en la Cola SAT.`
+          : r.approved
+            ? `${label} añadido a la Cola SAT (aprobado).`
+            : `${label} añadido a la Cola SAT.`,
+      );
+      setAddNumber("");
+      refreshAll();
+    } catch (err) {
+      setAddError(extractErrorMessage(err, "No se pudo añadir el pedido a la cola."));
+    } finally {
+      setAddBusy(false);
+    }
+  }
 
   const { preparing, ready_for_pickup: ready } = queue;
 
   return (
-    <div className="sat-queue-wrap">
+    <div className={`sat-queue-wrap ${view === "list" ? "sat-view-list" : "sat-view-cards"}`}>
       <div className="sat-queue-head">
         <h1>Cola SAT</h1>
-        <span className="muted small">
+        <span className="muted small sat-queue-count">
           Por embalar: {preparing.length} · Listos: {ready.length}
         </span>
-        <button type="button" className="button secondary small" onClick={load}>
-          Actualizar
-        </button>
+        <div className="sat-queue-tools">
+          <div className="sat-view-toggle" role="group" aria-label="Vista">
+            <button type="button" aria-pressed={view === "cards"}
+                    onClick={() => changeView("cards")}>
+              Tarjetas
+            </button>
+            <button type="button" aria-pressed={view === "list"}
+                    onClick={() => changeView("list")}>
+              Lista
+            </button>
+          </div>
+          <button type="button" className="button secondary small" onClick={refreshAll}>
+            Actualizar
+          </button>
+        </div>
       </div>
+
+      <div className="erp-flow-filters" role="search" aria-label="Filtros de la Cola SAT">
+        <label className="field erp-flow-filter-grow">
+          <span className="sr-only">Buscar pedido o cliente</span>
+          <input
+            type="search" value={qInput} placeholder="Nº de pedido o cliente…"
+            aria-label="Buscar pedido o cliente"
+            onChange={(e) => setQInput(e.target.value)}
+          />
+        </label>
+        <label className="field">
+          <span>Desde</span>
+          <input type="date" aria-label="Fecha desde" value={desde}
+                 onChange={(e) => setDesde(e.target.value)} />
+        </label>
+        <label className="field">
+          <span>Hasta</span>
+          <input type="date" aria-label="Fecha hasta" value={hasta}
+                 onChange={(e) => setHasta(e.target.value)} />
+        </label>
+        {stores.length > 0 ? (
+          <label className="field">
+            <span>Tienda</span>
+            <select value={store} aria-label="Tienda" onChange={(e) => setStore(e.target.value)}>
+              <option value="">Todas</option>
+              {stores.map((s) => <option key={s.slug} value={s.slug}>{s.label}</option>)}
+            </select>
+          </label>
+        ) : null}
+        <label className="field">
+          <span>Estado</span>
+          <select value={estado} aria-label="Estado"
+                  onChange={(e) => setEstado(e.target.value as "" | SatQueueEstado)}>
+            {ESTADO_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+        </label>
+        {hasFilters || qInput ? (
+          <button type="button" className="button small secondary" onClick={limpiar}>
+            Limpiar filtros
+          </button>
+        ) : null}
+      </div>
+
+      {canEdit ? (
+        <form className="sat-add-form" onSubmit={addByNumber} aria-label="Añadir pedido a la cola">
+          <label className="field">
+            <span>Añadir pedido a la cola</span>
+            <input
+              type="text" value={addNumber} placeholder="Nº de pedido (p. ej. BOP-1234)"
+              aria-label="Número de pedido a añadir"
+              onChange={(e) => setAddNumber(e.target.value)}
+            />
+          </label>
+          <button type="submit" className="button small" disabled={addBusy || !addNumber.trim()}>
+            {addBusy ? "Añadiendo…" : "Añadir"}
+          </button>
+          {addNotice ? <span className="form-info small" role="status">{addNotice}</span> : null}
+          {addError ? <span className="form-error small" role="alert">{addError}</span> : null}
+        </form>
+      ) : null}
+
       {error ? <p className="form-error">{error}</p> : null}
       {loading ? <p className="muted">Cargando…</p> : null}
 
@@ -44,11 +285,14 @@ export default function SatQueuePage() {
         <section className="sat-section" aria-label="Por embalar">
           <h2>📦 Por embalar</h2>
           {preparing.length === 0 ? (
-            <p className="sat-empty">Nada por embalar.</p>
+            <p className="sat-empty">{hasFilters ? "Nada por embalar con estos filtros." : "Nada por embalar."}</p>
+          ) : view === "list" ? (
+            <SatQueueTable items={preparing} variant="preparing" onChanged={refreshAll}
+                           ariaLabel="Pedidos por embalar" />
           ) : (
             <div className="sat-cards">
               {preparing.map((o) => (
-                <SatPreparingCard key={o.id} order={o} onChanged={load} />
+                <SatPreparingCard key={o.id} order={o} onChanged={refreshAll} />
               ))}
             </div>
           )}
@@ -57,16 +301,82 @@ export default function SatQueuePage() {
         <section className="sat-section" aria-label="Listos para envío">
           <h2>🚚 Listos para envío</h2>
           {ready.length === 0 ? (
-            <p className="sat-empty">Nada listo para enviar.</p>
+            <p className="sat-empty">{hasFilters ? "Nada listo para enviar con estos filtros." : "Nada listo para enviar."}</p>
+          ) : view === "list" ? (
+            <SatQueueTable items={ready} variant="ready" onChanged={refreshAll}
+                           ariaLabel="Pedidos listos para envío" />
           ) : (
             <div className="sat-cards">
               {ready.map((o) => (
-                <SatReadyCard key={o.id} order={o} onChanged={load} />
+                <SatReadyCard key={o.id} order={o} onChanged={refreshAll} />
               ))}
             </div>
           )}
         </section>
       </div>
+
+      <section className="sat-section sat-history" aria-label="Historial de enviados al taller">
+        <button
+          type="button" className="sat-history-toggle" aria-expanded={historyOpen}
+          onClick={() => setHistoryOpen((o) => !o)}
+        >
+          {historyOpen ? "▾" : "▸"} Historial de enviados al taller
+          <span className="muted small"> · email al SAT o aprobación</span>
+        </button>
+        {historyOpen ? (
+          historyError ? (
+            <p className="form-error">{historyError}</p>
+          ) : historyLoading && history.length === 0 ? (
+            <p className="muted">Cargando historial…</p>
+          ) : history.length === 0 ? (
+            <p className="muted">Sin envíos al taller{hasFilters ? " con estos filtros" : ""}.</p>
+          ) : (
+            <div className="sat-table-wrap">
+              <table className="sat-table" aria-label="Enviados al taller">
+                <thead>
+                  <tr>
+                    <th>Nº</th>
+                    <th>Cliente</th>
+                    <th>Cuándo</th>
+                    <th>Quién</th>
+                    <th>Tipo</th>
+                    <th>Destinatario</th>
+                    <th>Estado actual</th>
+                    <th>Albarán</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {history.map((h, i) => (
+                    <tr key={`${h.kind}-${h.order_id}-${h.at}-${i}`}>
+                      <td className="sat-td-num">
+                        <Link href={`/erp/orders/${h.order_id}`}>{h.order_number}</Link>
+                      </td>
+                      <td className="sat-td-cliente">{customerLabel(h) || "—"}</td>
+                      <td>{satDateTime(h.at)}</td>
+                      <td>{h.actor_name ?? "—"}</td>
+                      <td title={h.reason ?? h.subject ?? undefined}>
+                        <span className={`badge ${h.kind === "email_sat" ? "active" : "ok"}`}>
+                          {KIND_LABEL[h.kind]}
+                        </span>
+                        {h.reason ? <span className="muted small sat-history-reason"> {h.reason}</span> : null}
+                      </td>
+                      <td>{h.to.length > 0 ? h.to.join(", ") : "—"}</td>
+                      <td>
+                        <span className={`badge ${STATUS_LABELS[h.preparation_status]?.tone ?? "muted"}`}>
+                          {STATUS_LABELS[h.preparation_status]?.label ?? h.preparation_status}
+                        </span>
+                        {h.cancelled ? <span className="badge bad"> Anulado</span> : null}
+                        {h.excluded ? <span className="badge muted"> Quitado</span> : null}
+                      </td>
+                      <td>{h.factusol_albaran_number ?? (h.has_albaran ? "Subido" : "—")}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )
+        ) : null}
+      </section>
     </div>
   );
 }

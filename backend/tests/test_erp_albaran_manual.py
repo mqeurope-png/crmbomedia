@@ -8,6 +8,7 @@ propia clave). Idempotente; los web nunca; el guard que no cuadra no escribe.
 """
 from __future__ import annotations
 
+import io
 import json
 import re
 from collections.abc import Generator
@@ -16,6 +17,7 @@ from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
+from pypdf import PdfReader
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -365,3 +367,158 @@ def test_guard_esquema_no_cuadra_no_escribe(http, session_factory, engine) -> No
     result = _run_job(engine, fake, "o-4")
     assert result["status"] == "created"
     assert _written(fake, "F_ALB")[0]["CLIALB"] == "2458"
+
+
+# ---------------------------------------------------------------------------
+# Lote B3a — destinatario del envío (dropshipping) en el albarán
+# ---------------------------------------------------------------------------
+
+ENVIO = {
+    "address_line": "12 Rue de la Paix", "city": "Paris", "postal_code": "75002",
+    "state": "Île-de-France", "country": "Francia",
+}
+
+
+def _pdf_text(pdf: bytes) -> str:
+    return "\n".join(p.extract_text() for p in PdfReader(io.BytesIO(pdf)).pages)
+
+
+def _fcli_reads(fake: AlbaranFakeClient) -> int:
+    return len([c for c in fake.calls if c[0] == "F_CLI"])
+
+
+def test_albaran_manual_con_destinatario_de_envio(http, session_factory, engine) -> None:
+    """Pedido con NOMBRE y DIRECCIÓN de envío (dropshipping): el bloque de
+    cliente de F_ALB lleva el destinatario (`CNOALB`) y la dirección de envío
+    (`CDO/CPO/CCP/CPR/CPAALB`, país a ISO numérico); `CLIALB`/`CNIALB` (código
+    y NIF) y teléfono/email siguen siendo los fiscales de F_CLI. El PDF del
+    albarán imprime la entrega y, en pequeño, «Facturar a: <nombre fiscal>».
+    La FACTURA que sale de ese albarán (cadena albaranes → facturas) vuelve a
+    los datos fiscales de F_CLI, nunca al destinatario."""
+    with session_factory() as s:
+        o = _manual(s, "o-ds", "MANUAL-000020", [
+            {"sku": "CDR80", "desc": "CD-R 80", "qty": 10, "price": 1.0},
+        ], packing={"shipping_address": dict(ENVIO)})
+        o.shipping_name = "Nombre envío"
+        s.commit()
+
+    fake = _client()
+    result = _run_job(engine, fake, "o-ds")
+    assert result["status"] == "created" and result["numero"] == "5-500004"
+    assert result["delivery_recipient"] == "Nombre envío"
+    (cab,) = _written(fake, "F_ALB")
+    # Entrega: destinatario + dirección de envío del pedido.
+    assert cab["CNOALB"] == "Nombre envío"
+    assert cab["CDOALB"] == "12 Rue de la Paix" and cab["CPOALB"] == "Paris"
+    assert cab["CCPALB"] == "75002" and cab["CPRALB"] == "Île-de-France"
+    assert cab["CPAALB"] == "250"                                # Francia, ISO numérico
+    # Fiscal: código y NIF del cliente F_CLI; teléfono y email de la ficha.
+    assert cab["CLIALB"] == 2458 and cab["CNIALB"] == "B12345678"
+    assert cab["TELALB"] == "972000000" and cab["CEMALB"] == "info@duplicoder.es"
+    assert cab["REFALB"] == "MANUAL-000020" and cab["TOTALB"] == 12.1
+    assert set(cab) <= ALB_REFERENCE_COLUMNS
+    with session_factory() as s:
+        assert s.get(Order, "o-ds").factusol_albaran_number == "5-500004"
+
+    # PDF del albarán: la entrega en el bloque de cliente y, debajo, a quién
+    # se factura (el nombre fiscal de F_CLI, que es lo que dirá la factura).
+    with _patched(fake):
+        pdf = http.get("/api/erp/orders/o-ds/factusol-albaran-pdf",
+                       headers=auth_headers(http, "user"))
+    assert pdf.status_code == 200, pdf.text
+    text = _pdf_text(pdf.content)
+    assert "Nombre envío" in text and "12 Rue de la Paix" in text
+    assert "Facturar a: DUPLICODER, S.L." in text
+
+    # Factura desde ese albarán: datos FISCALES releídos de F_CLI (una lectura
+    # más), CLIFAC/CNIFAC intactos, y la factura vinculada al pedido.
+    reads = _fcli_reads(fake)
+    with session_factory() as s:
+        fac = chain.convert_document(
+            s, fake, source_type="albaranes", target_type="facturas",
+            tip=5, cod=500004, ejercicio="2026",
+        )
+    assert fac["numero"] == "5-000001"
+    (factura,) = _written(fake, "F_FAC")
+    assert factura["CNOFAC"] == "Duplicoder"                     # F_CLI, no el destinatario
+    assert factura["CDOFAC"] == "C/ Mayor 1" and factura["CPOFAC"] == "Girona"
+    assert factura["CCPFAC"] == "17001" and factura["CPRFAC"] == "Girona"
+    assert factura["CPAFAC"] == "724"
+    assert factura["CLIFAC"] == 2458 and factura["CNIFAC"] == "B12345678"
+    assert factura["REFFAC"] == "MANUAL-000020" and factura["TOTFAC"] == 12.1
+    assert _fcli_reads(fake) == reads + 1
+    with session_factory() as s:
+        assert s.get(Order, "o-ds").factusol_invoice_number == "1"
+
+
+def test_albaran_manual_solo_nombre_o_solo_direccion_de_envio(session_factory, engine) -> None:
+    """Solo NOMBRE de envío → cambia `CNOALB` y la dirección sigue siendo la de
+    F_CLI; solo DIRECCIÓN de envío → `CNOALB` sigue siendo la empresa y la
+    dirección es la de envío (el país en blanco conserva el de F_CLI); una
+    dirección de envío VACÍA no cuenta: el registro es el de siempre y la
+    factura copia el albarán tal cual sin releer F_CLI."""
+    with session_factory() as s:
+        o = _manual(s, "o-n", "MANUAL-000021", [{"sku": "CDR80", "desc": "CD", "price": 1.0}])
+        o.shipping_name = "  Nombre envío  "
+        _manual(s, "o-d", "MANUAL-000022", [{"sku": "CDR80", "desc": "CD", "price": 1.0}],
+                packing={"shipping_address": {
+                    "address_line": "Av. Diagonal 1", "city": "Barcelona",
+                    "postal_code": "08019", "state": "", "country": "",
+                }})
+        _manual(s, "o-0", "MANUAL-000023", [{"sku": "CDR80", "desc": "CD", "price": 1.0}],
+                packing={"shipping_address": {
+                    "address_line": "", "city": "", "postal_code": "", "state": "",
+                    "country": "España",
+                }})
+        s.commit()
+    fake = _client()
+
+    assert _run_job(engine, fake, "o-n")["delivery_recipient"] == "Nombre envío"
+    cab = _written(fake, "F_ALB")[-1]
+    assert cab["CNOALB"] == "Nombre envío" and cab["CDOALB"] == "C/ Mayor 1"
+    assert cab["CPOALB"] == "Girona" and cab["CPAALB"] == "724"
+    assert cab["CLIALB"] == 2458 and cab["CNIALB"] == "B12345678"
+
+    assert _run_job(engine, fake, "o-d")["delivery_recipient"] == "Duplicoder"
+    cab = _written(fake, "F_ALB")[-1]
+    assert cab["CNOALB"] == "Duplicoder" and cab["CDOALB"] == "Av. Diagonal 1"
+    assert cab["CPOALB"] == "Barcelona" and cab["CCPALB"] == "08019"
+    assert cab["CPRALB"] == "" and cab["CPAALB"] == "724"         # país vacío → el de F_CLI
+
+    assert _run_job(engine, fake, "o-0")["delivery_recipient"] is None
+    cab = _written(fake, "F_ALB")[-1]
+    assert cab["CNOALB"] == "Duplicoder" and cab["CDOALB"] == "C/ Mayor 1"
+    assert cab["CPOALB"] == "Girona" and cab["CCPALB"] == "17001"
+
+    # Sin datos de envío la factura es la copia por sufijo de siempre.
+    reads = _fcli_reads(fake)
+    with session_factory() as s:
+        fac = chain.convert_document(
+            s, fake, source_type="albaranes", target_type="facturas",
+            tip=5, cod=500006, ejercicio="2026",
+        )
+    assert fac["order"]["order_number"] == "MANUAL-000023"
+    assert _fcli_reads(fake) == reads
+    factura = _written(fake, "F_FAC")[-1]
+    assert factura["CNOFAC"] == "Duplicoder" and factura["CDOFAC"] == "C/ Mayor 1"
+
+
+def test_factura_de_albaran_con_envio_sin_fcli_no_se_escribe(session_factory, engine) -> None:
+    """Guard de la factura: si el albarán lleva destinatario de envío y el
+    cliente fiscal ya no se puede leer de F_CLI, NO se factura (antes eso que
+    una factura al destinatario). Nada escrito en F_FAC/F_LFA."""
+    with session_factory() as s:
+        o = _manual(s, "o-ko", "MANUAL-000024", [{"sku": "CDR80", "desc": "CD", "price": 1.0}])
+        o.shipping_name = "Nombre envío"
+        s.commit()
+    fake = _client()
+    assert _run_job(engine, fake, "o-ko")["numero"] == "5-500004"
+    fake.tables["F_CLI"] = []
+    with session_factory() as s, pytest.raises(FactusolError, match="ya no existe en F_CLI"):
+        chain.convert_document(
+            s, fake, source_type="albaranes", target_type="facturas",
+            tip=5, cod=500004, ejercicio="2026",
+        )
+    assert _written(fake, "F_FAC") == [] and _written(fake, "F_LFA") == []
+    with session_factory() as s:
+        assert s.get(Order, "o-ko").factusol_invoice_number is None

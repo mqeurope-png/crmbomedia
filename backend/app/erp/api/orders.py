@@ -10,12 +10,12 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any, Literal
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field, model_validator
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.errors import not_found
@@ -111,6 +111,11 @@ class OrderCreate(BaseModel):
     pickup_in_store: bool = False
     shipping_address: AddressIn | None = None
     billing_address: AddressIn | None = None
+    # Lote B3a — nombre de envío (dropshipping): DESTINATARIO del albarán cuando
+    # no es la empresa cliente (`Order.shipping_name`). Con dirección de envío,
+    # el albarán FACTUSOL que crea BoHub lleva este nombre + esa dirección en su
+    # bloque de cliente; la factura sigue saliendo a los datos fiscales (F_CLI).
+    shipping_name: str | None = Field(default=None, max_length=120)
     # Fase 1: origen FACTUSOL (presupuesto / pedido de cliente) del alta manual.
     factusol_source: FactusolSourceIn | None = None
     # Fase 2 (solo con `factusol_source`): paso de confirmación de pago
@@ -203,7 +208,10 @@ def customer_names(
     # COMPLETÓ el pedido (vista «Ver ocultados», badge «Completado»), en 1 query.
     user_ids = {
         uid for o in orders
-        for uid in (o.seguimiento_excluded_by_user_id, o.completed_by_user_id)
+        for uid in (
+            o.seguimiento_excluded_by_user_id, o.completed_by_user_id,
+            o.cancelled_by_user_id,
+        )
         if uid
     }
     user_names: dict[str, str] = {}
@@ -219,6 +227,7 @@ def customer_names(
             "company_name": companies.get(o.company_id) if o.company_id else None,
             "excluded_by_name": user_names.get(o.seguimiento_excluded_by_user_id or ""),
             "completed_by_name": user_names.get(o.completed_by_user_id or ""),
+            "cancelled_by_name": user_names.get(o.cancelled_by_user_id or ""),
         }
         for o in orders
     }
@@ -291,6 +300,14 @@ def _serialise_summary(
         "completed_at": o.completed_at.isoformat() if o.completed_at else None,
         "completed_by_user_id": o.completed_by_user_id,
         "completed_by_name": names.get("completed_by_name"),
+        # «Anular» (reversible, distinto de quitar): quién, cuándo y motivo.
+        "cancelled": o.cancelled_at is not None,
+        "cancelled_at": o.cancelled_at.isoformat() if o.cancelled_at else None,
+        "cancelled_reason": o.cancelled_reason,
+        "cancelled_by_user_id": o.cancelled_by_user_id,
+        "cancelled_by_name": names.get("cancelled_by_name"),
+        # Nombre de envío (dropshipping) del pedido manual; null = la empresa.
+        "shipping_name": o.shipping_name,
     }
 
 
@@ -464,13 +481,23 @@ def _warnings(session: Session, o: Order) -> list[dict[str, str]]:
     return []
 
 
+#: Estados de facturación que cuentan como «facturado» para el filtro de la
+#: bandeja (además de tener nº de factura FACTUSOL). Mismo criterio que
+#: `workflow.is_invoiced` / `_COMPLETION_INVOICED`.
+_INVOICED_FILTER = ("generated", "invoiced_by_erp", "already_invoiced_externally")
+
+
 def worklist_visible(stmt):  # noqa: ANN001, ANN201 — Select[Order]
     """Control manual (#388 + bandeja): los pedidos QUITADOS a mano
     (`seguimiento_excluded_at`) salen de TODAS las listas de trabajo — bandeja,
     Cola PEDIDOS, colas SAT y seguimiento/Drive — con un solo flag. «Quitar»
     significa «este pedido fuera de mis listas»; «Reincluir» lo devuelve a
-    todas. La ficha del pedido (`/{order_id}`) sigue accesible."""
-    return stmt.where(Order.seguimiento_excluded_at.is_(None))
+    todas. La ficha del pedido (`/{order_id}`) sigue accesible.
+    Los ANULADOS («Anular», estado final reversible) salen igual de todas las
+    listas de trabajo; se ven con «Ver anulados»."""
+    return stmt.where(
+        Order.seguimiento_excluded_at.is_(None), Order.cancelled_at.is_(None),
+    )
 
 
 # --- endpoints ---------------------------------------------------------------
@@ -563,6 +590,8 @@ def create_order(
         notes=payload.notes,
         placed_at=payload.placed_at or datetime.now(UTC),
         packing_json=_manual_packing_json(payload),
+        # Lote B3a: destinatario del envío si no es la empresa (dropshipping).
+        shipping_name=(payload.shipping_name or "").strip() or None,
     )
     session.add(order)
     session.flush()
@@ -658,6 +687,21 @@ def _manual_packing_json(payload: OrderCreate) -> str | None:
     return json.dumps(data) if data else None
 
 
+def _where_store_slug(stmt, store_slug: str | None):  # noqa: ANN001, ANN201 — Select[Order]
+    """Tienda por SLUG (`account_id` de la cuenta Woo: artisjet / boprint /
+    fluxlasers…), sin distinguir mayúsculas. Lo usan la bandeja y la Cola
+    PEDIDOS."""
+    if not store_slug:
+        return stmt
+    from app.models.integration_settings import IntegrationAccount  # noqa: PLC0415
+
+    return stmt.where(Order.store_id.in_(
+        select(IntegrationAccount.id).where(
+            func.lower(IntegrationAccount.account_id) == store_slug.strip().lower()
+        )
+    ))
+
+
 @router.get("")
 def list_orders(
     payment: str | None = Query(default=None),
@@ -669,6 +713,8 @@ def list_orders(
     # Control manual — «Ver ocultados»: SOLO los quitados a mano (para
     # revisarlos y reincluirlos). Por defecto la bandeja los esconde.
     show_excluded: bool = Query(default=False),
+    # «Ver anulados»: SOLO los pedidos anulados (estado final reversible).
+    show_cancelled: bool = Query(default=False),
     # «Completado»: true = solo completados, false = solo sin completar,
     # ausente = todos (el badge distingue).
     completed: bool | None = Query(default=None),
@@ -685,6 +731,12 @@ def list_orders(
     # Fase 3 (ficha de empresa): pedidos de UNA empresa, con su `workflow`,
     # para la «actividad reciente».
     company_id: str | None = Query(default=None, max_length=36),
+    # Fase 6 (bandeja): tienda por SLUG (artisjet / boprint / fluxlasers…),
+    # facturado sí/no y rango de fechas del pedido (placed_at, ISO date).
+    store_slug: str | None = Query(default=None, max_length=64),
+    invoiced: bool | None = Query(default=None),
+    placed_from: date | None = Query(default=None),
+    placed_to: date | None = Query(default=None),
     sort: str = Query(default="placed_desc"),
     limit: int = Query(default=100, ge=1, le=500),
     session: Session = Depends(get_session),
@@ -694,6 +746,23 @@ def list_orders(
     stmt = select(Order)
     if company_id:
         stmt = stmt.where(Order.company_id == company_id)
+    stmt = _where_store_slug(stmt, store_slug)
+    if invoiced is True:
+        stmt = stmt.where(or_(
+            Order.factusol_invoice_number.isnot(None),
+            Order.invoice_status.in_(list(_INVOICED_FILTER)),
+        ))
+    elif invoiced is False:
+        stmt = stmt.where(
+            Order.factusol_invoice_number.is_(None),
+            Order.invoice_status.notin_(list(_INVOICED_FILTER)),
+        )
+    if placed_from:
+        stmt = stmt.where(Order.placed_at >= datetime.combine(placed_from, time.min, tzinfo=UTC))
+    if placed_to:
+        stmt = stmt.where(Order.placed_at < datetime.combine(
+            placed_to + timedelta(days=1), time.min, tzinfo=UTC,
+        ))
     if payment:
         stmt = stmt.where(Order.payment_status == payment)
     if cobro == "sin_comprobar":
@@ -715,7 +784,10 @@ def list_orders(
         stmt = stmt.where(Order.completed_at.isnot(None))
     elif completed is False:
         stmt = stmt.where(Order.completed_at.is_(None))
-    if show_excluded:
+    if show_cancelled:
+        # Vista de revisión: solo los anulados (con motivo y quién).
+        stmt = stmt.where(Order.cancelled_at.isnot(None))
+    elif show_excluded:
         # Vista de revisión: solo los quitados a mano (con motivo y quién).
         stmt = stmt.where(Order.seguimiento_excluded_at.isnot(None))
     else:
@@ -730,38 +802,51 @@ def list_orders(
         "total_desc": Order.total_amount.desc(),
         "created_desc": Order.created_at.desc(),
     }.get(sort, Order.placed_at.desc())
+    # Lote B7: la cola se decide en Python (`workflow`), así que el `limit`
+    # se aplica DESPUÉS de elegir cola — antes se recortaban 100 filas y luego
+    # se filtraba, y una cola con muchos pedidos salía incompleta. Se cargan
+    # todas las filas filtradas, se calcula el workflow de todas (los
+    # contadores son de TODO lo filtrado, para que las pastillas de cola no
+    # cambien al elegir una), se filtra por cola y solo entonces se recorta.
     rows = list(session.scalars(
-        stmt.options(selectinload(Order.lines)).order_by(order_by).limit(limit)
+        stmt.options(selectinload(Order.lines)).order_by(order_by)
     ))
-    names = customer_names(session, rows)
     # Rediseño de flujo: el bloque `workflow` (cola + siguiente acción +
     # alertas) lo calcula el backend UNA vez y lo consumen igual la bandeja y
-    # la ficha. Los contadores son de TODO lo filtrado, para que las pastillas
-    # de cola no cambien al elegir una.
+    # la ficha.
     from app.erp.workflow import queue_counts, workflows_for  # noqa: PLC0415
 
     flows = workflows_for(session, rows)
     counts = queue_counts(flows)
+    if queue:
+        rows = [o for o in rows if flows[o.id]["queue"] == queue]
+    rows = rows[:limit]
+    names = customer_names(session, rows)
     items = [
         {**_serialise_summary(o, names.get(o.id)), "workflow": flows[o.id]}
         for o in rows
     ]
-    if queue:
-        items = [i for i in items if i["workflow"]["queue"] == queue]
     return {"items": items, "queue_counts": counts, "queue": queue}
 
 
 @router.get("/pending-approval")
 def pending_approval(
+    # Lote B8: filtros ligeros de la Cola PEDIDOS — tienda por slug y orden
+    # por fecha (ascendente por defecto: lo más antiguo primero, como siempre).
+    store_slug: str | None = Query(default=None, max_length=64),
+    sort: str = Query(default="placed_asc", pattern="^(placed_asc|placed_desc)$"),
     session: Session = Depends(get_session),
     current_user: User = Depends(require_erp_view),
 ) -> dict[str, Any]:
     """Cola PEDIDOS: pendientes de revisión con sus bloqueos calculados."""
     _ = current_user
+    stmt = _where_store_slug(
+        worklist_visible(select(Order).where(Order.preparation_status == "pending_review")),
+        store_slug,
+    )
     rows = list(session.scalars(
-        worklist_visible(select(Order).where(Order.preparation_status == "pending_review"))
-        .options(selectinload(Order.lines))
-        .order_by(Order.placed_at.asc())
+        stmt.options(selectinload(Order.lines))
+        .order_by(Order.placed_at.desc() if sort == "placed_desc" else Order.placed_at.asc())
     ))
     names = customer_names(session, rows)
     return {
@@ -1089,6 +1174,19 @@ def fire_transition(
     return _serialise_detail(session, _get_order(session, order_id), current_user)
 
 
+def approve_inline(session: Session, order: Order, actor: User, *, reason: str) -> None:
+    """Aprobación (Cola PEDIDOS): pending_review → in_queue vía engine +
+    approved_at/by. La comparten `/approve`, «Enviar a SAT» por email y
+    «Añadir a mano a la Cola SAT» (regla: enviado al taller = aprobado). El
+    caller comprueba antes `_blockers()`; aquí puede saltar TransitionError."""
+    apply_transition(
+        session, order=order, domain=StatusDomain.PREPARATION,
+        to_status="in_queue", actor=actor, reason=reason,
+    )
+    order.approved_at = datetime.now(UTC)
+    order.approved_by_user_id = actor.id
+
+
 @router.post("/{order_id}/approve")
 def approve_order(
     order_id: str,
@@ -1105,17 +1203,11 @@ def approve_order(
             detail={"code": "blocked", "blockers": blockers},
         )
     try:
-        apply_transition(
-            session, order=order, domain=StatusDomain.PREPARATION,
-            to_status="in_queue", actor=current_user,
-            reason="aprobado en Cola PEDIDOS",
-        )
+        approve_inline(session, order, current_user, reason="aprobado en Cola PEDIDOS")
     except TransitionError as exc:
         raise HTTPException(
             409, {"code": exc.code, "detail": exc.detail}
         ) from exc
-    order.approved_at = datetime.now(UTC)
-    order.approved_by_user_id = current_user.id
     session.commit()
     return _serialise_detail(session, _get_order(session, order_id), current_user)
 
@@ -1234,6 +1326,156 @@ def bulk_complete_orders(
         ),
         "items": items,
     }
+
+
+# --- «Anular pedido» (manual / FACTUSOL; reversible; distinto de quitar) -----
+
+
+class CancelOrderIn(BaseModel):
+    """`confirm` OBLIGATORIO: anular es una decisión, no un clic accidental.
+    `delete_factusol_docs`: borrar también en FACTUSOL el albarán / presupuesto
+    del pedido si siguen vivos (se hace en el worker serializado)."""
+
+    confirm: bool = False
+    reason: str | None = Field(default=None, max_length=255)
+    delete_factusol_docs: bool = False
+
+
+def _factusol_docs_for_cancel_safe(
+    session: Session, order: Order, warnings: list[str],
+) -> tuple[list[dict[str, Any]], str | None]:
+    """Documentos FACTUSOL del pedido (lectura en vivo) o [] con aviso si
+    FACTUSOL no responde — nunca se bloquea la anulación por eso."""
+    from app.erp.order_cancel import factusol_docs_for_cancel  # noqa: PLC0415
+    from app.integrations.factusol.client import FactusolClient  # noqa: PLC0415
+    from app.integrations.factusol.service import ejercicio_for  # noqa: PLC0415
+
+    try:
+        client = FactusolClient.from_settings()
+        ejercicio = ejercicio_for(session)
+        return factusol_docs_for_cancel(client, order, ejercicio=ejercicio), ejercicio
+    except Exception as exc:  # noqa: BLE001 — sin credenciales / caído
+        warnings.append(
+            f"No se pudo consultar FACTUSOL ({str(exc)[:120]}): no se borrará "
+            "ningún documento."
+        )
+        return [], None
+
+
+@router.post("/{order_id}/cancel-preview")
+def cancel_order_preview(
+    order_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_edit),
+) -> dict[str, Any]:
+    """Aviso previo a «Anular»: si se puede (pedido web o con factura → no),
+    y qué documentos FACTUSOL tiene el pedido y cuáles se podrían borrar
+    (albarán no facturado, presupuesto pendiente). No cambia nada."""
+    from app.erp.order_cancel import cancel_blockers  # noqa: PLC0415
+
+    _ = current_user
+    order = _get_order(session, order_id)
+    blockers = cancel_blockers(order)
+    warnings: list[str] = []
+    if order.cancelled_at is not None:
+        warnings.append("El pedido ya está anulado.")
+    docs: list[dict[str, Any]] = []
+    if not blockers:
+        docs, _ejercicio = _factusol_docs_for_cancel_safe(session, order, warnings)
+    return {
+        "can_cancel": not blockers and order.cancelled_at is None,
+        "blockers": blockers,
+        "warnings": warnings,
+        "factusol_docs": docs,
+    }
+
+
+@router.post("/{order_id}/cancel")
+def cancel_order(
+    order_id: str,
+    payload: CancelOrderIn,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_edit),
+) -> dict[str, Any]:
+    """«Anular pedido»: estado FINAL reversible, distinto de «quitar». Solo
+    pedidos manuales / de FACTUSOL sin factura (409 `cannot_cancel` si no).
+    Con `delete_factusol_docs` se encola el borrado del albarán / presupuesto
+    borrables (202-style: `factusol_delete_job_id`); la factura nunca.
+    Queda en el timeline (`erp.order_cancelled`)."""
+    from app.core.audit import record_event  # noqa: PLC0415
+    from app.erp.order_cancel import (  # noqa: PLC0415
+        CANCELLED_EVENT,
+        cancel_blockers,
+        mark_cancelled,
+    )
+
+    if not payload.confirm:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, {
+            "code": "confirmation_required",
+            "detail": "Anular requiere confirmación explícita.",
+        })
+    order = _get_order(session, order_id)
+    blockers = cancel_blockers(order)
+    if blockers:
+        raise HTTPException(status.HTTP_409_CONFLICT, {
+            "code": "cannot_cancel", "detail": " ".join(blockers), "blockers": blockers,
+        })
+    already = mark_cancelled(session, order, current_user, payload.reason)
+    if not already:
+        record_event(
+            session, action=CANCELLED_EVENT, target_type="order", target_id=order.id,
+            actor=current_user,
+            message="Pedido anulado" + (f": {payload.reason}" if payload.reason else ""),
+            metadata={"reason": payload.reason, "order_number": order.order_number},
+        )
+        session.commit()
+    warnings: list[str] = []
+    job_id: str | None = None
+    to_delete: list[dict[str, Any]] = []
+    if payload.delete_factusol_docs:
+        docs, ejercicio = _factusol_docs_for_cancel_safe(session, order, warnings)
+        to_delete = [d for d in docs if d.get("deletable")]
+        if to_delete and ejercicio:
+            from app.integrations.factusol.jobs import (  # noqa: PLC0415
+                enqueue_cancel_order_documents,
+            )
+
+            job_id = enqueue_cancel_order_documents(
+                order.id, to_delete, ejercicio, current_user.id,
+            )
+    order = _get_order(session, order_id)
+    return {
+        **_serialise_detail(session, order, current_user),
+        "already_cancelled": already,
+        # (`warnings` a secas es el bloque estructurado de la ficha.)
+        "cancel_warnings": warnings,
+        "factusol_delete_job_id": job_id,
+        "factusol_docs_to_delete": to_delete,
+    }
+
+
+@router.post("/{order_id}/uncancel")
+def uncancel_order(
+    order_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_edit),
+) -> dict[str, Any]:
+    """«Restaurar»: revierte `/cancel` en BoHub (lo borrado en FACTUSOL no se
+    recrea: se avisa). Idempotente."""
+    from app.core.audit import record_event  # noqa: PLC0415
+    from app.erp.order_cancel import UNCANCELLED_EVENT, unmark_cancelled  # noqa: PLC0415
+
+    order = _get_order(session, order_id)
+    already = unmark_cancelled(session, order)
+    if not already:
+        record_event(
+            session, action=UNCANCELLED_EVENT, target_type="order", target_id=order.id,
+            actor=current_user, message="Pedido restaurado (anulación revertida)",
+            metadata={"order_number": order.order_number},
+        )
+        session.commit()
+    order = _get_order(session, order_id)
+    return {**_serialise_detail(session, order, current_user), "already_active": already}
 
 
 @router.post("/{order_id}/uncomplete")
@@ -1834,6 +2076,7 @@ def order_factusol_albaran_pdf(
 
     from app.erp.api.factusol import _fop_names  # noqa: PLC0415
     from app.erp.factusol_pdf import (  # noqa: PLC0415
+        annotate_delivery_recipient,
         company_for_serie,
         extract_document_data,
         generate_document_pdf,
@@ -1881,6 +2124,11 @@ def order_factusol_albaran_pdf(
         data = extract_document_data(
             client, "albaranes", raw[0], raw[1], ejercicio=ejercicio,
             fop_names=_fop_names(client, ejercicio),
+        )
+        # Lote B3a: albarán con nombre de envío (dropshipping) → el PDF apunta
+        # además el nombre FISCAL del cliente debajo del bloque de entrega.
+        annotate_delivery_recipient(
+            session, data, order=order, client=client, ejercicio=ejercicio,
         )
     except FactusolError as exc:
         logger.warning("factusol albaran-pdf KO order=%s: %s", order_id, exc)

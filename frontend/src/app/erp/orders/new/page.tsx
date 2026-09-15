@@ -156,6 +156,10 @@ export default function NewManualOrderPage() {
   const [portes, setPortes] = useState("");
   const [pickup, setPickup] = useState(false);
   const [shipping, setShipping] = useState<OrderAddress>({ ...EMPTY_ADDRESS });
+  // Nombre de envío (dropshipping): destinatario del albarán cuando NO es la
+  // empresa cliente. Vacío = se envía a la empresa; la factura va SIEMPRE a
+  // los datos fiscales de la empresa.
+  const [shippingName, setShippingName] = useState("");
   const [billingSame, setBillingSame] = useState(true);
   const [billing, setBilling] = useState<OrderAddress>({ ...EMPTY_ADDRESS });
   const [pendingCrmCompany, setPendingCrmCompany] = useState<Company | null>(null);
@@ -754,6 +758,8 @@ export default function NewManualOrderPage() {
         notes: notes.trim() || null,
         pickup_in_store: pickup,
         shipping_address: pickup ? null : shipping,
+        // Dropshipping: el destinatario del albarán si no es la empresa.
+        shipping_name: pickup ? null : shippingName.trim() || null,
         billing_address: billingSame ? (pickup ? null : shipping) : billing,
         // Fase 1: si el alta partió de un documento FACTUSOL, el pedido lo lleva
         // como origen (nunca `woocommerce`) con su nº y forma de pago.
@@ -1179,7 +1185,27 @@ export default function NewManualOrderPage() {
             <span>Recogida en tienda</span>
           </label>
           {!pickup ? (
-            <AddressFields legend="envío" value={shipping} onChange={setShipping} />
+            <>
+              {/* Dropshipping: el albarán FACTUSOL que crea BoHub (y su PDF)
+                  va a este nombre + la dirección de envío de abajo; la
+                  factura sale siempre a los datos fiscales de la empresa. */}
+              <label className="field">
+                <span>Nombre de envío (si no es la empresa)</span>
+                <input type="text" value={shippingName}
+                       aria-label="Nombre de envío"
+                       placeholder="Destinatario del envío (dropshipping)"
+                       maxLength={120}
+                       title="Destinatario que sale en el albarán cuando el envío no va a la empresa cliente (dropshipping). En blanco: la empresa. La factura va siempre a la empresa."
+                       onChange={(e) => setShippingName(e.target.value)} />
+              </label>
+              <AddressFields legend="envío" value={shipping} onChange={setShipping} />
+              {shippingName.trim() ? (
+                <p className="muted small" role="status">
+                  El albarán irá a <strong>{shippingName.trim()}</strong> con esta
+                  dirección de envío; la factura, a la empresa.
+                </p>
+              ) : null}
+            </>
           ) : null}
         </section>
 

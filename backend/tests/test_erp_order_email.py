@@ -433,6 +433,101 @@ def test_email_guards_confirmacion_destinatario_y_alias(http, session_factory) -
     assert r.status_code == 403
 
 
+# --- Lote B6: «enviado al taller» = aprobado ---------------------------------
+
+
+def test_email_al_sat_aprueba_si_estaba_pendiente(http, session_factory) -> None:
+    """Enviar el pedido por email al SAT lo marca aprobado (pending_review →
+    in_queue, approved_at/by) igual que la Cola PEDIDOS, y el historial del
+    taller lo cuenta dos veces: el email y la aprobación."""
+    from app.erp.models import OrderStatusHistory  # noqa: PLC0415
+
+    with session_factory() as s:
+        order = _seed_order(s)
+        _seed_alias(s)
+        oid = order.id
+        assert order.preparation_status == "pending_review"
+    _set_sat_email(http, SAT)
+
+    send, _ = _patch_send()
+    with _patched_factusol(), send:
+        r = http.post(f"/api/erp/orders/{oid}/email", json=_body(),
+                      headers=auth_headers(http, "pedidos"))
+    assert r.status_code == 201, r.text
+    assert r.json()["approved"] is True
+    assert r.json()["preparation_status"] == "in_queue"
+
+    with session_factory() as s:
+        o = s.get(Order, oid)
+        assert o.preparation_status == "in_queue"
+        assert o.approved_at is not None and o.approved_by_user_id is not None
+        h = s.scalars(select(OrderStatusHistory).where(
+            OrderStatusHistory.order_id == oid,
+        )).one()
+        assert (h.from_status, h.to_status) == ("pending_review", "in_queue")
+        assert h.reason == "enviado al SAT por email"
+        # El envío sigue registrado (una sola vez).
+        s.scalars(select(AuditLog).where(AuditLog.action == "erp.order_emailed")).one()
+
+    r = http.get("/api/erp/sat/history", headers=auth_headers(http, "pedidos"))
+    assert r.status_code == 200
+    kinds = sorted(i["kind"] for i in r.json()["items"] if i["order_id"] == oid)
+    assert kinds == ["aprobado", "email_sat"]
+    # Y ya está en «Por embalar».
+    queue = http.get("/api/erp/sat/queue", headers=auth_headers(http, "pedidos")).json()
+    assert [i["order_number"] for i in queue["preparing"]] == ["PRO-000574"]
+
+
+def test_email_al_sat_no_aprueba_con_bloqueos_ni_si_ya_estaba_en_cola(
+    http, session_factory,
+) -> None:
+    """Con excepciones abiertas el correo sale igual pero NO se aprueba; y si
+    el pedido ya no está pendiente de revisión no se toca nada."""
+    from app.erp.models import ErpException, ExceptionType, OrderStatusHistory  # noqa: PLC0415
+
+    with session_factory() as s:
+        order = _seed_order(s)
+        _seed_alias(s)
+        oid = order.id
+        s.add(ErpException(type=ExceptionType.SAT_ISSUE, order_id=oid))
+        s.commit()
+    _set_sat_email(http, SAT)
+
+    send, _ = _patch_send()
+    with _patched_factusol(), send as sent:
+        r = http.post(f"/api/erp/orders/{oid}/email", json=_body(),
+                      headers=auth_headers(http, "pedidos"))
+    assert r.status_code == 201, r.text
+    sent.assert_called_once()
+    assert r.json()["approved"] is False
+    assert r.json()["preparation_status"] == "pending_review"
+    with session_factory() as s:
+        o = s.get(Order, oid)
+        assert o.preparation_status == "pending_review" and o.approved_at is None
+        assert s.scalars(select(OrderStatusHistory).where(
+            OrderStatusHistory.order_id == oid,
+        )).all() == []
+        # Ya en cola (p.ej. reabierto desde el taller): el envío no lo mueve.
+        o.preparation_status = "preparing"
+        s.commit()
+
+    send, _ = _patch_send()
+    with _patched_factusol(), send:
+        r = http.post(f"/api/erp/orders/{oid}/email", json=_body(),
+                      headers=auth_headers(http, "pedidos"))
+    assert r.status_code == 201, r.text
+    assert r.json()["approved"] is False
+    assert r.json()["preparation_status"] == "preparing"
+    with session_factory() as s:
+        assert s.get(Order, oid).preparation_status == "preparing"
+        assert s.scalars(select(OrderStatusHistory).where(
+            OrderStatusHistory.order_id == oid,
+        )).all() == []
+        assert len(s.scalars(select(AuditLog).where(
+            AuditLog.action == "erp.order_emailed",
+        )).all()) == 2
+
+
 def test_email_gmail_no_conectado_avisa(http, session_factory) -> None:
     """Gmail caído / sin conectar: aviso claro y NADA registrado."""
     from app.integrations.gmail.service import GmailNotConnectedError

@@ -23,6 +23,7 @@ export function OrderStatusMachine({
   onFire,
   busy,
   omit = null,
+  hide = [],
 }: {
   order: OrderDetail;
   onFire: (domain: StatusDomain, t: AvailableTransition) => void;
@@ -30,6 +31,10 @@ export function OrderStatusMachine({
   /** Transición que ya está como botón principal en «Siguiente paso»: aquí
    *  no se repite. */
   omit?: { domain: StatusDomain; to_status: string } | null;
+  /** Transiciones que la ficha NO ofrece como botón (p. ej. «Solicitar
+   *  factura», que era un alias de «Emitir factura FACTUSOL»). El arco sigue
+   *  existiendo en el backend; solo no se pinta. */
+  hide?: { domain: StatusDomain; to_status: string }[];
 }) {
   const statusOf: Record<StatusDomain, string> = {
     payment: order.payment_status,
@@ -47,7 +52,8 @@ export function OrderStatusMachine({
           <span className="erp-flow-state-dom">{DOMAIN_LABELS[d]}</span>
           <OrderStatusBadge status={statusOf[d]} />
           {order.available_transitions[d]?.filter(
-            (t) => !(omit && omit.domain === d && omit.to_status === t.to_status),
+            (t) => !(omit && omit.domain === d && omit.to_status === t.to_status)
+              && !hide.some((h) => h.domain === d && h.to_status === t.to_status),
           ).map((t) => (
             <button
               key={t.to_status}

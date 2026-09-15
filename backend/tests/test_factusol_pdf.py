@@ -151,9 +151,10 @@ def test_pdf_contains_all_required_fields_per_doc_type() -> None:
         "26-09-2026",                              # 1er vencimiento
         "ART-001", "Artículo de prueba 1", "40,00", "10", "87,12",
         "Albarán 5-500004", "21-08-2026", "BOP-099917",  # agrupación
-        "PED-777", "20-08-2026",                   # nº y fecha de su pedido
     ]:
         assert needle in text, f"factura sin {needle!r}"
+    # Bloque 1b: el nº/fecha de «su pedido» (PED*/FPE*) ya no se imprime.
+    assert "PED-777" not in text and "20-08-2026" not in text
 
     # PRESUPUESTO: mismas bandas + texto de validez de 30 días.
     pdf, _ = _pdf("presupuestos", _header("presupuestos"),
@@ -1052,7 +1053,7 @@ def test_column_headers_do_not_wrap_mid_word_in_all_languages() -> None:
             "col_dto", "col_subtotal", "col_total"]
     for lang in ("es", "en", "de", "fr", "nl"):
         lab = labels_for(lang)
-        for key, width in zip(keys, widths):
+        for key, width in zip(keys, widths, strict=True):
             para = _header_paragraph(lab[key], width)
             size = para.style.fontSize
             usable = width - 2 * _CELL_PAD_LR
@@ -1078,3 +1079,157 @@ def test_taxable_amount_label_translated_five_languages() -> None:
     for lang, label in esperado.items():
         pdf, _ = _pdf("facturas", header, [_linea("facturas", 1)], lang=lang)
         assert label in _texto(pdf), f"{lang} sin {label!r}"
+
+
+# ---------------------------------------------------------------------------
+# Lote ERP · Bloque 1b — sin el renglón «Nº DE SU PEDIDO / FECHA DE SU PEDIDO»
+# (PED*/FPE*) en ningún modelo ni idioma; y las fechas centinela 1900 de
+# FACTUSOL nunca se imprimen. Bloque 5a — el albarán no lleva datos bancarios.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("doc_type", ["facturas", "albaranes", "presupuestos", "pedidos"])
+@pytest.mark.parametrize("lang", ["es", "en", "de", "fr", "nl"])
+def test_pdf_never_prints_customer_order_line(doc_type: str, lang: str) -> None:
+    header = _header(doc_type)
+    pdf, _ = _pdf(doc_type, header, [_linea(doc_type, 1)], lang=lang)
+    text = _texto(pdf)
+    lab = labels_for(lang)
+    assert lab["su_pedido"] not in text
+    assert lab["fecha_su_pedido"] not in text
+    assert "PED-777" not in text
+    assert "1900" not in text
+
+
+def test_pdf_factusol_empty_date_sentinel_is_blank() -> None:
+    """FACTUSOL guarda «sin fecha» como 1900-01-01 / 1899-12-30: ni el
+    vencimiento ni ninguna fecha sale como 01-01-1900."""
+    from app.erp.factusol_pdf import _fmt_date
+
+    assert _fmt_date("1900-01-01T00:00:00") == ""
+    assert _fmt_date("1899-12-30T00:00:00") == ""
+    assert _fmt_date("2026-08-26T00:00:00") == "26-08-2026"
+    header = _header("facturas", VENFAC="1900-01-01T00:00:00", FPEFAC="1900-01-01T00:00:00")
+    pdf, data = _pdf("facturas", header, [_linea("facturas", 1)])
+    assert data["vencimiento"] == ""
+    assert "01-01-1900" not in _texto(pdf)
+
+
+@pytest.mark.parametrize("lang", ["es", "en", "de", "fr", "nl"])
+@pytest.mark.parametrize("variant", [None, "valorado", "devolucion"])
+def test_albaran_pdf_has_no_bank_data(lang: str, variant: str | None) -> None:
+    """Bloque 5a: el albarán (normal, valorado o de devolución) no imprime
+    banco/IBAN/BIC en ningún idioma; la factura sí los conserva."""
+    header = _header("albaranes")
+    pdf, _ = _pdf("albaranes", header, [_linea("albaranes", 1)], lang=lang, variant=variant)
+    text = _texto(pdf)
+    assert "IBAN" not in text and "BIC" not in text
+    assert labels_for(lang)["cuenta"] not in text
+    fac, _ = _pdf("facturas", _header("facturas"), [_linea("facturas", 1)], lang=lang)
+    assert "IBAN: ES11 0081 0202 1700 0125 9030" in _texto(fac)
+
+
+# ---------------------------------------------------------------------------
+# Lote B3a — albarán con destinatario de envío (dropshipping): el bloque de
+# cliente de F_ALB lleva la entrega y el PDF añade «Facturar a: <fiscal>».
+# ---------------------------------------------------------------------------
+
+
+def _albaran_dropship_data() -> dict[str, Any]:
+    """Albarán tal como lo escribe BoHub para un pedido con nombre y dirección
+    de envío: el bloque de cliente ES la entrega (CLIALB sigue siendo el
+    cliente fiscal 2458)."""
+    header = _header(
+        "albaranes", CNOALB="Nombre envío", CDOALB="12 Rue de la Paix",
+        CCPALB="75002", CPOALB="Paris", CPRALB="Île-de-France", CPAALB="250",
+    )
+    return extract_document_data(
+        _alb_resolver(), "albaranes", header, [_linea("albaranes", 1)],
+        ejercicio="2026",
+    )
+
+
+@pytest.mark.parametrize("lang", ["es", "en", "de", "fr", "nl"])
+@pytest.mark.parametrize("variant", [None, "valorado", "devolucion"])
+def test_albaran_pdf_prints_delivery_block_and_fiscal_name(
+    lang: str, variant: str | None,
+) -> None:
+    """El PDF imprime el bloque de F_ALB tal cual (destinatario + dirección de
+    envío) y, SOLO si se anotó el nombre fiscal, la línea «Facturar a: …» en
+    el idioma del documento, en todas las variantes del albarán. Un albarán
+    sin anotación (los de siempre) no lleva esa línea."""
+    lab = labels_for(lang)
+    company = dict(COMPANY_DEFAULTS[5])
+    data = _albaran_dropship_data()
+    plain = _texto(generate_document_pdf(data, company=company, lang=lang, variant=variant))
+    assert "Nombre envío" in plain and "12 Rue de la Paix" in plain
+    assert "75002 Paris" in plain
+    assert lab["facturar_a"] not in plain
+
+    data["cliente"]["nombre_fiscal"] = "DUPLICODER, S.L."
+    text = _texto(generate_document_pdf(data, company=company, lang=lang, variant=variant))
+    assert "Nombre envío" in text and "12 Rue de la Paix" in text
+    assert f"{lab['facturar_a']} DUPLICODER, S.L." in text
+
+
+def test_annotate_delivery_recipient(session_factory) -> None:
+    """`annotate_delivery_recipient`: solo albaranes de un pedido con
+    `shipping_name`. El nombre fiscal sale de F_CLI (NOFCLI del CLIALB, lo que
+    dirá la factura) o, si no se puede leer, de la empresa CRM vinculada a ese
+    código; si coincide con el nombre del bloque no se apunta nada; sin
+    pedido localizable, tampoco."""
+    from app.erp.factusol_pdf import annotate_delivery_recipient
+    from app.erp.models import OrderSource
+    from app.models.crm import Company
+
+    fcli = FakeClient({"F_CLI": [
+        {"CODCLI": 2458, "NOFCLI": "DUPLICODER, S.L.", "NOCCLI": "Duplicoder",
+         "NIFCLI": "B12345678", "PAICLI": "724"},
+    ]})
+    with session_factory() as s:
+        s.add(Company(id="dupli", name="Duplicoder CRM", factusol_company_id="2458"))
+        s.add(Order(id="o-ds", external_source=OrderSource.MANUAL, external_id="20",
+                    order_number="MANUAL-000020", company_id="dupli", total_amount=0,
+                    shipping_name="Nombre envío", factusol_albaran_number="5-260063"))
+        s.add(Order(id="o-plain", external_source=OrderSource.MANUAL, external_id="21",
+                    order_number="MANUAL-000021", company_id="dupli", total_amount=0))
+        s.commit()
+        ds, plain = s.get(Order, "o-ds"), s.get(Order, "o-plain")
+
+        data = _albaran_dropship_data()
+        assert annotate_delivery_recipient(
+            s, data, order=ds, client=fcli, ejercicio="2026",
+        ) == "DUPLICODER, S.L."
+        assert data["cliente"]["nombre_fiscal"] == "DUPLICODER, S.L."
+        assert data["cliente"]["nombre"] == "Nombre envío"          # el bloque no cambia
+        # Sin cliente FACTUSOL, o F_CLI sin ese código: la empresa CRM vinculada.
+        data = _albaran_dropship_data()
+        assert annotate_delivery_recipient(s, data, order=ds) == "Duplicoder CRM"
+        data = _albaran_dropship_data()
+        assert annotate_delivery_recipient(
+            s, data, order=ds, client=FakeClient({"F_CLI": []}), ejercicio="2026",
+        ) == "Duplicoder CRM"
+        # Pedido sin nombre de envío → nada; una factura → nada.
+        data = _albaran_dropship_data()
+        assert annotate_delivery_recipient(
+            s, data, order=plain, client=fcli, ejercicio="2026",
+        ) is None
+        assert "nombre_fiscal" not in data["cliente"]
+        fac = extract_document_data(
+            _alb_resolver(), "facturas", _header("facturas"), [_linea("facturas", 1)],
+            ejercicio="2026",
+        )
+        assert annotate_delivery_recipient(
+            s, fac, order=ds, client=fcli, ejercicio="2026",
+        ) is None
+        # Nombre de envío igual al fiscal: sin línea.
+        data = _albaran_dropship_data()
+        data["cliente"]["nombre"] = "duplicoder, s.l."
+        assert annotate_delivery_recipient(
+            s, data, order=ds, client=fcli, ejercicio="2026",
+        ) is None
+        # Sin `order`: se busca por la referencia común del albarán; una
+        # referencia que no es de ningún pedido no anota nada.
+        data = _albaran_dropship_data()
+        assert annotate_delivery_recipient(s, data, client=fcli, ejercicio="2026") is None
+        assert "nombre_fiscal" not in data["cliente"]

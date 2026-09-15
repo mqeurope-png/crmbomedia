@@ -39,6 +39,7 @@ from app.integrations.factusol.client import FactusolClient, FactusolError
 from app.integrations.factusol.customers import get_customer
 from app.integrations.factusol.documents import DOC_SPECS, visible_number
 from app.integrations.factusol.quotes import (
+    _cpapre,
     build_quote_line_payload,
     build_quote_payload,
     resolve_codarts,
@@ -128,6 +129,129 @@ def customer_for_albaran(
         # ninguno de los confirmados (Tarea C).
         "regime": row.get("regime"),
     }
+
+
+# --- destinatario del envío (dropshipping, Lote B3a) ---------------------------
+#
+# El pedido manual puede llevar un NOMBRE de envío (`Order.shipping_name`) y una
+# DIRECCIÓN de envío (`packing_json.shipping_address`, D-2) distintos de la
+# empresa cliente. F_ALB no tiene columnas de dirección de entrega (solo 84 de
+# sus 136 columnas están inventariadas), así que se sigue el precedente de la
+# dirección alternativa de las proformas (`_apply_address`): el bloque de
+# cliente del documento LLEVA los datos de entrega. `CLIALB`/`CNIALB` (código y
+# NIF) no se tocan: siguen siendo los fiscales, y la factura que salga de ese
+# albarán se vuelve a los datos de F_CLI (`fiscal_overrides_for_invoice`).
+
+#: `packing_json.shipping_address` (campo del alta manual) → clave del bloque
+#: de cliente que esperan los builders de C-4.
+_SHIPPING_ADDRESS_FIELDS: tuple[tuple[str, str], ...] = (
+    ("address_line", "direccion"), ("city", "ciudad"),
+    ("postal_code", "cp"), ("state", "provincia"),
+)
+
+#: Prefijos de las columnas del bloque de cliente que pisa el destinatario del
+#: envío en el albarán — y que la factura vuelve a leer de F_CLI.
+DELIVERY_COLUMN_PREFIXES: tuple[str, ...] = ("CNO", "CDO", "CPO", "CCP", "CPR", "CPA")
+
+
+def order_shipping_name(order: Order) -> str:
+    """Nombre de envío del pedido (dropshipping), o '' si se envía a la empresa."""
+    return str(getattr(order, "shipping_name", "") or "").strip()
+
+
+def order_shipping_address(order: Order) -> dict[str, Any] | None:
+    """`packing_json.shipping_address` del pedido si trae alguna línea de
+    dirección (calle, ciudad, CP o provincia); None si no hay o está vacía."""
+    from app.erp.factusol_albaran import packing_of  # noqa: PLC0415
+
+    addr = packing_of(order).get("shipping_address")
+    if not isinstance(addr, dict):
+        return None
+    if not any(str(addr.get(key) or "").strip() for key, _ in _SHIPPING_ADDRESS_FIELDS):
+        return None
+    return addr
+
+
+def has_delivery_overrides(order: Order) -> bool:
+    """¿El pedido lleva destinatario y/o dirección de envío propios? Solo
+    entonces el albarán se aparta de los datos de F_CLI."""
+    return bool(order_shipping_name(order)) or order_shipping_address(order) is not None
+
+
+def apply_delivery_recipient(customer: dict[str, Any], order: Order) -> dict[str, Any]:
+    """Bloque de cliente del ALBARÁN con el DESTINATARIO del envío.
+
+    El nombre de envío pisa `CNOALB` (si no hay, se queda el de la empresa) y
+    la dirección de envío del pedido pisa `CDO/CPO/CCP/CPR/CPAALB` — el país
+    por su nombre o ISO2 (`_cpapre` lo pasa a ISO numérico); si viene vacío se
+    conserva el de F_CLI. La dirección sustituye al bloque ENTERO: mezclar la
+    calle de la sede con la ciudad de entrega sería una dirección inventada.
+    Código de cliente, NIF, teléfono y email NO se tocan (fiscales). Sin datos
+    de envío devuelve el cliente tal cual (comportamiento de siempre)."""
+    name = order_shipping_name(order)
+    addr = order_shipping_address(order)
+    if not name and addr is None:
+        return customer
+    out = dict(customer)
+    if name:
+        out["nombre"] = name
+    if addr is not None:
+        for key, target in _SHIPPING_ADDRESS_FIELDS:
+            out[target] = str(addr.get(key) or "").strip()
+        country = str(addr.get("country") or "").strip()
+        if country:
+            out["pais"] = country
+    return out
+
+
+def fiscal_overrides_for_invoice(
+    session: Session, client: FactusolClient, *, header: dict[str, Any],
+    serie: int, codigo: int, ejercicio: str, suffix: str,
+) -> dict[str, Any]:
+    """Guard de la FACTURA (Lote B3a) al convertir `albaranes → facturas`.
+
+    Si el albarán es el de un pedido de BoHub con destinatario / dirección de
+    envío propios, su bloque de cliente lleva los datos de ENTREGA — y la
+    factura tiene que salir a los datos FISCALES. Devuelve las columnas
+    `CNO/CDO/CPO/CCP/CPR/CPA{suffix}` releídas de F_CLI (el `CLIALB` del propio
+    albarán, que siguió siendo el fiscal) para pisar lo copiado por sufijo;
+    `{}` si no hay pedido detrás o no tiene datos de envío (la copia de
+    siempre). Si F_CLI no se puede leer, `FactusolError`: antes no facturar
+    que facturar al destinatario del envío."""
+    from app.erp.factusol_albaran import (  # noqa: PLC0415
+        find_order_for_albaran,
+        manual_albaran_codcli,
+    )
+
+    order = find_order_for_albaran(session, serie, codigo)
+    if order is None or not has_delivery_overrides(order):
+        return {}
+    codcli = header.get("CLIALB")
+    if codcli in (None, ""):
+        codcli = manual_albaran_codcli(session, order)
+    numero = visible_number(serie, codigo)
+    if codcli in (None, ""):
+        raise FactusolError(
+            f"El albarán {numero} del pedido {order.order_number} lleva un "
+            "destinatario de envío y no se puede saber su cliente fiscal "
+            "(sin CLIALB ni empresa vinculada a F_CLI): no se factura."
+        )
+    customer = customer_for_albaran(client, codcli=codcli, ejercicio=ejercicio)
+    overrides = {
+        f"CNO{suffix}": str(customer.get("nombre") or "")[:255],
+        f"CDO{suffix}": str(customer.get("direccion") or "")[:255],
+        f"CPO{suffix}": str(customer.get("ciudad") or "")[:255],
+        f"CCP{suffix}": str(customer.get("cp") or "")[:20],
+        f"CPR{suffix}": str(customer.get("provincia") or "")[:255],
+        f"CPA{suffix}": _cpapre(customer.get("pais")),
+    }
+    logger.info(
+        "factusol albarán %s (pedido %s): destinatario de envío %r en el albarán; "
+        "la factura sale a los datos fiscales de F_CLI %s (%s)",
+        numero, order.order_number, header.get("CNOALB"), codcli,
+        overrides[f"CNO{suffix}"],
+    )
+    return overrides
 
 
 def apply_regime(
@@ -294,6 +418,18 @@ def create_standalone_albaran(
     )
     numero = visible_number(serie, int(codigo))
     fecha_doc = fecha or datetime.now(UTC).date().isoformat()
+    # Lote B3a: destinatario del envío (dropshipping) en el bloque de cliente
+    # del albarán; CLIALB/CNIALB siguen siendo los fiscales.
+    delivery = has_delivery_overrides(order)
+    if delivery:
+        customer = apply_delivery_recipient(customer, order)
+        logger.info(
+            "factusol albarán %s: destinatario de envío %r, dirección de envío %s "
+            "(cliente fiscal %s sin cambios en CLIALB/CNIALB)",
+            numero, customer.get("nombre"),
+            "propia" if order_shipping_address(order) is not None else "de F_CLI",
+            codcli,
+        )
     effective_regime, lines, regime_warning = apply_regime(
         customer, lines, regime=regime, numero=numero,
     )
@@ -379,6 +515,7 @@ def create_standalone_albaran(
             f"({len(lineas)} líneas desde BoHub, enlace DOC='{SELF_LINK_CODE}' "
             f"a sí mismo, régimen {effective_regime}"
             + (f"; texto libre: {', '.join(free_text)}" if free_text else "")
+            + (f"; destinatario de envío «{customer.get('nombre')}»" if delivery else "")
             + ")"
         ),
     )
@@ -392,5 +529,8 @@ def create_standalone_albaran(
         "standalone": True, "free_text_lines": free_text,
         "regime": effective_regime, "regime_warning": regime_warning,
         "portes": portes,
+        # Lote B3a: el bloque de cliente del albarán lleva el destinatario del
+        # envío (nombre y/o dirección del pedido), no los datos de F_CLI.
+        "delivery_recipient": customer.get("nombre") if delivery else None,
         "origin_marked": True, "origin_mark_warning": None, "order": None,
     }

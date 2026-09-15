@@ -242,6 +242,25 @@ class Order(TimestampMixin, Base):
         ForeignKey("users.id", ondelete="SET NULL")
     )
 
+    # Lote ERP · «Anular pedido» (decisión de Bart): estado FINAL distinto de
+    # «quitar/ocultar» — el pedido se cancela (con aviso, y opcionalmente se
+    # borran su albarán / presupuesto en FACTUSOL; la factura NUNCA: eso se
+    # hace desde FACTUSOL). Sale de bandeja, colas y seguimiento; REVERSIBLE
+    # («Restaurar» limpia los tres campos) y sin borrar nada de BoHub. Solo
+    # pedidos manuales / de FACTUSOL, nunca web.
+    cancelled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), index=True
+    )
+    cancelled_by_user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    cancelled_reason: Mapped[str | None] = mapped_column(String(255))
+
+    # Lote ERP · nombre de envío (dropshipping): destinatario del albarán cuando
+    # NO es la empresa cliente. La dirección de envío ya vive en `packing_json`
+    # (`shipping_address`); aquí solo el nombre. NULL = enviar a la empresa.
+    shipping_name: Mapped[str | None] = mapped_column(String(120))
+
     # E4-fix1: idioma del pedido (ISO 639-1: es/en/de/fr/nl), detectado en la
     # importación Woo (WPML/locale/país) o corregido a mano en la ficha.
     # NULL = desconocido — la cascada de idioma del PDF cae al cliente o a la

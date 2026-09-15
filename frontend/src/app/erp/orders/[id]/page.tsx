@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { PageHeader } from "../../../components/PageHeader";
+import { CancelOrderModal } from "../../../components/erp/CancelOrderModal";
 import { EmbalarModal } from "../../../components/erp/EmbalarModal";
 import { PDF_LANGS } from "../../../components/erp/FactusolDocumentDetailModal";
 import { InvoiceEmailModal } from "../../../components/erp/InvoiceEmailModal";
@@ -23,6 +24,7 @@ import { extractErrorMessage } from "../../../lib/errors";
 import {
   completeOrder,
   customerLabel,
+  downloadFactusolDocumentPdf,
   downloadOrderFactusolPedidoPdf,
   getErpSettings,
   getOrder,
@@ -33,6 +35,7 @@ import {
   type OrderCobroInfo,
   fireTransition,
   saveBlob,
+  uncancelOrder,
   uncompleteOrder,
   updateOrderLanguage,
   updateOrderSeguimiento,
@@ -87,6 +90,10 @@ export default function ErpOrderDetailPage() {
   // FACTUSOL del pedido (serie+número) y luego se abre el modal de preview.
   const [invoiceRef, setInvoiceRef] = useState<FactusolInvoiceRef | null>(null);
   const [emailBusy, setEmailBusy] = useState(false);
+  const [invoicePdfBusy, setInvoicePdfBusy] = useState(false);
+  // «Anular pedido» (manual / FACTUSOL): modal con aviso previo; «Restaurar».
+  const [cancelOpen, setCancelOpen] = useState(false);
+  const [cancelBusy, setCancelBusy] = useState(false);
   // ERP · envío del PEDIDO por email (SAT / taller): modal + petición de crear
   // el albarán cuando el aviso del modal lo ofrece.
   const [orderEmailOpen, setOrderEmailOpen] = useState(false);
@@ -412,6 +419,34 @@ export default function ErpOrderDetailPage() {
             >
               {pdfBusy ? "Generando…" : "PDF del pedido (FACTUSOL)"}
             </button>
+            {/* Bloque 2a: el PDF de la FACTURA desde la ficha (además del
+                pedido y del albarán). Se localiza la factura del pedido en
+                FACTUSOL y se descarga en el idioma elegido. */}
+            <button
+              type="button"
+              className="button small secondary"
+              disabled={!invoiced || invoicePdfBusy}
+              title={invoiced
+                ? "Descarga el PDF de la factura de este pedido (FACTUSOL)"
+                : "Emite la factura en FACTUSOL primero"}
+              onClick={async () => {
+                setInvoicePdfBusy(true);
+                setError(null);
+                try {
+                  const ref = await getOrderFactusolInvoiceRef(order.id);
+                  const blob = await downloadFactusolDocumentPdf(
+                    "facturas", ref.serie, ref.codigo, pdfLang,
+                  );
+                  saveBlob(blob, `Factura_${ref.numero}.pdf`);
+                } catch (e) {
+                  setError(extractErrorMessage(e, "No se pudo generar el PDF de la factura."));
+                } finally {
+                  setInvoicePdfBusy(false);
+                }
+              }}
+            >
+              {invoicePdfBusy ? "Generando…" : "PDF de la factura"}
+            </button>
             {canEmit ? (
               <>
                 {/* ERP · enviar el PEDIDO al SAT / taller (y a quien haga
@@ -504,6 +539,44 @@ export default function ErpOrderDetailPage() {
                   {/* ERP-F1 «Enviar factura por email» vive ahora en la cabecera
                       como «Enviar factura al cliente» (una sola acción, sin
                       duplicarla aquí). */}
+                  {/* Lote ERP · «Anular pedido» (solo manuales / FACTUSOL; los
+                      web se anulan en WooCommerce): estado final reversible,
+                      distinto de «quitar». Con aviso y modal; puede borrar el
+                      albarán / presupuesto en FACTUSOL. */}
+                  {!isWeb ? (
+                    order.cancelled ? (
+                      <button
+                        type="button"
+                        className="button small secondary"
+                        disabled={cancelBusy}
+                        title="Deshace la anulación en BoHub (lo borrado en FACTUSOL no se recrea)"
+                        onClick={async () => {
+                          setCancelBusy(true);
+                          setError(null);
+                          try {
+                            await uncancelOrder(order.id);
+                            setNotice("Pedido restaurado.");
+                            await load();
+                          } catch (e) {
+                            setError(extractErrorMessage(e, "No se pudo restaurar el pedido."));
+                          } finally {
+                            setCancelBusy(false);
+                          }
+                        }}
+                      >
+                        Restaurar pedido
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        className="button small danger"
+                        title="Anula el pedido (con aviso previo); distinto de quitarlo de la bandeja"
+                        onClick={() => setCancelOpen(true)}
+                      >
+                        Anular pedido
+                      </button>
+                    )
+                  ) : null}
                 </ActionsMenu>
               </>
             ) : null}
@@ -548,6 +621,16 @@ export default function ErpOrderDetailPage() {
           WooCommerce no cambia).
         </p>
       ) : null}
+      {order.cancelled ? (
+        <p className="form-error" role="status">
+          <span className="badge muted">Anulado</span>{" "}
+          Pedido anulado el{" "}
+          {order.cancelled_at ? new Date(order.cancelled_at).toLocaleString("es-ES") : "—"}
+          {order.cancelled_by_name ? ` por ${order.cancelled_by_name}` : ""}
+          {order.cancelled_reason ? ` — ${order.cancelled_reason}` : ""}. Fuera de la
+          bandeja, las colas y el seguimiento; se puede restaurar desde «⋯».
+        </p>
+      ) : null}
       {order.externally_processed_at ? (
         <p className="form-info" role="status">
           <span className="badge muted">Externalizado</span>{" "}
@@ -578,9 +661,17 @@ export default function ErpOrderDetailPage() {
       {wf ? <NextActionBar workflow={wf}>{nextStepAction()}</NextActionBar> : null}
 
       {/* Las transiciones de estado que no son la principal (Reembolso,
-          Empezar preparación, Bloquear, Crear envío, Solicitar factura…), en
-          una fila compacta: ninguna se pierde. */}
-      <OrderStatusMachine order={order} onFire={onFire} busy={busy} omit={primaryTransition} />
+          Empezar preparación, Bloquear, Crear envío…), en una fila compacta:
+          ninguna se pierde. «Solicitar factura» (invoice → pending) NO se
+          pinta: era un alias de «Emitir factura FACTUSOL», que es el único
+          botón de factura (Bloque 2b). */}
+      <OrderStatusMachine
+        order={order}
+        onFire={onFire}
+        busy={busy}
+        omit={primaryTransition}
+        hide={[{ domain: "invoice", to_status: "pending" }]}
+      />
 
       <div className="erp-flow-grid2">
         <EconomicSummary order={order} />
@@ -753,6 +844,14 @@ export default function ErpOrderDetailPage() {
           orderNumber={order.order_number}
           onClose={() => setCobroOpen(false)}
           onDone={(info) => { setCobroLive(info); load(); }}
+        />
+      ) : null}
+      {cancelOpen ? (
+        <CancelOrderModal
+          orderId={order.id}
+          orderNumber={order.order_number}
+          onClose={() => setCancelOpen(false)}
+          onDone={() => { void load(); }}
         />
       ) : null}
       {invoiceRef ? (

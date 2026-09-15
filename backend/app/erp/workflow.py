@@ -364,7 +364,11 @@ def order_workflow(
     alerts = order_alerts(session, order, ctx=ctx)
     queue, action, explain = _next_step(order)
     blocking = [a for a in alerts if a["blocking"]]
-    if order.completed_at:
+    if getattr(order, "cancelled_at", None):
+        # Anulado (estado final reversible, distinto de «quitar»): nada que
+        # hacer; las listas de trabajo ya no lo enseñan.
+        queue, action, explain = QUEUE_LISTO, "ninguna", "Pedido anulado."
+    elif order.completed_at:
         # Completado a mano: fuera de las colas de trabajo aunque quede algo
         # suelto (es el estado final que decide Bart).
         queue, action, explain = QUEUE_LISTO, "ninguna", "Pedido completado."

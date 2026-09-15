@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Generator
+from datetime import UTC, datetime
 
 import pytest
 from fastapi.testclient import TestClient
@@ -15,13 +16,21 @@ from sqlalchemy.pool import StaticPool
 import app.main  # noqa: F401
 from app.db.base import Base
 from app.db.session import get_session
-from app.erp.models import ErpException, ExceptionStatus, Order, OrderLine
+from app.erp.models import (
+    ErpException,
+    ExceptionStatus,
+    ExceptionType,
+    Order,
+    OrderLine,
+    OrderStatusHistory,
+)
 from app.erp.storage import (
     HiDriveDocumentStorage,
     LocalDocumentStorage,
     get_document_storage,
 )
 from app.main import app
+from app.models.crm import AuditLog
 from tests._test_helpers import auth_headers, seed_test_users
 
 
@@ -124,6 +133,254 @@ def test_sat_queue_visible_to_sat_role(client, session_factory):
                       headers=auth_headers(client, "sat")).status_code == 200
     assert client.get("/api/erp/sat/queue",
                       headers=auth_headers(client, "viewer")).status_code == 403
+
+
+# --- Lote B6: filtros de la cola ---------------------------------------------
+
+
+def _mk_store(s: Session, slug: str) -> str:
+    from app.models.crm import ExternalSystem  # noqa: PLC0415
+    from app.models.integration_settings import IntegrationAccount  # noqa: PLC0415
+
+    acc = IntegrationAccount(
+        system=ExternalSystem.WOOCOMMERCE, account_id=slug, display_name=slug.title(),
+    )
+    s.add(acc)
+    s.commit()
+    return acc.id
+
+
+def _nums(client: TestClient, params: dict) -> tuple[list[str], list[str]]:
+    r = client.get("/api/erp/sat/queue", params=params, headers=auth_headers(client, "sat"))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    return (
+        [i["order_number"] for i in body["preparing"]],
+        [i["order_number"] for i in body["ready_for_pickup"]],
+    )
+
+
+def test_sat_queue_filters_fecha_tienda_estado_y_texto(client, session_factory):
+    """Los filtros se aplican a las DOS secciones y no rompen el orden de
+    prioridad (bloqueados → preparando → en cola)."""
+    from app.models.crm import Company  # noqa: PLC0415
+
+    with session_factory() as s:
+        art, bop = _mk_store(s, "artisjet"), _mk_store(s, "boprint")
+        comp = Company(name="Duplicoder SL")
+        s.add(comp)
+        s.commit()
+        s.add_all([
+            Order(order_number="ART-1", preparation_status="in_queue", payment_status="paid",
+                  store_id=art, company_id=comp.id,
+                  placed_at=datetime(2026, 9, 1, 10, tzinfo=UTC)),
+            Order(order_number="BOP-2", preparation_status="blocked", payment_status="paid",
+                  store_id=bop, placed_at=datetime(2026, 9, 5, 10, tzinfo=UTC)),
+            Order(order_number="BOP-3", preparation_status="packed", payment_status="paid",
+                  store_id=bop, placed_at=datetime(2026, 9, 10, 10, tzinfo=UTC)),
+        ])
+        s.commit()
+
+    assert _nums(client, {}) == (["BOP-2", "ART-1"], ["BOP-3"])
+    assert _nums(client, {"store_slug": "BoPrint"}) == (["BOP-2"], ["BOP-3"])
+    assert _nums(client, {"desde": "2026-09-05", "hasta": "2026-09-05"}) == (["BOP-2"], [])
+    assert _nums(client, {"hasta": "2026-09-04"}) == (["ART-1"], [])
+    assert _nums(client, {"desde": "2026-09-06"}) == ([], ["BOP-3"])
+    assert _nums(client, {"estado": "blocked"}) == (["BOP-2"], [])
+    assert _nums(client, {"estado": "in_queue"}) == (["ART-1"], [])
+    assert _nums(client, {"estado": "por_embalar"}) == (["BOP-2", "ART-1"], [])
+    assert _nums(client, {"estado": "ready"}) == ([], ["BOP-3"])
+    assert _nums(client, {"estado": "packed"}) == ([], ["BOP-3"])
+    # Texto: nº de pedido o cliente (empresa), sin distinguir mayúsculas.
+    assert _nums(client, {"q": "duplic"}) == (["ART-1"], [])
+    assert _nums(client, {"q": "bop-"}) == (["BOP-2"], ["BOP-3"])
+    assert _nums(client, {"q": "nada-que-ver"}) == ([], [])
+    # Estado desconocido → 422 (no se ignora en silencio).
+    r = client.get("/api/erp/sat/queue", params={"estado": "loquesea"},
+                   headers=auth_headers(client, "sat"))
+    assert r.status_code == 422
+    # El item lleva tienda y fecha para la vista lista.
+    body = client.get("/api/erp/sat/queue", headers=auth_headers(client, "sat")).json()
+    art_item = next(i for i in body["preparing"] if i["order_number"] == "ART-1")
+    assert art_item["store_slug"] == "artisjet"
+    assert art_item["placed_at"].startswith("2026-09-01")
+
+
+# --- Lote B6: historial de enviados al taller --------------------------------
+
+
+def test_sat_history_une_emails_y_aprobaciones(client, session_factory):
+    from app.core.audit import record_event  # noqa: PLC0415
+    from app.models.crm import User  # noqa: PLC0415
+
+    with session_factory() as s:
+        pedidos = s.query(User).filter_by(email="pedidos@example.com").one()
+        o_mail = Order(order_number="H-MAIL", preparation_status="in_queue",
+                       payment_status="paid", factusol_albaran_number="5-500001")
+        o_appr = Order(order_number="H-APPR", preparation_status="pending_review",
+                       payment_status="paid")
+        s.add_all([o_mail, o_appr])
+        s.commit()
+        record_event(
+            s, action="erp.order_emailed", target_type="order", target_id=o_mail.id,
+            actor=pedidos, message="Pedido H-MAIL enviado por email",
+            metadata={"to": ["taller@bomedia.net"], "cc": [], "subject": "Pedido H-MAIL",
+                      "attachment_kinds": ["albaran"]},
+        )
+        s.commit()
+        appr_id = o_appr.id
+
+    r = client.post(f"/api/erp/orders/{appr_id}/approve",
+                    headers=auth_headers(client, "pedidos"))
+    assert r.status_code == 200, r.text
+
+    r = client.get("/api/erp/sat/history", headers=auth_headers(client, "sat"))
+    assert r.status_code == 200, r.text
+    items = r.json()["items"]
+    assert {(i["order_number"], i["kind"]) for i in items} == {
+        ("H-MAIL", "email_sat"), ("H-APPR", "aprobado"),
+    }
+    # Más reciente primero: la aprobación ocurrió después del email.
+    assert items[0]["order_number"] == "H-APPR"
+    mail = next(i for i in items if i["kind"] == "email_sat")
+    assert mail["to"] == ["taller@bomedia.net"]
+    assert mail["subject"] == "Pedido H-MAIL"
+    assert mail["actor_name"] == "Pedidos User"
+    assert mail["factusol_albaran_number"] == "5-500001"
+    assert mail["preparation_status"] == "in_queue"
+    appr = next(i for i in items if i["kind"] == "aprobado")
+    assert appr["reason"] == "aprobado en Cola PEDIDOS"
+    assert appr["from_status"] == "pending_review"
+    assert appr["actor_name"] == "Pedidos User"
+    assert appr["preparation_status"] == "in_queue"
+
+    # Filtros (mismos que la cola) y límite.
+    r = client.get("/api/erp/sat/history", params={"q": "h-mail"},
+                   headers=auth_headers(client, "sat"))
+    assert [i["order_number"] for i in r.json()["items"]] == ["H-MAIL"]
+    r = client.get("/api/erp/sat/history", params={"limit": 1},
+                   headers=auth_headers(client, "sat"))
+    assert len(r.json()["items"]) == 1
+    r = client.get("/api/erp/sat/history", params={"desde": "2030-01-01"},
+                   headers=auth_headers(client, "sat"))
+    assert r.json()["items"] == []
+    assert client.get("/api/erp/sat/history",
+                      headers=auth_headers(client, "viewer")).status_code == 403
+
+
+# --- Lote B6: añadir a mano ---------------------------------------------------
+
+
+def test_sat_find_order_by_number(client, session_factory):
+    with session_factory() as s:
+        oid = _mk_order(s, number="BOP-777", prep="pending_review")
+    r = client.get("/api/erp/sat/find-order", params={"number": " bop-777 "},
+                   headers=auth_headers(client, "sat"))
+    assert r.status_code == 200, r.text
+    assert r.json()["id"] == oid
+    assert r.json()["already_queued"] is False
+    assert r.json()["cancelled"] is False and r.json()["excluded"] is False
+    r = client.get("/api/erp/sat/find-order", params={"number": "NOPE-1"},
+                   headers=auth_headers(client, "sat"))
+    assert r.status_code == 404
+    assert r.json()["detail"]["code"] == "order_not_found"
+
+
+def test_sat_enqueue_pending_review_aprueba_y_es_idempotente(client, session_factory):
+    with session_factory() as s:
+        oid = _mk_order(s, number="ENQ-PR", prep="pending_review")
+    r = client.post(f"/api/erp/orders/{oid}/sat-enqueue",
+                    headers=auth_headers(client, "pedidos"))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["preparation_status"] == "in_queue"
+    assert body["approved"] is True and body["via"] == "approve"
+    assert body["already_queued"] is False
+    with session_factory() as s:
+        o = s.get(Order, oid)
+        assert o.preparation_status == "in_queue"
+        assert o.approved_at is not None and o.approved_by_user_id is not None
+        hist = s.scalars(select(OrderStatusHistory).where(
+            OrderStatusHistory.order_id == oid,
+        )).all()
+        assert [h.to_status for h in hist] == ["in_queue"]
+        assert hist[0].reason == "añadido a mano a la Cola SAT"
+    # Idempotente: ya en cola.
+    r2 = client.post(f"/api/erp/orders/{oid}/sat-enqueue",
+                     headers=auth_headers(client, "pedidos"))
+    assert r2.status_code == 200
+    assert r2.json()["already_queued"] is True
+    # Y aparece en «Por embalar».
+    assert "ENQ-PR" in _nums(client, {})[0]
+    # El historial lo cuenta como enviado al taller.
+    hist = client.get("/api/erp/sat/history", headers=auth_headers(client, "sat")).json()
+    assert [(i["order_number"], i["kind"], i["reason"]) for i in hist["items"]] == [
+        ("ENQ-PR", "aprobado", "añadido a mano a la Cola SAT"),
+    ]
+
+
+def test_sat_enqueue_packed_y_externalizado_vuelven_a_la_cola(client, session_factory):
+    """packed → in_queue por el arco «Reabrir» si el rol puede (admin); si el
+    arco no existe (externalizado) o es de otro rol (pedidos) se fuerza el
+    estado dejando historial + auditoría igualmente."""
+    with session_factory() as s:
+        a = _mk_order(s, number="ENQ-PK-ADMIN", prep="packed")
+        p = _mk_order(s, number="ENQ-PK-PEDIDOS", prep="packed")
+        x = _mk_order(s, number="ENQ-EXT", prep="already_completed_externally")
+    r = client.post(f"/api/erp/orders/{a}/sat-enqueue", headers=auth_headers(client, "admin"))
+    assert r.status_code == 200, r.text
+    assert r.json()["via"] == "transition" and r.json()["preparation_status"] == "in_queue"
+    r = client.post(f"/api/erp/orders/{p}/sat-enqueue", headers=auth_headers(client, "pedidos"))
+    assert r.status_code == 200, r.text
+    assert r.json()["via"] == "direct" and r.json()["preparation_status"] == "in_queue"
+    r = client.post(f"/api/erp/orders/{x}/sat-enqueue", headers=auth_headers(client, "pedidos"))
+    assert r.status_code == 200, r.text
+    assert r.json()["via"] == "direct" and r.json()["preparation_status"] == "in_queue"
+    with session_factory() as s:
+        for oid, from_status in ((a, "packed"), (p, "packed"),
+                                 (x, "already_completed_externally")):
+            o = s.get(Order, oid)
+            assert o.preparation_status == "in_queue"
+            assert o.approved_at is None  # no era una aprobación
+            h = s.scalars(select(OrderStatusHistory).where(
+                OrderStatusHistory.order_id == oid,
+            )).one()
+            assert (h.from_status, h.to_status) == (from_status, "in_queue")
+            assert h.reason == "añadido a mano a la Cola SAT"
+        audits = s.scalars(select(AuditLog).where(
+            AuditLog.action == "erp.order_status_changed",
+        )).all()
+        assert sorted(json.loads(x_.metadata_json)["order_number"] for x_ in audits) == [
+            "ENQ-EXT", "ENQ-PK-ADMIN", "ENQ-PK-PEDIDOS",
+        ]
+    assert sorted(_nums(client, {})[0]) == ["ENQ-EXT", "ENQ-PK-ADMIN", "ENQ-PK-PEDIDOS"]
+
+
+def test_sat_enqueue_rechaza_anulado_quitado_bloqueado_y_roles(client, session_factory):
+    with session_factory() as s:
+        c = _mk_order(s, number="ENQ-CANC", prep="pending_review")
+        e = _mk_order(s, number="ENQ-EXCL", prep="pending_review")
+        b = _mk_order(s, number="ENQ-BLK", prep="pending_review")
+        now = datetime.now(UTC)
+        s.get(Order, c).cancelled_at = now
+        s.get(Order, e).seguimiento_excluded_at = now
+        s.add(ErpException(type=ExceptionType.SAT_ISSUE, order_id=b))
+        s.commit()
+    h = auth_headers(client, "pedidos")
+    r = client.post(f"/api/erp/orders/{c}/sat-enqueue", headers=h)
+    assert r.status_code == 409 and r.json()["detail"]["code"] == "cancelled"
+    r = client.post(f"/api/erp/orders/{e}/sat-enqueue", headers=h)
+    assert r.status_code == 409 and r.json()["detail"]["code"] == "excluded"
+    r = client.post(f"/api/erp/orders/{b}/sat-enqueue", headers=h)
+    assert r.status_code == 409 and r.json()["detail"]["code"] == "blocked"
+    assert r.json()["detail"]["blockers"][0]["code"] == "open_exceptions"
+    # SAT (solo lectura del ERP) no añade; inexistente → 404.
+    assert client.post(f"/api/erp/orders/{b}/sat-enqueue",
+                       headers=auth_headers(client, "sat")).status_code == 403
+    assert client.post("/api/erp/orders/no-existe/sat-enqueue", headers=h).status_code == 404
+    with session_factory() as s:
+        for oid in (c, e, b):
+            assert s.get(Order, oid).preparation_status == "pending_review"
 
 
 # --- reportar excepción ------------------------------------------------------

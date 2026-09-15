@@ -174,6 +174,9 @@ LABELS: dict[str, dict[str, str]] = {
         "title_albaranes_devolucion": "ALBARÁN DE DEVOLUCIÓN",
         "direccion_recogida": "DIRECCIÓN DE RECOGIDA:",
         "divisa_nota": "Importes en {code} — sin conversión",
+        # Lote B3a: albarán con destinatario de envío (dropshipping) — a quién
+        # se factura, en pequeño bajo el bloque de entrega.
+        "facturar_a": "Facturar a:",
         "cambio_label": "Tipo de cambio: {rate}",
     },
     "en": {
@@ -233,6 +236,7 @@ LABELS: dict[str, dict[str, str]] = {
         "title_albaranes_devolucion": "TRANSPORT DOC for return of goods",
         "direccion_recogida": "Consignee:",
         "divisa_nota": "Amounts in {code} — no conversion applied",
+        "facturar_a": "Bill to:",
         "cambio_label": "Exchange rate: {rate}",
     },
     "de": {
@@ -292,6 +296,7 @@ LABELS: dict[str, dict[str, str]] = {
         "title_albaranes_devolucion": "RÜCKLIEFERSCHEIN",
         "direccion_recogida": "ABHOLADRESSE:",
         "divisa_nota": "Beträge in {code} — ohne Umrechnung",
+        "facturar_a": "Rechnung an:",
         "cambio_label": "Wechselkurs: {rate}",
     },
     "fr": {
@@ -351,6 +356,7 @@ LABELS: dict[str, dict[str, str]] = {
         "title_albaranes_devolucion": "BON DE RETOUR",
         "direccion_recogida": "ADRESSE D'ENLÈVEMENT :",
         "divisa_nota": "Montants en {code} — sans conversion",
+        "facturar_a": "Facturer à :",
         "cambio_label": "Taux de change : {rate}",
     },
     "nl": {
@@ -410,6 +416,7 @@ LABELS: dict[str, dict[str, str]] = {
         "title_albaranes_devolucion": "RETOURBON",
         "direccion_recogida": "OPHAALADRES:",
         "divisa_nota": "Bedragen in {code} — zonder omrekening",
+        "facturar_a": "Factuur aan:",
         "cambio_label": "Wisselkoers: {rate}",
     },
 }
@@ -721,10 +728,17 @@ def _clean(v: Any) -> str:
     return str(v).strip() if v is not None else ""
 
 
+#: Fechas «vacías» de FACTUSOL: no guarda NULL sino un centinela de 1900/1899
+#: (mismo criterio que `factusol_discover_invoice_payment._EMPTY_DATES`).
+_EMPTY_DATE_PREFIXES = ("1900-01-01", "1899-12-30")
+
+
 def _fmt_date(v: Any) -> str:
     iso = _factusol_date(v)
     if not iso:
         return _clean(v)
+    if iso.startswith(_EMPTY_DATE_PREFIXES):
+        return ""  # centinela «sin fecha»: nunca imprimir 01-01-1900
     y, m, d = iso.split("-")
     return f"{d}-{m}-{y}"
 
@@ -1009,7 +1023,11 @@ def generate_document_pdf(
         valued = False
     title = _title_for(doc_type, variant, lab, company, lang)
     doc_label = lab[f"doc_{doc_type}"]
-    if bank is None:
+    if doc_type == "albaranes":
+        # Bloque 5a: el albarán (normal, valorado o de devolución) NO lleva
+        # datos bancarios en ningún modelo ni idioma; el banco va en la factura.
+        bank = None
+    elif bank is None:
         bank = default_bank(company)
 
     # ¿Aplica el texto intracomunitario? Criterio de los modelos «SIN IVA»:
@@ -1156,7 +1174,7 @@ def _draw_header(
             cv, cy, lab["direccion_recogida"], recogida, size=7.6,
         )
         cy -= 2 * mm
-        _draw_address_block(
+        cy = _draw_address_block(
             cv, cy, lab["direccion_entrega"], cli_lines, size=7.6,
         )
     else:
@@ -1171,6 +1189,17 @@ def _draw_header(
             cv.setFont(FONT, 9)
             cv.drawString(10 * mm, cy, text)
             cy -= 4.4 * mm
+    # Lote B3a: albarán con DESTINATARIO distinto del cliente fiscal
+    # (dropshipping): el bloque de arriba es la entrega (así viene en F_ALB);
+    # debajo, en pequeño, a quién se factura — para que el albarán siga
+    # diciendo de quién es el pedido. Solo si `annotate_delivery_recipient`
+    # lo apuntó (nombre de envío en el pedido y distinto del fiscal).
+    fiscal = str(cli.get("nombre_fiscal") or "").strip()
+    if fiscal:
+        cv.setFont(FONT, 7)
+        cv.setFillColor(GREY)
+        cv.drawString(10 * mm, cy, _fit(f"{lab['facturar_a']} {fiscal}", 7, 95))
+        cv.setFillColor(colors.black)
 
     # N.I.F. + SU REFERENCIA + FORMA DE PAGO, y — si existe — el nº/fecha
     # del pedido del cliente en su propia línea (sin solapar columnas).
@@ -1186,14 +1215,9 @@ def _draw_header(
     cv.drawString(10 * mm, ry, _fit(cli["nif"] or "—", 9, 50))
     cv.drawString(64 * mm, ry, _fit(data["referencia"] or "—", 9, 66))
     cv.drawString(134 * mm, ry, _fit(data["forma_pago"] or "—", 9, 66))
-    if data["pedido_cliente"]:
-        pedido = f"{lab['su_pedido']}: {data['pedido_cliente']}"
-        if data["fecha_pedido_cliente"]:
-            pedido += (
-                f" · {lab['fecha_su_pedido']}: {data['fecha_pedido_cliente']}"
-            )
-        cv.setFont(FONT, 8)
-        cv.drawString(10 * mm, ry - 4.4 * mm, _fit(pedido, 8, 190))
+    # El renglón «Nº DE SU PEDIDO: X · FECHA DE SU PEDIDO: …» (PED*/FPE*) ya
+    # NO se imprime en ningún modelo ni idioma (Bloque 1b): salía con la fecha
+    # centinela 01-01-1900 de FACTUSOL y no aporta nada frente a «Su ref.».
 
     cv.setStrokeColor(RULE)
     cv.setLineWidth(0.4)
@@ -1413,7 +1437,7 @@ def _lines_table(
         widths = [30 * mm, 140 * mm, 26 * mm]
 
     rows: list[list[Any]] = [
-        [_header_paragraph(h, w) for h, w in zip(headers, widths)]
+        [_header_paragraph(h, w) for h, w in zip(headers, widths, strict=True)]
     ]
     group_rows: list[int] = []
     current_group: str | None = None
@@ -1781,8 +1805,11 @@ def find_order_for_invoice(
       - o es el ÚNICO pedido con ese número y nada lo contradice (ni la
         referencia ni el cliente, cuando ambos lados constan): la factura
         emitida desde BoHub sin referencia ni cliente enlazado.
-    Con más de un candidato fuerte (o débil sin fuerte, o varios homónimos
-    sin pruebas) no se elige ninguno."""
+    Varios candidatos con la MISMA serie (boprint y fluxlasers comparten la
+    5; un vínculo cruzado heredado del CODFAC desnudo) se desempatan por la
+    REFFAC y, si no, por el CLIFAC. Si sigue habiendo ambigüedad real (o
+    varios débiles sin fuerte, o varios homónimos sin pruebas) no se elige
+    ninguno."""
     from sqlalchemy import select  # noqa: PLC0415
 
     from app.erp.models import Order  # noqa: PLC0415
@@ -1810,12 +1837,12 @@ def find_order_for_invoice(
     strong, weak, neutral = [], [], []
     for order in candidates:
         o_serie = order_invoice_serie(order)
+        o_ref = order_composed_ref(session, order)
+        o_cli = order_customer_code(session, order) or ""
         if serie_int is not None and o_serie is not None:
             if o_serie == serie_int:
                 strong.append(order)
             continue  # otra serie: es la factura homónima de OTRO pedido
-        o_ref = order_composed_ref(session, order)
-        o_cli = order_customer_code(session, order) or ""
         if ref and o_ref == ref:
             strong.append(order)
         elif cli and o_cli == cli:
@@ -1825,13 +1852,33 @@ def find_order_for_invoice(
     if len(strong) == 1:
         return strong[0]
     if strong:
-        return None
+        # Varios con la MISMA serie (boprint y fluxlasers comparten la 5; un
+        # vínculo cruzado heredado del CODFAC desnudo): desempata la REFFAC y,
+        # si no, el CLIFAC. Si sigue empatado, no se adivina.
+        return _pick_by_ref_then_customer(session, strong, ref=ref, cli=cli)
     if len(weak) == 1:
         return weak[0]
     if weak:
         return None
     if len(candidates) == 1 and len(neutral) == 1:
         return neutral[0]
+    return None
+
+
+def _pick_by_ref_then_customer(session: Session, orders: list, *, ref: str, cli: str):
+    """Entre pedidos igual de plausibles, el ÚNICO cuya referencia común es la
+    REFFAC de la factura; si ninguno (o varios), el ÚNICO cuya empresa es el
+    CLIFAC. Si no hay un único ganador → None (ambigüedad real)."""
+    if ref:
+        by_ref = [o for o in orders if order_composed_ref(session, o) == ref]
+        if len(by_ref) == 1:
+            return by_ref[0]
+        if by_ref:
+            orders = by_ref
+    if cli:
+        by_cli = [o for o in orders if (order_customer_code(session, o) or "") == cli]
+        if len(by_cli) == 1:
+            return by_cli[0]
     return None
 
 
@@ -1847,6 +1894,54 @@ def _find_company_by_codcli(session: Session, codcli: Any):
     return session.scalar(select(Company).where(
         Company.factusol_company_id == code,
     ))
+
+
+def annotate_delivery_recipient(
+    session: Session, data: dict[str, Any], *, order: Any = None,
+    client: Any = None, ejercicio: str | None = None,
+) -> str | None:
+    """Lote B3a — albarán con NOMBRE DE ENVÍO (dropshipping): su bloque de
+    cliente en F_ALB ya lleva el destinatario y la dirección de entrega, así
+    que el PDF los imprime solo. Aquí se apunta además el nombre FISCAL del
+    cliente en `data["cliente"]["nombre_fiscal"]` para que `_draw_header` lo
+    pinte en pequeño bajo el bloque («Facturar a: …»).
+
+    Solo albaranes cuyo pedido de BoHub (`order`, o localizado por la
+    referencia común) tiene `shipping_name`. El nombre fiscal sale de F_CLI
+    (`client`, el CODCLI del albarán — lo que dirá la factura) o, si no se
+    puede leer, de la empresa CRM vinculada a ese CODCLI. Si coincide con el
+    nombre del bloque no se apunta nada. Devuelve el nombre apuntado."""
+    if data.get("doc_type") != "albaranes":
+        return None
+    if order is None:
+        order = _find_order_for_document(session, "albaranes", data)
+    if not str(getattr(order, "shipping_name", "") or "").strip():
+        return None
+    cliente = data.get("cliente") or {}
+    codcli = cliente.get("codigo")
+    fiscal = ""
+    if client is not None and codcli:
+        from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
+        from app.integrations.factusol.customers import get_customer  # noqa: PLC0415
+
+        try:
+            row = get_customer(client, codcli, ejercicio=ejercicio or "")
+        except FactusolError:
+            logger.warning(
+                "factusol_pdf: no se pudo leer F_CLI %s para el nombre fiscal "
+                "del albarán %s", codcli, data.get("numero"), exc_info=True,
+            )
+            row = None
+        if row:
+            fiscal = str(row.get("nofcli") or row.get("noccli") or "").strip()
+    if not fiscal:
+        company = _find_company_by_codcli(session, codcli)
+        fiscal = str(getattr(company, "name", "") or "").strip()
+    if not fiscal or fiscal.lower() == str(cliente.get("nombre") or "").strip().lower():
+        return None
+    cliente["nombre_fiscal"] = fiscal
+    data["cliente"] = cliente
+    return fiscal
 
 
 def suggest_pdf_language(

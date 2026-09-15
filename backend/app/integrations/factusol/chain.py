@@ -717,9 +717,28 @@ def convert_document(
     )
     fecha_doc = fecha or datetime.now(UTC).date().isoformat()
 
+    # Lote B3a — guard de la FACTURA: el albarán de un pedido de BoHub con
+    # destinatario / dirección de envío propios (dropshipping) lleva en su
+    # bloque de cliente los datos de ENTREGA; la factura sale SIEMPRE a los
+    # datos fiscales de F_CLI (`CNO/CDO/CPO/CCP/CPR/CPAFAC` releídos). Sin
+    # pedido detrás o sin datos de envío no cambia nada: copia por sufijo.
+    overrides: dict[str, Any] = dict(header_overrides or {})
+    if source_type == "albaranes" and target_type == "facturas":
+        from app.integrations.factusol.albaran_manual import (  # noqa: PLC0415
+            fiscal_overrides_for_invoice,
+        )
+
+        overrides = {
+            **fiscal_overrides_for_invoice(
+                session, client, header=header, serie=tip, codigo=cod,
+                ejercicio=ejercicio, suffix=dst.suffix,
+            ),
+            **overrides,
+        }
+
     cabecera = build_target_header(
         header, src=src, dst=dst, serie=serie, codigo=codigo,
-        fecha=fecha_doc, allowed=allowed_header, overrides=header_overrides,
+        fecha=fecha_doc, allowed=allowed_header, overrides=overrides or None,
     )
     lineas = [
         build_target_line(

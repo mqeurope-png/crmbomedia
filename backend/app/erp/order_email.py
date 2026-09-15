@@ -410,6 +410,36 @@ def _order_reference(order: Any) -> str:
     return ""
 
 
+def _approve_after_sat_email(session: Session, order: Any, current_user: Any) -> bool:
+    """Regla del taller: «enviado al SAT» = aprobado. Si el pedido seguía
+    pendiente de revisión y no tiene bloqueos, pasa a in_queue como si se
+    aprobase en la Cola PEDIDOS (misma transición + approved_at/by). Con
+    bloqueos (excepciones abiertas) el correo sale igual pero NO se aprueba.
+    Nunca hace fallar el envío: el correo ya está fuera."""
+    from app.erp.api.orders import _blockers, approve_inline  # noqa: PLC0415
+    from app.erp.models import PreparationStatus  # noqa: PLC0415
+    from app.erp.state_machine import TransitionError  # noqa: PLC0415
+
+    current = getattr(order.preparation_status, "value", order.preparation_status)
+    if current != PreparationStatus.PENDING_REVIEW.value:
+        return False
+    if _blockers(session, order):
+        logger.info(
+            "order_email: pedido %s enviado al SAT pero NO aprobado (bloqueos)",
+            order.order_number,
+        )
+        return False
+    try:
+        approve_inline(session, order, current_user, reason="enviado al SAT por email")
+    except TransitionError as exc:
+        logger.warning(
+            "order_email: pedido %s enviado pero no se pudo aprobar: %s",
+            order.order_number, exc,
+        )
+        return False
+    return True
+
+
 def send_order_email(
     session: Session, client: Any, order: Any, *, ejercicio: str,
     current_user: Any, to: list[str], cc: list[str] | None = None,
@@ -471,6 +501,9 @@ def send_order_email(
             "message_id": message.id, "thread_id": message.thread_id,
         },
     )
+    # «Enviado al taller» = aprobado: si seguía pendiente de revisión pasa a
+    # la Cola SAT en la misma transacción que el registro del envío.
+    approved = _approve_after_sat_email(session, order, current_user)
     session.commit()
     logger.info(
         "order_email: pedido %s enviado a %s (%s)",
@@ -485,4 +518,8 @@ def send_order_email(
         "lang": lang,
         "attachments": filenames,
         "attachment_kinds": kinds,
+        "approved": approved,
+        "preparation_status": getattr(
+            order.preparation_status, "value", order.preparation_status,
+        ),
     }

@@ -11700,3 +11700,198 @@ tr.is-inactive {
 .company-ficha-id .mono { font-variant-numeric: tabular-nums; }
 .company-edit-form.erp-flow-panel { margin-bottom: 14px; }
 .erp-flow-panel h3 .badge { margin-left: 8px; vertical-align: middle; }
+
+/* Lote B3b/B4 · modal de proforma: portes + destinatario libre (dropshipping)
+   y vista previa de la plantilla en «Duplicar». */
+.erp-quote-foot .erp-quote-portes input { width: 120px; }
+.erp-quote-shipping { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: #f8fafc; }
+.erp-quote-shipping .form-row { display: flex; gap: 10px; flex-wrap: wrap; }
+.erp-quote-shipping .form-row .field { flex: 1 1 160px; }
+.erp-quote-preview { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; }
+.erp-quote-preview-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.erp-quote-preview-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.erp-quote-preview td.num, .erp-quote-preview th.num { text-align: right; font-variant-numeric: tabular-nums; }
+.erp-quote-preview .erp-article-sku { font-size: 12px; }
+
+/* ===== BoHub ERP — Cola SAT · Lote B6: filtros, vista lista, historial ======
+   Solo la cola (/erp/sat): cabecera con toggle Tarjetas/Lista, barra de
+   filtros sobre fondo claro del taller, tabla compacta con las mismas acciones
+   que las tarjetas, historial plegable y «Añadir pedido a la cola». */
+.sat-queue-head { flex-wrap: wrap; gap: 8px 12px; }
+.sat-queue-head .sat-queue-count { margin-right: auto; }
+.sat-queue-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.sat-view-toggle { display: inline-flex; border: 1px solid #cbd5e1; border-radius: 999px; overflow: hidden; background: #fff; }
+.sat-view-toggle button { border: 0; background: transparent; padding: 6px 14px; font-size: 13px; font-weight: 700; color: #475569; cursor: pointer; }
+.sat-view-toggle button[aria-pressed="true"] { background: #0f172a; color: #fff; }
+.sat-main .erp-flow-filters { background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 10px 12px; margin: 0 0 12px; }
+.sat-add-form { display: flex; align-items: flex-end; gap: 8px 10px; flex-wrap: wrap; margin: 0 0 14px; }
+.sat-add-form .field { margin: 0; flex: 1 1 240px; max-width: 360px; }
+.sat-add-form .field > span { font-size: 11px; color: var(--muted); }
+.sat-add-form .form-info, .sat-add-form .form-error { margin: 0; flex: 1 1 100%; }
+/* Vista lista: en escritorio la cola puede ir más ancha que las tarjetas. */
+.sat-main:has(.sat-view-list) { max-width: 1200px; }
+.sat-table-wrap { overflow-x: auto; background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; }
+.sat-table { width: 100%; border-collapse: collapse; font-size: 14px; min-width: 760px; }
+.sat-table th, .sat-table td { padding: 8px 10px; border-bottom: 1px solid #e2e8f0; text-align: left; vertical-align: middle; white-space: nowrap; }
+.sat-table th { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: #64748b; background: #f8fafc; }
+.sat-table tbody tr:last-child td { border-bottom: 0; }
+.sat-table td.sat-td-cliente { white-space: normal; min-width: 160px; }
+.sat-table .sat-td-num a { font-weight: 800; color: #0f172a; text-decoration: none; }
+.sat-table .sat-td-num a:hover { text-decoration: underline; }
+.sat-table .sat-row-total { margin-left: 8px; }
+.sat-table .sat-td-actions { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.sat-table .sat-chip-btn { padding: 4px 10px; font-size: 12px; }
+.sat-table .sat-confirm { display: inline-flex; gap: 6px; align-items: center; }
+.sat-table tr.sat-row-error td { background: #fef2f2; white-space: normal; }
+.sat-table tr.sat-row-error p { margin: 0; }
+.sat-row-warn { color: #b45309; font-weight: 800; font-size: 11px; margin-left: 6px; }
+.sat-doc-flag { display: inline-block; margin-right: 8px; font-size: 12px; color: #94a3b8; }
+.sat-doc-flag.ok { color: var(--success); font-weight: 700; }
+.sat-doc-flag.warn { color: #b54708; font-weight: 700; }
+.sat-history { margin-top: 20px; }
+.sat-history-toggle { display: block; width: 100%; text-align: left; border: 1px solid #e2e8f0; border-radius: 12px; background: #fff; padding: 12px 14px; font-size: 15px; font-weight: 800; color: #0f172a; cursor: pointer; margin-bottom: 10px; }
+.sat-history-toggle[aria-expanded="true"] { border-bottom-left-radius: 0; border-bottom-right-radius: 0; margin-bottom: 0; border-bottom: 0; }
+.sat-history-toggle[aria-expanded="true"] + .sat-table-wrap { border-top-left-radius: 0; border-top-right-radius: 0; }
+.sat-history-reason { white-space: normal; }
+@media (max-width: 640px) {
+  .sat-queue-head .sat-queue-count { flex: 1 1 100%; margin-right: 0; }
+  .sat-add-form .field { max-width: none; }
+}
+
+/* ==========================================================================
+   ERP · Lote B7/B8 — bandeja de pedidos: pastillas de estado, chips de
+   filtros activos, fecha destacada, vista LISTA (tabla) y filtros ligeros de
+   la Cola PEDIDOS. Solo se añade; nada de lo anterior cambia.
+   ========================================================================== */
+
+/* Las cuatro pastillas de estado (Pagado · Facturado · Cobro registrado ·
+   Completado): verde = se cumple, gris = no. Grandes en la tarjeta, compactas
+   (is-sm) en la celda de la tabla. */
+.erp-status-pills {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.erp-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.3;
+  white-space: nowrap;
+  border: 1px solid transparent;
+  cursor: default;
+}
+.erp-status-pill-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: none;
+  opacity: 0.9;
+}
+.erp-status-pill.is-on {
+  background: #E4F5EA;
+  color: #167A3E;
+  border-color: #BFE5CC;
+}
+.erp-status-pill.is-off {
+  background: #F1F3F6;
+  color: #7A8290;
+  border-color: #E3E7EC;
+}
+.erp-status-pills.is-sm { gap: 4px; }
+.erp-status-pills.is-sm .erp-status-pill { padding: 1px 7px; font-size: 11px; gap: 4px; }
+.erp-status-pills.is-sm .erp-status-pill-dot { width: 6px; height: 6px; }
+.erp-flow-item-pills { margin: 6px 0 2px; }
+
+/* Fecha del pedido, destacada en cada fila. */
+.erp-flow-date {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  font-size: 12.5px;
+  color: var(--ink);
+  background: #F5F7FA;
+  border-radius: 5px;
+  padding: 1px 7px;
+  white-space: nowrap;
+}
+
+/* Chips de filtros activos + «Limpiar filtros» / «Por defecto». */
+.erp-flow-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  margin: -4px 0 12px;
+}
+.erp-flow-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid #C7D7FF;
+  background: #EEF4FF;
+  color: var(--brand);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.erp-flow-chip:hover { background: #DFE9FF; }
+.erp-flow-chip span { font-weight: 600; }
+
+/* Tarjetas / Lista. */
+.erp-flow-view { display: inline-flex; gap: 4px; }
+
+/* Vista LISTA: tabla con la misma información y las mismas acciones que la
+   tarjeta. En pantallas anchas desborda visible (el menú «⋯» necesita salir
+   de la fila); en estrechas, scroll horizontal. */
+.erp-bandeja-table-wrap { overflow: visible; }
+.erp-bandeja-table { font-size: 13.5px; }
+.erp-bandeja-table th.num,
+.erp-bandeja-table td.num { text-align: right; white-space: nowrap; }
+.erp-bandeja-table td.erp-flow-amount { font-size: 14px; }
+.erp-bandeja-table td.erp-flow-amount small { text-align: right; }
+.erp-bandeja-table tr.is-alert td:first-child { box-shadow: inset 3px 0 0 #E2554A; }
+.erp-bandeja-table tr.is-muted td { opacity: 0.72; }
+.erp-bandeja-table .erp-flow-item-actions { justify-content: flex-start; }
+.erp-bandeja-table .erp-flow-item-r2.small { margin-top: 4px; }
+.erp-bandeja-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+.erp-bandeja-badges:empty { display: none; }
+.erp-bandeja-sort {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  text-transform: inherit;
+  letter-spacing: inherit;
+  cursor: pointer;
+}
+.erp-bandeja-queue {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.erp-bandeja-next { display: block; margin-top: 2px; }
+@media (max-width: 1100px) {
+  .erp-bandeja-table-wrap { overflow-x: auto; padding-bottom: 160px; margin-bottom: -160px; }
+  .erp-bandeja-table { min-width: 960px; }
+}
+
+/* Cola PEDIDOS: barra de filtros ligera (buscar, tienda, orden) sobre el grid
+   de tarjetas de aprobación. */
+.erp-approval-filters { margin: 0 0 14px; }
