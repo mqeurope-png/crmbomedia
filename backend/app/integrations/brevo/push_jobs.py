@@ -33,7 +33,11 @@ from sqlalchemy.orm import Session
 from app.core.audit import Action, record_event
 from app.integrations.brevo.client import BrevoClient
 from app.integrations.brevo.mapper import map_internal_contact_to_brevo
-from app.integrations.errors import IntegrationDuplicateError, IntegrationError
+from app.integrations.errors import (
+    IntegrationClientError,
+    IntegrationDuplicateError,
+    IntegrationError,
+)
 from app.models.crm import Contact, ExternalSystem, SyncLog
 from app.models.integration_settings import IntegrationAccount
 from app.services import brevo_push as _service
@@ -47,6 +51,89 @@ DEFAULT_PERIODIC_CHUNK = 100
 DEFAULT_BACKFILL_CHUNK = 50
 
 PUSH_LOCK_KEY = "brevo:periodic_push:heartbeat"
+
+# --- Cuarentena de contactos que fallan al hacer push -----------------------
+#
+# Un push que falla por un error PERMANENTE (4xx: teléfono inválido, contacto
+# que ni el upsert puede crear, atributo rechazado…) no fija `brevo_contact_id`,
+# así que el runner periódico lo re-detecta (`brevo_contact_id IS NULL`) y lo
+# vuelve a encolar CADA HORA, para siempre — la tormenta de la incidencia.
+# Contra eso: un contador en Redis por contacto (TTL) que, superado el límite,
+# lo deja en cuarentena; el runner periódico lo salta durante la ventana de
+# backoff. Fail-open: si Redis no responde, no se cuarentena (mejor reintentar
+# que perder un contacto). Un push que triunfa limpia el contador.
+BREVO_PUSH_FAIL_PREFIX = "brevo:push:fail:"
+DEFAULT_PUSH_MAX_ATTEMPTS = 3
+DEFAULT_PUSH_QUARANTINE_TTL = 6 * 3600
+
+
+def _fail_key(contact_id: str) -> str:
+    return f"{BREVO_PUSH_FAIL_PREFIX}{contact_id}"
+
+
+def record_push_failure(contact_id: str) -> int:
+    """Suma 1 al contador de fallos permanentes del contacto (con TTL) y
+    devuelve los intentos acumulados. 0 si Redis no responde."""
+    ttl = _int_env("BREVO_PUSH_QUARANTINE_TTL", DEFAULT_PUSH_QUARANTINE_TTL)
+    try:
+        conn = redis_connection()
+        key = _fail_key(contact_id)
+        attempts = int(conn.incr(key))
+        conn.expire(key, ttl)
+        return attempts
+    except Exception as exc:  # noqa: BLE001 — sin Redis no hay cuarentena
+        logger.warning("brevo.push quarantine incr failed cid=%s: %s", contact_id, exc)
+        return 0
+
+
+def clear_push_failure(contact_id: str) -> None:
+    """Borra el contador (el push triunfó): el contacto sale de cuarentena."""
+    try:
+        redis_connection().delete(_fail_key(contact_id))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("brevo.push quarantine clear failed cid=%s: %s", contact_id, exc)
+
+
+def is_push_quarantined(contact_id: str) -> bool:
+    """`True` si el contacto superó el límite de reintentos y está en la
+    ventana de backoff. Fail-open ante Redis caído (no cuarentena)."""
+    limit = _int_env("BREVO_PUSH_MAX_ATTEMPTS", DEFAULT_PUSH_MAX_ATTEMPTS)
+    try:
+        raw = redis_connection().get(_fail_key(contact_id))
+    except Exception:  # noqa: BLE001
+        return False
+    if raw is None:
+        return False
+    try:
+        return int(raw) >= limit
+    except (TypeError, ValueError):
+        return False
+
+
+async def _add_to_list_or_create(
+    client: Any, list_id: int, email: str, payload: dict[str, Any],
+) -> None:
+    """Añade el email a la lista; si Brevo responde 404 (el contacto no existe
+    en Brevo: desapareció, o el prefiltro del backfill iba con caché vieja), lo
+    CREA en esa lista (upsert) en vez de tumbar la sincronización. Cualquier
+    otro error se propaga."""
+    try:
+        await client.add_contacts_to_list(list_id, [email])
+    except IntegrationError as exc:
+        if getattr(exc, "status_code", None) != 404:
+            raise
+        logger.info(
+            "brevo.push upsert: contact %s not in Brevo, creating in list %s",
+            email, list_id,
+        )
+        await client.create_contact(
+            {
+                "email": email,
+                "attributes": payload.get("attributes", {}),
+                "listIds": [list_id],
+                "updateEnabled": True,
+            }
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -206,7 +293,7 @@ def _push_one(session: Session, contact_id: str) -> None:
                 if target_list_id in current_lists:
                     action = "already_in_list"
                 else:
-                    await client.add_contacts_to_list(target_list_id, [email])
+                    await _add_to_list_or_create(client, target_list_id, email, payload)
                     action = "added_to_list" if not removed_from else "moved"
                 brevo_id = str(existing.get("id") or "")
                 return action, removed_from, brevo_id
@@ -224,8 +311,9 @@ def _push_one(session: Session, contact_id: str) -> None:
                 brevo_id = str(created.get("id") or "")
             except IntegrationDuplicateError:
                 # Race: existía cuando hicimos POST aunque get_contact
-                # falló. Caemos al path de añadir a la lista.
-                await client.add_contacts_to_list(target_list_id, [email])
+                # falló. Caemos al path de añadir a la lista (upsert si el
+                # «duplicado» resultó no existir ya).
+                await _add_to_list_or_create(client, target_list_id, email, payload)
                 fetched = await client.get_contact(email)
                 brevo_id = str(fetched.get("id") or "")
                 return "added_to_list", removed_from, brevo_id
@@ -233,7 +321,13 @@ def _push_one(session: Session, contact_id: str) -> None:
 
     try:
         action, removed_from, brevo_id = asyncio.run(_drive())
-    except Exception as exc:  # noqa: BLE001 - audit + rethrow para RQ retry
+    except IntegrationClientError as exc:
+        # Error PERMANENTE (4xx: teléfono inválido que el saneo no atrapó,
+        # contacto que ni el upsert pudo crear, atributo rechazado…). NO se
+        # relanza: RQ no lo reencola y el runner periódico lo salta en cuanto
+        # supera el límite de intentos (cuarentena con backoff). Así un
+        # contacto imposible no satura el worker en bucle.
+        attempts = record_push_failure(contact_id)
         record_event(
             session,
             action=Action.BREVO_CONTACT_PUSH_FAILED,
@@ -243,11 +337,33 @@ def _push_one(session: Session, contact_id: str) -> None:
                 "error": str(exc),
                 "owner_user_id": contact.owner_user_id,
                 "list_id": target_list_id,
+                "permanent": True,
+                "attempts": attempts,
+            },
+        )
+        session.commit()
+        logger.warning(
+            "brevo.push_contact permanent failure cid=%s attempts=%s: %s",
+            contact_id, attempts, exc,
+        )
+        return
+    except Exception as exc:  # noqa: BLE001 — transitorio (5xx/red/429): relanza
+        record_event(
+            session,
+            action=Action.BREVO_CONTACT_PUSH_FAILED,
+            target_type="contact",
+            target_id=contact_id,
+            metadata={
+                "error": str(exc),
+                "owner_user_id": contact.owner_user_id,
+                "list_id": target_list_id,
+                "permanent": False,
             },
         )
         session.commit()
         raise
 
+    clear_push_failure(contact_id)
     contact.brevo_contact_id = brevo_id or contact.brevo_contact_id or "synced"
     contact.brevo_last_synced_at = datetime.now(UTC)
 
@@ -358,7 +474,13 @@ def periodic_push_check(session: Session, sync_log: SyncLog) -> SyncOutcome:
         )
     )
     enqueued = 0
+    quarantined = 0
     for cid in ids:
+        # No re-encolar en bucle los contactos que ya fallaron el límite de
+        # veces (cuarentena con backoff): son la tormenta de la incidencia.
+        if is_push_quarantined(cid):
+            quarantined += 1
+            continue
         try:
             enqueue_push_contact(contact_id=cid)
             enqueued += 1
@@ -369,7 +491,9 @@ def periodic_push_check(session: Session, sync_log: SyncLog) -> SyncOutcome:
     schedule_periodic_push()
     return SyncOutcome(
         records_processed=enqueued,
-        metadata={"detected": len(ids), "enqueued": enqueued},
+        metadata={
+            "detected": len(ids), "enqueued": enqueued, "quarantined": quarantined,
+        },
     )
 
 
@@ -596,14 +720,18 @@ def _add_one(session: Session, contact_id: str) -> None:
         return
     list_id = int(mapping.brevo_list_id)
     email = contact.email
+    payload = map_internal_contact_to_brevo(contact)
 
     async def _drive() -> None:
         async with BrevoClient(session, account.account_id) as client:
-            await client.add_contacts_to_list(list_id, [email])
+            # El prefiltro del backfill puede ir con caché vieja: si el
+            # contacto no está en Brevo, se crea (upsert) en vez de 404.
+            await _add_to_list_or_create(client, list_id, email, payload)
 
     try:
         asyncio.run(_drive())
-    except Exception as exc:  # noqa: BLE001
+    except IntegrationClientError as exc:
+        attempts = record_push_failure(contact_id)
         record_event(
             session,
             action=Action.BREVO_CONTACT_PUSH_FAILED,
@@ -614,11 +742,34 @@ def _add_one(session: Session, contact_id: str) -> None:
                 "list_id": list_id,
                 "owner_user_id": contact.owner_user_id,
                 "mode": "add_to_owner_list",
+                "permanent": True,
+                "attempts": attempts,
+            },
+        )
+        session.commit()
+        logger.warning(
+            "brevo.add_to_owner_list permanent failure cid=%s attempts=%s: %s",
+            contact_id, attempts, exc,
+        )
+        return
+    except Exception as exc:  # noqa: BLE001 — transitorio: relanza
+        record_event(
+            session,
+            action=Action.BREVO_CONTACT_PUSH_FAILED,
+            target_type="contact",
+            target_id=contact_id,
+            metadata={
+                "error": str(exc),
+                "list_id": list_id,
+                "owner_user_id": contact.owner_user_id,
+                "mode": "add_to_owner_list",
+                "permanent": False,
             },
         )
         session.commit()
         raise
 
+    clear_push_failure(contact_id)
     if not contact.brevo_contact_id:
         contact.brevo_contact_id = "pre-existing"
     contact.brevo_last_synced_at = datetime.now(UTC)

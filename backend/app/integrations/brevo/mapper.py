@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import unicodedata
 from datetime import datetime
 from typing import Any
@@ -365,6 +366,25 @@ def map_brevo_contact_to_internal(
     return record, ref_extras
 
 
+#: Brevo valida el atributo `SMS` como número internacional (E.164): `+`,
+#: prefijo de país y dígitos. Aceptamos hasta 15 dígitos (máximo E.164) tras
+#: quitar separadores. Un número local, con extensión o con letras NO cuadra.
+_E164_RE = re.compile(r"^\+\d{8,15}$")
+
+
+def brevo_sms(phone: str | None) -> str | None:
+    """Teléfono en el formato que Brevo acepta para `SMS` (E.164), o `None`.
+
+    Brevo rechaza con `400 Invalid phone number` cualquier valor que no sea
+    internacional, y eso tumba la sincronización ENTERA del contacto. Por eso,
+    si el teléfono no se puede validar (número local sin prefijo, extensión,
+    letras…), se OMITE: mejor subir el contacto sin teléfono que fallar."""
+    if not phone:
+        return None
+    cleaned = re.sub(r"[\s()\-.]", "", str(phone).strip())
+    return cleaned if _E164_RE.match(cleaned) else None
+
+
 def map_internal_contact_to_brevo(contact: Any) -> dict[str, Any]:
     """Inverse direction for the push engine. Only fields Brevo can
     store land in `attributes`; the email is the upsert key."""
@@ -373,8 +393,14 @@ def map_internal_contact_to_brevo(contact: Any) -> dict[str, Any]:
         attributes["NOMBRE"] = contact.first_name
     if contact.last_name:
         attributes["APELLIDOS"] = contact.last_name
-    if contact.phone:
-        attributes["SMS"] = contact.phone
+    sms = brevo_sms(getattr(contact, "phone", None))
+    if sms:
+        attributes["SMS"] = sms
+    elif getattr(contact, "phone", None):
+        logger.info(
+            "brevo.push phone %r not E.164; omitting SMS attribute for contact %s",
+            contact.phone, getattr(contact, "id", "?"),
+        )
     if contact.commercial_status:
         attributes["ESTADO_COMERCIAL"] = contact.commercial_status
     if contact.address_country:
