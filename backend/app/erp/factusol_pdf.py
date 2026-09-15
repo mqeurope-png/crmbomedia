@@ -174,6 +174,9 @@ LABELS: dict[str, dict[str, str]] = {
         "title_albaranes_devolucion": "ALBARÁN DE DEVOLUCIÓN",
         "direccion_recogida": "DIRECCIÓN DE RECOGIDA:",
         "divisa_nota": "Importes en {code} — sin conversión",
+        # Lote B3a: albarán con destinatario de envío (dropshipping) — a quién
+        # se factura, en pequeño bajo el bloque de entrega.
+        "facturar_a": "Facturar a:",
         "cambio_label": "Tipo de cambio: {rate}",
     },
     "en": {
@@ -233,6 +236,7 @@ LABELS: dict[str, dict[str, str]] = {
         "title_albaranes_devolucion": "TRANSPORT DOC for return of goods",
         "direccion_recogida": "Consignee:",
         "divisa_nota": "Amounts in {code} — no conversion applied",
+        "facturar_a": "Bill to:",
         "cambio_label": "Exchange rate: {rate}",
     },
     "de": {
@@ -292,6 +296,7 @@ LABELS: dict[str, dict[str, str]] = {
         "title_albaranes_devolucion": "RÜCKLIEFERSCHEIN",
         "direccion_recogida": "ABHOLADRESSE:",
         "divisa_nota": "Beträge in {code} — ohne Umrechnung",
+        "facturar_a": "Rechnung an:",
         "cambio_label": "Wechselkurs: {rate}",
     },
     "fr": {
@@ -351,6 +356,7 @@ LABELS: dict[str, dict[str, str]] = {
         "title_albaranes_devolucion": "BON DE RETOUR",
         "direccion_recogida": "ADRESSE D'ENLÈVEMENT :",
         "divisa_nota": "Montants en {code} — sans conversion",
+        "facturar_a": "Facturer à :",
         "cambio_label": "Taux de change : {rate}",
     },
     "nl": {
@@ -410,6 +416,7 @@ LABELS: dict[str, dict[str, str]] = {
         "title_albaranes_devolucion": "RETOURBON",
         "direccion_recogida": "OPHAALADRES:",
         "divisa_nota": "Bedragen in {code} — zonder omrekening",
+        "facturar_a": "Factuur aan:",
         "cambio_label": "Wisselkoers: {rate}",
     },
 }
@@ -1167,7 +1174,7 @@ def _draw_header(
             cv, cy, lab["direccion_recogida"], recogida, size=7.6,
         )
         cy -= 2 * mm
-        _draw_address_block(
+        cy = _draw_address_block(
             cv, cy, lab["direccion_entrega"], cli_lines, size=7.6,
         )
     else:
@@ -1182,6 +1189,17 @@ def _draw_header(
             cv.setFont(FONT, 9)
             cv.drawString(10 * mm, cy, text)
             cy -= 4.4 * mm
+    # Lote B3a: albarán con DESTINATARIO distinto del cliente fiscal
+    # (dropshipping): el bloque de arriba es la entrega (así viene en F_ALB);
+    # debajo, en pequeño, a quién se factura — para que el albarán siga
+    # diciendo de quién es el pedido. Solo si `annotate_delivery_recipient`
+    # lo apuntó (nombre de envío en el pedido y distinto del fiscal).
+    fiscal = str(cli.get("nombre_fiscal") or "").strip()
+    if fiscal:
+        cv.setFont(FONT, 7)
+        cv.setFillColor(GREY)
+        cv.drawString(10 * mm, cy, _fit(f"{lab['facturar_a']} {fiscal}", 7, 95))
+        cv.setFillColor(colors.black)
 
     # N.I.F. + SU REFERENCIA + FORMA DE PAGO, y — si existe — el nº/fecha
     # del pedido del cliente en su propia línea (sin solapar columnas).
@@ -1419,7 +1437,7 @@ def _lines_table(
         widths = [30 * mm, 140 * mm, 26 * mm]
 
     rows: list[list[Any]] = [
-        [_header_paragraph(h, w) for h, w in zip(headers, widths)]
+        [_header_paragraph(h, w) for h, w in zip(headers, widths, strict=True)]
     ]
     group_rows: list[int] = []
     current_group: str | None = None
@@ -1876,6 +1894,54 @@ def _find_company_by_codcli(session: Session, codcli: Any):
     return session.scalar(select(Company).where(
         Company.factusol_company_id == code,
     ))
+
+
+def annotate_delivery_recipient(
+    session: Session, data: dict[str, Any], *, order: Any = None,
+    client: Any = None, ejercicio: str | None = None,
+) -> str | None:
+    """Lote B3a — albarán con NOMBRE DE ENVÍO (dropshipping): su bloque de
+    cliente en F_ALB ya lleva el destinatario y la dirección de entrega, así
+    que el PDF los imprime solo. Aquí se apunta además el nombre FISCAL del
+    cliente en `data["cliente"]["nombre_fiscal"]` para que `_draw_header` lo
+    pinte en pequeño bajo el bloque («Facturar a: …»).
+
+    Solo albaranes cuyo pedido de BoHub (`order`, o localizado por la
+    referencia común) tiene `shipping_name`. El nombre fiscal sale de F_CLI
+    (`client`, el CODCLI del albarán — lo que dirá la factura) o, si no se
+    puede leer, de la empresa CRM vinculada a ese CODCLI. Si coincide con el
+    nombre del bloque no se apunta nada. Devuelve el nombre apuntado."""
+    if data.get("doc_type") != "albaranes":
+        return None
+    if order is None:
+        order = _find_order_for_document(session, "albaranes", data)
+    if not str(getattr(order, "shipping_name", "") or "").strip():
+        return None
+    cliente = data.get("cliente") or {}
+    codcli = cliente.get("codigo")
+    fiscal = ""
+    if client is not None and codcli:
+        from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
+        from app.integrations.factusol.customers import get_customer  # noqa: PLC0415
+
+        try:
+            row = get_customer(client, codcli, ejercicio=ejercicio or "")
+        except FactusolError:
+            logger.warning(
+                "factusol_pdf: no se pudo leer F_CLI %s para el nombre fiscal "
+                "del albarán %s", codcli, data.get("numero"), exc_info=True,
+            )
+            row = None
+        if row:
+            fiscal = str(row.get("nofcli") or row.get("noccli") or "").strip()
+    if not fiscal:
+        company = _find_company_by_codcli(session, codcli)
+        fiscal = str(getattr(company, "name", "") or "").strip()
+    if not fiscal or fiscal.lower() == str(cliente.get("nombre") or "").strip().lower():
+        return None
+    cliente["nombre_fiscal"] = fiscal
+    data["cliente"] = cliente
+    return fiscal
 
 
 def suggest_pdf_language(

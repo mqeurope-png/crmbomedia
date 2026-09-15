@@ -1053,7 +1053,7 @@ def test_column_headers_do_not_wrap_mid_word_in_all_languages() -> None:
             "col_dto", "col_subtotal", "col_total"]
     for lang in ("es", "en", "de", "fr", "nl"):
         lab = labels_for(lang)
-        for key, width in zip(keys, widths):
+        for key, width in zip(keys, widths, strict=True):
             para = _header_paragraph(lab[key], width)
             size = para.style.fontSize
             usable = width - 2 * _CELL_PAD_LR
@@ -1127,3 +1127,109 @@ def test_albaran_pdf_has_no_bank_data(lang: str, variant: str | None) -> None:
     assert labels_for(lang)["cuenta"] not in text
     fac, _ = _pdf("facturas", _header("facturas"), [_linea("facturas", 1)], lang=lang)
     assert "IBAN: ES11 0081 0202 1700 0125 9030" in _texto(fac)
+
+
+# ---------------------------------------------------------------------------
+# Lote B3a — albarán con destinatario de envío (dropshipping): el bloque de
+# cliente de F_ALB lleva la entrega y el PDF añade «Facturar a: <fiscal>».
+# ---------------------------------------------------------------------------
+
+
+def _albaran_dropship_data() -> dict[str, Any]:
+    """Albarán tal como lo escribe BoHub para un pedido con nombre y dirección
+    de envío: el bloque de cliente ES la entrega (CLIALB sigue siendo el
+    cliente fiscal 2458)."""
+    header = _header(
+        "albaranes", CNOALB="Nombre envío", CDOALB="12 Rue de la Paix",
+        CCPALB="75002", CPOALB="Paris", CPRALB="Île-de-France", CPAALB="250",
+    )
+    return extract_document_data(
+        _alb_resolver(), "albaranes", header, [_linea("albaranes", 1)],
+        ejercicio="2026",
+    )
+
+
+@pytest.mark.parametrize("lang", ["es", "en", "de", "fr", "nl"])
+@pytest.mark.parametrize("variant", [None, "valorado", "devolucion"])
+def test_albaran_pdf_prints_delivery_block_and_fiscal_name(
+    lang: str, variant: str | None,
+) -> None:
+    """El PDF imprime el bloque de F_ALB tal cual (destinatario + dirección de
+    envío) y, SOLO si se anotó el nombre fiscal, la línea «Facturar a: …» en
+    el idioma del documento, en todas las variantes del albarán. Un albarán
+    sin anotación (los de siempre) no lleva esa línea."""
+    lab = labels_for(lang)
+    company = dict(COMPANY_DEFAULTS[5])
+    data = _albaran_dropship_data()
+    plain = _texto(generate_document_pdf(data, company=company, lang=lang, variant=variant))
+    assert "Nombre envío" in plain and "12 Rue de la Paix" in plain
+    assert "75002 Paris" in plain
+    assert lab["facturar_a"] not in plain
+
+    data["cliente"]["nombre_fiscal"] = "DUPLICODER, S.L."
+    text = _texto(generate_document_pdf(data, company=company, lang=lang, variant=variant))
+    assert "Nombre envío" in text and "12 Rue de la Paix" in text
+    assert f"{lab['facturar_a']} DUPLICODER, S.L." in text
+
+
+def test_annotate_delivery_recipient(session_factory) -> None:
+    """`annotate_delivery_recipient`: solo albaranes de un pedido con
+    `shipping_name`. El nombre fiscal sale de F_CLI (NOFCLI del CLIALB, lo que
+    dirá la factura) o, si no se puede leer, de la empresa CRM vinculada a ese
+    código; si coincide con el nombre del bloque no se apunta nada; sin
+    pedido localizable, tampoco."""
+    from app.erp.factusol_pdf import annotate_delivery_recipient
+    from app.erp.models import OrderSource
+    from app.models.crm import Company
+
+    fcli = FakeClient({"F_CLI": [
+        {"CODCLI": 2458, "NOFCLI": "DUPLICODER, S.L.", "NOCCLI": "Duplicoder",
+         "NIFCLI": "B12345678", "PAICLI": "724"},
+    ]})
+    with session_factory() as s:
+        s.add(Company(id="dupli", name="Duplicoder CRM", factusol_company_id="2458"))
+        s.add(Order(id="o-ds", external_source=OrderSource.MANUAL, external_id="20",
+                    order_number="MANUAL-000020", company_id="dupli", total_amount=0,
+                    shipping_name="Nombre envío", factusol_albaran_number="5-260063"))
+        s.add(Order(id="o-plain", external_source=OrderSource.MANUAL, external_id="21",
+                    order_number="MANUAL-000021", company_id="dupli", total_amount=0))
+        s.commit()
+        ds, plain = s.get(Order, "o-ds"), s.get(Order, "o-plain")
+
+        data = _albaran_dropship_data()
+        assert annotate_delivery_recipient(
+            s, data, order=ds, client=fcli, ejercicio="2026",
+        ) == "DUPLICODER, S.L."
+        assert data["cliente"]["nombre_fiscal"] == "DUPLICODER, S.L."
+        assert data["cliente"]["nombre"] == "Nombre envío"          # el bloque no cambia
+        # Sin cliente FACTUSOL, o F_CLI sin ese código: la empresa CRM vinculada.
+        data = _albaran_dropship_data()
+        assert annotate_delivery_recipient(s, data, order=ds) == "Duplicoder CRM"
+        data = _albaran_dropship_data()
+        assert annotate_delivery_recipient(
+            s, data, order=ds, client=FakeClient({"F_CLI": []}), ejercicio="2026",
+        ) == "Duplicoder CRM"
+        # Pedido sin nombre de envío → nada; una factura → nada.
+        data = _albaran_dropship_data()
+        assert annotate_delivery_recipient(
+            s, data, order=plain, client=fcli, ejercicio="2026",
+        ) is None
+        assert "nombre_fiscal" not in data["cliente"]
+        fac = extract_document_data(
+            _alb_resolver(), "facturas", _header("facturas"), [_linea("facturas", 1)],
+            ejercicio="2026",
+        )
+        assert annotate_delivery_recipient(
+            s, fac, order=ds, client=fcli, ejercicio="2026",
+        ) is None
+        # Nombre de envío igual al fiscal: sin línea.
+        data = _albaran_dropship_data()
+        data["cliente"]["nombre"] = "duplicoder, s.l."
+        assert annotate_delivery_recipient(
+            s, data, order=ds, client=fcli, ejercicio="2026",
+        ) is None
+        # Sin `order`: se busca por la referencia común del albarán; una
+        # referencia que no es de ningún pedido no anota nada.
+        data = _albaran_dropship_data()
+        assert annotate_delivery_recipient(s, data, client=fcli, ejercicio="2026") is None
+        assert "nombre_fiscal" not in data["cliente"]

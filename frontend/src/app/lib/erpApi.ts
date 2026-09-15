@@ -914,6 +914,9 @@ export type OrderCreatePayload = {
   pickup_in_store?: boolean;
   shipping_address?: OrderAddress | null;
   billing_address?: OrderAddress | null;
+  /** Nombre de envío (dropshipping): destinatario del albarán cuando NO es la
+   *  empresa cliente. null = enviar a la empresa. */
+  shipping_name?: string | null;
   /** Fase 1: el alta parte de un presupuesto / pedido de cliente de FACTUSOL. */
   factusol_source?: FactusolSourceInput | null;
   /** Fase 2 (solo con `factusol_source`): paso de pago y albarán en FACTUSOL. */

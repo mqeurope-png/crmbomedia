@@ -147,6 +147,24 @@ def test_erp_orders_create_manual_success(client, session_factory):
     assert created[0]["changed_by_user_id"]
 
 
+def test_erp_orders_create_manual_shipping_name(client):
+    """Lote B3a — `shipping_name` (dropshipping): se guarda recortado en el
+    pedido y sale en la respuesta junto a la dirección de envío; sin él,
+    null (se envía a la empresa); más de 120 caracteres → 422."""
+    body = _create(client, order_number=None, shipping_name="  Nombre envío ",
+                   shipping_address={"address_line": "12 Rue de la Paix",
+                                     "city": "Paris", "postal_code": "75002",
+                                     "country": "Francia"})
+    assert body["shipping_name"] == "Nombre envío"
+    assert body["packing"]["shipping_address"]["city"] == "Paris"
+    assert _create(client, order_number=None)["shipping_name"] is None
+    assert _create(client, order_number=None, shipping_name="   ")["shipping_name"] is None
+    r = client.post("/api/erp/orders",
+                    json=_payload(order_number=None, shipping_name="x" * 121),
+                    headers=auth_headers(client, "pedidos"))
+    assert r.status_code == 422
+
+
 def test_erp_orders_create_manual_autonumber_increments(client):
     a = _create(client, order_number=None)["order_number"]
     b = _create(client, order_number=None)["order_number"]
