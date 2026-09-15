@@ -179,5 +179,32 @@ def test_inverse_mapping_builds_attributes():
     assert payload["email"] == "ana@example.com"
     assert payload["attributes"]["NOMBRE"] == "Ana"
     assert payload["attributes"]["APELLIDOS"] == "García"
-    assert payload["attributes"]["SMS"] == "+34 600 100 100"
+    # Un internacional válido llega saneado a E.164 (Brevo lo exige así).
+    assert payload["attributes"]["SMS"] == "+34600100100"
     assert payload["attributes"]["LEAD_SCORE"] == 80
+
+
+def test_inverse_mapping_omits_invalid_phone():
+    """Un teléfono que Brevo rechazaría (local, extensión, letras) se OMITE
+    en vez de mandarse y tumbar la sync con `400 Invalid phone number`."""
+    from app.integrations.brevo.mapper import brevo_sms
+
+    # El saneador: internacional válido → E.164; el resto → None.
+    assert brevo_sms("+34 600 100 100") == "+34600100100"
+    assert brevo_sms("+441234567890") == "+441234567890"
+    for bad in ("600100100", "12345", "+34 600 ext 12", "no-sabe", "", None):
+        assert brevo_sms(bad) is None, bad
+
+    class LocalPhoneContact:
+        id = "c-local"
+        first_name = "Bruno"
+        last_name = None
+        email = "bruno@example.com"
+        phone = "600100100"  # local, sin prefijo → Brevo lo rechaza
+        commercial_status = "new"
+        address_country = None
+        lead_score = None
+
+    payload = map_internal_contact_to_brevo(LocalPhoneContact())
+    assert "SMS" not in payload["attributes"]
+    assert payload["email"] == "bruno@example.com"

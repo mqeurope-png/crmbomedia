@@ -936,3 +936,169 @@ def test_owner_removed_via_primary_demote_enqueues_remove(factory, patched_push)
         session.commit()
 
     assert any(n == "remove_contact_from_brevo" for n, _ in enqueued)
+
+
+# ---------------------------------------------------------------------------
+# Fix tormenta Brevo — upsert en 404, saneo de teléfono (mapper) y cuarentena
+# ---------------------------------------------------------------------------
+
+
+def test_add_to_list_or_create_upserts_on_404():
+    """Si add-to-list da 404 (el contacto no existe en Brevo), se CREA en la
+    lista (upsert) en vez de tumbar la sync."""
+    import asyncio
+
+    calls: list[str] = []
+
+    class C:
+        async def add_contacts_to_list(self, list_id, emails):
+            calls.append("add")
+            raise IntegrationClientError("Contact does not exist", status_code=404)
+
+        async def create_contact(self, payload):
+            calls.append("create")
+            self.payload = payload
+            return {"id": 1}
+
+    c = C()
+    asyncio.run(
+        push_jobs._add_to_list_or_create(c, 7, "x@example.com", {"attributes": {"NOMBRE": "X"}})
+    )
+    assert calls == ["add", "create"]
+    assert c.payload["listIds"] == [7]
+    assert c.payload["updateEnabled"] is True
+    assert c.payload["attributes"] == {"NOMBRE": "X"}
+
+
+def test_add_to_list_or_create_propagates_non_404():
+    import asyncio
+
+    class C:
+        async def add_contacts_to_list(self, list_id, emails):
+            raise IntegrationClientError("bad request", status_code=400)
+
+        async def create_contact(self, payload):  # pragma: no cover
+            raise AssertionError("no debe crear ante un 400")
+
+    with pytest.raises(IntegrationClientError):
+        asyncio.run(push_jobs._add_to_list_or_create(C(), 7, "x@example.com", {"attributes": {}}))
+
+
+def test_push_permanent_error_records_failure_and_does_not_raise(factory):
+    """Un 400/404 permanente (p. ej. teléfono inválido) NO relanza: se registra
+    el fallo (cuenta para la cuarentena) y el contacto queda sin sincronizar,
+    pero el worker no entra en bucle."""
+    with factory() as session:
+        users = _user_ids(session)
+        _seed_mapping(session, user_id=users["admin"], list_id=42, list_name="Admin")
+        contact = _seed_contact(session, owner_user_id=users["admin"], email="bad@example.com")
+        session.commit()
+        cid = contact.id
+
+    class BadPhoneClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get_contact(self, email):
+            raise IntegrationClientError("not found", status_code=404)
+
+        async def create_contact(self, payload):
+            raise IntegrationClientError("Invalid phone number", status_code=400)
+
+    failures: list[str] = []
+    engine = factory.kw["bind"]
+    with (
+        patch.object(push_jobs, "BrevoClient", BadPhoneClient),
+        patch("app.db.session.get_engine", return_value=engine),
+        patch.object(
+            push_jobs, "record_push_failure",
+            side_effect=lambda c: (failures.append(c), 1)[1],
+        ),
+    ):
+        push_jobs.push_contact_to_brevo(cid)  # NO debe lanzar
+
+    assert failures == [cid]
+    with factory() as session:
+        assert session.get(Contact, cid).brevo_contact_id is None
+
+
+def test_push_success_clears_quarantine(factory, fake_brevo, patched_push):
+    with factory() as session:
+        users = _user_ids(session)
+        _seed_mapping(session, user_id=users["admin"], list_id=42, list_name="Admin")
+        contact = _seed_contact(session, owner_user_id=users["admin"], email="ok@example.com")
+        session.commit()
+        cid = contact.id
+
+    cleared: list[str] = []
+    with patch.object(push_jobs, "clear_push_failure", side_effect=cleared.append):
+        push_jobs.push_contact_to_brevo(cid)
+    assert cleared == [cid]
+
+
+def test_periodic_push_skips_quarantined(factory, patched_push):
+    from app.models.crm import SyncLog
+
+    with factory() as session:
+        users = _user_ids(session)
+        a = _seed_contact(session, owner_user_id=users["admin"], email="a@example.com")
+        b = _seed_contact(session, owner_user_id=users["admin"], email="b@example.com")
+        session.commit()
+        a_id, b_id = a.id, b.id
+
+    enqueued = patched_push
+    with (
+        patch.object(push_jobs, "is_push_quarantined", side_effect=lambda cid: cid == a_id),
+        patch.object(push_jobs, "schedule_periodic_push"),
+        factory() as session,
+    ):
+        push_jobs.periodic_push_check(
+            session, SyncLog(system="brevo", operation="periodic_push", status="running")
+        )
+
+    enq_ids = [args[0] for (name, args) in enqueued if name == "push_contact_to_brevo"]
+    assert b_id in enq_ids
+    assert a_id not in enq_ids  # en cuarentena → no se re-encola en bucle
+
+
+def test_quarantine_helpers_count_expire_and_fail_open():
+    class FakeRedis:
+        def __init__(self):
+            self.store: dict[str, int] = {}
+            self.ttl: dict[str, int] = {}
+
+        def incr(self, k):
+            self.store[k] = self.store.get(k, 0) + 1
+            return self.store[k]
+
+        def expire(self, k, ttl):
+            self.ttl[k] = ttl
+
+        def get(self, k):
+            v = self.store.get(k)
+            return None if v is None else str(v)
+
+        def delete(self, k):
+            self.store.pop(k, None)
+
+    fake = FakeRedis()
+    with patch.object(push_jobs, "redis_connection", return_value=fake):
+        assert push_jobs.is_push_quarantined("c1") is False
+        assert push_jobs.record_push_failure("c1") == 1
+        assert push_jobs.record_push_failure("c1") == 2
+        assert push_jobs.record_push_failure("c1") == 3
+        assert push_jobs.is_push_quarantined("c1") is True   # >= 3 (default)
+        assert fake.ttl["brevo:push:fail:c1"] > 0
+        push_jobs.clear_push_failure("c1")
+        assert push_jobs.is_push_quarantined("c1") is False
+
+    # Fail-open: sin Redis nunca se cuarentena (mejor reintentar que perder).
+    with patch.object(push_jobs, "redis_connection", side_effect=RuntimeError("down")):
+        assert push_jobs.is_push_quarantined("c1") is False
+        assert push_jobs.record_push_failure("c1") == 0
