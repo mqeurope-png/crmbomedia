@@ -1,0 +1,1656 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+@font-face{font-family:"Geist";font-weight:400;font-display:swap;src:url("fonts/geist-400.woff2") format("woff2")}
+@font-face{font-family:"Geist";font-weight:500;font-display:swap;src:url("fonts/geist-500.woff2") format("woff2")}
+@font-face{font-family:"Geist";font-weight:600;font-display:swap;src:url("fonts/geist-600.woff2") format("woff2")}
+@font-face{font-family:"Geist";font-weight:700;font-display:swap;src:url("fonts/geist-700.woff2") format("woff2")}
+@font-face{font-family:"Geist Mono";font-weight:400;font-display:swap;src:url("fonts/geist-mono-400.woff2") format("woff2")}
+@font-face{font-family:"Geist Mono";font-weight:500;font-display:swap;src:url("fonts/geist-mono-500.woff2") format("woff2")}
+html,body{margin:0;padding:0;background:#fbfbfc}
+body{font-family:"Geist",-apple-system,"Segoe UI",Roboto,sans-serif;color:#1b2330;-webkit-font-smoothing:antialiased}
+*{box-sizing:border-box}
+a{color:#2451c7;text-decoration:none}
+a:hover{color:#1e40af;text-decoration:underline}
+p{text-wrap:pretty}
+</style>
+</helmet>
+
+<template id="__bundler_thumbnail" data-bg-color="#f4f5f7">
+  <svg viewBox="0 0 1200 800" xmlns="http://www.w3.org/2000/svg">
+    <rect width="1200" height="800" fill="#f4f5f7"></rect>
+    <rect x="240" y="200" width="720" height="400" rx="36" fill="#ffffff" stroke="#e7e9ee" stroke-width="4"></rect>
+    <rect x="300" y="262" width="300" height="34" rx="17" fill="#1b2330"></rect>
+    <rect x="300" y="322" width="180" height="22" rx="11" fill="#e7e9ee"></rect>
+    <rect x="300" y="400" width="140" height="80" rx="18" fill="#e7f6ec"></rect>
+    <rect x="460" y="400" width="140" height="80" rx="18" fill="#e7f6ec"></rect>
+    <rect x="620" y="400" width="140" height="80" rx="18" fill="#fdf1dd"></rect>
+    <rect x="780" y="400" width="140" height="80" rx="18" fill="#eef0f4"></rect>
+    <rect x="300" y="512" width="260" height="48" rx="14" fill="#2f6bff"></rect>
+  </svg>
+</template>
+<div style="max-width:1120px;margin:0 auto;padding:48px 24px 120px;display:flex;flex-direction:column;gap:56px">
+
+  <header style="display:flex;flex-direction:column;gap:20px;border-bottom:1px solid #e7e9ee;padding-bottom:36px">
+    <div style="display:flex;align-items:center;gap:10px;font-size:12px;font-weight:500;letter-spacing:0.06em;text-transform:uppercase;color:#9aa2ad">
+      <span style="display:inline-block;width:8px;height:8px;border-radius:99px;background:#2f6bff"></span>
+      <span>BoHub · Bomedia S.L.</span>
+    </div>
+    <h1 style="margin:0;font-size:40px;line-height:1.1;letter-spacing:-0.025em;font-weight:600;max-width:20ch">Revisión de diseño del ERP</h1>
+    <p style="margin:0;font-size:17px;line-height:1.6;color:#6b7280;max-width:62ch">Diagnóstico del sistema visual y revisión pantalla por pantalla, sobre la dirección ya aprobada: bandeja de trabajo por colas y ficha de pedido como «línea de vida». Nada se elimina: se reorganiza y se clarifica.</p>
+    <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:4px">
+      <span style="display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:99px;background:#eef0f4;color:#5b6472;font-size:13px;font-weight:500">Revisión completa · 11 pantallas</span>
+      <span style="display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:99px;background:#e8f0ff;color:#2451c7;font-size:13px;font-weight:500">7 decisiones de sistema</span>
+      <span style="display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:99px;background:#e7f6ec;color:#1f7a45;font-size:13px;font-weight:500">12 quick wins</span>
+    </div>
+  </header>
+
+  <section style="display:flex;flex-direction:column;gap:20px">
+    <h2 style="margin:0;font-size:13px;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;color:#9aa2ad">Resumen</h2>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px">
+      <div style="background:#fff;border:1px solid #e7e9ee;border-radius:12px;padding:20px;box-shadow:0 1px 2px rgba(27,35,48,.04)">
+        <div style="font-size:12px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:#2451c7;margin-bottom:10px">Lo que ya está bien</div>
+        <p style="margin:0;font-size:14px;line-height:1.6;color:#6b7280">La decisión de fondo es correcta: colas por acción en vez de tabla, y una acción principal por pedido. Eso quita al usuario la tarea de deducir el estado. La revisión no toca esa estructura.</p>
+      </div>
+      <div style="background:#fff;border:1px solid #e7e9ee;border-radius:12px;padding:20px;box-shadow:0 1px 2px rgba(27,35,48,.04)">
+        <div style="font-size:12px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:#8a5c00;margin-bottom:10px">El problema real</div>
+        <p style="margin:0;font-size:14px;line-height:1.6;color:#6b7280">El estado del pedido se cuenta con texto pequeño y en varios sitios distintos. El usuario tiene que leer y comparar. La solución es una rejilla de estado fija, siempre en el mismo orden y con el mismo color.</p>
+      </div>
+      <div style="background:#fff;border:1px solid #e7e9ee;border-radius:12px;padding:20px;box-shadow:0 1px 2px rgba(27,35,48,.04)">
+        <div style="font-size:12px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:#1f7a45;margin-bottom:10px">La palanca más grande</div>
+        <p style="margin:0;font-size:14px;line-height:1.6;color:#6b7280">Una sola escala de botones en todo el ERP: un primario por pantalla, el resto secundarios, y lo peligroso (anular) fuera del grupo. Resuelve de una vez los botones duplicados de la ficha.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════ DIAGNÓSTICO DE SISTEMA ══════════ -->
+  <section style="display:flex;flex-direction:column;gap:32px">
+    <div style="display:flex;flex-direction:column;gap:12px">
+      <div style="display:flex;align-items:center;gap:12px">
+        <span style="display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:8px;background:#1b2330;color:#fff;font-size:14px;font-weight:600">1</span>
+        <h2 style="margin:0;font-size:28px;font-weight:600;letter-spacing:-0.02em">Diagnóstico de sistema</h2>
+      </div>
+      <p style="margin:0;font-size:16px;line-height:1.65;color:#6b7280;max-width:66ch">Siete decisiones transversales. Si se aplican antes de tocar pantallas, la mitad de los problemas de cada pantalla desaparecen solos.</p>
+    </div>
+
+    <!-- 1.1 Color -->
+    <div style="display:flex;flex-direction:column;gap:18px;background:#fff;border:1px solid #e7e9ee;border-radius:14px;padding:28px;box-shadow:0 1px 2px rgba(27,35,48,.04)">
+      <div style="display:flex;flex-wrap:wrap;align-items:baseline;gap:12px">
+        <h3 style="margin:0;font-size:20px;font-weight:600;letter-spacing:-0.01em">1.1 · Color y tokens</h3>
+        <span style="padding:4px 10px;border-radius:99px;background:#e7f6ec;color:#1f7a45;font-size:12px;font-weight:600">Quick win</span>
+      </div>
+      <p style="margin:0;font-size:15px;line-height:1.65;color:#6b7280;max-width:70ch">La paleta actual es sana y no hace falta cambiarla. Lo que falta es una regla de uso: hoy el mismo verde puede significar «pagado», «cobrado» y «todo correcto», y el azul se usa tanto para marca como para «por facturar». Se propone separar <strong style="color:#1b2330;font-weight:600">color de marca</strong> (solo acciones e interacción) de <strong style="color:#1b2330;font-weight:600">color de estado</strong> (solo informar).</p>
+
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px">
+        <div style="border:1px solid #eef0f4;border-radius:10px;overflow:hidden">
+          <div style="height:56px;background:#f4f5f7"></div>
+          <div style="padding:10px 12px"><div style="font-family:'Geist Mono',monospace;font-size:12px;color:#1b2330">--bg</div><div style="font-size:12px;color:#9aa2ad;margin-top:2px">#f4f5f7 · fondo app</div></div>
+        </div>
+        <div style="border:1px solid #eef0f4;border-radius:10px;overflow:hidden">
+          <div style="height:56px;background:#fff;border-bottom:1px solid #eef0f4"></div>
+          <div style="padding:10px 12px"><div style="font-family:'Geist Mono',monospace;font-size:12px;color:#1b2330">--card</div><div style="font-size:12px;color:#9aa2ad;margin-top:2px">#ffffff · tarjetas</div></div>
+        </div>
+        <div style="border:1px solid #eef0f4;border-radius:10px;overflow:hidden">
+          <div style="height:56px;background:#1b2330"></div>
+          <div style="padding:10px 12px"><div style="font-family:'Geist Mono',monospace;font-size:12px;color:#1b2330">--ink</div><div style="font-size:12px;color:#9aa2ad;margin-top:2px">#1b2330 · texto</div></div>
+        </div>
+        <div style="border:1px solid #eef0f4;border-radius:10px;overflow:hidden">
+          <div style="height:56px;background:#6b7280"></div>
+          <div style="padding:10px 12px"><div style="font-family:'Geist Mono',monospace;font-size:12px;color:#1b2330">--muted</div><div style="font-size:12px;color:#9aa2ad;margin-top:2px">#6b7280 · secundario</div></div>
+        </div>
+        <div style="border:1px solid #eef0f4;border-radius:10px;overflow:hidden">
+          <div style="height:56px;background:#2f6bff"></div>
+          <div style="padding:10px 12px"><div style="font-family:'Geist Mono',monospace;font-size:12px;color:#1b2330">--brand</div><div style="font-size:12px;color:#9aa2ad;margin-top:2px">#2f6bff · solo acción</div></div>
+        </div>
+        <div style="border:1px solid #eef0f4;border-radius:10px;overflow:hidden">
+          <div style="height:56px;background:#e7e9ee"></div>
+          <div style="padding:10px 12px"><div style="font-family:'Geist Mono',monospace;font-size:12px;color:#1b2330">--line</div><div style="font-size:12px;color:#9aa2ad;margin-top:2px">#e7e9ee · bordes</div></div>
+        </div>
+      </div>
+
+      <div style="display:flex;flex-direction:column;gap:10px;background:#f4f5f7;border-radius:10px;padding:18px">
+        <div style="font-size:13px;font-weight:600;color:#1b2330">Tres tokens que faltan</div>
+        <div style="display:flex;flex-direction:column;gap:8px;font-size:14px;line-height:1.6;color:#6b7280">
+          <div><code style="font-family:'Geist Mono',monospace;font-size:13px;color:#1b2330;background:#fff;padding:2px 6px;border-radius:5px;border:1px solid #e7e9ee">--focus</code> &nbsp;anillo de foco visible (#2f6bff al 40 %, 3 px). Hoy el foco de teclado se pierde y en el taller se navega mucho con tabulador.</div>
+          <div><code style="font-family:'Geist Mono',monospace;font-size:13px;color:#1b2330;background:#fff;padding:2px 6px;border-radius:5px;border:1px solid #e7e9ee">--ink-on-color</code> &nbsp;texto sobre fondos de estado. Fija el contraste mínimo 4,5:1 y evita que alguien escriba gris sobre ámbar.</div>
+          <div><code style="font-family:'Geist Mono',monospace;font-size:13px;color:#1b2330;background:#fff;padding:2px 6px;border-radius:5px;border:1px solid #e7e9ee">--danger-ink</code> &nbsp;rojo de acción destructiva (#b42318), distinto del rojo de estado «incidencia». Anular un pedido y tener una incidencia no son lo mismo.</div>
+        </div>
+        <div style="font-size:13px;font-weight:600;color:#1b2330;margin-top:6px">Dos correcciones sobre la paleta actual</div>
+        <div style="display:flex;flex-direction:column;gap:8px;font-size:14px;line-height:1.6;color:#6b7280">
+          <div><code style="font-family:'Geist Mono',monospace;font-size:13px;color:#1b2330;background:#fff;padding:2px 6px;border-radius:5px;border:1px solid #e7e9ee">--faint</code> (#9aa2ad) da 2,5:1 sobre blanco y no llega al mínimo. Se reserva para elementos sin información: separadores, flechas de desplegable, la barra de dirección del navegador. Todo texto que aporte un dato — fechas, importes, resúmenes de panel — usa <code style="font-family:'Geist Mono',monospace;font-size:13px;color:#1b2330;background:#fff;padding:2px 6px;border-radius:5px;border:1px solid #e7e9ee">--muted</code> (#6b7280, 4,8:1).</div>
+          <div>El ámbar del brief (<span style="font-family:'Geist Mono',monospace;font-size:13px">#9a6700</span> sobre <span style="font-family:'Geist Mono',monospace;font-size:13px">#fdf1dd</span>) mide 4,36:1, justo por debajo del mínimo. Se propone oscurecer solo la tinta a <strong style="color:#1b2330;font-weight:600">#8a5c00</strong>: mismo aspecto, 5,1:1. El fondo no cambia.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 1.2 Tipografía -->
+    <div style="display:flex;flex-direction:column;gap:18px;background:#fff;border:1px solid #e7e9ee;border-radius:14px;padding:28px;box-shadow:0 1px 2px rgba(27,35,48,.04)">
+      <div style="display:flex;flex-wrap:wrap;align-items:baseline;gap:12px">
+        <h3 style="margin:0;font-size:20px;font-weight:600;letter-spacing:-0.01em">1.2 · Tipografía</h3>
+        <span style="padding:4px 10px;border-radius:99px;background:#e7f6ec;color:#1f7a45;font-size:12px;font-weight:600">Quick win</span>
+      </div>
+      <p style="margin:0;font-size:15px;line-height:1.65;color:#6b7280;max-width:70ch">La fuente del sistema funciona, pero falta una escala cerrada: hoy conviven demasiados tamaños intermedios y eso es lo que hace que los estados «se lean pequeños». Se propone una escala de seis pasos, cuerpo a 14 px y mínimo absoluto 12 px solo para etiquetas. Y una regla nueva: <strong style="color:#1b2330;font-weight:600">todo dato numérico (referencias, NIF, importes, nº de serie) en monoespaciada</strong>, para poder comparar y copiar sin equivocarse.</p>
+      <div style="display:flex;flex-direction:column;gap:2px;border:1px solid #eef0f4;border-radius:10px;overflow:hidden">
+        <div style="display:flex;flex-wrap:wrap;align-items:baseline;gap:16px;padding:14px 18px;background:#fff"><span style="font-family:'Geist Mono',monospace;font-size:12px;color:#9aa2ad;min-width:92px">display / 28</span><span style="font-size:28px;font-weight:600;letter-spacing:-0.02em">Pedido BP-2481</span></div>
+        <div style="display:flex;flex-wrap:wrap;align-items:baseline;gap:16px;padding:14px 18px;background:#fbfbfc"><span style="font-family:'Geist Mono',monospace;font-size:12px;color:#9aa2ad;min-width:92px">título / 20</span><span style="font-size:20px;font-weight:600;letter-spacing:-0.01em">Resumen económico</span></div>
+        <div style="display:flex;flex-wrap:wrap;align-items:baseline;gap:16px;padding:14px 18px;background:#fff"><span style="font-family:'Geist Mono',monospace;font-size:12px;color:#9aa2ad;min-width:92px">subtítulo / 16</span><span style="font-size:16px;font-weight:600">Datos fiscales</span></div>
+        <div style="display:flex;flex-wrap:wrap;align-items:baseline;gap:16px;padding:14px 18px;background:#fbfbfc"><span style="font-family:'Geist Mono',monospace;font-size:12px;color:#9aa2ad;min-width:92px">cuerpo / 14</span><span style="font-size:14px;color:#1b2330">Impresora artisJet 3000U · 1 ud · portes incluidos</span></div>
+        <div style="display:flex;flex-wrap:wrap;align-items:baseline;gap:16px;padding:14px 18px;background:#fff"><span style="font-family:'Geist Mono',monospace;font-size:12px;color:#9aa2ad;min-width:92px">etiqueta / 12</span><span style="font-size:12px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:#6b7280">Régimen de IVA</span></div>
+        <div style="display:flex;flex-wrap:wrap;align-items:baseline;gap:16px;padding:14px 18px;background:#fbfbfc"><span style="font-family:'Geist Mono',monospace;font-size:12px;color:#9aa2ad;min-width:92px">dato / mono</span><span style="font-family:'Geist Mono',monospace;font-size:14px;color:#1b2330">BP-2481 · ESB12345678 · 4.290,00 €</span></div>
+      </div>
+    </div>
+
+    <!-- 1.3 Espaciado -->
+    <div style="display:flex;flex-direction:column;gap:18px;background:#fff;border:1px solid #e7e9ee;border-radius:14px;padding:28px;box-shadow:0 1px 2px rgba(27,35,48,.04)">
+      <div style="display:flex;flex-wrap:wrap;align-items:baseline;gap:12px">
+        <h3 style="margin:0;font-size:20px;font-weight:600;letter-spacing:-0.01em">1.3 · Escala de espaciado y radios</h3>
+        <span style="padding:4px 10px;border-radius:99px;background:#e7f6ec;color:#1f7a45;font-size:12px;font-weight:600">Quick win</span>
+      </div>
+      <p style="margin:0;font-size:15px;line-height:1.65;color:#6b7280;max-width:70ch">Escala de 4 px, siete pasos, sin valores fuera de lista. La densidad se controla con dos ajustes y no con retoques puntuales: dentro de una tarjeta se usa 12/16 px, entre bloques 24/32 px. Radios: 8 px para controles, 12 px para tarjetas y paneles, 99 px solo para pastillas.</p>
+      <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end">
+        <div style="display:flex;flex-direction:column;gap:6px;align-items:center"><div style="width:4px;height:4px;background:#2f6bff;border-radius:2px"></div><span style="font-family:'Geist Mono',monospace;font-size:11px;color:#9aa2ad">4</span></div>
+        <div style="display:flex;flex-direction:column;gap:6px;align-items:center"><div style="width:8px;height:8px;background:#2f6bff;border-radius:2px"></div><span style="font-family:'Geist Mono',monospace;font-size:11px;color:#9aa2ad">8</span></div>
+        <div style="display:flex;flex-direction:column;gap:6px;align-items:center"><div style="width:12px;height:12px;background:#2f6bff;border-radius:2px"></div><span style="font-family:'Geist Mono',monospace;font-size:11px;color:#9aa2ad">12</span></div>
+        <div style="display:flex;flex-direction:column;gap:6px;align-items:center"><div style="width:16px;height:16px;background:#2f6bff;border-radius:2px"></div><span style="font-family:'Geist Mono',monospace;font-size:11px;color:#9aa2ad">16</span></div>
+        <div style="display:flex;flex-direction:column;gap:6px;align-items:center"><div style="width:24px;height:24px;background:#2f6bff;border-radius:2px"></div><span style="font-family:'Geist Mono',monospace;font-size:11px;color:#9aa2ad">24</span></div>
+        <div style="display:flex;flex-direction:column;gap:6px;align-items:center"><div style="width:32px;height:32px;background:#2f6bff;border-radius:2px"></div><span style="font-family:'Geist Mono',monospace;font-size:11px;color:#9aa2ad">32</span></div>
+        <div style="display:flex;flex-direction:column;gap:6px;align-items:center"><div style="width:48px;height:48px;background:#2f6bff;border-radius:2px"></div><span style="font-family:'Geist Mono',monospace;font-size:11px;color:#9aa2ad">48</span></div>
+      </div>
+    </div>
+
+    <!-- 1.4 Pastillas de estado -->
+    <div style="display:flex;flex-direction:column;gap:18px;background:#fff;border:1px solid #e7e9ee;border-radius:14px;padding:28px;box-shadow:0 1px 2px rgba(27,35,48,.04)">
+      <div style="display:flex;flex-wrap:wrap;align-items:baseline;gap:12px">
+        <h3 style="margin:0;font-size:20px;font-weight:600;letter-spacing:-0.01em">1.4 · Patrón de estado</h3>
+        <span style="padding:4px 10px;border-radius:99px;background:#fdf1dd;color:#8a5c00;font-size:12px;font-weight:600">Cambio mayor</span>
+        <span style="font-size:13px;color:#6b7280">el punto de dolor nº 1</span>
+      </div>
+      <p style="margin:0;font-size:15px;line-height:1.65;color:#6b7280;max-width:70ch">Hoy el estado es texto. La propuesta es que sea <strong style="color:#1b2330;font-weight:600">estructura</strong>: cuatro casillas fijas — Pago, Factura, Cobro, Envío — siempre en el mismo orden y en la misma posición de la fila. Verde = hecho, ámbar = pendiente, gris = no aplica todavía, rojo = bloqueado. Así el ojo aprende la posición y deja de leer.</p>
+
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:18px">
+        <div style="border:1px solid #eef0f4;border-radius:12px;padding:18px;background:#fbfbfc">
+          <div style="font-size:12px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:#b42318;margin-bottom:14px">Antes</div>
+          <div style="font-size:12px;color:#6b7280;line-height:1.7">Pedido pagado · factura emitida · cobro pendiente · pendiente de envío</div>
+          <div style="margin-top:14px;font-size:13px;color:#6b7280;line-height:1.6">Cuatro datos en una frase. Hay que leerla entera, y en móvil se parte en tres líneas.</div>
+        </div>
+        <div style="border:1px solid #d7e2ff;border-radius:12px;padding:18px;background:#fff">
+          <div style="font-size:12px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:#1f7a45;margin-bottom:14px">Después</div>
+          <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px">
+            <div style="display:flex;flex-direction:column;gap:4px;align-items:center;padding:8px 4px;border-radius:8px;background:#e7f6ec"><span style="font-size:10px;font-weight:600;letter-spacing:0.05em;text-transform:uppercase;color:#1f7a45">Pago</span><span style="font-size:13px;font-weight:600;color:#1f7a45">Pagado</span></div>
+            <div style="display:flex;flex-direction:column;gap:4px;align-items:center;padding:8px 4px;border-radius:8px;background:#e7f6ec"><span style="font-size:10px;font-weight:600;letter-spacing:0.05em;text-transform:uppercase;color:#1f7a45">Factura</span><span style="font-size:13px;font-weight:600;color:#1f7a45">Emitida</span></div>
+            <div style="display:flex;flex-direction:column;gap:4px;align-items:center;padding:8px 4px;border-radius:8px;background:#fdf1dd"><span style="font-size:10px;font-weight:600;letter-spacing:0.05em;text-transform:uppercase;color:#8a5c00">Cobro</span><span style="font-size:13px;font-weight:600;color:#8a5c00">Pendiente</span></div>
+            <div style="display:flex;flex-direction:column;gap:4px;align-items:center;padding:8px 4px;border-radius:8px;background:#eef0f4"><span style="font-size:10px;font-weight:600;letter-spacing:0.05em;text-transform:uppercase;color:#5b6472">Envío</span><span style="font-size:13px;font-weight:600;color:#5b6472">—</span></div>
+          </div>
+          <div style="margin-top:14px;font-size:13px;color:#6b7280;line-height:1.6">Posición fija. Se lee de un vistazo y funciona sin distinguir colores, porque cada casilla lleva su palabra.</div>
+        </div>
+      </div>
+
+      <div style="display:flex;flex-direction:column;gap:12px;margin-top:4px">
+        <div style="font-size:13px;font-weight:600;color:#1b2330">Pastillas: un solo tamaño por contexto</div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center">
+          <span style="padding:5px 11px;border-radius:99px;background:#e7f6ec;color:#1f7a45;font-size:13px;font-weight:600">Pagado</span>
+          <span style="padding:5px 11px;border-radius:99px;background:#fdf1dd;color:#8a5c00;font-size:13px;font-weight:600">Pendiente</span>
+          <span style="padding:5px 11px;border-radius:99px;background:#e8f0ff;color:#2451c7;font-size:13px;font-weight:600">Por facturar</span>
+          <span style="padding:5px 11px;border-radius:99px;background:#e6f5f3;color:#0f766e;font-size:13px;font-weight:600">Manual</span>
+          <span style="padding:5px 11px;border-radius:99px;background:#f0e9fd;color:#6d3fc4;font-size:13px;font-weight:600">Intracomunitario</span>
+          <span style="padding:5px 11px;border-radius:99px;background:#fdeaea;color:#b42318;font-size:13px;font-weight:600">Incidencia</span>
+          <span style="padding:5px 11px;border-radius:99px;background:#eef0f4;color:#5b6472;font-size:13px;font-weight:600">Archivada</span>
+        </div>
+        <p style="margin:0;font-size:14px;line-height:1.6;color:#6b7280;max-width:70ch">Regla: las pastillas <strong style="color:#1b2330;font-weight:600">informan, nunca se pulsan</strong>. Si algo es pulsable es un botón o un chip de filtro, y se distingue por el borde. Hoy esa frontera no está clara en la bandeja.</p>
+      </div>
+    </div>
+
+    <!-- 1.5 Tablas vs tarjetas -->
+    <div style="display:flex;flex-direction:column;gap:18px;background:#fff;border:1px solid #e7e9ee;border-radius:14px;padding:28px;box-shadow:0 1px 2px rgba(27,35,48,.04)">
+      <div style="display:flex;flex-wrap:wrap;align-items:baseline;gap:12px">
+        <h3 style="margin:0;font-size:20px;font-weight:600;letter-spacing:-0.01em">1.5 · Tablas o tarjetas</h3>
+        <span style="padding:4px 10px;border-radius:99px;background:#fdf1dd;color:#8a5c00;font-size:12px;font-weight:600">Cambio mayor</span>
+      </div>
+      <p style="margin:0;font-size:15px;line-height:1.65;color:#6b7280;max-width:70ch">La inconsistencia actual viene de no tener criterio. Se propone uno, y solo uno:</p>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px">
+        <div style="border:1px solid #eef0f4;border-radius:12px;padding:18px;background:#fbfbfc">
+          <div style="font-size:15px;font-weight:600;margin-bottom:8px">Fila de trabajo</div>
+          <p style="margin:0 0 10px;font-size:14px;line-height:1.6;color:#6b7280">Cuando cada elemento tiene una acción propia y hay que decidir sobre él. Fila alta, rejilla de estado, botón de siguiente acción.</p>
+          <div style="font-size:13px;color:#6b7280;line-height:1.6">Bandeja de pedidos · Proformas · Cola SAT</div>
+        </div>
+        <div style="border:1px solid #eef0f4;border-radius:12px;padding:18px;background:#fbfbfc">
+          <div style="font-size:15px;font-weight:600;margin-bottom:8px">Tabla de consulta</div>
+          <p style="margin:0 0 10px;font-size:14px;line-height:1.6;color:#6b7280">Cuando se mira para comparar cifras y fechas. Densa, alineación numérica a la derecha, monoespaciada, cabecera fija.</p>
+          <div style="font-size:13px;color:#6b7280;line-height:1.6">Documentos FACTUSOL · Líneas de pedido · Actividad de empresa</div>
+        </div>
+        <div style="border:1px solid #eef0f4;border-radius:12px;padding:18px;background:#fbfbfc">
+          <div style="font-size:15px;font-weight:600;margin-bottom:8px">Panel de ficha</div>
+          <p style="margin:0 0 10px;font-size:14px;line-height:1.6;color:#6b7280">Pares etiqueta/valor de una sola entidad. Dos columnas en escritorio, una en móvil, nunca tabla.</p>
+          <div style="font-size:13px;color:#6b7280;line-height:1.6">Resumen económico · FACTUSOL · Datos fiscales</div>
+        </div>
+      </div>
+      <p style="margin:0;font-size:14px;line-height:1.6;color:#6b7280;max-width:70ch">En móvil, toda tabla de consulta se convierte en lista de pares etiqueta/valor. No hay scroll horizontal en ninguna pantalla: en el taller nadie va a arrastrar una tabla de lado.</p>
+    </div>
+
+    <!-- 1.6 Formularios y modales -->
+    <div style="display:flex;flex-direction:column;gap:18px;background:#fff;border:1px solid #e7e9ee;border-radius:14px;padding:28px;box-shadow:0 1px 2px rgba(27,35,48,.04)">
+      <div style="display:flex;flex-wrap:wrap;align-items:baseline;gap:12px">
+        <h3 style="margin:0;font-size:20px;font-weight:600;letter-spacing:-0.01em">1.6 · Formularios, modales y jerarquía de acciones</h3>
+        <span style="padding:4px 10px;border-radius:99px;background:#e7f6ec;color:#1f7a45;font-size:12px;font-weight:600">Quick win</span>
+      </div>
+
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:24px">
+        <div style="display:flex;flex-direction:column;gap:14px">
+          <div style="font-size:15px;font-weight:600">Escala de botones</div>
+          <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center">
+            <span style="display:inline-flex;align-items:center;height:40px;padding:0 18px;border-radius:8px;background:#2f6bff;color:#fff;font-size:14px;font-weight:600">Emitir factura</span>
+            <span style="display:inline-flex;align-items:center;height:40px;padding:0 18px;border-radius:8px;background:#fff;color:#1b2330;border:1px solid #e7e9ee;font-size:14px;font-weight:500">Descargar PDF</span>
+            <span style="display:inline-flex;align-items:center;height:40px;padding:0 14px;border-radius:8px;background:transparent;color:#6b7280;font-size:14px;font-weight:500">Enviar por email</span>
+            <span style="display:inline-flex;align-items:center;height:40px;padding:0 18px;border-radius:8px;background:#fff;color:#b42318;border:1px solid #f3c9c5;font-size:14px;font-weight:500">Anular</span>
+          </div>
+          <div style="font-size:14px;line-height:1.7;color:#6b7280">
+            <div><strong style="color:#1b2330;font-weight:600">Primario</strong> — uno por pantalla, siempre la siguiente acción del sistema.</div>
+            <div><strong style="color:#1b2330;font-weight:600">Secundario</strong> — con borde, para lo que se hace a menudo pero no ahora.</div>
+            <div><strong style="color:#1b2330;font-weight:600">Terciario</strong> — sin caja, dentro del panel al que pertenece.</div>
+            <div><strong style="color:#1b2330;font-weight:600">Destructivo</strong> — separado del grupo, con confirmación escrita.</div>
+          </div>
+          <div style="font-size:14px;line-height:1.6;color:#6b7280;background:#f4f5f7;border-radius:10px;padding:14px">Altura mínima 40 px en escritorio y <strong style="color:#1b2330;font-weight:600">48 px en móvil</strong>. Esto resuelve los targets táctiles del taller.</div>
+        </div>
+
+        <div style="display:flex;flex-direction:column;gap:14px">
+          <div style="font-size:15px;font-weight:600">Un único molde de modal</div>
+          <div style="border:1px solid #e7e9ee;border-radius:12px;overflow:hidden;background:#fff;box-shadow:0 8px 24px rgba(27,35,48,.08)">
+            <div style="padding:16px 18px;border-bottom:1px solid #eef0f4;display:flex;align-items:flex-start;justify-content:space-between;gap:12px">
+              <div><div style="font-size:16px;font-weight:600">Registrar cobro</div><div style="font-size:13px;color:#6b7280;margin-top:3px">Factura F-2026/118 · 4.290,00 €</div></div>
+              <span style="color:#9aa2ad;font-size:18px;line-height:1">✕</span>
+            </div>
+            <div style="padding:18px;display:flex;flex-direction:column;gap:14px;background:#fbfbfc">
+              <div style="display:flex;flex-direction:column;gap:6px"><span style="font-size:13px;font-weight:500;color:#1b2330">Importe cobrado</span><span style="display:flex;align-items:center;height:40px;padding:0 12px;border:1px solid #e7e9ee;border-radius:8px;background:#fff;font-family:'Geist Mono',monospace;font-size:14px">4.290,00 €</span></div>
+              <div style="display:flex;flex-direction:column;gap:6px"><span style="font-size:13px;font-weight:500;color:#1b2330">Forma de pago</span><span style="display:flex;align-items:center;justify-content:space-between;height:40px;padding:0 12px;border:1px solid #e7e9ee;border-radius:8px;background:#fff;font-size:14px;color:#6b7280">Transferencia <span style="color:#9aa2ad">▾</span></span></div>
+            </div>
+            <div style="padding:14px 18px;border-top:1px solid #eef0f4;display:flex;flex-wrap:wrap;gap:10px;justify-content:flex-end">
+              <span style="display:inline-flex;align-items:center;height:38px;padding:0 16px;border-radius:8px;border:1px solid #e7e9ee;font-size:14px;font-weight:500;color:#1b2330">Cancelar</span>
+              <span style="display:inline-flex;align-items:center;height:38px;padding:0 16px;border-radius:8px;background:#2f6bff;color:#fff;font-size:14px;font-weight:600">Registrar cobro</span>
+            </div>
+          </div>
+          <div style="font-size:14px;line-height:1.7;color:#6b7280">Cabecera con título y contexto, cuerpo con scroll propio, pie fijo con la acción a la derecha. Ancho máximo 520 px (formulario) o 720 px (buscador con resultados). En móvil ocupa toda la pantalla desde abajo. Los modales «descuadrados» se arreglan fijando este molde y prohibiendo anchos ad hoc.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 1.7 Responsive -->
+    <div style="display:flex;flex-direction:column;gap:18px;background:#fff;border:1px solid #e7e9ee;border-radius:14px;padding:28px;box-shadow:0 1px 2px rgba(27,35,48,.04)">
+      <div style="display:flex;flex-wrap:wrap;align-items:baseline;gap:12px">
+        <h3 style="margin:0;font-size:20px;font-weight:600;letter-spacing:-0.01em">1.7 · Responsive y accesibilidad</h3>
+        <span style="padding:4px 10px;border-radius:99px;background:#e8f0ff;color:#2451c7;font-size:12px;font-weight:600">Transversal</span>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px">
+        <div style="border:1px solid #eef0f4;border-radius:10px;padding:16px"><div style="font-family:'Geist Mono',monospace;font-size:12px;color:#2f6bff;margin-bottom:6px">≥ 1280</div><div style="font-size:14px;line-height:1.6;color:#6b7280">Ficha a dos columnas: línea de vida a la izquierda, paneles a la derecha.</div></div>
+        <div style="border:1px solid #eef0f4;border-radius:10px;padding:16px"><div style="font-family:'Geist Mono',monospace;font-size:12px;color:#2f6bff;margin-bottom:6px">768 – 1279</div><div style="font-size:14px;line-height:1.6;color:#6b7280">Una columna. Los paneles pasan debajo. Colas en fila con scroll táctil.</div></div>
+        <div style="border:1px solid #eef0f4;border-radius:10px;padding:16px"><div style="font-family:'Geist Mono',monospace;font-size:12px;color:#2f6bff;margin-bottom:6px">&lt; 768</div><div style="font-size:14px;line-height:1.6;color:#6b7280">Acción principal fija abajo. Paneles plegados. Rejilla de estado en 2×2.</div></div>
+        <div style="border:1px solid #eef0f4;border-radius:10px;padding:16px"><div style="font-family:'Geist Mono',monospace;font-size:12px;color:#2f6bff;margin-bottom:6px">Mínimos</div><div style="font-size:14px;line-height:1.6;color:#6b7280">Contraste 4,5:1 · target 48 px · foco visible · nunca solo color.</div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════ PANTALLA 1: BANDEJA ══════════ -->
+  <section style="display:flex;flex-direction:column;gap:28px">
+    <div style="display:flex;flex-direction:column;gap:12px;border-top:1px solid #e7e9ee;padding-top:40px">
+      <div style="display:flex;flex-wrap:wrap;align-items:center;gap:12px">
+        <span style="display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:8px;background:#1b2330;color:#fff;font-size:14px;font-weight:600">2</span>
+        <h2 style="margin:0;font-size:28px;font-weight:600;letter-spacing:-0.02em">Bandeja de pedidos</h2>
+        <span style="padding:5px 11px;border-radius:99px;background:#fdeaea;color:#b42318;font-size:12px;font-weight:600">Pantalla de más uso</span>
+      </div>
+      <p style="margin:0;font-size:16px;line-height:1.65;color:#6b7280;max-width:66ch">Es la pantalla donde se empieza el día. Su trabajo es responder a una sola pregunta: <em>¿qué tengo que hacer ahora?</em></p>
+    </div>
+
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px">
+      <div style="background:#fff;border:1px solid #e7e9ee;border-left:3px solid #1f7a45;border-radius:12px;padding:20px">
+        <div style="font-size:12px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:#1f7a45;margin-bottom:12px">Qué funciona</div>
+        <div style="font-size:14px;line-height:1.7;color:#6b7280;display:flex;flex-direction:column;gap:8px">
+          <div>Las colas con contador son el acierto central: reemplazan el filtrado manual por una decisión ya tomada.</div>
+          <div>Una acción principal por pedido evita que el usuario tenga que saber cuál es el siguiente paso del proceso.</div>
+          <div>Las alertas accionables sacan los bloqueos a la superficie en vez de esconderlos dentro de la ficha.</div>
+        </div>
+      </div>
+      <div style="background:#fff;border:1px solid #e7e9ee;border-left:3px solid #8a5c00;border-radius:12px;padding:20px">
+        <div style="font-size:12px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:#8a5c00;margin-bottom:12px">Qué mejorar</div>
+        <div style="font-size:14px;line-height:1.7;color:#6b7280;display:flex;flex-direction:column;gap:8px">
+          <div><strong style="color:#1b2330;font-weight:600">Estado en prosa.</strong> Va en texto pequeño y en una frase. Se sustituye por la rejilla de 4 casillas en posición fija.</div>
+          <div><strong style="color:#1b2330;font-weight:600">Filtros ausentes o escondidos.</strong> Faltan origen/tienda, facturado o no, y orden por fecha. Además, al filtrar no queda claro qué está activo.</div>
+          <div><strong style="color:#1b2330;font-weight:600">Colas y filtros compiten.</strong> Son dos mecanismos distintos con el mismo aspecto. Hay que separarlos visualmente: la cola es <em>dónde estoy</em>, el filtro es <em>qué veo dentro</em>.</div>
+          <div><strong style="color:#1b2330;font-weight:600">Origen poco visible.</strong> Saber si un pedido viene de boprint, artisJet, fluxlasers o es manual cambia cómo se trata, y hoy cuesta verlo.</div>
+          <div><strong style="color:#1b2330;font-weight:600">Sin selección múltiple.</strong> Imprimir seis albaranes son hoy seis viajes a la ficha.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- MOCKUP BANDEJA -->
+    <div style="display:flex;flex-direction:column;gap:12px">
+      <div style="display:flex;flex-wrap:wrap;align-items:baseline;gap:10px">
+        <span style="font-size:12px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:#9aa2ad">Mockup propuesto</span>
+        <span style="font-size:13px;color:#6b7280">escritorio · datos de ejemplo</span>
+      </div>
+
+      <div style="border:1px solid #e7e9ee;border-radius:14px;overflow:hidden;background:#f4f5f7;box-shadow:0 4px 16px rgba(27,35,48,.06)">
+        <!-- chrome -->
+        <div style="display:flex;align-items:center;gap:8px;padding:10px 14px;background:#fff;border-bottom:1px solid #e7e9ee">
+          <span style="width:9px;height:9px;border-radius:99px;background:#e7e9ee"></span>
+          <span style="width:9px;height:9px;border-radius:99px;background:#e7e9ee"></span>
+          <span style="width:9px;height:9px;border-radius:99px;background:#e7e9ee"></span>
+          <span style="margin-left:10px;font-family:'Geist Mono',monospace;font-size:11px;color:#9aa2ad">bohub.bomedia.es/erp/pedidos</span>
+        </div>
+
+        <!-- topbar app -->
+        <div style="display:flex;flex-wrap:wrap;align-items:center;gap:12px;padding:12px 18px;background:#fff;border-bottom:1px solid #e7e9ee">
+          <div style="display:flex;align-items:center;gap:8px;font-size:15px;font-weight:600;letter-spacing:-0.01em"><span style="display:inline-block;width:20px;height:20px;border-radius:6px;background:#2f6bff"></span>BoHub</div>
+          <div style="display:flex;flex-wrap:wrap;gap:4px;font-size:13px">
+            <span style="padding:6px 10px;border-radius:7px;background:#eef0f4;color:#1b2330;font-weight:600">Pedidos</span>
+            <span style="padding:6px 10px;border-radius:7px;color:#6b7280">Proformas</span>
+            <span style="padding:6px 10px;border-radius:7px;color:#6b7280">Empresas</span>
+            <span style="padding:6px 10px;border-radius:7px;color:#6b7280">FACTUSOL</span>
+            <span style="padding:6px 10px;border-radius:7px;color:#6b7280">SAT</span>
+          </div>
+          <div style="margin-left:auto;display:flex;align-items:center;gap:10px">
+            <span style="display:flex;align-items:center;gap:8px;height:36px;padding:0 12px;border:1px solid #e7e9ee;border-radius:8px;font-size:13px;color:#9aa2ad;min-width:180px">Buscar pedido, empresa o NIF</span>
+            <span style="display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;border-radius:99px;background:#eef0f4;font-size:12px;font-weight:600;color:#5b6472">MB</span>
+          </div>
+        </div>
+
+        <div style="padding:20px 18px 24px;display:flex;flex-direction:column;gap:16px">
+          <div style="display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:12px">
+            <div>
+              <h4 style="margin:0;font-size:22px;font-weight:600;letter-spacing:-0.02em">Bandeja de pedidos</h4>
+              <div style="font-size:13px;color:#6b7280;margin-top:4px">34 pedidos abiertos · 3 con incidencia</div>
+            </div>
+            <div style="display:flex;gap:8px">
+              <span style="display:inline-flex;align-items:center;height:40px;padding:0 14px;border-radius:8px;border:1px solid #e7e9ee;background:#fff;font-size:14px;font-weight:500">Nueva proforma</span>
+              <span style="display:inline-flex;align-items:center;height:40px;padding:0 16px;border-radius:8px;background:#2f6bff;color:#fff;font-size:14px;font-weight:600">Nuevo pedido</span>
+            </div>
+          </div>
+
+          <!-- COLAS -->
+          <div style="display:flex;flex-wrap:wrap;gap:8px">
+            <div style="display:flex;align-items:center;gap:8px;padding:10px 14px;border-radius:10px;background:#1b2330;color:#fff;min-height:44px"><span style="font-size:14px;font-weight:600">Por revisar</span><span style="padding:2px 8px;border-radius:99px;background:rgba(255,255,255,.18);font-size:12px;font-weight:600">6</span></div>
+            <div style="display:flex;align-items:center;gap:8px;padding:10px 14px;border-radius:10px;background:#fff;border:1px solid #e7e9ee;min-height:44px"><span style="font-size:14px;font-weight:500;color:#1b2330">Por facturar</span><span style="padding:2px 8px;border-radius:99px;background:#e8f0ff;color:#2451c7;font-size:12px;font-weight:600">9</span></div>
+            <div style="display:flex;align-items:center;gap:8px;padding:10px 14px;border-radius:10px;background:#fff;border:1px solid #e7e9ee;min-height:44px"><span style="font-size:14px;font-weight:500;color:#1b2330">Por cobrar</span><span style="padding:2px 8px;border-radius:99px;background:#fdf1dd;color:#8a5c00;font-size:12px;font-weight:600">12</span></div>
+            <div style="display:flex;align-items:center;gap:8px;padding:10px 14px;border-radius:10px;background:#fff;border:1px solid #e7e9ee;min-height:44px"><span style="font-size:14px;font-weight:500;color:#1b2330">Por enviar</span><span style="padding:2px 8px;border-radius:99px;background:#e6f5f3;color:#0f766e;font-size:12px;font-weight:600">4</span></div>
+            <div style="display:flex;align-items:center;gap:8px;padding:10px 14px;border-radius:10px;background:#fff;border:1px solid #f3c9c5;min-height:44px"><span style="font-size:14px;font-weight:600;color:#b42318">Incidencias</span><span style="padding:2px 8px;border-radius:99px;background:#fdeaea;color:#b42318;font-size:12px;font-weight:600">3</span></div>
+            <div style="display:flex;align-items:center;gap:8px;padding:10px 14px;border-radius:10px;background:#fff;border:1px solid #e7e9ee;min-height:44px"><span style="font-size:14px;font-weight:500;color:#6b7280">Listo</span><span style="padding:2px 8px;border-radius:99px;background:#eef0f4;color:#5b6472;font-size:12px;font-weight:600">218</span></div>
+          </div>
+
+          <!-- FILTROS -->
+          <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:12px 14px;background:#fff;border:1px solid #e7e9ee;border-radius:12px">
+            <span style="font-size:12px;font-weight:600;letter-spacing:0.05em;text-transform:uppercase;color:#9aa2ad;margin-right:2px">Filtrar</span>
+            <span style="display:inline-flex;align-items:center;gap:6px;height:36px;padding:0 12px;border-radius:8px;border:1px solid #d7e2ff;background:#e8f0ff;color:#2451c7;font-size:13px;font-weight:600">Tienda: artisJet <span style="color:#2f6bff">✕</span></span>
+            <span style="display:inline-flex;align-items:center;gap:6px;height:36px;padding:0 12px;border-radius:8px;border:1px solid #e7e9ee;background:#fff;color:#6b7280;font-size:13px">Origen: todos <span style="color:#9aa2ad">▾</span></span>
+            <span style="display:inline-flex;align-items:center;gap:6px;height:36px;padding:0 12px;border-radius:8px;border:1px solid #e7e9ee;background:#fff;color:#6b7280;font-size:13px">Facturado: no <span style="color:#9aa2ad">▾</span></span>
+            <span style="display:inline-flex;align-items:center;gap:6px;height:36px;padding:0 12px;border-radius:8px;border:1px solid #e7e9ee;background:#fff;color:#6b7280;font-size:13px">Régimen: todos <span style="color:#9aa2ad">▾</span></span>
+            <span style="margin-left:auto;display:inline-flex;align-items:center;gap:6px;height:36px;padding:0 12px;border-radius:8px;border:1px solid #e7e9ee;background:#fff;color:#1b2330;font-size:13px;font-weight:500">Más recientes primero <span style="color:#9aa2ad">▾</span></span>
+            <span style="font-size:13px;color:#2451c7;font-weight:500">Limpiar</span>
+          </div>
+
+          <!-- FILA 1: incidencia -->
+          <div style="background:#fff;border:1px solid #f3c9c5;border-radius:12px;overflow:hidden">
+            <div style="display:flex;flex-wrap:wrap;align-items:center;gap:16px;padding:16px">
+              <div style="flex:1 1 240px;min-width:0;display:flex;flex-direction:column;gap:6px">
+                <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px">
+                  <span style="font-family:'Geist Mono',monospace;font-size:15px;font-weight:500;color:#1b2330">AJ-2481</span>
+                  <span style="padding:3px 8px;border-radius:99px;background:#f0e9fd;color:#6d3fc4;font-size:11px;font-weight:600">artisJet · Woo</span>
+                  <span style="padding:3px 8px;border-radius:99px;background:#f0e9fd;color:#6d3fc4;font-size:11px;font-weight:600">Intracomunitario</span>
+                </div>
+                <div style="font-size:15px;font-weight:600;letter-spacing:-0.01em">Grafische Werkstatt Müller GmbH</div>
+                <div style="font-size:13px;color:#6b7280">14 sep 2026 · <span style="font-family:'Geist Mono',monospace">3.780,00 €</span> · Alemania</div>
+              </div>
+              <div style="flex:1 1 300px;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px">
+                <div style="display:flex;flex-direction:column;gap:3px;align-items:center;padding:8px 4px;border-radius:8px;background:#e7f6ec"><span style="font-size:10px;font-weight:600;letter-spacing:0.04em;text-transform:uppercase;color:#1f7a45">Pago</span><span style="font-size:13px;font-weight:600;color:#1f7a45">Pagado</span></div>
+                <div style="display:flex;flex-direction:column;gap:3px;align-items:center;padding:8px 4px;border-radius:8px;background:#fdeaea"><span style="font-size:10px;font-weight:600;letter-spacing:0.04em;text-transform:uppercase;color:#b42318">Factura</span><span style="font-size:13px;font-weight:600;color:#b42318">Bloqueada</span></div>
+                <div style="display:flex;flex-direction:column;gap:3px;align-items:center;padding:8px 4px;border-radius:8px;background:#eef0f4"><span style="font-size:10px;font-weight:600;letter-spacing:0.04em;text-transform:uppercase;color:#5b6472">Cobro</span><span style="font-size:13px;font-weight:600;color:#5b6472">—</span></div>
+                <div style="display:flex;flex-direction:column;gap:3px;align-items:center;padding:8px 4px;border-radius:8px;background:#eef0f4"><span style="font-size:10px;font-weight:600;letter-spacing:0.04em;text-transform:uppercase;color:#5b6472">Envío</span><span style="font-size:13px;font-weight:600;color:#5b6472">—</span></div>
+              </div>
+              <div style="margin-left:auto;display:flex;align-items:center;gap:8px">
+                <span style="display:inline-flex;align-items:center;height:40px;padding:0 16px;border-radius:8px;background:#2f6bff;color:#fff;font-size:14px;font-weight:600">Validar VAT en VIES</span>
+                <span style="display:inline-flex;align-items:center;justify-content:center;width:40px;height:40px;border-radius:8px;border:1px solid #e7e9ee;color:#6b7280;font-size:16px">⋯</span>
+              </div>
+            </div>
+            <div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px;padding:12px 16px;background:#fdeaea;border-top:1px solid #f3c9c5">
+              <span style="font-size:13px;font-weight:600;color:#b42318">Incidencia</span>
+              <span style="font-size:13px;color:#8b2a22;flex:1 1 220px">El VAT intracomunitario no está validado. FACTUSOL no permitirá emitir la factura exenta hasta confirmarlo.</span>
+            </div>
+          </div>
+
+          <!-- FILA 2 -->
+          <div style="background:#fff;border:1px solid #e7e9ee;border-radius:12px;padding:16px;display:flex;flex-wrap:wrap;align-items:center;gap:16px">
+            <div style="flex:1 1 240px;min-width:0;display:flex;flex-direction:column;gap:6px">
+              <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px">
+                <span style="font-family:'Geist Mono',monospace;font-size:15px;font-weight:500;color:#1b2330">BP-2479</span>
+                <span style="padding:3px 8px;border-radius:99px;background:#e8f0ff;color:#2451c7;font-size:11px;font-weight:600">boprint · Woo</span>
+                <span style="padding:3px 8px;border-radius:99px;background:#eef0f4;color:#5b6472;font-size:11px;font-weight:600">Nacional con IVA</span>
+              </div>
+              <div style="font-size:15px;font-weight:600;letter-spacing:-0.01em">Rotulación Levante S.L.</div>
+              <div style="font-size:13px;color:#6b7280">13 sep 2026 · <span style="font-family:'Geist Mono',monospace">4.290,00 €</span> · Valencia</div>
+            </div>
+            <div style="flex:1 1 300px;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px">
+              <div style="display:flex;flex-direction:column;gap:3px;align-items:center;padding:8px 4px;border-radius:8px;background:#e7f6ec"><span style="font-size:10px;font-weight:600;letter-spacing:0.04em;text-transform:uppercase;color:#1f7a45">Pago</span><span style="font-size:13px;font-weight:600;color:#1f7a45">Pagado</span></div>
+              <div style="display:flex;flex-direction:column;gap:3px;align-items:center;padding:8px 4px;border-radius:8px;background:#e7f6ec"><span style="font-size:10px;font-weight:600;letter-spacing:0.04em;text-transform:uppercase;color:#1f7a45">Factura</span><span style="font-size:13px;font-weight:600;color:#1f7a45">Emitida</span></div>
+              <div style="display:flex;flex-direction:column;gap:3px;align-items:center;padding:8px 4px;border-radius:8px;background:#fdf1dd"><span style="font-size:10px;font-weight:600;letter-spacing:0.04em;text-transform:uppercase;color:#8a5c00">Cobro</span><span style="font-size:13px;font-weight:600;color:#8a5c00">Pendiente</span></div>
+              <div style="display:flex;flex-direction:column;gap:3px;align-items:center;padding:8px 4px;border-radius:8px;background:#eef0f4"><span style="font-size:10px;font-weight:600;letter-spacing:0.04em;text-transform:uppercase;color:#5b6472">Envío</span><span style="font-size:13px;font-weight:600;color:#5b6472">—</span></div>
+            </div>
+            <div style="margin-left:auto;display:flex;align-items:center;gap:8px">
+              <span style="display:inline-flex;align-items:center;height:40px;padding:0 16px;border-radius:8px;background:#2f6bff;color:#fff;font-size:14px;font-weight:600">Registrar cobro</span>
+              <span style="display:inline-flex;align-items:center;justify-content:center;width:40px;height:40px;border-radius:8px;border:1px solid #e7e9ee;color:#6b7280;font-size:16px">⋯</span>
+            </div>
+          </div>
+
+          <!-- FILA 3 -->
+          <div style="background:#fff;border:1px solid #e7e9ee;border-radius:12px;padding:16px;display:flex;flex-wrap:wrap;align-items:center;gap:16px">
+            <div style="flex:1 1 240px;min-width:0;display:flex;flex-direction:column;gap:6px">
+              <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px">
+                <span style="font-family:'Geist Mono',monospace;font-size:15px;font-weight:500;color:#1b2330">FL-2476</span>
+                <span style="padding:3px 8px;border-radius:99px;background:#e6f5f3;color:#0f766e;font-size:11px;font-weight:600">fluxlasers · Manual</span>
+                <span style="padding:3px 8px;border-radius:99px;background:#eef0f4;color:#5b6472;font-size:11px;font-weight:600">Exportación</span>
+              </div>
+              <div style="font-size:15px;font-weight:600;letter-spacing:-0.01em">Laser Studio Zürich AG</div>
+              <div style="font-size:13px;color:#6b7280">11 sep 2026 · <span style="font-family:'Geist Mono',monospace">12.450,00 €</span> · Suiza</div>
+            </div>
+            <div style="flex:1 1 300px;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px">
+              <div style="display:flex;flex-direction:column;gap:3px;align-items:center;padding:8px 4px;border-radius:8px;background:#e7f6ec"><span style="font-size:10px;font-weight:600;letter-spacing:0.04em;text-transform:uppercase;color:#1f7a45">Pago</span><span style="font-size:13px;font-weight:600;color:#1f7a45">Pagado</span></div>
+              <div style="display:flex;flex-direction:column;gap:3px;align-items:center;padding:8px 4px;border-radius:8px;background:#e7f6ec"><span style="font-size:10px;font-weight:600;letter-spacing:0.04em;text-transform:uppercase;color:#1f7a45">Factura</span><span style="font-size:13px;font-weight:600;color:#1f7a45">Emitida</span></div>
+              <div style="display:flex;flex-direction:column;gap:3px;align-items:center;padding:8px 4px;border-radius:8px;background:#e7f6ec"><span style="font-size:10px;font-weight:600;letter-spacing:0.04em;text-transform:uppercase;color:#1f7a45">Cobro</span><span style="font-size:13px;font-weight:600;color:#1f7a45">Cobrado</span></div>
+              <div style="display:flex;flex-direction:column;gap:3px;align-items:center;padding:8px 4px;border-radius:8px;background:#fdf1dd"><span style="font-size:10px;font-weight:600;letter-spacing:0.04em;text-transform:uppercase;color:#8a5c00">Envío</span><span style="font-size:13px;font-weight:600;color:#8a5c00">En taller</span></div>
+            </div>
+            <div style="margin-left:auto;display:flex;align-items:center;gap:8px">
+              <span style="display:inline-flex;align-items:center;height:40px;padding:0 16px;border-radius:8px;background:#2f6bff;color:#fff;font-size:14px;font-weight:600">Enviar a SAT</span>
+              <span style="display:inline-flex;align-items:center;justify-content:center;width:40px;height:40px;border-radius:8px;border:1px solid #e7e9ee;color:#6b7280;font-size:16px">⋯</span>
+            </div>
+          </div>
+
+          <!-- FILA 4 -->
+          <div style="background:#fff;border:1px solid #e7e9ee;border-radius:12px;padding:16px;display:flex;flex-wrap:wrap;align-items:center;gap:16px">
+            <div style="flex:1 1 240px;min-width:0;display:flex;flex-direction:column;gap:6px">
+              <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px">
+                <span style="font-family:'Geist Mono',monospace;font-size:15px;font-weight:500;color:#1b2330">BP-2472</span>
+                <span style="padding:3px 8px;border-radius:99px;background:#e8f0ff;color:#2451c7;font-size:11px;font-weight:600">boprint · Woo</span>
+                <span style="padding:3px 8px;border-radius:99px;background:#eef0f4;color:#5b6472;font-size:11px;font-weight:600">Nacional con IVA</span>
+              </div>
+              <div style="font-size:15px;font-weight:600;letter-spacing:-0.01em">Serigrafía Duero S.C.</div>
+              <div style="font-size:13px;color:#6b7280">9 sep 2026 · <span style="font-family:'Geist Mono',monospace">890,00 €</span> · Valladolid</div>
+            </div>
+            <div style="flex:1 1 300px;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px">
+              <div style="display:flex;flex-direction:column;gap:3px;align-items:center;padding:8px 4px;border-radius:8px;background:#e7f6ec"><span style="font-size:10px;font-weight:600;letter-spacing:0.04em;text-transform:uppercase;color:#1f7a45">Pago</span><span style="font-size:13px;font-weight:600;color:#1f7a45">Pagado</span></div>
+              <div style="display:flex;flex-direction:column;gap:3px;align-items:center;padding:8px 4px;border-radius:8px;background:#fdf1dd"><span style="font-size:10px;font-weight:600;letter-spacing:0.04em;text-transform:uppercase;color:#8a5c00">Factura</span><span style="font-size:13px;font-weight:600;color:#8a5c00">Por emitir</span></div>
+              <div style="display:flex;flex-direction:column;gap:3px;align-items:center;padding:8px 4px;border-radius:8px;background:#eef0f4"><span style="font-size:10px;font-weight:600;letter-spacing:0.04em;text-transform:uppercase;color:#5b6472">Cobro</span><span style="font-size:13px;font-weight:600;color:#5b6472">—</span></div>
+              <div style="display:flex;flex-direction:column;gap:3px;align-items:center;padding:8px 4px;border-radius:8px;background:#eef0f4"><span style="font-size:10px;font-weight:600;letter-spacing:0.04em;text-transform:uppercase;color:#5b6472">Envío</span><span style="font-size:13px;font-weight:600;color:#5b6472">—</span></div>
+            </div>
+            <div style="margin-left:auto;display:flex;align-items:center;gap:8px">
+              <span style="display:inline-flex;align-items:center;height:40px;padding:0 16px;border-radius:8px;background:#2f6bff;color:#fff;font-size:14px;font-weight:600">Emitir factura</span>
+              <span style="display:inline-flex;align-items:center;justify-content:center;width:40px;height:40px;border-radius:8px;border:1px solid #e7e9ee;color:#6b7280;font-size:16px">⋯</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div style="display:flex;flex-direction:column;gap:8px;background:#fff;border:1px solid #e7e9ee;border-radius:12px;padding:20px">
+        <div style="font-size:13px;font-weight:600;letter-spacing:0.05em;text-transform:uppercase;color:#9aa2ad;margin-bottom:4px">Decisiones del mockup</div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px;font-size:14px;line-height:1.6;color:#6b7280">
+          <div><strong style="color:#1b2330;font-weight:600">Cola activa en oscuro.</strong> La cola seleccionada es la única en negativo: se ve de lejos dónde estás. Las demás son cápsulas con borde, y el contador lleva el color de su cola.</div>
+          <div><strong style="color:#1b2330;font-weight:600">Barra de filtros separada.</strong> Vive en su propia tarjeta, debajo de las colas, con etiqueta «Filtrar». Los filtros activos se pintan en azul con una ✕; «Limpiar» siempre visible.</div>
+          <div><strong style="color:#1b2330;font-weight:600">Orden a la derecha.</strong> Un solo desplegable con la frase entera («Más recientes primero»), no un icono de flechas.</div>
+          <div><strong style="color:#1b2330;font-weight:600">Rejilla de estado fija.</strong> Cuatro casillas en el centro de la fila, misma posición en todas. La incidencia pinta de rojo la casilla concreta que está bloqueada.</div>
+          <div><strong style="color:#1b2330;font-weight:600">Origen y régimen como pastillas.</strong> Tienda y régimen de IVA van junto a la referencia, donde se leen antes de decidir.</div>
+          <div><strong style="color:#1b2330;font-weight:600">Una acción + menú.</strong> El primario es la siguiente acción; todo lo demás (PDF, email, anular, abrir en FACTUSOL) vive en el «⋯». Nada desaparece.</div>
+          <div><strong style="color:#1b2330;font-weight:600">Alerta dentro de la fila.</strong> La franja roja se pega abajo de la tarjeta afectada y explica el bloqueo en una frase, sin jerga.</div>
+        </div>
+      </div>
+    </div>
+
+    <sc-if value="{{ mostrarMovil }}" hint-placeholder-val="{{ true }}">
+    <div style="display:flex;flex-direction:column;gap:12px">
+      <div style="font-size:12px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:#9aa2ad">Móvil · taller</div>
+      <div style="display:flex;flex-wrap:wrap;gap:20px">
+        <div style="flex:0 1 340px;border:1px solid #e7e9ee;border-radius:20px;background:#f4f5f7;padding:10px;box-shadow:0 4px 16px rgba(27,35,48,.06)">
+          <div style="background:#fff;border-radius:14px;overflow:hidden">
+            <div style="padding:14px;border-bottom:1px solid #eef0f4;display:flex;align-items:center;justify-content:space-between">
+              <span style="font-size:16px;font-weight:600;letter-spacing:-0.01em">Por cobrar</span>
+              <span style="padding:3px 9px;border-radius:99px;background:#fdf1dd;color:#8a5c00;font-size:12px;font-weight:600">12</span>
+            </div>
+            <div style="padding:12px;display:flex;flex-direction:column;gap:10px;background:#f4f5f7">
+              <div style="display:flex;gap:8px;overflow:hidden">
+                <span style="display:inline-flex;align-items:center;height:36px;padding:0 12px;border-radius:8px;background:#1b2330;color:#fff;font-size:13px;font-weight:600;white-space:nowrap">Por cobrar 12</span>
+                <span style="display:inline-flex;align-items:center;height:36px;padding:0 12px;border-radius:8px;background:#fff;border:1px solid #e7e9ee;font-size:13px;color:#6b7280;white-space:nowrap">Por enviar 4</span>
+              </div>
+              <div style="background:#fff;border:1px solid #e7e9ee;border-radius:12px;padding:14px;display:flex;flex-direction:column;gap:10px">
+                <div style="display:flex;flex-wrap:wrap;align-items:center;gap:6px">
+                  <span style="font-family:'Geist Mono',monospace;font-size:14px;font-weight:500">BP-2479</span>
+                  <span style="padding:2px 7px;border-radius:99px;background:#e8f0ff;color:#2451c7;font-size:11px;font-weight:600">boprint</span>
+                </div>
+                <div style="font-size:15px;font-weight:600;letter-spacing:-0.01em">Rotulación Levante S.L.</div>
+                <div style="font-size:13px;color:#6b7280">13 sep · <span style="font-family:'Geist Mono',monospace">4.290,00 €</span></div>
+                <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px">
+                  <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;border-radius:8px;background:#e7f6ec"><span style="font-size:11px;font-weight:600;text-transform:uppercase;color:#1f7a45">Pago</span><span style="font-size:13px;font-weight:600;color:#1f7a45">OK</span></div>
+                  <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;border-radius:8px;background:#e7f6ec"><span style="font-size:11px;font-weight:600;text-transform:uppercase;color:#1f7a45">Factura</span><span style="font-size:13px;font-weight:600;color:#1f7a45">OK</span></div>
+                  <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;border-radius:8px;background:#fdf1dd"><span style="font-size:11px;font-weight:600;text-transform:uppercase;color:#8a5c00">Cobro</span><span style="font-size:13px;font-weight:600;color:#8a5c00">Pend.</span></div>
+                  <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;border-radius:8px;background:#eef0f4"><span style="font-size:11px;font-weight:600;text-transform:uppercase;color:#5b6472">Envío</span><span style="font-size:13px;font-weight:600;color:#5b6472">—</span></div>
+                </div>
+                <div style="display:flex;align-items:center;justify-content:center;height:48px;border-radius:10px;background:#2f6bff;color:#fff;font-size:15px;font-weight:600">Registrar cobro</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div style="flex:1 1 280px;font-size:14px;line-height:1.7;color:#6b7280;display:flex;flex-direction:column;gap:10px;align-self:center">
+          <div><strong style="color:#1b2330;font-weight:600">La rejilla pasa a 2×2</strong> con etiqueta a la izquierda y valor a la derecha. Sigue siendo posición fija.</div>
+          <div><strong style="color:#1b2330;font-weight:600">Las colas se deslizan en horizontal</strong>, con la activa siempre a la izquierda.</div>
+          <div><strong style="color:#1b2330;font-weight:600">El botón principal ocupa todo el ancho</strong> y mide 48 px. Es lo único pulsable a distancia de pulgar.</div>
+          <div><strong style="color:#1b2330;font-weight:600">Nada de scroll horizontal</strong>: el importe y la fecha se apilan bajo el nombre.</div>
+        </div>
+      </div>
+    </div>
+    </sc-if>
+  </section>
+
+  <!-- ══════════ PANTALLA 2: FICHA DE PEDIDO ══════════ -->
+  <section style="display:flex;flex-direction:column;gap:28px">
+    <div style="display:flex;flex-direction:column;gap:12px;border-top:1px solid #e7e9ee;padding-top:40px">
+      <div style="display:flex;flex-wrap:wrap;align-items:center;gap:12px">
+        <span style="display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:8px;background:#1b2330;color:#fff;font-size:14px;font-weight:600">3</span>
+        <h2 style="margin:0;font-size:28px;font-weight:600;letter-spacing:-0.02em">Ficha de pedido</h2>
+        <span style="padding:5px 11px;border-radius:99px;background:#fdeaea;color:#b42318;font-size:12px;font-weight:600">Pantalla de más uso</span>
+      </div>
+      <p style="margin:0;font-size:16px;line-height:1.65;color:#6b7280;max-width:66ch">La «línea de vida» es una buena idea mal servida por la densidad. El pedido tiene siete pasos, pero la pantalla presenta doce bloques a la vez y varios botones que hacen lo mismo.</p>
+    </div>
+
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px">
+      <div style="background:#fff;border:1px solid #e7e9ee;border-left:3px solid #1f7a45;border-radius:12px;padding:20px">
+        <div style="font-size:12px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:#1f7a45;margin-bottom:12px">Qué funciona</div>
+        <div style="font-size:14px;line-height:1.7;color:#6b7280;display:flex;flex-direction:column;gap:8px">
+          <div>El stepper de 7 pasos con la acción incrustada en el paso actual es el patrón correcto: enseña el proceso mientras se trabaja.</div>
+          <div>Tener el panel FACTUSOL a la vista evita el salto constante al software de facturación para comprobar si algo está ya emitido.</div>
+          <div>El timeline da trazabilidad, que en administración vale mucho cuando hay que justificar algo.</div>
+        </div>
+      </div>
+      <div style="background:#fff;border:1px solid #e7e9ee;border-left:3px solid #8a5c00;border-radius:12px;padding:20px">
+        <div style="font-size:12px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:#8a5c00;margin-bottom:12px">Qué mejorar</div>
+        <div style="font-size:14px;line-height:1.7;color:#6b7280;display:flex;flex-direction:column;gap:8px">
+          <div><strong style="color:#1b2330;font-weight:600">Acciones duplicadas.</strong> Dos botones de factura (cabecera y paso) que parecen distintos y hacen lo mismo. La regla: <em>la acción vive en el paso; la cabecera solo tiene lo que aplica a todo el pedido</em>.</div>
+          <div><strong style="color:#1b2330;font-weight:600">Todo abierto a la vez.</strong> Doce bloques compiten. Lo relevante ahora debe estar abierto; el resto, plegado con su resumen en la cabecera del panel.</div>
+          <div><strong style="color:#1b2330;font-weight:600">Stepper horizontal que se rompe.</strong> Siete pasos no caben en pantalla de taller. Vertical funciona en todos los anchos y deja sitio para la acción y el detalle de cada paso.</div>
+          <div><strong style="color:#1b2330;font-weight:600">«Anular» junto al resto.</strong> Una acción irreversible no puede estar en la misma fila que «Descargar PDF».</div>
+          <div><strong style="color:#1b2330;font-weight:600">Estado económico disperso.</strong> Base, IVA, total, cobrado y pendiente aparecen en sitios distintos. Un solo panel con «pendiente de cobro» destacado.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- MOCKUP FICHA -->
+    <div style="display:flex;flex-direction:column;gap:12px">
+      <div style="display:flex;flex-wrap:wrap;align-items:baseline;gap:10px">
+        <span style="font-size:12px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:#9aa2ad">Mockup propuesto</span>
+        <span style="font-size:13px;color:#6b7280">escritorio · datos de ejemplo</span>
+      </div>
+
+      <div style="border:1px solid #e7e9ee;border-radius:14px;overflow:hidden;background:#f4f5f7;box-shadow:0 4px 16px rgba(27,35,48,.06)">
+        <div style="display:flex;align-items:center;gap:8px;padding:10px 14px;background:#fff;border-bottom:1px solid #e7e9ee">
+          <span style="width:9px;height:9px;border-radius:99px;background:#e7e9ee"></span>
+          <span style="width:9px;height:9px;border-radius:99px;background:#e7e9ee"></span>
+          <span style="width:9px;height:9px;border-radius:99px;background:#e7e9ee"></span>
+          <span style="margin-left:10px;font-family:'Geist Mono',monospace;font-size:11px;color:#9aa2ad">bohub.bomedia.es/erp/pedidos/BP-2479</span>
+        </div>
+
+        <!-- cabecera de ficha -->
+        <div style="background:#fff;border-bottom:1px solid #e7e9ee;padding:18px">
+          <div style="font-size:13px;color:#6b7280;margin-bottom:12px">← Bandeja · Por cobrar</div>
+          <div style="display:flex;flex-wrap:wrap;align-items:flex-start;gap:16px">
+            <div style="flex:1 1 300px;min-width:0;display:flex;flex-direction:column;gap:8px">
+              <div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px">
+                <h4 style="margin:0;font-family:'Geist Mono',monospace;font-size:26px;font-weight:500;letter-spacing:-0.01em">BP-2479</h4>
+                <span style="padding:4px 10px;border-radius:99px;background:#fdf1dd;color:#8a5c00;font-size:13px;font-weight:600">Por cobrar</span>
+              </div>
+              <div style="font-size:17px;font-weight:600;letter-spacing:-0.01em">Rotulación Levante S.L.</div>
+              <div style="display:flex;flex-wrap:wrap;gap:8px">
+                <span style="padding:3px 9px;border-radius:99px;background:#e8f0ff;color:#2451c7;font-size:12px;font-weight:600">boprint · Woo #10482</span>
+                <span style="padding:3px 9px;border-radius:99px;background:#eef0f4;color:#5b6472;font-size:12px;font-weight:600">Nacional con IVA 21 %</span>
+                <span style="padding:3px 9px;border-radius:99px;background:#e7f6ec;color:#1f7a45;font-size:12px;font-weight:600">Vinculado a FACTUSOL</span>
+              </div>
+            </div>
+            <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-left:auto">
+              <span style="display:inline-flex;align-items:center;height:40px;padding:0 16px;border-radius:8px;background:#2f6bff;color:#fff;font-size:14px;font-weight:600">Registrar cobro</span>
+              <span style="display:inline-flex;align-items:center;height:40px;padding:0 14px;border-radius:8px;border:1px solid #e7e9ee;background:#fff;font-size:14px;font-weight:500">Documentos</span>
+              <span style="display:inline-flex;align-items:center;justify-content:center;width:40px;height:40px;border-radius:8px;border:1px solid #e7e9ee;color:#6b7280;font-size:16px">⋯</span>
+            </div>
+          </div>
+          <div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:16px">
+            <div style="flex:1 1 40px;height:6px;border-radius:99px;background:#1f7a45"></div>
+            <div style="flex:1 1 40px;height:6px;border-radius:99px;background:#1f7a45"></div>
+            <div style="flex:1 1 40px;height:6px;border-radius:99px;background:#1f7a45"></div>
+            <div style="flex:1 1 40px;height:6px;border-radius:99px;background:#1f7a45"></div>
+            <div style="flex:1 1 40px;height:6px;border-radius:99px;background:#1f7a45"></div>
+            <div style="flex:1 1 40px;height:6px;border-radius:99px;background:#f0b429"></div>
+            <div style="flex:1 1 40px;height:6px;border-radius:99px;background:#e7e9ee"></div>
+          </div>
+          <div style="font-size:13px;color:#6b7280;margin-top:8px">Paso 6 de 7 · <strong style="color:#1b2330;font-weight:600">Cobro</strong> · creado hace 2 días</div>
+        </div>
+
+        <!-- cuerpo -->
+        <div style="padding:18px;display:flex;flex-wrap:wrap;gap:16px;align-items:flex-start">
+
+          <!-- COL IZQ: línea de vida -->
+          <div style="flex:1 1 400px;min-width:0;background:#fff;border:1px solid #e7e9ee;border-radius:12px;padding:20px">
+            <div style="font-size:16px;font-weight:600;margin-bottom:18px">Línea de vida del pedido</div>
+
+            <div style="display:flex;gap:14px">
+              <div style="display:flex;flex-direction:column;align-items:center;gap:0;padding-top:2px">
+                <span style="display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:99px;background:#1f7a45;color:#fff;font-size:12px;font-weight:700">✓</span>
+                <span style="width:2px;flex:1;background:#1f7a45;min-height:14px"></span>
+              </div>
+              <div style="flex:1;min-width:0;padding-bottom:16px">
+                <div style="display:flex;flex-wrap:wrap;align-items:baseline;gap:8px"><span style="font-size:15px;font-weight:600">Creado</span><span style="font-size:13px;color:#6b7280">12 sep 2026 · 09:14 · webhook boprint</span></div>
+              </div>
+            </div>
+
+            <div style="display:flex;gap:14px">
+              <div style="display:flex;flex-direction:column;align-items:center;padding-top:2px">
+                <span style="display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:99px;background:#1f7a45;color:#fff;font-size:12px;font-weight:700">✓</span>
+                <span style="width:2px;flex:1;background:#1f7a45;min-height:14px"></span>
+              </div>
+              <div style="flex:1;min-width:0;padding-bottom:16px">
+                <div style="display:flex;flex-wrap:wrap;align-items:baseline;gap:8px"><span style="font-size:15px;font-weight:600">Pagado</span><span style="font-size:13px;color:#6b7280">12 sep · tarjeta · <span style="font-family:'Geist Mono',monospace">4.290,00 €</span></span></div>
+              </div>
+            </div>
+
+            <div style="display:flex;gap:14px">
+              <div style="display:flex;flex-direction:column;align-items:center;padding-top:2px">
+                <span style="display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:99px;background:#1f7a45;color:#fff;font-size:12px;font-weight:700">✓</span>
+                <span style="width:2px;flex:1;background:#1f7a45;min-height:14px"></span>
+              </div>
+              <div style="flex:1;min-width:0;padding-bottom:16px">
+                <div style="display:flex;flex-wrap:wrap;align-items:baseline;gap:8px"><span style="font-size:15px;font-weight:600">Aprobado</span><span style="font-size:13px;color:#6b7280">12 sep · María B.</span></div>
+              </div>
+            </div>
+
+            <div style="display:flex;gap:14px">
+              <div style="display:flex;flex-direction:column;align-items:center;padding-top:2px">
+                <span style="display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:99px;background:#1f7a45;color:#fff;font-size:12px;font-weight:700">✓</span>
+                <span style="width:2px;flex:1;background:#1f7a45;min-height:14px"></span>
+              </div>
+              <div style="flex:1;min-width:0;padding-bottom:16px">
+                <div style="display:flex;flex-wrap:wrap;align-items:baseline;gap:8px"><span style="font-size:15px;font-weight:600">Albarán</span><span style="font-family:'Geist Mono',monospace;font-size:13px;color:#6b7280">A-2026/341</span></div>
+                <div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:8px"><span style="display:inline-flex;align-items:center;height:34px;padding:0 12px;border-radius:8px;border:1px solid #e7e9ee;font-size:13px;font-weight:500;color:#1b2330">Albarán PDF</span></div>
+              </div>
+            </div>
+
+            <div style="display:flex;gap:14px">
+              <div style="display:flex;flex-direction:column;align-items:center;padding-top:2px">
+                <span style="display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:99px;background:#1f7a45;color:#fff;font-size:12px;font-weight:700">✓</span>
+                <span style="width:2px;flex:1;background:#f0b429;min-height:14px"></span>
+              </div>
+              <div style="flex:1;min-width:0;padding-bottom:16px">
+                <div style="display:flex;flex-wrap:wrap;align-items:baseline;gap:8px"><span style="font-size:15px;font-weight:600">Factura</span><span style="font-family:'Geist Mono',monospace;font-size:13px;color:#6b7280">F-2026/118 · 13 sep</span></div>
+                <div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:8px">
+                  <span style="display:inline-flex;align-items:center;height:34px;padding:0 12px;border-radius:8px;border:1px solid #e7e9ee;font-size:13px;font-weight:500;color:#1b2330">Factura PDF</span>
+                  <span style="display:inline-flex;align-items:center;height:34px;padding:0 12px;border-radius:8px;border:1px solid #e7e9ee;font-size:13px;font-weight:500;color:#1b2330">Enviar al cliente</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- paso actual -->
+            <div style="display:flex;gap:14px">
+              <div style="display:flex;flex-direction:column;align-items:center;padding-top:2px">
+                <span style="display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:99px;background:#fff;border:2px solid #2f6bff;color:#2f6bff;font-size:12px;font-weight:700">6</span>
+                <span style="width:2px;flex:1;background:#e7e9ee;min-height:14px"></span>
+              </div>
+              <div style="flex:1;min-width:0;padding-bottom:16px">
+                <div style="border:1px solid #d7e2ff;background:#f7faff;border-radius:12px;padding:16px;display:flex;flex-direction:column;gap:12px">
+                  <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px">
+                    <span style="font-size:16px;font-weight:600">Cobro</span>
+                    <span style="padding:3px 9px;border-radius:99px;background:#fdf1dd;color:#8a5c00;font-size:12px;font-weight:600">Paso actual</span>
+                  </div>
+                  <div style="font-size:14px;line-height:1.6;color:#6b7280">La factura está emitida en FACTUSOL y pendiente de cobro. Vencimiento 13 oct 2026.</div>
+                  <div style="display:flex;flex-wrap:wrap;gap:8px">
+                    <span style="display:inline-flex;align-items:center;height:40px;padding:0 16px;border-radius:8px;background:#2f6bff;color:#fff;font-size:14px;font-weight:600">Registrar cobro</span>
+                    <span style="display:inline-flex;align-items:center;height:40px;padding:0 14px;border-radius:8px;border:1px solid #e7e9ee;background:#fff;font-size:14px;font-weight:500;color:#1b2330">Reclamar por email</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div style="display:flex;gap:14px">
+              <div style="display:flex;flex-direction:column;align-items:center;padding-top:2px">
+                <span style="display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:99px;background:#fff;border:2px solid #e7e9ee;color:#9aa2ad;font-size:12px;font-weight:700">7</span>
+              </div>
+              <div style="flex:1;min-width:0">
+                <div style="display:flex;flex-wrap:wrap;align-items:baseline;gap:8px"><span style="font-size:15px;font-weight:600;color:#6b7280">Enviado</span><span style="font-size:13px;color:#6b7280">pendiente · se activa al cobrar</span></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- COL DER: paneles -->
+          <div style="flex:1 1 300px;min-width:0;display:flex;flex-direction:column;gap:12px">
+
+            <div style="background:#fff;border:1px solid #e7e9ee;border-radius:12px;padding:18px">
+              <div style="font-size:15px;font-weight:600;margin-bottom:14px">Resumen económico</div>
+              <div style="display:flex;flex-direction:column;gap:9px;font-size:14px">
+                <div style="display:flex;justify-content:space-between;gap:12px"><span style="color:#6b7280">Base imponible</span><span style="font-family:'Geist Mono',monospace">3.545,45 €</span></div>
+                <div style="display:flex;justify-content:space-between;gap:12px"><span style="color:#6b7280">IVA 21 %</span><span style="font-family:'Geist Mono',monospace">744,55 €</span></div>
+                <div style="display:flex;justify-content:space-between;gap:12px;padding-top:9px;border-top:1px solid #eef0f4"><span style="font-weight:600">Total</span><span style="font-family:'Geist Mono',monospace;font-weight:600">4.290,00 €</span></div>
+                <div style="display:flex;justify-content:space-between;gap:12px"><span style="color:#6b7280">Cobrado</span><span style="font-family:'Geist Mono',monospace;color:#6b7280">0,00 €</span></div>
+              </div>
+              <div style="margin-top:14px;padding:14px;border-radius:10px;background:#fdf1dd;display:flex;flex-direction:column;gap:2px">
+                <span style="font-size:12px;font-weight:600;letter-spacing:0.05em;text-transform:uppercase;color:#8a5c00">Pendiente de cobro</span>
+                <span style="font-family:'Geist Mono',monospace;font-size:22px;font-weight:500;color:#8a5c00">4.290,00 €</span>
+              </div>
+            </div>
+
+            <div style="background:#fff;border:1px solid #e7e9ee;border-radius:12px;padding:18px">
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:14px">
+                <div style="font-size:15px;font-weight:600">FACTUSOL</div>
+                <span style="padding:3px 9px;border-radius:99px;background:#e7f6ec;color:#1f7a45;font-size:12px;font-weight:600">Sincronizado</span>
+              </div>
+              <div style="display:flex;flex-direction:column;gap:9px;font-size:14px">
+                <div style="display:flex;justify-content:space-between;gap:12px"><span style="color:#6b7280">Cliente</span><span style="font-family:'Geist Mono',monospace">CLI-1043</span></div>
+                <div style="display:flex;justify-content:space-between;gap:12px"><span style="color:#6b7280">Pedido</span><span style="font-family:'Geist Mono',monospace">P-2026/512</span></div>
+                <div style="display:flex;justify-content:space-between;gap:12px"><span style="color:#6b7280">Albarán</span><span style="font-family:'Geist Mono',monospace">A-2026/341</span></div>
+                <div style="display:flex;justify-content:space-between;gap:12px"><span style="color:#6b7280">Factura</span><span style="font-family:'Geist Mono',monospace">F-2026/118</span></div>
+              </div>
+              <div style="margin-top:12px;font-size:13px;color:#6b7280;line-height:1.6">Solo lectura. FACTUSOL es la fuente de verdad fiscal.</div>
+            </div>
+
+            <!-- paneles plegados con resumen -->
+            <div style="background:#fff;border:1px solid #e7e9ee;border-radius:12px;padding:16px 18px;display:flex;flex-wrap:wrap;align-items:center;gap:10px">
+              <div style="flex:1 1 140px;min-width:0"><div style="font-size:15px;font-weight:600">Líneas del pedido</div><div style="font-size:13px;color:#6b7280;margin-top:2px">3 artículos · portes 45,00 €</div></div>
+              <span style="color:#9aa2ad;font-size:14px">▾</span>
+            </div>
+            <div style="background:#fff;border:1px solid #e7e9ee;border-radius:12px;padding:16px 18px;display:flex;flex-wrap:wrap;align-items:center;gap:10px">
+              <div style="flex:1 1 140px;min-width:0"><div style="font-size:15px;font-weight:600">Envío y seguimiento</div><div style="font-size:13px;color:#6b7280;margin-top:2px">Sin expedición · pendiente de SAT</div></div>
+              <span style="color:#9aa2ad;font-size:14px">▾</span>
+            </div>
+            <div style="background:#fff;border:1px solid #e7e9ee;border-radius:12px;padding:16px 18px;display:flex;flex-wrap:wrap;align-items:center;gap:10px">
+              <div style="flex:1 1 140px;min-width:0"><div style="font-size:15px;font-weight:600">Historial</div><div style="font-size:13px;color:#6b7280;margin-top:2px">9 eventos · último hace 2 h</div></div>
+              <span style="color:#9aa2ad;font-size:14px">▾</span>
+            </div>
+            <div style="border:1px solid #f3c9c5;border-radius:12px;padding:16px 18px;background:#fff;display:flex;flex-wrap:wrap;align-items:center;gap:10px">
+              <div style="flex:1 1 140px;min-width:0"><div style="font-size:14px;font-weight:600;color:#b42318">Anular pedido</div><div style="font-size:13px;color:#6b7280;margin-top:2px">Requiere confirmación escrita</div></div>
+              <span style="display:inline-flex;align-items:center;height:36px;padding:0 14px;border-radius:8px;border:1px solid #f3c9c5;color:#b42318;font-size:13px;font-weight:500">Anular</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div style="display:flex;flex-direction:column;gap:8px;background:#fff;border:1px solid #e7e9ee;border-radius:12px;padding:20px">
+        <div style="font-size:13px;font-weight:600;letter-spacing:0.05em;text-transform:uppercase;color:#9aa2ad;margin-bottom:4px">Decisiones del mockup</div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px;font-size:14px;line-height:1.6;color:#6b7280">
+          <div><strong style="color:#1b2330;font-weight:600">Línea de vida vertical.</strong> Los 7 pasos en columna: cabe en cualquier ancho, cada paso muestra su dato (nº de albarán, de factura, fecha) y su propia acción. El paso actual es la única tarjeta azul de la pantalla.</div>
+          <div><strong style="color:#1b2330;font-weight:600">Barra de 7 segmentos en la cabecera.</strong> Da la lectura rápida («paso 6 de 7») sin tener que recorrer la línea de vida.</div>
+          <div><strong style="color:#1b2330;font-weight:600">Fin de los botones duplicados.</strong> La cabecera repite <em>solo</em> el primario del paso actual, y agrupa el resto en «Documentos» y «⋯». Cada documento se descarga desde su paso.</div>
+          <div><strong style="color:#1b2330;font-weight:600">Pendiente de cobro destacado.</strong> Es el dato que más se consulta; va en bloque ámbar con cifra grande, dentro del resumen económico.</div>
+          <div><strong style="color:#1b2330;font-weight:600">Paneles plegados con resumen.</strong> Líneas, envío e historial se cierran, pero su cabecera cuenta lo esencial («3 artículos», «9 eventos»). Se pierde cero información y se gana una pantalla legible.</div>
+          <div><strong style="color:#1b2330;font-weight:600">Anular aislado.</strong> Al final de la columna, en su propia tarjeta con borde rojo y confirmación escrita. Imposible pulsarlo por error.</div>
+          <div><strong style="color:#1b2330;font-weight:600">Migas con la cola de origen.</strong> «← Bandeja · Por cobrar» devuelve al usuario exactamente a donde estaba, no a la bandeja por defecto.</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════ 4 · FICHA DE EMPRESA ══════════ -->
+  <section style="display:flex;flex-direction:column;gap:24px">
+    <div style="display:flex;flex-direction:column;gap:12px;border-top:1px solid #e7e9ee;padding-top:40px">
+      <div style="display:flex;flex-wrap:wrap;align-items:center;gap:12px">
+        <span style="display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:8px;background:#1b2330;color:#fff;font-size:14px;font-weight:600">4</span>
+        <h2 style="margin:0;font-size:28px;font-weight:600;letter-spacing:-0.02em">Ficha de empresa</h2>
+      </div>
+      <p style="margin:0;font-size:16px;line-height:1.65;color:#6b7280;max-width:66ch">Se abre para responder tres cosas: si los datos fiscales están bien, si está vinculada a FACTUSOL y qué se ha hecho con ella últimamente. Hoy las tres conviven al mismo nivel.</p>
+    </div>
+
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px">
+      <div style="background:#fff;border:1px solid #e7e9ee;border-left:3px solid #1f7a45;border-radius:12px;padding:20px">
+        <div style="font-size:12px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:#1f7a45;margin-bottom:12px">Qué funciona</div>
+        <div style="font-size:14px;line-height:1.7;color:#6b7280;display:flex;flex-direction:column;gap:8px">
+          <div>Tener el régimen de IVA calculado desde el país evita el error más caro del proceso.</div>
+          <div>La actividad reciente en la propia ficha ahorra ir a buscar los pedidos de ese cliente.</div>
+        </div>
+      </div>
+      <div style="background:#fff;border:1px solid #e7e9ee;border-left:3px solid #8a5c00;border-radius:12px;padding:20px">
+        <div style="font-size:12px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:#8a5c00;margin-bottom:12px">Qué mejorar</div>
+        <div style="font-size:14px;line-height:1.7;color:#6b7280;display:flex;flex-direction:column;gap:8px">
+          <div><strong style="color:#1b2330;font-weight:600">El estado de vínculo se entierra.</strong> «Solo CRM» o «en FACTUSOL» determina qué se puede hacer: va en la cabecera, no en un panel.</div>
+          <div><strong style="color:#1b2330;font-weight:600">Archivada no se distingue.</strong> Tras la limpieza hay fichas archivadas que se leen igual que las activas. Necesitan banda de aviso y acciones desactivadas con explicación.</div>
+          <div><strong style="color:#1b2330;font-weight:600">Actividad en tres listas.</strong> Pedidos, facturas y proformas separados obligan a mirar tres sitios para saber qué pasó. Una sola tabla con filtro por tipo.</div>
+          <div><strong style="color:#1b2330;font-weight:600">VIES sin fecha.</strong> Un VAT validado hace dos años no vale igual que uno de hoy: mostrar cuándo se comprobó.</div>
+        </div>
+      </div>
+    </div>
+
+    <div style="border:1px solid #e7e9ee;border-radius:14px;overflow:hidden;background:#f4f5f7;box-shadow:0 4px 16px rgba(27,35,48,.06)">
+      <div style="display:flex;align-items:center;gap:8px;padding:10px 14px;background:#fff;border-bottom:1px solid #e7e9ee">
+        <span style="width:9px;height:9px;border-radius:99px;background:#e7e9ee"></span><span style="width:9px;height:9px;border-radius:99px;background:#e7e9ee"></span><span style="width:9px;height:9px;border-radius:99px;background:#e7e9ee"></span>
+        <span style="margin-left:10px;font-family:'Geist Mono',monospace;font-size:11px;color:#9aa2ad">bohub.bomedia.es/erp/empresas/1043</span>
+      </div>
+      <div style="background:#fff;border-bottom:1px solid #e7e9ee;padding:18px">
+        <div style="font-size:13px;color:#6b7280;margin-bottom:12px">← Empresas</div>
+        <div style="display:flex;flex-wrap:wrap;align-items:flex-start;gap:16px">
+          <div style="flex:1 1 280px;min-width:0;display:flex;flex-direction:column;gap:8px">
+            <h4 style="margin:0;font-size:24px;font-weight:600;letter-spacing:-0.02em">Rotulación Levante S.L.</h4>
+            <div style="font-family:'Geist Mono',monospace;font-size:14px;color:#6b7280">ESB98765432 · Valencia, España</div>
+            <div style="display:flex;flex-wrap:wrap;gap:8px">
+              <span style="padding:4px 10px;border-radius:99px;background:#e7f6ec;color:#1f7a45;font-size:12px;font-weight:600">Activa</span>
+              <span style="padding:4px 10px;border-radius:99px;background:#e7f6ec;color:#1f7a45;font-size:12px;font-weight:600">En FACTUSOL · CLI-1043</span>
+              <span style="padding:4px 10px;border-radius:99px;background:#eef0f4;color:#5b6472;font-size:12px;font-weight:600">Nacional con IVA 21 %</span>
+            </div>
+          </div>
+          <div style="display:flex;flex-wrap:wrap;gap:8px;margin-left:auto">
+            <span style="display:inline-flex;align-items:center;height:40px;padding:0 16px;border-radius:8px;background:#2f6bff;color:#fff;font-size:14px;font-weight:600">Nuevo pedido</span>
+            <span style="display:inline-flex;align-items:center;height:40px;padding:0 14px;border-radius:8px;border:1px solid #e7e9ee;background:#fff;font-size:14px;font-weight:500">Editar datos</span>
+            <span style="display:inline-flex;align-items:center;justify-content:center;width:40px;height:40px;border-radius:8px;border:1px solid #e7e9ee;color:#6b7280;font-size:16px">⋯</span>
+          </div>
+        </div>
+      </div>
+      <div style="padding:18px;display:flex;flex-wrap:wrap;gap:16px;align-items:flex-start">
+        <div style="flex:1 1 280px;min-width:0;display:flex;flex-direction:column;gap:12px">
+          <div style="background:#fff;border:1px solid #e7e9ee;border-radius:12px;padding:18px">
+            <div style="font-size:15px;font-weight:600;margin-bottom:14px">Datos fiscales</div>
+            <div style="display:flex;flex-direction:column;gap:9px;font-size:14px">
+              <div style="display:flex;justify-content:space-between;gap:12px"><span style="color:#6b7280">NIF / VAT</span><span style="font-family:'Geist Mono',monospace">ESB98765432</span></div>
+              <div style="display:flex;justify-content:space-between;gap:12px"><span style="color:#6b7280">País</span><span>España</span></div>
+              <div style="display:flex;justify-content:space-between;gap:12px"><span style="color:#6b7280">Régimen</span><span>Nacional con IVA</span></div>
+              <div style="display:flex;justify-content:space-between;gap:12px;align-items:center"><span style="color:#6b7280">VIES</span><span style="display:inline-flex;align-items:center;gap:6px"><span style="padding:2px 8px;border-radius:99px;background:#e7f6ec;color:#1f7a45;font-size:12px;font-weight:600">No aplica</span></span></div>
+            </div>
+          </div>
+          <div style="background:#fff;border:1px solid #e7e9ee;border-radius:12px;padding:18px">
+            <div style="font-size:15px;font-weight:600;margin-bottom:14px">Contacto y dirección</div>
+            <div style="display:flex;flex-direction:column;gap:9px;font-size:14px">
+              <div style="display:flex;justify-content:space-between;gap:12px"><span style="color:#6b7280">Persona</span><span>Ana Ferrer</span></div>
+              <div style="display:flex;justify-content:space-between;gap:12px"><span style="color:#6b7280">Email</span><span style="font-family:'Geist Mono',monospace;font-size:13px">compras@ejemplo.es</span></div>
+              <div style="display:flex;justify-content:space-between;gap:12px"><span style="color:#6b7280">Envío</span><span style="text-align:right">Pol. Ind. Norte 14<br>46100 Valencia</span></div>
+            </div>
+          </div>
+        </div>
+        <div style="flex:1 1 380px;min-width:0;background:#fff;border:1px solid #e7e9ee;border-radius:12px;overflow:hidden">
+          <div style="padding:18px 18px 12px;display:flex;flex-wrap:wrap;align-items:center;gap:10px">
+            <div style="font-size:15px;font-weight:600;flex:1 1 120px">Actividad reciente</div>
+            <div style="display:flex;gap:4px;flex-wrap:wrap">
+              <span style="padding:5px 10px;border-radius:7px;background:#eef0f4;color:#1b2330;font-size:12px;font-weight:600">Todo</span>
+              <span style="padding:5px 10px;border-radius:7px;color:#6b7280;font-size:12px">Pedidos</span>
+              <span style="padding:5px 10px;border-radius:7px;color:#6b7280;font-size:12px">Facturas</span>
+              <span style="padding:5px 10px;border-radius:7px;color:#6b7280;font-size:12px">Proformas</span>
+            </div>
+          </div>
+          <div style="display:flex;padding:8px 18px;background:#fbfbfc;border-top:1px solid #eef0f4;border-bottom:1px solid #eef0f4;font-size:11px;font-weight:600;letter-spacing:0.05em;text-transform:uppercase;color:#6b7280">
+            <span style="flex:1 1 90px">Documento</span><span style="flex:0 0 76px">Fecha</span><span style="flex:0 0 92px;text-align:right">Importe</span><span style="flex:0 0 86px;text-align:right">Estado</span>
+          </div>
+          <div style="display:flex;align-items:center;padding:12px 18px;border-bottom:1px solid #eef0f4;font-size:13px">
+            <span style="flex:1 1 90px;min-width:0"><span style="font-family:'Geist Mono',monospace">F-2026/118</span><span style="color:#6b7280"> · factura</span></span><span style="flex:0 0 76px;color:#6b7280">13 sep</span><span style="flex:0 0 92px;text-align:right;font-family:'Geist Mono',monospace">4.290,00 €</span><span style="flex:0 0 86px;text-align:right"><span style="padding:2px 8px;border-radius:99px;background:#fdf1dd;color:#8a5c00;font-size:11px;font-weight:600">Por cobrar</span></span>
+          </div>
+          <div style="display:flex;align-items:center;padding:12px 18px;border-bottom:1px solid #eef0f4;font-size:13px">
+            <span style="flex:1 1 90px;min-width:0"><span style="font-family:'Geist Mono',monospace">BP-2479</span><span style="color:#6b7280"> · pedido</span></span><span style="flex:0 0 76px;color:#6b7280">12 sep</span><span style="flex:0 0 92px;text-align:right;font-family:'Geist Mono',monospace">4.290,00 €</span><span style="flex:0 0 86px;text-align:right"><span style="padding:2px 8px;border-radius:99px;background:#e7f6ec;color:#1f7a45;font-size:11px;font-weight:600">Pagado</span></span>
+          </div>
+          <div style="display:flex;align-items:center;padding:12px 18px;border-bottom:1px solid #eef0f4;font-size:13px">
+            <span style="flex:1 1 90px;min-width:0"><span style="font-family:'Geist Mono',monospace">PR-0884</span><span style="color:#6b7280"> · proforma</span></span><span style="flex:0 0 76px;color:#6b7280">2 sep</span><span style="flex:0 0 92px;text-align:right;font-family:'Geist Mono',monospace">4.290,00 €</span><span style="flex:0 0 86px;text-align:right"><span style="padding:2px 8px;border-radius:99px;background:#eef0f4;color:#5b6472;font-size:11px;font-weight:600">Convertida</span></span>
+          </div>
+          <div style="display:flex;align-items:center;padding:12px 18px;font-size:13px">
+            <span style="flex:1 1 90px;min-width:0"><span style="font-family:'Geist Mono',monospace">BP-2310</span><span style="color:#6b7280"> · pedido</span></span><span style="flex:0 0 76px;color:#6b7280">14 jun</span><span style="flex:0 0 92px;text-align:right;font-family:'Geist Mono',monospace">1.150,00 €</span><span style="flex:0 0 86px;text-align:right"><span style="padding:2px 8px;border-radius:99px;background:#eef0f4;color:#5b6472;font-size:11px;font-weight:600">Completado</span></span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div style="background:#fff;border:1px solid #e7e9ee;border-radius:12px;padding:20px">
+      <div style="font-size:13px;font-weight:600;letter-spacing:0.05em;text-transform:uppercase;color:#9aa2ad;margin-bottom:12px">Decisiones del mockup</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px;font-size:14px;line-height:1.6;color:#6b7280">
+        <div><strong style="color:#1b2330;font-weight:600">Estado y vínculo en cabecera.</strong> Activa/archivada, código FACTUSOL y régimen, los tres como pastillas junto al nombre.</div>
+        <div><strong style="color:#1b2330;font-weight:600">Una sola actividad.</strong> Tabla de consulta con filtro por tipo: documento, fecha, importe alineado a la derecha y estado. Sustituye las tres listas sin perder ninguna.</div>
+        <div><strong style="color:#1b2330;font-weight:600">Datos fiscales en panel de pares.</strong> Con la fila VIES siempre presente, aunque diga «No aplica», para que el hueco no genere dudas.</div>
+        <div><strong style="color:#1b2330;font-weight:600">Archivar y borrar en «⋯».</strong> Y si la ficha está archivada, banda gris arriba con el motivo y la fecha, y «Reactivar» como primario.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════ 5 · PROFORMAS ══════════ -->
+  <section style="display:flex;flex-direction:column;gap:24px">
+    <div style="display:flex;flex-direction:column;gap:12px;border-top:1px solid #e7e9ee;padding-top:40px">
+      <div style="display:flex;flex-wrap:wrap;align-items:center;gap:12px">
+        <span style="display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:8px;background:#1b2330;color:#fff;font-size:14px;font-weight:600">5</span>
+        <h2 style="margin:0;font-size:28px;font-weight:600;letter-spacing:-0.02em">Proformas</h2>
+      </div>
+      <p style="margin:0;font-size:16px;line-height:1.65;color:#6b7280;max-width:66ch">Hereda el patrón de la bandeja: colas por acción y fila de trabajo. La única acción que de verdad importa es «Convertir en pedido», y hoy compite con el resto.</p>
+    </div>
+
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px">
+      <div style="background:#fff;border:1px solid #e7e9ee;border-left:3px solid #1f7a45;border-radius:12px;padding:20px">
+        <div style="font-size:12px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:#1f7a45;margin-bottom:12px">Qué funciona</div>
+        <div style="font-size:14px;line-height:1.7;color:#6b7280;display:flex;flex-direction:column;gap:8px">
+          <div>Las cuatro colas son las correctas y «aceptadas · por convertir» es exactamente la cola de trabajo real.</div>
+          <div>Mostrar importe y régimen en la fila evita abrir la proforma para saber si interesa.</div>
+        </div>
+      </div>
+      <div style="background:#fff;border:1px solid #e7e9ee;border-left:3px solid #8a5c00;border-radius:12px;padding:20px">
+        <div style="font-size:12px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:#8a5c00;margin-bottom:12px">Qué mejorar</div>
+        <div style="font-size:14px;line-height:1.7;color:#6b7280;display:flex;flex-direction:column;gap:8px">
+          <div><strong style="color:#1b2330;font-weight:600">No se ve la antigüedad.</strong> Una proforma pendiente de 40 días es una acción comercial; una de 2 días, no. Hace falta «hace X días» y orden por antigüedad.</div>
+          <div><strong style="color:#1b2330;font-weight:600">Convertida sin rastro visible.</strong> Debe enlazar al pedido resultante desde la propia fila.</div>
+          <div><strong style="color:#1b2330;font-weight:600">Rechazadas sin motivo.</strong> Se pierde información útil: el motivo cabe en la fila.</div>
+          <div><strong style="color:#1b2330;font-weight:600">Duplicar escondido.</strong> Es una de las acciones más usadas y está en un menú. Va como secundario en la fila.</div>
+        </div>
+      </div>
+    </div>
+
+    <div style="border:1px solid #e7e9ee;border-radius:14px;overflow:hidden;background:#f4f5f7;box-shadow:0 4px 16px rgba(27,35,48,.06)">
+      <div style="display:flex;align-items:center;gap:8px;padding:10px 14px;background:#fff;border-bottom:1px solid #e7e9ee">
+        <span style="width:9px;height:9px;border-radius:99px;background:#e7e9ee"></span><span style="width:9px;height:9px;border-radius:99px;background:#e7e9ee"></span><span style="width:9px;height:9px;border-radius:99px;background:#e7e9ee"></span>
+        <span style="margin-left:10px;font-family:'Geist Mono',monospace;font-size:11px;color:#9aa2ad">bohub.bomedia.es/erp/proformas</span>
+      </div>
+      <div style="padding:20px 18px 24px;display:flex;flex-direction:column;gap:14px">
+        <div style="display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:12px">
+          <div><h4 style="margin:0;font-size:22px;font-weight:600;letter-spacing:-0.02em">Proformas</h4><div style="font-size:13px;color:#6b7280;margin-top:4px">7 aceptadas esperando conversión</div></div>
+          <span style="display:inline-flex;align-items:center;height:40px;padding:0 16px;border-radius:8px;background:#2f6bff;color:#fff;font-size:14px;font-weight:600">Nueva proforma</span>
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px">
+          <div style="display:flex;align-items:center;gap:8px;padding:10px 14px;border-radius:10px;background:#1b2330;color:#fff;min-height:44px"><span style="font-size:14px;font-weight:600">Por convertir</span><span style="padding:2px 8px;border-radius:99px;background:rgba(255,255,255,.18);font-size:12px;font-weight:600">7</span></div>
+          <div style="display:flex;align-items:center;gap:8px;padding:10px 14px;border-radius:10px;background:#fff;border:1px solid #e7e9ee;min-height:44px"><span style="font-size:14px;font-weight:500;color:#1b2330">Pendientes</span><span style="padding:2px 8px;border-radius:99px;background:#fdf1dd;color:#8a5c00;font-size:12px;font-weight:600">23</span></div>
+          <div style="display:flex;align-items:center;gap:8px;padding:10px 14px;border-radius:10px;background:#fff;border:1px solid #e7e9ee;min-height:44px"><span style="font-size:14px;font-weight:500;color:#1b2330">Rechazadas</span><span style="padding:2px 8px;border-radius:99px;background:#fdeaea;color:#b42318;font-size:12px;font-weight:600">5</span></div>
+          <div style="display:flex;align-items:center;gap:8px;padding:10px 14px;border-radius:10px;background:#fff;border:1px solid #e7e9ee;min-height:44px"><span style="font-size:14px;font-weight:500;color:#6b7280">Convertidas</span><span style="padding:2px 8px;border-radius:99px;background:#eef0f4;color:#5b6472;font-size:12px;font-weight:600">96</span></div>
+        </div>
+        <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:12px 14px;background:#fff;border:1px solid #e7e9ee;border-radius:12px">
+          <span style="font-size:12px;font-weight:600;letter-spacing:0.05em;text-transform:uppercase;color:#9aa2ad">Filtrar</span>
+          <span style="display:inline-flex;align-items:center;gap:6px;height:36px;padding:0 12px;border-radius:8px;border:1px solid #e7e9ee;background:#fff;color:#6b7280;font-size:13px">Serie: todas <span style="color:#9aa2ad">▾</span></span>
+          <span style="display:inline-flex;align-items:center;gap:6px;height:36px;padding:0 12px;border-radius:8px;border:1px solid #e7e9ee;background:#fff;color:#6b7280;font-size:13px">Régimen: todos <span style="color:#9aa2ad">▾</span></span>
+          <span style="margin-left:auto;display:inline-flex;align-items:center;gap:6px;height:36px;padding:0 12px;border-radius:8px;border:1px solid #d7e2ff;background:#e8f0ff;color:#2451c7;font-size:13px;font-weight:600">Más antiguas primero <span>▾</span></span>
+        </div>
+
+        <div style="background:#fff;border:1px solid #e7e9ee;border-radius:12px;padding:16px;display:flex;flex-wrap:wrap;align-items:center;gap:14px">
+          <div style="flex:1 1 240px;min-width:0;display:flex;flex-direction:column;gap:6px">
+            <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px"><span style="font-family:'Geist Mono',monospace;font-size:15px;font-weight:500">PR-0902</span><span style="padding:3px 8px;border-radius:99px;background:#f0e9fd;color:#6d3fc4;font-size:11px;font-weight:600">Intracomunitario</span></div>
+            <div style="font-size:15px;font-weight:600;letter-spacing:-0.01em">Grafische Werkstatt Müller GmbH</div>
+            <div style="font-size:13px;color:#6b7280">Aceptada hace 3 días · <span style="font-family:'Geist Mono',monospace">3.780,00 €</span></div>
+          </div>
+          <div style="flex:0 1 auto"><span style="padding:5px 11px;border-radius:99px;background:#e7f6ec;color:#1f7a45;font-size:13px;font-weight:600">Aceptada</span></div>
+          <div style="margin-left:auto;display:flex;align-items:center;gap:8px">
+            <span style="display:inline-flex;align-items:center;height:40px;padding:0 16px;border-radius:8px;background:#2f6bff;color:#fff;font-size:14px;font-weight:600">Convertir en pedido</span>
+            <span style="display:inline-flex;align-items:center;height:40px;padding:0 14px;border-radius:8px;border:1px solid #e7e9ee;font-size:14px;font-weight:500;color:#1b2330">Duplicar</span>
+            <span style="display:inline-flex;align-items:center;justify-content:center;width:40px;height:40px;border-radius:8px;border:1px solid #e7e9ee;color:#6b7280;font-size:16px">⋯</span>
+          </div>
+        </div>
+
+        <div style="background:#fff;border:1px solid #e7e9ee;border-radius:12px;padding:16px;display:flex;flex-wrap:wrap;align-items:center;gap:14px">
+          <div style="flex:1 1 240px;min-width:0;display:flex;flex-direction:column;gap:6px">
+            <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px"><span style="font-family:'Geist Mono',monospace;font-size:15px;font-weight:500">PR-0887</span><span style="padding:3px 8px;border-radius:99px;background:#eef0f4;color:#5b6472;font-size:11px;font-weight:600">Nacional con IVA</span></div>
+            <div style="font-size:15px;font-weight:600;letter-spacing:-0.01em">Serigrafía Duero S.C.</div>
+            <div style="font-size:13px;color:#8a5c00;font-weight:500">Enviada hace 41 días · sin respuesta · <span style="font-family:'Geist Mono',monospace;font-weight:400;color:#6b7280">2.140,00 €</span></div>
+          </div>
+          <div style="flex:0 1 auto"><span style="padding:5px 11px;border-radius:99px;background:#fdf1dd;color:#8a5c00;font-size:13px;font-weight:600">Pendiente</span></div>
+          <div style="margin-left:auto;display:flex;align-items:center;gap:8px">
+            <span style="display:inline-flex;align-items:center;height:40px;padding:0 16px;border-radius:8px;background:#2f6bff;color:#fff;font-size:14px;font-weight:600">Reenviar al cliente</span>
+            <span style="display:inline-flex;align-items:center;height:40px;padding:0 14px;border-radius:8px;border:1px solid #e7e9ee;font-size:14px;font-weight:500;color:#1b2330">Duplicar</span>
+            <span style="display:inline-flex;align-items:center;justify-content:center;width:40px;height:40px;border-radius:8px;border:1px solid #e7e9ee;color:#6b7280;font-size:16px">⋯</span>
+          </div>
+        </div>
+
+        <div style="background:#fff;border:1px solid #e7e9ee;border-radius:12px;padding:16px;display:flex;flex-wrap:wrap;align-items:center;gap:14px">
+          <div style="flex:1 1 240px;min-width:0;display:flex;flex-direction:column;gap:6px">
+            <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px"><span style="font-family:'Geist Mono',monospace;font-size:15px;font-weight:500">PR-0884</span><span style="padding:3px 8px;border-radius:99px;background:#eef0f4;color:#5b6472;font-size:11px;font-weight:600">Nacional con IVA</span></div>
+            <div style="font-size:15px;font-weight:600;letter-spacing:-0.01em">Rotulación Levante S.L.</div>
+            <div style="font-size:13px;color:#6b7280">Convertida el 12 sep en <a href="#" style="font-family:'Geist Mono',monospace">BP-2479</a> · <span style="font-family:'Geist Mono',monospace">4.290,00 €</span></div>
+          </div>
+          <div style="flex:0 1 auto"><span style="padding:5px 11px;border-radius:99px;background:#eef0f4;color:#5b6472;font-size:13px;font-weight:600">Convertida</span></div>
+          <div style="margin-left:auto;display:flex;align-items:center;gap:8px">
+            <span style="display:inline-flex;align-items:center;height:40px;padding:0 16px;border-radius:8px;border:1px solid #e7e9ee;font-size:14px;font-weight:500;color:#1b2330">Ver pedido</span>
+            <span style="display:inline-flex;align-items:center;height:40px;padding:0 14px;border-radius:8px;border:1px solid #e7e9ee;font-size:14px;font-weight:500;color:#1b2330">Duplicar</span>
+            <span style="display:inline-flex;align-items:center;justify-content:center;width:40px;height:40px;border-radius:8px;border:1px solid #e7e9ee;color:#6b7280;font-size:16px">⋯</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div style="background:#fff;border:1px solid #e7e9ee;border-radius:12px;padding:20px">
+      <div style="font-size:13px;font-weight:600;letter-spacing:0.05em;text-transform:uppercase;color:#9aa2ad;margin-bottom:12px">Decisiones del mockup</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px;font-size:14px;line-height:1.6;color:#6b7280">
+        <div><strong style="color:#1b2330;font-weight:600">Antigüedad en palabras.</strong> «Aceptada hace 3 días», «Enviada hace 41 días». Cuando pasa del umbral, la frase se tiñe de ámbar: es un aviso comercial, no un estado del sistema.</div>
+        <div><strong style="color:#1b2330;font-weight:600">Orden por antigüedad por defecto</strong> en la cola de pendientes, y por fecha en las demás.</div>
+        <div><strong style="color:#1b2330;font-weight:600">Duplicar como secundario fijo</strong> en todas las filas, incluidas las convertidas: es la forma real de hacer un presupuesto parecido.</div>
+        <div><strong style="color:#1b2330;font-weight:600">La convertida enlaza a su pedido</strong> desde la propia frase de estado y desde «Ver pedido».</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════ 6 · NUEVA PROFORMA / DUPLICAR ══════════ -->
+  <section style="display:flex;flex-direction:column;gap:24px">
+    <div style="display:flex;flex-direction:column;gap:12px;border-top:1px solid #e7e9ee;padding-top:40px">
+      <div style="display:flex;flex-wrap:wrap;align-items:center;gap:12px">
+        <span style="display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:8px;background:#1b2330;color:#fff;font-size:14px;font-weight:600">6</span>
+        <h2 style="margin:0;font-size:28px;font-weight:600;letter-spacing:-0.02em">Nueva proforma y duplicar</h2>
+        <span style="padding:5px 11px;border-radius:99px;background:#fdeaea;color:#b42318;font-size:12px;font-weight:600">Flujo con bugs</span>
+      </div>
+      <p style="margin:0;font-size:16px;line-height:1.65;color:#6b7280;max-width:66ch">Duplicar es hoy el peor momento del ERP: obliga a re-mapear todos los artículos y la pantalla se descuadra. El origen del problema es conceptual, no visual.</p>
+    </div>
+
+    <div style="background:#fff;border:1px solid #e7e9ee;border-radius:12px;padding:22px;display:flex;flex-direction:column;gap:14px">
+      <div style="font-size:16px;font-weight:600">El diagnóstico de «duplicar»</div>
+      <p style="margin:0;font-size:15px;line-height:1.65;color:#6b7280;max-width:72ch">Duplicar se implementó como «crear una proforma nueva y rellenarla con los datos de otra». Eso fuerza a que cada línea vuelva a pasar por el buscador de catálogo, y si un artículo ya no existe o cambió de referencia, el formulario se queda a medias. Para el usuario, duplicar debería significar <strong style="color:#1b2330;font-weight:600">«esta proforma otra vez, y yo cambio lo que haga falta»</strong>.</p>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px">
+        <div style="border:1px solid #f3c9c5;border-radius:10px;padding:16px;background:#fff">
+          <div style="font-size:12px;font-weight:600;letter-spacing:0.05em;text-transform:uppercase;color:#b42318;margin-bottom:8px">Hoy</div>
+          <div style="font-size:14px;line-height:1.7;color:#6b7280">Formulario vacío → hay que volver a elegir empresa → cada línea se re-mapea contra el catálogo → los artículos no encontrados se pierden en silencio → el layout se rompe al meter líneas largas.</div>
+        </div>
+        <div style="border:1px solid #d7e2ff;border-radius:10px;padding:16px;background:#f7faff">
+          <div style="font-size:12px;font-weight:600;letter-spacing:0.05em;text-transform:uppercase;color:#1f7a45;margin-bottom:8px">Propuesta</div>
+          <div style="font-size:14px;line-height:1.7;color:#6b7280">La copia llega <strong style="color:#1b2330;font-weight:600">ya rellena y editable</strong>. Las líneas que no se pueden resolver se marcan en la propia línea con lo que hay que decidir, y el resto sigue siendo válido. Nada se pierde en silencio.</div>
+        </div>
+      </div>
+    </div>
+
+    <div style="display:flex;flex-direction:column;gap:12px">
+      <div style="font-size:12px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:#9aa2ad">Mockup propuesto · duplicar proforma</div>
+      <div style="border:1px solid #e7e9ee;border-radius:14px;overflow:hidden;background:#f4f5f7;box-shadow:0 4px 16px rgba(27,35,48,.06)">
+        <div style="display:flex;align-items:center;gap:8px;padding:10px 14px;background:#fff;border-bottom:1px solid #e7e9ee">
+          <span style="width:9px;height:9px;border-radius:99px;background:#e7e9ee"></span><span style="width:9px;height:9px;border-radius:99px;background:#e7e9ee"></span><span style="width:9px;height:9px;border-radius:99px;background:#e7e9ee"></span>
+          <span style="margin-left:10px;font-family:'Geist Mono',monospace;font-size:11px;color:#9aa2ad">bohub.bomedia.es/erp/proformas/nueva?duplicar=PR-0884</span>
+        </div>
+        <div style="padding:18px;display:flex;flex-direction:column;gap:14px">
+          <div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px;padding:14px 16px;background:#e8f0ff;border:1px solid #d7e2ff;border-radius:12px">
+            <span style="font-size:14px;font-weight:600;color:#2451c7;flex:1 1 220px">Copia de PR-0884 · Rotulación Levante S.L.</span>
+            <span style="font-size:13px;color:#2451c7">Todo viene rellenado. Cambia lo que necesites.</span>
+          </div>
+
+          <div style="background:#fff;border:1px solid #e7e9ee;border-radius:12px;padding:18px;display:flex;flex-direction:column;gap:14px">
+            <div style="display:flex;flex-wrap:wrap;gap:14px">
+              <div style="flex:1 1 240px;display:flex;flex-direction:column;gap:6px">
+                <span style="font-size:13px;font-weight:500">Empresa</span>
+                <span style="display:flex;align-items:center;justify-content:space-between;gap:10px;height:40px;padding:0 12px;border:1px solid #e7e9ee;border-radius:8px;font-size:14px">Rotulación Levante S.L. <span style="padding:2px 8px;border-radius:99px;background:#e7f6ec;color:#1f7a45;font-size:11px;font-weight:600">CLI-1043</span></span>
+              </div>
+              <div style="flex:0 1 160px;display:flex;flex-direction:column;gap:6px">
+                <span style="font-size:13px;font-weight:500">Serie</span>
+                <span style="display:flex;align-items:center;justify-content:space-between;height:40px;padding:0 12px;border:1px solid #e7e9ee;border-radius:8px;font-size:14px;color:#6b7280">PR 2026 <span style="color:#9aa2ad">▾</span></span>
+              </div>
+              <div style="flex:0 1 160px;display:flex;flex-direction:column;gap:6px">
+                <span style="font-size:13px;font-weight:500">Régimen de IVA</span>
+                <span style="display:flex;align-items:center;height:40px;padding:0 12px;border:1px solid #e7e9ee;border-radius:8px;font-size:14px;background:#fbfbfc;color:#6b7280">Nacional 21 %</span>
+              </div>
+            </div>
+
+            <div style="display:flex;flex-direction:column;gap:0;border:1px solid #eef0f4;border-radius:10px;overflow:hidden">
+              <div style="display:flex;padding:10px 14px;background:#fbfbfc;border-bottom:1px solid #eef0f4;font-size:11px;font-weight:600;letter-spacing:0.05em;text-transform:uppercase;color:#6b7280">
+                <span style="flex:1 1 160px">Artículo</span><span style="flex:0 0 52px;text-align:right">Uds</span><span style="flex:0 0 90px;text-align:right">Precio</span><span style="flex:0 0 96px;text-align:right">Total</span>
+              </div>
+              <div style="display:flex;flex-wrap:wrap;align-items:center;padding:12px 14px;border-bottom:1px solid #eef0f4;font-size:14px">
+                <span style="flex:1 1 160px;min-width:0"><span style="font-weight:500">artisJet 3000U</span><br><span style="font-family:'Geist Mono',monospace;font-size:12px;color:#6b7280">ART-3000U</span></span>
+                <span style="flex:0 0 52px;text-align:right;font-family:'Geist Mono',monospace">1</span><span style="flex:0 0 90px;text-align:right;font-family:'Geist Mono',monospace">3.250,00</span><span style="flex:0 0 96px;text-align:right;font-family:'Geist Mono',monospace">3.250,00</span>
+              </div>
+              <div style="display:flex;flex-wrap:wrap;align-items:center;padding:12px 14px;border-bottom:1px solid #eef0f4;font-size:14px">
+                <span style="flex:1 1 160px;min-width:0"><span style="font-weight:500">Tinta blanca 220 ml</span><br><span style="font-family:'Geist Mono',monospace;font-size:12px;color:#6b7280">INK-W220</span></span>
+                <span style="flex:0 0 52px;text-align:right;font-family:'Geist Mono',monospace">4</span><span style="flex:0 0 90px;text-align:right;font-family:'Geist Mono',monospace">62,50</span><span style="flex:0 0 96px;text-align:right;font-family:'Geist Mono',monospace">250,00</span>
+              </div>
+              <div style="background:#fdf1dd;border-bottom:1px solid #eef0f4;padding:12px 14px;display:flex;flex-direction:column;gap:10px">
+                <div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px">
+                  <span style="flex:1 1 180px;min-width:0;font-size:14px"><span style="font-weight:600;color:#8a5c00">Cabezal de repuesto DX5</span><br><span style="font-family:'Geist Mono',monospace;font-size:12px;color:#8a5c00">HEAD-DX5 · ya no está en el catálogo</span></span>
+                  <span style="display:inline-flex;align-items:center;height:36px;padding:0 12px;border-radius:8px;background:#fff;border:1px solid #e3caa0;font-size:13px;font-weight:600;color:#8a5c00">Elegir sustituto</span>
+                  <span style="display:inline-flex;align-items:center;height:36px;padding:0 12px;border-radius:8px;font-size:13px;font-weight:500;color:#8a5c00">Mantener como línea libre</span>
+                  <span style="display:inline-flex;align-items:center;height:36px;padding:0 12px;border-radius:8px;font-size:13px;font-weight:500;color:#8a5c00">Quitar</span>
+                </div>
+              </div>
+              <div style="display:flex;flex-wrap:wrap;align-items:center;padding:12px 14px;font-size:14px;color:#2451c7;font-weight:500">+ Añadir línea del catálogo</div>
+            </div>
+
+            <div style="display:flex;flex-wrap:wrap;gap:16px;align-items:flex-start">
+              <div style="flex:1 1 200px;font-size:13px;line-height:1.6;color:#6b7280">1 de 3 líneas necesita una decisión. Las otras 2 ya están listas y se guardan igual.</div>
+              <div style="flex:0 1 240px;display:flex;flex-direction:column;gap:8px;font-size:14px">
+                <div style="display:flex;justify-content:space-between;gap:12px"><span style="color:#6b7280">Base</span><span style="font-family:'Geist Mono',monospace">3.500,00 €</span></div>
+                <div style="display:flex;justify-content:space-between;gap:12px"><span style="color:#6b7280">IVA 21 %</span><span style="font-family:'Geist Mono',monospace">735,00 €</span></div>
+                <div style="display:flex;justify-content:space-between;gap:12px;padding-top:8px;border-top:1px solid #eef0f4"><span style="font-weight:600">Total</span><span style="font-family:'Geist Mono',monospace;font-weight:600">4.235,00 €</span></div>
+              </div>
+            </div>
+          </div>
+
+          <div style="display:flex;flex-wrap:wrap;gap:10px;justify-content:flex-end;align-items:center">
+            <span style="font-size:13px;color:#6b7280;margin-right:auto">Se creará en FACTUSOL al guardar.</span>
+            <span style="display:inline-flex;align-items:center;height:40px;padding:0 16px;border-radius:8px;border:1px solid #e7e9ee;background:#fff;font-size:14px;font-weight:500">Guardar borrador</span>
+            <span style="display:inline-flex;align-items:center;height:40px;padding:0 18px;border-radius:8px;background:#2f6bff;color:#fff;font-size:14px;font-weight:600">Crear proforma</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div style="background:#fff;border:1px solid #e7e9ee;border-radius:12px;padding:20px">
+      <div style="font-size:13px;font-weight:600;letter-spacing:0.05em;text-transform:uppercase;color:#9aa2ad;margin-bottom:12px">Decisiones del mockup</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px;font-size:14px;line-height:1.6;color:#6b7280">
+        <div><strong style="color:#1b2330;font-weight:600">Banda de procedencia.</strong> Una franja azul arriba dice de qué proforma es copia. El usuario nunca duda de dónde salió lo que está viendo.</div>
+        <div><strong style="color:#1b2330;font-weight:600">El conflicto se resuelve en la línea.</strong> Fondo ámbar, el motivo en lenguaje llano («ya no está en el catálogo») y tres salidas explícitas: sustituto, línea libre o quitar. Nunca un modal encima del formulario.</div>
+        <div><strong style="color:#1b2330;font-weight:600">Lo que sí funciona no se bloquea.</strong> Las líneas correctas se guardan aunque quede una por decidir, y el contador lo dice: «1 de 3 líneas necesita una decisión».</div>
+        <div><strong style="color:#1b2330;font-weight:600">Tabla de líneas con anchos fijos</strong> y totales alineados a la derecha en monoespaciada. Es la causa directa del «descuadre»: hoy las columnas se dimensionan según el contenido.</div>
+        <div><strong style="color:#1b2330;font-weight:600">Consecuencia declarada.</strong> «Se creará en FACTUSOL al guardar», junto al botón. El usuario no técnico necesita saber que esto sale del ERP.</div>
+        <div><strong style="color:#1b2330;font-weight:600">Mismo formulario para nueva y duplicada.</strong> La única diferencia es la banda de procedencia y los campos prerrellenados.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════ 7 · DOCUMENTOS FACTUSOL ══════════ -->
+  <section style="display:flex;flex-direction:column;gap:24px">
+    <div style="display:flex;flex-direction:column;gap:12px;border-top:1px solid #e7e9ee;padding-top:40px">
+      <div style="display:flex;flex-wrap:wrap;align-items:center;gap:12px">
+        <span style="display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:8px;background:#1b2330;color:#fff;font-size:14px;font-weight:600">7</span>
+        <h2 style="margin:0;font-size:28px;font-weight:600;letter-spacing:-0.02em">Documentos FACTUSOL</h2>
+      </div>
+      <p style="margin:0;font-size:16px;line-height:1.65;color:#6b7280;max-width:66ch">Aquí no se trabaja: se consulta y se reconcilia. Es la única pantalla del ERP que debe ser una tabla densa de verdad.</p>
+    </div>
+
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px">
+      <div style="background:#fff;border:1px solid #e7e9ee;border-left:3px solid #1f7a45;border-radius:12px;padding:20px">
+        <div style="font-size:12px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:#1f7a45;margin-bottom:12px">Qué funciona</div>
+        <div style="font-size:14px;line-height:1.7;color:#6b7280;display:flex;flex-direction:column;gap:8px">
+          <div>Las pestañas por tipo de documento coinciden con el modelo mental de FACTUSOL, así que no hay que traducir nada.</div>
+          <div>«Vincular a pedido» resuelve el caso real de documentos creados directamente en FACTUSOL.</div>
+        </div>
+      </div>
+      <div style="background:#fff;border:1px solid #e7e9ee;border-left:3px solid #8a5c00;border-radius:12px;padding:20px">
+        <div style="font-size:12px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:#8a5c00;margin-bottom:12px">Qué mejorar</div>
+        <div style="font-size:14px;line-height:1.7;color:#6b7280;display:flex;flex-direction:column;gap:8px">
+          <div><strong style="color:#1b2330;font-weight:600">No se ve lo que está sin vincular.</strong> Es el motivo principal para entrar aquí. Debe haber un contador y un filtro «solo sin vincular».</div>
+          <div><strong style="color:#1b2330;font-weight:600">Importes sin alinear.</strong> Cifras en tipografía proporcional y a la izquierda: imposible comparar columnas.</div>
+          <div><strong style="color:#1b2330;font-weight:600">Solo lectura no está declarado.</strong> Hay que decir en la propia pantalla que esto viene de FACTUSOL y no se edita aquí.</div>
+          <div><strong style="color:#1b2330;font-weight:600">Sin rango de fechas.</strong> Para cuadrar un mes hace falta filtrar por periodo.</div>
+        </div>
+      </div>
+    </div>
+
+    <div style="border:1px solid #e7e9ee;border-radius:14px;overflow:hidden;background:#f4f5f7;box-shadow:0 4px 16px rgba(27,35,48,.06)">
+      <div style="display:flex;align-items:center;gap:8px;padding:10px 14px;background:#fff;border-bottom:1px solid #e7e9ee">
+        <span style="width:9px;height:9px;border-radius:99px;background:#e7e9ee"></span><span style="width:9px;height:9px;border-radius:99px;background:#e7e9ee"></span><span style="width:9px;height:9px;border-radius:99px;background:#e7e9ee"></span>
+        <span style="margin-left:10px;font-family:'Geist Mono',monospace;font-size:11px;color:#9aa2ad">bohub.bomedia.es/erp/factusol/facturas</span>
+      </div>
+      <div style="padding:18px;display:flex;flex-direction:column;gap:14px">
+        <div style="display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:12px">
+          <div><h4 style="margin:0;font-size:22px;font-weight:600;letter-spacing:-0.02em">Documentos FACTUSOL</h4><div style="font-size:13px;color:#6b7280;margin-top:4px">Solo lectura · sincronizado hace 8 min</div></div>
+          <span style="display:inline-flex;align-items:center;height:40px;padding:0 14px;border-radius:8px;border:1px solid #e7e9ee;background:#fff;font-size:14px;font-weight:500">Sincronizar ahora</span>
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:4px;border-bottom:1px solid #e7e9ee;padding-bottom:0">
+          <span style="padding:10px 14px;font-size:14px;color:#6b7280">Presupuestos <span style="color:#6b7280">142</span></span>
+          <span style="padding:10px 14px;font-size:14px;color:#6b7280">Pedidos cliente <span style="color:#6b7280">318</span></span>
+          <span style="padding:10px 14px;font-size:14px;color:#6b7280">Albaranes <span style="color:#6b7280">294</span></span>
+          <span style="padding:10px 14px;font-size:14px;font-weight:600;color:#1b2330;border-bottom:2px solid #2f6bff">Facturas <span style="color:#6b7280">276</span></span>
+        </div>
+        <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px">
+          <span style="display:inline-flex;align-items:center;gap:6px;height:36px;padding:0 12px;border-radius:8px;border:1px solid #d7e2ff;background:#e8f0ff;color:#2451c7;font-size:13px;font-weight:600">Solo sin vincular · 4 <span>✕</span></span>
+          <span style="display:inline-flex;align-items:center;gap:6px;height:36px;padding:0 12px;border-radius:8px;border:1px solid #e7e9ee;background:#fff;color:#6b7280;font-size:13px">Septiembre 2026 <span style="color:#9aa2ad">▾</span></span>
+          <span style="display:inline-flex;align-items:center;gap:6px;height:36px;padding:0 12px;border-radius:8px;border:1px solid #e7e9ee;background:#fff;color:#6b7280;font-size:13px">Cobro: todos <span style="color:#9aa2ad">▾</span></span>
+          <span style="display:flex;align-items:center;height:36px;padding:0 12px;border:1px solid #e7e9ee;border-radius:8px;background:#fff;font-size:13px;color:#9aa2ad;min-width:160px;margin-left:auto">Buscar nº, cliente o NIF</span>
+        </div>
+        <div style="background:#fff;border:1px solid #e7e9ee;border-radius:12px;overflow:hidden">
+          <div style="display:flex;padding:10px 16px;background:#fbfbfc;border-bottom:1px solid #eef0f4;font-size:11px;font-weight:600;letter-spacing:0.05em;text-transform:uppercase;color:#6b7280">
+            <span style="flex:0 0 96px">Nº</span><span style="flex:1 1 140px">Cliente</span><span style="flex:0 0 72px">Fecha</span><span style="flex:0 0 100px;text-align:right">Importe</span><span style="flex:0 0 96px;text-align:right">Cobro</span><span style="flex:0 0 108px;text-align:right">Pedido</span>
+          </div>
+          <div style="display:flex;flex-wrap:wrap;align-items:center;padding:13px 16px;border-bottom:1px solid #eef0f4;font-size:13px">
+            <span style="flex:0 0 96px;font-family:'Geist Mono',monospace">F-2026/118</span><span style="flex:1 1 140px;min-width:0">Rotulación Levante S.L.</span><span style="flex:0 0 72px;color:#6b7280">13 sep</span><span style="flex:0 0 100px;text-align:right;font-family:'Geist Mono',monospace">4.290,00</span><span style="flex:0 0 96px;text-align:right"><span style="padding:2px 8px;border-radius:99px;background:#fdf1dd;color:#8a5c00;font-size:11px;font-weight:600">Pendiente</span></span><span style="flex:0 0 108px;text-align:right;font-family:'Geist Mono',monospace"><a href="#">BP-2479</a></span>
+          </div>
+          <div style="display:flex;flex-wrap:wrap;align-items:center;padding:13px 16px;border-bottom:1px solid #eef0f4;font-size:13px;background:#fbfbfc">
+            <span style="flex:0 0 96px;font-family:'Geist Mono',monospace">F-2026/117</span><span style="flex:1 1 140px;min-width:0">Laser Studio Zürich AG</span><span style="flex:0 0 72px;color:#6b7280">11 sep</span><span style="flex:0 0 100px;text-align:right;font-family:'Geist Mono',monospace">12.450,00</span><span style="flex:0 0 96px;text-align:right"><span style="padding:2px 8px;border-radius:99px;background:#e7f6ec;color:#1f7a45;font-size:11px;font-weight:600">Cobrada</span></span><span style="flex:0 0 108px;text-align:right;font-family:'Geist Mono',monospace"><a href="#">FL-2476</a></span>
+          </div>
+          <div style="display:flex;flex-wrap:wrap;align-items:center;padding:13px 16px;border-bottom:1px solid #eef0f4;font-size:13px;border-left:3px solid #8a5c00">
+            <span style="flex:0 0 96px;font-family:'Geist Mono',monospace">F-2026/116</span><span style="flex:1 1 140px;min-width:0">Serigrafía Duero S.C.</span><span style="flex:0 0 72px;color:#6b7280">9 sep</span><span style="flex:0 0 100px;text-align:right;font-family:'Geist Mono',monospace">890,00</span><span style="flex:0 0 96px;text-align:right"><span style="padding:2px 8px;border-radius:99px;background:#fdf1dd;color:#8a5c00;font-size:11px;font-weight:600">Pendiente</span></span><span style="flex:0 0 108px;text-align:right"><span style="display:inline-flex;align-items:center;height:30px;padding:0 10px;border-radius:7px;border:1px solid #e7e9ee;font-size:12px;font-weight:600;color:#2451c7">Vincular</span></span>
+          </div>
+          <div style="display:flex;flex-wrap:wrap;align-items:center;padding:13px 16px;font-size:13px;background:#fbfbfc">
+            <span style="flex:0 0 96px;font-family:'Geist Mono',monospace">F-2026/115</span><span style="flex:1 1 140px;min-width:0">Grafische Werkstatt Müller GmbH</span><span style="flex:0 0 72px;color:#6b7280">8 sep</span><span style="flex:0 0 100px;text-align:right;font-family:'Geist Mono',monospace">3.780,00</span><span style="flex:0 0 96px;text-align:right"><span style="padding:2px 8px;border-radius:99px;background:#e7f6ec;color:#1f7a45;font-size:11px;font-weight:600">Cobrada</span></span><span style="flex:0 0 108px;text-align:right;font-family:'Geist Mono',monospace"><a href="#">AJ-2455</a></span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div style="background:#fff;border:1px solid #e7e9ee;border-radius:12px;padding:20px">
+      <div style="font-size:13px;font-weight:600;letter-spacing:0.05em;text-transform:uppercase;color:#9aa2ad;margin-bottom:12px">Decisiones del mockup</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px;font-size:14px;line-height:1.6;color:#6b7280">
+        <div><strong style="color:#1b2330;font-weight:600">«Solo sin vincular» con contador</strong> como filtro destacado: la razón número uno para abrir esta pantalla queda a un clic.</div>
+        <div><strong style="color:#1b2330;font-weight:600">Lo no vinculado se marca en la fila</strong> con una banda ámbar a la izquierda y el botón «Vincular» donde iría el número de pedido.</div>
+        <div><strong style="color:#1b2330;font-weight:600">Números en monoespaciada</strong> y alineados a la derecha, con la columna de importe de ancho fijo. Así se pueden sumar de un vistazo.</div>
+        <div><strong style="color:#1b2330;font-weight:600">«Solo lectura · sincronizado hace 8 min»</strong> bajo el título, más «Sincronizar ahora». Explica de dónde salen los datos sin jerga.</div>
+        <div><strong style="color:#1b2330;font-weight:600">Rango de mes</strong> por defecto en el mes en curso, para cuadrar cierres.</div>
+        <div><strong style="color:#1b2330;font-weight:600">En móvil, cada fila es una tarjeta</strong> de pares etiqueta/valor. Sin scroll horizontal.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════ 8 · COLA SAT ══════════ -->
+  <section style="display:flex;flex-direction:column;gap:24px">
+    <div style="display:flex;flex-direction:column;gap:12px;border-top:1px solid #e7e9ee;padding-top:40px">
+      <div style="display:flex;flex-wrap:wrap;align-items:center;gap:12px">
+        <span style="display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:8px;background:#1b2330;color:#fff;font-size:14px;font-weight:600">8</span>
+        <h2 style="margin:0;font-size:28px;font-weight:600;letter-spacing:-0.02em">Cola SAT (taller)</h2>
+        <span style="padding:5px 11px;border-radius:99px;background:#e6f5f3;color:#0f766e;font-size:12px;font-weight:600">Pantalla pequeña</span>
+      </div>
+      <p style="margin:0;font-size:16px;line-height:1.65;color:#6b7280;max-width:66ch">Es la única pantalla que se usa de pie, con las manos ocupadas y a veces con guantes. Debe diseñarse primero para móvil y solo después para escritorio.</p>
+    </div>
+
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px">
+      <div style="background:#fff;border:1px solid #e7e9ee;border-left:3px solid #1f7a45;border-radius:12px;padding:20px">
+        <div style="font-size:12px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:#1f7a45;margin-bottom:12px">Qué funciona</div>
+        <div style="font-size:14px;line-height:1.7;color:#6b7280;display:flex;flex-direction:column;gap:8px">
+          <div>Los datos elegidos son los correctos: nº de serie, licencia WhiteRIP, origen y observaciones es exactamente lo que el taller necesita.</div>
+          <div>«Marcar procesado» cierra el bucle sin pasar por administración.</div>
+        </div>
+      </div>
+      <div style="background:#fff;border:1px solid #e7e9ee;border-left:3px solid #8a5c00;border-radius:12px;padding:20px">
+        <div style="font-size:12px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:#8a5c00;margin-bottom:12px">Qué mejorar</div>
+        <div style="font-size:14px;line-height:1.7;color:#6b7280;display:flex;flex-direction:column;gap:8px">
+          <div><strong style="color:#1b2330;font-weight:600">Datos técnicos en texto pequeño.</strong> El nº de serie y la licencia se teclean o se comparan con el equipo físico: van grandes, en monoespaciada y con botón de copiar.</div>
+          <div><strong style="color:#1b2330;font-weight:600">Observaciones enterradas.</strong> Si el comercial escribió algo, es lo primero que el taller debe leer.</div>
+          <div><strong style="color:#1b2330;font-weight:600">Botones pequeños.</strong> En taller, 48 px mínimo y separados para no pulsar el equivocado.</div>
+          <div><strong style="color:#1b2330;font-weight:600">Historial de enviados incompleto.</strong> Hace falta saber a qué hora se envió y quién lo hizo, para no duplicar envíos.</div>
+        </div>
+      </div>
+    </div>
+
+    <div style="display:flex;flex-wrap:wrap;gap:20px;align-items:flex-start">
+      <div style="flex:0 1 360px;border:1px solid #e7e9ee;border-radius:20px;background:#f4f5f7;padding:10px;box-shadow:0 4px 16px rgba(27,35,48,.06)">
+        <div style="background:#fff;border-radius:14px;overflow:hidden">
+          <div style="padding:14px;border-bottom:1px solid #eef0f4;display:flex;align-items:center;justify-content:space-between;gap:10px">
+            <span style="font-size:17px;font-weight:600;letter-spacing:-0.01em">Cola SAT</span>
+            <span style="padding:3px 9px;border-radius:99px;background:#e6f5f3;color:#0f766e;font-size:12px;font-weight:600">4 por preparar</span>
+          </div>
+          <div style="padding:12px;background:#f4f5f7;display:flex;flex-direction:column;gap:10px">
+            <div style="display:flex;gap:8px">
+              <span style="display:inline-flex;align-items:center;height:40px;padding:0 14px;border-radius:8px;background:#1b2330;color:#fff;font-size:14px;font-weight:600;white-space:nowrap">Por preparar</span>
+              <span style="display:inline-flex;align-items:center;height:40px;padding:0 14px;border-radius:8px;background:#fff;border:1px solid #e7e9ee;font-size:14px;color:#6b7280;white-space:nowrap">Enviados</span>
+            </div>
+            <div style="background:#fff;border:1px solid #e7e9ee;border-radius:12px;padding:16px;display:flex;flex-direction:column;gap:14px">
+              <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px">
+                <span style="font-family:'Geist Mono',monospace;font-size:15px;font-weight:500">FL-2476</span>
+                <span style="padding:2px 8px;border-radius:99px;background:#e6f5f3;color:#0f766e;font-size:11px;font-weight:600">fluxlasers</span>
+              </div>
+              <div style="font-size:17px;font-weight:600;letter-spacing:-0.01em;line-height:1.3">Laser Studio Zürich AG</div>
+              <div style="padding:14px;border-radius:10px;background:#fdf1dd;display:flex;flex-direction:column;gap:4px">
+                <span style="font-size:11px;font-weight:600;letter-spacing:0.05em;text-transform:uppercase;color:#8a5c00">Observaciones del comercial</span>
+                <span style="font-size:15px;line-height:1.5;color:#7a4f00">Cliente pide embalaje reforzado y manual en alemán. Avisar antes de enviar.</span>
+              </div>
+              <div style="display:flex;flex-direction:column;gap:10px">
+                <div style="display:flex;flex-direction:column;gap:4px;padding:12px;border:1px solid #eef0f4;border-radius:10px">
+                  <span style="font-size:11px;font-weight:600;letter-spacing:0.05em;text-transform:uppercase;color:#6b7280">Nº de serie</span>
+                  <div style="display:flex;align-items:center;justify-content:space-between;gap:10px"><span style="font-family:'Geist Mono',monospace;font-size:19px;font-weight:500">FLX-7741-2026</span><span style="display:inline-flex;align-items:center;justify-content:center;width:36px;height:36px;border-radius:8px;border:1px solid #e7e9ee;color:#2451c7;font-size:13px;font-weight:600">⧉</span></div>
+                </div>
+                <div style="display:flex;flex-direction:column;gap:4px;padding:12px;border:1px solid #eef0f4;border-radius:10px">
+                  <span style="font-size:11px;font-weight:600;letter-spacing:0.05em;text-transform:uppercase;color:#6b7280">Licencia WhiteRIP</span>
+                  <div style="display:flex;align-items:center;justify-content:space-between;gap:10px"><span style="font-family:'Geist Mono',monospace;font-size:19px;font-weight:500">WR-4C-88231</span><span style="display:inline-flex;align-items:center;justify-content:center;width:36px;height:36px;border-radius:8px;border:1px solid #e7e9ee;color:#2451c7;font-size:13px;font-weight:600">⧉</span></div>
+                </div>
+              </div>
+              <div style="display:flex;flex-direction:column;gap:8px">
+                <div style="display:flex;align-items:center;justify-content:center;height:48px;border-radius:10px;background:#2f6bff;color:#fff;font-size:15px;font-weight:600">Enviar a SAT por email</div>
+                <div style="display:flex;gap:8px">
+                  <div style="flex:1;display:flex;align-items:center;justify-content:center;height:48px;border-radius:10px;border:1px solid #e7e9ee;font-size:15px;font-weight:500">Albarán PDF</div>
+                  <div style="flex:1;display:flex;align-items:center;justify-content:center;height:48px;border-radius:10px;border:1px solid #e7e9ee;font-size:15px;font-weight:500">Procesado</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div style="flex:1 1 280px;background:#fff;border:1px solid #e7e9ee;border-radius:12px;padding:20px">
+        <div style="font-size:13px;font-weight:600;letter-spacing:0.05em;text-transform:uppercase;color:#9aa2ad;margin-bottom:12px">Decisiones del mockup</div>
+        <div style="display:flex;flex-direction:column;gap:14px;font-size:14px;line-height:1.6;color:#6b7280">
+          <div><strong style="color:#1b2330;font-weight:600">Observaciones arriba y en ámbar.</strong> Si hay una nota del comercial, es lo primero. Si no hay, el bloque no aparece.</div>
+          <div><strong style="color:#1b2330;font-weight:600">Datos técnicos a 19 px en monoespaciada</strong>, cada uno en su caja con botón de copiar de 36 px. Se leen a un brazo de distancia.</div>
+          <div><strong style="color:#1b2330;font-weight:600">Tres acciones, 48 px, en dos filas.</strong> El primario solo y ancho; las dos secundarias debajo, separadas.</div>
+          <div><strong style="color:#1b2330;font-weight:600">Pestaña «Enviados»</strong> con hora y responsable de cada envío, para no repetir.</div>
+          <div><strong style="color:#1b2330;font-weight:600">En escritorio, la misma tarjeta en rejilla de dos o tres columnas.</strong> No se convierte en tabla: el taller no compara, ejecuta.</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════ 9 · CREAR Y BUSCAR EMPRESA ══════════ -->
+  <section style="display:flex;flex-direction:column;gap:24px">
+    <div style="display:flex;flex-direction:column;gap:12px;border-top:1px solid #e7e9ee;padding-top:40px">
+      <div style="display:flex;flex-wrap:wrap;align-items:center;gap:12px">
+        <span style="display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:8px;background:#1b2330;color:#fff;font-size:14px;font-weight:600">9</span>
+        <h2 style="margin:0;font-size:28px;font-weight:600;letter-spacing:-0.02em">Buscar y crear empresa</h2>
+      </div>
+      <p style="margin:0;font-size:16px;line-height:1.65;color:#6b7280;max-width:66ch">Son dos pantallas pero un solo flujo: buscar, y si no existe, crear sin perder lo escrito. Es donde se generan los duplicados que luego cuesta limpiar.</p>
+    </div>
+
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px">
+      <div style="background:#fff;border:1px solid #e7e9ee;border-left:3px solid #1f7a45;border-radius:12px;padding:20px">
+        <div style="font-size:12px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:#1f7a45;margin-bottom:12px">Qué funciona</div>
+        <div style="font-size:14px;line-height:1.7;color:#6b7280;display:flex;flex-direction:column;gap:8px">
+          <div>Buscar por nombre, CIF y dominio a la vez cubre cómo busca la gente de verdad.</div>
+          <div>Marcar si está en FACTUSOL o solo en CRM en el propio resultado evita elegir mal.</div>
+          <div>El régimen deducido del país y la validación VIES integrada son la pieza más valiosa del formulario.</div>
+        </div>
+      </div>
+      <div style="background:#fff;border:1px solid #e7e9ee;border-left:3px solid #8a5c00;border-radius:12px;padding:20px">
+        <div style="font-size:12px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:#8a5c00;margin-bottom:12px">Qué mejorar</div>
+        <div style="font-size:14px;line-height:1.7;color:#6b7280;display:flex;flex-direction:column;gap:8px">
+          <div><strong style="color:#1b2330;font-weight:600">Anti-duplicados avisa tarde.</strong> Debe avisar al teclear el NIF, no al guardar, y mostrar la ficha candidata con un botón «Usar esta».</div>
+          <div><strong style="color:#1b2330;font-weight:600">«Crear también en FACTUSOL» sin consecuencias explicadas.</strong> Una casilla que crea un registro fiscal necesita una frase que diga qué implica.</div>
+          <div><strong style="color:#1b2330;font-weight:600">VIES sin estados intermedios.</strong> Comprobando, válido, no válido y servicio caído son cuatro situaciones distintas y hoy se ven casi igual.</div>
+          <div><strong style="color:#1b2330;font-weight:600">El modal cambia de tamaño</strong> al aparecer resultados. Ancho fijo de 720 px y la lista con scroll propio.</div>
+        </div>
+      </div>
+    </div>
+
+    <div style="display:flex;flex-wrap:wrap;gap:20px;align-items:flex-start">
+      <div style="flex:1 1 320px;min-width:0;display:flex;flex-direction:column;gap:10px">
+        <div style="font-size:12px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:#9aa2ad">Buscador · modal de 720 px</div>
+        <div style="border:1px solid #e7e9ee;border-radius:12px;overflow:hidden;background:#fff;box-shadow:0 8px 24px rgba(27,35,48,.08)">
+          <div style="padding:16px 18px;border-bottom:1px solid #eef0f4;display:flex;align-items:flex-start;justify-content:space-between;gap:12px">
+            <div><div style="font-size:16px;font-weight:600">Asignar empresa</div><div style="font-size:13px;color:#6b7280;margin-top:3px">Contacto: Ana Ferrer</div></div>
+            <span style="color:#9aa2ad;font-size:18px;line-height:1">✕</span>
+          </div>
+          <div style="padding:16px 18px;border-bottom:1px solid #eef0f4">
+            <span style="display:flex;align-items:center;height:44px;padding:0 14px;border:1px solid #2f6bff;border-radius:8px;font-size:15px;box-shadow:0 0 0 3px rgba(47,107,255,.2)">rotulacion</span>
+            <div style="font-size:13px;color:#6b7280;margin-top:8px">Busca por nombre, CIF o dominio de email.</div>
+          </div>
+          <div style="max-height:260px;overflow:hidden">
+            <div style="padding:14px 18px;border-bottom:1px solid #eef0f4;display:flex;flex-wrap:wrap;align-items:center;gap:10px">
+              <div style="flex:1 1 180px;min-width:0"><div style="font-size:15px;font-weight:600">Rotulación Levante S.L.</div><div style="font-family:'Geist Mono',monospace;font-size:12px;color:#6b7280;margin-top:3px">ESB98765432 · ejemplo.es</div></div>
+              <span style="padding:3px 9px;border-radius:99px;background:#e7f6ec;color:#1f7a45;font-size:11px;font-weight:600">En FACTUSOL</span>
+              <span style="display:inline-flex;align-items:center;height:36px;padding:0 14px;border-radius:8px;background:#2f6bff;color:#fff;font-size:13px;font-weight:600">Usar esta</span>
+            </div>
+            <div style="padding:14px 18px;border-bottom:1px solid #eef0f4;display:flex;flex-wrap:wrap;align-items:center;gap:10px">
+              <div style="flex:1 1 180px;min-width:0"><div style="font-size:15px;font-weight:600">Rotulación del Sur S.L.U.</div><div style="font-family:'Geist Mono',monospace;font-size:12px;color:#6b7280;margin-top:3px">ESB11223344 · sin dominio</div></div>
+              <span style="padding:3px 9px;border-radius:99px;background:#e6f5f3;color:#0f766e;font-size:11px;font-weight:600">Solo CRM</span>
+              <span style="display:inline-flex;align-items:center;height:36px;padding:0 14px;border-radius:8px;border:1px solid #e7e9ee;font-size:13px;font-weight:500;color:#1b2330">Usar esta</span>
+            </div>
+          </div>
+          <div style="padding:14px 18px;border-top:1px solid #eef0f4;background:#fbfbfc;display:flex;flex-wrap:wrap;align-items:center;gap:10px">
+            <span style="flex:1 1 160px;font-size:13px;color:#6b7280">¿No está en la lista?</span>
+            <span style="display:inline-flex;align-items:center;height:38px;padding:0 14px;border-radius:8px;border:1px solid #e7e9ee;background:#fff;font-size:14px;font-weight:600;color:#2451c7">Crear empresa «rotulacion»</span>
+          </div>
+        </div>
+      </div>
+
+      <div style="flex:1 1 320px;min-width:0;display:flex;flex-direction:column;gap:10px">
+        <div style="font-size:12px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:#9aa2ad">Crear empresa · identificación fiscal</div>
+        <div style="border:1px solid #e7e9ee;border-radius:12px;background:#fff;padding:18px;display:flex;flex-direction:column;gap:14px">
+          <div style="display:flex;flex-direction:column;gap:6px">
+            <span style="font-size:13px;font-weight:500">Nombre fiscal</span>
+            <span style="display:flex;align-items:center;height:40px;padding:0 12px;border:1px solid #e7e9ee;border-radius:8px;font-size:14px">Grafische Werkstatt Müller GmbH</span>
+          </div>
+          <div style="display:flex;flex-wrap:wrap;gap:12px">
+            <div style="flex:0 1 150px;display:flex;flex-direction:column;gap:6px">
+              <span style="font-size:13px;font-weight:500">País</span>
+              <span style="display:flex;align-items:center;justify-content:space-between;height:40px;padding:0 12px;border:1px solid #e7e9ee;border-radius:8px;font-size:14px">Alemania <span style="color:#9aa2ad">▾</span></span>
+            </div>
+            <div style="flex:1 1 180px;display:flex;flex-direction:column;gap:6px">
+              <span style="font-size:13px;font-weight:500">NIF / VAT</span>
+              <span style="display:flex;align-items:center;height:40px;padding:0 12px;border:1px solid #e7e9ee;border-radius:8px;font-family:'Geist Mono',monospace;font-size:14px">DE811907980</span>
+            </div>
+          </div>
+          <div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px;padding:14px;border-radius:10px;background:#f0e9fd">
+            <span style="flex:1 1 180px;font-size:14px;line-height:1.5;color:#5b2fa8"><strong style="font-weight:600">Régimen detectado: intracomunitario exento.</strong> La factura saldrá sin IVA si el VAT es válido.</span>
+          </div>
+          <div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px;padding:14px;border-radius:10px;background:#e7f6ec">
+            <span style="flex:1 1 160px;font-size:14px;color:#186b3c"><strong style="font-weight:600">VAT válido en VIES</strong> · comprobado hoy a las 11:42</span>
+            <span style="display:inline-flex;align-items:center;height:34px;padding:0 12px;border-radius:8px;background:#fff;border:1px solid #bfe3cc;font-size:13px;font-weight:500;color:#186b3c">Volver a comprobar</span>
+          </div>
+          <div style="display:flex;flex-wrap:wrap;align-items:flex-start;gap:12px;padding:14px;border:1px solid #e7e9ee;border-radius:10px">
+            <span style="display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:5px;background:#2f6bff;color:#fff;font-size:12px;font-weight:700;flex:0 0 auto">✓</span>
+            <span style="flex:1 1 200px;font-size:14px;line-height:1.55"><strong style="font-weight:600">Crear también en FACTUSOL</strong><br><span style="color:#6b7280">Se dará de alta como cliente en el software de facturación. Hace falta para poder emitir facturas a esta empresa.</span></span>
+          </div>
+          <div style="display:flex;flex-wrap:wrap;gap:10px;justify-content:flex-end">
+            <span style="display:inline-flex;align-items:center;height:40px;padding:0 16px;border-radius:8px;border:1px solid #e7e9ee;font-size:14px;font-weight:500">Cancelar</span>
+            <span style="display:inline-flex;align-items:center;height:40px;padding:0 18px;border-radius:8px;background:#2f6bff;color:#fff;font-size:14px;font-weight:600">Crear empresa</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div style="background:#fff;border:1px solid #e7e9ee;border-radius:12px;padding:20px">
+      <div style="font-size:13px;font-weight:600;letter-spacing:0.05em;text-transform:uppercase;color:#9aa2ad;margin-bottom:12px">Decisiones del mockup</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px;font-size:14px;line-height:1.6;color:#6b7280">
+        <div><strong style="color:#1b2330;font-weight:600">Lo escrito se arrastra.</strong> «Crear empresa «rotulacion»» lleva el texto ya tecleado al formulario. Nadie vuelve a escribir.</div>
+        <div><strong style="color:#1b2330;font-weight:600">El vínculo decide el botón.</strong> «En FACTUSOL» da un primario azul; «Solo CRM» da un secundario, porque hará falta vincularla antes de facturar.</div>
+        <div><strong style="color:#1b2330;font-weight:600">Régimen explicado, no etiquetado.</strong> El bloque morado dice qué consecuencia tiene: «La factura saldrá sin IVA si el VAT es válido».</div>
+        <div><strong style="color:#1b2330;font-weight:600">VIES con cuatro estados</strong> y siempre con la hora de comprobación, más «Volver a comprobar» a mano.</div>
+        <div><strong style="color:#1b2330;font-weight:600">La casilla de FACTUSOL explica su efecto</strong> en dos líneas, debajo de su etiqueta.</div>
+        <div><strong style="color:#1b2330;font-weight:600">Anti-duplicados al teclear el NIF:</strong> si coincide, aparece la ficha existente con «Usar esta» antes de dejar seguir.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════ 10 · NUEVO PEDIDO MANUAL ══════════ -->
+  <section style="display:flex;flex-direction:column;gap:24px">
+    <div style="display:flex;flex-direction:column;gap:12px;border-top:1px solid #e7e9ee;padding-top:40px">
+      <div style="display:flex;flex-wrap:wrap;align-items:center;gap:12px">
+        <span style="display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:8px;background:#1b2330;color:#fff;font-size:14px;font-weight:600">10</span>
+        <h2 style="margin:0;font-size:28px;font-weight:600;letter-spacing:-0.02em">Nuevo pedido manual</h2>
+      </div>
+      <p style="margin:0;font-size:16px;line-height:1.65;color:#6b7280;max-width:66ch">Exige empresa vinculada a FACTUSOL. Ese requisito es correcto, pero hoy aparece como error al final en vez de guiar desde el principio.</p>
+    </div>
+
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px">
+      <div style="background:#fff;border:1px solid #e7e9ee;border-left:3px solid #1f7a45;border-radius:12px;padding:20px">
+        <div style="font-size:12px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:#1f7a45;margin-bottom:12px">Qué funciona</div>
+        <div style="font-size:14px;line-height:1.7;color:#6b7280;display:flex;flex-direction:column;gap:8px">
+          <div>Exigir el vínculo con FACTUSOL antes de crear el pedido evita el trabajo sucio después.</div>
+          <div>Portes y dirección de envío como campos propios reflejan cómo se venden estos equipos.</div>
+        </div>
+      </div>
+      <div style="background:#fff;border:1px solid #e7e9ee;border-left:3px solid #8a5c00;border-radius:12px;padding:20px">
+        <div style="font-size:12px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:#8a5c00;margin-bottom:12px">Qué mejorar</div>
+        <div style="font-size:14px;line-height:1.7;color:#6b7280;display:flex;flex-direction:column;gap:8px">
+          <div><strong style="color:#1b2330;font-weight:600">El requisito se descubre tarde.</strong> Al elegir una empresa solo-CRM debe aparecer ahí mismo el aviso y el botón «Vincular ahora», sin salir del formulario.</div>
+          <div><strong style="color:#1b2330;font-weight:600">Estructura plana.</strong> Tres bloques claros — empresa, líneas, envío — con el total siempre visible, resuelven el formulario largo.</div>
+          <div><strong style="color:#1b2330;font-weight:600">Mismo componente de líneas que la proforma.</strong> Hoy son dos tablas distintas y se comportan distinto.</div>
+          <div><strong style="color:#1b2330;font-weight:600">Dirección de envío sin atajo.</strong> Debe ofrecer la dirección de la empresa con un clic y permitir otra.</div>
+        </div>
+      </div>
+    </div>
+
+    <div style="border:1px solid #e7e9ee;border-radius:14px;overflow:hidden;background:#f4f5f7;box-shadow:0 4px 16px rgba(27,35,48,.06)">
+      <div style="display:flex;align-items:center;gap:8px;padding:10px 14px;background:#fff;border-bottom:1px solid #e7e9ee">
+        <span style="width:9px;height:9px;border-radius:99px;background:#e7e9ee"></span><span style="width:9px;height:9px;border-radius:99px;background:#e7e9ee"></span><span style="width:9px;height:9px;border-radius:99px;background:#e7e9ee"></span>
+        <span style="margin-left:10px;font-family:'Geist Mono',monospace;font-size:11px;color:#9aa2ad">bohub.bomedia.es/erp/pedidos/nuevo</span>
+      </div>
+      <div style="padding:18px;display:flex;flex-wrap:wrap;gap:16px;align-items:flex-start">
+        <div style="flex:1 1 360px;min-width:0;display:flex;flex-direction:column;gap:12px">
+          <div style="background:#fff;border:1px solid #e7e9ee;border-radius:12px;padding:18px;display:flex;flex-direction:column;gap:12px">
+            <div style="font-size:15px;font-weight:600">1 · Empresa</div>
+            <span style="display:flex;align-items:center;justify-content:space-between;gap:10px;height:40px;padding:0 12px;border:1px solid #e7e9ee;border-radius:8px;font-size:14px">Rotulación del Sur S.L.U. <span style="padding:2px 8px;border-radius:99px;background:#e6f5f3;color:#0f766e;font-size:11px;font-weight:600">Solo CRM</span></span>
+            <div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px;padding:14px;border-radius:10px;background:#fdf1dd">
+              <span style="flex:1 1 200px;font-size:14px;line-height:1.5;color:#7a4f00"><strong style="font-weight:600;color:#8a5c00">Esta empresa aún no está en FACTUSOL.</strong> Sin ella no se puede emitir factura. Se puede vincular sin salir de aquí.</span>
+              <span style="display:inline-flex;align-items:center;height:38px;padding:0 14px;border-radius:8px;background:#fff;border:1px solid #e3caa0;font-size:14px;font-weight:600;color:#8a5c00">Vincular ahora</span>
+            </div>
+          </div>
+          <div style="background:#fff;border:1px solid #e7e9ee;border-radius:12px;padding:18px;display:flex;flex-direction:column;gap:12px">
+            <div style="font-size:15px;font-weight:600">2 · Líneas</div>
+            <div style="border:1px solid #eef0f4;border-radius:10px;overflow:hidden">
+              <div style="display:flex;padding:10px 14px;background:#fbfbfc;border-bottom:1px solid #eef0f4;font-size:11px;font-weight:600;letter-spacing:0.05em;text-transform:uppercase;color:#6b7280"><span style="flex:1 1 140px">Artículo</span><span style="flex:0 0 48px;text-align:right">Uds</span><span style="flex:0 0 88px;text-align:right">Precio</span><span style="flex:0 0 92px;text-align:right">Total</span></div>
+              <div style="display:flex;flex-wrap:wrap;align-items:center;padding:12px 14px;border-bottom:1px solid #eef0f4;font-size:14px"><span style="flex:1 1 140px;min-width:0"><span style="font-weight:500">MBO Láser 60W</span><br><span style="font-family:'Geist Mono',monospace;font-size:12px;color:#6b7280">MBO-L60</span></span><span style="flex:0 0 48px;text-align:right;font-family:'Geist Mono',monospace">1</span><span style="flex:0 0 88px;text-align:right;font-family:'Geist Mono',monospace">5.900,00</span><span style="flex:0 0 92px;text-align:right;font-family:'Geist Mono',monospace">5.900,00</span></div>
+              <div style="display:flex;align-items:center;padding:12px 14px;font-size:14px;color:#2451c7;font-weight:500">+ Añadir línea del catálogo</div>
+            </div>
+          </div>
+          <div style="background:#fff;border:1px solid #e7e9ee;border-radius:12px;padding:18px;display:flex;flex-direction:column;gap:12px">
+            <div style="font-size:15px;font-weight:600">3 · Envío</div>
+            <div style="display:flex;flex-wrap:wrap;gap:12px">
+              <div style="flex:0 1 150px;display:flex;flex-direction:column;gap:6px"><span style="font-size:13px;font-weight:500">Portes</span><span style="display:flex;align-items:center;height:40px;padding:0 12px;border:1px solid #e7e9ee;border-radius:8px;font-family:'Geist Mono',monospace;font-size:14px">120,00 €</span></div>
+              <div style="flex:1 1 200px;display:flex;flex-direction:column;gap:6px"><span style="font-size:13px;font-weight:500">Dirección de envío</span><span style="display:flex;align-items:center;justify-content:space-between;height:40px;padding:0 12px;border:1px solid #e7e9ee;border-radius:8px;font-size:14px;color:#6b7280">La de la empresa <span style="color:#9aa2ad">▾</span></span></div>
+            </div>
+          </div>
+        </div>
+        <div style="flex:1 1 260px;min-width:0;display:flex;flex-direction:column;gap:12px">
+          <div style="background:#fff;border:1px solid #e7e9ee;border-radius:12px;padding:18px">
+            <div style="font-size:15px;font-weight:600;margin-bottom:14px">Total del pedido</div>
+            <div style="display:flex;flex-direction:column;gap:9px;font-size:14px">
+              <div style="display:flex;justify-content:space-between;gap:12px"><span style="color:#6b7280">Artículos</span><span style="font-family:'Geist Mono',monospace">5.900,00 €</span></div>
+              <div style="display:flex;justify-content:space-between;gap:12px"><span style="color:#6b7280">Portes</span><span style="font-family:'Geist Mono',monospace">120,00 €</span></div>
+              <div style="display:flex;justify-content:space-between;gap:12px"><span style="color:#6b7280">IVA 21 %</span><span style="font-family:'Geist Mono',monospace">1.264,20 €</span></div>
+              <div style="display:flex;justify-content:space-between;gap:12px;padding-top:9px;border-top:1px solid #eef0f4"><span style="font-weight:600">Total</span><span style="font-family:'Geist Mono',monospace;font-weight:600;font-size:17px">7.284,20 €</span></div>
+            </div>
+          </div>
+          <div style="background:#fff;border:1px solid #e7e9ee;border-radius:12px;padding:18px;display:flex;flex-direction:column;gap:10px">
+            <div style="font-size:13px;color:#6b7280;line-height:1.6">Al crear el pedido se dará de alta también en FACTUSOL como pedido de cliente.</div>
+            <span style="display:inline-flex;align-items:center;justify-content:center;height:44px;border-radius:8px;background:#e7e9ee;color:#9aa2ad;font-size:14px;font-weight:600">Crear pedido</span>
+            <div style="font-size:13px;color:#8a5c00;line-height:1.5">Falta vincular la empresa a FACTUSOL.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div style="background:#fff;border:1px solid #e7e9ee;border-radius:12px;padding:20px">
+      <div style="font-size:13px;font-weight:600;letter-spacing:0.05em;text-transform:uppercase;color:#9aa2ad;margin-bottom:12px">Decisiones del mockup</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px;font-size:14px;line-height:1.6;color:#6b7280">
+        <div><strong style="color:#1b2330;font-weight:600">Tres pasos numerados</strong> en vez de un formulario continuo: empresa, líneas, envío. Sin ocultar nada.</div>
+        <div><strong style="color:#1b2330;font-weight:600">El bloqueo se explica donde ocurre</strong> y trae su solución: aviso ámbar junto a la empresa con «Vincular ahora».</div>
+        <div><strong style="color:#1b2330;font-weight:600">Botón desactivado con motivo escrito debajo.</strong> Nunca un botón gris sin explicación.</div>
+        <div><strong style="color:#1b2330;font-weight:600">Total siempre visible</strong> en el panel derecho, que en móvil pasa a barra fija inferior.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════ 11 · AJUSTES ERP ══════════ -->
+  <section style="display:flex;flex-direction:column;gap:24px">
+    <div style="display:flex;flex-direction:column;gap:12px;border-top:1px solid #e7e9ee;padding-top:40px">
+      <div style="display:flex;flex-wrap:wrap;align-items:center;gap:12px">
+        <span style="display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:8px;background:#1b2330;color:#fff;font-size:14px;font-weight:600">11</span>
+        <h2 style="margin:0;font-size:28px;font-weight:600;letter-spacing:-0.02em">Ajustes ERP</h2>
+      </div>
+      <p style="margin:0;font-size:16px;line-height:1.65;color:#6b7280;max-width:66ch">Se entra poco, pero cada cambio afecta a todos los pedidos. La prioridad no es la eficiencia: es que se entienda qué hace cada ajuste y se pueda comprobar.</p>
+    </div>
+
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px">
+      <div style="background:#fff;border:1px solid #e7e9ee;border-left:3px solid #1f7a45;border-radius:12px;padding:20px">
+        <div style="font-size:12px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:#1f7a45;margin-bottom:12px">Qué funciona</div>
+        <div style="font-size:14px;line-height:1.7;color:#6b7280;display:flex;flex-direction:column;gap:8px">
+          <div>Agrupar por tienda es lo correcto: cada tienda tiene su prefijo, su remitente y sus series.</div>
+          <div>Tener las plantillas de email por idioma en el ERP evita depender de nadie para un cambio de texto.</div>
+        </div>
+      </div>
+      <div style="background:#fff;border:1px solid #e7e9ee;border-left:3px solid #8a5c00;border-radius:12px;padding:20px">
+        <div style="font-size:12px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:#8a5c00;margin-bottom:12px">Qué mejorar</div>
+        <div style="font-size:14px;line-height:1.7;color:#6b7280;display:flex;flex-direction:column;gap:8px">
+          <div><strong style="color:#1b2330;font-weight:600">Ajustes sin ejemplo.</strong> «Prefijo de referencia» no dice nada; «BP- → BP-2479» sí. Cada campo con su resultado al lado.</div>
+          <div><strong style="color:#1b2330;font-weight:600">Plantillas sin previsualización.</strong> Se edita a ciegas. Hace falta «Ver ejemplo» y «Enviarme una prueba».</div>
+          <div><strong style="color:#1b2330;font-weight:600">Mapeo de series sin jerga traducida.</strong> Es lo más técnico de la pantalla y necesita una frase que explique para qué sirve.</div>
+          <div><strong style="color:#1b2330;font-weight:600">Guardado ambiguo.</strong> Un solo «Guardar cambios» por sección, con aviso si se sale sin guardar.</div>
+        </div>
+      </div>
+    </div>
+
+    <div style="border:1px solid #e7e9ee;border-radius:14px;overflow:hidden;background:#f4f5f7;box-shadow:0 4px 16px rgba(27,35,48,.06)">
+      <div style="display:flex;align-items:center;gap:8px;padding:10px 14px;background:#fff;border-bottom:1px solid #e7e9ee">
+        <span style="width:9px;height:9px;border-radius:99px;background:#e7e9ee"></span><span style="width:9px;height:9px;border-radius:99px;background:#e7e9ee"></span><span style="width:9px;height:9px;border-radius:99px;background:#e7e9ee"></span>
+        <span style="margin-left:10px;font-family:'Geist Mono',monospace;font-size:11px;color:#9aa2ad">bohub.bomedia.es/erp/ajustes</span>
+      </div>
+      <div style="padding:18px;display:flex;flex-wrap:wrap;gap:16px;align-items:flex-start">
+        <div style="flex:0 1 200px;background:#fff;border:1px solid #e7e9ee;border-radius:12px;padding:10px;display:flex;flex-direction:column;gap:2px">
+          <span style="padding:10px 12px;border-radius:8px;background:#eef0f4;font-size:14px;font-weight:600">Tiendas y referencias</span>
+          <span style="padding:10px 12px;border-radius:8px;font-size:14px;color:#6b7280">Remitentes de email</span>
+          <span style="padding:10px 12px;border-radius:8px;font-size:14px;color:#6b7280">Plantillas por idioma</span>
+          <span style="padding:10px 12px;border-radius:8px;font-size:14px;color:#6b7280">Series FACTUSOL</span>
+        </div>
+        <div style="flex:1 1 380px;min-width:0;display:flex;flex-direction:column;gap:12px">
+          <div style="background:#fff;border:1px solid #e7e9ee;border-radius:12px;padding:18px;display:flex;flex-direction:column;gap:16px">
+            <div>
+              <div style="font-size:17px;font-weight:600;letter-spacing:-0.01em">Tiendas y referencias</div>
+              <div style="font-size:14px;color:#6b7280;line-height:1.6;margin-top:6px">El prefijo es lo que va delante del número de pedido. Se usa para saber de qué tienda viene cada uno.</div>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:12px">
+              <div style="display:flex;flex-wrap:wrap;align-items:center;gap:12px;padding:14px;border:1px solid #eef0f4;border-radius:10px">
+                <span style="flex:1 1 130px;display:flex;align-items:center;gap:8px;font-size:14px;font-weight:600"><span style="display:inline-block;width:8px;height:8px;border-radius:99px;background:#2451c7"></span>boprint</span>
+                <span style="flex:0 1 110px;display:flex;align-items:center;height:40px;padding:0 12px;border:1px solid #e7e9ee;border-radius:8px;font-family:'Geist Mono',monospace;font-size:14px">BP-</span>
+                <span style="flex:1 1 160px;font-size:13px;color:#6b7280">Siguiente referencia: <span style="font-family:'Geist Mono',monospace;color:#1b2330">BP-2482</span></span>
+              </div>
+              <div style="display:flex;flex-wrap:wrap;align-items:center;gap:12px;padding:14px;border:1px solid #eef0f4;border-radius:10px">
+                <span style="flex:1 1 130px;display:flex;align-items:center;gap:8px;font-size:14px;font-weight:600"><span style="display:inline-block;width:8px;height:8px;border-radius:99px;background:#6d3fc4"></span>artisjet</span>
+                <span style="flex:0 1 110px;display:flex;align-items:center;height:40px;padding:0 12px;border:1px solid #e7e9ee;border-radius:8px;font-family:'Geist Mono',monospace;font-size:14px">AJ-</span>
+                <span style="flex:1 1 160px;font-size:13px;color:#6b7280">Siguiente referencia: <span style="font-family:'Geist Mono',monospace;color:#1b2330">AJ-2482</span></span>
+              </div>
+              <div style="display:flex;flex-wrap:wrap;align-items:center;gap:12px;padding:14px;border:1px solid #eef0f4;border-radius:10px">
+                <span style="flex:1 1 130px;display:flex;align-items:center;gap:8px;font-size:14px;font-weight:600"><span style="display:inline-block;width:8px;height:8px;border-radius:99px;background:#0f766e"></span>fluxlasers</span>
+                <span style="flex:0 1 110px;display:flex;align-items:center;height:40px;padding:0 12px;border:1px solid #e7e9ee;border-radius:8px;font-family:'Geist Mono',monospace;font-size:14px">FL-</span>
+                <span style="flex:1 1 160px;font-size:13px;color:#6b7280">Siguiente referencia: <span style="font-family:'Geist Mono',monospace;color:#1b2330">FL-2477</span></span>
+              </div>
+            </div>
+            <div style="display:flex;flex-wrap:wrap;gap:10px;justify-content:flex-end;align-items:center;padding-top:4px;border-top:1px solid #eef0f4">
+              <span style="font-size:13px;color:#6b7280;margin-right:auto">Cambiar un prefijo no afecta a los pedidos ya creados.</span>
+              <span style="display:inline-flex;align-items:center;height:40px;padding:0 16px;border-radius:8px;background:#2f6bff;color:#fff;font-size:14px;font-weight:600">Guardar cambios</span>
+            </div>
+          </div>
+          <div style="background:#fff;border:1px solid #e7e9ee;border-radius:12px;padding:18px;display:flex;flex-wrap:wrap;align-items:center;gap:12px">
+            <div style="flex:1 1 200px;min-width:0"><div style="font-size:15px;font-weight:600">Plantilla «Factura al cliente» · español</div><div style="font-size:13px;color:#6b7280;margin-top:3px">Última edición hace 3 meses</div></div>
+            <span style="display:inline-flex;align-items:center;height:38px;padding:0 14px;border-radius:8px;border:1px solid #e7e9ee;font-size:14px;font-weight:500;color:#1b2330">Ver ejemplo</span>
+            <span style="display:inline-flex;align-items:center;height:38px;padding:0 14px;border-radius:8px;border:1px solid #e7e9ee;font-size:14px;font-weight:500;color:#1b2330">Enviarme una prueba</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div style="background:#fff;border:1px solid #e7e9ee;border-radius:12px;padding:20px">
+      <div style="font-size:13px;font-weight:600;letter-spacing:0.05em;text-transform:uppercase;color:#9aa2ad;margin-bottom:12px">Decisiones del mockup</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px;font-size:14px;line-height:1.6;color:#6b7280">
+        <div><strong style="color:#1b2330;font-weight:600">Cada ajuste con su resultado al lado.</strong> Al cambiar el prefijo, «Siguiente referencia: BP-2482» se actualiza en vivo.</div>
+        <div><strong style="color:#1b2330;font-weight:600">Explicación en lenguaje llano</strong> bajo cada título de sección, una sola frase.</div>
+        <div><strong style="color:#1b2330;font-weight:600">Color de tienda coherente</strong> con las pastillas de origen de la bandeja: el mismo punto de color en todo el ERP.</div>
+        <div><strong style="color:#1b2330;font-weight:600">Plantillas con «Ver ejemplo» y «Enviarme una prueba»</strong>, para no editar a ciegas.</div>
+        <div><strong style="color:#1b2330;font-weight:600">Un «Guardar cambios» por sección</strong>, con la consecuencia escrita al lado.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════ PRIORIDADES ══════════ -->
+  <sc-if value="{{ mostrarPrioridades }}" hint-placeholder-val="{{ true }}">
+  <section style="display:flex;flex-direction:column;gap:24px">
+    <div style="display:flex;flex-direction:column;gap:12px;border-top:1px solid #e7e9ee;padding-top:40px">
+      <div style="display:flex;align-items:center;gap:12px">
+        <span style="display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:8px;background:#1b2330;color:#fff;font-size:14px;font-weight:600">12</span>
+        <h2 style="margin:0;font-size:28px;font-weight:600;letter-spacing:-0.02em">Prioridades</h2>
+      </div>
+      <p style="margin:0;font-size:16px;line-height:1.65;color:#6b7280;max-width:66ch">Ordenado por impacto en el trabajo diario. Los quick wins de arriba se pueden hacer sin tocar la arquitectura.</p>
+    </div>
+
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px">
+      <div style="background:#fff;border:1px solid #e7e9ee;border-radius:12px;padding:22px">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px">
+          <span style="padding:4px 10px;border-radius:99px;background:#e7f6ec;color:#1f7a45;font-size:12px;font-weight:600">Quick wins</span>
+          <span style="font-size:13px;color:#9aa2ad">bajo esfuerzo · alto impacto</span>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:12px">
+          <div style="display:flex;gap:12px"><span style="font-family:'Geist Mono',monospace;font-size:12px;color:#9aa2ad;padding-top:2px">01</span><div style="font-size:14px;line-height:1.6"><strong style="font-weight:600">Rejilla de estado de 4 casillas</strong> en la bandeja, en posición fija. Resuelve el punto de dolor nº 1.</div></div>
+          <div style="display:flex;gap:12px"><span style="font-family:'Geist Mono',monospace;font-size:12px;color:#9aa2ad;padding-top:2px">02</span><div style="font-size:14px;line-height:1.6"><strong style="font-weight:600">Barra de filtros</strong> con tienda, facturado, régimen y orden por fecha, más chips activos y «Limpiar».</div></div>
+          <div style="display:flex;gap:12px"><span style="font-family:'Geist Mono',monospace;font-size:12px;color:#9aa2ad;padding-top:2px">03</span><div style="font-size:14px;line-height:1.6"><strong style="font-weight:600">Quitar los botones duplicados</strong> de la ficha: la acción vive en su paso, la cabecera repite solo el primario.</div></div>
+          <div style="display:flex;gap:12px"><span style="font-family:'Geist Mono',monospace;font-size:12px;color:#9aa2ad;padding-top:2px">04</span><div style="font-size:14px;line-height:1.6"><strong style="font-weight:600">Aislar «Anular»</strong> con confirmación escrita, fuera del grupo de acciones.</div></div>
+          <div style="display:flex;gap:12px"><span style="font-family:'Geist Mono',monospace;font-size:12px;color:#9aa2ad;padding-top:2px">05</span><div style="font-size:14px;line-height:1.6"><strong style="font-weight:600">Escala de tipografía y espaciado</strong> cerrada, con monoespaciada para todo dato numérico.</div></div>
+          <div style="display:flex;gap:12px"><span style="font-family:'Geist Mono',monospace;font-size:12px;color:#9aa2ad;padding-top:2px">06</span><div style="font-size:14px;line-height:1.6"><strong style="font-weight:600">Altura mínima 48 px</strong> en móvil y anillo de foco visible en todos los controles.</div></div>
+          <div style="display:flex;gap:12px"><span style="font-family:'Geist Mono',monospace;font-size:12px;color:#9aa2ad;padding-top:2px">07</span><div style="font-size:14px;line-height:1.6"><strong style="font-weight:600">Pastilla de origen y régimen</strong> junto a la referencia en todas las listas.</div></div>
+          <div style="display:flex;gap:12px"><span style="font-family:'Geist Mono',monospace;font-size:12px;color:#9aa2ad;padding-top:2px">08</span><div style="font-size:14px;line-height:1.6"><strong style="font-weight:600">Migas que recuerdan la cola</strong> de procedencia al volver de la ficha.</div></div>
+          <div style="display:flex;gap:12px"><span style="font-family:'Geist Mono',monospace;font-size:12px;color:#9aa2ad;padding-top:2px">09</span><div style="font-size:14px;line-height:1.6"><strong style="font-weight:600">Filtro «solo sin vincular» con contador</strong> en Documentos FACTUSOL, más importes en monoespaciada alineados a la derecha.</div></div>
+          <div style="display:flex;gap:12px"><span style="font-family:'Geist Mono',monospace;font-size:12px;color:#9aa2ad;padding-top:2px">10</span><div style="font-size:14px;line-height:1.6"><strong style="font-weight:600">Antigüedad en palabras</strong> en proformas («hace 41 días») y orden por antigüedad en la cola de pendientes.</div></div>
+          <div style="display:flex;gap:12px"><span style="font-family:'Geist Mono',monospace;font-size:12px;color:#9aa2ad;padding-top:2px">11</span><div style="font-size:14px;line-height:1.6"><strong style="font-weight:600">Datos técnicos a 19 px con botón de copiar</strong> y observaciones arriba en la cola SAT.</div></div>
+          <div style="display:flex;gap:12px"><span style="font-family:'Geist Mono',monospace;font-size:12px;color:#9aa2ad;padding-top:2px">12</span><div style="font-size:14px;line-height:1.6"><strong style="font-weight:600">Cada ajuste con su resultado al lado</strong> y una frase de explicación por sección en Ajustes ERP.</div></div>
+        </div>
+      </div>
+
+      <div style="background:#fff;border:1px solid #e7e9ee;border-radius:12px;padding:22px">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px">
+          <span style="padding:4px 10px;border-radius:99px;background:#fdf1dd;color:#8a5c00;font-size:12px;font-weight:600">Cambios mayores</span>
+          <span style="font-size:13px;color:#9aa2ad">requieren refactor</span>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:12px">
+          <div style="display:flex;gap:12px"><span style="font-family:'Geist Mono',monospace;font-size:12px;color:#9aa2ad;padding-top:2px">13</span><div style="font-size:14px;line-height:1.6"><strong style="font-weight:600">Duplicar proforma como copia editable</strong>, con los conflictos resueltos en la propia línea y guardado parcial. Es el cambio de mayor impacto después de la bandeja.</div></div>
+          <div style="display:flex;gap:12px"><span style="font-family:'Geist Mono',monospace;font-size:12px;color:#9aa2ad;padding-top:2px">14</span><div style="font-size:14px;line-height:1.6"><strong style="font-weight:600">Línea de vida vertical</strong> con acción y datos por paso, sustituyendo el stepper horizontal.</div></div>
+          <div style="display:flex;gap:12px"><span style="font-family:'Geist Mono',monospace;font-size:12px;color:#9aa2ad;padding-top:2px">15</span><div style="font-size:14px;line-height:1.6"><strong style="font-weight:600">Paneles plegables con resumen</strong> en la cabecera de cada uno, y memoria del estado abierto/cerrado por usuario.</div></div>
+          <div style="display:flex;gap:12px"><span style="font-family:'Geist Mono',monospace;font-size:12px;color:#9aa2ad;padding-top:2px">16</span><div style="font-size:14px;line-height:1.6"><strong style="font-weight:600">Molde único de modal</strong> aplicado a todos los flujos, con dos anchos permitidos.</div></div>
+          <div style="display:flex;gap:12px"><span style="font-family:'Geist Mono',monospace;font-size:12px;color:#9aa2ad;padding-top:2px">17</span><div style="font-size:14px;line-height:1.6"><strong style="font-weight:600">Componente único de líneas</strong> compartido por proforma y pedido manual, con anchos de columna fijos.</div></div>
+          <div style="display:flex;gap:12px"><span style="font-family:'Geist Mono',monospace;font-size:12px;color:#9aa2ad;padding-top:2px">18</span><div style="font-size:14px;line-height:1.6"><strong style="font-weight:600">Anti-duplicados al teclear el NIF</strong> en el alta de empresa, con la ficha candidata y «Usar esta».</div></div>
+          <div style="display:flex;gap:12px"><span style="font-family:'Geist Mono',monospace;font-size:12px;color:#9aa2ad;padding-top:2px">19</span><div style="font-size:14px;line-height:1.6"><strong style="font-weight:600">Actividad de empresa unificada</strong> en una tabla con filtro por tipo, en lugar de tres listas.</div></div>
+          <div style="display:flex;gap:12px"><span style="font-family:'Geist Mono',monospace;font-size:12px;color:#9aa2ad;padding-top:2px">20</span><div style="font-size:14px;line-height:1.6"><strong style="font-weight:600">Criterio tabla / fila de trabajo / panel</strong> aplicado a las 11 pantallas, con tablas que se convierten en pares etiqueta/valor en móvil.</div></div>
+          <div style="display:flex;gap:12px"><span style="font-family:'Geist Mono',monospace;font-size:12px;color:#9aa2ad;padding-top:2px">21</span><div style="font-size:14px;line-height:1.6"><strong style="font-weight:600">Selección múltiple</strong> en bandeja, proformas y cola SAT, con acciones en lote.</div></div>
+        </div>
+      </div>
+    </div>
+
+    <div style="background:#1b2330;color:#fff;border-radius:14px;padding:26px;display:flex;flex-direction:column;gap:12px">
+      <div style="font-size:12px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:#9aa2ad">Orden de ejecución sugerido</div>
+      <p style="margin:0;font-size:16px;line-height:1.65;color:#e7e9ee;max-width:70ch">Primero los quick wins 01–08, que se concentran en bandeja y ficha y afectan a todo el equipo cada día. Después el 13, duplicar proforma, que es el único punto donde el ERP hace perder tiempo de forma activa. El resto puede ir entrando por pantalla, aprovechando que la 14–17 comparten componentes.</p>
+      <p style="margin:0;font-size:14px;line-height:1.6;color:#c7ccd4;max-width:70ch">Nota: la revisión se ha hecho sobre el brief y la dirección aprobada. Con las capturas reales de cada pantalla se pueden señalar defectos concretos de implementación que el brief no recoge, sobre todo en los modales y en el descuadre de duplicar.</p>
+    </div>
+  </section>
+  </sc-if>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;mostrarMovil&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Contenido&quot;},&quot;mostrarPrioridades&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Contenido&quot;}}">class Component extends DCLogic {
+  renderVals() {
+    return {
+      mostrarMovil: this.props.mostrarMovil ?? true,
+      mostrarPrioridades: this.props.mostrarPrioridades ?? true,
+    };
+  }
+}</script>
+</body>
+</html>
