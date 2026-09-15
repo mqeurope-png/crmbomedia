@@ -296,6 +296,25 @@ def list_factusol_documents(
                            "facturas sin saldo: %s", exc)
     if doc_type == "albaranes":
         _log_estalb_diagnostic(client, ejercicio, force_refresh=fresh_ciclo)
+    # Fase 5 — cruce con el CRM (empresa vinculada, país·régimen, pedido de
+    # BoHub) y tono de la pastilla de estado, la MISMA regla que las proformas
+    # (`annotate_documents_crm` reutiliza `annotate_quotes`). Local, sin tocar
+    # FACTUSOL; best-effort: un fallo del cruce nunca tumba el listado.
+    from app.erp.quotes_bandeja import annotate_documents_crm  # noqa: PLC0415
+
+    # Nombre propio (`crm_prev`): reutilizar `prev_annotate` recapturaría la
+    # variable que el closure del anotador de cobros ya cierra por referencia
+    # (Python cierra variables, no valores) → recursión infinita.
+    crm_prev = annotate
+
+    def annotate(docs: list[dict[str, Any]]) -> None:
+        if crm_prev is not None:
+            crm_prev(docs)
+        try:
+            annotate_documents_crm(session, docs, doc_type)
+        except Exception as exc:  # noqa: BLE001 — el cruce CRM nunca tumba la lista
+            logger.warning("factusol documents/%s: cruce CRM KO: %s", doc_type, exc)
+
     try:
         return list_documents(
             client, doc_type, ejercicio=ejercicio,
@@ -1034,6 +1053,75 @@ def register_invoice_collection_endpoint(
     )
     session.commit()
     return {"status": "queued", "job_id": job_id, **meta}
+
+
+@router.get("/documents/facturas/{serie}/{codigo}/cobro")
+def factura_cobro_info(
+    serie: int,
+    codigo: int,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_view),
+) -> dict[str, Any]:
+    """Estado de cobro EN VIVO de UNA factura de FACTUSOL por serie+número, SIN
+    pedido de BoHub: total, cobrado, saldo, ESTFAC, forma de pago, cuenta de
+    cobro sugerida y avisos — lo que el modal «Registrar cobro» (motor F-4-B)
+    necesita para operar desde el explorador de documentos (Fase 5). Es el
+    equivalente por factura de `GET /orders/{id}/factusol-cobro`. Solo lectura:
+    este endpoint NO escribe nada en FACTUSOL."""
+    _ = current_user
+    from app.erp.contrapartidas import suggest_contrapartida  # noqa: PLC0415
+    from app.integrations.factusol.catalogs import resolve_name  # noqa: PLC0415
+    from app.integrations.factusol.client import FactusolError  # noqa: PLC0415
+    from app.integrations.factusol.collections_write import (  # noqa: PLC0415
+        collection_status,
+    )
+
+    client, ejercicio = _client_and_ejercicio(session)
+    numero = f"{serie}-{int(codigo):06d}"
+    try:
+        status_info = collection_status(
+            client, serie=serie, codigo=codigo, ejercicio=ejercicio,
+        )
+    except FactusolError as exc:
+        raise _factusol_gateway_error(exc, "factusol_cobro_failed") from exc
+    if status_info is None:
+        return {
+            "serie": serie, "codigo": codigo, "numero": numero,
+            "status": "not_found", "invoice": None,
+            "detail": (
+                f"No existe la factura {numero} en FACTUSOL (ejercicio {ejercicio})."
+            ),
+        }
+    forma_nombre = resolve_name(_fop_names(client, ejercicio), status_info["fopfac"])
+    warnings: list[str] = []
+    if not status_info["ya_cobrada"] and status_info["cobros"] > 0:
+        warnings.append(
+            f"La factura ya tiene {status_info['cobros']} línea(s) de cobro por "
+            f"{status_info['total_cobrado']:.2f} € "
+            f"(saldo {status_info['saldo_pendiente']:.2f} €): posible doble cobro "
+            "o anticipo. Revisa antes de registrar."
+        )
+    if status_info["estfac"] == "1":
+        warnings.append("FACTUSOL la marca como cobro parcial (ESTFAC=1).")
+    suggested = suggest_contrapartida(
+        session, serie=serie, forma_nombre=forma_nombre, store=None,
+    )
+    return {
+        "serie": serie, "codigo": codigo, "numero": numero,
+        "status": "cobrada" if status_info["ya_cobrada"] else "pendiente",
+        "invoice": {"serie": serie, "codigo": codigo, "numero": numero},
+        "cliente": status_info["cliente"],
+        "referencia": status_info["referencia"],
+        "total": status_info["total"],
+        "total_cobrado": status_info["total_cobrado"],
+        "saldo_pendiente": status_info["saldo_pendiente"],
+        "estfac": status_info["estfac"],
+        "cobros": status_info["cobros"],
+        "fopfac": status_info["fopfac"],
+        "forma_pago_nombre": forma_nombre,
+        "suggested_cuenta": suggested,
+        "warnings": warnings,
+    }
 
 
 #: ERP-E4 — logos de las empresas emisoras. Los modelos de FACTUSOL apuntan a

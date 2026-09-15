@@ -10977,6 +10977,30 @@ tr.is-inactive {
   text-decoration: underline;
 }
 
+/* Fase 5 — celda de cliente (nombre + pastilla país·régimen), acciones por
+ * fila y badge del ciclo en la columna de estado. Reutiliza los tokens de las
+ * pastillas del flujo (.erp-flow-pill) y los badges (.badge). */
+.erp-doc-cliente {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+}
+.erp-doc-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  justify-content: flex-end;
+}
+.erp-doc-actions-col {
+  text-align: right;
+}
+.erp-doc-ciclo-badge {
+  margin-left: 6px;
+  font-size: 11px;
+}
+
 /* ERP-E3-B — ciclo PRE→ALB→FAC en el detalle: badge + enlaces al origen y a
  * los hijos, que navegan dentro del propio modal. */
 .erp-doc-ciclo {

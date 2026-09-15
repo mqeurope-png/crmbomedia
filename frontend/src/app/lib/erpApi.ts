@@ -1491,6 +1491,20 @@ export type FactusolDocument = {
    *  leído de F_LCO. `undefined` si el backend no pudo anotar los cobros. */
   saldo_pendiente?: number | null;
   total_cobrado?: number | null;
+  /** Fase 5 — cruce con el CRM (mismo criterio que proformas/ficha): empresa
+   *  vinculada por CODCLI, país (ISO2) y régimen de IVA para la pastilla, y el
+   *  pedido de BoHub si el documento ya se importó (presupuestos/pedidos).
+   *  Ausentes en respuestas antiguas / mocks. */
+  company?: { id: string; name: string; country: string | null; factusol_id: string | null } | null;
+  country_iso2?: string | null;
+  regime?: "nacional" | "intracomunitario" | "exportacion" | null;
+  regime_label?: string | null;
+  regime_source?: "empresa" | "cabecera" | null;
+  exento?: boolean;
+  order?: { id: string; order_number: string } | null;
+  /** Tono de la pastilla de estado (`ok`/`warn`/`muted`…) derivado del mismo
+   *  criterio del escritorio (ESTFAC/ESTALB/ESTPRE/ESTPCL). */
+  estado_tone?: string;
 };
 
 /** F3-fix1 — un cobro de la factura (F_LCO), solo lectura. */
@@ -1829,8 +1843,14 @@ export type FactusolCobroBlock = {
  *  («emite la factura primero»); `unresolved` / `not_found` = hay CODFAC pero
  *  no se localiza su fila (no se escribe nada). */
 export type OrderCobroInfo = {
-  order_id: string;
-  order_number: string;
+  /** Ausentes cuando el estado se pide por factura (serie+número) desde el
+   *  explorador de documentos, sin pedido de BoHub (`getFactusolFacturaCobro`). */
+  order_id?: string;
+  order_number?: string;
+  /** Fase 5 — solo en la variante por factura: nº «serie-código». */
+  numero?: string;
+  serie?: number;
+  codigo?: number;
   status: FactusolCobroStatus | "sin_factura" | "unresolved" | "not_found";
   invoice: { serie: number | null; codigo: number | null; numero: string } | null;
   detail?: string;
@@ -1853,6 +1873,18 @@ export type OrderCobroInfo = {
 
 export async function getOrderFactusolCobro(orderId: string): Promise<OrderCobroInfo> {
   return apiFetch(`/api/erp/orders/${encodeURIComponent(orderId)}/factusol-cobro`);
+}
+
+/** Fase 5 — estado de cobro EN VIVO de UNA factura de FACTUSOL por serie+número,
+ *  SIN pedido de BoHub: lo que necesita «Registrar cobro» (motor F-4-B) desde el
+ *  explorador de documentos. Mismo contrato que `getOrderFactusolCobro` (saldo,
+ *  cuenta sugerida, avisos), sin `order_id`/`order_number`. Solo lectura. */
+export async function getFactusolFacturaCobro(
+  serie: number, codigo: number | string,
+): Promise<OrderCobroInfo> {
+  return apiFetch(
+    `/api/erp/factusol/documents/facturas/${serie}/${encodeURIComponent(String(codigo))}/cobro`,
+  );
 }
 
 /** «Actualizar cobros FACTUSOL» de la bandeja: comprueba de una vez los

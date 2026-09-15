@@ -20,6 +20,7 @@ from sqlalchemy.pool import StaticPool
 import app.main  # noqa: F401 — registra los modelos
 from app.db.base import Base
 from app.db.session import get_session
+from app.erp.models import Order, OrderSource
 from app.integrations.factusol.documents import (
     DOC_SPECS,
     estado_label,
@@ -29,6 +30,7 @@ from app.integrations.factusol.documents import (
     visible_number,
 )
 from app.main import app
+from app.models.crm import Company
 from tests._test_helpers import auth_headers, seed_test_users
 
 # ---------------------------------------------------------------------------
@@ -466,3 +468,142 @@ def test_documents_endpoint_accepts_sort_and_cliente_q(client, session_factory) 
         headers=auth_headers(client, "user"),
     )
     assert bad.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Fase 5 — cruce con el CRM (empresa · país · régimen · pedido de BoHub) +
+# estado como pastilla + cobro por factura para el explorador de documentos.
+# Todo es SOLO LECTURA sobre FACTUSOL (el fake solo sirve `load_table`).
+# ---------------------------------------------------------------------------
+
+
+F_PRE_27 = {
+    "TIPPRE": "5", "CODPRE": 27, "CLIPRE": 2458, "CNOPRE": "DUPLICODER, S.L.",
+    "FECPRE": "2026-08-01T00:00:00", "ESTPRE": 1, "TOTPRE": 100.0,
+    "REFPRE": "REF-27", "NET1PRE": 100.0, "PIVA1PRE": 21.0,
+}
+
+
+def test_documents_list_annotates_company_regime_and_estado_tone(
+    client, session_factory,
+) -> None:
+    """Cada factura lleva la empresa CRM vinculada por CODCLI, el país·régimen
+    (misma regla que proformas/ficha) y el tono de la pastilla de estado. La
+    factura de un cliente sin empresa CRM sale sin empresa ni régimen."""
+    with session_factory() as s:
+        s.add(Company(id="es", name="Duplicoder SL", country="ES",
+                      tax_id="B12345678", factusol_company_id="2458"))
+        s.commit()
+    with _patched_factusol(FakeClient({"F_FAC": FACTURAS})):
+        r = client.get(
+            "/api/erp/factusol/documents/facturas?serie=5",
+            headers=auth_headers(client, "user"),
+        )
+    assert r.status_code == 200, r.text
+    rows = {d["numero"]: d for d in r.json()["items"]}
+    linked = rows["5-260066"]  # CLIFAC 2458 → Duplicoder SL
+    assert linked["company"]["name"] == "Duplicoder SL"
+    assert linked["country_iso2"] == "ES"
+    assert linked["regime"] == "nacional"
+    assert linked["regime_label"]
+    assert linked["estado_tone"] == "warn"  # ESTFAC=0 → pendiente de cobro
+    assert linked["order"] is None
+    unlinked = rows["5-260065"]  # CLIFAC 99 → sin empresa CRM
+    assert unlinked["company"] is None
+    assert unlinked["regime"] is None
+
+
+def test_documents_list_regime_intracomunitario(client, session_factory) -> None:
+    """Cliente intracomunitario (UE con NIF-IVA) → régimen exento, país ISO2."""
+    with session_factory() as s:
+        s.add(Company(id="fr", name="La Maison de la Plaque", country="FR",
+                      vat="FR16339753527", factusol_company_id="2458"))
+        s.commit()
+    with _patched_factusol(FakeClient({"F_FAC": [_fac(260066, "5")]})):
+        r = client.get(
+            "/api/erp/factusol/documents/facturas",
+            headers=auth_headers(client, "user"),
+        )
+    assert r.status_code == 200, r.text
+    d = r.json()["items"][0]
+    assert d["regime"] == "intracomunitario"
+    assert d["exento"] is True
+    assert d["country_iso2"] == "FR"
+    assert d["regime_source"] == "empresa"
+
+
+def test_documents_list_links_bohub_order_for_presupuesto(
+    client, session_factory,
+) -> None:
+    """Un presupuesto ya importado a BoHub trae su pedido (para «Abrir
+    pedido»); ESTPRE=1 (aceptado) pinta la pastilla en verde."""
+    with session_factory() as s:
+        s.add(Company(id="es", name="Duplicoder SL", country="ES",
+                      tax_id="B12345678", factusol_company_id="2458"))
+        s.add(Order(id="o27", order_number="PRO-000027", company_id="es",
+                    external_source=OrderSource.FACTUSOL_PROFORMA,
+                    external_id="27", total_amount=100.0, currency="EUR",
+                    payment_status="pending", preparation_status="pending_review"))
+        s.commit()
+    with _patched_factusol(FakeClient({"F_PRE": [F_PRE_27]})):
+        r = client.get(
+            "/api/erp/factusol/documents/presupuestos",
+            headers=auth_headers(client, "user"),
+        )
+    assert r.status_code == 200, r.text
+    d = r.json()["items"][0]
+    assert d["numero"] == "5-000027"
+    assert d["order"] == {"id": "o27", "order_number": "PRO-000027"}
+    assert d["estado_tone"] == "ok"  # ESTPRE=1 → aceptado
+
+
+def test_factura_cobro_info_pendiente(client, session_factory) -> None:
+    """Cobro por factura (serie+número, sin pedido): saldo, estado pendiente y
+    sin avisos cuando no hay cobros previos. Solo lectura."""
+    _ = session_factory
+    fake = FakeClient({"F_FAC": FACTURAS})
+    with _patched_factusol(fake):
+        r = client.get(
+            "/api/erp/factusol/documents/facturas/5/260066/cobro",
+            headers=auth_headers(client, "user"),
+        )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == "pendiente"
+    assert body["numero"] == "5-260066"
+    assert body["total"] == 186.34
+    assert body["saldo_pendiente"] == 186.34
+    assert body["warnings"] == []
+    # Nada de escritura: el fake solo expone `load_table` (lecturas).
+    assert all(isinstance(c, tuple) for c in fake.calls)
+
+
+def test_factura_cobro_info_cobrada(client, session_factory) -> None:
+    """ESTFAC=2 → la factura consta cobrada (no se ofrece registrar cobro)."""
+    _ = session_factory
+    fac = _fac(260099, "5", ESTFAC=2, TOTFAC=100.0)
+    with _patched_factusol(FakeClient({"F_FAC": [fac]})):
+        r = client.get(
+            "/api/erp/factusol/documents/facturas/5/260099/cobro",
+            headers=auth_headers(client, "user"),
+        )
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "cobrada"
+
+
+def test_factura_cobro_info_not_found(client, session_factory) -> None:
+    """Factura inexistente → `not_found`, sin escribir nada."""
+    _ = session_factory
+    with _patched_factusol(FakeClient({"F_FAC": FACTURAS})):
+        r = client.get(
+            "/api/erp/factusol/documents/facturas/7/1/cobro",
+            headers=auth_headers(client, "user"),
+        )
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "not_found"
+
+
+def test_factura_cobro_info_requires_auth(client) -> None:
+    assert client.get(
+        "/api/erp/factusol/documents/facturas/5/260066/cobro"
+    ).status_code in (401, 403)
