@@ -1293,6 +1293,156 @@ def bulk_complete_orders(
     }
 
 
+# --- «Anular pedido» (manual / FACTUSOL; reversible; distinto de quitar) -----
+
+
+class CancelOrderIn(BaseModel):
+    """`confirm` OBLIGATORIO: anular es una decisión, no un clic accidental.
+    `delete_factusol_docs`: borrar también en FACTUSOL el albarán / presupuesto
+    del pedido si siguen vivos (se hace en el worker serializado)."""
+
+    confirm: bool = False
+    reason: str | None = Field(default=None, max_length=255)
+    delete_factusol_docs: bool = False
+
+
+def _factusol_docs_for_cancel_safe(
+    session: Session, order: Order, warnings: list[str],
+) -> tuple[list[dict[str, Any]], str | None]:
+    """Documentos FACTUSOL del pedido (lectura en vivo) o [] con aviso si
+    FACTUSOL no responde — nunca se bloquea la anulación por eso."""
+    from app.erp.order_cancel import factusol_docs_for_cancel  # noqa: PLC0415
+    from app.integrations.factusol.client import FactusolClient  # noqa: PLC0415
+    from app.integrations.factusol.service import ejercicio_for  # noqa: PLC0415
+
+    try:
+        client = FactusolClient.from_settings()
+        ejercicio = ejercicio_for(session)
+        return factusol_docs_for_cancel(client, order, ejercicio=ejercicio), ejercicio
+    except Exception as exc:  # noqa: BLE001 — sin credenciales / caído
+        warnings.append(
+            f"No se pudo consultar FACTUSOL ({str(exc)[:120]}): no se borrará "
+            "ningún documento."
+        )
+        return [], None
+
+
+@router.post("/{order_id}/cancel-preview")
+def cancel_order_preview(
+    order_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_edit),
+) -> dict[str, Any]:
+    """Aviso previo a «Anular»: si se puede (pedido web o con factura → no),
+    y qué documentos FACTUSOL tiene el pedido y cuáles se podrían borrar
+    (albarán no facturado, presupuesto pendiente). No cambia nada."""
+    from app.erp.order_cancel import cancel_blockers  # noqa: PLC0415
+
+    _ = current_user
+    order = _get_order(session, order_id)
+    blockers = cancel_blockers(order)
+    warnings: list[str] = []
+    if order.cancelled_at is not None:
+        warnings.append("El pedido ya está anulado.")
+    docs: list[dict[str, Any]] = []
+    if not blockers:
+        docs, _ejercicio = _factusol_docs_for_cancel_safe(session, order, warnings)
+    return {
+        "can_cancel": not blockers and order.cancelled_at is None,
+        "blockers": blockers,
+        "warnings": warnings,
+        "factusol_docs": docs,
+    }
+
+
+@router.post("/{order_id}/cancel")
+def cancel_order(
+    order_id: str,
+    payload: CancelOrderIn,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_edit),
+) -> dict[str, Any]:
+    """«Anular pedido»: estado FINAL reversible, distinto de «quitar». Solo
+    pedidos manuales / de FACTUSOL sin factura (409 `cannot_cancel` si no).
+    Con `delete_factusol_docs` se encola el borrado del albarán / presupuesto
+    borrables (202-style: `factusol_delete_job_id`); la factura nunca.
+    Queda en el timeline (`erp.order_cancelled`)."""
+    from app.core.audit import record_event  # noqa: PLC0415
+    from app.erp.order_cancel import (  # noqa: PLC0415
+        CANCELLED_EVENT,
+        cancel_blockers,
+        mark_cancelled,
+    )
+
+    if not payload.confirm:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, {
+            "code": "confirmation_required",
+            "detail": "Anular requiere confirmación explícita.",
+        })
+    order = _get_order(session, order_id)
+    blockers = cancel_blockers(order)
+    if blockers:
+        raise HTTPException(status.HTTP_409_CONFLICT, {
+            "code": "cannot_cancel", "detail": " ".join(blockers), "blockers": blockers,
+        })
+    already = mark_cancelled(session, order, current_user, payload.reason)
+    if not already:
+        record_event(
+            session, action=CANCELLED_EVENT, target_type="order", target_id=order.id,
+            actor=current_user,
+            message="Pedido anulado" + (f": {payload.reason}" if payload.reason else ""),
+            metadata={"reason": payload.reason, "order_number": order.order_number},
+        )
+        session.commit()
+    warnings: list[str] = []
+    job_id: str | None = None
+    to_delete: list[dict[str, Any]] = []
+    if payload.delete_factusol_docs:
+        docs, ejercicio = _factusol_docs_for_cancel_safe(session, order, warnings)
+        to_delete = [d for d in docs if d.get("deletable")]
+        if to_delete and ejercicio:
+            from app.integrations.factusol.jobs import (  # noqa: PLC0415
+                enqueue_cancel_order_documents,
+            )
+
+            job_id = enqueue_cancel_order_documents(
+                order.id, to_delete, ejercicio, current_user.id,
+            )
+    order = _get_order(session, order_id)
+    return {
+        **_serialise_detail(session, order, current_user),
+        "already_cancelled": already,
+        # (`warnings` a secas es el bloque estructurado de la ficha.)
+        "cancel_warnings": warnings,
+        "factusol_delete_job_id": job_id,
+        "factusol_docs_to_delete": to_delete,
+    }
+
+
+@router.post("/{order_id}/uncancel")
+def uncancel_order(
+    order_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_erp_edit),
+) -> dict[str, Any]:
+    """«Restaurar»: revierte `/cancel` en BoHub (lo borrado en FACTUSOL no se
+    recrea: se avisa). Idempotente."""
+    from app.core.audit import record_event  # noqa: PLC0415
+    from app.erp.order_cancel import UNCANCELLED_EVENT, unmark_cancelled  # noqa: PLC0415
+
+    order = _get_order(session, order_id)
+    already = unmark_cancelled(session, order)
+    if not already:
+        record_event(
+            session, action=UNCANCELLED_EVENT, target_type="order", target_id=order.id,
+            actor=current_user, message="Pedido restaurado (anulación revertida)",
+            metadata={"order_number": order.order_number},
+        )
+        session.commit()
+    order = _get_order(session, order_id)
+    return {**_serialise_detail(session, order, current_user), "already_active": already}
+
+
 @router.post("/{order_id}/uncomplete")
 def uncomplete_order(
     order_id: str,

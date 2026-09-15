@@ -432,6 +432,50 @@ def enqueue_create_order_albaran(
     )
 
 
+# --- Lote ERP: borrar albarán / presupuesto en FACTUSOL al ANULAR un pedido --
+
+
+def cancel_order_documents_job(
+    order_id: str, docs: list[dict[str, Any]], ejercicio: str,
+    actor_user_id: str | None = None,
+) -> dict[str, Any]:
+    """Borra en FACTUSOL los documentos (albarán / presupuesto) de un pedido
+    ANULADO que el operador confirmó borrar. Corre en `factusol:writes`
+    (serial) y re-comprueba en vivo que cada documento sigue siendo borrable
+    (no facturado / pendiente) justo antes de borrar. La factura nunca."""
+    from sqlalchemy.orm import Session  # noqa: PLC0415
+
+    from app.db.session import get_engine  # noqa: PLC0415
+    from app.erp.models import Order  # noqa: PLC0415
+    from app.erp.order_cancel import delete_cancelled_order_documents  # noqa: PLC0415
+
+    with Session(get_engine()) as session:
+        order = session.get(Order, order_id)
+        if order is None:
+            raise FactusolError(f"Order {order_id!r} no existe")
+        if order.cancelled_at is None:
+            raise FactusolError("El pedido ya no está anulado: no se borra nada.")
+        client = FactusolClient.from_settings()
+        result = delete_cancelled_order_documents(
+            session, client, order, docs, ejercicio=ejercicio,
+            actor_user_id=actor_user_id,
+        )
+    logger.info("factusol: anulación order=%s borrados=%s omitidos=%d",
+                order_id, result.get("deleted"), len(result.get("skipped") or []))
+    return result
+
+
+def enqueue_cancel_order_documents(
+    order_id: str, docs: list[dict[str, Any]], ejercicio: str,
+    actor_user_id: str | None = None,
+) -> str:
+    """Encola `cancel_order_documents_job` en `factusol:writes`; devuelve el job_id."""
+    return _enqueue(
+        "app.integrations.factusol.jobs.cancel_order_documents_job",
+        order_id, docs, ejercicio, actor_user_id,
+    )
+
+
 # --- proformas (Fase C · C-4) ------------------------------------------------
 #
 # Las tres van a la MISMA cola serializada que la emisión de facturas. Crear y

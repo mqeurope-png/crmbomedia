@@ -405,6 +405,8 @@ export type CancelOrderPayload = {
 
 export type CancelOrderResult = OrderDetail & {
   already_cancelled?: boolean;
+  /** Avisos no bloqueantes (p. ej. FACTUSOL no respondió: no se borró nada). */
+  cancel_warnings?: string[];
   /** Job de borrado en FACTUSOL (si se pidió); se consulta con
    *  `getConvertJobStatus`/`convert-status`. */
   factusol_delete_job_id?: string | null;

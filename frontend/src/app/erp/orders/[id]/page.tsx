@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { PageHeader } from "../../../components/PageHeader";
+import { CancelOrderModal } from "../../../components/erp/CancelOrderModal";
 import { EmbalarModal } from "../../../components/erp/EmbalarModal";
 import { PDF_LANGS } from "../../../components/erp/FactusolDocumentDetailModal";
 import { InvoiceEmailModal } from "../../../components/erp/InvoiceEmailModal";
@@ -34,6 +35,7 @@ import {
   type OrderCobroInfo,
   fireTransition,
   saveBlob,
+  uncancelOrder,
   uncompleteOrder,
   updateOrderLanguage,
   updateOrderSeguimiento,
@@ -89,6 +91,9 @@ export default function ErpOrderDetailPage() {
   const [invoiceRef, setInvoiceRef] = useState<FactusolInvoiceRef | null>(null);
   const [emailBusy, setEmailBusy] = useState(false);
   const [invoicePdfBusy, setInvoicePdfBusy] = useState(false);
+  // «Anular pedido» (manual / FACTUSOL): modal con aviso previo; «Restaurar».
+  const [cancelOpen, setCancelOpen] = useState(false);
+  const [cancelBusy, setCancelBusy] = useState(false);
   // ERP · envío del PEDIDO por email (SAT / taller): modal + petición de crear
   // el albarán cuando el aviso del modal lo ofrece.
   const [orderEmailOpen, setOrderEmailOpen] = useState(false);
@@ -534,6 +539,44 @@ export default function ErpOrderDetailPage() {
                   {/* ERP-F1 «Enviar factura por email» vive ahora en la cabecera
                       como «Enviar factura al cliente» (una sola acción, sin
                       duplicarla aquí). */}
+                  {/* Lote ERP · «Anular pedido» (solo manuales / FACTUSOL; los
+                      web se anulan en WooCommerce): estado final reversible,
+                      distinto de «quitar». Con aviso y modal; puede borrar el
+                      albarán / presupuesto en FACTUSOL. */}
+                  {!isWeb ? (
+                    order.cancelled ? (
+                      <button
+                        type="button"
+                        className="button small secondary"
+                        disabled={cancelBusy}
+                        title="Deshace la anulación en BoHub (lo borrado en FACTUSOL no se recrea)"
+                        onClick={async () => {
+                          setCancelBusy(true);
+                          setError(null);
+                          try {
+                            await uncancelOrder(order.id);
+                            setNotice("Pedido restaurado.");
+                            await load();
+                          } catch (e) {
+                            setError(extractErrorMessage(e, "No se pudo restaurar el pedido."));
+                          } finally {
+                            setCancelBusy(false);
+                          }
+                        }}
+                      >
+                        Restaurar pedido
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        className="button small danger"
+                        title="Anula el pedido (con aviso previo); distinto de quitarlo de la bandeja"
+                        onClick={() => setCancelOpen(true)}
+                      >
+                        Anular pedido
+                      </button>
+                    )
+                  ) : null}
                 </ActionsMenu>
               </>
             ) : null}
@@ -576,6 +619,16 @@ export default function ErpOrderDetailPage() {
           {order.completed_at ? new Date(order.completed_at).toLocaleString("es-ES") : "—"}
           {order.completed_by_name ? ` por ${order.completed_by_name}` : ""} (solo BoHub;
           WooCommerce no cambia).
+        </p>
+      ) : null}
+      {order.cancelled ? (
+        <p className="form-error" role="status">
+          <span className="badge muted">Anulado</span>{" "}
+          Pedido anulado el{" "}
+          {order.cancelled_at ? new Date(order.cancelled_at).toLocaleString("es-ES") : "—"}
+          {order.cancelled_by_name ? ` por ${order.cancelled_by_name}` : ""}
+          {order.cancelled_reason ? ` — ${order.cancelled_reason}` : ""}. Fuera de la
+          bandeja, las colas y el seguimiento; se puede restaurar desde «⋯».
         </p>
       ) : null}
       {order.externally_processed_at ? (
@@ -791,6 +844,14 @@ export default function ErpOrderDetailPage() {
           orderNumber={order.order_number}
           onClose={() => setCobroOpen(false)}
           onDone={(info) => { setCobroLive(info); load(); }}
+        />
+      ) : null}
+      {cancelOpen ? (
+        <CancelOrderModal
+          orderId={order.id}
+          orderNumber={order.order_number}
+          onClose={() => setCancelOpen(false)}
+          onDone={() => { void load(); }}
         />
       ) : null}
       {invoiceRef ? (
