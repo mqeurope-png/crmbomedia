@@ -2,7 +2,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import CompanyDetailPage from "./page";
 import {
-  fiscalCheck, getCompany, listCompanyContacts, viesRevalidate,
+  archiveCompany, fiscalCheck, getCompany, listCompanyContacts, restoreCompany, viesRevalidate,
 } from "../../lib/companiesApi";
 import { listFactusolDocuments, listFactusolQuotes, listOrders } from "../../lib/erpApi";
 
@@ -37,6 +37,8 @@ jest.mock("../../lib/companiesApi", () => ({
   mergeCompanies: jest.fn(),
   updateCompany: jest.fn(),
   deleteCompany: jest.fn(),
+  archiveCompany: jest.fn(),
+  restoreCompany: jest.fn(),
   fiscalCheck: jest.fn(),
   viesRevalidate: jest.fn(),
 }));
@@ -336,5 +338,45 @@ describe("Ficha de empresa (rediseño de flujo, Fase 3)", () => {
     await user.click(screen.getByRole("button", { name: /Proformas FACTUSOL/ }));
     expect(screen.getByText("QUOTES PANEL create:0")).toBeInTheDocument();
     expect(screen.getByText(/FACTUSOL PANEL/)).toBeInTheDocument();
+  });
+
+  it("archivada: banner + «Restaurar» (en el banner y en «⋯»), sin «Archivar»", async () => {
+    (getCompany as jest.Mock).mockResolvedValue({
+      ...COMPANY, factusol_company_id: null, is_archived: true,
+      archived_reason: "no en FACTUSOL y sin negocio vivo",
+    });
+    (restoreCompany as jest.Mock).mockResolvedValue({ ...COMPANY, is_archived: false });
+    const user = userEvent.setup();
+    render(<CompanyDetailPage />);
+    await screen.findByRole("heading", { name: "SAS La Maison de la Plaque" });
+    const banner = screen.getByRole("status", { name: "Empresa archivada" });
+    expect(banner).toHaveTextContent("no en FACTUSOL y sin negocio vivo");
+    expect(banner).toHaveTextContent("No se ha borrado nada");
+    const cabecera = document.querySelector(".company-ficha-id") as HTMLElement;
+    expect(cabecera).toHaveTextContent("Archivada");
+    // Sin cliente F_CLI PERO archivada: no debe salir la alerta de «sin vincular».
+    expect(screen.queryByText(/sin cliente F_CLI no hay albarán/)).toBeNull();
+    // En «⋯»: «Restaurar», nunca «Archivar».
+    await user.click(screen.getByRole("button", { name: "Más acciones de la empresa" }));
+    expect(screen.getAllByRole("button", { name: "Restaurar" }).length).toBeGreaterThanOrEqual(1);
+    expect(screen.queryByRole("button", { name: "Archivar" })).toBeNull();
+    // El botón del banner restaura.
+    await user.click(within(banner).getByRole("button", { name: "Restaurar" }));
+    await waitFor(() => expect(restoreCompany).toHaveBeenCalledWith("c1"));
+  });
+
+  it("no archivada: «Archivar» en «⋯» archiva y refresca el banner", async () => {
+    (archiveCompany as jest.Mock).mockResolvedValue({
+      ...COMPANY, is_archived: true, archived_reason: "archivada a mano",
+    });
+    const confirmSpy = jest.spyOn(window, "confirm").mockReturnValue(true);
+    const user = userEvent.setup();
+    render(<CompanyDetailPage />);
+    await screen.findByRole("heading", { name: "SAS La Maison de la Plaque" });
+    await user.click(screen.getByRole("button", { name: "Más acciones de la empresa" }));
+    await user.click(screen.getByRole("button", { name: "Archivar" }));
+    await waitFor(() => expect(archiveCompany).toHaveBeenCalledWith("c1"));
+    expect(await screen.findByRole("status", { name: "Empresa archivada" })).toBeInTheDocument();
+    confirmSpy.mockRestore();
   });
 });

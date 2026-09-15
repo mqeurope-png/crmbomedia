@@ -15,6 +15,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     event,
+    false,
     func,
 )
 from sqlalchemy.dialects import mysql
@@ -212,6 +213,15 @@ class Company(TimestampMixin, Base):
     # seguidas sin veredicto (0 con veredicto firme).
     vies_next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     vies_attempts: Mapped[int | None] = mapped_column(Integer)
+    # Limpieza de empresas (migración 0110): archivado REVERSIBLE, nunca
+    # borrado. Una empresa archivada queda fuera de listados / bandejas /
+    # buscadores por defecto y no genera alertas ni incidencias; sus
+    # contactos / pedidos / tareas se conservan. «Restaurar» = `is_archived=0`.
+    is_archived: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default=false(), index=True,
+    )
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    archived_reason: Mapped[str | None] = mapped_column(String(255))
 
     contacts: Mapped[list["Contact"]] = relationship(back_populates="company")
 

@@ -44,6 +44,11 @@ export type Company = {
   notes: string | null;
   source: string;
   is_active: boolean;
+  /** Limpieza de empresas: archivado reversible (fuera de listados por
+   *  defecto). «Restaurar» la devuelve. Ausentes en respuestas antiguas. */
+  is_archived?: boolean;
+  archived_at?: string | null;
+  archived_reason?: string | null;
   /** C-3: CODCLI del cliente en FACTUSOL (null si no está vinculado). */
   factusol_company_id: string | null;
   /** Fase VIES: último resultado guardado (crudo) y el bloque interpretado
@@ -91,6 +96,8 @@ export type CompanyListFilters = {
   country?: string;
   source?: string;
   has_contacts?: boolean;
+  /** Incluir empresas archivadas (por defecto quedan fuera). */
+  include_archived?: boolean;
   limit?: number;
   offset?: number;
 };
@@ -105,6 +112,7 @@ export async function listCompanies(
   if (filters.has_contacts !== undefined) {
     params.set("has_contacts", String(filters.has_contacts));
   }
+  if (filters.include_archived) params.set("include_archived", "true");
   if (filters.limit !== undefined) params.set("limit", String(filters.limit));
   if (filters.offset !== undefined) params.set("offset", String(filters.offset));
   const qs = params.toString();
@@ -144,6 +152,20 @@ export async function mergeCompanies(
     `/api/companies/${source_id}/merge/${target_id}`,
     { method: "POST" },
   );
+}
+
+/** Archiva (REVERSIBLE, no borra) una empresa: fuera de listados / bandejas /
+ *  buscadores y sin alertas. Contactos / pedidos / tareas se conservan. */
+export async function archiveCompany(id: string, reason?: string): Promise<Company> {
+  return apiFetch<Company>(`/api/companies/${id}/archive`, {
+    method: "POST",
+    body: JSON.stringify({ reason: reason ?? null }),
+  });
+}
+
+/** Restaura una empresa archivada (vuelve a listados y buscadores). */
+export async function restoreCompany(id: string): Promise<Company> {
+  return apiFetch<Company>(`/api/companies/${id}/restore`, { method: "POST" });
 }
 
 export type CompanyContact = {

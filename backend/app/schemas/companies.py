@@ -77,6 +77,11 @@ class CompanyRead(BaseModel):
     vies_name: str | None = None
     vies_address: str | None = None
     vies: dict[str, Any] | None = None
+    #: Limpieza de empresas: archivado reversible (fuera de listados por
+    #: defecto). `is_archived=True` → «Restaurar» la devuelve.
+    is_archived: bool = False
+    archived_at: datetime | None = None
+    archived_reason: str | None = None
     external_references: dict[str, Any] = Field(
         default_factory=dict,
         validation_alias=AliasChoices(
