@@ -12625,3 +12625,110 @@ input[type="radio"]:focus-visible {
   font-weight: 600;
 }
 .erp-pf-age .mono { font-size: var(--fs-mono); }
+
+   Lote 2 · PR-2 · ficha de empresa  (companies/[id]/page.tsx +
+   components/erp/CompanyActivityPanel.tsx · revisión §4 «Ficha de empresa»)
+   Estado / vínculo FACTUSOL / régimen como pastillas junto al nombre, banda
+   gris de archivada con «Reactivar» como primario, «Datos fiscales» como
+   panel de pares (dl.erp-kv-grid, fila VIES siempre presente) y la actividad
+   reciente en UNA tabla de consulta con filtro por tipo. Solo tokens: nada de
+   px de fuente ni --faint sobre datos.
+   ========================================================================== */
+/* Cabecera bajo el nombre: NIF + localidad en una línea, pastillas en otra. */
+.company-ficha-id {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin: 0 0 var(--sp-4);
+}
+.company-ficha-id p { margin: 0; }
+.company-ficha-nif {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--sp-1) var(--sp-2);
+  font-size: var(--fs-body);
+  color: var(--muted);
+}
+.company-ficha-nif .mono { color: var(--ink); font-size: var(--fs-mono); }
+.company-ficha-pills {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+}
+/* Tonos de pastilla que la ficha usa además de p / t / n: verde = hecho o
+   activo, ámbar = pendiente, azul = informativo (por facturar), rojo =
+   incidencia. Mismo significado que la rejilla de estado. */
+.company-ficha .erp-flow-pill.is-g { background: var(--st-green-bg); color: var(--st-green-ink); }
+.company-ficha .erp-flow-pill.is-a { background: var(--st-amber-bg); color: var(--st-amber-ink); }
+.company-ficha .erp-flow-pill.is-b { background: var(--st-blue-bg); color: var(--st-blue-ink); }
+.company-ficha .erp-flow-pill.is-r { background: var(--st-red-bg); color: var(--st-red-ink); }
+/* Banda gris de archivada (arriba del todo): motivo, fecha y el primario. */
+.company-archived-band {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-3) var(--sp-4);
+  margin: 0 0 var(--sp-4);
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--st-neutral-bg);
+  border: 1px solid var(--line);
+  border-radius: var(--r-panel);
+  color: var(--ink);
+  font-size: var(--fs-body);
+}
+.company-archived-band-txt {
+  flex: 1 1 320px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+.company-archived-band-txt p { margin: 0; }
+.company-archived-band-hint { color: var(--muted); font-size: var(--fs-label); }
+.company-archived-band > .button { margin-left: auto; }
+/* Datos fiscales: panel de pares; lo que acompaña al valor (chip, botón) va
+   en línea con el texto. */
+.company-fiscal .erp-kv-grid dd .badge,
+.company-fiscal .erp-kv-grid dd .erp-flow-pill { vertical-align: middle; }
+.company-fiscal .erp-kv-grid dd.mono { font-size: var(--fs-mono); }
+.company-fiscal-vies {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-1) var(--sp-2);
+}
+.company-fiscal-vies .muted { font-size: var(--fs-label); }
+/* Actividad reciente: título + filtro por tipo en la misma línea, y una
+   tabla de consulta (.data-table--responsive: pares etiqueta/valor < 768). */
+.company-activity-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2) var(--sp-3);
+  margin: 0 0 var(--sp-3);
+}
+.company-activity-head h3 { margin: 0; }
+.company-activity-filter { display: flex; flex-wrap: wrap; gap: var(--sp-1); }
+.company-activity-filter .pill-toggle {
+  min-height: 32px;
+  padding: 0 var(--sp-3);
+  font-family: inherit;
+  font-size: var(--fs-label);
+  font-weight: 600;
+  color: var(--muted);
+}
+.company-activity-filter .pill-toggle.is-active { color: #fff; }
+.company-activity-table td { vertical-align: middle; }
+.company-activity-table td.mono { white-space: nowrap; }
+.company-activity-detail { color: var(--muted); }
+.company-activity-table td.company-activity-msg { color: var(--muted); text-align: left; }
+.company-activity-table td.company-activity-msg.is-warn { color: var(--st-amber-ink); }
+.company-activity > .erp-flow-kv { margin-top: var(--sp-2); border-top: 1px solid var(--line2); }
+@media (max-width: 767px) {
+  .company-activity-filter .pill-toggle { min-height: var(--control-h-touch); }
+  .company-archived-band > .button { margin-left: 0; width: 100%; }
+  .company-activity-table td.mono { white-space: normal; }
+}
